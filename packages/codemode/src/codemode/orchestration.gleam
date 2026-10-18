@@ -412,6 +412,7 @@ pub fn decode_spawn(
   use context <- result.try(provenance_arg(args))
   use tools <- result.try(optional_names_arg(args, "tools"))
   use result_schema <- result.try(schema_arg(args))
+  use on <- result.try(optional_string_arg(args, "on"))
   Ok(agent.SpawnRequest(
     purpose:,
     brief:,
@@ -421,7 +422,7 @@ pub fn decode_spawn(
     result_schema:,
     context:,
     detach:,
-    on: None,
+    on:,
   ))
 }
 
@@ -697,6 +698,8 @@ fn send_plan(
               field("operation", text(ids.op_id_to_string(operation))),
             ]),
           )
+        Ok(agent.Queued) ->
+          answered(msgpack.MapValue([field("kind", text("queued"))]))
       }
     }),
   )

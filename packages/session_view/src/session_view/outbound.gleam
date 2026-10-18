@@ -46,6 +46,7 @@ import session_view/model.{
 } as session_model
 import session_view/notice_words
 import session_view/queue_request
+import session_view/remote_transcript
 import session_view/session_channel
 import session_view/shared_set
 import session_view/worktree_view
@@ -205,6 +206,8 @@ fn record_sent(
       Shared(..shared, btw: btw.State(..shared.btw, pending: Some(request_id)))
     "context" ->
       shared_set.context(shared, context_view.sent(shared.context, request_id))
+    "child_history" ->
+      Shared(..shared, peek: remote_transcript.sent(shared.peek, request_id))
     "live_jobs" -> shared_set.jobs_request(shared, Some(request_id))
     "advisor_pending" -> shared_set.nudges_request(shared, Some(request_id))
 
@@ -373,6 +376,7 @@ pub fn mutating_submission(
     command.Approve(_) | command.Deny(_) | command.AddDirectory(..) -> True
     command.Empty -> shared.attachments != []
     command.Btw(_) | command.BtwClose -> False
+    command.Peek(_) | command.PeekClose -> False
     command.Schedules
     | command.ProfileShow
     | command.Approvals(_)

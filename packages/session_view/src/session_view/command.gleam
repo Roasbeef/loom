@@ -107,6 +107,14 @@ pub type Session {
   /// Hide the panel without cancelling its request.
   BtwClose
 
+  /// Open a peek at the transcript of a child that runs on another
+  /// orchestrator (protocol-change/090), named as the agent strip names it or
+  /// by its whole strand name there.
+  Peek(child: String)
+
+  /// Close the open peek.
+  PeekClose
+
   /// Add read access to a directory, or write access with an explicit flag.
   AddDirectory(path: String, access: String)
 
@@ -424,6 +432,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/diff", "observe current worktree changes", False),
     Suggestion("/btw", "ask a side question while main work continues", True),
     Suggestion("/context", "inspect current context usage", False),
+    Suggestion("/peek", "read a remote child's transcript", True),
     Suggestion("/contextall", "inspect context items", False),
     Suggestion("/summary", "inspect the latest completed operation", False),
     Suggestion(
@@ -520,6 +529,10 @@ pub fn parse(input: String) -> Command {
     "/btw clear" -> Session(Btw(btw.Clear))
     "/btw cancel" -> Session(Btw(btw.Cancel))
     "/btw close" -> Session(BtwClose)
+    "/peek" -> Session(MissingArgument("peek"))
+    "/peek close" -> Session(PeekClose)
+    "/peek " <> rest ->
+      required_argument("peek", rest, fn(value) { Session(Peek(value)) })
     "/btw " <> text -> Session(Btw(btw.Ask(text)))
     "/context" -> Surface(Context)
     "/context all" | "/contextall" -> Surface(ContextAll)

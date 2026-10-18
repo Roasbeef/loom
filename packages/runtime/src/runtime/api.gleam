@@ -921,11 +921,17 @@ fn admitting_child_run(
             Some(Continuation(within_ms: None, ..)) | None ->
               lineage.default_within_ms
           }
+          use deadline <- result.try(run_deadline_for(
+            lineage,
+            continuation,
+            budget,
+            now,
+          ))
           let run =
             child_run.Run(
               strand: runtime.strand,
               owner:,
-              deadline: option.map(budget, fn(ms) { now + ms }),
+              deadline:,
               stop: child_run.Unstopped,
             )
           Ok(tx.Tx(
@@ -953,9 +959,49 @@ fn admitting_child_run(
   }
 }
 
+// The deadline a new run of a child gets. An ordinary run gets a fresh budget
+// from now. A run that a remote parent's message starts (no continuation, and a
+// parent that is a `^` reference) gets the child's own absolute deadline, the
+// one its spawn was given, and nothing later: a message must not lengthen what
+// the spawner allowed, however many are sent, and a child past its deadline
+// cannot be revived by one.
+fn run_deadline_for(
+  child: lineage.Lineage,
+  continuation: Option(Continuation),
+  budget: Option(Int),
+  now: Int,
+) -> Result(Option(Int), ApiError) {
+  case continuation, string.starts_with(child.parent, parent_reference_prefix) {
+    None, True ->
+      case child.deadline {
+        Some(at) if at <= now ->
+          Error(ReadFailed("the child's deadline has passed"))
+        Some(_) | None -> Ok(child.deadline)
+      }
+    Some(_), _ | None, False -> Ok(option.map(budget, fn(ms) { now + ms }))
+  }
+}
+
 // Even a detached continuation must be admitted by the still-current caller.
 // Detachment removes run-end custody, not the caller's authority check.
+//
+// A child whose parent is a reference to a strand on another orchestrator
+// (`^main`, see `parent_reference_prefix`) has no parent strand here to read,
+// and a run started without a continuation is nobody's to own: the parent's runs
+// are on the other machine, and its orchestrator never tells this one that one
+// ended. Such a run is unowned, bounded by the deadline its record is given.
 fn child_owner(
+  runtime: Runtime,
+  child: lineage.Lineage,
+  continuation: Option(Continuation),
+) -> Result(#(Option(child_run.Owner), List(tx.SeqExpectation)), ApiError) {
+  case continuation, string.starts_with(child.parent, parent_reference_prefix) {
+    None, True -> Ok(#(None, []))
+    Some(_), _ | None, False -> local_child_owner(runtime, child, continuation)
+  }
+}
+
+fn local_child_owner(
   runtime: Runtime,
   child: lineage.Lineage,
   continuation: Option(Continuation),
@@ -2561,11 +2607,16 @@ pub const summary_fact_prefix = "summary/"
 /// when the orchestrator whose child this session serves reports that a run
 /// of its parent has ended, and a spawn for that run is refused from then on.
 /// It writes `delegate/released` when the parent session itself was deleted,
-/// and every spawn is refused from then on.
+/// and every spawn is refused from then on. Phase 2 adds two more corners under
+/// the same prefix: `delegate/outbox/{kind}/{key}`, the messages a child owes
+/// the parent's orchestrator and the progress cursor beside them, and
+/// `delegate/receipt/{message id}`, the record that a message from the parent
+/// was delivered into a child.
 ///
 /// Reserved because a model that could write one would end a run it does not
-/// own, which refuses every later spawn for it, or could remove one, which
-/// would let a spawn create a child nobody will reap.
+/// own, which refuses every later spawn for it, could remove one, which
+/// would let a spawn create a child nobody will reap, or could settle an outbox
+/// row to hide that its mail was never delivered.
 pub const delegate_fact_prefix = "delegate/"
 
 /// The reserved prefix of the stubs a parent session keeps for subagents that run
@@ -2579,12 +2630,45 @@ pub const delegate_fact_prefix = "delegate/"
 /// make a live remote child vanish from the fan-out count and the roster.
 pub const remote_child_fact_prefix = "remote-child/"
 
+/// The reserved prefix of the receipts a parent session keeps for mail that a
+/// child on another orchestrator sent it (protocol-change/084, phase 2). The
+/// Agency writes `remote-mail/{message id}` in the same commit that steers the
+/// parent strand, or alone when it refuses the message, and a repeat of the
+/// message is answered from the cell.
+///
+/// Reserved because a model that could write one would mark a message it never
+/// received as delivered, so the child would never be told otherwise, or could
+/// pre-empt a real message id with a refusal, and one that could remove a
+/// receipt would let the child's resend steer the parent a second time.
+pub const remote_mail_fact_prefix = "remote-mail/"
+
+/// The reserved key prefix under which a parent session keeps the pending
+/// escalation of each child on another orchestrator, as
+/// `remote-escalation/<orchestrator>/<id there>` (protocol-change/089).
+///
+/// Reserved because a model that could write one would show its operator a
+/// question the child never asked, or clear one the child is waiting on. It is
+/// not under `escalation/`, which the session's own tool clearance scans and
+/// spends, so a question that belongs to another machine can never be spent here.
+pub const remote_escalation_fact_prefix = "remote-escalation/"
+
+/// The reserved prefix of the sends a parent session owes a child on another
+/// orchestrator that was unreachable when the model sent them
+/// (protocol-change/084, phase 2). The Agency writes
+/// `remote-send/{message id}` before the first attempt, and the remote drainer
+/// resends from it until the orchestrator answers.
+///
+/// Reserved because a model that could write one would send text to a child
+/// under the parent's name without a tool call, and one that could remove a row
+/// would drop a message the model was told was queued.
+pub const remote_send_fact_prefix = "remote-send/"
+
 /// Whether a `fact.custom` key falls in a reserved, runtime-owned corner
 /// of the namespace. Reserved keys are refused to `put_fact` and hidden
 /// from `facts`; harness code reaches them through `put_reserved_fact`
 /// and `reserved_facts`.
 ///
-/// The sixteen corners, and what each would let a forged write do:
+/// The eighteen corners, and what each would let a forged write do:
 /// `escalation/` — manufacture an approval and widen a denied call;
 /// `operation-result/` — shadow an operation's terminal result and lie to
 /// every waiter; `lineage/` — rewrite a parent edge, which is the single
@@ -2613,8 +2697,13 @@ pub const remote_child_fact_prefix = "remote-child/"
 /// as though the harness's summarizer had written it; `delegate/` — mark a
 /// run of a remote parent as ended, so every later spawn for it is refused, or
 /// remove that mark, so a spawn after the run ended creates a child nobody
-/// will reap; and `remote-child/` — choose which orchestrator a retried spawn goes
-/// to, or remove the stub of a live remote child from the fan-out count.
+/// will reap; `remote-child/` — choose which orchestrator a retried spawn goes
+/// to, or remove the stub of a live remote child from the fan-out count;
+/// `remote-mail/` — mark mail from a remote child as delivered when it never
+/// reached the parent, or erase the receipt that stops a resend steering the
+/// parent twice; and `remote-send/` — send text to a remote child under the
+/// parent's name without a tool call, or drop a send the model was told was
+/// queued.
 ///
 /// ## Examples
 ///
@@ -2643,6 +2732,9 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, summary_fact_prefix)
   || string.starts_with(key, delegate_fact_prefix)
   || string.starts_with(key, remote_child_fact_prefix)
+  || string.starts_with(key, remote_mail_fact_prefix)
+  || string.starts_with(key, remote_escalation_fact_prefix)
+  || string.starts_with(key, remote_send_fact_prefix)
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion

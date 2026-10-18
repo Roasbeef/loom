@@ -731,7 +731,7 @@ and the epoch the page was admitted in:
 2. `session_authority` finds Owner or Operator authority in the target: an
    observer member is refused with the words "ask an operator to resume
    it", the check `OpenSession` (`client/daemon/server.gleam:2404`) makes;
-3. `open` (`client/daemon/manager.gleam:1826`) is called, which is the same
+3. `open` (`client/daemon/manager.gleam:1834`) is called, which is the same
    registry turn `sessions.open` runs: capacity, `Reserved`, archived, the
    domain slot;
 4. the daemon waits for the session to become `Resident`, polling `get`

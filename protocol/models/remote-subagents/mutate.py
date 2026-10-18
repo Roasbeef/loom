@@ -83,8 +83,8 @@ MUTATIONS = {
   # a call site can be told the result of another site's child.
   "M8-join-names-the-wrong-child": ("tcOnlyJoinReportsOwnChild", 20000, r"(another call site minted|did not reach)", [
     ("PSrc/Laptop.p",
-     "dest = port, site = s, child = stubs[s].child,",
-     "dest = port, site = s, child = 0,")]),
+     "dest = stubs[s].dest, site = s, child = stubs[s].child,",
+     "dest = stubs[s].dest, site = s, child = 0,")]),
 
   # `Release` writes the released fence before it stops the children, and the
   # session refuses every spawn from then on. Here it stops the children and
@@ -101,7 +101,7 @@ MUTATIONS = {
   "M10-unreachable-settles-the-release-row": ("tcOnlyReleaseIsTold", 20000, r"hot state", [
     ("PSrc/Laptop.p",
      "      // the row stays owed and the next pass sends it again.\n      watchingRelease = false;",
-     "      // the row stays owed and the next pass sends it again.\n      releaseOwed = false;")]),
+     "      // the row stays owed and the next pass sends it again.\n      releaseOwed = default(set[machine]);")]),
 
   # A `Release` for a parent with no session answers zero and makes nothing.
   # Here it makes a session, as a `Spawn` does, and then deletes it.
@@ -109,6 +109,67 @@ MUTATIONS = {
     ("PSrc/Port.p",
      "    if (phase == SS_NONE) {\n      announce eReleaseNoSession;\n      answer(m, K_RELEASED, 0, CS_RUNNING);\n      return;\n    }\n",
      "    if (phase == SS_NONE) {\n      makeSession(K_RELEASE);\n    }\n")]),
+
+  # The laptop steers the parent and stores the receipt in one commit, so a mail
+  # the remote sends again is answered from the receipt. Here the receipt is
+  # never stored, and a resend after a lost reply steers the parent a second
+  # time.
+  "M12-mail-admitted-without-a-receipt": ("tcOnlyUpwardAtMostOnce", 20000, r"steered the parent twice", [
+    ("PSrc/Laptop.p",
+     "      receipts[m.id] = MAIL_DELIVERED;\n",
+     "")]),
+
+  # Mail is steered into a run that is open and declined otherwise, because a
+  # finished parent is not woken for a child's message (`BusyOnly`). Here the
+  # steer does not look at the run, as a policy that may wake would not.
+  "M13-mail-may-wake-the-parent": ("tcOnlyUpwardOnlyIntoOpenRun", 20000, r"whose run had ended", [
+    ("PSrc/Laptop.p",
+     "    if (runOpen) {\n      receipts[m.id] = MAIL_DELIVERED;",
+     "    if (true) {\n      receipts[m.id] = MAIL_DELIVERED;")]),
+
+  # A row settles only on the laptop's answer. Here the remote settles it when it
+  # sends, so a mail the connection lost is never sent again.
+  "M14-mail-row-settled-without-an-answer": ("tcOnlyEveryMailAnswered", 20000, r"hot state", [
+    ("PSrc/Port.p",
+     "id = id, code = MAIL_DELIVERED));\n",
+     "id = id, code = MAIL_DELIVERED));\n        outbox[id].answered = true;\n")]),
+
+  # The laptop finds the stub by the child's name, which the stub records before
+  # the first `Spawn` leaves. Here it finds it by the handle, which exists only
+  # once the spawn is answered, so mail that arrives first is answered unknown.
+  "M15-mail-host-keys-on-the-handle": ("tcOnlyMailFindsItsStub", 20000, r"while the parent holds its stub", [
+    ("PSrc/Laptop.p",
+     "    if (!(m.site in stubs)) {\n      announce eUnknownAnswered,",
+     "    if (!(m.site in stubs && stubs[m.site].st == ST_SPAWNED)) {\n      announce eUnknownAnswered,")]),
+
+  # A spawn whose connection breaks is resent to the orchestrator its stub names
+  # and to no other, because the adoption that makes a resend safe is that
+  # orchestrator's. Here the box's spawn of a grandchild is retried against the
+  # second third orchestrator, which has no record of the first child and makes
+  # another (phase 4; with one Port this mutant had nothing to duplicate).
+  "M16-retried-against-a-second-orchestrator": ("tcOnlyOneOrchestratorPerSite", 20000, r"children on two orchestrators", [
+    ("PSrc/SpawnCall.p",
+     "    on eNoConn do {\n      send wire, eWatch, this;",
+     "    on eNoConn do {\n      port = spare;\n      send wire, eWatch, this;")]),
+
+  # Deleting a released delegate session of the box writes a release row for
+  # each third orchestrator its children started children on. Here it writes
+  # none, so the grandchildren run to their deadlines with nobody left to read
+  # them.
+  "M17-release-does-not-cascade": ("tcOnlyReleasedDescendantsEnd", 20000, r"hot state", [
+    ("PSrc/Port.p",
+     "      announce eCascadeDue;\n      send relay, eCascade;\n",
+     "      announce eCascadeDue;\n")]),
+
+  # The cascade's rows are written when the drained session is deleted, because
+  # until then the session's drainer resends a spawn that is still owed. Here the
+  # rows are written when the `Release` is handled, while the session still
+  # runs, and the drainer's next pass sends the third orchestrator a `Release`
+  # and then a `Spawn` that makes a child whose parent is gone.
+  "M18-cascade-written-before-the-slot-drains": ("tcOnlyNoSpawnAfterOwnRelease", 20000, r"after its own release", [
+    ("PSrc/Port.p",
+     "    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running, at = this, depth = depth);\n    answer(m, K_RELEASED, stopped, CS_RUNNING);",
+     "    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running, at = this, depth = depth);\n    if (hasRelay) {\n      send relay, eOweReleases;\n    }\n    answer(m, K_RELEASED, stopped, CS_RUNNING);")]),
 }
 
 

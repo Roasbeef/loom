@@ -59,6 +59,7 @@ import broker/policy
 import broker/token
 import client/advisor
 import client/agency
+import client/approval_ceiling
 import client/async_codemode
 import client/async_runs
 import client/blobs
@@ -72,6 +73,8 @@ import client/codex/transport as codex_transport
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
+import client/delegate_drain
+import client/delegate_outbox
 import client/directories
 import client/effect_abort
 import client/escalate
@@ -112,12 +115,14 @@ import client/owner_services
 import client/peer_mail
 import client/peer_outbox_drain
 import client/peers
+import client/permissions
 import client/profile_switch
 import client/proposals
 import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census
 import client/remote/workspace as remote_workspace
+import client/remote_child
 import client/remote_drain
 import client/remote_reach
 import client/retryconf
@@ -402,10 +407,23 @@ pub type Settings {
     /// the daemon sets it for a delegate session alone, whose children belong
     /// to a spawner that may never return (protocol-change/084).
     deadline_tick_ms: Option(Int),
+    /// The deepest spawn the Agency admits, counting the strand a human talks
+    /// to as depth 0, or `None` for the Agency's default of one. The daemon sets
+    /// it for a delegate session alone, to its spawner's `max_depth`, so a child
+    /// there may start children of its own as the policy allows
+    /// (protocol-change/084, phase 4).
+    depth_cap: Option(Int),
     /// What a delegate session reports about its children's spend and the
     /// budget it enforces on one child (protocol-change/084, phase 2). `None`
     /// for every session but the delegate session of a metered spawner.
     metering: Option(agency.Metering),
+    /// Where a delegate session's parent is, and how the session reaches it
+    /// (protocol-change/084, phase 2): the link names the parent session and the
+    /// spawner's node, the laptop is the sender that never dials. Both are `None`
+    /// for every session but a delegate session, which then runs no instance of
+    /// the drainer that sends its children's mail and progress.
+    spawner: Option(delegate_outbox.SpawnerLink),
+    laptop: Option(delegate_outbox.Laptop),
     /// Told the first human prompt the session accepts on its main strand,
     /// once, so the daemon can seed the catalogue's subtitle
     /// (`protocol-change/067`). `None` for a host with no catalogue.
@@ -591,6 +609,10 @@ pub type Instance {
     /// The questions another orchestrator's subagent messages put to this
     /// session's Agency, projected into the daemon registry the same way.
     spawns: agency.DelegateEndpoint,
+    /// The questions another orchestrator's children put to this session's
+    /// Agency about the mail and progress they send their parent
+    /// (protocol-change/084, phase 2), projected the same way.
+    inbox: agency.ChildInbox,
     /// The sole conversation writer and its supervised strands.
     runtime: api.Runtime,
     /// The original storage actor, monitored before another writer call.
@@ -1417,7 +1439,10 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       peer_defaults: None,
       remote_reach: None,
       deadline_tick_ms: None,
+      depth_cap: None,
       metering: None,
+      spawner: None,
+      laptop: None,
       first_prompt: None,
       profile_desk: None,
       codemode_sockets: None,
@@ -2173,6 +2198,9 @@ pub type Resident {
     /// Address-only delegate questions for a parent on another orchestrator:
     /// closures over the Agency holder's name and a trimmed configuration.
     spawns: agency.DelegateEndpoint,
+    /// Address-only questions about what this session's children on other
+    /// orchestrators send it: closures over the Agency holder's name.
+    inbox: agency.ChildInbox,
     /// The hub's stable address, which is all an attaching socket reads.
     gateway: hub.Gateway,
     /// The session's worktree observation (`Instance.worktree`), for the web
@@ -2201,6 +2229,7 @@ pub fn resident(instance: Instance) -> Resident {
   Resident(
     peer: instance.peer,
     spawns: instance.spawns,
+    inbox: instance.inbox,
     gateway: instance.gateway,
     worktree: instance.worktree,
     children: instance_children(instance),
@@ -3435,6 +3464,11 @@ fn assemble_in(
   // rings it when it leaves a record pending, before any drainer exists.
   let remote_drain_name = address.new_address(namespace)
 
+  // The delegate session's instance, over what its children send their parent,
+  // is reached by name for the same reason: the Agency rings it when a child
+  // writes mail, before any drainer exists.
+  let upward_drain_name = address.new_address(namespace)
+
   // The Agency's holder cannot exist yet: `api.open` takes the effects
   // and returns the runtime, and the runtime contains the effects, so a
   // closure over the live runtime is a value cycle rather than an
@@ -3452,9 +3486,14 @@ fn assemble_in(
   // The role resolver outlives assembly and needs only the gateway, so its
   // environment must not retain the remaining session settings.
   let subagent_gateway = settings.gateway
+
+  // A delegate session's depth cap is its spawner's `max_depth`; every other
+  // session keeps the Agency's default.
+  let agency_base = agency.default_config(agency_name, clock)
   let agency_config =
     agency.Config(
-      ..agency.default_config(agency_name, clock),
+      ..agency_base,
+      depth_cap: option.unwrap(settings.depth_cap, agency_base.depth_cap),
       peer_defaults: option.unwrap(
         settings.peer_defaults,
         peer_mail.no_defaults,
@@ -3467,6 +3506,8 @@ fn assemble_in(
       deadline_tick_ms: settings.deadline_tick_ms,
       abort_effects: effect_abort.abort(effect_abort_name),
       claim: option.then(settings.metering, fn(metering) { metering.claim }),
+      spawner: settings.spawner,
+      upward_queued: fn() { peer_outbox_drain.ring(upward_drain_name) },
       models: list.map(settings.catalog.models, fn(entry) {
         #(
           machine_strand.ModelIdentity(
@@ -3514,10 +3555,30 @@ fn assemble_in(
   // Asking the hub by name (not by handle) keeps that true across a hub
   // restart.
   let escalate_name = address.new_address(namespace)
+
+  // A delegate session whose spawner sets an approval ceiling has a second
+  // party to ask (protocol-change/089): the operator on the spawning
+  // orchestrator, who can answer for as long as that orchestrator's node is
+  // connected. The connection is read, never made, because the box does not dial
+  // its spawner. A raised request is announced as a row in the session's outbox,
+  // which the delegate drainer sends on.
   let escalate_config =
     escalate.Config(
       ..escalate.default_config(escalate_name, clock),
-      interactive: fn() { hub.attached(hub.Gateway(name:)) > 0 },
+      interactive: fn() {
+        hub.attached(hub.Gateway(name:)) > 0
+        || delegate_outbox.answers(settings.spawner, settings.laptop)
+      },
+      parked: fn(opened_runtime, id, until) {
+        announce_to_spawner(
+          settings,
+          opened_runtime,
+          id,
+          until,
+          upward_drain_name,
+          logger,
+        )
+      },
     )
 
   // The scheduling plane is decided once, here, and reached two ways:
@@ -4338,6 +4399,8 @@ fn assemble_in(
   let hub_catalog = settings.catalog
   let first_prompt = settings.first_prompt
   let profile_desk = settings.profile_desk
+  let spawner_link = settings.spawner
+  let hub_remote_reach = agency_config.remote
   let memory_settings = settings.memory
 
   // The two things the hub asks the workspace for, projected before the
@@ -4503,6 +4566,17 @@ fn assemble_in(
     // run-end rows it resends are facts in the session's own store, so a
     // replacement begins with a pass that reads them again.
     |> with_remote_drain(agency_config, runtime, remote_drain_name, logger)
+    // A delegate session's instance for what its children send their parent is
+    // in this tier for the same reason: the mail rows it sends are facts in the
+    // session's own store, so a replacement begins with a pass that reads them
+    // again.
+    |> with_upward_drain(
+      settings,
+      agency_config,
+      runtime,
+      upward_drain_name,
+      logger,
+    )
     // The commit forwarder is in this tier for the reason everything else
     // here is: it is reached by name and holds nothing. It carries no
     // state at all, in fact — one writer publication in, one hub hint out
@@ -4528,9 +4602,12 @@ fn assemble_in(
             |> hub.with_context(context_reader)
             |> hub.with_btw(btw_name)
             |> hub.with_live_jobs(live_jobs)
+            |> with_child_history(settings.remote_reach, runtime)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(first_prompt)
             |> with_profile_desk(profile_desk)
+            |> with_spawner_link(spawner_link)
+            |> hub.with_remote_reach(hub_remote_reach)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
@@ -4604,13 +4681,39 @@ fn assemble_in(
     }),
   )
 
+  // A delegate session remembers what its spawner's operator approved for the
+  // session, and the owner of this machine may have narrowed the spawner's
+  // approval ceiling since. The grants that are outside the ceiling as it is now
+  // are withdrawn here, before the session serves a child (protocol-change/089).
+  withdraw_outside_the_ceiling(settings, runtime, logger)
+
   // The host owns this supervisor through the record and a monitor, not
   // through the start link, so that its death is a fault the host
   // *handles* rather than a signal that fells the host mid-teardown.
   process.unlink(started_services.pid)
   Ok(Instance(
     peer: peer_endpoint,
-    spawns: agency.delegate_endpoint(agency_config),
+    spawns: agency.DelegateEndpoint(
+      ..agency.delegate_endpoint(agency_config),
+      resolve: fn(
+        parent,
+        _child,
+        escalation_id,
+        decision,
+        expected_seq,
+        decider,
+      ) {
+        Ok(hub.decide(
+          hub.Gateway(name:),
+          parent,
+          escalation_id,
+          decision,
+          expected_seq,
+          decider,
+        ))
+      },
+    ),
+    inbox: agency.child_inbox(agency_config),
     runtime:,
     storage_owner:,
     broker: broker_actor,
@@ -4977,6 +5080,46 @@ fn with_remote_drain(
       name,
     ),
   )
+}
+
+// The instance that sends what a delegate session's children owe their parent
+// (protocol-change/084, phase 2). Only a delegate session has a spawner link, so
+// every other session starts none. Its first pass at session open is what sends
+// a message that was owed when the daemon last stopped.
+fn with_upward_drain(
+  builder: sup.Builder,
+  settings: Settings,
+  agency_config: agency.Config,
+  runtime: api.Runtime,
+  name: address.Address(peer_outbox_drain.Message),
+  logger: Logger,
+) -> sup.Builder {
+  case settings.spawner {
+    None -> builder
+    Some(link) ->
+      sup.add(
+        builder,
+        peer_outbox_drain.supervised(
+          peer_outbox_drain.over(
+            delegate_drain.pass(
+              agency.runtime_supplier(agency_config),
+              fn() {
+                agency.delegate_occupancy(agency_config) == agency.Occupied
+              },
+              fn() {
+                let #(now, _clock) = clock.read(agency_config.clock)
+                now
+              },
+              link,
+              option.unwrap(settings.laptop, delegate_outbox.absent()),
+              logger,
+            ),
+            runtime.effects.timers.after,
+          ),
+          name,
+        ),
+      )
+  }
 }
 
 // The scheduled-heartbeat scanner, and the decision not to start one —
@@ -5792,6 +5935,24 @@ fn summary_tap(
   }
 }
 
+// The reader of remote children's transcript pages, when the session can reach
+// other orchestrators at all (protocol-change/090). A session with no reach has
+// no remote child, and its gateway answers `child_history` as unavailable.
+fn with_child_history(
+  options: hub.Options,
+  reach: Option(remote_reach.Reach),
+  runtime: api.Runtime,
+) -> hub.Options {
+  case reach {
+    Some(reach) ->
+      hub.with_child_history(
+        options,
+        remote_child.history_reader(runtime, reach),
+      )
+    None -> options
+  }
+}
+
 // The report of the session's first prompt, when the host listens for one.
 fn with_first_prompt(
   options: hub.Options,
@@ -5799,6 +5960,77 @@ fn with_first_prompt(
 ) -> hub.Options {
   case report {
     Some(report) -> hub.with_first_prompt(options, report)
+    None -> options
+  }
+}
+
+// Drops the session's remembered grants that came through its spawner and that
+// the spawner's ceiling, as the configuration now reads, does not admit. A
+// spawner whose table has no ceiling admits nothing, so every such grant goes.
+// A failure is logged and leaves the grants where they are for the next open to
+// try again: the ceiling is a bound on an honest spawner, and one open's delay
+// does not change that.
+fn withdraw_outside_the_ceiling(
+  settings: Settings,
+  runtime: api.Runtime,
+  logger: Logger,
+) -> Nil {
+  case settings.spawner {
+    None -> Nil
+    Some(link) -> {
+      let admits = case link.ceiling {
+        Some(ceiling) -> approval_ceiling.admits(ceiling, _)
+        None -> fn(_grant) { False }
+      }
+      case permissions.withdraw_spawner_grants(runtime, link.spawner, admits) {
+        Ok([]) -> Nil
+        Ok(withdrawn) ->
+          log.warn(logger, "serve.spawner_grants_withdrawn", [
+            field.count("grants", list.length(withdrawn)),
+            field.text("spawner", link.spawner),
+          ])
+        Error(reason) ->
+          log.warn(logger, "serve.spawner_grants_kept", [
+            field.text("reason", reason),
+          ])
+      }
+    }
+  }
+}
+
+// Files the row that sends a request on to the spawner's operator, and rings the
+// delegate drainer. It runs on the parked call's own process, and a failure
+// costs the spawner's operator the question and nothing else: the record stands,
+// and the box's owner can still answer it.
+fn announce_to_spawner(
+  settings: Settings,
+  runtime: api.Runtime,
+  id: String,
+  until: Int,
+  drain: address.Address(peer_outbox_drain.Message),
+  logger: Logger,
+) -> Nil {
+  case settings.spawner {
+    Some(delegate_outbox.SpawnerLink(ceiling: Some(_), ..)) ->
+      case delegate_outbox.announce(runtime, id, until:) {
+        Ok(Nil) -> peer_outbox_drain.ring(drain)
+        Error(reason) ->
+          log.warn(logger, "serve.announce_unsent", [
+            field.text("reason", reason),
+          ])
+      }
+    _ -> Nil
+  }
+}
+
+// A delegate session's hub takes a spawner's operator's decisions when it knows
+// the spawner's link.
+fn with_spawner_link(
+  options: hub.Options,
+  link: Option(delegate_outbox.SpawnerLink),
+) -> hub.Options {
+  case link {
+    Some(link) -> hub.with_spawner(options, link)
     None -> options
   }
 }

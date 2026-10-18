@@ -202,6 +202,13 @@ pub type Config {
     holder_timeout_ms: Int,
     max_records: Int,
     max_asks: Int,
+    /// Told, once, when a refused call is about to park on a record: the record's
+    /// identity and the instant its window closes. A host that has someone other
+    /// than its own attached clients to ask, such as a delegate session whose
+    /// spawner's operator may answer, uses it to send the question on
+    /// (protocol-change/089). It runs on the parked call's own process and must
+    /// not wait on the network.
+    parked: fn(api.Runtime, String, Int) -> Nil,
   )
 }
 
@@ -248,6 +255,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     holder_timeout_ms: 5000,
     max_records: 256,
     max_asks: 3,
+    parked: fn(_runtime, _id, _until) { Nil },
   )
 }
 
@@ -616,7 +624,10 @@ fn decide(config: Config, refused: Refused) -> Decision {
         Parked(id:, scope:, action:, refused:, until: until(config, refused))
       case raise(config, runtime, parked) && config.interactive() {
         False -> Settle
-        True -> park(config, runtime, parked)
+        True -> {
+          config.parked(runtime, parked.id, parked.until)
+          park(config, runtime, parked)
+        }
       }
     }
   }

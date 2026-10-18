@@ -5,6 +5,19 @@
 //// A missing action or unsupported grant prevents approval, while rejection
 //// remains available against the captured sequence. Disappearance alone never
 //// identifies the human who resolved a request.
+////
+//// ## Requests of children on another orchestrator
+////
+//// A session whose child runs on another orchestrator keeps that child's pending
+//// request in a cell of its own, `remote-escalation/<orchestrator>/<id there>`
+//// (protocol-change/089), holding the protocol's own record. `decode` reads it
+//// into the same `Review`, with a `Remote` that says where it is from. Its
+//// permission is the part of what was asked that the spawner's approval ceiling
+//// admits, because an approval can carry nothing else, and the rest is kept as
+//// `outside` so a card can show it and say why it cannot be granted. A record
+//// whose ceiling admits none of it offers denial only. The session choice is
+//// offered on the same terms as for any request, so it is offered exactly when
+//// the admitted grants can be remembered.
 
 import core/json
 import core/message
@@ -18,6 +31,7 @@ import gleam/result
 import gleam/string
 import session_view/session_wire
 import session_view/snapshot_view
+import session_view/strand_name
 
 /// Durable decision state, independent of a temporary absence from pending rows.
 pub type Status {
@@ -71,6 +85,22 @@ pub type Review {
     /// The strand whose call asked, from the escalation's captured scope,
     /// or `None` for a question with no call scope.
     strand: Option(String),
+    /// Where the question comes from when it is a child's on another
+    /// orchestrator, or `None` for this session's own.
+    remote: Option(Remote),
+  )
+}
+
+/// A child's request on another orchestrator, as this session was told of it.
+pub type Remote {
+  Remote(
+    /// The `[orchestrators.<name>]` the child runs on.
+    orchestrator: String,
+    /// The child's strand name there, which is session text.
+    child: String,
+    /// The grants it asked for that the spawner's approval ceiling does not
+    /// admit, in the wire vocabulary. They are drawn and cannot be approved.
+    outside: List(json.JsonValue),
   )
 }
 
@@ -99,7 +129,10 @@ pub fn records(
   cells
   |> list.filter(fn(cell) {
     cell.namespace == register.FactCustom
-    && string.starts_with(cell.key, "escalation/")
+    && {
+      string.starts_with(cell.key, "escalation/")
+      || string.starts_with(cell.key, remote_prefix)
+    }
   })
   |> list.try_map(decode)
 }
@@ -179,6 +212,99 @@ fn summary(record: Review) {
 /// // approval.decode(cell)
 /// ```
 pub fn decode(cell: snapshot_view.Cell) -> Result(Review, String) {
+  case string.starts_with(cell.key, remote_prefix) {
+    True -> decode_remote(cell)
+    False -> decode_local(cell)
+  }
+}
+
+/// The key prefix of a child's request on another orchestrator.
+pub const remote_prefix = "remote-escalation/"
+
+// A request filed from another orchestrator is the protocol's own record, so its
+// grants are already in the wire vocabulary and are not translated. Its `seq`
+// is the other orchestrator's, which is the one an answer must name.
+fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
+  use fields <- result.try(object(cell.value))
+  use id <- result.try(text(fields, "escalation_id"))
+  use <- bool.guard(
+    cell.namespace != register.FactCustom
+      || cell.key != remote_prefix <> id
+      || id == ""
+      || string.byte_size(id) > 256,
+    Error("invalid captured escalation identity"),
+  )
+  use state <- result.try(text(fields, "status"))
+  use state <- result.try(case state {
+    "pending" -> Ok(Pending)
+    "approved" -> Ok(Approved)
+    "rejected" -> Ok(Rejected)
+    "consumed" -> Ok(Consumed)
+    _ -> Error("invalid captured escalation status")
+  })
+  use seq <- result.try(case list.key_find(fields, "seq") {
+    Ok(json.Int(seq)) if seq >= 0 -> Ok(seq)
+    _ -> Error("invalid captured escalation sequence")
+  })
+  use orchestrator <- result.try(text(fields, "placement"))
+  use author <- result.try(
+    origin.decode_field(fields)
+    |> result.replace_error("invalid escalation decision origin"),
+  )
+  let tool = defaulted(fields, "tool")
+  let preview = defaulted(fields, "preview")
+  let action = defaulted(fields, "action")
+  let child = defaulted(fields, "strand")
+  let wanted = case list.key_find(fields, "denial") {
+    Ok(json.Object(denial)) ->
+      case list.key_find(denial, "wanted") {
+        Ok(json.Array(grants)) -> Ok(grants)
+        _ -> Error("approval has no captured requested grant set")
+      }
+    _ -> Error("approval has no captured requested grant set")
+  }
+  let admitted = case list.key_find(fields, "admitted") {
+    Ok(json.Array(grants)) -> grants
+    _ -> []
+  }
+  let permission = case action, wanted {
+    "", _ -> Unavailable("approval has no captured action digest")
+    _, Error(reason) -> Unavailable(reason)
+    _, Ok(wanted) ->
+      case list.filter(wanted, list.contains(admitted, _)) {
+        [] ->
+          Unavailable(
+            "the spawner's approval ceiling admits none of what was asked",
+          )
+        grants -> Exact(action, grants)
+      }
+  }
+  let outside = case wanted {
+    Ok(wanted) ->
+      list.filter(wanted, fn(grant) { !list.contains(admitted, grant) })
+    Error(_) -> []
+  }
+  Ok(Review(
+    id,
+    seq,
+    state,
+    tool,
+    preview,
+    author,
+    permission,
+    None,
+    Some(Remote(orchestrator:, child:, outside:)),
+  ))
+}
+
+fn defaulted(fields, key: String) -> String {
+  case list.key_find(fields, key) {
+    Ok(json.String(text)) -> text
+    _ -> ""
+  }
+}
+
+fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
   use fields <- result.try(object(cell.value))
   use id <- result.try(text(fields, "id"))
   use <- bool.guard(
@@ -214,7 +340,17 @@ pub fn decode(cell: snapshot_view.Cell) -> Result(Review, String) {
       }
     _ -> None
   }
-  Ok(Review(id, cell.seq, state, tool, preview, author, permission, strand))
+  Ok(Review(
+    id,
+    cell.seq,
+    state,
+    tool,
+    preview,
+    author,
+    permission,
+    strand,
+    None,
+  ))
 }
 
 fn exact(fields) {
@@ -358,6 +494,44 @@ fn approve_scoped(id, record, scope) -> Result(String, String) {
     Pending, Unavailable(reason) -> Error(reason)
     Approved, _ | Rejected, _ | Consumed, _ ->
       Error("approval is no longer pending")
+  }
+}
+
+/// Who asked and where, for a child's request on another orchestrator: the
+/// child's short name, an `@`, and the orchestrator, such as `run-tests @ box`.
+/// Both are session text, so the caller draws them as text. A request of this
+/// session's own has none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // approval.asker(review) == option.Some("run-tests @ box")
+/// ```
+pub fn asker(record: Review) -> Option(String) {
+  case record.remote {
+    Some(Remote(orchestrator:, child:, ..)) ->
+      Some(strand_name.short(child) <> " @ " <> orchestrator)
+    None -> None
+  }
+}
+
+/// The grants a request asked for that its spawner's approval ceiling does not
+/// admit, in words, one line each, with the reason they cannot be granted. Empty
+/// for a request of this session's own, and for one whose ceiling admits all of
+/// it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert approval.outside_lines(local_review) == []
+/// ```
+pub fn outside_lines(record: Review) -> List(String) {
+  case record.remote {
+    Some(Remote(outside:, ..)) ->
+      list.map(outside, fn(grant) {
+        readable_grant(grant) <> " (outside the spawner's approval ceiling)"
+      })
+    None -> []
   }
 }
 

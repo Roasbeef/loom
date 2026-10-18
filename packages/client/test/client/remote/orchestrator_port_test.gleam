@@ -6,18 +6,24 @@
 //// its own so that the question about ownership is never kept waiting.
 
 import client/catalogue_page
+import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/executors
 import client/listed_sessions.{Further, Last}
 import client/node_report
+import client/protocol
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
+import client/remote_escalation
+import client/remote_mail
 import client/remote_spawn.{
   Attached, CallSite, ChildUsage, Parent, Ready, Request, Spawned,
 }
 import client/roster
 import client/session_move
+import client/spawners
 import core/clock
+import core/glance
 import core/ids
 import core/json
 import gleam/erlang/atom
@@ -26,6 +32,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import gleam/string
 import host/bootstrap
 import storage/catalogue
@@ -93,6 +100,7 @@ fn describing() -> Address(Message) {
       },
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
+      orchestrator_port.refusing_children(),
       orchestrator_port.unheld,
       orchestrator_port.unreported(),
     )
@@ -123,6 +131,7 @@ fn holding(holder: orchestrator_port.Holder) -> Address(Message) {
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
+      orchestrator_port.refusing_children(),
       holder,
       orchestrator_port.unreported(),
     )
@@ -411,6 +420,7 @@ fn ready(handle: agent.Handle) -> remote_spawn.Joined {
       cache_write: 4,
       cost: 0.5,
     ),
+    owed: 0,
   )
 }
 
@@ -478,6 +488,61 @@ fn hosting(
       process.sleep(pause_ms)
       Ok(3)
     },
+    send: fn(origin, child, message_id, text) {
+      process.send(
+        seen,
+        "send "
+          <> origin.node
+          <> " "
+          <> origin.parent.strand
+          <> " "
+          <> child.strand
+          <> " "
+          <> message_id
+          <> " "
+          <> text,
+      )
+      process.sleep(pause_ms)
+      Ok(remote_mail.encode_landing(remote_mail.Admitted))
+    },
+    resolve: fn(origin, child, id, decision, seq, decider) {
+      process.send(
+        seen,
+        "resolve "
+          <> origin.node
+          <> " "
+          <> origin.parent.strand
+          <> " "
+          <> child.strand
+          <> " "
+          <> id
+          <> " "
+          <> string.inspect(decision)
+          <> " "
+          <> int.to_string(seq)
+          <> " "
+          <> decider.name,
+      )
+      process.sleep(pause_ms)
+      Ok(remote_escalation.Forgotten)
+    },
+    history: fn(origin, child, cursor, limit) {
+      process.send(
+        seen,
+        "history "
+          <> origin.node
+          <> " "
+          <> origin.parent.strand
+          <> " "
+          <> child.strand
+          <> " before "
+          <> int.to_string(cursor)
+          <> " limit "
+          <> int.to_string(limit),
+      )
+      process.sleep(pause_ms)
+      Ok(json.Object([#("child", json.String(child.strand))]))
+    },
   )
 }
 
@@ -492,6 +557,7 @@ fn spawning(host: orchestrator_port.SpawnHost) -> Address(Message) {
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
       host,
+      orchestrator_port.refusing_children(),
       orchestrator_port.unheld,
       orchestrator_port.unreported(),
     )
@@ -593,6 +659,15 @@ pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
       release: fn(_origin) {
         Error(remote_spawn.StoreFailure(reason: "the store failed"))
       },
+      send: fn(_origin, _child, _id, _text) {
+        Error(remote_spawn.StoreFailure(reason: "the store failed"))
+      },
+      resolve: fn(_origin, _child, _id, _decision, _seq, _decider) {
+        Error(remote_spawn.StoreFailure(reason: "the store failed"))
+      },
+      history: fn(_origin, _child, _cursor, _limit) {
+        Error(remote_spawn.TranscriptHidden)
+      },
     )
   let port = spawning(refusing)
   assert orchestrator_port.ask_spawn(
@@ -678,6 +753,13 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
       join: fn(_origin, _handles, _within_ms) { panic as "the spawn host fails" },
       run_ended: fn(_origin, _ended) { panic as "the spawn host fails" },
       release: fn(_origin) { panic as "the spawn host fails" },
+      send: fn(_origin, _child, _id, _text) { panic as "the spawn host fails" },
+      resolve: fn(_origin, _child, _id, _decision, _seq, _decider) {
+        panic as "the spawn host fails"
+      },
+      history: fn(_origin, _child, _cursor, _limit) {
+        panic as "the spawn host fails"
+      },
     )
   let port = spawning(crashing)
 
@@ -704,6 +786,239 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
 }
 
+// --- what a child sends its parent, and a send into a child (phase 2) ---------
+
+// A child host that records what it was asked, with the origin, and admits
+// everything from the node `trusted`.
+fn receiving(
+  seen: process.Subject(String),
+  trusted: String,
+  pause_ms: Int,
+) -> orchestrator_port.ChildHost {
+  orchestrator_port.ChildHost(
+    mail: fn(origin, child, message_id, text) {
+      process.send(
+        seen,
+        "mail "
+          <> origin.node
+          <> " "
+          <> origin.parent.session
+          <> "/"
+          <> origin.parent.strand
+          <> " "
+          <> child.strand
+          <> " "
+          <> message_id
+          <> " "
+          <> text,
+      )
+      process.sleep(pause_ms)
+      case origin.node == trusted {
+        True -> Ok(remote_mail.Delivered)
+        False -> Error(remote_mail.OriginMismatch)
+      }
+    },
+    progress: fn(origin, child, glance) {
+      process.send(
+        seen,
+        "progress " <> origin.node <> " " <> child.strand <> " " <> glance.title,
+      )
+      process.sleep(pause_ms)
+      case origin.node == trusted {
+        True -> Ok(Nil)
+        False -> Error(remote_mail.OriginMismatch)
+      }
+    },
+    escalation: fn(origin, child, record) {
+      process.send(
+        seen,
+        "escalation "
+          <> origin.node
+          <> " "
+          <> child.strand
+          <> " "
+          <> record.escalation_id
+          <> " "
+          <> int.to_string(record.seq),
+      )
+      process.sleep(pause_ms)
+      case origin.node == trusted {
+        True -> Ok(Nil)
+        False -> Error(remote_mail.OriginMismatch)
+      }
+    },
+  )
+}
+
+// A port under a private name that serves a child's messages with `host`.
+fn receiving_port(host: orchestrator_port.ChildHost) -> Address(Message) {
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) =
+    orchestrator_port.start_with(
+      name,
+      held,
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(_session) { Error("not_found") },
+      orchestrator_port.declining(),
+      orchestrator_port.refusing_spawns(),
+      host,
+      orchestrator_port.unheld,
+      orchestrator_port.unreported(),
+    )
+    as "the port starts under its name"
+  address.Address(node: node.self(), name:)
+}
+
+fn a_glance() -> glance.Glance {
+  glance.Glance(
+    operation: ids.op_id_to_string(operation()),
+    title: "running the suite",
+    summary: "",
+    at: 1000,
+    tokens: 0,
+  )
+}
+
+pub fn a_send_reaches_the_host_with_its_origin_and_answers_the_landing_test() {
+  let seen = process.new_subject()
+  let port = spawning(hosting(seen, 0))
+  assert orchestrator_port.ask_send(
+      port,
+      parent(),
+      handle(),
+      "m1",
+      "also the tests",
+      1000,
+    )
+    == Ok(Ok(remote_mail.encode_landing(remote_mail.Admitted)))
+  assert process.receive(seen, 0)
+    == Ok(
+      "send "
+      <> own_node()
+      <> " main sub:^main/run-the-suite-1 m1 also the tests",
+    )
+}
+
+pub fn a_daemon_with_no_orchestrators_refuses_a_childs_mail_and_progress_test() {
+  let port = started()
+  assert orchestrator_port.ask_mail(
+      port,
+      parent(),
+      handle(),
+      "m1",
+      "done",
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+  assert orchestrator_port.ask_progress(
+      port,
+      parent(),
+      handle(),
+      a_glance(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+
+  // It still answers the question it always answered.
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+pub fn a_childs_mail_and_progress_reach_the_host_with_their_origin_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, own_node(), 0))
+  assert orchestrator_port.ask_mail(
+      port,
+      parent(),
+      handle(),
+      "m1",
+      "found it",
+      1000,
+    )
+    == Ok(Ok(remote_mail.Delivered))
+  assert process.receive(seen, 0)
+    == Ok(
+      "mail " <> own_node() <> " s1/main sub:^main/run-the-suite-1 m1 found it",
+    )
+  assert orchestrator_port.ask_progress(
+      port,
+      parent(),
+      handle(),
+      a_glance(),
+      1000,
+    )
+    == Ok(Ok(Nil))
+  assert process.receive(seen, 0)
+    == Ok(
+      "progress "
+      <> own_node()
+      <> " sub:^main/run-the-suite-1 running the suite",
+    )
+}
+
+pub fn a_message_from_an_untrusted_node_is_refused_as_an_origin_mismatch_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, "somebody@else", 0))
+  assert orchestrator_port.ask_mail(
+      port,
+      parent(),
+      handle(),
+      "m1",
+      "found it",
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+  assert orchestrator_port.ask_progress(
+      port,
+      parent(),
+      handle(),
+      a_glance(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+}
+
+pub fn a_slow_child_host_does_not_keep_a_lookup_waiting_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, own_node(), 1500))
+
+  // The mail is still being admitted when the lookup is asked, and the lookup is
+  // answered at once: each runs apart from the port.
+  let late = process.new_subject()
+  let _asker =
+    process.spawn(fn() {
+      process.send(
+        late,
+        orchestrator_port.ask_mail(port, parent(), handle(), "m1", "slow", 5000),
+      )
+    })
+  assert process.receive(seen, 1000) |> result.is_ok
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+  assert process.receive(late, 5000) == Ok(Ok(Ok(remote_mail.Delivered)))
+}
+
+pub fn a_crashing_child_host_is_silence_and_the_port_serves_on_test() {
+  let crashing =
+    orchestrator_port.ChildHost(
+      mail: fn(_origin, _child, _id, _text) { panic as "the child host fails" },
+      progress: fn(_origin, _child, _glance) { panic as "the child host fails" },
+      escalation: fn(_origin, _child, _record) {
+        panic as "the child host fails"
+      },
+    )
+  let port = receiving_port(crashing)
+  assert orchestrator_port.ask_mail(port, parent(), handle(), "m1", "x", 200)
+    == Error(Nil)
+  assert orchestrator_port.ask_progress(
+      port,
+      parent(),
+      handle(),
+      a_glance(),
+      200,
+    )
+    == Error(Nil)
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
 // --- report ------------------------------------------------------------------
 
 // A port whose daemon reports what `reads` says.
@@ -717,6 +1032,7 @@ fn reporting(reads: orchestrator_port.Reads) -> Address(Message) {
       fn(_session) { Error("not_found") },
       orchestrator_port.declining(),
       orchestrator_port.refusing_spawns(),
+      orchestrator_port.refusing_children(),
       orchestrator_port.unheld,
       reads,
     )
@@ -787,6 +1103,106 @@ pub fn a_port_with_nothing_to_report_says_only_who_it_is_test() {
   assert report.orchestrator == None
   assert report.executor == None
   assert report.directory == None
+}
+
+// --- a page of a child's transcript (protocol-change/090) ---------------------
+
+// A spawner table for this node, whose `transcript` key is `transcript`. The
+// table is parsed and then moved to the node this process runs on, as
+// `agency_test` does, since a test VM's node cannot be named in a table.
+fn spawners_with(transcript: String) -> List(spawners.Spawner) {
+  let assert Ok(configured) = spawners.parse("[distribution]
+node = \"box@100.64.0.9\"
+ca = \"/etc/loom/ca.pem\"
+certificate = \"/etc/loom/cert.pem\"
+key = \"/etc/loom/key.pem\"
+cookie = \"/home/loom/.erlang.cookie\"
+
+[[distribution.peers]]
+node = \"laptop@100.64.0.5\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000001\"
+
+[profiles.cheap-review.roles]
+main = [\"fast\"]
+
+[spawners.laptop]
+node = \"laptop@100.64.0.5\"
+directory = \"/srv/loom/scratch\"
+profile = \"cheap-review\"
+" <> transcript <> "\n") as "the spawner table parses"
+  list.map(configured, fn(spawner) {
+    spawners.Spawner(..spawner, node: own_node())
+  })
+}
+
+pub fn a_history_reaches_the_host_with_its_origin_cursor_and_limit_test() {
+  let seen = process.new_subject()
+  let port = spawning(hosting(seen, 0))
+  assert orchestrator_port.ask_history(port, parent(), handle(), 41, 20, 1000)
+    == Ok(Ok(json.Object([#("child", json.String(handle().strand))])))
+  assert process.receive(seen, 0)
+    == Ok(
+      "history "
+      <> own_node()
+      <> " main sub:^main/run-the-suite-1 before 41 limit 20",
+    )
+}
+
+// A spawner whose table says nothing about transcripts keeps them on the box.
+// The read is refused before any session is looked for, so neither the
+// function that makes a session nor the one that finds one is asked.
+pub fn a_history_is_refused_when_the_spawner_keeps_transcripts_test() {
+  let host =
+    daemon_main.spawn_host(
+      spawners_with(""),
+      fn(_, _) { panic as "a read must not make a session" },
+      fn(_, _) { panic as "a read must not release a session" },
+      fn(_, _) { panic as "a hidden transcript must not be looked for" },
+    )
+  let port = spawning(host)
+  assert orchestrator_port.ask_history(port, parent(), handle(), 0, 50, 1000)
+    == Ok(Error(remote_spawn.TranscriptHidden))
+
+  // Saying so explicitly is the same.
+  let explicit =
+    daemon_main.spawn_host(
+      spawners_with("transcript = \"hidden\""),
+      fn(_, _) { panic as "a read must not make a session" },
+      fn(_, _) { panic as "a read must not release a session" },
+      fn(_, _) { panic as "a hidden transcript must not be looked for" },
+    )
+  assert orchestrator_port.ask_history(
+      spawning(explicit),
+      parent(),
+      handle(),
+      0,
+      50,
+      1000,
+    )
+    == Ok(Error(remote_spawn.TranscriptHidden))
+}
+
+// A read for a parent the box holds no open session for is refused, and the
+// function that makes a session is never asked: a `ChildHistory` that arrives
+// before its `Spawn`, or after the session closed, creates nothing.
+pub fn a_history_never_creates_a_session_test() {
+  let looked = process.new_subject()
+  let host =
+    daemon_main.spawn_host(
+      spawners_with("transcript = \"visible\""),
+      fn(_, _) { panic as "a read must not make a session" },
+      fn(_, _) { panic as "a read must not release a session" },
+      fn(spawner, asked) {
+        process.send(looked, #(spawner.name, asked))
+        Ok(None)
+      },
+    )
+  let port = spawning(host)
+  let assert Ok(Error(remote_spawn.InvalidArgument(reason:))) =
+    orchestrator_port.ask_history(port, parent(), handle(), 0, 50, 1000)
+    as "the read must be refused, not left unanswered"
+  assert string.contains(reason, "is not a child")
+  assert process.receive(looked, 0) == Ok(#("laptop", parent()))
 }
 
 pub fn a_report_that_fails_is_silence_and_the_port_serves_on_test() {
@@ -963,4 +1379,103 @@ pub fn a_catalogue_that_cannot_be_read_is_silence_and_not_an_empty_page_test() {
 
   // The failed read did not stop the port.
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+// --- a child's request for more authority, and the decision (protocol-change/089)
+
+fn a_request() -> protocol.EscalationRecord {
+  protocol.EscalationRecord(
+    escalation_id: "policy-ab",
+    op: "op-1",
+    strand: "sub:^main/run-the-suite-1",
+    status: "pending",
+    tool: "bash",
+    action: "d1",
+    preview: "make",
+    asked: 1,
+    denial: None,
+    seq: 3,
+    origin: None,
+    placement: None,
+    admitted: None,
+  )
+}
+
+pub fn a_daemon_with_no_orchestrators_refuses_a_childs_request_test() {
+  let port = started()
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+}
+
+pub fn a_childs_request_reaches_the_host_with_its_origin_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, own_node(), 0))
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Ok(Nil))
+  assert process.receive(seen, 0)
+    == Ok(
+      "escalation " <> own_node() <> " sub:^main/run-the-suite-1 policy-ab 3",
+    )
+}
+
+pub fn a_request_from_an_untrusted_node_is_refused_as_an_origin_mismatch_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, "somebody@else", 0))
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+}
+
+pub fn a_decision_reaches_the_spawn_host_with_its_origin_and_answers_test() {
+  let seen = process.new_subject()
+  let port = spawning(hosting(seen, 0))
+  assert orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
+    == Ok(Ok(remote_escalation.Forgotten))
+  assert process.receive(seen, 0)
+    == Ok(
+      "resolve "
+      <> own_node()
+      <> " main sub:^main/run-the-suite-1 policy-ab Deny 3 Ola",
+    )
+}
+
+pub fn a_daemon_that_accepts_no_spawns_refuses_a_decision_test() {
+  let port = started()
+  let assert Ok(Error(remote_spawn.UnknownSpawner(..))) =
+    orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
 }

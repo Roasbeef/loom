@@ -6,7 +6,11 @@ A small [P](https://p-org.github.io/P/) model of the phase 1 spawn protocol of
 orchestrator by writing a stub, sending `Spawn` and resending it from a drainer,
 against a remote that adopts the child its call site already made. Phase 2 adds
 `Release`: the laptop deletes the parent session and tells the remote, which
-stops the children and deletes the session that held them. It is run by `make
+stops the children and deletes the session that held them. Phase 2 also adds a
+child's mail to its parent (slice S9): a row in the delegate session's outbox, sent
+over a connection the laptop keeps up, and answered with a receipt. Phase 4 adds
+depth (slice S13): the box's children start children of their own on a third
+orchestrator, and the box's release reaches them. It is run by `make
 model-check`.
 
 The code is the specification. The model follows the slices S1 to S4 and S6 as
@@ -22,6 +26,63 @@ code.
 | `Port` (`PSrc/Port.p`) | `loom_orchestrator` with the delegate session's Agency holder and its store: admission with adoption on `minted_by`, the ended fence, `Join`, `RunEnded`, `Release` with its fence and the deletion of the session, the deadline tick and a restart. |
 | `Wire` (`PSrc/Wire.p`) | The network. One queue per sender and receiver pair, delivered in any interleaving across pairs, lost whole when the connection breaks. |
 | `Chaos`, `Harness` (`PTst/Chaos.p`) | The environment: connection drops, remote restarts, aborts of the parent's effect processes, a parent run ending, a child finishing, extra drainer passes, the parent session being deleted, the remote's slot draining, and at the end two drainer passes on a quiet network, the slot draining and every deadline passing. |
+
+### Depth (phase 4, slice S13)
+
+Every case also builds the machines below the box, and the cases with `grands`
+use them. The box's delegate session is itself a spawner: a child there may
+start a child of its own on a third orchestrator. A second `Laptop` machine, the
+relay, plays the delegate session's spawning side: its stubs, its drainer and its
+release rows. It talks to two more `Port` machines at depth 2 over a second
+`Wire`. The first is the orchestrator the box's `spawn_on` allows, and every
+grandchild is placed there; the second exists so that a spawn sent to the wrong
+orchestrator has somewhere to land. Child identities start at 0, 1000 and 2000 on
+the three Ports, so no two children share one.
+
+| Event | What it stands for |
+|---|---|
+| `eGrandSpawn` | A running child on the box calls `agent_spawn` with `on`. The box asks the relay to write the stub and send the `Spawn`, once per child. A child that is not running starts nothing, which stands for the released fence that `admit_remote` reads before it writes a stub. |
+| `eCascade` | The box deletes a released session after its slot drained (`eCascadeDue`), and owes each third orchestrator that a stub that is not refused names a release row (`manager.delete_delegate`, which reads the closed file). The relay writes the rows, drops its stubs and effect processes with the session, says which it owes (`eCascadeWritten`) and rings its own drainer. Until then the relay is a live session and goes on resending the `Spawn` of a stub that is `Requested`. |
+| `eOweReleases` | The rows alone, with the session left running. Nothing sends it in the model as built; mutant M18 sends it when the `Release` is handled. |
+| a box restart | Also kills the relay's effect processes, as it kills the children's runs. The stubs stay. |
+
+A stub records the orchestrator it names when it is written (`dest`), and every
+resend and join goes there. An effect process knows a `spare` orchestrator only
+so that the mutant that retries against it can be stated.
+
+### The mail (phase 2, slice S9)
+
+`eUpward` makes a running child mail its parent: the `Port` writes a row in the
+session's outbox (`outbox`, stored with the session, so a restart keeps it and a
+deletion discards it) and rings its drainer. A pass (`eMailPass`) sends every row
+with no answer as `K_MAIL`, through `eSendUp`, which the `Wire` delivers only
+while the connection is up and otherwise does not produce at all: the remote never
+dials. A send from the laptop dials, so it brings the connection up, a break takes
+it down, and `eReconnect` brings it back and rings the drainer. The environment
+sends `eReconnect` and `eParentOpen` before the run ends, which is the model's
+stated assumption: the link keeper's reconnection is fair, and a parent session
+that is closed is eventually opened.
+
+The laptop answers a `K_MAIL` in this order:
+
+| The laptop holds | It answers |
+|---|---|
+| the parent session closed (`eParentClose`) | `MAIL_NOT_OPEN`, and the row stays |
+| no stub for the child's call site | `MAIL_UNKNOWN` |
+| a receipt for the mail's id | the receipt, steering nothing |
+| the parent's run open | steers the parent and stores `MAIL_DELIVERED` |
+| the parent's run ended (`eParentRunEnds`) | stores `MAIL_DECLINED` |
+
+The stub is looked up by call site, which stands for the child's name, in any state:
+the stub is written before the first `Spawn` leaves, so mail that arrives before the
+answer to the spawn finds a `ST_REQUESTED` stub. Only an answer other than
+`MAIL_NOT_OPEN` settles a row.
+
+`UpwardOnlyIntoOpenRun` holds because the modelled parent run never reopens once
+it has ended; a parent that starts a new run later would make a declined mail a
+delivery only for mail not yet sent. The model also leaves the keeper's vote
+abstract: the fair reconnection stands for the laptop holding the link while a
+stub is `Requested`, running, or settled with mail still owed.
 
 ### The spawn
 
@@ -96,7 +157,8 @@ bound the child.
 
 | Spec | Rule |
 |---|---|
-| `AtMostOneChildPerSite` | A call site creates at most one child, however spawns and resends interleave. |
+| `AtMostOneChildPerSite` | A call site creates at most one child on an orchestrator, however spawns and resends interleave. |
+| `OneOrchestratorPerSite` | A call site's children are all on one orchestrator: a spawn is never retried against another. |
 | `OwnChildOnly` | The remote answers a call site only with the child that site minted. |
 | `AnswerIsStable` | A stub that names a child keeps naming it, whoever wrote the answer. |
 | `JoinReportsOwnChild` | A join reports a child only to the call site that minted it, and in the state the child reached. |
@@ -106,7 +168,13 @@ bound the child.
 | `ReleasedSessionHasNoRunningChild` | A `Release` leaves no running child in the session it releases, and no child is made in that session afterwards. |
 | `ReleaseMakesNoSession` | A `Release` never makes a delegate session. |
 | `EveryStubAnswered` | Liveness: every stub written is eventually answered by a handle or a refusal. |
-| `EveryReleaseIsTold` | Liveness: every release row the laptop writes is eventually answered. |
+| `EveryReleaseIsTold` | Liveness: every release row a spawner writes, the laptop's or the box's, is eventually answered. |
+| `ReleasedDescendantsEnd` | Liveness: once the box deletes a released session, the rows for every third orchestrator its children started children on are written and answered, and a third orchestrator's release leaves no grandchild running. |
+| `NoSpawnAfterOwnRelease` | A spawner's drainer sends no `Spawn` that makes a child after its own `Release` reached that orchestrator. |
+| `UpwardAtMostOnce` | A mail steers the parent at most once, however often it is sent. |
+| `UpwardOnlyIntoOpenRun` | A mail steers only a parent whose run is open. |
+| `MailFindsItsStub` | Mail about a child the parent holds a stub for is never answered unknown. |
+| `EveryMailAnswered` | Liveness: every mail row is eventually answered, under fair reconnection and a parent session that is eventually opened. |
 | `EveryChildTerminal` | Liveness: every child the remote created reaches a terminal state once the deadlines pass, with no message from the laptop. |
 
 P reports a violation of a liveness spec when a run ends with its monitor in
@@ -118,7 +186,9 @@ The `tcProbe*` cases must fail: each finds a witness for a situation the specs
 are only meaningful if the model reaches (an adoption, a name collision refused,
 a spawn refused by the fence, a child lost to a restart, a child stopped, a stub
 settled by a join, a release that stopped a child, a spawn refused by the released
-fence, a release that found no session, a released session deleted).
+fence, a release that found no session, a released session deleted, a grandchild
+made on a third orchestrator, a release that cascaded to one, and a cascaded
+release that stopped a grandchild).
 
 ## Mutants
 
@@ -139,6 +209,13 @@ model-check` runs it.
 | `Release` reaps without writing the released fence | `ReleasedSessionHasNoRunningChild` |
 | An unreachable call settles the release row | `EveryReleaseIsTold` |
 | `Release` makes a delegate session when the parent has none | `ReleaseMakesNoSession` |
+| The laptop steers a mail without storing its receipt | `UpwardAtMostOnce` |
+| The laptop steers a mail into a parent whose run ended (a policy that may wake) | `UpwardOnlyIntoOpenRun` |
+| The remote settles a mail row when it sends, without an answer | `EveryMailAnswered` |
+| The laptop finds the stub by the handle, which a `Requested` stub lacks | `MailFindsItsStub` |
+| A spawn whose connection broke is retried against a second orchestrator | `OneOrchestratorPerSite` |
+| The box's deletion of a released session writes no release rows for the third orchestrators | `ReleasedDescendantsEnd` |
+| The cascade's rows are written when the `Release` is handled, before the slot drains, so the still-running session resends a spawn after the third orchestrator's release | `NoSpawnAfterOwnRelease` |
 
 ## What is not modelled
 
@@ -157,12 +234,30 @@ model-check` runs it.
   and the model's deletion is one step.
 - The deletion failing after the slot drained. The row stays released and the
   retention sweep removes it, which the unit tests check.
-- A spawn retried against a second orchestrator. The code never does this, and
-  the model has one port, so the mutant that would do it has nothing to
-  duplicate.
+- The depth and fan-out caps across machines. The third orchestrators admit
+  every grandchild the box sends, and the depth refusal is checked by the unit
+  tests (`agency_test`).
+- A grandchild's deadline. The model has one deadline event per Port, and the
+  clamp that keeps a grandchild's deadline inside its parent's is checked by
+  `agency_test`.
+- A grandchild spawn already in flight from an effect process, another sender
+  on the second wire, that overtakes the cascaded release and makes a new
+  session on the third orchestrator. As at depth 1, its child is bounded by its
+  deadline, and neither `ReleasedDescendantsEnd` nor `NoSpawnAfterOwnRelease`
+  counts it.
+- A later delegate session of the box, made by a stale spawn after the first
+  was deleted. The relay stands for the first session only, so a later one
+  starts no grandchild.
 - The result a join carries. A join reports a state, and the specs check that
   it is the child's own.
 - Usage and the token budget.
+- Progress. A glance is a view, sent without a row, and the specs say nothing
+  about it. `ChildEscalation` belongs to phase 3.
+- The keeper's two second cadence. The model has a connection that is up or down
+  and a fair reconnection, which is the assumption the keeper's liveness needs.
+- The first `ChildSend` direction. A send is a request the laptop resends until
+  it is answered, as a `Spawn` is, and the receipt rule is the one `Spawn`'s
+  adoption already exercises.
 
 ## Running it
 

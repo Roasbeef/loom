@@ -16,6 +16,7 @@ import provider/adapter/anthropic
 import provider/http
 import provider/model
 import provider/stream
+import session_view/strand_framing
 import support/internal/ffi_daemon_socket as tcp
 import support/internal/ffi_ws
 import support/provider_http as peer
@@ -390,9 +391,54 @@ pub fn provider_http_fixture_rejects_error_wrong_text_and_extra_result_content_t
         [good, text_block("extra")],
         "unexpected text before latest user prompt",
       ),
+
+      // A strand message's head with no foot is not the harness's framing, so
+      // it is refused like any other text after a result.
+      #(
+        [good, text_block(strand_framing.message_head("sub:^main/x") <> "hi")],
+        "unexpected text before latest user prompt",
+      ),
     ],
     fn(blocks) { refuses_result(raw_body([blocks.0]), blocks.1) },
   )
+}
+
+// A message another agent steered into the run while the tool was in flight
+// rides in the user turn that carries the result. The fixture accepts that one
+// shape: the result selects the reply, and the framed message stays in the
+// request body.
+pub fn provider_http_fixture_accepts_a_steered_message_after_the_result_test() {
+  let steered =
+    strand_framing.message_head("sub:^main/x")
+    <> "ping\n"
+    <> strand_framing.message_foot
+  let #(url, report) =
+    peer.with_server(
+      [tool_step(), peer.ToolResultExchange("fixture-call", "done", "finished")],
+      fn(url) {
+        assert post(url, peer.dummy_key, body(["start A"])).0 == 200
+        let request =
+          raw_body([
+            [
+              result_block(
+                json.String("fixture-call"),
+                [text_block("done")],
+                json.Bool(False),
+              ),
+              text_block(steered),
+            ],
+          ])
+        assert post(url, peer.dummy_key, request).0 == 200
+        url
+      },
+    )
+  let assert Ok(observed) = report as "both steps complete"
+  assert list.map(observed, fn(request) { request.latest })
+    == [
+      peer.UserPrompt("start A"),
+      peer.SuccessfulToolResult("fixture-call", "done"),
+    ]
+  closed(url)
 }
 
 fn body(prompts) {

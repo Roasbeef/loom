@@ -242,6 +242,36 @@ pub fn a_spawn_model_crosses_the_orchestration_seam_test() {
   assert request.model == option.Some("reviewer")
 }
 
+pub fn a_spawn_placement_crosses_the_orchestration_seam_test() {
+  let seen = recorder()
+  let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+  let assert msgpack.MapValue(fields) = spawn_args("review core")
+    as "the fixture spawn must be a map"
+  let args = msgpack.MapValue([#(text("on"), text("box")), ..fields])
+  let assert framing.CapOk(..) = serviced(agency, "strand.spawn", args, 0)
+    as "the placement must be admitted to the Agency"
+  let assert [fake_agency.SawSpawn(request:, ..)] = fake_agency.drain(seen)
+    as "one spawn must reach the Agency"
+  assert request.on == option.Some("box")
+
+  let _outcome = serviced(agency, "strand.spawn", spawn_args("again"), 1)
+  let assert [fake_agency.SawSpawn(request: unplaced, ..)] =
+    fake_agency.drain(seen)
+    as "a program without the key must place nothing"
+  assert unplaced.on == option.None
+}
+
+pub fn a_malformed_spawn_placement_never_reaches_the_agency_test() {
+  let seen = recorder()
+  let agency = fake_agency.admitting(seen, fake_agency.always_completed)
+  let assert msgpack.MapValue(fields) = spawn_args("review core")
+    as "the fixture spawn must be a map"
+  let args = msgpack.MapValue([#(text("on"), msgpack.IntValue(1)), ..fields])
+  assert refused_by(agency, "strand.spawn", args)
+    == #("invalid_argument", "`on` must be text")
+  assert fake_agency.drain(seen) == []
+}
+
 pub fn a_malformed_spawn_model_never_reaches_the_agency_test() {
   let seen = recorder()
   let agency = fake_agency.admitting(seen, fake_agency.always_completed)

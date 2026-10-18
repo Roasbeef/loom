@@ -406,6 +406,64 @@ pub fn escalation(
   ])
 }
 
+/// The cell of a child's request on another orchestrator
+/// (protocol-change/089): the protocol's own record, filed under
+/// `remote-escalation/`, with the grants the spawner's ceiling admits listed in
+/// `admitted`. The record's `seq` is the other orchestrator's, and `cell_seq` is
+/// this session's register sequence for the cell.
+///
+/// ## Examples
+///
+/// ```gleam
+/// page_fixture.remote_escalation("box/policy-ab", 9, 41, "bash", "make test")
+/// ```
+pub fn remote_escalation(
+  id: String,
+  seq: Int,
+  cell_seq: Int,
+  tool: String,
+  preview: String,
+) -> json.JsonValue {
+  let inside =
+    json.Object([
+      #("type", json.String("writable_root")),
+      #("path", json.String("/shared/output")),
+    ])
+  let beyond =
+    json.Object([
+      #("type", json.String("env")),
+      #("name", json.String("AWS_SECRET")),
+    ])
+  json.Object([
+    #("namespace", json.String("fact.custom")),
+    #("key", json.String("remote-escalation/" <> id)),
+    #("seq", json.Int(cell_seq)),
+    #(
+      "value",
+      json.Object([
+        #("seq", json.Int(seq)),
+        #("escalation_id", json.String(id)),
+        #("op", json.String("op-1")),
+        #("strand", json.String("sub:^main/run-tests-0123456789abcdef")),
+        #("status", json.String("pending")),
+        #("tool", json.String(tool)),
+        #("action", json.String("captured-action")),
+        #("preview", json.String(preview)),
+        #(
+          "denial",
+          json.Object([
+            #("reason", json.String("tool requirements exceed the policy")),
+            #("source", json.String("policy")),
+            #("wanted", json.Array([inside, beyond])),
+          ]),
+        ),
+        #("placement", json.String("box")),
+        #("admitted", json.Array([inside])),
+      ]),
+    ),
+  ])
+}
+
 /// What a page is started with: session `A`, and a transport whose socket
 /// is the test's subject and whose clock reads zero.
 ///

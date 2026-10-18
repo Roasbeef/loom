@@ -42,9 +42,28 @@
 //// `Release` is the only thing that can make the session, and it is then
 //// refused when the row says released.
 ////
+//// The release cascades (protocol-change/084, phase 4), and nothing here does it.
+//// A child here may have started children of its own on a third orchestrator,
+//// and the session's stubs are the only record of them. The registry reads the
+//// stubs from the closed file in the turn that deletes the drained session and
+//// writes a release row for each orchestrator they name, as a laptop's deletion
+//// does (`manager.release_delegate`). Writing them any earlier would let the
+//// session, still running, resend a spawn that reaches the third orchestrator
+//// after its release.
+////
+//// ## Reading
+////
+//// A `ChildHistory` reads a child's transcript (protocol-change/090). Like a
+//// release it must create nothing, so it goes through `existing_endpoint`, the
+//// same function a send and a decision use, which is `resolve_existing`
+//// answering only the Agency of a resident session. A
+//// session that is closed holds no running child and is not opened to be
+//// read: the parent sees its result through a join.
+////
 //// ## Flow
 ////
-//// `resolver` → `creation` → `terms_of` → `resolve_existing` → `releaser`
+//// `resolver` → `creation` → `terms_of` → `resolve_existing` →
+//// `existing_endpoint` → `releaser`
 ////
 //// 1. `resolver` returns the function the spawn host calls for every message.
 //// 2. `creation` builds the registration a first spawn makes, from the
@@ -53,7 +72,10 @@
 ////    judges a spawn by.
 //// 4. `resolve_existing` finds the Agency of a pair that already has a session,
 ////    and creates nothing.
-//// 5. `releaser` returns the function the spawn host calls for a `Release`.
+//// 5. `existing_endpoint` returns the function the spawn host calls for a message
+////    about a child that exists or a read of its transcript, and creates and
+////    opens no session.
+//// 6. `releaser` returns the function the spawn host calls for a `Release`.
 
 import client/agency
 import client/daemon/manager
@@ -257,6 +279,36 @@ fn open_endpoint(
   }
 }
 
+/// The function the spawn host calls for a message about a child that already
+/// exists (a send into it, a decision about its request, or a read of its
+/// transcript): the Agency of the
+/// pair's session if one is open and resident, and `None` otherwise.
+///
+/// Unlike `resolver` it creates nothing. A message about a child cannot be the
+/// first message of a pair, and a stale one (the child finished, the session was
+/// released and deleted, and an operator answered the card afterwards) would
+/// otherwise open a fresh session only to refuse the message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let find = delegate_host.existing_endpoint(context)
+/// // find(spawner, parent) == Ok(option.None)
+/// ```
+pub fn existing_endpoint(
+  context: Context(instance),
+) -> fn(Spawner, Parent) ->
+  Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
+  let find = resolve_existing(context)
+  fn(spawner: Spawner, parent: Parent) {
+    use found <- result.map(find(spawner, parent))
+    case found {
+      Existing(endpoint:, ..) -> endpoint
+      NoSession -> None
+    }
+  }
+}
+
 /// The function the spawn host calls for a `Release`: stops the pair's children
 /// and has the registry delete its session, answering how many children it
 /// stopped.
@@ -311,35 +363,46 @@ pub fn releaser(
 // The Agency of a session once it is resident. The registry's view is read each
 // time and not the slot alone, so a session whose builder failed ends the wait
 // at once with the registry's account instead of running out the budget.
+//
+// A session that went back to saved, or did not open within the budget, may
+// open on a later attempt: after the daemon was killed, the file carries the
+// dead writer's lease until it expires, and each open before then fails. Both
+// answer `NotYetOpen`, which the sender treats as silence and asks again, so
+// a spawn resent by the parent's drainer opens the session once the lease is
+// gone. A session that cannot recover, or was never created, is a store
+// failure as before.
 fn resident(
   context: Context(instance),
   session_id: String,
 ) -> Result(agency.DelegateEndpoint, SpawnRefusal) {
+  let failed = fn(reason) { poll.Fail(remote_spawn.StoreFailure(reason:)) }
   let waited =
     poll.until(within: open_budget_ms, every: open_poll_ms, attempt: fn() {
       case manager.get(context.registry, session_id) {
-        Error(error) -> poll.Fail(describe(error))
+        Error(error) -> failed(describe(error))
         Ok(manager.View(status: manager.Opening(_), ..)) -> poll.Retry
         Ok(manager.View(status: manager.Resident(_), ..)) ->
           case manager.resolve(context.registry, session_id) {
             Ok(instance) -> poll.Done(context.endpoint(instance))
-            Error(error) -> poll.Fail(describe(error))
+            Error(error) -> failed(describe(error))
           }
         Ok(manager.View(status: manager.Reserved, ..)) ->
-          poll.Fail("the delegate session was reserved and never created")
+          failed("the delegate session was reserved and never created")
         Ok(manager.View(status: manager.Saved, ..)) ->
-          poll.Fail("the delegate session did not open")
+          poll.Fail(remote_spawn.NotYetOpen(
+            reason: "the delegate session did not open",
+          ))
         Ok(manager.View(status: manager.Stopping(_), ..)) ->
-          poll.Fail("the delegate session is stopping")
+          failed("the delegate session is stopping")
         Ok(manager.View(status: manager.RecoveryBlocked(reason:), ..)) ->
-          poll.Fail("the delegate session cannot recover: " <> reason)
+          failed("the delegate session cannot recover: " <> reason)
       }
     })
   case waited {
     poll.Answered(endpoint) -> Ok(endpoint)
-    poll.Failed(reason) -> Error(remote_spawn.StoreFailure(reason:))
+    poll.Failed(refusal) -> Error(refusal)
     poll.Expired ->
-      Error(remote_spawn.StoreFailure(
+      Error(remote_spawn.NotYetOpen(
         reason: "the delegate session did not open in time",
       ))
   }

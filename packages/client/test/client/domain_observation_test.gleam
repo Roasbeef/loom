@@ -5,16 +5,25 @@
 import client/gateway
 import client/gateway_test
 import client/protocol
+import client/remote_child
 import core/clock
+import core/entry
+import core/glance
 import core/ids
 import core/json
+import core/message
+import events/bus
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import runtime/api
+import session_view/remote_agent
+import session_view/remote_transcript
 import storage/access
 import support/addresses
+import support/remote_stubs
 import weft/actor
 import weft/poll
 
@@ -125,6 +134,13 @@ fn final_frame(socket: Socket, id: Int) -> json.JsonValue {
             | Ok(protocol.EventEnvelope(
                 reply_to: None,
                 event: protocol.SnapshotEvent(protocol.ContextSnapshot(board)),
+                ..,
+              ))
+            | Ok(protocol.EventEnvelope(
+                reply_to: None,
+                event: protocol.SnapshotEvent(protocol.ChildHistorySnapshot(
+                  board,
+                )),
                 ..,
               )) ->
               case field(board, "request_id") == json.Int(id) {
@@ -377,6 +393,176 @@ pub fn context_is_an_ordinary_read_and_shares_bounded_observation_slots_test() {
   assert field(final_frame(observer, 30), "status") == json.String("ready")
   process.send(release_worktree, Nil)
   assert field(final_frame(owner, 33), "status") == json.String("ready")
+}
+
+// A page of a remote child's transcript is an ordinary read, answered
+// `pending` at once and pushed when the reader, which asks the other
+// orchestrator, returns (protocol-change/090). The reader is handed the child
+// and the cursor the command named.
+pub fn a_remote_transcript_is_read_as_an_observation_test() {
+  let runtime = runtime()
+  let asked = process.new_subject()
+  let options =
+    gateway.default_options("child-history", runtime)
+    |> gateway.with_child_history(fn(child, before) {
+      process.send(asked, #(child, before))
+      Ok(
+        remote_transcript.encode(remote_transcript.Page(
+          child:,
+          entries: [],
+          omitted: 0,
+          next: None,
+        )),
+      )
+    })
+  let assert Ok(hub) = gateway.start(options, addresses.new())
+    as "the gateway starts"
+  let observer =
+    attach(
+      hub.data,
+      runtime,
+      "history-observer",
+      access.Participant(access.Observer),
+    )
+  let assert protocol.SnapshotEvent(protocol.ChildHistorySnapshot(pending)) =
+    request(observer, 40, protocol.ChildHistoryGet("sub:^main/build-1", 7))
+    as "a subscriber may read a remote child's page"
+  assert field(pending, "status") == json.String("pending")
+  let ready = final_frame(observer, 40)
+  assert field(ready, "status") == json.String("ready")
+  assert field(ready, "child") == json.String("sub:^main/build-1")
+  assert process.receive(asked, 1000) == Ok(#("sub:^main/build-1", 7))
+}
+
+// The children a pushed `remote_children` snapshot lists, the next one the
+// socket receives.
+fn pushed_children(socket: Socket) -> List(remote_agent.RemoteAgent) {
+  let assert poll.Answered(children) =
+    poll.until(within: 5000, every: 1, attempt: fn() {
+      case process.receive(socket.inbox, 0) {
+        Ok(frame) ->
+          case protocol.decode_event(frame) {
+            Ok(protocol.EventEnvelope(
+              reply_to: None,
+              event: protocol.SnapshotEvent(protocol.RemoteChildrenSnapshot(
+                children:,
+              )),
+              ..,
+            )) -> poll.Done(children)
+            _ -> poll.Retry
+          }
+        Error(Nil) -> poll.Retry
+      }
+    })
+    as "the socket receives the session's remote children"
+  children
+}
+
+// A session's children on other orchestrators reach a client as a pushed
+// list (protocol-change/090): once when it subscribes, and again when a stub
+// changes, which here is a glance arriving. Nothing is asked of the other
+// orchestrator; the list is what the stubs hold.
+pub fn remote_children_are_pushed_on_subscribe_and_when_a_stub_changes_test() {
+  let runtime = runtime()
+  let key = remote_child.stub_key("0123456789abcdef")
+  let stub = remote_stubs.stub("box", 3, remote_child.Requested)
+  let assert Ok(remote_child.Fresh) = remote_child.admit(runtime, key, stub)
+    as "the stub is written"
+  let options =
+    gateway.default_options("remote-children", runtime)
+    |> gateway.with_bus(bus.start())
+  let assert Ok(hub) = gateway.start(options, addresses.new())
+    as "the gateway starts"
+  let owner = attach(hub.data, runtime, "remote-owner", access.Owner)
+  let assert [first] = pushed_children(owner)
+  assert first.id == stub.name
+  assert first.orchestrator == "box"
+  assert first.standing == remote_agent.Starting
+
+  let seen =
+    glance.Glance(
+      operation: "op",
+      title: "building",
+      summary: "compiling the tests",
+      at: 5,
+      tokens: 900,
+    )
+  let assert Ok(_) =
+    remote_child.progressed(runtime, key, seen, 1_756_000_000_000)
+    as "the glance is kept"
+  let assert [later] = pushed_children(owner)
+  assert later.summary == "compiling the tests"
+  assert later.tokens == 900
+}
+
+// A tool result read from the box, as an entry of the child's branch.
+fn result_entry(seq: Int, text: String) -> entry.Entry {
+  let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(at: 0), seed: seq))
+  entry.MessageEntry(
+    id:,
+    parent: None,
+    seq:,
+    ts: 0,
+    message: message.ToolResultMessage(
+      tool_call_id: "call-" <> int.to_string(seq),
+      tool_name: "bash",
+      content: [message.ToolResultText(text:, text_signature: None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ),
+    terminate: False,
+  )
+}
+
+// A page cut from a branch whose newest entry is a 70 KB tool result and whose
+// next is a 30 KB one reaches the client whole as a pushed observation: the
+// large entry is counted as omitted on the box, and what is kept fits the
+// gateway's 64 KiB bound on a push, which a page at the old 256 KiB bound did
+// not.
+pub fn a_page_with_a_large_entry_is_pushed_within_the_bound_test() {
+  let runtime = runtime()
+  let branch = [
+    result_entry(3, string.repeat("a", 70_000)),
+    result_entry(2, string.repeat("b", 30_000)),
+    result_entry(1, "small"),
+  ]
+  let page = remote_transcript.page_of("sub:^main/build-1a2b3c", branch, 50)
+  assert page.omitted == 1
+  let options =
+    gateway.default_options("large-page", runtime)
+    |> gateway.with_child_history(fn(_child, _before) {
+      Ok(remote_transcript.encode(page))
+    })
+  let assert Ok(hub) = gateway.start(options, addresses.new())
+    as "the gateway starts"
+  let owner = attach(hub.data, runtime, "large-page-owner", access.Owner)
+  let assert protocol.SnapshotEvent(protocol.ChildHistorySnapshot(_)) =
+    request(owner, 42, protocol.ChildHistoryGet("sub:^main/build-1a2b3c", 0))
+  let ready = final_frame(owner, 42)
+  assert field(ready, "status") == json.String("ready")
+  assert field(ready, "omitted") == json.Int(1)
+  let assert Ok(event) = remote_transcript.decode_observation(ready)
+  let assert remote_transcript.Ready(_, decoded) = event
+  assert list.length(decoded.entries) == 2
+}
+
+// A gateway with no reader answers the read as unavailable, as a daemon with
+// no other orchestrator does.
+pub fn a_remote_transcript_without_a_reader_is_unavailable_test() {
+  let runtime = runtime()
+  let assert Ok(hub) =
+    gateway.start(
+      gateway.default_options("no-history", runtime),
+      addresses.new(),
+    )
+    as "the gateway starts"
+  let owner = attach(hub.data, runtime, "history-owner", access.Owner)
+  let assert protocol.ErrorEvent(code: "unavailable", ..) =
+    request(owner, 41, protocol.ChildHistoryGet("sub:^main/build-1", 0))
+    as "a gateway with no reader refuses the read"
 }
 
 pub fn a_revoked_connection_never_receives_its_captured_context_test() {

@@ -197,19 +197,21 @@ nothing to the laptop on its own. A dropped link costs the next call a
 reconnect, and a call made while the remote is unreachable is `Unreachable`.
 Phase 1 has no connection keeper.
 
-Phase 2 adds messages the remote originates (upward peer mail, section 8.6).
-Those need the laptop connected, so phase 2 adds a keeper on the laptop. While
-a parent session holds a live remote child, the keeper reconnects to that
-remote every two seconds when the connection drops, in the shape of the link
-keeper #934 gives directory members (`directory/member`). It is a weft state
-machine per remote orchestrator, started by the first live stub and stopped
-when none is left.
+Phase 2 adds messages the remote originates (a child's mail and progress, section
+8.6). Those need the laptop connected, so phase 2 adds a keeper on the laptop.
+While a parent session holds a stub that is `Requested` or running, the keeper
+reconnects to that remote every two seconds when the connection drops, in the
+shape of the link keeper #934 gives directory members (`directory/member`). It is
+a daemon-level weft state machine per remote orchestrator, `link_keeper`, that
+sessions vote to from their remote drainer and that holds only while a vote
+stands. The remote never dials: its sender asks whether the laptop's node is
+connected and sends nothing if it is not.
 
 ```mermaid
 flowchart LR
     subgraph laptop["laptop daemon (parent)"]
         p["parent session<br/>Agency, remote-child stubs,<br/>remote drainer"]
-        lp["loom_orchestrator<br/>(phase 2: upward PeerCommand)"]
+        lp["loom_orchestrator<br/>(phase 2: ChildMail, ChildProgress)"]
     end
     subgraph remote["remote daemon"]
         rp["loom_orchestrator<br/>Spawn, Join, RunEnded"]
@@ -219,7 +221,7 @@ flowchart LR
     p -- "pinned TLS distribution<br/>(laptop dials on demand)" --> rp
     rp --> d
     d --> x
-    d -. "phase 2: keeper and peer outbox drainer" .-> lp
+    d -. "phase 2: outbox drainer, over the laptop's connection" .-> lp
 ```
 
 ## 5. The trust model
@@ -734,36 +736,55 @@ restarted opens it first (section 7).
 
 ### 8.6 Messaging (phase 2)
 
-Both directions, the keeper of section 4 and the upward peer mail below are
-phase 2.
+Both directions, and the keeper of section 4, are phase 2. As built (slice S9,
+protocol-change/084, addendum 2026-10-17), and where it differs from this note's
+earlier text, which sent upward mail through `peers.send`: it cannot, because
+`peers.send` first requires an operator-authorized outgoing link on the sending
+session and a box's `default_tools` excludes `peer_*`.
 
-**Downward.** A new constructor, `ChildSend(parent, child, message_id, text,
-within_ms)`, delivers into the child through the remote Agency's `send`, so a
-send to an idle child starts a run owned by the parent's operation as locally.
-The message id is derived from the parent's call site, and the remote stores a
-receipt under it, so a resend answers the receipt instead of delivering twice:
-peer mail's receipt rule, reused. An `Unreachable` send is queued in the
-parent's outbox and drained like a peer-mail row.
+**Downward.** `ChildSend(parent, child, message_id, text)` delivers into the
+child through the delegate Agency, and the message id is the sending call site's
+digest. The box commits the receipt `delegate/receipt/{id}` with the delivery, so
+a resend answers `Admitted` and delivers nothing twice: peer mail's receipt rule,
+reused. A child with an open run takes a steer. An idle child starts a run that is
+detached, because nothing owns a run of a child whose parent is a reference to a
+strand on another machine, and bounded by the child's existing deadline (the run record gets the absolute
+deadline the spawn gave it, so repeated sends cannot extend the child's life, and
+a send after it is refused). An `Unreachable` send becomes a `remote-send/{id}` row on
+the laptop, and the remote drainer resends it until the box answers.
 
-**Upward.** A remote child's `agent_send` to `^main` becomes peer mail from
-the delegate session to the parent session, unchanged in mechanism. At spawn
-the parent's Agency writes a peer grant for the pair (child strand of the
-delegate session to the parent strand) with `may_wake = false`. The child's
-send then goes through `peers.send` on the remote: an outbox row first, then
-`PeerCommand(parent session, Deliver(...))` to the laptop's
-`loom_orchestrator` over an `Endpoint` built from the delegate session's
-recorded spawner node (`remote_peer.at`), not from a directory lookup. The
-parent's Agency admits it with `peer_mail.deliver`: exactly once by message
-id, and, because the grant does not allow waking, only as a steer into an open
-run.
+**Upward.** A remote child's `agent_send` to `^main` writes a
+`delegate/outbox/mail/{id}` row in the delegate session and answers `queued`. The
+authorization is the spawn: a child may address its parent, and no peer link is
+written. The session's second drainer instance sends the row as `ChildMail`, but
+only while the laptop's node is connected. The box never dials. The laptop keeps
+the connection up with the link keeper of section 4 for as long as a stub is
+`Requested` or running.
 
-When the laptop is connected, this is the local guarantee: a parent strand
-that has gone idle refuses, and the child reads `Refused` in its own turn.
-When it is not, `peers.send` returns `queued`, the remote's drainer retries,
-and a delivery that later finds the parent idle is refused and recorded on the
-child's outbox row, where the child can read it with `peer.sent_receipt` but
-is not told in its turn. That is the weaker guarantee the owner accepted for
-phase 2. Phase 1 refuses upward sends entirely (section 6).
+The laptop's port admits the mail through a `ChildHost`: it finds the stub by the
+child's name, so mail that arrives before the answer to the `Spawn` still finds the
+`Requested` stub, refuses a message whose node is not the configured node of the
+orchestrator the stub names, and steers the parent strand in the same commit that
+writes the receipt `remote-mail/{id}`. A parent with no run open declines the
+message, and the refusal is the receipt, because a finished parent is not woken
+for a child's message. A resend is answered from the receipt, so the parent is
+steered once.
+
+A box row is settled by an answer and never by age. Silence leaves it pending, and
+so does `ParentSessionNotOpen`, a parent session that is saved and not resident,
+which its owner ends by opening it.
+
+When the laptop is connected, a parent strand that has gone idle declines, and the
+delivery is recorded on the child's outbox row. When it is not, the child's send
+answered `queued`, and a delivery that later finds the parent idle is declined
+the same way and recorded on the row, where the child can read it but is not told
+in its turn. That is the weaker guarantee the owner accepted for phase 2. Phase 1
+refuses upward sends entirely (section 6).
+
+**Progress** travels the same way and without a row. The glance the delegate
+session already writes for each strand is sent as `ChildProgress` when its `at` is
+newer than the last the laptop acknowledged, and the laptop keeps the newest on
+the stub. A glance lost to a disconnect is not resent.
 
 ### 8.7 Depth and fan-out across machines
 
@@ -788,7 +809,12 @@ Caps are counted on both sides, and each side counts what it can see.
 - **Depth** is carried in the request and checked against `max_depth`. With
   the shipped `depth_cap: 1`, only a strand a human talks to spawns, and a
   remote child's tool set has no `agent_spawn`, so phase 1 has no
-  grandchildren anywhere.
+  grandchildren anywhere. Phase 4 (slice S13, protocol-change/084's addendum
+  of 2026-10-17) sets the delegate session's `depth_cap` to `max_depth`, gives
+  a child below it the spawn tool, lets it spawn on the orchestrators the
+  spawner's `spawn_on` lists, cuts a grandchild's deadline to what its parent
+  has left, and makes a `Release` of the delegate session release the
+  grandchildren in turn.
 
 ## 9. The spawn policy
 
@@ -1273,7 +1299,11 @@ refuse with a sentence, and refused tool calls settle in band.
 ### Phase 3: the parent's operator approves
 
 `approval_ceiling`, `ChildEscalation` and `Resolve`, and their display in the
-laptop's terminal and web view.
+laptop's terminal and web view. Built in slices S10 and S11 and recorded in
+[protocol-change/089](../../protocol-change/089-remote-approvals.md), which
+differs from section 11 in the names it gives the pieces: the ceiling is a table
+of its own, the request is filed under `remote-escalation/`, and a decision
+carries a scope, once or for the session.
 
 ### Phase 4: observation and reach
 
@@ -1308,7 +1338,10 @@ spawning on a third orchestrator.
   same checkout, as local siblings do. Isolation per child would cost a scope
   each.
 - **Transcripts stay on the remote** until phase 4, so the laptop's operator
-  sees a remote child's result and notes but not its working.
+  sees a remote child's result and notes but not its working. Phase 4
+  (protocol-change/090) lets the box owner allow a spawner to read them a page
+  at a time, with `[spawners.<name>] transcript = "visible"`; the default keeps
+  them on the box.
 - **Remote usage is reported, not metered locally.** The laptop trusts the
   remote's account of what a child cost, as it trusts its own gateway's.
 

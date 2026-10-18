@@ -36,6 +36,28 @@
 // children, the fences and everything else stored under it. The message that
 // makes the next session for the parent is a `Spawn` or a `RunEnded`, as in the
 // code. A repeat of `Release` stops nothing more and answers zero.
+//
+// A running child can mail its parent (`eUpward`). The mail is a row in the
+// session's outbox, written before anything is sent and rung to the drainer. A
+// pass sends every row that is not answered, and the wire sends it only while
+// the connection is up, so a laptop that is away costs nothing. The remote never
+// settles a row on its own account: only the laptop's answer does, whether it is
+// a receipt or a refusal that will not change. `MAIL_NOT_OPEN` is the one answer
+// that leaves the row, and the next pass asks again. The outbox is stored in the
+// session, so it survives a restart of the VM and is deleted with the session.
+//
+// Three Ports run in a case (phase 4). The box stands at depth 1 and has a relay,
+// the Laptop machine that plays its delegate session as a spawner. Two third
+// orchestrators stand at depth 2, and their children are the box's
+// grandchildren. A running child on the box starts a grandchild through the
+// relay (`eGrandSpawn`), on the orchestrator that `spawn_on` allows; a child
+// that is not running starts nothing, which is the released fence read before a
+// stub is written. Deleting a released session of the box, once its slot has
+// drained, tells the relay to owe the third orchestrators a release
+// (`eCascade`), and until then the relay goes on resending what it owes. A
+// restart of the box's VM kills the relay's effect processes as it kills
+// the children's runs. Child identities start at `base`, so that the three
+// Ports never name two children alike.
 machine Port {
   var wire: machine;
   var children: map[tChild, tChildRec];
@@ -45,10 +67,28 @@ machine Port {
   var clockPast: bool;
   var phase: tSession;
   var gen: int;
+  var laptop: machine;
+  var outbox: map[int, tRow];
+  var nextMail: int;
+  var depth: int;
+  var relay: machine;
+  var hasRelay: bool;
+  var grandBegun: set[tChild];
 
   start state Up {
-    entry (w: machine) {
-      wire = w;
+    entry (p: (wire: machine, base: int, depth: int)) {
+      wire = p.wire;
+      next = p.base;
+      depth = p.depth;
+    }
+
+    on eRelay do (r: machine) {
+      relay = r;
+      hasRelay = true;
+    }
+
+    on eGrandSpawn do {
+      grandSpawn();
     }
 
     on eNet do (m: tMsg) {
@@ -60,7 +100,21 @@ machine Port {
         runEnded(m.run);
       } else if (m.kind == K_RELEASE) {
         release(m);
+      } else if (m.kind == K_MAILED) {
+        mailed(m);
       }
+    }
+
+    on eLaptop do (l: machine) {
+      laptop = l;
+    }
+
+    on eUpward do {
+      upward();
+    }
+
+    on eMailPass do {
+      mailPass();
     }
 
     on eSlotDrained do {
@@ -85,7 +139,38 @@ machine Port {
 
     on eRestart do {
       loseRuns();
+      if (hasRelay) {
+        send relay, eAbort;
+      }
     }
+  }
+
+  // A running child starts a child of its own on the third orchestrator its
+  // spawner's `spawn_on` allows, the first of the relay's orchestrators, at most
+  // once each. The grandchild's call site is derived from the child, so a second
+  // start from the same child would be the same call site. The relay stands for
+  // the first delegate session only: a later one, which a stale spawn makes
+  // after the first was deleted, is another session with stubs of its own, and
+  // in the model it starts no grandchild.
+  fun grandSpawn() {
+    var c: tChild;
+    var cs: seq[tChild];
+    var running: seq[tChild];
+    if (!hasRelay || phase != SS_OPEN || gen > 0) {
+      return;
+    }
+    cs = keys(children);
+    foreach (c in cs) {
+      if (children[c].st == CS_RUNNING && !(c in grandBegun)) {
+        running += (sizeof(running), c);
+      }
+    }
+    if (sizeof(running) == 0) {
+      return;
+    }
+    c = choose(running);
+    grandBegun += (c);
+    send relay, eBegin, (site = 100 + c, run = 0, owner = -1, target = 0);
   }
 
   // Admission of one `Spawn`.
@@ -121,13 +206,62 @@ machine Port {
     next = next + 1;
     children[c] = (mintedBy = m.site, run = m.run, owner = m.owner, st = CS_RUNNING, overdue = clockPast);
     byName[name] = c;
-    announce eChildIn, (child = c, gen = gen);
-    announce eCreated, (site = m.site, child = c, run = m.run, owner = m.owner);
+    announce eChildIn, (child = c, gen = gen, at = this);
+    announce eCreated, (site = m.site, child = c, run = m.run, owner = m.owner, at = this);
+    announce eAdmittedFrom, (at = this, src = m.src);
     announce eAnswered, (site = m.site, child = c);
     answer(m, K_SPAWNED, c, CS_RUNNING);
     if (clockPast) {
       send this, eTick;
     }
+  }
+
+  // A running child sends its parent a message: the row is written and the
+  // drainer is rung. With no child running there is no one to send it.
+  fun upward() {
+    var c: tChild;
+    var cs: seq[tChild];
+    var running: seq[tChild];
+    var id: int;
+    cs = keys(children);
+    foreach (c in cs) {
+      if (children[c].st == CS_RUNNING) {
+        running += (sizeof(running), c);
+      }
+    }
+    if (sizeof(running) == 0) {
+      return;
+    }
+    c = choose(running);
+    id = nextMail;
+    nextMail = nextMail + 1;
+    outbox[id] = (site = children[c].mintedBy, child = c, answered = false);
+    announce eMailQueued, id;
+    send this, eMailPass;
+  }
+
+  // One drainer pass: every row that has no answer is sent.
+  fun mailPass() {
+    var id: int;
+    var ids: seq[int];
+    ids = keys(outbox);
+    foreach (id in ids) {
+      if (!outbox[id].answered) {
+        send wire, eSendUp, (sender = this, msg = (kind = K_MAIL, src = this, dest = laptop, site = outbox[id].site, child = outbox[id].child, st = CS_RUNNING, run = 0, owner = -1, id = id, code = MAIL_DELIVERED));
+      }
+    }
+  }
+
+  // The laptop's answer to a mail. Every answer settles the row but one.
+  fun mailed(m: tMsg) {
+    if (!(m.id in outbox) || outbox[m.id].answered) {
+      return;
+    }
+    if (m.code == MAIL_NOT_OPEN) {
+      return;
+    }
+    outbox[m.id].answered = true;
+    announce eMailSettled, m.id;
   }
 
   // A zero-window `Join`: where the named child stands.
@@ -176,6 +310,7 @@ machine Port {
     var cs: seq[tChild];
     var stopped: int;
     var running: int;
+    announce eReleaseFrom, (at = this, src = m.src);
     if (phase == SS_NONE) {
       announce eReleaseNoSession;
       answer(m, K_RELEASED, 0, CS_RUNNING);
@@ -194,20 +329,40 @@ machine Port {
         running = running + 1;
       }
     }
-    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running);
+    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running, at = this, depth = depth);
     answer(m, K_RELEASED, stopped, CS_RUNNING);
   }
 
   // The slot drained and the registry deletes the session. Whatever is still
   // running dies with it, and everything stored under it goes.
+  //
+  // The release cascades here and not when the `Release` is handled. The
+  // delegate session's children may have started children elsewhere, and the
+  // rows that tell those orchestrators are written in the turn that deletes the
+  // session, from its stubs. Until then the session's drainer keeps resending a
+  // spawn that is still owed, and a row written earlier would let that spawn
+  // reach the third orchestrator after its release.
   fun deleteSession() {
+    var id: int;
+    var ids: seq[int];
+    if (hasRelay) {
+      announce eCascadeDue;
+      send relay, eCascade;
+    }
     loseRuns();
+    ids = keys(outbox);
+    foreach (id in ids) {
+      if (!outbox[id].answered) {
+        announce eMailSettled, id;
+      }
+    }
+    outbox = default(map[int, tRow]);
     children = default(map[tChild, tChildRec]);
     byName = default(map[int, tChild]);
     fence = default(set[int]);
     phase = SS_NONE;
     gen = gen + 1;
-    announce eSessionDeleted;
+    announce eSessionDeleted, this;
   }
 
   // Marks every child running now as past its deadline.
@@ -267,6 +422,6 @@ machine Port {
   }
 
   fun answer(m: tMsg, kind: tKind, c: tChild, s: tChildState) {
-    send wire, eSend, (sender = this, msg = (kind = kind, src = this, dest = m.src, site = m.site, child = c, st = s, run = m.run, owner = m.owner));
+    send wire, eSend, (sender = this, msg = (kind = kind, src = this, dest = m.src, site = m.site, child = c, st = s, run = m.run, owner = m.owner, id = 0, code = MAIL_DELIVERED));
   }
 }

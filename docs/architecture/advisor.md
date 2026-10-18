@@ -87,7 +87,7 @@ a model's request, and carries a `lineage/` cell naming its parent.
 address another, and `strand.roster` lists strands from it.
 
 `ensure_strand` (`client/advisor.gleam:3606`) creates the advisor through
-`create_idle_strand` (`runtime/api.gleam:1557`) instead. That is the
+`create_idle_strand` (`runtime/api.gleam:1603`) instead. That is the
 runtime's own door, not the Agency's, so the advisor has no lineage cell
 at all. Three consequences follow, and all three are intended.
 
@@ -702,7 +702,7 @@ effect is the seam, and it asks the broker for nothing at all.
 
 **The operator** sees everything, because the daemon builds its strand
 list from the `StrandConfig` registers rather than from the lineage
-ledger (`strand_names`, `client/gateway.gleam:3460`). The advisor has
+ledger (`strand_names`, `client/gateway.gleam:3674`). The advisor has
 such a register, so it appears in the agent rail and its branch is one
 strand switch away. That visibility is deliberate: the isolation is
 between the two models, not between the harness and the person running

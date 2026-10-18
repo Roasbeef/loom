@@ -105,6 +105,10 @@ pub type Row {
     recent: List(String),
     /// Captured pending approval preview, never permission to grant it.
     decision: String,
+    /// The `[orchestrators.<name>]` the agent runs on when it is a child on
+    /// another orchestrator (`remote_agent.row`), and `None` for a strand of
+    /// this session. A host names a placed row `<name> @ <orchestrator>`.
+    placement: Option(String),
   )
 }
 
@@ -168,6 +172,7 @@ pub fn legacy(strands: List(protocol.Strand)) -> List(Row) {
       model_unavailable,
       [],
       "",
+      None,
     )
   })
 }
@@ -323,6 +328,7 @@ pub fn observe(
         |> text_hygiene.single_line,
       agent_activity.recent(view, window, strand.id, current),
       decision,
+      None,
     )
   })
 }

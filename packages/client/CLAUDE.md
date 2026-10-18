@@ -7533,8 +7533,8 @@ is set), with the P model in `protocol/models/remote-subagents`.
   `node` (a pinned `[[distribution.peers]]` node no other spawner uses), one
   `Placement` (`OnExecutor`, `InPool` or `InDirectory`, resolved against the
   executors and pools), a `profile` that must be a `[profiles.<name>]`, a `tools`
-  ceiling (`default_tools` is every built-in tool except `agent_spawn`,
-  `remember`, `peer_*` and `schedule_*`), and `max_depth`, `max_sessions` (at most
+  ceiling (`default_tools(max_depth)` is every built-in tool except `agent_spawn`
+  under a depth of 1, `remember`, `peer_*` and `schedule_*`), `spawn_on`, and `max_depth`, `max_sessions` (at most
   16), `max_within_s`, `default_within_s` and `retain_s`. The decoder refuses a
   `default_within_s` above `max_within_s` and a `retain_s` below it, naming both
   values, because either may be a default the file never wrote. `find` and
@@ -7603,7 +7603,7 @@ is set), with the P model in `protocol/models/remote-subagents`.
   cuts its window to `join_cap_ms`, waits as `^{strand}` (`wait_for`, which `wait`
   also uses) and adds each settled child's usage from `child_usage.of_strands`
   (one ledger scan, rows summed by branch entry). Grandchildren inside a delegate
-  session are still bounded by the Agency's own `depth_cap`, not `max_depth`.
+  session are bounded by `max_depth` too, which the daemon sets as the `depth_cap`.
 - `runtime/api` refuses a strand name starting with `^`
   (`InvalidStrandName`), in `seed_strand`, and reserves the `delegate/` fact
   prefix.
@@ -7668,7 +7668,7 @@ The laptop's side (slice S3):
   Some(orchestrator))`, a refused one `RemoteRefused`, and a `Ready` entry moves the
   stub to `Settled`. `roster` lists local cells and then `remote_peers` from the
   stubs, with a `Spawned` stub whose deadline has passed shown as `PastDeadline`.
-  `send` to a remote child is refused by `refuse_remote_child`.
+  `send` to a remote child is `send_remote` (slice S9, below).
 - `remote_drain.pass` is the second `peer_outbox_drain` instance's pass, in two
   steps over one read of the stubs, and the orchestrators the spawn step found
   silent are skipped by the join step. `spawn_pass` resends each `Requested` stub,
@@ -7792,6 +7792,135 @@ The box's deadline and retention (slice S4):
   Tests: `spawners_test`, `delegate_host_test` (the caps, the day rolling),
   `agency_test` (the hand-off stop), `advisor_test` (counted once),
   `goalstate_test`, `protocol_test`, `remote_child_test`.
+
+- Messaging and `with_on` (slice S9). `remote/link_keeper` is a daemon-level
+  `weft/state_machine` per `[orchestrators.<name>]` (`main.start_link_keepers`,
+  `Config.keepers`): `Idle`/`Holding`, votes (`hold`/`drop`) in the data, a
+  monitor on each voter, and a 2 s periodic that calls `Link.connect` only when
+  `Link.connected` (`distribution.is_connected`) is false. `remote_drain.pass`
+  votes through `Reach.keep` each pass (`vote`) and has a third step, `send_pass`,
+  that resends `remote_send` rows (`remote-send/{id}`) and removes a row on any
+  answer. `orchestrator_port.Message` gains `ChildSend` (served by
+  `SpawnHost.send`, then `DelegateEndpoint.send`, then `agency.delegate_send`,
+  which stores `delegate/receipt/{id}` in the delivering commit) and the box to
+  laptop `ChildMail` and `ChildProgress`, served by `ChildHost`
+  (`main.child_host`, `refusing_children()`), each `detached` with an `Origin`
+  the host judges. The Agency side is `agency.ChildInbox` (`child_inbox`,
+  projected as `serve.Resident.inbox`): `AdmitChildMail` runs in the holder,
+  finds the stub by `remote_child.find_named` (name and parent strand, any
+  state, never the handle), asks `admits(orchestrator)`, and steers the parent
+  with `api.steer_marking` writing `remote-mail/{id}`; no open run writes a
+  `Declined` receipt instead. `Stub.glance` is kept by `remote_child.progressed`.
+  `remote_mail` is the vocabulary (`Receipt`, `ChildRefusal`, `Landing`) and
+  `remote_send` the row. On the box, `Config.spawner`
+  (`main.spawner_link_of`) makes `queue_upward` write a
+  `delegate_outbox` mail row and answer `Queued`; `serve.with_upward_drain`
+  runs `delegate_drain.pass`, which sends only while
+  `remote_spawner.laptop_over(..).connected()` and never dials. A run
+  a send starts on a delegate child gets the child's absolute spawn deadline
+  (`api.run_deadline_for`) and is refused after it; `Joined.Ready.owed` and
+  `Stub.owed` keep the link voted while a settled child's mail is undelivered;
+  `peer_outbox_drain.ring` runs a pass at once; `ChildRefusal.Busy` is retryable.
+  Remote handles belong to a stub by strand.
+  Tests: `remote/link_keeper_test`, `remote_mail_test`, `delegate_outbox_test`,
+  `remote/orchestrator_port_test`, `agency_test` (mail on a `Requested` stub,
+  declined into an idle parent, origin mismatch, glances, upward row, sends and
+  the resend row, the vote, `delegate_send`), `daemon_spawn_host_test`,
+  `support/fake_orchestrators` (`deliver_to_laptop`, `voting`), and the P model.
+
+- Approvals (slices S10 and S11, protocol-change/089). `spawners.Spawner` gains
+  `approval_ceiling: Option(approval_ceiling.Ceiling)`; `approval_ceiling.admits`
+  names every `broker/policy.Grant` constructor. `delegate_outbox.SpawnerLink`
+  carries the ceiling, and `delegate_outbox.answers(link, laptop)` is the second
+  half of a delegate session's `escalate.Config.interactive` (a ceiling and a
+  connected spawner node; nothing dials). `escalate.Config.parked` is called
+  once as a refused call is about to park, and `serve.announce_to_spawner` writes
+  `delegate/outbox/escalation/{id}/{seq}` (`delegate_outbox.announce`, `Question`)
+  and rings the upward drainer. `delegate_drain.question_step` sends the record
+  (`escalation_view.view`, with `admitted` set from the ceiling), marks the row
+  `Acknowledged`, sends the decided state once and drops the row, or drops it when
+  a newer raise or the closed window made it moot. `ChildEscalation` is served by
+  `ChildHost.escalation` (`main.child_host`) into `agency.ChildInbox.escalation`,
+  which finds the stub by name in any state and files the record with
+  `remote_escalation_store.keep` (newest seq wins, under
+  `remote-escalation/{orchestrator}/{id}`, reserved by
+  `api.remote_escalation_fact_prefix`). `Resolve` is served by `SpawnHost.resolve`
+  into `DelegateEndpoint.resolve` (filled by `serve` with `gateway.decide`) and
+  judged on the hub's turn by `remote_decision.admit`; a session approval commits
+  with `permissions.Spawner` provenance, `permissions.withdraw_spawner_grants`
+  runs from `serve.withdraw_outside_the_ceiling` at open, and
+  `permissions.forgetting_for_spawner` backs `Forget`. On the laptop the gateway
+  reads the prefix for snapshots, events and the cut, and routes `approve`/`deny`
+  on an id with a slash (`from_elsewhere`) to `Reach.resolve` from a weft run
+  (`start_resolve`, `PendingResolve`, `resolve_reported`). `Options.spawner` and
+  `Options.remote` carry the link and the reach. `protocol.EscalationRecord`
+  gains `placement` and `admitted`. `remote_escalation` is the vocabulary
+  (`Decision`, `Scope`, `Answer`, `Decider`). Tests: `spawners_test` (the
+  ceiling), `remote_decision_test`, `delegate_question_test`, `gateway_test`
+  (routing, `decide`), `agency_test` (a request against a `Requested` stub,
+  newest seq wins), `remote/orchestrator_port_test`, and the shipped
+  `daemon_shipped_remote_subagents_test`.
+- A delegate session that does not open in `delegate_host.open_budget_ms`, or
+  goes back to saved while the host waits, answers
+  `remote_spawn.NotYetOpen`, and `remote_spawner.answer` reads it as
+  `Unreachable`, so the laptop resends and the stub stays `Requested`. After a
+  box is killed, the dead writer's lease on the session file refuses every open
+  until it expires (up to `lease_ttl_ms`, 60 s), and before this a spawn in that
+  minute left its stub `Refused` for good. `remote_release_test` and the shipped
+  remote subagents test, which kills and restarts the box, cover it.
+- Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`
+  (`glanceSeenMs`, absent reads 0) is the parent's clock when
+  `remote_child.progressed` kept the glance; every stub write publishes
+  `bus.RemoteChildrenChanged` (`remote_child.changed`). `remote_child.agents`
+  projects the stubs into `session_view/remote_agent` rows; the gateway pushes
+  them as `protocol.RemoteChildrenSnapshot` on subscribe (`push_remote_children`)
+  and on the bus event. `orchestrator_port.Message.ChildHistory` (`ask_history`),
+  `SpawnHost.history`, `DelegateEndpoint.history` and `Reach.history` read a
+  page of a child's branch; `main.spawn_host` takes a fourth resolver,
+  `delegate_host.existing_endpoint` (resident sessions only, creates nothing),
+  refuses `remote_spawn.TranscriptHidden` unless `spawners.Spawner.transcript`
+  is `Visible` (`[spawners.<name>] transcript`), and `agency.delegate_history`
+  checks descent from `^{parent.strand}` and reads `storage.scan_branch` from
+  the child's leaf into `remote_transcript.page_of`. The session endpoint's
+  `child_history` (`protocol.ChildHistoryGet`) is a read run as an observation
+  (`HistoryObservation`, `gateway.with_child_history`, wired by
+  `serve.with_child_history` to `remote_child.history_reader`). Tests:
+  `remote/orchestrator_port_test` (relay, hidden, no session created),
+  `agency_test` (paging through the port, a non-descendant refused),
+  `daemon_spawn_host_test`, `domain_observation_test` (the observation and the
+  pushes), `remote_child_test` (`agents`), `spawners_test`.
+- Depth across machines (phase 4, slice S13; protocol-change/084 addendum of
+  2026-10-17). `main.depth_cap_of` sets a delegate session's Agency `depth_cap`
+  to its spawner's `max_depth` (`serve.Settings.depth_cap`), so the
+  `int.min(max_depth, depth_cap)` clamp in `agency.depth_limit` never binds in a
+  daemon. `spawners.default_tools(max_depth)` holds `agent_spawn` exactly when
+  `max_depth` is above 1, and `agency.child_tools` keeps the spawn tool for a
+  delegated child that asks for no narrowing (a local child's default drops it).
+  `[spawners.<name>] spawn_on` (`Spawner.spawn_on`, a list of
+  `[orchestrators.<name>]` keys, refused when nonempty under a depth of 1) is
+  applied by `main.reach_of`, which builds a delegate session's reach with
+  `remote_reach.restricted(spawn_on)`: only those names are offered or spawned on,
+  and `offered` is the list being nonempty rather than the unshared-session test.
+  A grandchild on a third orchestrator is an ordinary `spawn_elsewhere` with the
+  delegate session as the parent session; `admit_remote` reads the released
+  fence before it writes a stub, and `agency.within_parent` and
+  `no_later_than_parent` keep any child's deadline inside its parent's.
+  The release cascades at the deletion, not at the release: `manager.delete_delegate`
+  (the drained release's `finish_release` and the sweep) reads the closed file's
+  stubs in that registry turn (`descendant_holders`, `remote_release.stubs_at`
+  in a deadline-bounded task) and writes their `catalogue_remote_releases` rows
+  (parent session = the delegate session) before the registration goes, so the
+  daemon's release drainer tells them. Writing them when the release begins
+  would let the still-running session resend a `Requested` spawn past the third
+  orchestrator's `Release`. A deadline over a spawner's cap is refused with both
+  figures (`remote_spawn.over_cap`). Metering is per hop.
+  Tests: `spawners_test`, `agency_test` (two fake orchestrators: allowed and
+  refused placement, depth on both sides, the deadline clamp, the fence before a
+  stub), `delegate_host_test` (a closed session's rows from its file, a resident
+  session's row only with its deletion, and the drainer's release of the third
+  orchestrator), `support/fake_orchestrators` (`Report.asked`), the shipped
+  `daemon_shipped_remote_depth_test` (three ledger orchestrators; deleting the
+  laptop session stops the grandchild), and the P model's `tcDepth`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),

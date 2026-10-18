@@ -1,13 +1,23 @@
 //// The other orchestrators a session may start children on, as a record of
 //// functions (protocol-change/084, slice S3).
 ////
-//// The Agency asks two questions of another orchestrator: start a child, and
-//// report on children. It must not know how they are sent. The orchestrator port
-//// and its addresses sit above the Agency in the module graph (the owner port
-//// reaches the Agency through the notice module), so the Agency depends on this
-//// record and the daemon fills it from the sending end
-//// (`client/remote/remote_spawner`). A test fills it with two closures that play
+//// The Agency asks three questions of another orchestrator: start a child,
+//// report on children, and deliver a message into one. It must not know how they
+//// are sent. The orchestrator port and its addresses sit above the Agency in the
+//// module graph (the owner port reaches the Agency through the notice module),
+//// so the Agency depends on this record and the daemon fills it from the sending
+//// end (`client/remote/remote_spawner`). A test fills it with closures that play
 //// the other orchestrator.
+////
+//// A fourth question, `history`, reads one page of a child's transcript there
+//// (protocol-change/090). It is asked for a person looking at the child, not
+//// by the Agency, and the daemon's gateway asks it in a task of its own, so a
+//// slow orchestrator never holds the session's hub.
+////
+//// A further function, `keep`, is not a question. The drainer of a session that
+//// has a child there votes through it to the daemon's link keeper, which keeps
+//// the connection up so that the orchestrator can send mail and progress of its
+//// own (`client/remote/link_keeper`).
 ////
 //// The port also takes a `RunEnded` message, which stops the children a finished
 //// run owns, and the sending end does not use it: a remote child is always
@@ -16,6 +26,12 @@
 //// orchestrator that a parent session was deleted. The parent's session is gone
 //// by then, so the caller is not an Agency but the daemon's release drainer,
 //// which asks through a `Reach` built for the deleted session.
+////
+//// A delegate session's children may start children of their own on another
+//// orchestrator (phase 4), but only where the spawner's `spawn_on` allows.
+//// `restricted` narrows a reach to those names and answers `offered` from the
+//// list, since the owner test an ordinary session is asked would pass for every
+//// orchestrator in a session that only this daemon's owner holds.
 ////
 //// The functions answer as a call to another orchestrator can end, and the same
 //// two ways peer mail's endpoints do (`client/peer_mail.Failure`).
@@ -33,9 +49,13 @@
 //// is already a sentence for the parent's model (`remote_spawn.describe_refusal`).
 
 import client/peer_mail.{type Failure}
+import client/remote_escalation.{type Answer, type Decider, type Decision}
+import client/remote_mail.{type Landing}
 import client/remote_spawn.{
   type CallSite, type Joined, type Parent, type Request, type Spawned,
 }
+import gleam/list
+import session_view/remote_transcript.{type Page}
 import tools/agent.{type Handle}
 
 /// The longest one `Spawn` waits for its answer, in milliseconds. The first spawn
@@ -76,7 +96,46 @@ pub type Reach {
     /// answers how many children it stopped. The arguments are the orchestrator
     /// and the parent. A parent the orchestrator holds nothing for answers zero.
     release: fn(String, Parent) -> Result(Int, Failure),
+    /// Delivers a message into a child, once. The arguments are the
+    /// orchestrator, the parent, the child's handle, the message's identity and
+    /// its text. The identity is the sending call site's digest, and the
+    /// orchestrator stores a receipt under it, so asking again after an
+    /// `Unreachable` delivers nothing twice and answers `Admitted`. An idle child
+    /// starts a detached run, bounded by the deadline the child already has.
+    send: fn(String, Parent, Handle, String, String) -> Result(Landing, Failure),
+    /// Tells an orchestrator what the operator decided about a child's request
+    /// for more authority (protocol-change/089). The arguments are the
+    /// orchestrator, the parent, the child, the request's identity there, the
+    /// decision, the `seq` of the question the operator was shown, and who
+    /// decided. The answer is the orchestrator's: committed, stale with the
+    /// current record, or refused. `Unreachable` means the decision may or may not
+    /// have committed, and the operator is shown the question again.
+    resolve: fn(String, Parent, Handle, String, Decision, Int, Decider) ->
+      Result(Answer, Failure),
+    /// Reads one page of a child's transcript. The arguments are the
+    /// orchestrator, the parent, the child's handle, the sequence the page
+    /// reads below (zero for the newest) and the most entries it holds. The
+    /// page is decoded here, whole and within its bounds, so a page that cannot
+    /// be read is a refusal and never a partial page. An orchestrator whose
+    /// spawner table keeps transcripts there refuses it.
+    history: fn(String, Parent, Handle, Int, Int) -> Result(Page, Failure),
+    /// Votes whether this session needs the connection to an orchestrator kept
+    /// up (`client/remote/link_keeper`). The drainer votes `Hold` on every pass
+    /// that finds a spawn unanswered or a child running there, and `Drop` when a
+    /// pass finds nothing owed. It never waits: a vote to a keeper that is not
+    /// running is lost, and the next pass votes again.
+    keep: fn(String, Vote) -> Nil,
   )
+}
+
+/// A session's vote to the keeper of one orchestrator's connection.
+pub type Vote {
+  /// A child may be running there, or a spawn is waiting for an answer: keep the
+  /// connection up, because the orchestrator sends messages of its own.
+  Hold
+
+  /// Nothing is owed there any more.
+  Drop
 }
 
 /// The reach of a session that has nowhere to start a child: no orchestrators
@@ -100,6 +159,52 @@ pub fn none(session: String) -> Reach {
       Error(not_configured(name))
     },
     release: fn(name, _parent) { Error(not_configured(name)) },
+    send: fn(name, _parent, _child, _message_id, _text) {
+      Error(not_configured(name))
+    },
+    resolve: fn(name, _parent, _child, _id, _decision, _seq, _decider) {
+      Error(not_configured(name))
+    },
+    history: fn(name, _parent, _child, _cursor, _limit) {
+      Error(not_configured(name))
+    },
+    keep: fn(_name, _vote) { Nil },
+  )
+}
+
+/// The reach of a delegate session, whose children may start children of their
+/// own only on the orchestrators its spawner's `spawn_on` lists
+/// (protocol-change/084, phase 4).
+///
+/// The names offered to the model are the configured ones that `allowed` also
+/// holds, and a spawn on any other name is refused as not configured. Whether
+/// the session may spawn elsewhere at all is the policy's answer: it may when
+/// `allowed` names at least one orchestrator. It is not the test an ordinary
+/// session is asked, that its owner holds it alone, because the owner of a
+/// delegate session is this daemon's owner and the test would pass for every
+/// orchestrator.
+///
+/// Only `spawn` is narrowed. A join, a send and a release concern a child that a
+/// stub already records, and an orchestrator taken out of `spawn_on` after the
+/// child started must still be asked about it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_reach.restricted(reach, ["third"]).orchestrators == ["third"]
+/// ```
+pub fn restricted(reach: Reach, allowed: List(String)) -> Reach {
+  Reach(
+    ..reach,
+    orchestrators: list.filter(reach.orchestrators, list.contains(allowed, _)),
+    offered: fn() { allowed != [] },
+    spawn: fn(name, parent, site, depth, tools, request, within_ms) {
+      case list.contains(allowed, name) {
+        True ->
+          reach.spawn(name, parent, site, depth, tools, request, within_ms)
+        False -> Error(not_configured(name))
+      }
+    },
   )
 }
 

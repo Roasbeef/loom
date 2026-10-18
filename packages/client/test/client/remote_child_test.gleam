@@ -11,11 +11,13 @@
 import client/remote_child.{Placed, Stub}
 import client/remote_spawn
 import core/clock
+import core/glance
 import core/ids
 import core/json
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/remote_agent
 import tools/agent
 
 fn an_op(seed: Int) -> ids.OpId {
@@ -49,6 +51,9 @@ fn a_stub(state: remote_child.State) -> remote_child.Stub {
     parent_tools: ["agent_note", "agent_send", "bash"],
     request: a_request(),
     name: "sub:^main/run-the-suite-0123456789abcdef",
+    glance: None,
+    glance_seen_ms: 0,
+    owed: 0,
     state:,
   )
 }
@@ -334,4 +339,96 @@ pub fn settled_usage_is_summed_per_orchestrator_in_name_order_test() {
     ]
   assert remote_child.settled_tokens(stubs) == 630
   assert remote_child.settled_tokens([]) == 0
+}
+
+pub fn a_glance_survives_the_stub_test() {
+  let seen =
+    glance.Glance(
+      operation: ids.op_id_to_string(an_op(4)),
+      title: "running the suite",
+      summary: "waiting on e2e",
+      at: 1_756_000_000_000,
+      tokens: 4200,
+    )
+  round_trips(Stub(..a_stub(remote_child.Requested), glance: Some(seen)))
+  round_trips(
+    Stub(..a_stub(remote_child.Spawned(a_placed())), glance: Some(seen)),
+  )
+}
+
+// The strip's rows come from the stubs alone (protocol-change/090). A running
+// child shows its newest glance with the age measured on this session's clock
+// from when the glance arrived, a child past its deadline is expired, and a
+// spawn not yet answered is starting under the purpose it asked for.
+pub fn the_strip_rows_come_from_the_stubs_test() {
+  let seen =
+    glance.Glance(
+      operation: ids.op_id_to_string(an_op(4)),
+      title: "running the suite",
+      summary: "waiting on e2e",
+      at: 1,
+      tokens: 4200,
+    )
+  let running =
+    Stub(
+      ..a_stub(remote_child.Spawned(a_placed())),
+      glance: Some(seen),
+      glance_seen_ms: 1_756_000_000_000,
+    )
+  let now = 1_756_000_030_000
+  let assert [row] = remote_child.agents([remote_child.Kept("k", running)], now)
+  assert row.id == running.name
+  assert row.orchestrator == "box"
+  assert row.standing == remote_agent.Running
+  assert row.title == "running the suite"
+  assert row.summary == "waiting on e2e"
+  assert row.tokens == 4200
+  assert row.model == "cheap"
+  assert row.age_ms == Some(30_000)
+
+  let assert [late] =
+    remote_child.agents(
+      [remote_child.Kept("k", running)],
+      a_placed().deadline_ms + 1,
+    )
+  assert late.standing == remote_agent.Expired
+
+  let assert [asked] =
+    remote_child.agents(
+      [remote_child.Kept("k", a_stub(remote_child.Requested))],
+      now,
+    )
+  assert asked.standing == remote_agent.Starting
+  assert asked.title == "run the suite"
+  assert asked.age_ms == None
+}
+
+// A stub written before glances existed has no `glance` member and reads as one
+// that has none.
+pub fn a_stub_without_a_glance_member_decodes_as_having_none_test() {
+  let assert json.Object(fields) =
+    remote_child.encode(a_stub(remote_child.Requested))
+  let older = json.Object(list.filter(fields, fn(pair) { pair.0 != "glance" }))
+  let assert Ok(stub) = remote_child.decode(older)
+  assert stub.glance == None
+}
+
+pub fn a_child_is_found_by_its_name_and_its_parent_strand_in_any_state_test() {
+  let requested =
+    remote_child.Kept("remote-child/a", a_stub(remote_child.Requested))
+  let other =
+    remote_child.Kept(
+      "remote-child/b",
+      Stub(..a_stub(remote_child.Requested), strand: "other"),
+    )
+  let name = requested.stub.name
+
+  // The stub is found whatever state it is in, and by nothing but its name and
+  // the parent strand: it has no handle yet.
+  assert remote_child.find_named([other, requested], "main", name)
+    == Ok(requested)
+  assert remote_child.find_named([other, requested], "other", name) == Ok(other)
+  assert remote_child.find_named([requested], "main", "sub:^main/nobody-1")
+    == Error(Nil)
+  assert remote_child.find_named([], "main", name) == Error(Nil)
 }

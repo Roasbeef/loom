@@ -811,8 +811,9 @@ still be running.
 | `directory` | string | one placement is required | an absolute path with no `..` segment | Place every delegate session in this directory on this machine. Does not take `workspace`. |
 | `workspace` | string | required with `executor` or `pool` | 1 to 128 bytes with no `/` and no NUL | The workspace name registered on the executor or the pool's executors. |
 | `profile` | string | required | the name of a `[profiles.<name>]` table | The profile that seeds every delegate session, so this daemon's catalogue, roles and pricing apply. |
-| `tools` | array of strings | every built-in tool except `agent_spawn`, `remember`, the `peer_*` tools and the `schedule_*` tools | a nonempty array of distinct tool names | The ceiling on a child's tools. A child's tools are narrowed by its request and by its parent's own set, and never widened past this list. The default ceiling never includes `agent_spawn`, so a child can spawn only if `max_depth` allows it and `agent_spawn` is listed here too. |
-| `max_depth` | integer | 1 | at least 1 | The deepest child allowed. One means children may not spawn. Nesting also needs `agent_spawn` listed in `tools`, because the default ceiling never includes it. |
+| `tools` | array of strings | every built-in tool except `remember`, the `peer_*` tools and the `schedule_*` tools, and except `agent_spawn` when `max_depth` is 1 | a nonempty array of distinct tool names | The ceiling on a child's tools. A child's tools are narrowed by its request and by its parent's own set, and never widened past this list. The default ceiling includes `agent_spawn` exactly when `max_depth` is above 1. A list you write is used as written, so with one a child can spawn only if `max_depth` allows it and the list names `agent_spawn`. |
+| `max_depth` | integer | 1 | at least 1 | The deepest child allowed, counting the spawning orchestrator's own strand as depth 0, so a child here is at depth 1. One means children may not spawn. With 2 or more, a child below the limit keeps `agent_spawn` and may start children of its own, in its delegate session and on the orchestrators `spawn_on` lists. Every spawn in the delegate session is judged by this figure, and a child at the limit loses the spawn tool. |
+| `spawn_on` | array of strings | none | distinct `[orchestrators.<name>]` keys of this daemon; needs `max_depth` above 1 | The other orchestrators on which a child of this spawner may start a child of its own (from protocol-change 084, phase 4). This daemon is then the spawner there, so the other orchestrator needs a `[spawners.<name>]` table for this daemon's node, and its own limits apply. A grandchild's deadline is cut to what its parent's deadline leaves, and when the spawning orchestrator releases the parent session, this daemon releases the grandchildren in turn. An orchestrator not in the list is not offered and is refused. Without the key, children spawn nowhere else. |
 | `max_sessions` | integer | 4 | 1 to 16 | The delegate sessions this spawner may hold. Sixteen is the number of scopes an executor admits. |
 | `max_within_s` | integer | 14400 (4 hours) | at least 1 | The longest deadline a spawn may ask for, in seconds. A longer request is refused, not shortened. |
 | `default_within_s` | integer | 1800 (30 minutes) | 1 to `max_within_s` | The deadline a spawn gets when it names none, in seconds. |
@@ -821,6 +822,43 @@ still be running.
 | `token_budget_per_day` | integer | none (unmetered) | at least 1 | The tokens, input plus output, that every child of this spawner may use over a rolling day of 24 hours. A spawn is refused with `token_budget_per_day` named once the day's total has reached it. Children already running are not stopped by it. |
 | `child_token_budget` | integer | none (unmetered) | at least 1 | The tokens one child may use. A child is stopped, with its outcome recorded as spent, after the request that takes it to the budget, so it can overshoot by one request. |
 | `max_per_day` | integer | none (unmetered) | at least 1 | The spawns admitted for this spawner over a rolling day. A new spawn is refused with `max_per_day` named once the day's count has reached it. A resent spawn that finds its child already started is answered with that child and is not counted. |
+| `approval_ceiling` | table | none (no ceiling) | a [`[spawners.<name>.approval_ceiling]`](#spawnersnameapproval_ceiling) table | What the spawning orchestrator's operator may approve for a child that asks for more than its sandbox allows (protocol-change 089). With no table, a delegate session counts as unattended and a refused call settles in band, as it always has, and no decision from the spawner is accepted. With a table, a refused call is held open while the spawner's node is connected, the spawner's operator is asked, and a decision is accepted only if every grant it carries is inside the table. |
+| `transcript` | string | `"hidden"` | `"visible"` or `"hidden"` | Whether the spawning orchestrator may read its children's transcripts here, one bounded page at a time (protocol-change/090). With `"hidden"` a request for one is refused and the spawner sees a child's result, notes and glances and nothing of its working. The transcript is recorded on this machine and may hold what its tools returned, so it is this daemon's owner who allows it. |
+
+## `[spawners.<name>.approval_ceiling]`
+
+(From protocol-change 089.) Optional, written on the box inside a
+`[spawners.<name>]` table, and read with it when the daemon starts. A child that
+runs here can ask for more than its sandbox allows: write access to a directory, a
+host on the network, an environment variable. Nobody is attached to a delegate
+session, so without this table the child's call settles on the refusal. With it,
+the refused call is held open for as long as the spawner's node is connected, the
+operator on the spawning orchestrator is shown the request, and the box accepts
+their decision only if every grant in it is inside the ceiling. A decision that
+names anything wider is refused (`outside the spawner's approval ceiling`) and the
+request stays pending for the owner of this machine, who can still attach to the
+delegate session and answer it.
+
+There is one key for each kind of grant. A key that is absent admits nothing of its
+kind, and a table with no keys asks the operator and admits nothing. The ceiling
+binds an honest spawner, like the rest of the spawn policy: it stops a mistaken
+approval, and a compromised peer does not have to send the message it judges.
+
+An operator on the spawning side may approve a grant for one call (once) or for the
+rest of the delegate session (session). A session approval is remembered in the
+delegate session and is honoured by every later call of that parent's children on
+this machine, and by no other session. It is checked against the ceiling again each
+time the delegate session opens, so narrowing the ceiling and restarting the daemon
+revokes what the old ceiling let through.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `writable_roots` | array of strings | none | absolute paths with no `..` or `.` segment | A writable root may be granted if it is one of these paths or under one, compared on a path segment (`/srv/work` admits `/srv/work/a` and not `/srv/workshop`). |
+| `readable_roots` | array of strings | none | absolute paths with no `..` or `.` segment | A readable root may be granted under one of these paths. A path that is writable under `writable_roots` may be read as well. |
+| `network` | string or array of strings | none | `"any"`, or `host:port` entries | `"any"` admits unrestricted network. A list admits a proxy grant whose every allowlist entry is in it. |
+| `env` | array of strings | none | environment variable names | These variables may be added to the allowlist. |
+| `limits` | table | none | any of `cpu_s`, `wall_s`, `mem_bytes`, `pids`, `fsize_bytes`, `output_bytes`, each a positive integer | A limit may be raised up to the value listed. A request for unlimited (`0`) is never admitted. |
+| `scratch` | array of strings | none | `"tmpfs"`, or absolute paths | The scratch choices that may be granted: a fresh tmpfs, or a host path at or under one of the listed paths. |
 
 ## Provisioning a deployment
 

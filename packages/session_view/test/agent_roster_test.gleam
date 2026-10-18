@@ -4,10 +4,14 @@
 //// rule: `main` first, working agents after it, the advisor on its own and
 //// settled strands listed in reverse row order.
 
+import core/json
+import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
+import gleam/string
 import session_view/agent_roster
 import session_view/agent_view
+import session_view/remote_agent
 
 fn row(id: String, status: agent_view.Status) -> agent_view.Row {
   agent_view.Row(
@@ -24,6 +28,7 @@ fn row(id: String, status: agent_view.Status) -> agent_view.Row {
     model: "",
     recent: [],
     decision: "",
+    placement: None,
   )
 }
 
@@ -134,4 +139,136 @@ pub fn a_strand_that_never_ran_is_listed_and_one_that_ran_is_not_test() {
   assert ids(chips.listed) == ["main", "sub:main/docs"]
   assert ids(chips.settled) == ["sub:main/old-1a2b3c"]
   assert agent_roster.listed_count(rows, "main") == 2
+}
+
+// --- children on other orchestrators (protocol-change/090) -------------------
+
+fn remote(
+  standing: remote_agent.Standing,
+  summary: String,
+  age_ms: Option(Int),
+) -> remote_agent.RemoteAgent {
+  remote_agent.RemoteAgent(
+    id: "sub:^main/build-turn-1-0",
+    parent: "main",
+    orchestrator: "box",
+    standing:,
+    title: "build the release",
+    summary:,
+    tokens: 12_400,
+    model: "fast",
+    age_ms:,
+  )
+}
+
+// A child on another orchestrator has no strand here, so its row comes from the
+// daemon's list and carries the orchestrator as its placement. It is listed
+// beside the capture's rows while it runs, with the glance's words and tokens.
+pub fn a_running_remote_child_is_listed_with_its_placement_test() {
+  let roster =
+    agent_roster.new()
+    |> agent_roster.observe_remote(
+      [remote(remote_agent.Running, "compiling the tests", Some(2000))],
+      10_000,
+    )
+  let rows =
+    list.append(
+      [row("main", agent_view.Working)],
+      agent_roster.remote_rows(roster),
+    )
+  let assert [main, child] = agent_roster.lines(roster, rows, "main")
+  assert main.placement == None
+  assert child.id == "sub:^main/build-turn-1-0"
+  assert child.placement == Some("box")
+  assert child.status == agent_view.Working
+  assert child.text == "compiling the tests"
+  assert child.title == "build the release"
+  assert child.tokens == Some(12_400)
+  assert child.age_s == Some(2)
+}
+
+// The age keeps growing on the host's own clock while no new list arrives, as
+// it does while the parent's daemon cannot reach the orchestrator: the strip
+// shows the last glance and how old it is, and nothing is asked of anyone.
+pub fn a_remote_childs_glance_ages_on_the_hosts_clock_test() {
+  let roster =
+    agent_roster.new()
+    |> agent_roster.observe_remote(
+      [remote(remote_agent.Running, "compiling", Some(1000))],
+      10_000,
+    )
+  let #(later, _) = agent_roster.tick(roster, 70_000)
+  let assert [line] =
+    agent_roster.lines(later, agent_roster.remote_rows(later), "main")
+  assert line.age_s == Some(61)
+}
+
+// A remote child with no summary yet says where it stands, and a settled one
+// leaves the listed chips for the settled ones, as a local strand does.
+pub fn a_remote_childs_standing_is_worded_when_it_has_no_summary_test() {
+  let starting = remote(remote_agent.Starting, "", None)
+  assert agent_roster.remote_row(starting).activity == "Starting on box"
+  assert agent_roster.remote_row(starting).status == agent_view.Waiting
+
+  let roster =
+    agent_roster.new()
+    |> agent_roster.observe_remote(
+      [remote(remote_agent.Completed, "", None)],
+      0,
+    )
+  let chips =
+    agent_roster.chips(
+      roster,
+      [row("main", agent_view.Idle), ..agent_roster.remote_rows(roster)],
+      "main",
+    )
+  assert ids(chips.listed) == ["main"]
+  assert ids(chips.settled) == ["sub:^main/build-turn-1-0"]
+}
+
+// The worst list a session can push, every name and word at its bound and made
+// of a character the encoding escapes, is cut to what one pushed frame can
+// carry, and what is kept still decodes.
+pub fn the_widest_remote_children_list_fits_one_frame_test() {
+  let words = string.repeat("\"", remote_agent.max_text_bytes)
+  let agents =
+    int.range(from: 0, to: remote_agent.max_children, with: [], run: fn(acc, n) {
+      [
+        remote_agent.RemoteAgent(
+          id: int.to_string(n)
+            <> string.repeat("x", remote_agent.max_name_bytes - 2),
+          parent: string.repeat("p", remote_agent.max_name_bytes),
+          orchestrator: string.repeat("o", remote_agent.max_name_bytes),
+          standing: remote_agent.Running,
+          title: words,
+          summary: words,
+          tokens: 1_000_000,
+          model: words,
+          age_ms: Some(1_000_000),
+        ),
+        ..acc
+      ]
+    })
+  let kept = remote_agent.within_bound(agents)
+  let encoded = json.Array(list.map(kept, remote_agent.encode))
+  assert string.byte_size(json.to_string(encoded))
+    <= remote_agent.list_bytes_limit
+  assert kept != []
+  assert remote_agent.decode_all([#("remote_children", encoded)]) == Ok(kept)
+}
+
+// The list's wire form is total and bounded: what the daemon encodes decodes to
+// the same entries, and an unknown standing is refused rather than drawn.
+pub fn a_remote_children_list_round_trips_and_refuses_damage_test() {
+  let agents = [remote(remote_agent.Running, "x", Some(5))]
+  let fields = [
+    #("remote_children", json.Array(list.map(agents, remote_agent.encode))),
+  ]
+  assert remote_agent.decode_all(fields) == Ok(agents)
+  let assert json.Object(damaged) =
+    remote_agent.encode(remote(remote_agent.Running, "x", None))
+  let damaged =
+    json.Object(list.key_set(damaged, "standing", json.String("dancing")))
+  let assert Error(_) =
+    remote_agent.decode_all([#("remote_children", json.Array([damaged]))])
 }

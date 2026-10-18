@@ -23,6 +23,7 @@ import client/async_codemode
 import client/async_runs
 import client/codemode
 import client/daemon/main as daemon_main
+import client/delegate_outbox
 import client/internal/ffi_os
 import client/owner_codemode
 import client/owner_services
@@ -30,11 +31,15 @@ import client/peer_mail
 import client/peer_outbox
 import client/peer_outbox_drain
 import client/peers
+import client/protocol
 import client/remote/address
 import client/remote/orchestrator_port
 import client/remote_child
 import client/remote_drain
+import client/remote_escalation_store
+import client/remote_mail
 import client/remote_reach
+import client/remote_send
 import client/remote_spawn
 import client/serve
 import client/spawners
@@ -45,6 +50,7 @@ import core/accounting
 import core/clock.{type Clock}
 import core/codec
 import core/entry
+import core/glance
 import core/ids
 import core/json
 import core/message
@@ -73,6 +79,7 @@ import runtime/child_run
 import runtime/effects
 import runtime/lineage
 import session/session
+import session_view/remote_transcript
 import session_view/strand_framing
 import simplifile
 import storage/storage
@@ -5199,9 +5206,12 @@ pub fn a_remote_spawn_is_judged_by_the_spawners_deadlines_test() {
         within_ms: Some(terms.max_within_ms + 1),
       ),
     )
-    == Error(remote_spawn.InvalidArgument(
-      reason: "within_ms is above this spawner's max_within_s",
-    ))
+    == Error(
+      remote_spawn.InvalidArgument(reason: remote_spawn.over_cap(
+        terms.max_within_ms + 1,
+        terms.max_within_ms,
+      )),
+    )
   assert agency.delegate_spawn(
       harness.config,
       delegation,
@@ -5837,7 +5847,15 @@ tools = [\"agent_note\", \"agent_send\", \"bash\", \"fs_read\"]
 }
 
 fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
-  let assert Ok(configured) = spawners.parse(spawner_table())
+  serving_table(harness, spawner_table())
+}
+
+// The port over the harness's Agency, with a spawner table of the test's own.
+fn serving_table(
+  harness: Harness,
+  table: String,
+) -> address.Address(orchestrator_port.Message) {
+  let assert Ok(configured) = spawners.parse(table)
     as "the spawner's table must parse"
 
   // The table names a node a distribution peer can have. A test VM that is not
@@ -5861,7 +5879,11 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
         fn(_spawner, _parent) {
           agency.delegate_endpoint(harness.config).release()
         },
+        fn(_spawner, _parent) {
+          Ok(Some(agency.delegate_endpoint(harness.config)))
+        },
       ),
+      orchestrator_port.refusing_children(),
       orchestrator_port.unheld,
       orchestrator_port.unreported(),
     )
@@ -5929,6 +5951,121 @@ pub fn a_spawner_drives_the_delegate_agency_through_the_port_test() {
       5000,
     )
     == Ok(Error(remote_spawn.ParentRunEnded))
+  close(harness)
+}
+
+// --- a page of a child's transcript (protocol-change/090) ---------------------
+
+fn page_of(
+  answer: Result(Result(json.JsonValue, remote_spawn.SpawnRefusal), Nil),
+) -> remote_transcript.Page {
+  let assert Ok(Ok(value)) = answer as "the read must be answered with a page"
+  let assert Ok(page) = remote_transcript.decode(value)
+    as "the page must decode"
+  page
+}
+
+// With `transcript = "visible"`, the parent reads its child's branch through
+// the port one bounded page at a time, newest first, and the cursor walks it
+// back to the child's first entry, the brief.
+pub fn a_parent_pages_its_childs_transcript_through_the_port_test() {
+  let harness = start_harness(Settles("the report"))
+  let port =
+    serving_table(harness, spawner_table() <> "transcript = \"visible\"\n")
+  let assert Ok(Ok(spawned)) =
+    orchestrator_port.ask_spawn(
+      port,
+      remote_parent(),
+      site_of("turn-1:tools", 0),
+      0,
+      remote_delegation().parent_tools,
+      remote_request("review auth"),
+      5000,
+    )
+    as "the spawn must be answered"
+  assert settled(harness, spawned.handle)
+
+  let newest =
+    page_of(orchestrator_port.ask_history(
+      port,
+      remote_parent(),
+      spawned.handle,
+      0,
+      1,
+      5000,
+    ))
+  assert newest.child == spawned.handle.strand
+  assert list.length(newest.entries) == 1
+  let assert Some(cursor) = newest.next as "an older entry must remain"
+  let assert [remote_transcript.Said(remote_transcript.Answered, "the report")] =
+    remote_transcript.said(newest)
+
+  // The whole branch in one page is the brief and the answer, oldest first,
+  // and it ends at the child's first entry.
+  let whole =
+    page_of(orchestrator_port.ask_history(
+      port,
+      remote_parent(),
+      spawned.handle,
+      0,
+      50,
+      5000,
+    ))
+  assert whole.next == None
+  let assert [first, ..] = remote_transcript.said(whole)
+  assert first.speaker == remote_transcript.Asked
+  assert string.contains(first.text, "read the file and report")
+
+  // The page below the cursor holds only entries older than the newest one.
+  let older =
+    page_of(orchestrator_port.ask_history(
+      port,
+      remote_parent(),
+      spawned.handle,
+      cursor,
+      50,
+      5000,
+    ))
+  assert list.all(older.entries, fn(record) { record.seq < cursor })
+  assert list.length(older.entries) == list.length(whole.entries) - 1
+  close(harness)
+}
+
+// A strand the parent did not start is not the parent's to read, whatever the
+// spawner's table allows: another parent strand of the same session is
+// refused, and nothing is read.
+pub fn a_parent_cannot_read_a_strand_it_did_not_start_test() {
+  let harness = start_harness(Settles("the report"))
+  let port =
+    serving_table(harness, spawner_table() <> "transcript = \"visible\"\n")
+  let assert Ok(Ok(spawned)) =
+    orchestrator_port.ask_spawn(
+      port,
+      remote_parent(),
+      site_of("turn-1:tools", 0),
+      0,
+      remote_delegation().parent_tools,
+      remote_request("review auth"),
+      5000,
+    )
+    as "the spawn must be answered"
+  let stranger = remote_spawn.Parent(..remote_parent(), strand: "other")
+  let assert Ok(Error(remote_spawn.InvalidArgument(reason:))) =
+    orchestrator_port.ask_history(port, stranger, spawned.handle, 0, 50, 5000)
+    as "a stranger's read must be refused"
+  assert string.contains(reason, "not a child of this parent")
+
+  // The delegate session's own strand is no descendant of the parent either.
+  let main_strand = agent.Handle(..spawned.handle, strand: "main")
+  let assert Ok(Error(remote_spawn.InvalidArgument(..))) =
+    orchestrator_port.ask_history(
+      port,
+      remote_parent(),
+      main_strand,
+      0,
+      50,
+      5000,
+    )
   close(harness)
 }
 
@@ -6002,9 +6139,12 @@ pub fn the_port_refuses_a_spawn_the_spawners_table_forbids_test() {
       ),
     )
     == Ok(
-      Error(remote_spawn.InvalidArgument(
-        reason: "within_ms is above this spawner's max_within_s",
-      )),
+      Error(
+        remote_spawn.InvalidArgument(reason: remote_spawn.over_cap(
+          1_000_000_000,
+          spawners.default_max_within_s * 1000,
+        )),
+      ),
     )
   assert orchestrator_port.ask_spawn(
       port,
@@ -6871,16 +7011,18 @@ pub fn the_spawn_tool_offers_the_orchestrators_the_session_reaches_test() {
   close(alone)
 }
 
-pub fn a_message_to_a_remote_child_is_refused_with_how_it_reports_test() {
+// Phase 1 refused a message to a remote child and told the model it reports
+// through its final answer. Phase 2 delivers it.
+pub fn a_message_to_a_remote_child_is_delivered_not_refused_test() {
   let box = fake_orchestrators.start("box", fake_orchestrators.Up)
   let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
   let caller = caller_on("main", "turn-1:tools", 0)
   let assert Ok(remote) = harness.seam.spawn(caller, on_box("remote"))
-  let assert Error(agent.InvalidArgument(reason:)) =
-    harness.seam.send(caller, remote.strand, "hello", None)
-  assert string.contains(reason, "runs on the orchestrator `box`")
-  assert string.contains(reason, "final answer")
-  assert string.contains(reason, "agent_wait")
+  let sender = caller_on("main", "turn-2:tools", 0)
+  let assert Ok(agent.Steered(..)) =
+    harness.seam.send(sender, remote.strand, "hello", None)
+  assert fake_orchestrators.report(box).sends
+    == [#(agent.call_site_digest(sender), "hello")]
   close(harness)
 }
 
@@ -6922,6 +7064,9 @@ fn a_stub_of(
       parent_tools: ["agent_note", "agent_send"],
       request: remote_spawn.Request(..remote_request("record"), detach:),
       name: "sub:^main/record-0123456789abcdef",
+      glance: None,
+      glance_seen_ms: 0,
+      owed: 0,
       state:,
     ),
   )
@@ -6983,7 +7128,7 @@ pub fn a_stub_only_moves_forward_test() {
 
   // A report of a finish cannot apply to a child nobody has said exists.
   let assert Ok(unmoved) =
-    remote_child.settled(harness.runtime, key, agent.Completed, usage)
+    remote_child.settled(harness.runtime, key, agent.Completed, usage, 0)
   assert unmoved.state == remote_child.Requested
 
   let assert Ok(spawned) =
@@ -6998,7 +7143,7 @@ pub fn a_stub_only_moves_forward_test() {
   assert again.state == spawned.state
 
   let assert Ok(finished) =
-    remote_child.settled(harness.runtime, key, agent.Completed, usage)
+    remote_child.settled(harness.runtime, key, agent.Completed, usage, 0)
   assert finished.state == remote_child.Settled(placed, agent.Completed, usage)
 
   // Nothing late moves a finished child, whether an answer or a refusal.
@@ -7283,5 +7428,1192 @@ pub fn a_fenced_spawn_is_not_claimed_test() {
     )
     == Error(remote_spawn.ParentRunEnded)
   assert process.receive(claimed, 0) == Error(Nil)
+  close(harness)
+}
+
+// --- messages between a parent and a child on another orchestrator ------------
+
+fn parent_of_remote_child() -> remote_spawn.Parent {
+  remote_spawn.Parent(session: parent_session, strand: "main")
+}
+
+fn only_box(name: String) -> fn(String) -> Bool {
+  fn(orchestrator) { orchestrator == name }
+}
+
+// The name of the one stub a parent harness holds, and a handle for it that
+// carries no operation the box would know, which is all the parent's host reads.
+fn stub_child(harness: Harness) -> Handle {
+  let assert [stub] = stubs_of(harness) as "the parent must hold one stub"
+  let #(operation, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 77))
+  agent.Handle(strand: stub.name, operation:)
+}
+
+// A parent harness whose box never answered a spawn, so its stub is `Requested`
+// and has no handle: the state mail can race into.
+fn requested_parent() -> #(Harness, fake_orchestrators.Box, Handle) {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) =
+    start_remote(HoldsParent, [box], fn(config) { config })
+  let _held = open_parent(harness, "turn-1:tools")
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("build"))
+    as "the box is down, so the spawn is left for the drainer"
+  #(harness, box, stub_child(harness))
+}
+
+pub fn mail_is_admitted_against_a_requested_stub_and_steers_the_parent_once_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Requested
+
+  // The mail reaches the parent before the answer to the spawn did, so it is
+  // found by the child's name and not by a handle the parent does not have yet.
+  let delivered =
+    fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "found the bug",
+    )
+  assert delivered == Ok(remote_mail.Delivered)
+
+  // A resend of the same message is answered from the receipt and steers
+  // nothing. The text is the parent's once.
+  assert fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "found the bug",
+    )
+    == Ok(remote_mail.Delivered)
+  let held = strand_attributed(harness)
+  assert list.length(
+      list.filter(held, fn(stored) {
+        string.contains(text_of(stored), "found the bug")
+      }),
+    )
+    == 1
+  assert list.any(held, fn(stored) {
+    sent_by(held, text_of(stored), child.strand)
+  })
+  close(harness)
+}
+
+pub fn an_answer_to_the_spawn_that_arrives_after_the_mail_agrees_with_it_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let assert Ok(remote_mail.Delivered) =
+    fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "early",
+    )
+
+  // The box comes up and the drainer's resend is answered. The stub moves to
+  // `Spawned` and the receipt of the mail it already admitted is untouched.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let _backlog = drain(harness)
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Spawned(_) = stub.state
+  assert fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "early",
+    )
+    == Ok(remote_mail.Delivered)
+  close(harness)
+}
+
+pub fn mail_into_an_idle_parent_is_declined_and_the_refusal_is_the_receipt_test() {
+  // No run is open on the parent: a finished parent is never woken for a
+  // child's message.
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("build"))
+  let child = stub_child(harness)
+  let inbox = agency.child_inbox(harness.config)
+  let assert Ok(remote_mail.Declined(reason:)) =
+    fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "too late",
+    )
+  assert string.contains(reason, "no run open")
+  assert strand_attributed(harness) == []
+
+  // The refusal is the receipt: the id is spent, so a resend is answered with
+  // the same refusal even if a run has opened since.
+  let _held = open_parent(harness, "turn-2:tools")
+  assert fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "too late",
+    )
+    == Ok(remote_mail.Declined(reason:))
+  assert strand_attributed(harness) == []
+  close(harness)
+}
+
+pub fn mail_is_refused_from_the_wrong_orchestrator_an_unknown_child_or_a_reused_id_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+
+  // The stub names `box`. A message that came from any other orchestrator is
+  // refused, and so is one about a child the parent never asked for.
+  assert inbox.mail(
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "hello",
+      only_box("desk"),
+    )
+    == Error(remote_mail.OriginMismatch)
+  assert fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      agent.Handle(..child, strand: "sub:^main/nobody-0123456789abcdef"),
+      "m1",
+      "hello",
+    )
+    == Error(remote_mail.UnknownChild)
+  assert strand_attributed(harness) == []
+
+  // An id is spent by what it carried: the same id with other text is not
+  // answered with the first message's receipt.
+  let assert Ok(remote_mail.Delivered) =
+    fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m2",
+      "first",
+    )
+  let assert Error(remote_mail.StoreFailure(reason:)) =
+    fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m2",
+      "second",
+    )
+  assert string.contains(reason, "different content")
+  assert !remote_mail.retryable(remote_mail.StoreFailure(reason:))
+  close(harness)
+}
+
+pub fn the_newest_glance_is_kept_on_the_stub_and_an_older_one_is_ignored_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let operation = ids.op_id_to_string(child.operation)
+  let glance_at = fn(at, title) {
+    glance.Glance(operation:, title:, summary: "", at:, tokens: 0)
+  }
+  assert inbox.progress(
+      parent_of_remote_child(),
+      child,
+      glance_at(2000, "newer"),
+      only_box(box.name),
+    )
+    == Ok(Nil)
+
+  // An older glance, and one that is repeated, change nothing.
+  assert inbox.progress(
+      parent_of_remote_child(),
+      child,
+      glance_at(1000, "older"),
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  let assert [stub] = stubs_of(harness)
+  assert stub.glance == Some(glance_at(2000, "newer"))
+  assert stub.state == remote_child.Requested
+
+  // The answer to the spawn leaves the glance where it was.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let _backlog = drain(harness)
+  let assert [moved] = stubs_of(harness)
+  let assert remote_child.Spawned(_) = moved.state
+  assert moved.glance == Some(glance_at(2000, "newer"))
+  assert inbox.progress(
+      parent_of_remote_child(),
+      child,
+      glance_at(3000, "x"),
+      only_box("desk"),
+    )
+    == Error(remote_mail.OriginMismatch)
+  close(harness)
+}
+
+// --- a child's request for more authority (protocol-change/089) -----------------
+
+fn a_request(seq: Int, status: String) -> protocol.EscalationRecord {
+  protocol.EscalationRecord(
+    escalation_id: "policy-ab",
+    op: "op-1",
+    strand: "sub:^main/build-0123456789abcdef",
+    status:,
+    tool: "bash",
+    action: "d1",
+    preview: "make",
+    asked: 1,
+    denial: None,
+    seq:,
+    origin: None,
+    placement: None,
+    admitted: Some([]),
+  )
+}
+
+fn filed_request(harness: Harness) -> Option(protocol.EscalationRecord) {
+  let assert Ok(found) =
+    remote_escalation_store.find(harness.runtime, "box/policy-ab")
+    as "the filed request must be readable"
+  found
+}
+
+pub fn a_request_is_filed_against_a_requested_stub_under_its_orchestrator_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Requested
+
+  // The request arrives before the answer to the `Spawn`, keyed by the child's
+  // name and found through the stub the parent wrote first.
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      a_request(3, "pending"),
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  let assert Some(filed) = filed_request(harness)
+  assert filed.escalation_id == "box/policy-ab"
+  assert filed.placement == Some("box")
+  assert filed.seq == 3
+
+  // The answer to the spawn agrees with it and leaves it where it was.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let _backlog = drain(harness)
+  let assert Some(still) = filed_request(harness)
+  assert still.seq == 3
+  close(harness)
+}
+
+pub fn the_newest_seq_wins_and_an_older_request_never_replaces_a_decided_one_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let send = fn(seq, status) {
+    inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      a_request(seq, status),
+      only_box(box.name),
+    )
+  }
+  assert send(3, "pending") == Ok(Nil)
+  assert send(4, "approved") == Ok(Nil)
+
+  // A late copy of the pending record, and a repeat of the decided one.
+  assert send(3, "pending") == Ok(Nil)
+  assert send(4, "approved") == Ok(Nil)
+  let assert Some(filed) = filed_request(harness)
+  assert filed.seq == 4
+  assert filed.status == "approved"
+  close(harness)
+}
+
+pub fn a_request_from_the_wrong_node_or_about_an_unknown_child_is_refused_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      a_request(3, "pending"),
+      only_box("desk"),
+    )
+    == Error(remote_mail.OriginMismatch)
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      agent.Handle(..child, strand: "sub:^main/stranger"),
+      a_request(3, "pending"),
+      only_box(box.name),
+    )
+    == Error(remote_mail.UnknownChild)
+  assert filed_request(harness) == None
+  close(harness)
+}
+
+pub fn a_finished_child_takes_its_filed_requests_with_it_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      protocol.EscalationRecord(..a_request(3, "pending"), strand: child.strand),
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  let assert Some(_) = filed_request(harness)
+
+  // The child is started and then finishes: the join's report settles the stub,
+  // and the card for a call that can no longer be answered clears.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let _backlog = drain(harness)
+  assert option.is_some(filed_request(harness))
+  let assert Ok([kept]) = remote_child.all(harness.runtime)
+  let assert Ok(_) =
+    remote_child.settled(
+      harness.runtime,
+      kept.key,
+      agent.Completed,
+      remote_spawn.ChildUsage(
+        input: 0,
+        output: 0,
+        cache_read: 0,
+        cache_write: 0,
+        cost: 0.0,
+      ),
+      0,
+    )
+  assert filed_request(harness) == None
+  close(harness)
+}
+
+pub fn a_refused_spawn_takes_its_filed_requests_with_it_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      protocol.EscalationRecord(..a_request(3, "pending"), strand: child.strand),
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  fake_orchestrators.set_mode(box, fake_orchestrators.Refuses(reason: "no"))
+  let _backlog = drain(harness)
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Refused("no")
+  assert filed_request(harness) == None
+  close(harness)
+}
+
+fn spawner_link() -> delegate_outbox.SpawnerLink {
+  delegate_outbox.SpawnerLink(
+    parent_session:,
+    spawner: "laptop",
+    node: "laptop@100.64.0.5",
+    ceiling: None,
+  )
+}
+
+// A delegate session that knows where its parent is, and the doorbell it rings.
+fn start_linked(provider: Provider) -> #(Harness, Subject(Nil)) {
+  let rung = process.new_subject()
+  let harness =
+    start_harness_with(provider, fn(config) {
+      agency.Config(
+        ..config,
+        spawner: Some(spawner_link()),
+        upward_queued: fn() { process.send(rung, Nil) },
+      )
+    })
+  #(harness, rung)
+}
+
+fn child_caller(spawned: remote_spawn.Spawned, label: String) -> Caller {
+  Caller(
+    ..caller_on(spawned.handle.strand, label, 0),
+    operation: spawned.handle.operation,
+  )
+}
+
+pub fn a_remote_childs_upward_send_is_a_row_and_answers_queued_test() {
+  let #(harness, rung) = start_linked(Hangs)
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  let assert Ok(Nil) = process.receive(rung, 1000)
+    as "a new child rings the drainer, which has glances to send"
+  let caller = child_caller(spawned, "child-turn:tools")
+
+  // The send does not go through peer mail: no link is written, the row is the
+  // whole of it, and the model is told the message is queued.
+  assert harness.seam.send(caller, "^main", "all done", None)
+    == Ok(agent.Queued)
+  let assert Ok(Nil) = process.receive(rung, 1000) as "a row rings the drainer"
+  let assert Ok([#(key, row)]) = delegate_outbox.mail_rows(harness.runtime)
+  assert key == delegate_outbox.mail_key(row.id)
+  assert row.text == "all done"
+  assert row.parent_strand == "main"
+  assert row.child == spawned.handle
+  assert row.state == delegate_outbox.Pending
+
+  // The same call replayed finds its own row. A different message under the
+  // same id would be refused, and a new call is a new row.
+  assert harness.seam.send(caller, "^main", "all done", None)
+    == Ok(agent.Queued)
+  let assert Ok([_only]) = delegate_outbox.mail_rows(harness.runtime)
+  assert harness.seam.send(caller, "^main", "something else", None)
+    == Error(agent.PlaneFailed(
+      reason: "the message id was already used for a different message",
+    ))
+  let second = Caller(..caller, source_index: 1)
+  assert harness.seam.send(second, "^main", "and more", None)
+    == Ok(agent.Queued)
+  let assert Ok([_first, _second]) = delegate_outbox.mail_rows(harness.runtime)
+
+  // `within_ms` has no meaning for an upward send, as for an idle one.
+  assert harness.seam.send(second, "^main", "x", Some(5000))
+    == Error(agent.InvalidArgument("within_ms applies only to an idle child"))
+  close(harness)
+}
+
+pub fn without_a_spawner_link_an_upward_send_is_refused_as_in_phase_one_test() {
+  let harness = start_harness(Hangs)
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  let caller = child_caller(spawned, "child-turn:tools")
+  let assert Error(agent.ParentRunEnded(..)) =
+    harness.seam.send(caller, "^main", "all done", None)
+  assert delegate_outbox.mail_rows(harness.runtime) == Ok([])
+  close(harness)
+}
+
+// --- a send into a child that runs elsewhere ----------------------------------
+
+fn spawn_on_box(harness: Harness, label: String) -> agent.Spawned {
+  let assert Ok(spawned) =
+    harness.seam.spawn(caller_on("main", label, 0), on_box("build"))
+    as "the box answers the spawn"
+  spawned
+}
+
+pub fn a_send_to_a_remote_child_reaches_the_box_once_and_lands_as_it_says_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let spawned = spawn_on_box(harness, "turn-1:tools")
+  let caller = caller_on("main", "turn-2:tools", 0)
+
+  let assert Ok(agent.Steered(..)) =
+    harness.seam.send(caller, spawned.strand, "also check the tests", None)
+  let seen = fake_orchestrators.report(box)
+  assert list.length(seen.sends) == 1
+  let assert [#(id, text)] = seen.sends
+  assert id == agent.call_site_digest(caller)
+  assert text == "also check the tests"
+
+  // The same call site again is the same message: the box answers from its
+  // receipt, and the parent reads it as accepted without a landing.
+  assert harness.seam.send(caller, spawned.strand, "also check the tests", None)
+    == Ok(agent.Queued)
+
+  // A handle for a later run of the same child is the same child. The wait
+  // finds the stub by strand.
+  let #(later, _generator) =
+    ids.mint_op(ids.generator(clock.fixed(at: 5), seed: 9))
+  assert agency.owns(harness.runtime, ancestor: "main", strand: spawned.strand)
+  let _ = later
+
+  // `within_ms` is not offered for a child that runs elsewhere.
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.send(
+      caller_on("main", "turn-3:tools", 0),
+      spawned.strand,
+      "x",
+      Some(1000),
+    )
+  assert string.contains(reason, "another orchestrator")
+  close(harness)
+}
+
+pub fn an_unreachable_box_leaves_a_row_that_the_drainer_resends_until_answered_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, queued) = start_remote(Hangs, [box], fn(config) { config })
+  let spawned = spawn_on_box(harness, "turn-1:tools")
+  let assert Ok(Nil) = process.receive(queued, 100)
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+  let caller = caller_on("main", "turn-2:tools", 0)
+
+  // Nobody answers: the model is told the message is queued, and the row is the
+  // promise that makes that true.
+  assert harness.seam.send(caller, spawned.strand, "hello", None)
+    == Ok(agent.Queued)
+  let assert Ok(Nil) = process.receive(queued, 100)
+    as "the drainer is rung for the row"
+  let id = agent.call_site_digest(caller)
+  let assert Ok([row]) = remote_send.all(harness.runtime)
+  assert row.id == id
+  assert row.text == "hello"
+  assert row.orchestrator == "box"
+  assert row.child == spawned.handle
+
+  // A pass while the box is down keeps the row and is owed.
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  assert remote_send.all(harness.runtime) == Ok([row])
+
+  // The box comes back: the next pass delivers, the row is removed, and the
+  // drainer has nothing left to attempt once the child's record is settled.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let _backlog = drain(harness)
+  assert remote_send.all(harness.runtime) == Ok([])
+  let delivered = fake_orchestrators.report(box).sends
+  assert list.contains(delivered, #(id, "hello"))
+  close(harness)
+}
+
+pub fn a_refusal_of_a_queued_send_is_an_answer_and_removes_the_row_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let spawned = spawn_on_box(harness, "turn-1:tools")
+  fake_orchestrators.set_mode(box, fake_orchestrators.Down)
+  let assert Ok(agent.Queued) =
+    harness.seam.send(
+      caller_on("main", "turn-2:tools", 0),
+      spawned.strand,
+      "hello",
+      None,
+    )
+  fake_orchestrators.set_mode(box, fake_orchestrators.Refuses("no such child"))
+  let _backlog = drain(harness)
+  assert remote_send.all(harness.runtime) == Ok([])
+  close(harness)
+}
+
+pub fn a_send_to_a_remote_child_the_parent_never_spawned_is_not_addressable_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Error(agent.NotAddressable(..)) =
+    harness.seam.send(
+      caller_on("main", "turn-1:tools", 0),
+      "sub:^main/nobody-0123456789abcdef",
+      "hello",
+      None,
+    )
+  assert fake_orchestrators.report(box).sends == []
+  close(harness)
+}
+
+pub fn the_drainer_votes_for_the_connection_while_a_child_may_be_running_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let votes = process.new_subject()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(
+        ..config,
+        remote: fake_orchestrators.voting(
+          parent_session,
+          [box],
+          fn() { True },
+          votes,
+        ),
+      )
+    })
+  let _owed = drain(harness)
+  assert process.receive(votes, 100) == Ok(#("box", remote_reach.Drop))
+    as "a session with no stub needs no connection"
+
+  // A spawn the box has not answered is owed, so the session holds the
+  // connection up; a pass after the box answers still holds it while the child
+  // runs.
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("build"))
+  let _owed = drain(harness)
+  assert process.receive(votes, 100) == Ok(#("box", remote_reach.Hold))
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let _owed = drain(harness)
+  assert process.receive(votes, 100) == Ok(#("box", remote_reach.Hold))
+  let _owed = drain(harness)
+  assert process.receive(votes, 100) == Ok(#("box", remote_reach.Hold))
+  close(harness)
+}
+
+// --- a send into a child that runs on this orchestrator -----------------------
+
+fn landing_of(
+  answer: Result(json.JsonValue, remote_spawn.SpawnRefusal),
+) -> remote_mail.Landing {
+  let assert Ok(value) = answer as "the send must be admitted"
+  let assert Ok(landing) = remote_mail.decode_landing(value)
+  landing
+}
+
+pub fn a_send_into_a_running_child_steers_it_once_and_a_repeat_is_admitted_test() {
+  let harness = start_harness(Hangs)
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  let send = fn(id, text) {
+    agency.delegate_send(
+      harness.config,
+      remote_parent(),
+      spawned.handle,
+      id,
+      text,
+    )
+  }
+  let assert remote_mail.Steered(..) = landing_of(send("s1", "also the tests"))
+  assert landing_of(send("s1", "also the tests")) == remote_mail.Admitted
+
+  // The child holds the message once, attributed to the parent reference.
+  let held = strand_attributed(harness)
+  assert list.length(
+      list.filter(held, fn(stored) {
+        string.contains(text_of(stored), "also the tests")
+      }),
+    )
+    == 1
+  assert list.any(held, fn(stored) { sent_by(held, text_of(stored), "^main") })
+
+  // An id is spent by what it carried.
+  let assert Error(remote_spawn.InvalidArgument(reason:)) =
+    send("s1", "something else")
+  assert string.contains(reason, "different content")
+
+  // A child the parent did not start is not the parent's to address.
+  let assert Error(remote_spawn.InvalidArgument(..)) =
+    agency.delegate_send(
+      harness.config,
+      remote_spawn.Parent(..remote_parent(), strand: "other"),
+      spawned.handle,
+      "s2",
+      "x",
+    )
+  close(harness)
+}
+
+pub fn a_send_into_an_idle_child_starts_a_detached_run_within_its_budget_test() {
+  // One clock for the session and the Agency, as in production, so the time left
+  // is comparable with the budget.
+  let shared = counting_clock(1_756_000_000_000, 3)
+  let harness =
+    start_harness_on(
+      Settles("done"),
+      fn(config) { config },
+      shared,
+      shared,
+      fn(sess) { sess },
+    )
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert settled(harness, spawned.handle)
+
+  // The child's first run is over. The send starts another, which belongs to no
+  // run of the parent's and whose deadline is the budget the spawn was given.
+  let landing =
+    landing_of(agency.delegate_send(
+      harness.config,
+      remote_parent(),
+      spawned.handle,
+      "s1",
+      "one more thing",
+    ))
+  let assert remote_mail.Started(operation:, remaining_ms: Some(remaining)) =
+    landing
+  assert remaining > 0
+  assert remaining <= 600_000
+  let run =
+    run_for(harness, agent.Handle(strand: spawned.handle.strand, operation:))
+  assert run.owner == None
+
+  // The run ends where the spawn's deadline fell, and not a budget later.
+  assert option.is_some(run.deadline)
+  assert run.deadline == run_for(harness, spawned.handle).deadline
+
+  // A repeat is the receipt, and starts no second run.
+  assert landing_of(agency.delegate_send(
+      harness.config,
+      remote_parent(),
+      spawned.handle,
+      "s1",
+      "one more thing",
+    ))
+    == remote_mail.Admitted
+  close(harness)
+}
+
+pub fn repeated_sends_never_move_a_childs_deadline_test() {
+  let shared = counting_clock(1_756_000_000_000, 3)
+  let harness =
+    start_harness_on(
+      Settles("done"),
+      fn(config) { config },
+      shared,
+      shared,
+      fn(sess) { sess },
+    )
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert settled(harness, spawned.handle)
+  let original = run_for(harness, spawned.handle).deadline
+  let send = fn(id) {
+    landing_of(agency.delegate_send(
+      harness.config,
+      remote_parent(),
+      spawned.handle,
+      id,
+      "again " <> id,
+    ))
+  }
+  let assert remote_mail.Started(operation: first, ..) = send("s1")
+  let strand = spawned.handle.strand
+
+  // The second send must find the child idle again, or it steers the run the
+  // first one started. That run settles at once under this provider, but only
+  // once its driver has handled the answer, so the test waits for it.
+  assert settled(harness, agent.Handle(strand:, operation: first))
+  let assert remote_mail.Started(operation: second, ..) = send("s2")
+  assert run_for(harness, agent.Handle(strand:, operation: first)).deadline
+    == original
+  assert run_for(harness, agent.Handle(strand:, operation: second)).deadline
+    == original
+  close(harness)
+}
+
+pub fn a_send_after_the_childs_deadline_is_refused_and_revives_nothing_test() {
+  let shared = counting_clock(1_756_000_000_000, 3)
+  let harness =
+    start_harness_on(
+      Settles("done"),
+      fn(config) { config },
+      shared,
+      shared,
+      fn(sess) { sess },
+    )
+  let assert Ok(spawned) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_delegation(),
+      site_of("turn-1:tools", 0),
+      remote_spawn.Request(..remote_request("short"), within_ms: Some(1)),
+    )
+  assert settled(harness, spawned.handle)
+
+  // The clock has moved past the one millisecond the child was given.
+  let assert Error(remote_spawn.StoreFailure(reason:)) =
+    agency.delegate_send(
+      harness.config,
+      remote_parent(),
+      spawned.handle,
+      "late",
+      "too late",
+    )
+  assert string.contains(reason, "deadline has passed")
+  close(harness)
+}
+
+pub fn a_send_to_a_remote_child_past_its_deadline_is_refused_by_the_parent_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let spawned = spawn_on_box(harness, "turn-1:tools")
+
+  // The stub records the deadline on this session's clock; make it the past.
+  let assert [kept] = list.map(stubs_of(harness), fn(stub) { stub })
+  let assert remote_child.Spawned(placed) = kept.state
+  let assert Ok(entries) = remote_child.all(harness.runtime)
+  let assert [entry] = entries
+  let expired =
+    remote_child.Stub(
+      ..entry.stub,
+      state: remote_child.Spawned(remote_child.Placed(..placed, deadline_ms: 1)),
+    )
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      entry.key,
+      remote_child.encode(expired),
+    )
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.send(
+      caller_on("main", "turn-2:tools", 0),
+      spawned.strand,
+      "hello",
+      None,
+    )
+  assert string.contains(reason, "past its deadline")
+  assert fake_orchestrators.report(box).sends == []
+  close(harness)
+}
+
+pub fn a_send_to_a_child_still_starting_says_so_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Down)
+  let #(harness, _queued) = start_remote(Hangs, [box], fn(config) { config })
+  let assert Error(agent.RemoteSilent(..)) =
+    harness.seam.spawn(caller_on("main", "turn-1:tools", 0), on_box("build"))
+  let child = stub_child(harness)
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.send(
+      caller_on("main", "turn-2:tools", 0),
+      child.strand,
+      "hello",
+      None,
+    )
+  assert string.contains(reason, "still starting")
+  close(harness)
+}
+
+// --- mail a finished child still owes -----------------------------------------
+
+pub fn a_join_counts_the_mail_a_finished_child_has_not_delivered_test() {
+  let #(harness, _rung) = start_linked(Settles("done"))
+  let spawned = remote_spawned(harness, "turn-1:tools", "review auth")
+  assert settled(harness, spawned.handle)
+  let caller = child_caller(spawned, "child-turn:tools")
+  let assert Ok(agent.Queued) =
+    harness.seam.send(caller, "^main", "last words", None)
+
+  // The child is finished and its mail is still on the box: the join says so.
+  let owed = fn() {
+    let assert Ok([remote_spawn.Ready(owed:, ..)]) =
+      agency.delegate_join(harness.config, remote_parent(), [spawned.handle], 0)
+    owed
+  }
+  assert owed() == 1
+
+  // The laptop answers, the row settles, and the join says nothing is owed.
+  let assert Ok([#(key, row)]) = delegate_outbox.mail_rows(harness.runtime)
+  let assert Ok(Nil) =
+    delegate_outbox.settle_mail(
+      harness.runtime,
+      key,
+      delegate_outbox.Mail(
+        ..row,
+        state: delegate_outbox.Answered(remote_mail.Delivered),
+      ),
+    )
+  assert owed() == 0
+  close(harness)
+}
+
+pub fn the_drainer_holds_the_link_while_a_finished_child_owes_mail_test() {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let votes = process.new_subject()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(
+        ..config,
+        remote: fake_orchestrators.voting(
+          parent_session,
+          [box],
+          fn() { True },
+          votes,
+        ),
+      )
+    })
+  let spawned = spawn_on_box(harness, "turn-1:tools")
+  fake_orchestrators.settle(box, spawned.handle)
+  fake_orchestrators.set_owed(box, 2)
+
+  // The child finished, and the box says two messages are still undelivered, so
+  // the stub is settled and the connection is still wanted.
+  assert drain(harness) == peer_outbox_drain.Owed(peer_outbox_drain.Quick)
+  let assert [stub] = stubs_of(harness)
+  let assert remote_child.Settled(..) = stub.state
+  assert stub.owed == 2
+  let _ = drain(harness)
+  let assert Ok(#("box", remote_reach.Hold)) = last_vote(votes)
+
+  // The box delivers: a later join reads zero, the pass clears and the vote drops.
+  fake_orchestrators.set_owed(box, 0)
+  assert drain(harness) == peer_outbox_drain.Clear
+  let assert [after] = stubs_of(harness)
+  assert after.owed == 0
+  let _ = drain(harness)
+  assert last_vote(votes) == Ok(#("box", remote_reach.Drop))
+  close(harness)
+}
+
+fn last_vote(
+  votes: Subject(#(String, remote_reach.Vote)),
+) -> Result(#(String, remote_reach.Vote), Nil) {
+  case process.receive(votes, 0) {
+    Ok(vote) ->
+      case last_vote(votes) {
+        Ok(later) -> Ok(later)
+        Error(Nil) -> Ok(vote)
+      }
+    Error(Nil) -> Error(Nil)
+  }
+}
+
+pub fn a_glance_from_another_machine_is_cut_to_a_local_glances_bounds_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let long = string.repeat("é", 300)
+  let seen =
+    glance.Glance(
+      operation: ids.op_id_to_string(child.operation),
+      title: long,
+      summary: long,
+      at: 5000,
+      tokens: 1,
+    )
+  assert inbox.progress(
+      parent_of_remote_child(),
+      child,
+      seen,
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  let assert [stub] = stubs_of(harness)
+  let assert Some(kept) = stub.glance
+  assert string.byte_size(kept.title) <= glance.max_title_bytes
+  assert string.byte_size(kept.summary) <= glance.max_summary_bytes
+  assert string.starts_with(long, kept.title)
+  close(harness)
+}
+
+pub fn a_laptop_that_cannot_reach_its_holder_answers_busy_not_a_final_failure_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  close(harness)
+
+  // The holder is gone with the session: nothing was decided, so the box is told
+  // to ask again.
+  let assert Error(busy) =
+    fake_orchestrators.deliver_to_laptop(
+      box,
+      inbox,
+      parent_of_remote_child(),
+      child,
+      "m1",
+      "hello",
+    )
+  assert remote_mail.retryable(busy)
+}
+
+// --- depth across machines (protocol-change/084, phase 4) --------------------
+//
+// The harness is a box's delegate session whose spawner allows a depth of two
+// and lists `third` in `spawn_on`. Two orchestrators are configured, `third` and
+// `fourth`, so the narrowing has one to leave out. A child the laptop started
+// here starts children of its own: on `third`, with this session as the parent
+// session, and locally. The daemon sets the Agency's cap to the spawner's
+// `max_depth` and the reach to `spawn_on` (`client/daemon/main`); here the two
+// are set by hand to the same values.
+
+// A spawner's terms that let a child spawn: a depth of two and a ceiling that
+// holds the spawn tool.
+fn deeper_terms() -> remote_spawn.Terms {
+  remote_spawn.Terms(
+    ..remote_terms(),
+    ceiling: ["agent_note", "agent_send", "agent_spawn", "bash"],
+    max_depth: 2,
+  )
+}
+
+// A delegate session two levels deep whose reach is narrowed to `third`. The
+// base reach would not be offered, which shows that the policy and not the
+// owner test answers whether the session may spawn elsewhere.
+fn start_deep(boxes: List(fake_orchestrators.Box)) -> #(Harness, Subject(Nil)) {
+  let queued = process.new_subject()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(
+        ..config,
+        depth_cap: 2,
+        remote: remote_reach.restricted(
+          fake_orchestrators.reach(parent_session, boxes, fn() { False }),
+          ["third"],
+        ),
+        remote_queued: fn() { process.send(queued, Nil) },
+      )
+    })
+  #(harness, queued)
+}
+
+// A child the laptop's main strand started here under the deeper terms, with no
+// narrowing of its tools.
+fn deep_child(harness: Harness, label: String) -> remote_spawn.Spawned {
+  let assert Ok(child) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_spawn.Delegation(..remote_delegation(), terms: deeper_terms()),
+      site_of(label, 0),
+      remote_request("lead"),
+    )
+    as "the delegate child is admitted"
+  child
+}
+
+fn on_orchestrator(purpose: String, name: String) -> agent.SpawnRequest {
+  agent.SpawnRequest(..a_spawn(purpose), on: Some(name))
+}
+
+pub fn a_delegate_child_spawns_on_the_orchestrator_its_spawner_allows_test() {
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let fourth = fake_orchestrators.start("fourth", fake_orchestrators.Up)
+  let #(harness, _queued) = start_deep([third, fourth])
+
+  // Under a depth of two the child keeps the spawn tool the ceiling gave it,
+  // which a local child would not by default.
+  let child = deep_child(harness, "turn-1:tools")
+  assert list.contains(child.tools, "agent_spawn")
+  let caller = child_caller(child, "child-turn:tools")
+
+  // Its spawn on `third` is sent with this session as the parent session and
+  // the depth of the child's own cell, so the third orchestrator judges the
+  // grandchild as depth two.
+  let assert Ok(grandchild) =
+    harness.seam.spawn(caller, on_orchestrator("dig", "third"))
+  let seen = fake_orchestrators.report(third)
+  let assert [#(depth, _request)] = seen.asked
+  assert depth == 1
+  let assert [stub] = stubs_of(harness)
+  assert stub.orchestrator == "third"
+  assert stub.strand == child.handle.strand
+  let assert remote_child.Spawned(placed:) = stub.state
+  assert grandchild.handle == placed.handle
+
+  // `fourth` is configured but not in `spawn_on`, so it is neither offered nor
+  // asked.
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 1),
+      on_orchestrator("dig", "fourth"),
+    )
+  assert string.contains(reason, "not a configured orchestrator")
+  assert fake_orchestrators.report(fourth).spawns == []
+  assert harness.config.remote.orchestrators == ["third"]
+
+  // The session's release will owe `third`: its stubs name it.
+  let assert Ok(kept) = remote_child.all(harness.runtime)
+  assert remote_child.holders(kept) == ["third"]
+  close(harness)
+}
+
+pub fn a_grandchild_past_the_depth_limit_is_refused_on_both_sides_test() {
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let #(harness, _queued) = start_deep([third])
+
+  // A child whose remote parent stands at depth one is itself at the limit of
+  // two: it holds no spawn tool, and a spawn it asks for anyway is refused here,
+  // before anything is sent.
+  let assert Ok(leaf) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_spawn.Delegation(
+        ..remote_delegation(),
+        depth: 1,
+        terms: deeper_terms(),
+      ),
+      site_of("turn-1:tools", 0),
+      remote_request("leaf"),
+    )
+  assert !list.contains(leaf.tools, "agent_spawn")
+  assert harness.seam.spawn(
+      child_caller(leaf, "leaf-turn:tools"),
+      on_orchestrator("deeper", "third"),
+    )
+    == Error(agent.DepthCapReached(depth: 2))
+  assert fake_orchestrators.report(third).spawns == []
+
+  // The third orchestrator judges a grandchild by its own spawner's limit: a
+  // `Spawn` from a parent at depth two is refused there when the limit is two.
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_spawn.Delegation(
+        ..remote_delegation(),
+        depth: 2,
+        terms: deeper_terms(),
+      ),
+      site_of("turn-2:tools", 0),
+      remote_request("too deep"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 2))
+  close(harness)
+}
+
+pub fn a_grandchilds_deadline_is_clamped_to_what_its_parent_has_left_test() {
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let #(harness, _queued) = start_deep([third])
+  let child = deep_child(harness, "turn-1:tools")
+  let assert Some(parent_cell) = cell_for(harness, child.handle.strand)
+  let assert Some(parent_deadline) = parent_cell.deadline
+  let caller = child_caller(child, "child-turn:tools")
+  let ten_hours = 36_000_000
+
+  // On the third orchestrator: a budget longer than the parent's is cut to what
+  // the parent has left, and a spawn that names none is sent that remainder,
+  // since the third orchestrator's default could be longer.
+  let assert Ok(_) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(
+        ..on_orchestrator("long", "third"),
+        within_ms: Some(ten_hours),
+      ),
+    )
+  let assert Ok(_) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 1),
+      on_orchestrator("default", "third"),
+    )
+  let assert [#(_, long), #(_, unnamed)] =
+    fake_orchestrators.report(third).asked
+  let assert Some(long_ms) = long.within_ms
+  let assert Some(unnamed_ms) = unnamed.within_ms
+  assert long_ms > 0 && long_ms <= remote_terms().default_within_ms
+  assert unnamed_ms > 0 && unnamed_ms <= remote_terms().default_within_ms
+
+  // A shorter budget is kept as it was asked.
+  let assert Ok(_) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 2),
+      agent.SpawnRequest(
+        ..on_orchestrator("short", "third"),
+        within_ms: Some(1000),
+      ),
+    )
+  let assert [_, _, #(_, short)] = fake_orchestrators.report(third).asked
+  assert short.within_ms == Some(1000)
+
+  // In the delegate session itself the grandchild's deadline is no later than
+  // its parent's.
+  let assert Ok(local) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 3),
+      agent.SpawnRequest(..a_spawn("local long"), within_ms: Some(ten_hours)),
+    )
+  let assert Some(local_cell) = cell_for(harness, local.strand)
+  let assert Some(local_deadline) = local_cell.deadline
+  assert local_deadline <= parent_deadline
+  close(harness)
+}
+
+pub fn a_released_delegate_session_admits_no_new_stub_test() {
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let #(harness, _queued) = start_deep([third])
+  let child = deep_child(harness, "turn-1:tools")
+  let caller = child_caller(child, "child-turn:tools")
+  let assert Ok(_) =
+    harness.seam.spawn(caller, on_orchestrator("before", "third"))
+
+  // The release writes the fence and stops the child, which then starts
+  // nothing on another orchestrator. The stub made before stays, for the
+  // registry to read when it deletes the session.
+  let endpoint = agency.delegate_endpoint(harness.config)
+  let assert Ok(_stopped) = endpoint.release()
+  let assert Error(agent.ParentRunEnded(..)) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 1),
+      on_orchestrator("after", "third"),
+    )
+  assert list.length(stubs_of(harness)) == 1
   close(harness)
 }

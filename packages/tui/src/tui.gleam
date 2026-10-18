@@ -100,6 +100,7 @@ import session_view/model.{
 import session_view/move_candidates
 import session_view/msg as session_msg
 import session_view/queue_request
+import session_view/remote_transcript
 import session_view/session_channel
 import session_view/shared_set
 import session_view/step as session_step
@@ -693,6 +694,7 @@ pub fn new_model_with_clock(
       answer: "",
       worktree: worktree_view.new(),
       context: context_view.new(),
+      peek: remote_transcript.Closed,
       btw: btw.new(),
       completion: completion_summary.new(),
       completion_owner: "",

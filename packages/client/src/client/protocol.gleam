@@ -87,6 +87,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/btw
+import session_view/remote_agent.{type RemoteAgent}
 import session_view/remote_usage.{type RemoteUsage}
 import storage/catalogue
 
@@ -297,6 +298,13 @@ pub type Command {
   /// Observes one strand's context without running hooks or a model.
   ContextGet(strand: String)
 
+  /// Reads one page of the transcript of a child that runs on another
+  /// orchestrator (protocol-change/090). `child` is the child's strand name
+  /// there, as the session's `remote_children` lists it, and `before` is the
+  /// sequence the page reads below, zero for the newest page. The reply is a
+  /// pending `child_history` board, and the page or the failure is pushed.
+  ChildHistoryGet(child: String, before: Int)
+
   /// An attachment-local side query, never a main operation.
   Btw(strand: String, action: btw.Action)
 
@@ -471,6 +479,15 @@ pub type Snapshot {
   /// Bounded asynchronous context accounting.
   ContextSnapshot(board: JsonValue)
 
+  /// The session's children on other orchestrators, as their stubs stand
+  /// (protocol-change/090). Pushed once when a client subscribes and again
+  /// whenever a stub changes.
+  RemoteChildrenSnapshot(children: List(RemoteAgent))
+
+  /// A pending, ready or failed page of a remote child's transcript
+  /// (protocol-change/090), with the request it answers.
+  ChildHistorySnapshot(board: JsonValue)
+
   /// The requesting attachment's private side-conversation board.
   BtwSnapshot(board: JsonValue)
 
@@ -644,6 +661,14 @@ pub type EscalationRecord {
     seq: Int,
     /// Historical author of the winning decision, if any.
     origin: Option(message.Origin),
+    /// The orchestrator the question was raised on, when it is not this one
+    /// (protocol-change/089). A record with a placement is a child's request on
+    /// another orchestrator, and its `escalation_id` is `<placement>/<id there>`.
+    placement: Option(String),
+    /// For a record with a placement: the part of `denial.wanted` that the
+    /// spawner's approval ceiling admits, which is all an approval may carry.
+    /// `None` on a record raised here.
+    admitted: Option(List(Grant)),
   )
 }
 
@@ -1075,6 +1100,13 @@ fn command_body(command: Command) -> #(String, JsonValue) {
     ContextGet(strand:) -> #(
       "context",
       json.Object([#("strand", json.String(strand))]),
+    )
+    ChildHistoryGet(child:, before:) -> #(
+      "child_history",
+      json.Object([
+        #("child", json.String(child)),
+        #("before", json.Int(before)),
+      ]),
     )
     WorktreeDiffGet -> #("worktree_diff", json.Object([]))
     LiveJobsGet(strand:) -> #(
@@ -1555,6 +1587,20 @@ fn decode_command_body(
       use strand <- result.try(required_string(fields, "strand"))
       Ok(ContextGet(strand:))
     }
+
+    // The child is named as the session's remote children list names it, and
+    // the gateway finds its stub by that name, so nothing here is trusted
+    // beyond its shape. The cursor is a sequence or zero.
+    "child_history" -> {
+      use fields <- result.try(body_fields(body))
+      use child <- result.try(required_string(fields, "child"))
+      use before <- result.try(required_int(fields, "before"))
+      case child != "" && string.byte_size(child) <= 512 && before >= 0 {
+        True -> Ok(ChildHistoryGet(child:, before:))
+        False ->
+          Error("child_history needs a child name and a cursor of zero or more")
+      }
+    }
     "models" -> Ok(ListModels)
     "skills" -> {
       use fields <- result.try(body_fields(body))
@@ -1893,6 +1939,16 @@ fn encode_snapshot(snapshot: Snapshot) -> JsonValue {
       json.Object([#("mode", json.String("btw")), #("board", board)])
     ContextSnapshot(board:) ->
       json.Object([#("mode", json.String("context")), #("board", board)])
+    RemoteChildrenSnapshot(children:) ->
+      json.Object([
+        #("mode", json.String("remote_children")),
+        #(
+          "remote_children",
+          json.Array(list.map(children, remote_agent.encode)),
+        ),
+      ])
+    ChildHistorySnapshot(board:) ->
+      json.Object([#("mode", json.String("child_history")), #("board", board)])
     LiveJobsSnapshot(board:) ->
       json.Object([#("mode", json.String("live_jobs")), #("board", board)])
     AdvisorPendingSnapshot(board:) ->
@@ -2002,7 +2058,7 @@ fn encode_entry_record(record: EntryRecord) -> JsonValue {
 
 // Historical records may name no action, so those fields remain optional.
 // Every v2 record still includes the exact decision sequence and its origin.
-fn encode_escalation(record: EscalationRecord) -> JsonValue {
+pub fn encode_escalation(record: EscalationRecord) -> JsonValue {
   object_of([
     #("seq", Some(json.Int(record.seq))),
     #("origin", Some(origin.encode(record.origin))),
@@ -2018,6 +2074,13 @@ fn encode_escalation(record: EscalationRecord) -> JsonValue {
       asked -> Some(json.Int(asked))
     }),
     #("denial", option.map(record.denial, encode_denial)),
+    #("placement", option.map(record.placement, json.String)),
+    #(
+      "admitted",
+      option.map(record.admitted, fn(grants) {
+        json.Array(list.map(grants, encode_grant))
+      }),
+    ),
   ])
 }
 
@@ -2548,6 +2611,17 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
       )
       Ok(SnapshotEvent(ContextSnapshot(board:)))
     }
+    "remote_children" -> {
+      use children <- result.try(remote_agent.decode_all(fields))
+      Ok(SnapshotEvent(RemoteChildrenSnapshot(children:)))
+    }
+    "child_history" -> {
+      use board <- result.try(
+        list.key_find(fields, "board")
+        |> result.replace_error("missing transcript board"),
+      )
+      Ok(SnapshotEvent(ChildHistorySnapshot(board:)))
+    }
     "live_jobs" -> {
       use board <- result.try(
         list.key_find(fields, "board")
@@ -2727,7 +2801,7 @@ fn decode_entry_record(value: JsonValue) -> Result(EntryRecord, String) {
   Ok(EntryRecord(strand:, entry:))
 }
 
-fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
+pub fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
   use fields <- result.try(body_fields(value))
   use seq <- result.try(nonnegative_field(fields, "seq"))
   use origin <- result.try(
@@ -2750,6 +2824,13 @@ fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
   use asked <- result.try(
     optional_int(fields, "asked") |> result.map(option.unwrap(_, 0)),
   )
+  use placement <- result.try(optional_string(fields, "placement"))
+  use admitted <- result.try(case list.key_find(fields, "admitted") {
+    Error(Nil) -> Ok(None)
+    Ok(json.Array(items)) ->
+      list.try_map(items, decode_grant) |> result.map(Some)
+    Ok(_) -> Error("admitted must be an array of grants")
+  })
   Ok(EscalationRecord(
     escalation_id:,
     op:,
@@ -2762,6 +2843,8 @@ fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
     denial:,
     seq:,
     origin:,
+    placement:,
+    admitted:,
   ))
 }
 

@@ -46,6 +46,7 @@ fn pending_review() -> approval.Review {
     origin: None,
     permission: approval.Unavailable(""),
     strand: None,
+    remote: option.None,
   )
 }
 
@@ -125,6 +126,7 @@ pub fn blocked_message_names_a_toolless_approval_test() {
       origin: None,
       permission: approval.Unavailable(""),
       strand: None,
+      remote: option.None,
     )
 
   herdr.message_for([review])
@@ -145,6 +147,7 @@ pub fn a_toolless_head_of_a_queue_names_it_too_test() {
       origin: None,
       permission: approval.Unavailable(""),
       strand: None,
+      remote: option.None,
     )
   let other =
     approval.Review(
@@ -156,6 +159,7 @@ pub fn a_toolless_head_of_a_queue_names_it_too_test() {
       origin: None,
       permission: approval.Unavailable(""),
       strand: None,
+      remote: option.None,
     )
 
   herdr.message_for([toolless])
@@ -176,6 +180,7 @@ pub fn blocked_message_counts_a_queue_test() {
       origin: None,
       permission: approval.Unavailable(""),
       strand: None,
+      remote: option.None,
     )
 
   herdr.message_for([pending_review(), other])
@@ -196,6 +201,7 @@ pub fn no_message_when_nothing_is_pending_test() {
       origin: None,
       permission: approval.Unavailable(""),
       strand: None,
+      remote: option.None,
     )
 
   herdr.message_for([decided])

@@ -289,6 +289,8 @@ fn chip(
       title: "",
       elapsed_s: None,
       tokens:,
+      placement: None,
+      age_s: None,
     ),
     hue: turns.Sub(0),
     cache:,

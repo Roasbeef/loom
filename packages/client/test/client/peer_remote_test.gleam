@@ -254,6 +254,7 @@ fn hosts_on(seed: Int, sender_clock: clock.Clock) -> Hosts {
           describe,
           orchestrator_port.declining(),
           orchestrator_port.refusing_spawns(),
+          orchestrator_port.refusing_children(),
           orchestrator_port.unheld,
           orchestrator_port.unreported(),
         )

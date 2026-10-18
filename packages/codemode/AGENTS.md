@@ -883,7 +883,8 @@ client composes effect, child-operation, search, notes and configured MCP
 routers for each selection. The daemon wraps both with host-bound peer routes;
 background launches add execution input and named workflow custody.
 `orchestration.decode_spawn` is the shared total assignment decoder for
-ordinary and named workflow steps. Capability ordinals bound named child
+ordinary and named workflow steps; it reads the optional `on`, which the Agency
+refuses from a background program and a workflow step. Capability ordinals bound named child
 steps and peer calls. Extensions do not receive background custody merely
 because their allowlist includes a shared module; unsupported calls refuse.
 

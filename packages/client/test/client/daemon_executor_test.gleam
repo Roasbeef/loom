@@ -13,6 +13,7 @@ import client/remote/address
 import client/remote/protocol
 import client/system_prompt
 import client/workspaces.{Workspace}
+import gleam/dict
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/string
@@ -51,6 +52,7 @@ fn config(
       [],
       None,
       None,
+      dict.new(),
     ),
     state_root: state,
     session_defaults: arguments,

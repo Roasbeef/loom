@@ -370,13 +370,26 @@ fn chip_element(
       [
         ring(chip, Card),
         html.span([attribute.class("chip-text")], [
-          html.span([attribute.class("chip-name")], [html.text(line.name)]),
+          html.span([attribute.class("chip-name")], [
+            html.text(agent_roster.placed_name(line, line.name)),
+          ]),
           status(line),
+          seen(line),
           own_model(chip.own_model),
         ]),
       ],
     ),
   ])
+}
+
+// How long a remote child's glance has not changed, once that is worth
+// saying (`agent_roster.seen_words`), as quiet text under the status. The
+// words are the roster's, built from a number, and drawn as a text node.
+fn seen(line: agent_roster.Line) -> Element(message) {
+  case agent_roster.seen_words(line) {
+    Some(words) -> html.span([attribute.class("chip-seen")], [html.text(words)])
+    None -> element.none()
+  }
 }
 
 // The model of a strand that runs on another one than `main`, as plain quiet

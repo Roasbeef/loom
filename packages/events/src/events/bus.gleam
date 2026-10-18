@@ -99,7 +99,7 @@ pub type Topic {
 
   /// Display feeds: rolling output tails of running tool calls
   /// (`ToolOutput`), summarizer labels (`BlockSummary`) and data-free goal
-  /// invalidation (`GoalChanged`, `ProposalsChanged`). This is not the
+  /// invalidation (`GoalChanged`, `ProposalsChanged`, `RemoteChildrenChanged`). This is not the
   /// commit-hint topic.
   Outputs
 }
@@ -204,6 +204,12 @@ pub type Event {
   /// reader again. It is published under a key shared by every session of
   /// the domain, not under one session's id (protocol-change/086).
   ProposalsChanged
+
+  /// A stub of a child that runs on another orchestrator changed: a glance
+  /// arrived, or the spawn moved on (protocol-change/090). It carries no data;
+  /// the stubs in the session's store are the truth, and a subscriber reads
+  /// them again.
+  RemoteChildrenChanged
 }
 
 /// One delivered event: the session it belongs to plus the event, so a
@@ -292,7 +298,8 @@ pub fn topic_of(event: Event) -> Topic {
     Escalation(..) -> Escalations
     Committed(..) -> Commits
     ToolOutput(..) -> Outputs
-    BlockSummary(..) | GoalChanged | ProposalsChanged -> Outputs
+    BlockSummary(..) | GoalChanged | ProposalsChanged | RemoteChildrenChanged ->
+      Outputs
   }
 }
 

@@ -205,7 +205,7 @@ runtime writer's post-commit publication as `CommitHint`, a bus
 publication as `BusHint`, and streamed provider deltas as
 `ProviderDelta`.
 
-`handle_text` becomes `dispatch` (`client/gateway.gleam:4485`), which
+`handle_text` becomes `dispatch` (`client/gateway.gleam:4662`), which
 decodes strictly on the envelope and tolerantly on names — an
 unrecognized `cmd` survives as `UnknownCommand` so the hub can answer
 `unsupported` in band — then `run_command`
@@ -625,7 +625,7 @@ actor — created before the runtime so the writer re-registers it on every
 tree restart — turns that into a `CommitHint` cast at the hub
 (`client/gateway.gleam:830`).
 
-The hint carries nothing. It triggers `pull` (`client/gateway.gleam:3354`),
+The hint carries nothing. It triggers `pull` (`client/gateway.gleam:3568`),
 which reads everything in storage above the hub's high-water seq and
 merges four sources: new entries reachable from each strand's leaf plus a
 completeness pass for entries no leaf covers, new usage rows attributed
@@ -653,7 +653,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:6463`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:6754`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -1176,7 +1176,7 @@ closure on the **Agency** record (`tools/agent.gleam`) — and everything
 with teeth lives on the far side of that seam, in `client/agency.gleam`,
 where a live runtime is visible.
 
-`spawn` (`client/agency.gleam:1131`) reads the durable lineage ledger,
+`spawn` (`client/agency.gleam:1250`) reads the durable lineage ledger,
 checks the depth cap, and mints the child's name from coordinates that
 are already durable in the intent (`client/agency.gleam:520`):
 `sub:{parent}/{slug}-{digest}`, where the slug is the purpose bounded and
@@ -1202,7 +1202,7 @@ beside the prose report rather than as a sentence the parent would have to
 parse. That is what makes deterministic orchestration over children
 something other than a script that regexes prose.
 
-`api.create_strand` (`runtime/api.gleam:1485`) then seeds the child's
+`api.create_strand` (`runtime/api.gleam:1528`) then seeds the child's
 three registers — its own model identity, its own leaf (a cursor into the
 shared tree), its own strand state — starts its driver through the
 factory, and accepts the task brief as its first run. Because the
@@ -1213,7 +1213,7 @@ between the seed commit and the brief commit leaves a strand nothing else
 could finish.
 
 Collecting the result is a store read, not a message.
-`await_strand_result` (`runtime/api.gleam:1930`) keys on the *operation*,
+`await_strand_result` (`runtime/api.gleam:1976`) keys on the *operation*,
 reading the reserved `operation-result/{op}` cell the child's terminal
 transaction wrote atomically beside the latest-wins `strand.last_result`
 register (`build.set_last_result`, `machine/planner.gleam:3799`). Keying
@@ -1239,7 +1239,7 @@ corner would buy.
 
 Not every second strand is a child. If the catalogue routes an `advisor`
 role, `serve` seeds one more strand at boot — through
-`create_idle_strand` (`runtime/api.gleam:1557`) rather than through the
+`create_idle_strand` (`runtime/api.gleam:1603`) rather than through the
 Agency, so it gets no lineage cell and so is addressable by nobody,
 lists nobody, and is reaped by nobody. At each end of a run on `main` a
 wrapped `run_end` slot casts to `client/advisor`'s actor, which scans
@@ -1635,7 +1635,7 @@ the record's scope to the call standing at the door now, because a retry
 always arrives under a call id the provider has just minted and a scope
 frozen to the first attempt would leave an approval nothing can spend.
 Then, *if* the host says
-someone is attached, `park` (`client/escalate.gleam:606`) holds the call —
+someone is attached, `park` (`client/escalate.gleam:614`) holds the call —
 on the tool's own effect process, never on the driver, so `Nudge`,
 `RequestAbort` and `PollTick` keep being served while a human decides. An
 approval is consumed by CAS — after a scope check that is still exact

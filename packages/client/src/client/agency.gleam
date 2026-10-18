@@ -42,12 +42,54 @@
 ////     child token budget, has `stop_if_spent` read the child's total and ask
 ////     the holder to stop it. The holder's `StopChild` runs the same `reap` as
 ////     every other stop.
-//// 11. The other direction, a child that runs on another orchestrator, is
+//// 11. Phase 2 of protocol-change/084 lets the two sides talk. A child's send
+////     to its parent is `queue_upward`, which writes a row the
+////     delegate session's drainer sends (`client/delegate_outbox`). The parent's
+////     Agency admits that mail in its holder with `admit_mail`, reached through
+////     `child_inbox`, and keeps a child's glance with `child_progress`. A send
+////     from the parent into a remote child is `send_remote`, delivered on the
+////     other side by `delegate_send`, which stores a receipt so a resend
+////     delivers once.
+//// 11a. A request for more authority from a child on another orchestrator is
+////     filed by `child_escalation` under `remote-escalation/`
+////     (protocol-change/089), on the caller's process like `child_progress`.
+//// 12. Protocol-change/090 lets the parent look at a child's working:
+////     `delegate_history` reads one bounded page of a child's branch for its
+////     remote parent, after the same descent test a send makes, and answers
+////     it as a `session_view/remote_transcript` page.
+//// 13. The other direction, a child that runs on another orchestrator, is
 ////     `spawn_elsewhere`: the holder's `admit_remote` writes the stub, then
 ////     `ask_until_answered` sends the `Spawn` and `record_answer` writes down
 ////     the reply. `wait_across` joins local and remote handles in one call,
 ////     `remote_peers` lists remote children from their stubs, and
 ////     `live_stubs` counts the stubs whose child may still be running.
+//// 13. Depth across machines (phase 4) adds two steps. `within_parent` keeps
+////     the deadline of a child's own child inside the deadline its parent has
+////     left, and `no_later_than_parent` caps the child's lineage cell at the
+////     parent's absolute deadline.
+////
+//// ## Depth across machines
+////
+//// A child here for a parent on another orchestrator may start children of its
+//// own when the spawner's `max_depth` allows it (protocol-change/084, phase 4).
+//// The daemon sets this session's `depth_cap` to that `max_depth`, so the child's
+//// spawn is judged by the figure its tools were chosen by. A grandchild in this
+//// session is an ordinary local spawn. One on a third orchestrator is
+//// `spawn_elsewhere` with this session as the parent session, so the third
+//// orchestrator sees this daemon as its spawner, and the stub, the lineage cell
+//// and the drainer are the ones a laptop uses. The `Spawn` carries the depth of
+//// the child's cell, and the third orchestrator judges it against its own
+//// spawner's `max_depth`. Which orchestrators may be asked is the spawner's
+//// `spawn_on`, which the daemon applies to this session's `Reach`.
+////
+//// The grandchild may not outlive its parent: `within_parent` cuts its budget to
+//// what the parent's deadline leaves. And releasing this session releases the
+//// grandchildren: the released fence stops new stubs, and when the session's
+//// slot has drained the registry reads the stubs from the closed file and writes
+//// a release row for each of their orchestrators before it deletes the session,
+//// the same rows a laptop writes when it deletes a parent session. Nothing here
+//// takes part in that, because until the slot has drained this session may still
+//// resend a spawn.
 ////
 //// ## The bootstrap knot, and the name that unties it
 ////
@@ -168,6 +210,32 @@
 //// writes the stub, so a slow or silent orchestrator cannot stop the session's
 //// other spawns, sends or peer mail.
 ////
+//// ## Messages between a parent and a child on another orchestrator
+////
+//// Phase 1 refused a send to a remote child and an upward send from one. Phase 2
+//// delivers both, and the two directions differ in who can wait.
+////
+//// **Down.** The parent's `send` finds the child's stub, and asks the child's
+//// orchestrator to deliver through `Reach.send`. The message id is the sending
+//// call site's digest, and the orchestrator stores `delegate/receipt/{id}` in
+//// the same commit that delivers, so a resend answers `Admitted` and delivers
+//// nothing twice. A child with no run open is started on a detached run whose
+//// deadline is the child's existing one (the run record gets the absolute deadline
+//// the spawn gave the child, so no number of sends lengthens it, and a send
+//// after it is refused). An orchestrator that does not answer leaves a
+//// `remote-send/{id}` row that the remote drainer resends, and the model is told
+//// the message is queued.
+////
+//// **Up.** A remote child's `agent_send` to `^main` writes a
+//// `delegate/outbox/mail/{id}` row and answers `queued`. It does not go through
+//// peer mail: no link is written and `peers.send` is not used, because the
+//// authorization is the spawn itself, and the delegate session cannot dial its
+//// parent. The laptop admits the mail by name, finding the stub by the child's
+//// strand name and never by its handle, so mail that races the answer to the
+//// `Spawn` still finds the `Requested` stub. The steer and the receipt
+//// `remote-mail/{id}` are one commit, and a parent with no run open declines the
+//// message and records that as the receipt.
+////
 //// ## What the ledger is for
 ////
 //// `runtime/lineage` is the durable ledger, one `fact.custom` cell per
@@ -242,16 +310,23 @@
 
 import broker/internal/call
 import client/child_usage
+import client/delegate_outbox
 import client/internal/session_owner
 import client/internal/timebase
 import client/peer_mail
 import client/peer_outbox
+import client/protocol
 import client/remote_child
+import client/remote_escalation
+import client/remote_escalation_store
+import client/remote_mail
 import client/remote_reach
+import client/remote_send
 import client/remote_spawn
 import client/workflow_ledger
 import core/clock.{type Clock}
 import core/entry
+import core/glance.{type Glance}
 import core/ids.{type EntryId, type OpId}
 import core/json.{type JsonValue}
 import core/message.{type AgentMessage}
@@ -274,7 +349,9 @@ import runtime/lineage.{type CallSite, type Lineage, CallSite, Lineage}
 import runtime/residency
 import runtime/writer
 import session/session
+import session_view/remote_transcript
 import session_view/strand_framing
+import storage/storage
 import telemetry/owner
 import tools/agent.{
   type Agency, type Caller, type Delivery, type Handle, type Outcome, type Peer,
@@ -400,6 +477,18 @@ pub type Config {
     /// that is adopted is neither counted nor refused. It must answer
     /// `StoreFailure` when the registry does not answer in time, never a cap.
     claim: Option(fn(Int) -> Result(Nil, remote_spawn.SpawnRefusal)),
+    /// Where this delegate session's parent is, or `None` for every session but
+    /// a delegate session (protocol-change/084, phase 2). With it set, a child's
+    /// `agent_send` to its parent reference writes an outbox row and answers
+    /// `queued`, and without it the same send is refused, as it was in phase 1.
+    /// The daemon fills it from the session's catalogue row, as it does
+    /// `deadline_tick_ms`.
+    spawner: Option(delegate_outbox.SpawnerLink),
+    /// Called once after the delegate session leaves something for its second
+    /// drainer instance to send (a mail row, or a new child that will glance), so
+    /// that instance arms its retry timer. The host supplies a closure over the
+    /// drainer's name, as it does for `outbox_queued`.
+    upward_queued: fn() -> Nil,
   )
 }
 
@@ -467,6 +556,8 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     deadline_tick_ms: None,
     abort_effects: fn(_operation) { Nil },
     claim: None,
+    spawner: None,
+    upward_queued: fn() { Nil },
   )
 }
 
@@ -532,6 +623,21 @@ pub type Message {
   /// child has spent its token budget, and fire-and-forget: the sender has
   /// nothing to wait for, and a repeat finds the run already stopped.
   StopChild(strand: String, stop: child_run.Stop)
+
+  /// Admits mail from a child that runs on another orchestrator (protocol-change
+  /// /084, phase 2): finds the child's stub by name, checks that the orchestrator
+  /// the stub names is the one the message came from, and steers the parent
+  /// strand in the commit that writes the receipt. Serialized with the holder's
+  /// other admissions, so two resends of one message cannot both reach the
+  /// strand.
+  AdmitChildMail(
+    parent: remote_spawn.Parent,
+    child: Handle,
+    message_id: String,
+    text: String,
+    admits: fn(String) -> Bool,
+    reply: Subject(Result(remote_mail.Receipt, remote_mail.ChildRefusal)),
+  )
 
   /// The periodic heartbeat of a session with `deadline_tick_ms`: stops every
   /// child whose deadline has passed, whether or not anything is waiting.
@@ -614,10 +720,16 @@ pub fn start(
       }
       DelegateSpawn(delegation:, site:, request:, reply:) -> {
         let caller = delegated_caller(delegation.parent, site)
-        process.send(
-          reply,
-          spawn_delegated(config, state, caller, delegation, request),
-        )
+        let admitted =
+          spawn_delegated(config, state, caller, delegation, request)
+
+        // A child that was admitted will glance, and nothing rings the drainer
+        // for a glance, so the drainer is rung once for the child.
+        case admitted, config.spawner {
+          Ok(_), Some(_) -> config.upward_queued()
+          _, _ -> Nil
+        }
+        process.send(reply, admitted)
         actor.continue(state)
       }
       DelegateEnded(operation:, reply:) -> {
@@ -626,6 +738,13 @@ pub fn start(
       }
       DelegateRelease(reply:) -> {
         process.send(reply, released_in(config, state))
+        actor.continue(state)
+      }
+      AdmitChildMail(parent:, child:, message_id:, text:, admits:, reply:) -> {
+        process.send(
+          reply,
+          admit_mail(config, state, parent, child, message_id, text, admits),
+        )
         actor.continue(state)
       }
       StopChild(strand:, stop:) -> {
@@ -1166,6 +1285,13 @@ type Source {
 // above that same cap. A remote child's own spawn is judged as a local one
 // against the cap, so a limit above it would hand the child a spawn tool that
 // every call of it would be refused.
+//
+// The clamp is kept, and documented rather than refused (protocol-change/084,
+// addendum of 2026-10-17). The daemon sets a delegate session's `depth_cap` to
+// its spawner's `max_depth` (`client/daemon/main.depth_cap_of`), so the two are
+// equal and the clamp never binds there. It binds only for a host that builds
+// the Agency with another cap, where it keeps the tool a child holds and the
+// limit its spawns meet the same.
 fn depth_limit(config: Config, source: Source) -> Int {
   case source {
     Local -> config.depth_cap
@@ -1200,6 +1326,18 @@ fn spawn_on(
     Some(existing) -> adopt(runtime, caller, existing)
     None -> {
       use Nil <- result.try(admit_run(runtime, caller, source))
+
+      // A child of a strand that has a deadline of its own may not outlive it.
+      // The clamp is on the create path only, after adoption, so a resent spawn
+      // is answered with the child it made and its original deadline.
+      let #(now, _clock) = clock.read(config.clock)
+      use request <- result.try(within_parent(
+        ledger,
+        caller,
+        request,
+        config.default_within_ms,
+        now,
+      ))
       reconcile(
         config,
         runtime,
@@ -1472,6 +1610,7 @@ fn reconcile(
     }
   })
   use tools <- result.try(child_tools(
+    source,
     depth_limit(config, source),
     parent_tools,
     request.tools,
@@ -1529,7 +1668,11 @@ fn reconcile(
       brief:,
       tools:,
       default_within_ms: config.default_within_ms,
-      deadline: deadline_of(config, now, request.within_ms),
+      deadline: no_later_than_parent(
+        ledger,
+        caller,
+        deadline_of(config, now, request.within_ms),
+      ),
       detached: request.detach,
       reaped: False,
       orchestrator: None,
@@ -1870,16 +2013,25 @@ fn child_configuration(
 // The result is sorted and deduplicated because a strand's active tool
 // list renders to the wire in that order, ahead of the system prompt, as
 // the byte prefix of the provider's cached region.
+//
+// A parent on another orchestrator is the one exception to the default. Its
+// tools arrive already narrowed to the spawner's ceiling, and the ceiling is
+// where the box's owner says whether a child may spawn (protocol-change/084,
+// phase 4): the default ceiling holds `agent_spawn` only when `max_depth` is
+// above one. So a delegated child keeps the spawn tool the ceiling gave it,
+// and the depth check below still takes it from a child at the cap.
 fn child_tools(
+  source: Source,
   depth_cap: Int,
   parent_tools: List(String),
   requested: Option(List(String)),
   depth: Int,
 ) -> Result(List(String), Refusal) {
-  use chosen <- result.try(case requested {
-    None ->
+  use chosen <- result.try(case requested, source {
+    None, Delegated(..) -> Ok(parent_tools)
+    None, Local ->
       Ok(list.filter(parent_tools, fn(name) { name != agent.spawn_tool_name }))
-    Some(names) -> {
+    Some(names), Local | Some(names), Delegated(..) -> {
       use held <- result.map(
         list.try_map(names, fn(name) {
           case list.contains(parent_tools, name) {
@@ -1964,6 +2116,67 @@ fn check_capacity(
 // to zero means no spawns at all, and this is the line that says so.
 fn at_least(values: List(a), bound: Int) -> Bool {
   bound <= 0 || list.drop(values, bound - 1) != []
+}
+
+// A spawn whose parent has a deadline, with its own deadline no later than the
+// parent's (protocol-change/084, phase 4). A child at depth one on another
+// orchestrator has the deadline its spawner gave it, and a child it starts, in
+// its delegate session or on a third orchestrator, would otherwise get a fresh
+// budget and could run past it, and past the spawner's `max_within_s`. So the
+// grandchild's budget is the smaller of what it asked for and what its parent
+// has left. A request that names no budget takes `fallback` first: the Agency's
+// default for a child here, and `None` for a child elsewhere, whose default the
+// other orchestrator does not know to clamp, so it is sent what the parent has
+// left. A parent past its deadline may not start a child at all. A parent with
+// no cell or no deadline, which is every strand a human talks to, is not
+// clamped.
+fn within_parent(
+  ledger: Dict(String, Lineage),
+  caller: Caller,
+  request: agent.SpawnRequest,
+  fallback: Option(Int),
+  now: Int,
+) -> Result(agent.SpawnRequest, Refusal) {
+  case option.then(cell_of(ledger, caller.strand), fn(cell) { cell.deadline }) {
+    None -> Ok(request)
+    Some(deadline) -> {
+      let left = deadline - now
+      use <- bool.guard(
+        when: left <= 0,
+        return: Error(agent.InvalidArgument(
+          reason: "this strand's own deadline has passed, so it cannot start a child",
+        )),
+      )
+      let asked = case request.within_ms {
+        Some(budget) if budget > 0 -> Some(budget)
+        Some(_) | None -> fallback
+      }
+      let within = case asked {
+        Some(budget) -> int.min(budget, left)
+        None -> left
+      }
+      Ok(agent.SpawnRequest(..request, within_ms: Some(within)))
+    }
+  }
+}
+
+// The absolute half of `within_parent`. The budget it cut is relative, and the
+// cell's deadline is computed from a later reading of the clock, so the cell is
+// capped at the parent's deadline as well and cannot fall even a few
+// milliseconds after it.
+fn no_later_than_parent(
+  ledger: Dict(String, Lineage),
+  caller: Caller,
+  deadline: Option(Int),
+) -> Option(Int) {
+  case
+    option.then(cell_of(ledger, caller.strand), fn(cell) { cell.deadline }),
+    deadline
+  {
+    Some(parent), Some(own) -> Some(int.min(parent, own))
+    Some(parent), None -> Some(parent)
+    None, own -> own
+  }
 }
 
 fn deadline_of(
@@ -2449,10 +2662,25 @@ fn send(
   use Nil <- result.try(
     case upward || is_descendant(ledger, caller.strand, to) {
       True -> Ok(Nil)
-      False -> Error(agent.NotAddressable(strand: to))
+
+      // A child whose spawn is unanswered has a stub and no lineage cell yet, so
+      // it is not addressable; the model is told it is still starting.
+      False ->
+        case remote_child.all(runtime) {
+          Ok(kept) -> Error(still_starting_or_unknown(kept, to))
+          Error(_) -> Error(agent.NotAddressable(strand: to))
+        }
     },
   )
-  use Nil <- result.try(refuse_remote_child(ledger, to))
+  use <- bool.lazy_guard(
+    when: upward
+      && option.is_some(config.spawner)
+      && string.starts_with(to, api.parent_reference_prefix),
+    return: fn() { queue_upward(config, runtime, caller, to, text, within_ms) },
+  )
+  use <- bool.lazy_guard(when: runs_elsewhere(ledger, to), return: fn() {
+    send_remote(config, runtime, caller, to, text, within_ms)
+  })
   use Nil <- result.try(case upward {
     False -> Ok(Nil)
     True ->
@@ -2531,26 +2759,161 @@ fn send(
   }
 }
 
-// A message to a child on another orchestrator cannot be delivered in phase 1:
-// the child has no strand here, and carrying a message to the other
-// orchestrator is a later phase (protocol-change/084). The refusal says how the
-// child reports instead, which is the result and the notes a wait delivers.
-fn refuse_remote_child(
-  ledger: Dict(String, Lineage),
-  to: String,
-) -> Result(Nil, Refusal) {
+// Whether the strand is a child on another orchestrator, which the lineage cell
+// says by naming the orchestrator.
+fn runs_elsewhere(ledger: Dict(String, Lineage), to: String) -> Bool {
   case cell_of(ledger, to) {
-    Some(Lineage(orchestrator: Some(orchestrator), ..)) ->
+    Some(Lineage(orchestrator: Some(_), ..)) -> True
+    Some(_) | None -> False
+  }
+}
+
+// A remote child's `agent_send` to its parent. The delegate session cannot
+// reach the parent's orchestrator on demand, so the message becomes an outbox row
+// and the model is told it is queued. The row is keyed by the sending call site,
+// so a replayed call finds its own row, and the drainer sends it when the
+// laptop's node is connected (`client/delegate_outbox`).
+fn queue_upward(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  to: String,
+  text: String,
+  within_ms: Option(Int),
+) -> Result(Delivery, Refusal) {
+  use Nil <- result.try(case within_ms {
+    Some(_) ->
+      Error(agent.InvalidArgument("within_ms applies only to an idle child"))
+    None -> Ok(Nil)
+  })
+  let row =
+    delegate_outbox.Mail(
+      id: agent.call_site_digest(caller),
+      parent_strand: string.drop_start(
+        to,
+        string.length(api.parent_reference_prefix),
+      ),
+      child: Handle(strand: caller.strand, operation: caller.operation),
+      text:,
+      state: delegate_outbox.Pending,
+    )
+  use Nil <- result.map(
+    delegate_outbox.queue_mail(runtime, row)
+    |> result.map_error(agent.PlaneFailed),
+  )
+  config.upward_queued()
+  agent.Queued
+}
+
+// A parent's `agent_send` to a child on another orchestrator. The orchestrator
+// is asked once, here, on the caller's own process. An answer is the delivery or
+// a refusal. No answer leaves a `remote-send/{id}` row for the remote drainer and
+// tells the model the message is queued: the orchestrator may have delivered it
+// and lost the reply, and the message id is what makes the resend safe.
+fn send_remote(
+  config: Config,
+  runtime: api.Runtime,
+  caller: Caller,
+  to: String,
+  text: String,
+  within_ms: Option(Int),
+) -> Result(Delivery, Refusal) {
+  use Nil <- result.try(case within_ms {
+    Some(_) ->
       Error(agent.InvalidArgument(
-        reason: "`"
-        <> to
-        <> "` runs on the orchestrator `"
-        <> orchestrator
-        <> "`, and a message cannot reach it from here yet. It reports "
-        <> "through its final answer, its notes and its result, which "
-        <> "agent_wait delivers",
+        "within_ms is not available for a child on another orchestrator; a "
+        <> "run it starts is bounded by the deadline the child already has",
       ))
-    Some(_) | None -> Ok(Nil)
+    None -> Ok(Nil)
+  })
+  use kept <- result.try(
+    remote_child.all(runtime) |> result.map_error(agent.PlaneFailed),
+  )
+  use #(stub, placed) <- result.try(
+    list.find_map(kept, fn(entry) {
+      case placed_of(entry.stub) {
+        Some(placed) if placed.handle.strand == to -> Ok(#(entry.stub, placed))
+        Some(_) | None -> Error(Nil)
+      }
+    })
+    |> result.replace_error(still_starting_or_unknown(kept, to)),
+  )
+
+  // A message must not revive a child: the remote starts a run only inside the
+  // deadline the spawn gave the child, so a send after it is refused here, where
+  // the model can be told, and not left to the remote.
+  let #(now, _clock) = clock.read(config.clock)
+  use Nil <- result.try(case placed.deadline_ms <= now {
+    True ->
+      Error(agent.InvalidArgument(
+        "`"
+        <> to
+        <> "` is past its deadline on the orchestrator `"
+        <> stub.orchestrator
+        <> "`, so a message cannot start another run on it",
+      ))
+    False -> Ok(Nil)
+  })
+  let id = agent.call_site_digest(caller)
+  let parent = remote_reach.parent(config.remote, stub.strand)
+  case config.remote.send(stub.orchestrator, parent, placed.handle, id, text) {
+    Ok(landing) -> Ok(delivery_of(config, landing))
+    Error(peer_mail.Refused(reason)) ->
+      Error(agent.RemoteRefused(orchestrator: stub.orchestrator, reason:))
+    Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) -> {
+      let row =
+        remote_send.Row(
+          id:,
+          orchestrator: stub.orchestrator,
+          parent_strand: stub.strand,
+          child: placed.handle,
+          text:,
+        )
+      use Nil <- result.map(
+        remote_send.queue(runtime, row) |> result.map_error(agent.PlaneFailed),
+      )
+      config.remote_queued()
+      agent.Queued
+    }
+  }
+}
+
+// Why a send found no child: one whose spawn the orchestrator has not answered
+// yet is still starting, and anything else is not the caller's to address.
+fn still_starting_or_unknown(
+  kept: List(remote_child.Kept),
+  to: String,
+) -> Refusal {
+  case
+    list.any(kept, fn(entry) {
+      entry.stub.name == to && entry.stub.state == remote_child.Requested
+    })
+  {
+    True ->
+      agent.InvalidArgument(
+        "`"
+        <> to
+        <> "` is still starting: its orchestrator has not answered the spawn, "
+        <> "so a message cannot reach it yet. Try again after agent_wait",
+      )
+    False -> agent.NotAddressable(strand: to)
+  }
+}
+
+// How the orchestrator says a message landed, as the delivery the model reads.
+// The deadline of a started run is a duration on the other clock, so it is added
+// to this one's now.
+fn delivery_of(config: Config, landing: remote_mail.Landing) -> Delivery {
+  case landing {
+    remote_mail.Steered(entry:) -> agent.Steered(entry:)
+    remote_mail.Started(operation:, remaining_ms:) -> {
+      let #(now, _clock) = clock.read(config.clock)
+      agent.Started(
+        operation:,
+        deadline_ms: option.map(remaining_ms, fn(ms) { now + ms }),
+      )
+    }
+    remote_mail.Admitted -> agent.Queued
   }
 }
 
@@ -3465,6 +3828,14 @@ pub fn workflow_child(
   use subject <- result.try(
     address.lookup(config.name) |> result.replace_error(agent.AgencyUnavailable),
   )
+
+  // A workflow step runs in the background, and `spawn_elsewhere` refuses
+  // placement from there. Admitting the step as a local child would answer a
+  // request for another machine with a child on this one, so it is refused.
+  use <- bool.guard(
+    when: option.is_some(request.on),
+    return: Error(agent.InvalidArgument(reason: background_refusal)),
+  )
   process.call(subject, config.holder_timeout_ms, fn(reply) {
     WorkflowChild(caller, step, request, custody, reply)
   })
@@ -3624,7 +3995,24 @@ fn admit_remote(
         True -> Ok(#(key, stub))
         False -> Error(agent.NameAlreadyMinted(strand: stub.name))
       }
-    None -> write_stub(config, runtime, ledger, caller, request, orchestrator)
+
+    // A new stub in a delegate session whose parent was deleted is refused by
+    // the released fence, read in the holder that also writes it: a child that
+    // was stopped by the release starts nothing on another orchestrator. The
+    // deadline is clamped here, before the stub records the request that every
+    // resend sends.
+    None -> {
+      use Nil <- result.try(refuse_if_fenced(runtime, released_key(), caller))
+      let #(now, _clock) = clock.read(config.clock)
+      use request <- result.try(within_parent(
+        ledger,
+        caller,
+        request,
+        None,
+        now,
+      ))
+      write_stub(config, runtime, ledger, caller, request, orchestrator)
+    }
   }
 }
 
@@ -3669,6 +4057,9 @@ fn write_stub(
       parent_tools: configuration.active_tool_names,
       request: remote_request(request),
       name:,
+      glance: None,
+      glance_seen_ms: 0,
+      owed: 0,
       state: remote_child.Requested,
     )
   use admission <- result.map(
@@ -3865,6 +4256,10 @@ fn placed_spawn(placed: remote_child.Placed) -> Spawned {
 // --- waiting on children across orchestrators -------------------------------
 
 // A handle that names a child on another orchestrator, and where its stub is.
+// The stub knows the child's strand and the operation of its first run, and a
+// message that started a later run gave the model a handle with the same strand
+// and another operation, so a handle belongs to a stub by its strand. The
+// receiver judges the operation.
 type Target {
   Target(handle: Handle, orchestrator: String, key: String)
 }
@@ -3882,7 +4277,8 @@ type Part {
 
 // The handles that name a child on another orchestrator, found by the parent's
 // own record of it and not by anything in the handle's text. A handle the stubs
-// do not hold is a local one, and the local wait judges it.
+// do not hold is a local one, and the local wait judges it. The match is by
+// strand, for the reason `Target` gives.
 fn remote_targets(
   kept: List(remote_child.Kept),
   handles: List(Handle),
@@ -3890,7 +4286,7 @@ fn remote_targets(
   list.filter_map(handles, fn(handle) {
     list.find_map(kept, fn(entry) {
       case placed_of(entry.stub) {
-        Some(placed) if placed.handle == handle ->
+        Some(placed) if placed.handle.strand == handle.strand ->
           Ok(Target(
             handle:,
             orchestrator: entry.stub.orchestrator,
@@ -4094,11 +4490,19 @@ fn settle_entry(
   case entry {
     remote_spawn.Pending(handle:, waited_ms:) ->
       Pending(handle:, waited_ms:, unanswered: None)
-    remote_spawn.Ready(handle:, outcome:, report:, result:, notes:, usage:) -> {
+    remote_spawn.Ready(
+      handle:,
+      outcome:,
+      report:,
+      result:,
+      notes:,
+      usage:,
+      owed:,
+    ) -> {
       case list.find(targets, fn(target) { target.handle == handle }) {
         Ok(target) -> {
           let _recorded =
-            remote_child.settled(runtime, target.key, outcome, usage)
+            remote_child.settled(runtime, target.key, outcome, usage, owed)
           Nil
         }
         Error(Nil) -> Nil
@@ -4227,8 +4631,12 @@ fn joined(
         Pending(..) -> Error(Nil)
       }
     })
-  use usage <- result.map(
+  use usage <- result.try(
     child_usage.of_strands(runtime, settled)
+    |> result.map_error(fn(reason) { agent.PlaneFailed(reason:) }),
+  )
+  use owing <- result.map(
+    delegate_outbox.mail_rows(runtime)
     |> result.map_error(fn(reason) { agent.PlaneFailed(reason:) }),
   )
   list.map(waited, fn(entry) {
@@ -4241,10 +4649,25 @@ fn joined(
           result:,
           notes:,
           usage: usage_of(usage, handle.strand),
+          owed: undelivered(owing, handle.strand),
         )
       Pending(handle:, waited_ms:, ..) ->
         remote_spawn.Pending(handle:, waited_ms:)
     }
+  })
+}
+
+// How many of a child's messages the delegate session has not delivered: its
+// mail rows that no answer has settled. A parent that is told a child finished
+// keeps asking until this is zero, so mail written just before the end is not
+// stranded by the end.
+fn undelivered(
+  rows: List(#(String, delegate_outbox.Mail)),
+  strand: String,
+) -> Int {
+  list.count(rows, fn(row) {
+    { row.1 }.child.strand == strand
+    && { row.1 }.state == delegate_outbox.Pending
   })
 }
 
@@ -4449,9 +4872,35 @@ pub type DelegateEndpoint {
     run_ended: fn(OpId) -> Result(Int, remote_spawn.SpawnRefusal),
     /// Records that the parent session was deleted and stops every child.
     release: fn() -> Result(Int, remote_spawn.SpawnRefusal),
+    /// Delivers a message from the parent into a child, given the parent, the
+    /// child, the message's identity and its text, and answers how it landed
+    /// (`remote_mail.encode_landing`). A repeat of an identity is answered from
+    /// the receipt.
+    send: fn(remote_spawn.Parent, Handle, String, String) ->
+      Result(JsonValue, remote_spawn.SpawnRefusal),
+    /// Reads one page of a child's transcript for the parent, given the
+    /// parent, the child, the sequence the page reads below and the most
+    /// entries it holds, and answers the encoded page
+    /// (`remote_transcript.encode`). Whether the spawner allows it is the
+    /// daemon's question, asked before this one.
+    history: fn(remote_spawn.Parent, Handle, Int, Int) ->
+      Result(JsonValue, remote_spawn.SpawnRefusal),
     /// Whether any child of the session still has a run, which the retention
     /// sweep asks before it closes an idle session.
     occupancy: fn() -> Occupancy,
+    /// Applies the parent's operator's decision to a child's request
+    /// (protocol-change/089), given the parent, the child, the record's identity
+    /// here, the decision, the `seq` the operator was shown, and who decided. The
+    /// agency does not hold the hub that commits decisions, so the host that
+    /// builds the session fills this in; `delegate_endpoint` refuses.
+    resolve: fn(
+      remote_spawn.Parent,
+      Handle,
+      String,
+      remote_escalation.Decision,
+      Int,
+      remote_escalation.Decider,
+    ) -> Result(remote_escalation.Answer, remote_spawn.SpawnRefusal),
   )
 }
 
@@ -4492,8 +4941,600 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
     },
     run_ended: fn(operation) { delegate_run_ended(trimmed, operation) },
     release: fn() { delegate_release(trimmed) },
+    send: fn(parent, child, message_id, text) {
+      delegate_send(trimmed, parent, child, message_id, text)
+    },
+    history: fn(parent, child, cursor, limit) {
+      delegate_history(trimmed, parent, child, cursor, limit)
+    },
     occupancy: fn() { delegate_occupancy(trimmed) },
+    resolve: fn(_parent, _child, _id, _decision, _seq, _decider) {
+      Error(remote_spawn.StoreFailure(
+        reason: "this session has no hub to decide a request",
+      ))
+    },
   )
+}
+
+// --- messages into a child on this orchestrator -------------------------------
+
+/// The key a delegate session stores the receipt of a message from its parent
+/// under. Reserved with the rest of `delegate/`.
+const receipt_prefix = "delegate/receipt/"
+
+/// Delivers a message from the remote parent into one of its children, once.
+///
+/// The message id keys a receipt that is written in the commit that delivers, so
+/// a message the parent's orchestrator sends again is answered `Admitted` and
+/// reaches the child once. A child with an open run takes the message as a steer.
+/// An idle one starts a detached run whose deadline is the budget the child's
+/// lineage cell keeps, so a send cannot lengthen what the spawner allowed.
+/// Nothing here waits on the network or on the holder: it borrows the runtime and
+/// commits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_send(config, parent, child, "7b1c", "also check the tests")
+/// // == Ok(remote_mail.encode_landing(remote_mail.Steered(entry)))
+/// ```
+pub fn delegate_send(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  message_id: String,
+  text: String,
+) -> Result(JsonValue, remote_spawn.SpawnRefusal) {
+  delivered(config, parent, child, message_id, text)
+  |> result.map(remote_mail.encode_landing)
+  |> result.map_error(refused(config, _))
+}
+
+fn delivered(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  message_id: String,
+  text: String,
+) -> Result(remote_mail.Landing, Refusal) {
+  use runtime <- result.try(borrow(config))
+  use ledger <- result.try(read_ledger(runtime))
+  let reference = api.parent_reference_prefix <> parent.strand
+  use Nil <- result.try(case is_descendant(ledger, reference, child.strand) {
+    True -> Ok(Nil)
+    False -> Error(agent.NotADescendant(strand: child.strand))
+  })
+  use Nil <- result.try(
+    case
+      string.byte_size(message_id) > 0
+      && string.byte_size(message_id) <= 128
+      && string.byte_size(text) <= remote_send.max_text_bytes
+    {
+      True -> Ok(Nil)
+      False ->
+        Error(agent.InvalidArgument("the message id or text exceeds its bound"))
+    },
+  )
+  let key = receipt_prefix <> message_id
+  let request =
+    json.Object([
+      #("child", json.String(child.strand)),
+      #("text", json.String(text)),
+    ])
+  use existing <- result.try(
+    api.fact(runtime, key) |> result.map_error(plane_failed),
+  )
+  case existing {
+    Some(held) -> same_send(held, request)
+    None -> {
+      let #(now, _clock) = clock.read(config.clock)
+      let payload =
+        message.UserMessage(
+          content: [
+            message.UserText(
+              text: frame_message(from: reference, body: text),
+              text_signature: None,
+            ),
+          ],
+          timestamp: now,
+          origin: Some(message.StrandOrigin(strand: reference)),
+        )
+      let mark = api.Mark(key:, value: json.Object([#("request", request)]))
+      case
+        api.send_to_strand_marking(
+          runtime,
+          to: child.strand,
+          message: payload,
+          mark:,
+        )
+      {
+        Ok(api.Steered(entry:)) -> Ok(remote_mail.Steered(entry:))
+        Ok(api.Started(operation:)) -> {
+          use deadline <- result.map(run_deadline(
+            runtime,
+            Handle(strand: child.strand, operation:),
+          ))
+
+          // The time left is read after the admission, so it can only be less
+          // than the budget the run was given, never more.
+          let #(later, _clock) = clock.read(config.clock)
+          remote_mail.Started(
+            operation:,
+            remaining_ms: option.map(deadline, fn(at) { int.max(0, at - later) }),
+          )
+        }
+
+        // A twin of this message committed between the read and the write. Its
+        // receipt is the answer.
+        Error(api.FactConflict(..)) -> {
+          use held <- result.try(
+            api.fact(runtime, key) |> result.map_error(plane_failed),
+          )
+          case held {
+            Some(held) -> same_send(held, request)
+            None ->
+              Error(agent.PlaneFailed(
+                "the send's receipt moved under the write",
+              ))
+          }
+        }
+        Error(error) -> Error(agent.PlaneFailed(describe_api(error)))
+      }
+    }
+  }
+}
+
+// --- a page of a child's transcript for its remote parent --------------------
+
+/// Reads one page of a child's transcript for the remote parent that started
+/// it (protocol-change/090).
+///
+/// The page is the child's branch: the entries on the path from the child's
+/// leaf down its parent links, newest first from the store and oldest first on
+/// the page, at most `limit` of them and within the page's byte bound
+/// (`remote_transcript.page_of`). `cursor` is the sequence the page reads
+/// below, zero for the newest page. A child the parent did not start is not
+/// the parent's to read, by the same descent test a send makes, so a parent
+/// cannot page through a sibling's branch or a strand of the delegate session
+/// itself. Nothing here writes, waits on the network or asks the holder: it
+/// borrows the runtime and reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_history(config, parent, child, 0, 50)
+/// // == Ok(remote_transcript.encode(page))
+/// ```
+pub fn delegate_history(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  cursor: Int,
+  limit: Int,
+) -> Result(JsonValue, remote_spawn.SpawnRefusal) {
+  history_page(config, parent, child, cursor, limit)
+  |> result.map(remote_transcript.encode)
+  |> result.map_error(refused(config, _))
+}
+
+fn history_page(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  cursor: Int,
+  limit: Int,
+) -> Result(remote_transcript.Page, Refusal) {
+  use Nil <- result.try(
+    case cursor >= 0 && limit >= 1 && limit <= remote_transcript.max_entries {
+      True -> Ok(Nil)
+      False ->
+        Error(agent.InvalidArgument("the cursor or the limit is out of bounds"))
+    },
+  )
+  use runtime <- result.try(borrow(config))
+  use ledger <- result.try(read_ledger(runtime))
+  let reference = api.parent_reference_prefix <> parent.strand
+  use Nil <- result.try(case is_descendant(ledger, reference, child.strand) {
+    True -> Ok(Nil)
+    False -> Error(agent.NotADescendant(strand: child.strand))
+  })
+  use leaf <- result.try(
+    api.leaf(api.on_strand(runtime, child.strand))
+    |> result.map_error(plane_failed),
+  )
+  case leaf {
+    None ->
+      Ok(remote_transcript.Page(
+        child: child.strand,
+        entries: [],
+        omitted: 0,
+        next: None,
+      ))
+
+    // One more entry than the page holds is read, so the page can say whether
+    // older entries exist without a second read.
+    Some(leaf) -> {
+      let query = storage.branch_scan(leaf) |> storage.branch_limit(limit + 1)
+      let query = case cursor {
+        0 -> query
+        before -> storage.branch_cursor(query, before)
+      }
+      use scanned <- result.map(
+        storage.scan_branch(runtime.session.store, query)
+        |> result.replace_error(agent.PlaneFailed(
+          reason: "the child's branch could not be read",
+        )),
+      )
+      remote_transcript.page_of(child.strand, scanned, limit)
+    }
+  }
+}
+
+// A receipt answers a repeat only if it is a receipt for this message. The id is
+// derived from the sender's call site and is not a proof of what was said, so an
+// id reused for other content is refused and never answered with the first
+// message's receipt.
+fn same_send(
+  held: JsonValue,
+  request: JsonValue,
+) -> Result(remote_mail.Landing, Refusal) {
+  case held {
+    json.Object(fields) ->
+      case list.key_find(fields, "request") == Ok(request) {
+        True -> Ok(remote_mail.Admitted)
+        False ->
+          Error(agent.InvalidArgument(
+            "the message id was already used for different content",
+          ))
+      }
+    _ -> Error(agent.PlaneFailed("the send's receipt is corrupt"))
+  }
+}
+
+// --- mail and progress from a child on another orchestrator -------------------
+
+/// The questions the orchestrator port asks of a parent session's Agency about
+/// what its children on other orchestrators send (protocol-change/084, phase 2),
+/// closed over the holder's name and a trimmed configuration, as
+/// `DelegateEndpoint` is for the other direction.
+///
+/// Each takes `admits`, the daemon's test of whether the message came from the
+/// node of the orchestrator a name stands for. The Agency knows which
+/// orchestrator a child's stub names and not the node it is configured at, and
+/// the daemon knows the roster, so the daemon passes the roster's half as a
+/// function and the Agency applies it to the stub it finds.
+pub type ChildInbox {
+  ChildInbox(
+    /// Admits a child's mail into the parent strand and answers the receipt.
+    mail: fn(remote_spawn.Parent, Handle, String, String, fn(String) -> Bool) ->
+      Result(remote_mail.Receipt, remote_mail.ChildRefusal),
+    /// Keeps a child's glance on its stub.
+    progress: fn(remote_spawn.Parent, Handle, Glance, fn(String) -> Bool) ->
+      Result(Nil, remote_mail.ChildRefusal),
+    /// Files a child's request for more authority for the parent's operator
+    /// (protocol-change/089).
+    escalation: fn(
+      remote_spawn.Parent,
+      Handle,
+      protocol.EscalationRecord,
+      fn(String) -> Bool,
+    ) -> Result(Nil, remote_mail.ChildRefusal),
+  )
+}
+
+/// Projects the inbox of one parent session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.child_inbox(config).mail(parent, child, "7b1c", "done", fn(name) { name == "box" })
+/// ```
+pub fn child_inbox(config: Config) -> ChildInbox {
+  let trimmed =
+    Config(
+      ..config,
+      subagent_model: fn() { Error(Nil) },
+      models: [],
+      peer_defaults: peer_mail.no_defaults,
+      outbox_queued: fn() { Nil },
+      remote: remote_reach.none(""),
+      remote_queued: fn() { Nil },
+    )
+  ChildInbox(
+    mail: fn(parent, child, message_id, text, admits) {
+      admit_child_mail(trimmed, parent, child, message_id, text, admits)
+    },
+    progress: fn(parent, child, glance, admits) {
+      child_progress(trimmed, parent, child, glance, admits)
+    },
+    escalation: fn(parent, child, record, admits) {
+      child_escalation(trimmed, parent, child, record, admits)
+    },
+  )
+}
+
+// Asks the holder to admit the mail. A holder that is not up, or that does not
+// answer in its bound, is a store failure: the box asks again only for
+// `ParentSessionNotOpen`, and a store failure settles the row, which is why the
+// answer says what it was and nothing is retried on a guess.
+fn admit_child_mail(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  message_id: String,
+  text: String,
+  admits: fn(String) -> Bool,
+) -> Result(remote_mail.Receipt, remote_mail.ChildRefusal) {
+  use subject <- result.try(
+    holder_subject(config)
+    |> result.replace_error(remote_mail.Busy(
+      reason: "the parent session's Agency is not running",
+    )),
+  )
+  use answer <- result.try(
+    call.try_call(
+      subject,
+      waiting: config.holder_timeout_ms,
+      sending: fn(reply) {
+        AdmitChildMail(parent:, child:, message_id:, text:, admits:, reply:)
+      },
+    )
+    |> result.replace_error(remote_mail.Busy(
+      reason: "the parent session's Agency did not answer",
+    )),
+  )
+  answer
+}
+
+// Finds the stub a message about a child concerns, by the child's name and the
+// parent strand it reports to, and checks that the message came from the
+// orchestrator that stub names. Nothing here reads the lineage cell or the
+// handle: the stub is written before the first `Spawn` leaves, so it exists
+// whatever state the spawn has reached.
+fn stub_for(
+  runtime: api.Runtime,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  admits: fn(String) -> Bool,
+) -> Result(remote_child.Kept, remote_mail.ChildRefusal) {
+  use kept <- result.try(
+    remote_child.all(runtime)
+    |> result.map_error(fn(reason) { remote_mail.Busy(reason:) }),
+  )
+  use entry <- result.try(
+    remote_child.find_named(kept, parent.strand, child.strand)
+    |> result.replace_error(remote_mail.UnknownChild),
+  )
+  case admits(entry.stub.orchestrator) {
+    True -> Ok(entry)
+    False -> Error(remote_mail.OriginMismatch)
+  }
+}
+
+// The holder's half of a child's mail: the stub, the receipt, and the steer.
+fn admit_mail(
+  config: Config,
+  runtime: api.Runtime,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  message_id: String,
+  text: String,
+  admits: fn(String) -> Bool,
+) -> Result(remote_mail.Receipt, remote_mail.ChildRefusal) {
+  use _entry <- result.try(stub_for(runtime, parent, child, admits))
+  use Nil <- result.try(
+    case
+      string.byte_size(message_id) > 0
+      && string.byte_size(message_id) <= 128
+      && string.byte_size(text) <= remote_send.max_text_bytes
+    {
+      True -> Ok(Nil)
+      False ->
+        Error(remote_mail.StoreFailure(
+          reason: "the message id or text exceeds its bound",
+        ))
+    },
+  )
+  let key = api.remote_mail_fact_prefix <> message_id
+  let request =
+    json.Object([
+      #("child", json.String(child.strand)),
+      #("text", json.String(text)),
+    ])
+  use existing <- result.try(
+    api.fact(runtime, key) |> result.map_error(mail_failure),
+  )
+  case existing {
+    Some(held) -> same_mail(held, request)
+    None -> steer_mail(config, runtime, parent, child, text, key, request)
+  }
+}
+
+// Steers the parent strand and writes the receipt in one commit. A parent with
+// no run open cannot be steered, and a finished parent is never woken for a
+// child's message, so the refusal is written alone as the receipt, and the child
+// reads it on its outbox row. Either way the message id is spent.
+fn steer_mail(
+  config: Config,
+  runtime: api.Runtime,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  text: String,
+  key: String,
+  request: JsonValue,
+) -> Result(remote_mail.Receipt, remote_mail.ChildRefusal) {
+  let #(now, _clock) = clock.read(config.clock)
+  let payload =
+    message.UserMessage(
+      content: [
+        message.UserText(
+          text: frame_message(from: child.strand, body: text),
+          text_signature: None,
+        ),
+      ],
+      timestamp: now,
+      origin: Some(message.StrandOrigin(strand: child.strand)),
+    )
+  let target = api.on_strand(runtime, parent.strand)
+  let mark = api.Mark(key:, value: mail_cell(request, remote_mail.Delivered))
+  case api.steer_marking(target, payload, mark) {
+    Ok(_entry) -> {
+      api.nudge(target)
+      Ok(remote_mail.Delivered)
+    }
+    Error(api.FactConflict(..)) -> {
+      use held <- result.try(
+        api.fact(runtime, key) |> result.map_error(mail_failure),
+      )
+      case held {
+        Some(held) -> same_mail(held, request)
+        None ->
+          Error(remote_mail.StoreFailure(
+            reason: "the mail's receipt moved under the write",
+          ))
+      }
+    }
+    Error(api.QueueRejected(..)) -> {
+      let declined =
+        remote_mail.Declined(
+          reason: "the parent has no run open, and a finished parent is not "
+          <> "woken for a child's message",
+        )
+      case
+        api.put_reserved_fact_expecting(
+          runtime,
+          key,
+          mail_cell(request, declined),
+          expected: None,
+        )
+      {
+        Ok(_) -> Ok(declined)
+        Error(api.FactConflict(..)) -> {
+          use held <- result.try(
+            api.fact(runtime, key) |> result.map_error(mail_failure),
+          )
+          case held {
+            Some(held) -> same_mail(held, request)
+            None ->
+              Error(remote_mail.StoreFailure(
+                reason: "the mail's receipt moved under the write",
+              ))
+          }
+        }
+        Error(error) -> Error(mail_failure(error))
+      }
+    }
+    Error(error) -> Error(mail_failure(error))
+  }
+}
+
+// The value a mail receipt cell holds: what was asked, so a repeat can be told
+// from an id reused for other content, and what became of it.
+fn mail_cell(request: JsonValue, receipt: remote_mail.Receipt) -> JsonValue {
+  json.Object([
+    #("request", request),
+    #("receipt", remote_mail.encode_receipt(receipt)),
+  ])
+}
+
+// A stored receipt answers a repeat only for the same request.
+fn same_mail(
+  held: JsonValue,
+  request: JsonValue,
+) -> Result(remote_mail.Receipt, remote_mail.ChildRefusal) {
+  case held {
+    json.Object(fields) ->
+      case list.key_find(fields, "request") == Ok(request) {
+        True ->
+          list.key_find(fields, "receipt")
+          |> result.replace_error(remote_mail.StoreFailure(
+            reason: "the mail's receipt is corrupt",
+          ))
+          |> result.try(fn(stored) {
+            remote_mail.decode_receipt(stored)
+            |> result.map_error(fn(reason) { remote_mail.StoreFailure(reason:) })
+          })
+        False ->
+          Error(remote_mail.StoreFailure(
+            reason: "the message id was already used for different content",
+          ))
+      }
+    _ ->
+      Error(remote_mail.StoreFailure(reason: "the mail's receipt is corrupt"))
+  }
+}
+
+fn mail_failure(error: api.ApiError) -> remote_mail.ChildRefusal {
+  remote_mail.Busy(reason: describe_api(error))
+}
+
+// A glance from another machine is text a model wrote, and the stub stores it, so
+// the title and the summary are cut to the bounds a local glance is written
+// under, at a character boundary.
+fn bounded_glance(seen: Glance) -> Glance {
+  glance.Glance(
+    ..seen,
+    title: cut(seen.title, glance.max_title_bytes),
+    summary: cut(seen.summary, glance.max_summary_bytes),
+  )
+}
+
+fn cut(text: String, bytes: Int) -> String {
+  string.to_graphemes(text)
+  |> list.fold_until("", fn(kept, piece) {
+    case string.byte_size(kept <> piece) <= bytes {
+      True -> list.Continue(kept <> piece)
+      False -> list.Stop(kept)
+    }
+  })
+}
+
+// Keeps a child's glance on its stub. A glance for a stub in any state is kept,
+// so one that arrives before the answer to the `Spawn` is still there when
+// `spawned` writes the state. It runs on the caller's process: the write is one
+// compare-and-set on the stub, which does not need the holder's serialization.
+fn child_progress(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  glance: Glance,
+  admits: fn(String) -> Bool,
+) -> Result(Nil, remote_mail.ChildRefusal) {
+  use runtime <- result.try(
+    borrow(config)
+    |> result.replace_error(remote_mail.Busy(
+      reason: "the parent session's Agency is not running",
+    )),
+  )
+  use entry <- result.try(stub_for(runtime, parent, child, admits))
+  let #(now, _clock) = clock.read(config.clock)
+  remote_child.progressed(runtime, entry.key, bounded_glance(glance), now)
+  |> result.map(fn(_stub) { Nil })
+  |> result.map_error(fn(reason) { remote_mail.Busy(reason:) })
+}
+
+// Files a child's request for the parent's operator. It is found by the stub, in
+// any state, for the reason a glance is: the stub is written before the first
+// `Spawn` leaves, so a request that overtakes the answer to the `Spawn` still
+// finds it. It runs on the caller's process, because the write is one
+// compare-and-set on the cell, which `remote_escalation_store.keep` makes safe to
+// repeat and to reorder.
+fn child_escalation(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  record: protocol.EscalationRecord,
+  admits: fn(String) -> Bool,
+) -> Result(Nil, remote_mail.ChildRefusal) {
+  use runtime <- result.try(
+    borrow(config)
+    |> result.replace_error(remote_mail.Busy(
+      reason: "the parent session's Agency is not running",
+    )),
+  )
+  use entry <- result.try(stub_for(runtime, parent, child, admits))
+  remote_escalation_store.keep(runtime, entry.stub.orchestrator, record)
+  |> result.map_error(fn(reason) { remote_mail.Busy(reason:) })
 }
 
 // The holder's mailbox, or the refusal a spawner reads when it is not up.

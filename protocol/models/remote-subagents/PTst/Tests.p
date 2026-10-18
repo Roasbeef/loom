@@ -15,9 +15,9 @@ module System = { Wire, Port, Laptop, SpawnCall, Chaos, Harness };
 // refuse. Site 1 shares run 0 with site 0.
 fun detached(): seq[tPlanSite] {
   var s: seq[tPlanSite];
-  s += (0, (site = 0, run = 0, owner = -1));
-  s += (1, (site = 1, run = 0, owner = -1));
-  s += (2, (site = 2, run = 1, owner = -1));
+  s += (0, (site = 0, run = 0, owner = -1, target = 0));
+  s += (1, (site = 1, run = 0, owner = -1, target = 0));
+  s += (2, (site = 2, run = 1, owner = -1, target = 0));
   return s;
 }
 
@@ -25,9 +25,9 @@ fun detached(): seq[tPlanSite] {
 // spawn is. The phase 2 `Release` is the sender these cases stand in for.
 fun attached(): seq[tPlanSite] {
   var s: seq[tPlanSite];
-  s += (0, (site = 0, run = 0, owner = 0));
-  s += (1, (site = 1, run = 0, owner = 0));
-  s += (2, (site = 2, run = 1, owner = 1));
+  s += (0, (site = 0, run = 0, owner = 0, target = 0));
+  s += (1, (site = 1, run = 0, owner = 0, target = 0));
+  s += (2, (site = 2, run = 1, owner = 1, target = 0));
   return s;
 }
 
@@ -46,7 +46,7 @@ fun noRuns(): seq[int] {
 machine TestQuiet {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 0, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 0, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 0, grandBreaks = 0));
     }
   }
 }
@@ -55,7 +55,7 @@ machine TestQuiet {
 machine TestDrops {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 3, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 3, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 0, grandBreaks = 0));
     }
   }
 }
@@ -65,7 +65,7 @@ machine TestDrops {
 machine TestAbort {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 1, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 1, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 0, grandBreaks = 0));
     }
   }
 }
@@ -74,7 +74,7 @@ machine TestAbort {
 machine TestRestart {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 1, crashes = 2, aborts = 0, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 1, crashes = 2, aborts = 0, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 0, grandBreaks = 0));
     }
   }
 }
@@ -83,7 +83,7 @@ machine TestRestart {
 machine TestAll {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 0, grandBreaks = 0));
     }
   }
 }
@@ -93,7 +93,7 @@ machine TestAll {
 machine TestRunEnd {
   start state Init {
     entry {
-      new Harness((sites = attached(), breaks = 1, crashes = 0, aborts = 1, ends = bothRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0));
+      new Harness((sites = attached(), breaks = 1, crashes = 0, aborts = 1, ends = bothRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 0, grandBreaks = 0));
     }
   }
 }
@@ -105,10 +105,76 @@ machine TestRunEnd {
 machine TestRelease {
   start state Init {
     entry {
-      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 1, drains = 1));
+      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 1, drains = 1, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 0, grandBreaks = 0));
     }
   }
 }
+
+// Phase 2 mail: running children mail their parent while the connection breaks
+// and the remote restarts, the laptop's parent session closes and its run ends,
+// and the remote's drainer passes at any point. Spawn answers are lost to the
+// breaks, so mail can reach a stub that is still `Requested`.
+machine TestUpward {
+  start state Init {
+    entry {
+      new Harness((sites = detached(), breaks = 2, crashes = 1, aborts = 1, ends = noRuns(), finishes = 1, pokes = 2, deletes = 0, drains = 0, upwards = 3, mailPasses = 3, closes = 1, runEnds = 1, reconnects = 1, grands = 0, grandBreaks = 0));
+    }
+  }
+}
+
+// Mail and nothing else that stops children: the cases that single out a rule.
+machine TestUpwardOnly {
+  start state Init {
+    entry {
+      new Harness((sites = detached(), breaks = 3, crashes = 0, aborts = 1, ends = noRuns(), finishes = 0, pokes = 2, deletes = 0, drains = 0, upwards = 3, mailPasses = 4, closes = 1, runEnds = 1, reconnects = 1, grands = 0, grandBreaks = 0));
+    }
+  }
+}
+
+// Phase 4 depth: children on the box start children of their own on a third
+// orchestrator while both connections break and the box restarts, and the
+// laptop deletes the parent session, so the box's release must reach the third
+// orchestrator through the box's own release rows.
+machine TestDepth {
+  start state Init {
+    entry {
+      new Harness((sites = detached(), breaks = 1, crashes = 1, aborts = 0, ends = noRuns(), finishes = 1, pokes = 2, deletes = 1, drains = 1, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 3, grandBreaks = 2));
+    }
+  }
+}
+
+// Grandchildren spawned over a connection that breaks often, with no deletion
+// to end their spawns early: the case for a resend that strays to the other
+// third orchestrator.
+machine TestDepthOnly {
+  start state Init {
+    entry {
+      new Harness((sites = detached(), breaks = 0, crashes = 0, aborts = 0, ends = noRuns(), finishes = 0, pokes = 1, deletes = 0, drains = 0, upwards = 0, mailPasses = 0, closes = 0, runEnds = 0, reconnects = 0, grands = 3, grandBreaks = 3));
+    }
+  }
+}
+
+test tcDepth [main = TestDepth]:
+  assert AtMostOneChildPerSite, OneOrchestratorPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, ReleasedSessionHasNoRunningChild, ReleaseMakesNoSession, EveryReleaseIsTold, ReleasedDescendantsEnd, NoSpawnAfterOwnRelease, EveryStubAnswered, EveryChildTerminal in
+  (union System, { TestDepth });
+
+test tcOnlyOneOrchestratorPerSite [main = TestDepthOnly]:
+  assert OneOrchestratorPerSite in (union System, { TestDepthOnly });
+
+test tcOnlyNoSpawnAfterOwnRelease [main = TestDepth]:
+  assert NoSpawnAfterOwnRelease in (union System, { TestDepth });
+
+test tcOnlyReleasedDescendantsEnd [main = TestDepth]:
+  assert ReleasedDescendantsEnd in (union System, { TestDepth });
+
+test tcProbeGrandchildMade [main = TestDepth]:
+  assert ProbeGrandchildMade in (union System, { TestDepth });
+
+test tcProbeCascadeOwed [main = TestDepth]:
+  assert ProbeCascadeOwed in (union System, { TestDepth });
+
+test tcProbeGrandchildReleased [main = TestDepth]:
+  assert ProbeGrandchildReleased in (union System, { TestDepth });
 
 test tcQuiet [main = TestQuiet]:
   assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, EveryStubAnswered, EveryChildTerminal in
@@ -135,7 +201,7 @@ test tcRunEnd [main = TestRunEnd]:
   (union System, { TestRunEnd });
 
 test tcRelease [main = TestRelease]:
-  assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, ReleasedSessionHasNoRunningChild, ReleaseMakesNoSession, EveryReleaseIsTold, EveryStubAnswered, EveryChildTerminal in
+  assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, ReleasedSessionHasNoRunningChild, ReleaseMakesNoSession, EveryReleaseIsTold, NoSpawnAfterOwnRelease, EveryStubAnswered, EveryChildTerminal in
   (union System, { TestRelease });
 
 // One spec each, for mutate.py.
@@ -199,3 +265,34 @@ test tcProbeReleaseFoundNoSession [main = TestRelease]:
 
 test tcProbeSessionDeleted [main = TestRelease]:
   assert ProbeSessionDeleted in (union System, { TestRelease });
+
+test tcUpward [main = TestUpward]:
+  assert AtMostOneChildPerSite, OwnChildOnly, AnswerIsStable, JoinReportsOwnChild, TerminalOnce, UpwardAtMostOnce, UpwardOnlyIntoOpenRun, EveryMailAnswered, MailFindsItsStub, EveryStubAnswered, EveryChildTerminal in
+  (union System, { TestUpward });
+
+test tcOnlyUpwardAtMostOnce [main = TestUpwardOnly]:
+  assert UpwardAtMostOnce in (union System, { TestUpwardOnly });
+
+test tcOnlyUpwardOnlyIntoOpenRun [main = TestUpwardOnly]:
+  assert UpwardOnlyIntoOpenRun in (union System, { TestUpwardOnly });
+
+test tcOnlyEveryMailAnswered [main = TestUpwardOnly]:
+  assert EveryMailAnswered in (union System, { TestUpwardOnly });
+
+test tcOnlyMailFindsItsStub [main = TestUpwardOnly]:
+  assert MailFindsItsStub in (union System, { TestUpwardOnly });
+
+test tcProbeMailDelivered [main = TestUpward]:
+  assert ProbeMailDelivered in (union System, { TestUpward });
+
+test tcProbeMailDeclined [main = TestUpward]:
+  assert ProbeMailDeclined in (union System, { TestUpward });
+
+test tcProbeMailNotOpen [main = TestUpward]:
+  assert ProbeMailNotOpen in (union System, { TestUpward });
+
+test tcProbeMailRepeated [main = TestUpward]:
+  assert ProbeMailRepeated in (union System, { TestUpward });
+
+test tcProbeMailForRequested [main = TestUpward]:
+  assert ProbeMailForRequested in (union System, { TestUpward });

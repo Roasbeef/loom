@@ -14,6 +14,7 @@ import client/remote_spawn.{Attached, CallSite, Origin, Parent, Request}
 import client/spawners.{type Spawner}
 import core/clock
 import core/ids
+import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/option.{None}
 import tools/agent
@@ -83,7 +84,9 @@ type Heard {
   Spawn(remote_spawn.Delegation)
   Join(remote_spawn.Parent, Int)
   Ended(ids.OpId)
+  Sent(remote_spawn.Parent, agent.Handle, String, String)
   Released
+  Read(remote_spawn.Parent, agent.Handle, Int, Int)
 }
 
 fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
@@ -104,16 +107,28 @@ fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
       process.send(heard, Released)
       Ok(4)
     },
+    send: fn(parent, child, message_id, text) {
+      process.send(heard, Sent(parent, child, message_id, text))
+      Ok(json.Null)
+    },
+    history: fn(parent, child, cursor, limit) {
+      process.send(heard, Read(parent, child, cursor, limit))
+      Ok(json.Object([]))
+    },
     occupancy: fn() { agency.Vacant },
+    resolve: fn(_parent, _child, _id, _decision, _seq, _decider) {
+      Error(remote_spawn.StoreFailure(reason: "not under test"))
+    },
   )
 }
 
-pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_four_test() {
+pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_five_test() {
   let host =
     main.spawn_host(
       configured(),
       fn(_, _) { panic as "an unknown node must not reach a session" },
       fn(_, _) { panic as "an unknown node must not release a session" },
+      fn(_, _) { panic as "an unknown node must not look for a session" },
     )
   let stranger = origin("stranger@10.0.0.9")
   let refusal = remote_spawn.UnknownSpawner(node: "stranger@10.0.0.9")
@@ -121,6 +136,8 @@ pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_four_test() {
   assert host.join(stranger, [], 1000) == Error(refusal)
   assert host.run_ended(stranger, operation()) == Error(refusal)
   assert host.release(stranger) == Error(refusal)
+  assert host.send(stranger, a_child(), "m1", "hello") == Error(refusal)
+  assert host.history(stranger, a_child(), 0, 50) == Error(refusal)
 }
 
 pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
@@ -129,6 +146,7 @@ pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
       [],
       fn(_, _) { panic as "a daemon with no spawners must not reach a session" },
       fn(_, _) { panic as "a daemon with no spawners must not release one" },
+      fn(_, _) { panic as "a daemon with no spawners must not look for one" },
     )
   let laptop = origin("laptop@100.64.0.5")
   let refusal = remote_spawn.UnknownSpawner(node: "laptop@100.64.0.5")
@@ -136,6 +154,11 @@ pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
   assert host.join(laptop, [], 1000) == Error(refusal)
   assert host.run_ended(laptop, operation()) == Error(refusal)
   assert host.release(laptop) == Error(refusal)
+  assert host.send(laptop, a_child(), "m1", "hello") == Error(refusal)
+}
+
+fn a_child() -> agent.Handle {
+  agent.Handle(strand: "sub:^main/run-the-suite-1", operation: operation())
 }
 
 pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
@@ -152,6 +175,10 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
       fn(spawner, parent) {
         process.send(released, #(spawner.name, parent))
         Ok(4)
+      },
+      fn(spawner, parent) {
+        process.send(asked, #(spawner.name, parent))
+        Ok(option.Some(recording(heard)))
       },
     )
   let laptop = origin("laptop@100.64.0.5")
@@ -180,8 +207,15 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
   assert host.run_ended(laptop, operation()) == Ok(3)
   assert process.receive(heard, 0) == Ok(Ended(operation()))
 
+  // A send reaches the same session with the parent, the child, the message's
+  // identity and its text, and nothing else of the origin.
+  assert host.send(laptop, a_child(), "m1", "also the tests") == Ok(json.Null)
+  assert process.receive(heard, 0)
+    == Ok(Sent(laptop.parent, a_child(), "m1", "also the tests"))
+
   // Each message asked for the session of the spawner's name and the parent it
   // named, and for no other.
+  assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Ok(#("laptop", laptop.parent))
@@ -192,14 +226,22 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
   assert host.release(laptop) == Ok(4)
   assert process.receive(released, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Error(Nil)
+
+  // The spawner's table names no `transcript`, so its children's transcripts
+  // stay here: a read is refused before any session is looked for.
+  assert host.history(laptop, a_child(), 0, 50)
+    == Error(remote_spawn.TranscriptHidden)
 }
 
 pub fn a_refusal_to_find_the_session_is_the_answer_to_each_message_test() {
   let refusal = remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4)
   let host =
-    main.spawn_host(configured(), fn(_, _) { Error(refusal) }, fn(_, _) {
-      Error(refusal)
-    })
+    main.spawn_host(
+      configured(),
+      fn(_, _) { Error(refusal) },
+      fn(_, _) { Error(refusal) },
+      fn(_, _) { Error(refusal) },
+    )
   let laptop = origin("laptop@100.64.0.5")
   assert host.spawn(laptop, call_site(), 0, [], request()) == Error(refusal)
   assert host.join(laptop, [], 1000) == Error(refusal)

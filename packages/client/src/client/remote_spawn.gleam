@@ -192,6 +192,12 @@ pub type Joined {
     notes: List(#(String, JsonValue)),
     /// What the run cost.
     usage: ChildUsage,
+    /// How many messages the child sent its parent that the receiving
+    /// orchestrator still has not delivered, because the parent's orchestrator was
+    /// away or closed. A child that has finished can still owe mail, so the
+    /// parent keeps its connection to the orchestrator up and asks again until
+    /// this reaches zero.
+    owed: Int,
   )
 
   /// The window ended first. Not an error: the parent may ask again.
@@ -271,6 +277,22 @@ pub type SpawnRefusal {
     /// What failed.
     reason: String,
   )
+
+  /// The delegate session the message needs did not open within the
+  /// receiver's budget, and asking again later can succeed. The usual cause is
+  /// a receiver that restarted after it was killed: the session file still
+  /// carries the dead daemon's writer lease, which expires on its own within a
+  /// minute. The sender treats this as silence and asks again, so a stub is
+  /// never left refused by a session that was only slow to open.
+  NotYetOpen(
+    /// What the registry said, in words for a person.
+    reason: String,
+  )
+
+  /// The spawner's table keeps its children's transcripts on the receiver
+  /// (`[spawners.<name>] transcript = "hidden"`, the default), so a
+  /// `ChildHistory` is not answered with any of it (protocol-change/090).
+  TranscriptHidden
 }
 
 /// The longest one join waits on the receiver, in milliseconds. A sender may ask
@@ -337,9 +359,7 @@ pub fn agent_request(
     Some(asked) if asked <= 0 ->
       Error(InvalidArgument(reason: "within_ms must be positive"))
     Some(asked) if asked > terms.max_within_ms ->
-      Error(InvalidArgument(
-        reason: "within_ms is above this spawner's max_within_s",
-      ))
+      Error(InvalidArgument(reason: over_cap(asked, terms.max_within_ms)))
     Some(asked) -> Ok(asked)
   })
   use Nil <- result.try(case request.tools {
@@ -364,6 +384,29 @@ pub fn agent_request(
     },
     on: None,
   ))
+}
+
+/// The refusal of a deadline above the spawner's cap, naming both figures.
+///
+/// A parent on a deeper orchestrator that names no deadline is sent what its
+/// own deadline leaves (protocol-change/084, phase 4), which this spawner's cap
+/// may be below. The model that reads the refusal then needs both numbers to ask
+/// again with a budget that fits, in one step.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawn.over_cap(90_000, 60_000)
+///   == "within_ms 90000 is above this spawner's max_within_s of 60000 ms; ask for 60000 or less"
+/// ```
+pub fn over_cap(asked: Int, max_within_ms: Int) -> String {
+  "within_ms "
+  <> int.to_string(asked)
+  <> " is above this spawner's max_within_s of "
+  <> int.to_string(max_within_ms)
+  <> " ms; ask for "
+  <> int.to_string(max_within_ms)
+  <> " or less"
 }
 
 /// The parent's tools that the ceiling also holds. A child's tools are narrowed
@@ -450,6 +493,10 @@ pub fn describe_refusal(refusal: SpawnRefusal) -> String {
     NameAlreadyMinted ->
       "a different call already started a child under that name"
     StoreFailure(reason:) -> "its store failed: " <> reason
+    TranscriptHidden ->
+      "it keeps the transcripts of this spawner's children to itself"
+    NotYetOpen(reason:) ->
+      "its session for this parent is not open yet: " <> reason
   }
 }
 

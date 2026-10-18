@@ -22,6 +22,7 @@ fn record(seq: Int, status: approval.Status) -> approval.Review {
       json.Object([#("kind", json.String("network"))]),
     ]),
     strand: None,
+    remote: option.None,
   )
 }
 

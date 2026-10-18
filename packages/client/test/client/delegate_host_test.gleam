@@ -13,19 +13,30 @@ import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/delegate_host
 import client/internal/ffi_os
+import client/peer_outbox_drain
+import client/remote_child
+import client/remote_escalation
+import client/remote_reach
+import client/remote_release
 import client/remote_spawn.{Parent}
 import client/spawners
 import core/clock
 import core/ids
+import core/json
 import gleam/erlang/process
 import gleam/int
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import host/bootstrap
 import simplifile
 import sqlight
 import storage/catalogue
 import storage/domain
+import support/fake_orchestrators
+import support/remote_stubs
+import telemetry/log
+import tools/agent
 import weft/poll
 
 fn configuration(placement: String) -> String {
@@ -87,7 +98,12 @@ fn tagged_with(
     join: fn(_parent, _handles, _within_ms) { Ok([]) },
     run_ended: fn(_operation) { Ok(tag) },
     release: fn() { Ok(tag) },
+    send: fn(_parent, _child, _message_id, _text) { Ok(json.Null) },
+    history: fn(_parent, _child, _cursor, _limit) { Ok(json.Null) },
     occupancy: fn() { occupancy },
+    resolve: fn(_parent, _child, _id, _decision, _seq, _decider) {
+      Error(remote_spawn.StoreFailure(reason: "not under test"))
+    },
   )
 }
 
@@ -465,6 +481,16 @@ pub fn a_session_is_a_delegate_once_the_registry_has_recorded_its_pair_test() {
     == Ok(option.Some(agency.delegate_deadline_tick_ms))
   assert daemon_main.deadline_tick_of(registry, parent(61).session)
     == Ok(option.None)
+
+  // Its Agency judges spawns by the spawner's `max_depth`, and any other session
+  // keeps the Agency's own default. A spawner whose table is gone gives none.
+  let deeper = spawners.Spawner(..laptop, max_depth: 3)
+  assert daemon_main.depth_cap_of(registry, [deeper], recorded.session_id)
+    == option.Some(3)
+  assert daemon_main.depth_cap_of(registry, [deeper], parent(61).session)
+    == option.None
+  assert daemon_main.depth_cap_of(registry, [], recorded.session_id)
+    == option.None
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }
@@ -956,5 +982,161 @@ pub fn a_registry_that_does_not_answer_a_claim_is_a_store_failure_test() {
   // spawner retries. It is never a cap.
   let assert Error(remote_spawn.StoreFailure(_)) =
     claim(registry, None, Some(1), 4242)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A message about a child that exists (a send into it, a decision about its
+// request) is served by the pair's session if one is open, and never makes one.
+// A stale card answered after the child finished and its session was deleted
+// must not open a fresh session only to refuse the message.
+pub fn a_send_or_a_decision_for_a_pair_with_no_session_creates_none_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  let here = context(registry, "/delegate-host/sessions")
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(90)
+  assert delegate_host.existing_endpoint(here)(laptop, remote) == Ok(None)
+
+  let host =
+    daemon_main.spawn_host(
+      [laptop],
+      delegate_host.resolver(here),
+      delegate_host.releaser(here),
+      delegate_host.existing_endpoint(here),
+    )
+  let origin = remote_spawn.Origin(node: "laptop@100.64.0.5", parent: remote)
+  let child =
+    agent.Handle(
+      strand: "sub:^main/run-the-suite-1",
+      operation: ids.mint_op(ids.generator(clock.fixed(at: 0), seed: 5)).0,
+    )
+  let held =
+    remote_spawn.InvalidArgument(
+      reason: "this orchestrator holds no such child for that parent",
+    )
+  assert host.send(origin, child, "m1", "hello") == Error(held)
+  assert host.resolve(
+      origin,
+      child,
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+    )
+    == Error(held)
+
+  // Neither the registry nor the catalogue holds a row for the pair, and no
+  // session was made.
+  assert manager.delegate_pair(registry, "laptop", remote.session) == Ok(None)
+  assert catalogue.delegates_held(store, "laptop") == Ok(0)
+  assert catalogue.by_request_key(store, "delegate:laptop:" <> remote.session)
+    == Error(catalogue.Missing)
+}
+
+// --- the release cascades (protocol-change/084, phase 4) ---------------------
+//
+// A delegate session's own children may have started children on a third
+// orchestrator, and the session's stubs are the only record of them. The
+// registry reads them from the closed file in the turn that deletes the drained
+// session and writes a release row for each orchestrator they name. Until then
+// the session may still resend a spawn, so a row written earlier could let a
+// spawn reach the third orchestrator after its release.
+
+// The release drainer's pass over `registry`, asking through `reach`.
+fn cascade_pass(
+  registry: manager.Manager(agency.DelegateEndpoint),
+  reach: remote_reach.Reach,
+) -> fn() -> peer_outbox_drain.Backlog {
+  remote_release.pass(
+    fn() {
+      manager.remote_releases(registry) |> result.map_error(string.inspect)
+    },
+    fn(release) {
+      manager.settle_remote_release(registry, release)
+      |> result.map_error(string.inspect)
+    },
+    reach.release,
+    log.discard(),
+  )
+}
+
+// The stubs a delegate session's children wrote: one spawn on `third` still
+// unanswered, and one that `fourth` refused, which made no child.
+fn grandchild_stubs(path: String) -> Nil {
+  remote_stubs.write(path, [
+    remote_stubs.stub("third", 1, remote_child.Requested),
+    remote_stubs.stub("fourth", 2, remote_child.Refused(reason: "no table")),
+  ])
+}
+
+pub fn a_closed_session_owes_its_childrens_children_a_release_test() {
+  let sessions = scratch("cascade-closed")
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(86)
+  let first = started(store, fn(built) { Ok(tagged(built)) })
+  let assert Ok(_) =
+    delegate_host.resolver(context(first, sessions))(laptop, remote)
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", remote.session)
+  stop(first)
+  let assert Ok(registration) = catalogue.get(store, recorded.session_id)
+  grandchild_stubs(registration.path)
+
+  // The session is closed, so the release deletes it in its own turn, and that
+  // turn reads the file and owes `third` a release for the delegate session.
+  // `fourth` refused its spawn and is owed nothing.
+  let second = started(store, fn(_built) { Error("must not open") })
+  assert delegate_host.releaser(context(second, sessions))(laptop, remote)
+    == Ok(0)
+  assert catalogue.get(store, recorded.session_id) == Error(catalogue.Missing)
+  let assert Ok([row]) = catalogue.remote_releases(store)
+  assert row.parent_session == recorded.session_id
+  assert row.orchestrator == "third"
+
+  // The drainer's pass tells `third`, naming the delegate session as the
+  // parent, and settles the row on its answer.
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let pass =
+    cascade_pass(second, fake_orchestrators.reach("", [third], fn() { True }))
+  assert pass() == peer_outbox_drain.Clear
+  assert fake_orchestrators.report(third).releases
+    == [Parent(session: recorded.session_id, strand: "main")]
+  assert catalogue.remote_releases(store) == Ok([])
+  stop(second)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn a_resident_session_owes_the_release_only_once_its_slot_has_drained_test() {
+  let sessions = scratch("cascade-resident")
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let rung = process.new_subject()
+  let registry = started(store, fn(built) { Ok(tagged(built)) })
+  manager.on_releases_owed(registry, fn() { process.send(rung, Nil) })
+  let here = context(registry, sessions)
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(87)
+  let assert Ok(first) = delegate_host.resolver(here)(laptop, remote)
+  let assert Ok(option.Some(recorded)) =
+    catalogue.delegate_for(store, "laptop", remote.session)
+  let assert Ok(registration) = catalogue.get(store, recorded.session_id)
+  grandchild_stubs(registration.path)
+  assert delegate_host.releaser(here)(laptop, remote) == Ok(tag_of(first))
+
+  // The row is written in the registry turn that deletes the session, after the
+  // slot has drained and nothing of the session can resend a spawn. Asked
+  // through the registry, which serializes with that turn, the row and the
+  // session are never seen together.
+  let assert Ok(Nil) = process.receive(rung, 5000)
+    as "the release drainer is rung for the row"
+  let assert Ok([row]) = manager.remote_releases(registry)
+  assert row.orchestrator == "third"
+  let assert Error(manager.Catalogue(catalogue.Missing)) =
+    manager.get(registry, recorded.session_id)
+
+  // A repeat finds no row for the pair, answers zero and owes nothing more.
+  assert delegate_host.releaser(here)(laptop, remote) == Ok(0)
+  let assert Ok([_still_one]) = catalogue.remote_releases(store)
+  stop(registry)
   assert catalogue.close(store) == Ok(Nil)
 }

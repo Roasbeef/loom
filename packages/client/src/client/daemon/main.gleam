@@ -8,15 +8,17 @@
 //// ## Flow
 ////
 //// `main` → `claim_endpoint` → `prepare_startup` → `run` → `start_executor` →
-//// `start_movers` → `node_reads` → `start_orchestrator_port` →
-//// `start_release_drain` → `start_delegate_sweep` → `listen_moving` →
-//// `publish_endpoint` → `wait`
+//// `start_link_keepers` → `start_movers` → `node_reads` →
+//// `start_orchestrator_port` → `start_release_drain` → `start_delegate_sweep` →
+//// `listen_moving` → `publish_endpoint` → `wait`
 ////
 //// 1. `main` parses the flags, `claim_endpoint` reserves this VM, and
 ////    `prepare_startup` reads the configuration once and prepares the root.
 //// 2. `run` starts the daemon's services in order. `start_executor` comes
 ////    first, so a machine that serves workspaces answers peers before any
-////    client can connect. `sweep_delegate_sessions` then settles the delegate
+////    client can connect. `start_link_keepers` follows it and starts one
+////    connection keeper for each `[orchestrators.<name>]`, which a session's
+////    drainer votes to while it has a child there. `sweep_delegate_sessions` then settles the delegate
 ////    sessions a previous run left, before anything is served or moved.
 ////    `start_movers` follows it and resumes every move this
 ////    daemon had in flight, and `start_orchestrator_port` follows that, so a
@@ -33,10 +35,15 @@
 ////    starts the hourly pass that deletes delegate sessions whose spawner was
 ////    removed and closes idle resident ones, using the same
 ////    `sweep_delegate_sessions` the boot ran once.
-//// 2a. Each delegate session is assembled with `deadline_tick_of` and
-////    `metering_of`: the first gives it the tick that enforces its children's
-////    deadlines, the second the recorder and the child budget of a metered
-////    spawner (protocol-change/084, phase 2).
+//// 2a. Each delegate session is assembled with `deadline_tick_of`, `metering_of`
+////    and `spawner_link_of`: the first gives it the tick that enforces its
+////    children's deadlines, the second the recorder and the child budget of a
+////    metered spawner, and the third the address of the parent its children
+////    write to (protocol-change/084, phase 2). `depth_cap_of` gives it the
+////    spawner's maximum depth as its Agency's depth cap, and `reach_of` narrows
+////    its reach to the orchestrators the spawner lets it spawn on, so its
+////    children may start children of their own as far as the policy allows
+////    (phase 4).
 //// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
@@ -60,6 +67,7 @@ import client/daemon/ui_login
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/delegate_host
+import client/delegate_outbox
 import client/deployment
 import client/directory/deletion
 import client/directory/member
@@ -91,10 +99,12 @@ import client/pools
 import client/profile_switch
 import client/remote/address
 import client/remote/host as executor_host
+import client/remote/link_keeper
 import client/remote/orchestrator_port
 import client/remote/remote_peer
 import client/remote/remote_spawner
 import client/remote/workspace
+import client/remote_mail
 import client/remote_reach
 import client/remote_release
 import client/remote_spawn
@@ -200,6 +210,10 @@ pub type Config {
     /// table existed before the listener did. The `ledger.*` control commands
     /// append and read entries through this handle.
     ledger: Option(ledger_control.Handle),
+    /// The connection keepers `start_link_keepers` started, by the name of the
+    /// `[orchestrators.<name>]` each keeps, and empty before then
+    /// (protocol-change/084, phase 2). A session's drainer votes to them.
+    keepers: link_keeper.Keepers,
   )
 }
 
@@ -399,6 +413,7 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
       [],
       None,
       None,
+      dict.new(),
     )
   use config <- result.try(parse_loop(arguments, initial))
   use state_root <- result.try(case config.state_root {
@@ -959,7 +974,9 @@ pub fn directory_path(state_root: String) -> String {
 /// peer that lists it without listing that peer back. It also relays the three
 /// subagent messages to `spawn_host`, which refuses all of them for a daemon with
 /// no `[spawners.<name>]` and otherwise serves them from the sender's delegate
-/// session. It is linked to the
+/// session, and the mail and progress of children that run on other
+/// orchestrators to `child_host`, which refuses them for a daemon with no
+/// `[orchestrators.<name>]`. It is linked to the
 /// process that starts the daemon's services, so an abnormal exit of the port
 /// ends the daemon the way the executor host's does: a daemon that silently
 /// stopped answering would make every peer report it unreachable.
@@ -967,7 +984,7 @@ pub fn directory_path(state_root: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, orchestrator_port.unreported()) == Ok(Nil)
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, inbox, orchestrator_port.unreported()) == Ok(Nil)
 /// ```
 @internal
 pub fn start_orchestrator_port(
@@ -976,6 +993,7 @@ pub fn start_orchestrator_port(
   logger: Logger,
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   delegate_endpoint: fn(instance) -> agency.DelegateEndpoint,
+  child_inbox: fn(instance) -> agency.ChildInbox,
   reads: orchestrator_port.Reads,
 ) -> Result(Nil, String) {
   case config.membership {
@@ -1023,7 +1041,9 @@ pub fn start_orchestrator_port(
             config.spawners,
             delegate_host.resolver(delegates),
             delegate_host.releaser(delegates),
+            delegate_host.existing_endpoint(delegates),
           ),
+          child_host(orchestrator_roster(config), ready.registry, child_inbox),
           ledger_holdings.from_catalogue(
             ready.registry,
             executor_roster(config),
@@ -1154,6 +1174,88 @@ fn orchestrator_facts(
   }
 }
 
+/// Starts one link keeper for each orchestrator the daemon lists
+/// (protocol-change/084, phase 2), and answers them by orchestrator name.
+///
+/// A keeper holds the distribution connection to its orchestrator while some
+/// session has a child there, reconnecting every two seconds, because the
+/// orchestrator sends mail and progress of its own and cannot dial a laptop. The
+/// sessions vote through `Reach.keep` (`client/remote_drain`), and the keeper
+/// does nothing while nobody has. Each keeper is linked to the process that
+/// starts the daemon's services, as the executor host and the port are, and
+/// reads the orchestrator's pinned peer each time it looks, so a ledger that
+/// re-pins a member is seen. A daemon with no `[distribution]` table has no
+/// connection to keep and starts none. An orchestrator enrolled after the daemon
+/// started has no keeper until the next start; its calls still dial on demand.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // assert main.start_link_keepers(Config(..config, membership: None), logger) == Ok(dict.new())
+/// ```
+@internal
+pub fn start_link_keepers(
+  config: Config,
+  logger: Logger,
+) -> Result(link_keeper.Keepers, String) {
+  case config.membership {
+    None -> Ok(dict.new())
+    Some(membership) -> {
+      use namespace <- result.try(names.start())
+      let listed = roster.rows(orchestrator_roster(config))
+      use started <- result.map(
+        list.try_map(listed, fn(orchestrator) {
+          let address = names.new_address(namespace)
+          link_keeper.start(
+            link_keeper.Options(
+              link: orchestrator_link(membership, orchestrator),
+              after: effects.real_timers().after,
+            ),
+            address,
+          )
+          |> result.map(fn(_started) { #(orchestrator.name, address) })
+          |> result.map_error(fn(error) {
+            "the link keeper for `"
+            <> orchestrator.name
+            <> "` did not start: "
+            <> string.inspect(error)
+          })
+        }),
+      )
+      log.info(logger, "daemon.link_keepers", [
+        field.count("keepers", list.length(started)),
+      ])
+      dict.from_list(started)
+    }
+  }
+}
+
+// What a keeper does about one orchestrator's connection: reads the connection
+// set, and connects within a bound shorter than a beat. The peer is resolved at
+// each use, because a ledger can pin a member after the daemon started.
+fn orchestrator_link(
+  membership: distribution.Membership,
+  orchestrator: orchestrators.Orchestrator,
+) -> link_keeper.Link {
+  link_keeper.Link(
+    connected: fn() {
+      case distribution.peer(membership, orchestrator.node) {
+        Ok(peer) -> distribution.is_connected(peer)
+        Error(_) -> False
+      }
+    },
+    connect: fn() {
+      case distribution.peer(membership, orchestrator.node) {
+        Ok(peer) -> {
+          let _outcome = distribution.connect(peer, 1500)
+          Nil
+        }
+        Error(_) -> Nil
+      }
+    },
+  )
+}
+
 /// Starts the release drainer when the configuration has a `[distribution]`
 /// table, and starts nothing otherwise (protocol-change/084, phase 2).
 ///
@@ -1206,7 +1308,7 @@ pub fn start_release_drain(
         }),
       )
       manager.on_releases_owed(ready.registry, fn() {
-        peer_outbox_drain.poke(name)
+        peer_outbox_drain.ring(name)
       })
       log.info(logger, "daemon.release_drain", [])
       Ok(Nil)
@@ -1285,13 +1387,23 @@ pub fn peer_command(
 ///
 /// A release is served by `releasing` and not by `delegates`: it finds the
 /// session the pair already has and creates none, which `delegates` would do
-/// for a pair with no row (`delegate_host.releaser`). The sender is judged the
+/// for a pair with no row (`delegate_host.releaser`). A send into a child and a
+/// decision about its request are served by `existing` for the same reason
+/// (`delegate_host.existing_endpoint`), and a pair with no open session answers
+/// that it holds no such child. The sender is judged the
 /// same way, so a node no spawner names is refused first.
+///
+/// A page of a child's transcript (protocol-change/090) is served by
+/// `existing`, which finds the Agency of a session the pair already has and
+/// is resident, and creates and opens nothing (`delegate_host.existing_endpoint`).
+/// The spawner's table is asked first: `transcript = "hidden"`, the default,
+/// refuses with `TranscriptHidden` before any session is looked at. A pair
+/// with no open session is refused as holding no such child.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host([], delegates, releasing).run_ended(origin, operation)
+/// // main.spawn_host([], delegates, releasing, existing).run_ended(origin, operation)
 /// // -> Error(remote_spawn.UnknownSpawner(origin.node))
 /// ```
 @internal
@@ -1301,14 +1413,34 @@ pub fn spawn_host(
     Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
   releasing: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(Int, remote_spawn.SpawnRefusal),
+  existing: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(Option(agency.DelegateEndpoint), remote_spawn.SpawnRefusal),
 ) -> orchestrator_port.SpawnHost {
+  let spawner_of = fn(origin: remote_spawn.Origin) {
+    spawners.by_node(configured, origin.node)
+    |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node))
+  }
   let serving = fn(origin: remote_spawn.Origin) {
+    use spawner <- result.try(spawner_of(origin))
+    use endpoint <- result.map(delegates(spawner, origin.parent))
+    #(spawner, endpoint)
+  }
+
+  // A message about a child that exists is served by the pair's session if it
+  // is open, and never by a new one: a stale card answered after the session was
+  // deleted must not open a session only to be refused.
+  let serving_existing = fn(origin: remote_spawn.Origin) {
     use spawner <- result.try(
       spawners.by_node(configured, origin.node)
       |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
     )
-    use endpoint <- result.map(delegates(spawner, origin.parent))
-    #(spawner, endpoint)
+    use found <- result.try(existing(spawner, origin.parent))
+    option.to_result(
+      found,
+      remote_spawn.InvalidArgument(
+        reason: "this orchestrator holds no such child for that parent",
+      ),
+    )
   }
   orchestrator_port.SpawnHost(
     spawn: fn(origin, call_site, depth, parent_tools, request) {
@@ -1333,11 +1465,100 @@ pub fn spawn_host(
       endpoint.run_ended(operation)
     },
     release: fn(origin) {
-      use spawner <- result.try(
-        spawners.by_node(configured, origin.node)
-        |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
-      )
+      use spawner <- result.try(spawner_of(origin))
       releasing(spawner, origin.parent)
+    },
+    send: fn(origin, child, message_id, text) {
+      use endpoint <- result.try(serving_existing(origin))
+      endpoint.send(origin.parent, child, message_id, text)
+    },
+    resolve: fn(origin, child, escalation_id, decision, expected_seq, decider) {
+      use endpoint <- result.try(serving_existing(origin))
+      endpoint.resolve(
+        origin.parent,
+        child,
+        escalation_id,
+        decision,
+        expected_seq,
+        decider,
+      )
+    },
+    history: fn(origin, child, cursor, limit) {
+      use spawner <- result.try(spawner_of(origin))
+      use Nil <- result.try(case spawner.transcript {
+        spawners.Visible -> Ok(Nil)
+        spawners.Hidden -> Error(remote_spawn.TranscriptHidden)
+      })
+      use found <- result.try(existing(spawner, origin.parent))
+      case found {
+        Some(endpoint) -> endpoint.history(origin.parent, child, cursor, limit)
+        None ->
+          Error(remote_spawn.InvalidArgument(
+            reason: child.strand
+            <> " is not a child this orchestrator holds open for the parent",
+          ))
+      }
+    },
+  )
+}
+
+/// The functions the orchestrator port calls for what a child on another
+/// orchestrator sends its parent here (protocol-change/084, phase 2). Each one
+/// finds the parent session the message names and applies the parent's Agency,
+/// and each refuses a message that did not come from the orchestrator that runs
+/// the child.
+///
+/// The origin is judged by the Agency, which finds the stub the message is about
+/// and so knows which `[orchestrators.<name>]` stands for the sender. This
+/// function supplies the roster's half of that judgement: given an
+/// orchestrator's name, whether its configured node is the node the message came
+/// from. A name the roster no longer lists is not the sender. The session is
+/// found as `peer_command` finds one. A session this catalogue holds but has
+/// not opened is `ParentSessionNotOpen`, which the sender asks again about, and
+/// one it does not hold is `UnknownChild`, which it does not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.child_host(roster, registry, fn(resident) { resident.inbox }).mail(origin, child, "7b1c", "done")
+/// ```
+@internal
+pub fn child_host(
+  configured: Roster(orchestrators.Orchestrator),
+  registry: manager.Manager(instance),
+  inbox: fn(instance) -> agency.ChildInbox,
+) -> orchestrator_port.ChildHost {
+  let admits = fn(origin: remote_spawn.Origin) {
+    fn(name) {
+      case orchestrators.find(roster.rows(configured), name) {
+        Ok(orchestrator) -> orchestrator.node == origin.node
+        Error(Nil) -> False
+      }
+    }
+  }
+  let resolving = fn(origin: remote_spawn.Origin) {
+    case manager.resolve(registry, origin.parent.session) {
+      Ok(resident) -> Ok(inbox(resident))
+      Error(_) ->
+        case server.standing(registry, origin.parent.session) {
+          server.Unopened | server.Handed ->
+            Error(remote_mail.ParentSessionNotOpen)
+          server.Archived | server.Unheld -> Error(remote_mail.UnknownChild)
+        }
+    }
+  }
+  orchestrator_port.ChildHost(
+    mail: fn(origin, child, message_id, text) {
+      use found <- result.try(resolving(origin))
+      found.mail(origin.parent, child, message_id, text, admits(origin))
+    },
+    progress: fn(origin, child, glance) {
+      use found <- result.try(resolving(origin))
+      found.progress(origin.parent, child, glance, admits(origin))
+    },
+    escalation: fn(origin, child, record) {
+      use found <- result.try(resolving(origin))
+      found.escalation(origin.parent, child, record, admits(origin))
     },
   )
 }
@@ -1385,22 +1606,73 @@ pub fn catalogue_holds(
 // may start a child elsewhere only while its owner holds it alone, which is the
 // test default peer links already use, asked at each spawn because inviting a
 // member changes the answer.
+//
+// A delegate session is held by this daemon's owner alone, so that test would
+// offer it every orchestrator. Its children may spawn only where the spawner's
+// `spawn_on` says (phase 4), so its reach is narrowed to that list and offered
+// when the list names one. A delegate session whose spawner was removed, or
+// whose marker cannot be read, reaches none: nothing is offered that the policy
+// cannot vouch for.
 fn reach_of(
   config: Config,
   registry: manager.Manager(instance),
   session: String,
 ) -> Option(remote_reach.Reach) {
-  case config.membership {
-    None -> None
-    Some(membership) ->
+  case config.membership, manager.delegate_of(registry, session) {
+    None, _ -> None
+    Some(membership), Ok(None) ->
       Some(
         remote_spawner.over_distribution(
           membership,
           orchestrator_roster(config),
+          config.keepers,
           session,
           fn() { list.contains(manager.unshared_sessions(registry), session) },
         ),
       )
+    Some(membership), Ok(Some(marker)) ->
+      spawners.find(config.spawners, marker.spawner)
+      |> option.from_result
+      |> option.map(fn(spawner) {
+        remote_spawner.over_distribution(
+          membership,
+          orchestrator_roster(config),
+          config.keepers,
+          session,
+          fn() { True },
+        )
+        |> remote_reach.restricted(spawner.spawn_on)
+      })
+    Some(_), Error(_) -> None
+  }
+}
+
+/// The deepest spawn a session's Agency admits, or `None` for the Agency's own
+/// default.
+///
+/// Only a delegate session has one: its spawner's `max_depth`, so that a child
+/// that the ceiling gave `agent_spawn` can use it, and a child at the limit
+/// cannot (protocol-change/084, phase 4). A session whose spawner was removed,
+/// or whose marker cannot be read, keeps the default of one, which admits no
+/// spawn from a child.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.depth_cap_of(registry, spawners, delegate_session_id) == Some(2)
+/// ```
+@internal
+pub fn depth_cap_of(
+  registry: manager.Manager(instance),
+  configured: List(spawners.Spawner),
+  id: String,
+) -> Option(Int) {
+  case manager.delegate_of(registry, id) {
+    Ok(Some(marker)) ->
+      spawners.find(configured, marker.spawner)
+      |> option.from_result
+      |> option.map(fn(spawner) { spawner.max_depth })
+    Ok(None) | Error(_) -> None
   }
 }
 
@@ -1894,6 +2166,7 @@ pub fn prepare_startup(
           deadline_tick_of(directory, registration.id)
           |> diagnose_start(logger, identity, SettingsResolution),
         )
+        let link = spawner_link_of(directory, config.spawners, registration.id)
         let settings =
           serve.Settings(
             ..settings,
@@ -1909,12 +2182,15 @@ pub fn prepare_startup(
             ),
             remote_reach: reach_of(config, directory, registration.id),
             deadline_tick_ms: tick,
+            depth_cap: depth_cap_of(directory, config.spawners, registration.id),
             metering: metering_of(
               directory,
               config.spawners,
               registration.id,
               logger,
             ),
+            spawner: link,
+            laptop: laptop_of(config, link),
           )
         let settings =
           serve.Settings(
@@ -2053,6 +2329,55 @@ pub fn metering_of(
       }
     Ok(None) -> None
     Error(_) -> None
+  }
+}
+
+/// Where a delegate session's parent is, or `None`.
+///
+/// Only the delegate session of a spawner whose table is still configured has
+/// one: the parent session its row names and the spawner's pinned node, which is
+/// the one place the box learns the laptop's address. A message never names it.
+/// A session whose row cannot be read, or whose spawner was removed, has none,
+/// and its children's upward sends are then refused as they were in phase 1.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.spawner_link_of(registry, [], delegate_session_id) == None
+/// ```
+@internal
+pub fn spawner_link_of(
+  registry: manager.Manager(instance),
+  configured: List(spawners.Spawner),
+  id: String,
+) -> Option(delegate_outbox.SpawnerLink) {
+  case manager.delegate_of(registry, id) {
+    Ok(Some(marker)) ->
+      case spawners.find(configured, marker.spawner) {
+        Ok(spawner) ->
+          Some(delegate_outbox.SpawnerLink(
+            parent_session: marker.parent_session,
+            spawner: spawner.name,
+            node: spawner.node,
+            ceiling: spawner.approval_ceiling,
+          ))
+        Error(Nil) -> None
+      }
+    Ok(None) | Error(_) -> None
+  }
+}
+
+// How a delegate session reaches its parent's orchestrator: over the daemon's
+// membership, to the spawner's pinned node, and never by dialing. A daemon with
+// no distribution has no laptop to reach.
+fn laptop_of(
+  config: Config,
+  link: Option(delegate_outbox.SpawnerLink),
+) -> Option(delegate_outbox.Laptop) {
+  case config.membership, link {
+    Some(membership), Some(found) ->
+      Some(remote_spawner.laptop_over(membership, found.node))
+    _, _ -> None
   }
 }
 
@@ -2572,6 +2897,8 @@ fn run(
     {
       use member <- result.try(start_directory(config, logger))
       let config = Config(..config, member:)
+      use keepers <- result.try(start_link_keepers(config, logger))
+      let config = Config(..config, keepers:)
       use executor <- result.try(start_executor(config, logger))
       use Nil <- result.try(sweep_delegate_sessions(
         config,
@@ -2587,6 +2914,7 @@ fn run(
         logger,
         fn(resident: serve.Resident) { Some(resident.peer) },
         fn(resident: serve.Resident) { resident.spawns },
+        fn(resident: serve.Resident) { resident.inbox },
         reads,
       ))
       use Nil <- result.try(start_release_drain(config, daemon, logger))

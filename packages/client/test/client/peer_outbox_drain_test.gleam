@@ -518,3 +518,34 @@ pub fn an_instance_over_another_pass_keeps_the_same_timing_test() {
   assert_no_arming(armings)
   assert process.call(script, 1000, fn(reply) { Ran(reply:) }) == 4
 }
+
+pub fn a_ring_runs_a_pass_at_once_where_a_poke_waits_an_interval_test() {
+  let passes = process.new_subject()
+  let armings = process.new_subject()
+  let name = addresses.new()
+  let options =
+    peer_outbox_drain.over(
+      fn() {
+        process.send(passes, Nil)
+        peer_outbox_drain.Clear
+      },
+      fn(delay_ms, wake) { process.send(armings, Arming(delay_ms:, wake:)) },
+    )
+  let assert Ok(_) = peer_outbox_drain.start(options, name)
+    as "the drainer starts"
+
+  // The pass at open runs when its arming rings.
+  let open = arming(armings)
+  open.wake()
+  let assert Ok(Nil) = process.receive(passes, 2000) as "the open pass ran"
+
+  // A poke only arms a timer one interval away, and runs nothing.
+  peer_outbox_drain.poke(name)
+  let waiting = arming(armings)
+  assert waiting.delay_ms == peer_outbox_drain.retry_interval_ms
+  assert process.receive(passes, 200) == Error(Nil)
+
+  // A ring runs a pass now.
+  peer_outbox_drain.ring(name)
+  let assert Ok(Nil) = process.receive(passes, 2000) as "the ring ran a pass"
+}

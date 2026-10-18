@@ -571,6 +571,51 @@ pub fn an_approval_card_puts_deny_first_and_escapes_the_record_test() {
   assert string.contains(html, "class=\"approvals\"")
 }
 
+// A child's request on another orchestrator is drawn as a card that names the
+// child and where it runs, as text. The grants the spawner's ceiling does not
+// admit are listed greyed with their reason, in a list of their own, and are not
+// part of what Allow sends. Nothing about the card is new to the page: the
+// classes are fixed and the session's words are text nodes.
+pub fn a_remote_request_names_the_child_and_where_it_runs_test() {
+  let #(model, _) =
+    page("operator", [
+      page_fixture.remote_escalation(
+        "box/policy-ab",
+        9,
+        8,
+        "bash",
+        "{\"command\":\"<b>make</b>\"}",
+      ),
+    ])
+  let html = element.to_string(operator_page.view(model))
+  assert string.contains(html, "run-tests @ box")
+  assert string.contains(html, "class=\"approval-outside\"")
+  assert string.contains(html, "AWS_SECRET")
+  assert string.contains(html, "outside the spawner&#39;s approval ceiling")
+    || string.contains(html, "outside the spawner's approval ceiling")
+  assert string.contains(html, "&lt;b&gt;make&lt;/b&gt;")
+  assert !string.contains(html, "<b>make")
+}
+
+// Allow sends the other orchestrator's identity and sequence, and only the
+// grants the ceiling admits.
+pub fn allowing_a_remote_request_sends_the_boxs_identity_and_admitted_grants_test() {
+  let #(model, wire) =
+    page("operator", [
+      page_fixture.remote_escalation("box/policy-ab", 9, 8, "bash", "make"),
+    ])
+  let _ =
+    send(model, [
+      operator_page.Decided("box/policy-ab", 9, component.AllowOnce),
+    ])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "one decision is one command"
+  assert string.contains(frame, "\"escalation_id\":\"box/policy-ab\"")
+  assert string.contains(frame, "\"expected_seq\":9")
+  assert string.contains(frame, "/shared/output")
+  assert !string.contains(frame, "AWS_SECRET")
+}
+
 pub fn a_closed_connection_refuses_commands_test() {
   let #(model, wire) = page("operator", [])
   let _ =
@@ -936,6 +981,7 @@ pub fn a_denied_approval_leaves_a_who_line_in_the_lane_test() {
       owner,
       approval.Unavailable("this decision is already resolved"),
       strand: None,
+      remote: option.None,
     )
   }
   let model =
@@ -973,6 +1019,7 @@ fn decided_record(id, seq, status, tool, strand) {
     Some(message.Origin("principal-owner", "Owner")),
     approval.Unavailable("this decision is already resolved"),
     strand:,
+    remote: option.None,
   )
 }
 

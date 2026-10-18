@@ -23,6 +23,30 @@
 //// `api.edit_reserved_facts` under the sequences the caller read, so a
 //// permission added or removed in between loses the whole edit and the
 //// operator is shown a fresh list.
+////
+//// ## Grants a spawner's operator approved (protocol-change/089)
+////
+//// A delegate session also remembers what the operator of its spawning
+//// orchestrator approved for the session. Those rows carry `Spawner`
+//// provenance: the spawner's name and the deciding principal as plain data, which
+//// authenticates nothing here. `withdraw_spawner_grants` drops the ones the
+//// spawner's current approval ceiling no longer admits when the session opens,
+//// and `forgetting_for_spawner` withdraws one at that operator's request, only
+//// for a grant that carries that spawner's own provenance.
+////
+//// ## Flow
+////
+//// `read_for` → `remembering_action` → `remembering` → `listing` → `forgetting` →
+//// `withdraw_spawner_grants` → `forgetting_for_spawner`
+////
+//// 1. `read_for` reads the standing authority one invocation captures, and
+////    `read` and `decode` are the halves it is made of.
+//// 2. `remembering_action` and `remembering` prepare the reserved fact an
+////    approval for the session commits with the decision.
+//// 3. `listing` reads everything the session remembers, with who approved it,
+////    and `forgetting` builds the guarded edit that removes some of it.
+//// 4. `withdraw_spawner_grants` and `forgetting_for_spawner` are the same edit
+////    for the grants a spawner's operator approved.
 
 import broker/policy
 import client/escalate
@@ -151,6 +175,22 @@ pub type Provenance {
     by: message.Origin,
     /// The credential the approval arrived on.
     via: Via,
+    /// When the approval was committed, in Unix milliseconds.
+    at_ms: Int,
+  )
+
+  /// The approval came from the operator of a spawning orchestrator, through
+  /// the approval ceiling that spawner's table sets (protocol-change/089). The
+  /// principal is the spawner's account of who answered, as plain data: it names
+  /// nobody on this machine and authenticates nothing here, so it is provenance
+  /// only. The spawner's name is what lets the daemon check the grant against
+  /// that spawner's ceiling when the session opens, and withdraw it when that
+  /// spawner's operator asks.
+  Spawner(
+    /// The `[spawners.<name>]` the approval came through.
+    spawner: String,
+    /// The principal's identity and display name on the spawning orchestrator.
+    principal: message.Origin,
     /// When the approval was committed, in Unix milliseconds.
     at_ms: Int,
   )
@@ -495,6 +535,7 @@ fn encode_general(
 fn provenance_author(provenance: Provenance) -> Option(message.Origin) {
   case provenance {
     Approved(by:, ..) -> Some(by)
+    Spawner(principal:, ..) -> Some(principal)
     Unknown -> None
   }
 }
@@ -510,6 +551,12 @@ fn provenance_author(provenance: Provenance) -> Option(message.Origin) {
 pub fn encode_provenance(provenance: Provenance) -> json.JsonValue {
   case provenance {
     Unknown -> json.Null
+    Spawner(spawner:, principal:, at_ms:) ->
+      json.Object([
+        #("spawner", json.String(spawner)),
+        #("by", origin.encode(Some(principal))),
+        #("at_ms", json.Int(at_ms)),
+      ])
     Approved(by:, via:, at_ms:) ->
       json.Object([
         #("by", origin.encode(Some(by))),
@@ -556,15 +603,20 @@ pub fn decode_provenance(value: json.JsonValue) -> Provenance {
       |> result.replace_error(Nil)
       |> result.try(option.to_result(_, Nil)),
     )
-    use via <- result.try(case list.key_find(fields, "via") {
-      Ok(json.Object(inner)) -> decode_via(inner)
-      _ -> Error(Nil)
-    })
-    use at_ms <- result.map(case list.key_find(fields, "at_ms") {
+    use at_ms <- result.try(case list.key_find(fields, "at_ms") {
       Ok(json.Int(at)) if at >= 0 -> Ok(at)
       _ -> Error(Nil)
     })
-    Approved(by:, via:, at_ms:)
+    case list.key_find(fields, "spawner") {
+      Ok(json.String(spawner)) -> Ok(Spawner(spawner:, principal: by, at_ms:))
+      _ -> {
+        use via <- result.map(case list.key_find(fields, "via") {
+          Ok(json.Object(inner)) -> decode_via(inner)
+          _ -> Error(Nil)
+        })
+        Approved(by:, via:, at_ms:)
+      }
+    }
   }
   result.unwrap(decoded, Unknown)
 }
@@ -876,5 +928,106 @@ fn optional(value: Option(String)) -> json.JsonValue {
   case value {
     Some(text) -> json.String(text)
     None -> json.Null
+  }
+}
+
+// --- grants a spawner's operator approved (protocol-change/089) -----------------
+
+/// Withdraws the remembered grants that came through `spawner` and that `keep`
+/// no longer admits, and answers the grants it withdrew.
+///
+/// A delegate session remembers what the spawning orchestrator's operator
+/// approved for the session (`Spawner` provenance). Those grants were inside the
+/// spawner's approval ceiling when they were approved, and the ceiling is
+/// configuration that the owner of this machine can narrow. The session calls
+/// this when it opens, with the test the current ceiling is, so narrowing the
+/// ceiling and restarting revokes what the old one let through. A grant approved
+/// by anyone else, or with no recorded approver, is never touched. A grant that
+/// carries another spawner's name is withdrawn too: a delegate session serves one
+/// spawner, so it can only be a leftover.
+///
+/// The edit is one guarded transaction, so a permission added or removed between
+/// the read and the write loses it and nothing is written; the caller may run it
+/// again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // permissions.withdraw_spawner_grants(runtime, "laptop", approval_ceiling.admits(ceiling, _))
+/// ```
+pub fn withdraw_spawner_grants(
+  runtime: api.Runtime,
+  spawner: String,
+  keep: fn(policy.Grant) -> Bool,
+) -> Result(List(policy.Grant), String) {
+  use #(cell, rows) <- result.try(
+    general_now(runtime) |> result.map_error(refusal_text),
+  )
+  let #(withdrawn, kept) =
+    list.partition(rows, fn(row) {
+      case row.provenance {
+        Spawner(spawner: from, ..) -> from != spawner || !keep(row.grant)
+        Approved(..) | Unknown -> False
+      }
+    })
+  case withdrawn {
+    [] -> Ok([])
+    _ ->
+      api.edit_reserved_facts(runtime, [general_edit(cell, kept)])
+      |> result.map_error(fn(_) { "the remembered permissions did not change" })
+      |> result.replace(list.map(withdrawn, fn(row) { row.grant }))
+  }
+}
+
+/// Builds the guarded edit that withdraws one grant the spawner's operator
+/// approved for the session. The grant must be remembered with `spawner`'s
+/// provenance: a grant the owner of this machine remembered, or that came
+/// through any other path, is not the spawner's to withdraw.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // permissions.forgetting_for_spawner(runtime, "laptop", policy.GrantWritableRoot("/srv/work"))
+/// ```
+pub fn forgetting_for_spawner(
+  runtime: api.Runtime,
+  spawner: String,
+  grant: policy.Grant,
+) -> Result(List(api.ReservedFactEdit), Refusal) {
+  use #(cell, rows) <- result.try(general_now(runtime))
+  case list.find(rows, fn(row) { row.grant == grant }) {
+    Ok(Remembered(provenance: Spawner(spawner: from, ..), ..))
+      if from == spawner
+    ->
+      Ok([general_edit(cell, list.filter(rows, fn(row) { row.grant != grant }))])
+    Ok(_) ->
+      Error(Failed("that permission was not approved through this spawner"))
+    Error(Nil) -> Error(Stale)
+  }
+}
+
+// The general fact as it is now, with the rows it holds.
+fn general_now(
+  runtime: api.Runtime,
+) -> Result(#(Option(api.FactCell), List(Remembered)), Refusal) {
+  use cell <- result.try(
+    api.fact_cell(runtime, key)
+    |> result.map_error(fn(_) {
+      Failed("session permissions could not be read")
+    }),
+  )
+  case cell {
+    None -> Ok(#(None, []))
+    Some(found) ->
+      general_of(found.value)
+      |> result.map(fn(rows) { #(cell, rows) })
+      |> result.map_error(Failed)
+  }
+}
+
+fn refusal_text(refusal: Refusal) -> String {
+  case refusal {
+    Stale -> "the remembered permissions changed while they were read"
+    Failed(reason:) -> reason
   }
 }

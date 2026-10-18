@@ -13,11 +13,22 @@
 // it registers with `eWatch` until it unregisters. A message sent after the
 // break travels normally, because Erlang reconnects on the next send. A crash of
 // the remote's VM is a break that also restarts the port.
+//
+// The connection is up or down. A send from the laptop dials, so it brings the
+// connection up. The remote never dials: a message it originates (`eSendUp`) is
+// sent only while the connection is up, and is not produced at all while it is
+// down, which is the drainer's pass skipping the laptop without a connect
+// attempt. A break takes the connection down. The link keeper brings it back, and
+// the model assumes it does so eventually (`eReconnect`, which the environment
+// sends before the run ends): the fair reconnection the keeper's liveness rests
+// on. A reconnection rings the remote's drainer, which ticks every few seconds
+// while a row is owed.
 machine Wire {
   var port: machine;
   var queues: map[(machine, machine), seq[tMsg]];
   var watching: set[machine];
   var stepPending: bool;
+  var connected: bool;
 
   start state Up {
     on eWirePort do (p: machine) {
@@ -33,8 +44,21 @@ machine Wire {
     }
 
     on eSend do (s: tSubmit) {
+      connected = true;
       enqueue(s);
       schedule();
+    }
+
+    on eSendUp do (s: tSubmit) {
+      if (connected) {
+        enqueue(s);
+        schedule();
+      }
+    }
+
+    on eReconnect do {
+      connected = true;
+      send port, eMailPass;
     }
 
     on eStep do {
@@ -44,11 +68,13 @@ machine Wire {
     }
 
     on eBreak do {
+      connected = false;
       sever();
       notifyWatchers();
     }
 
     on eCrashRemote do {
+      connected = false;
       sever();
       send port, eRestart;
       notifyWatchers();

@@ -65,7 +65,7 @@ spec ProbeJoinSettled observes eReported {
 // A `Release` stopped a running child.
 spec ProbeReleaseStopped observes eReleaseHandled {
   start state Watching {
-    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int)) {
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
       assert p.stopped == 0, "witness: a release stopped a running child";
     }
   }
@@ -93,8 +93,80 @@ spec ProbeReleaseFoundNoSession observes eReleaseNoSession {
 // The registry deleted a released session after its slot drained.
 spec ProbeSessionDeleted observes eSessionDeleted {
   start state Watching {
-    on eSessionDeleted do {
+    on eSessionDeleted do (at: machine) {
       assert false, "witness: a released session was deleted";
+    }
+  }
+}
+
+// A mail steered the parent.
+spec ProbeMailDelivered observes eSteered {
+  start state Watching {
+    on eSteered do (id: int) {
+      assert false, "witness: a mail steered the parent";
+    }
+  }
+}
+
+// A mail found the parent idle and was declined.
+spec ProbeMailDeclined observes eMailDeclined {
+  start state Watching {
+    on eMailDeclined do {
+      assert false, "witness: a mail was declined by an idle parent";
+    }
+  }
+}
+
+// A mail found the parent session closed and was asked about again.
+spec ProbeMailNotOpen observes eMailNotOpen {
+  start state Watching {
+    on eMailNotOpen do {
+      assert false, "witness: a mail found the parent session closed";
+    }
+  }
+}
+
+// A mail that had a receipt was sent again and answered from the receipt.
+spec ProbeMailRepeated observes eMailRepeated {
+  start state Watching {
+    on eMailRepeated do {
+      assert false, "witness: a resent mail was answered from its receipt";
+    }
+  }
+}
+
+// A mail arrived while the parent's stub for its child was still `Requested`.
+spec ProbeMailForRequested observes eMailForRequested {
+  start state Watching {
+    on eMailForRequested do {
+      assert false, "witness: a mail arrived before the answer to its spawn";
+    }
+  }
+}
+
+// A child on the box started a child of its own on a third orchestrator.
+spec ProbeGrandchildMade observes eCreated {
+  start state Watching {
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
+      assert p.site < 100, "witness: a grandchild was made on a third orchestrator";
+    }
+  }
+}
+
+// A release of the box's session owed a third orchestrator a release.
+spec ProbeCascadeOwed observes eCascadeWritten {
+  start state Watching {
+    on eCascadeWritten do (owed: set[machine]) {
+      assert sizeof(owed) == 0, "witness: a release cascaded to a third orchestrator";
+    }
+  }
+}
+
+// The cascade reached a third orchestrator and stopped a grandchild running there.
+spec ProbeGrandchildReleased observes eReleaseHandled {
+  start state Watching {
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
+      assert p.depth != 2 || p.stopped == 0, "witness: a cascaded release stopped a grandchild";
     }
   }
 }

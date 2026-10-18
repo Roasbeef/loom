@@ -81,6 +81,7 @@ import session_view/model as session_model
 import session_view/notes_view
 import session_view/protocol
 import session_view/queued_input
+import session_view/remote_transcript
 import session_view/remote_usage
 import session_view/remote_usage_words
 import session_view/snapshot_view
@@ -654,9 +655,14 @@ fn render_transcript(
   area: Rect,
   model: Model,
 ) -> buffer.Buffer {
-  case model.shared.btw.visibility {
-    btw.Visible -> render_btw(buf, area, model)
-    btw.Hidden -> render_main_transcript(buf, area, model)
+  case model.shared.btw.visibility, model.shared.peek {
+    btw.Visible, _ -> render_btw(buf, area, model)
+    btw.Hidden, remote_transcript.Closed ->
+      render_main_transcript(buf, area, model)
+    btw.Hidden, remote_transcript.Loading(..)
+    | btw.Hidden, remote_transcript.Shown(..)
+    | btw.Hidden, remote_transcript.Unavailable(..)
+    -> render_peek(buf, area, model)
   }
 }
 
@@ -2850,6 +2856,25 @@ fn render_context_surface(buf, cursor, screen, model: Model) {
       #(rendered, Error(Nil))
     }
   }
+}
+
+// A remote child's transcript in the lower lane, under the framing that says
+// whose working it is and where it was recorded (protocol-change/090). The
+// words are model text from another machine, so each line is drawn as plain
+// text and never through the Markdown renderer the transcript uses. The page
+// is the newest one, so the lane shows its tail when it is taller than the
+// lane.
+fn render_peek(buf: buffer.Buffer, area: Rect, model: Model) -> buffer.Buffer {
+  let #(main, side) = layout.transcript_areas(area, model)
+  let lines =
+    remote_transcript.lines(model.shared.peek)
+    |> list.flat_map(string.split(_, "\n"))
+    |> list.flat_map(fn(text) { text.wrap(text, int.max(1, side.size.width)) })
+  let shown =
+    list.drop(lines, int.max(0, list.length(lines) - side.size.height))
+    |> list.map(span.line_plain)
+  render_main_transcript(buf, main, model)
+  |> paragraph.render_styled(side, shown)
 }
 
 // Main rows keep updating above a bounded side panel. The composer accepts

@@ -61,12 +61,22 @@
 ////    stub, whoever heard it.
 //// 3. `settled` records a join's report on a `Spawned` stub.
 //// 4. `usage_by_orchestrator` and `settled_tokens` read what the settled stubs
-////    cost, for the status bar and for a goal's budget.
+////    cost, for the status bar and for a goal's budget, and `agents` projects
+////    the stubs into the rows an agent strip lists (protocol-change/090).
+////
+//// Every write publishes a data-free `RemoteChildrenChanged` on the session's
+//// bus after it lands, and the gateway pushes the session's remote children to
+//// its clients on hearing it (protocol-change/090).
 
+import client/peer_mail
+import client/remote_escalation_store
+import client/remote_reach.{type Reach}
 import client/remote_spawn.{type ChildUsage, type Parent}
 import core/corruption
+import core/glance.{type Glance}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
+import events/bus
 import gleam/dict
 import gleam/int
 import gleam/list
@@ -75,6 +85,8 @@ import gleam/result
 import gleam/string
 import runtime/api
 import runtime/lineage
+import session_view/remote_agent.{type RemoteAgent}
+import session_view/remote_transcript
 import tools/agent.{type Handle, type Outcome}
 
 /// How many times a step re-reads and retries after losing a compare-and-set.
@@ -102,6 +114,21 @@ pub type Stub {
     /// The strand name the child has on the other orchestrator, derived from the
     /// call site. It is what the roster calls a child that has no handle yet.
     name: String,
+    /// The newest glance the remote pushed for this child, or `None` before the
+    /// first one. It belongs to the stub and not to a state: a glance can arrive
+    /// while the stub is still `Requested`, and the answer to the `Spawn` that
+    /// follows must not lose it.
+    glance: Option(Glance),
+    /// When the newest glance reached this session, in Unix milliseconds on
+    /// this session's clock, zero before the first one. The glance's own `at`
+    /// is the other orchestrator's clock and is never compared with this one;
+    /// the roster says how old the glance is from this figure alone
+    /// (protocol-change/090).
+    glance_seen_ms: Int,
+    /// How many messages a settled child still had undelivered on its
+    /// orchestrator when a join last said, zero until then. See
+    /// `remote_spawn.Joined`.
+    owed: Int,
     /// How far the spawn has got.
     state: State,
   )
@@ -228,7 +255,10 @@ pub fn admit(
   case
     api.put_reserved_fact_expecting(runtime, key, encode(stub), expected: None)
   {
-    Ok(_) -> Ok(Fresh)
+    Ok(_) -> {
+      changed(runtime)
+      Ok(Fresh)
+    }
     Error(api.FactConflict(..)) -> {
       use found <- result.try(read(runtime, key))
       case found {
@@ -380,6 +410,129 @@ fn add_usage(total: ChildUsage, more: ChildUsage) -> ChildUsage {
   )
 }
 
+/// The session's remote children as an agent strip lists them
+/// (protocol-change/090), in the order the stubs are kept, at most
+/// `remote_agent.max_children` of them and within the list's byte bound
+/// (`remote_agent.within_bound`), with each row's words clipped to a strip's
+/// line (`remote_agent.max_text_bytes`).
+///
+/// The standing is the stub's state, with a `Spawned` stub past its deadline
+/// shown as expired, since `is_live` no longer counts it and no join has said
+/// how it ended. The title is the newest glance's when there is one, and the
+/// purpose the spawn asked for before it. A glance's age is measured on this
+/// session's clock from when it arrived (`Stub.glance_seen_ms`), never from the
+/// other orchestrator's `at`, so `now` is this session's clock. Nothing here
+/// asks the other orchestrator: the strip shows what the stubs hold, however
+/// long ago it arrived.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.agents([spawned_on_box], now)
+/// // == [RemoteAgent(id: "sub:^main/build-turn-1-0", orchestrator: "box", standing: Running, ..)]
+/// ```
+pub fn agents(kept: List(Kept), now: Int) -> List(RemoteAgent) {
+  kept
+  |> list.take(remote_agent.max_children)
+  |> list.map(fn(entry) { agent_of(entry.stub, now) })
+  |> remote_agent.within_bound
+}
+
+fn agent_of(stub: Stub, now: Int) -> RemoteAgent {
+  let standing = case stub.state {
+    Requested -> remote_agent.Starting
+    Spawned(..) ->
+      case is_live(stub, now) {
+        True -> remote_agent.Running
+        False -> remote_agent.Expired
+      }
+    Settled(outcome: agent.Completed, ..) -> remote_agent.Completed
+    Settled(..) -> remote_agent.Stopped
+    Refused(..) -> remote_agent.Refused
+  }
+  let model = case stub.state {
+    Spawned(placed:) | Settled(placed:, ..) -> placed.model
+    Requested | Refused(..) -> ""
+  }
+  let title = case stub.glance {
+    Some(seen) if seen.title != "" -> seen.title
+    Some(_) | None -> stub.request.purpose
+  }
+  remote_agent.RemoteAgent(
+    id: stub.name,
+    parent: stub.strand,
+    orchestrator: stub.orchestrator,
+    standing:,
+    title: glance.clip(title, remote_agent.max_text_bytes),
+    summary: case stub.glance {
+      Some(seen) -> glance.clip(seen.summary, remote_agent.max_text_bytes)
+      None -> ""
+    },
+    tokens: case stub.glance {
+      Some(seen) -> int.max(0, seen.tokens)
+      None -> 0
+    },
+    model: glance.clip(model, remote_agent.max_text_bytes),
+    age_ms: case stub.glance, stub.glance_seen_ms {
+      Some(_), seen if seen > 0 -> Some(int.max(0, now - seen))
+      Some(_), _ | None, _ -> None
+    },
+  )
+}
+
+/// The reader a session's gateway asks for a page of a remote child's
+/// transcript (protocol-change/090), given the child's name as `agents` lists
+/// it and the cursor. It finds the child's stub by that name, so a name that is
+/// not a child of this session reads nothing, and asks the child's
+/// orchestrator through `reach`. The answer is the page as its wire object, or
+/// the reason there is none in words for a person: a spawn that was not
+/// answered or was refused has no transcript, and a refusal from the other
+/// orchestrator, such as a spawner that keeps transcripts there, is passed on.
+///
+/// It is called in the gateway's observation task and waits on the network
+/// there, never in the hub or the Agency's holder.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.history_reader(runtime, reach)("sub:^main/build-turn-1-0", 0)
+/// ```
+pub fn history_reader(
+  runtime: api.Runtime,
+  reach: Reach,
+) -> fn(String, Int) -> Result(JsonValue, String) {
+  fn(child, before) {
+    use kept <- result.try(all(runtime))
+    use entry <- result.try(
+      list.find(kept, fn(entry) { entry.stub.name == child })
+      |> result.map_error(fn(_) {
+        "no child of this session is named " <> child
+      }),
+    )
+    use handle <- result.try(case entry.stub.state {
+      Spawned(placed:) | Settled(placed:, ..) -> Ok(placed.handle)
+      Requested -> Error("the child has not started yet")
+      Refused(..) -> Error("the spawn was refused, so there is no transcript")
+    })
+    reach.history(
+      entry.stub.orchestrator,
+      parent_of(entry.stub, reach.session),
+      handle,
+      before,
+      remote_transcript.max_entries,
+    )
+    |> result.map(remote_transcript.encode)
+    |> result.map_error(fn(failure) {
+      case failure {
+        peer_mail.Refused(reason) ->
+          entry.stub.orchestrator <> " refused: " <> reason
+        peer_mail.Unreachable | peer_mail.NotOpen ->
+          entry.stub.orchestrator <> " could not be reached"
+      }
+    })
+  }
+}
+
 /// The first orchestrator, in name order, that holds a child of the session which
 /// is or may be running at `now`, or `None` when no stub is live.
 ///
@@ -398,6 +551,61 @@ pub fn live_on(kept: List(Kept), now: Int) -> Option(String) {
   |> list.sort(string.compare)
   |> list.first
   |> option.from_result
+}
+
+/// Finds the stub of the child a remote orchestrator names, by the strand name
+/// it gave the child and the parent strand it reports to.
+///
+/// A message from the remote concerns a child it may have started a moment ago,
+/// and the answer to the `Spawn` that started it may not have reached this side
+/// yet. The name is derived from the call site and written on the stub before
+/// the first `Spawn` leaves, so the lookup finds the stub in any state. Nothing
+/// here reads the lineage cell, which is written only with `Spawned`, or the
+/// handle, which exists only after it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.find_named(kept, "main", "sub:^main/build-turn-1-0")
+/// ```
+pub fn find_named(
+  kept: List(Kept),
+  strand: String,
+  name: String,
+) -> Result(Kept, Nil) {
+  list.find(kept, fn(entry) {
+    entry.stub.name == name && entry.stub.strand == strand
+  })
+}
+
+/// Records a glance the remote pushed for a child, unless the stub already holds
+/// a newer one.
+///
+/// A glance is a view and not a fact the parent acts on, so the rule is the
+/// simplest that cannot go backwards: the glance with the larger `at` wins, an
+/// equal or older one is ignored, and the stub's state is left as it is. The
+/// write is a compare-and-set like every other step, so a glance and an answer
+/// to a `Spawn` that race both land. `now` is this session's clock when the
+/// glance arrived, kept beside it so the roster can say how old it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_child.progressed(runtime, key, glance, now)
+/// ```
+pub fn progressed(
+  runtime: api.Runtime,
+  key: String,
+  glance: Glance,
+  now: Int,
+) -> Result(Stub, String) {
+  advance_with(runtime, key, fn(stub) {
+    case stub.glance {
+      Some(held) if held.at >= glance.at -> None
+      Some(_) | None ->
+        Some(Stub(..stub, glance: Some(glance), glance_seen_ms: now))
+    }
+  })
 }
 
 /// Records the orchestrator's answer to a `Spawn`: the child exists.
@@ -470,6 +678,23 @@ pub fn refused(
       Spawned(..) | Settled(..) | Refused(..) -> None
     }
   })
+  |> result.map(clear_requests(runtime, _))
+}
+
+// A child that is settled or refused has no call left to answer for, so the
+// requests the box sent for it are removed and their cards clear
+// (protocol-change/089). A failure to remove them leaves a card that answers
+// `Stale`, which is the harm already accepted for a card that outlives its
+// window, so it does not fail the write of the stub.
+fn clear_requests(runtime: api.Runtime, stub: Stub) -> Stub {
+  case stub.state {
+    Settled(..) | Refused(..) -> {
+      let _ =
+        remote_escalation_store.clear(runtime, stub.orchestrator, stub.name)
+      stub
+    }
+    Requested | Spawned(..) -> stub
+  }
 }
 
 /// Records a join's report that a child finished, with what it cost. The cost is
@@ -485,13 +710,57 @@ pub fn settled(
   key: String,
   outcome: Outcome,
   usage: ChildUsage,
+  owed: Int,
 ) -> Result(Stub, String) {
-  advance(runtime, key, fn(state) {
-    case state {
-      Spawned(placed) -> Some(Settled(placed:, outcome:, usage:))
+  advance_with(runtime, key, fn(stub) {
+    case stub.state {
+      Spawned(placed) ->
+        Some(Stub(..stub, owed:, state: Settled(placed:, outcome:, usage:)))
+
+      // A later join says how much mail is still undelivered. It only ever goes
+      // down in practice, and the stub keeps what the newest join said.
+      Settled(..) if stub.owed != owed -> Some(Stub(..stub, owed:))
       Requested | Settled(..) | Refused(..) -> None
     }
   })
+  |> result.map(clear_requests(runtime, _))
+}
+
+/// How long after a child's deadline a settled child that still owes mail is
+/// asked about, in milliseconds. A box that cannot deliver for longer than this
+/// has lost its place; the mail is not worth a connection held for ever.
+pub const owing_grace_ms = 3_600_000
+
+/// Whether the connection to the stub's orchestrator is needed at `now`: the
+/// child may be running, or it has finished and the orchestrator still holds
+/// mail it sent, within `owing_grace_ms` of the child's deadline.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_child.needs_link(stub_in_state(remote_child.Requested), 1000)
+/// ```
+pub fn needs_link(stub: Stub, now: Int) -> Bool {
+  case is_live(stub, now) {
+    True -> True
+    False -> owes_mail(stub, now)
+  }
+}
+
+/// Whether the stub is settled and its orchestrator reported undelivered mail
+/// from the child, inside the grace period.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !remote_child.owes_mail(stub_in_state(remote_child.Requested), 1000)
+/// ```
+pub fn owes_mail(stub: Stub, now: Int) -> Bool {
+  case stub.state {
+    Settled(placed:, ..) ->
+      stub.owed > 0 && now < placed.deadline_ms + owing_grace_ms
+    Requested | Spawned(..) | Refused(..) -> False
+  }
 }
 
 // A step from one state, as a single compare-and-set. The stub is read with the
@@ -505,23 +774,35 @@ fn advance(
   key: String,
   next: fn(State) -> Option(State),
 ) -> Result(Stub, String) {
+  advance_with(runtime, key, fn(stub) {
+    option.map(next(stub.state), fn(state) { Stub(..stub, state:) })
+  })
+}
+
+// A step that may change any part of the stub, as a single compare-and-set. The
+// step is given the stub as read and returns the stub to write, or `None` when
+// it does not apply to where the stub stands.
+fn advance_with(
+  runtime: api.Runtime,
+  key: String,
+  next: fn(Stub) -> Option(Stub),
+) -> Result(Stub, String) {
   advance_attempts(runtime, key, next, step_attempts)
 }
 
 fn advance_attempts(
   runtime: api.Runtime,
   key: String,
-  next: fn(State) -> Option(State),
+  next: fn(Stub) -> Option(Stub),
   attempts: Int,
 ) -> Result(Stub, String) {
   use found <- result.try(read(runtime, key))
   case found {
     None -> Error("the remote child stub is missing")
     Some(#(stub, seq)) ->
-      case next(stub.state) {
+      case next(stub) {
         None -> Ok(stub)
-        Some(state) ->
-          store(runtime, key, Stub(..stub, state:), seq, next, attempts)
+        Some(moved) -> store(runtime, key, moved, seq, next, attempts)
       }
   }
 }
@@ -533,7 +814,7 @@ fn store(
   key: String,
   moved: Stub,
   seq: Int,
-  next: fn(State) -> Option(State),
+  next: fn(Stub) -> Option(Stub),
   attempts: Int,
 ) -> Result(Stub, String) {
   case
@@ -544,11 +825,26 @@ fn store(
       expected: Some(seq),
     )
   {
-    Ok(_) -> Ok(moved)
+    Ok(_) -> {
+      changed(runtime)
+      Ok(moved)
+    }
     Error(api.FactConflict(..)) if attempts > 1 ->
       advance_attempts(runtime, key, next, attempts - 1)
     Error(error) -> Error(describe(error))
   }
+}
+
+// Tells the session's subscribers that a stub changed (protocol-change/090),
+// after the write that changed it, so a gateway that reads the stubs on hearing
+// it finds the change. The event carries nothing: the stubs are the truth. A
+// lost publication leaves a client's strip stale until the next change.
+fn changed(runtime: api.Runtime) -> Nil {
+  bus.publish(
+    bus.start(),
+    session: bus.key(of: api.session_id(runtime)),
+    event: bus.RemoteChildrenChanged,
+  )
 }
 
 fn read(
@@ -638,6 +934,9 @@ pub fn encode(stub: Stub) -> JsonValue {
       #("parentTools", strings(stub.parent_tools)),
       #("request", encode_request(stub.request)),
       #("name", json.String(stub.name)),
+      #("glance", optional(stub.glance, glance.encode)),
+      #("glanceSeenMs", json.Int(stub.glance_seen_ms)),
+      #("owed", json.Int(stub.owed)),
     ],
     encode_state(stub.state),
   ))
@@ -761,6 +1060,19 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
     member(fields, "request") |> result.try(decode_request),
   )
   use name <- result.try(text(fields, "name"))
+  use glance <- result.try(
+    maybe(fields, "glance", fn(value) {
+      glance.decode(value) |> result.map_error(corruption.describe)
+    }),
+  )
+  use glance_seen_ms <- result.try(case list.key_find(fields, "glanceSeenMs") {
+    Error(Nil) -> Ok(0)
+    Ok(found) -> expect_number(found)
+  })
+  use owed <- result.try(case list.key_find(fields, "owed") {
+    Error(Nil) -> Ok(0)
+    Ok(found) -> expect_number(found)
+  })
   use state <- result.try(decode_state(fields))
   Ok(Stub(
     orchestrator:,
@@ -770,6 +1082,9 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
     parent_tools:,
     request:,
     name:,
+    glance:,
+    glance_seen_ms:,
+    owed:,
     state:,
   ))
 }
