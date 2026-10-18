@@ -19,11 +19,16 @@ reason.
 - `Spec(model, cmd, sut, response)`: `initial`, `command`, `precondition`
   (`statem.Admission`), pure `next_model`, `new_sut`, `run(sut, cmd) ->
   response`, `postcondition(model, cmd, response) -> Result(Nil,
-  statem.Violation)`, `teardown`. `run` is called from several processes at
-  once and must be safe for that; `sut` is a shared handle (subject, pid
-  client), never a value. `new_sut`, `run`, `postcondition`, `next_model`
-  and `teardown` are rescued: a crash is a `statem.crash` violation
-  (teardown's is dropped), so teardown runs on every path.
+  statem.Violation)`, `finish(sut) -> Result(Nil, statem.Violation)`,
+  `teardown`. `run` is called from several processes at once and must be
+  safe for that; `sut` is a shared handle (subject, pid client), never a
+  value. `finish` runs once per execution, on the test process, only after
+  a race judged linearizable and before teardown (never after a prefix
+  failure, crash, timeout or non-linearizable verdict); it is where
+  end-state invariants live (an audit read-back, a quiet pool). `new_sut`,
+  `run`, `postcondition`, `next_model`, `finish` and `teardown` are
+  rescued: a crash is a `statem.crash` violation (teardown's is dropped),
+  so teardown runs on every path.
 - `Case(cmd)(prefix, branches)`.
 - `Config` via `default_config(seed:)` and `with_*`: `test_count` (100),
   `branches` (2, clamped 2..3), `max_prefix` (6), `max_branch` (4, clamped
@@ -32,13 +37,18 @@ reason.
   (checker nodes, 100_000). No random default seed.
 - `Failure(cmd, response)`: seed, run, violation, original and shrunk
   `Case`, `Evidence` (`InPrefix(step)`, `Raced(histories, explanation)`,
-  `Unrecorded`), shrinks accepted, executions, `statem.ShrinkEnd`.
+  `AfterRace(histories)` for a `finish` failure, `Unrecorded`, `NoRace`),
+  shrinks accepted, executions, `statem.ShrinkEnd`.
 - `check`, `check_run`, `generate_case` (a case from `(seed, run)` alone),
   `report(failure, describe)`.
 
-Violation tags: the spec's own for a prefix failure; fixed ones for the
-rest, so a shrink stays on the failure it found: `statem.not_linearizable`,
-`statem.undecided`, `statem.timeout`, `statem.crash`.
+Violation tags: the spec's own for a prefix or `finish` failure; fixed ones
+for the rest, so a shrink stays on the failure it found:
+`statem.not_linearizable`, `statem.undecided`, `statem.timeout`,
+`statem.crash`, `statem.no_race`. All race failures share
+`statem.not_linearizable`, so a shrink can move from one concurrency bug to
+another (a lost update to an underflow); the shrunk case is still a real
+failure, not necessarily the original bug.
 
 ## How it works
 
@@ -49,7 +59,11 @@ precondition holds in every interleaving of the branches
 (`internal/interleave` enumerates them while there are at most 10_000;
 past that the longest branch is trimmed). An inadmissible draw, or one that
 left fewer than two branches, is redrawn up to eight times, then trimmed
-command by command, so generation always ends with an admissible case.
+command by command, so generation always ends with an admissible case. A
+case that ends with fewer than two non-empty branches races nothing: the run
+fails at once, unexecuted and unshrunk, as `statem.no_race` with `NoRace`
+evidence, so preconditions that admit no concurrent pair are reported
+instead of passing green.
 
 An execution builds one system, runs the prefix call by call checking each
 response against the model (a prefix failure races nothing), then
@@ -68,6 +82,13 @@ candidate if any attempt fails with the original tag (`statem.first_failure`).
 Shrink candidates, in order: drop a branch (while more than two), merge two
 branches, delete one command from a branch, delete from the prefix, move a
 branch's first command to the end of the prefix. Each must be admissible.
+A candidate may race fewer than two branches (only generation refuses
+that, as `statem.no_race`): it is kept only while it still fails under the
+original tag, so a prefix failure shrinks to the prefix alone.
+
+After the race, a linearizable verdict hands the system to `finish`; its
+violation keeps the spec's tag, its crash is `statem.crash` naming
+`finish`, and its evidence is `AfterRace(histories)`.
 
 ## Invariants that break things
 
