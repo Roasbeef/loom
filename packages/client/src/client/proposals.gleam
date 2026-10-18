@@ -371,7 +371,10 @@ pub type Admin {
 /// ```
 ///
 pub fn seam(wiring: Wiring) -> propose.Proposals {
-  propose.Proposals(submit: fn(submission) { submit(wiring, submission) })
+  propose.Proposals(
+    submit: fn(submission) { submit(wiring, submission) },
+    configuration: option.map(wiring.config, fn(config) { config.path }),
+  )
 }
 
 /// The operator's door over the same wiring.

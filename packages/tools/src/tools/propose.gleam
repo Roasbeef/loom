@@ -133,7 +133,14 @@ pub type Refusal {
 /// returns its id, and it has written nothing else. It never blocks on a
 /// person.
 pub type Proposals {
-  Proposals(submit: fn(Submission) -> Result(String, Refusal))
+  Proposals(
+    submit: fn(Submission) -> Result(String, Refusal),
+    /// The path of the configuration this session loaded, which the
+    /// description names so the model can read it before proposing an edit,
+    /// or `None` for a session with no file, whose description offers no
+    /// configuration edit.
+    configuration: Option(String),
+  )
 }
 
 /// The `propose` tool over one seam.
@@ -153,11 +160,10 @@ pub fn tool(proposals: Proposals) -> Tool {
       <> "rejects it, and only an approval writes anything. An approved rule "
       <> "reaches new sessions in the system prompt, after the operator's "
       <> "own instructions. Use it for a lesson that should bind future "
-      <> "work, not for a note: `remember` is for notes. With `target` set to "
-      <> "`config` it suggests an edit to the loom.toml this session loaded "
-      <> "instead (read it with fs_read); the edit must leave a file that "
-      <> "loads, and an approval reopens the session with it. `old` is text "
-      <> "already in the file to replace, which must match exactly once; "
+      <> "work, not for a note: `remember` is for notes. "
+      <> configuration_sentence(proposals.configuration)
+      <> "`old` is text already in the file to replace, which must match "
+      <> "exactly once; "
       <> "leave `old` out to append `new`. `new` is capped at "
       <> int.to_string(max_new_bytes)
       <> " bytes and the queue holds "
@@ -212,6 +218,21 @@ pub fn tool(proposals: Proposals) -> Tool {
     requirements: empty_requirements,
     run: fn(_ctx, args) { run(proposals, args) },
   )
+}
+
+// The sentence offering a configuration edit, naming the file, or nothing for a
+// session with no file. The path is fixed for the session, so the description
+// stays one byte string for the life of the session's cached prefix.
+fn configuration_sentence(configuration: Option(String)) -> String {
+  case configuration {
+    Some(path) ->
+      "With `target` set to `config` it suggests an edit to this session's "
+      <> "configuration, "
+      <> path
+      <> ", instead (read it with fs_read first); the edit must leave a file "
+      <> "that loads, and an approval reopens the session with it. "
+    option.None -> ""
+  }
 }
 
 fn run(proposals: Proposals, args: JsonValue) -> ToolOutcome {

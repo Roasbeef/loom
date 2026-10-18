@@ -23,11 +23,15 @@ import tools/tool.{type Ctx}
 
 // A seam that queues everything under one id.
 fn accepting() -> propose.Proposals {
-  propose.Proposals(submit: fn(_submission) { Ok("prop-0001") })
+  propose.Proposals(configuration: None, submit: fn(_submission) {
+    Ok("prop-0001")
+  })
 }
 
 fn refusing(refusal: propose.Refusal) -> propose.Proposals {
-  propose.Proposals(submit: fn(_submission) { Error(refusal) })
+  propose.Proposals(configuration: None, submit: fn(_submission) {
+    Error(refusal)
+  })
 }
 
 fn args(old: String, new: String, rationale: String) -> JsonValue {
@@ -62,7 +66,7 @@ pub fn a_valid_proposal_returns_its_id_test() {
 pub fn the_seam_receives_the_arguments_and_no_path_test() {
   let seen = process.new_subject()
   let seam =
-    propose.Proposals(submit: fn(submitted) {
+    propose.Proposals(configuration: None, submit: fn(submitted) {
       process.send(seen, submitted)
       Ok("prop-0002")
     })
@@ -355,4 +359,18 @@ fn dead_filesystem() -> tool.FileSystem {
     read_link: fn(_path) { Ok(tool.LinkMissing) },
     rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
   )
+}
+
+// A session with a configuration file names it, so the model can read it before
+// proposing a replacement; a session with none is not offered the edit.
+pub fn the_description_names_the_configuration_only_when_there_is_one_test() {
+  let with_file =
+    propose.tool(
+      propose.Proposals(
+        ..accepting(),
+        configuration: Some("/o/.loom/loom.toml"),
+      ),
+    )
+  assert string.contains(with_file.description, "/o/.loom/loom.toml")
+  assert !string.contains(propose.tool(accepting()).description, "`config`")
 }
