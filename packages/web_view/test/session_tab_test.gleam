@@ -489,6 +489,8 @@ pub fn the_runs_on_line_is_text_inside_the_session_group_test() {
       element.none(),
       element.none(),
       element.none(),
+      element.none(),
+      element.none(),
     ))
   assert string.contains(html, "runs on box&lt;1&gt;")
 }
