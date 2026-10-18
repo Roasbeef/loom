@@ -42,14 +42,14 @@
 //// `Release` is the only thing that can make the session, and it is then
 //// refused when the row says released.
 ////
-//// The release cascades (protocol-change/084, phase 4). A child here may have
-//// started children of its own on a third orchestrator, and the session's stubs
-//// are the only record of them. So after the stop, `releaser` takes the
-//// orchestrators those stubs name, from the Agency of a resident session or the
-//// file of a closed one, and hands them to the registry with the session. The
-//// registry writes a release row for each, as a laptop's deletion does, before
-//// it deletes anything, and this daemon's release drainer tells them. Releasing
-//// a laptop's parent session therefore reaches every orchestrator below it.
+//// The release cascades (protocol-change/084, phase 4), and nothing here does it.
+//// A child here may have started children of its own on a third orchestrator,
+//// and the session's stubs are the only record of them. The registry reads the
+//// stubs from the closed file in the turn that deletes the drained session and
+//// writes a release row for each orchestrator they name, as a laptop's deletion
+//// does (`manager.release_delegate`). Writing them any earlier would let the
+//// session, still running, resend a spawn that reaches the third orchestrator
+//// after its release.
 ////
 //// ## Flow
 ////
@@ -292,7 +292,7 @@ pub fn releaser(
     use existing <- result.try(find(spawner, parent))
     case existing {
       NoSession -> Ok(0)
-      Existing(session_id:, state:, endpoint:) -> {
+      Existing(state:, endpoint:, ..) -> {
         use stopped <- result.try(case state, endpoint {
           catalogue.Open, Some(endpoint) -> endpoint.release()
           catalogue.Open, None
@@ -300,23 +300,12 @@ pub fn releaser(
           | catalogue.Released, _
           -> Ok(0)
         })
-
-        // The session's own children may have started children elsewhere
-        // (phase 4), and those orchestrators are owed a release too. The list is
-        // taken after the stop, which wrote the fence that refuses a new stub.
-        // A resident session answers from its Agency and a closed one from its
-        // file. A repeat writes the same rows, which the catalogue keeps once.
-        use holders <- result.try(case endpoint {
-          Some(endpoint) -> endpoint.holders()
-          None -> Ok(manager.closed_holders(registry, session_id))
-        })
         use Nil <- result.map(
           manager.release_delegate(
             registry,
             spawner.name,
             parent.session,
             sessions,
-            holders,
           )
           |> result.map_error(fn(error) {
             remote_spawn.StoreFailure(reason: describe(error))

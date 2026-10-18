@@ -8201,8 +8201,9 @@ pub fn a_delegate_child_spawns_on_the_orchestrator_its_spawner_allows_test() {
   assert fake_orchestrators.report(fourth).spawns == []
   assert harness.config.remote.orchestrators == ["third"]
 
-  // The session's release will owe `third`: the endpoint lists it.
-  assert agency.delegate_endpoint(harness.config).holders() == Ok(["third"])
+  // The session's release will owe `third`: its stubs name it.
+  let assert Ok(kept) = remote_child.all(harness.runtime)
+  assert remote_child.holders(kept) == ["third"]
   close(harness)
 }
 
@@ -8305,7 +8306,7 @@ pub fn a_grandchilds_deadline_is_clamped_to_what_its_parent_has_left_test() {
   close(harness)
 }
 
-pub fn a_released_delegate_session_admits_no_new_stub_and_lists_the_old_test() {
+pub fn a_released_delegate_session_admits_no_new_stub_test() {
   let third = fake_orchestrators.start("third", fake_orchestrators.Up)
   let #(harness, _queued) = start_deep([third])
   let child = deep_child(harness, "turn-1:tools")
@@ -8313,9 +8314,9 @@ pub fn a_released_delegate_session_admits_no_new_stub_and_lists_the_old_test() {
   let assert Ok(_) =
     harness.seam.spawn(caller, on_orchestrator("before", "third"))
 
-  // The release writes the fence and stops the child. A stub it did not see
-  // could never be told, so none is admitted after it, and the list the release
-  // reads holds the one made before.
+  // The release writes the fence and stops the child, which then starts
+  // nothing on another orchestrator. The stub made before stays, for the
+  // registry to read when it deletes the session.
   let endpoint = agency.delegate_endpoint(harness.config)
   let assert Ok(_stopped) = endpoint.release()
   let assert Error(agent.ParentRunEnded(..)) =
@@ -8324,6 +8325,5 @@ pub fn a_released_delegate_session_admits_no_new_stub_and_lists_the_old_test() {
       on_orchestrator("after", "third"),
     )
   assert list.length(stubs_of(harness)) == 1
-  assert endpoint.holders() == Ok(["third"])
   close(harness)
 }

@@ -58,9 +58,8 @@
 ////     `live_stubs` counts the stubs whose child may still be running.
 //// 13. Depth across machines (phase 4) adds two steps. `within_parent` keeps
 ////     the deadline of a child's own child inside the deadline its parent has
-////     left, and `delegate_holders` lists the orchestrators a delegate
-////     session's children started children on, so that releasing the session
-////     releases them in turn.
+////     left, and `no_later_than_parent` caps the child's lineage cell at the
+////     parent's absolute deadline.
 ////
 //// ## Depth across machines
 ////
@@ -78,10 +77,12 @@
 ////
 //// The grandchild may not outlive its parent: `within_parent` cuts its budget to
 //// what the parent's deadline leaves. And releasing this session releases the
-//// grandchildren: the released fence stops new stubs, `delegate_holders` reads
-//// the ones there are, and the registry writes a release row for each of their
-//// orchestrators before it deletes the session, the same rows a laptop writes
-//// when it deletes a parent session.
+//// grandchildren: the released fence stops new stubs, and when the session's
+//// slot has drained the registry reads the stubs from the closed file and writes
+//// a release row for each of their orchestrators before it deletes the session,
+//// the same rows a laptop writes when it deletes a parent session. Nothing here
+//// takes part in that, because until the slot has drained this session may still
+//// resend a spawn.
 ////
 //// ## The bootstrap knot, and the name that unties it
 ////
@@ -3984,11 +3985,10 @@ fn admit_remote(
       }
 
     // A new stub in a delegate session whose parent was deleted is refused by
-    // the released fence, read in the holder that also writes it. The release
-    // lists the session's stubs to tell their orchestrators after the fence is
-    // written, so a stub admitted before the fence is one the list holds and no
-    // stub can be admitted after it. The deadline is clamped here, before the
-    // stub records the request that every resend sends.
+    // the released fence, read in the holder that also writes it: a child that
+    // was stopped by the release starts nothing on another orchestrator. The
+    // deadline is clamped here, before the stub records the request that every
+    // resend sends.
     None -> {
       use Nil <- result.try(refuse_if_fenced(runtime, released_key(), caller))
       let #(now, _clock) = clock.read(config.clock)
@@ -4868,12 +4868,6 @@ pub type DelegateEndpoint {
     /// Whether any child of the session still has a run, which the retention
     /// sweep asks before it closes an idle session.
     occupancy: fn() -> Occupancy,
-    /// The orchestrators this session's own children started children on, read
-    /// from its stubs (protocol-change/084, phase 4). A release asks it after
-    /// `release` has written the released fence, so the list holds every stub
-    /// the session will ever have, and the registry owes each of them a
-    /// `Release` before the session is deleted.
-    holders: fn() -> Result(List(String), remote_spawn.SpawnRefusal),
   )
 }
 
@@ -4918,33 +4912,7 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
       delegate_send(trimmed, parent, child, message_id, text)
     },
     occupancy: fn() { delegate_occupancy(trimmed) },
-    holders: fn() { delegate_holders(trimmed) },
   )
-}
-
-/// The orchestrators a delegate session's children started children on, which
-/// its release must tell in turn (protocol-change/084, phase 4).
-///
-/// They are the orchestrators of every stub that is not `Refused`
-/// (`remote_child.holders`). The stubs are read through a borrowed runtime, and
-/// nothing is written. A release calls this after the released fence, which
-/// `admit_remote` reads before it writes a stub, so no stub can appear after
-/// the list is taken.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // agency.delegate_holders(config) == Ok(["third"])
-/// ```
-pub fn delegate_holders(
-  config: Config,
-) -> Result(List(String), remote_spawn.SpawnRefusal) {
-  use runtime <- result.try(
-    borrow(config) |> result.map_error(refused(config, _)),
-  )
-  remote_child.all(runtime)
-  |> result.map(remote_child.holders)
-  |> result.map_error(fn(reason) { remote_spawn.StoreFailure(reason:) })
 }
 
 // --- messages into a child on this orchestrator -------------------------------
