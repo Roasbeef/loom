@@ -1,7 +1,9 @@
 # protocol-change/085: reading and operating a distributed deployment
 
-**Status**: PROPOSED 2026-10-11, revised after review. Nothing here is built, and
-every spelling is provisional until slice 4 lands.
+**Status**: PROPOSED 2026-10-11, revised after review. The decision text below is
+unchanged from that date and describes the proposal. Slices 1 to 7 are built; see
+the status addendum of 2026-10-17 at the end for what shipped, in which PRs, and what
+was deferred. Where an earlier addendum or the code gives a spelling, it wins.
 **Affects**: the client control protocol (Part 1.6: two new owner-only commands,
 `deployment.status` and `sessions.elsewhere`, and two optional members on the
 records of `sessions.list`), the orchestrator port's closed message type (two
@@ -739,3 +741,32 @@ had (protocol-change/078, phase 5, and protocol-change/083), and adds no wire me
   flags do not combine.
 - **No new scope, route, ticket, event class or content security policy change.** Every
   name, reason and executor is a text node, and every class is a literal.
+
+## Addendum 2026-10-17: status
+
+The proposal is built through slice 7. Nothing in the decision text above was
+withdrawn. The slices landed in these pull requests.
+
+- **Slices 1 to 3** (`sessions.list` custody members, `deployment.status` without
+  the port, and the executor and pool cards in the web form) landed in #957.
+- **Slice 4** (the orchestrator port's `Report`, node reports, classification, the
+  `node` filter, the directory copy and the text topology) landed in #995 and #996.
+- **Slices 5 to 7** (`sessions.elsewhere` and its clients, the Admin page's machines
+  list and read-only machine pages, and Move with candidates and Abandon) landed in
+  #999, together with the metering and retention work for remote subagents
+  (protocol-change/084, #998).
+
+Four points differ from the proposal or are left open.
+
+- **The topology is text only.** Slice 6 shipped as a machines list and a read-only
+  page for each machine, as the addendum of 2026-10-16 on the machines list records.
+  The SVG topology drawing of section 8 of the design note is not built. The terminal
+  prints the text topology. The SVG is optional and has no owner.
+- **Slice 8 is not built.** The in-terminal `/deployment` view and executor picker
+  were deferred until the terminal revamp, as the plan said.
+- **Three decoders read `deployment.status`.** `tui/deployment_view`,
+  `web_view/machines` and `ledger_control.member_view` each decode it. One decoder in
+  a package that all three may depend on would replace them. This is a follow-up.
+- **`protocol.version` did not change** for this proposal, as the Affects line states.
+  The executor host's value is 3 because of remote code mode and MCP
+  (protocol-change/078), not because of this document.

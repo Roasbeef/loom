@@ -9,9 +9,10 @@ give as built. The three failure cases the shipped test does not drive (the
 laptop killed mid-spawn, the link cut mid-join, the parent's turn ended with the
 link down) are covered by the P model
 (`protocol/models/remote-subagents`, the cases `tcDrops`, `tcAbort` and
-`tcRestart`), not by the shipped test. Phase 2 lands as dated addenda at the end
-of this document, the first being `Release` (2026-10-16). Every spelling below
-that an addendum has not built is still provisional.
+`tcRestart`), not by the shipped test. Phases 2 to 4 shipped as dated addenda at the end
+of this document (`Release` to depth across machines, 2026-10-16 and 2026-10-17;
+phase 2 in #998 and #999, phases 3 and 4 in #1006, with 089 and 090). A spelling
+below that no addendum has built is still provisional.
 **Affects**: the orchestrator port's closed message type (three constructors in
 phase 1, `Spawn`, `Join` and `RunEnded`; `Release` and `ChildSend` in phase 2;
 `ChildEscalation` and `Resolve` in phase 3), `loom.toml` (a `[spawners.<name>]`
@@ -453,7 +454,9 @@ Phase 1 has five slices, each of which lands on `origin/main` alone.
   reason, wherever it is heard. Remote children are always detached, the laptop
   sends no run end, and the drainer settles children that finish unwaited by a
   zero-window `Join`. Remote usage is recorded on the
-  settled stub; counting it against a goal is not built, and refusing
+  settled stub; counting it against a goal was not built in S3 (the goal's
+  accounting reads settled remote tokens since the metering work of 2026-10-16),
+  and refusing
   `sessions.move` for a parent that holds a live stub is built in S6 (see the
   addendum of 2026-10-16). The design note's section 15 lists
   the differences.

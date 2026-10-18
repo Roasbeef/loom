@@ -1,15 +1,21 @@
 # Operator surface for the distributed runtime: executor choice, one session list, health and topology
 
-Status: **proposed, for the owner's review, 2026-10-11 (revised after review).
-Nothing here is built.** It is written against `distributed/simplify` (PR #923,
+Status: **proposed, for the owner's review, 2026-10-11 (revised after review);
+built through slice 7 as of 2026-10-17.** The text below is the proposal as
+reviewed and was not rewritten when the slices landed. Section 11's plan was
+carried out in #957 (slices 1 to 3), #995 and #996 (slice 4) and #999 (slices 5 to
+7); the SVG topology of section 8 and the in-terminal slice 8 were not built, and
+the status addendum of 2026-10-17 in
+[protocol-change/085](../../protocol-change/085-distributed-admin-surface.md) is the
+record of what differs. It was written against `distributed/simplify` (PR #923,
 the distributed runtime) with the Khepri directory of `directory/khepri` (PR
 #934, protocol-change/083) on top. The interface changes are drafted in
 [protocol-change/085](../../protocol-change/085-distributed-admin-surface.md).
-It also leaves room for three branches that are not in this tree: the peer mail
+It also leaves room for three branches that were not in that tree: the peer mail
 reach work (PR #937, which adds `Describe`, `Roster` and a `NotOpen` answer to
 the orchestrator port), remote code mode and MCP on executors (PR #938, which
 raises `protocol.version` to 3), and subagents on another orchestrator (PR #939,
-design only, protocol-change/084 on that branch).
+design only, protocol-change/084 on that branch). All three have since landed.
 
 The design changes no rule of [protocol-change/051](../../protocol-change/051-web-view-route.md)
 or of [protocol-change/053](../../protocol-change/053-owner-admin-and-claims.md).
