@@ -1242,10 +1242,9 @@ fn run_read(schemes: List(Scheme), ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use limit <- tool.with_arg(tool.optional_int(args, "limit"))
   let offset = option.unwrap(offset, 1)
   let limit = option.unwrap(limit, default_read_lines)
-  use <- bool.guard(
-    when: offset < 1 || limit < 1,
-    return: tool.failure("invalid arguments: offset and limit must be >= 1"),
-  )
+  use <- bool.lazy_guard(when: offset < 1 || limit < 1, return: fn() {
+    tool.failure("invalid arguments: offset and limit must be >= 1")
+  })
   case string.split_once(path, on: "://") {
     Ok(#(name, reference)) ->
       scheme_outcome(schemes, ctx, name, reference, offset, limit)
@@ -1397,9 +1396,11 @@ fn scheme_read_outcome(
     lines -> string.join(list.map(lines, fn(line) { line.text }), "\n")
   }
   let text = text <> continuation(window)
-  use <- bool.guard(
+  use <- bool.lazy_guard(
     when: bit_array.byte_size(<<text:utf8>>) > blob.overflow_threshold_bytes,
-    return: tool.failure("virtual read is too large; use a smaller `limit`"),
+    return: fn() {
+      tool.failure("virtual read is too large; use a smaller `limit`")
+    },
   )
   tool.success(text)
   |> tool.with_details(
@@ -1471,13 +1472,15 @@ fn read_outcome(
   // useless for planning edits — so an oversized window is refused
   // (spec §3.2 overflow applies to opaque outputs like bash/grep;
   // windowing is fs_read's bounding mechanism).
-  use <- bool.guard(
+  use <- bool.lazy_guard(
     when: bit_array.byte_size(<<text:utf8>>) > blob.overflow_threshold_bytes,
-    return: tool.failure(
-      "the requested window renders larger than "
-      <> int.to_string(blob.overflow_threshold_bytes)
-      <> " bytes; read a smaller window (lower `limit`)",
-    ),
+    return: fn() {
+      tool.failure(
+        "the requested window renders larger than "
+        <> int.to_string(blob.overflow_threshold_bytes)
+        <> " bytes; read a smaller window (lower `limit`)",
+      )
+    },
   )
   tool.success(text)
   |> tool.with_details(

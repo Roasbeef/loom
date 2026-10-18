@@ -1433,7 +1433,9 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       session_path:,
       bind_host:,
       bind_port:,
-      token_path: option.unwrap(flags.token_file, session_path <> ".token"),
+      token_path: option.lazy_unwrap(flags.token_file, fn() {
+        session_path <> ".token"
+      }),
       workspace:,
       domain_paths: None,
       peer_directory: None,
@@ -5154,7 +5156,7 @@ fn with_upward_drain(
                 now
               },
               link,
-              option.unwrap(settings.laptop, delegate_outbox.absent()),
+              option.lazy_unwrap(settings.laptop, delegate_outbox.absent),
               logger,
             ),
             runtime.effects.timers.after,

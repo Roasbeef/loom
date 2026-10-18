@@ -782,10 +782,9 @@ fn decode_row(row: MsgPackValue) -> Result(Schedule, ScheduleError) {
   use fired <- result.try(
     wire.int_field(row, "fired") |> result.map_error(bad_result),
   )
-  use <- bool.guard(
-    when: fired < 0,
-    return: Error(bad_result("negative fired count")),
-  )
+  use <- bool.lazy_guard(when: fired < 0, return: fn() {
+    Error(bad_result("negative fired count"))
+  })
   Ok(Schedule(name:, target:, when:, cadence:, wake:, fired:, body:))
 }
 
@@ -893,15 +892,14 @@ fn cadence_field(value: MsgPackValue) -> Result(Cadence, ScheduleError) {
         wire.int_field(cadence, "utc_offset_s") |> result.map_error(bad_result),
       )
       use expiry <- result.try(expiry_field(cadence))
-      use <- bool.guard(
-        when: expression == "",
-        return: Error(bad_result("empty cron expression")),
-      )
-      use <- bool.guard(
+      use <- bool.lazy_guard(when: expression == "", return: fn() {
+        Error(bad_result("empty cron expression"))
+      })
+      use <- bool.lazy_guard(
         when: utc_offset_s < -50_400
           || utc_offset_s > 50_400
           || utc_offset_s % 60 != 0,
-        return: Error(bad_result("invalid utc_offset_s")),
+        return: fn() { Error(bad_result("invalid utc_offset_s")) },
       )
       Ok(Cron(expression:, utc_offset_s:, expiry:))
     }

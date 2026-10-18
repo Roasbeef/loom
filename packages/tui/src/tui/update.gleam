@@ -206,10 +206,9 @@ fn stage_component(
     artifact.size,
     fetch,
   ))
-  use <- bool.guard(
-    presence == source.Absent,
-    Error("release artifact is missing: " <> artifact.name),
-  )
+  use <- bool.lazy_guard(presence == source.Absent, fn() {
+    Error("release artifact is missing: " <> artifact.name)
+  })
   files.unpack(path, artifact, destination)
 }
 

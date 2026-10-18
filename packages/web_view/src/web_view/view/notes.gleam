@@ -283,9 +283,7 @@ fn presentation(
   note: notes_view.Note,
 ) -> notes.Presentation {
   dict.get(state.presentations, note.key)
-  |> result.unwrap(notes.Presentation(
-    string.slice(note.text, 0, 220),
-    [],
-    notes.Literal,
-  ))
+  |> result.lazy_unwrap(fn() {
+    notes.Presentation(string.slice(note.text, 0, 220), [], notes.Literal)
+  })
 }

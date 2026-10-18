@@ -90,7 +90,8 @@ fn walk(
       ))
       use config <- result.try(metadata(path))
       use fields <- result.try(
-        tom.parse(config) |> result.replace_error(path <> " is not valid TOML"),
+        tom.parse(config)
+        |> result.map_error(fn(_) { path <> " is not valid TOML" }),
       )
       let children =
         list.flat_map(["dependencies", "dev_dependencies"], fn(section) {
@@ -239,9 +240,9 @@ pub fn verify(
       use content <- result.try(metadata(admitted))
       tom.parse(content)
       |> result.map(fn(_fields) { Nil })
-      |> result.replace_error(
-        path <> " is not valid prepared dependency metadata",
-      )
+      |> result.map_error(fn(_) {
+        path <> " is not valid prepared dependency metadata"
+      })
     },
   )
 }

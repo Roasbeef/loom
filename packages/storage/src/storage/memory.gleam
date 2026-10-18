@@ -365,7 +365,7 @@ fn put_register(
 ) -> MemoryState {
   let ns_text = register.ns_to_string(ns)
   let cells =
-    dict.get(state.registers, ns_text) |> result.unwrap(or: dict.new())
+    dict.get(state.registers, ns_text) |> result.lazy_unwrap(or: dict.new)
   MemoryState(
     ..state,
     registers: dict.insert(

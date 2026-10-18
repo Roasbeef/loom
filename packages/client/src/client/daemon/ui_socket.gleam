@@ -3609,7 +3609,8 @@ fn invitation(
     invites.Observer -> access.Observer
     invites.Operator -> access.Operator
   }
-  let name = option.unwrap(named, "Guest " <> string.drop_start(id, 6))
+  let name =
+    option.lazy_unwrap(named, fn() { "Guest " <> string.drop_start(id, 6) })
   use principal <- result.map(
     manager.administer(
       registry,
@@ -6186,5 +6187,5 @@ fn authorize(attachment: server.Attachment(instance)) {
     incarnation: attachment.incarnation,
     digest: attachment.digest,
   )
-  |> result.replace_error(ending.reason(ending.AccessRevoked))
+  |> result.map_error(fn(_) { ending.reason(ending.AccessRevoked) })
 }

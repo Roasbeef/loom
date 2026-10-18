@@ -1491,7 +1491,9 @@ pub fn service_btw(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
   let owner = session_model.queue_owner(shared)
-  use <- bool.guard(shared.btw.owner != owner, Shared(..shared, btw: btw.new()))
+  use <- bool.lazy_guard(shared.btw.owner != owner, fn() {
+    Shared(..shared, btw: btw.new())
+  })
   case shared.channel, shared.btw.board, shared.btw.pending {
     Some(channel), Some(board), None -> {
       case

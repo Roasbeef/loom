@@ -1912,23 +1912,24 @@ fn run_wait(
   )
   use within_ms <- tool.with_arg(tool.optional_int(args, "within_ms"))
   let texts = option.unwrap(texts, [])
-  use <- bool.guard(
-    when: texts == [],
-    return: tool.failure(
+  use <- bool.lazy_guard(when: texts == [], return: fn() {
+    tool.failure(
       "invalid arguments: `handles` must be a nonempty array, for example {\"handles\":[\"<returned handle>\"]}",
-    ),
-  )
+    )
+  })
 
   // `texts` is model-supplied and not otherwise bounded, so a caller
   // that lists far more than `max_handles` handles must not force a walk
   // of the whole array just to say so — `list.drop` stops at the bound.
-  use <- bool.guard(
+  use <- bool.lazy_guard(
     when: list.drop(texts, max_handles) != [],
-    return: tool.failure(
-      "invalid arguments: at most "
-      <> int.to_string(max_handles)
-      <> " handles per call",
-    ),
+    return: fn() {
+      tool.failure(
+        "invalid arguments: at most "
+        <> int.to_string(max_handles)
+        <> " handles per call",
+      )
+    },
   )
   use handles <- tool.or_outcome(
     list.try_map(texts, parse_handle),

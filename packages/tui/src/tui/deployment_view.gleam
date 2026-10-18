@@ -678,7 +678,8 @@ fn placement_state(word: String) -> Result(PlacementState, String) {
 fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   case value {
     json.Object(members) ->
-      list.key_find(members, key) |> result.replace_error("missing " <> key)
+      list.key_find(members, key)
+      |> result.map_error(fn(_) { "missing " <> key })
     json.Array(_)
     | json.String(_)
     | json.Int(_)

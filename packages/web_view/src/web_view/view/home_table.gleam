@@ -350,10 +350,11 @@ fn group(
       html.h3(
         [attribute.class("home-workspace"), attribute.title(group.project)],
         [
-          html.text(result.unwrap(
-            dict.get(titles, group.project),
-            heading.shorten_path(group.project),
-          )),
+          html.text(
+            result.lazy_unwrap(dict.get(titles, group.project), fn() {
+              heading.shorten_path(group.project)
+            }),
+          ),
           html.span([attribute.class("home-count")], [
             html.text(int.to_string(list.length(group.entries))),
           ]),

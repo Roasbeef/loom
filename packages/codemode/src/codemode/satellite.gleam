@@ -2074,7 +2074,7 @@ fn map_field(value: MsgPackValue, key: String) -> Result(MsgPackValue, String) {
           False -> Error(Nil)
         }
       })
-      |> result.replace_error("missing field `" <> key <> "`")
+      |> result.map_error(fn(_) { "missing field `" <> key <> "`" })
     _ -> Error("expected a map, got a scalar")
   }
 }

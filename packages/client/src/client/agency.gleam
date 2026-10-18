@@ -2905,7 +2905,7 @@ fn send_remote(
         Some(_) | None -> Error(Nil)
       }
     })
-    |> result.replace_error(still_starting_or_unknown(kept, to)),
+    |> result.map_error(fn(_) { still_starting_or_unknown(kept, to) }),
   )
 
   // A message must not revive a child: the remote starts a run only inside the

@@ -314,7 +314,7 @@ fn ask(
     Ok(subject) -> {
       use pid <- result.try(
         process.subject_owner(subject)
-        |> result.replace_error(no_store()),
+        |> result.map_error(fn(_) { no_store() }),
       )
       let reply = process.new_subject()
       let monitor = process.monitor(pid)

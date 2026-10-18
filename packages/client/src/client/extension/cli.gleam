@@ -252,12 +252,12 @@ fn absolute(path: String) -> Result(String, String) {
     True -> Ok(path)
     False ->
       use_working_directory(path)
-      |> result.replace_error(
+      |> result.map_error(fn(_) {
         "--home "
         <> path
         <> " is relative and the working directory is "
-        <> "unreadable, so it cannot be resolved",
-      )
+        <> "unreadable, so it cannot be resolved"
+      })
   }
 }
 

@@ -276,10 +276,12 @@ fn boot_production(program: fn() -> Outcome) -> Result(Nil, BootError) {
 pub fn read_token() -> Result(BitArray, BootError) {
   use path <- result.try(
     ffi_transport.getenv(token_env)
-    |> result.replace_error(TokenUnavailable(token_env <> " is unset")),
+    |> result.map_error(fn(_) { TokenUnavailable(token_env <> " is unset") }),
   )
   ffi_transport.read_file(path)
-  |> result.replace_error(TokenUnavailable("cannot read token file " <> path))
+  |> result.map_error(fn(_) {
+    TokenUnavailable("cannot read token file " <> path)
+  })
 }
 
 /// Builds the production transport over the AF_UNIX socket named by
@@ -288,11 +290,13 @@ pub fn read_token() -> Result(BitArray, BootError) {
 pub fn production_transport() -> Result(Transport, BootError) {
   use path <- result.try(
     ffi_transport.getenv(sock_env)
-    |> result.replace_error(TransportUnavailable(sock_env <> " is unset")),
+    |> result.map_error(fn(_) { TransportUnavailable(sock_env <> " is unset") }),
   )
   use socket <- result.try(
     ffi_transport.connect_unix(path)
-    |> result.replace_error(TransportUnavailable("cannot connect to " <> path)),
+    |> result.map_error(fn(_) {
+      TransportUnavailable("cannot connect to " <> path)
+    }),
   )
   Ok(socket_transport(socket))
 }

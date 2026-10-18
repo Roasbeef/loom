@@ -269,18 +269,15 @@ pub fn submission(args: JsonValue) -> Result(Submission, String) {
   use source <- result.try(tool.optional_string(args, "source_entry"))
   use <- bool.guard(string.trim(new) == "", Error("`new` is empty"))
   use <- bool.guard(string.trim(rationale) == "", Error("`rationale` is empty"))
-  use <- bool.guard(
-    bytes(new) > max_new_bytes,
-    Error(too_long("new", max_new_bytes)),
-  )
-  use <- bool.guard(
-    bytes(old) > max_old_bytes,
-    Error(too_long("old", max_old_bytes)),
-  )
-  use <- bool.guard(
-    bytes(rationale) > max_rationale_bytes,
-    Error(too_long("rationale", max_rationale_bytes)),
-  )
+  use <- bool.lazy_guard(bytes(new) > max_new_bytes, fn() {
+    Error(too_long("new", max_new_bytes))
+  })
+  use <- bool.lazy_guard(bytes(old) > max_old_bytes, fn() {
+    Error(too_long("old", max_old_bytes))
+  })
+  use <- bool.lazy_guard(bytes(rationale) > max_rationale_bytes, fn() {
+    Error(too_long("rationale", max_rationale_bytes))
+  })
   use Nil <- result.try(clean("new", new))
   use Nil <- result.try(clean("old", old))
   use Nil <- result.try(clean("rationale", rationale))

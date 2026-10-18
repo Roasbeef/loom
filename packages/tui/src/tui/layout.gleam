@@ -938,8 +938,7 @@ pub fn input_keys(model: Model) -> #(String, Option(String)) {
     ),
     #(" ^O agents ", Some("Recipient unavailable · your draft is kept")),
   )
-  use <- bool.guard(
-    model.shared.peer == session_model.Disconnected,
+  use <- bool.lazy_guard(model.shared.peer == session_model.Disconnected, fn() {
     case model.view.reconnect {
       tui_model.ReconnectAttempting(..) -> #(
         " draft kept ",
@@ -949,8 +948,8 @@ pub fn input_keys(model: Model) -> #(String, Option(String)) {
         " /sessions reconnects ",
         Some("Disconnected · /sessions to reconnect · draft retained"),
       )
-    },
-  )
+    }
+  })
   let held = #(
     " Enter sends held input ",
     Some("Stopped · your next message is sent with the held input"),

@@ -515,27 +515,27 @@ fn parse(text: String) -> Result(Dynamic, String) {
 
 fn field(document: Dynamic, name: String) -> Result(Dynamic, String) {
   decode.run(document, decode.at([name], decode.dynamic))
-  |> result.replace_error("the hook arguments have no " <> name)
+  |> result.map_error(fn(_) { "the hook arguments have no " <> name })
 }
 
 fn field_string(document: Dynamic, name: String) -> Result(String, String) {
   decode.run(document, decode.at([name], decode.string))
-  |> result.replace_error("the hook arguments have no string " <> name)
+  |> result.map_error(fn(_) { "the hook arguments have no string " <> name })
 }
 
 fn field_int(document: Dynamic, name: String) -> Result(Int, String) {
   decode.run(document, decode.at([name], decode.int))
-  |> result.replace_error("the hook arguments have no integer " <> name)
+  |> result.map_error(fn(_) { "the hook arguments have no integer " <> name })
 }
 
 fn field_bool(document: Dynamic, name: String) -> Result(Bool, String) {
   decode.run(document, decode.at([name], decode.bool))
-  |> result.replace_error("the hook arguments have no boolean " <> name)
+  |> result.map_error(fn(_) { "the hook arguments have no boolean " <> name })
 }
 
 fn field_float(document: Dynamic, name: String) -> Result(Float, String) {
   decode.run(document, decode.at([name], decode.float))
-  |> result.replace_error("the hook arguments have no number " <> name)
+  |> result.map_error(fn(_) { "the hook arguments have no number " <> name })
 }
 
 // A field that is absent, or present and null, or present and of the
@@ -561,5 +561,5 @@ fn field_list(
   name: String,
 ) -> Result(List(Dynamic), String) {
   decode.run(document, decode.at([name], decode.list(decode.dynamic)))
-  |> result.replace_error("the hook arguments have no array " <> name)
+  |> result.map_error(fn(_) { "the hook arguments have no array " <> name })
 }

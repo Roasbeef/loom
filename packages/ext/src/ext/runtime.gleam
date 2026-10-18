@@ -403,6 +403,8 @@ fn string_field(value: Value, key: String) -> Result(String, String) {
     Error(Nil) -> Error("the invocation carried no `" <> key <> "` field")
     Ok(found) ->
       report.as_string(found)
-      |> result.replace_error("the invocation's `" <> key <> "` was not text")
+      |> result.map_error(fn(_) {
+        "the invocation's `" <> key <> "` was not text"
+      })
   }
 }

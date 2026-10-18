@@ -386,7 +386,7 @@ fn limits_of(
           list.find(limit_fields(), fn(field) {
             policy.limit_field_name(field) == name
           })
-          |> result.replace_error(key <> "." <> name <> " is not a limit"),
+          |> result.map_error(fn(_) { key <> "." <> name <> " is not a limit" }),
         )
         case value {
           tom.Int(most) if most >= 1 -> Ok(#(field, most))
