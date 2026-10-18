@@ -11,7 +11,7 @@ link down) are covered by the P model
 (`protocol/models/remote-subagents`, the cases `tcDrops`, `tcAbort` and
 `tcRestart`), not by the shipped test. Phases 2 to 4 shipped as dated addenda at the end
 of this document (`Release` to depth across machines, 2026-10-16 and 2026-10-17;
-phase 2 in #998 and #999, phases 3 and 4 in #1006, with 089 and 090). A spelling
+phase 2 in #998 (S6, S7), #999 (S8) and #1006 (S9), phases 3 and 4 in #1006, with 089 and 090). A spelling
 below that no addendum has built is still provisional.
 **Affects**: the orchestrator port's closed message type (three constructors in
 phase 1, `Spawn`, `Join` and `RunEnded`; `Release` and `ChildSend` in phase 2;

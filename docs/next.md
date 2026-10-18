@@ -79,8 +79,8 @@ What shipped, by document, so that the next reader does not look for a plan:
   pages, Move with candidates, Abandon, and the executor and pool cards in the web
   form (#957, #995, #996, #999). The status addendum at the end of
   `protocol-change/085-distributed-admin-surface.md` lists what was deferred.
-- **084, remote subagents:** phase 1 (#960, #969); `Release`, retention,
-  metering and messaging with the link keeper (#998, #999); approvals on the
+- **084, remote subagents:** phase 1 (#960, #969); `Release` and retention (#998),
+  metering (#999), messaging with the link keeper, approvals on the
   laptop (089), observation (090) and depth across machines (#1006).
 - **Not built, by design:** failover and moving a session between executors
   (`docs/architecture/directory.md`, "What failover would add").
