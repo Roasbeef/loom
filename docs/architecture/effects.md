@@ -1197,7 +1197,10 @@ custodian owns that capability but performs no provider work. It adopts
 the gateway guard, the private fallback pump, and every transport owner
 before each one begins. The guard tracks the pump's current transport.
 The pump owns the provider terminal race and will not start another
-fallback until that transport drains.
+fallback until that transport drains. The request and gateway are payloads
+of the guard's parked phase. Its begin permit transfers them to the pump, so
+subsequent guard states retain control and accounting without retaining another
+copy of the request inputs.
 
 Teardown first invokes the transport's cancellation capability, then
 observes bounded owner death. If the owner does not retire, the guard

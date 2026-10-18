@@ -1,0 +1,115 @@
+{
+  "daemon_pid": 71417,
+  "otp": "29",
+  "erts": "17.0.5",
+  "schedulers": 16,
+  "source_revision": "928d0ae50dfe70277512a4c05116626c7c28d942",
+  "changes_deployed": false,
+  "captures": {
+    "before": {
+      "sha256": "8f35d8a6844686ac69948f8d56b0a1c927bc6b97ec432eeb01dd3e301a0e6c0e",
+      "node_metrics": {
+        "total": 268248349,
+        "processes": 164151152,
+        "processes_used": 164002352,
+        "system": 104097197,
+        "atom": 1449306,
+        "atom_used": 1449306,
+        "binary": 52501696,
+        "code": 28787172,
+        "ets": 1997024,
+        "process_count": 328
+      },
+      "utc_time": "2026-10-18T06:59:16.534000+00:00"
+    },
+    "cpu": {
+      "sha256": "7ef5e3e3c0a29c6131f93fdc719f955a7f5f86075255f50e93bd8f0461439102",
+      "measurement": {
+        "t": "perturbation",
+        "probe": "1",
+        "enabled": [
+          "current_stacktrace"
+        ],
+        "events": {
+          "v": 9392
+        },
+        "collector_reductions": {
+          "not_applicable": true
+        },
+        "bytes": {
+          "not_applicable": true
+        },
+        "wall_ms": {
+          "v": 10002
+        },
+        "matched": 16,
+        "counters": null,
+        "outcome": "complete"
+      },
+      "profile_source": {
+        "kind": "sampled_stacks",
+        "method": "process_info current_stacktrace",
+        "rate": 62
+      },
+      "sample_counts": {
+        "waiting": 9312,
+        "running": 74,
+        "runnable": 6
+      }
+    },
+    "allocation": {
+      "sha256": "c29c266b44db4fe40e1dbaa8d13450f06f3529729f0cbc89193c4079823c8417",
+      "measurement": {
+        "t": "perturbation",
+        "probe": "1",
+        "enabled": [
+          "call_time",
+          "call_memory"
+        ],
+        "events": {
+          "not_applicable": true
+        },
+        "collector_reductions": {
+          "not_applicable": true
+        },
+        "bytes": {
+          "not_applicable": true
+        },
+        "wall_ms": {
+          "v": 5106
+        },
+        "matched": 831,
+        "counters": {
+          "requested_ms": 5000,
+          "processes": 8,
+          "called": 253,
+          "read": 253,
+          "unread": 0,
+          "invalidated": 0,
+          "total_words": 2681361
+        },
+        "outcome": "partial",
+        "reason": "truncated:top_k_limit"
+      },
+      "profile_source": {
+        "kind": "allocation_counts"
+      }
+    },
+    "after-workload": {
+      "sha256": "f7da12dda8a211bf4921f397aa37ecef7560940a602e023622e3cc9115cfaf84",
+      "node_metrics": {
+        "total": 185377653,
+        "processes": 84020008,
+        "processes_used": 83911072,
+        "system": 101357645,
+        "atom": 1449947,
+        "atom_used": 1449947,
+        "binary": 49770488,
+        "code": 28825796,
+        "ets": 1990272,
+        "process_count": 235
+      },
+      "utc_time": "2026-10-18T07:12:46.190000+00:00"
+    }
+  }
+}
