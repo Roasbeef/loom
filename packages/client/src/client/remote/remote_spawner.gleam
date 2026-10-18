@@ -76,6 +76,11 @@ const send_ms = 15_000
 // transaction.
 const child_ms = 15_000
 
+// How long a decision waits for the box's answer, in milliseconds. The operator's
+// request is held by the gateway's transport for six seconds, and the box commits
+// one transaction, so the bound is below the transport's.
+const resolve_ms = 4500
+
 // How long a release waits for its answer, in milliseconds. The receiver stops
 // the children and hands the session to its registry, which answers without
 // waiting for the session to drain, so the bound is short.
@@ -157,6 +162,20 @@ pub fn over_distribution(
         peer_mail.Refused("its answer could not be read: " <> reason)
       })
     },
+    resolve: fn(name, parent, child, id, decision, expected_seq, decided_by) {
+      use at <- result.try(reached(membership, configured, name))
+      orchestrator_port.ask_resolve(
+        at,
+        parent,
+        child,
+        id,
+        decision,
+        expected_seq,
+        decided_by,
+        resolve_ms,
+      )
+      |> answer
+    },
     keep: fn(name, vote) {
       case dict.get(keepers, name) {
         Ok(keeper) ->
@@ -221,6 +240,19 @@ pub fn laptop_over(membership: Membership, node: String) -> Laptop {
       case at() {
         Ok(port) ->
           orchestrator_port.ask_progress(port, parent, child, glance, child_ms)
+        Error(_) -> Error(Nil)
+      }
+    },
+    escalation: fn(parent, child, record) {
+      case at() {
+        Ok(port) ->
+          orchestrator_port.ask_escalation(
+            port,
+            parent,
+            child,
+            record,
+            child_ms,
+          )
         Error(_) -> Error(Nil)
       }
     },

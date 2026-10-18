@@ -45,6 +45,8 @@ fn record(
     denial: None,
     seq: 0,
     origin: None,
+    placement: None,
+    admitted: None,
   )
 }
 

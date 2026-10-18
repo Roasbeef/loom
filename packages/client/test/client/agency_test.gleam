@@ -7536,6 +7536,7 @@ fn spawner_link() -> delegate_outbox.SpawnerLink {
     parent_session:,
     spawner: "laptop",
     node: "laptop@100.64.0.5",
+    ceiling: None,
   )
 }
 

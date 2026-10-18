@@ -20,9 +20,18 @@
 //// | --- | --- |
 //// | `delegate/outbox/mail/{message id}` | one message a child sent its parent, with the state it is in |
 //// | `delegate/outbox/progress/{strand}` | the `at` of the newest glance the laptop acknowledged for a child |
+//// | `delegate/outbox/escalation/{id}/{seq}` | a child's request for more authority, raised at that `seq` (protocol-change/089) |
 ////
-//// The kinds are a namespace. Escalations, which phase 3 sends the same way, take
-//// `delegate/outbox/escalation/{id}/{seq}`.
+//// ## A request outlives its answer by one send
+////
+//// An escalation row differs from a mail row. Mail is settled by the laptop's
+//// answer and kept. A request is a question about a record that the box owns and
+//// that changes: the row says only which record and which `seq` the box raised it
+//// at, and the pass builds what it sends from the record as it is then. The row
+//// is `NotAcknowledged` until the laptop acknowledges that `seq`, then `Acknowledged`. It is
+//// deleted once the record has been decided and the decided state was sent, or
+//// once a newer raise superseded it, or once the park window closed. Nothing on
+//// the laptop depends on the row after that.
 ////
 //// ## A row settles on an answer, never on age
 ////
@@ -51,19 +60,26 @@
 ////
 //// ## Flow
 ////
-//// `queue_mail` → `mail_rows` → `settle_mail` → `unsent_glances` → `acknowledge`
+//// `queue_mail` → `mail_rows` → `settle_mail` → `unsent_glances` → `acknowledge` →
+//// `announce` → `queue_question` → `question_rows` → `settle_question` → `drop_question`
 ////
 //// 1. `queue_mail` writes the row a child's upward send left.
 //// 2. `mail_rows` lists the rows, and `settle_mail` records the laptop's answer
 ////    on one.
 //// 3. `unsent_glances` lists the glances the laptop has not acknowledged, and
 ////    `acknowledge` records one that it has.
+//// 4. `queue_question` writes the row a raised request left, `question_rows`
+////    lists them, `settle_question` marks one acknowledged and `drop_question`
+////    removes one that has served.
 
+import client/approval_ceiling.{type Ceiling}
+import client/protocol.{type EscalationRecord}
 import client/remote_mail.{type ChildRefusal, type Receipt}
 import client/remote_spawn.{type Parent}
 import core/glance.{type Glance}
 import core/ids
 import core/json.{type JsonValue}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -84,6 +100,10 @@ pub type SpawnerLink {
     spawner: String,
     /// The laptop's full node name.
     node: String,
+    /// What the spawner's operator may approve (protocol-change/089), or `None`
+    /// when the table sets no ceiling, and then a delegate session is unattended
+    /// and takes no decision from the spawner.
+    ceiling: Option(Ceiling),
   )
 }
 
@@ -100,6 +120,9 @@ pub type Laptop {
     /// Sends one child's glance. `Error(Nil)` is silence.
     progress: fn(Parent, Handle, Glance) ->
       Result(Result(Nil, ChildRefusal), Nil),
+    /// Sends one child's request for more authority. `Error(Nil)` is silence.
+    escalation: fn(Parent, Handle, EscalationRecord) ->
+      Result(Result(Nil, ChildRefusal), Nil),
   )
 }
 
@@ -115,6 +138,7 @@ pub fn absent() -> Laptop {
     connected: fn() { False },
     mail: fn(_parent, _child, _id, _text) { Error(Nil) },
     progress: fn(_parent, _child, _glance) { Error(Nil) },
+    escalation: fn(_parent, _child, _record) { Error(Nil) },
   )
 }
 
@@ -459,4 +483,239 @@ fn text(
     Ok(_) -> Error("expected `" <> name <> "` to be text")
     Error(Nil) -> Error("missing `" <> name <> "`")
   }
+}
+
+// --- requests for more authority (protocol-change/089) -------------------------
+
+const question_prefix = "delegate/outbox/escalation/"
+
+/// How far a request's row has got.
+pub type Sending {
+  /// The laptop has not acknowledged this `seq`.
+  NotAcknowledged
+
+  /// The laptop acknowledged this `seq`. The row stays until the record leaves
+  /// `pending`, so that the decided state is sent once.
+  Acknowledged
+}
+
+/// One request a child raised, as the box owes it to the parent's operator.
+pub type Question {
+  Question(
+    /// The record's identity on this box.
+    id: String,
+    /// The record's `seq` when the child raised it.
+    seq: Int,
+    /// The parent strand the child reports to.
+    parent_strand: String,
+    /// The child that is parked on the request.
+    child: Handle,
+    /// When the park window closes, on the session's clock in milliseconds. After
+    /// it nobody is waiting for an answer and the row is dropped.
+    until: Int,
+    /// How far it has got.
+    sending: Sending,
+  )
+}
+
+/// The key of a request's row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_outbox.question_key("policy-ab", 3)
+///   == "delegate/outbox/escalation/policy-ab/3"
+/// ```
+pub fn question_key(id: String, seq: Int) -> String {
+  question_prefix <> id <> "/" <> int.to_string(seq)
+}
+
+/// Writes the row a raised request left. A row that exists is left alone, so a
+/// raise that is repeated at the same `seq` costs nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // delegate_outbox.queue_question(runtime, delegate_outbox.Question(id:, seq: 3, parent_strand: "main", child:, until:, sending: delegate_outbox.NotAcknowledged))
+/// ```
+pub fn queue_question(
+  runtime: api.Runtime,
+  row: Question,
+) -> Result(Nil, String) {
+  case
+    api.put_reserved_fact_expecting(
+      runtime,
+      question_key(row.id, row.seq),
+      encode_question(row),
+      expected: None,
+    )
+  {
+    Ok(_) | Error(api.FactConflict(..)) -> Ok(Nil)
+    Error(error) -> Error(string.inspect(error))
+  }
+}
+
+/// Every request row, with its key, in key order. A cell that does not decode is
+/// left out, as a mail row is: a row nobody can send must not keep the pass
+/// owing for ever.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // delegate_outbox.question_rows(runtime) == Ok([#(key, row)])
+/// ```
+pub fn question_rows(
+  runtime: api.Runtime,
+) -> Result(List(#(String, Question)), String) {
+  use cells <- result.map(
+    api.reserved_facts(runtime, prefix: question_prefix)
+    |> result.map_error(string.inspect),
+  )
+  list.filter_map(cells, fn(cell) {
+    decode_question(cell.1)
+    |> result.map(fn(row) { #(cell.0, row) })
+    |> result.replace_error(Nil)
+  })
+}
+
+/// Records that the laptop acknowledged the row's `seq`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // delegate_outbox.settle_question(runtime, key, delegate_outbox.Question(..row, sending: delegate_outbox.Acknowledged))
+/// ```
+pub fn settle_question(
+  runtime: api.Runtime,
+  key: String,
+  row: Question,
+) -> Result(Nil, String) {
+  api.put_reserved_fact(runtime, key, encode_question(row))
+  |> result.map_error(string.inspect)
+}
+
+/// Removes a row that has served, or that a newer raise superseded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // delegate_outbox.drop_question(runtime, key)
+/// ```
+pub fn drop_question(runtime: api.Runtime, key: String) -> Result(Nil, String) {
+  api.delete_reserved_fact(runtime, key) |> result.map_error(string.inspect)
+}
+
+/// A request row as the value its cell holds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // delegate_outbox.decode_question(delegate_outbox.encode_question(row)) == Ok(row)
+/// ```
+pub fn encode_question(row: Question) -> JsonValue {
+  json.Object([
+    #("id", json.String(row.id)),
+    #("seq", json.Int(row.seq)),
+    #("parent", json.String(row.parent_strand)),
+    #("child", json.String(row.child.strand)),
+    #("operation", json.String(ids.op_id_to_string(row.child.operation))),
+    #("until", json.Int(row.until)),
+    #("sending", case row.sending {
+      NotAcknowledged -> json.String("unsent")
+      Acknowledged -> json.String("sent")
+    }),
+  ])
+}
+
+/// Decodes a request row. Total: anything malformed is an error naming what was
+/// wrong.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_outbox.decode_question(json.Null)
+///   == Error("expected a request row, got null")
+/// ```
+pub fn decode_question(value: JsonValue) -> Result(Question, String) {
+  use fields <- result.try(object(value, "a request row"))
+  use id <- result.try(text(fields, "id"))
+  use seq <- result.try(whole(fields, "seq"))
+  use parent_strand <- result.try(text(fields, "parent"))
+  use strand <- result.try(text(fields, "child"))
+  use raw_operation <- result.try(text(fields, "operation"))
+  use operation <- result.try(
+    ids.parse_op_id(raw_operation)
+    |> result.map_error(fn(_) { "expected `operation` to be an operation id" }),
+  )
+  use until <- result.try(whole(fields, "until"))
+  use sending <- result.try(case text(fields, "sending") {
+    Ok("unsent") -> Ok(NotAcknowledged)
+    Ok("sent") -> Ok(Acknowledged)
+    Ok(other) -> Error("unknown sending state `" <> other <> "`")
+    Error(reason) -> Error(reason)
+  })
+  Ok(Question(
+    id:,
+    seq:,
+    parent_strand:,
+    child: agent.Handle(strand:, operation:),
+    until:,
+    sending:,
+  ))
+}
+
+fn whole(
+  fields: List(#(String, JsonValue)),
+  name: String,
+) -> Result(Int, String) {
+  case list.key_find(fields, name) {
+    Ok(json.Int(found)) if found >= 0 -> Ok(found)
+    Ok(_) -> Error("expected `" <> name <> "` to be a nonnegative integer")
+    Error(Nil) -> Error("missing `" <> name <> "`")
+  }
+}
+
+/// Writes the row for a request a child has just raised and is about to wait on.
+///
+/// The record is read as it is, so the row names the `seq` the child will be
+/// parked at. The parent strand comes from the child's lineage, which names it as
+/// a reference (`^main`). A record that names no call, or a call whose strand has
+/// no lineage, is not a child's and gets no row: nobody on the laptop could
+/// answer it for a parent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // delegate_outbox.announce(runtime, "policy-ab", until: 1_700_000_300_000)
+/// ```
+pub fn announce(
+  runtime: api.Runtime,
+  id: String,
+  until until: Int,
+) -> Result(Nil, String) {
+  use cell <- result.try(
+    api.escalation_cell(runtime, id) |> result.map_error(string.inspect),
+  )
+  use scope <- result.try(option.to_result(
+    cell.record.scope,
+    "the request names no call",
+  ))
+  use child <- result.try(
+    lineage_of(runtime, scope.strand)
+    |> result.replace_error("the request is not a child's"),
+  )
+  queue_question(
+    runtime,
+    Question(
+      id:,
+      seq: cell.seq,
+      parent_strand: string.drop_start(
+        child.parent,
+        string.length(api.parent_reference_prefix),
+      ),
+      child: agent.Handle(strand: scope.strand, operation: scope.operation),
+      until:,
+      sending: NotAcknowledged,
+    ),
+  )
 }

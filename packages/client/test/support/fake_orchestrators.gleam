@@ -27,6 +27,7 @@
 
 import client/agency
 import client/peer_mail
+import client/remote_escalation
 import client/remote_mail
 import client/remote_reach.{type Reach}
 import client/remote_spawn.{
@@ -83,6 +84,9 @@ pub type Report {
     /// Every send into a child, as the message id and the text, in order,
     /// including resends and the ones the network lost.
     sends: List(#(String, String)),
+    /// Every decision sent to it, as the request's identity and the `seq` the
+    /// operator was shown, in order.
+    resolves: List(#(String, Int)),
   )
 }
 
@@ -117,6 +121,11 @@ type Ask {
     text: String,
     reply: Subject(Result(remote_mail.Landing, peer_mail.Failure)),
   )
+  AskResolve(
+    escalation_id: String,
+    expected_seq: Int,
+    reply: Subject(Result(remote_escalation.Answer, peer_mail.Failure)),
+  )
 }
 
 type State {
@@ -131,6 +140,7 @@ type State {
     owed: Int,
     releases: List(remote_spawn.Parent),
     sends: List(#(String, String)),
+    resolves: List(#(String, Int)),
     delivered: Dict(String, String),
   )
 }
@@ -155,6 +165,7 @@ pub fn start(name: String, mode: Mode) -> Box {
       owed: 0,
       releases: [],
       sends: [],
+      resolves: [],
       delivered: dict.new(),
     ))
     |> actor.on_message(handle)
@@ -234,6 +245,19 @@ pub fn voting(
     send: fn(name, _parent, _child, message_id, text) {
       ask(boxes, name, fn(reply) { AskSend(message_id:, text:, reply:) })
     },
+    resolve: fn(
+      name,
+      _parent,
+      _child,
+      escalation_id,
+      _decision,
+      expected_seq,
+      _by,
+    ) {
+      ask(boxes, name, fn(reply) {
+        AskResolve(escalation_id:, expected_seq:, reply:)
+      })
+    },
     keep: fn(name, vote) { process.send(votes, #(name, vote)) },
   )
 }
@@ -288,6 +312,7 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
           join_windows: list.reverse(state.join_windows),
           releases: list.reverse(state.releases),
           sends: list.reverse(state.sends),
+          resolves: list.reverse(state.resolves),
         ),
       )
       actor.continue(state)
@@ -305,6 +330,21 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
     Asked(AskRelease(parent:, reply:)) -> release(state, parent, reply)
     Asked(AskSend(message_id:, text:, reply:)) ->
       send(state, message_id, text, reply)
+
+    // A decision is recorded and refused: the fake holds no record to judge it
+    // against, and a test that wants the box's judgement uses the real one.
+    Asked(AskResolve(escalation_id:, expected_seq:, reply:)) -> {
+      process.send(
+        reply,
+        Ok(remote_escalation.Refused(reason: "the fake decides nothing")),
+      )
+      actor.continue(
+        State(..state, resolves: [
+          #(escalation_id, expected_seq),
+          ..state.resolves
+        ]),
+      )
+    }
   }
 }
 

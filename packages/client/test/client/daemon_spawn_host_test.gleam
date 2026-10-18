@@ -111,6 +111,9 @@ fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
       Ok(json.Null)
     },
     occupancy: fn() { agency.Vacant },
+    resolve: fn(_parent, _child, _id, _decision, _seq, _decider) {
+      Error(remote_spawn.StoreFailure(reason: "not under test"))
+    },
   )
 }
 

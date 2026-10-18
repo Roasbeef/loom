@@ -2642,6 +2642,16 @@ pub const remote_child_fact_prefix = "remote-child/"
 /// receipt would let the child's resend steer the parent a second time.
 pub const remote_mail_fact_prefix = "remote-mail/"
 
+/// The reserved key prefix under which a parent session keeps the pending
+/// escalation of each child on another orchestrator, as
+/// `remote-escalation/<orchestrator>/<id there>` (protocol-change/089).
+///
+/// Reserved because a model that could write one would show its operator a
+/// question the child never asked, or clear one the child is waiting on. It is
+/// not under `escalation/`, which the session's own tool clearance scans and
+/// spends, so a question that belongs to another machine can never be spent here.
+pub const remote_escalation_fact_prefix = "remote-escalation/"
+
 /// The reserved prefix of the sends a parent session owes a child on another
 /// orchestrator that was unreachable when the model sent them
 /// (protocol-change/084, phase 2). The Agency writes
@@ -2723,6 +2733,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, delegate_fact_prefix)
   || string.starts_with(key, remote_child_fact_prefix)
   || string.starts_with(key, remote_mail_fact_prefix)
+  || string.starts_with(key, remote_escalation_fact_prefix)
   || string.starts_with(key, remote_send_fact_prefix)
 }
 

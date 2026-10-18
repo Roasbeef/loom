@@ -179,7 +179,6 @@
 //// For held input, start with `hold_prompt`, `release_halt` and `halted_queue`.
 //// These are separate paths inside one actor, not a single call chain.
 
-import broker/escalation as broker_escalation
 import broker/framing
 import broker/internal/call
 import broker/policy.{type Grant}
@@ -189,12 +188,15 @@ import client/blocksummary
 import client/btw
 import client/catalog
 import client/daemon/transfer
+import client/delegate_outbox
 import client/directories
+import client/escalation_view
 import client/goal_pending
 import client/goalcommand
 import client/grants
 import client/internal/session_owner
 import client/notes_view
+import client/peer_mail
 import client/permissions
 import client/profile_switch
 import client/protocol.{
@@ -203,6 +205,11 @@ import client/protocol.{
 }
 import client/provider_relay
 import client/remote_child
+import client/remote_decision
+import client/remote_escalation
+import client/remote_escalation_store
+import client/remote_reach
+import client/remote_spawn
 import client/schedule
 import client/scheduleadmin
 import client/skills
@@ -251,6 +258,7 @@ import storage/access
 import storage/snapshot
 import storage/storage.{type EntryHead}
 import telemetry/owner
+import tools/agent as agent_tools
 import tools/history
 import tools/tool.{type Registry}
 import weft
@@ -406,6 +414,14 @@ pub type Options {
     /// model profile (`protocol-change/082`). `None` is a session with no
     /// daemon behind it: `profile_get` and `profile_set` answer `unsupported`.
     profile: Option(profile_switch.Desk),
+    /// For a delegate session: where its parent is and what the spawner's
+    /// operator may approve (protocol-change/089). `None` for every other
+    /// session, whose hub then takes no decision from a spawner.
+    spawner: Option(delegate_outbox.SpawnerLink),
+    /// How this session asks another orchestrator to apply its operator's
+    /// decision about a child's request (protocol-change/089). `None` reaches
+    /// none, and such a decision is refused.
+    remote: Option(remote_reach.Reach),
   )
 }
 
@@ -440,6 +456,25 @@ pub opaque type Message {
   )
   SocketDown(process.Down)
   Attached(reply: Subject(Int))
+
+  /// A spawner's operator's decision about a child's request in this delegate
+  /// session (protocol-change/089). It is judged and committed on the hub's turn,
+  /// against the same record a local operator would answer.
+  DecideForSpawner(
+    parent: remote_spawn.Parent,
+    escalation_id: String,
+    decision: remote_escalation.Decision,
+    expected_seq: Int,
+    decided_by: remote_escalation.Decider,
+    reply: Subject(remote_escalation.Answer),
+  )
+
+  /// What a decision this hub sent to another orchestrator came to, or that its
+  /// run ended without saying.
+  ResolveReported(
+    resolve: Int,
+    pulled: weft.Pulled(remote_escalation.Answer, peer_mail.Failure),
+  )
   Detach(connection: Int)
   FromClient(connection: Int, text: String)
   CommitHint
@@ -470,6 +505,13 @@ type State {
     // a slot.
     captures: Dict(Int, PendingCapture),
     next_capture: Int,
+    // Decisions sent to another orchestrator and not yet answered, by number.
+    // The call is a network round trip, so it runs in a weft run that reports
+    // back, as a capture does, and this mailbox never waits for it.
+    resolves: Dict(Int, PendingResolve),
+    next_resolve: Int,
+    spawner: Option(delegate_outbox.SpawnerLink),
+    remote: Option(remote_reach.Reach),
     worktree_diff: Option(fn() -> Result(JsonValue, String)),
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
@@ -566,7 +608,40 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     summary_demand: None,
     first_prompt: None,
     profile: None,
+    spawner: None,
+    remote: None,
   )
+}
+
+/// Tells a delegate session's hub where its parent is and what the spawner's
+/// operator may approve, so that it can take that operator's decisions
+/// (protocol-change/089).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_spawner(options, link)
+/// ```
+pub fn with_spawner(
+  options: Options,
+  link: delegate_outbox.SpawnerLink,
+) -> Options {
+  Options(..options, spawner: Some(link))
+}
+
+/// Gives a session's hub the means to ask another orchestrator to apply a
+/// decision about a child's request that runs there (protocol-change/089).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_remote_reach(options, reach)
+/// ```
+pub fn with_remote_reach(
+  options: Options,
+  reach: remote_reach.Reach,
+) -> Options {
+  Options(..options, remote: Some(reach))
 }
 
 /// Captures at most 32 extension notices of 2048 UTF-8 bytes each for every
@@ -1179,6 +1254,10 @@ fn start_with_delivery(
         observations: dict.new(),
         captures: dict.new(),
         next_capture: 1,
+        resolves: dict.new(),
+        next_resolve: 1,
+        spawner: options.spawner,
+        remote: options.remote,
         worktree_diff: options.worktree_diff,
         live_jobs: options.live_jobs,
         context: options.context,
@@ -1419,6 +1498,50 @@ pub fn attached(gateway: Gateway) -> Int {
     result.unwrap(answer, 0)
   }
   result.unwrap(observed, 0)
+}
+
+/// Applies a spawner's operator's decision to a child's request in this delegate
+/// session, and answers what became of it (protocol-change/089).
+///
+/// The hub judges the decision on its own turn, so it is serialized with the
+/// session's other approvals and commits on the session's one writer. The caller
+/// is the orchestrator port's task for the message, which may wait, and a hub
+/// that does not answer within the bound is a refusal the spawner may try again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.decide(gateway, parent, "policy-ab", remote_escalation.Deny, 3, decider)
+/// ```
+pub fn decide(
+  gateway: Gateway,
+  parent: remote_spawn.Parent,
+  escalation_id: String,
+  decision: remote_escalation.Decision,
+  expected_seq: Int,
+  decided_by: remote_escalation.Decider,
+) -> remote_escalation.Answer {
+  let asked = {
+    use subject <- result.try(address.lookup(gateway.name))
+    call.try_call(subject, waiting: 4000, sending: fn(reply) {
+      DecideForSpawner(
+        parent:,
+        escalation_id:,
+        decision:,
+        expected_seq:,
+        decided_by:,
+        reply:,
+      )
+    })
+    |> result.replace_error(Nil)
+  }
+  case asked {
+    Ok(answer) -> answer
+    Error(Nil) ->
+      remote_escalation.Refused(
+        reason: "the delegate session's hub did not answer",
+      )
+  }
 }
 
 /// Removes a connection; a no-op for unknown ids.
@@ -1850,6 +1973,12 @@ fn continue(state: State) -> actor.Next(State, Message) {
         CaptureReported(capture, pulled)
       })
     })
+  let selector =
+    dict.fold(state.resolves, selector, fn(selector, resolve, pending) {
+      process.select_map(selector, pending.reports, fn(pulled) {
+        ResolveReported(resolve, pulled)
+      })
+    })
   actor.continue(state) |> actor.with_selector(selector)
 }
 
@@ -1859,6 +1988,29 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       continue(observation_reported(state, connection, pulled))
     CaptureReported(capture:, pulled:) ->
       continue(capture_reported(state, capture, pulled))
+    ResolveReported(resolve:, pulled:) ->
+      continue(resolve_reported(state, resolve, pulled))
+    DecideForSpawner(
+      parent:,
+      escalation_id:,
+      decision:,
+      expected_seq:,
+      decided_by:,
+      reply:,
+    ) -> {
+      process.send(
+        reply,
+        decide_for_spawner(
+          state,
+          parent,
+          escalation_id,
+          decision,
+          expected_seq,
+          decided_by,
+        ),
+      )
+      continue(state)
+    }
     LeasePreview(pid, expires, reply) ->
       continue(lease_preview(state, pid, expires, reply))
     Preview(source, operation, generation, kind, text, reply) ->
@@ -2294,6 +2446,11 @@ fn snapshot_plan(recent: Int) -> snapshot.Plan {
       snapshot.Selection(
         register.FactCustom,
         runtime_escalation.key_prefix,
+        snapshot.StringFieldEquals("status", "pending"),
+      ),
+      snapshot.Selection(
+        register.FactCustom,
+        api.remote_escalation_fact_prefix,
         snapshot.StringFieldEquals("status", "pending"),
       ),
     ],
@@ -3953,6 +4110,43 @@ fn open_operation_phase(
 }
 
 fn escalation_events(state: State, hw: Int) -> List(Emit) {
+  list.append(
+    local_escalation_events(state, hw),
+    remote_escalation_events(state, fn(seq) { seq > hw }),
+  )
+}
+
+// The requests filed from other orchestrators that changed in a range of
+// register sequences, as the events the session's own records are.
+fn remote_escalation_events(
+  state: State,
+  within: fn(Int) -> Bool,
+) -> List(Emit) {
+  case
+    storage.list_registers(
+      state.runtime.session.store,
+      register.FactCustom,
+      Some(api.remote_escalation_fact_prefix),
+    )
+  {
+    Error(_) -> []
+    Ok(cells) ->
+      list.filter_map(cells, fn(cell) {
+        let #(_key, storage.Register(value:, seq:)) = cell
+        use <- bool.guard(when: !within(seq), return: Error(Nil))
+        use record <- result.map(
+          protocol.decode_escalation(value.payload) |> result.replace_error(Nil),
+        )
+        Emit(
+          seq:,
+          event: protocol.EscalationEvent(record:),
+          observation_strand: None,
+        )
+      })
+  }
+}
+
+fn local_escalation_events(state: State, hw: Int) -> List(Emit) {
   let store = state.runtime.session.store
   case
     storage.list_registers(
@@ -3986,81 +4180,7 @@ fn escalation_event(
   record: runtime_escalation.Escalation,
   seq: Int,
 ) -> WireEvent {
-  protocol.EscalationEvent(record: escalation_view(record, seq))
-}
-
-// One durable record as the protocol carries it — the single place the
-// two shapes are bridged, so an event, a snapshot row, and the record a
-// refused approval hands back can never disagree about the same record.
-//
-// The denial rides only on a pending record: on any other status there
-// is nothing left to decide, and a client that showed the diff again
-// would be inviting an answer to a closed question.
-fn escalation_view(
-  record: runtime_escalation.Escalation,
-  seq: Int,
-) -> protocol.EscalationRecord {
-  let #(op, strand) = escalation_attribution(record)
-  protocol.EscalationRecord(
-    escalation_id: record.id,
-    seq:,
-    origin: record.origin,
-    op:,
-    strand:,
-    status: escalation_status(record.status),
-    tool: option.unwrap(record.tool, ""),
-    action: option.unwrap(record.action, ""),
-    preview: option.unwrap(record.preview, ""),
-    asked: record.asked,
-    denial: case record.status {
-      runtime_escalation.Pending -> denial_view(record.denial)
-      runtime_escalation.Approved
-      | runtime_escalation.Rejected
-      | runtime_escalation.Consumed -> None
-    },
-  )
-}
-
-// The operation and strand a record names, off its own `CallScope`.
-//
-// This used to guess from the hub's live map, which returned whichever
-// single operation was open for *every* record and two empty strings
-// otherwise — so in a two-strand session a refusal raised on `sub:1`
-// was presented as `main`'s (#67). The scope has been on the record
-// since it started carrying one, and a record that names no call is
-// the only thing that answers empty now.
-fn escalation_attribution(
-  record: runtime_escalation.Escalation,
-) -> #(String, String) {
-  case record.scope {
-    None -> #("", "")
-    Some(scope) -> #(ids.op_id_to_string(scope.operation), scope.strand)
-  }
-}
-
-fn escalation_status(status: runtime_escalation.Status) -> String {
-  case status {
-    runtime_escalation.Pending -> "pending"
-    runtime_escalation.Approved -> "approved"
-    runtime_escalation.Rejected -> "rejected"
-    runtime_escalation.Consumed -> "consumed"
-  }
-}
-
-fn denial_view(denial: JsonValue) -> Option(protocol.Denial) {
-  case grants.decode_denial(denial) {
-    Error(_) -> None
-    Ok(decoded) ->
-      Some(protocol.Denial(
-        reason: decoded.reason,
-        source: case decoded.source {
-          broker_escalation.PolicyDenial -> "policy"
-          broker_escalation.ExecutionDenial(enforcement: _) -> "execution"
-        },
-        enforcement: None,
-        wanted: decoded.wanted,
-      ))
-  }
+  protocol.EscalationEvent(record: escalation_view.view(record, seq))
 }
 
 // --- entry field access ----------------------------------------------------
@@ -5455,6 +5575,19 @@ fn replay_escalation_emits(
   from_seq: Int,
   range_top: Int,
 ) -> List(Emit) {
+  list.append(
+    replay_local_escalation_emits(state, from_seq, range_top),
+    remote_escalation_events(state, fn(seq) {
+      seq >= from_seq && seq <= range_top
+    }),
+  )
+}
+
+fn replay_local_escalation_emits(
+  state: State,
+  from_seq: Int,
+  range_top: Int,
+) -> List(Emit) {
   case
     storage.list_registers(
       state.runtime.session.store,
@@ -5636,6 +5769,17 @@ fn recent_entries(state: State) -> List(EntryRecord) {
 }
 
 fn pending_escalations(state: State) -> List(protocol.EscalationRecord) {
+  list.append(
+    local_pending_escalations(state),
+    case remote_escalation_store.all(state.runtime) {
+      Ok(records) ->
+        list.filter(records, fn(record) { record.status == "pending" })
+      Error(_) -> []
+    },
+  )
+}
+
+fn local_pending_escalations(state: State) -> List(protocol.EscalationRecord) {
   case api.escalations(state.runtime) {
     Error(_) -> []
     Ok(records) ->
@@ -5646,7 +5790,7 @@ fn pending_escalations(state: State) -> List(protocol.EscalationRecord) {
           api.escalation_cell(state.runtime, record.id)
           |> result.replace_error(Nil),
         )
-        Ok(escalation_view(cell.record, cell.seq))
+        Ok(escalation_view.view(cell.record, cell.seq))
       })
   }
 }
@@ -6641,6 +6785,19 @@ fn approve(
   expected_seq: Int,
   lifetime: ApprovalLifetime,
 ) -> State {
+  use <- from_elsewhere(state, escalation_id, fn(record) {
+    start_resolve(
+      state,
+      connection,
+      id,
+      record,
+      remote_escalation.Approve(grants: echoed, action:, scope: case lifetime {
+        Once -> remote_escalation.Once
+        ForSession -> remote_escalation.Session
+      }),
+      expected_seq,
+    )
+  })
   use cell <- or_refuse(
     pending_escalation_cell(state, escalation_id, expected_seq),
     state,
@@ -6698,7 +6855,7 @@ fn pending_escalation_cell(
         "escalation "
           <> escalation_id
           <> " is "
-          <> escalation_status(cell.record.status),
+          <> escalation_view.status_name(cell.record.status),
       ))
     },
   )
@@ -6828,7 +6985,9 @@ fn stale_approval(
   protocol.ErrorEvent(
     code: protocol.code_stale_approval,
     message:,
-    details: Some(protocol.stale_approval_details(escalation_view(record, seq))),
+    details: Some(
+      protocol.stale_approval_details(escalation_view.view(record, seq)),
+    ),
   )
 }
 
@@ -6875,6 +7034,16 @@ fn deny(
   escalation_id: String,
   expected_seq: Int,
 ) -> State {
+  use <- from_elsewhere(state, escalation_id, fn(record) {
+    start_resolve(
+      state,
+      connection,
+      id,
+      record,
+      remote_escalation.Deny,
+      expected_seq,
+    )
+  })
   use cell <- or_refuse(
     pending_escalation_cell(state, escalation_id, expected_seq),
     state,
@@ -6903,6 +7072,376 @@ fn deny(
   reply_with_committed(state, connection, id, fn(emit) {
     escalation_emitted(emit, escalation_id, "rejected")
   })
+}
+
+// --- requests of children on other orchestrators (protocol-change/089) ---------
+
+// A request filed from another orchestrator has an identity of the form
+// `<orchestrator>/<id there>`, and a local one never contains a slash. A decision
+// about a filed request is not committed here: the question belongs to the box,
+// which judges the decision and commits it. Anything else falls through to the
+// session's own records, which answer `unknown_escalation` for an identity they
+// do not hold.
+fn from_elsewhere(
+  state: State,
+  escalation_id: String,
+  elsewhere: fn(protocol.EscalationRecord) -> State,
+  here: fn() -> State,
+) -> State {
+  case string.contains(escalation_id, "/") {
+    False -> here()
+    True ->
+      case remote_escalation_store.find(state.runtime, escalation_id) {
+        Ok(Some(record)) -> elsewhere(record)
+        Ok(None) | Error(_) -> here()
+      }
+  }
+}
+
+// A decision on a request that was filed from another orchestrator.
+//
+// Everything the laptop can know is checked before the network is used: the
+// question is still the one displayed, the echoed action and grants are the
+// record's, and the grants are ones the box said its ceiling admits. The box
+// checks all of it again against its own record, because the laptop's copy is
+// only the last thing it heard.
+//
+// The call to the box runs in a weft run that reports back, so this mailbox never
+// waits on the network. The socket's one reply capability is kept for it, as a
+// capture's is, and the answer leaves when the run reports.
+fn start_resolve(
+  state: State,
+  connection: Int,
+  id: Int,
+  record: protocol.EscalationRecord,
+  decision: remote_escalation.Decision,
+  expected_seq: Int,
+) -> State {
+  let refuse = fn(code, text) {
+    reply_error(state, connection, id, code, text)
+    state
+  }
+  let stale = fn(text) {
+    reply(
+      state,
+      connection,
+      id,
+      protocol.ErrorEvent(
+        code: protocol.code_stale_approval,
+        message: text,
+        details: Some(protocol.stale_approval_details(record)),
+      ),
+    )
+    state
+  }
+  case record.status, record.seq == expected_seq {
+    "pending", True ->
+      case echo_matches_remote(record, decision) {
+        Error(Stale(text)) -> stale(text)
+        Error(Outside) ->
+          refuse(
+            protocol.code_bad_request,
+            remote_escalation.outside_the_ceiling,
+          )
+        Ok(Nil) -> dispatch_resolve(state, connection, id, record, decision)
+      }
+    "pending", False -> stale("the displayed question has changed")
+    status, _ ->
+      refuse(
+        protocol.code_not_pending,
+        "escalation " <> record.escalation_id <> " is " <> status,
+      )
+  }
+}
+
+type RemoteEcho {
+  Stale(reason: String)
+  Outside
+}
+
+// The laptop's half of the echo checks. An approval names the record's action
+// and a subset of what was asked for, and every grant it carries is one the box
+// said its ceiling admits. A record the box sent without an `admitted` list
+// admits nothing.
+fn echo_matches_remote(
+  record: protocol.EscalationRecord,
+  decision: remote_escalation.Decision,
+) -> Result(Nil, RemoteEcho) {
+  case decision {
+    remote_escalation.Deny | remote_escalation.Forget(..) -> Ok(Nil)
+    remote_escalation.Approve(grants: echoed, action:, ..) -> {
+      let wanted = case record.denial {
+        Some(denial) -> denial.wanted
+        None -> []
+      }
+      let admitted = option.unwrap(record.admitted, [])
+      case
+        record.action != action,
+        grants.first_unwanted(echoed, wanted:),
+        grants.first_unwanted(echoed, wanted: admitted)
+      {
+        True, _, _ ->
+          Error(Stale(
+            "the action this approval names is not the one the request carries",
+          ))
+        False, Some(_), _ ->
+          Error(Stale(
+            "the approved grants are not a subset of what was asked for",
+          ))
+        False, None, Some(_) -> Error(Outside)
+        False, None, None -> Ok(Nil)
+      }
+    }
+  }
+}
+
+// Sends the decision to the box in a run of its own and keeps the socket's reply
+// capability until the run reports.
+fn dispatch_resolve(
+  state: State,
+  connection: Int,
+  id: Int,
+  record: protocol.EscalationRecord,
+  decision: remote_escalation.Decision,
+) -> State {
+  let refuse = fn(text) {
+    reply_error(state, connection, id, protocol.code_bad_request, text)
+    state
+  }
+  let target = {
+    use placement <- result.try(option.to_result(
+      record.placement,
+      "that request has no placement",
+    ))
+    use reach <- result.try(option.to_result(
+      state.remote,
+      "this session cannot reach another orchestrator",
+    ))
+    use operation <- result.try(
+      ids.parse_op_id(record.op)
+      |> result.replace_error("the request names no operation"),
+    )
+    use kept <- result.try(remote_child.all(state.runtime))
+    use entry <- result.map(
+      list.find(kept, fn(entry) {
+        entry.stub.orchestrator == placement && entry.stub.name == record.strand
+      })
+      |> result.replace_error(
+        "the child that asked is not one of this session's",
+      ),
+    )
+    #(
+      placement,
+      reach,
+      remote_spawn.Parent(session: reach.session, strand: entry.stub.strand),
+      agent_tools.Handle(strand: record.strand, operation:),
+    )
+  }
+  case target, dict.get(state.connections, connection) {
+    Error(text), _ -> refuse(text)
+    Ok(_), Error(Nil) -> state
+    Ok(#(placement, reach, parent, child)), Ok(link) -> {
+      let decider = case link.origin {
+        Some(message.Origin(principal:, name:)) ->
+          remote_escalation.Decider(principal:, name:)
+        _ -> remote_escalation.Decider(principal: "host", name: "host")
+      }
+      let reports = process.new_subject()
+      let run =
+        weft.new([
+          fn() {
+            reach.resolve(
+              placement,
+              parent,
+              child,
+              remote_escalation.box_id(record.escalation_id),
+              decision,
+              record.seq,
+              decider,
+            )
+          },
+        ])
+        |> weft.deadline(resolve_deadline_ms)
+      let run = case link.consumer {
+        Some(socket) -> weft.cancel_when_exits(run, socket)
+        None -> run
+      }
+      let _relay = weft.start_relayed(run, to: reports)
+      let pending =
+        PendingResolve(
+          connection:,
+          request: id,
+          response: link.response,
+          placement:,
+          reports:,
+          progress: Awaiting,
+        )
+      State(
+        ..state,
+        resolves: dict.insert(state.resolves, state.next_resolve, pending),
+        next_resolve: state.next_resolve + 1,
+      )
+    }
+  }
+}
+
+// How long the box may take to answer a decision. The socket waits six seconds
+// for its one reply, and the sending end gives the box four and a half.
+const resolve_deadline_ms = 5500
+
+// A decision on its way to the box. The entry stays selected until the run has
+// said its last word, as a capture's does.
+type PendingResolve {
+  PendingResolve(
+    connection: Int,
+    request: Int,
+    response: Option(Subject(Result(String, String))),
+    placement: String,
+    reports: Subject(weft.Pulled(remote_escalation.Answer, peer_mail.Failure)),
+    progress: CaptureProgress,
+  )
+}
+
+fn resolve_reported(
+  state: State,
+  resolve: Int,
+  pulled: weft.Pulled(remote_escalation.Answer, peer_mail.Failure),
+) -> State {
+  case dict.get(state.resolves, resolve) {
+    Error(Nil) -> state
+    Ok(pending) ->
+      case pulled {
+        weft.NotYet -> state
+        weft.PulledOutcome(outcome:) -> {
+          let state =
+            State(
+              ..state,
+              resolves: dict.insert(
+                state.resolves,
+                resolve,
+                PendingResolve(..pending, progress: Answered),
+              ),
+            )
+          answer_resolve(state, pending, resolve_result(outcome))
+        }
+        weft.AllDelivered | weft.RunLost(..) -> {
+          let state = case pending.progress {
+            Answered -> state
+            Awaiting ->
+              answer_resolve(state, pending, Error(peer_mail.Unreachable))
+          }
+          State(..state, resolves: dict.delete(state.resolves, resolve))
+        }
+      }
+  }
+}
+
+fn resolve_result(
+  outcome: weft.Outcome(remote_escalation.Answer, peer_mail.Failure),
+) -> Result(remote_escalation.Answer, peer_mail.Failure) {
+  case outcome {
+    weft.Completed(value:, ..) -> Ok(value)
+    weft.Failed(error:, ..) -> Error(error)
+    weft.Abandoned(..)
+    | weft.NeverStarted(..)
+    | weft.Crashed(..)
+    | weft.DrainProofLost(..)
+    | weft.CancellationUnconfirmed(..) -> Error(peer_mail.Unreachable)
+  }
+}
+
+// Answers the request that sent the decision. What the box said becomes what the
+// operator is told, and the record it sent back is filed at once, so that the
+// card changes without waiting for the box's own push.
+fn answer_resolve(
+  state: State,
+  pending: PendingResolve,
+  result: Result(remote_escalation.Answer, peer_mail.Failure),
+) -> State {
+  let tell = fn(state: State) {
+    let say = fn(event) {
+      reply(state, pending.connection, pending.request, event)
+    }
+    case result {
+      Ok(remote_escalation.Decided(record:)) -> {
+        file_remote(state, pending.placement, record)
+        say(mutation_outcome("committed"))
+      }
+      Ok(remote_escalation.Forgotten) -> say(mutation_outcome("committed"))
+      Ok(remote_escalation.Stale(record:, reason:)) -> {
+        file_remote(state, pending.placement, record)
+        say(protocol.ErrorEvent(
+          code: protocol.code_stale_approval,
+          message: reason,
+          details: Some(
+            protocol.stale_approval_details(remote_escalation.placed(
+              pending.placement,
+              record,
+            )),
+          ),
+        ))
+      }
+      Ok(remote_escalation.Refused(reason:))
+      | Error(peer_mail.Refused(reason)) ->
+        say(protocol.ErrorEvent(
+          code: protocol.code_bad_request,
+          message: reason,
+          details: None,
+        ))
+      Error(peer_mail.Unreachable) | Error(peer_mail.NotOpen) ->
+        say(protocol.ErrorEvent(
+          code: protocol.code_internal,
+          message: "the orchestrator did not answer; the decision may not have been applied",
+          details: None,
+        ))
+    }
+    state
+  }
+  case pending.response {
+    Some(response) -> with_response(state, pending.connection, response, tell)
+    None -> tell(state)
+  }
+}
+
+fn file_remote(
+  state: State,
+  placement: String,
+  record: protocol.EscalationRecord,
+) -> Nil {
+  case remote_escalation_store.keep(state.runtime, placement, record) {
+    Ok(Nil) | Error(_) -> Nil
+  }
+}
+
+// A spawner's operator's decision about a request in this delegate session. The
+// time is the session's own, for the provenance of a remembered grant.
+fn decide_for_spawner(
+  state: State,
+  parent: remote_spawn.Parent,
+  escalation_id: String,
+  decision: remote_escalation.Decision,
+  expected_seq: Int,
+  decided_by: remote_escalation.Decider,
+) -> remote_escalation.Answer {
+  case state.spawner {
+    None ->
+      remote_escalation.Refused(
+        reason: "this session takes no decision from a spawner",
+      )
+    Some(link) -> {
+      let #(now, _clock) = clock.read(state.runtime.effects.clock)
+      remote_decision.admit(
+        state.runtime,
+        link,
+        parent,
+        escalation_id,
+        decision,
+        expected_seq,
+        decided_by,
+        now,
+      )
+    }
+  }
 }
 
 fn escalation_emitted(
@@ -8500,7 +9039,7 @@ fn describe_api_error(
     )
     api.EscalationWrongStatus(id:, status:) -> #(
       protocol.code_not_pending,
-      "escalation " <> id <> " is " <> escalation_status(status),
+      "escalation " <> id <> " is " <> escalation_view.status_name(status),
     )
     api.FactConflict(key:) -> #(
       protocol.code_conflict,

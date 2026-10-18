@@ -59,6 +59,7 @@ import broker/policy
 import broker/token
 import client/advisor
 import client/agency
+import client/approval_ceiling
 import client/async_codemode
 import client/async_runs
 import client/blobs
@@ -113,6 +114,7 @@ import client/owner_services
 import client/peer_mail
 import client/peer_outbox_drain
 import client/peers
+import client/permissions
 import client/profile_switch
 import client/remote/owner_port
 import client/remote/protocol
@@ -3628,10 +3630,29 @@ fn assemble_in(
   // Asking the hub by name (not by handle) keeps that true across a hub
   // restart.
   let escalate_name = address.new_address(namespace)
+  //
+  // A delegate session whose spawner sets an approval ceiling has a second
+  // party to ask (protocol-change/089): the operator on the spawning
+  // orchestrator, who can answer for as long as that orchestrator's node is
+  // connected. The connection is read, never made, because the box does not dial
+  // its spawner. A raised request is announced as a row in the session's outbox,
+  // which the delegate drainer sends on.
   let escalate_config =
     escalate.Config(
       ..escalate.default_config(escalate_name, clock),
-      interactive: fn() { hub.attached(hub.Gateway(name:)) > 0 },
+      interactive: fn() {
+        hub.attached(hub.Gateway(name:)) > 0 || spawner_answers(settings)
+      },
+      parked: fn(opened_runtime, id, until) {
+        announce_to_spawner(
+          settings,
+          opened_runtime,
+          id,
+          until,
+          upward_drain_name,
+          logger,
+        )
+      },
     )
 
   // The scheduling plane is decided once, here, and reached two ways:
@@ -4634,6 +4655,8 @@ fn assemble_in(
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(settings.first_prompt)
             |> with_profile_desk(settings.profile_desk)
+            |> with_spawner_link(settings.spawner)
+            |> hub.with_remote_reach(agency_config.remote)
             |> hub.with_registry(tool_registry)
             |> hub.with_extension_refusals(extension_refusals)
             |> hub.with_skills(skills)
@@ -4692,13 +4715,38 @@ fn assemble_in(
     }),
   )
 
+  // A delegate session remembers what its spawner's operator approved for the
+  // session, and the owner of this machine may have narrowed the spawner's
+  // approval ceiling since. The grants that are outside the ceiling as it is now
+  // are withdrawn here, before the session serves a child (protocol-change/089).
+  withdraw_outside_the_ceiling(settings, runtime, logger)
+
   // The host owns this supervisor through the record and a monitor, not
   // through the start link, so that its death is a fault the host
   // *handles* rather than a signal that fells the host mid-teardown.
   process.unlink(started_services.pid)
   Ok(Instance(
     peer: peer_endpoint,
-    spawns: agency.delegate_endpoint(agency_config),
+    spawns: agency.DelegateEndpoint(
+      ..agency.delegate_endpoint(agency_config),
+      resolve: fn(
+        parent,
+        _child,
+        escalation_id,
+        decision,
+        expected_seq,
+        decider,
+      ) {
+        Ok(hub.decide(
+          hub.Gateway(name:),
+          parent,
+          escalation_id,
+          decision,
+          expected_seq,
+          decider,
+        ))
+      },
+    ),
     inbox: agency.child_inbox(agency_config),
     runtime:,
     storage_owner:,
@@ -5100,6 +5148,10 @@ fn with_upward_drain(
               agency.runtime_supplier(agency_config),
               fn() {
                 agency.delegate_occupancy(agency_config) == agency.Occupied
+              },
+              fn() {
+                let #(now, _clock) = clock.read(agency_config.clock)
+                now
               },
               link,
               option.unwrap(settings.laptop, delegate_outbox.absent()),
@@ -5955,6 +6007,87 @@ fn with_first_prompt(
 ) -> hub.Options {
   case report {
     Some(report) -> hub.with_first_prompt(options, report)
+    None -> options
+  }
+}
+
+// Drops the session's remembered grants that came through its spawner and that
+// the spawner's ceiling, as the configuration now reads, does not admit. A
+// spawner whose table has no ceiling admits nothing, so every such grant goes.
+// A failure is logged and leaves the grants where they are for the next open to
+// try again: the ceiling is a bound on an honest spawner, and one open's delay
+// does not change that.
+fn withdraw_outside_the_ceiling(
+  settings: Settings,
+  runtime: api.Runtime,
+  logger: Logger,
+) -> Nil {
+  case settings.spawner {
+    None -> Nil
+    Some(link) -> {
+      let admits = case link.ceiling {
+        Some(ceiling) -> approval_ceiling.admits(ceiling, _)
+        None -> fn(_grant) { False }
+      }
+      case permissions.withdraw_spawner_grants(runtime, link.spawner, admits) {
+        Ok([]) -> Nil
+        Ok(withdrawn) ->
+          log.warn(logger, "serve.spawner_grants_withdrawn", [
+            field.count("grants", list.length(withdrawn)),
+            field.text("spawner", link.spawner),
+          ])
+        Error(reason) ->
+          log.warn(logger, "serve.spawner_grants_kept", [
+            field.text("reason", reason),
+          ])
+      }
+    }
+  }
+}
+
+// Whether a delegate session's spawner can answer a request now: its table sets
+// an approval ceiling and its node is connected. Nothing is dialed.
+fn spawner_answers(settings: Settings) -> Bool {
+  case settings.spawner, settings.laptop {
+    Some(delegate_outbox.SpawnerLink(ceiling: Some(_), ..)), Some(laptop) ->
+      laptop.connected()
+    _, _ -> False
+  }
+}
+
+// Files the row that sends a request on to the spawner's operator, and rings the
+// delegate drainer. It runs on the parked call's own process, and a failure
+// costs the spawner's operator the question and nothing else: the record stands,
+// and the box's owner can still answer it.
+fn announce_to_spawner(
+  settings: Settings,
+  runtime: api.Runtime,
+  id: String,
+  until: Int,
+  drain: address.Address(peer_outbox_drain.Message),
+  logger: Logger,
+) -> Nil {
+  case settings.spawner {
+    Some(delegate_outbox.SpawnerLink(ceiling: Some(_), ..)) ->
+      case delegate_outbox.announce(runtime, id, until:) {
+        Ok(Nil) -> peer_outbox_drain.ring(drain)
+        Error(reason) ->
+          log.warn(logger, "serve.announce_unsent", [
+            field.text("reason", reason),
+          ])
+      }
+    _ -> Nil
+  }
+}
+
+// A delegate session's hub takes a spawner's operator's decisions when it knows
+// the spawner's link.
+fn with_spawner_link(
+  options: hub.Options,
+  link: Option(delegate_outbox.SpawnerLink),
+) -> hub.Options {
+  case link {
+    Some(link) -> hub.with_spawner(options, link)
     None -> options
   }
 }

@@ -26,9 +26,23 @@
 //// is `Clear` and the drainer goes idle with no timer. The Agency rings it when
 //// it writes a row and when it admits a child.
 ////
+//// ## Requests for more authority
+////
+//// A child that is refused by its sandbox and whose spawner has an approval
+//// ceiling parks on the box's escalation record, and the spawner's operator is
+//// asked (protocol-change/089). `question_step` is the part of the pass that
+//// asks. Each request row names a record and the `seq` it was raised at, and the
+//// pass sends the record as it is when it sends. A row ends in one of four ways:
+//// a newer raise replaced it, the park window closed, the record was decided and
+//// the decided state was sent, or the laptop said it would never admit the
+//// message. A row whose record is still pending and was acknowledged waits, and
+//// the pass stays owed for it, because the decision can come at any moment and
+//// nothing rings the drainer for it.
+////
 //// ## Flow
 ////
-//// `pass` → `send_if_connected` → `mail_step` → `progress_step`
+//// `pass` → `send_if_connected` → `mail_step` → `progress_step` →
+//// `question_step`
 ////
 //// 1. `pass` reads the rows once through the session's runtime, which it fetches
 ////    afresh each time because the drainer outlives a restart of the runtime.
@@ -38,13 +52,20 @@
 ////    that does not answer is not asked again in the same pass.
 //// 4. `progress_step` sends the newest unacknowledged glance of each child, and
 ////    stops at the first silence.
+//// 5. `question_step` sends each request that is pending and not yet
+////    acknowledged, and the decided state of each that has been decided.
 
+import client/approval_ceiling
 import client/delegate_outbox.{type Laptop, type Mail, type SpawnerLink, Mail}
+import client/escalation_view
 import client/peer_outbox_drain.{type Backlog, Clear, Owed, Quick}
+import client/protocol
 import client/remote_mail
 import client/remote_spawn
 import gleam/list
+import gleam/option.{None, Some}
 import runtime/api
+import runtime/escalation as durable
 import telemetry/field
 import telemetry/log.{type Logger}
 
@@ -69,6 +90,7 @@ const owed = Owed(Quick)
 pub fn pass(
   runtime: fn() -> Result(api.Runtime, Nil),
   running: fn() -> Bool,
+  now: fn() -> Int,
   link: SpawnerLink,
   laptop: Laptop,
   logger: Logger,
@@ -90,7 +112,7 @@ pub fn pass(
                 row.1.state == delegate_outbox.Pending
               })
             owed_if(
-              send_if_connected(open, link, laptop, logger, pending)
+              send_if_connected(open, link, laptop, logger, pending, now())
               || running(),
             )
           }
@@ -108,14 +130,19 @@ fn send_if_connected(
   laptop: Laptop,
   logger: Logger,
   pending: List(#(String, Mail)),
+  now: Int,
 ) -> Bool {
   case laptop.connected() {
-    False -> pending != []
+    False -> pending != [] || questions_waiting(runtime, now)
     True -> {
       let #(left, silent) = mail_step(runtime, link, laptop, logger, pending)
+      let asking = question_step(runtime, link, laptop, logger, now)
       case silent {
         True -> True
-        False -> left || progress_step(runtime, link, laptop, logger)
+        False -> {
+          let glancing = progress_step(runtime, link, laptop, logger)
+          left || glancing || asking
+        }
       }
     }
   }
@@ -279,4 +306,184 @@ fn send_glances(
       }
     }
   }
+}
+
+// --- requests for more authority ------------------------------------------------
+
+// Whether a request row is still worth keeping the pass alive for, when the
+// laptop is away and nothing can be sent. A row whose window has closed will be
+// dropped when the laptop is back, and does not keep the pass ticking until then.
+fn questions_waiting(runtime: api.Runtime, now: Int) -> Bool {
+  case delegate_outbox.question_rows(runtime) {
+    Ok(rows) -> list.any(rows, fn(row) { row.1.until > now })
+    Error(_) -> True
+  }
+}
+
+// Sends what each request row owes and answers whether any row is still waiting.
+//
+// A row is judged against the record it names, read as it is now. A newer raise
+// leaves the older row nothing to say, and a closed window means nobody is parked
+// on the answer. Otherwise a pending record is sent until the laptop acknowledges
+// that `seq`, and a decided one is sent once more, so that the laptop clears the
+// card, before its row is dropped.
+fn question_step(
+  runtime: api.Runtime,
+  link: SpawnerLink,
+  laptop: Laptop,
+  logger: Logger,
+  now: Int,
+) -> Bool {
+  case delegate_outbox.question_rows(runtime) {
+    Error(reason) -> {
+      log.warn(logger, "delegate_drain.questions_unreadable", [
+        field.text("reason", reason),
+      ])
+      True
+    }
+    Ok(rows) ->
+      list.fold(rows, False, fn(waiting, row) {
+        let still = one_question(runtime, link, laptop, logger, now, row)
+        waiting || still
+      })
+  }
+}
+
+fn one_question(
+  runtime: api.Runtime,
+  link: SpawnerLink,
+  laptop: Laptop,
+  logger: Logger,
+  now: Int,
+  entry: #(String, delegate_outbox.Question),
+) -> Bool {
+  let #(key, row) = entry
+  let drop = fn() {
+    case delegate_outbox.drop_question(runtime, key) {
+      Ok(Nil) -> False
+      Error(reason) -> {
+        log.warn(logger, "delegate_drain.question_undropped", [
+          field.text("reason", reason),
+        ])
+        True
+      }
+    }
+  }
+  case api.escalation_cell(runtime, row.id) {
+    Error(_) -> drop()
+    Ok(cell) ->
+      case cell.record.status {
+        durable.Pending ->
+          case cell.seq > row.seq || now >= row.until {
+            True -> drop()
+            False ->
+              case row.sending {
+                delegate_outbox.Acknowledged -> True
+                delegate_outbox.NotAcknowledged ->
+                  send_question(runtime, link, laptop, logger, key, row, cell)
+              }
+          }
+        durable.Approved | durable.Rejected | durable.Consumed -> {
+          let delivered =
+            send_record(link, laptop, row, escalation_record(link, cell))
+          case delivered {
+            Delivered | Final -> drop()
+            Waiting -> True
+          }
+        }
+      }
+  }
+}
+
+// Sends a pending request and records the laptop's acknowledgement of its `seq`.
+fn send_question(
+  runtime: api.Runtime,
+  link: SpawnerLink,
+  laptop: Laptop,
+  logger: Logger,
+  key: String,
+  row: delegate_outbox.Question,
+  cell: api.EscalationCell,
+) -> Bool {
+  case send_record(link, laptop, row, escalation_record(link, cell)) {
+    Waiting -> True
+    Final -> {
+      case delegate_outbox.drop_question(runtime, key) {
+        Ok(Nil) -> Nil
+        Error(reason) ->
+          log.warn(logger, "delegate_drain.question_undropped", [
+            field.text("reason", reason),
+          ])
+      }
+      False
+    }
+    Delivered -> {
+      case
+        delegate_outbox.settle_question(
+          runtime,
+          key,
+          delegate_outbox.Question(..row, sending: delegate_outbox.Acknowledged),
+        )
+      {
+        Ok(Nil) -> Nil
+        Error(reason) ->
+          log.warn(logger, "delegate_drain.question_unsettled", [
+            field.text("reason", reason),
+          ])
+      }
+      True
+    }
+  }
+}
+
+// What the laptop said to one record.
+type Sent {
+  // It holds the record or a newer one.
+  Delivered
+
+  // It said it would never admit the record, so asking again is pointless.
+  Final
+
+  // Silence, or a refusal worth asking again about.
+  Waiting
+}
+
+fn send_record(
+  link: SpawnerLink,
+  laptop: Laptop,
+  row: delegate_outbox.Question,
+  record: protocol.EscalationRecord,
+) -> Sent {
+  let parent =
+    remote_spawn.Parent(session: link.parent_session, strand: row.parent_strand)
+  case laptop.escalation(parent, row.child, record) {
+    Error(Nil) -> Waiting
+    Ok(Ok(Nil)) -> Delivered
+    Ok(Error(refusal)) ->
+      case remote_mail.retryable(refusal) {
+        True -> Waiting
+        False -> Final
+      }
+  }
+}
+
+// The record as the laptop is told it: the protocol's own shape, and for a
+// pending one the part of what was asked that the ceiling admits, so the
+// operator's client can show the rest as out of reach.
+fn escalation_record(
+  link: SpawnerLink,
+  cell: api.EscalationCell,
+) -> protocol.EscalationRecord {
+  let shown = escalation_view.view(cell.record, cell.seq)
+  let wanted = case shown.denial {
+    Some(denial) -> denial.wanted
+    None -> []
+  }
+  protocol.EscalationRecord(
+    ..shown,
+    admitted: Some(case link.ceiling {
+      Some(ceiling) -> approval_ceiling.admitted(ceiling, wanted)
+      None -> []
+    }),
+  )
 }

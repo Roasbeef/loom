@@ -605,6 +605,14 @@ pub type EscalationRecord {
     seq: Int,
     /// Historical author of the winning decision, if any.
     origin: Option(message.Origin),
+    /// The orchestrator the question was raised on, when it is not this one
+    /// (protocol-change/089). A record with a placement is a child's request on
+    /// another orchestrator, and its `escalation_id` is `<placement>/<id there>`.
+    placement: Option(String),
+    /// For a record with a placement: the part of `denial.wanted` that the
+    /// spawner's approval ceiling admits, which is all an approval may carry.
+    /// `None` on a record raised here.
+    admitted: Option(List(Grant)),
   )
 }
 
@@ -1925,7 +1933,7 @@ fn encode_entry_record(record: EntryRecord) -> JsonValue {
 
 // Historical records may name no action, so those fields remain optional.
 // Every v2 record still includes the exact decision sequence and its origin.
-fn encode_escalation(record: EscalationRecord) -> JsonValue {
+pub fn encode_escalation(record: EscalationRecord) -> JsonValue {
   object_of([
     #("seq", Some(json.Int(record.seq))),
     #("origin", Some(origin.encode(record.origin))),
@@ -1941,6 +1949,13 @@ fn encode_escalation(record: EscalationRecord) -> JsonValue {
       asked -> Some(json.Int(asked))
     }),
     #("denial", option.map(record.denial, encode_denial)),
+    #("placement", option.map(record.placement, json.String)),
+    #(
+      "admitted",
+      option.map(record.admitted, fn(grants) {
+        json.Array(list.map(grants, encode_grant))
+      }),
+    ),
   ])
 }
 
@@ -2632,7 +2647,7 @@ fn decode_entry_record(value: JsonValue) -> Result(EntryRecord, String) {
   Ok(EntryRecord(strand:, entry:))
 }
 
-fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
+pub fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
   use fields <- result.try(body_fields(value))
   use seq <- result.try(nonnegative_field(fields, "seq"))
   use origin <- result.try(
@@ -2655,6 +2670,13 @@ fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
   use asked <- result.try(
     optional_int(fields, "asked") |> result.map(option.unwrap(_, 0)),
   )
+  use placement <- result.try(optional_string(fields, "placement"))
+  use admitted <- result.try(case list.key_find(fields, "admitted") {
+    Error(Nil) -> Ok(None)
+    Ok(json.Array(items)) ->
+      list.try_map(items, decode_grant) |> result.map(Some)
+    Ok(_) -> Error("admitted must be an array of grants")
+  })
   Ok(EscalationRecord(
     escalation_id:,
     op:,
@@ -2667,6 +2689,8 @@ fn decode_escalation(value: JsonValue) -> Result(EscalationRecord, String) {
     denial:,
     seq:,
     origin:,
+    placement:,
+    admitted:,
   ))
 }
 

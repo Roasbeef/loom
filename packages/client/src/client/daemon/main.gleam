@@ -1436,6 +1436,17 @@ pub fn spawn_host(
       use #(_spawner, endpoint) <- result.try(serving(origin))
       endpoint.send(origin.parent, child, message_id, text)
     },
+    resolve: fn(origin, child, escalation_id, decision, expected_seq, decider) {
+      use #(_spawner, endpoint) <- result.try(serving(origin))
+      endpoint.resolve(
+        origin.parent,
+        child,
+        escalation_id,
+        decision,
+        expected_seq,
+        decider,
+      )
+    },
   )
 }
 
@@ -1492,6 +1503,10 @@ pub fn child_host(
     progress: fn(origin, child, glance) {
       use found <- result.try(resolving(origin))
       found.progress(origin.parent, child, glance, admits(origin))
+    },
+    escalation: fn(origin, child, record) {
+      use found <- result.try(resolving(origin))
+      found.escalation(origin.parent, child, record, admits(origin))
     },
   )
 }
@@ -2241,6 +2256,7 @@ pub fn spawner_link_of(
             parent_session: marker.parent_session,
             spawner: spawner.name,
             node: spawner.node,
+            ceiling: spawner.approval_ceiling,
           ))
         Error(Nil) -> None
       }
