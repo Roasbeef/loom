@@ -791,3 +791,163 @@ pub fn check_run_reproduces_a_numbered_run_test() {
   assert again.original == first.original
   assert again.run == first.run
 }
+
+// --- finish -----------------------------------------------------------------
+
+/// The value the counter holds, read through its own mailbox.
+fn current(sut: process.Subject(counter.Message)) -> Int {
+  let assert counter.Value(value) = counter.run(Atomic, sut, Read)
+    as "a read answers with a value"
+
+  value
+}
+
+pub fn a_finish_violation_fails_under_its_own_tag_and_shrinks_test() {
+  // The counter is correct, so every race has an order. Only the audit at
+  // the end can fail, and it does once three increments have landed, which
+  // no single response shows.
+  let base =
+    counter.spec(
+      service: Atomic,
+      commands: all_commands(),
+      step: 1,
+      guard: Unguarded,
+    )
+  let spec =
+    statem_parallel.Spec(..base, finish: fn(sut) {
+      case current(sut) >= 3 {
+        True -> Error(statem.Violation(tag: "audit", detail: "three or more"))
+        False -> Ok(Nil)
+      }
+    })
+
+  let assert Error(failure) = statem_parallel.check(spec, config())
+
+  assert failure.violation.tag == "audit"
+
+  // The audit needs three increments and nothing else, wherever they run,
+  // so the shrink keeps exactly those three.
+  let Case(prefix, branches) = failure.shrunk
+  let commands = list.append(prefix, list.flatten(branches))
+
+  assert commands == [Increment, Increment, Increment]
+  assert failure.shrinks > 0
+
+  let assert statem_parallel.AfterRace(_) = failure.evidence
+}
+
+pub fn finish_is_not_called_after_a_race_that_failed_test() {
+  // The model thinks an increment adds two, and with no prefix every
+  // increment races, so every execution fails in the checker. Finish would
+  // have nothing left to decide, and must not run.
+  let tally = counter.start_tally()
+  let base =
+    counter.spec(
+      service: Atomic,
+      commands: [Increment],
+      step: 2,
+      guard: Unguarded,
+    )
+  let spec =
+    statem_parallel.Spec(..base, finish: fn(_) {
+      counter.note(tally, "finished")
+      Ok(Nil)
+    })
+
+  let assert Error(failure) =
+    statem_parallel.check(
+      spec,
+      config()
+        |> statem_parallel.with_max_prefix(0)
+        |> statem_parallel.with_repeat(1)
+        |> statem_parallel.with_max_shrinks(0),
+    )
+
+  // Shrinking is off: a shrink may try a case with nothing left to race,
+  // which is linearizable and so rightly reaches finish.
+  assert failure.violation.tag == statem_parallel.not_linearizable_tag
+  assert counter.count(tally, "finished") == 0
+}
+
+pub fn a_crash_in_finish_is_a_crash_and_teardown_still_runs_test() {
+  let tally = counter.start_tally()
+  let base =
+    counter.spec(
+      service: Atomic,
+      commands: all_commands(),
+      step: 1,
+      guard: Unguarded,
+    )
+  let spec =
+    statem_parallel.Spec(
+      ..base,
+      new_sut: fn() {
+        counter.note(tally, "built")
+        base.new_sut()
+      },
+      finish: fn(_) { panic as "the audit blew up" },
+      teardown: fn(sut) {
+        counter.note(tally, "torn down")
+        base.teardown(sut)
+      },
+    )
+
+  let assert Error(failure) =
+    statem_parallel.check(
+      spec,
+      config()
+        |> statem_parallel.with_repeat(1)
+        |> statem_parallel.with_shrink_retries(1),
+    )
+
+  let built = counter.count(tally, "built")
+
+  assert failure.violation.tag == "statem.crash"
+  assert string.contains(failure.violation.detail, "finish")
+  assert string.contains(failure.violation.detail, "the audit blew up")
+
+  let assert statem_parallel.AfterRace(_) = failure.evidence
+
+  assert built > 0
+  assert counter.count(tally, "torn down") == built
+}
+
+// --- a case that races nothing ----------------------------------------------
+
+pub fn a_model_with_no_concurrent_pair_fails_as_no_race_test() {
+  // From one, a guarded decrement is admissible on its own, but two of them
+  // in different branches have an interleaving that decrements at zero. No
+  // two branches are ever admissible together, so every case is left with
+  // one branch, and the check must say so rather than pass without racing.
+  let tally = counter.start_tally()
+  let base =
+    counter.spec(
+      service: Atomic,
+      commands: [Decrement],
+      step: 1,
+      guard: Guarded,
+    )
+  let spec =
+    statem_parallel.Spec(..base, initial: 1, new_sut: fn() {
+      counter.note(tally, "built")
+      base.new_sut()
+    })
+  let no_prefix = config() |> statem_parallel.with_max_prefix(0)
+
+  let drawn = statem_parallel.generate_case(spec, no_prefix, 0)
+
+  assert list.length(drawn.branches) < 2
+
+  let assert Error(failure) = statem_parallel.check(spec, no_prefix)
+
+  assert failure.violation.tag == statem_parallel.no_race_tag
+  assert failure.run == 0
+  assert failure.evidence == statem_parallel.NoRace
+  assert failure.shrunk == drawn
+  assert failure.candidates_run == 0
+  assert counter.count(tally, "built") == 0
+  assert string.contains(
+    statem_parallel.report(failure, counter.describe),
+    "[statem.no_race]",
+  )
+}

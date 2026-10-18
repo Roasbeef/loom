@@ -9126,3 +9126,22 @@ in `serve`. The notes come from `memory.read_note_entries`, which takes no
 lease, so the read never waits on `remember`. A section that
 fails is `unavailable`, never an empty list, and every cut is counted in
 `omitted`. Lint R13 reads backticked names in a Flow section as function names.
+
+## Registry linearizability (`test/client/daemon/manager_parallel_test`)
+
+`statem_parallel` runs concurrent `Open`, `Stop`, `Probe` and stale-token
+requests (`resolve_incarnation`, `operation`, `stop_if_incarnation` with a
+retired or never-issued token) against two sessions of the real registry over
+an in-memory catalogue. The model is the set of sessions with a live slot; a
+stale token must be `StaleOperation` whatever the model says. `Stop` is the
+compare-and-set in use: it re-reads and retries when a concurrent
+stop-and-reopen overtakes its token, and a ledger actor records which tokens
+`open` handed out and which a stop saw retire. `finish` fails an incarnation
+that was handed out and neither retired nor stands (a second claimer that won),
+and a quiet registry that still reports a stopping or blocked slot. A stop that
+read a token and acted on it unconditionally later is found only when its window
+spans a retire-and-reopen, so the defect is probabilistic per run; the sequential
+mutations (admitting a second slot over a building one, dropping the token
+comparison) fail every run. Three branches race; the census test fails if
+generation stops pairing an `Open`, a `Stop` and a stale request across
+branches.
