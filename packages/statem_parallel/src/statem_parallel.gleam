@@ -37,6 +37,13 @@
 //// terminates and a generated case is always admissible, at the price that a
 //// precondition which is hard to satisfy concurrently yields short branches.
 ////
+//// Short is allowed; absent is not. A case left with fewer than two non-empty
+//// branches races nothing, and counting it as a pass would let a model whose
+//// preconditions admit no concurrent pair report a green parallel test that
+//// never raced. Such a case fails the run at once, unexecuted, under the
+//// fixed tag `statem.no_race` (`no_race_tag`), so the consumer learns that
+//// the preconditions are too strict for this layer to test anything.
+////
 //// A case is a function of `(seed, run)` alone: run `i` takes the same
 //// seed `statem` would, so `generate_case` reproduces it without executing
 //// anything and a failure's `seed` and `run` name it exactly.
@@ -47,12 +54,23 @@
 //// response checked against the model before the next call, as `statem` does;
 //// a prefix violation fails at once without racing anything. The branches then
 //// race (`statem_parallel/internal/runner`), bounded by a deadline, and the
-//// histories go to the checker with the model after the prefix. `teardown`
-//// runs on every path where a system exists. A callback that raises is a
-//// `statem.crash` violation, a phase past its deadline is `statem.timeout`,
-//// a search that ran out of budget is `statem.undecided`, and a history no
-//// order explains is `statem.not_linearizable`; each is a fixed tag so a
-//// shrink stays on the failure it found.
+//// histories go to the checker with the model after the prefix. When an
+//// order exists, `finish` gets the system once more, alone, to check what
+//// only the end state can show (an audit read-back, a pool that should be
+//// quiet); its violation keeps the spec's own tag, like a prefix failure,
+//// and carries the race's histories as `AfterRace` evidence. `finish` does
+//// not run after a race that already failed, since that verdict stands.
+//// `teardown` runs on every path where a system exists. A callback that
+//// raises is a `statem.crash` violation, a phase past its deadline is
+//// `statem.timeout`, a search that ran out of budget is `statem.undecided`,
+//// and a history no order explains is `statem.not_linearizable`; each is a
+//// fixed tag so a shrink stays on the failure it found.
+////
+//// Fixed tags have a cost. Every race failure shares
+//// `statem.not_linearizable`, whatever went wrong inside it, so a shrink can
+//// move from one concurrency bug to another: a case that loses an update
+//// may shrink to one that underflows. The shrunk case is still a real
+//// failure, just not necessarily the same bug as the original.
 ////
 //// `run` is called from several processes at once, so it must be safe to call
 //// concurrently. The `sut` is a handle, such as a subject or a pid-backed
@@ -75,7 +93,10 @@
 //// sequence, delete one command from a branch, delete one command from the
 //// prefix (`delete_from_prefix`), and move a branch's first command to the end of the prefix (a
 //// racing command that still fails when it runs first, alone, was never part
-//// of the race). Every candidate must be admissible, by the same rule as
+//// of the race). A candidate may race fewer than two branches: the shrink
+//// keeps only what still fails under the original tag, so a prefix failure
+//// shrinks to the prefix alone and a race failure keeps the race it needs.
+//// Every candidate must be admissible, by the same rule as
 //// generation, and counts as failing if any of `shrink_retries` executions
 //// fails with the original tag. The first accepted candidate restarts the
 //// search. `max_shrinks` bounds executions, and `shrink_stop` is the caller's
@@ -100,12 +121,15 @@
 ////    `statem.next_run_seed`; `check_run` and `generate_case` reach the same
 ////    seed through `statem.run_seed`.
 //// 2. `run_with` calls `generate`, which draws the prefix with `statem.grow`,
-////    then `draw_branches` until `interleave.admissible` agrees.
+////    then `draw_branches` until `interleave.admissible` agrees. A case that
+////    `races` nothing becomes the `no_race` failure without executing.
 //// 3. `execute` builds a system, runs the prefix with `run_prefix`, races the
-////    branches with `runner.race`, asks `linearize.check` for an order, and
-////    tears the system down.
+////    branches with `runner.race`, asks `linearize.check` for an order,
+////    hands the system to the spec's end check through `run_finish` when
+////    one is found, and tears the system down.
 //// 4. A failure goes to `shrink`, whose `descend` `search`es the `candidates`
-////    and `attempt`s the admissible ones under the retry policy.
+////    that still race and `attempt`s the admissible ones under the retry
+////    policy.
 //// 5. `report` renders the `Failure`.
 
 import exception
@@ -136,6 +160,7 @@ import statem_parallel/internal/runner
 ///   new_sut: counter.start,
 ///   run: fn(counter, _) { counter.increment(counter) },
 ///   postcondition: fn(count, _, response) { expect(response, count + 1) },
+///   finish: fn(_) { Ok(Nil) },
 ///   teardown: counter.stop,
 /// )
 /// ```
@@ -163,6 +188,13 @@ pub type Spec(model, cmd, sut, response) {
     /// the command. In a branch the model is whichever one the order being
     /// tried puts there, which is what makes the check a search.
     postcondition: fn(model, cmd, response) -> Result(Nil, Violation),
+    /// Check the system once the race is over and an order was found, for
+    /// what no single response shows: an audit read-back, a pool that
+    /// should be idle. Called once per execution whose race was judged
+    /// linearizable, from the test process, before `teardown`; never after
+    /// a prefix failure, a crash, a timeout or a race no order explains. A
+    /// violation keeps its own tag and a crash is `statem.crash`.
+    finish: fn(sut) -> Result(Nil, Violation),
     /// Release the system. Called after every execution that built one, with
     /// the crash discarded.
     teardown: fn(sut) -> Nil,
@@ -380,9 +412,22 @@ pub type Evidence(cmd, response) {
     explanation: Option(linearize.Explanation(cmd, response)),
   )
 
+  /// The race was linearizable and `finish` then failed or crashed. The
+  /// histories are those of the race it checked after.
+  AfterRace(
+    /// One history per branch, in order, with instants.
+    histories: List(List(Event(cmd, response))),
+  )
+
   /// Nothing was recorded: the system would not start, or a branch crashed
   /// or timed out before histories could be completed.
   Unrecorded
+
+  /// Generation could not find two non-empty branches the preconditions
+  /// admit together, so nothing was executed or shrunk. The failure's
+  /// violation is tagged `statem.no_race`, `shrinks` and `candidates_run`
+  /// are zero, and the original and shrunk cases are the case drawn.
+  NoRace
 }
 
 /// One failing check, with everything needed to reproduce and read it.
@@ -415,6 +460,9 @@ pub const not_linearizable_tag = "statem.not_linearizable"
 
 /// The tag of a history whose search ran out of budget.
 pub const undecided_tag = "statem.undecided"
+
+/// The tag of a generated case left with fewer than two branches to race.
+pub const no_race_tag = "statem.no_race"
 
 // --- the driver -----------------------------------------------------------
 
@@ -481,6 +529,13 @@ fn run_with(
 ) -> Result(Nil, Failure(cmd, response)) {
   let drawn = generate(spec, config, seed)
 
+  // A case with fewer than two branches would pass without racing anything,
+  // which is exactly the green-but-untested run this layer refuses. It fails
+  // here, before a system is built, and there is nothing to shrink.
+  use <- bool.lazy_guard(when: !races(drawn), return: fn() {
+    Error(no_race(config, run, drawn))
+  })
+
   // Every failure counts here, whatever its tag: the first one found is the
   // one to shrink. Repeats are what give a scheduling-dependent bug several
   // chances to show before the case is believed.
@@ -495,6 +550,42 @@ fn run_with(
   case tried.accepted {
     None -> Ok(Nil)
     Some(trial) -> Error(shrink(spec, config, run, drawn, trial))
+  }
+}
+
+/// The failure a generated case with fewer than two branches earns. Nothing
+/// ran, so the original and shrunk cases are the drawn one and the shrink is
+/// reported as converged with no candidates tried.
+fn no_race(
+  config: Config,
+  run: Int,
+  drawn: Case(cmd),
+) -> Failure(cmd, response) {
+  Failure(
+    seed: config.seed,
+    run: run,
+    violation: Violation(
+      tag: no_race_tag,
+      detail: "the preconditions admit no concurrent pair from this model: "
+        <> "after redraws and trimming, "
+        <> int.to_string(list.length(drawn.branches))
+        <> " non-empty branch(es) were left to race, and a parallel case needs two",
+    ),
+    original: drawn,
+    shrunk: drawn,
+    evidence: NoRace,
+    shrinks: 0,
+    candidates_run: 0,
+    shrink_end: statem.ShrinkConverged,
+  )
+}
+
+/// Whether a case races anything: at least two of its branches have a
+/// command. Generation and every shrink candidate are held to it.
+fn races(shown: Case(cmd)) -> Bool {
+  case list.filter(shown.branches, fn(branch) { branch != [] }) {
+    [_, _, ..] -> True
+    _ -> False
   }
 }
 
@@ -600,22 +691,37 @@ fn render_evidence(
 
     Unrecorded -> ["no history was recorded"]
 
-    Raced(histories, explanation) -> {
-      let origin =
-        histories
-        |> list.flatten
-        |> list.map(fn(event) { event.invoked_at })
-        |> list.reduce(int.min)
-        |> option.from_result
-        |> option.unwrap(0)
+    NoRace -> [
+      "generation left fewer than two branches to race; nothing was executed",
+    ]
 
+    AfterRace(histories) ->
+      list.flatten([
+        [
+          "the race below was linearizable; finish failed after it",
+          "race history (milliseconds after the first invocation):",
+        ],
+        render_histories(histories, first_invocation(histories), describe),
+      ])
+
+    Raced(histories, explanation) ->
       list.flatten([
         ["failing history (milliseconds after the first invocation):"],
-        render_histories(histories, origin, describe),
+        render_histories(histories, first_invocation(histories), describe),
         render_explanation(explanation, describe),
       ])
-    }
   }
+}
+
+/// The earliest invocation instant in the histories, which the report
+/// shows every instant relative to; zero when nothing was invoked.
+fn first_invocation(histories: List(List(Event(cmd, response)))) -> Int {
+  histories
+  |> list.flatten
+  |> list.map(fn(event) { event.invoked_at })
+  |> list.reduce(int.min)
+  |> option.from_result
+  |> option.unwrap(0)
 }
 
 /// One line per call, grouped by branch.
@@ -898,7 +1004,8 @@ fn play(
     Ok(after_prefix) ->
       case runner.race(spec.run, sut, shown.branches, config.deadline) {
         Error(violation) -> Error(Trial(violation, Unrecorded))
-        Ok(histories) -> judge_histories(spec, config, after_prefix, histories)
+        Ok(histories) ->
+          judge_histories(spec, config, sut, after_prefix, histories)
       }
   }
 }
@@ -960,10 +1067,12 @@ fn advance_prefix(
 }
 
 /// Ask the checker whether the histories have an order, turning each answer
-/// into the violation it deserves.
+/// into the violation it deserves. Only a linearizable race reaches
+/// `finish`: any other verdict already fails the execution.
 fn judge_histories(
   spec: Spec(model, cmd, sut, response),
   config: Config,
+  sut: sut,
   model: model,
   histories: List(List(Event(cmd, response))),
 ) -> Result(Nil, Trial(cmd, response)) {
@@ -981,7 +1090,7 @@ fn judge_histories(
     Error(crash) ->
       Error(Trial(statem.crashed("checker", crash), Raced(histories, None)))
 
-    Ok(linearize.Linearizable(_)) -> Ok(Nil)
+    Ok(linearize.Linearizable(_)) -> run_finish(spec, sut, histories)
 
     Ok(linearize.Undecided(nodes)) ->
       Error(Trial(
@@ -1002,6 +1111,26 @@ fn judge_histories(
         ),
         Raced(histories, Some(explanation)),
       ))
+  }
+}
+
+/// The spec's end-of-execution check, after a race the checker accepted. Its
+/// violation keeps the spec's own tag, as a prefix failure does, because it
+/// is the consumer's invariant rather than this layer's verdict; a crash is
+/// `statem.crash` under the name `finish`. Teardown follows in `execute`
+/// either way.
+fn run_finish(
+  spec: Spec(model, cmd, sut, response),
+  sut: sut,
+  histories: List(List(Event(cmd, response))),
+) -> Result(Nil, Trial(cmd, response)) {
+  case exception.rescue(fn() { spec.finish(sut) }) {
+    Error(crash) ->
+      Error(Trial(statem.crashed("finish", crash), AfterRace(histories)))
+
+    Ok(Error(violation)) -> Error(Trial(violation, AfterRace(histories)))
+
+    Ok(Ok(Nil)) -> Ok(Nil)
   }
 }
 
@@ -1220,6 +1349,12 @@ fn replay_prefix(
 /// branches first, then single commands, then the move that turns a racing
 /// command into a sequential one.
 fn candidates(shown: Case(cmd)) -> List(Case(cmd)) {
+  // Merging the last two branches, emptying one, or hoisting a branch's
+  // only command can each leave fewer than two branches. Generation refuses
+  // such a case as `statem.no_race` because it would pass without racing;
+  // a shrink may reach one, because a candidate is kept only while it still
+  // fails under the original tag, and a failure that survives without the
+  // race is smaller for losing it.
   list.flatten([
     drop_branch(shown),
     merge_branches(shown),

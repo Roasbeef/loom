@@ -214,6 +214,7 @@ pub fn spec(
         }
       }
     },
+    finish: fn(_) { Ok(Nil) },
     teardown: stop,
   )
 }

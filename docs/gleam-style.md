@@ -1400,7 +1400,10 @@ ways:
   enumerates the interleavings (at most 10,000) and redraws or trims the
   case until the precondition holds in all of them. A precondition that
   depends on the model therefore yields shorter branches, which is the
-  price of never testing the harness's own guards.
+  price of never testing the harness's own guards. A case left with fewer
+  than two branches races nothing and fails as `statem.no_race`, so
+  preconditions that admit no concurrent pair are a red test, not a
+  green one that never raced.
 - **The bounds are small on purpose.** Two branches by default (three at
   most), at most six commands per branch, a ten second deadline on the
   parallel phase only (the prefix has none), and a checker node budget
@@ -1411,8 +1414,11 @@ ways:
 - **Fixed tags.** A history no order explains is `statem.not_linearizable`,
   with the rules that blocked it named in the report; `statem.timeout`,
   `statem.crash` and `statem.undecided` are fixed too, so a shrink stays on
-  the failure it found. A failure in the sequential prefix keeps the spec's
-  own tag.
+  the failure it found. Every race failure shares `not_linearizable`, so a
+  shrink can drift from one concurrency bug to another; the shrunk case is
+  still a real failure. A failure in the sequential prefix keeps the spec's
+  own tag, and so does one from `finish`, the end-of-execution check that
+  runs once after a linearizable race and before `teardown`.
 - **Prove it with a racy variant.** Beside the correct system, keep a
   deliberately racy one (a read and a write as two messages) and assert the
   check finds it and shrinks to two single-command branches. A harness that
