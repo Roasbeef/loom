@@ -70,6 +70,7 @@ import client/catalog
 import client/checkpoint
 import client/codemode as codemode_wiring
 import client/codex/transport as codex_transport
+import client/config_watch
 import client/context_view
 import client/contributions
 import client/daemon/domain as domain_service
@@ -1678,6 +1679,22 @@ fn adapter_api(dialect: catalog.Dialect) -> String {
   }
 }
 
+// Everything one configuration load yields, in the order the tables are read.
+type Loaded =
+  #(
+    catalog.Catalog,
+    List(rules.Rule),
+    List(schedule.Schedule),
+    schedule.Policy,
+    jobs.JobsPolicy,
+    operation.NormalizedRetryPolicy,
+    memory_config.Options,
+    catalog.ToolsConfig,
+    List(secrets.Entry),
+    catalog.WorkspaceConfig,
+    catalog.AdvisorConfig,
+  )
+
 // The configuration ladder: an explicit file must load and validate or
 // the boot refuses (a typoed config silently ignored would serve the
 // wrong model); no file falls back to the environment surface, which
@@ -1694,22 +1711,7 @@ fn load_config(
   flag: Option(String),
   profile: Option(String),
   model: Option(String),
-) -> Result(
-  #(
-    catalog.Catalog,
-    List(rules.Rule),
-    List(schedule.Schedule),
-    schedule.Policy,
-    jobs.JobsPolicy,
-    operation.NormalizedRetryPolicy,
-    memory_config.Options,
-    catalog.ToolsConfig,
-    List(secrets.Entry),
-    catalog.WorkspaceConfig,
-    catalog.AdvisorConfig,
-  ),
-  String,
-) {
+) -> Result(Loaded, String) {
   case flag {
     None -> {
       // The environment surface defines no profiles and no model keys, so a
@@ -1758,63 +1760,96 @@ fn load_config(
           <> string.inspect(error)
         }),
       )
-      let named = fn(reason) { path <> ": " <> reason }
-      use #(parsed, document) <- result.try(
-        catalog.parse_with_document(text) |> result.map_error(named),
-      )
-
-      // The profile and the model are resolved on every load, never remembered
-      // from an earlier one, so a resume reads the file as it stands. One the
-      // file no longer defines refuses here, in the file's own words, where
-      // the alternative is opening a session on roles it was not created with.
-      use catalogue <- result.try(
-        with_choice(parsed, profile, model) |> result.map_error(named),
-      )
-      use rule_list <- result.try(
-        rules.from_document(document) |> result.map_error(named),
-      )
-      use schedule_list <- result.try(
-        schedule.from_document(document) |> result.map_error(named),
-      )
-      use schedule_policy <- result.try(
-        schedule.policy_from_document(document) |> result.map_error(named),
-      )
-      use jobs_policy <- result.try(
-        jobs.policy_from_document(document) |> result.map_error(named),
-      )
-      use retry_policy <- result.try(
-        retryconf.policy_from_document(document) |> result.map_error(named),
-      )
-      use memory <- result.try(
-        memory_config.from_document(document) |> result.map_error(named),
-      )
-      use tools <- result.try(
-        catalog.tools_from_document(document) |> result.map_error(named),
-      )
-      use secret_entries <- result.try(
-        secrets.from_document(document) |> result.map_error(named),
-      )
-      use workspace_config <- result.try(
-        catalog.workspace_from_document(document) |> result.map_error(named),
-      )
-      use advisor_config <- result.try(
-        catalog.advisor_from_document(document) |> result.map_error(named),
-      )
-      Ok(#(
-        catalogue,
-        rule_list,
-        schedule_list,
-        schedule_policy,
-        jobs_policy,
-        retry_policy,
-        memory,
-        tools,
-        secret_entries,
-        workspace_config,
-        advisor_config,
-      ))
+      parse_config(path, text, profile, model)
     }
   }
+}
+
+/// Whether `text`, as the configuration at `path`, would open a session created
+/// with `profile` and `model`: the same parse and the same table readers, in the
+/// same order, as every session open. Nothing is resolved and no secret command
+/// runs. A configuration watcher asks it before a changed file may reopen a
+/// session (`client/config_watch`), and the proposal queue before a
+/// configuration edit is queued or written (`client/proposals`), so a file that
+/// would fail the open is never the reason a session stops.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.check_config("/home/o/.loom/loom.toml", text, None, None)
+/// ```
+///
+@internal
+pub fn check_config(
+  path: String,
+  text: String,
+  profile: Option(String),
+  model: Option(String),
+) -> Result(Nil, String) {
+  parse_config(path, text, profile, model) |> result.replace(Nil)
+}
+
+fn parse_config(
+  path: String,
+  text: String,
+  profile: Option(String),
+  model: Option(String),
+) -> Result(Loaded, String) {
+  let named = fn(reason) { path <> ": " <> reason }
+  use #(parsed, document) <- result.try(
+    catalog.parse_with_document(text) |> result.map_error(named),
+  )
+
+  // The profile and the model are resolved on every load, never remembered
+  // from an earlier one, so a resume reads the file as it stands. One the
+  // file no longer defines refuses here, in the file's own words, where
+  // the alternative is opening a session on roles it was not created with.
+  use catalogue <- result.try(
+    with_choice(parsed, profile, model) |> result.map_error(named),
+  )
+  use rule_list <- result.try(
+    rules.from_document(document) |> result.map_error(named),
+  )
+  use schedule_list <- result.try(
+    schedule.from_document(document) |> result.map_error(named),
+  )
+  use schedule_policy <- result.try(
+    schedule.policy_from_document(document) |> result.map_error(named),
+  )
+  use jobs_policy <- result.try(
+    jobs.policy_from_document(document) |> result.map_error(named),
+  )
+  use retry_policy <- result.try(
+    retryconf.policy_from_document(document) |> result.map_error(named),
+  )
+  use memory <- result.try(
+    memory_config.from_document(document) |> result.map_error(named),
+  )
+  use tools <- result.try(
+    catalog.tools_from_document(document) |> result.map_error(named),
+  )
+  use secret_entries <- result.try(
+    secrets.from_document(document) |> result.map_error(named),
+  )
+  use workspace_config <- result.try(
+    catalog.workspace_from_document(document) |> result.map_error(named),
+  )
+  use advisor_config <- result.try(
+    catalog.advisor_from_document(document) |> result.map_error(named),
+  )
+  Ok(#(
+    catalogue,
+    rule_list,
+    schedule_list,
+    schedule_policy,
+    jobs_policy,
+    retry_policy,
+    memory,
+    tools,
+    secret_entries,
+    workspace_config,
+    advisor_config,
+  ))
 }
 
 // The catalogue a session routes by: the default one, or the one carrying the
@@ -3628,6 +3663,13 @@ fn assemble_in(
       entropy:,
       bus: event_bus,
       logger:,
+      // The file this session loaded, from the daemon's desk: a session with
+      // no daemon, or no file, refuses configuration proposals.
+      config: settings.profile_desk
+        |> option.then(fn(desk) { desk.watch })
+        |> option.map(fn(source) {
+          proposals.ConfigFile(path: source.path, check: source.check)
+        }),
     )
 
   // Code mode, and the MCP servers it reaches, are one decision made on
@@ -4587,6 +4629,7 @@ fn assemble_in(
         hub.commit_forwarder(to: name, as_name: forwarder_name)
       }),
     )
+    |> with_config_watch(profile_desk, name, logger)
     |> sup.add(
       supervision.worker(fn() {
         hub.start(
@@ -5118,6 +5161,32 @@ fn with_upward_drain(
           ),
           name,
         ),
+      )
+  }
+}
+
+// The watcher of the configuration file the session loaded, when the daemon
+// named one. It is in this tier because all it holds is the fingerprint of the
+// text the session has: a replacement starts again from the baseline read
+// before the open, and at worst reopens the session once more than it needed.
+fn with_config_watch(
+  builder: sup.Builder,
+  desk: Option(profile_switch.Desk),
+  hub_name: address.Address(hub.Message),
+  logger: Logger,
+) -> sup.Builder {
+  case option.then(desk, fn(desk) { desk.watch }) {
+    None -> builder
+    Some(source) ->
+      sup.add(
+        builder,
+        supervision.worker(fn() {
+          config_watch.start(
+            source,
+            fn() { hub.configuration_changed(hub_name) },
+            logger,
+          )
+        }),
       )
   }
 }

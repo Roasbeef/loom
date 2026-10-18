@@ -1,5 +1,39 @@
 # Current handoff
 
+## Configuration reload and edits — October 18
+
+PRs #901 (hot reload) and #908 (approved `loom_config` edits) were taken over
+and rebuilt on main as one change, under protocol-change/089. Neither branch
+merged: main had since ruled (082) that a session takes new roles by reopening,
+and 086 had reserved a proposal kind for configuration edits.
+
+- **Reload.** `client/config_watch` reads the session's effective `loom.toml`
+  each second, acts when two reads agree, checks the text with
+  `serve.check_config` under the session's profile and model, and tells the hub,
+  which reopens through the profile desk's restart once no strand is running.
+  #901's per-operation model snapshots, restart-required section list and
+  summary endpoint history are gone, because a reopen rebuilds everything.
+- **Edits.** A `config` proposal kind in 086's queue, filed by `propose` with
+  `target: "config"`, checked to load when filed and approved, written
+  atomically with its mode kept and links refused, approvable only from a session
+  that loads that file. #908's `loom_config` tool, escalation special-casing and
+  per-tool approval-panel and web-card code are gone; the existing review pane
+  draws the row.
+- **Tests.** `config_watch_test` and `config_proposals_test` are statem specs
+  with coverage checks; each invariant family has a mutation that fails its own
+  tag on a one-to-five command shrink. `gateway_test` covers the hub's idle and
+  busy reopen.
+
+Left open on purpose:
+
+- A reload reopens the session, which closes attachments and ends background
+  jobs, as a profile switch does. Waiting for jobs too is the obvious next step
+  if that bites; the hub has no session-wide job count to ask today.
+- Two domains approving edits to one daemon-wide file are serialized only by
+  the digest check, as against an operator's editor.
+- The model reads the configuration with `fs_read`, which the default host read
+  scope allows; under `read_scope = "workspace"` it can only append.
+
 ## First-session startup — October 17
 
 Startup improvements must not buy lower latency with increased CPU or memory.

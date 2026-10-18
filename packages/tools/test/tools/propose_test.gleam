@@ -23,11 +23,15 @@ import tools/tool.{type Ctx}
 
 // A seam that queues everything under one id.
 fn accepting() -> propose.Proposals {
-  propose.Proposals(submit: fn(_submission) { Ok("prop-0001") })
+  propose.Proposals(configuration: None, submit: fn(_submission) {
+    Ok("prop-0001")
+  })
 }
 
 fn refusing(refusal: propose.Refusal) -> propose.Proposals {
-  propose.Proposals(submit: fn(_submission) { Error(refusal) })
+  propose.Proposals(configuration: None, submit: fn(_submission) {
+    Error(refusal)
+  })
 }
 
 fn args(old: String, new: String, rationale: String) -> JsonValue {
@@ -62,7 +66,7 @@ pub fn a_valid_proposal_returns_its_id_test() {
 pub fn the_seam_receives_the_arguments_and_no_path_test() {
   let seen = process.new_subject()
   let seam =
-    propose.Proposals(submit: fn(submitted) {
+    propose.Proposals(configuration: None, submit: fn(submitted) {
       process.send(seen, submitted)
       Ok("prop-0002")
     })
@@ -74,6 +78,7 @@ pub fn the_seam_receives_the_arguments_and_no_path_test() {
   let assert Ok(submitted) = process.receive(seen, 100)
   assert submitted
     == propose.Submission(
+      target: propose.Rules,
       old: "old rule",
       new: "new rule",
       rationale: "because",
@@ -84,7 +89,28 @@ pub fn the_seam_receives_the_arguments_and_no_path_test() {
 pub fn the_schema_has_no_field_that_could_name_a_path_test() {
   let schema = string.inspect(propose.tool(accepting()).schema)
   assert !string.contains(schema, "path")
-  assert !string.contains(schema, "target")
+}
+
+// `target` chooses between the two files the host owns, by name; anything else
+// is refused before the seam is asked.
+pub fn a_target_is_a_name_and_never_a_path_test() {
+  let assert Ok(submitted) =
+    propose.submission(
+      json.Object([
+        #("target", json.String("config")),
+        #("new", json.String("[tools]")),
+        #("rationale", json.String("why")),
+      ]),
+    )
+  assert submitted.target == propose.Configuration
+  assert propose.submission(
+      json.Object([
+        #("target", json.String("/etc/passwd")),
+        #("new", json.String("x")),
+        #("rationale", json.String("why")),
+      ]),
+    )
+    == Error("`target` is `rules` or `config`")
 }
 
 pub fn an_oversize_new_is_refused_before_the_seam_test() {
@@ -101,7 +127,7 @@ pub fn an_oversize_new_is_refused_before_the_seam_test() {
 pub fn a_new_of_exactly_the_cap_is_accepted_test() {
   let exact = string.repeat("x", propose.max_new_bytes)
   assert propose.submission(args("", exact, "why"))
-    == Ok(propose.Submission("", exact, "why", None))
+    == Ok(propose.Submission(propose.Rules, "", exact, "why", None))
 }
 
 pub fn an_empty_new_or_rationale_is_refused_test() {
@@ -122,7 +148,7 @@ pub fn an_absent_old_appends_like_an_empty_one_test() {
       #("rationale", json.String("why")),
     ])
   assert propose.submission(absent)
-    == Ok(propose.Submission("", "rule", "why", None))
+    == Ok(propose.Submission(propose.Rules, "", "rule", "why", None))
 }
 
 pub fn a_source_entry_must_be_an_entry_id_test() {
@@ -137,7 +163,7 @@ pub fn a_source_entry_must_be_an_entry_id_test() {
     ])
   }
   assert propose.submission(with_source(text))
-    == Ok(propose.Submission("", "rule", "why", Some(text)))
+    == Ok(propose.Submission(propose.Rules, "", "rule", "why", Some(text)))
   assert propose.submission(with_source("not-an-entry"))
     == Error("`source_entry` is not an entry id")
 }
@@ -176,7 +202,13 @@ pub fn a_control_character_is_refused_in_each_field_test() {
 
 pub fn newline_and_tab_are_allowed_test() {
   assert propose.submission(args("", "line one\n\tline two", "why\nbecause"))
-    == Ok(propose.Submission("", "line one\n\tline two", "why\nbecause", None))
+    == Ok(propose.Submission(
+      propose.Rules,
+      "",
+      "line one\n\tline two",
+      "why\nbecause",
+      None,
+    ))
 }
 
 // Approved text is carried inside an `<instructions` fence, so text that could
@@ -327,4 +359,18 @@ fn dead_filesystem() -> tool.FileSystem {
     read_link: fn(_path) { Ok(tool.LinkMissing) },
     rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
   )
+}
+
+// A session with a configuration file names it, so the model can read it before
+// proposing a replacement; a session with none is not offered the edit.
+pub fn the_description_names_the_configuration_only_when_there_is_one_test() {
+  let with_file =
+    propose.tool(
+      propose.Proposals(
+        ..accepting(),
+        configuration: Some("/o/.loom/loom.toml"),
+      ),
+    )
+  assert string.contains(with_file.description, "/o/.loom/loom.toml")
+  assert !string.contains(propose.tool(accepting()).description, "`config`")
 }

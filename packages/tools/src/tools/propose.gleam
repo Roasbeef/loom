@@ -1,5 +1,5 @@
-//// The `propose` tool: the model's way of suggesting a standing rule
-//// without being able to make one.
+//// The `propose` tool: the model's way of suggesting a standing rule, or an
+//// edit to the session's configuration, without being able to make either.
 ////
 //// ## Flow
 ////
@@ -10,8 +10,8 @@
 ////    a new rule over the byte cap, an empty rationale, an entry id that
 ////    does not parse, a control character other than newline and tab, and
 ////    text that names the prompt's `<instructions` fence (`closes_fence`).
-//// 3. `submission` is the value the seam receives. It carries no path and no
-////    kind, because the model has no say in either.
+//// 3. `submission` is the value the seam receives. It carries no path: the
+////    model chooses only between the two files the host owns (`Target`).
 //// 4. The seam validates against the rules file, queues the proposal and
 ////    answers its id; `run` replies `queued as <id>` and nothing more.
 //// 5. A seam `Refusal` becomes the in-band answer through `refusal_outcome`.
@@ -27,10 +27,11 @@
 //// writes anything (`docs/architecture/approvals.md`, "Proposals are not
 //// approvals").
 ////
-//// The model never names a target. The host owns one file, the rules file
-//// beside the domain's memory store, and the argument schema has no field
-//// that could carry a path. That is why there is nothing here to validate
-//// about one.
+//// The model never names a path. The host owns two files a proposal may edit,
+//// the rules file beside the domain's memory store and the `loom.toml` the
+//// session loaded (protocol-change/089), and `target` chooses between them by
+//// name; the argument schema has no field that could carry a path, so there is
+//// nothing here to validate about one.
 ////
 //// ## A seam of closures, like `remember`
 ////
@@ -80,9 +81,19 @@ pub const max_rationale_bytes = 1024
 /// fills a bounded queue and then learns it is full.
 pub const max_pending = 64
 
+/// Which host-owned file a proposal edits.
+pub type Target {
+  /// The rules file, which later sessions' prompts carry.
+  Rules
+
+  /// The configuration this session loaded. An approval reopens every
+  /// session that loads it.
+  Configuration
+}
+
 /// What the model asked to propose. The host fills in everything else: the
-/// proposal's id, its kind, its target, the digest of the file it was judged
-/// against, the session and the time.
+/// proposal's id, its path, the digest of the file it was judged against, the
+/// session and the time.
 ///
 /// Constructor invariants: `new` is non-empty after trimming and at most
 /// `max_new_bytes`; `old` is at most `max_old_bytes` and empty means append;
@@ -90,6 +101,7 @@ pub const max_pending = 64
 /// `source_entry` is the canonical text of an entry id when present.
 pub type Submission {
   Submission(
+    target: Target,
     old: String,
     new: String,
     rationale: String,
@@ -121,7 +133,14 @@ pub type Refusal {
 /// returns its id, and it has written nothing else. It never blocks on a
 /// person.
 pub type Proposals {
-  Proposals(submit: fn(Submission) -> Result(String, Refusal))
+  Proposals(
+    submit: fn(Submission) -> Result(String, Refusal),
+    /// The path of the configuration this session loaded, which the
+    /// description names so the model can read it before proposing an edit,
+    /// or `None` for a session with no file, whose description offers no
+    /// configuration edit.
+    configuration: Option(String),
+  )
 }
 
 /// The `propose` tool over one seam.
@@ -141,9 +160,11 @@ pub fn tool(proposals: Proposals) -> Tool {
       <> "rejects it, and only an approval writes anything. An approved rule "
       <> "reaches new sessions in the system prompt, after the operator's "
       <> "own instructions. Use it for a lesson that should bind future "
-      <> "work, not for a note: `remember` is for notes. `old` is text "
-      <> "already in the rules to replace, which must match exactly once; "
-      <> "leave `old` out to append `new` as a new rule. `new` is capped at "
+      <> "work, not for a note: `remember` is for notes. "
+      <> configuration_sentence(proposals.configuration)
+      <> "`old` is text already in the file to replace, which must match "
+      <> "exactly once; "
+      <> "leave `old` out to append `new`. `new` is capped at "
       <> int.to_string(max_new_bytes)
       <> " bytes and the queue holds "
       <> int.to_string(max_pending)
@@ -154,6 +175,13 @@ pub fn tool(proposals: Proposals) -> Tool {
     ),
     schema: tool.object_schema(
       [
+        #(
+          "target",
+          tool.string_property(
+            "`rules` (the default) for a standing rule, or `config` for an "
+            <> "edit to this session's loom.toml",
+          ),
+        ),
         #(
           "old",
           tool.string_property(
@@ -192,6 +220,21 @@ pub fn tool(proposals: Proposals) -> Tool {
   )
 }
 
+// The sentence offering a configuration edit, naming the file, or nothing for a
+// session with no file. The path is fixed for the session, so the description
+// stays one byte string for the life of the session's cached prefix.
+fn configuration_sentence(configuration: Option(String)) -> String {
+  case configuration {
+    Some(path) ->
+      "With `target` set to `config` it suggests an edit to this session's "
+      <> "configuration, "
+      <> path
+      <> ", instead (read it with fs_read first); the edit must leave a file "
+      <> "that loads, and an approval reopens the session with it. "
+    option.None -> ""
+  }
+}
+
 fn run(proposals: Proposals, args: JsonValue) -> ToolOutcome {
   use submitted <- tool.with_arg(submission(args))
   use id <- tool.or_outcome(proposals.submit(submitted), refusal_outcome)
@@ -208,6 +251,16 @@ fn run(proposals: Proposals, args: JsonValue) -> ToolOutcome {
 /// ```
 ///
 pub fn submission(args: JsonValue) -> Result(Submission, String) {
+  use target <- result.try(
+    tool.optional_string(args, "target")
+    |> result.try(fn(target) {
+      case target {
+        option.None | Some("rules") -> Ok(Rules)
+        Some("config") -> Ok(Configuration)
+        Some(_) -> Error("`target` is `rules` or `config`")
+      }
+    }),
+  )
   use old <- result.try(
     tool.optional_string(args, "old") |> result.map(option.unwrap(_, "")),
   )
@@ -238,7 +291,7 @@ pub fn submission(args: JsonValue) -> Result(Submission, String) {
       |> result.map(fn(_id) { Some(text) })
       |> result.replace_error("`source_entry` is not an entry id")
   })
-  Ok(Submission(old:, new:, rationale:, source_entry:))
+  Ok(Submission(target:, old:, new:, rationale:, source_entry:))
 }
 
 // A field is clean when it holds no control character a rule could not need

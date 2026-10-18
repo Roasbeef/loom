@@ -99,8 +99,8 @@ pub fn an_unknown_kind_and_state_are_kept_and_offer_no_action_test() {
   let odd =
     json.Object([
       #("id", json.String("prop-0000000003")),
-      #("kind", json.String("config")),
-      #("target", json.String("loom.toml")),
+      #("kind", json.String("agents")),
+      #("target", json.String("AGENTS.md")),
       #("base_digest", json.String("d")),
       #("old", json.String("")),
       #("new", json.String("x")),
@@ -111,7 +111,7 @@ pub fn an_unknown_kind_and_state_are_kept_and_offer_no_action_test() {
     ])
   let assert Ok(decoded) = proposals.decode(board([odd], 0))
   let assert [only] = decoded.proposals
-  assert only.kind == proposals.Unrecognized("config")
+  assert only.kind == proposals.Unrecognized("agents")
   assert only.state == proposals.Other("withdrawn")
   assert only.source.entry == None
   assert !proposals.decidable(only)
@@ -363,4 +363,38 @@ pub fn refusal_words_cover_each_code_and_pass_an_unknown_one_through_test() {
     "no longer exists",
   )
   assert proposals.refusal_words("odd", "line\none") == "odd: line one"
+}
+
+// A pending row of a kind this client does not know is shown and never offered
+// an action, and a configuration edit is a kind it knows, worded by its path.
+pub fn only_a_known_kind_is_decidable_test() {
+  let row = fn(kind) {
+    json.Object([
+      #("id", json.String("prop-0000000004")),
+      #("kind", json.String(kind)),
+      #("target", json.String("/home/o/.loom/loom.toml")),
+      #("base_digest", json.String("d")),
+      #("old", json.String("")),
+      #("new", json.String("[tools]")),
+      #("rationale", json.String("why")),
+      #("source", json.Object([#("session", json.String("s"))])),
+      #("created_ms", json.Int(1)),
+      #("state", json.String("pending")),
+    ])
+  }
+  let assert Ok(decoded) = proposals.decode(board([row("agents")], 1))
+  let assert [unknown] = decoded.proposals
+  assert !proposals.decidable(unknown)
+  let assert Ok(decoded) = proposals.decode(board([row("config")], 1))
+  let assert [config] = decoded.proposals
+  assert config.kind == proposals.Config
+  assert proposals.decidable(config)
+  assert string.contains(
+    proposals.approve_words(config),
+    "/home/o/.loom/loom.toml",
+  )
+  assert proposals.settled_words(
+      proposals.Proposal(..config, state: proposals.Approved),
+    )
+    == "Approved and written to /home/o/.loom/loom.toml."
 }

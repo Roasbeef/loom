@@ -227,7 +227,7 @@ pub fn one_proposal_shows_its_facts_and_the_two_buttons_test() {
   assert string.contains(html, "prop-0000000001")
   assert string.contains(html, "it failed twice")
   assert string.contains(html, "2026-09-21 14:13 UTC")
-  assert string.contains(html, "Applies to new sessions only.")
+  assert string.contains(html, "A rule applies to new sessions only.")
   assert string.contains(html, "Approve</button>")
   assert string.contains(html, "Reject</button>")
   assert component.proposals_pending(model) == 1

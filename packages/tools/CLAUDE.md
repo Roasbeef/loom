@@ -846,9 +846,14 @@ was asked.
 - **A model cannot choose what memory it writes.** `remember` takes a title,
   a description, a note and a kind from a closed list, and no entry type: the
   host writes `memory/note` and nothing else.
-- **`propose` is a seam over `client/proposals` with no path or target
-  argument.** It validates argument bounds only; the host validates against
-  the rules file and the queue depth (64).
+- **`propose` is a seam over `client/proposals` with no path argument.**
+  `target` names one of the two files the host owns, `rules` (the default) or
+  `config` (the session's `loom.toml`, protocol-change/089), and is
+  `Submission.target` (`Rules | Configuration`). `Proposals.configuration` is
+  the session's configuration path, which the description names so the model
+  can read the file first, and `None` drops the config sentence. It validates
+  argument bounds only; the host validates against the file and the queue
+  depth (64).
 - **`history_search` takes `syntax`, `kind`, `before` and `around`.** `syntax`
   is `words` (the default) or `raw`; `kind` filters; `before` pages; and, for
   `read`, `around` (0-5) is clamped here and in storage. The seam is

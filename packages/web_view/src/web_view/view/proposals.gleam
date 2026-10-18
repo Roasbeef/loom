@@ -237,7 +237,7 @@ fn ending(
   presses: Presses(message),
 ) -> Element(message) {
   case board_words.decidable(row), proposals.asking(state, row.id) {
-    True, True -> question(presses)
+    True, True -> question(row, presses)
     True, False ->
       html.div([attribute.class("share-actions")], [
         html.button(
@@ -259,17 +259,25 @@ fn ending(
       ])
     False, _ ->
       html.p([attribute.class("proposal-settled session-quiet")], [
-        html.text(board_words.settled_words(row.state)),
+        html.text(board_words.settled_words(row)),
       ])
   }
 }
 
 // The question that replaces the buttons in place: the sentence, the confirm
 // that names the act, and the way out.
-fn question(presses: Presses(message)) -> Element(message) {
+fn question(
+  row: board_words.Proposal,
+  presses: Presses(message),
+) -> Element(message) {
   html.div([attribute.class("share-ask")], [
     html.p([attribute.class("share-lead"), attribute.role("alert")], [
-      html.text(proposals.approval_question),
+      html.text(
+        "Approve this "
+        <> board_words.kind_words(row.kind)
+        <> "? "
+        <> board_words.approve_words(row),
+      ),
     ]),
     html.div([attribute.class("share-actions")], [
       html.button(
@@ -278,7 +286,7 @@ fn question(presses: Presses(message)) -> Element(message) {
           attribute.class("share-make"),
           event.on_click(presses.approve),
         ],
-        [html.text(proposals.approve_label)],
+        [html.text("Approve " <> board_words.kind_words(row.kind))],
       ),
       html.button(
         [
