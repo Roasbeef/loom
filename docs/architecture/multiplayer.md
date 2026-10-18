@@ -180,7 +180,7 @@ Two pieces of wiring in `client/serve` make the pushes reach the shipped
 binary. It starts one `commit_forwarder` (`client/gateway.gleam:1574`) per
 session and subscribes the writer to it, so the gateway learns of each
 commit. It also nests the two provider taps,
-`tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:4178`), so
+`tap_provider_with(tap_preview_provider(...))` (`client/serve.gleam:4124`), so
 every token reaches the gateway as a `ProviderDelta` while the bounded
 preview remains available to a terminal that attaches in the middle of an
 answer. The outer tap's second observer feeds the block summarizer's live
@@ -322,8 +322,8 @@ sequenceDiagram
 
 The drain runs inside the gateway's pull, because that pull is the one
 place where the gateway observes that a strand has gone idle.
-`drain_idle_strands` (`client/gateway.gleam:5902`) is called from
-`pull_and_broadcast` (`client/gateway.gleam:3272`) after `state.live` has
+`drain_idle_strands` (`client/gateway.gleam:5988`) is called from
+`pull_and_broadcast` (`client/gateway.gleam:3355`) after `state.live` has
 been refreshed from the registers and before any frame leaves.
 
 Ordinarily the drain submits only the head of the queue. Natural

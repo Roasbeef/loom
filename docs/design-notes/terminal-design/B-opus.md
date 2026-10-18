@@ -409,8 +409,8 @@ record would need a new control command.
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
-| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3638`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3881`; the call list has no data and needs a new wire record |
-| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2697` |
+| Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3674`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:3937`; the call list has no data and needs a new wire record |
+| Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2733` |
 | Strand messages | harness text frame | `frame_message` at `client/agency.gleam:2480`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
