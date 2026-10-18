@@ -45,6 +45,18 @@
 // a receipt or a refusal that will not change. `MAIL_NOT_OPEN` is the one answer
 // that leaves the row, and the next pass asks again. The outbox is stored in the
 // session, so it survives a restart of the VM and is deleted with the session.
+//
+// Three Ports run in a case (phase 4). The box stands at depth 1 and has a relay,
+// the Laptop machine that plays its delegate session as a spawner. Two third
+// orchestrators stand at depth 2, and their children are the box's
+// grandchildren. A running child on the box starts a grandchild through the
+// relay (`eGrandSpawn`), on the orchestrator that `spawn_on` allows; a child
+// that is not running starts nothing, which is the released fence read before a
+// stub is written. A `Release` of the box's session tells the relay to owe the
+// third orchestrators a release (`eCascade`) after it has stopped the children,
+// and a restart of the box's VM kills the relay's effect processes as it kills
+// the children's runs. Child identities start at `base`, so that the three
+// Ports never name two children alike.
 machine Port {
   var wire: machine;
   var children: map[tChild, tChildRec];
@@ -57,10 +69,25 @@ machine Port {
   var laptop: machine;
   var outbox: map[int, tRow];
   var nextMail: int;
+  var depth: int;
+  var relay: machine;
+  var hasRelay: bool;
+  var grandBegun: set[tChild];
 
   start state Up {
-    entry (w: machine) {
-      wire = w;
+    entry (p: (wire: machine, base: int, depth: int)) {
+      wire = p.wire;
+      next = p.base;
+      depth = p.depth;
+    }
+
+    on eRelay do (r: machine) {
+      relay = r;
+      hasRelay = true;
+    }
+
+    on eGrandSpawn do {
+      grandSpawn();
     }
 
     on eNet do (m: tMsg) {
@@ -111,7 +138,35 @@ machine Port {
 
     on eRestart do {
       loseRuns();
+      if (hasRelay) {
+        send relay, eAbort;
+      }
     }
+  }
+
+  // A running child starts a child of its own on the third orchestrator its
+  // spawner's `spawn_on` allows, the first of the relay's orchestrators, at most
+  // once each. The grandchild's call site is derived from the child, so a second
+  // start from the same child would be the same call site.
+  fun grandSpawn() {
+    var c: tChild;
+    var cs: seq[tChild];
+    var running: seq[tChild];
+    if (!hasRelay || phase != SS_OPEN) {
+      return;
+    }
+    cs = keys(children);
+    foreach (c in cs) {
+      if (children[c].st == CS_RUNNING && !(c in grandBegun)) {
+        running += (sizeof(running), c);
+      }
+    }
+    if (sizeof(running) == 0) {
+      return;
+    }
+    c = choose(running);
+    grandBegun += (c);
+    send relay, eBegin, (site = 100 + c, run = 0, owner = -1, target = 0);
   }
 
   // Admission of one `Spawn`.
@@ -147,8 +202,8 @@ machine Port {
     next = next + 1;
     children[c] = (mintedBy = m.site, run = m.run, owner = m.owner, st = CS_RUNNING, overdue = clockPast);
     byName[name] = c;
-    announce eChildIn, (child = c, gen = gen);
-    announce eCreated, (site = m.site, child = c, run = m.run, owner = m.owner);
+    announce eChildIn, (child = c, gen = gen, at = this);
+    announce eCreated, (site = m.site, child = c, run = m.run, owner = m.owner, at = this);
     announce eAnswered, (site = m.site, child = c);
     answer(m, K_SPAWNED, c, CS_RUNNING);
     if (clockPast) {
@@ -268,7 +323,14 @@ machine Port {
         running = running + 1;
       }
     }
-    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running);
+    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running, at = this, depth = depth);
+
+    // The release cascades: the delegate session's children may have started
+    // children elsewhere, and the rows that tell those orchestrators are owed
+    // before the session can go.
+    if (hasRelay) {
+      send relay, eCascade;
+    }
     answer(m, K_RELEASED, stopped, CS_RUNNING);
   }
 
@@ -290,7 +352,7 @@ machine Port {
     fence = default(set[int]);
     phase = SS_NONE;
     gen = gen + 1;
-    announce eSessionDeleted;
+    announce eSessionDeleted, this;
   }
 
   // Marks every child running now as past its deadline.

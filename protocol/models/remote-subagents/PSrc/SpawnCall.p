@@ -10,15 +10,22 @@
 machine SpawnCall {
   var wire: machine;
   var port: machine;
+  var spare: machine;
   var laptop: machine;
   var site: tSite;
   var run: int;
   var owner: int;
 
+  // `port` is the orchestrator the stub names. `spare` is another orchestrator
+  // the spawner could reach, which the code never sends this spawn to: a resend
+  // goes where the first send went (`remote_spawn`, "never sent to another
+  // orchestrator"). It is here so that the mutant that does send it there has
+  // somewhere to go.
   start state Begin {
-    entry (p: (wire: machine, port: machine, laptop: machine, site: tPlanSite)) {
+    entry (p: (wire: machine, port: machine, spare: machine, laptop: machine, site: tPlanSite)) {
       wire = p.wire;
       port = p.port;
+      spare = p.spare;
       laptop = p.laptop;
       site = p.site.site;
       run = p.site.run;

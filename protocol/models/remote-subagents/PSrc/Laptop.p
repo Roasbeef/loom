@@ -44,29 +44,50 @@
 // which is not an answer: the row stays and the next pass sends again. Only
 // `Released` settles the row. A message that arrives for a stub the deletion
 // removed is dropped.
+//
+// The same machine plays the box's delegate session as a spawner (phase 4, the
+// relay). Its `ports` are the third orchestrators, and a stub names the one it
+// was placed on. Its release rows are written when the box's Port is released
+// and tells it so (`eCascade`): one row for each third orchestrator that a stub
+// that is not refused names, which is `holders` in the code, and the relay rings
+// its own drainer, as the registry rings the daemon's release drainer. The rows
+// are a set of orchestrators, one row each, as the catalogue keeps them.
 machine Laptop {
   var wire: machine;
-  var port: machine;
+  var ports: seq[machine];
   var stubs: map[tSite, tStub];
   var calls: map[tSite, machine];
-  var releaseOwed: bool;
+  var releaseOwed: set[machine];
   var watchingRelease: bool;
   var open: bool;
   var runOpen: bool;
   var receipts: map[int, tMailCode];
 
   start state Up {
-    entry (p: (wire: machine, port: machine)) {
+    entry (p: (wire: machine, ports: seq[machine])) {
       wire = p.wire;
-      port = p.port;
+      ports = p.ports;
       open = true;
       runOpen = true;
     }
 
     on eBegin do (s: tPlanSite) {
-      stubs[s.site] = (st = ST_REQUESTED, child = 0, run = s.run, owner = s.owner);
+      var dest: machine;
+      var spare: machine;
+      dest = ports[s.target];
+      spare = ports[(s.target + 1) % sizeof(ports)];
+      stubs[s.site] = (st = ST_REQUESTED, child = 0, run = s.run, owner = s.owner, dest = dest);
       announce eStubRequested, s.site;
-      calls[s.site] = new SpawnCall((wire = wire, port = port, laptop = this, site = s));
+      calls[s.site] = new SpawnCall((wire = wire, port = dest, spare = spare, laptop = this, site = s));
+    }
+
+    on eCascade do {
+      var owed: set[machine];
+      owed = deleteSession();
+      announce eCascadeWritten, owed;
+      if (sizeof(owed) > 0) {
+        send this, eDrain;
+      }
     }
 
     on eStubAnswer do (a: (site: tSite, child: tChild)) {
@@ -85,7 +106,7 @@ machine Laptop {
       } else if (m.kind == K_JOINED) {
         joined(m);
       } else if (m.kind == K_RELEASED) {
-        released();
+        released(m.src);
       } else if (m.kind == K_MAIL) {
         mail(m);
       }
@@ -97,7 +118,7 @@ machine Laptop {
 
     on eParentOpen do {
       open = true;
-      send port, eMailPass;
+      send ports[0], eMailPass;
     }
 
     on eParentRunEnds do {
@@ -118,7 +139,8 @@ machine Laptop {
     }
 
     on eDelete do {
-      deleteSession();
+      var owed: set[machine];
+      owed = deleteSession();
     }
 
     on eAbort do {
@@ -192,29 +214,31 @@ machine Laptop {
     send wire, eSend, (sender = this, msg = (kind = K_MAILED, src = this, dest = m.src, site = m.site, child = m.child, st = CS_RUNNING, run = 0, owner = -1, id = m.id, code = code));
   }
 
-  // The remote answered a release. Only an answer settles the row.
-  fun released() {
-    if (releaseOwed) {
-      releaseOwed = false;
-      announce eReleaseTold;
+  // An orchestrator answered a release. Only an answer settles its row.
+  fun released(from: machine) {
+    if (from in releaseOwed) {
+      releaseOwed -= (from);
+      announce eReleaseTold, (who = this, port = from);
     }
-    if (watchingRelease) {
+    if (watchingRelease && sizeof(releaseOwed) == 0) {
       send wire, eUnwatch, this;
       watchingRelease = false;
     }
   }
 
-  // The parent session is deleted: one release row for the remote if some stub
-  // may have made a child there, then the stubs and the effect processes go.
-  // A stub that was still owed is not owed any more.
-  fun deleteSession() {
+  // The parent session is deleted: one release row for each orchestrator that a
+  // stub that is not refused names, then the stubs and the effect processes go.
+  // A stub that was still owed is not owed any more. Answers the orchestrators
+  // that are owed a release now, rows already owed included.
+  fun deleteSession(): set[machine] {
     var s: tSite;
     var ss: seq[tSite];
-    var owe: bool;
+    var owe: set[machine];
+    var p: machine;
     ss = keys(stubs);
     foreach (s in ss) {
       if (stubs[s].st != ST_REFUSED) {
-        owe = true;
+        owe += (stubs[s].dest);
       }
       if (stubs[s].st == ST_REQUESTED) {
         announce eStubDone, s;
@@ -222,27 +246,34 @@ machine Laptop {
     }
     abortCalls();
     stubs = default(map[tSite, tStub]);
-    if (owe && !releaseOwed) {
-      releaseOwed = true;
-      announce eReleaseWritten;
+    foreach (p in owe) {
+      if (!(p in releaseOwed)) {
+        releaseOwed += (p);
+        announce eReleaseWritten, (who = this, port = p);
+      }
     }
+    return owe;
   }
 
-  // One drainer pass.
+  // One drainer pass. Every stub's messages go to the orchestrator the stub
+  // names, and never to another.
   fun pass() {
     var s: tSite;
     var ss: seq[tSite];
-    if (releaseOwed) {
+    var p: machine;
+    if (sizeof(releaseOwed) > 0) {
       send wire, eWatch, this;
       watchingRelease = true;
-      send wire, eSend, (sender = this, msg = (kind = K_RELEASE, src = this, dest = port, site = 0, child = 0, st = CS_RUNNING, run = 0, owner = -1, id = 0, code = MAIL_DELIVERED));
+      foreach (p in releaseOwed) {
+        send wire, eSend, (sender = this, msg = (kind = K_RELEASE, src = this, dest = p, site = 0, child = 0, st = CS_RUNNING, run = 0, owner = -1, id = 0, code = MAIL_DELIVERED));
+      }
     }
     ss = keys(stubs);
     foreach (s in ss) {
       if (stubs[s].st == ST_REQUESTED) {
-        send wire, eSend, (sender = this, msg = (kind = K_SPAWN, src = this, dest = port, site = s, child = 0, st = CS_RUNNING, run = stubs[s].run, owner = stubs[s].owner, id = 0, code = MAIL_DELIVERED));
+        send wire, eSend, (sender = this, msg = (kind = K_SPAWN, src = this, dest = stubs[s].dest, site = s, child = 0, st = CS_RUNNING, run = stubs[s].run, owner = stubs[s].owner, id = 0, code = MAIL_DELIVERED));
       } else if (stubs[s].st == ST_SPAWNED) {
-        send wire, eSend, (sender = this, msg = (kind = K_JOIN, src = this, dest = port, site = s, child = stubs[s].child, st = CS_RUNNING, run = stubs[s].run, owner = stubs[s].owner, id = 0, code = MAIL_DELIVERED));
+        send wire, eSend, (sender = this, msg = (kind = K_JOIN, src = this, dest = stubs[s].dest, site = s, child = stubs[s].child, st = CS_RUNNING, run = stubs[s].run, owner = stubs[s].owner, id = 0, code = MAIL_DELIVERED));
       }
     }
   }

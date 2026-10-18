@@ -65,7 +65,7 @@ spec ProbeJoinSettled observes eReported {
 // A `Release` stopped a running child.
 spec ProbeReleaseStopped observes eReleaseHandled {
   start state Watching {
-    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int)) {
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
       assert p.stopped == 0, "witness: a release stopped a running child";
     }
   }
@@ -93,7 +93,7 @@ spec ProbeReleaseFoundNoSession observes eReleaseNoSession {
 // The registry deleted a released session after its slot drained.
 spec ProbeSessionDeleted observes eSessionDeleted {
   start state Watching {
-    on eSessionDeleted do {
+    on eSessionDeleted do (at: machine) {
       assert false, "witness: a released session was deleted";
     }
   }
@@ -140,6 +140,33 @@ spec ProbeMailForRequested observes eMailForRequested {
   start state Watching {
     on eMailForRequested do {
       assert false, "witness: a mail arrived before the answer to its spawn";
+    }
+  }
+}
+
+// A child on the box started a child of its own on a third orchestrator.
+spec ProbeGrandchildMade observes eCreated {
+  start state Watching {
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
+      assert p.site < 100, "witness: a grandchild was made on a third orchestrator";
+    }
+  }
+}
+
+// A release of the box's session owed a third orchestrator a release.
+spec ProbeCascadeOwed observes eCascadeWritten {
+  start state Watching {
+    on eCascadeWritten do (owed: set[machine]) {
+      assert sizeof(owed) == 0, "witness: a release cascaded to a third orchestrator";
+    }
+  }
+}
+
+// The cascade reached a third orchestrator and stopped a grandchild running there.
+spec ProbeGrandchildReleased observes eReleaseHandled {
+  start state Watching {
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
+      assert p.depth != 2 || p.stopped == 0, "witness: a cascaded release stopped a grandchild";
     }
   }
 }

@@ -83,8 +83,8 @@ MUTATIONS = {
   # a call site can be told the result of another site's child.
   "M8-join-names-the-wrong-child": ("tcOnlyJoinReportsOwnChild", 20000, r"(another call site minted|did not reach)", [
     ("PSrc/Laptop.p",
-     "dest = port, site = s, child = stubs[s].child,",
-     "dest = port, site = s, child = 0,")]),
+     "dest = stubs[s].dest, site = s, child = stubs[s].child,",
+     "dest = stubs[s].dest, site = s, child = 0,")]),
 
   # `Release` writes the released fence before it stops the children, and the
   # session refuses every spawn from then on. Here it stops the children and
@@ -101,7 +101,7 @@ MUTATIONS = {
   "M10-unreachable-settles-the-release-row": ("tcOnlyReleaseIsTold", 20000, r"hot state", [
     ("PSrc/Laptop.p",
      "      // the row stays owed and the next pass sends it again.\n      watchingRelease = false;",
-     "      // the row stays owed and the next pass sends it again.\n      releaseOwed = false;")]),
+     "      // the row stays owed and the next pass sends it again.\n      releaseOwed = default(set[machine]);")]),
 
   # A `Release` for a parent with no session answers zero and makes nothing.
   # Here it makes a session, as a `Spawn` does, and then deletes it.
@@ -141,6 +141,25 @@ MUTATIONS = {
     ("PSrc/Laptop.p",
      "    if (!(m.site in stubs)) {\n      announce eUnknownAnswered,",
      "    if (!(m.site in stubs && stubs[m.site].st == ST_SPAWNED)) {\n      announce eUnknownAnswered,")]),
+
+  # A spawn whose connection breaks is resent to the orchestrator its stub names
+  # and to no other, because the adoption that makes a resend safe is that
+  # orchestrator's. Here the box's spawn of a grandchild is retried against the
+  # second third orchestrator, which has no record of the first child and makes
+  # another (phase 4; with one Port this mutant had nothing to duplicate).
+  "M16-retried-against-a-second-orchestrator": ("tcOnlyOneOrchestratorPerSite", 20000, r"children on two orchestrators", [
+    ("PSrc/SpawnCall.p",
+     "    on eNoConn do {\n      send wire, eWatch, this;",
+     "    on eNoConn do {\n      port = spare;\n      send wire, eWatch, this;")]),
+
+  # A release of the box's delegate session writes a release row for each third
+  # orchestrator its children started children on, before the session goes.
+  # Here it stops the children and writes none, so the grandchildren run to their
+  # deadlines with nobody left to read them.
+  "M17-release-does-not-cascade": ("tcOnlyReleasedDescendantsEnd", 20000, r"hot state", [
+    ("PSrc/Port.p",
+     "    if (hasRelay) {\n      send relay, eCascade;\n    }\n",
+     "")]),
 }
 
 
