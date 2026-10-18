@@ -39,6 +39,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import mist
+import session_view/strand_framing
 import weft
 import weft/actor
 import weft/poll
@@ -744,7 +745,8 @@ fn is_object(value: json.JsonValue) -> Bool {
   }
 }
 
-// A result cannot carry attribution or another block. Cache-control metadata
+// A result cannot carry attribution or another block, except a strand message
+// steered in after it (below). Cache-control metadata
 // on the ordinary outer block is orthogonal to its exact identity and content.
 fn latest_content(
   blocks: List(json.JsonValue),
@@ -757,13 +759,14 @@ fn latest_content(
         _ -> text_content(blocks)
       }
 
-    // A result that is followed by text only: input steered into the run while
-    // the tool was in flight rides in the same user turn as the result (a
-    // provider turn alternates roles). The result still selects the reply, and
-    // the steered text stays in the retained request body for the caller to
-    // assert on.
+    // A result that is followed only by strand messages: a message another
+    // agent steered into the run while the tool was in flight rides in the same
+    // user turn as the result (a provider turn alternates roles). The result
+    // still selects the reply, and the steered text stays in the retained
+    // request body for the caller to assert on. Plain text after a result is
+    // still refused, so only the shape steering produces is accepted.
     [first, ..rest] ->
-      case field(first, "type"), list.all(rest, is_text_block) {
+      case field(first, "type"), list.all(rest, is_steered_message) {
         json.String("tool_result"), True -> tool_result(first, admission)
         _, _ -> text_content(blocks)
       }
@@ -772,8 +775,20 @@ fn latest_content(
   }
 }
 
-fn is_text_block(block: json.JsonValue) -> Bool {
-  field(block, "type") == json.String("text")
+// Whether a block is a text block framed as a strand message, the framing
+// `agency.frame_message` gives what one agent sends another. The sender is
+// read from the head line and `strand_framing.strip` decides, so a block
+// matches only when both its head and its foot are the harness's own.
+fn is_steered_message(block: json.JsonValue) -> Bool {
+  case field(block, "type"), field(block, "text") {
+    json.String("text"), json.String(text) ->
+      case string.split_once(text, "]\n") {
+        Ok(#("[message from " <> sender, _)) ->
+          strand_framing.strip(text, sender).body != text
+        _ -> False
+      }
+    _, _ -> False
+  }
 }
 
 fn text_content(blocks: List(json.JsonValue)) -> Result(Latest, String) {
