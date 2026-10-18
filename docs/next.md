@@ -9,9 +9,9 @@ Baselined October 18, 2026 against source head
 `perf/daemon-resource-cost`, from `928d0ae50dfe70277512a4c05116626c7c28d942`.
 The claims below were checked against this tree, local test logs, and recorded
 measurements. This is a local performance handoff, not a new project-wide CI
-or release audit. The local `main` ref had advanced to `e289d93ab` when checked;
-these commits have not been rebased onto that ref. The profiling evidence and
-architecture note are committed at `de96eff4f`.
+or release audit. The local `main` ref pointed to the older `e289d93ab` when checked;
+the publication base is `origin/main` at `928d0ae50`. The profiling evidence
+and architecture note are committed at `de96eff4f`.
 
 ## Where the tree is
 
@@ -44,11 +44,16 @@ daemon.
 
 ## What to do next
 
-1. Review and publish the focused ownership changes when authorized. Rebase
+1. PR [#1008](https://github.com/Roasbeef/loom/pull/1008) publishes the focused
+   ownership changes. The owner authorized its merge once review, hosted CI,
+   and strict Linux signoff are green. Rebase
    onto the chosen publication base and repeat affected gates if it advances.
    **Exit:** exact published head has the required CI and Linux evidence.
-   Scope remains call-worker capture and provider request ownership; the
-   JSON/polling path has no change in this branch.
+   The owner also approved a separate CI repair: the ordinary Linux runner
+   declares the existing remote-depth prerequisite skip, while a dedicated
+   delegated step must run that fixture with an empty skip allowance. Fixture
+   assertions and prerequisite conditions are unchanged. The JSON/polling path
+   has no change in this branch.
 2. Obtain operator authorization for installation and a coordinated daemon
    restart, then measure a matched busy workload. **Exit:** compare CPU,
    cumulative allocation, process/binary memory, and RSS at matching request,

@@ -65,7 +65,7 @@ In [satellite.gleam](../../packages/codemode/src/codemode/satellite.gleam),
 settlement callback in `dispatch_cap_call` also captured `State` to obtain its
 command subject. Each spawned call worker could therefore copy unrelated host
 fields, including all capability ceilings. The worker only needs the precheck,
-router, command subject, and call identity. Projecting those values before
+selected plan, command subject, and call identity. Projecting those values before
 constructing the closures removes both broad captures, without changing
 admission, routing, ceilings, or settlement.
 
