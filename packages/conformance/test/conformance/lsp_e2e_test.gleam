@@ -1115,9 +1115,6 @@ fn settings(
     tools: catalog.default_tools(),
     advisor: None,
     go_caches: None,
-    metering: None,
-    spawner: None,
-    laptop: None,
   )
 }
 
