@@ -9139,7 +9139,7 @@ stream grows to its first request, the first grows by `every_bytes`, and the
 first request ends. `landed` now writes the idle stream into the book before
 `consider` weighs the relaunch, and the `coalesce` tag holds it there.
 
-## Configuration reload and edits (protocol-change/089)
+## Configuration reload and edits (protocol-change/091)
 
 A daemon session takes an edit to the `loom.toml` it loaded without a daemon
 restart. `client/config_watch` is a weft actor in the session's restartable

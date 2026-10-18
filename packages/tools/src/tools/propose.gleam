@@ -29,7 +29,7 @@
 ////
 //// The model never names a path. The host owns two files a proposal may edit,
 //// the rules file beside the domain's memory store and the `loom.toml` the
-//// session loaded (protocol-change/089), and `target` chooses between them by
+//// session loaded (protocol-change/091), and `target` chooses between them by
 //// name; the argument schema has no field that could carry a path, so there is
 //// nothing here to validate about one.
 ////

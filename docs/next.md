@@ -3,7 +3,7 @@
 ## Configuration reload and edits — October 18
 
 PRs #901 (hot reload) and #908 (approved `loom_config` edits) were taken over
-and rebuilt on main as one change, under protocol-change/089. Neither branch
+and rebuilt on main as one change, under protocol-change/091. Neither branch
 merged: main had since ruled (082) that a session takes new roles by reopening,
 and 086 had reserved a proposal kind for configuration edits.
 

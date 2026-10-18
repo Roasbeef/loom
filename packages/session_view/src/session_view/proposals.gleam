@@ -1,6 +1,6 @@
 //// The standing rules, and configuration edits, a model has proposed and a
 //// person has yet to decide: the daemon's board, decoded totally, and the words
-//// both hosts use for a row (protocol-change/086 and 089).
+//// both hosts use for a row (protocol-change/086 and 091).
 ////
 //// A model calls its `propose` tool when it notices a correction worth
 //// keeping. The daemon queues the suggestion and writes nothing; a person
