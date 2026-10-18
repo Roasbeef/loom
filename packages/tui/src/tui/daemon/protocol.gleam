@@ -80,8 +80,11 @@ pub type WebView {
   /// The `hello` names no view: the daemon was started without `--ui`.
   NoWebView
 
-  /// The daemon serves the view under this route prefix.
-  WebViewAt(path: String)
+  /// The daemon serves the view under this route prefix. `origins` are the
+  /// `https` origins the owner listed in `[daemon] ui_origins`
+  /// (protocol-change/052), as the daemon normalized them; empty when none
+  /// is listed or the daemon predates the field.
+  WebViewAt(path: String, origins: List(String))
 }
 
 /// Idle delivery policy attached to a directional peer grant.
@@ -184,6 +187,15 @@ pub type Command {
     /// link may decline (`loom ui --no-remember`). A session's link is always
     /// `Remember`, which is never sent.
     remember: Remembering,
+  )
+
+  /// Asks for a link that signs another device in to this principal's home:
+  /// `ui.link` with `"device": true` (protocol-change/052, the addendum). The
+  /// ticket lives ten minutes rather than sixty seconds and always sets a
+  /// browser login, which is what `loom ui --device` prints.
+  UiDeviceLink(
+    /// The most the page may do, as for `UiLink`.
+    page: WebPage,
   )
 
   /// Looks up a workspace selection without starting it.
@@ -774,7 +786,7 @@ pub fn name(command: Command) -> String {
     ArchiveSession(..) -> "sessions.archive"
     RestoreSession(..) -> "sessions.restore"
     GetSession(..) -> "sessions.get"
-    UiLink(..) -> "ui.link"
+    UiLink(..) | UiDeviceLink(..) -> "ui.link"
     WorkspaceDefault(..) -> "sessions.default"
     SetDefault(..) -> "sessions.set_default"
     CreateSession(..) -> "sessions.create"
@@ -813,6 +825,7 @@ pub fn mutates(command: Command) -> Bool {
     | ListArchivedSessions(..)
     | GetSession(..)
     | UiLink(..)
+    | UiDeviceLink(..)
     | WorkspaceDefault(..)
     | GetOperation(..)
     | InspectPeers(..)
@@ -956,6 +969,19 @@ fn command_fields(command: Command, epoch: Epoch) {
           },
         ),
       )
+
+    // A device link is the home's link with the one field that makes it a
+    // device's. A daemon that predates the field ignores it and mints an
+    // ordinary sixty-second home link, which the reply's `expires_in_ms`
+    // shows.
+    UiDeviceLink(page) ->
+      Ok([
+        #("device", json.Bool(True)),
+        ..case page {
+          ObserverPage -> []
+          OperatorPage -> [#("page", json.String("operator"))]
+        }
+      ])
     WorkspaceDefault(workspace) ->
       text_fields([#("workspace", workspace, 4096)])
     RenameSession(id, name) -> {
@@ -1607,7 +1633,39 @@ fn field(value: json.JsonValue, key: String) {
 fn view_at(body: json.JsonValue) {
   case field(body, "ui") {
     Error(_) -> Ok(NoWebView)
-    Ok(view) -> result.map(text_at(view, "path", 256), WebViewAt)
+    Ok(view) -> {
+      use path <- result.try(text_at(view, "path", 256))
+      use origins <- result.map(origins_at(view))
+      WebViewAt(path, origins)
+    }
+  }
+}
+
+// The most listed origins a hello may name, the daemon's own bound
+// (`ui_origin.max_origins`).
+const max_view_origins = 16
+
+// The listed `https` origins of the view (protocol-change/052). An absent
+// field is none, as from a daemon that predates it. A present one is an array
+// of at most `max_view_origins` nonempty `https://` strings, or the hello is
+// refused, because `loom ui --device` builds a link on one of them.
+fn origins_at(view: json.JsonValue) -> Result(List(String), String) {
+  case field(view, "origins") {
+    Error(_) -> Ok([])
+    Ok(json.Array(items)) -> {
+      use Nil <- result.try(case list.drop(items, max_view_origins) == [] {
+        True -> Ok(Nil)
+        False -> Error("too many web view origins")
+      })
+      list.try_map(items, fn(item) {
+        use text <- result.try(bounded_text(item, 256))
+        case string.starts_with(text, "https://") {
+          True -> Ok(text)
+          False -> Error("a web view origin must be https")
+        }
+      })
+    }
+    Ok(_) -> Error("expected an array of web view origins")
   }
 }
 
