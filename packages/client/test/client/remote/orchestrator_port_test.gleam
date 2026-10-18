@@ -6,6 +6,7 @@
 //// its own so that the question about ownership is never kept waiting.
 
 import client/node_report
+import client/protocol
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
 import client/remote_escalation
@@ -1075,4 +1076,103 @@ pub fn a_report_that_fails_is_silence_and_the_port_serves_on_test() {
 
   // The failed report did not stop the port.
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+// --- a child's request for more authority, and the decision (protocol-change/089)
+
+fn a_request() -> protocol.EscalationRecord {
+  protocol.EscalationRecord(
+    escalation_id: "policy-ab",
+    op: "op-1",
+    strand: "sub:^main/run-the-suite-1",
+    status: "pending",
+    tool: "bash",
+    action: "d1",
+    preview: "make",
+    asked: 1,
+    denial: None,
+    seq: 3,
+    origin: None,
+    placement: None,
+    admitted: None,
+  )
+}
+
+pub fn a_daemon_with_no_orchestrators_refuses_a_childs_request_test() {
+  let port = started()
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+}
+
+pub fn a_childs_request_reaches_the_host_with_its_origin_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, own_node(), 0))
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Ok(Nil))
+  assert process.receive(seen, 0)
+    == Ok(
+      "escalation " <> own_node() <> " sub:^main/run-the-suite-1 policy-ab 3",
+    )
+}
+
+pub fn a_request_from_an_untrusted_node_is_refused_as_an_origin_mismatch_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, "somebody@else", 0))
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+}
+
+pub fn a_decision_reaches_the_spawn_host_with_its_origin_and_answers_test() {
+  let seen = process.new_subject()
+  let port = spawning(hosting(seen, 0))
+  assert orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
+    == Ok(Ok(remote_escalation.Forgotten))
+  assert process.receive(seen, 0)
+    == Ok(
+      "resolve "
+      <> own_node()
+      <> " main sub:^main/run-the-suite-1 policy-ab Deny 3 Ola",
+    )
+}
+
+pub fn a_daemon_that_accepts_no_spawns_refuses_a_decision_test() {
+  let port = started()
+  let assert Ok(Error(remote_spawn.UnknownSpawner(..))) =
+    orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
 }

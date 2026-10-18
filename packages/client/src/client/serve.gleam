@@ -3630,7 +3630,7 @@ fn assemble_in(
   // Asking the hub by name (not by handle) keeps that true across a hub
   // restart.
   let escalate_name = address.new_address(namespace)
-  //
+
   // A delegate session whose spawner sets an approval ceiling has a second
   // party to ask (protocol-change/089): the operator on the spawning
   // orchestrator, who can answer for as long as that orchestrator's node is
@@ -3641,7 +3641,8 @@ fn assemble_in(
     escalate.Config(
       ..escalate.default_config(escalate_name, clock),
       interactive: fn() {
-        hub.attached(hub.Gateway(name:)) > 0 || spawner_answers(settings)
+        hub.attached(hub.Gateway(name:)) > 0
+        || delegate_outbox.answers(settings.spawner, settings.laptop)
       },
       parked: fn(opened_runtime, id, until) {
         announce_to_spawner(
@@ -6042,16 +6043,6 @@ fn withdraw_outside_the_ceiling(
           ])
       }
     }
-  }
-}
-
-// Whether a delegate session's spawner can answer a request now: its table sets
-// an approval ceiling and its node is connected. Nothing is dialed.
-fn spawner_answers(settings: Settings) -> Bool {
-  case settings.spawner, settings.laptop {
-    Some(delegate_outbox.SpawnerLink(ceiling: Some(_), ..)), Some(laptop) ->
-      laptop.connected()
-    _, _ -> False
   }
 }
 

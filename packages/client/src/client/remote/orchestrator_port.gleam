@@ -99,6 +99,15 @@
 //// them until it is answered. `client/remote_mail` is their vocabulary, and the
 //// sending ends are `ask_mail` and `ask_progress` below.
 ////
+//// Protocol-change/089 adds the two messages by which the operator of a
+//// spawning orchestrator answers a child's request for more authority. A child
+//// on this orchestrator that its sandbox refuses can ask its parent's operator
+//// (`ChildEscalation`, served by the `ChildHost` like mail and progress), and the
+//// operator's decision comes back as `Resolve`, served by the `SpawnHost` like a
+//// send into a child. Both are judged by the node they came from, and neither
+//// changes what the other messages do. The sending ends are `ask_escalation` and
+//// `ask_resolve`.
+////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
 //// Erlang node. It carries no credential, and a client is never redirected by
@@ -118,7 +127,7 @@
 //// ## Flow
 ////
 //// `start_with` → `answer` → `detached` → `ask_release` → `ask_send` →
-//// `ask_mail` → `exchange` → `exchange_why`
+//// `ask_mail` → `ask_escalation` → `ask_resolve` → `exchange` → `exchange_why`
 ////
 //// 1. `start_with` starts the port with the hosts a daemon supplies.
 //// 2. `answer` handles one message. A read it can answer from a function it
@@ -126,8 +135,9 @@
 //// 3. `detached` runs the slow ones (a spawn, a join, a run end, a release, a
 ////    send, a child's mail or progress) in a task linked to the port, so a
 ////    question about ownership never waits behind them.
-//// 4. The `ask_*` functions are the sending ends, `ask_release` and `ask_send`
-////    among those the laptop calls and `ask_mail` among those the box calls, and
+//// 4. The `ask_*` functions are the sending ends, `ask_release`, `ask_send` and
+////    `ask_resolve` among those the laptop calls and `ask_mail` and
+////    `ask_escalation` among those the box calls, and
 ////    each makes its one request through `exchange`, which wraps
 ////    `exchange_why`. That function takes a monitor before it sends, and
 ////    `ask_report` uses it directly to learn why there was no answer.

@@ -719,3 +719,23 @@ pub fn announce(
     ),
   )
 }
+
+/// Whether the party that could answer a delegate session's request is there to
+/// be asked now: the spawner's table sets an approval ceiling and its node is
+/// connected. It is the second half of what makes a delegate session attended,
+/// beside the clients attached to its hub (protocol-change/089), and it is read
+/// afresh on every poll of a parked call, so a laptop that goes away un-parks
+/// the call at the next slice. Nothing is dialed: the box does not reach its
+/// spawner, it only notices that the spawner has reached it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !delegate_outbox.answers(option.None, option.None)
+/// ```
+pub fn answers(link: Option(SpawnerLink), laptop: Option(Laptop)) -> Bool {
+  case link, laptop {
+    Some(SpawnerLink(ceiling: Some(_), ..)), Some(found) -> found.connected()
+    _, _ -> False
+  }
+}

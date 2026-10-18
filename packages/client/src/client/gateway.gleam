@@ -30,6 +30,12 @@
 ////    with `pull`, de-duplicates by seq and `broadcast`s the frames.
 //// 7. `send_response` and `deliver` check the binding again (`check_binding`,
 ////    the delivery point) before a reply or a push reaches the socket.
+//// 8. A child's request on another orchestrator is decided in two places
+////    (protocol-change/089). On the laptop, `from_elsewhere` routes an `approve`
+////    or `deny` that names a filed request to `start_resolve`, which sends it to
+////    the box from a weft run, and `resolve_reported` answers the socket when the
+////    run reports. On the box, `decide` is the hub's door for the spawner's
+////    operator's decision, judged by `client/remote_decision`.
 ////
 //// ## Authenticated network delivery
 ////

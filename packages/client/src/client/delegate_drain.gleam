@@ -64,6 +64,7 @@ import client/remote_mail
 import client/remote_spawn
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import runtime/api
 import runtime/escalation as durable
 import telemetry/field
@@ -374,15 +375,8 @@ fn one_question(
     Ok(cell) ->
       case cell.record.status {
         durable.Pending ->
-          case cell.seq > row.seq || now >= row.until {
-            True -> drop()
-            False ->
-              case row.sending {
-                delegate_outbox.Acknowledged -> True
-                delegate_outbox.NotAcknowledged ->
-                  send_question(runtime, link, laptop, logger, key, row, cell)
-              }
-          }
+          pending_question(runtime, link, laptop, logger, now, key, row, cell)
+          |> result.lazy_unwrap(drop)
         durable.Approved | durable.Rejected | durable.Consumed -> {
           let delivered =
             send_record(link, laptop, row, escalation_record(link, cell))
@@ -391,6 +385,30 @@ fn one_question(
             Waiting -> True
           }
         }
+      }
+  }
+}
+
+// A row whose record is still pending. `Error(Nil)` says the row has nothing
+// left to say, because a newer raise replaced it or the park window closed, and
+// the caller drops it. `Ok` says whether the row is still waiting.
+fn pending_question(
+  runtime: api.Runtime,
+  link: SpawnerLink,
+  laptop: Laptop,
+  logger: Logger,
+  now: Int,
+  key: String,
+  row: delegate_outbox.Question,
+  cell: api.EscalationCell,
+) -> Result(Bool, Nil) {
+  case cell.seq > row.seq || now >= row.until {
+    True -> Error(Nil)
+    False ->
+      case row.sending {
+        delegate_outbox.Acknowledged -> Ok(True)
+        delegate_outbox.NotAcknowledged ->
+          Ok(send_question(runtime, link, laptop, logger, key, row, cell))
       }
   }
 }

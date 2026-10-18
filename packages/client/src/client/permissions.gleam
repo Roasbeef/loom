@@ -23,6 +23,30 @@
 //// `api.edit_reserved_facts` under the sequences the caller read, so a
 //// permission added or removed in between loses the whole edit and the
 //// operator is shown a fresh list.
+////
+//// ## Grants a spawner's operator approved (protocol-change/089)
+////
+//// A delegate session also remembers what the operator of its spawning
+//// orchestrator approved for the session. Those rows carry `Spawner`
+//// provenance: the spawner's name and the deciding principal as plain data, which
+//// authenticates nothing here. `withdraw_spawner_grants` drops the ones the
+//// spawner's current approval ceiling no longer admits when the session opens,
+//// and `forgetting_for_spawner` withdraws one at that operator's request, only
+//// for a grant that carries that spawner's own provenance.
+////
+//// ## Flow
+////
+//// `read_for` → `remembering_action` → `remembering` → `listing` → `forgetting` →
+//// `withdraw_spawner_grants` → `forgetting_for_spawner`
+////
+//// 1. `read_for` reads the standing authority one invocation captures, and
+////    `read` and `decode` are the halves it is made of.
+//// 2. `remembering_action` and `remembering` prepare the reserved fact an
+////    approval for the session commits with the decision.
+//// 3. `listing` reads everything the session remembers, with who approved it,
+////    and `forgetting` builds the guarded edit that removes some of it.
+//// 4. `withdraw_spawner_grants` and `forgetting_for_spawner` are the same edit
+////    for the grants a spawner's operator approved.
 
 import broker/policy
 import client/escalate

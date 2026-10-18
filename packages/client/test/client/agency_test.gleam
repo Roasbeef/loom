@@ -31,10 +31,12 @@ import client/peer_mail
 import client/peer_outbox
 import client/peer_outbox_drain
 import client/peers
+import client/protocol
 import client/remote/address
 import client/remote/orchestrator_port
 import client/remote_child
 import client/remote_drain
+import client/remote_escalation_store
 import client/remote_mail
 import client/remote_reach
 import client/remote_send
@@ -7528,6 +7530,105 @@ pub fn the_newest_glance_is_kept_on_the_stub_and_an_older_one_is_ignored_test() 
       only_box("desk"),
     )
     == Error(remote_mail.OriginMismatch)
+  close(harness)
+}
+
+// --- a child's request for more authority (protocol-change/089) -----------------
+
+fn a_request(seq: Int, status: String) -> protocol.EscalationRecord {
+  protocol.EscalationRecord(
+    escalation_id: "policy-ab",
+    op: "op-1",
+    strand: "sub:^main/build-0123456789abcdef",
+    status:,
+    tool: "bash",
+    action: "d1",
+    preview: "make",
+    asked: 1,
+    denial: None,
+    seq:,
+    origin: None,
+    placement: None,
+    admitted: Some([]),
+  )
+}
+
+fn filed_request(harness: Harness) -> Option(protocol.EscalationRecord) {
+  let assert Ok(found) =
+    remote_escalation_store.find(harness.runtime, "box/policy-ab")
+    as "the filed request must be readable"
+  found
+}
+
+pub fn a_request_is_filed_against_a_requested_stub_under_its_orchestrator_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let assert [stub] = stubs_of(harness)
+  assert stub.state == remote_child.Requested
+
+  // The request arrives before the answer to the `Spawn`, keyed by the child's
+  // name and found through the stub the parent wrote first.
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      a_request(3, "pending"),
+      only_box(box.name),
+    )
+    == Ok(Nil)
+  let assert Some(filed) = filed_request(harness)
+  assert filed.escalation_id == "box/policy-ab"
+  assert filed.placement == Some("box")
+  assert filed.seq == 3
+
+  // The answer to the spawn agrees with it and leaves it where it was.
+  fake_orchestrators.set_mode(box, fake_orchestrators.Up)
+  let _backlog = drain(harness)
+  let assert Some(still) = filed_request(harness)
+  assert still.seq == 3
+  close(harness)
+}
+
+pub fn the_newest_seq_wins_and_an_older_request_never_replaces_a_decided_one_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  let send = fn(seq, status) {
+    inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      a_request(seq, status),
+      only_box(box.name),
+    )
+  }
+  assert send(3, "pending") == Ok(Nil)
+  assert send(4, "approved") == Ok(Nil)
+
+  // A late copy of the pending record, and a repeat of the decided one.
+  assert send(3, "pending") == Ok(Nil)
+  assert send(4, "approved") == Ok(Nil)
+  let assert Some(filed) = filed_request(harness)
+  assert filed.seq == 4
+  assert filed.status == "approved"
+  close(harness)
+}
+
+pub fn a_request_from_the_wrong_node_or_about_an_unknown_child_is_refused_test() {
+  let #(harness, box, child) = requested_parent()
+  let inbox = agency.child_inbox(harness.config)
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      child,
+      a_request(3, "pending"),
+      only_box("desk"),
+    )
+    == Error(remote_mail.OriginMismatch)
+  assert inbox.escalation(
+      parent_of_remote_child(),
+      agent.Handle(..child, strand: "sub:^main/stranger"),
+      a_request(3, "pending"),
+      only_box(box.name),
+    )
+    == Error(remote_mail.UnknownChild)
+  assert filed_request(harness) == None
   close(harness)
 }
 

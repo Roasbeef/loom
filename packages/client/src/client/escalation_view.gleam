@@ -11,8 +11,8 @@
 ////
 //// `view` → `attribution` → `status_name` → `denial`
 ////
-//// 1. `view` builds the wire record from a durable one and the register `seq` it
-////    was read at.
+//// 1. `view` builds the wire record from a durable one and the register
+////    sequence it was read at.
 //// 2. `attribution` reads the operation and strand off the record's own scope.
 //// 3. `status_name` words the status, and `denial` the stored denial.
 

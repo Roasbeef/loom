@@ -98,6 +98,7 @@ fn keep_loop(
     Some(held) ->
       case protocol.decode_escalation(held.value) {
         Ok(filed) -> record.seq > filed.seq
+
         // A cell that does not decode is replaced: it is a record nobody can
         // show, and the box's copy is the one that can be.
         Error(_) -> True

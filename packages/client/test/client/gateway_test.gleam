@@ -7,9 +7,11 @@ import broker/internal/call
 import broker/policy.{type Grant}
 import client/advisor
 import client/advisorguard
+import client/approval_ceiling
 import client/blocksummary
 import client/blocksummarybook
 import client/catalog
+import client/delegate_outbox
 import client/directories
 import client/escalate
 import client/gateway
@@ -19,6 +21,10 @@ import client/permissions
 import client/profile_switch
 import client/protocol
 import client/provider_relay
+import client/remote_child
+import client/remote_escalation
+import client/remote_escalation_store
+import client/remote_spawn
 import client/schedule
 import client/scheduleadmin
 import core/accounting
@@ -52,6 +58,7 @@ import provider/stream
 import runtime/api
 import runtime/effects
 import runtime/escalation as durable
+import runtime/lineage
 import runtime/writer
 import session/session
 import session_view/advisor_pending as terminal_nudges
@@ -63,8 +70,10 @@ import simplifile
 import storage/access
 import storage/storage
 import support/addresses
+import support/fake_orchestrators
 import support/internal/ffi_memory
 import support/tool_registry
+import tools/agent
 import tools/directory_access
 import tools/history
 import tools/tool
@@ -7397,4 +7406,349 @@ pub fn authenticated_observer_cannot_ask_or_read_private_side_queries_test() {
         as "observers cannot use side inference or read side history"
     },
   )
+}
+
+// --- a child's request on another orchestrator (protocol-change/089) -----------
+
+const remote_child_name = "sub:^main/run-tests-0123456789abcdef"
+
+fn remote_wanted() -> List(Grant) {
+  [policy.GrantWritableRoot("/shared/out"), policy.GrantEnv("AWS_SECRET")]
+}
+
+fn remote_admitted() -> List(Grant) {
+  [policy.GrantWritableRoot("/shared/out")]
+}
+
+// A hub whose session holds the stub of one child on `box`, and whose reach plays
+// the box. The request is filed the way the parent's Agency files what the box
+// sends, at the box's `seq` 9.
+fn remote_harness() -> #(Harness, fake_orchestrators.Box) {
+  let box = fake_orchestrators.start("box", fake_orchestrators.Up)
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      fn(options) {
+        gateway.with_remote_reach(
+          options,
+          fake_orchestrators.reach(
+            ids.session_id_to_string(api.session_id(options.runtime)),
+            [box],
+            fn() { True },
+          ),
+        )
+      },
+    )
+  let stub =
+    remote_child.Stub(
+      orchestrator: "box",
+      strand: "main",
+      site: remote_spawn.CallSite(
+        operation: op_id(5),
+        step_id: "step-1",
+        source_index: 0,
+        minter: agent.ToolCall,
+      ),
+      depth: 0,
+      parent_tools: [],
+      request: remote_spawn.Request(
+        purpose: "run it",
+        brief: "run it",
+        model: None,
+        tools: None,
+        within_ms: None,
+        result_schema: None,
+        detach: remote_spawn.Attached,
+      ),
+      name: remote_child_name,
+      glance: None,
+      owed: 0,
+      state: remote_child.Requested,
+    )
+  let assert Ok(remote_child.Fresh) =
+    remote_child.admit(harness.runtime, remote_child.stub_key("d1"), stub)
+  let assert Ok(Nil) =
+    remote_escalation_store.keep(harness.runtime, "box", a_remote_record(9))
+  #(harness, box)
+}
+
+fn a_remote_record(seq: Int) -> protocol.EscalationRecord {
+  protocol.EscalationRecord(
+    escalation_id: "policy-ab",
+    op: ids.op_id_to_string(op_id(7)),
+    strand: remote_child_name,
+    status: "pending",
+    tool: "bash",
+    action: "d1",
+    preview: "make",
+    asked: 1,
+    denial: Some(protocol.Denial(
+      reason: "tool requirements exceed the session policy",
+      source: "policy",
+      enforcement: None,
+      wanted: remote_wanted(),
+    )),
+    seq:,
+    origin: None,
+    placement: None,
+    admitted: Some(remote_admitted()),
+  )
+}
+
+fn remote_approval(
+  grants: List(Grant),
+  action: String,
+  seq: Int,
+) -> protocol.Command {
+  protocol.Approve(
+    escalation_id: "box/policy-ab",
+    grants:,
+    action:,
+    expected_seq: seq,
+  )
+}
+
+pub fn a_snapshot_carries_a_remote_request_under_its_placement_test() {
+  let #(harness, _box) = remote_harness()
+  send(harness, 1, protocol.Subscribe(session: "sess-01", from_seq: None))
+  let assert protocol.SnapshotEvent(protocol.FullSnapshot(escalations:, ..)) =
+    next(harness).event
+    as "subscribe must reply with a full snapshot"
+  let assert [record] = escalations
+  assert record.escalation_id == "box/policy-ab"
+  assert record.placement == Some("box")
+  assert record.seq == 9
+  assert record.admitted == Some(remote_admitted())
+}
+
+pub fn a_request_filed_later_is_pushed_as_an_escalation_event_test() {
+  let #(harness, _box) = remote_harness()
+  subscribe(harness)
+  let assert Ok(Nil) =
+    remote_escalation_store.keep(
+      harness.runtime,
+      "box",
+      protocol.EscalationRecord(..a_remote_record(10), asked: 2),
+    )
+  let record = next_escalation(harness)
+  assert record.escalation_id == "box/policy-ab"
+  assert record.seq == 10
+  assert record.placement == Some("box")
+}
+
+pub fn approving_a_remote_request_asks_the_box_with_its_own_identity_test() {
+  let #(harness, box) = remote_harness()
+  subscribe(harness)
+  send(harness, 2, remote_approval(remote_admitted(), "d1", 9))
+
+  // The fake box decides nothing, so its refusal is the operator's answer. What
+  // matters is what the box was asked: its own identity for the request and the
+  // seq the operator was shown.
+  let reply = next(harness)
+  let assert protocol.ErrorEvent(code:, message:, ..) = reply.event
+  assert code == protocol.code_bad_request
+  assert message == "the fake decides nothing"
+  assert fake_orchestrators.report(box).resolves == [#("policy-ab", 9)]
+}
+
+pub fn denying_a_remote_request_asks_the_box_too_test() {
+  let #(harness, box) = remote_harness()
+  subscribe(harness)
+  send(
+    harness,
+    2,
+    protocol.Deny(escalation_id: "box/policy-ab", expected_seq: 9),
+  )
+  let assert protocol.ErrorEvent(..) = next(harness).event
+  assert fake_orchestrators.report(box).resolves == [#("policy-ab", 9)]
+}
+
+pub fn an_approval_beyond_what_the_ceiling_admitted_never_leaves_the_laptop_test() {
+  let #(harness, box) = remote_harness()
+  subscribe(harness)
+  send(harness, 2, remote_approval(remote_wanted(), "d1", 9))
+  let assert protocol.ErrorEvent(code:, message:, ..) = next(harness).event
+  assert code == protocol.code_bad_request
+  assert message == "outside the spawner's approval ceiling"
+  assert fake_orchestrators.report(box).resolves == []
+}
+
+pub fn an_approval_for_a_moved_question_is_stale_with_the_current_record_test() {
+  let #(harness, box) = remote_harness()
+  subscribe(harness)
+  send(harness, 2, remote_approval(remote_admitted(), "d1", 8))
+  let assert protocol.ErrorEvent(code:, details: Some(details), ..) =
+    next(harness).event
+  assert code == protocol.code_stale_approval
+  let assert json.Object(fields) = details
+  let assert Ok(json.Object(shown)) = list.key_find(fields, "escalation")
+  assert list.key_find(shown, "seq") == Ok(json.Int(9))
+  assert list.key_find(shown, "placement") == Ok(json.String("box"))
+  assert fake_orchestrators.report(box).resolves == []
+}
+
+pub fn an_approval_that_names_another_action_is_stale_test() {
+  let #(harness, box) = remote_harness()
+  subscribe(harness)
+  send(harness, 2, remote_approval(remote_admitted(), "another", 9))
+  let assert protocol.ErrorEvent(code:, ..) = next(harness).event
+  assert code == protocol.code_stale_approval
+  assert fake_orchestrators.report(box).resolves == []
+}
+
+pub fn a_decided_remote_request_is_no_longer_pending_test() {
+  let #(harness, box) = remote_harness()
+  subscribe(harness)
+  let assert Ok(Nil) =
+    remote_escalation_store.keep(
+      harness.runtime,
+      "box",
+      protocol.EscalationRecord(
+        ..a_remote_record(11),
+        status: "approved",
+        denial: None,
+      ),
+    )
+  let _pushed = next_escalation(harness)
+  send(harness, 2, remote_approval(remote_admitted(), "d1", 11))
+  let assert protocol.ErrorEvent(code:, ..) = next(harness).event
+  assert code == protocol.code_not_pending
+  assert fake_orchestrators.report(box).resolves == []
+}
+
+pub fn an_identity_with_a_slash_that_is_filed_nowhere_is_unknown_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  send(harness, 2, protocol.Deny(escalation_id: "box/none", expected_seq: 1))
+  let assert protocol.ErrorEvent(code:, ..) = next(harness).event
+  assert code == protocol.code_unknown_escalation
+}
+
+// --- a spawner's operator's decision, on the box's hub (protocol-change/089) ----
+
+fn the_parent() -> remote_spawn.Parent {
+  remote_spawn.Parent(
+    session: "0198c0de-0000-7000-8000-000000000001",
+    strand: "main",
+  )
+}
+
+fn the_decider() -> remote_escalation.Decider {
+  remote_escalation.Decider(principal: "ab12", name: "Ola")
+}
+
+pub fn a_session_that_serves_no_spawner_takes_no_decision_test() {
+  let harness = start_harness()
+  claim(
+    harness,
+    "esc-1",
+    scope_on("sub:^main/x", op_id(5)),
+    durable.Action(tool: "bash", digest: "d1", preview: "{}"),
+    [to_registry()],
+  )
+  let answer =
+    gateway.decide(
+      harness.hub,
+      the_parent(),
+      "esc-1",
+      remote_escalation.Deny,
+      current_question_seq(harness, "esc-1"),
+      the_decider(),
+    )
+  let assert remote_escalation.Refused(..) = answer
+  assert stored(harness, "esc-1").status == durable.Pending
+}
+
+pub fn a_delegate_hub_commits_a_decision_inside_the_ceiling_test() {
+  let link =
+    delegate_outbox.SpawnerLink(
+      parent_session: "0198c0de-0000-7000-8000-000000000001",
+      spawner: "laptop",
+      node: "laptop@100.64.0.5",
+      ceiling: Some(
+        approval_ceiling.Ceiling(..approval_ceiling.nothing(), env: ["TOKEN"]),
+      ),
+    )
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      fn(options) { gateway.with_spawner(options, link) },
+    )
+  let child = "sub:^main/x"
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      lineage.register_key(child),
+      lineage.encode(lineage.Lineage(
+        strand: child,
+        parent: "^main",
+        depth: 1,
+        minted_by: lineage.CallSite(
+          operation: op_id(1),
+          step_id: "step",
+          source_index: 0,
+        ),
+        brief: op_id(2),
+        tools: [],
+        default_within_ms: None,
+        deadline: None,
+        detached: True,
+        reaped: False,
+        orchestrator: None,
+      )),
+    )
+  claim(
+    harness,
+    "esc-1",
+    scope_on(child, op_id(5)),
+    durable.Action(tool: "bash", digest: "d1", preview: "{}"),
+    [policy.GrantEnv("TOKEN")],
+  )
+  let seq = current_question_seq(harness, "esc-1")
+
+  // The ceiling admits the environment variable and not a root.
+  let beyond =
+    gateway.decide(
+      harness.hub,
+      the_parent(),
+      "esc-1",
+      remote_escalation.Approve(
+        grants: [policy.GrantWritableRoot("/etc")],
+        action: "d1",
+        scope: remote_escalation.Once,
+      ),
+      seq,
+      the_decider(),
+    )
+  let assert remote_escalation.Stale(..) = beyond
+  assert stored(harness, "esc-1").status == durable.Pending
+
+  let answer =
+    gateway.decide(
+      harness.hub,
+      the_parent(),
+      "esc-1",
+      remote_escalation.Approve(
+        grants: [policy.GrantEnv("TOKEN")],
+        action: "d1",
+        scope: remote_escalation.Once,
+      ),
+      seq,
+      the_decider(),
+    )
+  let assert remote_escalation.Decided(record) = answer
+  assert record.status == "approved"
+  assert stored(harness, "esc-1").status == durable.Approved
 }

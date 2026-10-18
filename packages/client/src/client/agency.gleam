@@ -50,6 +50,9 @@
 ////     from the parent into a remote child is `send_remote`, delivered on the
 ////     other side by `delegate_send`, which stores a receipt so a resend
 ////     delivers once.
+//// 11a. A request for more authority from a child on another orchestrator is
+////     filed by `child_escalation` under `remote-escalation/`
+////     (protocol-change/089), on the caller's process like `child_progress`.
 //// 12. The other direction, a child that runs on another orchestrator, is
 ////     `spawn_elsewhere`: the holder's `admit_remote` writes the stub, then
 ////     `ask_until_answered` sends the `Spawn` and `record_answer` writes down
