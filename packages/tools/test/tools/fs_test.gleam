@@ -1444,6 +1444,33 @@ pub fn resolve_readable_judges_roots_and_protection_from_one_policy_test() {
     == protected
   assert fs.resolve_readable(filesystem, "/work", confined, "/state/token")
     == protected
+
+  // Even if an explicit root or grant sits strictly inside a protected entry,
+  // neither `resolve_readable` nor `resolve_writable_roots` carves it out: only
+  // `exempting_blob_root` opens a session's blob store for reads.
+  let assert Ok(Nil) =
+    filesystem.write("/work/.git/hooks/pre-commit", <<"h":utf8>>)
+  let with_hook_root =
+    policy.SandboxPolicy(
+      ..confined,
+      readable_roots: ["/work", "/work/.git/hooks"],
+      protected: ["/work/.git"],
+    )
+  assert fs.resolve_readable(
+      filesystem,
+      "/work",
+      with_hook_root,
+      ".git/hooks/pre-commit",
+    )
+    == Error(fs.ProtectedPath(".git/hooks/pre-commit", "/work/.git"))
+  assert fs.resolve_writable_roots(
+      filesystem,
+      "/work",
+      ["/work/.git/hooks"],
+      ["/work/.git"],
+      ".git/hooks/pre-commit",
+    )
+    == Error(fs.ProtectedPath(".git/hooks/pre-commit", "/work/.git"))
 }
 
 pub fn host_reads_refuse_the_roots_the_jail_replaces_test() {

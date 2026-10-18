@@ -948,6 +948,8 @@ pub fn the_blob_root_is_the_one_protected_entry_native_reads_open_test() {
     assert seam.fs_read(managed_blobs <> "/sha256-1") == Ok("managed-blob\n")
     assert search.read_lines(managed_blobs <> "/sha256-1", 1, 1)
       == Ok(engine.Lines(text: "managed-blob", first: 1, last: 1, total: 1))
+    let assert Ok(stat_entry) = search.stat(managed_blobs <> "/sha256-1")
+    assert stat_entry.kind == engine.File
     let assert Error(workspace.ReadPathRefused(fs.ProtectedPath(..))) =
       seam.fs_read(sibling_blobs <> "/sha256-2")
       as "another workspace's blob store stays protected"
