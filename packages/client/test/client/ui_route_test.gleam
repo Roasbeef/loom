@@ -9455,3 +9455,57 @@ pub fn the_hello_names_the_listed_origins_test() {
       == Ok(json.Array([json.String(remote_origin)]))
   })
 }
+
+// `ui.link` with `"device": true` is the home's ticket living the device
+// link's ten minutes, and it sets a browser login when exchanged on the
+// listed origin, under that origin's cookie name. It names no session and
+// cannot decline the login.
+pub fn a_device_link_is_a_ten_minute_remembered_home_ticket_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "device-link", 5203)
+    let ask = fn(fields) {
+      let #(socket, _) =
+        daemon_server_test.connect(port, credential, "/v2/control")
+      let _hello = daemon_server_test.frame(socket, within_ms: 1000)
+      let reply =
+        daemon_server_test.send(
+          socket,
+          1,
+          "ui.link",
+          json.Object([#("device", json.Bool(True)), ..fields]),
+          within_ms: 1000,
+        )
+      let _ = ffi_ws.tcp_close(socket)
+      reply
+    }
+    let assert Ok(body) = field(ask([]), "body") as "the reply has a body"
+    assert field(body, "expires_in_ms") == Ok(json.Int(ui_sessions.device_ms))
+    let assert Ok(json.String(path)) = field(body, "path") as "a link"
+    assert string.starts_with(path, "/ui/home?ticket=")
+
+    // The refusals carry no link.
+    assert field(ask([#("session_id", json.String(session))]), "body")
+      |> result.try(field(_, "path"))
+      |> result.is_error
+    assert field(ask([#("remember", json.Bool(False))]), "body")
+      |> result.try(field(_, "path"))
+      |> result.is_error
+
+    let answer =
+      get(port, path, [#("host", remote_host), #("sec-fetch-site", "none")])
+    assert answer.status == 200
+    let cookies =
+      list.filter_map(answer.headers, fn(header) {
+        case header.0 {
+          "set-cookie" -> Ok(header.1)
+          _ -> Error(Nil)
+        }
+      })
+    assert list.any(cookies, string.starts_with(_, "__Secure-loom_ui="))
+    let assert Ok(login) =
+      list.find(cookies, string.starts_with(_, "__Secure-loom_login="))
+      as "a device link sets a login"
+    assert string.contains(login, "; Path=/ui/l/")
+    assert string.ends_with(login, "; Secure")
+  })
+}

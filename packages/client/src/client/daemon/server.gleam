@@ -2500,6 +2500,7 @@ fn control(
             | protocol.RenamePrincipal(..)
             | protocol.SessionMembers(..)
             | protocol.UiLink(..)
+            | protocol.DeviceLink(..)
             | protocol.ListSessions(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
@@ -2544,6 +2545,7 @@ fn control_use(command: protocol.Command) {
     | protocol.CredentialSignins(..)
     | protocol.SessionMembers(..)
     | protocol.UiLink(..)
+    | protocol.DeviceLink(..)
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
     | protocol.SessionActivity(..)
@@ -3394,6 +3396,32 @@ fn dispatch_class(
       link_reply(page.home_exchange_path(issued.ticket), issued)
     }
 
+    // A device link for `loom ui --device` (protocol-change/052, the
+    // addendum): the home ticket above, always `Remembered`, minted to live
+    // the device link's ten minutes so the person can carry it to a phone.
+    // The credential that asked holds the same power to mint a home link
+    // every minute, so the page's grant allowance, which keeps a stolen page
+    // from minting credentials, is not spent here. The reply is the ordinary
+    // `ui.link` reply, whose `expires_in_ms` says how long the ticket lives.
+    protocol.DeviceLink(page: ceiling) -> {
+      use ui <- result.try(option.to_result(config.ui, "unavailable"))
+      use issued <- result.map(
+        ui_sessions.mint_carried(
+          ui.sessions,
+          ui_sessions.Grant(
+            scope: ui_sessions.Home,
+            credential: digest,
+            principal: principal.id,
+            ceiling:,
+            reach: ui_sessions.Workspace,
+            origin: ui_sessions.Fresh,
+            remember: ui_sessions.Remembered,
+          ),
+        )
+        |> result.replace_error("unavailable"),
+      )
+      link_reply(page.home_exchange_path(issued.ticket), issued)
+    }
     protocol.ListSessions(after, revision) -> {
       use #(current, views) <- result.try(
         manager.authorized_page(state.registry, digest, after:)
