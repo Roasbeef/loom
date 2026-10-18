@@ -58,6 +58,7 @@ pub fn stub(orchestrator: String, seed: Int, state: State) -> Stub {
     ),
     name: "sub:^main/run-the-suite-" <> string.inspect(seed),
     glance: None,
+    glance_seen_ms: 0,
     owed: 0,
     state:,
   )

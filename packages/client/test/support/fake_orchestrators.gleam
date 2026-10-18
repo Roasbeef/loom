@@ -37,7 +37,9 @@ import core/ids
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{None}
 import gleam/string
+import session_view/remote_transcript
 import tools/agent.{type Handle}
 import weft/actor
 
@@ -233,6 +235,21 @@ pub fn voting(
     },
     send: fn(name, _parent, _child, message_id, text) {
       ask(boxes, name, fn(reply) { AskSend(message_id:, text:, reply:) })
+    },
+    // A transcript is not part of the table a fake orchestrator keeps, so a
+    // read of one answers an empty last page from any orchestrator the reach
+    // names, and the refusal for a name it does not.
+    history: fn(name, _parent, child, _cursor, _limit) {
+      case list.any(boxes, fn(box) { box.name == name }) {
+        True ->
+          Ok(remote_transcript.Page(
+            child: child.strand,
+            entries: [],
+            omitted: 0,
+            next: None,
+          ))
+        False -> Error(remote_reach.not_configured(name))
+      }
     },
     keep: fn(name, vote) { process.send(votes, #(name, vote)) },
   )

@@ -77,6 +77,7 @@ import runtime/child_run
 import runtime/effects
 import runtime/lineage
 import session/session
+import session_view/remote_transcript
 import session_view/strand_framing
 import simplifile
 import storage/storage
@@ -5841,7 +5842,15 @@ tools = [\"agent_note\", \"agent_send\", \"bash\", \"fs_read\"]
 }
 
 fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
-  let assert Ok(configured) = spawners.parse(spawner_table())
+  serving_table(harness, spawner_table())
+}
+
+// The port over the harness's Agency, with a spawner table of the test's own.
+fn serving_table(
+  harness: Harness,
+  table: String,
+) -> address.Address(orchestrator_port.Message) {
+  let assert Ok(configured) = spawners.parse(table)
     as "the spawner's table must parse"
 
   // The table names a node a distribution peer can have. A test VM that is not
@@ -5864,6 +5873,9 @@ fn serving(harness: Harness) -> address.Address(orchestrator_port.Message) {
         fn(_spawner, _parent) { Ok(agency.delegate_endpoint(harness.config)) },
         fn(_spawner, _parent) {
           agency.delegate_endpoint(harness.config).release()
+        },
+        fn(_spawner, _parent) {
+          Ok(Some(agency.delegate_endpoint(harness.config)))
         },
       ),
       orchestrator_port.refusing_children(),
@@ -5934,6 +5946,121 @@ pub fn a_spawner_drives_the_delegate_agency_through_the_port_test() {
       5000,
     )
     == Ok(Error(remote_spawn.ParentRunEnded))
+  close(harness)
+}
+
+// --- a page of a child's transcript (protocol-change/090) ---------------------
+
+fn page_of(
+  answer: Result(Result(json.JsonValue, remote_spawn.SpawnRefusal), Nil),
+) -> remote_transcript.Page {
+  let assert Ok(Ok(value)) = answer as "the read must be answered with a page"
+  let assert Ok(page) = remote_transcript.decode(value)
+    as "the page must decode"
+  page
+}
+
+// With `transcript = "visible"`, the parent reads its child's branch through
+// the port one bounded page at a time, newest first, and the cursor walks it
+// back to the child's first entry, the brief.
+pub fn a_parent_pages_its_childs_transcript_through_the_port_test() {
+  let harness = start_harness(Settles("the report"))
+  let port =
+    serving_table(harness, spawner_table() <> "transcript = \"visible\"\n")
+  let assert Ok(Ok(spawned)) =
+    orchestrator_port.ask_spawn(
+      port,
+      remote_parent(),
+      site_of("turn-1:tools", 0),
+      0,
+      remote_delegation().parent_tools,
+      remote_request("review auth"),
+      5000,
+    )
+    as "the spawn must be answered"
+  assert settled(harness, spawned.handle)
+
+  let newest =
+    page_of(orchestrator_port.ask_history(
+      port,
+      remote_parent(),
+      spawned.handle,
+      0,
+      1,
+      5000,
+    ))
+  assert newest.child == spawned.handle.strand
+  assert list.length(newest.entries) == 1
+  let assert Some(cursor) = newest.next as "an older entry must remain"
+  let assert [remote_transcript.Said(remote_transcript.Answered, "the report")] =
+    remote_transcript.said(newest)
+
+  // The whole branch in one page is the brief and the answer, oldest first,
+  // and it ends at the child's first entry.
+  let whole =
+    page_of(orchestrator_port.ask_history(
+      port,
+      remote_parent(),
+      spawned.handle,
+      0,
+      50,
+      5000,
+    ))
+  assert whole.next == None
+  let assert [first, ..] = remote_transcript.said(whole)
+  assert first.speaker == remote_transcript.Asked
+  assert string.contains(first.text, "read the file and report")
+
+  // The page below the cursor holds only entries older than the newest one.
+  let older =
+    page_of(orchestrator_port.ask_history(
+      port,
+      remote_parent(),
+      spawned.handle,
+      cursor,
+      50,
+      5000,
+    ))
+  assert list.all(older.entries, fn(record) { record.seq < cursor })
+  assert list.length(older.entries) == list.length(whole.entries) - 1
+  close(harness)
+}
+
+// A strand the parent did not start is not the parent's to read, whatever the
+// spawner's table allows: another parent strand of the same session is
+// refused, and nothing is read.
+pub fn a_parent_cannot_read_a_strand_it_did_not_start_test() {
+  let harness = start_harness(Settles("the report"))
+  let port =
+    serving_table(harness, spawner_table() <> "transcript = \"visible\"\n")
+  let assert Ok(Ok(spawned)) =
+    orchestrator_port.ask_spawn(
+      port,
+      remote_parent(),
+      site_of("turn-1:tools", 0),
+      0,
+      remote_delegation().parent_tools,
+      remote_request("review auth"),
+      5000,
+    )
+    as "the spawn must be answered"
+  let stranger = remote_spawn.Parent(..remote_parent(), strand: "other")
+  let assert Ok(Error(remote_spawn.InvalidArgument(reason:))) =
+    orchestrator_port.ask_history(port, stranger, spawned.handle, 0, 50, 5000)
+    as "a stranger's read must be refused"
+  assert string.contains(reason, "not a child of this parent")
+
+  // The delegate session's own strand is no descendant of the parent either.
+  let main_strand = agent.Handle(..spawned.handle, strand: "main")
+  let assert Ok(Error(remote_spawn.InvalidArgument(..))) =
+    orchestrator_port.ask_history(
+      port,
+      remote_parent(),
+      main_strand,
+      0,
+      50,
+      5000,
+    )
   close(harness)
 }
 
@@ -6930,6 +7057,7 @@ fn a_stub_of(
       request: remote_spawn.Request(..remote_request("record"), detach:),
       name: "sub:^main/record-0123456789abcdef",
       glance: None,
+      glance_seen_ms: 0,
       owed: 0,
       state:,
     ),

@@ -9,7 +9,12 @@
 //// end (`client/remote/remote_spawner`). A test fills it with closures that play
 //// the other orchestrator.
 ////
-//// A fourth function, `keep`, is not a question. The drainer of a session that
+//// A fourth question, `history`, reads one page of a child's transcript there
+//// (protocol-change/090). It is asked for a person looking at the child, not
+//// by the Agency, and the daemon's gateway asks it in a task of its own, so a
+//// slow orchestrator never holds the session's hub.
+////
+//// A further function, `keep`, is not a question. The drainer of a session that
 //// has a child there votes through it to the daemon's link keeper, which keeps
 //// the connection up so that the orchestrator can send mail and progress of its
 //// own (`client/remote/link_keeper`).
@@ -42,6 +47,7 @@ import client/remote_mail.{type Landing}
 import client/remote_spawn.{
   type CallSite, type Joined, type Parent, type Request, type Spawned,
 }
+import session_view/remote_transcript.{type Page}
 import tools/agent.{type Handle}
 
 /// The longest one `Spawn` waits for its answer, in milliseconds. The first spawn
@@ -89,6 +95,13 @@ pub type Reach {
     /// `Unreachable` delivers nothing twice and answers `Admitted`. An idle child
     /// starts a detached run, bounded by the deadline the child already has.
     send: fn(String, Parent, Handle, String, String) -> Result(Landing, Failure),
+    /// Reads one page of a child's transcript. The arguments are the
+    /// orchestrator, the parent, the child's handle, the sequence the page
+    /// reads below (zero for the newest) and the most entries it holds. The
+    /// page is decoded here, whole and within its bounds, so a page that cannot
+    /// be read is a refusal and never a partial page. An orchestrator whose
+    /// spawner table keeps transcripts there refuses it.
+    history: fn(String, Parent, Handle, Int, Int) -> Result(Page, Failure),
     /// Votes whether this session needs the connection to an orchestrator kept
     /// up (`client/remote/link_keeper`). The drainer votes `Hold` on every pass
     /// that finds a spawn unanswered or a child running there, and `Drop` when a
@@ -130,6 +143,9 @@ pub fn none(session: String) -> Reach {
     },
     release: fn(name, _parent) { Error(not_configured(name)) },
     send: fn(name, _parent, _child, _message_id, _text) {
+      Error(not_configured(name))
+    },
+    history: fn(name, _parent, _child, _cursor, _limit) {
       Error(not_configured(name))
     },
     keep: fn(_name, _vote) { Nil },

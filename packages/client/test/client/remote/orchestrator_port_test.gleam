@@ -5,6 +5,7 @@
 //// subagent messages to a spawn host (protocol-change/084), each in a task of
 //// its own so that the question about ownership is never kept waiting.
 
+import client/daemon/main as daemon_main
 import client/node_report
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
@@ -13,6 +14,7 @@ import client/remote_spawn.{
   Attached, CallSite, ChildUsage, Parent, Ready, Request, Spawned,
 }
 import client/session_move
+import client/spawners
 import core/clock
 import core/glance
 import core/ids
@@ -494,6 +496,23 @@ fn hosting(
       process.sleep(pause_ms)
       Ok(remote_mail.encode_landing(remote_mail.Admitted))
     },
+    history: fn(origin, child, cursor, limit) {
+      process.send(
+        seen,
+        "history "
+          <> origin.node
+          <> " "
+          <> origin.parent.strand
+          <> " "
+          <> child.strand
+          <> " before "
+          <> int.to_string(cursor)
+          <> " limit "
+          <> int.to_string(limit),
+      )
+      process.sleep(pause_ms)
+      Ok(json.Object([#("child", json.String(child.strand))]))
+    },
   )
 }
 
@@ -613,6 +632,9 @@ pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
       send: fn(_origin, _child, _id, _text) {
         Error(remote_spawn.StoreFailure(reason: "the store failed"))
       },
+      history: fn(_origin, _child, _cursor, _limit) {
+        Error(remote_spawn.TranscriptHidden)
+      },
     )
   let port = spawning(refusing)
   assert orchestrator_port.ask_spawn(
@@ -699,6 +721,9 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
       run_ended: fn(_origin, _ended) { panic as "the spawn host fails" },
       release: fn(_origin) { panic as "the spawn host fails" },
       send: fn(_origin, _child, _id, _text) { panic as "the spawn host fails" },
+      history: fn(_origin, _child, _cursor, _limit) {
+        panic as "the spawn host fails"
+      },
     )
   let port = spawning(crashing)
 
@@ -1011,6 +1036,106 @@ pub fn a_port_with_nothing_to_report_says_only_who_it_is_test() {
   assert report.orchestrator == None
   assert report.executor == None
   assert report.directory == None
+}
+
+// --- a page of a child's transcript (protocol-change/090) ---------------------
+
+// A spawner table for this node, whose `transcript` key is `transcript`. The
+// table is parsed and then moved to the node this process runs on, as
+// `agency_test` does, since a test VM's node cannot be named in a table.
+fn spawners_with(transcript: String) -> List(spawners.Spawner) {
+  let assert Ok(configured) = spawners.parse("[distribution]
+node = \"box@100.64.0.9\"
+ca = \"/etc/loom/ca.pem\"
+certificate = \"/etc/loom/cert.pem\"
+key = \"/etc/loom/key.pem\"
+cookie = \"/home/loom/.erlang.cookie\"
+
+[[distribution.peers]]
+node = \"laptop@100.64.0.5\"
+sha256 = \"0000000000000000000000000000000000000000000000000000000000000001\"
+
+[profiles.cheap-review.roles]
+main = [\"fast\"]
+
+[spawners.laptop]
+node = \"laptop@100.64.0.5\"
+directory = \"/srv/loom/scratch\"
+profile = \"cheap-review\"
+" <> transcript <> "\n") as "the spawner table parses"
+  list.map(configured, fn(spawner) {
+    spawners.Spawner(..spawner, node: own_node())
+  })
+}
+
+pub fn a_history_reaches_the_host_with_its_origin_cursor_and_limit_test() {
+  let seen = process.new_subject()
+  let port = spawning(hosting(seen, 0))
+  assert orchestrator_port.ask_history(port, parent(), handle(), 41, 20, 1000)
+    == Ok(Ok(json.Object([#("child", json.String(handle().strand))])))
+  assert process.receive(seen, 0)
+    == Ok(
+      "history "
+      <> own_node()
+      <> " main sub:^main/run-the-suite-1 before 41 limit 20",
+    )
+}
+
+// A spawner whose table says nothing about transcripts keeps them on the box.
+// The read is refused before any session is looked for, so neither the
+// function that makes a session nor the one that finds one is asked.
+pub fn a_history_is_refused_when_the_spawner_keeps_transcripts_test() {
+  let host =
+    daemon_main.spawn_host(
+      spawners_with(""),
+      fn(_, _) { panic as "a read must not make a session" },
+      fn(_, _) { panic as "a read must not release a session" },
+      fn(_, _) { panic as "a hidden transcript must not be looked for" },
+    )
+  let port = spawning(host)
+  assert orchestrator_port.ask_history(port, parent(), handle(), 0, 50, 1000)
+    == Ok(Error(remote_spawn.TranscriptHidden))
+
+  // Saying so explicitly is the same.
+  let explicit =
+    daemon_main.spawn_host(
+      spawners_with("transcript = \"hidden\""),
+      fn(_, _) { panic as "a read must not make a session" },
+      fn(_, _) { panic as "a read must not release a session" },
+      fn(_, _) { panic as "a hidden transcript must not be looked for" },
+    )
+  assert orchestrator_port.ask_history(
+      spawning(explicit),
+      parent(),
+      handle(),
+      0,
+      50,
+      1000,
+    )
+    == Ok(Error(remote_spawn.TranscriptHidden))
+}
+
+// A read for a parent the box holds no open session for is refused, and the
+// function that makes a session is never asked: a `ChildHistory` that arrives
+// before its `Spawn`, or after the session closed, creates nothing.
+pub fn a_history_never_creates_a_session_test() {
+  let looked = process.new_subject()
+  let host =
+    daemon_main.spawn_host(
+      spawners_with("transcript = \"visible\""),
+      fn(_, _) { panic as "a read must not make a session" },
+      fn(_, _) { panic as "a read must not release a session" },
+      fn(spawner, asked) {
+        process.send(looked, #(spawner.name, asked))
+        Ok(None)
+      },
+    )
+  let port = spawning(host)
+  let assert Ok(Error(remote_spawn.InvalidArgument(reason:))) =
+    orchestrator_port.ask_history(port, parent(), handle(), 0, 50, 1000)
+    as "the read must be refused, not left unanswered"
+  assert string.contains(reason, "is not a child")
+  assert process.receive(looked, 0) == Ok(#("laptop", parent()))
 }
 
 pub fn a_report_that_fails_is_silence_and_the_port_serves_on_test() {

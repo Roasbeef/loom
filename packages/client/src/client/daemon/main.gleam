@@ -1036,6 +1036,7 @@ pub fn start_orchestrator_port(
             config.spawners,
             delegate_host.resolver(delegates),
             delegate_host.releaser(delegates),
+            delegate_host.resolve_open(delegates),
           ),
           child_host(orchestrator_roster(config), ready.registry, child_inbox),
           ledger_holdings.from_catalogue(
@@ -1381,10 +1382,17 @@ pub fn peer_command(
 /// for a pair with no row (`delegate_host.releaser`). The sender is judged the
 /// same way, so a node no spawner names is refused first.
 ///
+/// A page of a child's transcript (protocol-change/090) is served by
+/// `existing`, which finds the Agency of a session the pair already has and
+/// is resident, and creates and opens nothing (`delegate_host.resolve_open`).
+/// The spawner's table is asked first: `transcript = "hidden"`, the default,
+/// refuses with `TranscriptHidden` before any session is looked at. A pair
+/// with no open session is refused as holding no such child.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host([], delegates, releasing).run_ended(origin, operation)
+/// // main.spawn_host([], delegates, releasing, existing).run_ended(origin, operation)
 /// // -> Error(remote_spawn.UnknownSpawner(origin.node))
 /// ```
 @internal
@@ -1394,12 +1402,15 @@ pub fn spawn_host(
     Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
   releasing: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(Int, remote_spawn.SpawnRefusal),
+  existing: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(Option(agency.DelegateEndpoint), remote_spawn.SpawnRefusal),
 ) -> orchestrator_port.SpawnHost {
+  let spawner_of = fn(origin: remote_spawn.Origin) {
+    spawners.by_node(configured, origin.node)
+    |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node))
+  }
   let serving = fn(origin: remote_spawn.Origin) {
-    use spawner <- result.try(
-      spawners.by_node(configured, origin.node)
-      |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
-    )
+    use spawner <- result.try(spawner_of(origin))
     use endpoint <- result.map(delegates(spawner, origin.parent))
     #(spawner, endpoint)
   }
@@ -1426,15 +1437,28 @@ pub fn spawn_host(
       endpoint.run_ended(operation)
     },
     release: fn(origin) {
-      use spawner <- result.try(
-        spawners.by_node(configured, origin.node)
-        |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
-      )
+      use spawner <- result.try(spawner_of(origin))
       releasing(spawner, origin.parent)
     },
     send: fn(origin, child, message_id, text) {
       use #(_spawner, endpoint) <- result.try(serving(origin))
       endpoint.send(origin.parent, child, message_id, text)
+    },
+    history: fn(origin, child, cursor, limit) {
+      use spawner <- result.try(spawner_of(origin))
+      use Nil <- result.try(case spawner.transcript {
+        spawners.Visible -> Ok(Nil)
+        spawners.Hidden -> Error(remote_spawn.TranscriptHidden)
+      })
+      use found <- result.try(existing(spawner, origin.parent))
+      case found {
+        Some(endpoint) -> endpoint.history(origin.parent, child, cursor, limit)
+        None ->
+          Error(remote_spawn.InvalidArgument(
+            reason: child.strand
+            <> " is not a child this orchestrator holds open for the parent",
+          ))
+      }
     },
   )
 }

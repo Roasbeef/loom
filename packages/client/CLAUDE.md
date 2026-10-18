@@ -7899,6 +7899,28 @@ The box's deadline and retention (slice S4):
   the resend row, the vote, `delegate_send`), `daemon_spawn_host_test`,
   `support/fake_orchestrators` (`deliver_to_laptop`, `voting`), and the P model.
 
+- Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`
+  (`glanceSeenMs`, absent reads 0) is the parent's clock when
+  `remote_child.progressed` kept the glance; every stub write publishes
+  `bus.RemoteChildrenChanged` (`remote_child.changed`). `remote_child.agents`
+  projects the stubs into `session_view/remote_agent` rows; the gateway pushes
+  them as `protocol.RemoteChildrenSnapshot` on subscribe (`push_remote_children`)
+  and on the bus event. `orchestrator_port.Message.ChildHistory` (`ask_history`),
+  `SpawnHost.history`, `DelegateEndpoint.history` and `Reach.history` read a
+  page of a child's branch; `main.spawn_host` takes a fourth resolver,
+  `delegate_host.resolve_open` (resident sessions only, creates nothing),
+  refuses `remote_spawn.TranscriptHidden` unless `spawners.Spawner.transcript`
+  is `Visible` (`[spawners.<name>] transcript`), and `agency.delegate_history`
+  checks descent from `^{parent.strand}` and reads `storage.scan_branch` from
+  the child's leaf into `remote_transcript.page_of`. The session endpoint's
+  `child_history` (`protocol.ChildHistoryGet`) is a read run as an observation
+  (`HistoryObservation`, `gateway.with_child_history`, wired by
+  `serve.with_child_history` to `remote_child.history_reader`). Tests:
+  `remote/orchestrator_port_test` (relay, hidden, no session created),
+  `agency_test` (paging through the port, a non-descendant refused),
+  `daemon_spawn_host_test`, `domain_observation_test` (the observation and the
+  pushes), `remote_child_test` (`agents`), `spawners_test`.
+
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),
 `remote/orchestrator_port_test` (each message reaches the host with its origin,

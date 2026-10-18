@@ -118,6 +118,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census
 import client/remote/workspace as remote_workspace
+import client/remote_child
 import client/remote_drain
 import client/remote_reach
 import client/retryconf
@@ -4631,6 +4632,7 @@ fn assemble_in(
             |> hub.with_context(context_reader)
             |> hub.with_btw(btw_name)
             |> hub.with_live_jobs(live_jobs)
+            |> with_child_history(settings.remote_reach, runtime)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(settings.first_prompt)
             |> with_profile_desk(settings.profile_desk)
@@ -5945,6 +5947,24 @@ fn summary_tap(
         blocksummary.live_admission(catalogue, route.provider),
       )
     None -> fn(_spec, _generation) { fn(_event) { Nil } }
+  }
+}
+
+// The reader of remote children's transcript pages, when the session can reach
+// other orchestrators at all (protocol-change/090). A session with no reach has
+// no remote child, and its gateway answers `child_history` as unavailable.
+fn with_child_history(
+  options: hub.Options,
+  reach: Option(remote_reach.Reach),
+  runtime: api.Runtime,
+) -> hub.Options {
+  case reach {
+    Some(reach) ->
+      hub.with_child_history(
+        options,
+        remote_child.history_reader(runtime, reach),
+      )
+    None -> options
   }
 }
 

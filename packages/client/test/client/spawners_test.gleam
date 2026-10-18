@@ -96,6 +96,7 @@ retain_s = 7200
 token_budget_per_day = 5000000
 child_token_budget = 200000
 max_per_day = 20
+transcript = \"visible\"
 ",
     )
   assert spawners.parse(text)
@@ -115,6 +116,7 @@ max_per_day = 20
         token_budget_per_day: Some(5_000_000),
         child_token_budget: Some(200_000),
         max_per_day: Some(20),
+        transcript: spawners.Visible,
       ),
     ])
 }
@@ -128,6 +130,10 @@ pub fn omitted_keys_take_the_documented_defaults_test() {
   assert spawner.default_within_s == 1800
   assert spawner.retain_s == 604_800
   assert spawner.idle_close_s == 3600
+
+  // A spawner's children keep their transcripts on this machine unless the
+  // table says otherwise (protocol-change/090).
+  assert spawner.transcript == spawners.Hidden
 
   // The metering keys default to no bound, which is a spawner as it was before
   // the keys existed.
@@ -244,6 +250,21 @@ idle_close_s = 0
 ",
     ),
     "spawners.laptop.idle_close_s must be positive",
+  )
+}
+
+// `transcript` is one of two words. A typo is refused and never read as
+// either, so a misspelt `hidden` cannot open a child's transcript.
+pub fn transcript_is_visible_or_hidden_test() {
+  let assert Ok([visible]) =
+    spawners.parse(minimal_with("transcript = \"visible\""))
+  assert visible.transcript == spawners.Visible
+  let assert Ok([hidden]) =
+    spawners.parse(minimal_with("transcript = \"hidden\""))
+  assert hidden.transcript == spawners.Hidden
+  refused(
+    minimal_with("transcript = \"hiden\""),
+    "spawners.laptop.transcript must be",
   )
 }
 
@@ -455,7 +476,7 @@ pub fn a_malformed_table_is_refused_with_the_key_it_names_test() {
   )
   refused(
     minimal_with("host = \"x\""),
-    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day)",
+    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day, transcript)",
   )
   refused(
     with("[spawners]\nlaptop = \"laptop@100.64.0.5\"\n"),

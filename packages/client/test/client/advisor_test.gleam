@@ -3601,6 +3601,7 @@ fn settle_remote(
       ),
       name: "sub:^main/" <> digest,
       glance: None,
+      glance_seen_ms: 0,
       owed: 0,
       state: remote_child.Settled(
         placed:,

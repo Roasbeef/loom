@@ -50,7 +50,11 @@
 ////     from the parent into a remote child is `send_remote`, delivered on the
 ////     other side by `delegate_send`, which stores a receipt so a resend
 ////     delivers once.
-//// 12. The other direction, a child that runs on another orchestrator, is
+//// 12. Protocol-change/090 lets the parent look at a child's working:
+////     `delegate_history` reads one bounded page of a child's branch for its
+////     remote parent, after the same descent test a send makes, and answers
+////     it as a `session_view/remote_transcript` page.
+//// 13. The other direction, a child that runs on another orchestrator, is
 ////     `spawn_elsewhere`: the holder's `admit_remote` writes the stub, then
 ////     `ask_until_answered` sends the `Spawn` and `record_answer` writes down
 ////     the reply. `wait_across` joins local and remote handles in one call,
@@ -312,7 +316,9 @@ import runtime/lineage.{type CallSite, type Lineage, CallSite, Lineage}
 import runtime/residency
 import runtime/writer
 import session/session
+import session_view/remote_transcript
 import session_view/strand_framing
+import storage/storage
 import telemetry/owner
 import tools/agent.{
   type Agency, type Caller, type Delivery, type Handle, type Outcome, type Peer,
@@ -3908,6 +3914,7 @@ fn write_stub(
       request: remote_request(request),
       name:,
       glance: None,
+      glance_seen_ms: 0,
       owed: 0,
       state: remote_child.Requested,
     )
@@ -4727,6 +4734,13 @@ pub type DelegateEndpoint {
     /// the receipt.
     send: fn(remote_spawn.Parent, Handle, String, String) ->
       Result(JsonValue, remote_spawn.SpawnRefusal),
+    /// Reads one page of a child's transcript for the parent, given the
+    /// parent, the child, the sequence the page reads below and the most
+    /// entries it holds, and answers the encoded page
+    /// (`remote_transcript.encode`). Whether the spawner allows it is the
+    /// daemon's question, asked before this one.
+    history: fn(remote_spawn.Parent, Handle, Int, Int) ->
+      Result(JsonValue, remote_spawn.SpawnRefusal),
     /// Whether any child of the session still has a run, which the retention
     /// sweep asks before it closes an idle session.
     occupancy: fn() -> Occupancy,
@@ -4772,6 +4786,9 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
     release: fn() { delegate_release(trimmed) },
     send: fn(parent, child, message_id, text) {
       delegate_send(trimmed, parent, child, message_id, text)
+    },
+    history: fn(parent, child, cursor, limit) {
+      delegate_history(trimmed, parent, child, cursor, limit)
     },
     occupancy: fn() { delegate_occupancy(trimmed) },
   )
@@ -4901,6 +4918,92 @@ fn delivered(
         }
         Error(error) -> Error(agent.PlaneFailed(describe_api(error)))
       }
+    }
+  }
+}
+
+// --- a page of a child's transcript for its remote parent --------------------
+
+/// Reads one page of a child's transcript for the remote parent that started
+/// it (protocol-change/090).
+///
+/// The page is the child's branch: the entries on the path from the child's
+/// leaf down its parent links, newest first from the store and oldest first on
+/// the page, at most `limit` of them and within the page's byte bound
+/// (`remote_transcript.page_of`). `cursor` is the sequence the page reads
+/// below, zero for the newest page. A child the parent did not start is not
+/// the parent's to read, by the same descent test a send makes, so a parent
+/// cannot page through a sibling's branch or a strand of the delegate session
+/// itself. Nothing here writes, waits on the network or asks the holder: it
+/// borrows the runtime and reads.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_history(config, parent, child, 0, 50)
+/// // == Ok(remote_transcript.encode(page))
+/// ```
+pub fn delegate_history(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  cursor: Int,
+  limit: Int,
+) -> Result(JsonValue, remote_spawn.SpawnRefusal) {
+  history_page(config, parent, child, cursor, limit)
+  |> result.map(remote_transcript.encode)
+  |> result.map_error(refused(config, _))
+}
+
+fn history_page(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  cursor: Int,
+  limit: Int,
+) -> Result(remote_transcript.Page, Refusal) {
+  use Nil <- result.try(
+    case cursor >= 0 && limit >= 1 && limit <= remote_transcript.max_entries {
+      True -> Ok(Nil)
+      False ->
+        Error(agent.InvalidArgument("the cursor or the limit is out of bounds"))
+    },
+  )
+  use runtime <- result.try(borrow(config))
+  use ledger <- result.try(read_ledger(runtime))
+  let reference = api.parent_reference_prefix <> parent.strand
+  use Nil <- result.try(case is_descendant(ledger, reference, child.strand) {
+    True -> Ok(Nil)
+    False -> Error(agent.NotADescendant(strand: child.strand))
+  })
+  use leaf <- result.try(
+    api.leaf(api.on_strand(runtime, child.strand))
+    |> result.map_error(plane_failed),
+  )
+  case leaf {
+    None ->
+      Ok(remote_transcript.Page(
+        child: child.strand,
+        entries: [],
+        omitted: 0,
+        next: None,
+      ))
+
+    // One more entry than the page holds is read, so the page can say whether
+    // older entries exist without a second read.
+    Some(leaf) -> {
+      let query = storage.branch_scan(leaf) |> storage.branch_limit(limit + 1)
+      let query = case cursor {
+        0 -> query
+        before -> storage.branch_cursor(query, before)
+      }
+      use scanned <- result.map(
+        storage.scan_branch(runtime.session.store, query)
+        |> result.replace_error(agent.PlaneFailed(
+          reason: "the child's branch could not be read",
+        )),
+      )
+      remote_transcript.page_of(child.strand, scanned, limit)
     }
   }
 }
@@ -5231,7 +5334,8 @@ fn child_progress(
     )),
   )
   use entry <- result.try(stub_for(runtime, parent, child, admits))
-  remote_child.progressed(runtime, entry.key, bounded_glance(glance))
+  let #(now, _clock) = clock.read(config.clock)
+  remote_child.progressed(runtime, entry.key, bounded_glance(glance), now)
   |> result.map(fn(_stub) { Nil })
   |> result.map_error(fn(reason) { remote_mail.Busy(reason:) })
 }

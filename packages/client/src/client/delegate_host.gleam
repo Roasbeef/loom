@@ -42,9 +42,18 @@
 //// `Release` is the only thing that can make the session, and it is then
 //// refused when the row says released.
 ////
+//// ## Reading
+////
+//// A `ChildHistory` reads a child's transcript (protocol-change/090). Like a
+//// release it must create nothing, so it goes through `resolve_open`, which is
+//// `resolve_existing` answering only the Agency of a resident session. A
+//// session that is closed holds no running child and is not opened to be
+//// read: the parent sees its result through a join.
+////
 //// ## Flow
 ////
-//// `resolver` → `creation` → `terms_of` → `resolve_existing` → `releaser`
+//// `resolver` → `creation` → `terms_of` → `resolve_existing` → `releaser` →
+//// `resolve_open`
 ////
 //// 1. `resolver` returns the function the spawn host calls for every message.
 //// 2. `creation` builds the registration a first spawn makes, from the
@@ -54,6 +63,7 @@
 //// 4. `resolve_existing` finds the Agency of a pair that already has a session,
 ////    and creates nothing.
 //// 5. `releaser` returns the function the spawn host calls for a `Release`.
+//// 6. `resolve_open` returns the function the spawn host calls for a read.
 
 import client/agency
 import client/daemon/manager
@@ -304,6 +314,31 @@ pub fn releaser(
         )
         stopped
       }
+    }
+  }
+}
+
+/// The function the spawn host calls to find the Agency of a pair's session for
+/// a read: the Agency when the pair has a session that is resident, and `None`
+/// when it has none or the one it has is not open. It creates and opens
+/// nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let find = delegate_host.resolve_open(context)
+/// // find(spawner, parent) == Ok(option.None)
+/// ```
+pub fn resolve_open(
+  context: Context(instance),
+) -> fn(Spawner, Parent) ->
+  Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
+  let find = resolve_existing(context)
+  fn(spawner: Spawner, parent: Parent) {
+    use existing <- result.map(find(spawner, parent))
+    case existing {
+      NoSession -> None
+      Existing(endpoint:, ..) -> endpoint
     }
   }
 }

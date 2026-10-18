@@ -60,6 +60,7 @@ import client/roster.{type Roster}
 import gleam/dict
 import gleam/list
 import gleam/result
+import session_view/remote_transcript
 
 // How much longer than the window it asks the receiver to wait a join's own
 // deadline is, so the receiver's answer for a window that ran out is not itself
@@ -75,6 +76,11 @@ const send_ms = 15_000
 // milliseconds. The laptop's host finds the parent's Agency and commits one
 // transaction.
 const child_ms = 15_000
+
+// How long a transcript page waits for its answer, in milliseconds. The
+// receiver reads one bounded page from the delegate session's store, so the
+// bound is a call's; it sits inside the gateway's observation deadline.
+const history_ms = 10_000
 
 // How long a release waits for its answer, in milliseconds. The receiver stops
 // the children and hands the session to its registry, which answers without
@@ -155,6 +161,24 @@ pub fn over_distribution(
       remote_mail.decode_landing(landing)
       |> result.map_error(fn(reason) {
         peer_mail.Refused("its answer could not be read: " <> reason)
+      })
+    },
+    history: fn(name, parent, child, cursor, limit) {
+      use at <- result.try(reached(membership, configured, name))
+      use page <- result.try(
+        orchestrator_port.ask_history(
+          at,
+          parent,
+          child,
+          cursor,
+          limit,
+          history_ms,
+        )
+        |> answer,
+      )
+      remote_transcript.decode(page)
+      |> result.map_error(fn(reason) {
+        peer_mail.Refused("its page could not be read: " <> reason)
       })
     },
     keep: fn(name, vote) {

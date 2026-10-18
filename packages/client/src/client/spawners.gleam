@@ -57,9 +57,20 @@
 //// Like the other limits they bound an honest spawner and a model that spawns
 //// too much, and are not a boundary against a compromised peer.
 ////
+//// ## Transcripts
+////
+//// `transcript` says whether the spawning orchestrator may read its children's
+//// transcripts here (protocol-change/090). `"hidden"`, the default, keeps them
+//// on this machine: a `ChildHistory` is refused with `TranscriptHidden`, and
+//// the spawner sees a child's result, notes and glances and nothing of its
+//// working. `"visible"` lets it read one bounded page at a time of a child's
+//// branch. The box owner decides, because the transcript is recorded here and
+//// may hold what this machine's tools returned.
+////
 //// ## Flow
 ////
-//// `from_document` → `row` → `placement_of` → `tools_of` → `windows`
+//// `from_document` → `row` → `placement_of` → `tools_of` → `windows` →
+//// `transcript_of`
 ////
 //// 1. `from_document` reads the table and requires the distribution table.
 //// 2. `row` validates one entry: its name, its keys, its node and its profile.
@@ -68,7 +79,9 @@
 //// 4. `tools_of` reads the ceiling, or builds the default one.
 //// 5. `windows` checks the three durations against each other, and
 ////    `budget_of` reads one of the three optional metering keys.
-//// 6. `standing` tells the sweep what a session's spawner allows, or that it
+//// 6. `transcript_of` reads whether children's transcripts may be read from
+////    the spawning orchestrator.
+//// 7. `standing` tells the sweep what a session's spawner allows, or that it
 ////    was removed. `find` and `by_node` resolve a configured spawner by name or by the node
 ////    a message came from.
 
@@ -109,6 +122,16 @@ pub const default_retain_s = 604_800
 
 /// `idle_close_s` when the table names none: one hour.
 pub const default_idle_close_s = 3600
+
+/// Whether the spawning orchestrator may read its children's transcripts here.
+pub type Transcript {
+  /// It may not. A `ChildHistory` is refused with `TranscriptHidden`. This is
+  /// the default.
+  Hidden
+
+  /// It may read one bounded page of a child's branch at a time.
+  Visible
+}
 
 /// Where every delegate session of one spawner is put.
 pub type Placement {
@@ -183,6 +206,8 @@ pub type Spawner {
     /// The spawns admitted for this spawner over a rolling day. `None` bounds
     /// nothing.
     max_per_day: Option(Int),
+    /// Whether the spawner may read its children's transcripts here.
+    transcript: Transcript,
   )
 }
 
@@ -422,7 +447,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
           "node", "executor", "pool", "directory", "workspace", "profile",
           "tools", "max_depth", "max_sessions", "max_within_s",
           "default_within_s", "retain_s", "idle_close_s", "token_budget_per_day",
-          "child_token_budget", "max_per_day",
+          "child_token_budget", "max_per_day", "transcript",
         ],
         "[spawners." <> name <> "]",
       ))
@@ -478,6 +503,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         "child_token_budget",
       ))
       use max_per_day <- result.try(budget_of(fields, place, "max_per_day"))
+      use transcript <- result.try(transcript_of(fields, place))
       use Nil <- result.map(windows(
         place,
         max_within_s,
@@ -499,6 +525,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         token_budget_per_day:,
         child_token_budget:,
         max_per_day:,
+        transcript:,
       )
     }
     _ -> Error(place <> " must be a table")
@@ -758,6 +785,20 @@ fn budget_of(
   case dict.has_key(fields, key) {
     False -> Ok(None)
     True -> count_of(fields, place, key, 1) |> result.map(Some)
+  }
+}
+
+// The `transcript` key: `"hidden"` when absent, and one of the two words when
+// present. Anything else is refused, so a typo never opens a transcript.
+fn transcript_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Transcript, String) {
+  use word <- result.try(optional_string(fields, place, "transcript"))
+  case word {
+    None | Some("hidden") -> Ok(Hidden)
+    Some("visible") -> Ok(Visible)
+    Some(_) -> Error(place <> ".transcript must be \"visible\" or \"hidden\"")
   }
 }
 

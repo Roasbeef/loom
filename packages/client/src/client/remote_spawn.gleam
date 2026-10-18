@@ -277,6 +277,11 @@ pub type SpawnRefusal {
     /// What failed.
     reason: String,
   )
+
+  /// The spawner's table keeps its children's transcripts on the receiver
+  /// (`[spawners.<name>] transcript = "hidden"`, the default), so a
+  /// `ChildHistory` is not answered with any of it (protocol-change/090).
+  TranscriptHidden
 }
 
 /// The longest one join waits on the receiver, in milliseconds. A sender may ask
@@ -456,6 +461,8 @@ pub fn describe_refusal(refusal: SpawnRefusal) -> String {
     NameAlreadyMinted ->
       "a different call already started a child under that name"
     StoreFailure(reason:) -> "its store failed: " <> reason
+    TranscriptHidden ->
+      "it keeps the transcripts of this spawner's children to itself"
   }
 }
 
