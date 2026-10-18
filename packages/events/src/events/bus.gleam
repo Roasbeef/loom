@@ -98,7 +98,8 @@ pub type Topic {
 
   /// Display feeds: rolling output tails of running tool calls
   /// (`ToolOutput`), summarizer labels (`BlockSummary`) and data-free goal
-  /// invalidation (`GoalChanged`). This is not the commit-hint topic.
+  /// invalidation (`GoalChanged`, `RemoteChildrenChanged`). This is not the
+  /// commit-hint topic.
   Outputs
 }
 
@@ -195,6 +196,12 @@ pub type Event {
   /// A successful goal write or deletion invalidated its auxiliary board.
   /// The reserved cell remains authoritative (protocol 056).
   GoalChanged
+
+  /// A stub of a child that runs on another orchestrator changed: a glance
+  /// arrived, or the spawn moved on (protocol-change/090). It carries no data;
+  /// the stubs in the session's store are the truth, and a subscriber reads
+  /// them again.
+  RemoteChildrenChanged
 }
 
 /// One delivered event: the session it belongs to plus the event, so a
@@ -283,7 +290,7 @@ pub fn topic_of(event: Event) -> Topic {
     Escalation(..) -> Escalations
     Committed(..) -> Commits
     ToolOutput(..) -> Outputs
-    BlockSummary(..) | GoalChanged -> Outputs
+    BlockSummary(..) | GoalChanged | RemoteChildrenChanged -> Outputs
   }
 }
 
