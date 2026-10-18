@@ -174,7 +174,7 @@ pub fn enter_opens_the_row_and_shows_the_edit_and_the_sentence_test() {
   assert string.contains(text, "Replaces text in loom-rules.md")
   assert string.contains(text, "- Run make test.")
   assert string.contains(text, "+ Run make check.")
-  assert string.contains(text, "Applies to new sessions only.")
+  assert string.contains(text, "A rule applies to new sessions only.")
   assert string.contains(text, "a approve · r reject")
 }
 

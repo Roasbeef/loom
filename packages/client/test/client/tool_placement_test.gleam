@@ -117,7 +117,7 @@ fn owner_built() -> List(tool.Tool) {
     skill_tool.tools(a_skill_catalogue()),
     peers.tools(a_peer_wiring()),
     contributions.proposal_tools(
-      propose.Proposals(submit: fn(_submission) {
+      propose.Proposals(configuration: None, submit: fn(_submission) {
         Error(propose.Unavailable("a fixture"))
       }),
     ),

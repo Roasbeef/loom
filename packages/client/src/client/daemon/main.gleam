@@ -53,6 +53,7 @@ import argv
 import client/agency
 import client/catalog
 import client/catalogue_page
+import client/config_watch
 import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
@@ -2179,6 +2180,13 @@ pub fn prepare_startup(
           bootstrap.canonical_directory(config.state_root)
           |> diagnose_start(logger, identity, SettingsResolution),
         )
+
+        // The file's fingerprint is read before the open loads it, so a save
+        // that lands in between reopens the session once more than it needed
+        // rather than never (`client/config_watch`).
+        let loaded =
+          profiles.effective(registration.configuration, configuration)
+        let baseline = option.from_result(config_watch.fingerprint(loaded))
         use settings <- result.try(
           serve.resolve_managed(
             config.session_defaults,
@@ -2227,7 +2235,8 @@ pub fn prepare_startup(
             profile_desk: Some(profile_desk(
               directory,
               registration,
-              profiles.effective(registration.configuration, configuration),
+              loaded,
+              baseline,
               logger,
             )),
           )
@@ -2573,13 +2582,15 @@ pub type SweepTick {
 //
 // `configuration` is the file this session loads, resolved the way creation
 // resolved it (`profiles.effective`), so the names the hub offers are the names
-// its own open will accept. The restart runs in a process the session does not
+// its own open will accept, and the file its watcher reads for changes from the
+// `baseline` fingerprint taken before the open. The restart runs in a process the session does not
 // own (`restart.begin`), and a failure of either step is logged and leaves the
 // profile saved for the next open.
 fn profile_desk(
   registry: manager.Manager(serve.Resident),
   registration: catalogue.Registration,
   configuration: String,
+  baseline: Option(String),
   logger: Logger,
 ) -> profile_switch.Desk {
   let id = registration.id
@@ -2604,6 +2615,18 @@ fn profile_desk(
           }),
         ])
       })
+    },
+    watch: case configuration {
+      "" -> None
+      path -> {
+        let profile = registration.profile
+        let model = registration.model
+        Some(
+          config_watch.Source(path:, baseline:, check: fn(text) {
+            serve.check_config(path, text, profile, model)
+          }),
+        )
+      }
     },
   )
 }

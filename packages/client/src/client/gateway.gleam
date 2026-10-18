@@ -517,6 +517,21 @@ pub opaque type Message {
   /// return has been emitted on the hub's own process, before the sinks it
   /// wrote to are closed.
   DrainHeld(flushed: Subject(Nil), reply: Subject(Int))
+
+  /// The configuration file this session loads has changed and the new text
+  /// loads. The session reopens to read it once no strand is running.
+  ConfigChanged
+}
+
+// Whether the session owes a reopen for a configuration file that changed under
+// it. `Owed` waits for every strand to go idle, because the reopen stops the
+// session and a run in flight is not the reload's to interrupt; `Reopening`
+// keeps a second notice from starting a second restart while the first stops
+// this hub.
+type Reload {
+  Current
+  Owed
+  Reopening
 }
 
 type State {
@@ -553,6 +568,7 @@ type State {
     first_prompt: Option(fn(String) -> Nil),
     // The daemon's door for the session's model profile, when it has one.
     profile: Option(profile_switch.Desk),
+    reload: Reload,
     delivery: Delivery,
     health: Health,
     admission: Admission,
@@ -1370,6 +1386,7 @@ fn start_with_delivery(
         summary_demand: options.summary_demand,
         first_prompt: options.first_prompt,
         profile: options.profile,
+        reload: Current,
         delivery:,
         health: Reading,
         admission: Accepting,
@@ -1755,6 +1772,22 @@ pub fn commit_forwarder(
   })
   |> actor.addressed(as_name)
   |> actor.start
+}
+
+/// Tells the hub that the configuration file its session loads has changed and
+/// the new text loads (`client/config_watch`). The hub reopens the session once
+/// no strand is running, through its profile desk's restart; a hub with no desk
+/// has no daemon to reopen it and ignores the notice. A hub that is not running
+/// loses it, which costs nothing: its replacement's session read the file anew.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.configuration_changed(name)
+/// ```
+///
+pub fn configuration_changed(name: address.Address(Message)) -> Nil {
+  send_if_alive(name, ConfigChanged)
 }
 
 /// Wraps a provider surface so every streamed delta is teed to the hub
@@ -2236,6 +2269,16 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         Network -> continue(remove_connection(state, connection))
       }
     CommitHint -> continue(pull_and_broadcast(revalidate_all(state)))
+
+    // The pull that follows decides: an idle session reopens now, and a busy
+    // one when the pull that sees its last run end comes round.
+    ConfigChanged ->
+      continue(pull_and_broadcast(
+        State(..state, reload: case state.reload {
+          Current -> Owed
+          owed -> owed
+        }),
+      ))
 
     // A running command's tail is display state and not a hint: nothing
     // in the store moved, so there is nothing to pull, and the frame
@@ -3571,7 +3614,7 @@ fn pull_and_broadcast(state: State) -> State {
   // have gone, so a queue whose strand just went idle drains here — after
   // `state.live` has been replaced and before anything leaves, so a drain
   // that fails reports against the state the failure was decided under.
-  let state = drain_idle_strands(state)
+  let state = drain_idle_strands(state) |> reopen_if_owed
   case state.delivery {
     // The host fixture stream is the whole record; it has no size bound
     // to respect and its fixtures read the entries themselves.
@@ -3616,6 +3659,24 @@ fn pull_and_broadcast(state: State) -> State {
       )
   }
   state
+}
+
+// A reload the configuration owes is paid here, after the pull has replaced
+// `live` and after any held prompt for an idle strand has been admitted, so a
+// queue that starts a run defers the reopen rather than being cut off by it. A
+// draining hub is already being stopped and owes nothing.
+fn reopen_if_owed(state: State) -> State {
+  case state.reload, state.profile, state.admission {
+    Owed, Some(desk), Accepting ->
+      case dict.is_empty(state.live) {
+        True -> {
+          desk.restart()
+          State(..state, reload: Reopening)
+        }
+        False -> state
+      }
+    _, _, _ -> state
+  }
 }
 
 // The usage envelope has a fixed set of counters, but a provider can still

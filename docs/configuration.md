@@ -54,10 +54,18 @@ values, and a dangling model name in a role chain. The refusal names the file,
 the table and the key, and the daemon or session does not start. A typo is an
 error instead of a setting that silently does nothing.
 
-**There is no live reload.** A session reads the file when it is built: when it
-is created, opened, or resumed. It keeps what it read for as long as it runs, so
-an edit reaches a running session only after that session is stopped and opened
-again. Eight tables are read once, when the daemon starts, and need a daemon
+**A session reloads by reopening.** A session reads the file when it is built:
+when it is created, opened, or resumed, and keeps what it read while it runs. A
+daemon session also watches the file it loaded
+([protocol-change/089](../protocol-change/089-config-proposals.md)): once an edit
+has settled (two reads a second apart agree) and the new text loads under the
+session's profile and model, the session reopens as soon as no strand is
+running, which rebuilds everything the file configures. A save that does not load
+is logged as `config.refused` and changes nothing. The reopen closes the session's
+attachments (the terminal reattaches, a web page needs a reload) and ends its
+background jobs. An agent can suggest an edit with `propose` and `target:
+"config"`; the owner approves it in the proposals review, and the approval
+writes the file. Eight tables are read once, when the daemon starts, and need a daemon
 restart: [`[daemon]`](#daemon), [`[peers]`](#peers) (from protocol-change 077),
 [`[distribution]`](#distribution), [`[executors.<name>]`](#executorsname),
 [`[pools.<name>]`](#poolsname), [`[workspaces.<name>]`](#workspacesname) and

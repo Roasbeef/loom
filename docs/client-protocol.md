@@ -2062,7 +2062,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2478`).
+`wrong_session`. Source: (`client/gateway.gleam:2521`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -2402,7 +2402,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:7077`).
+   is `stale_approval`. Source: (`client/gateway.gleam:7138`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -3063,9 +3063,9 @@ a full queue never prevents an attach. A row is:
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `id` | string | required | `prop-` and ten lower-case hexadecimal digits. |
-| `kind` | string | required | `rule`. A client MUST show a kind it does not know as unknown rather than refuse the board. |
-| `target` | string | required | The rules file's name, `loom-rules.md`. It is a name and never a path; the host owns where the file is. |
-| `base_digest` | string | required | The digest of the rules file's exact text when the proposal was judged. An approval is applied only to a file that still has it. |
+| `kind` | string | required | `rule`, or `config` for an edit to the `loom.toml` the proposing session loaded ([protocol-change/089](../protocol-change/089-config-proposals.md)). A client MUST show a kind it does not know as unknown rather than refuse the board, and MUST NOT offer a decision on it. |
+| `target` | string | required | For `rule`, the rules file's name, `loom-rules.md`, a name and never a path. For `config`, the configuration's absolute path; only a session that loads that file approves it. |
+| `base_digest` | string | required | The digest of the target file's exact text when the proposal was judged. An approval is applied only to a file that still has it. |
 | `old` | string | required | Existing rule text to replace, which matched the file exactly once when proposed. Empty means the proposal appends `new` as a new rule. |
 | `new` | string | required | The rule text, at most 2048 bytes. |
 | `rationale` | string | required | Why, in the model's words, for the reviewer. |
@@ -4412,7 +4412,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:4353`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:4414`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

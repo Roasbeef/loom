@@ -9139,6 +9139,39 @@ stream grows to its first request, the first grows by `every_bytes`, and the
 first request ends. `landed` now writes the idle stream into the book before
 `consider` weighs the relaunch, and the `coalesce` tag holds it there.
 
+## Configuration reload and edits (protocol-change/089)
+
+A daemon session takes an edit to the `loom.toml` it loaded without a daemon
+restart. `client/config_watch` is a weft actor in the session's restartable
+service tier, started by `serve.with_config_watch` when the profile desk carries
+a `watch` (`profile_switch.Desk.watch`, a `config_watch.Source`: the effective
+path, the fingerprint the builder read before the open, and
+`serve.check_config` under the registration's profile and model). It reads the
+file once a `poll_ms` tick, bounded to `max_file_bytes` of regular text, acts on
+a changed text only when two reads agree, checks it, and calls
+`gateway.configuration_changed`; a text that fails is logged once as
+`config.refused` by path, never with the parser's reason. The hub's `Reload`
+(`Current | Owed | Reopening`) is paid in `reopen_if_owed`, after a pull and the
+held-queue drain, by `desk.restart()` once `live` is empty, the profile switch's
+own path. A session with no file, or no daemon, runs no watcher. A reopen ends
+attachments (the terminal reattaches, a web page needs a reload) and the
+session's background jobs.
+
+`serve.check_config(path, text, profile, model)` is `load_config`'s parse over a
+text, with no secret resolved: `load_config` is the read and `parse_config`, and
+the eleven-field result is the alias `Loaded`.
+
+A proposal of kind `proposals.Config` edits that file through the 086 queue.
+`Wiring.config` is `Some(ConfigFile(path, check))` from the same desk; `propose`
+with `target: "config"` stores the absolute path as `target`, and the decoder
+holds a config row to an absolute path. `loadable` runs `edited` and then the
+check, at submission and at approval; `writable` refuses an approval from a
+session whose own configuration is another file; `write_target` writes through
+`write_file` (staged, renamed), keeps the permission bits and refuses a symbolic
+link. Config edits carry no fence check and no header, and are bounded by
+`config_watch.max_file_bytes`. `config_proposals_test` is the statem spec of
+that lifecycle and `config_watch_test` of the watcher.
+
 ## Memory overview (protocol 087)
 
 `client/memory_overview` reads the inject mode, the two file sizes, the
