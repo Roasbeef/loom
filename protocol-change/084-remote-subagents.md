@@ -485,6 +485,12 @@ with receipts, upward peer mail with the `BusyOnly` grant, `with_on` in code
 mode, and the two upward specs. Phase 3 is `approval_ceiling`,
 `ChildEscalation` and `Resolve`.
 
+Phase 4's observation of a remote child, its glance on the parent's agent strip
+and a page of its transcript read with `ChildHistory` behind
+`[spawners.<name>] transcript`, is its own proposal,
+[protocol-change/090](090-remote-observation.md), because it ships transcript
+content across orchestrators, which this proposal did not propose to do.
+
 ## What it costs
 
 **No boundary against a compromised spawner or remote.** A spawner is a pinned

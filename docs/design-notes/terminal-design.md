@@ -200,7 +200,7 @@ like [A's narrow sheet](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284
 Before slice 13 `layout.layout` (`packages/tui/src/tui/layout.gleam:105`)
 (`layout`) stacked header, body, composer and footer, and `body_layout` gave the
 body one side pane, the 34-cell agent rail or the 72-cell changes pane. The
-footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:560`)
+footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:568`)
 (`footer_rows`). The new layout replaces the header and footer with the
 identity line and the input frame, and replaces the two side panes with one
 rail.

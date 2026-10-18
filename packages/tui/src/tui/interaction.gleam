@@ -1448,10 +1448,20 @@ fn update_strip_key_in_list(key: keys.Key, model: Model) -> Model {
 
     // Choosing an agent in the sheet closes it, so the transcript that was
     // chosen is the one on screen.
+    // A child on another orchestrator has no strand here to switch to, so
+    // choosing it opens a peek at its transcript (protocol-change/090).
     agent_strip.Open(strip, strand) ->
-      case strand == model.shared.active_strand {
-        True -> tui_model.store_strip(model, strip)
-        False ->
+      case
+        strand == model.shared.active_strand,
+        agent_roster.remote_named(model.shared.roster, strand)
+      {
+        True, _ -> tui_model.store_strip(model, strip)
+        False, Ok(_) ->
+          inbound.run_settled(tui_model.store_strip(model, strip), commands.act(
+            _,
+            msg.Control(command.Peek(strand)),
+          ))
+        False, Error(Nil) ->
           submit.switch_active_strand(
             tui_model.store_strip(model, strip),
             strand,

@@ -36,6 +36,12 @@
 ////    the box from a weft run, and `resolve_reported` answers the socket when the
 ////    run reports. On the box, `decide` is the hub's door for the spawner's
 ////    operator's decision, judged by `client/remote_decision`.
+//// 9. Children on other orchestrators (protocol-change/090) reach a client two
+////    ways. `push_remote_children` pushes the session's stubs, projected by
+////    `remote_child.agents`, once to a client that subscribes and to every
+////    subscriber when the bus says a stub changed. `begin_history` reads a
+////    page of a child's transcript as an observation, in a task, so the
+////    other orchestrator's answer never holds this mailbox.
 ////
 //// ## Authenticated network delivery
 ////
@@ -261,6 +267,7 @@ import runtime/writer
 import session/session
 import session_view/btw as btw_view
 import session_view/protocol as session_wire
+import session_view/remote_agent
 import session_view/remote_usage
 import storage/access
 import storage/snapshot
@@ -413,6 +420,12 @@ pub type Options {
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
     context: Option(fn(String) -> Result(JsonValue, String)),
+    /// Reads one page of a remote child's transcript, given the child's name
+    /// as the session's remote children list it and the cursor, and answers
+    /// the page as a `remote_transcript` object or the reason there is none
+    /// (protocol-change/090). It runs in an observation's task, never in the
+    /// hub. `None` answers every `child_history` with `unavailable`.
+    child_history: Option(fn(String, Int) -> Result(JsonValue, String)),
     /// Disposable side conversations are scoped to this connection incarnation.
     btw: Option(address.Address(btw.Message)),
     /// Where the blocks a `block_summaries` read found no summary for are
@@ -528,6 +541,8 @@ type State {
     live_jobs: Option(fn(String) -> Result(JsonValue, String)),
     /// Bounded context observation, sharing the managed read workers.
     context: Option(fn(String) -> Result(JsonValue, String)),
+    /// The transcript page reader of remote children, when the daemon has one.
+    child_history: Option(fn(String, Int) -> Result(JsonValue, String)),
     /// Disposable side conversations are scoped to this connection incarnation.
     btw: Option(address.Address(btw.Message)),
     /// On-demand summarization of blocks a read found unsummarized.
@@ -622,6 +637,7 @@ pub fn default_options(session_id: String, runtime: api.Runtime) -> Options {
     worktree_diff: None,
     live_jobs: None,
     context: None,
+    child_history: None,
     btw: None,
     summary_demand: None,
     first_prompt: None,
@@ -768,6 +784,22 @@ pub fn with_context(
   read_context: fn(String) -> Result(JsonValue, String),
 ) -> Options {
   Options(..options, context: Some(read_context))
+}
+
+/// Supplies the reader of remote children's transcript pages
+/// (protocol-change/090). The hub calls it in an observation's task with the
+/// child's name and the cursor a `child_history` command named.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_child_history(options, read_page)
+/// ```
+pub fn with_child_history(
+  options: Options,
+  read_page: fn(String, Int) -> Result(JsonValue, String),
+) -> Options {
+  Options(..options, child_history: Some(read_page))
 }
 
 /// Supplies the session-lived, tool-free side-query service.
@@ -1058,23 +1090,28 @@ type CaptureProgress {
   Answered
 }
 
-// Worktree reads retain owner authority; context exposes session metadata.
+// Worktree reads retain owner authority; context exposes session metadata. A
+// remote child's transcript is a read any subscriber of the session may make,
+// as a capture of a local strand is: the spawner's table on the other
+// orchestrator is what decides whether it is answered at all.
 type ObservationKind {
   WorktreeObservation
   ContextObservation
+  HistoryObservation
 }
 
 fn observation_snapshot(kind: ObservationKind, board: JsonValue) {
   protocol.SnapshotEvent(case kind {
     WorktreeObservation -> protocol.WorktreeDiffSnapshot(board)
     ContextObservation -> protocol.ContextSnapshot(board)
+    HistoryObservation -> protocol.ChildHistorySnapshot(board)
   })
 }
 
 fn observation_allowed(state: State, connection: Int, kind: ObservationKind) {
   case kind {
     WorktreeObservation -> worktree_owner(state, connection)
-    ContextObservation ->
+    ContextObservation | HistoryObservation ->
       case dict.get(state.connections, connection) {
         Ok(Connection(subscription: Subscribed, ..)) -> True
         _ -> False
@@ -1328,6 +1365,7 @@ fn start_with_delivery(
         worktree_diff: options.worktree_diff,
         live_jobs: options.live_jobs,
         context: options.context,
+        child_history: options.child_history,
         btw: options.btw,
         summary_demand: options.summary_demand,
         first_prompt: options.first_prompt,
@@ -2258,6 +2296,14 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       push_to_subscribed(state, protocol.ProposalsChanged)
       continue(state)
     }
+
+    // A remote child's stub changed. The stubs are read again and pushed
+    // whole, so a lost hint costs a stale strip until the next change, and
+    // no pull runs: a stub is a reserved fact, which no emit carries.
+    BusHint(published: bus.Published(event: bus.RemoteChildrenChanged, ..)) -> {
+      push_to_subscribed(state, remote_children_event(state))
+      continue(state)
+    }
     BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
@@ -2421,6 +2467,7 @@ fn network_command(
           let before = subscription_of(state, connection)
           let state = mark_subscribed(state, connection)
           announce_join(state, before)
+          push_remote_children(state, connection)
           begin_transfer(state, connection, id, transfer.Recent)
         }
         False -> {
@@ -2485,6 +2532,7 @@ fn network_command(
     | protocol.ListSkills(..)
     | protocol.WorktreeDiffGet
     | protocol.ContextGet(..)
+    | protocol.ChildHistoryGet(..)
     | protocol.Btw(..)
     | protocol.LiveJobsGet(..)
     | protocol.AdvisorPendingGet
@@ -3475,6 +3523,7 @@ fn read_only(command: Command) {
     | protocol.ListSkills(..)
     | protocol.WorktreeDiffGet
     | protocol.ContextGet(..)
+    | protocol.ChildHistoryGet(..)
     | protocol.LiveJobsGet(..)
     | protocol.AdvisorPendingGet
     | protocol.BlockSummariesGet(..)
@@ -4757,6 +4806,64 @@ fn begin_context(
   begin_observation(state, connection, id, ContextObservation, capture)
 }
 
+// A page of a remote child's transcript, read in an observation's task: the
+// reader asks the other orchestrator, which may be slow or away, and the hub
+// answers `pending` at once and pushes the page or the failure when the task
+// reports. The child is named as the remote children list names it, and the
+// reader finds its stub, so a name that is not a child of this session is the
+// reader's refusal, not a read of anything.
+fn begin_history(
+  state: State,
+  connection: Int,
+  id: Int,
+  child: String,
+  before: Int,
+) -> State {
+  let capture =
+    option.map(state.child_history, fn(read) { fn() { read(child, before) } })
+  begin_observation(state, connection, id, HistoryObservation, capture)
+}
+
+// The session's remote children as one snapshot event, read from the stubs in
+// its store at this moment. Stubs that cannot be read give an empty list, which
+// a client draws as no remote child: the list is a display, and nothing that
+// decides reads it.
+fn remote_children_event(state: State) -> WireEvent {
+  protocol.SnapshotEvent(
+    protocol.RemoteChildrenSnapshot(children: remote_agents(state)),
+  )
+}
+
+// The session's clock, the one the Agency stamps a glance's arrival and a
+// child's deadline with, so the ages and the liveness here are read on it.
+fn remote_agents(state: State) -> List(remote_agent.RemoteAgent) {
+  case remote_child.all(state.runtime) {
+    Ok(kept) -> {
+      let #(now, _clock) = clock.read(state.runtime.effects.clock)
+      remote_child.agents(kept, now)
+    }
+    Error(_) -> []
+  }
+}
+
+// Pushes the session's remote children to one connection that has just
+// subscribed, so its strip lists them before any stub changes. A session with
+// no remote child pushes nothing, which a client reads as none. The push is
+// order-free with the subscription's own reply.
+fn push_remote_children(state: State, connection: Int) -> Nil {
+  case remote_agents(state), dict.get(state.connections, connection) {
+    [], _ | _, Error(Nil) -> Nil
+    children, Ok(link) -> {
+      let event =
+        protocol.SnapshotEvent(protocol.RemoteChildrenSnapshot(children:))
+      deliver(
+        link,
+        protocol.encode_event(EventEnvelope(reply_to: None, seq: None, event:)),
+      )
+    }
+  }
+}
+
 fn begin_observation(
   state: State,
   connection: Int,
@@ -5247,6 +5354,8 @@ fn run_command(
       side_query(state, connection, id, strand, action)
     protocol.ContextGet(strand:), Subscribed ->
       begin_context(state, connection, id, strand)
+    protocol.ChildHistoryGet(child:, before:), Subscribed ->
+      begin_history(state, connection, id, child, before)
     protocol.LiveJobsGet(strand:), Subscribed ->
       read_live_jobs(state, connection, id, strand)
     protocol.AdvisorPendingGet, Subscribed ->

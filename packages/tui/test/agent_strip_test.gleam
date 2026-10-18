@@ -73,6 +73,7 @@ fn row(id: String, status: agent_view.Status, operation) -> agent_view.Row {
     model: "",
     recent: [],
     decision: "",
+    placement: None,
   )
 }
 

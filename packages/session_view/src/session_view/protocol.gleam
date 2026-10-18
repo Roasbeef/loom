@@ -54,6 +54,8 @@ import session_view/notes_view
 import session_view/proposals
 import session_view/queued_input
 import session_view/remembered
+import session_view/remote_agent.{type RemoteAgent}
+import session_view/remote_transcript
 import session_view/remote_usage.{type RemoteUsage}
 import session_view/skills
 import session_view/worktree_view
@@ -175,6 +177,18 @@ pub type Event {
 
   /// A private side-query board for the asking attachment.
   BtwSnapshot(board: btw.Board)
+
+  /// The children of this session that run on other orchestrators, as their
+  /// stubs stand (protocol-change/090). The daemon pushes it once when a
+  /// client subscribes and again whenever a stub changes, and a host replaces
+  /// what it held with it.
+  RemoteChildrenSnapshot(children: List(RemoteAgent))
+
+  /// A request-scoped page of a remote child's transcript: the reply to a
+  /// `child_history` read is the pending acknowledgement, and the page or the
+  /// failure is pushed when the other orchestrator answers
+  /// (protocol-change/090).
+  ChildHistorySnapshot(observation: remote_transcript.Event)
 
   /// Current live jobs, observed separately from a completed operation.
   LiveJobsSnapshot(board: live_jobs.Board)
@@ -805,6 +819,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | QueuedInputSnapshot(_)
     | WorktreeSnapshot(_)
     | ContextSnapshot(_)
+    | ChildHistorySnapshot(_)
     | BtwSnapshot(_)
     | LiveJobsSnapshot(_)
     | AdvisorPendingSnapshot(_)
@@ -819,6 +834,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | ServerError(..) -> Ok(event)
     FullSnapshot(..)
     | StrandsSnapshot(_)
+    | RemoteChildrenSnapshot(_)
     | ConfigSnapshot(..)
     | EntryAdded(_)
     | StreamDelta(..)
@@ -1023,6 +1039,13 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "context" -> {
       use board <- result.try(required_value(fields, "board"))
       context_view.decode(board) |> result.map(ContextSnapshot)
+    }
+    "remote_children" ->
+      remote_agent.decode_all(fields) |> result.map(RemoteChildrenSnapshot)
+    "child_history" -> {
+      use board <- result.try(required_value(fields, "board"))
+      remote_transcript.decode_observation(board)
+      |> result.map(ChildHistorySnapshot)
     }
     "worktree_diff" -> {
       use board <- result.try(required_value(fields, "board"))
@@ -1513,6 +1536,22 @@ pub fn remove_queued_input(
 /// ```
 pub fn context(id: Int, strand: String) -> String {
   command(id, "context", [#("strand", json.String(strand))])
+}
+
+/// Reads one page of a remote child's transcript (protocol-change/090).
+/// `child` is the child's strand name on the orchestrator that runs it, and
+/// `before` is the sequence the page reads below, zero for the newest page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.child_history(8, "sub:^main/build-1a2b", 0)
+/// ```
+pub fn child_history(id: Int, child: String, before: Int) -> String {
+  command(id, "child_history", [
+    #("child", json.String(child)),
+    #("before", json.Int(before)),
+  ])
 }
 
 /// Reads one bounded worktree observation without mutating repository state.

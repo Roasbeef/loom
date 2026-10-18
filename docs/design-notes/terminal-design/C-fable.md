@@ -171,9 +171,9 @@ heading.
 
 **Data.** The row comes from `Row` (`session_view/agent_view.gleam:79`),
 whose `Status` (`session_view/agent_view.gleam:52`) carries the glyph and
-`label` (`session_view/agent_view.gleam:554`) the word, and from `Line`
+`label` (`session_view/agent_view.gleam:564`) the word, and from `Line`
 (`session_view/agent_roster.gleam:84`), which adds elapsed time and context
-size; `lines` (`session_view/agent_roster.gleam:355`) is the order. The task,
+size; `lines` (`session_view/agent_roster.gleam:527`) is the order. The task,
 activity, latest update, pending input, recent tools and approvals are the
 `Row`'s own fields. Sent messages are `Item`
 (`session_view/agent_messages.gleam:52`), held in `agent_messages`
@@ -189,7 +189,7 @@ Today's terminal (`layout`, `tui/layout.gleam:105`) is a header, a body, a
 composer and a footer with the agent strip under it. The body holds the
 transcript and, at the right, either the agent rail (34 cells, from 100
 columns, `body_layout` at `tui/layout.gleam:138`) or the changes pane (up to
-72 cells, from 140 columns, `diff_pane_width` at `tui/layout.gleam:397`), never
+72 cells, from 140 columns, `diff_pane_width` at `tui/layout.gleam:405`), never
 both. Eight more surfaces are overlays or transcript replacements, each with
 its own keys: the agent workspace, the picker, the model selector, the
 approval dialog, the peer-link and access overlays, `/notes`, `/summary`,
@@ -355,7 +355,7 @@ today, so the composer never loses width to a column.
 | < 100 | transcript | none beside it; `Shift+Tab` or `Ctrl+O` opens the panel over the transcript, `Esc` returns | drawn, from 16 rows and two agents, up to a quarter of the height |
 
 The transcript keeps at least 68 cells beside a panel, the rule
-`diff_pane_width` (`tui/layout.gleam:397`) applies today. The strip's height
+`diff_pane_width` (`tui/layout.gleam:405`) applies today. The strip's height
 rule is unchanged (`height_for_count`, `tui/agent_strip.gleam:212`). The
 rows a panel's tab needs are never taken from the composer.
 

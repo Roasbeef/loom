@@ -291,3 +291,13 @@ pub fn a_definitive_refusal_and_a_count_are_answers_test() {
   assert remote_spawner.release_answer(Error(Nil))
     == Error(peer_mail.Unreachable)
 }
+
+// A box whose session for the parent did not open in its budget, as after the
+// box was killed and its dead writer's lease has not expired, has not answered:
+// every question treats it as silence and is asked again, so a spawn is resent
+// and its stub is never left refused by a session that was only slow to open.
+pub fn a_session_not_yet_open_is_silence_test() {
+  let slow = Ok(Error(remote_spawn.NotYetOpen(reason: "did not open in time")))
+  assert remote_spawner.answer(slow) == Error(peer_mail.Unreachable)
+  assert remote_spawner.release_answer(slow) == Error(peer_mail.Unreachable)
+}

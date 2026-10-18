@@ -277,6 +277,22 @@ pub type SpawnRefusal {
     /// What failed.
     reason: String,
   )
+
+  /// The delegate session the message needs did not open within the
+  /// receiver's budget, and asking again later can succeed. The usual cause is
+  /// a receiver that restarted after it was killed: the session file still
+  /// carries the dead daemon's writer lease, which expires on its own within a
+  /// minute. The sender treats this as silence and asks again, so a stub is
+  /// never left refused by a session that was only slow to open.
+  NotYetOpen(
+    /// What the registry said, in words for a person.
+    reason: String,
+  )
+
+  /// The spawner's table keeps its children's transcripts on the receiver
+  /// (`[spawners.<name>] transcript = "hidden"`, the default), so a
+  /// `ChildHistory` is not answered with any of it (protocol-change/090).
+  TranscriptHidden
 }
 
 /// The longest one join waits on the receiver, in milliseconds. A sender may ask
@@ -456,6 +472,10 @@ pub fn describe_refusal(refusal: SpawnRefusal) -> String {
     NameAlreadyMinted ->
       "a different call already started a child under that name"
     StoreFailure(reason:) -> "its store failed: " <> reason
+    TranscriptHidden ->
+      "it keeps the transcripts of this spawner's children to itself"
+    NotYetOpen(reason:) ->
+      "its session for this parent is not open yet: " <> reason
   }
 }
 

@@ -196,7 +196,7 @@ fewer columns.
 
 - Name, status, task, activity, update, pending input, approvals, model and
   recent tools: `Row` at `session_view/agent_view.gleam:79`.
-- Elapsed time and tokens: `Line` at `session_view/agent_roster.gleam:84`,
+- Elapsed time and tokens: `Line` at `session_view/agent_roster.gleam:103`,
   which the strip already draws.
 - The status words: `status_line` at `session_view/strand_card.gleam:45`; the
   Needs you count: `needing` at `session_view/strand_card.gleam:240`.
@@ -319,7 +319,7 @@ the viewed strand; this is the one change to the strip's keys.
 The spawn row in `main`'s transcript carries a small tree of the strands it
 started (`├ ? sub:tests Needs approval · 34s · 9k`). The rows themselves are
 durable and cached by `tui/projection`, but the glyph, status and figures are
-painted at frame time from `Line` at `session_view/agent_roster.gleam:84`, so
+painted at frame time from `Line` at `session_view/agent_roster.gleam:103`, so
 a status change repaints the frame without invalidating the row cache.
 
 ## 7. The drawer's tabs and keys

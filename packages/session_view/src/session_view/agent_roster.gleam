@@ -24,6 +24,17 @@
 //// thirty-minute agent started five seconds ago. Tokens are the context size
 //// of the operation's newest generation, from a live usage push when the
 //// host has seen one and from the glance otherwise.
+////
+//// A child on another orchestrator has no strand here, so it has no row in a
+//// capture. The daemon sends what the parent's stubs hold as a
+//// `remote_children` snapshot (`remote_agent`), `observe_remote` keeps the
+//// newest list with the host's clock at its arrival, and `remote_rows` gives
+//// the hosts one row for each, with its placement set, to list beside the
+//// capture's rows. Its line carries the glance's tokens and the glance's age:
+//// the daemon's own measure of how long ago the glance reached it, plus the
+//// time the host has held that report, so a strip that hears nothing more,
+//// because the parent's daemon cannot reach the orchestrator, shows the last
+//// glance growing older instead of a figure that looks current.
 
 import core/glance.{type Glance}
 import core/message
@@ -36,6 +47,7 @@ import gleam/result
 import gleam/string
 import machine/codec
 import session_view/agent_view
+import session_view/remote_agent.{type RemoteAgent}
 import session_view/snapshot_view
 import session_view/strand_name
 import session_view/text_hygiene
@@ -78,6 +90,12 @@ pub type Roster {
     pushed: Dict(String, #(String, Int)),
     /// The host clock as of the last tick, so drawing reads no clock.
     now_ms: Int,
+    /// The children on other orchestrators, as the newest `remote_children`
+    /// snapshot listed them.
+    remote: List(RemoteAgent),
+    /// The host clock when that snapshot arrived, which a remote line's age
+    /// counts on from.
+    remote_at_ms: Int,
   )
 }
 
@@ -98,6 +116,13 @@ pub type Line {
     elapsed_s: Option(Int),
     /// Context size of the current operation, when known.
     tokens: Option(Int),
+    /// The orchestrator a child on another orchestrator runs on, and `None`
+    /// for a strand of this session.
+    placement: Option(String),
+    /// How old a remote child's newest glance is, in seconds as of the
+    /// roster's last tick, or `None` for a local strand and a remote child
+    /// with no glance yet.
+    age_s: Option(Int),
   )
 }
 
@@ -137,7 +162,14 @@ pub type Chips {
 /// assert agent_roster.new().now_ms == 0
 /// ```
 pub fn new() -> Roster {
-  Roster(glances: dict.new(), clocks: dict.new(), pushed: dict.new(), now_ms: 0)
+  Roster(
+    glances: dict.new(),
+    clocks: dict.new(),
+    pushed: dict.new(),
+    now_ms: 0,
+    remote: [],
+    remote_at_ms: 0,
+  )
 }
 
 /// Folds one coherent capture into the roster's memory.
@@ -189,7 +221,159 @@ pub fn observe(
     dict.filter(roster.pushed, fn(strand, pair) {
       dict.get(view.operations, strand) == Ok(pair.0)
     })
-  Roster(glances:, clocks:, pushed:, now_ms:)
+  Roster(..roster, glances:, clocks:, pushed:, now_ms:)
+}
+
+/// Keeps the newest list of children on other orchestrators, with the host's
+/// clock at its arrival.
+///
+/// A snapshot replaces the list whole, so a child the daemon no longer lists
+/// leaves the strip. The arrival time anchors each line's age, so the figure
+/// keeps growing between snapshots without the host comparing its clock with
+/// the daemon's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_roster.observe_remote(agent_roster.new(), [], 5).remote_at_ms == 5
+/// ```
+pub fn observe_remote(
+  roster: Roster,
+  remote: List(RemoteAgent),
+  now_ms: Int,
+) -> Roster {
+  Roster(
+    ..roster,
+    remote:,
+    remote_at_ms: now_ms,
+    now_ms: int.max(roster.now_ms, now_ms),
+  )
+}
+
+/// One row for each child on another orchestrator, in the order the daemon
+/// listed them, for a host to list after the capture's rows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert agent_roster.remote_rows(agent_roster.new()) == []
+/// ```
+pub fn remote_rows(roster: Roster) -> List(agent_view.Row) {
+  list.map(roster.remote, remote_row)
+}
+
+/// The remote child a person names, by the short name the strip shows or by
+/// its whole strand name on the other orchestrator. A short name two children
+/// share names neither, so the person is asked for the whole one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_roster.remote_named(roster, "build-turn-1") == Ok(agent)
+/// ```
+pub fn remote_named(roster: Roster, name: String) -> Result(RemoteAgent, Nil) {
+  case list.find(roster.remote, fn(agent) { agent.id == name }) {
+    Ok(agent) -> Ok(agent)
+    Error(Nil) ->
+      case
+        list.filter(roster.remote, fn(agent) { short_name(agent.id) == name })
+      {
+        [agent] -> Ok(agent)
+        [] | [_, _, ..] -> Error(Nil)
+      }
+  }
+}
+
+/// The name a host draws for a line: the short name, and for a child on
+/// another orchestrator ` @ ` and the orchestrator's name after it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_roster.placed_name(line) == "build-turn-1 @ box"
+/// ```
+pub fn placed_name(line: Line, name: String) -> String {
+  case line.placement {
+    Some(place) -> name <> " @ " <> place
+    None -> name
+  }
+}
+
+/// How long the glance of a remote child has not changed, in words, once it
+/// is old enough to be worth saying: from `stale_after_s` on, which is longer
+/// than a running child goes between glances, so a strip that says it is
+/// showing a child it cannot currently hear from. A local strand says nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_roster.seen_words(line) == Some("seen 2m 05s ago")
+/// ```
+pub fn seen_words(line: Line) -> Option(String) {
+  case line.age_s {
+    Some(age) if age >= stale_after_s -> Some("seen " <> duration(age) <> " ago")
+    Some(_) | None -> None
+  }
+}
+
+/// The age of a remote child's glance, in seconds, from which a strip says
+/// how old it is.
+pub const stale_after_s = 60
+
+/// The strip's row for one remote child.
+///
+/// The status is the standing in the strip's vocabulary: a spawn not yet
+/// answered is waiting, a child within its deadline is working, and a settled
+/// one has finished or failed. A child whose deadline passed with no join to
+/// say how it ended is unavailable, because the stub cannot tell. The task is
+/// the glance's title, and the activity its summary, or words for the standing
+/// while there is no summary. The row has no operation: the operation is the
+/// other orchestrator's, and the roster's clocks are keyed by operations of
+/// this session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agent_roster.remote_row(agent).placement == Some("box")
+/// ```
+pub fn remote_row(agent: RemoteAgent) -> agent_view.Row {
+  let place = agent.orchestrator
+  let status = case agent.standing {
+    remote_agent.Starting -> agent_view.Waiting
+    remote_agent.Running -> agent_view.Working
+    remote_agent.Expired -> agent_view.Unavailable
+    remote_agent.Completed -> agent_view.Finished
+    remote_agent.Stopped | remote_agent.Refused -> agent_view.Failed
+  }
+  let activity = case agent.summary, agent.standing {
+    "", remote_agent.Starting -> "Starting on " <> place
+    "", remote_agent.Running -> "Running on " <> place
+    "", remote_agent.Expired -> "Deadline passed on " <> place
+    "", remote_agent.Completed -> "Finished on " <> place
+    "", remote_agent.Stopped -> "Stopped on " <> place
+    "", remote_agent.Refused -> "Refused by " <> place
+    summary, _ -> summary
+  }
+  let model = case agent.model {
+    "" -> agent_view.model_unavailable
+    model -> model
+  }
+  agent_view.Row(
+    id: agent.id,
+    name: text_hygiene.single_line(agent.id),
+    operation: None,
+    status:,
+    task: text_hygiene.single_line(agent.title),
+    activity: text_hygiene.single_line(activity),
+    update: agent_view.update_unavailable,
+    update_entry: None,
+    pending: "",
+    approvals: [],
+    model: text_hygiene.single_line(model),
+    recent: [],
+    decision: "",
+    placement: Some(text_hygiene.single_line(place)),
+  )
 }
 
 fn glance_strand(cell: snapshot_view.Cell) -> Result(String, Nil) {
@@ -478,6 +662,26 @@ fn line(roster: Roster, row: agent_view.Row) -> Line {
       option.map(current, fn(seen) { seen.tokens })
     })
     |> keep_if(fn(count) { count > 0 })
+
+  // A remote child's figures come from the daemon's list and not from the
+  // capture: its tokens are the glance's, and its age is the daemon's measure
+  // at the snapshot plus the time this host has held the snapshot since.
+  let remote = case row.placement {
+    Some(_) ->
+      list.find(roster.remote, fn(agent) { agent.id == row.id })
+      |> option.from_result
+    None -> None
+  }
+  let tokens = case remote {
+    Some(agent) -> Some(agent.tokens) |> keep_if(fn(count) { count > 0 })
+    None -> tokens
+  }
+  let age_s =
+    remote
+    |> option.then(fn(agent) { agent.age_ms })
+    |> option.map(fn(age) {
+      int.max(0, age + roster.now_ms - roster.remote_at_ms) / 1000
+    })
   Line(
     id: row.id,
     name: short_name(row.name),
@@ -486,6 +690,8 @@ fn line(roster: Roster, row: agent_view.Row) -> Line {
     title: text_hygiene.single_line(title),
     elapsed_s: option.map(running_ms(roster, row), fn(ms) { ms / 1000 }),
     tokens:,
+    placement: row.placement,
+    age_s:,
   )
 }
 

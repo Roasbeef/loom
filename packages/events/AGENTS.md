@@ -230,6 +230,9 @@ these forks because they define the same modules.
   package cannot import.
 
 `GoalChanged` is a targeted invalidation on `Outputs` (protocol-change/056).
+`RemoteChildrenChanged` is the same kind of data-free event on `Outputs`
+(protocol-change/090): `client/remote_child` publishes it after a stub write,
+and the gateway pushes the session's remote children again.
 Its publisher is the advisor after a successful durable goal write or deletion;
 the gateway relays it to subscribed peers, whose session lane re-reads the
 reserved cell with `goal_get`. It carries neither durable state nor a transcript

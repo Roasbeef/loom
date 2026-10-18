@@ -58,6 +58,7 @@ import session_view/composer
 import session_view/context_view
 import session_view/goal_view
 import session_view/model.{Attached, Disconnected, Preview, Replaying} as session_model
+import session_view/remote_transcript
 import session_view/reviewer_status
 import session_view/snapshot_view
 import session_view/text_hygiene
@@ -128,11 +129,18 @@ pub fn transcript_inner(panel: Rect) -> Rect {
 /// ```gleam
 /// let #(main, side) = layout.transcript_areas(area, model)
 /// ```
+///
+/// A peek at a remote child's transcript (`/peek`) takes the same lower half
+/// when no side question is shown.
 @internal
 pub fn transcript_areas(area: Rect, model: Model) -> #(Rect, Rect) {
-  case model.shared.btw.visibility {
-    btw.Hidden -> #(area, geometry.rect_zero())
-    btw.Visible -> {
+  case model.shared.btw.visibility, model.shared.peek {
+    btw.Hidden, remote_transcript.Closed -> #(area, geometry.rect_zero())
+    btw.Visible, _
+    | btw.Hidden, remote_transcript.Loading(..)
+    | btw.Hidden, remote_transcript.Shown(..)
+    | btw.Hidden, remote_transcript.Unavailable(..)
+    -> {
       let side_height =
         int.min(area.size.height, int.max(1, area.size.height / 2))
       let main_height = area.size.height - side_height
@@ -1536,12 +1544,17 @@ pub fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
 
 /// Legacy fixtures have no captured register cut. Their rows explicitly expose
 /// unavailable task and result evidence instead of inventing successful work.
+///
+/// Children on other orchestrators follow the session's own strands
+/// (protocol-change/090). Their rows come from the daemon's list of the
+/// session's stubs and carry the orchestrator as their placement.
 @internal
 pub fn displayed_agents(model: Model) -> List(agent_view.Row) {
   let rows = case model.shared.captured {
     Some(_) -> model.shared.agent_rows
     None -> agent_view.legacy(model.shared.strands)
   }
+  let rows = list.append(rows, agent_roster.remote_rows(model.shared.roster))
   case model.shared.peer {
     Disconnected ->
       list.map(rows, fn(row) {

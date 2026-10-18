@@ -30,6 +30,8 @@ fn chip(status: agent_view.Status, text: String) -> strip.Chip {
       title: "",
       elapsed_s: None,
       tokens: None,
+      placement: None,
+      age_s: None,
     ),
     hue: turns.Sub(0),
     cache: None,

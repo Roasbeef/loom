@@ -116,6 +116,15 @@
 //// changes what the other messages do. The sending ends are `ask_escalation` and
 //// `ask_resolve`.
 ////
+//// Protocol-change/090 adds `ChildHistory`, the parent's request for one bounded
+//// page of a child's transcript, served through `SpawnHost.history`. It is a
+//// read: the host answers from the session that already holds the child and
+//// never creates one, so a request for a pair with no session, or one that
+//// arrives before the `Spawn` it concerns, is refused. The spawner's table
+//// decides whether it is answered at all (`[spawners.<name>] transcript`), and
+//// a hidden transcript is refused with `TranscriptHidden`. `ask_history` is the
+//// sending end.
+////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
 //// Erlang node. It carries no credential, and a client is never redirected by
@@ -135,20 +144,21 @@
 //// ## Flow
 ////
 //// `start_with` → `answer` → `detached` → `ask_release` → `ask_send` →
-//// `ask_mail` → `ask_escalation` → `ask_resolve` → `exchange` → `exchange_why`
+//// `ask_history` → `ask_mail` → `ask_escalation` → `ask_resolve` → `exchange` →
+//// `exchange_why`
 ////
 //// 1. `start_with` registers the port under its name, with the closures the
 ////    daemon supplies for the questions it cannot answer from its own state.
 //// 2. `answer` takes one message at a time. A question that is one read is
 ////    answered in the port's turn; one that walks a catalogue, opens a session
 ////    or waits (`Holds`, `Report`, `Sessions`, `Activate` and the subagent
-////    messages, a release, a send and a child's mail or progress among them)
-////    goes to `detached`.
+////    messages, a release, a send, a history read and a child's mail or
+////    progress among them) goes to `detached`.
 //// 3. `detached` computes the reply in a run that dies with the requester and
 ////    with the port, so a slow answer never delays the next question.
-//// 4. The `ask_*` functions are the sending end: `ask_release`, `ask_send`
-////    and `ask_resolve` among those the laptop calls, and `ask_mail` and
-////    `ask_escalation` among those the box calls.
+//// 4. The `ask_*` functions are the sending end: `ask_release`, `ask_send`,
+////    `ask_history` and `ask_resolve` among those the laptop calls, and
+////    `ask_mail` and `ask_escalation` among those the box calls.
 ////    Each makes its one request through `exchange`, which wraps
 ////    `exchange_why`: a monitor on the port, the request, and a wait that
 ////    ends at the answer, at the port's death, or at the deadline.
@@ -345,6 +355,27 @@ pub type Message {
     /// What the parent says.
     text: String,
     /// Where the landing goes.
+    reply: Subject(Result(JsonValue, SpawnRefusal)),
+  )
+
+  /// Asks for one page of a child's transcript (protocol-change/090). The answer
+  /// is the page (`session_view/remote_transcript.encode`), or the reason the
+  /// host refused it: `TranscriptHidden` when the spawner's table keeps
+  /// transcripts here, and an invalid argument for a child that is not a
+  /// descendant of the parent strand. It reads and never creates: a parent
+  /// this orchestrator holds no session for is refused, whatever order it
+  /// arrives in relative to the `Spawn`.
+  ChildHistory(
+    /// The parent session and strand, on the sending orchestrator.
+    parent: Parent,
+    /// The child, as `Spawned` returned it. Only its strand is read.
+    child: Handle,
+    /// The sequence the page reads below, zero for the newest page.
+    cursor: Int,
+    /// The most entries the page holds, at most
+    /// `remote_transcript.max_entries`.
+    limit: Int,
+    /// Where the page goes.
     reply: Subject(Result(JsonValue, SpawnRefusal)),
   )
 
@@ -619,6 +650,10 @@ pub type SpawnHost {
     /// was shown and who decided (protocol-change/089).
     resolve: fn(Origin, Handle, String, Decision, Int, Decider) ->
       Result(Answer, SpawnRefusal),
+    /// Reads one page of a child's transcript, given the child, the cursor
+    /// and the limit, and answers the encoded page. It never creates a
+    /// session.
+    history: fn(Origin, Handle, Int, Int) -> Result(JsonValue, SpawnRefusal),
   )
 }
 
@@ -650,6 +685,9 @@ pub fn refusing_spawns() -> SpawnHost {
       Error(remote_spawn.UnknownSpawner(node: origin.node))
     },
     resolve: fn(origin, _child, _id, _decision, _seq, _decider) {
+      Error(remote_spawn.UnknownSpawner(node: origin.node))
+    },
+    history: fn(origin, _child, _cursor, _limit) {
       Error(remote_spawn.UnknownSpawner(node: origin.node))
     },
   )
@@ -1008,6 +1046,18 @@ fn answer(
           child,
           message_id,
           text,
+        )
+      })
+
+    // A page of a transcript is a branch read in the delegate session's store,
+    // which may be large, so it runs apart from the port like a send.
+    ChildHistory(parent:, child:, cursor:, limit:, reply:) ->
+      detached(reply, fn(node) {
+        spawns.history(
+          remote_spawn.Origin(node:, parent:),
+          child,
+          cursor,
+          limit,
         )
       })
 
@@ -1381,6 +1431,30 @@ pub fn ask_send(
   exchange(
     at,
     fn(reply) { ChildSend(parent:, child:, message_id:, text:, reply:) },
+    within_ms,
+  )
+}
+
+/// Asks the port at `at` for one page of a child's transcript, and waits at
+/// most `within_ms`. Silence is `Error(Nil)`, and the same page can be asked
+/// for again: the read changes nothing on the receiver.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_history(Address(node: peer, name: orchestrator_port.default()), parent, child, 0, 50, 10_000)
+/// ```
+pub fn ask_history(
+  at: Address(Message),
+  parent: Parent,
+  child: Handle,
+  cursor: Int,
+  limit: Int,
+  within_ms: Int,
+) -> Result(Result(JsonValue, SpawnRefusal), Nil) {
+  exchange(
+    at,
+    fn(reply) { ChildHistory(parent:, child:, cursor:, limit:, reply:) },
     within_ms,
   )
 }

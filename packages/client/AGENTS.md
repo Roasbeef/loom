@@ -7860,6 +7860,35 @@ The box's deadline and retention (slice S4):
   (routing, `decide`), `agency_test` (a request against a `Requested` stub,
   newest seq wins), `remote/orchestrator_port_test`, and the shipped
   `daemon_shipped_remote_subagents_test`.
+- A delegate session that does not open in `delegate_host.open_budget_ms`, or
+  goes back to saved while the host waits, answers
+  `remote_spawn.NotYetOpen`, and `remote_spawner.answer` reads it as
+  `Unreachable`, so the laptop resends and the stub stays `Requested`. After a
+  box is killed, the dead writer's lease on the session file refuses every open
+  until it expires (up to `lease_ttl_ms`, 60 s), and before this a spawn in that
+  minute left its stub `Refused` for good. `remote_release_test` and the shipped
+  remote subagents test, which kills and restarts the box, cover it.
+- Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`
+  (`glanceSeenMs`, absent reads 0) is the parent's clock when
+  `remote_child.progressed` kept the glance; every stub write publishes
+  `bus.RemoteChildrenChanged` (`remote_child.changed`). `remote_child.agents`
+  projects the stubs into `session_view/remote_agent` rows; the gateway pushes
+  them as `protocol.RemoteChildrenSnapshot` on subscribe (`push_remote_children`)
+  and on the bus event. `orchestrator_port.Message.ChildHistory` (`ask_history`),
+  `SpawnHost.history`, `DelegateEndpoint.history` and `Reach.history` read a
+  page of a child's branch; `main.spawn_host` takes a fourth resolver,
+  `delegate_host.existing_endpoint` (resident sessions only, creates nothing),
+  refuses `remote_spawn.TranscriptHidden` unless `spawners.Spawner.transcript`
+  is `Visible` (`[spawners.<name>] transcript`), and `agency.delegate_history`
+  checks descent from `^{parent.strand}` and reads `storage.scan_branch` from
+  the child's leaf into `remote_transcript.page_of`. The session endpoint's
+  `child_history` (`protocol.ChildHistoryGet`) is a read run as an observation
+  (`HistoryObservation`, `gateway.with_child_history`, wired by
+  `serve.with_child_history` to `remote_child.history_reader`). Tests:
+  `remote/orchestrator_port_test` (relay, hidden, no session created),
+  `agency_test` (paging through the port, a non-descendant refused),
+  `daemon_spawn_host_test`, `domain_observation_test` (the observation and the
+  pushes), `remote_child_test` (`agents`), `spawners_test`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),

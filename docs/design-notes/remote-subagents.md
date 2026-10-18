@@ -1333,7 +1333,10 @@ spawning on a third orchestrator.
   same checkout, as local siblings do. Isolation per child would cost a scope
   each.
 - **Transcripts stay on the remote** until phase 4, so the laptop's operator
-  sees a remote child's result and notes but not its working.
+  sees a remote child's result and notes but not its working. Phase 4
+  (protocol-change/090) lets the box owner allow a spawner to read them a page
+  at a time, with `[spawners.<name>] transcript = "visible"`; the default keeps
+  them on the box.
 - **Remote usage is reported, not metered locally.** The laptop trusts the
   remote's account of what a child cost, as it trusts its own gateway's.
 

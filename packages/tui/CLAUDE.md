@@ -293,6 +293,19 @@ summary observations retain their old completion behavior. See
 the session tab, through `remote_usage_words`. A session with no remote child
 draws neither.
 
+## Remote children and `/peek` (protocol-change/090)
+
+`layout.displayed_agents` lists `agent_roster.remote_rows` after the session's
+rows, so the strip and the workspace list show a child on another orchestrator;
+`agent_row` names it `<child> @ <orchestrator>` (`agent_roster.placed_name`) and
+puts `seen … ago` ahead of a glance that has not changed for a minute. Choosing a
+remote row in the strip (`interaction`, `agent_strip.Open`) runs
+`command.Peek` instead of a strand switch. `/peek <name>` opens a peek and
+`/peek close` closes it; while one is open and no side question is shown,
+`layout.transcript_areas` gives it the lower half and `render.render_peek` draws
+`remote_transcript.lines` as plain text, never through the Markdown renderer.
+Tests: `remote_child_strip_test`.
+
 ## Build identity and daemon updates
 
 `loom version` (also `loom --version`) reports the invoked client's launcher

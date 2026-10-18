@@ -91,6 +91,7 @@ fn tagged_with(
     run_ended: fn(_operation) { Ok(tag) },
     release: fn() { Ok(tag) },
     send: fn(_parent, _child, _message_id, _text) { Ok(json.Null) },
+    history: fn(_parent, _child, _cursor, _limit) { Ok(json.Null) },
     occupancy: fn() { occupancy },
     resolve: fn(_parent, _child, _id, _decision, _seq, _decider) {
       Error(remote_spawn.StoreFailure(reason: "not under test"))

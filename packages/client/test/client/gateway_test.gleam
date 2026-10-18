@@ -7777,6 +7777,7 @@ fn remote_harness() -> #(Harness, fake_orchestrators.Box) {
       ),
       name: remote_child_name,
       glance: None,
+      glance_seen_ms: 0,
       owed: 0,
       state: remote_child.Requested,
     )

@@ -268,7 +268,7 @@ Source: (`client/gateway.gleam:1917-1923`).
 
 The read-only set is `subscribe`, `catch_up`, `snapshot_next`,
 `history`, `history_lineage`, `escalations_get`, `escalations_decided`, `models`, `skills`, `notes`, `live_jobs`, `queued_input`,
-`worktree_diff`, `context` and `schedules`. Every other
+`worktree_diff`, `context`, `child_history` and `schedules`. Every other
 command from an observer is refused with the code `forbidden` before any
 durable write or effect dispatch.
 Source: (`client/gateway.gleam:1982-2006`) and
@@ -3127,6 +3127,32 @@ waits on a `remember` call.
 
 No push announces a change to memory. A client that is showing the overview
 reads it when it opens and again no more than once a minute.
+#### 4.9.34 `child_history`
+
+`{child: string, before: integer}` reads one page of the transcript of a child
+that runs on another orchestrator, with ordinary session-read authority, so an
+observer's attachment may ask for it. `child` is the child's strand name there,
+as the `remote_children` snapshot (section 5.2) lists it, nonempty and at most
+512 bytes; `before` is the sequence the page reads below, zero for the newest
+page. The daemon finds the child's stub by that name, so a name that is not a
+remote child of the session reads nothing and fails.
+
+The read is an observation as `context` is (section 4.9.21): the reply is a
+`snapshot` with mode `child_history` and a `board` of `{status: "pending",
+request_id}`, and the outcome is pushed with the same `board.request_id` and no
+`reply_to`. It shares `context`'s worker slots, fourteen-second deadline and
+socket cancellation. A ready board adds the page: `child`, `entries` (at most 50
+durable entries in the shared entry shape of section 5.7, oldest first, within
+49,152 bytes of encoded entries, with every reasoning block taken out on the
+orchestrator that runs the child), `omitted` (entries too large to send alone) and
+`next` (the `before` of the next older page, or null at the child's first
+entry). A failed board carries `message`. The whole board is bounded to 65,536
+encoded bytes, the bound on any pushed observation. The orchestrator that runs the child answers only when its
+`[spawners.<name>] transcript` is `"visible"`; otherwise the board fails with
+the orchestrator's refusal. A daemon that reaches no other orchestrator answers
+`unavailable`. The page is model text from another machine and a client draws it
+as text. See
+[protocol 090](../protocol-change/090-remote-observation.md).
 
 ## 5. Events
 
@@ -3138,10 +3164,10 @@ Over the authenticated session transport a client sees:
 - mutation replies: `mutation_outcome`;
 - auxiliary replies: `snapshot` with mode `models`, `skills`, `schedules`, `notes`,
   `permissions`, `queued_input`, `live_jobs`, `block_summaries`, `btw`, or pending `worktree_diff` /
-  `context`;
+  `context` / `child_history`;
 - pushed frames: `committed`, `stream_delta`, `tool_output`, `block_summary`, `goal_changed`,
-  `proposals_changed`, `presence`, `snapshot` with mode `config` or final `worktree_diff` /
-  `context`, and `error`;
+  `proposals_changed`, `presence`, `snapshot` with mode `config` or `remote_children`, or
+  final `worktree_diff` / `context` / `child_history`, and `error`;
 - refusals: `error` with `reply_to`.
 
 `snapshot` with mode `full`, `resume` or `strands`, and the durable
@@ -3160,7 +3186,7 @@ One body, discriminated by `mode`.
 
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
-| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff`, `live_jobs`, `context`, `btw` or `profile`. |
+| `mode` | string | required | `full`, `resume`, `strands`, `config`, `models`, `skills`, `notes`, `schedules`, `queued_input`, `worktree_diff`, `live_jobs`, `context`, `child_history`, `remote_children`, `btw` or `profile`. |
 
 Source: (`client/protocol.gleam:1471-1540`).
 
@@ -3173,7 +3199,32 @@ Mode `schedules` carries `schedules`. Mode `profile` carries `profile`
 (absent for the default roles), `available` and, in the reply to `profile_set`
 only, `moved` (section 4.9.30). Modes `queued_input`, `worktree_diff`,
 `live_jobs`, `skills`, `context` and `goal` carry `board` (sections 4.9.17 through 4.9.27). Mode `btw` carries its attachment-private `board` (section
-4.9.31).
+4.9.31). Mode `child_history` carries `board` (section 4.9.34).
+
+Mode `remote_children` is pushed and answers no request
+([protocol 090](../protocol-change/090-remote-observation.md)). It carries
+`remote_children`, the session's children on other orchestrators as their stubs
+stand, at most 64, which replaces whatever list the client held. The daemon
+pushes it once to a connection that subscribes, when the list is not empty, and
+to every subscriber whenever a stub changes. Each entry:
+
+| Field | Type | Presence | Meaning |
+|---|---|---|---|
+| `id` | string | required | The child's strand name on the orchestrator that runs it, nonempty. A `child_history` names the child by it. |
+| `parent` | string | required | The parent strand in this session. |
+| `orchestrator` | string | required | The `[orchestrators.<name>]` the child runs on. |
+| `standing` | string | required | `starting` (the spawn is unanswered), `running`, `expired` (the deadline passed with no settlement seen), `completed`, `stopped` or `refused`. |
+| `title` | string | required | The newest glance's title, or the purpose the spawn asked for. |
+| `summary` | string | required | The newest glance's one-line summary, empty before the first. |
+| `tokens` | integer | required | The context size the newest glance reported, zero when unknown. |
+| `model` | string | required | The catalogue name of the child's model, empty while the spawn is unanswered. |
+| `age_ms` | integer or null | required | How long before the push, on the daemon's clock, the newest glance reached it; null before the first. |
+
+`title`, `summary` and `model` are at most 256 bytes, the daemon clipping them,
+and the names `id`, `parent` and `orchestrator` at most 512. The daemon sends
+the longest head of the list whose encoding is within 60,000 bytes, so the push
+fits the 64 KiB frame bound. A client decodes the list whole or refuses it. The entries are model text and configuration from another machine
+and a client draws them as text.
 Source: (`client/protocol.gleam:1036-1073`).
 
 ```json

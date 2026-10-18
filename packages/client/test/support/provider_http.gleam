@@ -152,6 +152,15 @@ pub type Expectation {
     /// Exact identity from the earlier tool invocation.
     call_id: String,
   )
+
+  /// A tool result of either kind, matched on the provider-minted identity,
+  /// for a call whose outcome depends on timing the fixture does not control,
+  /// such as a spawn on an orchestrator that is still reopening. A failed
+  /// result is admitted only under `AlsoFailed`.
+  AwaitAnyToolResult(
+    /// Exact identity from the earlier tool invocation.
+    call_id: String,
+  )
 }
 
 /// One streamed response, after the script step and the observed request
@@ -578,6 +587,10 @@ fn awaited(expect: Expectation, latest: Latest) -> Bool {
     AwaitFailedToolResult(..), UserPrompt(..)
     | AwaitFailedToolResult(..), SuccessfulToolResult(..)
     -> False
+    AwaitAnyToolResult(call_id:), SuccessfulToolResult(id, _text)
+    | AwaitAnyToolResult(call_id:), FailedToolResult(id, _text)
+    -> id == call_id
+    AwaitAnyToolResult(..), UserPrompt(..) -> False
   }
 }
 
@@ -585,8 +598,9 @@ fn awaited_bounded(expect: Expectation) -> Bool {
   case expect {
     AwaitPrompt(text:) -> bounded(text)
     AwaitPromptPrefix(prefix:) -> prefix != "" && bounded(prefix)
-    AwaitToolResult(call_id:) | AwaitFailedToolResult(call_id:) ->
-      call_id != "" && bounded(call_id)
+    AwaitToolResult(call_id:)
+    | AwaitFailedToolResult(call_id:)
+    | AwaitAnyToolResult(call_id:) -> call_id != "" && bounded(call_id)
   }
 }
 

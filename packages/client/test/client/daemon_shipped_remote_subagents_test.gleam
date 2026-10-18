@@ -44,6 +44,17 @@
 ////   asks for the same directory again, which shows that the once approval was
 ////   spent, and the operator allows it for the session. A third child, started
 ////   afterwards, makes the same kind of call and runs without any question.
+//// - While children run, the parent's agent strip lists them as
+////   `<child> @ box` from the stubs the box's progress keeps
+////   (protocol-change/090). The box's `[spawners.laptop]` names no
+////   `transcript`, so a `/peek` at a child is refused there under the default
+////   and the terminal says the transcript is unavailable.
+//// - The box is then killed and restarted with `transcript = "visible"`. The
+////   killed daemon's writer lease is still on the delegate session's file, so
+////   the box answers the next spawn `NotYetOpen` until it expires; the laptop
+////   treats that as silence and resends, and the fourth child starts once the
+////   session opens. A `/peek` at it then reads a page of its branch from the
+////   box, framed as a remote transcript.
 //// - A last turn starts a fourth child that runs until it is stopped. The
 ////   laptop session is then stopped and deleted with that child running. The
 ////   laptop's release drainer tells the box (`Release`), and the box stops the
@@ -185,7 +196,7 @@ fn drive(duo: Duo) -> Nil {
         let #(Nil, laptop_report) =
           provider.with_server_for(
             laptop_script(),
-            provider.OnlySuccessful,
+            provider.AlsoFailed,
             900_000,
             fn(laptop_url) { session(duo, work, granted, laptop_url, box_url) },
           )
@@ -232,7 +243,7 @@ fn deploy(
         "profile = \"kid\"",
         "max_within_s = 120",
         "default_within_s = 60",
-        "retain_s = 3600",
+        retain_line,
         "",
         "[spawners.laptop.approval_ceiling]",
         "writable_roots = [\"" <> granted <> "\"]",
@@ -243,6 +254,26 @@ fn deploy(
   )
   remote_daemons.write_options(duo.alpha)
   remote_daemons.write_options(duo.bravo)
+}
+
+// The last line of the box's spawner table, which the restart extends with
+// `transcript = "visible"`.
+const retain_line = "retain_s = 3600"
+
+// Lets the laptop read its children's transcripts on the box from the next
+// start of the box daemon: the spawner table gains `transcript = "visible"`.
+fn make_transcripts_visible(layout: remote_daemons.Layout) -> Nil {
+  let assert Ok(text) = simplifile.read(layout.config)
+    as "the box's configuration is readable"
+  let assert Ok(#(before, after)) = string.split_once(text, retain_line)
+    as "the box's spawner table is in its configuration"
+  let assert Ok(Nil) =
+    simplifile.write(
+      layout.config,
+      before <> retain_line <> "\ntranscript = \"visible\"" <> after,
+    )
+    as "the box's spawner table now shows transcripts"
+  Nil
 }
 
 fn plan(laptop_node: String, box_node: String) -> String {
@@ -413,9 +444,14 @@ fn laptop_script() -> List(provider.Exchange) {
         spawn("run the fourth child's shell", "fourth child", None),
       )
     }),
-    provider.ComputedExchange(provider.AwaitToolResult("spawn-four"), fn(_seen) {
-      provider.ReplyText(fourth_answer)
-    }),
+    // The box was killed and restarted just before this spawn, so it may be
+    // answered at once or, while the dead daemon's lease is on the delegate
+    // session's file, reported as not answered in time and resent by the
+    // laptop's drainer. Either result is followed by the same text.
+    provider.ComputedExchange(
+      provider.AwaitAnyToolResult("spawn-four"),
+      fn(_seen) { provider.ReplyText(fourth_answer) },
+    ),
   ]
 }
 
@@ -565,7 +601,8 @@ fn session(
 ) -> Nil {
   deploy(duo, work, granted, laptop_url, box_url)
   let environment = [#("LOOM_TEST_PROVIDER_KEY", provider.dummy_key)]
-  let box = remote_daemons.start_with_environment(duo.bravo, [], environment)
+  let _first_box =
+    remote_daemons.start_with_environment(duo.bravo, [], environment)
   let laptop = remote_daemons.start_with_environment(duo.alpha, [], environment)
   let control = remote_daemons.open_control(laptop)
   let #(session, settled) =
@@ -587,6 +624,18 @@ fn session(
   // run end sends it nothing: its heartbeat goes on growing.
   let at_turn_end = line_count(work <> "/beat2")
   let _grew = await_lines(work <> "/beat2", at_turn_end + 2)
+
+  // The parent's strip lists the running child, placed on the box. The row
+  // comes from the stub the laptop keeps, pushed to the terminal when it
+  // changes (protocol-change/090).
+  await_frame(terminal, "second-child @ box")
+
+  // The box's spawner table names no `transcript`, so the child's transcript
+  // stays on the box: the peek is refused there, and the terminal says so.
+  remote_daemons.say(terminal, "/peek second-child")
+  await_frame(terminal, "[transcript of sub:^main/second-child-")
+  await_frame(terminal, "Transcript unavailable")
+  remote_daemons.say(terminal, "/peek close")
 
   // The third child's deadline passes with nobody waiting on it, and the box's
   // tick aborts its run. The daemon logs the abort, and the second turn has not
@@ -660,6 +709,15 @@ fn session(
   let _wrote_a_third = await_lines(marker, 3)
   await_no_question(terminal)
 
+  // The box's owner now lets the laptop read its children's transcripts. The
+  // setting is read when the daemon starts, so the box is killed and started
+  // again with it. No child is running there. The dead daemon's writer lease
+  // stays on the delegate session's file until it expires, so the next spawn is
+  // answered `NotYetOpen` until then, and the laptop resends it.
+  remote_daemons.crash(duo.bravo)
+  make_transcripts_visible(duo.bravo)
+  let box = remote_daemons.start_with_environment(duo.bravo, [], environment)
+
   // The last turn starts a child that has no end of its own. Its heartbeat
   // grows on the box, and the box holds a delegate session for this parent.
   remote_daemons.say(terminal, fourth_prompt)
@@ -676,7 +734,18 @@ fn session(
     ],
     settle_ms,
   )
-  let _running = await_lines(work <> "/beat4", 2)
+  let _running = await_lines_within(work <> "/beat4", 2, 2 * settle_ms)
+
+  // The box now shows its children's transcripts to this spawner, so a peek at
+  // the running child reads a page of its branch from the box, framed as a
+  // remote transcript: the brief the parent gave it and the shell it called.
+  await_frame(terminal, "fourth-child @ box")
+  remote_daemons.say(terminal, "/peek fourth-child")
+  await_frame(terminal, "[transcript of sub:^main/fourth-child-")
+  await_frame(terminal, "asked: run the fourth child")
+  await_frame(terminal, "tool: bash")
+  await_frame(terminal, "[end transcript.")
+  remote_daemons.say(terminal, "/peek close")
   let box_control = remote_daemons.open_control(box)
   assert delegate_sessions(box_control, 70, session) != []
 
@@ -803,10 +872,27 @@ fn await_no_delegate_session(
   Nil
 }
 
+// Waits until the terminal's frame shows `needle`.
+fn await_frame(terminal, needle: String) -> Nil {
+  let _ =
+    tui_v2_test.await_within(
+      terminal,
+      fn(sample: tui_driver.Sample) { string.contains(sample.frame, needle) },
+      settle_ms,
+    )
+  Nil
+}
+
 // Waits until the file has at least `lines` lines and returns the count.
 fn await_lines(path: String, lines: Int) -> Int {
+  await_lines_within(path, lines, settle_ms)
+}
+
+// `await_lines` with a bound of its own. The fourth child starts only once the
+// killed box's lease has expired, which can take a minute after the kill.
+fn await_lines_within(path: String, lines: Int, within: Int) -> Int {
   let assert poll.Answered(count) =
-    poll.until(within: settle_ms, every: 500, attempt: fn() {
+    poll.until(within:, every: 500, attempt: fn() {
       case line_count(path) >= lines {
         True -> poll.Done(line_count(path))
         False -> poll.Retry

@@ -60,6 +60,7 @@ import client/roster.{type Roster}
 import gleam/dict
 import gleam/list
 import gleam/result
+import session_view/remote_transcript
 
 // How much longer than the window it asks the receiver to wait a join's own
 // deadline is, so the receiver's answer for a window that ran out is not itself
@@ -80,6 +81,11 @@ const child_ms = 15_000
 // request is held by the gateway's transport for six seconds, and the box commits
 // one transaction, so the bound is below the transport's.
 const resolve_ms = 4500
+
+// How long a transcript page waits for its answer, in milliseconds. The
+// receiver reads one bounded page from the delegate session's store, so the
+// bound is a call's; it sits inside the gateway's observation deadline.
+const history_ms = 10_000
 
 // How long a release waits for its answer, in milliseconds. The receiver stops
 // the children and hands the session to its registry, which answers without
@@ -175,6 +181,24 @@ pub fn over_distribution(
         resolve_ms,
       )
       |> answer
+    },
+    history: fn(name, parent, child, cursor, limit) {
+      use at <- result.try(reached(membership, configured, name))
+      use page <- result.try(
+        orchestrator_port.ask_history(
+          at,
+          parent,
+          child,
+          cursor,
+          limit,
+          history_ms,
+        )
+        |> answer,
+      )
+      remote_transcript.decode(page)
+      |> result.map_error(fn(reason) {
+        peer_mail.Refused("its page could not be read: " <> reason)
+      })
     },
     keep: fn(name, vote) {
       case dict.get(keepers, name) {
@@ -334,12 +358,24 @@ fn reached(
   ))
 }
 
-// The port's reply as the two failures. Silence from the asking functions is
-// `Error(Nil)`, a refusal rides inside an answer, and only the second is
-// definitive.
-fn answer(heard: Result(Result(a, SpawnRefusal), Nil)) -> Result(a, Failure) {
+/// The port's reply as the two failures. Silence from the asking functions is
+/// `Error(Nil)`, a refusal rides inside an answer, and only the second is
+/// definitive, with one exception: `NotYetOpen` says the receiver's session may
+/// open on a later attempt, so it is silence too and the caller asks again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_spawner.answer(Ok(Error(remote_spawn.NotYetOpen("slow"))))
+///   == Error(peer_mail.Unreachable)
+/// ```
+@internal
+pub fn answer(
+  heard: Result(Result(a, SpawnRefusal), Nil),
+) -> Result(a, Failure) {
   case heard {
     Ok(Ok(value)) -> Ok(value)
+    Ok(Error(remote_spawn.NotYetOpen(..))) -> Error(peer_mail.Unreachable)
     Ok(Error(refusal)) ->
       Error(peer_mail.Refused(remote_spawn.describe_refusal(refusal)))
     Error(Nil) -> Error(peer_mail.Unreachable)

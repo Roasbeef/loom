@@ -83,6 +83,7 @@ fn agent(id: String, status: agent_view.Status, activity: String) {
     model: "moonshotai/Kimi-K3",
     recent: [],
     decision: "",
+    placement: None,
   )
 }
 

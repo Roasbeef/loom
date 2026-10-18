@@ -17,6 +17,7 @@ import core/json
 import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
+import session_view/remote_agent
 import tools/agent
 
 fn an_op(seed: Int) -> ids.OpId {
@@ -51,6 +52,7 @@ fn a_stub(state: remote_child.State) -> remote_child.Stub {
     request: a_request(),
     name: "sub:^main/run-the-suite-0123456789abcdef",
     glance: None,
+    glance_seen_ms: 0,
     owed: 0,
     state:,
   )
@@ -352,6 +354,53 @@ pub fn a_glance_survives_the_stub_test() {
   round_trips(
     Stub(..a_stub(remote_child.Spawned(a_placed())), glance: Some(seen)),
   )
+}
+
+// The strip's rows come from the stubs alone (protocol-change/090). A running
+// child shows its newest glance with the age measured on this session's clock
+// from when the glance arrived, a child past its deadline is expired, and a
+// spawn not yet answered is starting under the purpose it asked for.
+pub fn the_strip_rows_come_from_the_stubs_test() {
+  let seen =
+    glance.Glance(
+      operation: ids.op_id_to_string(an_op(4)),
+      title: "running the suite",
+      summary: "waiting on e2e",
+      at: 1,
+      tokens: 4200,
+    )
+  let running =
+    Stub(
+      ..a_stub(remote_child.Spawned(a_placed())),
+      glance: Some(seen),
+      glance_seen_ms: 1_756_000_000_000,
+    )
+  let now = 1_756_000_030_000
+  let assert [row] = remote_child.agents([remote_child.Kept("k", running)], now)
+  assert row.id == running.name
+  assert row.orchestrator == "box"
+  assert row.standing == remote_agent.Running
+  assert row.title == "running the suite"
+  assert row.summary == "waiting on e2e"
+  assert row.tokens == 4200
+  assert row.model == "cheap"
+  assert row.age_ms == Some(30_000)
+
+  let assert [late] =
+    remote_child.agents(
+      [remote_child.Kept("k", running)],
+      a_placed().deadline_ms + 1,
+    )
+  assert late.standing == remote_agent.Expired
+
+  let assert [asked] =
+    remote_child.agents(
+      [remote_child.Kept("k", a_stub(remote_child.Requested))],
+      now,
+    )
+  assert asked.standing == remote_agent.Starting
+  assert asked.title == "run the suite"
+  assert asked.age_ms == None
 }
 
 // A stub written before glances existed has no `glance` member and reads as one

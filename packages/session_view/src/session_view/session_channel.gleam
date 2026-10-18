@@ -961,6 +961,8 @@ fn apply_pushed(
     | protocol.HeldInputReturned(..)
     | protocol.WorktreeSnapshot(_)
     | protocol.ContextSnapshot(_)
+    | protocol.ChildHistorySnapshot(_)
+    | protocol.RemoteChildrenSnapshot(_)
     | protocol.BtwSnapshot(_)
     | protocol.UsageChanged(..)
     | protocol.BlockSummarized(..)
@@ -1324,6 +1326,7 @@ fn matching_presentation(name, intent, event) {
     "worktree_diff", Read, protocol.WorktreeSnapshot(_) -> True
     "btw", Read, protocol.BtwSnapshot(_) -> True
     "context", Read, protocol.ContextSnapshot(_) -> True
+    "child_history", Read, protocol.ChildHistorySnapshot(_) -> True
     "live_jobs", Read, protocol.LiveJobsSnapshot(_) -> True
     "advisor_pending", Read, protocol.AdvisorPendingSnapshot(_) -> True
     "block_summaries", Read, protocol.BlockSummariesSnapshot(_) -> True
@@ -1981,6 +1984,7 @@ pub fn is_read(command: String) -> Bool {
     | "queued_input"
     | "btw"
     | "context"
+    | "child_history"
     | "worktree_diff"
     | "live_jobs"
     | "advisor_pending"

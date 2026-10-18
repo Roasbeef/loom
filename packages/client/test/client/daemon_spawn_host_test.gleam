@@ -86,6 +86,7 @@ type Heard {
   Ended(ids.OpId)
   Sent(remote_spawn.Parent, agent.Handle, String, String)
   Released
+  Read(remote_spawn.Parent, agent.Handle, Int, Int)
 }
 
 fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
@@ -110,6 +111,10 @@ fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
       process.send(heard, Sent(parent, child, message_id, text))
       Ok(json.Null)
     },
+    history: fn(parent, child, cursor, limit) {
+      process.send(heard, Read(parent, child, cursor, limit))
+      Ok(json.Object([]))
+    },
     occupancy: fn() { agency.Vacant },
     resolve: fn(_parent, _child, _id, _decision, _seq, _decider) {
       Error(remote_spawn.StoreFailure(reason: "not under test"))
@@ -132,6 +137,7 @@ pub fn a_node_no_spawner_names_is_an_unknown_spawner_for_all_five_test() {
   assert host.run_ended(stranger, operation()) == Error(refusal)
   assert host.release(stranger) == Error(refusal)
   assert host.send(stranger, a_child(), "m1", "hello") == Error(refusal)
+  assert host.history(stranger, a_child(), 0, 50) == Error(refusal)
 }
 
 pub fn a_daemon_with_no_spawners_refuses_every_node_test() {
@@ -220,6 +226,11 @@ pub fn a_configured_spawner_is_served_by_its_delegate_agency_test() {
   assert host.release(laptop) == Ok(4)
   assert process.receive(released, 0) == Ok(#("laptop", laptop.parent))
   assert process.receive(asked, 0) == Error(Nil)
+
+  // The spawner's table names no `transcript`, so its children's transcripts
+  // stay here: a read is refused before any session is looked for.
+  assert host.history(laptop, a_child(), 0, 50)
+    == Error(remote_spawn.TranscriptHidden)
 }
 
 pub fn a_refusal_to_find_the_session_is_the_answer_to_each_message_test() {

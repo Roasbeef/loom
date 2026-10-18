@@ -770,6 +770,18 @@ to the strand on screen. The socket admits an observer's click beneath
 `component.strip_path` (051, the addendum on strand focus).
 `focus_test` covers the behaviour and `page_events_test` the paths.
 
+**A remote child's card.** A child that runs on another orchestrator is listed
+after the session's strands from the daemon's pushed `remote_children` list
+(protocol-change/090), and its card says `<child> @ <orchestrator>`. It has no
+strand here, so focusing its card does not change the strand on screen: the
+component runs the shared step's `Peek` as a control (`peek_at`), which sends
+`child_history`, and `detail` draws the peek (`view/peek`) in the Strands tab in
+place of the list. The page is model text from another machine, drawn as text
+nodes under the harness's framing lines and never through the Markdown drawer.
+The peek's back link is the strand view's marker control on `main`'s card, and
+focusing any card closes the peek, so it adds no event class, path, scope or
+policy change. `remote_peek_test` covers it.
+
 **The sidebar.** `ui_socket` gives the component `Transport.sessions`, the
 authorized catalogue read the terminal's session picker uses
 (`manager.authorized_page`) made with the page's credential digest, so a
