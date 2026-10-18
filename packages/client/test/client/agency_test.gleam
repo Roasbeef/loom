@@ -7881,8 +7881,13 @@ pub fn repeated_sends_never_move_a_childs_deadline_test() {
     ))
   }
   let assert remote_mail.Started(operation: first, ..) = send("s1")
-  let assert remote_mail.Started(operation: second, ..) = send("s2")
   let strand = spawned.handle.strand
+
+  // The second send must find the child idle again, or it steers the run the
+  // first one started. That run settles at once under this provider, but only
+  // once its driver has handled the answer, so the test waits for it.
+  assert settled(harness, agent.Handle(strand:, operation: first))
+  let assert remote_mail.Started(operation: second, ..) = send("s2")
   assert run_for(harness, agent.Handle(strand:, operation: first)).deadline
     == original
   assert run_for(harness, agent.Handle(strand:, operation: second)).deadline
