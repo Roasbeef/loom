@@ -62,6 +62,10 @@
 ////    the slot drains, and `sweep_now` deletes what a failed deletion left, what
 ////    `due_for_deletion` finds due, and `close_idle` closes the resident
 ////    sessions that have been idle past the spawner's idle window.
+//// 11. A release of a delegate session cascades (protocol-change/084, phase 4):
+////    `release_now` first writes the release rows the session's own children
+////    are owed with `owe_releases`, from the holders its Agency reported or that
+////    `closed_holders` read from a closed file.
 
 import broker/internal/call
 import broker/internal/ffi_crypto
@@ -714,10 +718,18 @@ type Message(instance) {
     Subject(Result(Option(catalogue.Delegate), Error)),
   )
 
-  /// Releases the delegate session of a pair: marks it releasing, stops its
-  /// slot, and deletes it once the slot has drained. The strings are the
-  /// spawner, the parent session and the sessions directory.
-  ReleaseDelegate(String, String, String, Subject(Result(Nil, Error)))
+  /// Releases the delegate session of a pair: owes a release to each
+  /// orchestrator in the list, marks the session releasing, stops its slot, and
+  /// deletes it once the slot has drained. The strings are the spawner, the
+  /// parent session and the sessions directory, and the list is the
+  /// orchestrators the session's own children started children on.
+  ReleaseDelegate(
+    String,
+    String,
+    String,
+    List(String),
+    Subject(Result(Nil, Error)),
+  )
 
   /// Deletes the delegate sessions that are due and answers how many went, with
   /// the resident ones that look idle. The function judges a spawner, the
@@ -2096,10 +2108,18 @@ pub fn delegate_pair(
 /// everything stored under it. A pair with no row is `Ok` and nothing happens,
 /// and a repeat tries the deletion again if the first failed.
 ///
+/// `holders` are the orchestrators the session's own children started children
+/// on (protocol-change/084, phase 4). Before anything else, in the same turn,
+/// the registry writes one release row for each, the rows a deleted parent
+/// session leaves (`client/remote_release`), and rings the release drainer. So a
+/// release that reached this daemon reaches the orchestrators below it, and the
+/// rows outlive the session they were written for. A repeat writes rows that
+/// are already there, and the catalogue keeps each once.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // manager.release_delegate(registry, "laptop", parent, sessions) == Ok(Nil)
+/// // manager.release_delegate(registry, "laptop", parent, sessions, ["third"]) == Ok(Nil)
 /// ```
 @internal
 pub fn release_delegate(
@@ -2107,14 +2127,32 @@ pub fn release_delegate(
   spawner: String,
   parent_session: String,
   sessions: String,
+  holders: List(String),
 ) -> Result(Nil, Error) {
   call.try_call(manager.commands, waiting: 5000, sending: ReleaseDelegate(
     spawner,
     parent_session,
     sessions,
+    holders,
     _,
   ))
   |> result.unwrap(Error(Unavailable))
+}
+
+/// The orchestrators that may hold a child of a closed session's children, read
+/// from its file in the caller's process (protocol-change/084, phase 4). It is
+/// what a release of a delegate session that is not resident owes in turn. A
+/// session the registry cannot name, and a file that cannot be read, owe
+/// nothing, as for a deletion.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.closed_holders(registry, delegate_session_id) == ["third"]
+/// ```
+@internal
+pub fn closed_holders(manager: Manager(instance), id: String) -> List(String) {
+  holders_of(manager, id)
 }
 
 /// What the retention sweep asks about delegate sessions (protocol-change/084).
@@ -3616,9 +3654,9 @@ fn handle(
       )
       sm.keep(book)
     }
-    ReleaseDelegate(spawner, parent_session, sessions, reply) -> {
+    ReleaseDelegate(spawner, parent_session, sessions, holders, reply) -> {
       let #(book, outcome) =
-        release_now(book, spawner, parent_session, sessions)
+        release_now(book, spawner, parent_session, sessions, holders)
       process.send(reply, outcome)
       step(phase, book)
     }
@@ -4316,27 +4354,30 @@ fn delete_registration(
   sessions: String,
   holders: List(String),
 ) -> Result(catalogue.Registration, AdminError) {
-  use Nil <- result.try(owe_releases(book, id, holders))
+  use Nil <- result.try(
+    owe_releases(book, id, holders) |> result.map_error(AdminMetadata),
+  )
   remove_registration(book, id, sessions)
 }
 
+// The release rows a session that is about to go owes the orchestrators that
+// may hold a child of it, and the bell that wakes the drainer that sends them.
+// A deletion of a parent session and a release of a delegate session both write
+// them, in the registry's turn and before the session leaves.
 fn owe_releases(
   book: Book(instance),
   id: String,
   holders: List(String),
-) -> Result(Nil, AdminError) {
+) -> Result(Nil, catalogue.Error) {
   case holders {
     [] -> Ok(Nil)
     [_, ..] -> {
-      use Nil <- result.map(
-        catalogue.write_remote_releases(
-          book.catalogue,
-          id,
-          holders,
-          now_ms: ffi_os.system_time_ms(),
-        )
-        |> result.map_error(AdminMetadata),
-      )
+      use Nil <- result.map(catalogue.write_remote_releases(
+        book.catalogue,
+        id,
+        holders,
+        now_ms: ffi_os.system_time_ms(),
+      ))
       book.release_bell()
     }
   }
@@ -4488,19 +4529,27 @@ fn release_now(
   spawner: String,
   parent_session: String,
   sessions: String,
+  holders: List(String),
 ) -> #(Book(instance), Result(Nil, Error)) {
   case catalogue.delegate_for(book.catalogue, spawner, parent_session) {
     Error(error) -> #(book, Error(Catalogue(error)))
     Ok(None) -> #(book, Ok(Nil))
     Ok(Some(found)) -> {
-      let marked = case found.state {
-        catalogue.Open ->
-          catalogue.set_delegate_state(
-            book.catalogue,
-            found.session_id,
-            catalogue.Releasing,
-          )
-        catalogue.Releasing | catalogue.Released -> Ok(Nil)
+      // The rows the session's children's children are owed come first: they
+      // name the session, which is deleted below, and they outlive it. A row
+      // that cannot be written fails the release, which the spawner sends
+      // again, rather than deleting the only record of whom to tell.
+      let marked = {
+        use Nil <- result.try(owe_releases(book, found.session_id, holders))
+        case found.state {
+          catalogue.Open ->
+            catalogue.set_delegate_state(
+              book.catalogue,
+              found.session_id,
+              catalogue.Releasing,
+            )
+          catalogue.Releasing | catalogue.Released -> Ok(Nil)
+        }
       }
       case marked {
         Error(error) -> #(book, Error(Catalogue(error)))

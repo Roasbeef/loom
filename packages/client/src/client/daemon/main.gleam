@@ -39,7 +39,11 @@
 ////    and `spawner_link_of`: the first gives it the tick that enforces its
 ////    children's deadlines, the second the recorder and the child budget of a
 ////    metered spawner, and the third the address of the parent its children
-////    write to (protocol-change/084, phase 2).
+////    write to (protocol-change/084, phase 2). `depth_cap_of` gives it the
+////    spawner's maximum depth as its Agency's depth cap, and `reach_of` narrows
+////    its reach to the orchestrators the spawner lets it spawn on, so its
+////    children may start children of their own as far as the policy allows
+////    (phase 4).
 //// 3. `listen_moving` binds the listener, and `publish_endpoint` records the
 ////    bound port for the reservation this VM holds.
 //// 4. `wait` blocks on the signal relay, the root and the executor host, and a
@@ -1539,14 +1543,21 @@ pub fn catalogue_holds(
 // may start a child elsewhere only while its owner holds it alone, which is the
 // test default peer links already use, asked at each spawn because inviting a
 // member changes the answer.
+//
+// A delegate session is held by this daemon's owner alone, so that test would
+// offer it every orchestrator. Its children may spawn only where the spawner's
+// `spawn_on` says (phase 4), so its reach is narrowed to that list and offered
+// when the list names one. A delegate session whose spawner was removed, or
+// whose marker cannot be read, reaches none: nothing is offered that the policy
+// cannot vouch for.
 fn reach_of(
   config: Config,
   registry: manager.Manager(instance),
   session: String,
 ) -> Option(remote_reach.Reach) {
-  case config.membership {
-    None -> None
-    Some(membership) ->
+  case config.membership, manager.delegate_of(registry, session) {
+    None, _ -> None
+    Some(membership), Ok(None) ->
       Some(
         remote_spawner.over_distribution(
           membership,
@@ -1556,6 +1567,49 @@ fn reach_of(
           fn() { list.contains(manager.unshared_sessions(registry), session) },
         ),
       )
+    Some(membership), Ok(Some(marker)) ->
+      spawners.find(config.spawners, marker.spawner)
+      |> option.from_result
+      |> option.map(fn(spawner) {
+        remote_spawner.over_distribution(
+          membership,
+          orchestrator_roster(config),
+          config.keepers,
+          session,
+          fn() { True },
+        )
+        |> remote_reach.restricted(spawner.spawn_on)
+      })
+    Some(_), Error(_) -> None
+  }
+}
+
+/// The deepest spawn a session's Agency admits, or `None` for the Agency's own
+/// default.
+///
+/// Only a delegate session has one: its spawner's `max_depth`, so that a child
+/// that the ceiling gave `agent_spawn` can use it, and a child at the limit
+/// cannot (protocol-change/084, phase 4). A session whose spawner was removed,
+/// or whose marker cannot be read, keeps the default of one, which admits no
+/// spawn from a child.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // main.depth_cap_of(registry, spawners, delegate_session_id) == Some(2)
+/// ```
+@internal
+pub fn depth_cap_of(
+  registry: manager.Manager(instance),
+  configured: List(spawners.Spawner),
+  id: String,
+) -> Option(Int) {
+  case manager.delegate_of(registry, id) {
+    Ok(Some(marker)) ->
+      spawners.find(configured, marker.spawner)
+      |> option.from_result
+      |> option.map(fn(spawner) { spawner.max_depth })
+    Ok(None) | Error(_) -> None
   }
 }
 
@@ -2065,6 +2119,7 @@ pub fn prepare_startup(
             ),
             remote_reach: reach_of(config, directory, registration.id),
             deadline_tick_ms: tick,
+            depth_cap: depth_cap_of(directory, config.spawners, registration.id),
             metering: metering_of(
               directory,
               config.spawners,

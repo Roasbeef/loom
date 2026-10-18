@@ -402,6 +402,12 @@ pub type Settings {
     /// the daemon sets it for a delegate session alone, whose children belong
     /// to a spawner that may never return (protocol-change/084).
     deadline_tick_ms: Option(Int),
+    /// The deepest spawn the Agency admits, counting the strand a human talks
+    /// to as depth 0, or `None` for the Agency's default of one. The daemon sets
+    /// it for a delegate session alone, to its spawner's `max_depth`, so a child
+    /// there may start children of its own as the policy allows
+    /// (protocol-change/084, phase 4).
+    depth_cap: Option(Int),
     /// What a delegate session reports about its children's spend and the
     /// budget it enforces on one child (protocol-change/084, phase 2). `None`
     /// for every session but the delegate session of a metered spawner.
@@ -1455,6 +1461,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       peer_defaults: None,
       remote_reach: None,
       deadline_tick_ms: None,
+      depth_cap: None,
       metering: None,
       spawner: None,
       laptop: None,
@@ -3564,9 +3571,11 @@ fn assemble_in(
   // consumes the config. `client/effect_abort` explains the join; the actor
   // behind the name is added to the services tier beside the async service.
   let effect_abort_name = address.new_address(namespace)
+  let agency_base = agency.default_config(agency_name, clock)
   let agency_config =
     agency.Config(
-      ..agency.default_config(agency_name, clock),
+      ..agency_base,
+      depth_cap: option.unwrap(settings.depth_cap, agency_base.depth_cap),
       peer_defaults: option.unwrap(
         settings.peer_defaults,
         peer_mail.no_defaults,

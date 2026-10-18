@@ -111,6 +111,7 @@ fn recording(heard: Subject(Heard)) -> agency.DelegateEndpoint {
       Ok(json.Null)
     },
     occupancy: fn() { agency.Vacant },
+    holders: fn() { Ok([]) },
   )
 }
 

@@ -56,6 +56,32 @@
 ////     the reply. `wait_across` joins local and remote handles in one call,
 ////     `remote_peers` lists remote children from their stubs, and
 ////     `live_stubs` counts the stubs whose child may still be running.
+//// 13. Depth across machines (phase 4) adds two steps. `within_parent` keeps
+////     the deadline of a child's own child inside the deadline its parent has
+////     left, and `delegate_holders` lists the orchestrators a delegate
+////     session's children started children on, so that releasing the session
+////     releases them in turn.
+////
+//// ## Depth across machines
+////
+//// A child here for a parent on another orchestrator may start children of its
+//// own when the spawner's `max_depth` allows it (protocol-change/084, phase 4).
+//// The daemon sets this session's `depth_cap` to that `max_depth`, so the child's
+//// spawn is judged by the figure its tools were chosen by. A grandchild in this
+//// session is an ordinary local spawn. One on a third orchestrator is
+//// `spawn_elsewhere` with this session as the parent session, so the third
+//// orchestrator sees this daemon as its spawner, and the stub, the lineage cell
+//// and the drainer are the ones a laptop uses. The `Spawn` carries the depth of
+//// the child's cell, and the third orchestrator judges it against its own
+//// spawner's `max_depth`. Which orchestrators may be asked is the spawner's
+//// `spawn_on`, which the daemon applies to this session's `Reach`.
+////
+//// The grandchild may not outlive its parent: `within_parent` cuts its budget to
+//// what the parent's deadline leaves. And releasing this session releases the
+//// grandchildren: the released fence stops new stubs, `delegate_holders` reads
+//// the ones there are, and the registry writes a release row for each of their
+//// orchestrators before it deletes the session, the same rows a laptop writes
+//// when it deletes a parent session.
 ////
 //// ## The bootstrap knot, and the name that unties it
 ////
@@ -1246,6 +1272,13 @@ type Source {
 // above that same cap. A remote child's own spawn is judged as a local one
 // against the cap, so a limit above it would hand the child a spawn tool that
 // every call of it would be refused.
+//
+// The clamp is kept, and documented rather than refused (protocol-change/084,
+// addendum of 2026-10-17). The daemon sets a delegate session's `depth_cap` to
+// its spawner's `max_depth` (`client/daemon/main.depth_cap_of`), so the two are
+// equal and the clamp never binds there. It binds only for a host that builds
+// the Agency with another cap, where it keeps the tool a child holds and the
+// limit its spawns meet the same.
 fn depth_limit(config: Config, source: Source) -> Int {
   case source {
     Local -> config.depth_cap
@@ -1280,6 +1313,18 @@ fn spawn_on(
     Some(existing) -> adopt(runtime, caller, existing)
     None -> {
       use Nil <- result.try(admit_run(runtime, caller, source))
+
+      // A child of a strand that has a deadline of its own may not outlive it.
+      // The clamp is on the create path only, after adoption, so a resent spawn
+      // is answered with the child it made and its original deadline.
+      let #(now, _clock) = clock.read(config.clock)
+      use request <- result.try(within_parent(
+        ledger,
+        caller,
+        request,
+        config.default_within_ms,
+        now,
+      ))
       reconcile(
         config,
         runtime,
@@ -1552,6 +1597,7 @@ fn reconcile(
     }
   })
   use tools <- result.try(child_tools(
+    source,
     depth_limit(config, source),
     parent_tools,
     request.tools,
@@ -1609,7 +1655,11 @@ fn reconcile(
       brief:,
       tools:,
       default_within_ms: config.default_within_ms,
-      deadline: deadline_of(config, now, request.within_ms),
+      deadline: no_later_than_parent(
+        ledger,
+        caller,
+        deadline_of(config, now, request.within_ms),
+      ),
       detached: request.detach,
       reaped: False,
       orchestrator: None,
@@ -1950,16 +2000,25 @@ fn child_configuration(
 // The result is sorted and deduplicated because a strand's active tool
 // list renders to the wire in that order, ahead of the system prompt, as
 // the byte prefix of the provider's cached region.
+//
+// A parent on another orchestrator is the one exception to the default. Its
+// tools arrive already narrowed to the spawner's ceiling, and the ceiling is
+// where the box's owner says whether a child may spawn (protocol-change/084,
+// phase 4): the default ceiling holds `agent_spawn` only when `max_depth` is
+// above one. So a delegated child keeps the spawn tool the ceiling gave it,
+// and the depth check below still takes it from a child at the cap.
 fn child_tools(
+  source: Source,
   depth_cap: Int,
   parent_tools: List(String),
   requested: Option(List(String)),
   depth: Int,
 ) -> Result(List(String), Refusal) {
-  use chosen <- result.try(case requested {
-    None ->
+  use chosen <- result.try(case requested, source {
+    None, Delegated(..) -> Ok(parent_tools)
+    None, Local ->
       Ok(list.filter(parent_tools, fn(name) { name != agent.spawn_tool_name }))
-    Some(names) -> {
+    Some(names), Local | Some(names), Delegated(..) -> {
       use held <- result.map(
         list.try_map(names, fn(name) {
           case list.contains(parent_tools, name) {
@@ -2044,6 +2103,67 @@ fn check_capacity(
 // to zero means no spawns at all, and this is the line that says so.
 fn at_least(values: List(a), bound: Int) -> Bool {
   bound <= 0 || list.drop(values, bound - 1) != []
+}
+
+// A spawn whose parent has a deadline, with its own deadline no later than the
+// parent's (protocol-change/084, phase 4). A child at depth one on another
+// orchestrator has the deadline its spawner gave it, and a child it starts, in
+// its delegate session or on a third orchestrator, would otherwise get a fresh
+// budget and could run past it, and past the spawner's `max_within_s`. So the
+// grandchild's budget is the smaller of what it asked for and what its parent
+// has left. A request that names no budget takes `fallback` first: the Agency's
+// default for a child here, and `None` for a child elsewhere, whose default the
+// other orchestrator does not know to clamp, so it is sent what the parent has
+// left. A parent past its deadline may not start a child at all. A parent with
+// no cell or no deadline, which is every strand a human talks to, is not
+// clamped.
+fn within_parent(
+  ledger: Dict(String, Lineage),
+  caller: Caller,
+  request: agent.SpawnRequest,
+  fallback: Option(Int),
+  now: Int,
+) -> Result(agent.SpawnRequest, Refusal) {
+  case option.then(cell_of(ledger, caller.strand), fn(cell) { cell.deadline }) {
+    None -> Ok(request)
+    Some(deadline) -> {
+      let left = deadline - now
+      use <- bool.guard(
+        when: left <= 0,
+        return: Error(agent.InvalidArgument(
+          reason: "this strand's own deadline has passed, so it cannot start a child",
+        )),
+      )
+      let asked = case request.within_ms {
+        Some(budget) if budget > 0 -> Some(budget)
+        Some(_) | None -> fallback
+      }
+      let within = case asked {
+        Some(budget) -> int.min(budget, left)
+        None -> left
+      }
+      Ok(agent.SpawnRequest(..request, within_ms: Some(within)))
+    }
+  }
+}
+
+// The absolute half of `within_parent`. The budget it cut is relative, and the
+// cell's deadline is computed from a later reading of the clock, so the cell is
+// capped at the parent's deadline as well and cannot fall even a few
+// milliseconds after it.
+fn no_later_than_parent(
+  ledger: Dict(String, Lineage),
+  caller: Caller,
+  deadline: Option(Int),
+) -> Option(Int) {
+  case
+    option.then(cell_of(ledger, caller.strand), fn(cell) { cell.deadline }),
+    deadline
+  {
+    Some(parent), Some(own) -> Some(int.min(parent, own))
+    Some(parent), None -> Some(parent)
+    None, own -> own
+  }
 }
 
 fn deadline_of(
@@ -3862,7 +3982,25 @@ fn admit_remote(
         True -> Ok(#(key, stub))
         False -> Error(agent.NameAlreadyMinted(strand: stub.name))
       }
-    None -> write_stub(config, runtime, ledger, caller, request, orchestrator)
+
+    // A new stub in a delegate session whose parent was deleted is refused by
+    // the released fence, read in the holder that also writes it. The release
+    // lists the session's stubs to tell their orchestrators after the fence is
+    // written, so a stub admitted before the fence is one the list holds and no
+    // stub can be admitted after it. The deadline is clamped here, before the
+    // stub records the request that every resend sends.
+    None -> {
+      use Nil <- result.try(refuse_if_fenced(runtime, released_key(), caller))
+      let #(now, _clock) = clock.read(config.clock)
+      use request <- result.try(within_parent(
+        ledger,
+        caller,
+        request,
+        None,
+        now,
+      ))
+      write_stub(config, runtime, ledger, caller, request, orchestrator)
+    }
   }
 }
 
@@ -4730,6 +4868,12 @@ pub type DelegateEndpoint {
     /// Whether any child of the session still has a run, which the retention
     /// sweep asks before it closes an idle session.
     occupancy: fn() -> Occupancy,
+    /// The orchestrators this session's own children started children on, read
+    /// from its stubs (protocol-change/084, phase 4). A release asks it after
+    /// `release` has written the released fence, so the list holds every stub
+    /// the session will ever have, and the registry owes each of them a
+    /// `Release` before the session is deleted.
+    holders: fn() -> Result(List(String), remote_spawn.SpawnRefusal),
   )
 }
 
@@ -4774,7 +4918,33 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
       delegate_send(trimmed, parent, child, message_id, text)
     },
     occupancy: fn() { delegate_occupancy(trimmed) },
+    holders: fn() { delegate_holders(trimmed) },
   )
+}
+
+/// The orchestrators a delegate session's children started children on, which
+/// its release must tell in turn (protocol-change/084, phase 4).
+///
+/// They are the orchestrators of every stub that is not `Refused`
+/// (`remote_child.holders`). The stubs are read through a borrowed runtime, and
+/// nothing is written. A release calls this after the released fence, which
+/// `admit_remote` reads before it writes a stub, so no stub can appear after
+/// the list is taken.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.delegate_holders(config) == Ok(["third"])
+/// ```
+pub fn delegate_holders(
+  config: Config,
+) -> Result(List(String), remote_spawn.SpawnRefusal) {
+  use runtime <- result.try(
+    borrow(config) |> result.map_error(refused(config, _)),
+  )
+  remote_child.all(runtime)
+  |> result.map(remote_child.holders)
+  |> result.map_error(fn(reason) { remote_spawn.StoreFailure(reason:) })
 }
 
 // --- messages into a child on this orchestrator -------------------------------
