@@ -208,6 +208,7 @@ fn commit_ok(
   tx: Tx,
 ) -> #(SessionStats, tx.CommitResult) {
   let assert Ok(result) = storage.commit(store, tx)
+    as "conformance storage check"
   let model =
     list.fold(over: tx.writes, from: model, with: fn(model, write) {
       case write {
@@ -222,7 +223,7 @@ fn commit_ok(
         SetRegister(..) | DeleteRegister(..) -> model
       }
     })
-  let assert Ok(actual) = storage.stats(store)
+  let assert Ok(actual) = storage.stats(store) as "conformance storage check"
   assert actual == model
   #(model, result)
 }
@@ -233,6 +234,7 @@ fn ids_of(entries: List(Entry)) -> List(EntryId) {
 
 fn scan_ids(store: Storage(handle), q: storage.BranchScan) -> List(EntryId) {
   let assert Ok(entries) = storage.scan_branch(store, q)
+    as "conformance storage check"
   ids_of(entries)
 }
 
@@ -260,10 +262,13 @@ fn atomicity_checks(backend: Backend(handle)) -> Nil {
       expected: [],
     )
   let assert Error(Corruption(_)) = storage.commit(store, failing)
+    as "conformance storage check"
   let assert Ok(None) = storage.get_register(store, register.StrandLeaf, "main")
+    as "conformance storage check"
   let assert Ok(found) = storage.get_entries(store, [a.id])
+    as "conformance storage check"
   assert dict.size(found) == 0
-  let assert Ok(stats) = storage.stats(store)
+  let assert Ok(stats) = storage.stats(store) as "conformance storage check"
   assert stats == storage.empty_stats()
 
   // A missing parent poisons the whole transaction the same way.
@@ -288,7 +293,9 @@ fn atomicity_checks(backend: Backend(handle)) -> Nil {
       expected: [],
     )
   let assert Error(Corruption(_)) = storage.commit(store, orphaned)
+    as "conformance storage check"
   let assert Ok(found) = storage.get_entries(store, [a.id])
+    as "conformance storage check"
   assert dict.size(found) == 0
 
   // After the failures, a clean commit starts at seq 1: the failed
@@ -301,8 +308,9 @@ fn atomicity_checks(backend: Backend(handle)) -> Nil {
     )
   assert result.first_seq == 1
   let assert Ok(found) = storage.get_entries(store, [a.id])
+    as "conformance storage check"
   assert dict.size(found) == 1
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -336,7 +344,7 @@ fn seq_checks(backend: Backend(handle)) -> Nil {
 
   // Strictly increasing in write order, starting at first_seq; gaps are
   // legal, so only monotonicity is contractual.
-  let assert [fs1, fs2, fs3] = first.seqs
+  let assert [fs1, fs2, fs3] = first.seqs as "conformance storage check"
   assert fs1 == first.first_seq && fs1 < fs2 && fs2 < fs3
   let #(_, second) =
     commit_ok(
@@ -352,17 +360,19 @@ fn seq_checks(backend: Backend(handle)) -> Nil {
     )
 
   // Strictly increasing across commits.
-  let assert [s1, s2] = second.seqs
+  let assert [s1, s2] = second.seqs as "conformance storage check"
   let assert Ok(first_last) = list.last(first.seqs)
+    as "conformance storage check"
   assert s1 > first_last
   assert s2 > s1
 
   // The stored entries carry the assigned seqs, with gaps where the
   // interleaved register writes consumed seqs.
   let assert Ok(found) = storage.get_entries(store, [a.id, b.id, c.id])
-  let assert Ok(stored_a) = dict.get(found, a.id)
-  let assert Ok(stored_b) = dict.get(found, b.id)
-  let assert Ok(stored_c) = dict.get(found, c.id)
+    as "conformance storage check"
+  let assert Ok(stored_a) = dict.get(found, a.id) as "conformance storage check"
+  let assert Ok(stored_b) = dict.get(found, b.id) as "conformance storage check"
+  let assert Ok(stored_c) = dict.get(found, c.id) as "conformance storage check"
   assert stored_a.seq < stored_b.seq
   assert stored_b.seq < stored_c.seq
   assert stored_b.seq - stored_a.seq >= 2
@@ -370,8 +380,9 @@ fn seq_checks(backend: Backend(handle)) -> Nil {
 
   // An empty transaction is legal, applies nothing, and assigns nothing.
   let assert Ok(empty) = storage.commit(store, Tx(writes: [], expected: []))
+    as "conformance storage check"
   assert empty.seqs == []
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -409,20 +420,24 @@ fn write_order_checks(backend: Backend(handle)) -> Nil {
       ),
     )
   let assert Ok(found) = storage.get_entries(store, [b.id])
-  let assert Ok(stored_b) = dict.get(found, b.id)
+    as "conformance storage check"
+  let assert Ok(stored_b) = dict.get(found, b.id) as "conformance storage check"
   assert stored_b.parent == Some(a.id)
   let assert Ok(None) = storage.get_register(store, register.OpState, "gone")
+    as "conformance storage check"
   let assert Ok(Some(kept)) =
     storage.get_register(store, register.OpState, "kept")
+    as "conformance storage check"
   assert kept.value == json_value(2)
   let assert Ok(Some(twice)) =
     storage.get_register(store, register.OpState, "twice")
+    as "conformance storage check"
   assert twice.value == json_value(4)
 
   // The surviving "twice" cell was stamped by the later of its two sets.
   assert twice.seq > kept.seq
   let _ = model
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -446,16 +461,19 @@ fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
   // Entry under an existing entry id: corruption, not an update.
   let assert Error(Corruption(_)) =
     storage.commit(store, Tx(writes: [InsertEntry(a)], expected: []))
+    as "conformance storage check"
 
   // Usage under an existing usage id.
   let assert Error(Corruption(_)) =
     storage.commit(store, Tx(writes: [InsertUsage(row)], expected: []))
+    as "conformance storage check"
 
   // The id namespace is shared: a usage row under an entry id is
   // corruption too.
   let #(cross, _ctx) = usage(ctx, None, 5)
   let assert Ok(entry_id_as_usage) =
     ids.parse_usage_id(ids.entry_id_to_string(a.id))
+    as "conformance storage check"
   let assert Error(Corruption(_)) =
     storage.commit(
       store,
@@ -464,7 +482,8 @@ fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
         expected: [],
       ),
     )
-  let assert Ok(Nil) = storage.close(store)
+    as "conformance storage check"
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -488,6 +507,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
     )
   let assert Ok(Some(cell)) =
     storage.get_register(store, register.StrandConfig, "main")
+    as "conformance storage check"
   assert cell.value == json_value(1) && cell.seq == first.first_seq
 
   let #(model, second) =
@@ -501,6 +521,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
     )
   let assert Ok(Some(cell)) =
     storage.get_register(store, register.StrandConfig, "main")
+    as "conformance storage check"
   assert cell.value == json_value(2) && cell.seq == second.first_seq
 
   let #(model, _) =
@@ -511,6 +532,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
     )
   let assert Ok(None) =
     storage.get_register(store, register.StrandConfig, "main")
+    as "conformance storage check"
 
   // Deleting an absent cell is a no-op, and the commit still succeeds.
   let #(model, _) =
@@ -532,6 +554,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
     )
   let assert Ok(Some(cell)) =
     storage.get_register(store, register.StrandConfig, "main")
+    as "conformance storage check"
   assert cell.value == json_value(3) && cell.seq == third.first_seq
 
   // list_registers: key-ascending, prefix-filtered, namespace-scoped —
@@ -553,6 +576,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
       ),
     )
   let assert Ok(all) = storage.list_registers(store, register.OpToolArgs, None)
+    as "conformance storage check"
   assert list.map(all, fn(pair) { pair.0 })
     == [
       "op1%weird_key",
@@ -563,15 +587,18 @@ fn register_checks(backend: Backend(handle)) -> Nil {
     ]
   let assert Ok(op1) =
     storage.list_registers(store, register.OpToolArgs, Some("op1:"))
+    as "conformance storage check"
   assert list.map(op1, fn(pair) { pair.0 })
     == ["op1:step1:0", "op1:step1:1", "op1:step2:0"]
   let assert Ok(weird) =
     storage.list_registers(store, register.OpToolArgs, Some("op1%"))
+    as "conformance storage check"
   assert list.map(weird, fn(pair) { pair.0 }) == ["op1%weird_key"]
   let assert Ok(none) =
     storage.list_registers(store, register.OpToolArgs, Some("op3"))
+    as "conformance storage check"
   assert none == []
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -606,8 +633,10 @@ fn cas_checks(backend: Backend(handle)) -> Nil {
     ])
   let assert Error(StaleExpectation(failed)) =
     storage.commit(store, failing_none)
+    as "conformance storage check"
   assert failed == Expect(register.OpState, "op", None)
   let assert Ok(found) = storage.get_entries(store, [a.id])
+    as "conformance storage check"
   assert dict.size(found) == 0
 
   // Matching seq: passes.
@@ -629,14 +658,17 @@ fn cas_checks(backend: Backend(handle)) -> Nil {
       Expect(register.OpState, "op", Some(first.first_seq)),
     ])
   let assert Error(StaleExpectation(_)) = storage.commit(store, stale)
+    as "conformance storage check"
   let assert Ok(Some(cell)) =
     storage.get_register(store, register.OpState, "op")
+    as "conformance storage check"
   assert cell.value == json_value(2)
 
   // Expect-some on an absent cell: fails.
   let absent =
     Tx(writes: [], expected: [Expect(register.OpState, "missing", Some(1))])
   let assert Error(StaleExpectation(_)) = storage.commit(store, absent)
+    as "conformance storage check"
 
   // Several expectations, all holding, guard one commit.
   let #(model, _) =
@@ -657,7 +689,7 @@ fn cas_checks(backend: Backend(handle)) -> Nil {
       Tx(writes: [], expected: [Expect(register.OpState, "op", None)]),
     )
   let _ = ctx
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -702,8 +734,10 @@ fn placement_checks(backend: Backend(handle)) -> Nil {
   // Until placement, exactly the pending value exists.
   let assert Ok(Some(pending)) =
     storage.get_register(store, register.PendingEntry, queued_key)
+    as "conformance storage check"
   assert pending.value == payload
   let assert Ok(found) = storage.get_entries(store, [queued.id])
+    as "conformance storage check"
   assert dict.size(found) == 0
 
   let #(_, _) =
@@ -729,15 +763,19 @@ fn placement_checks(backend: Backend(handle)) -> Nil {
   // After placement, exactly the entry exists.
   let assert Ok(None) =
     storage.get_register(store, register.PendingEntry, queued_key)
+    as "conformance storage check"
   let assert Ok(listed) =
     storage.list_registers(store, register.PendingEntry, None)
+    as "conformance storage check"
   assert listed == []
   let assert Ok(found) = storage.get_entries(store, [queued.id])
+    as "conformance storage check"
   assert dict.size(found) == 1
   let assert Ok(Some(leaf)) =
     storage.get_register(store, register.StrandLeaf, "main")
+    as "conformance storage check"
   assert register.read_leaf(leaf.value) == Ok(Some(queued.id))
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -861,14 +899,18 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   let #(d3, _ctx) = message(ctx, Some(m2.id), "d3")
   let assert Ok(_) =
     storage.commit(store, Tx(writes: [InsertEntry(d3)], expected: []))
+    as "conformance storage check"
   assert scan_ids(store, newest |> storage.branch_stop_at_id(d3.id))
     == [m6.id, m5.id, x4.id, c3.id, m2.id, m1.id]
 
   // The stop applies before the cursor: with the cursor below the
   // compaction stop, only rows between them emit ...
   let assert Ok(found) = storage.get_entries(store, [m5.id, c3.id])
+    as "conformance storage check"
   let assert Ok(stored_m5) = dict.get(found, m5.id)
+    as "conformance storage check"
   let assert Ok(stored_c3) = dict.get(found, c3.id)
+    as "conformance storage check"
 
   // Stop resolution precedes kind filtering, even when the stop itself is
   // excluded. The exclusive cursor and limit then apply to surviving rows.
@@ -930,7 +972,8 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   let #(stranger, _) = mint(new_ctx() |> skip_mints(50))
   let assert Error(UnknownEntry(_)) =
     storage.scan_branch(store, storage.branch_scan(from: stranger))
-  let assert Ok(Nil) = storage.close(store)
+    as "conformance storage check"
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -966,10 +1009,11 @@ fn page_through_loop(
     None -> q |> storage.branch_limit(page)
   }
   let assert Ok(entries) = storage.scan_branch(store, paged)
+    as "conformance storage check"
   case entries {
     [] -> list.reverse(accumulator)
     _ -> {
-      let assert Ok(last) = list.last(entries)
+      let assert Ok(last) = list.last(entries) as "conformance storage check"
       page_through_loop(
         store,
         q,
@@ -1098,7 +1142,7 @@ fn branch_index_checks(backend: Backend(handle)) -> Nil {
         |> storage.branch_stop_at_kind(storage.Compaction),
     )
     == [f4.id, f3.id, e2.id, e1.id]
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -1144,33 +1188,39 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
       ),
     )
   let assert Ok(all) = storage.scan_entries(store, storage.entry_scan())
+    as "conformance storage check"
   assert ids_of(all) == [m1.id, c2.id, x3.id, x4.id, m5.id]
   let assert Ok(descending) =
     storage.scan_entries(
       store,
       storage.entry_scan() |> storage.entry_order(storage.NewestFirst),
     )
+    as "conformance storage check"
   assert ids_of(descending) == list.reverse(ids_of(all))
   let assert Ok(messages) =
     storage.scan_entries(
       store,
       storage.entry_scan() |> storage.entry_kind(storage.Message),
     )
+    as "conformance storage check"
   assert ids_of(messages) == [m1.id, m5.id]
   let assert Ok(notes) =
     storage.scan_entries(
       store,
       storage.entry_scan() |> storage.entry_custom_type("note"),
     )
+    as "conformance storage check"
   assert ids_of(notes) == [x3.id]
   let assert Ok(window) =
     storage.scan_entries(
       store,
       storage.entry_scan() |> storage.entry_seq_range(Some(2), Some(4)),
     )
+    as "conformance storage check"
   assert ids_of(window) == [c2.id, x3.id, x4.id]
   let assert Ok(limited) =
     storage.scan_entries(store, storage.entry_scan() |> storage.entry_limit(2))
+    as "conformance storage check"
   assert ids_of(limited) == [m1.id, c2.id]
 
   // A zero or negative limit returns no rows — never "no limit". SQLite's
@@ -1178,9 +1228,11 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
   // every row here while another returns none: a silent divergence.
   let assert Ok(zero) =
     storage.scan_entries(store, storage.entry_scan() |> storage.entry_limit(0))
+    as "conformance storage check"
   assert zero == []
   let assert Ok(negative) =
     storage.scan_entries(store, storage.entry_scan() |> storage.entry_limit(-1))
+    as "conformance storage check"
   assert negative == []
   let assert Ok(very_negative) =
     storage.scan_entries(
@@ -1189,6 +1241,7 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
         |> storage.entry_kind(storage.Message)
         |> storage.entry_limit(-100),
     )
+    as "conformance storage check"
   assert very_negative == []
 
   // The heads read is the same query projected to id, parent and seq, so
@@ -1198,6 +1251,7 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
   // pass by agreeing with each other.
   let assert Ok(all_heads) =
     storage.scan_entry_heads(store, storage.entry_scan())
+    as "conformance storage check"
   assert all_heads
     == [
       storage.EntryHead(id: m1.id, parent: None, seq: 1),
@@ -1208,10 +1262,12 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
     ]
   list.each(entry_scan_shapes(), fn(q) {
     let assert Ok(full) = storage.scan_entries(store, q)
+      as "conformance storage check"
     let assert Ok(heads) = storage.scan_entry_heads(store, q)
+      as "conformance storage check"
     assert heads == list.map(full, storage.entry_head_of)
   })
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -1273,7 +1329,8 @@ fn usage_scan_checks(backend: Backend(handle)) -> Nil {
     )
 
   let assert Ok(rows) = storage.scan_usage(store, storage.usage_scan())
-  let assert [r1, r2, r3] = rows
+    as "conformance storage check"
+  let assert [r1, r2, r3] = rows as "conformance storage check"
   assert r1.id == u1.id && r1.entry_id == Some(a.id) && !r1.adjustment
   assert r2.id == u2.id && r2.entry_id == None
   assert r3.id == u3.id && r3.adjustment
@@ -1289,7 +1346,8 @@ fn usage_scan_checks(backend: Backend(handle)) -> Nil {
         |> storage.usage_order(storage.NewestFirst)
         |> storage.usage_limit(1),
     )
-  let assert [only] = newest
+    as "conformance storage check"
+  let assert [only] = newest as "conformance storage check"
   assert only.id == u3.id
 
   // Catch-up read: everything after a persisted high-water seq.
@@ -1298,17 +1356,20 @@ fn usage_scan_checks(backend: Backend(handle)) -> Nil {
       store,
       storage.usage_scan() |> storage.usage_seq_range(Some(r1.seq + 1), None),
     )
+    as "conformance storage check"
   assert list.map(catch_up, fn(row) { row.id }) == [u2.id, u3.id]
 
   // A zero or negative limit returns no rows — never "no limit".
   let assert Ok(zero) =
     storage.scan_usage(store, storage.usage_scan() |> storage.usage_limit(0))
+    as "conformance storage check"
   assert zero == []
   let assert Ok(negative) =
     storage.scan_usage(store, storage.usage_scan() |> storage.usage_limit(-1))
+    as "conformance storage check"
   assert negative == []
   let _ = first
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
   Nil
 }
 
@@ -1325,7 +1386,7 @@ fn close_checks(backend: Backend(handle)) -> Nil {
       storage.empty_stats(),
       Tx(writes: [InsertEntry(a)], expected: []),
     )
-  let assert Ok(Nil) = storage.close(store)
+  let assert Ok(Nil) = storage.close(store) as "conformance storage check"
 
   // Idempotent.
   assert storage.close(store) == Ok(Nil)
@@ -1333,10 +1394,13 @@ fn close_checks(backend: Backend(handle)) -> Nil {
   // Reads on a closed handle are refused in-band.
   let assert Error(HandleClosed) =
     storage.get_register(store, register.StrandLeaf, "main")
+    as "conformance storage check"
   let assert Error(HandleClosed) = storage.stats(store)
+    as "conformance storage check"
 
   // Commits on a closed handle fault in-band.
   let assert Error(Faulted(_)) =
     storage.commit(store, Tx(writes: [], expected: []))
+    as "conformance storage check"
   Nil
 }
