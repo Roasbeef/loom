@@ -4,6 +4,8 @@
 //// table that says anything else is refused wherever the file is read, and the
 //// refusal names the key.
 
+import broker/policy
+import client/approval_ceiling
 import client/catalog
 import client/spawners.{InDirectory, InPool, OnExecutor, Spawner}
 import gleam/dict
@@ -115,6 +117,7 @@ max_per_day = 20
         token_budget_per_day: Some(5_000_000),
         child_token_budget: Some(200_000),
         max_per_day: Some(20),
+        approval_ceiling: None,
       ),
     ])
 }
@@ -455,7 +458,7 @@ pub fn a_malformed_table_is_refused_with_the_key_it_names_test() {
   )
   refused(
     minimal_with("host = \"x\""),
-    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day)",
+    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day, approval_ceiling)",
   )
   refused(
     with("[spawners]\nlaptop = \"laptop@100.64.0.5\"\n"),
@@ -483,4 +486,190 @@ pub fn the_catalogue_parser_refuses_what_the_spawner_parser_refuses_test() {
   // missing models, not an unknown `spawners` key.
   let assert Error(without_models) = catalog.parse(with(minimal))
   assert without_models == "the catalogue needs a [models.<name>] table"
+}
+
+// --- the approval ceiling (protocol-change/089) --------------------------------
+
+fn ceiling_of(table: String) -> approval_ceiling.Ceiling {
+  let assert Ok([spawner]) =
+    spawners.parse(with(
+      minimal <> "[spawners.laptop.approval_ceiling]\n" <> table,
+    ))
+    as "the ceiling table is accepted"
+  let assert Some(ceiling) = spawner.approval_ceiling
+    as "the spawner carries the ceiling it was given"
+  ceiling
+}
+
+pub fn a_table_with_no_ceiling_has_none_test() {
+  let assert Ok([spawner]) = spawners.parse(with(minimal))
+  assert spawner.approval_ceiling == None
+}
+
+pub fn an_empty_ceiling_table_is_a_ceiling_that_admits_nothing_test() {
+  let ceiling = ceiling_of("")
+  assert ceiling == approval_ceiling.nothing()
+  assert !approval_ceiling.admits(ceiling, policy.GrantEnv("HOME"))
+}
+
+pub fn a_ceiling_may_state_every_key_test() {
+  let ceiling =
+    ceiling_of(
+      "writable_roots = [\"/srv/work\", \"/var/tmp/\"]
+readable_roots = [\"/usr/share\"]
+network = [\"registry.npmjs.org:443\"]
+env = [\"NPM_TOKEN\"]
+scratch = [\"tmpfs\", \"/srv/scratch\"]
+limits = { wall_s = 600, mem_bytes = 1073741824 }
+",
+    )
+  assert ceiling
+    == approval_ceiling.Ceiling(
+      writable_roots: ["/srv/work", "/var/tmp"],
+      readable_roots: ["/usr/share"],
+      network: approval_ceiling.Hosts(["registry.npmjs.org:443"]),
+      env: ["NPM_TOKEN"],
+      limits: [#(policy.MemBytes, 1_073_741_824), #(policy.WallSeconds, 600)],
+      scratch: [
+        approval_ceiling.TmpfsScratch,
+        approval_ceiling.ScratchUnder("/srv/scratch"),
+      ],
+    )
+}
+
+pub fn the_limits_may_be_their_own_table_test() {
+  let assert Ok([spawner]) =
+    spawners.parse(with(
+      minimal <> "[spawners.laptop.approval_ceiling.limits]\nwall_s = 60\n",
+    ))
+  let assert Some(ceiling) = spawner.approval_ceiling
+  assert ceiling.limits == [#(policy.WallSeconds, 60)]
+}
+
+pub fn a_malformed_ceiling_is_refused_with_the_key_it_names_test() {
+  let place = "spawners.laptop.approval_ceiling"
+  let bad = fn(line: String, fragment: String) {
+    refused(with(minimal <> "[" <> place <> "]\n" <> line <> "\n"), fragment)
+  }
+  bad("host = \"x\"", "unknown key `host` in " <> place)
+  bad("writable_roots = \"/srv\"", place <> ".writable_roots must be an array")
+  bad(
+    "writable_roots = [\"srv\"]",
+    place <> ".writable_roots must be an absolute",
+  )
+  bad("writable_roots = [\"/srv/../etc\"]", "must not contain a .. segment")
+  bad("readable_roots = [\"/srv//x\"]", "must not contain a . segment")
+  bad("network = \"all\"", place <> ".network must be \"any\" or an array")
+  bad("network = [\"example.com\"]", "entry example.com is not host:port")
+  bad("network = [\"example.com:0\"]", "is not host:port")
+  bad("env = [\"\"]", place <> ".env must not hold an empty name")
+  bad("limits = { speed = 3 }", "unknown key `speed` in " <> place <> ".limits")
+  bad("limits = { wall_s = 0 }", place <> ".limits.wall_s must be positive")
+  bad(
+    "limits = { wall_s = \"1\" }",
+    place <> ".limits.wall_s must be an integer",
+  )
+  bad("limits = 3", place <> ".limits must be a table")
+  bad("scratch = [\"nowhere\"]", "scratch entry must be an absolute path")
+  refused(
+    minimal_with("approval_ceiling = \"yes\""),
+    "spawners.laptop.approval_ceiling must be a table",
+  )
+}
+
+pub fn a_ceiling_admits_a_grant_inside_it_and_refuses_one_outside_it_test() {
+  let ceiling =
+    ceiling_of(
+      "writable_roots = [\"/srv/work\"]
+readable_roots = [\"/usr/share\"]
+network = [\"registry.npmjs.org:443\"]
+env = [\"NPM_TOKEN\"]
+scratch = [\"tmpfs\"]
+limits = { wall_s = 600 }
+",
+    )
+  let admits = approval_ceiling.admits(ceiling, _)
+
+  // A root is admitted at or under a listed path, on a segment boundary.
+  assert admits(policy.GrantWritableRoot("/srv/work"))
+  assert admits(policy.GrantWritableRoot("/srv/work/a/b"))
+  assert !admits(policy.GrantWritableRoot("/srv/workshop"))
+  assert !admits(policy.GrantWritableRoot("/srv/work/../etc"))
+  assert !admits(policy.GrantWritableRoot("/etc"))
+
+  // Reading is implied by writing, and not the other way round.
+  assert admits(policy.GrantReadableRoot("/usr/share/doc"))
+  assert admits(policy.GrantReadableRoot("/srv/work/x"))
+  assert !admits(policy.GrantReadableRoot("/usr"))
+
+  // A proxy grant is admitted when every host it lists is listed; full network
+  // and an unlisted host are not.
+  assert admits(
+    policy.GrantNetwork(policy.NetworkProxy(
+      allow: ["registry.npmjs.org:443"],
+      proxy: "p",
+    )),
+  )
+  assert !admits(
+    policy.GrantNetwork(policy.NetworkProxy(
+      allow: ["registry.npmjs.org:443", "evil.example:443"],
+      proxy: "p",
+    )),
+  )
+  assert !admits(policy.GrantNetwork(policy.NetworkFull))
+  assert admits(policy.GrantNetwork(policy.NetworkOff))
+
+  assert admits(policy.GrantEnv("NPM_TOKEN"))
+  assert !admits(policy.GrantEnv("AWS_SECRET_ACCESS_KEY"))
+
+  // A limit is admitted up to its maximum, never as unlimited, and only for a
+  // field the ceiling names.
+  assert admits(policy.GrantLimit(policy.WallSeconds, 600))
+  assert !admits(policy.GrantLimit(policy.WallSeconds, 601))
+  assert !admits(policy.GrantLimit(policy.WallSeconds, 0))
+  assert !admits(policy.GrantLimit(policy.MemBytes, 1))
+
+  assert admits(policy.GrantScratch(policy.ScratchTmpfs))
+  assert !admits(policy.GrantScratch(policy.ScratchPath("/srv/scratch")))
+}
+
+pub fn any_network_admits_every_network_grant_test() {
+  let ceiling = ceiling_of("network = \"any\"")
+  assert approval_ceiling.admits(
+    ceiling,
+    policy.GrantNetwork(policy.NetworkFull),
+  )
+  assert approval_ceiling.admits(
+    ceiling,
+    policy.GrantNetwork(policy.NetworkProxy(allow: ["a:1"], proxy: "p")),
+  )
+}
+
+pub fn admitted_keeps_the_grants_the_ceiling_admits_in_order_test() {
+  let ceiling = ceiling_of("env = [\"A\", \"B\"]")
+  let grants = [
+    policy.GrantEnv("A"),
+    policy.GrantEnv("C"),
+    policy.GrantEnv("B"),
+  ]
+  assert approval_ceiling.admitted(ceiling, grants)
+    == [policy.GrantEnv("A"), policy.GrantEnv("B")]
+  assert !approval_ceiling.admits_all(ceiling, grants)
+  assert approval_ceiling.admits_all(ceiling, [policy.GrantEnv("A")])
+}
+
+pub fn the_root_path_admits_every_absolute_path_test() {
+  let ceiling = ceiling_of("writable_roots = [\"/\"]")
+  assert approval_ceiling.admits(ceiling, policy.GrantWritableRoot("/etc/x"))
+}
+
+pub fn the_catalogue_parser_refuses_a_malformed_ceiling_too_test() {
+  let assert Error(reason) =
+    catalog.parse(with(
+      minimal <> "[spawners.laptop.approval_ceiling]\nnetwork = \"all\"\n",
+    ))
+  assert string.contains(
+    reason,
+    "spawners.laptop.approval_ceiling.network must be",
+  )
 }

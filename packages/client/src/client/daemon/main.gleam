@@ -1037,6 +1037,7 @@ pub fn start_orchestrator_port(
             config.spawners,
             delegate_host.resolver(delegates),
             delegate_host.releaser(delegates),
+            delegate_host.existing_endpoint(delegates),
           ),
           child_host(orchestrator_roster(config), ready.registry, child_inbox),
           ledger_holdings.from_catalogue(
@@ -1382,13 +1383,16 @@ pub fn peer_command(
 ///
 /// A release is served by `releasing` and not by `delegates`: it finds the
 /// session the pair already has and creates none, which `delegates` would do
-/// for a pair with no row (`delegate_host.releaser`). The sender is judged the
+/// for a pair with no row (`delegate_host.releaser`). A send into a child and a
+/// decision about its request are served by `existing` for the same reason
+/// (`delegate_host.existing_endpoint`), and a pair with no open session answers
+/// that it holds no such child. The sender is judged the
 /// same way, so a node no spawner names is refused first.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // main.spawn_host([], delegates, releasing).run_ended(origin, operation)
+/// // main.spawn_host([], delegates, releasing, existing).run_ended(origin, operation)
 /// // -> Error(remote_spawn.UnknownSpawner(origin.node))
 /// ```
 @internal
@@ -1398,6 +1402,8 @@ pub fn spawn_host(
     Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
   releasing: fn(spawners.Spawner, remote_spawn.Parent) ->
     Result(Int, remote_spawn.SpawnRefusal),
+  existing: fn(spawners.Spawner, remote_spawn.Parent) ->
+    Result(Option(agency.DelegateEndpoint), remote_spawn.SpawnRefusal),
 ) -> orchestrator_port.SpawnHost {
   let serving = fn(origin: remote_spawn.Origin) {
     use spawner <- result.try(
@@ -1406,6 +1412,23 @@ pub fn spawn_host(
     )
     use endpoint <- result.map(delegates(spawner, origin.parent))
     #(spawner, endpoint)
+  }
+
+  // A message about a child that exists is served by the pair's session if it
+  // is open, and never by a new one: a stale card answered after the session was
+  // deleted must not open a session only to be refused.
+  let serving_existing = fn(origin: remote_spawn.Origin) {
+    use spawner <- result.try(
+      spawners.by_node(configured, origin.node)
+      |> result.replace_error(remote_spawn.UnknownSpawner(node: origin.node)),
+    )
+    use found <- result.try(existing(spawner, origin.parent))
+    option.to_result(
+      found,
+      remote_spawn.InvalidArgument(
+        reason: "this orchestrator holds no such child for that parent",
+      ),
+    )
   }
   orchestrator_port.SpawnHost(
     spawn: fn(origin, call_site, depth, parent_tools, request) {
@@ -1437,8 +1460,19 @@ pub fn spawn_host(
       releasing(spawner, origin.parent)
     },
     send: fn(origin, child, message_id, text) {
-      use #(_spawner, endpoint) <- result.try(serving(origin))
+      use endpoint <- result.try(serving_existing(origin))
       endpoint.send(origin.parent, child, message_id, text)
+    },
+    resolve: fn(origin, child, escalation_id, decision, expected_seq, decider) {
+      use endpoint <- result.try(serving_existing(origin))
+      endpoint.resolve(
+        origin.parent,
+        child,
+        escalation_id,
+        decision,
+        expected_seq,
+        decider,
+      )
     },
   )
 }
@@ -1496,6 +1530,10 @@ pub fn child_host(
     progress: fn(origin, child, glance) {
       use found <- result.try(resolving(origin))
       found.progress(origin.parent, child, glance, admits(origin))
+    },
+    escalation: fn(origin, child, record) {
+      use found <- result.try(resolving(origin))
+      found.escalation(origin.parent, child, record, admits(origin))
     },
   )
 }
@@ -2245,6 +2283,7 @@ pub fn spawner_link_of(
             parent_session: marker.parent_session,
             spawner: spawner.name,
             node: spawner.node,
+            ceiling: spawner.approval_ceiling,
           ))
         Error(Nil) -> None
       }

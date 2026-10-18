@@ -10,8 +10,10 @@ import client/daemon/manager
 import client/executors
 import client/listed_sessions.{Further, Last}
 import client/node_report
+import client/protocol
 import client/remote/address.{type Address}
 import client/remote/orchestrator_port.{type Message, NotOwned, Owned}
+import client/remote_escalation
 import client/remote_mail
 import client/remote_spawn.{
   Attached, CallSite, ChildUsage, Parent, Ready, Request, Spawned,
@@ -501,6 +503,27 @@ fn hosting(
       process.sleep(pause_ms)
       Ok(remote_mail.encode_landing(remote_mail.Admitted))
     },
+    resolve: fn(origin, child, id, decision, seq, decider) {
+      process.send(
+        seen,
+        "resolve "
+          <> origin.node
+          <> " "
+          <> origin.parent.strand
+          <> " "
+          <> child.strand
+          <> " "
+          <> id
+          <> " "
+          <> string.inspect(decision)
+          <> " "
+          <> int.to_string(seq)
+          <> " "
+          <> decider.name,
+      )
+      process.sleep(pause_ms)
+      Ok(remote_escalation.Forgotten)
+    },
   )
 }
 
@@ -620,6 +643,9 @@ pub fn a_refusal_from_the_host_is_the_answer_to_each_message_test() {
       send: fn(_origin, _child, _id, _text) {
         Error(remote_spawn.StoreFailure(reason: "the store failed"))
       },
+      resolve: fn(_origin, _child, _id, _decision, _seq, _decider) {
+        Error(remote_spawn.StoreFailure(reason: "the store failed"))
+      },
     )
   let port = spawning(refusing)
   assert orchestrator_port.ask_spawn(
@@ -706,6 +732,9 @@ pub fn a_crashing_host_is_silence_and_the_port_serves_on_test() {
       run_ended: fn(_origin, _ended) { panic as "the spawn host fails" },
       release: fn(_origin) { panic as "the spawn host fails" },
       send: fn(_origin, _child, _id, _text) { panic as "the spawn host fails" },
+      resolve: fn(_origin, _child, _id, _decision, _seq, _decider) {
+        panic as "the spawn host fails"
+      },
     )
   let port = spawning(crashing)
 
@@ -768,6 +797,24 @@ fn receiving(
       process.send(
         seen,
         "progress " <> origin.node <> " " <> child.strand <> " " <> glance.title,
+      )
+      process.sleep(pause_ms)
+      case origin.node == trusted {
+        True -> Ok(Nil)
+        False -> Error(remote_mail.OriginMismatch)
+      }
+    },
+    escalation: fn(origin, child, record) {
+      process.send(
+        seen,
+        "escalation "
+          <> origin.node
+          <> " "
+          <> child.strand
+          <> " "
+          <> record.escalation_id
+          <> " "
+          <> int.to_string(record.seq),
       )
       process.sleep(pause_ms)
       case origin.node == trusted {
@@ -929,6 +976,9 @@ pub fn a_crashing_child_host_is_silence_and_the_port_serves_on_test() {
     orchestrator_port.ChildHost(
       mail: fn(_origin, _child, _id, _text) { panic as "the child host fails" },
       progress: fn(_origin, _child, _glance) { panic as "the child host fails" },
+      escalation: fn(_origin, _child, _record) {
+        panic as "the child host fails"
+      },
     )
   let port = receiving_port(crashing)
   assert orchestrator_port.ask_mail(port, parent(), handle(), "m1", "x", 200)
@@ -1204,4 +1254,103 @@ pub fn a_catalogue_that_cannot_be_read_is_silence_and_not_an_empty_page_test() {
 
   // The failed read did not stop the port.
   assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+// --- a child's request for more authority, and the decision (protocol-change/089)
+
+fn a_request() -> protocol.EscalationRecord {
+  protocol.EscalationRecord(
+    escalation_id: "policy-ab",
+    op: "op-1",
+    strand: "sub:^main/run-the-suite-1",
+    status: "pending",
+    tool: "bash",
+    action: "d1",
+    preview: "make",
+    asked: 1,
+    denial: None,
+    seq: 3,
+    origin: None,
+    placement: None,
+    admitted: None,
+  )
+}
+
+pub fn a_daemon_with_no_orchestrators_refuses_a_childs_request_test() {
+  let port = started()
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+}
+
+pub fn a_childs_request_reaches_the_host_with_its_origin_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, own_node(), 0))
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Ok(Nil))
+  assert process.receive(seen, 0)
+    == Ok(
+      "escalation " <> own_node() <> " sub:^main/run-the-suite-1 policy-ab 3",
+    )
+}
+
+pub fn a_request_from_an_untrusted_node_is_refused_as_an_origin_mismatch_test() {
+  let seen = process.new_subject()
+  let port = receiving_port(receiving(seen, "somebody@else", 0))
+  assert orchestrator_port.ask_escalation(
+      port,
+      parent(),
+      handle(),
+      a_request(),
+      1000,
+    )
+    == Ok(Error(remote_mail.OriginMismatch))
+}
+
+pub fn a_decision_reaches_the_spawn_host_with_its_origin_and_answers_test() {
+  let seen = process.new_subject()
+  let port = spawning(hosting(seen, 0))
+  assert orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
+    == Ok(Ok(remote_escalation.Forgotten))
+  assert process.receive(seen, 0)
+    == Ok(
+      "resolve "
+      <> own_node()
+      <> " main sub:^main/run-the-suite-1 policy-ab Deny 3 Ola",
+    )
+}
+
+pub fn a_daemon_that_accepts_no_spawns_refuses_a_decision_test() {
+  let port = started()
+  let assert Ok(Error(remote_spawn.UnknownSpawner(..))) =
+    orchestrator_port.ask_resolve(
+      port,
+      parent(),
+      handle(),
+      "policy-ab",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab12", name: "Ola"),
+      1000,
+    )
 }

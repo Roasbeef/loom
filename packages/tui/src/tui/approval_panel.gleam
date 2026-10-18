@@ -396,9 +396,13 @@ fn rule(width: Int) -> span.Line {
 // them this is.
 fn heading(state: State, waiting: Int, width: Int) -> span.Line {
   let approval.Presentation(question, _, _) = state.presentation
-  let asker = case state.review.strand {
-    Some(strand) -> text_hygiene.single_line(strand) <> " · "
-    None -> ""
+
+  // A child's request on another orchestrator names the child and where it
+  // runs; both are session text and are drawn as text.
+  let asker = case approval.asker(state.review), state.review.strand {
+    Some(asker), _ -> text_hygiene.single_line(asker) <> " · "
+    None, Some(strand) -> text_hygiene.single_line(strand) <> " · "
+    None, None -> ""
   }
   let place = case waiting > 1 {
     True -> "1 of " <> int.to_string(waiting) <> " "
@@ -520,6 +524,11 @@ fn detail_lines(
         [span.line_new([span.span_styled("grant", label())])],
         authority
           |> list.map(fn(line) { styled_lines(line, plain(), width) })
+          |> list.flatten,
+        // What the spawner's ceiling does not admit is drawn quiet, with the
+        // reason, and is not part of what an approval carries.
+        approval.outside_lines(state.review)
+          |> list.map(fn(line) { styled_lines(line, quiet(), width) })
           |> list.flatten,
         session,
       ])

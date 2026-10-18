@@ -53,6 +53,7 @@ fn link() -> delegate_outbox.SpawnerLink {
     parent_session: "0198c0de-0000-7000-8000-000000000001",
     spawner: "laptop",
     node: "laptop@100.64.0.5",
+    ceiling: option.None,
   )
 }
 
@@ -168,6 +169,7 @@ fn laptop(
       process.send(heard, Glanced(parent:, child:, at: seen.at))
       progressed
     },
+    escalation: fn(_parent, _child, _record) { Error(Nil) },
   )
 }
 
@@ -179,6 +181,7 @@ fn pass(
   delegate_drain.pass(
     fn() { Ok(runtime) },
     fn() { running },
+    fn() { 0 },
     link(),
     laptop,
     log.discard(),

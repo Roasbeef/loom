@@ -44,7 +44,8 @@
 ////
 //// ## Flow
 ////
-//// `resolver` → `creation` → `terms_of` → `resolve_existing` → `releaser`
+//// `resolver` → `creation` → `terms_of` → `resolve_existing` → `existing_endpoint` →
+//// `releaser`
 ////
 //// 1. `resolver` returns the function the spawn host calls for every message.
 //// 2. `creation` builds the registration a first spawn makes, from the
@@ -53,7 +54,9 @@
 ////    judges a spawn by.
 //// 4. `resolve_existing` finds the Agency of a pair that already has a session,
 ////    and creates nothing.
-//// 5. `releaser` returns the function the spawn host calls for a `Release`.
+//// 5. `existing_endpoint` returns the function the spawn host calls for a message
+////    about a child that exists, and creates no session.
+//// 6. `releaser` returns the function the spawn host calls for a `Release`.
 
 import client/agency
 import client/daemon/manager
@@ -254,6 +257,35 @@ fn open_endpoint(
     | Ok(manager.View(status: manager.Saved, ..))
     | Ok(manager.View(status: manager.Stopping(_), ..))
     | Ok(manager.View(status: manager.RecoveryBlocked(_), ..)) -> Ok(None)
+  }
+}
+
+/// The function the spawn host calls for a message about a child that already
+/// exists (a send into it, or a decision about its request): the Agency of the
+/// pair's session if one is open and resident, and `None` otherwise.
+///
+/// Unlike `resolver` it creates nothing. A message about a child cannot be the
+/// first message of a pair, and a stale one (the child finished, the session was
+/// released and deleted, and an operator answered the card afterwards) would
+/// otherwise open a fresh session only to refuse the message.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let find = delegate_host.existing_endpoint(context)
+/// // find(spawner, parent) == Ok(option.None)
+/// ```
+pub fn existing_endpoint(
+  context: Context(instance),
+) -> fn(Spawner, Parent) ->
+  Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
+  let find = resolve_existing(context)
+  fn(spawner: Spawner, parent: Parent) {
+    use found <- result.map(find(spawner, parent))
+    case found {
+      Existing(endpoint:, ..) -> endpoint
+      NoSession -> None
+    }
   }
 }
 

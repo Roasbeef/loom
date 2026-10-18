@@ -1063,6 +1063,8 @@ fn settings(
     remote_reach: None,
     deadline_tick_ms: None,
     metering: None,
+    spawner: None,
+    laptop: None,
     first_prompt: None,
     profile_desk: None,
     secrets: secret.env(),

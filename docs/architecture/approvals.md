@@ -452,6 +452,72 @@ policy its starting call captured, and a code-mode execution's filesystem
 capabilities keep the roots its call captured, so an addition or a
 remembered grant committed later reaches only later calls.
 
+## A child on another orchestrator
+
+A subagent that runs on another orchestrator
+([remote-subagents](../design-notes/remote-subagents.md)) is refused by its
+sandbox exactly as a local one is, and the refusal is an escalation record in the
+*delegate session* on that machine, the box. The parent's operator is on the
+laptop. [protocol-change/089](../../protocol-change/089-remote-approvals.md)
+carries the question there and the answer back, and bounds what the answer may
+grant.
+
+```mermaid
+sequenceDiagram
+    participant C as Child (box)
+    participant E as client/escalate (box)
+    participant D as Delegate drainer (box)
+    participant L as Parent Agency (laptop)
+    participant G as Laptop gateway
+    participant O as Operator
+    participant H as Delegate hub (box)
+    C->>E: refused(Refused)
+    E->>E: claim record, park while the spawner's node is connected
+    E->>D: row delegate/outbox/escalation/{id}/{seq}
+    D->>L: ChildEscalation(record, admitted)
+    L->>L: file remote-escalation/{box}/{id}, newest seq wins
+    L-->>G: escalation event, placement = box
+    G->>O: card "child @ box"
+    O->>G: approve(box/id, grants, action, expected_seq)
+    G->>H: Resolve(id, Approve(grants, action, scope), seq, decided_by)
+    H->>H: same seq, action, subset, descendant, inside the ceiling
+    H->>E: record Approved (one CAS)
+    E-->>C: Resume(grants)
+    D->>L: ChildEscalation(record, approved), then the row is dropped
+```
+
+**Parking.** `Config.interactive` for a delegate session is true when a client is
+attached to its hub or the spawner's table sets an `approval_ceiling` and the
+spawner's node is connected (`delegate_outbox.answers`). Nothing dials: the box
+only notices that the laptop reached it. A call that settles in band writes no
+row.
+
+**The ceiling.** `[spawners.<name>.approval_ceiling]`
+(`client/approval_ceiling`) has one key for each kind of grant. The box admits a
+decision (`client/remote_decision`) with the checks a local `approve` makes (the
+same question at `expected_seq`, the echoed action, a subset of `wanted`) and one
+more: the record was raised by a descendant of the parent the message names, and
+every grant is inside the ceiling. A decision outside it is refused with
+`outside the spawner's approval ceiling` and the record stays pending for the
+box's owner. The laptop checks the `admitted` list the box sent first, so an
+approval that can only be refused never leaves the machine.
+
+**Where the laptop keeps it.** The parent session files the record under
+`remote-escalation/{orchestrator}/{id}`, never under its own `escalation/`
+prefix, which its tool clearance scans and spends. The newest `seq` wins under a
+compare-and-set, so a late copy of an older record changes nothing. The gateway
+reads that prefix for snapshots, events and the metadata cut, so the terminal and
+the page draw it as a card with `<child> @ <orchestrator>`, the admitted grants
+as what Allow carries, and the rest greyed with the reason.
+
+**For the session.** A session approval commits the grant into the delegate
+session's own remembered-permissions fact, in the same transaction as the
+approval, with `Spawner` provenance: the spawner's name and the deciding
+principal as plain data. It reaches later calls of every child of that parent on
+the box and no other session. When the delegate session opens, each `Spawner`
+grant is checked against the spawner's current ceiling and the ones outside it
+are dropped. The grants go with the store on `Release`.
+
 ## Imported hook decisions
 
 Claude-compatible `PreToolUse` hooks ([hooks-compat.md](hooks-compat.md))
@@ -593,7 +659,10 @@ is `packages/client/src/client/escalate.gleam`.
 | `tools/tool.gleam` | `authorize_policy`, `RaisedRefusal`, `Escalated`, and `Ctx`'s `grants`, `directory_access` and `raise_refusal` fields. |
 | `tools/permissions.gleam` | The `permissions` argument on `bash` and `code_mode`. |
 | `tools/directory_access.gleam` | Native filesystem authority, kept separate from the jail's read roots. |
-| `session_view/approval.gleam`, `tui/approval_panel.gleam` | Decoding records from a metadata cut, the approval dialog, and the `approve`/`deny` commands it sends. |
+| `session_view/approval.gleam`, `tui/approval_panel.gleam` | Decoding records from a metadata cut, the approval dialog, and the `approve`/`deny` commands it sends. A record with a `Remote` is a child's on another orchestrator. |
+| `client/approval_ceiling.gleam` | What a spawner's operator may approve: the table's decoder and `admits`. |
+| `client/remote_decision.gleam`, `client/remote_escalation.gleam` | The box's door for a spawner's operator's decision, and the vocabulary of `ChildEscalation` and `Resolve`. |
+| `client/remote_escalation_store.gleam`, `client/delegate_outbox.gleam`, `client/delegate_drain.gleam` | The laptop's filing of a child's request, and the box's outbox rows and the pass that sends them. |
 
 Protocol changes [007](../../protocol-change/007-escalation-carries-the-action.md)
 (the action on the wire and the echo),

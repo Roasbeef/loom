@@ -50,6 +50,9 @@
 ////     from the parent into a remote child is `send_remote`, delivered on the
 ////     other side by `delegate_send`, which stores a receipt so a resend
 ////     delivers once.
+//// 11a. A request for more authority from a child on another orchestrator is
+////     filed by `child_escalation` under `remote-escalation/`
+////     (protocol-change/089), on the caller's process like `child_progress`.
 //// 12. The other direction, a child that runs on another orchestrator, is
 ////     `spawn_elsewhere`: the holder's `admit_remote` writes the stub, then
 ////     `ask_until_answered` sends the `Spawn` and `record_answer` writes down
@@ -281,7 +284,10 @@ import client/internal/session_owner
 import client/internal/timebase
 import client/peer_mail
 import client/peer_outbox
+import client/protocol
 import client/remote_child
+import client/remote_escalation
+import client/remote_escalation_store
 import client/remote_mail
 import client/remote_reach
 import client/remote_send
@@ -4730,6 +4736,19 @@ pub type DelegateEndpoint {
     /// Whether any child of the session still has a run, which the retention
     /// sweep asks before it closes an idle session.
     occupancy: fn() -> Occupancy,
+    /// Applies the parent's operator's decision to a child's request
+    /// (protocol-change/089), given the parent, the child, the record's identity
+    /// here, the decision, the `seq` the operator was shown, and who decided. The
+    /// agency does not hold the hub that commits decisions, so the host that
+    /// builds the session fills this in; `delegate_endpoint` refuses.
+    resolve: fn(
+      remote_spawn.Parent,
+      Handle,
+      String,
+      remote_escalation.Decision,
+      Int,
+      remote_escalation.Decider,
+    ) -> Result(remote_escalation.Answer, remote_spawn.SpawnRefusal),
   )
 }
 
@@ -4774,6 +4793,11 @@ pub fn delegate_endpoint(config: Config) -> DelegateEndpoint {
       delegate_send(trimmed, parent, child, message_id, text)
     },
     occupancy: fn() { delegate_occupancy(trimmed) },
+    resolve: fn(_parent, _child, _id, _decision, _seq, _decider) {
+      Error(remote_spawn.StoreFailure(
+        reason: "this session has no hub to decide a request",
+      ))
+    },
   )
 }
 
@@ -4946,6 +4970,14 @@ pub type ChildInbox {
     /// Keeps a child's glance on its stub.
     progress: fn(remote_spawn.Parent, Handle, Glance, fn(String) -> Bool) ->
       Result(Nil, remote_mail.ChildRefusal),
+    /// Files a child's request for more authority for the parent's operator
+    /// (protocol-change/089).
+    escalation: fn(
+      remote_spawn.Parent,
+      Handle,
+      protocol.EscalationRecord,
+      fn(String) -> Bool,
+    ) -> Result(Nil, remote_mail.ChildRefusal),
   )
 }
 
@@ -4973,6 +5005,9 @@ pub fn child_inbox(config: Config) -> ChildInbox {
     },
     progress: fn(parent, child, glance, admits) {
       child_progress(trimmed, parent, child, glance, admits)
+    },
+    escalation: fn(parent, child, record, admits) {
+      child_escalation(trimmed, parent, child, record, admits)
     },
   )
 }
@@ -5233,6 +5268,30 @@ fn child_progress(
   use entry <- result.try(stub_for(runtime, parent, child, admits))
   remote_child.progressed(runtime, entry.key, bounded_glance(glance))
   |> result.map(fn(_stub) { Nil })
+  |> result.map_error(fn(reason) { remote_mail.Busy(reason:) })
+}
+
+// Files a child's request for the parent's operator. It is found by the stub, in
+// any state, for the reason a glance is: the stub is written before the first
+// `Spawn` leaves, so a request that overtakes the answer to the `Spawn` still
+// finds it. It runs on the caller's process, because the write is one
+// compare-and-set on the cell, which `remote_escalation_store.keep` makes safe to
+// repeat and to reorder.
+fn child_escalation(
+  config: Config,
+  parent: remote_spawn.Parent,
+  child: Handle,
+  record: protocol.EscalationRecord,
+  admits: fn(String) -> Bool,
+) -> Result(Nil, remote_mail.ChildRefusal) {
+  use runtime <- result.try(
+    borrow(config)
+    |> result.replace_error(remote_mail.Busy(
+      reason: "the parent session's Agency is not running",
+    )),
+  )
+  use entry <- result.try(stub_for(runtime, parent, child, admits))
+  remote_escalation_store.keep(runtime, entry.stub.orchestrator, record)
   |> result.map_error(fn(reason) { remote_mail.Busy(reason:) })
 }
 

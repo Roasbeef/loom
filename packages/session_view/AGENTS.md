@@ -404,6 +404,13 @@ for a host with no surfaces.
   storage numbers from the same counter as transcript entries.
 - `approval.wants(tool)`: the fixed words for what a request asks to do
   (`run a command`), shared by the cards.
+- `approval.Review.remote`: a child's request on another orchestrator
+  (protocol-change/089), decoded from a `remote-escalation/{orchestrator}/{id}`
+  cell holding the protocol's record. Its `id` is `<orchestrator>/<id there>`,
+  its `seq` is the other orchestrator's, and its permission is only the grants
+  the spawner's ceiling admits (`outside` keeps the rest). `approval.asker`
+  words `child @ orchestrator` and `approval.outside_lines` the withheld grants
+  with their reason; both are session text for the caller to draw as text.
 - `cache_miss` (a miss reconstructed from two usage rows, and the TTL
   outlook the rows prove) and `cache_watch.Ledger` (which rows may be
   compared: `admit`, `settle`, `capture`, `observe`, `forget`, and `shown`,

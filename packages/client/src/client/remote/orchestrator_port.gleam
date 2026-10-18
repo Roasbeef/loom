@@ -107,6 +107,15 @@
 //// them until it is answered. `client/remote_mail` is their vocabulary, and the
 //// sending ends are `ask_mail` and `ask_progress` below.
 ////
+//// Protocol-change/089 adds the two messages by which the operator of a
+//// spawning orchestrator answers a child's request for more authority. A child
+//// on this orchestrator that its sandbox refuses can ask its parent's operator
+//// (`ChildEscalation`, served by the `ChildHost` like mail and progress), and the
+//// operator's decision comes back as `Resolve`, served by the `SpawnHost` like a
+//// send into a child. Both are judged by the node they came from, and neither
+//// changes what the other messages do. The sending ends are `ask_escalation` and
+//// `ask_resolve`.
+////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
 //// Erlang node. It carries no credential, and a client is never redirected by
@@ -126,7 +135,7 @@
 //// ## Flow
 ////
 //// `start_with` → `answer` → `detached` → `ask_release` → `ask_send` →
-//// `ask_mail` → `exchange` → `exchange_why`
+//// `ask_mail` → `ask_escalation` → `ask_resolve` → `exchange` → `exchange_why`
 ////
 //// 1. `start_with` registers the port under its name, with the closures the
 ////    daemon supplies for the questions it cannot answer from its own state.
@@ -137,8 +146,9 @@
 ////    goes to `detached`.
 //// 3. `detached` computes the reply in a run that dies with the requester and
 ////    with the port, so a slow answer never delays the next question.
-//// 4. The `ask_*` functions are the sending end: `ask_release` and `ask_send`
-////    among those the laptop calls, and `ask_mail` among those the box calls.
+//// 4. The `ask_*` functions are the sending end: `ask_release`, `ask_send`
+////    and `ask_resolve` among those the laptop calls, and `ask_mail` and
+////    `ask_escalation` among those the box calls.
 ////    Each makes its one request through `exchange`, which wraps
 ////    `exchange_why`: a monitor on the port, the request, and a wait that
 ////    ends at the answer, at the port's death, or at the deadline.
@@ -149,7 +159,9 @@ import client/internal/ffi_remote
 import client/listed_sessions.{type Page}
 import client/node_report.{type NodeReport}
 import client/peer_mail
+import client/protocol.{type EscalationRecord}
 import client/remote/address.{type Address}
+import client/remote_escalation.{type Answer, type Decider, type Decision}
 import client/remote_mail.{type ChildRefusal, type Receipt}
 import client/remote_spawn.{
   type CallSite, type Joined, type Origin, type Parent, type Request,
@@ -377,6 +389,50 @@ pub type Message {
     reply: Subject(Result(Nil, ChildRefusal)),
   )
 
+  /// A request for more authority from a child that runs on the sending
+  /// orchestrator, for its parent on this one (protocol-change/089). The record
+  /// is the sender's, at the `seq` it carries. The receiver keeps the newest it
+  /// has heard of for each `(escalation_id, seq)` and draws it for the parent's
+  /// operator, and a record that is no longer pending clears the card. The
+  /// answer is `Ok(Nil)` once the receiver holds that record or a newer one.
+  ///
+  /// The child is named by its strand, and the receiver finds the parent's stub
+  /// by that name as it does for `ChildMail`, so the message may arrive before
+  /// the answer to the `Spawn` that made the child.
+  ChildEscalation(
+    /// The parent session and strand, on this orchestrator.
+    parent: Parent,
+    /// The child that asked. Only its strand is read.
+    child: Handle,
+    /// The question, in the protocol's own vocabulary, with the grants the
+    /// sender's approval ceiling admits.
+    record: EscalationRecord,
+    /// Where the answer goes.
+    reply: Subject(Result(Nil, ChildRefusal)),
+  )
+
+  /// The parent's operator answering a child's request that runs on this
+  /// orchestrator (protocol-change/089). The answer says whether the decision
+  /// committed, or why not, with the record as it now is when the question has
+  /// moved. It may arrive before the sender's `ChildEscalation` is acknowledged,
+  /// and the receiver judges it against its own record alone.
+  Resolve(
+    /// The parent session and strand, on the sending orchestrator.
+    parent: Parent,
+    /// The child that asked.
+    child: Handle,
+    /// The record's identity on this orchestrator.
+    escalation_id: String,
+    /// What the operator decided.
+    decision: Decision,
+    /// The `seq` of the question the operator was shown.
+    expected_seq: Int,
+    /// Who decided, as text, for provenance.
+    decided_by: Decider,
+    /// Where the answer goes.
+    reply: Subject(Result(Answer, SpawnRefusal)),
+  )
+
   /// What this daemon holds that a revoke of it, or of an executor it places
   /// sessions on, would strand (protocol-change/086, phase 2): how many
   /// sessions its catalogue owns, and how many of them are placed on each
@@ -558,6 +614,11 @@ pub type SpawnHost {
     /// and its text, and answers how it landed. A repeat of an identity answers
     /// from the receipt.
     send: fn(Origin, Handle, String, String) -> Result(JsonValue, SpawnRefusal),
+    /// Applies the parent's operator's decision to a child's request, given the
+    /// child, the record's identity here, the decision, the `seq` the operator
+    /// was shown and who decided (protocol-change/089).
+    resolve: fn(Origin, Handle, String, Decision, Int, Decider) ->
+      Result(Answer, SpawnRefusal),
   )
 }
 
@@ -588,6 +649,9 @@ pub fn refusing_spawns() -> SpawnHost {
     send: fn(origin, _child, _message_id, _text) {
       Error(remote_spawn.UnknownSpawner(node: origin.node))
     },
+    resolve: fn(origin, _child, _id, _decision, _seq, _decider) {
+      Error(remote_spawn.UnknownSpawner(node: origin.node))
+    },
   )
 }
 
@@ -607,6 +671,10 @@ pub type ChildHost {
     mail: fn(Origin, Handle, String, String) -> Result(Receipt, ChildRefusal),
     /// Keeps a child's glance on the parent's stub for it.
     progress: fn(Origin, Handle, Glance) -> Result(Nil, ChildRefusal),
+    /// Keeps a child's request for more authority for the parent's operator to
+    /// answer, given the child and the record (protocol-change/089).
+    escalation: fn(Origin, Handle, EscalationRecord) ->
+      Result(Nil, ChildRefusal),
   )
 }
 
@@ -626,6 +694,9 @@ pub fn refusing_children() -> ChildHost {
       Error(remote_mail.OriginMismatch)
     },
     progress: fn(_origin, _child, _glance) { Error(remote_mail.OriginMismatch) },
+    escalation: fn(_origin, _child, _record) {
+      Error(remote_mail.OriginMismatch)
+    },
   )
 }
 
@@ -956,6 +1027,33 @@ fn answer(
     ChildProgress(parent:, child:, glance:, reply:) ->
       detached(reply, fn(node) {
         children.progress(remote_spawn.Origin(node:, parent:), child, glance)
+      })
+    ChildEscalation(parent:, child:, record:, reply:) ->
+      detached(reply, fn(node) {
+        children.escalation(remote_spawn.Origin(node:, parent:), child, record)
+      })
+
+    // A decision reaches into the delegate session's gateway, which commits on
+    // the session's one writer, so it runs apart from the port like the other
+    // messages that reach into a session.
+    Resolve(
+      parent:,
+      child:,
+      escalation_id:,
+      decision:,
+      expected_seq:,
+      decided_by:,
+      reply:,
+    ) ->
+      detached(reply, fn(node) {
+        spawns.resolve(
+          remote_spawn.Origin(node:, parent:),
+          child,
+          escalation_id,
+          decision,
+          expected_seq,
+          decided_by,
+        )
       })
   }
   actor.continue(state)
@@ -1330,6 +1428,66 @@ pub fn ask_progress(
   exchange(
     at,
     fn(reply) { ChildProgress(parent:, child:, glance:, reply:) },
+    within_ms,
+  )
+}
+
+/// Pushes a child's request for more authority to the port at `at`, and waits
+/// at most `within_ms` for the answer. Silence is `Error(Nil)`, and the same
+/// record can be sent again: the receiver keeps the newest `seq` it has heard of.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_escalation(Address(node: laptop, name: orchestrator_port.default()), parent, child, record, 15_000)
+/// ```
+pub fn ask_escalation(
+  at: Address(Message),
+  parent: Parent,
+  child: Handle,
+  record: EscalationRecord,
+  within_ms: Int,
+) -> Result(Result(Nil, ChildRefusal), Nil) {
+  exchange(
+    at,
+    fn(reply) { ChildEscalation(parent:, child:, record:, reply:) },
+    within_ms,
+  )
+}
+
+/// Sends the parent's operator's decision to the port at `at`, and waits at most
+/// `within_ms` for the answer. Silence is `Error(Nil)`; the decision may or may
+/// not have committed, and asking again is safe because the receiver judges
+/// the `seq` the operator was shown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_resolve(Address(node: box, name: orchestrator_port.default()), parent, child, id, decision, 3, decider, 5000)
+/// ```
+pub fn ask_resolve(
+  at: Address(Message),
+  parent: Parent,
+  child: Handle,
+  escalation_id: String,
+  decision: Decision,
+  expected_seq: Int,
+  decided_by: Decider,
+  within_ms: Int,
+) -> Result(Result(Answer, SpawnRefusal), Nil) {
+  exchange(
+    at,
+    fn(reply) {
+      Resolve(
+        parent:,
+        child:,
+        escalation_id:,
+        decision:,
+        expected_seq:,
+        decided_by:,
+        reply:,
+      )
+    },
     within_ms,
   )
 }

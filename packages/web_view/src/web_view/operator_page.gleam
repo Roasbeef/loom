@@ -680,9 +680,13 @@ fn card(
   let head =
     html.p([attribute.class("approval-head")], [
       html.b([attribute.class("approval-strand")], [
-        html.text(case list.key_find(raised_on, record.id) {
-          Ok(strand) -> strand
-          Error(Nil) -> "A strand"
+        html.text(case approval.asker(record) {
+          Some(asker) -> asker
+          None ->
+            case list.key_find(raised_on, record.id) {
+              Ok(strand) -> strand
+              Error(Nil) -> "A strand"
+            }
         }),
       ]),
       html.text(" wants to " <> approval.wants(record.tool)),
@@ -704,6 +708,7 @@ fn card(
             html.li([], [html.text(string.drop_start(line, 2))])
           }),
         ),
+        outside(record),
         html.div(
           [attribute.class("approval-actions"), attribute.class("arming")],
           [
@@ -728,6 +733,23 @@ fn card(
           [deny, arming],
         ),
       ])
+  }
+}
+
+// The grants a child's request on another orchestrator asked for that the
+// spawner's approval ceiling does not admit: greyed, each with its reason, and
+// not part of what Allow carries. A request with nothing outside the ceiling
+// draws no element.
+fn outside(record: approval.Review) -> Element(Msg(socket)) {
+  case approval.outside_lines(record) {
+    [] -> element.none()
+    lines ->
+      html.ul(
+        [attribute.class("approval-outside")],
+        list.map(lines, fn(line) {
+          html.li([], [html.text(string.drop_start(line, 2))])
+        }),
+      )
   }
 }
 

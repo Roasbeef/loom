@@ -38,6 +38,7 @@
 //// is already a sentence for the parent's model (`remote_spawn.describe_refusal`).
 
 import client/peer_mail.{type Failure}
+import client/remote_escalation.{type Answer, type Decider, type Decision}
 import client/remote_mail.{type Landing}
 import client/remote_spawn.{
   type CallSite, type Joined, type Parent, type Request, type Spawned,
@@ -89,6 +90,15 @@ pub type Reach {
     /// `Unreachable` delivers nothing twice and answers `Admitted`. An idle child
     /// starts a detached run, bounded by the deadline the child already has.
     send: fn(String, Parent, Handle, String, String) -> Result(Landing, Failure),
+    /// Tells an orchestrator what the operator decided about a child's request
+    /// for more authority (protocol-change/089). The arguments are the
+    /// orchestrator, the parent, the child, the request's identity there, the
+    /// decision, the `seq` of the question the operator was shown, and who
+    /// decided. The answer is the orchestrator's: committed, stale with the
+    /// current record, or refused. `Unreachable` means the decision may or may not
+    /// have committed, and the operator is shown the question again.
+    resolve: fn(String, Parent, Handle, String, Decision, Int, Decider) ->
+      Result(Answer, Failure),
     /// Votes whether this session needs the connection to an orchestrator kept
     /// up (`client/remote/link_keeper`). The drainer votes `Hold` on every pass
     /// that finds a spawn unanswered or a child running there, and `Drop` when a
@@ -130,6 +140,9 @@ pub fn none(session: String) -> Reach {
     },
     release: fn(name, _parent) { Error(not_configured(name)) },
     send: fn(name, _parent, _child, _message_id, _text) {
+      Error(not_configured(name))
+    },
+    resolve: fn(name, _parent, _child, _id, _decision, _seq, _decider) {
       Error(not_configured(name))
     },
     keep: fn(_name, _vote) { Nil },

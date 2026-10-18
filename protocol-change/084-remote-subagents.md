@@ -913,3 +913,26 @@ The key space is open for them. The P model's three new specs are
 are caught: admitting without a receipt, a policy that may wake the parent, a row
 settled without an answer, and a host that keys on the handle. The model assumes
 fair reconnection and a parent session that is eventually opened, and says so.
+
+## Addendum 2026-10-17: approvals (phase 3, slices S10 and S11)
+
+[protocol-change/089](089-remote-approvals.md) records what these slices built,
+because they touch the client control protocol (`EscalationRecord.placement` and
+`admitted`), which this document leaves unchanged. Where it differs from the
+proposal above and from the design note's section 11:
+
+- The ceiling is `[spawners.<name>.approval_ceiling]`, a table with one key for
+  each constructor of `broker/policy.Grant`, and not the inline value the
+  proposal sketched.
+- `ChildEscalation(parent, child, record, reply)` carries the protocol's own
+  `EscalationRecord`, with the grants the ceiling admits, and is sent from the
+  `delegate/outbox/escalation/{id}/{seq}` row the S9 drainer owns. The laptop
+  files it under `remote-escalation/{orchestrator}/{id}`, not under its own
+  `escalation/` prefix, which the session's tool clearance spends.
+- `Resolve(parent, child, escalation_id, decision, expected_seq, decided_by,
+  reply)` replaces the proposal's `Resolve(parent, escalation, decision,
+  expected_seq)`. The decision is `Approve(grants, action, scope)`, `Deny` or
+  `Forget(grant)`, and the box judges it through the delegate session's hub.
+- A session-scope approval is remembered in the delegate session with `Spawner`
+  provenance and re-checked against the ceiling when the session opens.
+- The P model is unchanged. 089 says why.

@@ -495,7 +495,7 @@ that heading.
 **Local strand messages are weaker.** A message from another strand in the
 same session arrives as a user turn with no origin. Its sender is written by
 the harness into a text frame, `[message from <strand>]` … `[end message. …]`
-(`frame_message` at `client/agency.gleam:2575`). Today `session_view` does not
+(`frame_message` at `client/agency.gleam:2581`). Today `session_view` does not
 recognise the frame, so these messages are drawn as `› User` turns, which is
 one of the pain points in the owner's recordings. Concept B recognises the
 frame by both its header and its footer, as advisor frames are recognised,

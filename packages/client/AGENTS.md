@@ -7821,12 +7821,45 @@ The box's deadline and retention (slice S4):
   (`api.run_deadline_for`) and is refused after it; `Joined.Ready.owed` and
   `Stub.owed` keep the link voted while a settled child's mail is undelivered;
   `peer_outbox_drain.ring` runs a pass at once; `ChildRefusal.Busy` is retryable.
-  Remote handles belong to a stub by strand. `ChildEscalation` is phase 3.
+  Remote handles belong to a stub by strand.
   Tests: `remote/link_keeper_test`, `remote_mail_test`, `delegate_outbox_test`,
   `remote/orchestrator_port_test`, `agency_test` (mail on a `Requested` stub,
   declined into an idle parent, origin mismatch, glances, upward row, sends and
   the resend row, the vote, `delegate_send`), `daemon_spawn_host_test`,
   `support/fake_orchestrators` (`deliver_to_laptop`, `voting`), and the P model.
+
+- Approvals (slices S10 and S11, protocol-change/089). `spawners.Spawner` gains
+  `approval_ceiling: Option(approval_ceiling.Ceiling)`; `approval_ceiling.admits`
+  names every `broker/policy.Grant` constructor. `delegate_outbox.SpawnerLink`
+  carries the ceiling, and `delegate_outbox.answers(link, laptop)` is the second
+  half of a delegate session's `escalate.Config.interactive` (a ceiling and a
+  connected spawner node; nothing dials). `escalate.Config.parked` is called
+  once as a refused call is about to park, and `serve.announce_to_spawner` writes
+  `delegate/outbox/escalation/{id}/{seq}` (`delegate_outbox.announce`, `Question`)
+  and rings the upward drainer. `delegate_drain.question_step` sends the record
+  (`escalation_view.view`, with `admitted` set from the ceiling), marks the row
+  `Acknowledged`, sends the decided state once and drops the row, or drops it when
+  a newer raise or the closed window made it moot. `ChildEscalation` is served by
+  `ChildHost.escalation` (`main.child_host`) into `agency.ChildInbox.escalation`,
+  which finds the stub by name in any state and files the record with
+  `remote_escalation_store.keep` (newest seq wins, under
+  `remote-escalation/{orchestrator}/{id}`, reserved by
+  `api.remote_escalation_fact_prefix`). `Resolve` is served by `SpawnHost.resolve`
+  into `DelegateEndpoint.resolve` (filled by `serve` with `gateway.decide`) and
+  judged on the hub's turn by `remote_decision.admit`; a session approval commits
+  with `permissions.Spawner` provenance, `permissions.withdraw_spawner_grants`
+  runs from `serve.withdraw_outside_the_ceiling` at open, and
+  `permissions.forgetting_for_spawner` backs `Forget`. On the laptop the gateway
+  reads the prefix for snapshots, events and the cut, and routes `approve`/`deny`
+  on an id with a slash (`from_elsewhere`) to `Reach.resolve` from a weft run
+  (`start_resolve`, `PendingResolve`, `resolve_reported`). `Options.spawner` and
+  `Options.remote` carry the link and the reach. `protocol.EscalationRecord`
+  gains `placement` and `admitted`. `remote_escalation` is the vocabulary
+  (`Decision`, `Scope`, `Answer`, `Decider`). Tests: `spawners_test` (the
+  ceiling), `remote_decision_test`, `delegate_question_test`, `gateway_test`
+  (routing, `decide`), `agency_test` (a request against a `Requested` stub,
+  newest seq wins), `remote/orchestrator_port_test`, and the shipped
+  `daemon_shipped_remote_subagents_test`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),
