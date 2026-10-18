@@ -924,6 +924,40 @@ pub fn the_blob_root_is_the_one_protected_entry_native_reads_open_test() {
       seam.fs_write("link_blob", "forged")
       as "a write through a link into the blob root is refused"
   })
+
+  // Under the daemon, the session's blob store sits at
+  // `<state_root>/workspaces/<hash>/blobs`, which is covered by the parent
+  // `<state_root>/workspaces` entry in `base.protected`. Native reads must
+  // still open that session's blob store under both scopes while refusing
+  // sibling domain files and any write into the store.
+  let managed_blobs = state <> "/workspaces/domain-a/blobs"
+  let sibling_blobs = state <> "/workspaces/domain-b/blobs"
+  make_directory(managed_blobs)
+  make_directory(sibling_blobs)
+  write(managed_blobs, "sha256-1", "managed-blob\n")
+  write(sibling_blobs, "sha256-2", "sibling-blob\n")
+  write(state <> "/workspaces/domain-a", "loom-memory.db", "memory\n")
+  list.each([catalog.HostReads, catalog.WorkspaceReads], fn(scope) {
+    let session = session_policy(root, state, scope)
+    let request =
+      codemode_tool.Request(..request_over(root), base_policy: session)
+    let config = config_over(root) |> codemode.into_blobs(managed_blobs)
+    let seam = codemode.workspace_seam(config, request)
+    let search = codemode.search_seam_with_access(root, session, managed_blobs)
+
+    assert seam.fs_read(managed_blobs <> "/sha256-1") == Ok("managed-blob\n")
+    assert search.read_lines(managed_blobs <> "/sha256-1", 1, 1)
+      == Ok(engine.Lines(text: "managed-blob", first: 1, last: 1, total: 1))
+    let assert Error(workspace.ReadPathRefused(fs.ProtectedPath(..))) =
+      seam.fs_read(sibling_blobs <> "/sha256-2")
+      as "another workspace's blob store stays protected"
+    let assert Error(workspace.ReadPathRefused(fs.ProtectedPath(..))) =
+      seam.fs_read(state <> "/workspaces/domain-a/loom-memory.db")
+      as "the domain's memory store beside the blob root stays protected"
+    let assert Error(workspace.PathRefused(..)) =
+      seam.fs_write(managed_blobs <> "/sha256-3", "forged")
+      as "a write into the managed blob root is refused"
+  })
 }
 
 pub fn native_reads_agree_with_the_jail_under_both_scopes_test() {
