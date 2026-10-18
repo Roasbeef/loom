@@ -45,6 +45,19 @@
 // a receipt or a refusal that will not change. `MAIL_NOT_OPEN` is the one answer
 // that leaves the row, and the next pass asks again. The outbox is stored in the
 // session, so it survives a restart of the VM and is deleted with the session.
+//
+// Three Ports run in a case (phase 4). The box stands at depth 1 and has a relay,
+// the Laptop machine that plays its delegate session as a spawner. Two third
+// orchestrators stand at depth 2, and their children are the box's
+// grandchildren. A running child on the box starts a grandchild through the
+// relay (`eGrandSpawn`), on the orchestrator that `spawn_on` allows; a child
+// that is not running starts nothing, which is the released fence read before a
+// stub is written. Deleting a released session of the box, once its slot has
+// drained, tells the relay to owe the third orchestrators a release
+// (`eCascade`), and until then the relay goes on resending what it owes. A
+// restart of the box's VM kills the relay's effect processes as it kills
+// the children's runs. Child identities start at `base`, so that the three
+// Ports never name two children alike.
 machine Port {
   var wire: machine;
   var children: map[tChild, tChildRec];
@@ -57,10 +70,25 @@ machine Port {
   var laptop: machine;
   var outbox: map[int, tRow];
   var nextMail: int;
+  var depth: int;
+  var relay: machine;
+  var hasRelay: bool;
+  var grandBegun: set[tChild];
 
   start state Up {
-    entry (w: machine) {
-      wire = w;
+    entry (p: (wire: machine, base: int, depth: int)) {
+      wire = p.wire;
+      next = p.base;
+      depth = p.depth;
+    }
+
+    on eRelay do (r: machine) {
+      relay = r;
+      hasRelay = true;
+    }
+
+    on eGrandSpawn do {
+      grandSpawn();
     }
 
     on eNet do (m: tMsg) {
@@ -111,7 +139,38 @@ machine Port {
 
     on eRestart do {
       loseRuns();
+      if (hasRelay) {
+        send relay, eAbort;
+      }
     }
+  }
+
+  // A running child starts a child of its own on the third orchestrator its
+  // spawner's `spawn_on` allows, the first of the relay's orchestrators, at most
+  // once each. The grandchild's call site is derived from the child, so a second
+  // start from the same child would be the same call site. The relay stands for
+  // the first delegate session only: a later one, which a stale spawn makes
+  // after the first was deleted, is another session with stubs of its own, and
+  // in the model it starts no grandchild.
+  fun grandSpawn() {
+    var c: tChild;
+    var cs: seq[tChild];
+    var running: seq[tChild];
+    if (!hasRelay || phase != SS_OPEN || gen > 0) {
+      return;
+    }
+    cs = keys(children);
+    foreach (c in cs) {
+      if (children[c].st == CS_RUNNING && !(c in grandBegun)) {
+        running += (sizeof(running), c);
+      }
+    }
+    if (sizeof(running) == 0) {
+      return;
+    }
+    c = choose(running);
+    grandBegun += (c);
+    send relay, eBegin, (site = 100 + c, run = 0, owner = -1, target = 0);
   }
 
   // Admission of one `Spawn`.
@@ -147,8 +206,9 @@ machine Port {
     next = next + 1;
     children[c] = (mintedBy = m.site, run = m.run, owner = m.owner, st = CS_RUNNING, overdue = clockPast);
     byName[name] = c;
-    announce eChildIn, (child = c, gen = gen);
-    announce eCreated, (site = m.site, child = c, run = m.run, owner = m.owner);
+    announce eChildIn, (child = c, gen = gen, at = this);
+    announce eCreated, (site = m.site, child = c, run = m.run, owner = m.owner, at = this);
+    announce eAdmittedFrom, (at = this, src = m.src);
     announce eAnswered, (site = m.site, child = c);
     answer(m, K_SPAWNED, c, CS_RUNNING);
     if (clockPast) {
@@ -250,6 +310,7 @@ machine Port {
     var cs: seq[tChild];
     var stopped: int;
     var running: int;
+    announce eReleaseFrom, (at = this, src = m.src);
     if (phase == SS_NONE) {
       announce eReleaseNoSession;
       answer(m, K_RELEASED, 0, CS_RUNNING);
@@ -268,15 +329,26 @@ machine Port {
         running = running + 1;
       }
     }
-    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running);
+    announce eReleaseHandled, (gen = gen, stopped = stopped, stillRunning = running, at = this, depth = depth);
     answer(m, K_RELEASED, stopped, CS_RUNNING);
   }
 
   // The slot drained and the registry deletes the session. Whatever is still
   // running dies with it, and everything stored under it goes.
+  //
+  // The release cascades here and not when the `Release` is handled. The
+  // delegate session's children may have started children elsewhere, and the
+  // rows that tell those orchestrators are written in the turn that deletes the
+  // session, from its stubs. Until then the session's drainer keeps resending a
+  // spawn that is still owed, and a row written earlier would let that spawn
+  // reach the third orchestrator after its release.
   fun deleteSession() {
     var id: int;
     var ids: seq[int];
+    if (hasRelay) {
+      announce eCascadeDue;
+      send relay, eCascade;
+    }
     loseRuns();
     ids = keys(outbox);
     foreach (id in ids) {
@@ -290,7 +362,7 @@ machine Port {
     fence = default(set[int]);
     phase = SS_NONE;
     gen = gen + 1;
-    announce eSessionDeleted;
+    announce eSessionDeleted, this;
   }
 
   // Marks every child running now as past its deadline.

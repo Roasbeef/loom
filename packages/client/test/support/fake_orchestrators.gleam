@@ -89,6 +89,10 @@ pub type Report {
     /// Every decision sent to it, as the request's identity and the `seq` the
     /// operator was shown, in order.
     resolves: List(#(String, Int)),
+    /// The depth and the request of every `Spawn` sent to it, in the same order
+    /// as `spawns`, so a test can read what a parent on a deeper orchestrator
+    /// sent: the depth its cell holds and the deadline it was cut to.
+    asked: List(#(Int, Request)),
   )
 }
 
@@ -105,6 +109,7 @@ type Ask {
   AskSpawn(
     parent: remote_spawn.Parent,
     site: CallSite,
+    depth: Int,
     request: Request,
     within_ms: Int,
     reply: Subject(Result(Spawned, peer_mail.Failure)),
@@ -144,6 +149,7 @@ type State {
     sends: List(#(String, String)),
     resolves: List(#(String, Int)),
     delivered: Dict(String, String),
+    asked: List(#(Int, Request)),
   )
 }
 
@@ -156,20 +162,23 @@ type State {
 /// ```
 pub fn start(name: String, mode: Mode) -> Box {
   let assert Ok(started) =
-    actor.new(State(
-      mode:,
-      spawns: [],
-      windows: [],
-      children: dict.new(),
-      joins: 0,
-      join_windows: [],
-      settled: [],
-      owed: 0,
-      releases: [],
-      sends: [],
-      resolves: [],
-      delivered: dict.new(),
-    ))
+    actor.new(
+      State(
+        mode:,
+        spawns: [],
+        windows: [],
+        children: dict.new(),
+        joins: 0,
+        join_windows: [],
+        settled: [],
+        owed: 0,
+        releases: [],
+        sends: [],
+        resolves: [],
+        delivered: dict.new(),
+        asked: [],
+      ),
+    )
     |> actor.on_message(handle)
     |> actor.start
     as "the fake orchestrator starts"
@@ -233,9 +242,9 @@ pub fn voting(
     session:,
     orchestrators: list.map(boxes, fn(box) { box.name }),
     offered:,
-    spawn: fn(name, parent, site, _depth, _tools, request, within_ms) {
+    spawn: fn(name, parent, site, depth, _tools, request, within_ms) {
       ask(boxes, name, fn(reply) {
-        AskSpawn(parent:, site:, request:, within_ms:, reply:)
+        AskSpawn(parent:, site:, depth:, request:, within_ms:, reply:)
       })
     },
     join: fn(name, _parent, handles, window_ms) {
@@ -331,13 +340,17 @@ fn handle(state: State, call: Call) -> actor.Next(State, Call) {
           releases: list.reverse(state.releases),
           sends: list.reverse(state.sends),
           resolves: list.reverse(state.resolves),
+          asked: list.reverse(state.asked),
         ),
       )
       actor.continue(state)
     }
-    Asked(AskSpawn(parent:, site:, request:, within_ms:, reply:)) ->
+    Asked(AskSpawn(parent:, site:, depth:, request:, within_ms:, reply:)) ->
       spawn(
-        State(..state, windows: [within_ms, ..state.windows]),
+        State(..state, windows: [within_ms, ..state.windows], asked: [
+          #(depth, request),
+          ..state.asked
+        ]),
         parent,
         site,
         request,

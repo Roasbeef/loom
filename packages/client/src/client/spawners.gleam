@@ -67,6 +67,19 @@
 //// branch. The box owner decides, because the transcript is recorded here and
 //// may hold what this machine's tools returned.
 ////
+//// ## Depth
+////
+//// `max_depth` counts from the strand a human talks to on the spawning
+//// orchestrator, which is depth 0, so a child here is at depth 1 and a value of
+//// 1 means children may not spawn. A larger value lets a child start children of
+//// its own: in its delegate session, and on another orchestrator when
+//// `spawn_on` names it (protocol-change/084, phase 4). The daemon makes the
+//// delegate session's Agency judge every spawn in it by the same figure, so the
+//// limit a child is told and the limit it meets are one number. The default
+//// ceiling holds `agent_spawn` exactly when the depth allows a child to use it,
+//// and a nonempty `spawn_on` under a depth of 1 is refused because no child
+//// could ever use it.
+////
 //// ## Flow
 ////
 //// `from_document` → `row` → `placement_of` → `tools_of` → `windows` →
@@ -76,7 +89,8 @@
 //// 2. `row` validates one entry: its name, its keys, its node and its profile.
 //// 3. `placement_of` requires exactly one placement and resolves it against the
 ////    executors and pools this file configures.
-//// 4. `tools_of` reads the ceiling, or builds the default one.
+//// 4. `tools_of` reads the ceiling, or builds the default one for the depth,
+////    and `spawn_on_of` reads the orchestrators a child may spawn on.
 //// 5. `windows` checks the three durations against each other, and
 ////    `budget_of` reads one of the three optional metering keys.
 //// 6. `transcript_of` reads whether children's transcripts may be read from
@@ -216,6 +230,12 @@ pub type Spawner {
     approval_ceiling: Option(Ceiling),
     /// Whether the spawner may read its children's transcripts here.
     transcript: Transcript,
+    /// The `[orchestrators.<name>]` keys of this daemon on which a child of
+    /// this spawner may start children of its own (protocol-change/084, phase
+    /// 4). Empty, the default, means none, and a grandchild may still run in
+    /// the delegate session when `max_depth` allows it. A nonempty list needs a
+    /// `max_depth` above one.
+    spawn_on: List(String),
   )
 }
 
@@ -232,19 +252,28 @@ type Known {
 
 /// The tool ceiling a spawner gets when its table names none: every built-in
 /// tool except the ones that reach state beyond the delegate session. Those are
-/// `agent_spawn`, `remember`, the `peer_*` tools and the `schedule_*` tools.
-/// There is no built-in tool that installs a skill, so there is nothing more to
-/// withhold on that account.
+/// `remember`, the `peer_*` tools and the `schedule_*` tools, and `agent_spawn`
+/// unless `max_depth` is above one (protocol-change/084, phase 4). With a deeper
+/// limit a child may start children of its own, in the delegate session or on an
+/// orchestrator that `spawn_on` lists, so the default holds the tool that does
+/// it. There is no built-in tool that installs a skill, so there is nothing more
+/// to withhold on that account.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert !list.contains(spawners.default_tools(), "agent_spawn")
-/// assert list.contains(spawners.default_tools(), "bash")
+/// assert !list.contains(spawners.default_tools(1), "agent_spawn")
+/// assert list.contains(spawners.default_tools(2), "agent_spawn")
+/// assert list.contains(spawners.default_tools(1), "bash")
 /// ```
-pub fn default_tools() -> List(String) {
+pub fn default_tools(max_depth: Int) -> List(String) {
   list.append(tool_placement.workspace_names, tool_placement.owner_names())
-  |> list.filter(fn(name) { !reaches_beyond_the_session(name) })
+  |> list.filter(fn(name) {
+    case name == agent_spawn {
+      True -> max_depth > 1
+      False -> !reaches_beyond_the_session(name)
+    }
+  })
 }
 
 /// Reads the spawners from configuration text, for callers that hold no parsed
@@ -456,25 +485,28 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
           "tools", "max_depth", "max_sessions", "max_within_s",
           "default_within_s", "retain_s", "idle_close_s", "token_budget_per_day",
           "child_token_budget", "max_per_day", "approval_ceiling", "transcript",
+          "spawn_on",
         ],
         "[spawners." <> name <> "]",
       ))
       use node <- result.try(node_of(fields, place, known.peers))
       use placement <- result.try(placement_of(fields, place, known))
       use profile <- result.try(profile_of(fields, place, known.profiles))
-      use tools <- result.try(tools_of(fields, place))
 
       // The limits are what the remote enforces on an honest spawner: how deep
       // a child may nest, how many delegate sessions the spawner holds, and
       // the three durations (`windows` checks them against each other). They
       // bound a model that spawns too much or for too long, and nothing here
-      // is a boundary against a compromised peer.
+      // is a boundary against a compromised peer. The depth comes first because
+      // the default ceiling and `spawn_on` both depend on it.
       use max_depth <- result.try(count_of(
         fields,
         place,
         "max_depth",
         default_max_depth,
       ))
+      use tools <- result.try(tools_of(fields, place, max_depth))
+      use spawn_on <- result.try(spawn_on_of(fields, place, max_depth))
       use max_sessions <- result.try(sessions_of(fields, place))
       use max_within_s <- result.try(count_of(
         fields,
@@ -536,6 +568,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         max_per_day:,
         approval_ceiling:,
         transcript:,
+        spawn_on:,
       )
     }
     _ -> Error(place <> " must be a table")
@@ -721,10 +754,11 @@ fn profile_of(
 fn tools_of(
   fields: Dict(String, tom.Toml),
   place: String,
+  max_depth: Int,
 ) -> Result(List(String), String) {
   let words = place <> ".tools must be a nonempty array of tool names"
   case dict.get(fields, "tools") {
-    Error(Nil) -> Ok(default_tools())
+    Error(Nil) -> Ok(default_tools(max_depth))
     Ok(tom.Array([])) -> Error(words)
     Ok(tom.Array(items)) -> {
       use names <- result.try(
@@ -743,6 +777,58 @@ fn tools_of(
       }
     }
     Ok(_) -> Error(words)
+  }
+}
+
+// The orchestrators a child may start children of its own on: an array of
+// distinct names, each with the grammar of an `[orchestrators.<name>]` key.
+// Absent is none. A name is not checked against this file's orchestrators,
+// because in ledger mode the ledger supplies rows the file never writes; a name
+// that no row carries is offered to nobody and refused at the spawn.
+//
+// A nonempty list under a `max_depth` of one is refused: every child is then at
+// the limit and holds no spawn tool, so the list could never be used, which is
+// the same mistake as a spawn tool that the depth forbids.
+fn spawn_on_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  max_depth: Int,
+) -> Result(List(String), String) {
+  let words = place <> ".spawn_on must be an array of orchestrator names"
+  use names <- result.try(case dict.get(fields, "spawn_on") {
+    Error(Nil) -> Ok([])
+    Ok(tom.Array(items)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          tom.String(name) ->
+            case catalogue.is_profile_name(name) {
+              True -> Ok(name)
+              False ->
+                Error(
+                  place
+                  <> ".spawn_on "
+                  <> name
+                  <> " is not an orchestrator name",
+                )
+            }
+          _ -> Error(words)
+        }
+      })
+    Ok(_) -> Error(words)
+  })
+  use Nil <- result.try(case first_repeat(names) {
+    Ok(repeated) ->
+      Error(place <> ".spawn_on lists " <> repeated <> " more than once")
+    Error(Nil) -> Ok(Nil)
+  })
+  case names, max_depth > 1 {
+    [], _ | [_, ..], True -> Ok(names)
+    [_, ..], False ->
+      Error(
+        place
+        <> ".spawn_on needs max_depth above 1: at a depth of 1 no child may"
+        <> " start a child of its own",
+      )
   }
 }
 
@@ -873,10 +959,13 @@ fn windows(
   }
 }
 
+// The spawn tool's name. The default ceiling holds it only under a deeper limit.
+const agent_spawn = "agent_spawn"
+
 // Whether a built-in tool reaches state beyond the delegate session, which is
 // why the default ceiling leaves it out.
 fn reaches_beyond_the_session(name: String) -> Bool {
-  name == "agent_spawn"
+  name == agent_spawn
   || name == "remember"
   || string.starts_with(name, "peer_")
   || string.starts_with(name, "schedule_")

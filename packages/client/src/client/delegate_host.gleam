@@ -42,6 +42,15 @@
 //// `Release` is the only thing that can make the session, and it is then
 //// refused when the row says released.
 ////
+//// The release cascades (protocol-change/084, phase 4), and nothing here does it.
+//// A child here may have started children of its own on a third orchestrator,
+//// and the session's stubs are the only record of them. The registry reads the
+//// stubs from the closed file in the turn that deletes the drained session and
+//// writes a release row for each orchestrator they name, as a laptop's deletion
+//// does (`manager.release_delegate`). Writing them any earlier would let the
+//// session, still running, resend a spawn that reaches the third orchestrator
+//// after its release.
+////
 //// ## Reading
 ////
 //// A `ChildHistory` reads a child's transcript (protocol-change/090). Like a

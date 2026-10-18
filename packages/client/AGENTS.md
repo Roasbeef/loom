@@ -7533,8 +7533,8 @@ is set), with the P model in `protocol/models/remote-subagents`.
   `node` (a pinned `[[distribution.peers]]` node no other spawner uses), one
   `Placement` (`OnExecutor`, `InPool` or `InDirectory`, resolved against the
   executors and pools), a `profile` that must be a `[profiles.<name>]`, a `tools`
-  ceiling (`default_tools` is every built-in tool except `agent_spawn`,
-  `remember`, `peer_*` and `schedule_*`), and `max_depth`, `max_sessions` (at most
+  ceiling (`default_tools(max_depth)` is every built-in tool except `agent_spawn`
+  under a depth of 1, `remember`, `peer_*` and `schedule_*`), `spawn_on`, and `max_depth`, `max_sessions` (at most
   16), `max_within_s`, `default_within_s` and `retain_s`. The decoder refuses a
   `default_within_s` above `max_within_s` and a `retain_s` below it, naming both
   values, because either may be a default the file never wrote. `find` and
@@ -7603,7 +7603,7 @@ is set), with the P model in `protocol/models/remote-subagents`.
   cuts its window to `join_cap_ms`, waits as `^{strand}` (`wait_for`, which `wait`
   also uses) and adds each settled child's usage from `child_usage.of_strands`
   (one ledger scan, rows summed by branch entry). Grandchildren inside a delegate
-  session are still bounded by the Agency's own `depth_cap`, not `max_depth`.
+  session are bounded by `max_depth` too, which the daemon sets as the `depth_cap`.
 - `runtime/api` refuses a strand name starting with `^`
   (`InvalidStrandName`), in `seed_strand`, and reserves the `delegate/` fact
   prefix.
@@ -7889,6 +7889,38 @@ The box's deadline and retention (slice S4):
   `agency_test` (paging through the port, a non-descendant refused),
   `daemon_spawn_host_test`, `domain_observation_test` (the observation and the
   pushes), `remote_child_test` (`agents`), `spawners_test`.
+- Depth across machines (phase 4, slice S13; protocol-change/084 addendum of
+  2026-10-17). `main.depth_cap_of` sets a delegate session's Agency `depth_cap`
+  to its spawner's `max_depth` (`serve.Settings.depth_cap`), so the
+  `int.min(max_depth, depth_cap)` clamp in `agency.depth_limit` never binds in a
+  daemon. `spawners.default_tools(max_depth)` holds `agent_spawn` exactly when
+  `max_depth` is above 1, and `agency.child_tools` keeps the spawn tool for a
+  delegated child that asks for no narrowing (a local child's default drops it).
+  `[spawners.<name>] spawn_on` (`Spawner.spawn_on`, a list of
+  `[orchestrators.<name>]` keys, refused when nonempty under a depth of 1) is
+  applied by `main.reach_of`, which builds a delegate session's reach with
+  `remote_reach.restricted(spawn_on)`: only those names are offered or spawned on,
+  and `offered` is the list being nonempty rather than the unshared-session test.
+  A grandchild on a third orchestrator is an ordinary `spawn_elsewhere` with the
+  delegate session as the parent session; `admit_remote` reads the released
+  fence before it writes a stub, and `agency.within_parent` and
+  `no_later_than_parent` keep any child's deadline inside its parent's.
+  The release cascades at the deletion, not at the release: `manager.delete_delegate`
+  (the drained release's `finish_release` and the sweep) reads the closed file's
+  stubs in that registry turn (`descendant_holders`, `remote_release.stubs_at`
+  in a deadline-bounded task) and writes their `catalogue_remote_releases` rows
+  (parent session = the delegate session) before the registration goes, so the
+  daemon's release drainer tells them. Writing them when the release begins
+  would let the still-running session resend a `Requested` spawn past the third
+  orchestrator's `Release`. A deadline over a spawner's cap is refused with both
+  figures (`remote_spawn.over_cap`). Metering is per hop.
+  Tests: `spawners_test`, `agency_test` (two fake orchestrators: allowed and
+  refused placement, depth on both sides, the deadline clamp, the fence before a
+  stub), `delegate_host_test` (a closed session's rows from its file, a resident
+  session's row only with its deletion, and the drainer's release of the third
+  orchestrator), `support/fake_orchestrators` (`Report.asked`), the shipped
+  `daemon_shipped_remote_depth_test` (three ledger orchestrators; deleting the
+  laptop session stops the grandchild), and the P model's `tcDepth`.
 
 Tests: `spawners_test` (a valid table, defaults, every refusal, the catalogue
 parser, `standing`), `orchestrators_test` (the `@` and `#` refusal),

@@ -120,13 +120,14 @@ transcript = \"visible\"
         max_per_day: Some(20),
         approval_ceiling: None,
         transcript: spawners.Visible,
+        spawn_on: [],
       ),
     ])
 }
 
 pub fn omitted_keys_take_the_documented_defaults_test() {
   let assert Ok([spawner]) = spawners.parse(with(minimal))
-  assert spawner.tools == spawners.default_tools()
+  assert spawner.tools == spawners.default_tools(1)
   assert spawner.max_depth == 1
   assert spawner.max_sessions == 4
   assert spawner.max_within_s == 14_400
@@ -176,7 +177,7 @@ pub fn a_metering_key_is_a_positive_integer_test() {
 }
 
 pub fn the_default_ceiling_leaves_out_what_reaches_beyond_the_session_test() {
-  let tools = spawners.default_tools()
+  let tools = spawners.default_tools(1)
   assert list.contains(tools, "bash")
   assert list.contains(tools, "fs_edit")
   assert list.contains(tools, "agent_note")
@@ -187,6 +188,54 @@ pub fn the_default_ceiling_leaves_out_what_reaches_beyond_the_session_test() {
   assert !list.contains(tools, "peer_roster")
   assert !list.contains(tools, "schedule_create")
   assert !list.contains(tools, "schedule_cancel")
+}
+
+pub fn a_deeper_spawner_holds_the_spawn_tool_by_default_test() {
+  // A depth above one lets a child start children of its own, so the default
+  // ceiling holds the tool that does it, and still none that reaches beyond the
+  // delegate session.
+  let tools = spawners.default_tools(2)
+  assert list.contains(tools, "agent_spawn")
+  assert !list.contains(tools, "remember")
+  assert !list.contains(tools, "peer_send")
+  assert list.filter(tools, fn(name) { name != "agent_spawn" })
+    == spawners.default_tools(1)
+
+  let assert Ok([deep]) = spawners.parse(minimal_with("max_depth = 3"))
+  assert list.contains(deep.tools, "agent_spawn")
+
+  // An explicit ceiling is the owner's own and is kept as written.
+  let assert Ok([written]) =
+    spawners.parse(minimal_with("max_depth = 2\ntools = [\"bash\"]"))
+  assert written.tools == ["bash"]
+}
+
+pub fn spawn_on_lists_where_a_child_may_spawn_test() {
+  let assert Ok([plain]) = spawners.parse(with(minimal))
+  assert plain.spawn_on == []
+
+  let assert Ok([deep]) =
+    spawners.parse(minimal_with("max_depth = 2\nspawn_on = [\"third\"]"))
+  assert deep.spawn_on == ["third"]
+
+  // A list under a depth of one could never be used, since no child there may
+  // spawn, and it is refused rather than ignored.
+  refused(
+    minimal_with("spawn_on = [\"third\"]"),
+    "spawners.laptop.spawn_on needs max_depth above 1",
+  )
+  refused(
+    minimal_with("max_depth = 2\nspawn_on = [\"third\", \"third\"]"),
+    "spawners.laptop.spawn_on lists third more than once",
+  )
+  refused(
+    minimal_with("max_depth = 2\nspawn_on = [\"Third@x\"]"),
+    "spawners.laptop.spawn_on Third@x is not an orchestrator name",
+  )
+  refused(
+    minimal_with("max_depth = 2\nspawn_on = \"third\""),
+    "spawners.laptop.spawn_on must be an array of orchestrator names",
+  )
 }
 
 pub fn a_placement_is_an_executor_a_pool_or_a_directory_test() {
@@ -479,7 +528,7 @@ pub fn a_malformed_table_is_refused_with_the_key_it_names_test() {
   )
   refused(
     minimal_with("host = \"x\""),
-    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day, approval_ceiling, transcript)",
+    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day, approval_ceiling, transcript, spawn_on)",
   )
   refused(
     with("[spawners]\nlaptop = \"laptop@100.64.0.5\"\n"),

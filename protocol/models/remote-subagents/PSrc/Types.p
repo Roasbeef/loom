@@ -17,6 +17,15 @@
 // them carries every message that crosses the network, and the environment
 // (Chaos) breaks it.
 //
+// Phase 4 adds depth. The box's delegate session is itself a spawner: its
+// children start children of their own on a third orchestrator. The model plays
+// that side with a second Laptop machine, the relay, which holds the delegate
+// session's stubs and release rows, over a second Wire to two more Ports. One of
+// them is the orchestrator the box's `spawn_on` allows; the other is there so
+// that a spawn sent to the wrong one can be seen. The box's Port starts a
+// grandchild through the relay and, when it is released, tells the relay to owe
+// the third orchestrators a release in turn.
+//
 // A call site is an integer. The child name a site derives is a function of the
 // site (`nameOf`). The model forces two sites to derive one name so that the
 // `minted_by` comparison of the adoption check has something to refuse.
@@ -70,11 +79,14 @@ type tSubmit = (sender: machine, msg: tMsg);
 // A child record in the delegate session. `minted_by` is the call site.
 type tChildRec = (mintedBy: tSite, run: int, owner: int, st: tChildState, overdue: bool);
 
-// A stub: the state and, once the remote answered, the child it names.
-type tStub = (st: tStubState, child: tChild, run: int, owner: int);
+// A stub: the state and, once the remote answered, the child it names. `dest`
+// is the orchestrator the stub names, fixed when the stub is written: every
+// resend and every join for it goes there and nowhere else.
+type tStub = (st: tStubState, child: tChild, run: int, owner: int, dest: machine);
 
-// A call site a case starts: the parent run it belongs to and its owner.
-type tPlanSite = (site: tSite, run: int, owner: int);
+// A call site a case starts: the parent run it belongs to, its owner, and the
+// index of the orchestrator it is placed on among those its spawner knows.
+type tPlanSite = (site: tSite, run: int, owner: int, target: int);
 
 // The name the remote derives from a call site. Sites 0 and 2 collide.
 fun nameOf(site: tSite): int {
@@ -130,23 +142,50 @@ event eRunEnd: int;
 event eStubRequested: tSite;
 event eStubDone: tSite;
 event eStubSpawnedAs: (site: tSite, child: tChild);
-event eCreated: (site: tSite, child: tChild, run: int, owner: int);
+
+// `at` is the Port that created the child, so a spec can tell the boxes apart.
+event eCreated: (site: tSite, child: tChild, run: int, owner: int, at: machine);
 event eAnswered: (site: tSite, child: tChild);
 event eChildTerminal: (child: tChild, st: tChildState);
 event eReported: (site: tSite, child: tChild, st: tChildState);
 event eRefused: (site: tSite, reason: int);
 event eRunEndedHandled: (run: int, stillRunning: int);
 
-// A `Release` was handled in the session of generation `gen`: `stopped` children
-// were stopped by it and `stillRunning` were left running. A generation is one
-// delegate session, from the message that made it to its deletion.
-event eReleaseHandled: (gen: int, stopped: int, stillRunning: int);
+// A `Release` was handled in the session of generation `gen` on the Port `at`,
+// which stands at `depth`: 1 for the box the laptop spawns on, 2 for a third
+// orchestrator the box's children spawn on. `stopped` children were stopped by
+// it and `stillRunning` were left running. A generation is one delegate session,
+// from the message that made it to its deletion.
+event eReleaseHandled: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int);
 event eSessionMade: tKind;
-event eChildIn: (child: tChild, gen: int);
-event eSessionDeleted;
-event eReleaseWritten;
-event eReleaseTold;
+event eChildIn: (child: tChild, gen: int, at: machine);
+event eSessionDeleted: machine;
+
+// A spawner (`who`, the laptop or the box's delegate session) wrote, or was
+// answered on, the release row it owes the orchestrator `port`.
+event eReleaseWritten: (who: machine, port: machine);
+event eReleaseTold: (who: machine, port: machine);
 event eReleaseNoSession;
+
+// Depth 2 (phase 4). A running child on the box starts a child of its own on a
+// third orchestrator (`eGrandSpawn`, which the environment sends the box). The
+// deletion of a released session of the box, once its slot has drained
+// (`eCascadeDue`), tells its delegate session to owe the third orchestrators a
+// release in turn (`eCascade`), and the delegate session says which ones it now
+// owes (`eCascadeWritten`). `eOweReleases` writes the rows alone, which only a
+// mutant sends.
+event eGrandSpawn;
+event eRelay: machine;
+event eCascade;
+event eOweReleases;
+event eCascadeDue;
+event eCascadeWritten: set[machine];
+
+// A Port handled a `Release` sent by `src`, and admitted a spawn sent by `src`
+// that made a child. Seen by the spec that a spawner sends no spawn after its
+// own release.
+event eReleaseFrom: (at: machine, src: machine);
+event eAdmittedFrom: (at: machine, src: machine);
 
 // A row is written in the outbox, and settled by an answer or by the deletion
 // of the session that held it.

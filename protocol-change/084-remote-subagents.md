@@ -942,3 +942,143 @@ proposal above and from the design note's section 11:
 - A session-scope approval is remembered in the delegate session with `Spawner`
   provenance and re-checked against the ceiling when the session opens.
 - The P model is unchanged. 089 says why.
+
+## Addendum 2026-10-17: depth across machines (phase 4, slice S13)
+
+This records what slice S13 built. A child on the box may now start children of
+its own, in its delegate session and on a third orchestrator. Phase 4 also
+proposed several placements chosen by name; the owner ruled to defer them, so a
+spawner still has exactly one placement.
+
+### Depth
+
+`max_depth` counts from the spawning orchestrator's own strand, which is depth 0,
+so a child on the box is at depth 1. The `Spawn` already carried the parent's
+depth, and nothing on the wire changes: a grandchild's `Spawn` carries the depth
+of the child's lineage cell, 1, and the third orchestrator judges the grandchild
+at depth 2 against its own spawner's `max_depth`.
+
+The daemon now sets a delegate session's Agency `depth_cap` to its spawner's
+`max_depth` (`daemon/main.depth_cap_of`, beside `deadline_tick_of`, carried as
+`serve.Settings.depth_cap`). Every spawn in the session is judged by that figure:
+a delegated spawn, a child's local spawn and a child's spawn elsewhere. A
+delegate session whose spawner was removed keeps the default of 1.
+
+The proposal said `max_depth` is never above the remote Agency's `depth_cap`,
+and the code took `int.min(max_depth, depth_cap)` without saying so. The clamp
+stays and is documented, not refused: with the cap set from `max_depth` the two
+are equal in a daemon, so the clamp never binds there. It binds only for a host
+that builds the Agency with another cap, where it keeps the tool a child holds
+and the limit its spawns meet the same. A decoder refusal would have had nothing
+to refuse once the cap follows the table.
+
+### The spawn tool
+
+`spawners.default_tools(max_depth)` holds `agent_spawn` exactly when
+`max_depth` is above 1. A ceiling the owner writes is kept as written. A
+delegated child that asks for no narrowing keeps the spawn tool its ceiling-clamped
+parent tools hold (`agency.child_tools`), where a local child's default drops
+it; a child at the limit loses it either way.
+
+### `spawn_on`
+
+`[spawners.<name>] spawn_on` is a list of this daemon's `[orchestrators.<name>]`
+keys on which a child of the spawner may start a child of its own. It defaults to
+none, and a nonempty list under a `max_depth` of 1 is refused, because no child
+there could use it. Names are checked for their grammar and not against the
+file's orchestrators, since in ledger mode the ledger supplies rows the file
+never writes. The key is in `spawners.row`, `docs/configuration.md` and so in
+`make doc-check`.
+
+A delegate session's `Reach` is now `remote_spawner.over_distribution` narrowed
+by `remote_reach.restricted(spawn_on)`: only the listed names are offered, a
+spawn on any other is refused as not configured, and `offered` is the policy's
+answer, true when the list names one. It is not `manager.unshared_sessions`,
+because a delegate session is held by the box's owner alone and that test would
+offer every orchestrator. Join, send and release are not narrowed, since they
+concern a child a stub already records.
+
+The slice's plan said a delegate session's reach was `none` because
+`agency.delegate_endpoint` trims `remote`. The trim is on the endpoint the port
+calls, not on the session's seam: the seam had the daemon's ordinary reach, with
+the owner test, and only the missing spawn tool kept a child from using it.
+
+### The grandchild
+
+The grandchild's parent is the delegate session, so the third orchestrator sees
+the box as its spawner and holds a delegate session for the pair (box, delegate
+session). The stub, the lineage cell, the remote drainer and the link keeper are
+the ones a laptop uses, unchanged. The third orchestrator needs a
+`[spawners.<name>]` table for the box's node.
+
+A grandchild may not outlive its parent (`agency.within_parent`). Its budget is
+the smaller of what it asked for and what its parent's deadline leaves, and a
+parent past its deadline may start no child. A spawn on a third orchestrator that
+names no budget is sent the remainder, since the box does not know the third's
+default; a third orchestrator whose `max_within_s` is below that remainder
+refuses it. The wire does not change for this: the refusal names both figures,
+the `within_ms` it was sent and its own limit in milliseconds
+(`remote_spawn.over_cap`), so the model can ask again with a budget that fits
+in one step. A grandchild in the
+delegate session is also capped at the parent's absolute deadline when its
+lineage cell is written. The same rule holds for any strand with a deadline that
+spawns, and a strand a human talks to has none.
+
+Metering is per hop. Each orchestrator meters the children that run on it
+against its own spawner's budgets, and counts what it can see: the box counts
+the child's tokens, the third orchestrator counts the grandchild's, and neither
+adds the other's.
+
+### The release cascades
+
+`Release` of a delegate session now reaches its children's children:
+
+1. The holder writes the released fence and stops the children, as before.
+   `admit_remote` now reads the released fence before it writes a stub, so a
+   stopped child starts nothing elsewhere.
+2. The registry deletes the session once its slot has drained, as before. In
+   that turn, before it removes the registration, `manager.delete_delegate`
+   reads the stubs from the closed file (`remote_release.stubs_at`, in a task
+   with a deadline so a faulty file costs the turn a bound), and writes one
+   `catalogue_remote_releases` row for each orchestrator a stub that is not
+   refused names, with the delegate session as the parent session, then rings
+   the release drainer. These are the rows a laptop's deletion writes, and they
+   outlive the session they name. The retention sweep's deletion of a delegate
+   session does the same.
+3. The daemon's release drainer, which every daemon with distribution starts, so
+   also one that is both a spawner's target and a spawner, sends the third
+   orchestrator `Release`, and it stops the grandchildren and deletes its
+   delegate session.
+
+The rows are written at the deletion and not when the release is handled. A
+first version wrote them in the turn that marked the row releasing. Until the
+slot has drained, though, the session's remote drainer and a spawn still being
+asked keep resending the `Spawn` of a stub that is `Requested`, so the third
+orchestrator could handle the `Release`, delete its session, and then make a
+child for the late `Spawn` whose parent was gone. After the drain nothing of the
+session runs to send it. A `Spawn` already in flight from the effect process
+that was asking can still arrive after the `Release`, from another process; that
+child is bounded by its deadline, as at depth 1.
+
+### Tests and the model
+
+`agency_test` drives a delegate session two levels deep over two fake
+orchestrators: a spawn on the allowed one with the cell's depth, a refusal of
+the one `spawn_on` leaves out, the depth refusal on both sides, the deadline
+clamp, and a release after which a child starts nothing elsewhere.
+`delegate_host_test` checks that a closed session's deletion owes the third
+orchestrator a release from its file and that the drainer's pass releases the
+third orchestrator's session, and that for a resident session the row appears
+only together with the session's deletion. `daemon_shipped_remote_depth_test`
+runs three shipped daemons from a three-orchestrator ledger: the laptop's parent
+starts a child on the box, which starts a grandchild on the third, and deleting
+the laptop session stops both and deletes both delegate sessions.
+
+`protocol/models/remote-subagents` gains a relay (the box's delegate session as a
+spawner) and two `Port` machines at depth 2, the specs `OneOrchestratorPerSite`,
+`ReleasedDescendantsEnd` and `NoSpawnAfterOwnRelease`, and the case `tcDepth`.
+The relay goes on resending until the box deletes the session, and the cascade
+is written then. Three mutants are caught: a spawn retried against a second
+orchestrator, which the model could not state with one port; a deletion that
+does not cascade; and a cascade written when the release is handled, before the
+slot drains.

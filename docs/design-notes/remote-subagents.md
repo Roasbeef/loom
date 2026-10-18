@@ -809,7 +809,12 @@ Caps are counted on both sides, and each side counts what it can see.
 - **Depth** is carried in the request and checked against `max_depth`. With
   the shipped `depth_cap: 1`, only a strand a human talks to spawns, and a
   remote child's tool set has no `agent_spawn`, so phase 1 has no
-  grandchildren anywhere.
+  grandchildren anywhere. Phase 4 (slice S13, protocol-change/084's addendum
+  of 2026-10-17) sets the delegate session's `depth_cap` to `max_depth`, gives
+  a child below it the spawn tool, lets it spawn on the orchestrators the
+  spawner's `spawn_on` lists, cuts a grandchild's deadline to what its parent
+  has left, and makes a `Release` of the delegate session release the
+  grandchildren in turn.
 
 ## 9. The spawn policy
 

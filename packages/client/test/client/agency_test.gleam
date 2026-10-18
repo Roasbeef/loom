@@ -5206,9 +5206,12 @@ pub fn a_remote_spawn_is_judged_by_the_spawners_deadlines_test() {
         within_ms: Some(terms.max_within_ms + 1),
       ),
     )
-    == Error(remote_spawn.InvalidArgument(
-      reason: "within_ms is above this spawner's max_within_s",
-    ))
+    == Error(
+      remote_spawn.InvalidArgument(reason: remote_spawn.over_cap(
+        terms.max_within_ms + 1,
+        terms.max_within_ms,
+      )),
+    )
   assert agency.delegate_spawn(
       harness.config,
       delegation,
@@ -6136,9 +6139,12 @@ pub fn the_port_refuses_a_spawn_the_spawners_table_forbids_test() {
       ),
     )
     == Ok(
-      Error(remote_spawn.InvalidArgument(
-        reason: "within_ms is above this spawner's max_within_s",
-      )),
+      Error(
+        remote_spawn.InvalidArgument(reason: remote_spawn.over_cap(
+          1_000_000_000,
+          spawners.default_max_within_s * 1000,
+        )),
+      ),
     )
   assert orchestrator_port.ask_spawn(
       port,
@@ -8165,8 +8171,13 @@ pub fn repeated_sends_never_move_a_childs_deadline_test() {
     ))
   }
   let assert remote_mail.Started(operation: first, ..) = send("s1")
-  let assert remote_mail.Started(operation: second, ..) = send("s2")
   let strand = spawned.handle.strand
+
+  // The second send must find the child idle again, or it steers the run the
+  // first one started. That run settles at once under this provider, but only
+  // once its driver has handled the answer, so the test waits for it.
+  assert settled(harness, agent.Handle(strand:, operation: first))
+  let assert remote_mail.Started(operation: second, ..) = send("s2")
   assert run_for(harness, agent.Handle(strand:, operation: first)).deadline
     == original
   assert run_for(harness, agent.Handle(strand:, operation: second)).deadline
@@ -8384,4 +8395,225 @@ pub fn a_laptop_that_cannot_reach_its_holder_answers_busy_not_a_final_failure_te
       "hello",
     )
   assert remote_mail.retryable(busy)
+}
+
+// --- depth across machines (protocol-change/084, phase 4) --------------------
+//
+// The harness is a box's delegate session whose spawner allows a depth of two
+// and lists `third` in `spawn_on`. Two orchestrators are configured, `third` and
+// `fourth`, so the narrowing has one to leave out. A child the laptop started
+// here starts children of its own: on `third`, with this session as the parent
+// session, and locally. The daemon sets the Agency's cap to the spawner's
+// `max_depth` and the reach to `spawn_on` (`client/daemon/main`); here the two
+// are set by hand to the same values.
+
+// A spawner's terms that let a child spawn: a depth of two and a ceiling that
+// holds the spawn tool.
+fn deeper_terms() -> remote_spawn.Terms {
+  remote_spawn.Terms(
+    ..remote_terms(),
+    ceiling: ["agent_note", "agent_send", "agent_spawn", "bash"],
+    max_depth: 2,
+  )
+}
+
+// A delegate session two levels deep whose reach is narrowed to `third`. The
+// base reach would not be offered, which shows that the policy and not the
+// owner test answers whether the session may spawn elsewhere.
+fn start_deep(boxes: List(fake_orchestrators.Box)) -> #(Harness, Subject(Nil)) {
+  let queued = process.new_subject()
+  let harness =
+    start_harness_with(Hangs, fn(config) {
+      agency.Config(
+        ..config,
+        depth_cap: 2,
+        remote: remote_reach.restricted(
+          fake_orchestrators.reach(parent_session, boxes, fn() { False }),
+          ["third"],
+        ),
+        remote_queued: fn() { process.send(queued, Nil) },
+      )
+    })
+  #(harness, queued)
+}
+
+// A child the laptop's main strand started here under the deeper terms, with no
+// narrowing of its tools.
+fn deep_child(harness: Harness, label: String) -> remote_spawn.Spawned {
+  let assert Ok(child) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_spawn.Delegation(..remote_delegation(), terms: deeper_terms()),
+      site_of(label, 0),
+      remote_request("lead"),
+    )
+    as "the delegate child is admitted"
+  child
+}
+
+fn on_orchestrator(purpose: String, name: String) -> agent.SpawnRequest {
+  agent.SpawnRequest(..a_spawn(purpose), on: Some(name))
+}
+
+pub fn a_delegate_child_spawns_on_the_orchestrator_its_spawner_allows_test() {
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let fourth = fake_orchestrators.start("fourth", fake_orchestrators.Up)
+  let #(harness, _queued) = start_deep([third, fourth])
+
+  // Under a depth of two the child keeps the spawn tool the ceiling gave it,
+  // which a local child would not by default.
+  let child = deep_child(harness, "turn-1:tools")
+  assert list.contains(child.tools, "agent_spawn")
+  let caller = child_caller(child, "child-turn:tools")
+
+  // Its spawn on `third` is sent with this session as the parent session and
+  // the depth of the child's own cell, so the third orchestrator judges the
+  // grandchild as depth two.
+  let assert Ok(grandchild) =
+    harness.seam.spawn(caller, on_orchestrator("dig", "third"))
+  let seen = fake_orchestrators.report(third)
+  let assert [#(depth, _request)] = seen.asked
+  assert depth == 1
+  let assert [stub] = stubs_of(harness)
+  assert stub.orchestrator == "third"
+  assert stub.strand == child.handle.strand
+  let assert remote_child.Spawned(placed:) = stub.state
+  assert grandchild.handle == placed.handle
+
+  // `fourth` is configured but not in `spawn_on`, so it is neither offered nor
+  // asked.
+  let assert Error(agent.InvalidArgument(reason:)) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 1),
+      on_orchestrator("dig", "fourth"),
+    )
+  assert string.contains(reason, "not a configured orchestrator")
+  assert fake_orchestrators.report(fourth).spawns == []
+  assert harness.config.remote.orchestrators == ["third"]
+
+  // The session's release will owe `third`: its stubs name it.
+  let assert Ok(kept) = remote_child.all(harness.runtime)
+  assert remote_child.holders(kept) == ["third"]
+  close(harness)
+}
+
+pub fn a_grandchild_past_the_depth_limit_is_refused_on_both_sides_test() {
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let #(harness, _queued) = start_deep([third])
+
+  // A child whose remote parent stands at depth one is itself at the limit of
+  // two: it holds no spawn tool, and a spawn it asks for anyway is refused here,
+  // before anything is sent.
+  let assert Ok(leaf) =
+    agency.delegate_spawn(
+      harness.config,
+      remote_spawn.Delegation(
+        ..remote_delegation(),
+        depth: 1,
+        terms: deeper_terms(),
+      ),
+      site_of("turn-1:tools", 0),
+      remote_request("leaf"),
+    )
+  assert !list.contains(leaf.tools, "agent_spawn")
+  assert harness.seam.spawn(
+      child_caller(leaf, "leaf-turn:tools"),
+      on_orchestrator("deeper", "third"),
+    )
+    == Error(agent.DepthCapReached(depth: 2))
+  assert fake_orchestrators.report(third).spawns == []
+
+  // The third orchestrator judges a grandchild by its own spawner's limit: a
+  // `Spawn` from a parent at depth two is refused there when the limit is two.
+  assert agency.delegate_spawn(
+      harness.config,
+      remote_spawn.Delegation(
+        ..remote_delegation(),
+        depth: 2,
+        terms: deeper_terms(),
+      ),
+      site_of("turn-2:tools", 0),
+      remote_request("too deep"),
+    )
+    == Error(remote_spawn.CapReached(cap: remote_spawn.MaxDepth, limit: 2))
+  close(harness)
+}
+
+pub fn a_grandchilds_deadline_is_clamped_to_what_its_parent_has_left_test() {
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let #(harness, _queued) = start_deep([third])
+  let child = deep_child(harness, "turn-1:tools")
+  let assert Some(parent_cell) = cell_for(harness, child.handle.strand)
+  let assert Some(parent_deadline) = parent_cell.deadline
+  let caller = child_caller(child, "child-turn:tools")
+  let ten_hours = 36_000_000
+
+  // On the third orchestrator: a budget longer than the parent's is cut to what
+  // the parent has left, and a spawn that names none is sent that remainder,
+  // since the third orchestrator's default could be longer.
+  let assert Ok(_) =
+    harness.seam.spawn(
+      caller,
+      agent.SpawnRequest(
+        ..on_orchestrator("long", "third"),
+        within_ms: Some(ten_hours),
+      ),
+    )
+  let assert Ok(_) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 1),
+      on_orchestrator("default", "third"),
+    )
+  let assert [#(_, long), #(_, unnamed)] =
+    fake_orchestrators.report(third).asked
+  let assert Some(long_ms) = long.within_ms
+  let assert Some(unnamed_ms) = unnamed.within_ms
+  assert long_ms > 0 && long_ms <= remote_terms().default_within_ms
+  assert unnamed_ms > 0 && unnamed_ms <= remote_terms().default_within_ms
+
+  // A shorter budget is kept as it was asked.
+  let assert Ok(_) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 2),
+      agent.SpawnRequest(
+        ..on_orchestrator("short", "third"),
+        within_ms: Some(1000),
+      ),
+    )
+  let assert [_, _, #(_, short)] = fake_orchestrators.report(third).asked
+  assert short.within_ms == Some(1000)
+
+  // In the delegate session itself the grandchild's deadline is no later than
+  // its parent's.
+  let assert Ok(local) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 3),
+      agent.SpawnRequest(..a_spawn("local long"), within_ms: Some(ten_hours)),
+    )
+  let assert Some(local_cell) = cell_for(harness, local.strand)
+  let assert Some(local_deadline) = local_cell.deadline
+  assert local_deadline <= parent_deadline
+  close(harness)
+}
+
+pub fn a_released_delegate_session_admits_no_new_stub_test() {
+  let third = fake_orchestrators.start("third", fake_orchestrators.Up)
+  let #(harness, _queued) = start_deep([third])
+  let child = deep_child(harness, "turn-1:tools")
+  let caller = child_caller(child, "child-turn:tools")
+  let assert Ok(_) =
+    harness.seam.spawn(caller, on_orchestrator("before", "third"))
+
+  // The release writes the fence and stops the child, which then starts
+  // nothing on another orchestrator. The stub made before stays, for the
+  // registry to read when it deletes the session.
+  let endpoint = agency.delegate_endpoint(harness.config)
+  let assert Ok(_stopped) = endpoint.release()
+  let assert Error(agent.ParentRunEnded(..)) =
+    harness.seam.spawn(
+      Caller(..caller, source_index: 1),
+      on_orchestrator("after", "third"),
+    )
+  assert list.length(stubs_of(harness)) == 1
+  close(harness)
 }

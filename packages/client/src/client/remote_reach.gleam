@@ -27,6 +27,12 @@
 //// by then, so the caller is not an Agency but the daemon's release drainer,
 //// which asks through a `Reach` built for the deleted session.
 ////
+//// A delegate session's children may start children of their own on another
+//// orchestrator (phase 4), but only where the spawner's `spawn_on` allows.
+//// `restricted` narrows a reach to those names and answers `offered` from the
+//// list, since the owner test an ordinary session is asked would pass for every
+//// orchestrator in a session that only this daemon's owner holds.
+////
 //// The functions answer as a call to another orchestrator can end, and the same
 //// two ways peer mail's endpoints do (`client/peer_mail.Failure`).
 ////
@@ -48,6 +54,7 @@ import client/remote_mail.{type Landing}
 import client/remote_spawn.{
   type CallSite, type Joined, type Parent, type Request, type Spawned,
 }
+import gleam/list
 import session_view/remote_transcript.{type Page}
 import tools/agent.{type Handle}
 
@@ -162,6 +169,42 @@ pub fn none(session: String) -> Reach {
       Error(not_configured(name))
     },
     keep: fn(_name, _vote) { Nil },
+  )
+}
+
+/// The reach of a delegate session, whose children may start children of their
+/// own only on the orchestrators its spawner's `spawn_on` lists
+/// (protocol-change/084, phase 4).
+///
+/// The names offered to the model are the configured ones that `allowed` also
+/// holds, and a spawn on any other name is refused as not configured. Whether
+/// the session may spawn elsewhere at all is the policy's answer: it may when
+/// `allowed` names at least one orchestrator. It is not the test an ordinary
+/// session is asked, that its owner holds it alone, because the owner of a
+/// delegate session is this daemon's owner and the test would pass for every
+/// orchestrator.
+///
+/// Only `spawn` is narrowed. A join, a send and a release concern a child that a
+/// stub already records, and an orchestrator taken out of `spawn_on` after the
+/// child started must still be asked about it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_reach.restricted(reach, ["third"]).orchestrators == ["third"]
+/// ```
+pub fn restricted(reach: Reach, allowed: List(String)) -> Reach {
+  Reach(
+    ..reach,
+    orchestrators: list.filter(reach.orchestrators, list.contains(allowed, _)),
+    offered: fn() { allowed != [] },
+    spawn: fn(name, parent, site, depth, tools, request, within_ms) {
+      case list.contains(allowed, name) {
+        True ->
+          reach.spawn(name, parent, site, depth, tools, request, within_ms)
+        False -> Error(not_configured(name))
+      }
+    },
   )
 }
 

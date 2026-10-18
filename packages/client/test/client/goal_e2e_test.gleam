@@ -1131,6 +1131,7 @@ fn settings(root: String, script: Subject(ScriptMessage)) -> serve.Settings {
     peer_defaults: None,
     remote_reach: None,
     deadline_tick_ms: None,
+    depth_cap: None,
     metering: None,
     spawner: None,
     laptop: None,

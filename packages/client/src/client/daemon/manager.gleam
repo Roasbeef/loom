@@ -62,6 +62,10 @@
 ////    the slot drains, and `sweep_now` deletes what a failed deletion left, what
 ////    `due_for_deletion` finds due, and `close_idle` closes the resident
 ////    sessions that have been idle past the spawner's idle window.
+//// 11. Deleting a delegate session cascades (protocol-change/084, phase 4):
+////    `delete_delegate`, which both the drained release and the sweep use,
+////    reads the closed file's stubs with `descendant_holders` and writes their
+////    release rows with `owe_releases` before the registration goes.
 
 import broker/internal/call
 import broker/internal/ffi_crypto
@@ -93,6 +97,7 @@ import storage/access
 import storage/catalogue
 import storage/domain
 import telemetry/owner
+import weft
 import weft/state_machine as sm
 
 /// Live lifecycle state, joined with the durable initialization the registry
@@ -4303,7 +4308,7 @@ fn sweep_now(
     free
     |> list.filter(fn(row) { due_for_deletion(standing, row, now_ms) })
     |> list.count(fn(row) {
-      result.is_ok(remove_registration(book, row.session_id, sessions))
+      result.is_ok(delete_delegate(book, row.session_id, sessions))
     })
   let candidates =
     list.filter_map(held, fn(row) {
@@ -4453,9 +4458,66 @@ fn finish_release(
     catalogue.set_delegate_state(book.catalogue, session_id, catalogue.Released)
     |> result.map_error(Catalogue),
   )
-  remove_registration(book, session_id, sessions)
+  delete_delegate(book, session_id, sessions)
   |> result.replace(Nil)
   |> result.map_error(fn(_) { Unavailable })
+}
+
+// The deletion of a delegate session that no slot holds, and the releases it
+// owes in turn (protocol-change/084, phase 4). A child of the session may have
+// started children of its own on another orchestrator, and the session's stubs
+// are the only record of them. So this turn reads the stubs from the closed
+// file and writes one release row for each orchestrator they name before it
+// removes the registration, as a parent session's deletion does.
+//
+// The rows are written here and not when the release begins. Until the slot
+// has drained, the session's drainer and a spawn still being asked keep
+// resending the `Spawn` of a stub that is `Requested`, and one that reached the
+// other orchestrator after its `Release` would make a child there whose parent
+// is gone. Once the slot has drained nothing of the session runs to send it.
+fn delete_delegate(
+  book: Book(instance),
+  session_id: String,
+  sessions: String,
+) -> Result(catalogue.Registration, AdminError) {
+  use existing <- result.try(
+    catalogue.get(book.catalogue, session_id) |> result.map_error(AdminMetadata),
+  )
+  use Nil <- result.try(owe_releases(
+    book,
+    session_id,
+    descendant_holders(existing.path, session_id),
+  ))
+  remove_registration(book, session_id, sessions)
+}
+
+// How long the registry's turn may spend reading a closed delegate session's
+// stubs, in milliseconds. The read lists one prefix and closes.
+const descendant_read_ms = 5000
+
+// The orchestrators a closed delegate session's stubs name. The file is read in
+// a task with a deadline, so a store that faults or hangs costs the turn the
+// bound and no more, and the store's actor is linked to the task and not to the
+// registry. A file that cannot be read owes nothing, as for a deletion: the
+// children below it run to their deadlines.
+fn descendant_holders(path: String, session_id: String) -> List(String) {
+  let read =
+    [
+      fn() {
+        remote_release.stubs_at(
+          path,
+          "release-read:" <> session_id,
+          clock.from_function(ffi_os.system_time_ms),
+        )
+      },
+    ]
+    |> weft.new
+    |> weft.deadline(descendant_read_ms)
+    |> weft.start
+  case read {
+    [weft.Completed(value: kept, ..)] -> remote_child.holders(kept)
+    _ -> []
+  }
 }
 
 fn remove_registration(

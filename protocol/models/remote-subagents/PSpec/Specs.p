@@ -7,21 +7,43 @@
 // interleave. This is the adoption check of section 8.2: a resent `Spawn`
 // derives the same name, finds its own cell and answers the same handle.
 //
-// A delegate session is what holds the child, so the rule is per session. The
-// session's deletion starts a new one, and a stale `Spawn` that reaches the
-// remote after the release made a session for it is a new session's first
-// spawn.
+// A delegate session is what holds the child, so the rule is per session, and
+// each Port holds its own. The session's deletion starts a new one, and a stale
+// `Spawn` that reaches the remote after the release made a session for it is a
+// new session's first spawn.
 spec AtMostOneChildPerSite observes eCreated, eSessionDeleted {
-  var created: set[tSite];
+  var created: map[machine, set[tSite]];
 
   start state Watching {
-    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int)) {
-      assert !(p.site in created), format("call site {0} created a second child", p.site);
-      created += (p.site);
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
+      if (!(p.at in created)) {
+        created[p.at] = default(set[tSite]);
+      }
+      assert !(p.site in created[p.at]), format("call site {0} created a second child", p.site);
+      created[p.at] += (p.site);
     }
 
-    on eSessionDeleted do {
-      created = default(set[tSite]);
+    on eSessionDeleted do (at: machine) {
+      created[at] = default(set[tSite]);
+    }
+  }
+}
+
+// A call site's children are all on one orchestrator (phase 4). A spawn is
+// resent until it is answered and never sent to another orchestrator
+// (`remote_spawn`), because the adoption that makes a resend safe is one
+// orchestrator's: a second orchestrator has no record of the first child and
+// would make another. The stub records the orchestrator before the first send,
+// and every resend and join reads it from there.
+spec OneOrchestratorPerSite observes eCreated {
+  var placed: map[tSite, machine];
+
+  start state Watching {
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
+      if (p.site in placed) {
+        assert placed[p.site] == p.at, format("call site {0} created children on two orchestrators", p.site);
+      }
+      placed[p.site] = p.at;
     }
   }
 }
@@ -33,7 +55,7 @@ spec OwnChildOnly observes eCreated, eAnswered {
   var madeBy: map[tChild, tSite];
 
   start state Watching {
-    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int)) {
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
       madeBy[p.child] = p.site;
     }
 
@@ -66,7 +88,7 @@ spec JoinReportsOwnChild observes eCreated, eChildTerminal, eReported {
   var ended: map[tChild, tChildState];
 
   start state Watching {
-    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int)) {
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
       madeBy[p.child] = p.site;
     }
 
@@ -105,11 +127,11 @@ spec NoSpawnUnderEndedRun observes eRunEndedHandled, eCreated, eSessionDeleted {
       ended += (p.run);
     }
 
-    on eSessionDeleted do {
+    on eSessionDeleted do (at: machine) {
       ended = default(set[int]);
     }
 
-    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int)) {
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
       assert !(p.run in ended), format("call site {0} created child {1} under run {2}, which had ended", p.site, p.child, p.run);
     }
   }
@@ -160,14 +182,14 @@ spec EveryChildTerminal observes eCreated, eChildTerminal {
   var live: set[tChild];
 
   start cold state Quiet {
-    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int)) {
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
       live += (p.child);
       goto Waiting;
     }
   }
 
   hot state Waiting {
-    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int)) {
+    on eCreated do (p: (site: tSite, child: tChild, run: int, owner: int, at: machine)) {
       live += (p.child);
     }
 
@@ -187,16 +209,16 @@ spec EveryChildTerminal observes eCreated, eChildTerminal {
 // when the session is already releasing, and one that came first is a child the
 // release stops.
 spec ReleasedSessionHasNoRunningChild observes eReleaseHandled, eChildIn {
-  var released: set[int];
+  var released: set[(machine, int)];
 
   start state Watching {
-    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int)) {
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
       assert p.stillRunning == 0, format("{0} children were still running after the release of session {1}", p.stillRunning, p.gen);
-      released += (p.gen);
+      released += ((p.at, p.gen));
     }
 
-    on eChildIn do (p: (child: tChild, gen: int)) {
-      assert !(p.gen in released), format("child {0} was made in session {1}, which had been released", p.child, p.gen);
+    on eChildIn do (p: (child: tChild, gen: int, at: machine)) {
+      assert !((p.at, p.gen) in released), format("child {0} was made in session {1}, which had been released", p.child, p.gen);
     }
   }
 }
@@ -212,22 +234,124 @@ spec ReleaseMakesNoSession observes eSessionMade {
   }
 }
 
-// Every release row the laptop writes is eventually answered. Only an answer
+// Every release row a spawner writes is eventually answered, the laptop's to the
+// box and the box's delegate session's to a third orchestrator. Only an answer
 // settles the row: an unreachable call leaves it, and the next pass sends it
 // again, so bounded faults delay the answer and cannot lose it.
 spec EveryReleaseIsTold observes eReleaseWritten, eReleaseTold {
+  var owed: set[(machine, machine)];
+
   start cold state Quiet {
-    on eReleaseWritten do {
+    on eReleaseWritten do (p: (who: machine, port: machine)) {
+      owed += ((p.who, p.port));
       goto Waiting;
     }
   }
 
   hot state Waiting {
-    on eReleaseTold do {
-      goto Quiet;
+    on eReleaseWritten do (p: (who: machine, port: machine)) {
+      owed += ((p.who, p.port));
+    }
+
+    on eReleaseTold do (p: (who: machine, port: machine)) {
+      owed -= ((p.who, p.port));
+      if (sizeof(owed) == 0) {
+        goto Quiet;
+      }
     }
   }
 }
+
+// A released session's descendants on every box end (phase 4). When the box
+// deletes a released session, once its slot has drained (`eCascadeDue`), its
+// children's children are on third orchestrators that only its stubs name. The
+// deletion must leave a row for each of them (the cascade, `eCascadeWritten`),
+// and each row must be answered by the third orchestrator, whose own release
+// stops every running child there. So the monitor is hot from the box's deletion
+// until the cascade has been written and every orchestrator it names has
+// answered, and a third orchestrator's release that left a child running fails
+// at once. A grandchild that a spawn already in flight makes after the third
+// orchestrator's release is bounded by its deadline, as at depth 1, and is not a
+// descendant this release could reach.
+spec ReleasedDescendantsEnd observes eCascadeDue, eReleaseHandled, eCascadeWritten, eReleaseTold {
+  var awaiting: int;
+  var pending: set[machine];
+
+  start cold state Quiet {
+    on eCascadeDue do {
+      awaiting = awaiting + 1;
+      goto Waiting;
+    }
+
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
+      noneLeft(p.stillRunning, p.depth);
+    }
+
+    on eCascadeWritten do (owed: set[machine]) {
+      awaiting = awaiting - 1;
+    }
+
+    on eReleaseTold do (p: (who: machine, port: machine)) {
+      pending -= (p.port);
+    }
+  }
+
+  hot state Waiting {
+    on eCascadeDue do {
+      awaiting = awaiting + 1;
+    }
+
+    on eReleaseHandled do (p: (gen: int, stopped: int, stillRunning: int, at: machine, depth: int)) {
+      noneLeft(p.stillRunning, p.depth);
+    }
+
+    on eCascadeWritten do (owed: set[machine]) {
+      var p: machine;
+      awaiting = awaiting - 1;
+      foreach (p in owed) {
+        pending += (p);
+      }
+      if (awaiting <= 0 && sizeof(pending) == 0) {
+        goto Quiet;
+      }
+    }
+
+    on eReleaseTold do (p: (who: machine, port: machine)) {
+      pending -= (p.port);
+      if (awaiting <= 0 && sizeof(pending) == 0) {
+        goto Quiet;
+      }
+    }
+  }
+
+  fun noneLeft(stillRunning: int, depth: int) {
+    assert depth == 1 || stillRunning == 0, format("{0} grandchildren were still running after their orchestrator's release", stillRunning);
+  }
+}
+
+// A spawner sends no spawn that makes a child after its own `Release` reached
+// that orchestrator (phase 4). Its drainer, which sends both, writes the release
+// row only when nothing of the session is left to resend a spawn: the laptop's
+// stubs go with the deleted parent session, and the box's delegate session's
+// rows are written in the turn that deletes it after its slot drained. Both
+// come from the same process, which delivers in order. A spawn from the effect
+// process that was still asking when the session went is another sender, may
+// arrive after the release, and is bounded by its deadline; this spec does not
+// count it.
+spec NoSpawnAfterOwnRelease observes eReleaseFrom, eAdmittedFrom {
+  var released: set[(machine, machine)];
+
+  start state Watching {
+    on eReleaseFrom do (p: (at: machine, src: machine)) {
+      released += ((p.at, p.src));
+    }
+
+    on eAdmittedFrom do (p: (at: machine, src: machine)) {
+      assert !((p.at, p.src) in released), "a spawner's spawn made a child after its own release reached the orchestrator";
+    }
+  }
+}
+
 
 // A mail steers the parent at most once, however often the remote sends it. The
 // laptop stores the receipt in the commit that steers (`remote-mail/{id}`), so a
