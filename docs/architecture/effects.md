@@ -754,7 +754,8 @@ birth time immediately before signalling.
 
 The tracker watches the gated root with kqueue before its first fresh process
 snapshot. Fork and exit notifications trigger another snapshot and watches for
-newly observed descendants. An idle wait does not read the host process table.
+newly observed descendants. Installing a new watch queues another snapshot to
+cover forks before registration. An idle wait does not read the host process table.
 Darwin does not implement recursive `NOTE_TRACK`, so these events are discovery
 hints rather than ownership. A live queue or registration failure restores the
 previous 20 ms polling path; startup failure refuses before opening the gate.

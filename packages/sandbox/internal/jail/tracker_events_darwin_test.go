@@ -126,3 +126,88 @@ func TestProcessTrackerRefusesMissingRoot(t *testing.T) {
 		t.Fatal("missing root did not fail the gated preflight")
 	}
 }
+
+// The root's fork notification has already been consumed when a snapshot
+// discovers its child. Forking a grandchild before registering that child
+// must schedule another snapshot even if no subsequent process event occurs.
+func TestProcessTrackerRescansAfterRegisteringNewChildren(t *testing.T) {
+	child := exec.Command("/bin/sh", "-c", "read ready; /bin/sleep 30 & echo $!; wait")
+	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	input, err := child.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	output, err := child.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { _ = child.Wait(); close(done) }()
+	defer func() { _ = syscall.Kill(-child.Process.Pid, syscall.SIGKILL); <-done }()
+
+	queue, err := unix.Kqueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := &processTracker{root: os.Getpid(), queue: queue, seen: make(map[int]uint64),
+		watched: make(map[int]uint64), stop: make(chan struct{}), done: make(chan struct{})}
+	started := false
+	defer func() {
+		if started {
+			tracker.close()
+		} else {
+			_ = unix.Close(queue)
+		}
+	}()
+	wake := unix.Kevent_t{Filter: unix.EVFILT_USER, Flags: unix.EV_ADD | unix.EV_CLEAR}
+	if _, err := unix.Kevent(queue, []unix.Kevent_t{wake}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	table, err := darwinProcessTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.captureTable(table)
+	if _, ok := tracker.seen[child.Process.Pid]; !ok {
+		t.Fatal("initial snapshot missed the gated child")
+	}
+
+	// No PROC watch is installed yet: this fork has no notification. The
+	// retained table describes the child, but predates its new descendant.
+	if _, err := fmt.Fprintln(input, "fork"); err != nil {
+		t.Fatal(err)
+	}
+	if err := output.(*os.File).SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(output).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	grandchild, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.watchTable(table); err != nil {
+		t.Fatal(err)
+	}
+	started = true
+	go tracker.run()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		tracker.mu.Lock()
+		_, observed := tracker.seen[grandchild]
+		tracker.mu.Unlock()
+		if observed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("post-registration snapshot missed the unwatched fork")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

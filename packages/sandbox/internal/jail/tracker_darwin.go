@@ -163,11 +163,15 @@ func (t *processTracker) captureAndWatch() error {
 		return err
 	}
 	t.captureTable(table)
+	return t.watchTable(table)
+}
 
+func (t *processTracker) watchTable(table []unix.KinfoProc) error {
 	// Only identities observed under this root enter the ledger. A watch
 	// raced by exit is harmless; signal always rechecks the remembered birth.
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	added := false
 	for _, entry := range table {
 		pid, birth := int(entry.Proc.P_pid), processBirth(entry)
 		observed, ok := t.seen[pid]
@@ -181,6 +185,15 @@ func (t *processTracker) captureAndWatch() error {
 			return err
 		}
 		t.watched[pid] = birth
+		added = true
+	}
+
+	// A child can fork between this snapshot and its watch registration.
+	// Queue a post-registration snapshot to discover such live grandchildren;
+	// later forks already have watches. Each scan releases the capture lock
+	// and returns through run's stop check, even under a continuous fork load.
+	if added {
+		return t.wake()
 	}
 	return nil
 }
@@ -272,10 +285,15 @@ func (t *processTracker) close() {
 
 	// close owns the descriptor until the reader has joined, so a racing
 	// reader exit cannot recycle it underneath this wakeup.
-	wake := unix.Kevent_t{Filter: unix.EVFILT_USER, Fflags: unix.NOTE_TRIGGER}
-	_, _ = unix.Kevent(t.queue, []unix.Kevent_t{wake}, nil, nil)
+	_ = t.wake()
 	<-t.done
 	_ = unix.Close(t.queue)
+}
+
+func (t *processTracker) wake() error {
+	wake := unix.Kevent_t{Filter: unix.EVFILT_USER, Fflags: unix.NOTE_TRIGGER}
+	_, err := unix.Kevent(t.queue, []unix.Kevent_t{wake}, nil, nil)
+	return err
 }
 
 func darwinProcessTable() ([]unix.KinfoProc, error) {
