@@ -15,8 +15,9 @@ frame-only DOM/vendor binding, including promise/exception conversion.
 
 The configuration pins the dagre layout. Mermaid 12 otherwise lays flowcharts
 out with ELK, whose browserified bundle needs a CommonJS `require` that Bun's
-IIFE output does not define, so every flowchart failed. Do not drop the pin
-without a real-browser flowchart drive.
+IIFE output does not define, so every flowchart failed. A `flowchart-elk`
+header still selects ELK and falls back to source. Do not drop the pin without
+a real-browser flowchart drive.
 
 Run `make gen-client` from the repository root. It compiles the Gleam frame
 program, installs the npm lock with `npm ci --ignore-scripts`, reuses the Bun

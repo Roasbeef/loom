@@ -208,8 +208,9 @@ export function message_data(event) {
   return event.data;
 }
 
+// A frame in a detached shadow tree has no window; the post is then moot.
 export function post_to_frame(frame, text) {
-  frame.contentWindow.postMessage(text, "*");
+  frame.contentWindow?.postMessage(text, "*");
 }
 
 // The handler is returned so that `remove_listener` can name it. Unlike

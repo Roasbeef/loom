@@ -207,12 +207,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, List(Effect)) {
       }
     Measured(revision, height) ->
       case model.shown == Some(revision) && revision == model.latest {
-        True -> #(model, [
-          ReplyToParent(RenderedReply(
-            revision,
-            clamp_height(float.round(float.ceiling(height))),
-          )),
-        ])
+        True -> #(model, [height_reply(revision, height)])
         False -> #(model, [])
       }
   }
@@ -223,8 +218,8 @@ pub fn update(model: Model, message: Msg) -> #(Model, List(Effect)) {
 /// The layout is pinned to dagre. Mermaid 12 otherwise lays flowcharts out
 /// with ELK, whose browserified bundle calls a CommonJS `require` that the
 /// frame's IIFE build does not define, so every flowchart failed to render.
-/// Configuration and frontmatter directives are refused, so no source can
-/// select ELK again.
+/// A `flowchart-elk` header still selects ELK; it fails closed to the source
+/// fallback like any other render failure.
 ///
 /// ## Examples
 /// ```gleam
@@ -473,10 +468,7 @@ fn published(
         False, _, _ -> #(model, [])
         True, True, Ok(height) ->
           retire(Model(..model, shown: Some(revision)), queued, [
-            ReplyToParent(RenderedReply(
-              revision,
-              clamp_height(float.round(float.ceiling(height))),
-            )),
+            height_reply(revision, height),
           ])
         True, True, Error(_) ->
           retire(model, queued, [Clear, ReplyToParent(FailedReply(revision))])
@@ -504,6 +496,11 @@ fn retire(
   }
 }
 
-fn clamp_height(height: Int) -> Int {
-  int.clamp(height, min_height, max_height)
+// A measured height rounds up to whole pixels inside the published bounds.
+fn height_reply(revision: Int, height: Float) -> Effect {
+  let pixels = float.round(float.ceiling(height))
+  ReplyToParent(RenderedReply(
+    revision,
+    int.clamp(pixels, min_height, max_height),
+  ))
 }

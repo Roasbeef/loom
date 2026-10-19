@@ -56,8 +56,6 @@ pub type Resources {
   Resources(
     /// The element's own shadow root, not the session component's.
     root: ffi_dom.Element,
-    /// Its light DOM contains the server's source text.
-    host: ffi_dom.Element,
     /// Changes to that source trigger another read.
     source: ffi_dom.Observer,
     /// Explicit theme changes trigger another read.
@@ -196,13 +194,13 @@ fn reread(
     True -> #(model, effect.none())
     False -> {
       let revision = diagram.revision
+      // The render deadline is armed in `send`, when the request is posted,
+      // not here: counting the frame's bundle download against it marked
+      // renderable diagrams unavailable on a slow link.
       let wait = case diagram.phase {
         rule.Waiting -> {
           use dispatch <- effect.from
           ffi_dom.after(rule.debounce_ms, fn() { dispatch(Due(revision)) })
-          ffi_dom.after(rule.debounce_ms + rule.timeout_ms, fn() {
-            dispatch(Expired(revision))
-          })
         }
         rule.Empty
         | rule.Rendering
@@ -221,6 +219,20 @@ fn mount() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let root = ffi_dom.as_element(root)
   let host = ffi_dom.host(root)
+  case ffi_dom.is_connected(host) {
+    True -> install(dispatch, root, host)
+
+    // Removed before this paint: `Disconnected` already ran with nothing to
+    // release, so installing now would leak a window listener for good.
+    False -> Nil
+  }
+}
+
+fn install(
+  dispatch: fn(Msg) -> Nil,
+  root: ffi_dom.Element,
+  host: ffi_dom.Element,
+) -> Nil {
   let media = ffi_dom.media_query("(prefers-color-scheme: light)")
   let read = fn() { dispatch(read_source(host, media)) }
   let source = ffi_dom.mutation_observer(read)
@@ -234,15 +246,7 @@ fn mount() -> Effect(Msg) {
       dispatch(Answered(frame_reply(root, event)))
     })
   dispatch(
-    Mounted(Resources(
-      root,
-      host,
-      source,
-      theme,
-      media,
-      media_listener,
-      messages,
-    )),
+    Mounted(Resources(root, source, theme, media, media_listener, messages)),
   )
   read()
 }
@@ -282,15 +286,18 @@ fn frame_reply(root: ffi_dom.Element, event: Dynamic) -> rule.Reply {
 
 // A request is text data sent only to this element's fixed sandbox URL. The
 // wildcard is required because sandboxing deliberately gives it an opaque origin.
+// The deadline starts with the post, so it bounds the renderer and not the
+// frame's load; a frame that never loads leaves the source disclosed.
 fn send(model: Model) -> Effect(Msg) {
   case model.frame, model.diagram.phase, model.resources {
     Ready, rule.Rendering, Some(resources) -> {
       let request = rule.request(model.diagram)
-      use _, _ <- effect.after_paint
+      let revision = model.diagram.revision
+      use dispatch, _ <- effect.after_paint
       let _ =
         ffi_dom.query_selector(resources.root, "iframe")
         |> result.map(fn(frame) { ffi_dom.post_to_frame(frame, request) })
-      Nil
+      ffi_dom.after(rule.timeout_ms, fn() { dispatch(Expired(revision)) })
     }
     _, _, _ -> effect.none()
   }

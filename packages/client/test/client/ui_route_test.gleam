@@ -1901,6 +1901,13 @@ pub fn mermaid_asset_routes_keep_the_child_policy_isolated_test() {
     assert frame.status == 200
     assert list.key_find(frame.headers, "content-security-policy")
       == Ok(page.mermaid_content_security_policy)
+
+    // Replaced, not appended: a second page policy's frame-ancestors 'none'
+    // would stop the frame from loading at all (protocol-change/091).
+    assert list.count(frame.headers, fn(header) {
+        header.0 == "content-security-policy"
+      })
+      == 1
     assert string.contains(frame.body, "/ui/assets/mermaid.js")
     assert string.contains(
       page.mermaid_content_security_policy,

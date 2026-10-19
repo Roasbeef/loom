@@ -82,7 +82,8 @@ owns the application, message listener and observer; teardown removes them all.
   `bundle/renderer_test.mjs` test exception and promise normalization. Neither
   runs the real vendor; `scripts/web_mermaid_check.sh` is the browser drive.
 - The configuration pins `layout: "dagre"`. ELK, Mermaid 12's flowchart
-  default, fails inside the IIFE bundle (`__require is not defined`).
+  default, fails inside the IIFE bundle (`__require is not defined`); a
+  `flowchart-elk` header still reaches it and falls back to source.
 - The frame root's `color-scheme` follows the request's theme. A frame whose
   scheme differs from its iframe element's is painted on an opaque backdrop.
 
