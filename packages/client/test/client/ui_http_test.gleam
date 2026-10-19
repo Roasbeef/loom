@@ -4,6 +4,7 @@
 //// carries (protocol-change/051).
 
 import client/daemon/ui_http
+import client/daemon/ui_sessions
 import gleam/http
 import gleam/http/request
 import gleam/http/response
@@ -124,10 +125,19 @@ pub fn routes_are_gets_under_ui_test() {
   assert ui_http.route(get("/favicon.ico", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/assets/web_view.css", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/assets/other.js", [])) == ui_http.Unknown
-  assert ui_http.route(
-      get("/ui/sessions/abc", []) |> request.set_method(http.Post),
-    )
-    == ui_http.Unknown
+
+  // A `POST` to an exchange's own address is its confirmation's press, and
+  // the path names which exchange; the ticket is in the body, not the route.
+  let post = fn(path) {
+    ui_http.route(get(path, []) |> request.set_method(http.Post))
+  }
+  assert post("/ui/sessions/abc")
+    == ui_http.ConfirmedExchange(ui_sessions.SessionExchange("abc"))
+  assert post("/ui/home") == ui_http.ConfirmedExchange(ui_sessions.HomeExchange)
+  assert post("/ui/admin")
+    == ui_http.ConfirmedExchange(ui_sessions.AdminExchange)
+  assert post("/ui/p/k1/sessions/abc") == ui_http.Unknown
+  assert post("/ui/sessions/abc/ws") == ui_http.Unknown
 }
 
 pub fn the_cookie_is_read_and_set_with_its_attributes_test() {
@@ -231,7 +241,7 @@ pub fn the_bookmark_is_a_get_and_the_resume_a_post_test() {
   assert ui_http.route(get("/ui/l/k1", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/l/k1/home/ws", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/l/home", [])) == ui_http.Unknown
-  assert ui_http.route(post("/ui/home", [])) == ui_http.Unknown
+  assert ui_http.route(post("/ui/l/home", [])) == ui_http.Unknown
   assert ui_http.route(post("/ui/l/k1/sessions/abc", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/assets/web_view_resume.js", []))
     == ui_http.Asset(ui_http.ResumeScript)
@@ -360,6 +370,25 @@ pub fn the_posted_nonce_is_one_field_of_sixty_four_hex_digits_test() {
     >>)
     == Error(Nil)
   assert ui_http.posted_nonce(<<0xff, 0xfe>>) == Error(Nil)
+}
+
+// The confirmation's press carries one field, `ticket`, of the shape every
+// ticket is minted in, and is held to the nonce's rules field for field.
+pub fn the_posted_ticket_is_one_field_of_sixty_four_hex_digits_test() {
+  let ticket = string.repeat("0f", 32)
+  assert ui_http.posted_ticket(<<"ticket=":utf8, ticket:utf8>>) == Ok(ticket)
+  assert ui_http.posted_ticket(<<"ticket=":utf8>>) == Error(Nil)
+  assert ui_http.posted_ticket(<<"ticket=":utf8, "0f":utf8>>) == Error(Nil)
+  assert ui_http.posted_ticket(<<
+      "ticket=":utf8,
+      { string.uppercase(ticket) }:utf8,
+    >>)
+    == Error(Nil)
+  assert ui_http.posted_ticket(<<"ticket=":utf8, ticket:utf8, "&x=1":utf8>>)
+    == Error(Nil)
+  assert ui_http.posted_ticket(<<"nonce=":utf8, ticket:utf8>>) == Error(Nil)
+  assert ui_http.posted_nonce(<<"ticket=":utf8, ticket:utf8>>) == Error(Nil)
+  assert ui_http.posted_ticket(<<0xff, 0xfe>>) == Error(Nil)
 }
 
 // The resume page, and only it, is served under a policy that lets a form submit

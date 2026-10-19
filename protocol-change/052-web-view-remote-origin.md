@@ -578,3 +578,18 @@ minutes and sets `__Secure-loom_login`. `tui/view_device_test` covers the
 launcher's words, the choice of listed origin, the wire, and a QR code that
 decodes back to its link. A real drive through Tailscale Serve from a phone
 has not been run.
+
+## Addendum: a device link scanned from a QR code (2026-10-19)
+
+The admission table above keeps "Exchange `Sec-Fetch-Site`: `none` or
+`same-origin`" for both origins, and that is still the rule for redeeming a
+ticket on a `GET`. A phone's camera opens the device link's QR code
+`cross-site` or with no header, so as built it was refused with `forbidden
+exchange`, which is how the owner found it. Protocol-change/051's addendum of
+the same date answers such a `GET` with a confirmation instead of a `403`:
+one button that posts the ticket to the exchange's path, accepted only as a
+`same-origin` form post. Nothing in this proposal's origin rules changes. The
+post is admitted under the same `PageOrigin` as the `GET`, so the press on a
+listed origin sets `__Secure-loom_ui` and `__Secure-loom_login` with `Secure`,
+and the confirmation names the listed origin it signs in to. A sibling
+subdomain, `same-site`, can show the confirmation and cannot post it.

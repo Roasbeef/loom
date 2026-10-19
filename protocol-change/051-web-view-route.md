@@ -4365,3 +4365,111 @@ panel's scroll position. An Escape within notes detail presses Back and stops
 propagation before the shell's strand-navigation shortcut; an editor retains its
 own Escape. The element handles no key outside the notes pane and never reaches
 an approval or composer.
+
+## Addendum: a link opened from another app is confirmed (2026-10-19)
+
+### The problem
+
+Check 2 above refuses the ticket exchange with `403` unless `Sec-Fetch-Site`
+is `none` or `same-origin`. The owner ran `loom ui --device` on a daemon
+behind Tailscale Serve (protocol-change/052), scanned the QR code with a
+phone's camera, and the phone's browser showed `forbidden exchange`. A link
+that a camera, a QR scanner or a chat app hands to the browser arrives
+`Sec-Fetch-Site: cross-site`, or with no such header, and not as `none`. The
+same link pasted into the address bar worked. So the check refused the very
+path 052's device link exists for.
+
+The check is there for a reason that still holds: another page must not be
+able to put a keyed page in front of the person, or sign the person's browser
+in with a ticket the attacker minted for their own account (login CSRF). The
+ticket is the CSRF secret only against an attacker who does not hold one.
+
+### What was decided
+
+The exchange's three `GET` routes (`/ui/sessions/<id>?ticket=`,
+`/ui/home?ticket=`, `/ui/admin?ticket=`) keep their fast path: `none` or
+`same-origin` redeems at once, unchanged. Any other `GET`, `cross-site`,
+`same-site` or a missing header, is no longer refused. It is answered with a
+confirmation:
+
+- a fixed `200` document from this origin that says what signing in will do:
+  the origin it signs in to, whether the link opens a session's page, the
+  home or the admin page, and, for a ticket that is `Remembered`, that the
+  browser stays signed in for up to thirty days;
+- one form with one button, which posts the ticket in a hidden field to the
+  exchange's own path (`POST /ui/sessions/<id>`, `POST /ui/home`, `POST
+  /ui/admin`). The ticket is never put back into a URL;
+- no script, served with every `/ui` header (`Referrer-Policy: no-referrer`,
+  `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`) and the
+  policy with `form-action 'self'`, which the resume page and the claim form
+  already use.
+
+Loading the confirmation spends nothing. The table answers a read-only
+`preview` with the ticket's `Remember`, which picks the words, and a ticket
+that is not live gets the exchange's own "link expired" document instead of
+a button that cannot work.
+
+The `POST` is held to the rules of the login's resume (065): `Sec-Fetch-Site`
+exactly `same-origin`, and a declared URL-encoded body of at most 1 KiB with
+no `Transfer-Encoding`. The body must be exactly one field, `ticket`, of 64
+lowercase hexadecimal digits. A `POST` that fails any of these is refused
+(`403` for the sender, `400` for the body) before the table is asked, so it
+spends nothing. One that passes redeems through the same function the fast
+path uses and gets the same exchange page, so the page cookie, its
+`__Secure-` name and `Secure` attribute on a listed origin (052), and any
+browser login are set exactly as they are for a pasted link.
+
+### Why this keeps the defence
+
+An attacker's page can still navigate the person to the confirmation, with
+the attacker's ticket in it. It cannot finish the exchange: the only request
+that redeems from a non-first-party start is a form post whose
+`Sec-Fetch-Site` is `same-origin`, which only a page on this origin can make,
+and the only such page is the confirmation itself, which redeems only when the
+person presses a button that names the origin and what it opens. A cross-site
+form that posts the ticket straight to the exchange path is refused by the
+same-origin rule, and so is a program that sends no `Sec-Fetch-Site`.
+`same-site` (another loopback port, or a sibling subdomain of a listed name)
+can show the confirmation and cannot post it, as it could not exchange
+before. Framing is refused by `frame-ancestors 'none'`, so the button cannot
+be overlaid by another page.
+
+What the person gives up is one press when the link comes from outside the
+browser. What remains open is the case the check never covered: a person who
+presses Sign in on a link someone else sent them. The words on the page are
+the defence there ("Continue only if you asked for this link yourself").
+
+### What was considered
+
+- **Accept `cross-site` and a missing header on the `GET`.** That removes the
+  login CSRF defence entirely, for loopback as well as for listed origins.
+- **A script that posts the ticket automatically.** A script on the
+  confirmation runs whoever navigated there, so it is the same as accepting
+  `cross-site`.
+- **Moving the ticket into the fragment** (052, Open). It does not change
+  what `Sec-Fetch-Site` a camera's link carries, and it would change the
+  exchange for every link.
+
+### Cost
+
+One read-only message on the ticket table, three `POST` routes, one fixed
+document, and a ticket in the confirmation's body, which is uncached and
+sends no referrer. A browser that sends no `Sec-Fetch-Site` on its own form
+posts cannot complete the confirmation; current Chrome, Firefox and Safari
+send it.
+
+### Verification
+
+`client/ui_route_test` drives a real listener: a session link fetched
+`cross-site`, `same-site` and with no header gets the confirmation (one form
+posting to the exchange path, the ticket only in a hidden field, `no-store`,
+`no-referrer`, `form-action 'self'`, no cookie) and stays live; its press
+redeems once and the spent link is told it expired; posts that are
+cross-site, same-site, `none`, headerless, of the wrong type, with a second
+field, a malformed ticket or a foreign `Host` are refused and leave the
+ticket live; the admin exchange completes through its confirmation; and a
+device link fetched `cross-site` on a listed origin is confirmed in that
+origin's words and its press sets `__Secure-loom_ui` and
+`__Secure-loom_login` with `Secure`. `client/ui_http_test` covers the routes
+and `posted_ticket`; `web_view/page_test` covers the document and its
+escaping. A real drive from a phone through Tailscale Serve has not been run.

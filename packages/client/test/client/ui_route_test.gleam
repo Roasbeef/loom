@@ -1492,6 +1492,42 @@ fn enter(port: Int, path: String) -> Entered {
   entered(exchange(port, path))
 }
 
+// A link's address and its ticket, split where the query starts: the address
+// is what the link's confirmation posts to, and the ticket is what it posts.
+fn split_link(path: String) -> #(String, String) {
+  let assert Ok(parts) = string.split_once(path, "?ticket=")
+    as "the link carries a ticket"
+  parts
+}
+
+// A raw `POST` of `body` to a link's exchange address, with its length
+// declared, so a test can send the sender, type and body any page might.
+fn press(
+  port: Int,
+  path: String,
+  headers: List(#(String, String)),
+  body: String,
+) -> Answer {
+  let length = #("content-length", int.to_string(string.byte_size(body)))
+  send_request(port, "POST", split_link(path).0, [length, ..headers], body)
+}
+
+// The press on a link's confirmation, as the confirmation's own form sends it:
+// a same-origin, URL-encoded post of the one `ticket` field. `more` carries
+// the host.
+fn confirm(port: Int, path: String, more: List(#(String, String))) -> Answer {
+  press(
+    port,
+    path,
+    [
+      #("sec-fetch-site", "same-origin"),
+      #("content-type", "application/x-www-form-urlencoded"),
+      ..more
+    ],
+    "ticket=" <> split_link(path).1,
+  )
+}
+
 fn attribute(body: String, name: String) -> String {
   let assert Ok(#(_, rest)) = string.split_once(body, name <> "=\"")
     as "the exchange page carries the attribute"
@@ -1612,11 +1648,14 @@ pub fn a_ticket_becomes_a_keyed_page_once_test() {
     let session = create_session(ready, "once", 901)
     let path = link(port, credential, session)
 
-    // A cross-site navigation cannot exchange it, and does not spend it.
+    // A cross-site navigation cannot exchange it and does not spend it: it is
+    // answered with the confirmation, which sets no cookie.
     let cross = get(port, path, [host(port), #("sec-fetch-site", "cross-site")])
-    assert cross.status == 403
+    assert cross.status == 200
+    assert list.key_find(cross.headers, "set-cookie") == Error(Nil)
     let absent = get(port, path, [host(port)])
-    assert absent.status == 403
+    assert absent.status == 200
+    assert list.key_find(absent.headers, "set-cookie") == Error(Nil)
 
     // The exchange answers 200, never a redirect, with the keyed page and
     // the nonce in its body, and a cookie scoped to the page key.
@@ -1657,6 +1696,108 @@ pub fn a_ticket_becomes_a_keyed_page_once_test() {
         #("cookie", "loom_ui=" <> page.cookie),
       ]).status
       == 404
+  })
+}
+
+// A link opened from another app, as a phone's camera, a QR scanner or a chat
+// app opens one, arrives `cross-site` or with no `Sec-Fetch-Site` at all. It is
+// answered with a confirmation that spends nothing: one form that posts the
+// ticket in a hidden field to the exchange's own address, under the policy that
+// lets this origin's forms submit, uncached and sending no referrer. The press,
+// a same-origin post, redeems it exactly as a first-party link would.
+pub fn a_link_from_another_app_is_confirmed_before_it_is_spent_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "confirmed-link", 5301)
+    let path = link(port, credential, session)
+    let ticket = split_link(path).1
+    let sites = [
+      [#("sec-fetch-site", "cross-site")],
+      [#("sec-fetch-site", "same-site")],
+      [],
+    ]
+    list.each(sites, fn(site) {
+      let offered = get(port, path, [host(port), ..site])
+      assert offered.status == 200
+      assert list.key_find(offered.headers, "set-cookie") == Error(Nil)
+      assert list.key_find(offered.headers, "cache-control") == Ok("no-store")
+      assert referrer_policy(offered) == Ok("no-referrer")
+      let assert Ok(policy) =
+        list.key_find(offered.headers, "content-security-policy")
+        as "the confirmation carries the policy"
+      assert string.contains(policy, "form-action 'self'")
+      assert string.contains(
+        offered.body,
+        "method=\"post\" action=\"/ui/sessions/" <> session <> "\"",
+      )
+      assert string.contains(
+        offered.body,
+        "<input type=\"hidden\" name=\"ticket\" value=\"" <> ticket <> "\">",
+      )
+      assert string.contains(offered.body, "a page for one session")
+      assert !string.contains(offered.body, "thirty days")
+
+      // The ticket is in the field and nowhere else, so in no URL.
+      assert list.length(string.split(offered.body, ticket)) == 2
+      assert !string.contains(offered.body, "?ticket=")
+      assert !string.contains(offered.body, "<script")
+    })
+
+    // Three loads spent nothing: the press redeems, under the policy every
+    // other answer has, and the page it hands over opens.
+    let answer = confirm(port, path, [host(port)])
+    let page = entered(answer)
+    assert string.ends_with(page.page, "/sessions/" <> session)
+    let assert Ok(policy) =
+      list.key_find(answer.headers, "content-security-policy")
+      as "the exchange carries the policy"
+    assert string.contains(policy, "form-action 'none'")
+    assert open_page(port, page).status == 200
+
+    // Spent. Neither the press nor the link opens a second page, and a spent
+    // link from another app is told it has expired rather than offered a
+    // button that cannot work.
+    assert confirm(port, path, [host(port)]).status == 401
+    assert exchange(port, path).status == 401
+    let dead = get(port, path, [host(port), #("sec-fetch-site", "cross-site")])
+    assert dead.status == 401
+    assert !string.contains(dead.body, "name=\"ticket\"")
+  })
+}
+
+// The press is this origin's own form and nothing else. A post from another
+// site or another loopback port, one that says nothing of its origin, `none`
+// (nobody types a post), a body that is not a declared form, and a form that
+// does not hold exactly one ticket-shaped field are each refused before the
+// ticket is asked about, so the link still opens afterwards.
+pub fn only_a_same_origin_form_press_redeems_a_confirmed_link_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "pressed-link", 5302)
+    let path = link(port, credential, session)
+    let ticket = split_link(path).1
+    let body = "ticket=" <> ticket
+    let form = #("content-type", "application/x-www-form-urlencoded")
+    let from = fn(site) {
+      press(port, path, [host(port), form, ..site], body).status
+    }
+    assert from([#("sec-fetch-site", "cross-site")]) == 403
+    assert from([#("sec-fetch-site", "same-site")]) == 403
+    assert from([#("sec-fetch-site", "none")]) == 403
+    assert from([]) == 403
+
+    // A same-origin post that is not the confirmation's form.
+    let same = #("sec-fetch-site", "same-origin")
+    let shaped = fn(headers, sent) { press(port, path, headers, sent).status }
+    assert shaped([host(port), same, #("content-type", "text/plain")], body)
+      == 400
+    assert shaped([host(port), same], body) == 400
+    assert shaped([host(port), same, form], body <> "&x=1") == 400
+    assert shaped([host(port), same, form], "nonce=" <> ticket) == 400
+    assert shaped([host(port), same, form], "ticket=0f") == 400
+    assert shaped([#("host", "evil.example"), same, form], body) == 403
+
+    // None of them spent it: the link still opens.
+    let page = enter(port, path)
+    assert string.ends_with(page.page, "/sessions/" <> session)
   })
 }
 
@@ -2721,9 +2862,12 @@ pub fn a_home_ticket_becomes_a_keyed_home_once_test() {
     let path = operator_home(port, credential)
     assert string.starts_with(path, "/ui/home?ticket=")
 
-    // The exchange's checks are the session exchange's.
-    assert get(port, path, [host(port), #("sec-fetch-site", "cross-site")]).status
-      == 403
+    // The exchange's checks are the session exchange's: a cross-site link is
+    // confirmed first and not spent.
+    let offered =
+      get(port, path, [host(port), #("sec-fetch-site", "cross-site")])
+    assert offered.status == 200
+    assert string.contains(offered.body, "action=\"/ui/home\"")
     let answer = exchange(port, path)
     let page = entered(answer)
     assert string.ends_with(page.page, "/home")
@@ -6692,10 +6836,14 @@ pub fn an_owners_home_opens_an_admin_page_once_test() {
     let path = admin_ticket(port, home)
     assert string.starts_with(path, "/ui/admin?ticket=")
 
-    // The exchange's checks are the home's.
-    assert get(port, path, [host(port), #("sec-fetch-site", "cross-site")]).status
-      == 403
-    let answer = exchange(port, path)
+    // The exchange's checks are the home's. A cross-site link is confirmed,
+    // and here the confirmation's press is what exchanges it.
+    let offered =
+      get(port, path, [host(port), #("sec-fetch-site", "cross-site")])
+    assert offered.status == 200
+    assert string.contains(offered.body, "action=\"/ui/admin\"")
+    assert string.contains(offered.body, "admin page")
+    let answer = confirm(port, path, [host(port)])
     let page = entered(answer)
     assert string.ends_with(page.page, "/admin")
     let assert Ok(set) = list.key_find(answer.headers, "set-cookie")
@@ -9546,5 +9694,66 @@ pub fn a_device_link_is_a_ten_minute_remembered_home_ticket_test() {
       as "a device link sets a login"
     assert string.contains(login, "; Path=/ui/l/")
     assert string.ends_with(login, "; Secure")
+  })
+}
+
+// The case a phone's camera reaches: a device link scanned from the QR code
+// arrives on the listed origin `cross-site`. It is confirmed in that origin's
+// words, naming the thirty days its login lasts, under the `wss://` policy, and
+// the press sets the `__Secure-` page cookie and login with `Secure`, exactly
+// as the same link pasted into the address bar would.
+pub fn a_device_link_from_a_qr_code_is_confirmed_on_the_listed_origin_test() {
+  fixture(fn(_ready, port, credential) {
+    let #(socket, _) =
+      daemon_server_test.connect(port, credential, "/v2/control")
+    let _hello = daemon_server_test.frame(socket, within_ms: 1000)
+    let reply =
+      daemon_server_test.send(
+        socket,
+        1,
+        "ui.link",
+        json.Object([#("device", json.Bool(True))]),
+        within_ms: 1000,
+      )
+    let _ = ffi_ws.tcp_close(socket)
+    let assert Ok(json.String(path)) =
+      field(reply, "body") |> result.try(field(_, "path"))
+      as "a device link"
+
+    let offered =
+      get(port, path, [
+        #("host", remote_host),
+        #("sec-fetch-site", "cross-site"),
+      ])
+    assert offered.status == 200
+    assert string.contains(offered.body, "on " <> remote_origin <> "?")
+    assert string.contains(offered.body, "thirty days")
+    assert string.contains(offered.body, "action=\"/ui/home\"")
+    assert list.key_find(offered.headers, "set-cookie") == Error(Nil)
+    let assert Ok(policy) =
+      list.key_find(offered.headers, "content-security-policy")
+      as "the confirmation carries the policy"
+    assert string.contains(policy, "connect-src 'self' wss://" <> remote_host)
+    assert string.contains(policy, "form-action 'self'")
+
+    let answer = confirm(port, path, [#("host", remote_host)])
+    assert answer.status == 200
+    assert string.ends_with(attribute(answer.body, "data-next"), "/home")
+    let cookies =
+      list.filter_map(answer.headers, fn(header) {
+        case header.0 {
+          "set-cookie" -> Ok(header.1)
+          _ -> Error(Nil)
+        }
+      })
+    let assert Ok(page_cookie) =
+      list.find(cookies, string.starts_with(_, "__Secure-loom_ui="))
+      as "the press sets the page cookie"
+    assert string.ends_with(page_cookie, "; Secure")
+    let assert Ok(login) =
+      list.find(cookies, string.starts_with(_, "__Secure-loom_login="))
+      as "the press sets the device's login"
+    assert string.ends_with(login, "; Secure")
+    assert !list.any(cookies, string.starts_with(_, "loom_ui="))
   })
 }

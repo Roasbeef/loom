@@ -36,8 +36,12 @@
 //// 5. `dispatch` answers operation reads itself and sends every other command
 ////    to `dispatch_class`, one arm per command; replies leave through `send`.
 //// 6. A `/ui` request takes `web_socket` for the page's socket or
-////    `web_document` for the page, the ticket exchange and images, each
-////    re-checking cookie, grant and credential through `page_grant`. The
+////    `web_document` for the page and images, each re-checking cookie, grant
+////    and credential through `page_grant`. A ticket link takes
+////    `offered_exchange`, which redeems a first-party navigation at once and
+////    answers any other with a confirmation (`confirm_exchange`); the
+////    confirmation's press is `confirmed_exchange`, and both redeem through
+////    `redeem_ticket`. The
 ////    home's socket and page take `home_socket` and `home_grant` instead, and
 ////    the admin page's take `admin_socket` and `admin_grant`. The admin page's
 ////    machines are read by `admin_deployment`, which makes the control
@@ -510,6 +514,39 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
           ui_http.secured_for(claim_page(request), origin, page.OwnForms)
         ui_http.ClaimSubmit -> claim_submit(config, ui, request, origin)
 
+        // The three ticket exchanges share one path through `offered_exchange`
+        // and `confirmed_exchange`, which secure their own answers because the
+        // confirmation is a document that holds a form.
+        ui_http.Exchange(id, ticket) ->
+          offered_exchange(
+            config,
+            ui,
+            request,
+            origin,
+            ui_sessions.SessionExchange(id),
+            ticket,
+          )
+        ui_http.HomeExchange(ticket) ->
+          offered_exchange(
+            config,
+            ui,
+            request,
+            origin,
+            ui_sessions.HomeExchange,
+            ticket,
+          )
+        ui_http.AdminExchange(ticket) ->
+          offered_exchange(
+            config,
+            ui,
+            request,
+            origin,
+            ui_sessions.AdminExchange,
+            ticket,
+          )
+        ui_http.ConfirmedExchange(exchange) ->
+          confirmed_exchange(config, ui, request, origin, exchange)
+
         ui_http.AdminSocket(key, nonce) ->
           admin_socket(config, ui, request, origin, key, nonce)
         route -> {
@@ -893,6 +930,10 @@ fn web_document(
     | ui_http.LoginPage(..)
     | ui_http.ClaimPage
     | ui_http.ClaimSubmit
+    | ui_http.Exchange(..)
+    | ui_http.HomeExchange(..)
+    | ui_http.AdminExchange(..)
+    | ui_http.ConfirmedExchange(..)
     | ui_http.AdminSocket(..) -> plain(404, "unknown endpoint")
 
     ui_http.Asset(asset) -> {
@@ -939,37 +980,6 @@ fn web_document(
         True -> result_of(config, ui, request, origin, key, id, ref, None)
       }
 
-    // A ticket presented against another session's path, or a home's ticket
-    // presented here, is spent without a UI session. A redeemed one adds a
-    // page and leaves the principal's others open (the oldest ends only at
-    // `ui_sessions.max_pages`), and hands this tab the new page's key, in the
-    // cookie's path, and its nonce, in the body, never in a redirect.
-    ui_http.Exchange(id, ticket) ->
-      case ui_http.exchange_allowed(request) {
-        False -> plain(403, "forbidden exchange")
-        True ->
-          case
-            ui_sessions.redeem(
-              ui.sessions,
-              ticket,
-              ui_sessions.SessionExchange(id),
-            )
-          {
-            Error(ui_sessions.UnknownTicket) ->
-              refused_page(401, ending.LinkExpired, id)
-            Error(ui_sessions.OtherScope) ->
-              plain(403, "ticket names another session")
-            Ok(redeemed) ->
-              entered(
-                config,
-                ui,
-                origin,
-                redeemed,
-                page.session_path(redeemed.key, id),
-              )
-          }
-      }
-
     // The home page, kept to the same two rules as a session's: a navigation
     // from this origin or from outside any page, and a cookie under the key
     // that names a live page of the `Home` scope.
@@ -998,59 +1008,162 @@ fn web_document(
           }
       }
 
-    // The admin exchange is the home's twin: a session's ticket or a home's
-    // presented here is spent and refused, and no page is added, and an admin
-    // ticket presented at either of theirs is too, since each exchange redeems
-    // only its own scope (`ui_sessions.redeem`).
-    ui_http.AdminExchange(ticket) ->
-      case ui_http.exchange_allowed(request) {
-        False -> plain(403, "forbidden exchange")
-        True ->
-          case
-            ui_sessions.redeem(ui.sessions, ticket, ui_sessions.AdminExchange)
-          {
-            Error(ui_sessions.UnknownTicket) ->
-              refused_admin(401, ending.LinkExpired)
-            Error(ui_sessions.OtherScope) ->
-              plain(403, "ticket names another page")
-            Ok(redeemed) ->
-              entered(
-                config,
-                ui,
-                origin,
-                redeemed,
-                page.admin_path(redeemed.key),
-              )
-          }
-      }
-
-    // The home's exchange is the session exchange's twin: a session's ticket
-    // presented here is spent and refused, and no page is added.
-    ui_http.HomeExchange(ticket) ->
-      case ui_http.exchange_allowed(request) {
-        False -> plain(403, "forbidden exchange")
-        True ->
-          case
-            ui_sessions.redeem(ui.sessions, ticket, ui_sessions.HomeExchange)
-          {
-            Error(ui_sessions.UnknownTicket) ->
-              refused_home(401, ending.LinkExpired)
-            Error(ui_sessions.OtherScope) ->
-              plain(403, "ticket names another page")
-            Ok(redeemed) ->
-              entered(
-                config,
-                ui,
-                origin,
-                redeemed,
-                page.home_path(redeemed.key),
-              )
-          }
-      }
-
     // A browser's visit to its bookmark: the verification, and then a home page
     // the login mints (protocol-change/065, PR 8).
     ui_http.LoginResume(key) -> login_resume(config, ui, request, origin, key)
+  }
+}
+
+// A ticket link, `GET` with the ticket in its query. A link opened from outside
+// any page (`none`) or from this origin redeems at once, as it always has. Any
+// other link, which is how a phone's camera, a QR scanner or a chat app opens
+// one (`cross-site`, or no `Sec-Fetch-Site` at all), is not redeemed and not
+// refused: it is answered with a confirmation that says what signing in will
+// do and holds one button. That keeps the exchange's defence, since another
+// page can still put the confirmation in front of the person but cannot finish
+// the exchange without the person pressing a button on this origin that names
+// what it does, and loading the confirmation spends nothing.
+fn offered_exchange(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  exchange: ui_sessions.Exchange,
+  ticket: String,
+) {
+  case ui_http.exchange_allowed(request) {
+    True ->
+      ui_http.secured(
+        redeem_ticket(config, ui, origin, exchange, ticket),
+        origin,
+      )
+    False -> confirm_exchange(ui, origin, exchange, ticket)
+  }
+}
+
+// The confirmation for a ticket that is still live, or the exchange's own
+// "link expired" answer for one that is not, so a dead link does not offer a
+// button that cannot work. The preview leaves the ticket in the table. The
+// document is the one answer under `OwnForms`, and like every `/ui` answer it
+// carries `Referrer-Policy: no-referrer`, so neither its stylesheet fetch nor
+// its form's post tells anyone the address that holds the ticket, and
+// `Cache-Control: no-store`, so the ticket in its body is not kept on disk.
+fn confirm_exchange(
+  ui: Ui(instance),
+  origin: ui_http.PageOrigin,
+  exchange: ui_sessions.Exchange,
+  ticket: String,
+) {
+  case ui_sessions.preview(ui.sessions, ticket) {
+    Error(Nil) -> ui_http.secured(expired_link(exchange), origin)
+    Ok(remember) -> {
+      let staying = case remember {
+        ui_sessions.Remembered -> page.StaysSignedIn
+        ui_sessions.Forgotten -> page.ForThisPage
+      }
+      document(
+        200,
+        "text/html; charset=utf-8",
+        page.exchange_confirmation(
+          opening(exchange),
+          staying,
+          ui_http.address(origin),
+          ticket,
+        ),
+      )
+      |> ui_http.secured_for(origin, page.OwnForms)
+    }
+  }
+}
+
+// The press on a confirmation: a `POST` to the exchange's own address, with the
+// ticket as the form's one field. It is held to the rules the login's resume
+// is: this origin's own page as the sender, so a form another page posts and a
+// program that says nothing of its origin are both refused, and a declared,
+// bounded URL-encoded body. Only then is the body read and the ticket redeemed,
+// by the same function the `GET` uses, so the cookie, its `__Secure-` name on a
+// listed origin and any login are set exactly as they would be there.
+fn confirmed_exchange(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  exchange: ui_sessions.Exchange,
+) {
+  let answer = case
+    ui_http.same_origin_post(request),
+    ui_http.form_declared(request)
+  {
+    False, _ -> plain(403, "forbidden exchange")
+    True, False -> plain(400, "bad request")
+    True, True -> {
+      let posted = {
+        use body <- result.try(
+          mist.read_body(request, max_body_limit: ui_http.max_form_bytes)
+          |> result.replace_error(Nil),
+        )
+        ui_http.posted_ticket(body.body)
+      }
+      case posted {
+        Error(Nil) -> plain(400, "bad request")
+        Ok(ticket) -> redeem_ticket(config, ui, origin, exchange, ticket)
+      }
+    }
+  }
+  ui_http.secured(answer, origin)
+}
+
+// One redemption, whichever way the ticket arrived. A ticket presented at
+// another exchange than its own, another session's or another scope's, is
+// spent without a UI session. A redeemed one adds a page and leaves the
+// principal's others open (the oldest ends only at `ui_sessions.max_pages`),
+// and hands this tab the new page's key, in the cookie's path, and its nonce,
+// in the body, never in a redirect.
+fn redeem_ticket(
+  config: Config(instance),
+  ui: Ui(instance),
+  origin: ui_http.PageOrigin,
+  exchange: ui_sessions.Exchange,
+  ticket: String,
+) {
+  case ui_sessions.redeem(ui.sessions, ticket, exchange) {
+    Error(ui_sessions.UnknownTicket) -> expired_link(exchange)
+    Error(ui_sessions.OtherScope) ->
+      case exchange {
+        ui_sessions.SessionExchange(_) ->
+          plain(403, "ticket names another session")
+        ui_sessions.HomeExchange | ui_sessions.AdminExchange ->
+          plain(403, "ticket names another page")
+      }
+    Ok(redeemed) ->
+      entered(config, ui, origin, redeemed, landing(exchange, redeemed.key))
+  }
+}
+
+// The keyed page a redeemed ticket moves the tab to.
+fn landing(exchange: ui_sessions.Exchange, key: String) -> String {
+  case exchange {
+    ui_sessions.SessionExchange(id) -> page.session_path(key, id)
+    ui_sessions.HomeExchange -> page.home_path(key)
+    ui_sessions.AdminExchange -> page.admin_path(key)
+  }
+}
+
+// The answer to a ticket that is not live, in the words of the page it was for.
+fn expired_link(exchange: ui_sessions.Exchange) {
+  case exchange {
+    ui_sessions.SessionExchange(id) -> refused_page(401, ending.LinkExpired, id)
+    ui_sessions.HomeExchange -> refused_home(401, ending.LinkExpired)
+    ui_sessions.AdminExchange -> refused_admin(401, ending.LinkExpired)
+  }
+}
+
+// What the confirmation names the exchange as.
+fn opening(exchange: ui_sessions.Exchange) -> page.Opening {
+  case exchange {
+    ui_sessions.SessionExchange(id) -> page.OpensSession(id)
+    ui_sessions.HomeExchange -> page.OpensHome
+    ui_sessions.AdminExchange -> page.OpensAdmin
   }
 }
 

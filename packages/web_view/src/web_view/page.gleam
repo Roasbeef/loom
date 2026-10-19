@@ -11,8 +11,9 @@
 //// is what lets the policy say `script-src 'self'` and `style-src 'self'`.
 //// The values interpolated into a document are the session identity, which
 //// the router has already parsed as a canonical ID, and on the exchange page
-//// the page's keyed address and its nonce, which the daemon generated; each
-//// is escaped here all the same. Lustre's client runtime is served from the
+//// the page's keyed address and its nonce, which the daemon generated, and on
+//// the exchange's confirmation the ticket and the admitted origin's address;
+//// each is escaped here all the same. Lustre's client runtime is served from the
 //// `lustre` application's own `priv` directory, so the file a browser runs
 //// is the one the pinned package shipped.
 ////
@@ -25,6 +26,24 @@
 //// cookie and the page key can leak to such a page, the nonce cannot. The
 //// keyed page's HTML never carries it, since anyone holding the cookie and
 //// the key can fetch that HTML.
+////
+//// ## Flow
+////
+//// `exchange_path` → `exchange_confirmation` → `enter` → `shell` →
+//// `content_security_policy_for`
+////
+//// 1. `exchange_path`, `home_exchange_path` and `admin_exchange_path` are the
+////    links a ticket travels in, and `session_path`, `home_path` and
+////    `admin_path` the keyed pages an exchange moves to.
+//// 2. `exchange_confirmation` is what a link opened from another app is
+////    answered with: one form that posts the ticket to `exchange_action`.
+//// 3. `enter` and `enter_remembered` are the exchange's hand-off page, which
+////    keeps the nonce and moves the tab to its keyed page.
+//// 4. `shell`, `home_shell` and `admin_shell` are the keyed pages, and
+////    `refusal`, `home_refusal` and `admin_refusal` what a refused one gets.
+//// 5. `login_page` and `claim_page` are the two other documents with a form.
+//// 6. `content_security_policy_for` is the policy each is served under, and
+////    `asset_path`, `static_file` and `runtime_file` say where the assets are.
 
 import gleam/erlang/application
 import gleam/list
@@ -504,8 +523,9 @@ fn fresh_link_box(command: Option(String), way: Way) -> String {
 /// key and no principal: the script takes the key from the address it was
 /// served at, and the form posts to that address.
 ///
-/// It is the one document, with the claim form, served under a policy that lets
-/// a form submit to this origin (`OwnForms`).
+/// It is one of the three documents, with the claim form and the exchange's
+/// confirmation, served under a policy that lets a form submit to this origin
+/// (`OwnForms`).
 ///
 /// ## Examples
 ///
@@ -715,6 +735,145 @@ fn claim_keep_notice() -> String {
   <> "keep, and a claim works once."
 }
 
+/// Which page a ticket link opens, as the exchange's confirmation names it
+/// and as its form posts back to.
+pub type Opening {
+  /// One session's page. `session_id` is the exchange path's, which the form
+  /// posts back to unchanged.
+  OpensSession(session_id: String)
+
+  /// The person's home page.
+  OpensHome
+
+  /// The owner's admin page.
+  OpensAdmin
+}
+
+/// Whether exchanging a ticket signs the browser in past the page it opens.
+pub type Staying {
+  /// The exchange also sets a browser login, which lasts up to thirty days: a
+  /// `loom ui` home link or a device link.
+  StaysSignedIn
+
+  /// The exchange opens the page alone, and the browser is signed in for no
+  /// longer than the page lasts.
+  ForThisPage
+}
+
+/// The address an `Opening`'s exchange lives at, without the ticket: the path
+/// the confirmation's form posts to. A ticket never goes back into a URL once
+/// the confirmation has it, because a URL reaches history and logs.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.exchange_action(page.OpensHome) == "/ui/home"
+/// assert page.exchange_action(page.OpensSession("S")) == "/ui/sessions/S"
+/// ```
+pub fn exchange_action(opening: Opening) -> String {
+  case opening {
+    OpensSession(session_id) -> prefix <> "/sessions/" <> session_id
+    OpensHome -> prefix <> "/home"
+    OpensAdmin -> prefix <> "/admin"
+  }
+}
+
+/// The confirmation a ticket link is answered with when the browser says it
+/// was opened from another app or page (`Sec-Fetch-Site` other than `none` or
+/// `same-origin`, or no such header). A phone's camera and a chat app open
+/// links this way. The document says what signing in will do, and holds one
+/// form that posts the ticket, in a hidden field, to the exchange's own address
+/// (`exchange_action`). It has no script, and it is served under the policy
+/// that lets a form submit to this origin (`OwnForms`).
+///
+/// Loading it spends nothing. Only the person's press on the button, which is
+/// this origin's own form and so arrives `Sec-Fetch-Site: same-origin`,
+/// redeems the ticket. Another page can still put this document in front of
+/// the person, and it says plainly what the button does, so a link the person
+/// did not ask for is one they can decline.
+///
+/// `address` is the origin the person is signing in to, which the daemon took
+/// from the admitted `Host`, and `ticket` is the link's own value; each is
+/// escaped here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let html =
+///   page.exchange_confirmation(
+///     page.OpensHome,
+///     page.StaysSignedIn,
+///     "https://loom.example.ts.net",
+///     "00ff",
+///   )
+/// assert string.contains(html, "name=\"ticket\" value=\"00ff\"")
+/// ```
+pub fn exchange_confirmation(
+  opening: Opening,
+  staying: Staying,
+  address: String,
+  ticket: String,
+) -> String {
+  "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+  <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+  <> "<title>Loom</title>"
+  <> icon_link()
+  <> "<link rel=\"stylesheet\" href=\""
+  <> asset_path(stylesheet_asset)
+  <> "\"></head><body><main class=\"ended-page\">"
+  <> "<section class=\"ended-document\">"
+  <> "<p class=\"ended-brand\">Loom</p>"
+  <> "<p class=\"claim-title\">Sign this browser in to Loom on "
+  <> houdini.escape(address)
+  <> "?</p>"
+  <> "<p class=\"ended-advice\">"
+  <> houdini.escape(opening_words(opening))
+  <> " "
+  <> houdini.escape(staying_words(staying))
+  <> "</p>"
+  <> "<p class=\"ended-advice\">"
+  <> houdini.escape(confirmation_reason())
+  <> "</p>"
+  <> "<form class=\"claim-form\" method=\"post\" action=\""
+  <> houdini.escape(exchange_action(opening))
+  <> "\"><input type=\"hidden\" name=\"ticket\" value=\""
+  <> houdini.escape(ticket)
+  <> "\"><button class=\"claim-submit\" type=\"submit\">Sign in</button>"
+  <> "</form></section></main></body></html>\n"
+}
+
+// What the button opens, in the words of the page it leads to.
+fn opening_words(opening: Opening) -> String {
+  case opening {
+    OpensSession(_) -> "The link opens a page for one session in this browser."
+    OpensHome -> "The link opens your Loom home in this browser."
+    OpensAdmin -> "The link opens the admin page in this browser."
+  }
+}
+
+// How long the browser stays signed in once the button is pressed.
+fn staying_words(staying: Staying) -> String {
+  case staying {
+    StaysSignedIn ->
+      "This browser then stays signed in for up to thirty days, so its "
+      <> "bookmark of the home works without a new link."
+    ForThisPage -> "This browser stays signed in only while that page lasts."
+  }
+}
+
+/// Why the confirmation is asked at all, in the words the page draws.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.confirmation_reason(), "asked for this link")
+/// ```
+pub fn confirmation_reason() -> String {
+  "This link was opened from another app or page, so Loom asks before it "
+  <> "signs you in. Continue only if you asked for this link yourself. It "
+  <> "works once."
+}
+
 /// The page the ticket exchange answers with. Its body names the keyed page
 /// to move to and the tab's nonce, as data attributes; its script, which
 /// runs at the end of the body, keeps the nonce in `sessionStorage` under the
@@ -821,7 +980,9 @@ pub type Forms {
   NoForms
 
   /// A form may submit to this origin and to no other: `form-action 'self'`.
-  /// Only the resume page and the claim form are served so (protocol-change/065).
+  /// Only the resume page, the claim form (protocol-change/065) and the
+  /// exchange's confirmation (protocol-change/051, the addendum on links from
+  /// another app) are served so.
   OwnForms
 }
 
