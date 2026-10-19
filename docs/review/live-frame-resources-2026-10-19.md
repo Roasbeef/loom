@@ -145,6 +145,49 @@ and Linux signoff. The operator has authorized hosted CI as the Linux acceptance
 evidence while the separate host is offline; no separate host signoff is claimed.
 The renderer source is unchanged.
 
+## Subsequent CI fixture results
+
+The repaired head `3f7217100` was tested as merge `36d5ffebc` with main
+`ca9a21f02`. Its native affected gate passed in 905 seconds: 4,880 client tests,
+1,544 terminal tests, 111 conformance tests, 302 lint tests, global static
+checks and a clean skip census. Hosted Linux and macOS E2E also passed.
+Both macOS package shards nevertheless failed before reaching the client:
+the admin timer's second receive exceeded its 100 ms budget, and the runtime
+idle-poll fixture observed no extra short arm during its fixed 200 ms sample.
+The advisory badges were green and the final macOS census was skipped; those
+results do not satisfy the merge gate.
+
+The approved test-only adjustment `cf09476e9` gives the admin timer's two
+positive receives the same one-second delivery budget as the equivalent home
+fixture. The five-millisecond timer interval, read/rearm checks and ended-page
+negative assertion are unchanged. Independent review approved the adjustment;
+all 1,132 web-view tests passed. The CI log does not establish why delivery was
+late. Three unchanged native repetitions of the runtime idle-poll test also
+passed. No runtime fixture or production change is included for that failure.
+The approved timer adjustment requires fresh integration and hosted checks;
+no further same-head retry is authorized by the exhausted retry budget.
+
+The timer-adjusted merge `5b77e00d` with main `c444fca25` subsequently passed
+the full native runtime gate (207 tests) and affected gate (4,880 client,
+1,544 terminal, 1,140 web-view, 111 conformance and 302 lint tests), with a
+clean skip census. Hosted Linux test jobs also passed, including both previously
+failing fixtures, while macOS remained queued. Main then merged the harness
+extraction at `4f5833907`. The scoped patches rebased unchanged onto that base;
+the old integration results are historical evidence, and fresh checks are
+required for the updated client wiring, test scripts and CI.
+
+The next integration, `a162c3f7` with main `4f5833907`, passed every hosted
+Linux gate and its actual census; macOS was still queued when main advanced
+to `361ffa9f4` (PR #1038). The native harness gate passed 26 tests. The native
+parallel-eight client lane instead timed out in two unchanged callback
+fixtures: publishing the OAuth listener port within five seconds and receiving
+a loopback HTTP status within two seconds. Each passed three unchanged native
+repetitions, and both passed on hosted Linux. The cause is unproven; no source
+repair is included for those timeouts. The full failed logs remain outside Git.
+The scoped patches rebased unchanged onto the admin update, and the next
+native gate uses CI's four-module client setting. Fresh native and hosted
+integration checks remain required before merge.
+
 ## Repeat capture during elevated CPU
 
 A newly opened terminal was sampled for another thirty seconds after our

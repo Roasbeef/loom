@@ -4,24 +4,46 @@ This file records the verified state and next steps for this checkout. Rewrite
 it after a body of work; retain historical measurements in their evidence
 reports rather than carrying old validation forward.
 
-Baselined October 19, 2026 against renderer source `284d656ad` on
+Baselined October 19, 2026 against renderer source `9b471953a` on
 `perf/live-resource-followup`, from `origin/main` at
-`ba4f1321498ff4d1544197ffdffa35a7d83ae2c4`. The claims below were checked
+`361ffa9f444383a684347606688269f620eb3a15`. The claims below were checked
 against this source, saved local evidence, or the explicitly named GitHub
 state. This is a scoped profiling handoff, not a new architecture audit.
 
-Main advanced while the first integration run was pending. The original native
-affected gate and Linux CI passed, but raw macOS shard results failed despite
-advisory green badges. The two targeted retries are exhausted. The final
-remote-subagent and agency failures passed three unchanged native repetitions
-each; those passes do not establish their CI root cause. This rebase needs a
-fresh integration run. That run exposed the agency teardown race again: the
-linked holder read the writer during shutdown and terminated the following
-EUnit test. The approved test-only repair `15efea614` retains the original
-holder and monitor and requires its death before closing the runtime. All 209
-agency tests and independent review passed; full publication gates must be
-refreshed for the repaired head. The renderer source blob is unchanged from
-the review.
+Main advanced while integration checks were pending. The agency fixture repair
+`15efea614` retains the original holder and monitor and requires its death before
+closing the runtime. Its 209 focused tests and independent review passed. The
+resulting merge `36d5ffebc` with main `ca9a21f02` passed the full native affected
+gate, hosted Linux and macOS E2E. Both advisory macOS package shards failed
+before reaching the client: an admin timer receive exceeded 100 ms, and the
+runtime idle-poll fixture missed growth during a fixed 200 ms sample. The final
+macOS census was skipped despite green badges, so this is not merge acceptance.
+
+The approved test-only commit `cf09476e9` aligns the admin timer's two positive
+waits with the existing home fixture's one-second budget. Independent review
+and all 1,132 native web-view tests passed; its five-millisecond timer interval
+and behavioral assertions remain intact. The unchanged idle-poll test passed
+three native repetitions, but its CI failure's cause remains unproven. No
+runtime repair is included. The new timer adjustment needs fresh native and
+hosted integration checks. The renderer source blob remains unchanged from
+the original review; no same-head retries remain.
+
+Main subsequently advanced again to `4f5833907` with the harness extraction
+(PR #1034), including client wiring, test scripts and CI. The six scoped commits
+were rebased without conflicts or patch changes; the renderer and both approved
+fixture files remain byte-identical to their reviewed versions. The previous
+native pass and Linux results belong to merge `5b77e00d` with the older main
+`c444fca25`, so current integration checks must be refreshed before merge.
+
+Main advanced once more to `361ffa9f4` with the grouped admin and New-session
+form (PR #1038), including the admin module and its tests. All six patches
+rebased unchanged onto it. The older `a162c3f7` integration passed every hosted
+Linux gate and its real census while macOS was queued. Its native harness gate
+passed 26 tests, but the parallel-eight native client lane hit two unchanged
+callback-fixture timeouts. Each passed three isolated native repetitions, and
+both passed hosted Linux. Their cause remains unproven; the refreshed native
+gate uses CI's four-module client setting without changing any assertions.
+The old failed logs are preserved, and fresh integration gates are required.
 
 The Mermaid follow-up and rulings below preserve the upstream validation record.
 This terminal-only change does not claim a new browser validation run.
@@ -36,7 +58,7 @@ This terminal-only change does not claim a new browser validation run.
 | Local validation | Native `make check-tui` passed all 1,479 tests. Terminal lint has zero errors. The exact-cell/ANSI comparison passes 28 canvas cases. Independent source review approved. |
 | Web Mermaid | The upstream validation record retains the 21-check Chrome drive; Firefox and Safari remain follow-ups. |
 | Terminal Mermaid | Upstream PR #1024 merged the bounded text renderer. Its PNG path remains research. |
-| Publication gates | PR [#1023](https://github.com/Roasbeef/loom/pull/1023) is ready for review. Native and Linux gates passed before the test-only repair; fresh full gates are pending for that repair. No installation, restart or hotpatch was performed in this pass. |
+| Publication gates | PR [#1023](https://github.com/Roasbeef/loom/pull/1023) is ready for review. Native, Linux and macOS E2E passed before the latest timer-fixture adjustment; fresh integration gates are pending, and the earlier advisory package failures remain recorded. No installation, restart or hotpatch was performed in this pass. |
 
 The [fresh profiling report](review/live-frame-resources-2026-10-19.md) records
 both live capture rounds, the allocation attribution, matched renderer
