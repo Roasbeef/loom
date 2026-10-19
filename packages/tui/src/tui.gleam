@@ -1858,11 +1858,11 @@ fn view_origin(arguments: List(String)) -> Result(Option(String), String) {
     True ->
       session_control.flag_value(arguments, "--origin")
       |> result.map(Some)
-      |> result.replace_error(
+      |> result.map_error(fn(_) {
         "loom ui needs an origin after --origin, such as "
         <> "https://box.example.ts.net:8443\n"
-        <> ui_usage(),
-      )
+        <> ui_usage()
+      })
   }
 }
 
@@ -1906,13 +1906,13 @@ pub fn listed_origin(
     _, Some(wanted) -> {
       let wanted = normalized_origin(wanted)
       list.find(listed, fn(origin) { origin == wanted })
-      |> result.replace_error(
+      |> result.map_error(fn(_) {
         "the daemon does not list "
         <> wanted
         <> " as a web view origin; it lists "
         <> string.join(listed, ", ")
-        <> ".",
-      )
+        <> "."
+      })
     }
   }
 }
