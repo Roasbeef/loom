@@ -396,6 +396,9 @@ pub type Title {
     name: String,
     /// The node string drawn under it, quieter, or none.
     node: Option(String),
+    /// Words drawn under the name that say what the name is, or none. A
+    /// standalone daemon titled by its host name is labelled "This machine".
+    label: Option(String),
   )
 }
 
@@ -424,6 +427,8 @@ pub type Snapshot {
     distribution: Distribution,
     /// The pools the asking daemon configures.
     pools: List(Pool),
+    /// The asking daemon's host name, when the reply states it.
+    host: Option(String),
   )
 }
 
@@ -618,6 +623,7 @@ pub fn decode_overview(document: JsonValue) -> Result(Snapshot, String) {
     pools: field(document, "placements")
       |> result.map(optional_list(_, "pools", pool))
       |> result.unwrap([]),
+    host: optional_text(document, "host"),
   ))
 }
 
@@ -1108,21 +1114,27 @@ pub fn group_of(machine: Machine) -> Group {
 }
 
 /// The name a machine is drawn under. A standalone daemon's own node name is one
-/// the BEAM made up, so it is "This machine" with no node line. Any other machine
-/// is its name, with its node string under it when the two differ.
+/// the BEAM made up, so it is never drawn: the daemon is its host name labelled
+/// "This machine", or "This machine" alone when the reply states no host name.
+/// Any other machine is its name, with its node string under it when the two
+/// differ.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert machines.title(standalone, own).name == "This machine"
+/// assert machines.title(standalone, own).label == Some("This machine")
 /// ```
 pub fn title(snapshot: Snapshot, machine: Machine) -> Title {
-  case snapshot.distribution, machine.whose {
-    Standalone, This -> Title(name: "This machine", node: None)
-    Standalone, Other | Distributed, _ ->
+  case snapshot.distribution, machine.whose, snapshot.host {
+    Standalone, This, Some(host) ->
+      Title(name: host, node: None, label: Some("This machine"))
+    Standalone, This, None ->
+      Title(name: "This machine", node: None, label: None)
+    Standalone, Other, _ | Distributed, _, _ ->
       case machine.node == machine.name {
-        True -> Title(name: machine.name, node: None)
-        False -> Title(name: machine.name, node: Some(machine.node))
+        True -> Title(name: machine.name, node: None, label: None)
+        False ->
+          Title(name: machine.name, node: Some(machine.node), label: None)
       }
   }
 }

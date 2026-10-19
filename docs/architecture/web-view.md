@@ -1396,9 +1396,11 @@ the three tints the page already has (`machines.pill_class`).
 A daemon with no `[distribution]` table is named by the BEAM (`nonode@nohost`, or a
 generated profile name), which means nothing to a person. The reply says so
 (`"distribution": "none"`, from `deployment.Footing`), and when it lists only the
-asking daemon the section draws one card named "This machine" with its build and
-sessions and a quiet note that distribution is not configured, pointing to
-`docs/distributed-setup.md`. The made-up name is drawn nowhere, the machine's own page
+asking daemon the section draws one card titled by the machine's host name (the
+reply's `host`, which the daemon reads once at start with `ffi_os.host_name`) and
+labelled "This machine", or titled "This machine" when there is no host name, with
+its build and sessions and a quiet note that distribution is not configured,
+pointing to `docs/distributed-setup.md`. The made-up name is drawn nowhere, the machine's own page
 included.
 
 The markup is one tree at every width and no row is a table cell, so no column can

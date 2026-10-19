@@ -342,6 +342,21 @@ pub fn standalone_document() -> JsonValue {
   ])
 }
 
+/// The standalone daemon's document with the `host` member a daemon that read
+/// its host name adds.
+pub fn hosted_document(host: String) -> JsonValue {
+  let assert json.Object(fields) = standalone_document()
+    as "the fixture is an object"
+  json.Object(list.append(fields, [#("host", text(host))]))
+}
+
+/// The standalone daemon's reading when it states its host name.
+pub fn hosted(host: String) -> machines.Snapshot {
+  let assert Ok(snapshot) = machines.decode_overview(hosted_document(host))
+    as "the fixture decodes"
+  snapshot
+}
+
 /// The standalone daemon's reading.
 pub fn standalone() -> machines.Snapshot {
   let assert Ok(snapshot) = machines.decode_overview(standalone_document())

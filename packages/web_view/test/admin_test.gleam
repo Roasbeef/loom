@@ -1765,6 +1765,27 @@ pub fn a_standalone_daemon_is_one_card_without_its_node_name_test() {
   assert !string.contains(html, "loom_daemon_profile")
 }
 
+// A standalone daemon that read its host name is titled by it, with "This
+// machine" under it, on the card and on the machine's own page. A host name is
+// text like every other name.
+pub fn a_standalone_daemon_is_titled_by_its_host_name_test() {
+  let host = "studio<b>.local"
+  let start =
+    admin.Start(..start(), deployment: fn(_, deliver) {
+      deliver(machines.Heard(fleet.hosted(host)))
+    })
+  let #(model, _) = opened(start)
+  let html = drawn(model)
+  assert string.contains(html, ">studio&lt;b&gt;.local<")
+  assert string.contains(html, ">This machine<")
+  assert !string.contains(html, "<b>")
+  assert !string.contains(html, "loom_daemon_profile")
+  let model = choose(model, fleet.standalone_node)
+  let html = drawn(model)
+  assert count(html, ">studio&lt;b&gt;.local<") == 2
+  assert !string.contains(html, "loom_daemon_profile")
+}
+
 // Pressing a machine reads that machine, by its key, and opens its page on the
 // Overview with the long lists the read returned.
 pub fn choosing_a_machine_reads_it_and_opens_its_page_test() {

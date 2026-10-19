@@ -29,9 +29,11 @@
 ////
 //// A daemon with no `[distribution]` table (`machines.Standalone`) connects to no
 //// other machine, and its node name is one the BEAM made up. The section then
-//// draws one card for "This machine" with its build and sessions, and a quiet
-//// note that distribution is not configured and where the setup is described.
-//// The made-up node name is never drawn (`machines.title`).
+//// draws one card titled by the machine's host name and labelled "This
+//// machine" ("This machine" alone when the daemon could not read its host
+//// name), with its build and sessions, and a quiet note that distribution is
+//// not configured and where the setup is described. The made-up node name is
+//// never drawn (`machines.title`).
 ////
 //// ## A row is a button
 ////
@@ -317,12 +319,17 @@ fn row(
   ])
 }
 
-// The quiet line under the name: the node string when it says something the
-// name does not, "this daemon" for the asking daemon, and the roles beyond the
-// one its group already says.
+// The quiet line under the name: what the name is when the title says ("This
+// machine" under a host name), the node string when it says something the name
+// does not, "this daemon" for the asking daemon, and the roles beyond the one
+// its group already says.
 fn subline(machine: Machine, title: machines.Title) -> Element(message) {
   let parts =
     list.flatten([
+      case title.label {
+        Some(words) -> [html.span([], [html.text(words)])]
+        None -> []
+      },
       case title.node {
         Some(node) -> [
           html.span([attribute.class("admin-node-id")], [html.text(node)]),

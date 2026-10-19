@@ -810,13 +810,20 @@ adds one optional member to the whole-deployment reply.
   ("1 of 2 ready") and which executors it admits; it is not a machine and its row
   is not a button. The names of the workspaces an executor serves are not in the
   whole-deployment reply, so they stay on the machine's own page.
+- **`deployment.status` gains `host`.** A whole-deployment reply carries the
+  answering daemon's host name as `host` when the daemon could read it. The daemon
+  reads it once at start (`main.deployment_reach`, into `Reach.host`) with
+  `inet:gethostname/0`, the one new Erlang call, in `client/internal/ffi_os`
+  (`host_name`, decoded totally: anything but a non-empty `{ok, Charlist}` of at
+  most 253 bytes is no host name). No library the package uses exposes the host
+  name. The member is optional like `distribution`, and a reply for one node does
+  not carry it.
 - **A daemon on its own is one card.** When the reply says `"none"` and lists only
-  the asking daemon, the section draws one card named "This machine" with its build
-  and sessions and a quiet note that distribution is not configured and that
-  `docs/distributed-setup.md` says how to add machines. The made-up node name is
-  drawn nowhere, not on the card and not on the machine's own page. The page does
-  not show the machine's host name: no reply carries one, and reading it would take
-  an Erlang call that no package makes today.
+  the asking daemon, the section draws one card titled by the host name and
+  labelled "This machine" (or titled "This machine" when the reply has no `host`),
+  with its build and sessions and a quiet note that distribution is not configured
+  and that `docs/distributed-setup.md` says how to add machines. The made-up node
+  name is drawn nowhere, not on the card and not on the machine's own page.
 - **Unlinked members stay listed.** A ledger member this daemon does not dial is
   listed in its group, quieter than the rest, with "not linked from here" where the
   pill would be.

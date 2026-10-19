@@ -1788,8 +1788,9 @@ machine") is the account.
   HeardOne | Unread`), `Held`, `Detailed`, `Tab`, `Distribution` (`Distributed |
   Standalone`, from the reply's optional `distribution`), `Pool` (from
   `placements.pools`), `Group` (`OrchestratorGroup | ExecutorGroup | MemberGroup`, by
-  `group_of`), `Title` (by `title`: "This machine" for a standalone daemon's own row,
-  whose node name the BEAM made up and is never drawn), and the words
+  `group_of`), `Title` (by `title`: a standalone daemon's own row is its host name,
+  the reply's optional `host`, labelled "This machine", or "This machine" alone; its
+  node name the BEAM made up is never drawn), and the words
   (`summary_words`, `build_words`, `reason_words`, `age_words`, `pill_class`). `decode_overview` merges the document's
   nodes with the ledger's members by node name; `decode_detail` reads a read for one
   node. `text_limit` 256 and `list_limit` 128 bound it.

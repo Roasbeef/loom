@@ -148,6 +148,7 @@ fn reporting(
     deployment.Reach(
       self:,
       footing: deployment.Distributed,
+      host: Some("studio"),
       dial: fn(node, _within_ms) {
         process.send(told, Dialled(node))
         case list.key_find(answers, node) {
@@ -194,6 +195,7 @@ pub fn the_owner_reads_every_configured_node_as_the_daemon_found_it_test() {
       let body = field(reply, "body")
       assert field(body, "self") == json.String(self)
       assert field(body, "distribution") == json.String("configured")
+      assert field(body, "host") == json.String("studio")
       assert field(body, "state") == json.String("degraded")
       assert field(body, "reasons")
         == json.Array([

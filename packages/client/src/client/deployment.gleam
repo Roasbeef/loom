@@ -205,6 +205,10 @@ pub type Reach {
     /// Whether the daemon runs with distribution: `Standalone` from `alone`,
     /// `Distributed` from `over`.
     footing: Footing,
+    /// The machine's host name, which the daemon reads once at start
+    /// (`main.deployment_reach`), or none when it could not be read. Both
+    /// constructors leave it out.
+    host: Option(String),
     /// Connects to a configured node.
     dial: Dial,
     /// Asks a connected node for its report.
@@ -250,6 +254,7 @@ pub fn alone(self: String) -> Reach {
   Reach(
     self:,
     footing: Standalone,
+    host: None,
     dial: fn(_node, _within_ms) { Error(Unavailable) },
     ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
     sessions: listed_sessions.unlisted,
@@ -273,6 +278,7 @@ pub fn over(membership: distribution.Membership, self: String) -> Reach {
   Reach(
     self:,
     footing: Distributed,
+    host: None,
     dial: fn(node, within_ms) {
       use peer <- result.try(
         distribution.peer(membership, node)

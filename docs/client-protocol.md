@@ -564,7 +564,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3601`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3613`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1617,6 +1617,8 @@ it needs no epoch.
 | `omitted`, `more` | array | when the reply was cut | See Size, below. |
 | `moves` | array | without `node`, unless omitted | The moves in flight on the answering daemon: `session_id`, `op`, `to` (the destination's name), `phase` (`running` or `waiting`), and `stalled_ms` and `reason` when stalled. A reason is cut to 200 bytes. |
 | `ledger` | object | without `node`, on a daemon that runs from a membership ledger | The body of `ledger.status` (§3.30): the daemon's head, its standing, each active member with the head it last reported to this daemon and how long ago, and the last line it refused. At most 64 members. Absent when the ledger does not answer, and then a client treats it as unknown. |
+| `distribution` | string | without `node` | `configured` when the answering daemon started distribution under a configured node name, `none` when it has no `[distribution]` table. Without distribution `self` is a name the BEAM made up (`nonode@nohost` or a generated profile name), and the Admin page draws the daemon as "This machine" rather than by that name (protocol-change/085, the addendum of 2026-10-19). A client that does not know the member ignores it, and one that reads a reply without it treats it as `configured`. |
+| `host` | string | without `node`, when the daemon could read it | The answering daemon's host name, as `inet:gethostname/0` gives it, read once when the daemon starts; at most 253 bytes. The Admin page titles a standalone daemon's card with it. |
 
 On a daemon that runs from a membership ledger, the configured orchestrators and
 executors include the ones the ledger derives (protocol-change/086, phase 2), so

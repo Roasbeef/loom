@@ -145,18 +145,29 @@ pub fn the_pools_and_the_footing_are_read_test() {
   assert older.pools == []
 }
 
-// A daemon with no distribution is "This machine": the node name the BEAM gave
-// it is never the name it is drawn under. Every other machine keeps its name,
-// with its node under it when the two differ.
+// A daemon with no distribution is its host name labelled "This machine", or
+// "This machine" alone when the reply states no host name: the node name the
+// BEAM gave it is never the name it is drawn under. Every other machine keeps
+// its name, with its node under it when the two differ.
 pub fn a_standalone_daemon_is_this_machine_test() {
   let snapshot = fleet.standalone()
   assert snapshot.distribution == machines.Standalone
+  assert snapshot.host == None
   let assert [own] = snapshot.machines
   assert machines.title(snapshot, own)
-    == machines.Title(name: "This machine", node: None)
+    == machines.Title(name: "This machine", node: None, label: None)
+  let hosted = fleet.hosted("studio.local")
+  assert hosted.host == Some("studio.local")
+  let assert [own] = hosted.machines
+  assert machines.title(hosted, own)
+    == machines.Title(
+      name: "studio.local",
+      node: None,
+      label: Some("This machine"),
+    )
   let fleet_snapshot = fleet.overview("box")
   assert machines.title(fleet_snapshot, member(fleet_snapshot, "box"))
-    == machines.Title(name: "box", node: Some(fleet.box_node))
+    == machines.Title(name: "box", node: Some(fleet.box_node), label: None)
   assert machines.group_of(member(fleet_snapshot, "alpha"))
     == machines.OrchestratorGroup
   assert machines.group_of(member(fleet_snapshot, "box"))

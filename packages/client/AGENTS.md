@@ -8267,7 +8267,7 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   (`weft.limit`) so black-holed targets cannot starve the rest. `orchestrator_port.ask_report`
   returns a typed `Silence`: `PortGone` (its monitor fired at once: nothing
   registered there, or the port ended) is `Down(Silent)`, and `AskTimedOut` is
-  `Down(TimedOut)`. `Reach(self, footing, dial, ask, own)` is how it reaches:
+  `Down(TimedOut)`. `Reach(self, footing, host, dial, ask, own)` is how it reaches:
   `over(membership, self)` (`footing: Distributed`) is `distribution.peer`,
   `distribution.connect`, then `orchestrator_port.ask_report` at the connected
   node's port, `alone(self)` (`footing: Standalone`, no `[distribution]`) connects
@@ -8322,9 +8322,12 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   (`directory_status_json`, moved here from `server`, plus `copy`) and `moves`
   names each destination as the asking daemon names it.
 - A whole-deployment reply carries `distribution` (`footing_word`: `configured`
-  or `none`), added by `server.with_footing`, so the Admin page draws a daemon
-  with no distribution as "This machine" and never its made-up node name
-  (protocol-change/085, the addendum of 2026-10-19).
+  or `none`) and, when the daemon could read it, `host`, both added by
+  `server.with_footing`, so the Admin page titles a daemon with no distribution
+  by its host name under "This machine" and never by its made-up node name
+  (protocol-change/085, the addendum of 2026-10-19). `Reach.host` is read once by
+  `main.deployment_reach` through `ffi_os.host_name` (`inet:gethostname/0`,
+  decoded by `host_name_of`); `alone` and `over` leave it `None`.
 - `server.Config.deployment` is the `Reach`; `main.deployment_reach` builds it
   from `Config.membership` and the node's own name and `listen_moving` gives it
   `reads.report`. `server.deployment_status` adds `MemberRole` to the asking
