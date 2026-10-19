@@ -2053,15 +2053,23 @@ fn render_split_footer(
 // otherwise blank canvas cells makes those vacated positions explicit diff
 // writes without forcing every steady streaming frame to repaint.
 fn repaint_canvas(screen: Rect, phase: Bool) -> buffer.Buffer {
-  let modifier = case phase {
-    True -> style.dim()
-    False -> style.none()
+  // The buffer's default already represents every blank cell. The old bulk
+  // fill materialized the whole grid even though its one-character row only
+  // changed the first column. Keep the default sparse and write that column
+  // only in the alternate phase, preserving the existing diff markers.
+  let blank = buffer.buffer_new(screen)
+  case phase {
+    False -> blank
+    True ->
+      int.range(0, screen.size.height, blank, fn(buf, row) {
+        buffer.set_string(
+          buf,
+          geometry.Position(screen.position.x, screen.position.y + row),
+          " ",
+          style.new(style.Default, style.Default, style.dim()),
+        )
+      })
   }
-  buffer.buffer_new_filled(
-    screen,
-    " ",
-    style.new(style.Default, style.Default, modifier),
-  )
 }
 
 fn render_pending_band(
