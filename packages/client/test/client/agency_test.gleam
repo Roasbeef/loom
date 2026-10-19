@@ -99,7 +99,13 @@ import weft/poll
 // --- the harness -----------------------------------------------------------
 
 type Harness {
-  Harness(runtime: api.Runtime, seam: agent.Agency, config: agency.Config)
+  Harness(
+    runtime: api.Runtime,
+    seam: agent.Agency,
+    config: agency.Config,
+    holder: process.Pid,
+    holder_watch: process.Monitor,
+  )
 }
 
 /// Whether the scripted provider settles a response or hangs. A hanging
@@ -269,9 +275,15 @@ fn start_harness_hooked(
       ),
     )
     as "the runtime must open"
-  let assert Ok(_holder) = agency.start(config, runtime)
+  let assert Ok(holder) = agency.start(config, runtime)
     as "the agency holder must start"
-  Harness(runtime:, seam:, config:)
+  Harness(
+    runtime:,
+    seam:,
+    config:,
+    holder: holder.pid,
+    holder_watch: process.monitor(holder.pid),
+  )
 }
 
 fn start_harness_over(
@@ -643,6 +655,15 @@ fn until(predicate: fn() -> Bool, attempts: Int) -> Bool {
 }
 
 fn close(harness: Harness) -> Nil {
+  // The Agency's deadline tick reads the writer. Retire that reader before
+  // closing the runtime so its next tick cannot crash a later linked test.
+  process.unlink(harness.holder)
+  process.kill(harness.holder)
+  let assert Ok(process.ProcessDown(reason: process.Killed, ..)) =
+    process.new_selector()
+    |> process.select_specific_monitor(harness.holder_watch, fn(down) { down })
+    |> process.selector_receive(5000)
+    as "the original agency holder retires before its writer"
   let _closed = api.close(harness.runtime)
   Nil
 }
