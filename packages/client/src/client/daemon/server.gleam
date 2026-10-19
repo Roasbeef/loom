@@ -500,7 +500,19 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
 
         ui_http.AdminSocket(key, nonce) ->
           admin_socket(config, ui, request, host, key, nonce)
-        route -> ui_http.secured(web_document(config, ui, request, route), host)
+        route -> {
+          let secured =
+            ui_http.secured(web_document(config, ui, request, route), host)
+          case route {
+            ui_http.Asset(ui_http.MermaidFrame) ->
+              response.set_header(
+                secured,
+                "content-security-policy",
+                page.mermaid_content_security_policy,
+              )
+            _ -> secured
+          }
+        }
       }
   }
 }

@@ -60,6 +60,9 @@
 //// - `<loom-link>` (`web_client/link`) makes a Markdown link clickable once the
 ////   browser has checked its destination, read from the element's own child
 ////   text, as an `http` or `https` address.
+//// - `<loom-mermaid>` (`web_client/mermaid`) renders a Mermaid fence in a
+////   fixed-address opaque sandbox, with the source kept as selectable text
+////   in the session page (protocol-change/091).
 //// - `<loom-reveal>` (`web_client/reveal`) scrolls the box it sits in into view
 ////   once, when the box appears.
 ////
@@ -85,6 +88,7 @@ import web_client/expand
 import web_client/fold
 import web_client/follow
 import web_client/link
+import web_client/mermaid
 import web_client/notes
 import web_client/popover
 import web_client/rename
@@ -122,6 +126,7 @@ pub fn main() -> Nil {
   let _ = fold.register()
   let _ = follow.register()
   let _ = link.register()
+  let _ = mermaid.register()
   let _ = notes.register()
   let _ = popover.register()
   let _ = rename.register()

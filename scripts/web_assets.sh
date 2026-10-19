@@ -66,9 +66,18 @@ stylesheet_inputs() {
 	find packages/web_view/src "$client/src" -name '*.gleam' | LC_ALL=C sort
 }
 
+mermaid_inputs() {
+  echo scripts/web_assets.sh
+  echo "$client/manifest.toml"
+  echo "$client/mermaid/licenses.py"
+  echo "$client/mermaid/package.json"
+  echo "$client/mermaid/package-lock.json"
+  echo "$client/mermaid/renderer.js"
+}
+
 # The copied files: the scripts and the favicon.
 scripts() {
-	ls "$client"/assets/*.js "$client"/assets/*.svg | LC_ALL=C sort
+	ls "$client"/assets/*.js "$client"/assets/*.svg "$client"/assets/*.html | LC_ALL=C sort
 }
 
 digest_of() {
@@ -159,6 +168,8 @@ check_all() {
 	local status=0
 	check_artifact "$static/web_client.mjs" bundle_inputs || status=1
 	check_artifact "$static/web_client.css" stylesheet_inputs || status=1
+	check_artifact "$static/mermaid.js" mermaid_inputs || status=1
+	check_artifact "$static/mermaid-licenses.txt" mermaid_inputs || status=1
 	check_scripts || status=1
 	return $status
 }
@@ -197,6 +208,29 @@ build() {
 		"The web view's client components"
 	stamp "$scratch/web_client.css" "$static/web_client.css" stylesheet_inputs \
 		"The web view's stylesheet"
+	mkdir -p "$client/build"
+	(cd "$client/mermaid" && npm ci --ignore-scripts --no-audit --no-fund)
+
+	# Reuse the platform binary whose version and hash Lustre just verified.
+	# The system Bun must not silently choose a different renderer build.
+	local bun="" candidate expected_bun
+	expected_bun=$(awk -F '"' '/^const version = / { print $2; exit }' \
+		"$client/build/packages/lustre_dev_tools/src/lustre_dev_tools/bin/bun.gleam")
+	[ -n "$expected_bun" ] || { echo "web_assets: cannot read pinned Bun version" >&2; return 1; }
+	for candidate in "$client"/.lustre/bin/bun-*/bun; do
+		if [ -x "$candidate" ] && [ "$("$candidate" --version 2>/dev/null)" = "$expected_bun" ]; then
+			bun=$candidate
+			break
+		fi
+	done
+	[ -n "$bun" ] || { echo "web_assets: Lustre's verified Bun is missing" >&2; return 1; }
+	"$bun" build "$client/mermaid/renderer.js" --target browser --format iife \
+		--minify --outfile "$client/build/mermaid.js"
+	stamp "$client/build/mermaid.js" "$static/mermaid.js" mermaid_inputs \
+		"Isolated Mermaid renderer"
+	python3 "$client/mermaid/licenses.py" "$client/build/mermaid-licenses.txt"
+	stamp "$client/build/mermaid-licenses.txt" "$static/mermaid-licenses.txt" \
+		mermaid_inputs "Mermaid third-party notices"
 	for path in $(scripts); do
 		cp "$path" "$static/$(basename "$path")"
 	done
@@ -213,7 +247,7 @@ build() {
 self_test() {
 	local tmp artifact list
 	tmp=$(mktemp)
-	for pair in "web_client.mjs bundle_inputs" "web_client.css stylesheet_inputs"; do
+	for pair in "web_client.mjs bundle_inputs" "web_client.css stylesheet_inputs" "mermaid.js mermaid_inputs" "mermaid-licenses.txt mermaid_inputs"; do
 		artifact="$static/${pair%% *}"
 		list="${pair##* }"
 		if ! check_artifact "$artifact" "$list" >/dev/null 2>&1; then

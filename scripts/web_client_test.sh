@@ -43,5 +43,13 @@ if [ -z "$runtime" ]; then
 fi
 
 cd packages/web_client
+
+# The isolated renderer's adapter is tested with a controlled DOM and vendor
+# promise. It reads only source files, not installed npm dependencies.
+case "$runtime" in
+node | bun) "$runtime" mermaid/renderer_test.mjs ;;
+deno) deno run --allow-read mermaid/renderer_test.mjs ;;
+esac
+
 python3 ../../scripts/with_timeout.py 600 -- \
 	gleam test --target javascript --runtime "$runtime"
