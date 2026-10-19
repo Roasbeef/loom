@@ -69,13 +69,7 @@ successfully for `490792538`, but is not this branch's validation.
    **Exit:** identify the allocating/retaining path and a failing ownership
    bound before proposing another repair. The report records an unmeasured
    component callback candidate and the separate language-server RSS owner.
-4. Decide whether the Mermaid renderer should be cacheable. Each diagram is
-   its own frame and fetches the 5.4 MB bundle again, because UI assets are
-   served `no-store`. **Exit:** a measurement with 20+ diagrams on a remote
-   daemon, then a versioned or revalidated `mermaid.js`, or a ruling that the
-   cost is acceptable. Rendering correctness no longer depends on it: the
-   render deadline starts when the request is posted.
-5. Drive the Mermaid check in Firefox and Safari once. **Exit:** the same 21
+4. Drive the Mermaid check in Firefox and Safari once. **Exit:** the same 21
    checks pass, or the differences are filed. Terminal rendering stays a
    separate discussion; the
    [TUI note](design-notes/mermaid-terminal-graphics.md) is research only.
@@ -113,6 +107,13 @@ Bun's IIFE build, hence the dagre pin) or that a frame without a matching
 configuration or the frame document needs a run of
 `scripts/web_mermaid_check.sh`; the [validation
 record](review/mermaid-web-rendering-2026-10-18.md) has the trail.
+
+**Mermaid frames are created near the viewport; the renderer stays
+`no-store`.** With 24 diagrams, caching `mermaid.js` saved about 0.5 s and
+100 MB, while creating frames only within a viewport of the visible area cut
+live frames from 24 to 2 and Chrome's growth from 1,018 MB to 423 MB. Each
+frame's own renderer heap is the cost, not the transfer. Re-open caching only
+with a remote-daemon measurement that shows transfer dominating.
 
 ## Deliberately open
 

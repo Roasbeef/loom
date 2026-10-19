@@ -1981,7 +1981,10 @@ diagrams. `web_view/markdown_view` supplies a fixed `<loom-mermaid>` tag and
 plain source text. The Gleam client component reads that text, retains a
 selectable source disclosure and sends a bounded revisioned request to one
 fixed-address opaque frame. Streaming source changes are debounced, and stale
-results cannot replace newer source or a timed-out render.
+results cannot replace newer source or a timed-out render. The frame is created
+only once the element comes within a viewport of the visible area, because each
+frame holds its own copy of the 5.4 MB renderer and its heap; a transcript with
+two dozen diagrams otherwise started two dozen renderers at once.
 
 Mermaid's DOM generation runs only in the frame, which has a separate HTTP
 sandbox and content policy. Its response admits its own classic bundled

@@ -176,6 +176,32 @@ The drive passed all 21 checks again after these fixes, as did the 353
 The renderer's npm bundle, lock, notice collector, frame document and binding
 checks moved from `web_client/mermaid` to `web_mermaid/bundle`, so one package
 owns the frame program and its FFI checks run in its own lane. Two repeated
-phase matches were folded. Not covered here: Firefox and Safari, and memory
-with many diagrams, since each diagram is its own frame with its own copy of
-the 5.4 MB renderer served `no-store`.
+phase matches were folded. Not covered here: Firefox and Safari.
+
+## Many diagrams: caching and frame lifetime (2026-10-19)
+
+The seed's fake model answers `mermaid many` with 24 small flowcharts in one
+streamed answer. Measured in Chrome for Testing against a local seeded daemon,
+from send to every framed diagram shown, with Chrome's total RSS sampled
+before and three seconds after:
+
+| Variant | Time to shown | Frame loads | Live frames at end | Chrome RSS growth |
+| --- | --- | --- | --- | --- |
+| One frame per diagram, renderer `no-store` | 9.0 s | 48 | 24 | 1,018 MB |
+| Same, renderer `private, max-age=3600` | 8.5 s | 48 | 24 | 920 MB |
+| Frames only near the viewport, `no-store` | 8.1 s | 26 | 2 | 423 MB |
+
+Each diagram loads twice: once in the streamed row and again in the committed
+row that replaces it, so 24 diagrams cost 48 loads of the 5.4 MB renderer. The
+time is dominated by streaming, so caching barely moves it on a local daemon,
+and memory is dominated by each frame's own renderer heap, roughly 20 to 40 MB,
+which caching does not touch. The renderer therefore stays `no-store`, like
+every other UI asset, with no versioned path to keep in step across upgrades.
+Instead a diagram's frame is created only once the element comes within a
+viewport of the visible area, and is kept from then on. Opening a long
+transcript now starts renderers only for what is on screen. The remaining
+growth in the third row is mostly frames made while the answer streamed at
+the bottom of the page, which are dropped when the committed row replaces
+them. A remote daemon would also save the transfer, about 260 MB in the first
+row. The 21-check drive passes with lazy frames; it now scrolls each diagram
+into view, since the page follows the newest row.
