@@ -195,6 +195,24 @@ export function get_document() {
   return document;
 }
 
+// Frame messages are data; the caller checks identity before decoding them.
+export function get_window() {
+  return window;
+}
+
+export function message_from_frame(frame, event) {
+  return event.source === frame.contentWindow;
+}
+
+export function message_data(event) {
+  return event.data;
+}
+
+// A frame in a detached shadow tree has no window; the post is then moot.
+export function post_to_frame(frame, text) {
+  frame.contentWindow?.postMessage(text, "*");
+}
+
 // The handler is returned so that `remove_listener` can name it. Unlike
 // `add_passive_listener` it may cancel the event, and it is called with the
 // event.

@@ -123,6 +123,12 @@ pub type Asset {
 
   /// The tab icon, an SVG.
   Favicon
+
+  /// The isolated Mermaid child-frame document.
+  MermaidFrame
+
+  /// The isolated Mermaid renderer script.
+  MermaidScript
 }
 
 /// The most images one row may carry that the route will ask the page for.
@@ -199,6 +205,8 @@ pub fn route(request: Request(body)) -> Route {
         _ if name == page.resume_asset -> Asset(ResumeScript)
         _ if name == page.client_asset -> Asset(Client)
         _ if name == page.favicon_asset -> Asset(Favicon)
+        _ if name == page.mermaid_frame_asset -> Asset(MermaidFrame)
+        _ if name == page.mermaid_script_asset -> Asset(MermaidScript)
         _ -> Unknown
       }
     _, _ -> Unknown

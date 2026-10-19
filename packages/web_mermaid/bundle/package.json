@@ -1,0 +1,9 @@
+{
+  "name": "loom-mermaid-renderer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "mermaid": "12.2.0"
+  }
+}

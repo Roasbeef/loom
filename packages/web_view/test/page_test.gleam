@@ -120,7 +120,7 @@ pub fn every_owned_asset_is_in_this_packages_priv_test() {
 pub fn the_policy_is_the_one_051_specifies_test() {
   assert page.content_security_policy("127.0.0.1:4000")
     == "default-src 'none'; script-src 'self'; style-src 'self'; "
-    <> "style-src-attr 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:4000; "
+    <> "frame-src 'self'; style-src-attr 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:4000; "
     <> "img-src 'self'; base-uri 'none'; form-action 'none'; "
     <> "frame-ancestors 'none'"
 }

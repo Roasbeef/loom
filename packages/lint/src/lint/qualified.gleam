@@ -68,6 +68,7 @@ pub fn loom_roots() -> List(String) {
     "tools",
     "tui",
     "web_client",
+    "web_mermaid",
     "web_view",
   ]
 }

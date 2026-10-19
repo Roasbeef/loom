@@ -898,8 +898,9 @@ pub fn after(milliseconds: Int, done: fn() -> Nil) -> Nil
 /// hands the outcome to `done` when the browser answers. The write is refused
 /// when the page is not a secure context, when the clipboard is not permitted
 /// and when the press was not a user's own; each is `Error(Nil)`, and no
-/// exception reaches the caller. `<loom-copy>` calls it in the press's own
-/// turn, and only with text `web_client/copy_rule.text` accepted.
+/// exception reaches the caller. `<loom-copy>` calls it with validated
+/// invitation text; `<loom-mermaid>` copies its displayed source only after
+/// an explicit Copy source press (protocol-change/091).
 ///
 /// ## Examples
 ///
@@ -930,3 +931,46 @@ pub fn media_query(query: String) -> Element
 /// ```
 @external(javascript, "./dom.mjs", "media_matches")
 pub fn media_matches(query: Element) -> Bool
+
+/// The window event target, used only for the isolated frame's messages.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let window = ffi_dom.get_window()
+/// ```
+@external(javascript, "./dom.mjs", "get_window")
+pub fn get_window() -> Element
+
+/// Whether a message came from this exact iframe window, not a sibling.
+/// Opaque frame origins cannot be used as an identity check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.message_from_frame(frame, event)
+/// ```
+@external(javascript, "./dom.mjs", "message_from_frame")
+pub fn message_from_frame(frame: Element, event: Dynamic) -> Bool
+
+/// The untrusted data of a message event, for a total decoder to inspect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.message_data(event)
+/// ```
+@external(javascript, "./dom.mjs", "message_data")
+pub fn message_data(event: Dynamic) -> Dynamic
+
+/// Sends text data to a fixed, opaque sandbox frame. The wildcard target
+/// origin is necessary because the frame deliberately has no origin.
+/// No markup is written by this call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ffi_dom.post_to_frame(frame, request)
+/// ```
+@external(javascript, "./dom.mjs", "post_to_frame")
+pub fn post_to_frame(frame: Element, text: String) -> Nil

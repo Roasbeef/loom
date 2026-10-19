@@ -26,6 +26,34 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 NUDGED = threading.Event()
 
+# A real streamed response for the Mermaid browser drive. The third fence
+# deliberately fails, so a blank diagram cannot pass as a successful view.
+MERMAID_ANSWER = '''## Mermaid diagrams
+
+```mermaid
+flowchart LR
+    A[Request approval] --> B{Decision}
+    B -->|Allow| C[Wake strand]
+    B -->|Deny| D[Keep source]
+```
+
+```mermaid
+sequenceDiagram
+    participant M as Strand
+    participant G as Gateway
+    participant N as Notice
+    M->>G: Request permission
+    G->>N: Approval recorded
+    N-->>M: Resume work
+```
+
+```mermaid
+this is deliberately not a diagram
+```
+
+The source stays available when a diagram cannot be rendered.
+'''
+
 
 def text_of(content):
     """The text of a message's content, blocks joined."""
@@ -96,6 +124,8 @@ def main_turn(messages):
         )
         return [("text", answer)], "end_turn", warm
     said = text_of(last.get("content", ""))
+    if "mermaid" in said.lower():
+        return [("text", MERMAID_ANSWER)], "end_turn", warm
     if "advisor-nudges" in said or "[advisor nudges]" in said:
         return [("text", "Checked: the sweep leaves the generated SQL alone.")], "end_turn", warm
     if "after the break" in said:

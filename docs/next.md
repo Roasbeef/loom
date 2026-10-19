@@ -11,6 +11,11 @@ this tree, saved local logs, or the GitHub state named explicitly. This is a
 scoped idle-resource handoff, not a fresh audit of every architecture wave or
 an assertion that this branch's hosted gates have finished.
 
+The web Mermaid rows and steps were added on October 19, 2026 by
+[PR #1018](https://github.com/Roasbeef/loom/pull/1018) (`feature/web-mermaid`),
+rebased onto `ae1b65159` after #1020 merged, and checked against a real
+browser drive. They do not re-audit the idle-resource claims.
+
 ## Where the tree is
 
 | Work | Verified state |
@@ -20,6 +25,7 @@ an assertion that this branch's hosted gates have finished.
 | Page memory ownership | Admission owns its callback only in `Pending`; repeated authorization captures registry and identities rather than a resolved attachment. |
 | Local validation | Both production changes passed independent review. The final sandbox race suite passes. Before the batching correction, conformance passed 111 tests and real jailed code mode passed 414; final-helper E2E remains required. The surrounding page suites passed 276 tests. |
 | Publication | The owner authorized a PR with end-to-end verification. Affected repository gates are running; hosted CI and strict Linux signoff remain pending at this documentation commit. No installation or restart occurred. |
+| Web Mermaid fences | A `mermaid` fence keeps its source as page text and renders in an opaque, script-only frame run by the `web_mermaid` package (protocol-change/091). Flowchart and sequence diagrams render in Chrome in both themes; invalid, oversized and refused source falls back to source. `scripts/web_mermaid_check.sh` passes all 21 checks against a seeded daemon. |
 
 The [idle resource report](review/idle-resources-2026-10-19.md) contains the
 process census, CPU and allocation measurements, memory ownership paths,
@@ -63,6 +69,16 @@ successfully for `490792538`, but is not this branch's validation.
    **Exit:** identify the allocating/retaining path and a failing ownership
    bound before proposing another repair. The report records an unmeasured
    component callback candidate and the separate language-server RSS owner.
+4. Decide whether the Mermaid renderer should be cacheable. Each diagram is
+   its own frame and fetches the 5.4 MB bundle again, because UI assets are
+   served `no-store`. **Exit:** a measurement with 20+ diagrams on a remote
+   daemon, then a versioned or revalidated `mermaid.js`, or a ruling that the
+   cost is acceptable. Rendering correctness no longer depends on it: the
+   render deadline starts when the request is posted.
+5. Drive the Mermaid check in Firefox and Safari once. **Exit:** the same 21
+   checks pass, or the differences are filed. Terminal rendering stays a
+   separate discussion; the
+   [TUI note](design-notes/mermaid-terminal-graphics.md) is research only.
 
 ## Rulings already made
 
@@ -88,6 +104,16 @@ cache authorization or redirect an admitted relay to another gateway.
 [idle report](review/idle-resources-2026-10-19.md) distinguish allocation,
 application-state words, post-collection capacity, binary ownership and RSS.
 
+**Mermaid generates markup only in the separate frame, and mocked vendors do
+not establish rendering.** [Protocol-change/091](../protocol-change/091-isolated-mermaid-diagrams.md)
+keeps SVG and vendor diagnostics out of the session page. The controlled-promise
+tests could not see that Mermaid 12 picks ELK for flowcharts (broken under
+Bun's IIFE build, hence the dagre pin) or that a frame without a matching
+`color-scheme` is painted on white. A change to the renderer, its
+configuration or the frame document needs a run of
+`scripts/web_mermaid_check.sh`; the [validation
+record](review/mermaid-web-rendering-2026-10-18.md) has the trail.
+
 ## Deliberately open
 
 None of these is unfinished work somebody forgot.
@@ -101,6 +127,9 @@ None of these is unfinished work somebody forgot.
 - `admit` has a component session-list callback that may retain a full
   attachment. Its retained size and a component-level regression are unmeasured;
   the socket/gateway fix makes no claim about that owner.
+- ELK layouts are unsupported in the Mermaid frame; a `flowchart-elk` header
+  falls back to source. Network fonts, links and interactive callbacks are
+  deliberately not enabled.
 
 ## How to verify
 
@@ -109,6 +138,13 @@ preparation and strict skip census. `make e2e` and `make e2e-codemode` exercise
 the actual helper; `go test -race ./...` in `packages/sandbox` covers the new
 tracker races. The notification regression must fail if only its queued rescan
 is removed. `make signoff-remote` remains the Linux publication gate.
+
+For the Mermaid path, build with `make gen-client server-shipment`, start
+`scripts/web_seed/seed.sh` on private ports (`WEB_SEED_PORT`,
+`WEB_SEED_FAKE_PORT`) with its own state directory, and pass the operator URL
+to `scripts/web_mermaid_check.sh`. Run it in one shell invocation: a harness
+that reaps the process tree between commands also kills agent-browser's
+daemon and its tab.
 
 **Do not rebuild a package while its tests use its build artifacts.**
 **Check each gate's own exit status and saved failure/skip diagnostics.**
