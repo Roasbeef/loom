@@ -125,6 +125,26 @@ assertions or skip declarations were changed. The unchanged native
 affected gates remain pending at this documentation revision. Terminal lint
 reports zero errors and 239 census warnings.
 
+## CI fixture shutdown ordering
+
+The rebased native affected gate passed in 811 seconds: 4,876 client tests,
+1,539 terminal tests, global static checks, lint and a clean skip census.
+Every hosted Linux job also passed, including the Rust Analyzer fixture and
+all eleven jail enforcement probes. macOS exposed the agency fixture race
+again: its deadline test passed, then the still-linked agency holder read the
+writer during shutdown and terminated the following test.
+
+The approved test-only repair retains the holder's original PID and monitor.
+Cleanup unlinks and kills that holder, requires its own `Killed` notification,
+and only then closes the runtime. This follows the existing provider-fixture
+cleanup pattern. Existing behavioral assertions and skip rules are unchanged.
+All 209 agency tests passed with three schedulers; independent review approved
+the ordering and monitor ownership. The repaired revision needs fresh full
+native and hosted gates. The client-path selector also requests conformance
+and Linux signoff. The operator has authorized hosted CI as the Linux acceptance
+evidence while the separate host is offline; no separate host signoff is claimed.
+The renderer source is unchanged.
+
 ## Repeat capture during elevated CPU
 
 A newly opened terminal was sampled for another thirty seconds after our

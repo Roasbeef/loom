@@ -4,7 +4,7 @@ This file records the verified state and next steps for this checkout. Rewrite
 it after a body of work; retain historical measurements in their evidence
 reports rather than carrying old validation forward.
 
-Baselined October 19, 2026 against source `284d656ad` on
+Baselined October 19, 2026 against renderer source `284d656ad` on
 `perf/live-resource-followup`, from `origin/main` at
 `ba4f1321498ff4d1544197ffdffa35a7d83ae2c4`. The claims below were checked
 against this source, saved local evidence, or the explicitly named GitHub
@@ -15,7 +15,13 @@ affected gate and Linux CI passed, but raw macOS shard results failed despite
 advisory green badges. The two targeted retries are exhausted. The final
 remote-subagent and agency failures passed three unchanged native repetitions
 each; those passes do not establish their CI root cause. This rebase needs a
-fresh integration run. The renderer source blob is unchanged from the review.
+fresh integration run. That run exposed the agency teardown race again: the
+linked holder read the writer during shutdown and terminated the following
+EUnit test. The approved test-only repair `15efea614` retains the original
+holder and monitor and requires its death before closing the runtime. All 209
+agency tests and independent review passed; full publication gates must be
+refreshed for the repaired head. The renderer source blob is unchanged from
+the review.
 
 The Mermaid follow-up and rulings below preserve the upstream validation record.
 This terminal-only change does not claim a new browser validation run.
@@ -30,7 +36,7 @@ This terminal-only change does not claim a new browser validation run.
 | Local validation | Native `make check-tui` passed all 1,479 tests. Terminal lint has zero errors. The exact-cell/ANSI comparison passes 28 canvas cases. Independent source review approved. |
 | Web Mermaid | The upstream validation record retains the 21-check Chrome drive; Firefox and Safari remain follow-ups. |
 | Terminal Mermaid | Upstream PR #1024 merged the bounded text renderer. Its PNG path remains research. |
-| Publication gates | Remaining affected gates and hosted CI are pending at this documentation commit. No installation, restart or hotpatch was performed in this pass. |
+| Publication gates | PR [#1023](https://github.com/Roasbeef/loom/pull/1023) is ready for review. Native and Linux gates passed before the test-only repair; fresh full gates are pending for that repair. No installation, restart or hotpatch was performed in this pass. |
 
 The [fresh profiling report](review/live-frame-resources-2026-10-19.md) records
 both live capture rounds, the allocation attribution, matched renderer
@@ -53,8 +59,10 @@ install or restart it as part of this pass.
 
 1. Finish the focused rendering PR and its affected gates.
    **Exit:** independent review, `make check-affected` and hosted checks refer to
-   the exact published head. The selector currently requires client, terminal,
-   lint and the global static gates, and says separate signoff is not required.
+   the exact published head. The approved client-fixture repair expands the
+   selector to client, terminal, conformance, lint and global static gates. Its
+   package-level rule now requests Linux signoff; the operator has authorized
+   hosted CI as the Linux acceptance evidence while the separate host is offline.
    Inspect raw advisory macOS results and the skip census before declaring CI
    green. Keep changes to authentication and dependencies outside this PR.
 2. Continue attributing the remaining CPU only from bounded captures.
