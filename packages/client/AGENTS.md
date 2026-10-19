@@ -450,7 +450,10 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   its socket at `.../ws` with the `csrf-token` query, and five assets),
   `page_origin` (over `loopback_host` and the listed origins),
   `exchange_allowed` and `navigation_allowed`
-  (`Sec-Fetch-Site` is `none` or `same-origin`), `origin_matches`, the
+  (`Sec-Fetch-Site` is `none` or `same-origin`), `ConfirmedExchange(exchange)`
+  for a `POST` to `/ui/sessions/<id>`, `/ui/home` or `/ui/admin` (the press on
+  an exchange's confirmation) with `posted_ticket` reading its one `ticket`
+  field, `origin_matches`, the
   `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`;
   `__Secure-loom_ui` and `Secure` on a listed origin) and
   `secured`, whose `Referrer-Policy: no-referrer` is load-bearing. Every
@@ -466,7 +469,17 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   in `server.Ui`. A release that lost one refuses `--ui` at startup; a
   request never touches the disk.
 - `daemon/server`: routes in 051's order of checks. The exchange answers
-  200 with the keyed path and the nonce in the body, never a redirect.
+  200 with the keyed path and the nonce in the body, never a redirect. All
+  three exchanges go through `offered_exchange`: a `GET` whose
+  `Sec-Fetch-Site` is `none` or `same-origin` redeems at once, and any other
+  (a phone's camera, a QR scanner or a chat app opens links `cross-site` or
+  with no header) gets `confirm_exchange`'s document instead, which
+  `ui_sessions.preview` describes without spending the ticket and which holds
+  one `OwnForms` form posting the ticket in a hidden field.
+  `confirmed_exchange` accepts that post only under `same_origin_post` and
+  `form_declared`, and both paths redeem through `redeem_ticket` and
+  `entered`, so cookies and logins are set the same way (051, the addendum on
+  links from another app).
   `page_grant` re-checks the cookie, its key, its session, and
   `manager.authenticate` and `session_authority` for the minting
   credential on every request. The socket also requires the nonce, then

@@ -66,7 +66,9 @@
 ////    ticket for a grant, and differ only in the deadline and the login the
 ////    ticket carries.
 //// 3. `redeem` removes the ticket and, for a live one at its own exchange,
-////    adds the page whose three secrets it hands back.
+////    adds the page whose three secrets it hands back. `preview` reads a live
+////    ticket's `Remember` and leaves it in place, for the confirmation a link
+////    opened from another app is answered with.
 //// 4. `attach_login` records the login a remembered exchange set, once its row
 ////    exists.
 //// 5. `lookup` finds a live page by its cookie, and `still_open` and
@@ -434,6 +436,7 @@ type Message {
     exchange: Exchange,
     reply: Subject(Result(Redeemed, Refusal)),
   )
+  Preview(ticket: String, reply: Subject(Result(Remember, Nil)))
   Attach(cookie: String, login: Issuer, reply: Subject(Nil))
   LoginOf(cookie: String, reply: Subject(Option(Issuer)))
   Lookup(cookie: String, reply: Subject(Result(#(Page, Int), Nil)))
@@ -768,6 +771,26 @@ pub fn redeem(
   |> result.unwrap(Error(UnknownTicket))
 }
 
+/// Whether a live `ticket` would also set a browser login, without spending
+/// it. The exchange's confirmation (protocol-change/051, the addendum on links
+/// from another app) asks this so it can say what the person's press will do,
+/// and so a dead link is answered as one at once. `Error(Nil)` is a ticket
+/// that is not live, or a table that did not answer.
+///
+/// The answer is only a description. The press posts the ticket back and
+/// `redeem` decides it afresh, with every check redemption makes, so a ticket
+/// that expired or was spent in between is refused there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.preview(sessions, ticket) == Ok(ui_sessions.Remembered)
+/// ```
+pub fn preview(sessions: Sessions, ticket: String) -> Result(Remember, Nil) {
+  call.try_call(sessions.subject, waiting: 1000, sending: Preview(ticket, _))
+  |> result.unwrap(Error(Nil))
+}
+
 /// Records that the page behind `cookie` is the browser of `login`, which a
 /// `Remembered` exchange does once the login's row is written. A cookie that
 /// names no live page records nothing. The page's grant is untouched, so a
@@ -1086,6 +1109,17 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           )
         }
       }
+    }
+
+    // A preview reads a live ticket and changes nothing, so loading the
+    // confirmation page spends no ticket. It checks only the deadline:
+    // the scope, a page bound and the issuing login's end are the
+    // redemption's to judge when the person presses the button.
+    Preview(ticket:, reply:) -> {
+      live(state.tickets, digest(ticket), now)
+      |> result.map(fn(found: Ticket) { found.grant.remember })
+      |> process.send(reply, _)
+      actor.continue(state)
     }
 
     Lookup(cookie:, reply:) -> {

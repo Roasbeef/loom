@@ -23,6 +23,7 @@
 //// proxy's header from one any local process wrote.
 
 import client/daemon/ui_origin
+import client/daemon/ui_sessions
 import core/ids
 import gleam/bit_array
 import gleam/http
@@ -130,6 +131,12 @@ pub type Route {
   /// as the socket URL's `csrf-token`.
   AdminSocket(key: String, nonce: Option(String))
 
+  /// `POST /ui/sessions/<id>`, `POST /ui/home` or `POST /ui/admin`: the press
+  /// on an exchange's confirmation, which carries the ticket in its form body
+  /// and never in the URL (protocol-change/051, the addendum on links from
+  /// another app). `exchange` is the one the path names.
+  ConfirmedExchange(exchange: ui_sessions.Exchange)
+
   /// `GET /ui/assets/<name>`, for one of the fixed asset names.
   Asset(asset: Asset)
 
@@ -172,8 +179,9 @@ pub type Asset {
 /// request from naming a position no row could have.
 pub const max_position = 256
 
-/// Routes a `/ui` request; every route is a `GET` except the login's resume and
-/// the claim's submission, which are `POST`s. The session ID is returned as the path gave it; the caller
+/// Routes a `/ui` request; every route is a `GET` except the login's resume,
+/// the claim's submission and the three exchanges' confirmed presses, which
+/// are `POST`s. The session ID is returned as the path gave it; the caller
 /// parses it as a canonical ID before using it. The home's three routes and the
 /// admin page's three name no session (protocol-change/065).
 ///
@@ -191,6 +199,8 @@ pub fn route(request: Request(body)) -> Route {
         Some(ticket) -> Exchange(id, ticket)
         None -> Unknown
       }
+    http.Post, ["ui", "sessions", id] ->
+      ConfirmedExchange(ui_sessions.SessionExchange(id))
     http.Get, ["ui", "p", key, "sessions", id] -> Page(key, id)
     http.Get, ["ui", "p", key, "sessions", id, "ws"] ->
       Socket(key, id, query(request, "csrf-token"))
@@ -216,6 +226,7 @@ pub fn route(request: Request(body)) -> Route {
         Some(ticket) -> HomeExchange(ticket)
         None -> Unknown
       }
+    http.Post, ["ui", "home"] -> ConfirmedExchange(ui_sessions.HomeExchange)
     http.Get, ["ui", "p", key, "home"] -> HomePage(key)
     http.Get, ["ui", "p", key, "home", "ws"] ->
       HomeSocket(key, query(request, "csrf-token"))
@@ -229,6 +240,7 @@ pub fn route(request: Request(body)) -> Route {
         Some(ticket) -> AdminExchange(ticket)
         None -> Unknown
       }
+    http.Post, ["ui", "admin"] -> ConfirmedExchange(ui_sessions.AdminExchange)
     http.Get, ["ui", "p", key, "admin"] -> AdminPage(key)
     http.Get, ["ui", "p", key, "admin", "ws"] ->
       AdminSocket(key, query(request, "csrf-token"))
@@ -326,12 +338,17 @@ fn valid_port(suffix: String) -> Bool {
   }
 }
 
-/// Whether the ticket exchange may proceed: `Sec-Fetch-Site` is `none` (a
-/// link opened from outside any page) or `same-origin`.
+/// Whether the ticket exchange may redeem at once: `Sec-Fetch-Site` is `none`
+/// (a link pasted into the address bar, or opened from a bookmark) or
+/// `same-origin`.
 ///
 /// A top-level navigation sends no `Origin`, so this is the exchange's
-/// cross-site check. The ticket itself is the CSRF secret; this refuses the
-/// exchange when another site drives the browser to it.
+/// cross-site check. The ticket itself is the CSRF secret; this keeps another
+/// site from driving the browser through the exchange. A link that fails it is
+/// not refused outright: a phone's camera, a QR scanner and a chat app open
+/// links as `cross-site` or with no header, so the exchange answers with a
+/// confirmation instead, and only its same-origin press (`same_origin_post`)
+/// redeems (protocol-change/051, the addendum on links from another app).
 ///
 /// ## Examples
 ///
@@ -369,7 +386,8 @@ pub fn navigation_allowed(request: Request(body)) -> Bool {
 
 /// Whether a state-changing request came from this origin's own page:
 /// `Sec-Fetch-Site` is `same-origin` and nothing else. The login's resume is a
-/// `POST` from the resume page, which is this origin's, so a link another page
+/// `POST` from the resume page, and an exchange's confirmed press is a `POST`
+/// from its confirmation, both this origin's, so a link another page
 /// followed, a form another page posted and a request with no such header (a
 /// program that is not a browser, or one that cannot be trusted to say) are all
 /// refused, `none` included: nobody types a `POST`.
@@ -423,10 +441,31 @@ pub fn form_declared(request: Request(body)) -> Bool {
 /// // ui_http.posted_nonce(<<"nonce=00...">>)
 /// ```
 pub fn posted_nonce(body: BitArray) -> Result(String, Nil) {
+  posted_secret(body, "nonce")
+}
+
+/// The ticket an exchange's confirmation posted: a body of exactly one field,
+/// `ticket`, whose value is 64 lowercase hexadecimal digits, the shape every
+/// ticket is minted in. Anything else is not a confirmation, and is refused
+/// before the ticket table is asked.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.posted_ticket(<<"ticket=00...">>)
+/// ```
+pub fn posted_ticket(body: BitArray) -> Result(String, Nil) {
+  posted_secret(body, "ticket")
+}
+
+// A form body of exactly one field, `name`, holding one of the daemon's own
+// 32-byte secrets in lowercase hexadecimal. A second field, or a value of any
+// other shape, is refused.
+fn posted_secret(body: BitArray, name: String) -> Result(String, Nil) {
   use text <- result.try(bit_array.to_string(body))
   use fields <- result.try(uri.parse_query(text))
   case fields {
-    [#("nonce", value)] ->
+    [#(field, value)] if field == name ->
       case string.byte_size(value) == 64 && lowercase_hex(value) {
         True -> Ok(value)
         False -> Error(Nil)
