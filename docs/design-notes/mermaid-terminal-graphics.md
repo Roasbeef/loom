@@ -15,7 +15,7 @@ The sections below are the earlier exploration of drawing a rasterised diagram t
 
 ## Existing image path
 
-The TUI already draws transcript PNGs through etui. `tui/image_support` probes once before the interactive loop and selects `KittyPlaceholders`, `Iterm2Inline`, or `TextOnly`; plain palettes, `NO_COLOR`, Herdr, and an unanswered/unsupported probe use `TextOnly`. The probe result remains fixed for the process lifetime.
+The TUI already draws transcript PNGs through etui. `tui/image_support` probes once before the interactive loop and selects `KittyPlaceholders`, `Iterm2Inline`, or `TextOnly`; plain palettes, non-empty `NO_COLOR`, and an unanswered/unsupported probe use `TextOnly`. The probe result remains fixed for the process lifetime.
 
 `tui/image_box` keeps the placeholder unless support, media type, size, and geometry checks pass. Kitty/Ghostty use U+10EEEE placeholder cells, which scroll and clip with transcript text. `tui/image_plan.settle` inspects the visible transcript window after the frame cache is refreshed, then reconciles it through `tui/image_shown`. Kitty/Ghostty upload, place, and remove images as boxes enter, move within, and leave the viewport. iTerm2 uses OSC 1337 and blank cells; the image is drawn after its frame and erased or redrawn when the frame or viewport changes. Quit removes uploaded Kitty images before leaving the alternate screen.
 

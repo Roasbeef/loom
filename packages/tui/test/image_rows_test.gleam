@@ -4,8 +4,8 @@
 //// under the call that returned it, as one row that names it: its place,
 //// its media type, its pixel size read from its header, its byte size, and
 //// the key that opens it outside the terminal. The row is always drawn, so
-//// scrollback and replays stay text. Inside Herdr, which passes no pane
-//// graphics through, a second row says so. The header reader is exercised
+//// scrollback and replays stay text. Herdr follows the same capability
+//// probe as other terminals. The header reader is exercised
 //// here too, on a PNG and a JPEG built byte by byte.
 
 import core/json
@@ -75,7 +75,7 @@ pub fn an_image_is_one_row_under_its_call_test() {
   })
 }
 
-pub fn inside_herdr_the_row_says_why_test() {
+pub fn herdr_does_not_claim_pane_graphics_are_unavailable_test() {
   let assert Ok(reporter) =
     herdr.start(herdr.Config(
       pane_id: "pane-7",
@@ -90,10 +90,11 @@ pub fn inside_herdr_the_row_says_why_test() {
       view: view_set.herdr_reporter(base.view, Some(reporter)),
     )
   let lines = frame_scene.screen(model, 80, 24) |> frame.buffer_to_lines
-  assert list.any(lines, string.contains(
+  assert !list.any(lines, string.contains(
     _,
-    "inside Herdr: pane graphics are not passed through",
+    "pane graphics are not passed through",
   ))
+  assert list.any(lines, string.contains(_, "▣ image 1 · image/png"))
 }
 
 // A response with prose draws its call inside itself and the result arrives

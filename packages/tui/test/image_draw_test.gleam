@@ -618,22 +618,11 @@ pub fn a_probe_timeout_is_text_only_test() {
   assert support == image_support.TextOnly(image_support.NotAnswered)
 }
 
-pub fn a_plain_palette_or_herdr_is_not_probed_test() {
+pub fn a_plain_palette_or_no_colour_is_not_probed_test() {
   let refuse = fn(_) { panic as "the probe must not be sent" }
   let none = fn(_) { Error(Nil) }
   assert image_support.detect(appearance.Plain, none, refuse)
     == image_support.TextOnly(image_support.PlainPalette)
-  assert image_support.detect(
-      appearance.Dark,
-      fn(name) {
-        case name {
-          "HERDR_ENV" -> Ok("1")
-          _ -> Error(Nil)
-        }
-      },
-      refuse,
-    )
-    == image_support.TextOnly(image_support.InsideHerdr)
   assert image_support.detect(
       appearance.Dark,
       fn(name) {
@@ -993,4 +982,27 @@ pub fn side_panel_image_window_matches_the_painted_main_rectangle_test() {
     list.take(list.drop(shown, side.position.y), side.size.height),
     shows_placeholders,
   )
+}
+
+// Herdr keeps the standard Kitty protocol after retiring its bespoke API.
+// A positive probe enables previews; a silent pane still falls back to text.
+pub fn herdr_is_probed_and_only_positive_support_enables_images_test() {
+  let getenv = fn(name) {
+    case name {
+      "HERDR_ENV" -> Ok("1")
+      _ -> Error(Nil)
+    }
+  }
+  let positive = fn(timeout) {
+    assert timeout == image_support.probe_timeout_ms
+    graphics.Capabilities(
+      ..graphics.none(),
+      kitty: graphics.Supported,
+      cell_size: Some(graphics.CellSize(8, 16)),
+    )
+  }
+  assert image_support.detect(appearance.Dark, getenv, positive)
+    == image_support.KittyPlaceholders(graphics.CellSize(8, 16))
+  assert image_support.detect(appearance.Dark, getenv, fn(_) { graphics.none() })
+    == image_support.TextOnly(image_support.NotAnswered)
 }

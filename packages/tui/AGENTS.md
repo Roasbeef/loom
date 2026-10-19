@@ -2873,10 +2873,9 @@ awaiting its result has no call list.
 An image a tool returned, or a person attached, is a placeholder row under
 the row that carries it, `▣ image 1 · image/png · 1200×700 · 84 KB   o opens
 externally`, built by `session_view/image_header`, which reads the pixel
-size from a PNG, JPEG or GIF header in the data's first 64 KiB. Inside
-Herdr (`herdr_reporter` set) a second row says pane graphics are not passed
-through; `projection.noted_images` adds it to the line before rows and
-anchors are built from it, so the two agree. While the reader is above the
+size from a PNG, JPEG or GIF header in the data's first 64 KiB. Herdr is
+probed for standard Kitty support like any other terminal; the reporter's
+presence does not disable graphics or add a refusal row. While the reader is above the
 tail with nothing typed, `o` opens the strand's newest image outside the
 terminal: `image_drain.open_newest` starts `job.OpenImage`, whose worker
 (`image_open.open`) writes the bytes to a file in a `0700` directory under
@@ -3049,21 +3048,24 @@ own (`host/bootstrap`) and the JSON is `core/json`'s total parser.
 On a terminal that can draw them, an image's placeholder row grows into a
 labelled box and the terminal draws the picture into it. The placeholder row
 is still the answer everywhere else (scrollback, `loom replay`, a terminal
-that did not answer the probe, a Herdr pane, a plain palette).
+that did not answer the probe, a plain palette).
 
 **The probe.** `interactive` calls `image_support.probe_terminal(palette,
 getenv)` once, in the process that runs the loop and immediately before
 `app.run_buffered_cursor_adaptive`, so nothing printed earlier can be taken
 for a reply and the raw mode `probe.run` leaves on is the one the backend
 inherits. `image_support.detect` applies Loom's plain-palette rule first (a
-plain palette is never probed), then etui's `graphics.decide` (Herdr and
-`NO_COLOR` skip the probe), then runs `probe.run(200)` and maps the answer
+plain palette is never probed), then etui's `graphics.decide` skips non-empty
+`NO_COLOR`, then `probe.run(200)` maps the answer
 with `from_capabilities`: `KittyPlaceholders(cell)` for kitty and Ghostty,
 `Iterm2Inline(cell)` for iTerm2, `TextOnly(why)` otherwise, with the cell
 size guessed at 8 by 16 pixels if the terminal did not give one. A probe that
 times out is `TextOnly(NotAnswered)`. The answer lives in
 `View.image_support` for the whole process, and `new_model` starts it at
 `TextOnly(NotProbed)`, which is what every replay and test sees.
+Herdr removed its separate pane-graphics API while retaining standard Kitty
+rendering; the old environment-based skip conflated those interfaces. A
+positive probe enables previews in its panes, and a silent pane stays text.
 
 **The box.** `session_view/image_header.picture` gives an `ImageRow` its
 `Picture` (fingerprint, media type, pixel size, byte count), so a `Line`, a

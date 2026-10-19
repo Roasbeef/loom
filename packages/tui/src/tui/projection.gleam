@@ -629,10 +629,9 @@ fn image_note(
   model: Model,
   picture: Option(image_header.Picture),
 ) -> Option(String) {
-  case model.view.herdr_reporter, picture {
-    Some(_), _ -> Some("inside Herdr: pane graphics are not passed through")
-    None, Some(picture) -> image_box.refusal(model.view.image_support, picture)
-    None, None -> None
+  case picture {
+    Some(picture) -> image_box.refusal(model.view.image_support, picture)
+    None -> None
   }
 }
 
