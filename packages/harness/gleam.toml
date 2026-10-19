@@ -1,0 +1,18 @@
+name = "harness"
+version = "0.1.0"
+gleam = ">= 1.18.0"
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+core = { path = "../core" }
+machine = { path = "../machine" }
+session = { path = "../session" }
+storage = { path = "../storage" }
+provider = { path = "../provider" }
+runtime = { path = "../runtime" }
+broker = { path = "../broker" }
+tools = { path = "../tools" }
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"

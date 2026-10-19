@@ -1177,6 +1177,31 @@ identity: a generation whose captured identity heads a routable role's
 chain goes out as a role and walks, while an off-route identity and every
 deferred poll go out already resolved.
 
+### Who builds the provider surface
+
+The runtime asks its host for a provider surface and nothing else about
+models, and the code behind that surface is the `harness` package, not the
+daemon. `harness/routing` picks the target, `harness/admission` makes the
+pre-request decision (including the vision rule), `harness/provider` shapes
+the request and starts the stream, and `harness/tool_table` answers the
+registry-level half of the tool surface. `harness` depends on `core`,
+`machine`, `session`, `storage`, `provider`, `runtime`, `tools` and
+`broker`, never on `client`, so a program can run a session in its own
+process: `harness.new` validates a `Settings` record and `harness.effects`
+builds the `Effects` record `runtime/api.open` takes. The defaults are no
+compaction and no escalation channel.
+
+`client/wiring` is the second caller. It builds the same `Provider` and
+`Routing` records from its daemon `Config`, without the checks `harness.new`
+makes, and adds what only the daemon has: the notes checkpoint behind the
+compaction hooks, the directory and permission grants a tool call runs under,
+the escalation plane, the placement of a tool across machines and the holder
+process which keeps one `Config` for the whole session. Its public names
+(`provider_request`, `request_target`, `strand_window`, ...) are one-line
+delegations, so routing, fallback order and admission cannot differ between
+the daemon and an embedder. `packages/harness/CLAUDE.md` states the embedding
+contract and `docs/design-notes/harness-extraction.md` maps the move.
+
 ### Streaming
 
 Streaming follows the sans-io shape. The parser for server-sent events
@@ -1407,7 +1432,8 @@ platform gaps.
 | `provider/gateway.gleam`, `provider/secret.gleam` | The registry, role resolution, and the fallback walk; the secret-name lookup seam. |
 | `provider/stream.gleam` | Stream events, the pure server-sent-events parser, the transport pump. |
 | `provider/adapter/anthropic.gleam`, `.../openai.gleam`, `.../gemini.gleam`, `.../responses.gleam` | Request construction, response accumulation, total stop-reason mapping, overflow. |
-| `client/wiring.gleam` | The production effect record: the seam between the pure planes and this one. Its module doc is the list of mapping decisions. |
+| `client/wiring.gleam` | The production effect record: the seam between the pure planes and this one, built on `harness`. Its module doc is the list of mapping decisions. |
+| `harness.gleam`, `harness/provider.gleam`, `harness/routing.gleam`, `harness/admission.gleam`, `harness/tool_table.gleam` | The daemon-free provider half of `Effects`: the typed `Settings` and `harness.effects`, the provider surface, role and target routing, admission and the vision rule, and the registry-level tool surface. |
 | `client/escalate.gleam` | Parking: raise on every policy refusal, hold the call while a human decides, consume the approval and re-clear once. |
 | `conformance` test suites `wiring_test.gleam`, `e2e_test.gleam` | The adapter's mappings against fakes, and the M2 jailed acceptance that proves the record end to end. Both live under `packages/conformance/test/conformance/`. |
 | `protocol/msgpack-fixtures/` | Golden frames both languages are pinned against. |

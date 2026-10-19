@@ -298,6 +298,9 @@ one.
   `async-collaboration`. Strands and automation: `messaging`,
   `advisor`, `goals`, `automation`, `hooks-compat`. Observation and
   testing: `events`, `telemetry`, `simulation`.
+- **Embedding** — `packages/harness/CLAUDE.md`: running a session in your own
+  process without `client`, with the embedding test as the contract, and
+  `docs/design-notes/harness-extraction.md` for what moved out of the daemon.
 - **Decisions** — `docs/adr/`, `protocol-change/`.
 - **Design notes** (explorations, not commitments) — `docs/design-notes/`.
 - **Review waves** — `docs/review/`, one file per wave with its triage.
