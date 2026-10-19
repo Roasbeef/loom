@@ -61,6 +61,10 @@ pub type Report {
     toolchains: List(String),
     /// How many more scopes it admits, when it reported.
     free_scopes: Option(Int),
+    /// The names, never the roots, of the workspaces the executor registered,
+    /// as its report listed them. Empty when it did not report, which the form
+    /// words as unknown rather than as none.
+    workspaces: List(String),
     /// The words saying its census contradicts what its operator declared, when
     /// it does. They are the operator's own configuration values and the
     /// machine's report, drawn as text.
@@ -85,6 +89,10 @@ pub type PoolReport {
     executors: List(String),
     /// Those of them the daemon reached, in the same order.
     eligible: List(String),
+    /// The workspace names every reached executor registered, which are the
+    /// ones a first open can use whichever of them it lands on. Empty when none
+    /// was reached or the reached ones share no name.
+    workspaces: List(String),
   )
 }
 
@@ -204,6 +212,33 @@ pub fn offers(cards: Cards, choice: Choice) -> Bool {
 /// ```
 pub fn any(cards: Cards) -> Bool {
   cards.placements.executors != [] || cards.placements.pools != []
+}
+
+/// The workspace names the form may offer for a choice, in the order the
+/// daemon reported them. A choice the page did not draw, or one the daemon has
+/// not reported on, offers none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let cards = placements.listed(["box"], [])
+/// assert placements.workspaces(cards, placements.OnExecutor("box")) == []
+/// ```
+pub fn workspaces(cards: Cards, choice: Choice) -> List(String) {
+  case choice {
+    OnExecutor(name:) ->
+      case
+        list.find(cards.placements.executors, fn(each) { each.name == name })
+      {
+        Ok(Executor(report: option.Some(report), ..)) -> report.workspaces
+        Ok(_) | Error(Nil) -> []
+      }
+    InPool(name:) ->
+      case list.find(cards.placements.pools, fn(each) { each.name == name }) {
+        Ok(Pool(report: option.Some(report), ..)) -> report.workspaces
+        Ok(_) | Error(Nil) -> []
+      }
+  }
 }
 
 /// The word a state is drawn as.

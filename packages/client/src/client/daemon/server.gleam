@@ -346,6 +346,10 @@ pub type HomeAttachment(instance) {
     /// the profiles they cost no read. A page learns them once, when it opens,
     /// and only an owner's page that holds the creation capability is told.
     executors: List(String),
+    /// The asking daemon's own node name, which the new-session form names as
+    /// "this machine" beside its executors. It is the name `deployment.status`
+    /// gives the asker (`Reach.self`), a configuration value and not a secret.
+    machine: String,
     /// The `[pools.<name>]` names of the configuration, in the order it lists
     /// them, told to the same pages for the same reason and checked again when a
     /// creation runs (`create_session` answers `pool_unknown`). They are the
@@ -749,6 +753,7 @@ fn home_upgrade(
             executors: list.map(roster.rows(config.executors), fn(executor) {
               executor.name
             }),
+            machine: config.deployment.self,
             pools: list.map(config.pools, fn(pool) { pool.name }),
             placements: fn() {
               deployment.placed(

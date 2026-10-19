@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:461-187`).
+Source: `handle` (`client/daemon/server.gleam:469-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -714,8 +714,8 @@ retry with the same key completes it once the majority returns. A record that
 already names another orchestrator is `conflict`.
 
 `loom --executor <name> --workspace <registered name>` is the terminal's way to
-send `executor`, and the web home's "New session on an executor" form is the
-browser's; neither adds a member to this command. `loom --pool <name>
+send `executor`, and the web home's "New session" form, with an executor chosen
+under "Runs on", is the browser's; neither adds a member to this command. `loom --pool <name>
 --workspace <registered name>` sends `pool` the same way.
 
 The server assigns the database path beneath its own private session

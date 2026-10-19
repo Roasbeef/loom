@@ -274,3 +274,25 @@ because the terminal retains its creation key and completes the same identity
 on a retry. The terminal's refusal to open a reserved row now also names delete.
 The sidebar words a row nothing can open "needs attention", as the home table
 does, rather than "saved".
+
+## Addendum (2026-10-19): one "New session" button
+
+This addendum changes the page, not the wire. The section for folders that hold no
+session no longer has a "New session in another folder" button beside a second
+"New session on an executor" button (protocol-change/078, 085). It has one "New
+session" button, whose form begins with a "Runs on" choice when the daemon has
+executors or pools and is otherwise the form this proposal describes. The owner
+found two buttons confusing, because "another folder" meant a folder on whichever
+daemon served the page and neither label said which machine.
+
+For this machine the form is as decided above, with one addition: the folders the
+daemon remembers that no group shows are also a select beside the path field. An
+option's value is its position in the list the page drew and its label is the path
+as a text node, so a path is still never an attribute. The decoder
+(`view/create.typed_fields_with_roles`) turns a position back into a path and
+accepts an empty value for none. A path typed in the field wins over the select,
+and `Place` is `Typed` either way, so the daemon judges a remembered folder with
+the same rule (`new_folder.check`) it applies to a typed one. A `folder` field on a
+form that offered no folders, or a position outside the list, refuses the event.
+Nothing else in this proposal changes: `Place`, the admission by `home.table_path`,
+the fixed refusal words and the remembered-folder list are as decided.

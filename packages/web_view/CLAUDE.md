@@ -235,12 +235,13 @@ page keys and nonces, and the relay into the session's gateway.
   (`home.Folders(recent, forget)`, `Some` where `create` is) reads the owner's
   remembered folders after each list (`FoldersRead`) and forgets one by identity
   (`Forgetting(id)`). `view/folders` draws the section after the lists: the
-  "New session in another folder" button (`OpeningElsewhere`, state
-  `create.Elsewhere`, then `CreatingElsewhere(path, name, sharing)` and
-  `create.Sending`) and the remembered folders no group shows, keyed by
+  one "New session" button (`OpeningElsewhere`, state `create.Elsewhere`, then
+  `CreatingElsewhere(path, name, sharing)` and `create.Sending`) and the remembered folders no group shows, keyed by
   `creations.Recent.id`, each with the usual form (`Choosing`) and "Forget this
   folder". `create.typed_fields` accepts exactly one `path`, one `name`, at most
-  one `shareable` and nothing else. `creations.typed_path`, `expanded` and `inside`
+  one `shareable` and nothing else; `typed_fields_with_roles` also reads at most
+  one `folder`, the position of a remembered folder in the select beside the path
+  field (a typed path wins). `creations.typed_path`, `expanded` and `inside`
   are the pure half of the rule for a typed path; the daemon holds the filesystem
   half. A path is drawn only as a text node, never an attribute or a key, and a
   refusal is one fixed sentence per reason (`NotAFolder`, `OutsideHome`,
@@ -1571,21 +1572,27 @@ opened is `creations.UnknownModel`, whose fixed words say to reload the page.
 `[pools.<name>]` names the daemon was configured with, `[]` unless `Start.create`
 is `Some` (`ui_socket.upgrade_home` copies `server.HomeAttachment.executors` and
 `.pools`, the daemon's startup capture, so no read is made for the names). When
-either is not empty the section for folders (`view/folders`) draws a second
-button, "New session on an executor", and `create.State` gains `Remote` (panel
-open, nothing chosen), `Chosen(choice)` (a card chosen, its form drawn) and
-`Dispatching(choice)` (creation out), which behave as `Elsewhere` and `Sending`
-do. The form (`create.remote_form`) is a text field for the registered workspace
-name (`name=workspace`, at most 128 bytes) and the optional session name; there is
-no Shareable box and no profile or model select, because the daemon makes a
-session on an executor or in a pool session-only and a registered session takes
-the configuration's default roles (`creations.default_roles`) from this form.
+either is not empty the one "New session" form (`create.new_form`) opens with a
+"Runs on" choice, and `create.State` gains `Chosen(choice)` (an executor or a pool
+chosen, its workspace form drawn) and `Dispatching(choice)` (creation out), which
+behave as `Elsewhere` (this machine, the default) and `Sending` do. There is no
+separate button and no `Remote` state: `home.ChoosingHere` returns to this machine.
+The workspace form for a choice is a select of the workspaces that place
+registered (`name=workspace`, values are positions into
+`placements.workspaces(cards, choice)`, decoded by `create.remote_fields`) and the
+optional session name; a place with no known workspace draws a note and a text field for the name
+(`create.typed_workspace_field`, held to `creations.registered_name` by
+`remote_fields`), and the daemon's refusal returns on the form. There is no Shareable box, because the daemon makes a session on an
+executor or in a pool session-only, and the profile and model selects are the same
+as on the folder form (`create.remote_fields_with_roles`). `Start.machine` is the
+daemon's own name, worded `<name> (this machine)` on the first card.
 
 ## Executor and pool cards (protocol-change/085)
 
-The panel draws a card for each executor and each pool (`create.panel`,
-`executor_card`, `pool_card`), in the configuration's order, executors first: the
-name, the kind, a state pill, the facts, and a Choose button. The cards come from
+The "Runs on" choice draws a card for this machine and then for each executor and
+each pool (`create.places`, `here_card`, `executor_card`, `pool_card`), in the
+configuration's order, executors first: the name, the kind, a state pill, the
+facts, and a Choose button. The cards come from
 `placements.Cards`: `placements.listed` builds them from the names alone
 (`Readiness` `Checking`), and the daemon's read replaces them
 (`placements.after`, which marks the cards `Checked`; the daemon's read always
@@ -1603,7 +1610,8 @@ is what its operator declared (worded as a claim); a pool's are how many of its
 admitted executors were reached and the order a first open tries them, which
 health does not change.
 
-`Start.placements` starts the read: `home.OpeningRemote` numbers it
+`Start.placements` starts the read: `home.OpeningElsewhere` (when the daemon has
+any place) numbers it
 (`Model.place_reads`) and runs it through `placing`, an `effect.from` that hands
 the daemon a function and returns at once; the answer is
 `home.PlacementsRead(serial, read)`, dropped when a newer read overtook it, and
@@ -1617,12 +1625,15 @@ and no node name, address or key.
 
 A card's button sends `home.ChoosingPlace(choice)`, with `placements.Choice` =
 `OnExecutor(name)` | `InPool(name)` built by the server from the names it holds,
-so the browser names no text; the component honours it only while the panel is
+so the browser names no text; the component honours it only while the form is
 open, no creation is out, and `placements.offers` finds the card. The chosen
 placement is the page's state, not a field of the form: `create.remote_fields`
-accepts exactly one `workspace` and one `name`, so a forged `executor` or `pool`
-field is an extra field and refuses the event, and `home.CreatingRemote(workspace,
-name)` asks the daemon only from `Chosen`. The cards are a keyed list whose keys
+accepts exactly one `workspace` (a position), one `name` and the two optional
+selects, so a forged `executor` or `pool` field is an extra field and refuses the
+event, and `home.CreatingRemote(workspace, name, roles)` asks the daemon only from
+`Chosen`. `placements.Report.workspaces` and `PoolReport.workspaces` carry the
+names the select offers (`deployment.for_page` fills them from the executors'
+reports). The cards are a keyed list whose keys
 are positions (`e0`, `p1`), never a name: the lists are the daemon's startup
 capture and cannot change while the page is open. No event class is added: a card
 is a click beneath the sessions list's section, where the home already admits

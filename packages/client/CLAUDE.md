@@ -8334,7 +8334,10 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   alone (`WithoutSelf`, so a slow directory read never delays the cards), and
   `deployment.for_page` reduces the result to `web_view/placements` (a state, the
   free scope count, any contradiction, the operator's declaration, a pool's trial
-  order and the members that can take a session; no node name or address).
+  order and the members that can take a session, and the workspace names the
+  new-session form offers: each executor's own, and for a pool those every reached
+  executor registered; no node name or address). `server.HomeAttachment.machine`
+  is `Reach.self`, which the form words as "this machine".
   `server.HomeAttachment` gains `pools` (the startup capture of the `[pools]`
   names, like `executors`) and `placements`, the blocking read, which
   `ui_socket.upgrade_home` hands the page as `read_task(deliver,

@@ -94,6 +94,7 @@ fn start_with(ceiling: home.Ceiling, read: fn() -> home.Listing) -> home.Start {
     rename_self: None,
     executors: [],
     pools: [],
+    machine: "box",
     placements: fn(_) { Nil },
   )
 }
@@ -2240,7 +2241,7 @@ fn recent(id: Int, path: String) -> creations.Recent {
 pub fn only_a_page_that_may_create_draws_the_folder_section_test() {
   let #(plain, _) = opened(start())
   let html = drawn(plain)
-  assert !string.contains(html, "another folder")
+  assert !string.contains(html, "Other folders</h3><button")
   assert !string.contains(html, "Other folders")
   assert !string.contains(html, "Forget this folder")
 
@@ -2261,7 +2262,10 @@ pub fn only_a_page_that_may_create_draws_the_folder_section_test() {
 
   let asked = process.new_subject()
   let #(owner, _) = opened(creator(recording(asked)))
-  assert string.contains(drawn(owner), "New session in another folder")
+  assert string.contains(
+    drawn(owner),
+    "Other folders</h3><button class=\"home-new\" type=\"button\">New session</button>",
+  )
   assert string.contains(drawn(owner), "Other folders")
 }
 
@@ -2270,7 +2274,7 @@ pub fn only_a_page_that_may_create_draws_the_folder_section_test() {
 pub fn the_folder_section_waits_for_the_first_list_test() {
   let asked = process.new_subject()
   let model = home.new(creator(recording(asked)))
-  assert !string.contains(drawn(model), "another folder")
+  assert !string.contains(drawn(model), "Other folders")
 }
 
 // The remembered folders that no group shows are drawn, each with a button to
@@ -2448,7 +2452,10 @@ pub fn a_refused_folder_says_why_and_never_the_path_test() {
     Ok(split) -> split
     Error(Nil) -> #("", "")
   }
-  assert string.contains(head, "New session in another folder")
+  assert string.contains(
+    head,
+    "Other folders</h3><button class=\"home-new\" type=\"button\">New session</button>",
+  )
   assert string.ends_with(
     head,
     "</div><p class=\"notice-refusal\" role=\"status\">",
