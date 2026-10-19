@@ -10,6 +10,8 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon/server
 import client/daemon/session_socket
+import client/daemon/ui_sessions
+import client/daemon/ui_socket
 import client/daemon_server_test as wire
 import client/deployment
 import client/gateway
@@ -43,9 +45,13 @@ import runtime/api
 import runtime/effects
 import runtime/escalation
 import runtime/writer
+import storage/access
 import storage/domain
+import support/addresses
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_memory
+import support/internal/ffi_soak
+import support/internal/ffi_ui_sessions
 import support/internal/ffi_ws
 import weft
 import weft/poll
@@ -80,6 +86,29 @@ fn fixture_with(
     String,
     gateway_test.Harness,
   ) -> a,
+) {
+  fixture_serving(
+    build,
+    drain_instance,
+    fn(daemon, request, attachment) {
+      session_socket.upgrade(
+        daemon,
+        request,
+        attachment,
+        attachment.instance.hub,
+      )
+    },
+    run,
+  )
+}
+
+// Each adapter owns the same authenticated route and parser-permit transfer.
+// A page adapter lets the memory fixture observe its actual socket process.
+fn fixture_serving(
+  build: fn(ids.SessionId) -> gateway_test.Harness,
+  drain_instance: fn(gateway_test.Harness, Int) -> Nil,
+  upgrade,
+  run,
 ) {
   let directory =
     "build/test_db/session-socket-"
@@ -148,14 +177,7 @@ fn fixture_with(
           ffi_os.unique_positive_integer(),
         )
       },
-      fn(request, attachment) {
-        session_socket.upgrade(
-          daemon,
-          request,
-          attachment,
-          attachment.instance.hub,
-        )
-      },
+      fn(request, attachment) { upgrade(daemon, request, attachment) },
       None,
     )
   let ports = process.new_subject()
@@ -343,6 +365,172 @@ fn attachment_growth(payload_size) {
       after - before
     },
   )
+}
+
+// The socket's handler survives admission. Its startup closure must not keep
+// a second runtime after the phase has transferred custody to the component.
+pub fn admitted_page_socket_releases_its_startup_runtime_test() {
+  let #(small, small_hub) = page_socket_memory(0)
+  let #(large, large_hub) = page_socket_memory(8192)
+  assert large <= small + 65_536
+    as "the serving socket releases its admission-only runtime capture"
+  assert large_hub <= small_hub + 512
+    as "the page's live authorization callback retains only its identities"
+}
+
+fn page_socket_memory(payload_size) {
+  let socket_name = addresses.new()
+  with_page_tickets(fn(tickets) {
+    fixture_serving(
+      fn(id) {
+        let harness = gateway_test.reserved_fixture(id)
+        let payload =
+          list.repeat(message.UserMessage([], 0, None), payload_size)
+        let runtime = harness.runtime
+        let hooks =
+          effects.Hooks(..runtime.effects.hooks, run_start: fn(_) { payload })
+        let inflated =
+          api.Runtime(
+            ..runtime,
+            effects: effects.Effects(..runtime.effects, hooks:),
+          )
+        assert ffi_memory.flat_words(inflated) >= payload_size * 2
+          as "the resolved runtime really contains the unused hook payload"
+        let #(operation, _) =
+          ids.mint_op(ids.generator(clock.fixed(1_700_000_000_000), 981))
+        assert list.length(inflated.effects.hooks.run_start(operation))
+          == payload_size
+          as "the payload stays available through its intended runtime hook"
+        gateway_test.Harness(..harness, runtime: inflated)
+      },
+      fn(_, _) { Nil },
+      fn(daemon, request, attachment) {
+        let seen =
+          server.PageGrant(
+            ui_sessions.Grant(
+              ui_sessions.Session(attachment.session_id),
+              attachment.digest,
+              attachment.principal.id,
+              access.Observer,
+              ui_sessions.OneSession,
+              ui_sessions.Fresh,
+              ui_sessions.Forgotten,
+            ),
+            None,
+            "http://127.0.0.1",
+          )
+        ui_socket.upgrade(
+          daemon,
+          request,
+          server.Attachment(
+            ..attachment,
+            authority: access.Participant(access.Observer),
+          ),
+          attachment.instance.hub,
+          fn() { Error("the memory fixture has no worktree") },
+          tickets,
+          fn() { Ok(60_000) },
+          fn(_) {
+            let assert Ok(_) = registry.register_self(socket_name)
+              as "the fixture names only its own admitted socket"
+            Nil
+          },
+          seen,
+        )
+      },
+      fn(_, port, credential, id, _, harness) {
+        let assert Ok(hub_subject) = registry.lookup(harness.hub.name)
+          as "the fixture's original hub is registered"
+        let assert Ok(hub_pid) = process.subject_owner(hub_subject)
+          as "the hub subject has its original owner"
+        let before = ffi_memory.flat_words(system.get_state(hub_pid))
+        let attachments = gateway.attached(harness.hub)
+        let #(socket, _) =
+          wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
+        let assert poll.Answered(pid) =
+          poll.until(within: 5000, every: 1, attempt: fn() {
+            case addresses.owner(socket_name) {
+              Ok(pid) -> poll.Done(pid)
+              Error(Nil) -> poll.Retry
+            }
+          })
+          as "the component registered its serving socket"
+
+        let assert poll.Answered(Nil) =
+          poll.until(within: 5000, every: 1, attempt: fn() {
+            case gateway.attached(harness.hub) == attachments + 1 {
+              True -> poll.Done(Nil)
+              False -> poll.Retry
+            }
+          })
+          as "the page's own relay was admitted by the original gateway"
+        let hub_growth =
+          ffi_memory.flat_words(system.get_state(hub_pid)) - before
+
+        // The system message runs after the admission handler returns, so the
+        // owned socket has entered Serving before its explicit fixture collection.
+        let _ = system.get_state(pid)
+        assert ffi_soak.garbage_collect(pid)
+          as "only this fixture's socket completes a major collection"
+        let assert Ok(bytes) =
+          decode.run(
+            ffi_soak.process_info(pid, atom.create("memory")),
+            decode.at([1], decode.int),
+          )
+          as "the owned socket reports allocated process bytes"
+        let closed = process.monitor(pid)
+        let _ = ffi_ws.tcp_close(socket)
+        let assert Ok(_) =
+          process.new_selector()
+          |> process.select_specific_monitor(closed, fn(down) { down })
+          |> process.selector_receive(5000)
+          as "closing the fixture client retires its socket"
+        let assert poll.Answered(Nil) =
+          poll.until(within: 5000, every: 1, attempt: fn() {
+            case gateway.attached(harness.hub) == attachments {
+              True -> poll.Done(Nil)
+              False -> poll.Retry
+            }
+          })
+          as "the page's relay releases its gateway attachment after close"
+        #(bytes, hub_growth)
+      },
+    )
+  })
+}
+
+// The HTTP upgrader exits normally, which cannot retire a linked ticket
+// service. This fixture owns it through both successful and failing bodies.
+fn with_page_tickets(run) {
+  let assert Ok(tickets) =
+    ui_sessions.start(ui_sessions.Settings(
+      now: bootstrap.monotonic_time_ms,
+      wall: bootstrap.system_time_ms,
+      entropy: token.production_entropy(),
+      ticket_ms: ui_sessions.ticket_ms,
+      device_ms: ui_sessions.device_ms,
+      session_ms: ui_sessions.session_ms,
+    ))
+    as "the page's own ticket service starts"
+  let pid = ffi_ui_sessions.pid(tickets)
+  let watch = process.monitor(pid)
+
+  // Sixty seconds includes the inner fixture's forty-second body and its
+  // two five-second daemon retirement waits before this owner cleans up.
+  let outcomes =
+    weft.new([fn() { Ok(run(tickets)) }])
+    |> weft.deadline(60_000)
+    |> weft.start
+  process.unlink(pid)
+  process.kill(pid)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(5000)
+    as "the fixture's ticket service exits before its outcome is reported"
+  let assert [weft.Completed(0, value)] = outcomes
+    as "the page fixture completed with its ticket service already retired"
+  value
 }
 
 pub fn admission_slower_than_the_initializer_budget_still_serves_test() {
