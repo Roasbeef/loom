@@ -36,9 +36,34 @@ import session_view/text_hygiene
 /// be able to close the lane with a board it could not draw.
 pub const row_limit = 164
 
-/// The sentence a reviewer is told about what an approval reaches.
+/// The sentence a reviewer is told about what an approval of a rule reaches.
+/// Kept for a host that draws the generic sentence; `reach_words` is the one
+/// that says the right thing for the row's own kind.
 pub const applies_words =
   "A rule applies to new sessions only. A configuration edit reopens each session that loads the file once it is idle."
+
+/// What an approval of this row reaches, in one sentence. A rule binds the
+/// sessions opened after it; a configuration edit reopens the sessions that
+/// load the file, since a session reads its configuration once at open. A kind
+/// this client does not know says only what it can: nothing it can state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert proposals.reach_words(config_row)
+///   == "Applies when a session loads loom.toml next; each session that loads it reopens once idle."
+/// ```
+pub fn reach_words(proposal: Proposal) -> String {
+  case proposal.kind {
+    Config ->
+      "Applies when a session loads "
+      <> target_label(proposal.target)
+      <> " next; each session that loads it reopens once idle."
+    Rule ->
+      "Applies to new sessions only. A running session keeps the rules it started with."
+    Unrecognized(_) -> applies_words
+  }
+}
 
 /// The words a host shows when the board holds no rows.
 pub const empty_words =
@@ -379,11 +404,19 @@ pub fn age(created_ms: Int, now_ms: Int) -> String {
   }
 }
 
-/// The edit a proposal makes, as diff lines: the replaced text removed and
-/// the new text added. An empty `old` appends, so only added lines show.
+/// The edit a proposal makes, as diff lines: the text `old` replaces removed
+/// and `new` added. An empty `old` appends, so only added lines show.
+///
+/// A configuration edit is drawn as the change it is, not as two whole
+/// texts: the lines the two texts share around the edit are kept as context
+/// and everything else is one removed run followed by one added run. A
+/// replaced value and its replacement therefore sit on adjacent rows, which
+/// is the thing a reader is deciding. A rule edit shares nothing to recover,
+/// because `old` and `new` are different rules rather than two versions of
+/// one; there the two runs are simply adjacent, as they always were.
 ///
 /// The line numbers are left blank. The proposal's lines are not positions in
-/// the rules file, and a number there would claim a place the daemon never
+/// the target file, and a number there would claim a place the daemon never
 /// named.
 ///
 /// ## Examples
@@ -392,19 +425,189 @@ pub fn age(created_ms: Int, now_ms: Int) -> String {
 /// assert list.length(proposals.diff_lines(row)) == 2
 /// ```
 pub fn diff_lines(proposal: Proposal) -> List(diff_view.Line) {
-  let removed = case proposal.old {
-    "" -> []
-    old -> lines_of(diff_view.Removed, old)
-  }
-  list.append(removed, lines_of(diff_view.Added, proposal.new))
+  edit_lines(proposal.old, proposal.new)
 }
 
-fn lines_of(kind: diff_view.Kind, text: String) -> List(diff_view.Line) {
-  string.split(text, "\n")
+/// The edit an `old`/`new` pair makes, as diff lines, for a host that holds
+/// the two texts without a queued proposal: the transcript's own row for the
+/// `propose` call that asked for one. `diff_lines` is this over a stored row,
+/// so a review and the transcript cannot disagree about what the edit is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert list.length(proposals.edit_lines("", "a rule")) == 1
+/// ```
+pub fn edit_lines(old: String, new: String) -> List(diff_view.Line) {
+  case old {
+    "" ->
+      rows_of(
+        diff_view.Added,
+        lines_of_text(new) |> list.take(diff_view.max_lines),
+      )
+    old ->
+      diff_view.Line(diff_view.Removed, None, None, old)
+      |> pair_lines(diff_view.Line(diff_view.Added, None, None, new))
+  }
+}
+
+// The two texts as one diff: the lines they share at their head and at their
+// tail are context, and what is left between them is one removed run followed
+// by one added run.
+//
+// Only those two shared runs are found, and that is enough. A proposal is a
+// few lines changed in a text a person already knows, so what a reader needs
+// is the change shown against its surroundings rather than the smallest edit
+// script there is. Finding every shared run in the middle as well would cost a
+// quadratic scan to redraw a proposal nobody would read differently. A
+// whole-file replacement shares nothing and falls out as the removed run and
+// the added run, which is what it is.
+fn pair_lines(
+  removed: diff_view.Line,
+  added: diff_view.Line,
+) -> List(diff_view.Line) {
+  let before = lines_of_text(removed.text)
+  let after = lines_of_text(added.text)
+  let #(head, before_rest, after_rest) = agreed(before, after, [])
+
+  // The tail is found by running the same walk over both texts reversed, so
+  // the lines the edit did not touch stay context on both sides of it and a
+  // reader sees the change against its surroundings rather than in isolation.
+  // That walk reads its inputs backwards, so both middles come back backwards
+  // with them and are reversed here: without this the removed and added runs
+  // would each draw bottom to top.
+  let #(tail, before_middle, after_middle) =
+    agreed(list.reverse(before_rest), list.reverse(after_rest), [])
+  let before_middle = list.reverse(before_middle)
+  let after_middle = list.reverse(after_middle)
+
+  list.flatten([
+    rows_of(diff_view.Context, head),
+    rows_of(diff_view.Removed, before_middle),
+    rows_of(diff_view.Added, after_middle),
+    rows_of(diff_view.Context, tail),
+  ])
   |> list.take(diff_view.max_lines)
-  |> list.map(fn(line) {
+}
+
+// The lines two texts share from their start, in order, with what each text
+// has left once those lines are taken. The accumulator is reversed on the way
+// out so the caller reads the lines in the order the texts hold them.
+fn agreed(
+  before: List(String),
+  after: List(String),
+  kept: List(String),
+) -> #(List(String), List(String), List(String)) {
+  case before, after {
+    [first, ..before_rest], [second, ..after_rest] if first == second ->
+      agreed(before_rest, after_rest, [first, ..kept])
+    _, _ -> #(list.reverse(kept), before, after)
+  }
+}
+
+// A text's lines. The empty text is no line at all rather than one empty line:
+// a run drawn from nothing must contribute nothing to the diff or to the count
+// beside it.
+fn lines_of_text(text: String) -> List(String) {
+  case text {
+    "" -> []
+    _ -> string.split(text, "\n")
+  }
+}
+
+// One row per line of a run. The lines are already the text's own, so a row
+// never splits anything further: the kind decides only how it is drawn.
+fn rows_of(kind: diff_view.Kind, lines: List(String)) -> List(diff_view.Line) {
+  list.map(lines, fn(line) {
     diff_view.Line(kind:, old: None, new: None, text: line)
   })
+}
+
+/// The file an approval would write, named the way a person can read at a
+/// glance: the last segment of an absolute path, and the target as it stands
+/// for anything else. The complete path is still the row's `target`, which a
+/// host may draw in full where it has the room.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert proposals.target_label("/home/me/.loom/loom.toml") == "loom.toml"
+/// assert proposals.target_label("loom-rules.md") == "loom-rules.md"
+/// ```
+pub fn target_label(target: String) -> String {
+  case
+    string.split(target, "/")
+    |> list.reverse
+    |> list.find(fn(segment) { segment != "" })
+  {
+    Ok(name) -> name
+    Error(Nil) -> target
+  }
+}
+
+/// How many lines an approval would remove and add, as `+2 -1`, for a host to
+/// draw beside the edit. A count of the diff lines rather than of the two
+/// texts: the shared lines stay context, so they are counted as neither.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert proposals.change_counts(replacing) == "+1 -1"
+/// ```
+pub fn change_counts(proposal: Proposal) -> String {
+  edit_counts(proposal.old, proposal.new)
+}
+
+/// The same count over two texts a host holds without a queued proposal, so
+/// the transcript's row for the `propose` call that asked for the edit says
+/// the same number the review does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert proposals.edit_counts("a", "b") == "+1 -1"
+/// ```
+pub fn edit_counts(old: String, new: String) -> String {
+  let counts =
+    list.fold(edit_lines(old, new), #(0, 0), fn(total, line) {
+      case line.kind {
+        diff_view.Removed -> #(total.0, total.1 + 1)
+        diff_view.Added -> #(total.0 + 1, total.1)
+        _ -> total
+      }
+    })
+  case counts {
+    #(0, 0) -> "no change"
+    #(0, removed) -> "-" <> int.to_string(removed)
+    #(added, 0) -> "+" <> int.to_string(added)
+    #(added, removed) ->
+      "+" <> int.to_string(added) <> " -" <> int.to_string(removed)
+  }
+}
+
+/// The edit as the text a host renders when it draws diffs from text rather
+/// than from `diff_view.Line`s: one row per line, prefixed with the sign its
+/// kind carries, and with a space for a line both texts share.
+///
+/// The transcript's patch renderer, which already draws an edit's own diff,
+/// takes this; the review's scrollable detail takes `diff_lines` and colours
+/// the rows itself. Both therefore show the same lines in the same order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert proposals.diff_text("a", "b") == "-a\n+b"
+/// ```
+pub fn diff_text(old: String, new: String) -> String {
+  edit_lines(old, new)
+  |> list.map(fn(line) {
+    case line.kind {
+      diff_view.Removed -> "-" <> line.text
+      diff_view.Added -> "+" <> line.text
+      _ -> " " <> line.text
+    }
+  })
+  |> string.join("\n")
 }
 
 /// The wire word for a decision.

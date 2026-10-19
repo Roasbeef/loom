@@ -67,6 +67,7 @@ import session_view/composer
 import session_view/file_read_view
 import session_view/image_header
 import session_view/notes_view
+import session_view/proposals
 import session_view/protocol
 import session_view/recall_view
 import session_view/snapshot
@@ -1856,7 +1857,24 @@ pub fn user_body(content: List(message.UserBlock)) -> String {
 
 // Notes are useful output, even when ordinary tool details are collapsed.
 // Known note tools expose their value; arbitrary tool JSON keeps its own schema.
+//
+// A `propose` call is the one case that is not a note: its arguments are an
+// edit, so it is drawn as the diff under this dispatch rather than through the
+// note arms. Arguments that are not an object, or that name no edit at all,
+// draw nothing here and keep the summary row the caller already placed, which
+// is the generic rendering.
 fn note_call_lines(
+  name: String,
+  arguments: json.JsonValue,
+  extent: notes_view.Extent,
+) -> List(Line) {
+  case name, arguments {
+    "propose", json.Object(fields) -> propose_patch_lines(fields, extent)
+    _, _ -> note_value_lines(name, arguments, extent)
+  }
+}
+
+fn note_value_lines(
   name: String,
   arguments: json.JsonValue,
   extent: notes_view.Extent,
@@ -1877,6 +1895,34 @@ fn note_call_lines(
       [Line(ToolDetail, body)]
     }
     Error(Nil) -> []
+  }
+}
+
+// The edit a `propose` call asks for, drawn as the diff it is. The call's
+// arguments are the edit, and the person reading the transcript is the person
+// who will be asked to approve it, so the row shows what would change rather
+// than the JSON that asked for it.
+//
+// A collapsed row keeps the opening of the diff, the way a collapsed edit's
+// own patch does, so a proposal against a long file holds a readable number
+// of rows rather than the whole of it. A call whose arguments do not name both
+// texts draws nothing here and keeps the generic rows.
+fn propose_patch_lines(
+  fields: List(#(String, json.JsonValue)),
+  extent: notes_view.Extent,
+) -> List(Line) {
+  let old = string_field(fields, "old") |> option.unwrap("")
+  let new = string_field(fields, "new") |> option.unwrap("")
+  case old, new {
+    "", "" -> []
+    _, _ -> {
+      let diff = proposals.diff_text(old, new)
+      let shown = case extent {
+        notes_view.Complete -> diff
+        notes_view.Excerpt -> program_preview(diff, patch_preview_lines)
+      }
+      [Line(ToolPatch, shown)]
+    }
   }
 }
 
@@ -3844,6 +3890,7 @@ pub fn tool_call_summary(
         True -> "remember\n" <> json.to_string(arguments)
         False -> "remember · " <> remembered_subject(fields)
       }
+    "propose", json.Object(fields) -> propose_summary(fields)
     "history_search", json.Object(_) ->
       case recall_view.call_summary(arguments) {
         Some(summary) -> summary
@@ -3870,6 +3917,30 @@ fn remembered_subject(fields: List(#(String, json.JsonValue))) -> String {
       }
     None -> "durable note"
   }
+}
+
+// What a `propose` call is about: which file, how much of it changes, and the
+// reason the model gave. The edit itself is a diff and is drawn as one by
+// `propose_patch_lines`, so this row carries no argument JSON: a reader
+// deciding on the change should never have to read escaped quotes to find
+// out what is being changed.
+fn propose_summary(fields: List(#(String, json.JsonValue))) -> String {
+  let file = case string_field(fields, "target") {
+    Some("config") -> "the configuration"
+    _ -> "the rules"
+  }
+  let old = string_field(fields, "old") |> option.unwrap("")
+  let new = string_field(fields, "new") |> option.unwrap("")
+  let counts = proposals.edit_counts(old, new)
+  let reason = case string_field(fields, "rationale") {
+    Some(reason) -> reason
+    None -> ""
+  }
+  let reason = case reason {
+    "" -> ""
+    _ -> " · " <> compact(reason, 84)
+  }
+  "propose · " <> file <> " · " <> counts <> reason
 }
 
 fn generic_tool_call(

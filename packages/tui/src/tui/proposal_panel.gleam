@@ -560,9 +560,25 @@ fn proposal_lines(
     <> proposals.age(row.created_ms, now)
   let from =
     "From session " <> text_hygiene.single_line(row.source.session) <> entry
+
+  // The heading names what changes and how much of it does. A configuration's
+  // path is drawn beneath it rather than cut into it, so a long path never
+  // pushes the size off the line.
   let edit = case row.old {
-    "" -> "Adds a " <> proposals.kind_words(row.kind) <> " to " <> row.target
-    _ -> "Replaces text in " <> row.target
+    "" ->
+      "Adds a "
+      <> proposals.kind_words(row.kind)
+      <> " · "
+      <> proposals.change_counts(row)
+    _ ->
+      "Changes "
+      <> proposals.target_label(row.target)
+      <> " · "
+      <> proposals.change_counts(row)
+  }
+  let file = case row.kind {
+    proposals.Config -> wrapped(row.target, theme.overlay_quiet(), width)
+    proposals.Rule | proposals.Unrecognized(_) -> []
   }
   list.flatten([
     wrapped(head, theme.overlay_current(), width),
@@ -570,9 +586,10 @@ fn proposal_lines(
     [heading("Why", width)],
     wrapped(row.rationale, theme.overlay_plain(), width),
     [heading(edit, width)],
+    file,
     diff_lines(row, width),
     [heading("When it applies", width)],
-    wrapped(proposals.applies_words, theme.overlay_plain(), width),
+    wrapped(proposals.reach_words(row), theme.overlay_plain(), width),
     ending(row, reader, width),
   ])
 }
@@ -606,16 +623,20 @@ fn ending(
   }
 }
 
-// The edit, one line per line of text: removed lines in red with a minus and
-// added lines in green with a plus, each filled to the width so the colour
-// reads as a band. The text is wrapped to the width so a long rule is read
-// whole, with the sign repeated only on its first line.
+// The edit, one line per line of text: removed lines in red with a minus,
+// added lines in green with a plus, and the lines the two texts share in
+// between drawn quiet and unmarked so the change reads against its own
+// surroundings. Every row is filled to the width, so the colour reads as a
+// band rather than as a highlight on some words. The text is wrapped to the
+// width so a long line is read whole, with the sign repeated only on its
+// first row.
 fn diff_lines(row: proposals.Proposal, width: Int) -> List(span.Line) {
   proposals.diff_lines(row)
   |> list.flat_map(fn(line) {
     let #(sign, appearance) = case line.kind {
       diff_view.Removed -> #("- ", theme.diff_removed())
-      _ -> #("+ ", theme.diff_added())
+      diff_view.Added -> #("+ ", theme.diff_added())
+      _ -> #("  ", theme.overlay_quiet())
     }
     let room = int.max(1, width - 2)
     let pieces = wrapped(text_hygiene.single_line(line.text), appearance, room)

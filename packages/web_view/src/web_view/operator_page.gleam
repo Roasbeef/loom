@@ -402,6 +402,16 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           component.pending(model),
           component.raised_on(model),
           component.may_remember(model),
+          proposals_view.dock_cards(
+            component.proposals_kept(model),
+            component.proposals_state(model),
+            proposals_view.Presses(
+              ask: AskingApproval,
+              approve: ConfirmingApproval,
+              keep: CancellingApproval,
+              reject: Rejecting,
+            ),
+          ),
         ),
         composer(model),
       ]),
@@ -620,8 +630,16 @@ fn approvals(
   pending: List(approval.Review),
   raised_on: List(#(String, String)),
   owner: Bool,
+  proposed: List(#(String, Element(Msg(socket)))),
 ) -> Element(Msg(socket)) {
-  case pending {
+  let cards =
+    list.append(
+      list.map(pending, fn(record) {
+        #(int.to_string(record.seq), card(record, raised_on, owner))
+      }),
+      list.map(proposed, fn(pair) { #("proposal-" <> pair.0, pair.1) }),
+    )
+  case cards {
     [] -> element.none()
     [_, ..] ->
       html.section(
@@ -630,14 +648,7 @@ fn approvals(
           attribute.aria_label("Approvals waiting"),
           attribute.data(approvals_marker, ""),
         ],
-        [
-          keyed.div(
-            [attribute.class("approval-list")],
-            list.map(pending, fn(record) {
-              #(int.to_string(record.seq), card(record, raised_on, owner))
-            }),
-          ),
-        ],
+        [keyed.div([attribute.class("approval-list")], cards)],
       )
   }
 }
