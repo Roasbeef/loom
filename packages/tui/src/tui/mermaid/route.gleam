@@ -50,6 +50,21 @@ pub type Found {
   Found(cells: List(#(Int, Int)), expansions: Int)
 }
 
+/// Why `find` returned no route.
+pub type Reason {
+  /// No route exists, within the window or the whole canvas.
+  NoRoute
+
+  /// The search spent the expansions it was allowed before finding out.
+  OutOfBudget
+}
+
+/// A search that found no route, and how many states it expanded finding that
+/// out. The count is what lets a caller keep one budget across many searches.
+pub type Failure {
+  Failure(reason: Reason, expansions: Int)
+}
+
 // What the search is looking for and where it may look. `window` is the
 // rectangle of cells it may enter, as left, top, right, bottom, and `target`
 // the rectangle the goal cells lie in, which the estimate measures against.
@@ -58,6 +73,7 @@ type Goal {
     cells: Dict(#(Int, Int), Int),
     heading: Int,
     limit: Int,
+    budget: Int,
     width: Int,
     window: #(Int, Int, Int, Int),
     target: #(Int, Int, Int, Int),
@@ -102,9 +118,11 @@ const finished = 4
 ///
 /// The result lists the route's cells in order, the first cell beside the
 /// source box and the last beside the target, with the number of states
-/// expanded. It is `Error` when no route exists within the cost limit, which
-/// the caller reports as a refusal, and the error carries the expansions spent
-/// finding that out.
+/// expanded. It is `Error` when no route exists within the cost limit or when
+/// the search has expanded `budget` states, and the error says which and
+/// carries the expansions spent. The budget covers both attempts, the window
+/// and the whole canvas, so a caller that shares one budget among many edges
+/// bounds the total work.
 ///
 /// ## Examples
 ///
@@ -117,21 +135,26 @@ pub fn find(
   exit: Side,
   to: Box,
   entry: Side,
-) -> Result(Found, Int) {
+  budget: Int,
+) -> Result(Found, Failure) {
   let starts = ports(canvas, from, exit)
   let goals = ports(canvas, to, entry)
   let near = window_around(from, to, canvas)
-  case attempt(canvas, starts, goals, exit, entry, near) {
+  case attempt(canvas, starts, goals, exit, entry, near, budget) {
     Ok(found) -> Ok(found)
-    Error(spent) -> {
+    Error(Failure(reason: OutOfBudget, ..) as failure) -> Error(failure)
+    Error(Failure(reason: NoRoute, expansions: spent)) -> {
       let whole = #(0, 0, canvas.width(canvas) - 1, canvas.height(canvas) - 1)
       case near == whole {
-        True -> Error(spent)
+        True -> Error(Failure(NoRoute, spent))
         False ->
-          case attempt(canvas, starts, goals, exit, entry, whole) {
+          case
+            attempt(canvas, starts, goals, exit, entry, whole, budget - spent)
+          {
             Ok(found) ->
               Ok(Found(..found, expansions: found.expansions + spent))
-            Error(more) -> Error(spent + more)
+            Error(Failure(reason:, expansions: more)) ->
+              Error(Failure(reason, spent + more))
           }
       }
     }
@@ -163,7 +186,8 @@ fn attempt(
   exit: Side,
   entry: Side,
   window: #(Int, Int, Int, Int),
-) -> Result(Found, Int) {
+  budget: Int,
+) -> Result(Found, Failure) {
   let width = canvas.width(canvas)
   let usable = fn(port: #(Int, Int, Int)) {
     port.0 >= window.0
@@ -180,6 +204,7 @@ fn attempt(
       ),
       heading: heading_of(opposite(entry)),
       limit: 8 * { width + canvas.height(canvas) } + 64,
+      budget:,
       width:,
       window:,
       target:,
@@ -196,7 +221,7 @@ fn attempt(
       )
     })
   case reachable {
-    [] -> Error(0)
+    [] -> Error(Failure(NoRoute, 0))
     _ -> walk(canvas, goal, search, 0)
   }
 }
@@ -401,9 +426,9 @@ fn walk(
   goal: Goal,
   search: Search,
   priority: Int,
-) -> Result(Found, Int) {
+) -> Result(Found, Failure) {
   case priority > goal.limit {
-    True -> Error(search.expanded)
+    True -> Error(Failure(NoRoute, search.expanded))
     False ->
       case dict.get(search.queue, priority) {
         Ok([state, ..rest]) -> {
@@ -423,7 +448,7 @@ fn settle(
   remaining: Search,
   state: Int,
   priority: Int,
-) -> Result(Found, Int) {
+) -> Result(Found, Failure) {
   let current = priority - estimate(goal, state)
   case dict.get(remaining.best, state) {
     Ok(known) if known == current ->
@@ -440,13 +465,15 @@ fn advance(
   state: Int,
   cost: Int,
   priority: Int,
-) -> Result(Found, Int) {
+) -> Result(Found, Failure) {
   case state_of(goal.width, state) {
     #(_, _, heading) if heading == finished ->
       Ok(Found(
         cells: trace(goal.width, remaining, state, []),
         expansions: remaining.expanded,
       ))
+    _ if remaining.expanded >= goal.budget ->
+      Error(Failure(OutOfBudget, remaining.expanded))
     #(x, y, heading) ->
       walk(
         canvas,

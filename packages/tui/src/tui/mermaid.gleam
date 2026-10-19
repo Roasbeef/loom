@@ -6,8 +6,10 @@
 //// module draws the two diagram families a conversation actually uses,
 //// flowcharts and sequence diagrams, as box-drawing characters. It is pure:
 //// it reads a string and returns styled lines, with no process, no file and
-//// no escape sequence, so it is safe to run on every streamed delta and its
-//// output is as portable as any other transcript text.
+//// no escape sequence, so its output is as portable as any other transcript
+//// text. It is bounded but not cheap, up to tens of milliseconds for a diagram
+//// at the caps, so settled transcript rows draw diagrams and the live tail
+//// shows the fence as source until the answer settles.
 ////
 //// The renderer draws a subset and refuses the rest. A diagram it cannot
 //// draw faithfully is a typed `Refusal`, never a partial drawing, and the
@@ -77,26 +79,44 @@ fn read_out(drawn: Canvas) -> Picture {
 // transposed one. The transposed layout is only built when the declared one is
 // too wide or cannot be drawn. If neither fits, the declared picture is
 // returned for the caller's width check to refuse, so a refusal always names
-// the declared one.
+// the declared one. Both directions draw from one routing budget, so what the
+// first spends, whether it drew or failed, is taken from the second.
 fn fit(chart: Flowchart, width: Int) -> Result(Picture, Refusal) {
-  case draw.flowchart(chart, chart.direction) {
+  case draw.flowchart(chart, chart.direction, model.max_route_expansions) {
     Ok(drawn) -> {
       let declared = read_out(drawn.canvas)
       case declared.width <= width {
         True -> Ok(declared)
-        False -> Ok(transposed_or(declared, chart, width))
+        False -> Ok(transposed_or(declared, chart, width, drawn.expansions))
       }
     }
-    Error(refusal) ->
-      case draw.flowchart(chart, transpose(chart.direction)) {
+    Error(draw.Failed(refusal:, expansions:)) ->
+      case
+        draw.flowchart(
+          chart,
+          transpose(chart.direction),
+          model.max_route_expansions - expansions,
+        )
+      {
         Ok(drawn) -> Ok(read_out(drawn.canvas))
         Error(_) -> Error(refusal)
       }
   }
 }
 
-fn transposed_or(declared: Picture, chart: Flowchart, width: Int) -> Picture {
-  case draw.flowchart(chart, transpose(chart.direction)) {
+fn transposed_or(
+  declared: Picture,
+  chart: Flowchart,
+  width: Int,
+  spent: Int,
+) -> Picture {
+  case
+    draw.flowchart(
+      chart,
+      transpose(chart.direction),
+      model.max_route_expansions - spent,
+    )
+  {
     Ok(drawn) -> {
       let other = read_out(drawn.canvas)
       case other.width <= width {
@@ -169,5 +189,6 @@ fn limit_name(limit: model.Limit) -> String {
     model.Edges -> "edge count"
     model.LabelCells -> "label width"
     model.CanvasCells -> "diagram size"
+    model.RoutingWork -> "routing work"
   }
 }

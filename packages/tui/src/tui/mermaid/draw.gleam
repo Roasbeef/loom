@@ -49,26 +49,41 @@ pub type Drawing {
   Drawing(canvas: Canvas, expansions: Int)
 }
 
+/// A flowchart that was not drawn, why, and how many search states were
+/// expanded before it was given up. A caller that tries a second direction
+/// subtracts this from its budget, so the total stays bounded.
+pub type Failed {
+  Failed(refusal: Refusal, expansions: Int)
+}
+
 /// Draws a flowchart for a direction onto a canvas, or says why it cannot.
 ///
-/// The caller crops and styles the canvas with `canvas.rows`. A routing
-/// failure or a label with no free place to sit is `Unroutable`: the diagram
-/// is refused whole rather than drawn with an edge missing.
+/// `budget` is the most router states this drawing may expand. Spending it all
+/// before every edge is routed is a `TooLarge(RoutingWork)` refusal, so a
+/// diagram cannot make the router run for longer however it is shaped. The
+/// caller crops and styles the canvas with `canvas.rows`. A routing failure or
+/// a label with no free place to sit is `Unroutable`: the diagram is refused
+/// whole rather than drawn with an edge missing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(drawing) = draw.flowchart(chart, model.TopDown)
+/// let assert Ok(drawing) =
+///   draw.flowchart(chart, model.TopDown, model.max_route_expansions)
 /// ```
 pub fn flowchart(
   chart: Flowchart,
   direction: Direction,
-) -> Result(Drawing, Refusal) {
-  use placement <- result.try(layout.place(chart, direction))
+  budget: Int,
+) -> Result(Drawing, Failed) {
+  use placement <- result.try(
+    layout.place(chart, direction)
+    |> result.map_error(fn(refusal) { Failed(refusal, 0) }),
+  )
   let painted = Drawing(canvas: paint_boxes(chart, placement), expansions: 0)
   let order = routing_order(chart.edges, placement.boxes)
   list.try_fold(order, painted, fn(current, index) {
-    route_edge(current, chart, placement, index)
+    route_edge(current, chart, placement, index, budget)
   })
 }
 
@@ -82,11 +97,16 @@ fn paint_boxes(chart: Flowchart, placement: Placement) -> Canvas {
 
 // Edge indices from the nearest endpoints to the farthest, ties in source
 // order. Short edges are routed first so that they get the direct path and a
-// long edge goes around them.
+// long edge goes around them. An edge whose endpoint has no box sorts last and
+// is refused when it is routed.
 fn routing_order(edges: List(Edge), boxes: List(Box)) -> List(Int) {
   edges
   |> list.index_map(fn(edge, index) {
-    #(distance(box_at(boxes, edge.from), box_at(boxes, edge.to)), index)
+    let span = case model.at(boxes, edge.from), model.at(boxes, edge.to) {
+      Ok(from), Ok(to) -> distance(from, to)
+      _, _ -> 1_000_000
+    }
+    #(span, index)
   })
   |> list.sort(fn(a, b) {
     case int.compare(a.0, b.0) {
@@ -102,46 +122,48 @@ fn distance(a: Box, b: Box) -> Int {
   + int.absolute_value(a.y + a.height / 2 - b.y - b.height / 2)
 }
 
-fn box_at(boxes: List(Box), index: Int) -> Box {
-  case list.drop(boxes, index) {
-    [box, ..] -> box
-    [] -> model.Box(0, 0, 0, 0)
-  }
-}
-
-fn edge_at(edges: List(Edge), index: Int) -> Result(Edge, Refusal) {
-  case list.drop(edges, index) {
-    [edge, ..] -> Ok(edge)
-    [] -> Error(model.Unroutable)
-  }
-}
-
-fn flow_of(flows: List(layout.Flow), index: Int) -> layout.Flow {
-  case list.drop(flows, index) {
-    [flow, ..] -> flow
-    [] -> layout.Forward
-  }
-}
-
 fn route_edge(
   current: Drawing,
   chart: Flowchart,
   placement: Placement,
   index: Int,
-) -> Result(Drawing, Refusal) {
-  use edge <- result.try(edge_at(chart.edges, index))
-  let #(exit, entry) =
-    sides_for(placement.direction, flow_of(placement.flows, index))
-  let source = box_at(placement.boxes, edge.from)
-  let target = box_at(placement.boxes, edge.to)
-  case route.find(current.canvas, source, exit, target, entry) {
-    Error(_) -> Error(model.Unroutable)
-    Ok(route.Found(cells: path, expansions:)) ->
-      commit(current.canvas, path, exit, entry, edge)
-      |> place_label(path, edge.label, placement.direction)
-      |> result.map(fn(painted) {
-        Drawing(canvas: painted, expansions: current.expansions + expansions)
-      })
+  budget: Int,
+) -> Result(Drawing, Failed) {
+  let spent = current.expansions
+  let lookups = {
+    use edge <- result.try(model.at(chart.edges, index))
+    use flow <- result.try(model.at(placement.flows, index))
+    use source <- result.try(model.at(placement.boxes, edge.from))
+    use target <- result.map(model.at(placement.boxes, edge.to))
+    #(edge, flow, source, target)
+  }
+  case lookups {
+    Error(Nil) -> Error(Failed(model.Unroutable, spent))
+    Ok(#(edge, flow, source, target)) -> {
+      let #(exit, entry) = sides_for(placement.direction, flow)
+      case
+        route.find(current.canvas, source, exit, target, entry, budget - spent)
+      {
+        Error(route.Failure(reason:, expansions:)) ->
+          Error(Failed(failure_refusal(reason), spent + expansions))
+        Ok(route.Found(cells: path, expansions:)) ->
+          commit(current.canvas, path, exit, entry, edge)
+          |> place_label(path, edge.label, placement.direction)
+          |> result.map(fn(painted) {
+            Drawing(canvas: painted, expansions: spent + expansions)
+          })
+          |> result.map_error(fn(refusal) {
+            Failed(refusal, spent + expansions)
+          })
+      }
+    }
+  }
+}
+
+fn failure_refusal(reason: route.Reason) -> Refusal {
+  case reason {
+    route.NoRoute -> model.Unroutable
+    route.OutOfBudget -> model.TooLarge(model.RoutingWork)
   }
 }
 
@@ -186,7 +208,9 @@ fn bit_into_box(side: Side) -> Int {
 }
 
 // Writes a route. Its first and last cells touch a box, so they become fixed
-// glyphs no later route may cross; the cells between are crossable lines.
+// glyphs no later route may cross; the cells between are crossable lines. Each
+// cell is written knowing its neighbours on the route, which one pass over the
+// cells paired with the cells before and after them provides.
 fn commit(
   current: Canvas,
   path: List(#(Int, Int)),
@@ -194,25 +218,20 @@ fn commit(
   entry: Side,
   edge: Edge,
 ) -> Canvas {
-  let cells = list.length(path)
-  list.index_fold(path, current, fn(painted, cell, position) {
-    let previous = case list.drop(path, position - 1) {
-      [before, ..] if position > 0 -> Some(before)
-      _ -> option.None
+  let before = [option.None, ..list.map(path, Some)]
+  let after = list.append(list.map(list.drop(path, 1), Some), [option.None])
+  list.zip(path, list.zip(before, after))
+  |> list.fold(current, fn(painted, entry_of) {
+    let #(cell, #(previous, following)) = entry_of
+    let mask = case previous, following {
+      option.None, option.None -> bit_into_box(exit) + bit_into_box(entry)
+      option.None, _ -> bit_into_box(exit) + toward(cell, following)
+      _, option.None -> toward(cell, previous) + bit_into_box(entry)
+      _, _ -> toward(cell, previous) + toward(cell, following)
     }
-    let following = case list.drop(path, position + 1) {
-      [after, ..] -> Some(after)
-      [] -> option.None
-    }
-    let mask = case position == 0, position == cells - 1 {
-      True, True -> bit_into_box(exit) + bit_into_box(entry)
-      True, False -> bit_into_box(exit) + toward(cell, following)
-      False, True -> toward(cell, previous) + bit_into_box(entry)
-      False, False -> toward(cell, previous) + toward(cell, following)
-    }
-    case position == 0, position == cells - 1 {
-      _, True -> end_glyph(painted, cell, mask, entry, edge)
-      True, False ->
+    case previous, following {
+      _, option.None -> end_glyph(painted, cell, mask, entry, edge)
+      option.None, _ ->
         canvas.put_ink(
           painted,
           cell.0,
@@ -220,8 +239,7 @@ fn commit(
           canvas.line_glyph(mask, edge.stroke),
           canvas.Wire,
         )
-      False, False ->
-        canvas.add_line(painted, cell.0, cell.1, mask, edge.stroke)
+      _, _ -> canvas.add_line(painted, cell.0, cell.1, mask, edge.stroke)
     }
   })
 }

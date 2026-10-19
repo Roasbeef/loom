@@ -37,6 +37,12 @@ pub const max_label_cells = 40
 /// cost grows with area rather than with the input.
 pub const max_canvas_cells = 65_536
 
+/// The most search states the edge router may expand to draw one diagram,
+/// across every edge and every direction tried. Routing a diagram at the node
+/// and edge caps takes about 16,000, so this is several times what a real
+/// diagram needs and bounds a hostile one to under about 80 ms.
+pub const max_route_expansions = 60_000
+
 /// The indices `0` up to but not including `count`, in order. A count of zero
 /// or less is empty.
 ///
@@ -51,6 +57,23 @@ pub fn indices(count: Int) -> List(Int) {
   |> list.reverse
 }
 
+/// The element at an index, or `Error(Nil)` when there is none. Callers that
+/// index a list by a node or edge number use this and handle the absence,
+/// rather than substitute a value that would draw as something plausible.
+///
+/// ## Examples
+///
+/// ```gleam
+/// model.at(["a", "b"], 1)
+/// // -> Ok("b")
+/// ```
+pub fn at(items: List(a), index: Int) -> Result(a, Nil) {
+  case index < 0 {
+    True -> Error(Nil)
+    False -> list.drop(items, index) |> list.first
+  }
+}
+
 /// The limit a `TooLarge` refusal names.
 pub type Limit {
   SourceBytes
@@ -58,6 +81,7 @@ pub type Limit {
   Edges
   LabelCells
   CanvasCells
+  RoutingWork
 }
 
 /// Why a diagram was not drawn. The caller keeps the source and shows

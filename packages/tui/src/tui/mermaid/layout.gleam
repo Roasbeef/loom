@@ -465,11 +465,22 @@ fn bump(table: Dict(#(Int, FlowSide), Int), key: #(Int, FlowSide)) {
   dict.insert(table, key, result.unwrap(dict.get(table, key), 0) + 1)
 }
 
-fn size_at(sizes: List(#(Int, Int)), index: Int) -> #(Int, Int) {
-  case list.drop(sizes, index) {
-    [size, ..] -> size
-    [] -> #(5, 3)
-  }
+// A node's size along the flow axis, or across it, if the node has one. A
+// node without a size is left out of whatever is being summed or placed.
+fn along_of(
+  axis: Axis,
+  sizes: List(#(Int, Int)),
+  node: Int,
+) -> Result(Int, Nil) {
+  model.at(sizes, node) |> result.map(along_size(axis, _))
+}
+
+fn cross_of(
+  axis: Axis,
+  sizes: List(#(Int, Int)),
+  node: Int,
+) -> Result(Int, Nil) {
+  model.at(sizes, node) |> result.map(cross_size(axis, _))
 }
 
 // The room between layer `l` and layer `l + 1`: a lane for every edge that
@@ -518,13 +529,16 @@ fn along_positions(
         let #(table, start) = state
         let members = result.unwrap(dict.get(layers, layer), [])
         let thickness =
-          list.fold(members, 0, fn(best, node) {
-            int.max(best, along_size(axis, size_at(sizes, node)))
-          })
+          members
+          |> list.filter_map(along_of(axis, sizes, _))
+          |> list.fold(0, int.max)
         let placed =
           list.fold(members, table, fn(inner, node) {
-            let size = along_size(axis, size_at(sizes, node))
-            dict.insert(inner, node, start + { thickness - size } / 2)
+            case along_of(axis, sizes, node) {
+              Ok(size) ->
+                dict.insert(inner, node, start + { thickness - size } / 2)
+              Error(_) -> inner
+            }
           })
         #(
           placed,
@@ -594,17 +608,21 @@ fn pack(
     let #(members, length) = entry
     let #(placed, _) =
       list.fold(members, #(table, { widest - length } / 2), fn(state, node) {
-        let size = cross_size(axis, size_at(sizes, node))
-        #(dict.insert(state.0, node, state.1), state.1 + size + cross_gap(axis))
+        case cross_of(axis, sizes, node) {
+          Ok(size) -> #(
+            dict.insert(state.0, node, state.1),
+            state.1 + size + cross_gap(axis),
+          )
+          Error(_) -> state
+        }
       })
     placed
   })
 }
 
 fn row_length(axis: Axis, sizes: List(#(Int, Int)), members: List(Int)) -> Int {
-  let sizes =
-    list.map(members, fn(node) { cross_size(axis, size_at(sizes, node)) })
-  int.sum(sizes) + cross_gap(axis) * int.max(0, list.length(members) - 1)
+  let widths = list.filter_map(members, cross_of(axis, sizes, _))
+  int.sum(widths) + cross_gap(axis) * int.max(0, list.length(widths) - 1)
 }
 
 // Moves one layer's nodes toward their neighbours' mean centre, then pushes
@@ -620,32 +638,31 @@ fn relax(
 ) -> Dict(Int, Int) {
   let members = result.unwrap(dict.get(layers, layer), [])
   let desired =
-    list.map(members, fn(node) {
-      let size = cross_size(axis, size_at(sizes, node))
+    list.filter_map(members, fn(node) {
+      use size <- result.map(cross_of(axis, sizes, node))
       let centres =
         result.unwrap(dict.get(neighbours, node), [])
         |> list.filter(fn(other) {
           result.unwrap(dict.get(layer_of, other), layer) != layer
         })
-        |> list.map(fn(other) {
-          result.unwrap(dict.get(table, other), 0)
-          + cross_size(axis, size_at(sizes, other))
-          / 2
+        |> list.filter_map(fn(other) {
+          use start <- result.try(dict.get(table, other))
+          use width <- result.map(cross_of(axis, sizes, other))
+          start + width / 2
         })
       case centres {
-        [] -> #(node, result.unwrap(dict.get(table, node), 0))
-        _ -> #(node, int.sum(centres) / list.length(centres) - size / 2)
+        [] -> #(node, result.unwrap(dict.get(table, node), 0), size)
+        _ -> #(node, int.sum(centres) / list.length(centres) - size / 2, size)
       }
     })
   let #(placed, _) =
     list.fold(desired, #(table, None), fn(state, entry) {
       let #(inner, previous_end) = state
-      let #(node, want) = entry
+      let #(node, want, size) = entry
       let start = case previous_end {
         Some(end) -> int.max(want, end + cross_gap(axis))
         None -> want
       }
-      let size = cross_size(axis, size_at(sizes, node))
       #(dict.insert(inner, node, start), Some(start + size))
     })
   placed
@@ -657,7 +674,10 @@ fn cross_extent(
   across: Dict(Int, Int),
 ) -> Int {
   dict.fold(across, 0, fn(widest, node, start) {
-    int.max(widest, start + cross_size(axis, size_at(sizes, node)))
+    case cross_of(axis, sizes, node) {
+      Ok(size) -> int.max(widest, start + size)
+      Error(_) -> widest
+    }
   })
 }
 

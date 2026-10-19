@@ -420,20 +420,6 @@ fn drop_trailing_blank(runs: List(Run)) -> List(Run) {
   }
 }
 
-/// The width in cells of the widest row `rows` would return.
-///
-/// ## Examples
-///
-/// ```gleam
-/// canvas.new(4, 1)
-/// |> canvas.put_text(1, 0, "ab", canvas.Body)
-/// |> canvas.drawn_width
-/// // -> 2
-/// ```
-pub fn drawn_width(canvas: Canvas) -> Int {
-  rows_width(rows(canvas))
-}
-
 /// The width in cells of the widest of some rows already read out. A caller
 /// that needs both the rows and their width reads the canvas once and measures
 /// the rows, rather than reading it twice.

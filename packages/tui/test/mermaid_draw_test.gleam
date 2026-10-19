@@ -218,19 +218,77 @@ fn scattered(multiplier: Int) -> model.Flowchart {
   chart
 }
 
-// A direction may be refused as unroutable, and `mermaid.render` then draws the
-// other, so each shape must draw in at least one direction and every drawing
-// that succeeds must stay within the budget.
+// Every direction is drawn from the whole-render budget, and what a direction
+// spends is counted whether it drew or failed. A shape must draw in at least
+// one direction, every drawing must stay within the expected work, and nothing
+// may exceed the budget the renderer allows itself.
 pub fn the_router_expands_a_bounded_number_of_states_test() {
   list.each([3, 7, 17, 29], fn(multiplier) {
-    let drawn =
-      [model.TopDown, model.LeftRight]
-      |> list.filter_map(fn(direction) {
-        draw.flowchart(scattered(multiplier), direction)
+    let outcomes =
+      list.map([model.TopDown, model.LeftRight], fn(direction) {
+        draw.flowchart(
+          scattered(multiplier),
+          direction,
+          model.max_route_expansions,
+        )
       })
-    assert drawn != []
-    list.each(drawn, fn(drawing) {
-      assert drawing.expansions <= expansion_budget
+    assert list.any(outcomes, fn(outcome) {
+      case outcome {
+        Ok(_) -> True
+        Error(_) -> False
+      }
+    })
+    list.each(outcomes, fn(outcome) {
+      case outcome {
+        Ok(drawing) -> {
+          assert drawing.expansions <= expansion_budget
+        }
+        Error(draw.Failed(expansions:, ..)) -> {
+          assert expansions <= model.max_route_expansions
+        }
+      }
     })
   })
+}
+
+// A long chain closed by six edges back to its start forces the back edges to
+// run the length of the diagram, which is the shape that sends a search over
+// the most cells. It must draw within the budget or be refused, and never
+// spend more than the budget either way.
+pub fn a_chain_with_back_edges_stays_within_the_budget_test() {
+  let forward =
+    model.indices(31)
+    |> list.map(fn(index) {
+      "N" <> int.to_string(index) <> " --> N" <> int.to_string(index + 1)
+    })
+  let back =
+    model.indices(6)
+    |> list.map(fn(index) { "N" <> int.to_string(31 - index) <> " --> N0" })
+  let assert Ok(model.Flow(chart)) =
+    parse.parse("graph TD\n" <> string.join(list.append(forward, back), "\n"))
+  list.each([model.TopDown, model.LeftRight], fn(direction) {
+    case draw.flowchart(chart, direction, model.max_route_expansions) {
+      Ok(drawing) -> {
+        assert drawing.expansions <= model.max_route_expansions
+      }
+      Error(draw.Failed(expansions:, ..)) -> {
+        assert expansions <= model.max_route_expansions
+      }
+    }
+  })
+}
+
+// Spending the whole budget is a refusal that names the work, and the count it
+// reports is the budget, not more.
+pub fn an_exhausted_budget_refuses_and_reports_what_it_spent_test() {
+  let assert Error(draw.Failed(refusal:, expansions:)) =
+    draw.flowchart(scattered(3), model.TopDown, 200)
+  assert refusal == model.TooLarge(model.RoutingWork)
+  assert expansions <= 200
+}
+
+pub fn an_empty_budget_draws_nothing_test() {
+  let assert Error(draw.Failed(refusal:, expansions: 0)) =
+    draw.flowchart(scattered(3), model.TopDown, 0)
+  assert refusal == model.TooLarge(model.RoutingWork)
 }

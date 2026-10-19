@@ -85,13 +85,6 @@ fn box_width(participant: Participant) -> Int {
   text.cell_width(participant.label) + 4
 }
 
-fn width_at(widths: List(Int), index: Int) -> Int {
-  case list.drop(widths, index) {
-    [found, ..] -> found
-    [] -> 5
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Columns
 // ---------------------------------------------------------------------------
@@ -101,9 +94,9 @@ fn width_at(widths: List(Int), index: Int) -> Int {
 fn column_gaps(diagram: Sequence, widths: List(Int)) -> Dict(Int, Int) {
   let count = list.length(widths)
   let base =
-    list.fold(model.indices(count - 1), dict.new(), fn(table, index) {
-      let left = width_at(widths, index)
-      let right = width_at(widths, index + 1)
+    list.zip(widths, list.drop(widths, 1))
+    |> list.index_fold(dict.new(), fn(table, neighbours, index) {
+      let #(left, right) = neighbours
       dict.insert(table, index, left - left / 2 + right / 2 + 2)
     })
   diagram.events
@@ -188,9 +181,9 @@ fn centres(
       )
     })
   let reach =
-    list.fold(model.indices(count), 0, fn(least, index) {
+    list.index_fold(widths, 0, fn(least, width, index) {
       let centre = result.unwrap(dict.get(positions, index), 0)
-      int.min(least, centre - width_at(widths, index) / 2)
+      int.min(least, centre - width / 2)
     })
   let notes =
     list.fold(diagram.events, reach, fn(least, event) {
@@ -225,8 +218,9 @@ fn centre_of(columns: Columns, index: Int) -> Int {
 // reaches to the right of it. Cropping removes the slack.
 fn canvas_width(diagram: Sequence, widths: List(Int), columns: Columns) -> Int {
   let last = list.length(widths) - 1
+  let last_width = result.unwrap(list.last(widths), 0)
   let reach =
-    list.fold(diagram.events, width_at(widths, last), fn(widest, event) {
+    list.fold(diagram.events, last_width, fn(widest, event) {
       case event {
         model.Said(message) ->
           int.max(widest, text.cell_width(message.text) + loop_reach + 4)
@@ -247,24 +241,21 @@ fn paint_headers(
   widths: List(Int),
   columns: Columns,
 ) -> Canvas {
-  list.index_fold(
-    diagram.participants,
-    painted,
-    fn(current, participant, index) {
-      let width = width_at(widths, index)
-      canvas.draw_box(
-        current,
-        model.Box(
-          x: centre_of(columns, index) - width / 2,
-          y: 0,
-          width:,
-          height: box_height,
-        ),
-        model.Rectangle,
-        [participant.label],
-      )
-    },
-  )
+  list.zip(diagram.participants, widths)
+  |> list.index_fold(painted, fn(current, pair, index) {
+    let #(participant, width) = pair
+    canvas.draw_box(
+      current,
+      model.Box(
+        x: centre_of(columns, index) - width / 2,
+        y: 0,
+        width:,
+        height: box_height,
+      ),
+      model.Rectangle,
+      [participant.label],
+    )
+  })
 }
 
 // A lifeline from the foot of the header to the bottom of the diagram.
