@@ -1717,14 +1717,19 @@ listener and list the origin Serve will present:
 ```toml
 # loom.toml, read by loomd at startup
 [daemon]
+bind = "127.0.0.1:4100"
 ui = true
 ui_origins = ["https://obelisk.tail0a99b.ts.net:8443"]
 ```
 
 ```sh
-loomd --config loom.toml --bind 127.0.0.1:4100 &
+loomd --config loom.toml &
 tailscale serve --bg --https=8443 http://127.0.0.1:4100
 ```
+
+`bind` keeps the port in the file, so a daemon that `loom` starts uses it
+too. An explicit `loomd --bind` would outrank it, and a changed value takes
+effect only when the daemon restarts.
 
 The origin is the node's MagicDNS name on the tailnet with the port Serve
 listens on; `tailscale serve status` prints it. Port 443 is the default and

@@ -244,10 +244,12 @@ a claim-shaped value where a bearer belongs; `loom --token` and
 
 ### 2.4 Transport security
 
-The daemon binds loopback only. Its `--bind` flag accepts `127.0.0.1:port`
-or `[::1]:port` and refuses anything else, so there is no cleartext
-listener on a routable address to protect.
-Source: (`client/daemon/main.gleam:260-272`).
+The daemon binds loopback only. Its `--bind` flag and the `[daemon] bind`
+key in its startup configuration share one parser, which accepts
+`127.0.0.1:port` or `[::1]:port` and refuses anything else, so there is no
+cleartext listener on a routable address to protect. The flag outranks the
+key, and the key outranks the default `127.0.0.1:0`.
+Source: (`client/daemon/listen_address.gleam:61-84`).
 
 The daemon terminates no TLS of its own. A client reaching a daemon from
 another host MUST do so through a trusted TLS endpoint or an
@@ -4388,7 +4390,7 @@ below have not been edited.
    loopback and that remote deployment requires TLS at a trusted
    endpoint.** The code accepts no non-loopback bind at all, so there is
    no cleartext remote listener to protect, and the daemon terminates no
-   TLS itself (`client/daemon/main.gleam:260-272`).
+   TLS itself (`client/daemon/listen_address.gleam:61-84`).
 
 5. **The `attachment` event is unreachable over the authenticated
    transport.** It is built and sent on the in-process fixture path
