@@ -2492,6 +2492,49 @@ pub fn a_stopped_reviewer_returns_saved_observations_as_partial_work_test() {
   close(harness)
 }
 
+pub fn a_stopped_reviewer_without_notes_surfaces_latest_assistant_activity_test() {
+  let gated = process.new_subject()
+  let harness = start_harness(Gated(into: gated))
+  let caller = caller_on("main", "turn-1:tools", 0)
+  let assert Ok(child) = harness.seam.spawn(caller, a_spawn("review"))
+    as "the reviewer begins a real operation"
+  let assert Ok(#(_first_spec, first_events)) = process.receive(gated, 5000)
+    as "the child's first generation request arrives"
+  settle_blocks(
+    first_events,
+    [
+      message.AssistantText(
+        text: "Inspected parser state transitions.",
+        text_signature: None,
+      ),
+      message.AssistantToolCall(call: message.ToolCall(
+        id: "call-1",
+        name: "bash",
+        arguments: json.Object([#("command", json.String("true"))]),
+        thought_signature: None,
+        namespace: None,
+      )),
+    ],
+    message.ToolUse,
+    metered(),
+  )
+  let assert Ok(#(_second_spec, _second_events)) = process.receive(gated, 5000)
+    as "the child's second generation request arrives after the tool turn commits"
+  api.abort_operation(
+    api.on_strand(harness.runtime, child.strand),
+    child.handle.operation,
+  )
+  let assert agent.Ready(outcome: agent.Aborted, report:, notes:, ..) =
+    joined(harness, caller, child.handle)
+    as "stopped child exposes its latest assistant activity"
+  assert notes == []
+  assert string.contains(report, "Partial reviewer output (stopped)")
+  assert string.contains(report, "Latest assistant activity before stop:")
+  assert string.contains(report, "Inspected parser state transitions.")
+  assert string.contains(report, "[tool call: bash]")
+  close(harness)
+}
+
 // A real parent run gives renewed admission an owner whose state can be
 // checked in the same transaction. Fabricated call-site ids cannot test that.
 fn open_parent(harness: Harness, label: String) -> Caller {

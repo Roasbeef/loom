@@ -60,6 +60,7 @@ declared|linux|SKIP shipped remote strand: platform enforcement unavailable|The 
 # dedicated delegated-jail step must execute the children, deadline and release
 # scenarios with an empty skip allowance.
 declared|linux|SKIP shipped remote subagents: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail job runs the remote-subagent fixture with an empty skip allowance.
+declared|linux|SKIP shipped remote depth: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the delegated Linux jail runs the three-orchestrator remote-depth fixture without this waiver.
 declared|linux|SKIP shipped remote owner loss: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the owner-loss scenario for real.
 declared|linux|SKIP shipped remote directory: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the two-orchestrator directory scenarios for real.
 declared|linux|SKIP shipped remote peer mail: platform enforcement unavailable|The ordinary runner may lack demanded helper enforcement; the macOS gate and the local Linux sign-off gate run the cross-orchestrator peer mail scenarios for real.

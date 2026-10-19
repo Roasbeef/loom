@@ -224,19 +224,21 @@ pub fn start(
     actor.new_with_initialiser(1000, fn(subject) {
       let watch = process.monitor(component)
 
-      // The attach is the first message, so it runs after this initialiser
-      // has returned and the component's start is not held by it.
-      process.send(subject, Attaching)
+      // The attach is the first message via `continuing`, so it runs after
+      // this initialiser has returned and the component's start is not held
+      // by it.
       actor.initialised(Waiting(attach, subject, watch, inbox, opened, ended))
       |> actor.selecting(
         process.new_selector()
         |> process.select(subject)
         |> process.select_specific_monitor(watch, ComponentDown),
       )
+      |> actor.continuing(Attaching)
       |> actor.returning(subject)
       |> Ok
     })
     |> actor.on_message(handle)
+    |> actor.unlinked
     |> actor.start
   case started {
     Ok(_) -> Nil

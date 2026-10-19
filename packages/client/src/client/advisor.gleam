@@ -159,6 +159,7 @@
 //// budget by delegating.
 //// The publication path announces an invalidated observation, not a verdict.
 
+import broker/internal/call
 import client/advisorguard
 import client/advisorslice
 import client/goalcheck
@@ -3707,26 +3708,8 @@ pub fn ask(
   message: fn(Subject(answer)) -> Message,
 ) -> Result(answer, Nil) {
   use subject <- result.try(address.lookup(name))
-  use pid <- result.try(process.subject_owner(subject))
-
-  let reply = process.new_subject()
-  let monitor = process.monitor(pid)
-
-  // Keep delivery on the same process the failure selector monitors. A
-  // second name lookup would turn an ordinary restart into a caller
-  // crash.
-  process.send(subject, message(reply))
-  let answered =
-    process.new_selector()
-    |> process.select_map(reply, Some)
-    |> process.select_specific_monitor(monitor, fn(_down) { None })
-    |> process.selector_receive(within: timeout_ms)
-  process.demonitor_process(monitor)
-
-  case answered {
-    Ok(Some(value)) -> Ok(value)
-    Ok(None) | Error(Nil) -> Error(Nil)
-  }
+  call.try_call(subject, waiting: timeout_ms, sending: message)
+  |> result.replace_error(Nil)
 }
 
 // The successor clock is discarded, as `client/notes` does at the same

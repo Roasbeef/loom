@@ -6,8 +6,8 @@
 PACKAGES := host core storage session machine prompt statem statem_parallel session_view web_view telemetry runtime provider \
 	broker executor mcp lsp tools cap ext codemode events client conformance tui lint
 # Packages that target JavaScript. They are formatted, built and documented
-# with the rest but have no test run (scripts/check.sh says why).
-JS_PACKAGES := web_client
+# with the rest; their pure tests run on a JavaScript runtime.
+JS_PACKAGES := web_client web_mermaid
 GO_PKG   := packages/sandbox
 HELPER   := $(GO_PKG)/loom-exec
 PREFIX   ?= $(HOME)/.local
@@ -71,6 +71,10 @@ test: sandbox ## Run tests only (skips format check), all Gleam packages
 # The browser package targets JavaScript, so its tests need Node, Bun or
 # Deno rather than EUnit and the sandbox helper; scripts/web_client_test.sh
 # finds the runtime. An explicit rule outranks the test-% pattern below.
+.PHONY: test-web_mermaid
+test-web_mermaid: ## Run the isolated renderer controller tests
+	@bash scripts/web_client_test.sh web_mermaid
+
 .PHONY: test-web_client
 test-web_client: ## Run the browser package's tests (needs Node, Bun or Deno)
 	@bash scripts/web_client_test.sh

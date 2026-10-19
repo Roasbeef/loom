@@ -653,7 +653,7 @@ intermediate phase still converges, because phases are display labels and
 the snapshot carries live state.
 
 The client that issued the command gets its `entry` once, as the reply.
-`reply_with_matched` (`client/gateway.gleam:6815`) pulls, picks the last
+`reply_with_matched` (`client/gateway.gleam:6837`) pulls, picks the last
 emit the matcher accepts, broadcasts everything to everyone *except* that
 one copy to that one connection, and sends the matched emit back with
 both `reply_to` and its seq.
@@ -752,7 +752,7 @@ failure a tool can meet. Tool failures are **data**. That is what makes
 "tools never crash the strand" a structural claim rather than a
 discipline.
 
-For `bash`, `call_spec` (`tools/bash.gleam:806`) builds a `CallSpec` naming the
+For `bash`, `call_spec` (`tools/bash.gleam:815`) builds a `CallSpec` naming the
 op and step ids, the session base policy, the tool's own
 policy-shaped requirements, the consumed grants, `RefuseNarrowed`, the
 argv, the constructed environment, and a pooled budget
@@ -1627,15 +1627,15 @@ production that closure is not the bare broker runner: `escalating_runner`
 (`client/wiring.gleam:1979`) wraps it, so a `PolicyRefused` — and only a
 policy refusal, the one refusal a human can overturn — goes to the
 escalation seam before it becomes a result. `decide`
-(`client/escalate.gleam:290`) files a durable, call-scoped record under an
+(`client/escalate.gleam:814`) files a durable, call-scoped record under an
 id derived from `{strand, tool, wanted diff}` (`record_id`,
-`client/escalate.gleam:272`), so a model that retries lands on the record
+`client/escalate.gleam:432`), so a model that retries lands on the record
 already pending rather than one row per attempt — and *claims* it, moving
 the record's scope to the call standing at the door now, because a retry
 always arrives under a call id the provider has just minted and a scope
 frozen to the first attempt would leave an approval nothing can spend.
 Then, *if* the host says
-someone is attached, `park` (`client/escalate.gleam:614`) holds the call —
+someone is attached, `park` (`client/escalate.gleam:930`) holds the call —
 on the tool's own effect process, never on the driver, so `Nudge`,
 `RequestAbort` and `PollTick` keep being served while a human decides. An
 approval is consumed by CAS — after a scope check that is still exact

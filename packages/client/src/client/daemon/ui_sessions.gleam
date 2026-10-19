@@ -676,7 +676,9 @@ pub fn reserve_invite(
     access.fingerprint(credential),
     _,
   ))
-  |> result.unwrap(Error(bootstrap.system_time_ms() + invite_window_ms))
+  |> result.lazy_unwrap(fn() {
+    Error(bootstrap.system_time_ms() + invite_window_ms)
+  })
 }
 
 /// Reserves one of the credential's session creations, or refuses when it has

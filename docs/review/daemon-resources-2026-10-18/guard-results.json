@@ -1,0 +1,50 @@
+{
+  "baseline_revision": "928d0ae50dfe70277512a4c05116626c7c28d942",
+  "candidate_revision": "2a99a8b448c3b79fc4ebe6b5a744a5a465fd5dc6",
+  "vm": "OTP 29 / ERTS 17.0.5",
+  "schedulers": 1,
+  "baseline": [
+    {
+      "count": 100,
+      "parked_words": 1722,
+      "active_words": 1819,
+      "guard_bytes": 34776,
+      "pump_bytes": 34632,
+      "body_bytes": 2921,
+      "driver_reductions": 227,
+      "native_alive": true
+    },
+    {
+      "count": 10000,
+      "parked_words": 160122,
+      "active_words": 160219,
+      "guard_bytes": 1574496,
+      "pump_bytes": 4119904,
+      "body_bytes": 299023,
+      "driver_reductions": 1158,
+      "native_alive": true
+    }
+  ],
+  "candidate": [
+    {
+      "count": 100,
+      "parked_words": 1724,
+      "active_words": 146,
+      "guard_bytes": 21976,
+      "pump_bytes": 34632,
+      "body_bytes": 2921,
+      "driver_reductions": 225,
+      "native_alive": true
+    },
+    {
+      "count": 10000,
+      "parked_words": 160124,
+      "active_words": 146,
+      "guard_bytes": 9192,
+      "pump_bytes": 4119904,
+      "body_bytes": 299023,
+      "driver_reductions": 78,
+      "native_alive": true
+    }
+  ]
+}

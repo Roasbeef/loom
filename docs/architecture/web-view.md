@@ -245,7 +245,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:4894`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6103`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -2066,3 +2066,38 @@ show parent completion or child budget expiry alongside the provider's
 cancellation acknowledgement diagnostic. Attribution requires the exact aborted
 operation, final assistant entry and recorded strand. Older history without
 that captured metadata retains its generic diagnostic.
+
+## Mermaid diagram boundary
+
+[Protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md)
+keeps the session page's text-only rule while allowing Mermaid fences to draw
+diagrams. `web_view/markdown_view` supplies a fixed `<loom-mermaid>` tag and
+plain source text. The Gleam client component reads that text, retains a
+selectable source disclosure and sends a bounded revisioned request to one
+fixed-address opaque frame. Streaming source changes are debounced, and stale
+results cannot replace newer source or a timed-out render. The frame is created
+only once the element comes within a viewport of the visible area, because each
+frame holds its own copy of the 5.4 MB renderer and its heap; a transcript with
+two dozen diagrams otherwise started two dozen renderers at once.
+
+Mermaid's DOM generation runs only in the frame, which has a separate HTTP
+sandbox and content policy. Its response admits its own classic bundled
+script and inline diagram styles, but no network-backed resources or forms.
+No SVG returns to the parent. `ui_http` and `ui_assets` extend the closed asset
+table; `server` replaces the ordinary page policy only for the frame document.
+The frame's internal `web_mermaid` program is Gleam: a pure controller returns
+ordered effects for its runtime to interpret over minimal DOM/vendor bindings.
+Its empty Lustre view mounts separately from vendor SVG, so updates never
+reconcile away a diagram. Request policy, Drawing/Checking stages, latest-only
+queueing, SVG policy and reply encoding contain no handwritten JS. The npm
+bootstrap only injects the pinned vendor. Neither this program nor its FFI is
+a dependency of the session client.
+
+The generated renderer has its own offline source/lock/body digest gate in
+`scripts/web_assets.sh`, including the frame program's Gleam sources and lock. The session bundle's no-markup DOM binding is unchanged.
+
+The renderer intentionally refuses configuration and navigation directives.
+A native source disclosure and explicit Copy source action remain available
+for unsupported or malformed diagrams. The TUI still shows source; future
+terminal graphics work is scoped separately in the
+[terminal graphics note](../design-notes/mermaid-terminal-graphics.md).

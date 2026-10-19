@@ -588,13 +588,13 @@ New `F` keys wait on a check of what Herdr and common terminals pass through
 | Workspace and strip rows | `Row`, `Line` (section 2) | None |
 | Strand cards, status line | `strand_card.status_line` (`packages/session_view/src/session_view/strand_card.gleam:45`) (`status_line`) | None |
 | Gutter hue | `turns.hue` (`packages/session_view/src/session_view/turns.gleam:308`) (`hue`) | None |
-| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1432`) (`divider`), plus a count from the steps' results | None |
+| Worked divider with a failure count | `turns.divider` (`packages/session_view/src/session_view/turns.gleam:1496`) (`divider`), plus a count from the steps' results | None |
 | Sent messages | `agent_messages.observe` | None |
 | Received strand messages | A strand origin on the admitted message | **protocol-change 059** |
 | Peer messages | `PeerOrigin` | None |
 | Code-mode program and result | `code_mode_program`, `code_mode_result_lines` | None |
 | Code-mode call list | A call record in the result | **protocol-change 060** |
-| Images | The tool result block at `packages/tools/src/tools/fs.gleam:1257` (`ToolResultImage`), read through `of_entry` | None; etui work |
+| Images | The tool result block at `packages/tools/src/tools/fs.gleam:1488` (`ToolResultImage`), read through `of_entry` | None; etui work |
 | Repeats, repeated errors | New folds in `session_view` | None |
 | Harness notices | See section 9 | Possibly a marker |
 | Layout memory | A file in the state root | None |

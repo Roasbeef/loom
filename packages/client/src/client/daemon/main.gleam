@@ -1879,38 +1879,39 @@ pub fn start_movers(
     }
     Some(membership) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
-      let directory = session_directory_of(config, ready.registry)
+      let registry = ready.registry
+      let sessions_directory = ready.sessions_directory
+      let directory = session_directory_of(config, registry)
       let #(authority, upkeep) = case directory.ownership {
         // The movers' periodic pass seeds the store from the catalogue until
         // it has once, then finishes the deletions left marked; on request it
         // writes the local sessions' records.
-        Some(ownership) -> #(
-          session_mover.Recorded(ownership:),
-          session_movers.Upkeep(
-            every_tick: fn() {
-              let _seeded =
-                migrate.seed(
-                  ready.registry,
-                  ownership,
-                  roster.rows(orchestrator_roster(config)),
-                  logger,
-                )
-              deletion.finish_pending(
-                ready.registry,
-                ready.sessions_directory,
-                ownership,
-              )
-            },
-            cover: fn() {
-              migrate.cover_local(ready.registry, ownership, logger)
-              |> result.replace(Nil)
-            },
-            release: fn(session) {
-              let _released = ownership.release_local(session)
-              Nil
-            },
-          ),
-        )
+        Some(ownership) -> {
+          let release_local = ownership.release_local
+          #(
+            session_mover.Recorded(ownership:),
+            session_movers.Upkeep(
+              every_tick: fn() {
+                let _seeded =
+                  migrate.seed(
+                    registry,
+                    ownership,
+                    roster.rows(orchestrator_roster(config)),
+                    logger,
+                  )
+                deletion.finish_pending(registry, sessions_directory, ownership)
+              },
+              cover: fn() {
+                migrate.cover_local(registry, ownership, logger)
+                |> result.replace(Nil)
+              },
+              release: fn(session) {
+                let _released = release_local(session)
+                Nil
+              },
+            ),
+          )
+        }
         None -> #(session_mover.Rows, session_movers.no_upkeep())
       }
       let environment =
@@ -2226,11 +2227,12 @@ pub fn prepare_startup(
             spawner: link,
             laptop: laptop_of(config, link),
           )
+        let session_id = registration.id
         let settings =
           serve.Settings(
             ..settings,
             first_prompt: Some(fn(text) {
-              manager.seed_subtitle(directory, registration.id, text)
+              manager.seed_subtitle(directory, session_id, text)
             }),
             profile_desk: Some(profile_desk(
               directory,
@@ -2246,7 +2248,6 @@ pub fn prepare_startup(
         // reach one says so in the reason the opening operation reports. The
         // session records the executor an open chose in its own store, and the
         // catalogue is told once so that a listing can show it.
-        let session_id = registration.id
         let chosen = fn(executor) {
           manager.seed_executor(directory, session_id, executor)
         }

@@ -11,10 +11,17 @@
          owner_label_of/1, reductions_of/1, log_capture_start/0,
          log_capture_stop/0, log/2, utf_codepoint_calls/1,
          function_values/1, wire_round_trip/1, remote_pid/0,
-         ra_names_on_disk/1, rsa_key_pem/0, lsp_start_waiters/1]).
+         ra_names_on_disk/1, rsa_key_pem/0, lsp_start_waiters/1, ui_sessions_pid/1]).
 
 -include_lib("public_key/include/public_key.hrl").
 -include_lib("client/include/client@lsp@manager_Manager.hrl").
+-include_lib("client/include/client@daemon@ui_sessions_Sessions.hrl").
+
+%% The opaque service has no public PID API. This fixture-only lookup lets
+%% the page-memory regression monitor and retire its own temporary service.
+ui_sessions_pid(#sessions{subject = Subject}) ->
+    {ok, Pid} = 'gleam@erlang@process':subject_owner(Subject),
+    Pid.
 
 %% Only the manager's processed acquisitions establish the startup test's
 %% prerequisite. Gleam has no sys:get_state wrapper; keep this private-state

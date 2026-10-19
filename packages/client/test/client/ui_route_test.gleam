@@ -1808,11 +1808,11 @@ pub fn an_operators_page_caps_the_membership_test() {
 
 // The policy protocol-change/051 specifies, spelled out rather than taken
 // from `page.content_security_policy`, so that a change to it fails here and
-// has to be argued in a 051 addendum. Moving the stylesheet and scripts into
-// files changed where they come from and nothing about what may run.
+// has to be argued in a protocol proposal. Protocol-change/091 adds only
+// same-origin frames; script and stylesheet sources remain unchanged.
 fn policy(port: Int) -> String {
   "default-src 'none'; script-src 'self'; style-src 'self'; "
-  <> "style-src-attr 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:"
+  <> "frame-src 'self'; style-src-attr 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:"
   <> int.to_string(port)
   <> "; img-src 'self'; base-uri 'none'; form-action 'none'; "
   <> "frame-ancestors 'none'"
@@ -1899,6 +1899,45 @@ pub fn every_document_and_script_withholds_the_referrer_test() {
       as "a refusal carries the policy"
     assert string.contains(policy, "form-action 'none'")
     assert get(port, "/ui/assets/elsewhere.js", [host(port)]).status == 404
+  })
+}
+
+/// The Mermaid child receives a sandboxing policy independent of the parent.
+pub fn mermaid_asset_routes_keep_the_child_policy_isolated_test() {
+  fixture(fn(_ready, port, _credential) {
+    let frame = get(port, "/ui/assets/mermaid.html", [host(port)])
+    assert frame.status == 200
+    assert list.key_find(frame.headers, "content-security-policy")
+      == Ok(page.mermaid_content_security_policy)
+
+    // Replaced, not appended: a second page policy's frame-ancestors 'none'
+    // would stop the frame from loading at all (protocol-change/091).
+    assert list.count(frame.headers, fn(header) {
+        header.0 == "content-security-policy"
+      })
+      == 1
+    assert string.contains(frame.body, "/ui/assets/mermaid.js")
+    assert string.contains(
+      page.mermaid_content_security_policy,
+      "sandbox allow-scripts",
+    )
+    assert string.contains(
+      page.mermaid_content_security_policy,
+      "connect-src 'none'",
+    )
+    assert string.contains(
+      page.mermaid_content_security_policy,
+      "frame-ancestors 'self'",
+    )
+    let script = get(port, "/ui/assets/mermaid.js", [host(port)])
+    assert script.status == 200
+    assert string.contains(script.body, "securityLevel")
+    assert list.key_find(script.headers, "content-security-policy")
+      == Ok(policy(port))
+    assert !string.contains(
+      page.mermaid_content_security_policy,
+      "allow-same-origin",
+    )
   })
 }
 

@@ -61,10 +61,9 @@ pub fn resolve(
   let name = "manifest-" <> platform <> ".json"
   let path = stage <> "/" <> name
   use presence <- result.try(acquire(base <> "/" <> name, path, 262_144, fetch))
-  use <- bool.guard(
-    presence == Absent,
-    Error("selected release has no manifest for " <> platform),
-  )
+  use <- bool.lazy_guard(presence == Absent, fn() {
+    Error("selected release has no manifest for " <> platform)
+  })
   use signature <- result.try(acquire(
     base <> "/" <> name <> ".asc",
     path <> ".asc",
@@ -87,10 +86,10 @@ fn resolve_base(choices: options.Options, platform, stage, fetch) {
     "", "" -> github_base(choices, stage, fetch)
     "", mirror -> {
       let suffix = "/manifest-" <> platform <> ".json"
-      use <- bool.guard(
+      use <- bool.lazy_guard(
         !string.starts_with(mirror, "https://")
           || !string.ends_with(mirror, suffix),
-        Error("mirror must be an HTTPS URL ending in " <> suffix),
+        fn() { Error("mirror must be an HTTPS URL ending in " <> suffix) },
       )
       Ok(#(string.drop_end(mirror, string.length(suffix)), "", ""))
     }

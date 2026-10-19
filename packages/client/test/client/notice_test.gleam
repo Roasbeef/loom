@@ -20,6 +20,8 @@ pub fn a_job_and_an_execution_never_share_a_mark_test() {
   assert notice.key(notice.Job(id: "ab"))
     != notice.key(notice.Execution(id: "ab"))
   assert notice.key(notice.Job(id: "ab")) == "client/notice/job/ab"
+  assert notice.key(notice.Escalation(id: "policy-1", seq: 7))
+    == "client/notice/escalation/policy-1/7"
 }
 
 pub fn the_first_idle_sample_only_starts_the_stretch_test() {

@@ -117,6 +117,10 @@ pub fn routes_are_gets_under_ui_test() {
     == ui_http.Asset(ui_http.Client)
   assert ui_http.route(get("/ui/assets/favicon.svg", []))
     == ui_http.Asset(ui_http.Favicon)
+  assert ui_http.route(get("/ui/assets/mermaid.html", []))
+    == ui_http.Asset(ui_http.MermaidFrame)
+  assert ui_http.route(get("/ui/assets/mermaid.js", []))
+    == ui_http.Asset(ui_http.MermaidScript)
   assert ui_http.route(get("/favicon.ico", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/assets/web_view.css", [])) == ui_http.Unknown
   assert ui_http.route(get("/ui/assets/other.js", [])) == ui_http.Unknown
@@ -165,6 +169,7 @@ pub fn every_ui_response_carries_the_policy_test() {
     as "the policy is present"
   assert string.contains(policy, "default-src 'none'")
   assert string.contains(policy, "script-src 'self'")
+  assert string.contains(policy, "frame-src 'self'")
   assert string.contains(policy, "connect-src 'self' ws://127.0.0.1:4000")
   assert string.contains(policy, "base-uri 'none'")
   assert string.contains(policy, "form-action 'none'")

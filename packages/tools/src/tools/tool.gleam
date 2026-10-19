@@ -347,9 +347,12 @@ fn ask_permission(
 }
 
 fn refused(denial: escalation.Denial) -> ToolOutcome {
-  failure(denial.reason)
+  failure(denial.reason <> " " <> async_approval_guidance)
   |> with_details(denial_to_json(denial))
 }
+
+const async_approval_guidance =
+  "If an operator is attached, an approval request is pending; continue with other independent work or end your turn to wait for the [loom] approval notice."
 
 /// What one stream of a running execution looks like right now.
 ///
@@ -1364,7 +1367,13 @@ fn observed(tails: Tails, stream: framing.OutputStream) -> OutputTail {
 pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
   case refusal {
     broker.PolicyRefused(denial:) ->
-      failure("sandbox policy refused the call: " <> denial.reason)
+      failure(
+        "sandbox policy refused the call: "
+        <> denial.reason
+        <> " ("
+        <> async_approval_guidance
+        <> ")",
+      )
       |> with_details(denial_to_json(denial))
     broker.InvalidPolicy(error:) ->
       failure("sandbox policy invalid: " <> policy_error_text(error))

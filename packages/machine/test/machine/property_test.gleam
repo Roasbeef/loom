@@ -287,19 +287,13 @@ fn run_script(script: Script) -> World {
 
 // --- the properties -------------------------------------------------------
 
-pub fn every_tool_call_has_a_result_test() {
+pub fn generated_scripts_preserve_all_terminal_invariants_test() {
   use script <- qcheck.run(script_config(), script_generator())
   let world = run_script(script)
 
-  // Every tool call in every answerable assistant entry has exactly one
+  // 1. Every tool call in every answerable assistant entry has exactly one
   // matching tool-result entry, whatever interleaving of settles,
-  // refusals, orphans, and aborts happened. A response that settles
-  // under cancelled control commits normalized to `Aborted` with its
-  // calls intact and no results staged for them; that is sound only
-  // because context projection drops aborted responses (spec WP-C), so
-  // those calls never reach a provider and are owed nothing. The
-  // generator found that case (one plain settle, abort at step four)
-  // within its first hundred scripts; the seeds this replaced never did.
+  // refusals, orphans, and aborts happened.
   let entries = dict.values(world.store.entries)
   let call_ids =
     list.flat_map(entries, fn(stored) {
@@ -332,24 +326,18 @@ pub fn every_tool_call_has_a_result_test() {
       })
     assert list.length(results) == 1
   })
-}
 
-pub fn terminal_cleanup_leaves_no_operation_state_test() {
-  use script <- qcheck.run(script_config(), script_generator())
-  let world = run_script(script)
-  // The terminal transaction removed every operation-owned register.
+  // 2. The terminal transaction removed every operation-owned register,
+  // and the strand is durably idle.
   assert store.list_register_keys(world.store, register.OpState, "") == []
   assert store.list_register_keys(world.store, register.OpMeta, "") == []
   assert store.list_register_keys(world.store, register.OpToolArgs, "") == []
   assert store.list_register_keys(world.store, register.OpPreparation, "") == []
   assert store.list_register_keys(world.store, register.PendingEntry, "") == []
-  // And the strand is durably idle.
   let assert Ok(#(_seq, register.RegisterValue(payload:))) =
     store.get_register(world.store, register.StrandState, "main")
   let assert Ok(strand_state) = codec.decode_strand_state(payload)
   assert strand_state.current_operation == None
-  // No state transitions out of terminal: the next drive finds no
-  // program counter at all.
   let next = case
     scenario.step(world, NoObservation, scenario.default_options())
   {
@@ -357,16 +345,9 @@ pub fn terminal_cleanup_leaves_no_operation_state_test() {
     Ok(_) -> Ok(Nil)
   }
   assert next == Error("op.state absent")
-}
 
-pub fn terminal_result_is_recorded_operation_keyed_test() {
-  use script <- qcheck.run(script_config(), script_generator())
-  let world = run_script(script)
-  // The terminal transaction wrote the result twice, atomically: the
-  // strand's latest-wins register, and the operation-keyed copy that a
-  // waiter can still observe after a later run overwrites the strand
-  // register. The two payloads must agree, and the operation-keyed
-  // key must derive from the operation the result itself names.
+  // 3. The terminal transaction wrote the result twice, atomically: the
+  // strand's latest-wins register, and the operation-keyed copy.
   let assert Ok(#(_seq, register.RegisterValue(payload: latest))) =
     store.get_register(world.store, register.StrandLastResult, "main")
   let assert Ok(result) = codec.decode_last_result(latest)
@@ -382,21 +363,14 @@ pub fn terminal_result_is_recorded_operation_keyed_test() {
       operation.result_fact_key(op),
     )
   assert keyed == latest
-}
 
-pub fn aborted_response_implies_aborted_run_test() {
-  use script <- qcheck.run(script_config(), script_generator())
-  let world = run_script(script)
-  let assert Ok(#(_seq, register.RegisterValue(payload:))) =
-    store.get_register(world.store, register.StrandLastResult, "main")
-  let assert Ok(result) = codec.decode_last_result(payload)
+  // 4. A committed aborted response implies an aborted run.
   let aborted_run = case result {
     RunLastResult(outcome: RunAborted, ..) -> True
     _ -> False
   }
   let has_aborted_response =
-    dict.values(world.store.entries)
-    |> list.any(fn(stored) {
+    list.any(entries, fn(stored) {
       case stored {
         entry.MessageEntry(
           message: message.AssistantMessage(stop_reason: message.Aborted, ..),
@@ -405,8 +379,6 @@ pub fn aborted_response_implies_aborted_run_test() {
         _ -> False
       }
     })
-  // A committed aborted response is only reachable under cancelled
-  // control, whose only exit is the aborted terminal transaction.
   case has_aborted_response {
     True -> {
       assert aborted_run

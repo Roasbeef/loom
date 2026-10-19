@@ -17,7 +17,10 @@
 ////   plain text (protocol-change/051, the addendum on clickable links).
 //// - An ordered list's numbers are text in each item rather than a `start`
 ////   attribute, so the number the model wrote never reaches an attribute.
-//// - A code fence's language is a text label, never a class. It also picks
+//// - Exactly `mermaid` selects `<loom-mermaid>` with a text-only source
+////   child. Its browser element owns the isolated renderer and source
+////   disclosure (protocol-change/091); no SVG enters this tree.
+//// - A code fence's language is otherwise a text label, never a class. It picks
 ////   the scanner that colours the fence (`code_view`), which draws token
 ////   classes from a closed type and every token's text as a text node.
 ////
@@ -229,6 +232,13 @@ fn block_element(block: Block) -> Element(message) {
         [attribute.class("md-heading"), level_class(level)],
         list.map(inlines, inline_element),
       )
+
+    // Only the fixed Mermaid tag chooses the isolated browser renderer.
+    // Its source is still a text node; no diagram markup is built here.
+    markdown.CodeBlock(language: Some("mermaid"), text:) ->
+      element.element("loom-mermaid", [], [
+        html.pre([attribute.class("mermaid-source")], [html.text(text)]),
+      ])
 
     markdown.CodeBlock(language:, text:) ->
       html.div([attribute.class("md-code")], [

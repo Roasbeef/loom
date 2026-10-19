@@ -110,12 +110,11 @@ fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   let globs = option.unwrap(globs, [])
   let context = option.unwrap(context, 0)
   let max_results = option.unwrap(max_results, default_max_results)
-  use <- bool.guard(
-    when: context < 0 || max_results < 1,
-    return: tool.failure(
+  use <- bool.lazy_guard(when: context < 0 || max_results < 1, return: fn() {
+    tool.failure(
       "invalid arguments: `context` must be >= 0 and `max_results` >= 1",
-    ),
-  )
+    )
+  })
   use root <- tool.or_outcome(search_root(ctx, path), identity_outcome)
   let #(now, _clock) = clock.read(ctx.clock)
   let spec = call_spec(ctx, pattern, root, globs, context, now)

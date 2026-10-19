@@ -70,6 +70,7 @@ import glexer/token
 import lint/finding.{type Finding, Finding}
 import lint/flow_order
 import lint/layout
+import lint/module_doc
 import lint/policy.{type Eager, type Policy}
 import lint/portable
 import lint/qualified
@@ -135,7 +136,9 @@ pub fn check_with(
   // R6's `@external` half is lexed rather than parsed, so it survives a file
   // `glance` cannot read: a policy rule that goes quiet on a parse failure is
   // a hole in the policy, not a missed suggestion (`lint/portable`).
-  let foreign = portable.externals(package, source.external_offsets(code))
+  let own = module_path(path)
+  let foreign =
+    portable.externals_at(package, own, source.external_offsets(code))
   case glance.module(code) {
     Error(error) -> [
       parse_finding(path, code, error),
@@ -152,20 +155,20 @@ pub fn check_with(
       let lines = source.classify(code)
       let blocks = layout.blocks(module, code)
       let at = source.line_map(lines.starts, layout.offsets(blocks))
-      let own = module_path(path)
 
       // R13 to R18 are about how a reader finds their way around a large
       // module (issue #593): its spine, its order, its state space, and
       // what each call's qualifier says. They read the module doc as well
       // as the tree, so each takes the line table alongside the AST.
+      let doc = module_doc.lines(code)
       let orientation =
         list.flatten([
-          spine.findings(module, code, lines, policy, own),
-          transitions.findings(module, code, lines, policy, own),
+          spine.findings_with_doc(module, code, doc, lines, policy, own),
+          transitions.findings_with_doc(module, doc, lines, policy, own),
           state_first.findings(module, code, lines, policy, own),
           qualified.findings(module, code, lines, policy, own),
           flow_order.findings(module, code, lines, policy, own),
-          unnamed_helper.findings(module, code, lines, policy, own),
+          unnamed_helper.findings_with_doc(module, doc, lines, policy, own),
         ])
       let all =
         found

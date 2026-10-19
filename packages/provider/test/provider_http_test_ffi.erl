@@ -6,7 +6,22 @@
          start_redirect_pair/1, stop_servers/1,
          restart_httpc_manager/0, restart_httpc_handler_supervisor/0,
          with_suspended_request_handlers/2, await_owner_drain_wait/1,
-         kill_owner_during_delivery/2]).
+         kill_owner_during_delivery/2, request_guard_words/0]).
+
+%% Observe only guards monitoring this synthetic request's consumer. The
+%% returned pair is application state, not the machine's complete roots.
+request_guard_words() ->
+    {monitored_by, Watching} = process_info(self(), monitored_by),
+    States = [State || Pid <- Watching,
+        element(1, proc_lib:translate_initial_call(Pid)) =:= 'weft@state_machine',
+        State <- [try sys:get_state(Pid, 1000) catch _:_ -> unavailable end],
+        is_tuple(State), tuple_size(State) =:= 2,
+        is_tuple(element(2, State)),
+        element(1, element(2, State)) =:= guard],
+    case States of
+        [State] -> {ok, erts_debug:flat_size(State)};
+        _ -> {error, nil}
+    end.
 
 %% Waits until cancellation has moved the native owner into its handler-Down
 %% barrier. This is a test observation, not production coordination: it makes

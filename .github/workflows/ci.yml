@@ -398,7 +398,7 @@ jobs:
           # and both are cheap.
           - bucket: fast
             packages: >-
-              host core machine prompt statem statem_parallel session_view web_view web_client telemetry provider broker executor
+              host core machine prompt statem statem_parallel session_view web_view web_client web_mermaid telemetry provider broker executor
               mcp lsp tools cap ext codemode tui lint sandbox
     steps:
       # actions/checkout v7.0.1
@@ -1463,6 +1463,21 @@ jobs:
           LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
             "jail (linux, shipped remote subagents)" shipped-remote-subagents.log
 
+      # This three-orchestrator fixture has the same enforcement prerequisite
+      # as remote subagents; a declared ordinary-runner skip must not hide it.
+      - name: Shipped remote depth with delegated enforcement
+        env:
+          LOOM_BOOTSTRAP_E2E_SERVER: ${{ github.workspace }}/bin/loomd
+          LOOM_TEST_PROVIDER_KEY: loom-provider-fixture-key
+          LOOM_TEST_TIMEOUT_SECONDS: 900
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          bash scripts/test.sh client --match client@daemon_shipped_remote_depth_test: \
+            2>&1 | tee shipped-remote-depth.log
+          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
+            "jail (linux, shipped remote depth)" shipped-remote-depth.log
+
       # The ordinary runner cannot supply all of these fixtures' required
       # enforcement layers. This lane has verified them and must execute both
       # observations; an environmental skip is therefore a failure here.
@@ -1495,6 +1510,7 @@ jobs:
             shipped-jobs.log
             shipped-deployment.log
             shipped-remote-subagents.log
+            shipped-remote-depth.log
             ux-joined.log
             ux-worktree.log
           retention-days: 14

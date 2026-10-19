@@ -3428,7 +3428,12 @@ fn drained(
     weft.PulledOutcome(outcome: weft.Completed(value: settlement, ..)) ->
       record_settlement(awaiting_last_word(state, id), id, settlement)
 
-    weft.PulledOutcome(..) ->
+    weft.PulledOutcome(outcome: weft.Failed(..))
+    | weft.PulledOutcome(outcome: weft.Crashed(..))
+    | weft.PulledOutcome(outcome: weft.Abandoned(..))
+    | weft.PulledOutcome(outcome: weft.NeverStarted(..))
+    | weft.PulledOutcome(outcome: weft.DrainProofLost(..))
+    | weft.PulledOutcome(outcome: weft.CancellationUnconfirmed(..)) ->
       record_loss(awaiting_last_word(state, id), id, jobstate.HelperLoss)
 
     // The relay's last word, which arrives behind the outcome the drain

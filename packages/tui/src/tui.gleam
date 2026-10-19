@@ -1940,9 +1940,9 @@ fn view_session(arguments: List(String)) -> Result(Option(String), String) {
     True ->
       session_control.flag_value(arguments, "--session")
       |> result.map(Some)
-      |> result.replace_error(
-        "loom ui needs a session id after --session\n" <> ui_usage(),
-      )
+      |> result.map_error(fn(_) {
+        "loom ui needs a session id after --session\n" <> ui_usage()
+      })
   }
 }
 
@@ -2618,7 +2618,7 @@ pub fn launch_token(arguments: List(String)) -> Result(String, String) {
         )
         bit_array.to_string(bytes)
         |> result.map(string.trim)
-        |> result.replace_error("--token-file " <> path <> " is not text")
+        |> result.map_error(fn(_) { "--token-file " <> path <> " is not text" })
       }
       Error(Nil) ->
         Ok(

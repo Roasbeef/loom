@@ -53,8 +53,19 @@ pub fn findings(
   policy: Policy,
   own_path: String,
 ) -> List(Raw) {
+  findings_with_doc(module, module_doc.lines(code), lines, policy, own_path)
+}
+
+/// `findings`, taking the already-lexed module doc lines.
+pub fn findings_with_doc(
+  module: glance.Module,
+  doc: List(module_doc.DocLine),
+  lines: Lines,
+  policy: Policy,
+  own_path: String,
+) -> List(Raw) {
   let _ = own_path
-  let named = doc_words(code)
+  let named = doc_words_from(doc)
 
   calls.private_helpers(module)
   |> list.filter_map(fn(helper) {
@@ -116,8 +127,8 @@ fn finding_for(function: glance.Function, caller: String, span: Int) -> Raw {
 /// "runner". The doc lines come from `lint/module_doc`, the same reader R13
 /// and R14 use, so the three rules agree about what the module doc is: a
 /// `////` inside a multi-line string is not part of it.
-fn doc_words(code: String) -> Set(String) {
-  module_doc.lines(code)
+fn doc_words_from(doc: List(module_doc.DocLine)) -> Set(String) {
+  doc
   |> list.flat_map(fn(line) { words(line.text) })
   |> set.from_list
 }

@@ -512,11 +512,22 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
 
         ui_http.AdminSocket(key, nonce) ->
           admin_socket(config, ui, request, origin, key, nonce)
-        route ->
-          ui_http.secured(
-            web_document(config, ui, request, origin, route),
-            origin,
-          )
+        route -> {
+          let secured =
+            ui_http.secured(
+              web_document(config, ui, request, origin, route),
+              origin,
+            )
+          case route {
+            ui_http.Asset(ui_http.MermaidFrame) ->
+              response.set_header(
+                secured,
+                "content-security-policy",
+                page.mermaid_content_security_policy,
+              )
+            _ -> secured
+          }
+        }
       }
   }
 }
@@ -1642,7 +1653,7 @@ fn image_of(
     ))
     ui_sessions.images(ui.sessions, cookie)
     |> result.map(fn(read) { picture(read(ref, position)) })
-    |> result.replace_error(plain(404, "unknown image"))
+    |> result.map_error(fn(_) { plain(404, "unknown image") })
   }
   case found {
     Ok(answer) | Error(answer) -> answer
@@ -1725,10 +1736,9 @@ fn result_of(
 // might sniff from the bytes.
 fn picture(found: Result(transcript_image.Image, Nil)) {
   let served = {
-    use held <- result.try(result.replace_error(
-      found,
-      plain(404, "unknown image"),
-    ))
+    use held <- result.try(
+      result.map_error(found, fn(_) { plain(404, "unknown image") }),
+    )
     use image.Served(mime_type:, bytes:) <- result.map(
       image.serve(held)
       |> result.map_error(fn(refusal) {
@@ -2231,7 +2241,7 @@ fn claim_route(config: Config(instance), request) {
     use presented <- result.try(claim_header(request))
     use state <- result.try(
       root.ready(config.daemon, within: 1000)
-      |> result.replace_error(plain(503, "daemon unavailable")),
+      |> result.map_error(fn(_) { plain(503, "daemon unavailable") }),
     )
     use Nil <- result.try(case manager.claim_known(state.registry, presented) {
       Ok(Nil) -> Ok(Nil)
@@ -2465,11 +2475,11 @@ fn control(
             control_use(request.command),
             within: 1000,
           )
-          |> result.replace_error(control_refusal("unavailable")),
+          |> result.map_error(fn(_) { control_refusal("unavailable") }),
         )
         use principal <- result.try(
           manager.authenticate(current.registry, digest)
-          |> result.replace_error(control_refusal("unauthorized")),
+          |> result.map_error(fn(_) { control_refusal("unauthorized") }),
         )
         dispatch(config, state, digest, principal, request.id, request.command)
       }
@@ -3570,7 +3580,7 @@ fn dispatch_class(
       use Nil <- result.try(epoch(state, supplied))
       use Nil <- result.try(
         inbound_settled(config, state.registry, id)
-        |> result.replace_error(admin_error_code(manager.AdminBusy)),
+        |> result.map_error(fn(_) { admin_error_code(manager.AdminBusy) }),
       )
       use through_directory <- result.try(deleted_through_directory(
         config,

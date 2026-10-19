@@ -66,6 +66,16 @@ pub const favicon_asset = "favicon.svg"
 /// custom elements.
 pub const client_asset = "web_client.mjs"
 
+/// The isolated Mermaid child frame document.
+pub const mermaid_frame_asset = "mermaid.html"
+
+/// The isolated Mermaid renderer bundle.
+pub const mermaid_script_asset = "mermaid.js"
+
+/// The independent policy applied to the isolated Mermaid child document.
+pub const mermaid_content_security_policy =
+  "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; font-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+
 /// Where the keyed pages live: `/ui/p/<key>`, the path the page's cookie is
 /// scoped to.
 ///
@@ -832,7 +842,7 @@ pub fn content_security_policy_for(socket: String, forms: Forms) -> String {
     OwnForms -> "'self'"
   }
   "default-src 'none'; script-src 'self'; style-src 'self'; "
-  <> "style-src-attr 'unsafe-inline'; connect-src 'self' "
+  <> "frame-src 'self'; style-src-attr 'unsafe-inline'; connect-src 'self' "
   <> socket
   <> "; img-src 'self'; base-uri 'none'; form-action "
   <> action

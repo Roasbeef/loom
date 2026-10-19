@@ -1004,3 +1004,17 @@ extension prelude module in the vendored tree, in addition to the dependency
 table and built inventory. Discovery and each build share this check. A missing
 `cap/lsp_sql` is reported as a stale host seed before any satellite clearance.
 This is a module-presence check, not a digest check of unchanged module names.
+
+## Call worker ownership
+
+The single-shot satellite host projects its precheck and reply subject before
+constructing worker callbacks. A call worker receives its selected plan and
+request, while the host keeps the router, ledger, admission ceilings and other
+in-flight calls. Prechecks still run before service or broker clearance;
+settlement still returns through the host's typed command subject. The persistent
+host follows the same subject projection in `satellite.host_settling`.
+
+The worker memory regression varies unrelated host ceilings, measures the
+synthetic worker before and after collecting its own heap, and proves that
+the host still enforces its one-call ceiling. Neither measurement is a live
+daemon collection or an RSS measurement.

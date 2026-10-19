@@ -759,7 +759,7 @@ fn restore_returned_drafts(model: Model) -> Model {
           let owner = #(session, strand)
           let saved =
             dict.get(view.strand_workspaces, owner)
-            |> result.unwrap(empty_workspace())
+            |> result.lazy_unwrap(empty_workspace)
           let saved =
             StrandWorkspace(
               ..saved,
@@ -1029,7 +1029,7 @@ fn switch_editor(
       ),
     )
   let saved = dict.get(parked, arriving) |> option.from_result
-  let restored = option.unwrap(saved, empty_workspace())
+  let restored = option.lazy_unwrap(saved, empty_workspace)
   Model(
     shared: shared_set.attachments(model.shared, restored.attachments),
     view: View(

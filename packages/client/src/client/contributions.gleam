@@ -376,7 +376,7 @@ pub fn workspace_tools(
   // The three `job_*` definitions are gated the way every other plane's
   // are — a host without the actor pays no cached bytes for tools that
   // could only refuse.
-  let door = option.unwrap(jobs, job_tool.unavailable())
+  let door = option.lazy_unwrap(jobs, job_tool.unavailable)
 
   // The observer is the only difference a door makes to the two write
   // tools, and `fs.write_tool()` is `write_tool_with` over an observer
@@ -399,6 +399,7 @@ pub fn workspace_tools(
         None -> []
         Some(available) -> [job_tool.scheme(available)]
       },
+      [fs.blob_scheme()],
     ])
   list.flatten([
     with_code_mode_hints(

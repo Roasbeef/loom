@@ -1120,20 +1120,19 @@ fn cursor_pair(
   stderr: String,
 ) -> Result(Cursors, String) {
   use stdout <- result.try(
-    int.parse(stdout) |> result.replace_error(malformed_cursor(text)),
+    int.parse(stdout) |> result.map_error(fn(_) { malformed_cursor(text) }),
   )
   use stderr <- result.try(
-    int.parse(stderr) |> result.replace_error(malformed_cursor(text)),
+    int.parse(stderr) |> result.map_error(fn(_) { malformed_cursor(text) }),
   )
 
   // Negative halves are refused rather than clamped: a cursor is a token
   // this tool minted, so one that could not have been minted is a sign
   // the model built its own, and rewinding it silently to the start of
   // the stream would hide that.
-  use <- bool.guard(
-    when: stdout < 0 || stderr < 0,
-    return: Error(malformed_cursor(text)),
-  )
+  use <- bool.lazy_guard(when: stdout < 0 || stderr < 0, return: fn() {
+    Error(malformed_cursor(text))
+  })
   Ok(Cursors(stdout:, stderr:))
 }
 

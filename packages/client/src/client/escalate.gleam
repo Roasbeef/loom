@@ -25,6 +25,24 @@
 ////     escalation plane — all of them end in the ordinary in-band refusal
 ////     the model gets today, alongside the record.
 ////
+//// ## Flow
+////
+//// `seam` → `decide` → `raise` → `decide_claimed` → `park` → `look` → `look_at_record` → `spend`; `detach_or_spend` → `detach_cell` → `recheck_after_detach`; `notify_decision` → `decision_notice_text`
+////
+//// 1. `default_config`, `start` and `none` configure the holder; `seam` closes
+////    over the holder's name and routes every refusal to `decide`, which borrows
+////    the runtime via `borrow` and `ask`.
+//// 2. `record_id` digests the coarse want through `dedup_key` and `limit_field`,
+////    while `action_record_id` pairs that want with `action_digest`; `action_preview`
+////    renders the bounded preview via `utf8_prefix` and `grouped`.
+//// 3. `raise` checks `within_cap` and the per-want ask budget through `want_next_asks`,
+////    `bump_want_asks`, `record_want_asks` and `want_asks_key`, then claims the record.
+//// 4. `decide_claimed` spends an already-approved record immediately via `spend_claimed`,
+////    parks for `until` via `park`, `look` and `look_at_record` when interactive, or detaches.
+//// 5. When the grace window expires, `detach_or_spend`, `detach_cell` and `recheck_after_detach`
+////    record `async_key` so a later operator answer triggers `notify_decision` and `decision_notice_text`.
+//// 6. `spend` consumes the approval under CAS and clears the want-ask and async marks.
+////
 //// ## Where the waiting happens, and why it is safe there
 ////
 //// The park loop runs on the *tool effect process* — the process the
@@ -142,10 +160,12 @@
 //// and a crash all end in the in-band refusal.
 
 import broker/escalation.{type Denial}
+import broker/internal/call
 import broker/policy.{type Grant}
 import client/grants
 import client/internal/session_owner
 import client/internal/timebase
+import client/notice
 import core/clock.{type Clock}
 import core/ids.{type OpId}
 import core/json.{type JsonValue}
@@ -154,6 +174,7 @@ import gleam/bool
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import runtime/api
@@ -212,6 +233,74 @@ pub type Config {
   )
 }
 
+/// One policy-refused call, as the seam sees it.
+///
+/// Constructor invariants: every coordinate is the *driver's* — the tool
+/// context carries them from `effects.ToolRun`, never from anything the
+/// model supplied — so the scope an approval is attributed to names one
+/// real call in the tree; `denial` is the broker's structured refusal,
+/// whose `wanted` is the exact diff an approval may grant; `arguments`
+/// is the call's post-clearance effective arguments, which is what a
+/// resumption re-executes with and therefore what the consent is bound
+/// to; `deadline_ms` is the call's own budget deadline, past which no
+/// re-clearance can reserve.
+pub type Refused {
+  Refused(
+    operation: OpId,
+    strand: String,
+    step_id: String,
+    source_index: Int,
+    call_id: String,
+    tool: String,
+    denial: Denial,
+    arguments: JsonValue,
+    deadline_ms: Int,
+  )
+}
+
+/// What the seam decided about a refused call.
+pub type Decision {
+  /// Nothing to spend: settle the refusal in band, as the harness always
+  /// has. The durable record (if one was written) stands as the audit
+  /// line and the passive queue entry.
+  Settle
+
+  /// An approval was consumed for exactly this call. Re-clear it once
+  /// under these additional grants.
+  Resume(grants: List(Grant))
+}
+
+/// The escalation seam, as production wiring holds it.
+pub type Escalations {
+  Escalations(refused: fn(Refused) -> Decision)
+}
+
+/// How an operator answered a pending escalation question.
+pub type OperatorDecision {
+  /// Approved for one execution of the bound action.
+  ApprovedOnce
+
+  /// Approved and remembered for the session.
+  ApprovedForSession
+
+  /// Denied by the operator.
+  Denied
+}
+
+// One park's fixed coordinates, unchanged from the first slice to the
+// last: which record, which call holds the claim, what that call would
+// run, what the broker refused, and the instant the window shuts.
+type Parked {
+  Parked(
+    id: String,
+    want: String,
+    scope: durable.CallScope,
+    action: durable.Action,
+    refused: Refused,
+    until: Int,
+  )
+}
+
 /// The default policy: park for at most five minutes, polling every
 /// second, and never park at all unless the host says someone is
 /// attached.
@@ -249,8 +338,8 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     name:,
     clock:,
     interactive: fn() { False },
-    park_timeout_ms: 300_000,
-    poll_interval_ms: 1000,
+    park_timeout_ms: 5000,
+    poll_interval_ms: 200,
     rest: process.sleep,
     holder_timeout_ms: 5000,
     max_records: 256,
@@ -305,48 +394,6 @@ pub fn start(
   |> actor.addressed(config.name)
   |> actor.hibernate_after(residency.hibernate_after_ms)
   |> actor.start
-}
-
-/// One policy-refused call, as the seam sees it.
-///
-/// Constructor invariants: every coordinate is the *driver's* — the tool
-/// context carries them from `effects.ToolRun`, never from anything the
-/// model supplied — so the scope an approval is attributed to names one
-/// real call in the tree; `denial` is the broker's structured refusal,
-/// whose `wanted` is the exact diff an approval may grant; `arguments`
-/// is the call's post-clearance effective arguments, which is what a
-/// resumption re-executes with and therefore what the consent is bound
-/// to; `deadline_ms` is the call's own budget deadline, past which no
-/// re-clearance can reserve.
-pub type Refused {
-  Refused(
-    operation: OpId,
-    strand: String,
-    step_id: String,
-    source_index: Int,
-    call_id: String,
-    tool: String,
-    denial: Denial,
-    arguments: JsonValue,
-    deadline_ms: Int,
-  )
-}
-
-/// What the seam decided about a refused call.
-pub type Decision {
-  /// Nothing to spend: settle the refusal in band, as the harness always
-  /// has. The durable record (if one was written) stands as the audit
-  /// line and the passive queue entry.
-  Settle
-
-  /// An approval was consumed for exactly this call. Re-clear it once
-  /// under these additional grants.
-  Resume(grants: List(Grant))
-}
-
-/// The escalation seam, as production wiring holds it.
-pub type Escalations {
-  Escalations(refused: fn(Refused) -> Decision)
 }
 
 /// A seam that escalates nothing: every refusal settles in band exactly
@@ -414,6 +461,109 @@ pub fn record_id(strand: String, tool: String, wanted: List(Grant)) -> String {
   // is more than a session's escalation set can collide in and short
   // enough to read in a client.
   "policy-" <> string.slice(digest, at_index: 7, length: 32)
+}
+
+/// The durable id an action-bound escalation record is filed under: a
+/// digest of `{want_id, action_digest}` so concurrent async questions for
+/// different actions on the same want do not overwrite one another, while
+/// retries of the same action land on the same record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalate.action_record_id("main", "bash", denial.wanted, digest)
+/// ```
+///
+pub fn action_record_id(
+  strand: String,
+  tool: String,
+  wanted: List(Grant),
+  action: String,
+) -> String {
+  let want = record_id(strand, tool, wanted)
+  let digest = blob.ref_for(bit_array.from_string(want <> "\u{1e}" <> action))
+  "policy-" <> string.slice(digest, at_index: 7, length: 32)
+}
+
+/// Wakes or steers the requesting strand when an operator answers an
+/// escalation whose call already finished its synchronous grace window.
+///
+/// A call still inside its grace window consumes the approval inline on its
+/// next poll slice and needs no notice. Once the grace window has closed and
+/// written its detached sequence under `client/escalation_async/<id>`, this
+/// delivers a single-use `[loom]` notice through `client/notice`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalate.notify_decision(runtime, cell, escalate.ApprovedOnce)
+/// ```
+///
+pub fn notify_decision(
+  runtime: api.Runtime,
+  cell: api.EscalationCell,
+  decision: OperatorDecision,
+) -> Result(notice.Delivered, String) {
+  case cell.record.scope {
+    None -> Ok(notice.Withheld)
+    Some(scope) ->
+      case api.fact(runtime, async_key(cell.record.id)) {
+        Ok(Some(json.Int(detached_seq))) if detached_seq == cell.seq ->
+          notice.deliver(
+            runtime,
+            scope.strand,
+            notice.Escalation(id: cell.record.id, seq: cell.seq),
+            decision_notice_text(cell.record, decision),
+          )
+        _ -> Ok(notice.Withheld)
+      }
+  }
+}
+
+/// Renders the `[loom]` notice injected when an async escalation is decided.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalate.decision_notice_text(record, escalate.ApprovedOnce)
+/// ```
+///
+pub fn decision_notice_text(
+  record: durable.Escalation,
+  decision: OperatorDecision,
+) -> String {
+  let tool_name = option.unwrap(record.tool, "tool")
+  let action_line = case record.preview {
+    Some(preview) -> "\n\nAction: " <> preview
+    None -> ""
+  }
+  case decision {
+    ApprovedOnce ->
+      "[loom] approval "
+      <> record.id
+      <> " approved (once) for "
+      <> tool_name
+      <> action_line
+      <> "\n\nRe-run the `"
+      <> tool_name
+      <> "` call with the same arguments to spend this approval."
+    ApprovedForSession ->
+      "[loom] approval "
+      <> record.id
+      <> " approved (for session) for "
+      <> tool_name
+      <> action_line
+      <> "\n\nThe approved permissions are remembered for this session; re-run the `"
+      <> tool_name
+      <> "` call to proceed."
+    Denied ->
+      "[loom] approval "
+      <> record.id
+      <> " denied for "
+      <> tool_name
+      <> action_line
+      <> "\n\nThe operator denied this request; take an alternative route that does not require it."
+  }
 }
 
 // One wanted grant, as the digest sees it.
@@ -582,26 +732,11 @@ fn grouped(number: Int) -> String {
 
 // --- deciding one refusal --------------------------------------------------
 
-// One park's fixed coordinates, unchanged from the first slice to the
-// last: which record, which call holds the claim, what that call would
-// run, what the broker refused, and the instant the window shuts. They
-// travel together because every step of the loop needs all of them and
-// none of them ever moves.
-type Parked {
-  Parked(
-    id: String,
-    scope: durable.CallScope,
-    action: durable.Action,
-    refused: Refused,
-    until: Int,
-  )
-}
-
 fn decide(config: Config, refused: Refused) -> Decision {
   case borrow(config) {
     Error(Nil) -> Settle
     Ok(runtime) -> {
-      let id = record_id(refused.strand, refused.tool, refused.denial.wanted)
+      let want = record_id(refused.strand, refused.tool, refused.denial.wanted)
       let scope =
         durable.CallScope(
           operation: refused.operation,
@@ -614,47 +749,67 @@ fn decide(config: Config, refused: Refused) -> Decision {
       // Digested once per refusal and carried down: the park loop and
       // the spend both compare against it, and hashing the arguments
       // again per poll would be a cost the model chooses.
+      let digest = action_digest(refused.arguments)
       let action =
         durable.Action(
           tool: refused.tool,
-          digest: action_digest(refused.arguments),
+          digest:,
           preview: action_preview(refused.arguments),
         )
+      let id =
+        action_record_id(
+          refused.strand,
+          refused.tool,
+          refused.denial.wanted,
+          digest,
+        )
       let parked =
-        Parked(id:, scope:, action:, refused:, until: until(config, refused))
-      case raise(config, runtime, parked) && config.interactive() {
-        False -> Settle
-        True -> {
-          config.parked(runtime, parked.id, parked.until)
-          park(config, runtime, parked)
-        }
+        Parked(
+          id:,
+          want:,
+          scope:,
+          action:,
+          refused:,
+          until: until(config, refused),
+        )
+      case raise(config, runtime, parked) {
+        Error(Nil) -> Settle
+        Ok(claimed) -> decide_claimed(config, runtime, parked, claimed)
       }
     }
   }
 }
 
-// Files the record and takes the claim on it — which, under a
-// deterministic record id, is the ordinary case rather than the
-// exception. `api.claim_escalation` writes the record when there is
-// none and otherwise moves the scope to this call under a CAS, so the
-// one row a want ever occupies follows whichever call is currently
-// standing at the door. Without that a retry — and a model that reads
-// an in-band refusal always retries under a freshly minted call id —
-// would park on a record scoped to a call that has gone, an approval
-// scoped to that call could never be spent by anything, and the operator
-// would watch an approved record do nothing for the rest of the session.
-//
-// Anything else — a commit fault, a lost writer, a set already at its
-// cap, a record that has already asked its last question — means there
-// is no durable record this call can spend, so there is nothing to park
-// on and the refusal settles in band, exactly as it did before any of
-// this existed. A model watching from the other side cannot tell those
-// apart, and must not be able to: `Exhausted` in particular has to look
-// exactly like a first refusal, or the absence of a prompt becomes a
-// signal that an approval is sitting there.
-fn raise(config: Config, runtime: api.Runtime, parked: Parked) -> Bool {
-  let Parked(id:, scope:, action:, refused:, until: _) = parked
-  use <- bool.guard(when: !within_cap(config, runtime, id), return: False)
+fn decide_claimed(
+  config: Config,
+  runtime: api.Runtime,
+  parked: Parked,
+  claimed: durable.Escalation,
+) -> Decision {
+  case claimed.status, config.interactive() {
+    durable.Approved, _ -> spend_claimed(config, runtime, parked)
+    _, False -> detach_or_spend(config, runtime, parked)
+    _, True -> {
+      config.parked(runtime, parked.id, parked.until)
+      park(config, runtime, parked)
+    }
+  }
+}
+
+fn raise(
+  config: Config,
+  runtime: api.Runtime,
+  parked: Parked,
+) -> Result(durable.Escalation, Nil) {
+  let Parked(id:, want:, scope:, action:, refused:, until: _) = parked
+  use <- bool.guard(when: !within_cap(config, runtime, id), return: Error(Nil))
+  use next_asks <- result.try(want_next_asks(
+    config,
+    runtime,
+    id,
+    want,
+    action.digest,
+  ))
   case
     api.claim_escalation(
       runtime,
@@ -665,9 +820,55 @@ fn raise(config: Config, runtime: api.Runtime, parked: Parked) -> Bool {
       max_asks: config.max_asks,
     )
   {
-    Ok(durable.Claimed(_record)) -> True
-    Ok(durable.Exhausted(_record)) -> False
-    Error(_error) -> False
+    Ok(durable.Claimed(record)) -> {
+      record_want_asks(runtime, want, next_asks)
+      Ok(record)
+    }
+    Ok(durable.Exhausted(_record)) | Error(_error) -> Error(Nil)
+  }
+}
+
+fn want_next_asks(
+  config: Config,
+  runtime: api.Runtime,
+  id: String,
+  want: String,
+  digest: String,
+) -> Result(Int, Nil) {
+  case api.escalation(runtime, id) {
+    Ok(existing) ->
+      case existing.status, durable.bound_to(existing, digest) {
+        durable.Pending, True | durable.Approved, True -> Ok(0)
+        durable.Consumed, _ -> Ok(1)
+        _, _ -> bump_want_asks(config, runtime, want)
+      }
+    Error(_absent) -> bump_want_asks(config, runtime, want)
+  }
+}
+
+fn bump_want_asks(
+  config: Config,
+  runtime: api.Runtime,
+  want: String,
+) -> Result(Int, Nil) {
+  let current = case api.fact(runtime, want_asks_key(want)) {
+    Ok(Some(json.Int(count))) -> count
+    _ -> 0
+  }
+  case current >= config.max_asks {
+    True -> Error(Nil)
+    False -> Ok(current + 1)
+  }
+}
+
+fn record_want_asks(runtime: api.Runtime, want: String, asks: Int) -> Nil {
+  case asks > 0 {
+    False -> Nil
+    True -> {
+      let _ =
+        api.put_reserved_fact(runtime, want_asks_key(want), json.Int(asks))
+      Nil
+    }
   }
 }
 
@@ -741,16 +942,73 @@ fn park(config: Config, runtime: api.Runtime, parked: Parked) -> Decision {
     )
 
   case outcome {
-    poll.Answered(decision) -> decision
+    poll.Answered(Resume(grants:)) -> Resume(grants:)
+    poll.Answered(Settle) | poll.Expired | poll.Failed(Nil) ->
+      detach_or_spend(config, runtime, parked)
+  }
+}
 
-    // The window closed with the record still pending and nobody having
-    // decided it. The call settles on the refusal it came in with.
-    poll.Expired -> Settle
+fn spend_claimed(
+  config: Config,
+  runtime: api.Runtime,
+  parked: Parked,
+) -> Decision {
+  case api.escalation_cell(runtime, parked.id) {
+    Error(_error) -> Settle
+    Ok(cell) -> spend(config, runtime, parked, cell)
+  }
+}
 
-    // Unreachable: `look` never reports `Fail`, because a record that
-    // cannot be waited for is an answer rather than an error. The arm is
-    // written out because that is what makes it checkable.
-    poll.Failed(Nil) -> Settle
+fn detach_or_spend(
+  config: Config,
+  runtime: api.Runtime,
+  parked: Parked,
+) -> Decision {
+  case api.escalation_cell(runtime, parked.id) {
+    Error(_error) -> Settle
+    Ok(cell) -> detach_cell(config, runtime, parked, cell)
+  }
+}
+
+fn detach_cell(
+  config: Config,
+  runtime: api.Runtime,
+  parked: Parked,
+  cell: api.EscalationCell,
+) -> Decision {
+  use <- bool.guard(
+    when: !durable.scoped_to(cell.record, parked.scope),
+    return: Settle,
+  )
+  case cell.record.status {
+    durable.Approved -> spend(config, runtime, parked, cell)
+    durable.Rejected | durable.Consumed -> Settle
+    durable.Pending -> {
+      let _ =
+        api.put_reserved_fact(runtime, async_key(parked.id), json.Int(cell.seq))
+      recheck_after_detach(config, runtime, parked, cell.seq)
+    }
+  }
+}
+
+fn recheck_after_detach(
+  config: Config,
+  runtime: api.Runtime,
+  parked: Parked,
+  detached_seq: Int,
+) -> Decision {
+  case api.escalation_cell(runtime, parked.id) {
+    Ok(fresh) if fresh.record.status == durable.Approved ->
+      case
+        api.fact(
+          runtime,
+          notice.key(notice.Escalation(id: parked.id, seq: detached_seq)),
+        )
+      {
+        Ok(None) -> spend(config, runtime, parked, fresh)
+        _ -> Settle
+      }
+    _ -> Settle
   }
 }
 
@@ -861,12 +1119,28 @@ fn spend(
     // from under the three checks above: one approval is worth one
     // widened execution, and it was not this one.
     Error(_error) -> Settle
-    Ok(payloads) ->
+    Ok(payloads) -> {
+      let _ =
+        api.put_reserved_fact(runtime, want_asks_key(parked.want), json.Int(0))
+      let _ = api.delete_reserved_fact(runtime, async_key(parked.id))
       case grants.decode_all(payloads) {
         Error(_report) -> Settle
         Ok(typed) -> Resume(grants: typed)
       }
+    }
   }
+}
+
+const async_prefix = "client/escalation_async/"
+
+const want_asks_prefix = "client/escalation_asks/"
+
+fn async_key(id: String) -> String {
+  async_prefix <> id
+}
+
+fn want_asks_key(want: String) -> String {
+  want_asks_prefix <> want
 }
 
 // --- borrowing the runtime -------------------------------------------------
@@ -894,18 +1168,6 @@ fn ask(
   waiting timeout: Int,
   sending make_request: fn(Subject(reply)) -> message,
 ) -> Result(reply, Nil) {
-  use owner <- result.try(process.subject_owner(subject))
-  let monitor = process.monitor(owner)
-  let reply_to = process.new_subject()
-
-  // The monitor and request must name the same incarnation. A named send would
-  // perform a second lookup and could either panic or reach a replacement.
-  process.send(subject, make_request(reply_to))
-  let answer =
-    process.new_selector()
-    |> process.select_map(reply_to, Ok)
-    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive(within: timeout)
-  process.demonitor_process(monitor)
-  result.flatten(answer)
+  call.try_call(subject, waiting: timeout, sending: make_request)
+  |> result.replace_error(Nil)
 }

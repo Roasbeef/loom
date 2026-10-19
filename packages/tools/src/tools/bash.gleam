@@ -334,10 +334,12 @@ fn run(
   // The floor is shared and the ceiling is not: a timeout under a
   // millisecond is nonsense in either mode, while the ceiling belongs to
   // whichever plane will run the command. See the module doc.
-  use <- bool.guard(
+  use <- bool.lazy_guard(
     when: option.unwrap(requested, default_timeout_ms) < 1
       && requested != Some(0),
-    return: tool.failure("invalid arguments: `timeout_ms` must be >= 1"),
+    return: fn() {
+      tool.failure("invalid arguments: `timeout_ms` must be >= 1")
+    },
   )
 
   use ctx <- tool.or_outcome(permissions.authorize(ctx, args), fn(outcome) {
@@ -371,12 +373,14 @@ fn requested_lifetime(
   requested: Option(Int),
 ) -> Result(Option(Int), String) {
   use lifetime <- result.try(tool.optional_string(args, "lifetime"))
-  use <- bool.guard(
+  use <- bool.lazy_guard(
     when: lifetime == Some("session") && agent.is_subagent(ctx.strand),
-    return: Error(
-      "lifetime: session is not available to a subagent; a subagent's jobs "
-      <> "end with it, so use the default finite lifetime (omit lifetime)",
-    ),
+    return: fn() {
+      Error(
+        "lifetime: session is not available to a subagent; a subagent's jobs "
+        <> "end with it, so use the default finite lifetime (omit lifetime)",
+      )
+    },
   )
   case lifetime, mode, requested {
     None, _mode, _wall | Some("finite"), _mode, _wall -> {

@@ -1911,6 +1911,8 @@ fn string_list_field(
 /// The longest schedule one run draws. The lists are as long as the old
 /// generator's eighty at most, and the final retirement is `finish`, not a
 /// generated event.
+const min_events = 20
+
 const max_events = 80
 
 /// One campaign: every schedule in it runs under one role, because an
@@ -2099,6 +2101,7 @@ pub fn session_channel_keeps_its_invariants_over_generated_schedules_test() {
     let config =
       statem.default_config(seed: campaign.seed)
       |> statem.with_test_count(campaign.runs)
+      |> statem.with_min_commands(min_events)
       |> statem.with_max_commands(max_events)
     case statem.check(spec(campaign.role, reached), config) {
       Ok(Nil) -> Nil

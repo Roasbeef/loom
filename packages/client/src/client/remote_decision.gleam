@@ -49,6 +49,7 @@
 import broker/policy.{type Grant}
 import client/approval_ceiling.{type Ceiling}
 import client/delegate_outbox.{type SpawnerLink}
+import client/escalate
 import client/escalation_view
 import client/grants
 import client/permissions
@@ -210,7 +211,7 @@ fn deny(
     cell,
     Some(remote_escalation.origin_of(decider)),
   )
-  |> answered(runtime, cell)
+  |> answered(runtime, cell, escalate.Denied)
 }
 
 // An approval is the local operator's approval with the ceiling put in. The
@@ -280,7 +281,10 @@ fn approve(
           )
       }
   }
-  |> answered(runtime, cell)
+  |> answered(runtime, cell, case scope {
+    Once -> escalate.ApprovedOnce
+    Session -> escalate.ApprovedForSession
+  })
 }
 
 // Whether every path a grant names is already its own canonical path on this
@@ -324,9 +328,13 @@ fn answered(
   committed: Result(durable.Escalation, api.ApiError),
   runtime: api.Runtime,
   cell: api.EscalationCell,
+  decision: escalate.OperatorDecision,
 ) -> Answer {
   case committed {
-    Ok(_) -> read_back(runtime, cell)
+    Ok(_) -> {
+      let _ = escalate.notify_decision(runtime, cell, decision)
+      read_back(runtime, cell)
+    }
     Error(api.RaceLost) ->
       case api.escalation_cell(runtime, cell.record.id) {
         Ok(fresh) -> stale(fresh, "the request changed while it was decided")
