@@ -131,7 +131,7 @@ pub fn the_policy_is_the_one_051_specifies_test() {
 pub fn a_listed_origins_policy_names_its_secure_socket_test() {
   assert page.content_security_policy("wss://box.example:8443")
     == "default-src 'none'; script-src 'self'; style-src 'self'; "
-    <> "style-src-attr 'unsafe-inline'; connect-src 'self' wss://box.example:8443; "
+    <> "frame-src 'self'; style-src-attr 'unsafe-inline'; connect-src 'self' wss://box.example:8443; "
     <> "img-src 'self'; base-uri 'none'; form-action 'none'; "
     <> "frame-ancestors 'none'"
 }
