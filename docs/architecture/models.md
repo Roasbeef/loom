@@ -465,8 +465,9 @@ honour, so a cheaper fallback costs nothing.
 when the strand's primary model is text-only. It receives the existing
 system prompt, tools, and conversation context, bounded by the image policy
 above. It is a routed generation for that turn, not a separate
-image-description subtask. Later text-only turns can return to the primary
-model with historical images replaced by placeholders. The catalogue
+image-description subtask. Later text prompts keep the vision route while
+images remain in the strand's projected context. Once compaction or navigation
+removes those pixels, a text-only run can return to the primary model. The catalogue
 refuses a vision chain containing an explicitly text-only model.
 
 ## The glance loop

@@ -126,8 +126,7 @@ fn identity_of(resolved: ResolvedModel) -> ModelIdentity {
   ModelIdentity(provider: resolved.provider, model_id: resolved.model_id)
 }
 
-// Whether the current turn of this operation's strand projection carries an
-// image.
+// Whether this operation's strand projection or admitted batch carries images.
 fn image_bearing_projected(opened: Session, operation: OpId) -> Bool {
   case session_read.strand_of(opened, operation) {
     Error(Nil) -> False
@@ -142,9 +141,9 @@ fn image_bearing_projected(opened: Session, operation: OpId) -> Bool {
 /// The admitted prompt batch is immutable for the operation. It can contain an
 /// image followed by a text instruction when held inputs are released
 /// together. Keep that entire image-bearing run on vision, including tool and
-/// run-end continuations; the next operation gets a new batch and can recover
-/// to text after a failed image run. Context classification additionally
-/// covers image steers and legacy callers without operation metadata.
+/// run-end continuations. Later prompts keep vision while their projected
+/// context retains images; compaction can discard them and return to text.
+/// Context classification also covers image steers and legacy callers.
 ///
 /// ## Examples
 ///

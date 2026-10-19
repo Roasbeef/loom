@@ -5,8 +5,8 @@
 //// an embedder needs as much as the daemon does; `client/vision` delegates
 //// here so its callers and tests are untouched.
 ////
-//// `image_bearing` classifies through `current_turn` and `is_image`;
-//// `placeholdered` rewrites through `replace_image`.
+//// `image_bearing` classifies through `is_image`; `placeholdered` rewrites
+//// through `replace_image`.
 ////
 //// A strand's model is chosen once, at creation, and nothing on the
 //// request path used to ask whether the *request* — not the strand —
@@ -24,7 +24,7 @@
 //// original attempt took:
 ////
 //// - **Admission** (`image_bearing`, `admission`). A request whose
-////   current turn carries an image, on a strand whose model cannot read
+////   projected context carries an image, on a strand whose model cannot read
 ////   images, must find a usable `vision` route or be refused
 ////   in band with a worded reason — before the planner mints any ids,
 ////   at the same gate that already refuses an unresolvable identity. An
@@ -47,22 +47,20 @@
 ////   the vision model that reads the whole context on a re-routed
 ////   request.
 ////
-//// The current turn decides because that is what this request must be
-//// answered against. A new attributed user prompt or a settled assistant
-//// response bounds it; a tool call and its result are steps inside it, so the
-//// second request of an image turn stays on the model that saw the
-//// image. An older image, on a request whose current turn is text,
-//// stays in the projection of a vision-capable model (the model may
-//// need to refer back) and is placeholdered on a text-only one (the
-//// model cannot read it on any turn).
+//// Every image still present in the projected strand context participates in
+//// routing. A text follow-up can refer to an earlier image without attaching
+//// it again, including after an interrupted run. Compaction or navigation can
+//// remove those pixels from the projection; only then is the request text-only.
+//// The gateway separately budgets historical images and protects the active
+//// run's images, so routing does not make old images count as newly attached.
 
 import core/message.{
   type AgentMessage, type UserBlock, AssistantMessage, CustomMessage,
-  ToolResultImage, ToolResultMessage, ToolResultText, ToolUse, UserImage,
-  UserMessage, UserText,
+  ToolResultImage, ToolResultMessage, ToolResultText, UserImage, UserMessage,
+  UserText,
 }
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option, None}
 import machine/operation.{OperationError}
 import machine/planner.{type RequestAdmission, AdmissionUnavailable}
 import machine/strand.{type ModelIdentity}
@@ -70,9 +68,8 @@ import provider/model.{type RequestTarget, type ResolvedModel, Vision}
 
 /// The placeholder a text-only projection shows in an image block's
 /// place. The mime type travels because it is the one fact about the
-/// image the text can still carry, and "described earlier in this
-/// conversation" tells the model the pixels exist in durable history a
-/// later vision-capable turn may read.
+/// image the text can still carry. The wording states what this request
+/// omitted without claiming a previous model described the pixels.
 ///
 /// ## Examples
 ///
@@ -83,33 +80,28 @@ import provider/model.{type RequestTarget, type ResolvedModel, Vision}
 ///
 pub fn placeholder(mime_type: String) -> UserBlock {
   UserText(
-    text: "[image: " <> mime_type <> ", described earlier in this conversation]",
+    text: "[image: "
+      <> mime_type
+      <> ", unavailable to this text-only model; original retained in conversation history]",
     text_signature: None,
   )
 }
 
-/// Whether the projection's *current turn* carries an image — the
-/// classification admission routes on.
+/// Whether any user or tool-result image remains in this projected context.
 ///
-/// The newest attributed user prompt begins a turn. Run-start digests have
-/// no human origin, so they remain inside that prompt's turn, as do assistant
-/// tool calls and their results. A settled assistant response also closes a
-/// turn, preserving the boundary for older transcripts without attribution.
-///
-/// Failed assistant messages are removed by session projection. Relying only
-/// on assistant boundaries would therefore route a later text prompt through
-/// vision forever after a rejected image request. Attribution survives that
-/// projection and identifies the new prompt without inspecting its text.
+/// Answers and new prompts do not remove earlier pixels. The next request
+/// must still use a model that can read them, since the prompt may refer back
+/// to any image the strand retains. This examines only the caller's projection,
+/// never another strand or images discarded by compaction.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // assert vision.image_bearing([]) == False
+/// assert vision.image_bearing([]) == False
 /// ```
 ///
 pub fn image_bearing(messages: List(AgentMessage)) -> Bool {
-  current_turn(messages)
-  |> list.any(fn(entry) {
+  list.any(messages, fn(entry) {
     case entry {
       UserMessage(content:, ..) -> list.any(content, is_image)
       ToolResultMessage(content:, ..) ->
@@ -122,34 +114,6 @@ pub fn image_bearing(messages: List(AgentMessage)) -> Bool {
       AssistantMessage(..) | CustomMessage(..) -> False
     }
   })
-}
-
-// Walk newest-first until the current human prompt or a settled answer.
-// The attributed prompt belongs to the result; the preceding answer does not.
-// Digests and tool steps stay with the prompt that caused them.
-//
-// Any attributed message bounds the turn, whether its origin is a human, a
-// peer session or a strand of this session (protocol-change 059). That is a
-// boundary and never an authority decision.
-fn current_turn(messages: List(AgentMessage)) -> List(AgentMessage) {
-  collect_turn(list.reverse(messages), [])
-}
-
-fn collect_turn(
-  newest_first: List(AgentMessage),
-  collected: List(AgentMessage),
-) -> List(AgentMessage) {
-  case newest_first {
-    [] -> collected
-    [UserMessage(origin: Some(_), ..) as prompt, ..] -> [prompt, ..collected]
-    [AssistantMessage(stop_reason: ToolUse, ..) as step, ..rest] ->
-      collect_turn(rest, [step, ..collected])
-    [AssistantMessage(..), ..] -> collected
-    [UserMessage(..) as step, ..rest]
-    | [ToolResultMessage(..) as step, ..rest]
-    | [CustomMessage(..) as step, ..rest] ->
-      collect_turn(rest, [step, ..collected])
-  }
 }
 
 fn is_image(block: UserBlock) -> Bool {
@@ -249,7 +213,7 @@ pub fn placeholdered(messages: List(AgentMessage)) -> List(AgentMessage) {
                 ToolResultText(
                   "[image: "
                     <> mime_type
-                    <> ", described earlier in this conversation]",
+                    <> ", unavailable to this text-only model; original retained in conversation history]",
                   None,
                 )
               ToolResultText(..) -> block

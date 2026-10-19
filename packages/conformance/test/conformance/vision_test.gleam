@@ -14,10 +14,8 @@
 //// - **The refusal.** With no vision route, the same prompt fails in
 ////   band with the worded `image_unsupported` reason, and no provider
 ////   is asked at all.
-//// - **The placeholder.** After the image turn, a text follow-up is
-////   answered by the strand's own model, and the request that reached
-////   it shows the placeholder where the image was — the durable
-////   transcript still carries the image itself.
+//// - **The follow-up.** A later text prompt still reaches vision with the
+////   retained pixels. A separate run boundary must not remove image access.
 
 import broker/broker
 import broker/exec
@@ -536,11 +534,8 @@ pub fn an_image_prompt_without_a_route_fails_worded_test() {
 
 // --- the placeholder ------------------------------------------------------
 
-// After the image turn, a text follow-up is answered by the strand's
-// own text-only model, and the request that reached it shows the
-// placeholder where the image was — while the durable transcript
-// still carries the image itself.
-pub fn a_followup_reaches_the_text_model_placeheld_test() {
+// Text follow-ups retain image access across independently admitted runs.
+pub fn a_followup_keeps_the_retained_image_on_vision_test() {
   let counter = tally()
   let sess = memory_session()
   let effects =
@@ -565,15 +560,16 @@ pub fn a_followup_reaches_the_text_model_placeheld_test() {
     ..,
   ) = outcome
 
-  // The follow-up went to the strand's own model, and its request
-  // body shows the placeholder, not the bytes.
-  assert requests_to(counter, text_host) == 1
-  let #(_, body) = the_one_request_to(counter, text_host)
-  assert !string.contains(body, image_base64)
-  assert string.contains(
-    body,
-    "[image: image/png, described earlier in this conversation]",
-  )
+  // Both runs use vision. The second request still includes the image,
+  // even though the second human prompt contains only text.
+  assert requests_to(counter, text_host) == 0
+  assert requests_to(counter, vision_host) == 2
+  let seen =
+    process.call(counter, waiting: 1000, sending: fn(reply) { Read(reply:) })
+  let assert [_, #(_, body)] = seen as "both runs must reach the transport"
+  assert string.contains(body, image_base64)
+  assert string.contains(body, "and in prose?")
+  assert !string.contains(body, "unavailable to this text-only model")
 
   // The durable transcript keeps the image: the second turn's
   // projection carries the original block, placeholders and all.
@@ -585,6 +581,22 @@ pub fn a_followup_reaches_the_text_model_placeheld_test() {
     message.AssistantMessage(..),
   ] = messages
   assert data == image_base64
+
+  // Navigating away removes the image from this branch's projection even
+  // though its original entry remains in the conversation store.
+  let assert Ok(move) = api.navigate(runtime, None, False, None, None, None)
+    as "navigation to an empty branch must be admitted"
+  let assert Ok(_) = api.await_result(runtime, move, within_ms: 30_000)
+    as "navigation must settle before the next prompt"
+  let assert Ok(third) =
+    api.prompt(runtime, [text_prompt("a fresh text branch")])
+  let assert Ok(operation.RunLastResult(outcome: operation.RunCompleted(..), ..)) =
+    api.await_result(runtime, third, within_ms: 30_000)
+    as "a branch without retained images must use its text model"
+  assert requests_to(counter, text_host) == 1
+  let #(_, text_body) = the_one_request_to(counter, text_host)
+  assert !string.contains(text_body, image_base64)
+  assert string.contains(text_body, text_model_id)
 
   let assert Ok(Nil) = api.close(runtime)
 }
@@ -598,4 +610,68 @@ fn projected_all(sess: Session) -> List(message.AgentMessage) {
       }
     _ -> []
   }
+}
+
+// The original report stopped a tool-heavy image run, then asked a text
+// follow-up. Cancellation must not discard the prompt's retained pixels.
+pub fn a_followup_after_a_stopped_image_run_keeps_vision_test() {
+  let counter = tally()
+  let started = process.new_subject()
+  let answering = transport(counter, image_answer)
+  let endpoint =
+    http.Transport(prepare_streaming: fn(request, subject) {
+      case requests_to(counter, vision_host) {
+        0 -> {
+          let ready = process.new_subject()
+          let owner =
+            process.spawn_unlinked(fn() {
+              let cancel = process.new_subject()
+              process.send(ready, cancel)
+              let _ = process.receive_forever(cancel)
+              Nil
+            })
+          let cancel = process.receive_forever(ready)
+          Ok(
+            http.PreparedRequest(
+              running: http.RunningRequest(owner:, cancel: fn() {
+                process.send(cancel, Nil)
+              }),
+              begin: fn() {
+                process.send(counter, Saw(vision_host, request.body))
+                process.send(started, Nil)
+              },
+            ),
+          )
+        }
+        _ -> answering.prepare_streaming(request, subject)
+      }
+    })
+  let sess = memory_session()
+  let effects =
+    wiring.build_effects(wiring_config(routed_gateway(endpoint), sess))
+  let assert Ok(runtime) =
+    api.open(sess, effects, api.default_options(configuration()))
+    as "the stoppable image session must open"
+  let assert Ok(first) = api.prompt(runtime, [image_prompt()])
+    as "the original image prompt must be admitted"
+  let assert Ok(Nil) = process.receive(started, 5000)
+    as "the image request must reach the transport before cancellation"
+  api.abort_operation(runtime, first)
+  let assert Ok(operation.RunLastResult(outcome: operation.RunAborted, ..)) =
+    api.await_result(runtime, first, within_ms: 30_000)
+    as "the original image run must settle as aborted"
+
+  let assert Ok(second) =
+    api.prompt(runtime, [text_prompt("did you see the image?")])
+    as "the text follow-up must be admitted"
+  let assert Ok(operation.RunLastResult(outcome: operation.RunCompleted(..), ..)) =
+    api.await_result(runtime, second, within_ms: 30_000)
+    as "the follow-up after cancellation must complete"
+  assert requests_to(counter, text_host) == 0
+  assert requests_to(counter, vision_host) == 2
+  let seen = process.call(counter, 1000, fn(reply) { Read(reply:) })
+  let assert [_, #(_, body)] = seen as "the follow-up must reach vision"
+  assert string.contains(body, image_base64)
+  assert string.contains(body, "did you see the image?")
+  let assert Ok(Nil) = api.close(runtime)
 }
