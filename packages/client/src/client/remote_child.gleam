@@ -681,19 +681,29 @@ pub fn refused(
   |> result.map(clear_requests(runtime, _))
 }
 
-// A child that is settled or refused has no call left to answer for, so the
-// requests the box sent for it are removed and their cards clear
-// (protocol-change/089). A failure to remove them leaves a card that answers
-// `Stale`, which is the harm already accepted for a card that outlives its
-// window, so it does not fail the write of the stub.
+// A refused spawn made no child, so the requests filed for its name have nobody
+// to answer for and are removed, and their cards clear (protocol-change/089). A
+// failure to remove them leaves a card that answers `Stale`, which is the harm
+// already accepted for a card that outlives its record, so it does not fail the
+// write of the stub.
+//
+// A settled child keeps its requests. Its call stopped waiting after the short
+// grace, but the box keeps the record decidable: a decision steers a child that
+// is still running, and an approval waits for the next run of one that went idle
+// (a notice never opens a run on a subagent; the parent's `agent_send` does,
+// within the child's deadline), where re-issuing the call spends it. A child
+// that gives up and reports within seconds of being refused is the common case,
+// and clearing on its settle would take the card away before its operator could
+// read it, and answer the approval `unknown_escalation`. The card clears when the box sends the decided
+// state, or when the laptop's own decision files the record the box answered.
 fn clear_requests(runtime: api.Runtime, stub: Stub) -> Stub {
   case stub.state {
-    Settled(..) | Refused(..) -> {
+    Refused(..) -> {
       let _ =
         remote_escalation_store.clear(runtime, stub.orchestrator, stub.name)
       stub
     }
-    Requested | Spawned(..) -> stub
+    Requested | Spawned(..) | Settled(..) -> stub
   }
 }
 
@@ -723,7 +733,6 @@ pub fn settled(
       Requested | Settled(..) | Refused(..) -> None
     }
   })
-  |> result.map(clear_requests(runtime, _))
 }
 
 /// How long after a child's deadline a settled child that still owes mail is

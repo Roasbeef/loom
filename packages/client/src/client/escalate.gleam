@@ -301,17 +301,19 @@ type Parked {
   )
 }
 
-/// The default policy: park for at most five minutes, polling every
-/// second, and never park at all unless the host says someone is
+/// The default policy: park for a five-second grace, polling every 200
+/// milliseconds, and never park at all unless the host says someone is
 /// attached.
 ///
-/// Five minutes is a compromise between the two ways this can go wrong.
-/// Longer and a call held for a decision nobody is coming back for keeps
-/// an exclusive tool's slot and a strand's turn alive well past the point
-/// the model could have routed around the refusal; shorter and a human
-/// who stepped away from a prompt loses a decision they were going to
-/// make. Neither is a safety property — the record survives either way —
-/// so a host that knows its operators may set whatever it likes.
+/// The grace is short because a decision no longer has to arrive while
+/// the call waits. When it closes with the record still pending, the
+/// call settles in band and the record stays decidable; a later decision
+/// steers or wakes the strand (`notify_decision`) so the model re-issues
+/// the call and spends the approval. A longer park would only hold an
+/// exclusive tool's slot and a strand's turn for a person who may not be
+/// coming back. Neither length is a safety property — the record survives
+/// either way — so a host that knows its operators may set whatever it
+/// likes.
 ///
 /// The record cap is a different kind of number: 256 distinct wants in
 /// one session is already far past what a person would work through, and
