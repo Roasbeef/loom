@@ -1,0 +1,745 @@
+{
+  "source_base": "c444fca2511759619dd3eee324fe206c018eee02",
+  "installed_commit": "3cd33073961be8d9b9205decd0b51bd98bfb253f",
+  "daemon_pid": 50242,
+  "otp": "29",
+  "erts": "17.0.5",
+  "word_bytes": 8,
+  "benchmark_schedulers": 1,
+  "source_sha256": {
+    "baseline_json": "2679e06c3f3b2e76a2ea4203a7cd95cf23186f7caa70093f090560f934c12d82",
+    "candidate_json": "637be2616a9d59d819c5e0b52a352f6aa86c70e83c9a1566c4c48d186459a2ad"
+  },
+  "measurement_scope": "Untraced parse/1 reductions and timing; separate root-only cumulative heap allocation. Offline fixtures, not installed CPU or RSS savings. Host workload uncontrolled.",
+  "live_censuses": [
+    {
+      "capture": "baseline",
+      "node_counters": {
+        "total": 465165635,
+        "processes": 343254928,
+        "processes_used": 342959832,
+        "system": 121910707,
+        "atom": 1512613,
+        "atom_used": 1512613,
+        "binary": 68072640,
+        "code": 30238106,
+        "ets": 2164072,
+        "process_count": 668
+      },
+      "owners": {
+        "session": 5,
+        "strand": 10
+      }
+    },
+    {
+      "capture": "census2",
+      "node_counters": {
+        "total": 432131203,
+        "processes": 303926392,
+        "processes_used": 303596952,
+        "system": 128204811,
+        "atom": 1512828,
+        "atom_used": 1512828,
+        "binary": 74343576,
+        "code": 30238730,
+        "ets": 2164080,
+        "process_count": 673
+      },
+      "owners": {
+        "session": 5,
+        "strand": 10
+      }
+    }
+  ],
+  "os_series": [
+    {
+      "timestamp": 1792452982.950207,
+      "pid": 50242,
+      "cpu_percent": 29.0,
+      "rss_kib": 605776,
+      "cpu_time": "27:03.99"
+    },
+    {
+      "timestamp": 1792452984.965743,
+      "pid": 50242,
+      "cpu_percent": 86.6,
+      "rss_kib": 557248,
+      "cpu_time": "27:06.85"
+    },
+    {
+      "timestamp": 1792452986.994613,
+      "pid": 50242,
+      "cpu_percent": 59.9,
+      "rss_kib": 585168,
+      "cpu_time": "27:08.36"
+    },
+    {
+      "timestamp": 1792452989.0125859,
+      "pid": 50242,
+      "cpu_percent": 65.5,
+      "rss_kib": 575856,
+      "cpu_time": "27:09.40"
+    },
+    {
+      "timestamp": 1792452991.036573,
+      "pid": 50242,
+      "cpu_percent": 95.1,
+      "rss_kib": 573888,
+      "cpu_time": "27:11.11"
+    },
+    {
+      "timestamp": 1792452993.079159,
+      "pid": 50242,
+      "cpu_percent": 57.0,
+      "rss_kib": 573536,
+      "cpu_time": "27:11.98"
+    }
+  ],
+  "json_equivalence": {
+    "inputs": 882,
+    "exceptions": 0,
+    "sha256": "27b8e2a1f3e4c1f1fcd85885f0695a3cb70ca0375dfb53766f711de3a4b1995d"
+  },
+  "json_samples": [
+    {
+      "variant": "baseline",
+      "pair": 1,
+      "fixture": "plain",
+      "bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127588,
+      "words": 5350,
+      "microseconds": 47450
+    },
+    {
+      "variant": "baseline",
+      "pair": 1,
+      "fixture": "escaped",
+      "bytes": 102002,
+      "repetitions": 50,
+      "reductions": 10382107,
+      "words": 23604650,
+      "microseconds": 143659
+    },
+    {
+      "variant": "baseline",
+      "pair": 1,
+      "fixture": "dense",
+      "bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11446052,
+      "words": 94245748,
+      "microseconds": 253260
+    },
+    {
+      "variant": "baseline",
+      "pair": 1,
+      "fixture": "dense_double",
+      "bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22748416,
+      "words": 188046900,
+      "microseconds": 441112
+    },
+    {
+      "variant": "baseline",
+      "pair": 1,
+      "fixture": "short",
+      "bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3219812,
+      "words": 14906548,
+      "microseconds": 29677
+    },
+    {
+      "variant": "baseline",
+      "pair": 1,
+      "fixture": "transcript",
+      "bytes": 360462,
+      "repetitions": 50,
+      "reductions": 50751122,
+      "words": 104717500,
+      "microseconds": 901755
+    },
+    {
+      "variant": "baseline",
+      "pair": 2,
+      "fixture": "plain",
+      "bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127588,
+      "words": 5350,
+      "microseconds": 24690
+    },
+    {
+      "variant": "baseline",
+      "pair": 2,
+      "fixture": "escaped",
+      "bytes": 102002,
+      "repetitions": 50,
+      "reductions": 10381947,
+      "words": 23604650,
+      "microseconds": 65788
+    },
+    {
+      "variant": "baseline",
+      "pair": 2,
+      "fixture": "dense",
+      "bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11439872,
+      "words": 94245748,
+      "microseconds": 128671
+    },
+    {
+      "variant": "baseline",
+      "pair": 2,
+      "fixture": "dense_double",
+      "bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22670112,
+      "words": 188046900,
+      "microseconds": 323060
+    },
+    {
+      "variant": "baseline",
+      "pair": 2,
+      "fixture": "short",
+      "bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3219792,
+      "words": 14906548,
+      "microseconds": 27554
+    },
+    {
+      "variant": "baseline",
+      "pair": 2,
+      "fixture": "transcript",
+      "bytes": 360462,
+      "repetitions": 50,
+      "reductions": 50751122,
+      "words": 104717500,
+      "microseconds": 821196
+    },
+    {
+      "variant": "baseline",
+      "pair": 3,
+      "fixture": "plain",
+      "bytes": 114002,
+      "repetitions": 50,
+      "reductions": 7127588,
+      "words": 5350,
+      "microseconds": 45224
+    },
+    {
+      "variant": "baseline",
+      "pair": 3,
+      "fixture": "escaped",
+      "bytes": 102002,
+      "repetitions": 50,
+      "reductions": 10382099,
+      "words": 23604650,
+      "microseconds": 122408
+    },
+    {
+      "variant": "baseline",
+      "pair": 3,
+      "fixture": "dense",
+      "bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11443572,
+      "words": 94245748,
+      "microseconds": 217454
+    },
+    {
+      "variant": "baseline",
+      "pair": 3,
+      "fixture": "dense_double",
+      "bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22725208,
+      "words": 188046900,
+      "microseconds": 412099
+    },
+    {
+      "variant": "baseline",
+      "pair": 3,
+      "fixture": "short",
+      "bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3219812,
+      "words": 14906548,
+      "microseconds": 30156
+    },
+    {
+      "variant": "baseline",
+      "pair": 3,
+      "fixture": "transcript",
+      "bytes": 360462,
+      "repetitions": 50,
+      "reductions": 50751122,
+      "words": 104717500,
+      "microseconds": 724883
+    },
+    {
+      "variant": "final",
+      "pair": 1,
+      "fixture": "plain",
+      "bytes": 114002,
+      "repetitions": 50,
+      "reductions": 6415087,
+      "words": 5350,
+      "microseconds": 27348
+    },
+    {
+      "variant": "final",
+      "pair": 1,
+      "fixture": "escaped",
+      "bytes": 102002,
+      "repetitions": 50,
+      "reductions": 9983382,
+      "words": 23604650,
+      "microseconds": 85365
+    },
+    {
+      "variant": "final",
+      "pair": 1,
+      "fixture": "dense",
+      "bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11441633,
+      "words": 94245748,
+      "microseconds": 164088
+    },
+    {
+      "variant": "final",
+      "pair": 1,
+      "fixture": "dense_double",
+      "bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22686462,
+      "words": 188046900,
+      "microseconds": 364752
+    },
+    {
+      "variant": "final",
+      "pair": 1,
+      "fixture": "short",
+      "bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3219537,
+      "words": 14906548,
+      "microseconds": 23392
+    },
+    {
+      "variant": "final",
+      "pair": 1,
+      "fixture": "transcript",
+      "bytes": 360462,
+      "repetitions": 50,
+      "reductions": 49366331,
+      "words": 104717500,
+      "microseconds": 546743
+    },
+    {
+      "variant": "final",
+      "pair": 2,
+      "fixture": "plain",
+      "bytes": 114002,
+      "repetitions": 50,
+      "reductions": 6415087,
+      "words": 5350,
+      "microseconds": 25846
+    },
+    {
+      "variant": "final",
+      "pair": 2,
+      "fixture": "escaped",
+      "bytes": 102002,
+      "repetitions": 50,
+      "reductions": 9983346,
+      "words": 23604650,
+      "microseconds": 76956
+    },
+    {
+      "variant": "final",
+      "pair": 2,
+      "fixture": "dense",
+      "bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11440377,
+      "words": 94245748,
+      "microseconds": 155859
+    },
+    {
+      "variant": "final",
+      "pair": 2,
+      "fixture": "dense_double",
+      "bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22681298,
+      "words": 188046900,
+      "microseconds": 358299
+    },
+    {
+      "variant": "final",
+      "pair": 2,
+      "fixture": "short",
+      "bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3219609,
+      "words": 14906548,
+      "microseconds": 27221
+    },
+    {
+      "variant": "final",
+      "pair": 2,
+      "fixture": "transcript",
+      "bytes": 360462,
+      "repetitions": 50,
+      "reductions": 49366331,
+      "words": 104717500,
+      "microseconds": 736232
+    },
+    {
+      "variant": "final",
+      "pair": 3,
+      "fixture": "plain",
+      "bytes": 114002,
+      "repetitions": 50,
+      "reductions": 6415087,
+      "words": 5350,
+      "microseconds": 44395
+    },
+    {
+      "variant": "final",
+      "pair": 3,
+      "fixture": "escaped",
+      "bytes": 102002,
+      "repetitions": 50,
+      "reductions": 9983894,
+      "words": 23604650,
+      "microseconds": 158244
+    },
+    {
+      "variant": "final",
+      "pair": 3,
+      "fixture": "dense",
+      "bytes": 96002,
+      "repetitions": 50,
+      "reductions": 11446417,
+      "words": 94245748,
+      "microseconds": 234075
+    },
+    {
+      "variant": "final",
+      "pair": 3,
+      "fixture": "dense_double",
+      "bytes": 192002,
+      "repetitions": 50,
+      "reductions": 22752770,
+      "words": 188046900,
+      "microseconds": 473645
+    },
+    {
+      "variant": "final",
+      "pair": 3,
+      "fixture": "short",
+      "bytes": 10753,
+      "repetitions": 50,
+      "reductions": 3219893,
+      "words": 14906548,
+      "microseconds": 40106
+    },
+    {
+      "variant": "final",
+      "pair": 3,
+      "fixture": "transcript",
+      "bytes": 360462,
+      "repetitions": 50,
+      "reductions": 49366331,
+      "words": 104717500,
+      "microseconds": 1066008
+    }
+  ],
+  "json_medians_per_decode": [
+    {
+      "fixture": "plain",
+      "baseline": {
+        "reductions": 142551.76,
+        "words": 107.0,
+        "microseconds": 904.48,
+        "microseconds_range": [
+          493.8,
+          949.0
+        ]
+      },
+      "final": {
+        "reductions": 128301.74,
+        "words": 107.0,
+        "microseconds": 546.96,
+        "microseconds_range": [
+          516.92,
+          887.9
+        ]
+      },
+      "reductions_decrease_percent": 9.996383068157144
+    },
+    {
+      "fixture": "escaped",
+      "baseline": {
+        "reductions": 207641.98,
+        "words": 472093.0,
+        "microseconds": 2448.16,
+        "microseconds_range": [
+          1315.76,
+          2873.18
+        ]
+      },
+      "final": {
+        "reductions": 199667.64,
+        "words": 472093.0,
+        "microseconds": 1707.3,
+        "microseconds_range": [
+          1539.12,
+          3164.88
+        ]
+      },
+      "reductions_decrease_percent": 3.840427643774147
+    },
+    {
+      "fixture": "dense",
+      "baseline": {
+        "reductions": 228871.44,
+        "words": 1884914.96,
+        "microseconds": 4349.08,
+        "microseconds_range": [
+          2573.42,
+          5065.2
+        ]
+      },
+      "final": {
+        "reductions": 228832.66,
+        "words": 1884914.96,
+        "microseconds": 3281.76,
+        "microseconds_range": [
+          3117.18,
+          4681.5
+        ]
+      },
+      "reductions_decrease_percent": 0.016944010139485766
+    },
+    {
+      "fixture": "dense_double",
+      "baseline": {
+        "reductions": 454504.16,
+        "words": 3760938.0,
+        "microseconds": 8241.98,
+        "microseconds_range": [
+          6461.2,
+          8822.24
+        ]
+      },
+      "final": {
+        "reductions": 453729.24,
+        "words": 3760938.0,
+        "microseconds": 7295.04,
+        "microseconds_range": [
+          7165.98,
+          9472.9
+        ]
+      },
+      "reductions_decrease_percent": 0.17049788939225152
+    },
+    {
+      "fixture": "short",
+      "baseline": {
+        "reductions": 64396.24,
+        "words": 298130.96,
+        "microseconds": 593.54,
+        "microseconds_range": [
+          551.08,
+          603.12
+        ]
+      },
+      "final": {
+        "reductions": 64392.18,
+        "words": 298130.96,
+        "microseconds": 544.42,
+        "microseconds_range": [
+          467.84,
+          802.12
+        ]
+      },
+      "reductions_decrease_percent": 0.006304715927507587
+    },
+    {
+      "fixture": "transcript",
+      "baseline": {
+        "reductions": 1015022.44,
+        "words": 2094350.0,
+        "microseconds": 16423.92,
+        "microseconds_range": [
+          14497.66,
+          18035.1
+        ]
+      },
+      "final": {
+        "reductions": 987326.62,
+        "words": 2094350.0,
+        "microseconds": 14724.64,
+        "microseconds_range": [
+          10934.86,
+          21320.16
+        ]
+      },
+      "reductions_decrease_percent": 2.7285918920176733
+    }
+  ],
+  "page_fixture_measurements": [
+    {
+      "variant": "baseline",
+      "trial": 1,
+      "unused_hook_messages": [
+        0,
+        8192
+      ],
+      "rows": [
+        {
+          "socket_bytes": 6216,
+          "hub_growth_words": 388,
+          "component_flat_words": 19006
+        },
+        {
+          "socket_bytes": 6104,
+          "hub_growth_words": 424,
+          "component_flat_words": 191308
+        }
+      ],
+      "regression_verdict": "failed"
+    },
+    {
+      "variant": "baseline",
+      "trial": 2,
+      "unused_hook_messages": [
+        0,
+        8192
+      ],
+      "rows": [
+        {
+          "socket_bytes": 6216,
+          "hub_growth_words": 388,
+          "component_flat_words": 19006
+        },
+        {
+          "socket_bytes": 6104,
+          "hub_growth_words": 424,
+          "component_flat_words": 191308
+        }
+      ],
+      "regression_verdict": "failed"
+    },
+    {
+      "variant": "baseline",
+      "trial": 3,
+      "unused_hook_messages": [
+        0,
+        8192
+      ],
+      "rows": [
+        {
+          "socket_bytes": 6216,
+          "hub_growth_words": 388,
+          "component_flat_words": 19006
+        },
+        {
+          "socket_bytes": 6104,
+          "hub_growth_words": 424,
+          "component_flat_words": 191308
+        }
+      ],
+      "regression_verdict": "failed"
+    },
+    {
+      "variant": "final",
+      "trial": 1,
+      "unused_hook_messages": [
+        0,
+        8192
+      ],
+      "rows": [
+        {
+          "socket_bytes": 6216,
+          "hub_growth_words": 388,
+          "component_flat_words": 9280
+        },
+        {
+          "socket_bytes": 6104,
+          "hub_growth_words": 424,
+          "component_flat_words": 9550
+        }
+      ],
+      "regression_verdict": "passed"
+    },
+    {
+      "variant": "final",
+      "trial": 2,
+      "unused_hook_messages": [
+        0,
+        8192
+      ],
+      "rows": [
+        {
+          "socket_bytes": 6216,
+          "hub_growth_words": 388,
+          "component_flat_words": 9280
+        },
+        {
+          "socket_bytes": 6104,
+          "hub_growth_words": 424,
+          "component_flat_words": 9550
+        }
+      ],
+      "regression_verdict": "passed"
+    },
+    {
+      "variant": "final",
+      "trial": 3,
+      "unused_hook_messages": [
+        0,
+        8192
+      ],
+      "rows": [
+        {
+          "socket_bytes": 6216,
+          "hub_growth_words": 388,
+          "component_flat_words": 9280
+        },
+        {
+          "socket_bytes": 6104,
+          "hub_growth_words": 424,
+          "component_flat_words": 9550
+        }
+      ],
+      "regression_verdict": "passed"
+    }
+  ],
+  "candidate_source_commits": {
+    "cpu": "35a0957cb",
+    "memory": "a0c42df95"
+  },
+  "validation": {
+    "core_tests": 166,
+    "session_socket_tests": 12,
+    "ui_socket_tests": 63,
+    "ui_relay_tests": 18,
+    "targeted_lint_errors": 0,
+    "targeted_lint_warnings": 766,
+    "doc_check_errors": 0,
+    "doc_check_warnings": 211,
+    "independent_review": "no blocking findings",
+    "full_client_suite": "not run",
+    "hosted_ci": "not run",
+    "installed_comparison": "not run"
+  }
+}
