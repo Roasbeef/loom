@@ -1599,10 +1599,12 @@ pub fn the_page_is_told_states_declarations_and_no_node_test() {
         enforcement: None,
         toolchains: [],
         free_scopes: None,
+        workspaces: [],
         contradiction: None,
       )),
     )
   let assert Some(report) = exec2_card.report
+  assert report.workspaces == ["proj"]
   assert report.state == page.Degraded
   assert report.free_scopes == Some(12)
   assert report.platform == Some("linux/x86_64")
@@ -1612,8 +1614,65 @@ pub fn the_page_is_told_states_declarations_and_no_node_test() {
   assert pool
     == page.Pool(
       "builders",
-      Some(page.PoolReport(executors: ["exec2", "box"], eligible: ["box"])),
+      Some(
+        page.PoolReport(
+          executors: ["exec2", "box"],
+          eligible: ["box"],
+          workspaces: [],
+        ),
+      ),
     )
+}
+
+// A pool offers the workspace names every executor that could take the session
+// registered, because a first open can land on any of them. An executor that is
+// down is not asked, and a pool with none reachable offers nothing.
+pub fn a_pool_is_told_the_workspaces_all_its_reachable_executors_share_test() {
+  let facts = fn(name, workspaces) {
+    Some(
+      node_report.NodeReport(
+        ..bare(name),
+        executor: Some(
+          node_report.ExecutorFacts(
+            ..executor_facts(scopes(open: 4, closing: 0, unknown: 0)),
+            workspaces:,
+          ),
+        ),
+      ),
+    )
+  }
+  let pool = fn(eligible) {
+    deployment.PoolEntry(
+      name: "builders",
+      executors: ["exec2", "box"],
+      eligible:,
+    )
+  }
+  let told = fn(eligible) {
+    let assert page.Placements(pools: [card], ..) =
+      deployment.for_page(
+        deployment.Placements(
+          executors: [
+            deployment.ExecutorEntry(
+              box(),
+              Reachable,
+              facts("box@10.0.0.2", ["app", "tools", "docs"]),
+            ),
+            deployment.ExecutorEntry(
+              exec2(),
+              Reachable,
+              facts("exec2@10.0.0.9", ["tools", "app"]),
+            ),
+          ],
+          pools: [pool(eligible)],
+        ),
+      )
+    let assert Some(report) = card.report
+    report.workspaces
+  }
+  assert told(["exec2", "box"]) == ["app", "tools"]
+  assert told(["box"]) == ["app", "tools", "docs"]
+  assert told([]) == []
 }
 
 pub fn a_down_or_full_executor_is_drawn_with_that_state_test() {

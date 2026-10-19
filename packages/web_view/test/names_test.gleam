@@ -70,6 +70,7 @@ fn start(
     rename_self:,
     executors: [],
     pools: [],
+    machine: "box",
     placements: fn(_) { Nil },
   )
 }

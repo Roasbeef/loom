@@ -1,5 +1,5 @@
-//// The home's section for folders that hold no session: a control that opens a
-//// session in a folder the owner types, and the folders the owner recently
+//// The home's section for folders that hold no session: a control that opens the
+//// one form for a new session, and the folders the owner recently
 //// started one in that the list above does not show (protocol-change/074).
 ////
 //// A session's folder appears in the list while the owner holds a session in it.
@@ -88,12 +88,11 @@ pub fn view(
             html.h3([attribute.class("home-workspace")], [
               html.text("Other folders"),
             ]),
-            create.elsewhere_button(offer),
 
-            // The daemon's executors, when it has any, give the section a
-            // second way to start a session where the owner has no folder: a
-            // workspace registered on one of them (protocol-change/078).
-            create.remote_button(offer),
+            // One button opens the one form for a new session. Where the daemon
+            // has executors or pools the form opens with a choice of the machine
+            // it runs on (protocol-change/078, 085).
+            create.new_button(offer),
           ]),
 
           // The refusal sits under the heading row and not in it: a sentence
@@ -102,8 +101,7 @@ pub fn view(
             Some(notice) -> notice.line(notice)
             None -> element.none()
           },
-          create.elsewhere_form(offer),
-          create.remote_form(offer),
+          create.new_form(offer, list.map(recent, fn(entry) { entry.path })),
           keyed.ul(
             [attribute.class("home-list")],
             list.map(recent, fn(entry) {

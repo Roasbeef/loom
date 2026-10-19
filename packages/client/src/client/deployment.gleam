@@ -1242,6 +1242,7 @@ pub fn for_page(placed: Placements) -> page.Placements {
           ),
           toolchains: entry.executor.toolchains,
           free_scopes: option.map(facts, free_scopes),
+          workspaces: registered_names(entry),
           contradiction: option.then(facts, fn(found) {
             contradiction_of(Some(entry.executor), found)
           }),
@@ -1254,10 +1255,43 @@ pub fn for_page(placed: Placements) -> page.Placements {
         report: Some(page.PoolReport(
           executors: entry.executors,
           eligible: entry.eligible,
+          workspaces: shared_names(placed.executors, entry.eligible),
         )),
       )
     }),
   )
+}
+
+// The workspace names an executor's report lists, or none when it did not
+// report. The names are the executor's own census and never a root.
+fn registered_names(entry: ExecutorEntry) -> List(String) {
+  entry.report
+  |> option.then(fn(report) { report.executor })
+  |> option.map(fn(facts) { facts.workspaces })
+  |> option.unwrap([])
+}
+
+// The names every named executor registered, in the first one's order. A first
+// open lands on whichever eligible executor takes it, so only a name all of them
+// serve is certain to be found; with no eligible executor nothing is offered.
+fn shared_names(
+  executors: List(ExecutorEntry),
+  eligible: List(String),
+) -> List(String) {
+  let lists =
+    list.filter_map(executors, fn(entry) {
+      case list.contains(eligible, entry.executor.name) {
+        True -> Ok(registered_names(entry))
+        False -> Error(Nil)
+      }
+    })
+  case lists {
+    [] -> []
+    [first, ..rest] ->
+      list.filter(first, fn(name) {
+        list.all(rest, fn(other) { list.contains(other, name) })
+      })
+  }
 }
 
 // The state a card for an executor shows: full when it would refuse the next

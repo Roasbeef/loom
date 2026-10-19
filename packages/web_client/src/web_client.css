@@ -588,7 +588,7 @@
   .home-create-profile-select{min-width:0;padding:4px 8px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg);color:var(--color-fg);font:13px/1.4 var(--font-sans);}
   .home-create-profile-select:focus-visible{outline:none;border-color:var(--color-fg-quiet);}
   .home-create-profile-select:disabled{opacity:.6;}
-  .home-create-hint{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
+  .home-create-hint,.home-create-note{margin:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
   .home-create-actions{display:flex;gap:8px;}
   .home-create-actions button{margin:0;padding:4px 12px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:13px/1.4 var(--font-sans);cursor:pointer;}
   .home-create-actions button:hover:not(:disabled){background:var(--color-bg);}
