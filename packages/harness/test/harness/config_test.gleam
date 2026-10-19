@@ -113,3 +113,11 @@ pub fn random_entropy_does_not_repeat_test() {
   let seed = harness.random_entropy()
   assert seed() != seed()
 }
+
+pub fn an_empty_fallback_api_is_refused_test() {
+  let base = settings(fixtures.routed_gateway(transport()))
+  assert harness.new(
+      harness.Settings(..base, fallback: fixtures.fallback_with("", 1, 1)),
+    )
+    == Error(harness.EmptyApi)
+}

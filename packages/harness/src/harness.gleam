@@ -60,8 +60,8 @@
 //// ## Flow
 ////
 //// `settings` fills the defaults, `new` validates them into a `HarnessConfig`
-//// (`routed` asks the gateway about the role, `positive` checks a limit and
-//// `absolute` a path), and `effects` assembles the record. `random_entropy` is the unique-seed
+//// (`routed` asks the gateway about the role, `named` checks the fallback api,
+//// `positive` a limit and `absolute` a path), and `effects` assembles the record. `random_entropy` is the unique-seed
 //// source a host may use, and `embedded_context` is the tool context an
 //// `Embedded` host runs its tools under.
 
@@ -153,6 +153,11 @@ pub type ConfigError {
 
   /// A path which must be absolute was not.
   RelativePath(path: String)
+
+  /// The fallback adapter api is empty. It is captured durably into every
+  /// generation intent and compared when a deferred handle is validated, so
+  /// it must name the api actually dispatched to.
+  EmptyApi
 }
 
 /// A validated configuration. Opaque: the only way to hold one is `new`.
@@ -203,7 +208,7 @@ pub fn settings(
 /// Judges a set of settings, refusing every combination the daemon would
 /// reject at run time.
 ///
-/// The role must resolve to a usable chain, the fallback window, the fallback
+/// The role must resolve to a usable chain, the fallback api must be named, the fallback window, the fallback
 /// ceiling and the provider timeout must be positive, and an `Embedded`
 /// workspace and blob root must be absolute.
 ///
@@ -215,6 +220,7 @@ pub fn settings(
 ///
 pub fn new(settings: Settings) -> Result(HarnessConfig, ConfigError) {
   use _routed <- try(routed(settings.gateway, settings.role))
+  use _api <- try(named(settings.fallback.api))
   use _window <- try(positive(
     "fallback.context_window",
     settings.fallback.context_window,
@@ -267,6 +273,13 @@ fn routed(provider_gateway: Gateway, role: Role) -> Result(Nil, ConfigError) {
   case gateway.resolve(provider_gateway, role) {
     Ok(_resolved) -> Ok(Nil)
     Error(_missing) -> Error(RoleUnrouted(role:))
+  }
+}
+
+fn named(api: String) -> Result(Nil, ConfigError) {
+  case api {
+    "" -> Error(EmptyApi)
+    _ -> Ok(Nil)
   }
 }
 

@@ -24,7 +24,7 @@ placement across machines and the holder process.
   beyond the fallback, random entropy, no system prompt, a ten minute provider
   timeout); `new(settings)` refuses what the daemon would turn into an in-band
   `model_unavailable` at run time. `ConfigError` is `RoleUnrouted(role)`,
-  `InvalidLimit(name)` or `RelativePath(path)`.
+  `InvalidLimit(name)`, `RelativePath(path)` or `EmptyApi`.
 - `harness.Tools` — `Embedded(workspace, blob_root)` runs tools in this VM
   under a context with no broker (`embedded_context`), `Hosted(context)` under
   one the embedder builds per call.
