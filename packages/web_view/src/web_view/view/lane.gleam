@@ -1165,6 +1165,10 @@ fn block_element(
   newest: String,
 ) -> Element(message) {
   let counted = turns.reasoning_lines(block)
+  let thoughts = case dict.is_empty(thoughts) {
+    True -> turns.reasoning_thoughts(block, expansion.capped)
+    False -> thoughts
+  }
   let rows =
     list.map(block.rows, fn(row) {
       let heir = case row.0 == newest {

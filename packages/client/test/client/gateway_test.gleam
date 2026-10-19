@@ -1860,6 +1860,39 @@ pub fn set_config_model_name_leaves_thinking_level_alone_test() {
     == Ok(json.String("off"))
 }
 
+// Switching to a catalogue entry whose declared `thinking` differs from the
+// previous entry's seed updates the strand's thinking level when the strand
+// was still at its previous seed (such as switching from an unseeded/off entry
+// to `gemini-argon` or from `gemini-argon` to `gemini-argon-high`).
+pub fn set_config_model_name_seeds_thinking_when_at_previous_seed_test() {
+  let assert [head, tail] = test_catalog().models
+    as "the test catalogue must have two entries"
+  let catalog =
+    catalog.Catalog(..test_catalog(), models: [
+      head,
+      catalog.CatalogModel(..tail, thinking: model.ThinkingHigh),
+    ])
+  let harness = start_harness_with(catalog: Some(catalog))
+  subscribe(harness)
+  assert field_of(effective_config(harness, 34, "main"), "thinking_level")
+    == Ok(json.String("off"))
+  send(
+    harness,
+    35,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("model_name", json.String("fallback"))]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(35)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+    as "switching model replies with the updated config snapshot"
+  assert field_of(config, "model_name") == Ok(json.String("fallback"))
+  assert field_of(config, "thinking_level") == Ok(json.String("high"))
+}
+
 // A strand the hub seeds takes its per-turn level from the catalogue
 // entry its identity names — the entry in force — and not from whatever
 // level the source strand happened to be sitting at. A copied strand has
