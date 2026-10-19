@@ -280,6 +280,21 @@ pub fn this_machine_is_the_default_choice_test() {
   assert string.contains(after, "aria-pressed=\"true\"")
 }
 
+// The card for this machine carries the name the daemon was given for itself,
+// the one its ledger uses for it, and not its node string.
+pub fn this_machine_is_titled_by_the_name_the_daemon_gives_it_test() {
+  let asked = process.new_subject()
+  let start =
+    home.Start(
+      ..hearing([], ["box"], [], answering(reported()), asked),
+      machine: "hub",
+    )
+  let html = drawn(run(opened(start), home.OpeningElsewhere))
+  assert string.contains(html, "hub (this machine)")
+  assert string.contains(html, "Commands and the conversation stay on hub.")
+  assert !string.contains(html, "alpha (this machine)")
+}
+
 // The daemon's answer puts a state pill on each card, in the tints the page
 // already has, with what it knows of the executor, and says the state is advice.
 pub fn the_cards_show_the_state_the_daemon_found_test() {
@@ -373,8 +388,15 @@ pub fn an_unknown_list_submits_the_typed_name_test() {
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
   let html = drawn(model)
   assert string.contains(html, "name=\"workspace\"")
-  let _ =
-    run(model, home.CreatingRemote("served", "review", creations.default_roles))
+  // The form's own decoder trims the typed text before the page sees it.
+  let assert Ok(#(workspace, name, roles)) =
+    create.remote_fields_with_roles(
+      [#("workspace", " served "), #("name", "review")],
+      [],
+      [],
+      [],
+    )
+  let _ = run(model, home.CreatingRemote(workspace, name, roles))
   assert the_asked(asked)
     == Ok(#(
       creations.Registered("box", "served"),
@@ -382,6 +404,43 @@ pub fn an_unknown_list_submits_the_typed_name_test() {
       creations.Shareable,
       creations.default_roles,
     ))
+}
+
+// The submit is checked against what the form could have sent. Where the
+// daemon listed the place's workspaces the form drew a select, so a name outside
+// the list is refused and sends nothing. Where it listed none the form drew a
+// text field, and a name that cannot be a workspace name is refused too.
+pub fn a_workspace_the_form_could_not_have_sent_is_refused_test() {
+  let asked = process.new_subject()
+  let listed = hearing([], ["box"], ["builders"], answering(reported()), asked)
+  let model = run(opened(listed), home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
+  let _ =
+    run(model, home.CreatingRemote("elsewhere", "", creations.default_roles))
+  assert the_asked(asked) == Error(Nil)
+  let _ = run(model, home.CreatingRemote("tools", "", creations.default_roles))
+  assert the_asked(asked)
+    == Ok(#(
+      creations.Registered("box", "tools"),
+      "",
+      creations.Shareable,
+      creations.default_roles,
+    ))
+
+  // A pool offers the names its reached executors share.
+  let pooled = run(model, home.ChoosingPlace(placements.InPool("builders")))
+  let _ =
+    run(pooled, home.CreatingRemote("elsewhere", "", creations.default_roles))
+  assert the_asked(asked) == Error(Nil)
+
+  let unread = opened(executing([], ["box"], asked))
+  let unread = run(unread, home.OpeningElsewhere)
+  let unread = run(unread, home.ChoosingPlace(placements.OnExecutor("box")))
+  let _ =
+    run(unread, home.CreatingRemote("/work/app", "", creations.default_roles))
+  assert the_asked(asked) == Error(Nil)
+  let _ = run(unread, home.CreatingRemote("", "", creations.default_roles))
+  assert the_asked(asked) == Error(Nil)
 }
 
 // The daemon's refusal of a name the executor does not serve comes back on the

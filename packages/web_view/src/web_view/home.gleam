@@ -1287,7 +1287,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     CreatingRemote(workspace:, name:, roles:) ->
       case model.start.create, model.status, model.creating {
         Some(ask), Connected, create.Chosen(choice) ->
-          case offered_roles(model, roles) {
+          case
+            offered_roles(model, roles)
+            && offered_workspace(model, choice, workspace)
+          {
             True -> #(
               Model(..model, creating: create.Dispatching(choice), note: None),
               creation(
@@ -2188,6 +2191,22 @@ fn creation(
 fn offered_roles(model: Model, roles: creations.Roles) -> Bool {
   offered(model.start.profiles, roles.profile)
   && offered(model.start.models, roles.model)
+}
+
+// Whether a submitted workspace is one the form could have sent for the place
+// chosen. When the daemon listed the workspaces the place registers, the form
+// drew a select, so only a listed name can come from it. When it listed none
+// the form drew a text field, so any text that names a workspace can, and the
+// daemon decides whether the executor serves it.
+fn offered_workspace(
+  model: Model,
+  choice: placements.Choice,
+  workspace: String,
+) -> Bool {
+  case placements.workspaces(model.cards, choice) {
+    [] -> result.is_ok(creations.registered_name(workspace))
+    listed -> list.contains(listed, workspace)
+  }
 }
 
 fn offered(listed: List(String), chosen: Option(String)) -> Bool {
