@@ -150,7 +150,7 @@ fn body_style() -> style.Style {
 /// ```
 pub fn reason(refusal: Refusal) -> String {
   case refusal {
-    model.Unsupported(what:) -> "not drawn: " <> what <> " are not supported"
+    model.Unsupported(what:) -> "not drawn: unsupported " <> what
     model.Malformed(line:, expected:) ->
       "not drawn: line " <> int.to_string(line) <> " expected " <> expected
     model.TooLarge(limit:) ->

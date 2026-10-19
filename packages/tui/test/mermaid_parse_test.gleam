@@ -111,29 +111,29 @@ pub fn br_breaks_a_node_label_test() {
 
 pub fn unsupported_flowchart_constructs_are_named_test() {
   assert refusal("graph TD\nsubgraph s\nA\nend")
-    == model.Unsupported("subgraph statements")
+    == model.Unsupported("`subgraph` statement")
   assert refusal("graph TD\nA\nclassDef x fill:#f00")
-    == model.Unsupported("classDef statements")
+    == model.Unsupported("`classDef` statement")
   assert refusal("graph TD\nA\nstyle A fill:#f00")
-    == model.Unsupported("style statements")
+    == model.Unsupported("`style` statement")
   assert refusal("graph TD\nA\nclick A callback")
-    == model.Unsupported("click statements")
+    == model.Unsupported("`click` statement")
   assert refusal("graph TD\nA:::hot --> B")
     == model.Unsupported("class shorthand")
   assert refusal("graph TD\nA((circle)) --> B")
-    == model.Unsupported("this node shape")
+    == model.Unsupported("node shape")
   assert refusal("graph TD\nA <--> B")
-    == model.Unsupported("a bidirectional edge")
-  assert refusal("graph TD\nA --> A") == model.Unsupported("a self-loop edge")
+    == model.Unsupported("bidirectional edge")
+  assert refusal("graph TD\nA --> A") == model.Unsupported("self-loop edge")
 }
 
 pub fn other_diagram_types_directives_and_front_matter_are_refused_test() {
   assert refusal("pie title Pets\n\"Dogs\" : 5")
-    == model.Unsupported("pie diagrams")
+    == model.Unsupported("diagram type `pie`")
   assert refusal("classDiagram\nclass A")
-    == model.Unsupported("classDiagram diagrams")
+    == model.Unsupported("diagram type `classDiagram`")
   assert refusal("%%{init: {}}%%\ngraph TD\nA")
-    == model.Unsupported("a %%{ directive")
+    == model.Unsupported("%%{ directive")
   assert refusal("---\ntitle: x\n---\ngraph TD\nA")
     == model.Unsupported("front matter")
 }
@@ -255,13 +255,13 @@ pub fn notes_test() {
 
 pub fn unsupported_sequence_constructs_are_named_test() {
   assert refusal("sequenceDiagram\nA->>B: x\nloop every day\nend")
-    == model.Unsupported("loop in a sequence diagram")
+    == model.Unsupported("`loop` in a sequence diagram")
   assert refusal("sequenceDiagram\nA->>B: x\nactivate B")
-    == model.Unsupported("activate in a sequence diagram")
+    == model.Unsupported("`activate` in a sequence diagram")
   assert refusal("sequenceDiagram\nA->>+B: x")
     == model.Unsupported("message activation")
   assert refusal("sequenceDiagram\nautonumber\nA->>B: x")
-    == model.Unsupported("autonumber in a sequence diagram")
+    == model.Unsupported("`autonumber` in a sequence diagram")
 }
 
 pub fn malformed_sequence_lines_name_their_line_test() {

@@ -185,8 +185,8 @@ pub fn the_canvas_cap_refuses_before_routing_test() {
 pub fn reasons_are_short_phrases_test() {
   assert mermaid.reason(model.TooWide)
     == "not drawn: too wide for this terminal"
-  assert mermaid.reason(model.Unsupported("subgraph statements"))
-    == "not drawn: subgraph statements are not supported"
+  assert mermaid.reason(model.Unsupported("`subgraph` statement"))
+    == "not drawn: unsupported `subgraph` statement"
 }
 
 // --- the router's work is bounded ---------------------------------------

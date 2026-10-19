@@ -134,7 +134,7 @@ fn significant_lines(source: String) -> Result(List(Numbered), Refusal) {
   |> list.try_fold([], fn(kept, entry) {
     case entry.1 {
       "" -> Ok(kept)
-      "%%{" <> _ -> Error(model.Unsupported("a %%{ directive"))
+      "%%{" <> _ -> Error(model.Unsupported("%%{ directive"))
       "%%" <> _ -> Ok(kept)
       "---" <> _ if kept == [] -> Error(model.Unsupported("front matter"))
       _ -> Ok([entry, ..kept])
@@ -153,7 +153,7 @@ fn dispatch(
       parse_sequence(rest) |> result.map(model.Sequenced)
     [keyword, ..] if keyword == "flowchart" || keyword == "graph" ->
       parse_flowchart(number, header, rest) |> result.map(model.Flow)
-    [other, ..] -> Error(model.Unsupported(other <> " diagrams"))
+    [other, ..] -> Error(model.Unsupported("diagram type `" <> other <> "`"))
     [] -> Error(model.Malformed(number, "a diagram header"))
   }
 }
@@ -276,7 +276,7 @@ fn parse_statement(
     [] -> ""
   }
   case list.contains(flow_keywords, first) {
-    True -> Error(model.Unsupported(first <> " statements"))
+    True -> Error(model.Unsupported("`" <> first <> "` statement"))
     False -> {
       use #(builder, sources, rest) <- result.try(parse_group(
         builder,
@@ -354,7 +354,7 @@ fn add_edges(
   list.try_fold(pairs, builder, fn(builder, pair) {
     let #(from, to) = pair
     case from == to, builder.edge_count >= model.max_edges {
-      True, _ -> Error(model.Unsupported("a self-loop edge"))
+      True, _ -> Error(model.Unsupported("self-loop edge"))
       _, True -> Error(model.TooLarge(model.Edges))
       False, False ->
         Ok(
@@ -378,7 +378,7 @@ fn parse_edge(
   line: Int,
 ) -> Result(#(Stroke, Tip, String, String), Refusal) {
   case text {
-    "<" <> _ -> Error(model.Unsupported("a bidirectional edge"))
+    "<" <> _ -> Error(model.Unsupported("bidirectional edge"))
     "-.->" <> rest -> Ok(#(model.Dotted, model.Arrow, "", rest))
     "-.-" <> rest -> Ok(#(model.Dotted, model.Open, "", rest))
     "-. " <> rest -> infix_edge(rest, model.Dotted, ".->", ".-", line)
@@ -388,7 +388,7 @@ fn parse_edge(
     "-->" <> rest -> Ok(#(model.Solid, model.Arrow, "", rest))
     "---" <> rest -> Ok(#(model.Solid, model.Open, "", rest))
     "-- " <> rest -> infix_edge(rest, model.Solid, "-->", "---", line)
-    "--x" <> _ | "--o" <> _ -> Error(model.Unsupported("an edge end marker"))
+    "--x" <> _ | "--o" <> _ -> Error(model.Unsupported("edge end marker"))
     _ -> Error(model.Malformed(line, "an edge such as -->"))
   }
 }
@@ -487,8 +487,8 @@ fn parse_shape(
   case rest {
     "([" <> inner -> delimited(inner, "])", model.Rounded, line)
     "[[" <> _ | "[(" <> _ | "[/" <> _ | "[\\" <> _ | "((" <> _ | "{{" <> _ ->
-      Error(model.Unsupported("this node shape"))
-    ">" <> _ -> Error(model.Unsupported("this node shape"))
+      Error(model.Unsupported("node shape"))
+    ">" <> _ -> Error(model.Unsupported("node shape"))
     "[" <> inner -> delimited(inner, "]", model.Rectangle, line)
     "(" <> inner -> delimited(inner, ")", model.Rounded, line)
     "{" <> inner -> delimited(inner, "}", model.Decision, line)
@@ -711,7 +711,8 @@ fn sequence_line(
       parse_note(builder, string.drop_start(text, string.length(first)), line)
     _ ->
       case list.contains(sequence_keywords, first) {
-        True -> Error(model.Unsupported(first <> " in a sequence diagram"))
+        True ->
+          Error(model.Unsupported("`" <> first <> "` in a sequence diagram"))
         False -> parse_message(builder, text, line)
       }
   }

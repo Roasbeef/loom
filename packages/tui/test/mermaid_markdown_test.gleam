@@ -41,7 +41,7 @@ pub fn a_refused_diagram_falls_back_to_its_source_with_the_reason_test() {
       "▎ subgraph s",
       "▎ A",
       "▎ end",
-      "▎ not drawn: subgraph statements are not supported",
+      "▎ not drawn: unsupported `subgraph` statement",
       "",
     ]
 }
