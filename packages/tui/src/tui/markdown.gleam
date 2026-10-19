@@ -26,7 +26,8 @@
 ////    `render_sanitized` does the same job for text already known to be safe: it
 ////    parses with `tree.parse` and renders each block in order.
 //// 2. `render_block` dispatches on the block: headings and paragraphs go through
-////    `inline_lines`, code blocks through `code_spans`, quotes and alerts through
+////    `inline_lines`, code blocks through `code_spans`, a mermaid fence through
+////    `render_mermaid` (a drawn diagram, or the source and a reason), quotes and alerts through
 ////    `render_quote` and `render_alert`, lists through `render_list`, tables
 ////    through `render_table`.
 //// 3. `inline_lines` turns inline nodes into styled parts (`inline_parts`) and
@@ -57,6 +58,7 @@ import session_view/code_tokens.{
 }
 import session_view/markdown as tree
 import session_view/text_hygiene
+import tui/mermaid
 import tui/theme
 
 // A span is segmented and measured once before hard wrapping. Continuations
@@ -711,15 +713,10 @@ fn render_block(block: tree.Block, width: Int) -> List(span.Line) {
     tree.Paragraph(inlines:) ->
       inline_lines(inlines, style.default_style())
       |> trailing_blank
+    tree.CodeBlock(language: Some("mermaid"), text:) ->
+      render_mermaid(text, width)
     tree.CodeBlock(language:, text:) ->
-      source_lines(text)
-      |> list.map(fn(line) {
-        span.line_new([
-          span.span_styled(code_gutter, theme.signal_bold()),
-          ..code_spans(language, line)
-        ])
-      })
-      |> prepend_code_language(language)
+      code_block(language, text)
       |> trailing_blank
 
     // A quote's bar costs two cells of every row it covers, and quotes nest,
@@ -737,6 +734,54 @@ fn render_block(block: tree.Block, width: Int) -> List(span.Line) {
       span.line_new([span.span_styled("────────────────", theme.quiet_text())]),
       span.line_plain(""),
     ]
+  }
+}
+
+// A code block under its gutter and, when it names a language, a label row.
+fn code_block(language: Option(String), text: String) -> List(span.Line) {
+  source_lines(text)
+  |> list.map(fn(line) {
+    span.line_new([
+      span.span_styled(code_gutter, theme.signal_bold()),
+      ..code_spans(language, line)
+    ])
+  })
+  |> prepend_code_language(language)
+}
+
+// A Mermaid fence is drawn as a diagram when the renderer accepts it, under
+// the same gutter and `mermaid` label a code block carries so the two read as
+// one kind of block. The renderer is given the width left after the gutter,
+// so a drawn row never needs the hard wrap that would break a diagram.
+//
+// A diagram the renderer refuses is shown as the source it was given, with one
+// quiet row under it saying why, so the reader never loses the model's text.
+// A fence still streaming in is only partial source, and the same fallback
+// covers it: the parser does not say whether a fence was closed, and the
+// partial text is either refused or drawn as far as it already parses.
+fn render_mermaid(source: String, width: Int) -> List(span.Line) {
+  let room = int.max(1, width - string.length(code_gutter))
+  case mermaid.render(source, room) {
+    Ok(rows) ->
+      rows
+      |> list.map(fn(row) {
+        let span.Line(spans:, ..) = row
+        span.line_new([
+          span.span_styled(code_gutter, theme.signal_bold()),
+          ..spans
+        ])
+      })
+      |> prepend_code_language(Some("mermaid"))
+      |> trailing_blank
+    Error(refusal) ->
+      code_block(Some("mermaid"), source)
+      |> list.append([
+        span.line_new([
+          span.span_styled(code_gutter, theme.signal_bold()),
+          span.span_styled(mermaid.reason(refusal), theme.quiet_text()),
+        ]),
+      ])
+      |> trailing_blank
   }
 }
 
