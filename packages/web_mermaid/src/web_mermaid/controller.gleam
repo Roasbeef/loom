@@ -296,10 +296,7 @@ pub fn reply_json(reply: Reply) -> String {
 pub fn safe_svg(nodes: List(Node)) -> Bool {
   case nodes {
     [] -> False
-    [Node(name, attributes), ..rest] ->
-      name == "svg"
-      && safe_node(Node(name, attributes))
-      && list.all(rest, safe_node)
+    [root, ..] -> root.name == "svg" && list.all(nodes, safe_node)
   }
 }
 

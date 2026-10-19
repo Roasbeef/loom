@@ -327,15 +327,29 @@ fn copy(diagram: rule.State) -> Effect(Msg) {
 }
 
 fn view(model: Model) -> Element(Msg) {
-  let #(height, frame_class, disclosure) = case model.diagram.phase {
-    rule.Shown(height) -> #(height, "mermaid-frame", attribute.none())
+  // Only a shown diagram is visible and focusable; every other phase keeps
+  // the frame loaded but hidden, with the source disclosure open instead.
+  let #(height, frame_state, disclosure) = case model.diagram.phase {
+    rule.Shown(height) -> #(
+      height,
+      [
+        attribute.class("mermaid-frame"),
+        attribute.attribute("aria-hidden", "false"),
+        attribute.attribute("tabindex", "0"),
+      ],
+      attribute.none(),
+    )
     rule.Empty
     | rule.Waiting
     | rule.Rendering
     | rule.TooLarge
     | rule.Unavailable -> #(
       1,
-      "mermaid-frame mermaid-pending",
+      [
+        attribute.class("mermaid-frame mermaid-pending"),
+        attribute.attribute("aria-hidden", "true"),
+        attribute.attribute("tabindex", "-1"),
+      ],
       attribute.attribute("open", ""),
     )
   }
@@ -358,28 +372,12 @@ fn view(model: Model) -> Element(Msg) {
         element.element(
           "iframe",
           [
-            attribute.class(frame_class),
             attribute.src("/ui/assets/mermaid.html"),
             attribute.title("Mermaid diagram"),
             attribute.attribute("sandbox", "allow-scripts"),
             attribute.attribute("referrerpolicy", "no-referrer"),
             attribute.attribute("height", int.to_string(height)),
-            attribute.attribute("aria-hidden", case model.diagram.phase {
-              rule.Shown(_) -> "false"
-              rule.Empty
-              | rule.Waiting
-              | rule.Rendering
-              | rule.TooLarge
-              | rule.Unavailable -> "true"
-            }),
-            attribute.attribute("tabindex", case model.diagram.phase {
-              rule.Shown(_) -> "0"
-              rule.Empty
-              | rule.Waiting
-              | rule.Rendering
-              | rule.TooLarge
-              | rule.Unavailable -> "-1"
-            }),
+            ..frame_state
           ],
           [],
         )
