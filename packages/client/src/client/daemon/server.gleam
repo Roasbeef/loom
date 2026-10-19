@@ -3023,13 +3023,44 @@ fn deployment_status(
   |> result.map(fn(snapshot) {
     #(
       "deployment.status",
-      with_ledger(
-        deployment.to_json(snapshot, bootstrap.system_time_ms()),
-        node,
-        config.ledger,
-      ),
+      deployment.to_json(snapshot, bootstrap.system_time_ms())
+        |> with_footing(node, config.deployment)
+        |> with_ledger(node, config.ledger),
     )
   })
+}
+
+// The whole-deployment read says whether this daemon runs with distribution,
+// and the machine's host name when the daemon could read it (protocol-change/085,
+// the addendum of 2026-10-19). Without distribution the daemon's node name is one
+// the BEAM made up, which the Admin page does not show, and the page draws one
+// card for this machine, titled by the host name. A read that names one node is
+// about that node and carries nothing about the asking daemon.
+fn with_footing(
+  body: JsonValue,
+  node: Option(String),
+  reach: deployment.Reach,
+) -> JsonValue {
+  let host = case reach.host {
+    Some(name) -> [#("host", json.String(name))]
+    None -> []
+  }
+  case body, node {
+    json.Object(fields), None ->
+      json.Object(
+        list.flatten([
+          fields,
+          [
+            #(
+              "distribution",
+              json.String(deployment.footing_word(reach.footing)),
+            ),
+          ],
+          host,
+        ]),
+      )
+    _, _ -> body
+  }
 }
 
 // A daemon that runs from a membership ledger adds the ledger's own status to

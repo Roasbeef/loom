@@ -1784,10 +1784,11 @@ account.
   clicks beneath `home.table_path`. `home_test` pins the group, the silent line, the
   detail, "Show more" and the dropped stale page.
 
-## The Admin page's machines (protocol-change/085, addendum 2026-10-16)
+## The Admin page's machines (protocol-change/085, addenda 2026-10-16 and 2026-10-19)
 
-The admin page draws a Deployment section below People and Sessions: the verdict, a
-table of machines, and a page for the machine the owner chose.
+The admin page draws a Deployment section below People and Sessions: a summary line,
+the machines grouped by role (or one "This machine" card for a daemon with no
+distribution), the pools, and a page for the machine the owner chose.
 `docs/architecture/web-view.md` ("Deployment: the machines list and a page for each
 machine") is the account.
 
@@ -1795,8 +1796,13 @@ machine") is the account.
   roles, whose, here, link, ledgered)` with `Here` (`Dialled(findings) |
   NotLinkedFromHere`) and `Ledgered` (`Enrolled(standing) | NotListed | Unledgered`),
   `Findings`, `Snapshot`, `Detail` (the long lists of one node), `Reading` (`Heard |
-  HeardOne | Unread`), `Held`, `Detailed`, `Tab`, and the words (`verdict_words`,
-  `reason_words`, `age_words`, `pill_class`). `decode_overview` merges the document's
+  HeardOne | Unread`), `Held`, `Detailed`, `Tab`, `Distribution` (`Distributed |
+  Standalone`, from the reply's optional `distribution`), `Pool` (from
+  `placements.pools`), `Group` (`OrchestratorGroup | ExecutorGroup | MemberGroup`, by
+  `group_of`), `Title` (by `title`: a standalone daemon's own row is its host name,
+  the reply's optional `host`, labelled "This machine", or "This machine" alone; its
+  node name the BEAM made up is never drawn), and the words
+  (`summary_words`, `build_words`, `reason_words`, `age_words`, `pill_class`). `decode_overview` merges the document's
   nodes with the ledger's members by node name; `decode_detail` reads a read for one
   node. `text_limit` 256 and `list_limit` 128 bound it.
 - `web_view/operator_commands` writes `renew`, `revoke`, `enroll` and `release`. `quote`
@@ -1809,10 +1815,13 @@ machine") is the account.
   by its key unless it is the asking daemon or not dialled; `TabChosen` reads the other
   orchestrators for the Sessions tab; `MachineClosed` overtakes any read out. The
   deployment follows the timer, one read together with the people read.
-- `view/admin_machines` is the section and table, `view/admin_machine` the page and its
-  four tabs. Every name is a text node, the classes are fixed words and the only data
-  chosen ones are the pill tints, rows are keyed by position, and every handler is a
-  click beneath `admin.body_path`.
+- `view/admin_machines` is the section: the groups as tinted lists, each row a button
+  with only the facts its group has (a fact not stated is left out, not a dash), and
+  the pools; `view/admin_machine` is the page and its four tabs. One tree serves every
+  width: no table cells, facts beside the name on a wide screen and stacked under it at
+  640 px and narrower. Every name is a text node, the classes are fixed words and the
+  only data-chosen ones are the pill tints and the `unlinked` modifier, rows are keyed
+  by position, and every handler is a click beneath `admin.body_path`.
 - `view/elsewhere.strip` is the one-line strip the owner's operating home draws in the
   first child of its centre, so `home.table_path` does not move.
 - Tests: `machines_test` (decoder, bounds, words), `operator_commands_test` (the fixed

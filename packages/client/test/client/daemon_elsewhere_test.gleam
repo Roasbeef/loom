@@ -136,6 +136,8 @@ fn listing(
   let reach =
     deployment.Reach(
       self:,
+      footing: deployment.Distributed,
+      host: None,
       dial: fn(node, _within_ms) {
         process.send(notes, Dialled(node))
         case list.key_find(answers, node) {

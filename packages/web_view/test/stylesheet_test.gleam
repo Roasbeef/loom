@@ -146,21 +146,22 @@ fn rule_of(css: String, selector: String) -> String {
   }
 }
 
-// The Admin page's machines (protocol-change/085): the table scrolls sideways in
-// its own box, the machine's page and the peers' strip are a tinted block with a
-// hairline border, and none of them has a coloured edge or a shadow.
+// The Admin page's machines (protocol-change/085): each group is a tinted list
+// with a hairline border, the machine's page and the peers' strip are tinted
+// blocks with a hairline border, none of them has a coloured edge or a shadow,
+// and a state pill never wraps.
 pub fn the_machines_have_no_accent_bar_and_no_shadow_test() {
   let css = stylesheet()
   assert string.contains(
-    rule_of(css, ".admin-machines-wrap"),
-    "overflow-x:auto",
+    rule_of(css, "ul.admin-fleet"),
+    "border:1px solid var(--color-divider)",
   )
-  assert string.contains(css, "table.admin-machines{")
+  assert string.contains(rule_of(css, "}.pill"), "white-space:nowrap")
   list.each(
     [
       "section.admin-machine",
-      ".admin-machines-wrap",
-      "tr.admin-machine-row[aria-current]",
+      "ul.admin-fleet",
+      ".admin-node-pick[aria-current]",
       ".admin-tabs",
       "button.admin-tab[aria-selected=true]",
       ".admin-command",

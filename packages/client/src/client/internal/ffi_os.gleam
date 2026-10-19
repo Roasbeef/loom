@@ -3,7 +3,65 @@
 //// behind it and why no pure alternative exists. Nothing else in this
 //// package touches foreign code.
 
+import gleam/bool
+import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
+import gleam/erlang/atom
 import gleam/erlang/process.{type Pid}
+import gleam/list
+import gleam/result
+import gleam/string
+
+/// The longest host name `host_name` returns, in bytes. A DNS name is at most
+/// 253 bytes, and the Admin page's decoder refuses any text over 256.
+pub const host_name_limit = 253
+
+/// The machine's host name, for the Admin page's "This machine" card
+/// (protocol-change/085, the addendum of 2026-10-19). OTP
+/// `inet:gethostname/0`: the host name is an operating-system fact that
+/// `gleam_stdlib`, `gleam_erlang`, `gleam_otp` and weft do not expose, and no
+/// pure function can know it. The answer is decoded totally: anything but
+/// `{ok, Charlist}` whose characters are all Unicode code points, and that is
+/// neither empty nor longer than `host_name_limit` bytes, is `Error(Nil)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(name) = ffi_os.host_name()
+/// ```
+pub fn host_name() -> Result(String, Nil) {
+  host_name_of(inet_gethostname())
+}
+
+/// Reads what `inet:gethostname/0` answered, as `host_name` does, from any
+/// term, so a test can hand it the shapes the call never returns.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ffi_os.host_name_of(dynamic.nil()) == Error(Nil)
+/// ```
+pub fn host_name_of(answer: Dynamic) -> Result(String, Nil) {
+  let shape = {
+    use tag <- decode.field(0, atom.decoder())
+    use characters <- decode.field(1, decode.list(decode.int))
+    decode.success(#(tag, characters))
+  }
+  use #(tag, characters) <- result.try(
+    decode.run(answer, shape) |> result.replace_error(Nil),
+  )
+  use <- bool.guard(atom.to_string(tag) != "ok", Error(Nil))
+  use points <- result.try(list.try_map(characters, string.utf_codepoint))
+  let name = string.from_utf_codepoints(points)
+  let size = string.byte_size(name)
+  use <- bool.guard(size == 0 || size > host_name_limit, Error(Nil))
+  Ok(name)
+}
+
+// OTP `inet:gethostname/0`, which answers `{ok, Charlist}`. It is typed as
+// `Dynamic` so `host_name_of` decodes the answer rather than trusting it.
+@external(erlang, "inet", "gethostname")
+fn inet_gethostname() -> Dynamic
 
 /// Wall-clock milliseconds since the Unix epoch, for the server's
 /// injected `Clock`. OTP `erlang:system_time(millisecond)` via the

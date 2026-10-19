@@ -1169,6 +1169,7 @@ fn body(model: Model) -> Element(Msg) {
           chosen: model.machine,
           choose: MachineChosen,
           page: machine_page(model, snapshot),
+          entries: snapshot.sessions,
         )),
       ]
     }

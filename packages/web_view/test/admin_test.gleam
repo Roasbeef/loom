@@ -1676,17 +1676,18 @@ fn unlinked_node() -> String {
   "laptop@10.0.0.7"
 }
 
-// The section follows People and Sessions, and its first line is the verdict
-// with what needs a look. A directory copy that is unconfirmed is said once.
-pub fn the_deployment_section_leads_with_the_verdict_test() {
+// The section follows People and Sessions, and the line under its heading
+// counts the machines by group and says what needs a look. A directory copy
+// that is unconfirmed is said once.
+pub fn the_deployment_section_leads_with_the_summary_test() {
   let #(model, _) = fleet_page()
   let html = drawn(model)
-  let assert [_, after_sessions] = string.split(html, ">Sessions<")
-  let assert [_, deployment] =
-    string.split(after_sessions, "aria-label=\"Deployment\"")
+  let assert Ok(#(_, after_sessions)) = string.split_once(html, ">Sessions<")
+  let assert Ok(#(_, deployment)) =
+    string.split_once(after_sessions, "aria-label=\"Deployment\"")
   assert string.contains(
     deployment,
-    "Deployment · 5 nodes · 1 degraded · 1 down · 1 not linked from here",
+    "5 machines · 2 orchestrators · 3 executors · 1 degraded · 1 down · 1 not linked from here: box: ",
   )
   assert count(html, "could not confirm that its copy of the session directory")
     == 1
@@ -1694,33 +1695,95 @@ pub fn the_deployment_section_leads_with_the_verdict_test() {
   assert !string.contains(html, "Reading the deployment.")
 }
 
-// One row for each machine, with the columns the owner scans, and a machine the
-// ledger lists and this daemon does not dial is marked and shows no state.
-pub fn the_table_has_a_row_for_each_machine_test() {
+// The machines are grouped by what they do, orchestrators first with this
+// daemon marked, then executors, then the pools. Each row shows only the facts
+// its group has, so an orchestrator has no platform and an executor no slots,
+// and a machine the ledger lists and this daemon does not dial is marked, quiet,
+// and shows no state.
+pub fn the_machines_are_grouped_by_what_they_do_test() {
   let #(model, _) = fleet_page()
   let html = drawn(model)
-  list.each(
-    [
-      "Name", "Roles", "State", "Platform", "Enforcement", "Toolchains",
-      "Capacity", "Ledger", "Last report",
-    ],
-    fn(column) {
-      assert string.contains(html, ">" <> column <> "<")
-    },
-  )
-  assert count(html, "class=\"admin-machine-row\"") == 5
-  assert string.contains(html, "linux/x86_64")
-  assert string.contains(html, ">enforced<")
-  assert string.contains(html, "go, gleam")
-  assert string.contains(html, "3 of 16")
-  assert string.contains(html, "2 of 8")
+  let assert Ok(#(_, deployment)) =
+    string.split_once(html, "aria-label=\"Deployment\"")
+  let assert Ok(#(_, after_orchestrators)) =
+    string.split_once(deployment, ">Orchestrators<")
+  let assert Ok(#(orchestrators, after_executors)) =
+    string.split_once(after_orchestrators, ">Executors<")
+  let assert Ok(#(executors, pools)) =
+    string.split_once(after_executors, ">Pools<")
+  assert count(html, "class=\"admin-node\"") == 5
+  assert count(html, "class=\"admin-node unlinked\"") == 1
+  assert string.contains(orchestrators, "this daemon")
+  assert string.contains(orchestrators, ">Slots<")
+  assert string.contains(orchestrators, "0.2.0 (b4eeb50c)")
+  assert !string.contains(orchestrators, ">Platform<")
+  assert string.contains(executors, "linux/x86_64")
+  assert string.contains(executors, ">enforced<")
+  assert string.contains(executors, "go, gleam")
+  assert string.contains(executors, "3 open of 16")
+  assert string.contains(executors, fleet.box_node)
+  assert !string.contains(executors, ">Slots<")
+  assert string.contains(executors, "not linked from here")
+  assert string.contains(pools, "linux")
+  assert string.contains(pools, "1 of 2 ready")
+  assert string.contains(pools, "box, exec2")
   assert string.contains(html, "enrolled · voter")
   assert string.contains(html, "not listed")
   assert string.contains(html, "6 min ago")
-  assert count(html, "not linked from here") == 2
-  assert count(html, "class=\"pill pending\"") == 1
+  assert !string.contains(deployment, "—")
+  assert count(html, "class=\"pill pending\"") == 2
   assert count(html, "class=\"pill ended\"") == 1
   assert count(html, "class=\"pill online\"") == 2
+}
+
+// A daemon with no distribution is one card for "This machine", with its build
+// (the commit cut to eight characters), the sessions its catalogue holds, since
+// its report has no orchestrator facts, and the note that distribution is not
+// configured. The node name
+// the BEAM made up for it is drawn nowhere, not even on the machine's own page.
+pub fn a_standalone_daemon_is_one_card_without_its_node_name_test() {
+  let start =
+    admin.Start(..start(), deployment: fn(_, deliver) {
+      deliver(machines.Heard(fleet.standalone()))
+    })
+  let #(model, _) = opened(start)
+  let html = drawn(model)
+  assert string.contains(html, ">This machine<")
+  assert string.contains(html, "this daemon")
+  assert string.contains(html, "1 machine · 1 orchestrator · all ok")
+  assert string.contains(html, "0.3.0 (ca9a21f0)")
+  assert string.contains(html, "2 · 1 running")
+  assert !string.contains(html, "ca9a21f02bc6")
+  assert string.contains(html, "Distribution is not configured")
+  assert string.contains(html, "docs/distributed-setup.md")
+  assert !string.contains(html, ">Orchestrators<")
+  assert !string.contains(html, ">Ledger<")
+  assert !string.contains(html, "loom_daemon_profile")
+  let model = choose(model, fleet.standalone_node)
+  let html = drawn(model)
+  assert string.contains(html, "aria-label=\"Machine\"")
+  assert !string.contains(html, "loom_daemon_profile")
+}
+
+// A standalone daemon that read its host name is titled by it, with "This
+// machine" under it, on the card and on the machine's own page. A host name is
+// text like every other name.
+pub fn a_standalone_daemon_is_titled_by_its_host_name_test() {
+  let host = "studio<b>.local"
+  let start =
+    admin.Start(..start(), deployment: fn(_, deliver) {
+      deliver(machines.Heard(fleet.hosted(host)))
+    })
+  let #(model, _) = opened(start)
+  let html = drawn(model)
+  assert string.contains(html, ">studio&lt;b&gt;.local<")
+  assert string.contains(html, ">This machine<")
+  assert !string.contains(html, "<b>")
+  assert !string.contains(html, "loom_daemon_profile")
+  let model = choose(model, fleet.standalone_node)
+  let html = drawn(model)
+  assert count(html, ">studio&lt;b&gt;.local<") == 2
+  assert !string.contains(html, "loom_daemon_profile")
 }
 
 // Pressing a machine reads that machine, by its key, and opens its page on the
@@ -2018,7 +2081,7 @@ pub fn every_machine_handler_is_beneath_the_body_test() {
 pub fn a_failed_deployment_read_keeps_the_earlier_one_test() {
   let #(model, _) = fleet_page()
   let model = run(model, admin.Ticked)
-  assert string.contains(drawn(model), "Deployment · 5 nodes")
+  assert string.contains(drawn(model), "5 machines · 2 orchestrators")
   let #(never, _) = opened(start())
   assert string.contains(drawn(never), "could not be read just now")
 }

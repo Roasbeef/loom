@@ -67,7 +67,7 @@ same way. [The setup guide](../distributed-setup.md) tells an operator to check 
 connection with `epmd -names`, `lsof` or `ss`.
 
 **The session list.** `sessions.list` reads this daemon's catalogue
-(`ListSessions`, `client/daemon/server.gleam:3548`). The orchestrator port answers
+(`ListSessions`, `client/daemon/server.gleam:3579`). The orchestrator port answers
 `Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:200`).
 Nothing answers "what sessions do you hold".
 
@@ -80,7 +80,7 @@ reason that goes to one log line (`Stalled`, `client/session_mover.gleam:233`) a
 is forgotten, and the movers keep only the time the stall began (`Entry`,
 `client/session_movers.gleam:140`). `directory.status` reports the configured
 members, Ra's members with their votes, the leader and this member's applied index
-(`directory_status_json`, `client/daemon/server.gleam:3749`). It does not compare
+(`directory_status_json`, `client/daemon/server.gleam:3780`). It does not compare
 the applied index with the leader's, so it cannot say whether this copy has caught
 up. The only "not caught up" signal today is `voter: false`, which holds while a
 joining member is a non-voter.

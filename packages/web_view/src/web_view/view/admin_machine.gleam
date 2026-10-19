@@ -138,12 +138,16 @@ pub fn view(page: Page(message)) -> Element(message) {
   )
 }
 
-// The name, the state and Close, and under them the node and the roles.
+// The name, the state and Close, and under them the node and the roles. The
+// name is `machines.title`'s, so a standalone daemon is "This machine" here as
+// in the list and its made-up node name is not drawn.
 fn header(page: Page(message)) -> Element(message) {
   let machine = page.machine
+  let title = machines.title(page.snapshot, machine)
+  let roles = string.join(list.map(machine.roles, machines.role_words), ", ")
   html.div([attribute.class("admin-machine-head")], [
     html.div([attribute.class("admin-machine-title")], [
-      html.h3([attribute.class("admin-subheading")], [html.text(machine.name)]),
+      html.h3([attribute.class("admin-subheading")], [html.text(title.name)]),
       case machines.state_of(machine) {
         Some(state) ->
           html.span(
@@ -168,11 +172,10 @@ fn header(page: Page(message)) -> Element(message) {
       ),
     ]),
     html.p([attribute.class("admin-sub")], [
-      html.text(
-        machine.node
-        <> " · "
-        <> string.join(list.map(machine.roles, machines.role_words), ", "),
-      ),
+      html.text(case title.node {
+        Some(node) -> node <> " · " <> roles
+        None -> roles
+      }),
     ]),
   ])
 }
@@ -306,12 +309,7 @@ fn health(found: Findings) -> Element(message) {
 }
 
 fn build(found: Findings) -> String {
-  case found.build_version, found.build_commit {
-    Some(version), Some(commit) -> version <> " (" <> commit <> ")"
-    Some(version), None -> version
-    None, Some(commit) -> commit
-    None, None -> "—"
-  }
+  option.unwrap(machines.build_words(found), "—")
 }
 
 fn option_int(value: Option(Int)) -> String {

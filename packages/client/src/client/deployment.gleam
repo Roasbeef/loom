@@ -166,13 +166,49 @@ pub type Dial =
 pub type Ask =
   fn(String, Int) -> Result(NodeReport, orchestrator_port.Silence)
 
+/// Whether the asking daemon runs with distribution, which decides whether its
+/// own node name means anything to a person. A daemon with a `[distribution]`
+/// table is named by its configuration, `box@100.116.224.112`, and the Admin
+/// page shows that name. A daemon without one is called whatever the BEAM gave
+/// it, `nonode@nohost` or a generated profile name, and the page calls it "This
+/// machine" instead.
+pub type Footing {
+  /// The daemon started distribution under a configured node name.
+  Distributed
+
+  /// The daemon has no distribution and connects to no other machine.
+  Standalone
+}
+
+/// The wire word for a footing: the `distribution` member a whole-deployment
+/// reply carries (protocol-change/085, the addendum of 2026-10-19).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert deployment.footing_word(deployment.Standalone) == "none"
+/// ```
+pub fn footing_word(footing: Footing) -> String {
+  case footing {
+    Distributed -> "configured"
+    Standalone -> "none"
+  }
+}
+
 /// What the daemon asks with: its own node name, which the reply is "as seen
-/// from", how it connects, how it asks a connected node for its report, and how
-/// it reports itself.
+/// from", whether it runs with distribution, how it connects, how it asks a
+/// connected node for its report, and how it reports itself.
 pub type Reach {
   Reach(
     /// The asking daemon's node name.
     self: String,
+    /// Whether the daemon runs with distribution: `Standalone` from `alone`,
+    /// `Distributed` from `over`.
+    footing: Footing,
+    /// The machine's host name, which the daemon reads once at start
+    /// (`main.deployment_reach`), or none when it could not be read. Both
+    /// constructors leave it out.
+    host: Option(String),
     /// Connects to a configured node.
     dial: Dial,
     /// Asks a connected node for its report.
@@ -217,6 +253,8 @@ fn unreported(self: String) -> fn() -> NodeReport {
 pub fn alone(self: String) -> Reach {
   Reach(
     self:,
+    footing: Standalone,
+    host: None,
     dial: fn(_node, _within_ms) { Error(Unavailable) },
     ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
     sessions: listed_sessions.unlisted,
@@ -239,6 +277,8 @@ pub fn alone(self: String) -> Reach {
 pub fn over(membership: distribution.Membership, self: String) -> Reach {
   Reach(
     self:,
+    footing: Distributed,
+    host: None,
     dial: fn(node, within_ms) {
       use peer <- result.try(
         distribution.peer(membership, node)
