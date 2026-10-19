@@ -5,6 +5,7 @@ package jail
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // BenchmarkProcessTrackerStartup measures real fresh kernel-table acquisition,
@@ -18,5 +19,21 @@ func BenchmarkProcessTrackerStartup(b *testing.B) {
 			b.Fatal(err)
 		}
 		tracker.close()
+	}
+}
+
+// BenchmarkProcessTrackerIdle measures cumulative allocation and CPU during a
+// sleeping execution. Run with -benchtime=12s -benchmem -cpuprofile=idle.pprof;
+// the benchmark timer and runtime are included, not just the tracker goroutine.
+func BenchmarkProcessTrackerIdle(b *testing.B) {
+	tracker, err := startProcessTracker(os.Getpid())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer tracker.close()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		time.Sleep(processTrackInterval)
 	}
 }

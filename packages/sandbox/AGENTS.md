@@ -188,16 +188,20 @@ only Go module.
   descendants it observes with their process birth time and rechecks that
   identity immediately before signaling. This narrows PID reuse but cannot
   make the check and `kill(2)` atomic. It complements rather than replaces
-  process-group signals for children that call `setsid(2)`. Each 20 ms sample
-  reads a fresh kernel process table. One process-local mutex covers each
-  table acquisition and its indexing, including startup and cancellation
-  captures, so simultaneous trackers do not multiply these large transient
-  allocations. It never shares or caches a snapshot, changes the 20 ms ticker,
-  or serializes other jail setup. Lock order is capture mutex then tracker
-  mutex; signal captures before taking its tracker lock, and close joins
-  without holding either. Startup uses the same fresh capture as its
-  fail-closed preflight. `BenchmarkProcessTrackerStartup` reports cumulative
-  startup allocation separately from retained heap or RSS.
+  process-group signals for children that call `setsid(2)`. The gated root
+  receives a kqueue fork/exit watch before a fresh startup capture. Observed
+  descendants receive their own watches; process events trigger fresh captures
+  rather than reading the entire host table every 20 ms while idle. Darwin
+  does not implement recursive `NOTE_TRACK`, so discovery remains best effort.
+  A failed live queue or descendant registration returns to 20 ms polling;
+  startup queue, root-watch, or capture failures refuse before releasing the
+  gate. Cancellation always takes an independent fresh capture. One process-local
+  mutex covers acquisition and indexing, bounding simultaneous temporary
+  buffers without sharing or caching snapshots. Lock order is capture mutex
+  then tracker mutex. Close wakes the queue, joins the reader, then closes the
+  descriptor; the bounded event wait also covers a failed wake notification.
+  `BenchmarkProcessTrackerStartup` and `BenchmarkProcessTrackerIdle` distinguish
+  startup costs from steady cumulative allocation, retained heap and RSS.
   A parent-head map and one-based sibling
   indices traverse that snapshot without copying process records or allocating
   a child slice per host process. The ledger lock also owns reusable index and

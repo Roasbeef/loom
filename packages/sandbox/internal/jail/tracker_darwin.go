@@ -29,6 +29,9 @@ type processTracker struct {
 	frontier []int
 	stop     chan struct{}
 	done     chan struct{}
+
+	queue   int
+	watched map[int]uint64
 }
 
 const processTrackInterval = 20 * time.Millisecond
@@ -42,33 +45,144 @@ var processCaptureMu sync.Mutex
 
 func startProcessTracker(root int) (*processTracker, error) {
 	t := &processTracker{
-		root: root,
-		seen: make(map[int]uint64),
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
+		root:    root,
+		seen:    make(map[int]uint64),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+		watched: make(map[int]uint64),
+	}
+
+	queue, err := unix.Kqueue()
+	if err != nil {
+		return nil, fmt.Errorf("jail: create Darwin process queue: %w", err)
+	}
+	t.queue = queue
+	wake := unix.Kevent_t{Filter: unix.EVFILT_USER, Flags: unix.EV_ADD | unix.EV_CLEAR}
+	if _, err := unix.Kevent(queue, []unix.Kevent_t{wake}, nil, nil); err != nil {
+		_ = unix.Close(queue)
+		return nil, fmt.Errorf("jail: register Darwin tracker wake: %w", err)
+	}
+
+	// Register the gated root before taking the initial snapshot. Fork events
+	// arriving during discovery remain queued for the next fresh capture.
+	if err := t.watch(root); err != nil {
+		_ = unix.Close(queue)
+		return nil, fmt.Errorf("jail: watch Darwin process root: %w", err)
 	}
 
 	// The jail's start gate is still closed. This successful fresh capture
 	// is the initial descendant ledger as well as the fail-closed preflight.
-	if err := t.capture(); err != nil {
-		return nil, fmt.Errorf("jail: read Darwin process table: %w", err)
+	if err := t.captureAndWatch(); err != nil {
+		_ = unix.Close(queue)
+		return nil, fmt.Errorf("jail: read/watch Darwin process table: %w", err)
 	}
 	go t.run()
 	return t, nil
 }
 
+// run uses process events as discovery hints, never as identity authority.
+// Darwin does not implement recursive NOTE_TRACK: each fork/exit wakes a fresh
+// table walk, then newly observed descendants receive their own watches. A
+// rapid double-fork can still outrun discovery, as with the sampled tracker.
 func (t *processTracker) run() {
 	defer close(t.done)
+	var events [32]unix.Kevent_t
+	timeout := unix.NsecToTimespec((250 * time.Millisecond).Nanoseconds())
+	for {
+		select {
+		case <-t.stop:
+			return
+		default:
+		}
+
+		// The user event wakes close promptly; the timeout also bounds join
+		// if that notification fails. Idle waits do not read a process table.
+		n, err := unix.Kevent(t.queue, nil, events[:], &timeout)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			t.runPolling()
+			return
+		}
+		select {
+		case <-t.stop:
+			return
+		default:
+		}
+		if n == 0 {
+			continue
+		}
+		for _, event := range events[:n] {
+			if event.Flags&unix.EV_ERROR != 0 {
+				t.runPolling()
+				return
+			}
+			if event.Fflags&unix.NOTE_EXIT != 0 {
+				delete(t.watched, int(event.Ident))
+			}
+		}
+		if err := t.captureAndWatch(); err != nil {
+			t.runPolling()
+			return
+		}
+	}
+}
+
+// runPolling preserves the previous best-effort discovery if a live queue or
+// a descendant registration fails. Losing notifications must not silently
+// stop discovery; startup failures instead refuse before opening the gate.
+func (t *processTracker) runPolling() {
 	ticker := time.NewTicker(processTrackInterval)
 	defer ticker.Stop()
 	for {
+		_ = t.capture()
 		select {
 		case <-ticker.C:
-			_ = t.capture()
 		case <-t.stop:
 			return
 		}
 	}
+}
+
+func (t *processTracker) watch(pid int) error {
+	change := unix.Kevent_t{
+		Ident: uint64(pid), Filter: unix.EVFILT_PROC,
+		Flags:  unix.EV_ADD | unix.EV_CLEAR,
+		Fflags: unix.NOTE_FORK | unix.NOTE_EXIT,
+	}
+	_, err := unix.Kevent(t.queue, []unix.Kevent_t{change}, nil, nil)
+	return err
+}
+
+func (t *processTracker) captureAndWatch() error {
+	processCaptureMu.Lock()
+	defer processCaptureMu.Unlock()
+	table, err := darwinProcessTable()
+	if err != nil {
+		return err
+	}
+	t.captureTable(table)
+
+	// Only identities observed under this root enter the ledger. A watch
+	// raced by exit is harmless; signal always rechecks the remembered birth.
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, entry := range table {
+		pid, birth := int(entry.Proc.P_pid), processBirth(entry)
+		observed, ok := t.seen[pid]
+		if !ok || observed != birth || t.watched[pid] == birth {
+			continue
+		}
+		if err := t.watch(pid); err != nil {
+			if err == unix.ESRCH {
+				continue
+			}
+			return err
+		}
+		t.watched[pid] = birth
+	}
+	return nil
 }
 
 // capture consumes one fresh kernel snapshot while its process-local permit
@@ -155,7 +269,13 @@ func darwinProcessBirth(pid int) (uint64, error) {
 
 func (t *processTracker) close() {
 	close(t.stop)
+
+	// close owns the descriptor until the reader has joined, so a racing
+	// reader exit cannot recycle it underneath this wakeup.
+	wake := unix.Kevent_t{Filter: unix.EVFILT_USER, Fflags: unix.NOTE_TRIGGER}
+	_, _ = unix.Kevent(t.queue, []unix.Kevent_t{wake}, nil, nil)
 	<-t.done
+	_ = unix.Close(t.queue)
 }
 
 func darwinProcessTable() ([]unix.KinfoProc, error) {

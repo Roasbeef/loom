@@ -192,3 +192,23 @@ mountpoint in the root tmpfs and a jailed process can stat them. The eleven
 self-test probes are unchanged and all eleven remain enforced, including `host
 path outside the mount plan unreadable`, which reads a file rather than
 stat-ing a directory.
+
+## Addendum: process notifications reduce idle tracking cost
+
+**Date**: 2026-10-19
+
+The helper now registers kqueue fork/exit notifications for the gated root and
+observed descendants, taking a fresh host snapshot when a notification arrives.
+An idle timeout does not acquire a process table. The fresh startup and
+cancellation captures remain, and a live notification failure falls back to the
+previous 20 ms polling path. Startup registration failure refuses the execution
+before its gate opens. A user event wakes shutdown; the queue descriptor stays
+owned until its reader joins.
+
+This changes the discovery trigger, not the ownership boundary rejected above.
+Darwin's recursive `NOTE_TRACK` is unsupported, and a rapid double-fork can
+still reparent before a snapshot records its ancestry. Birth-qualified signals
+still have the check/kill race. Every execution retains the lifecycle skip, and
+strict callers still refuse it. The measured idle CPU and allocation results,
+including the distinction from live RSS, are in the
+[idle resource report](../review/idle-resources-2026-10-19.md).
