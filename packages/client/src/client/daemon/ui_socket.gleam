@@ -1624,6 +1624,12 @@ fn admit(
   let reach = seen.grant.reach
   let transferred = root.transfer(daemon, attachment.permit, within: 1000)
   process.send(settled, Nil)
+
+  // The component and its read tasks outlive admission. Retain the registry
+  // and identities each read uses, rather than the attachment's runtime.
+  let registry = attachment.registry
+  let credential = attachment.digest
+  let principal = attachment.principal.id
   let transport =
     component.Transport(
       connect: fn(inbox, opened) {
@@ -1635,7 +1641,7 @@ fn admit(
       shut: ui_relay.shut,
       now: bootstrap.monotonic_time_ms,
       sessions: fn(deliver) {
-        listed_task(role, fn() { listed(attachment) }, deliver)
+        listed_task(role, fn() { listed(registry, credential) }, deliver)
       },
       activity: session_activity_for(role, attachment.activity),
       open: fn(target) {
@@ -1658,12 +1664,12 @@ fn admit(
       logins: logins_capability(role, fn(logins, deliver) {
         read_task(deliver, fn() {
           ended_logins(
-            attachment.principal.id,
+            principal,
             open,
             fn(target) {
               manager.signins(
-                attachment.registry,
-                attachment.digest,
+                registry,
+                credential,
                 target,
                 after: "",
                 now_ms: bootstrap.system_time_ms(),
@@ -1895,11 +1901,12 @@ pub fn listed_task(
 // the calling process on the registry for up to the call's five seconds, and
 // on a few stats for each entry's project, so `listed_task` runs it off the
 // page's runtime.
-fn listed(attachment: server.Attachment(instance)) -> List(sessions.Entry) {
-  case
-    manager.authorized_page(attachment.registry, attachment.digest, after: "")
-  {
-    Ok(#(_, views)) -> held_entries(attachment.registry, views) |> with_projects
+fn listed(
+  registry: manager.Manager(instance),
+  credential: access.Digest,
+) -> List(sessions.Entry) {
+  case manager.authorized_page(registry, credential, after: "") {
+    Ok(#(_, views)) -> held_entries(registry, views) |> with_projects
     Error(_) -> []
   }
 }

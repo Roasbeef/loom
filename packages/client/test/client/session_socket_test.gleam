@@ -370,12 +370,19 @@ fn attachment_growth(payload_size) {
 // The socket's handler survives admission. Its startup closure must not keep
 // a second runtime after the phase has transferred custody to the component.
 pub fn admitted_page_socket_releases_its_startup_runtime_test() {
-  let #(small, small_hub) = page_socket_memory(0)
-  let #(large, large_hub) = page_socket_memory(8192)
+  let #(small, small_hub, small_component) = page_socket_memory(0)
+  let #(large, large_hub, large_component) = page_socket_memory(8192)
   assert large <= small + 65_536
     as "the serving socket releases its admission-only runtime capture"
   assert large_hub <= small_hub + 512
     as "the page's live authorization callback retains only its identities"
+  assert large_component <= small_component + 4096
+    as {
+      "the component's retained callbacks exclude unrelated runtime hooks: "
+      <> int.to_string(small_component)
+      <> " -> "
+      <> int.to_string(large_component)
+    }
 }
 
 fn page_socket_memory(payload_size) {
@@ -467,6 +474,12 @@ fn page_socket_memory(payload_size) {
         let hub_growth =
           ffi_memory.flat_words(system.get_state(hub_pid)) - before
 
+        // The component retains its transport after admission. Its callbacks
+        // must not copy the resolved runtime into every page or sidebar task.
+        let assert Ok(component) = ffi_memory.page_component_pid(pid)
+          as "the socket links exactly one Lustre component"
+        let component_words = ffi_memory.flat_words(system.get_state(component))
+
         // The system message runs after the admission handler returns, so the
         // owned socket has entered Serving before its explicit fixture collection.
         let _ = system.get_state(pid)
@@ -493,7 +506,7 @@ fn page_socket_memory(payload_size) {
             }
           })
           as "the page's relay releases its gateway attachment after close"
-        #(bytes, hub_growth)
+        #(bytes, hub_growth, component_words)
       },
     )
   })

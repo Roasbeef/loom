@@ -11,11 +11,31 @@
          owner_label_of/1, reductions_of/1, log_capture_start/0,
          log_capture_stop/0, log/2, utf_codepoint_calls/1,
          function_values/1, wire_round_trip/1, remote_pid/0,
-         ra_names_on_disk/1, rsa_key_pem/0, lsp_start_waiters/1, ui_sessions_pid/1]).
+         ra_names_on_disk/1, rsa_key_pem/0, lsp_start_waiters/1, ui_sessions_pid/1,
+         page_component_pid/1]).
 
 -include_lib("public_key/include/public_key.hrl").
 -include_lib("client/include/client@lsp@manager_Manager.hrl").
 -include_lib("client/include/client@daemon@ui_sessions_Sessions.hrl").
+-include_lib("lustre/include/lustre@runtime@server@runtime_State.hrl").
+
+%% The real socket links its Lustre component. No Gleam API exposes that link
+%% as a typed PID; identify only this fixture's child through Lustre's pinned
+%% state record, without adding an inspection API to the production socket.
+page_component_pid(Socket) ->
+    {links, Links} = process_info(Socket, links),
+    Components = lists:filter(fun(Pid) ->
+        case proc_lib:translate_initial_call(Pid) of
+            {'gleam@otp@actor', _, _} ->
+                try is_record(sys:get_state(Pid, 1000), state)
+                catch exit:_ -> false end;
+            _ -> false
+        end
+    end, [Pid || Pid <- Links, is_pid(Pid)]),
+    case Components of
+        [Pid] -> {ok, Pid};
+        _ -> {error, nil}
+    end.
 
 %% The opaque service has no public PID API. This fixture-only lookup lets
 %% the page-memory regression monitor and retire its own temporary service.
