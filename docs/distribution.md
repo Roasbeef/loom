@@ -930,6 +930,10 @@ HOME, and TMPDIR remain server-owned. Provider credentials are not implicitly
 copied into tool environments.
 
 
+## How a build learns its commit
+
+A daemon reports the commit it was built from, and a deployment compares those reports to see whether every node runs the same build. `scripts/build-commit.sh` is the single resolver, used by the Makefile and by `scripts/release.sh` and `scripts/release-client.sh`. Inside a checkout or worktree it answers with the current HEAD. A tree made by `git archive` has no `.git`, so it reads the root `BUILD_COMMIT` file, whose `$Format:%H$` placeholder `.gitattributes` marks `export-subst` and git expands at archive time. A tree with neither reports `unknown`. `make BUILD_COMMIT=<sha>` overrides all three, and `make print-build-commit` shows the answer.
+
 ## Reproducible candidates and release manifests
 
 `scripts/release-build.sh` is the clean-source candidate recipe. The initial

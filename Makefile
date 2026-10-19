@@ -341,11 +341,16 @@ STATE_DIR ?= $(CURDIR)/build/dev/state
 # Build identity for the two `run-*` targets, exported so a development daemon
 # or client reports which build it is the same way an installed one does
 # (#392). The version is the package's own, matching what scripts/install.sh
-# and scripts/release.sh read; the commit falls back to `unknown` so a tree
+# and scripts/release.sh read; the commit comes from scripts/build-commit.sh, which
+# also reads a `git archive` tree and falls back to `unknown` so a tree
 # without git metadata, or without git at all, still builds.
 SERVER_VERSION := $(shell sed -n 's/^version *= *"\(.*\)"/\1/p' packages/client/gleam.toml | head -1)
 CLIENT_VERSION := $(shell sed -n 's/^version *= *"\(.*\)"/\1/p' packages/tui/gleam.toml | head -1)
-BUILD_COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+BUILD_COMMIT := $(shell scripts/build-commit.sh)
+
+.PHONY: print-build-commit
+print-build-commit: ## Print the commit a build of this tree reports
+	@echo $(BUILD_COMMIT)
 
 .PHONY: run-server
 run-server: binaries ## Run the daemon from source: [STATE_DIR=path] [ARGS=--best-effort]
