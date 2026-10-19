@@ -3,6 +3,29 @@
 This file records the verified state and next steps for this checkout. Rewrite
 it after a body of work; keep historical measurements in their evidence reports.
 
+## Image follow-ups and Herdr, October 19
+
+The image fix is based on Loom source `47d4b54a6` and pins etui
+`43969f88075a17044640e5e7cc43682b86a988ab` ([etui PR #10](https://github.com/Roasbeef/etui/pull/10)).
+The original reported image turn reached Gemini; its later text follow-up
+returned to GLM with a placeholder. Follow-ups now retain vision while images
+remain in the strand's projected context. Historical image limits and active
+run protection remain separate. Navigation or compaction can remove those
+pixels and return the strand to text.
+
+Herdr supports standard Kitty graphics after removal of its bespoke API.
+The corrected probe accepts its positive `libghostty` reply, and a native
+private-session capture verified Loom's 480 by 280 demo image transmission.
+Non-empty `NO_COLOR` still suppresses previews. See the [scoped evidence and
+remaining gates](review/image-followups-herdr-2026-10-19.md).
+
+Next: finish the exact-head affected gates, hosted CI and Linux signoff for the
+Loom PR. The independent review found no substantive issues. No installation,
+restart of the operator's daemon, or merge is authorized by this task.
+
+The following resource and Mermaid handoff is preserved historical context;
+those claims were not re-audited by the image fix.
+
 Baselined October 19, 2026 against main
 `698a693de5f7a22a65f7081ab0fce4f7523624dd`, with the approved fixture follow-up
 on `test/admin-read-budget`. The merge, source diff, independent review and
