@@ -99,6 +99,25 @@ cancellation, with the original 200 ms wall deadline. The test also observes the
 worker's death. No bootstrap or remote-background behavior was changed without
 a reproducible cause.
 
+A subsequent integration run on `addd5553a`, over `c444fca25`, exposed an
+outbox-fixture ordering race. It queued its first row before the initial empty
+pass had returned, so that pass could legitimately apply saved-recipient
+backoff. A controlled suspension reproduced the doubled sequence. The fixture
+now acknowledges the initial `Clear` result through its existing `Options.pass`
+callback before enqueueing; the actor completes the same turn's Idle transition
+before processing the later doorbell. The expected delays remain unchanged.
+A controlled 355 ms suspension preserved the expected sequence with this
+barrier, and the complete peer-outbox module passed all 16 tests.
+
+That integration run also had a scripted-provider rejection before any LSP
+execution and an observation deadline that expired before references were
+requested. Each passed three isolated reproductions. The saved provider error
+arrived after 127 ms, which rules out the normal one-second retry as its cause;
+replaying a duplicate alone does not establish that the failed run had one.
+Those fixtures remain unchanged, with one bounded full integration retry
+required. The preceding full gate on `d207589d0` passed every package and a
+clean skip census in 1,231 seconds; it does not validate the newer base.
+
 The owner authorized repairing CI before merge and explicitly waived the
 dedicated Linux signoff while obelisk is offline and no alternate host is
 available. That signoff has not run. A fresh independent adversarial review of

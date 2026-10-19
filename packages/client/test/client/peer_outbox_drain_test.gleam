@@ -287,9 +287,30 @@ pub fn a_saved_recipient_slows_the_drainer_to_a_cap_and_is_delivered_once_open_t
 pub fn an_owner_that_does_not_answer_returns_the_drainer_to_the_fixed_interval_test() {
   let rig = peer_rig.rig(2100, [], Down)
   peer_rig.set_resident(rig, Saved)
-  let #(armings, name) = drainer(rig)
+  let armings = process.new_subject()
+  let scans = process.new_subject()
+  let name = addresses.new()
+  let options =
+    peer_outbox_drain.options(rig.wiring, fn(delay_ms, wake) {
+      process.send(armings, Arming(delay_ms:, wake:))
+    })
+  let pass = options.pass
+  let options =
+    peer_outbox_drain.Options(..options, pass: fn() {
+      let backlog = pass()
+      process.send(scans, backlog)
+      backlog
+    })
+  let assert Ok(_) = peer_outbox_drain.start(options, name)
+    as "the observed drainer starts"
   let open = arming(armings)
   open.wake()
+
+  // The startup pass must observe an empty outbox before this fixture queues
+  // anything. Its acknowledgement orders the later Queued after the same
+  // actor turn's transition to Idle, regardless of scheduling delay.
+  let assert Ok(peer_outbox_drain.Clear) = process.receive(scans, 2000)
+    as "the initial empty pass completes before the first message is queued"
   let assert Ok(_) = peer_rig.send(rig, "m1")
   peer_outbox_drain.poke(name)
   assert waits(armings, 3) == [5000, 10_000, 20_000]
