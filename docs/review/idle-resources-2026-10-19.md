@@ -1,11 +1,12 @@
 # Idle CPU and memory investigation
 
-Status: profiling and two local page-memory repairs are complete. Replacement
-of the Darwin tracking mechanism is pending owner approval. The memory repair is saved locally
-at `c5776c1d3`; it has not been published or installed. No installed process was stopped, forced through garbage collection,
-patched, or restarted. The operator described this workload as idle; the live
-daemon still had three resident sessions and six declared strands. This is an
-observational baseline, not a controlled before/after comparison.
+Status: the page-memory fixes and Darwin notification tracker are committed
+on `perf/idle-resource-cost`, with independent review complete. Publication,
+hosted CI and strict Linux signoff are the remaining PR gates. No installed
+process was stopped, forced through garbage collection, patched or restarted.
+The operator described the measured workload as idle; the live daemon still
+had three resident sessions and six declared strands. Live measurements below
+are an observational baseline, not a controlled before/after comparison.
 
 Source inspection uses `490792538d18577ee001402ef7377998ce1b12b3` on
 `perf/idle-resource-cost`. Both installed helpers report build
@@ -22,8 +23,8 @@ Their RSS was 17,888 and 17,824 KiB. The long-lived children were a code-mode
 BEAM process and `gleam lsp`, respectively. Waiting children still count as
 running executions to the helper.
 
-`sandbox/internal/jail/tracker_darwin.run` captures the entire host process
-table every 20 ms for each execution. Native samples of both helpers show
+The baseline `sandbox/internal/jail/tracker_darwin.run` captures the entire
+host process table every 20 ms for each execution. Native samples of both helpers show
 repeated `sysctl` calls among otherwise blocked threads. The tracker needs
 parent links to remember descendants for later cancellation, including children
 that leave the original process group. It is doing lifecycle work while the
@@ -43,15 +44,54 @@ Three existing startup benchmark runs reported 179 to 187 microseconds and
 took 14.65 to 14.86 microseconds with zero steady allocations. Optimizing that
 traversal again would leave the expensive acquisition and periodic wakeups.
 
-The proposed next experiment is a kqueue fork/exit watch, with fresh startup
-and cancellation captures and explicit treatment of failed registrations.
-Changing the descendant-discovery mechanism needs owner approval before a
-prototype is added. This is not a proposal to lengthen the sampling interval.
+The repaired tracker registers kqueue fork/exit watches before releasing the
+root's start gate, then watches observed descendants. Notifications trigger
+fresh snapshots; an idle event timeout does not query the process table.
+Installing a new descendant watch queues another snapshot, covering children
+forked between the previous snapshot and watch registration. Cancellation still
+takes a fresh snapshot and checks each remembered birth before signalling.
+Startup failures refuse the execution; runtime queue or registration failures
+restore the previous polling path. Close wakes the reader and joins it before
+releasing the descriptor.
+
 [Apple's event header](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h)
-states that `NOTE_TRACK` and `NOTE_CHILD` are unsupported on modern macOS, so
-automatic recursive tracking cannot be assumed. A prototype must prove its
-idle benefit and exercise new descendants, reparenting, PID reuse, independent
-roots, cancellation, and shutdown before any equivalence claim.
+states that `NOTE_TRACK` and `NOTE_CHILD` are unsupported on modern macOS.
+These watches therefore remain best-effort discovery, as recorded in the
+[ADR-006 addendum](../adr/006-macos-seatbelt-boundary.md). Rapid daemonization
+and the birth-check/signal race remain documented lifecycle gaps; every Darwin
+execution still reports its lifecycle skip.
+
+The committed idle benchmark uses the same 20 ms sleep workload as the baseline
+probe. Notification profiles measured 0.49% and 0.55% of one core, against
+9.62% for the baseline. The final reviewed idle-only profile measured 0.14%
+(20 ms of samples over 14.32 seconds). Such sparse samples do not establish a
+precise improvement percentage; all three cuts show the process-table cost
+removed from the idle path. The final idle benchmark allocated 25 bytes per
+interval, rounded to zero allocations, against 899,429 bytes before. The reviewed
+startup benchmark measured 211.8 microseconds and 933,146 bytes per operation.
+Startup still acquires a full table, and these allocation counters describe
+cumulative allocation rather than retained memory or RSS.
+
+Three additional sequential baseline/candidate pairs ran the already-built test
+binaries without CPU sampling, using `/usr/bin/time -p` to count user plus
+system CPU over each run's elapsed time. Baseline CPU was 3.65%, 5.20% and
+12.98% of one core; candidate CPU was 0.48%, 0.35% and 0.49%. Median CPU fell
+from 5.20% to 0.48%, a 90.7% reduction in this harness. The host was not
+otherwise quiesced, which explains why the absolute cost and sampling cuts
+should not be treated as a universal percentage. Baseline allocation was
+939,326 to 948,481 bytes per interval; each candidate run recorded zero bytes
+and allocations. Startup remains included in OS process totals but outside the
+benchmark's reported per-interval allocation counters.
+
+The new regressions witness automatic child and grandchild discovery before
+cancellation, retain an observed orphan after its parent exits, exercise queue
+failure fallback, and reject a missing startup root. A deterministic test forks
+a grandchild between its parent's snapshot and registration, then requires
+background discovery with no later process event or cancellation capture.
+Removing only the queued rescan makes that regression fail; the fixed test
+passes ten repetitions. Independent review found this registration gap in the
+first prototype and approved the correction. The full sandbox race suite passes
+again after that correction.
 
 ## Daemon CPU is smaller and mostly waiting
 
@@ -87,7 +127,7 @@ which captures the original resolved attachment even after `Pending` changes
 to `Serving`. The page's `upgrade` authorization closure also passes the whole
 attachment to `authorize`, although the check only needs the registry and
 immutable identities. Both baseline paths retain an unrelated runtime and effects.
-The local repair makes the admission callback belong only to
+The repair makes the admission callback belong only to
 the pending phase and projects the authorization inputs before constructing
 the callback. Repeated authorization, parser-permit transfer, original gateway
 binding, and close ordering must remain unchanged. The real-upgrade regression varies an unused runtime hook by 8,192 messages.
@@ -122,7 +162,7 @@ approved this cleanup delta.
 A separate, pre-existing candidate remains in `admit`: the component's
 `Transport.sessions` callback captures the full attachment, although `listed`
 uses only registry and digest. The component stores this transport. Its retained
-size and a bounded component regression remain unmeasured; this local patch
+size and a bounded component regression remain unmeasured; this patch
 establishes the socket and gateway bounds above, not elimination of every
 component capture.
 
@@ -144,9 +184,11 @@ The full surrounding suites pass: 12 session-socket, 63 page-socket, 18 relay,
 and 183 UI-route tests (276 total). The final focused regression also passes
 after strengthening the hook-delivery witness. The complete 12-test socket suite passes again after the cleanup correction.
 Client lint has zero errors and 731 census warnings. Documentation checks have
-zero errors and 214 warnings. Formatting and whitespace checks pass. The local
-helper benchmarks pass. Hosted CI, Linux signoff, publication, installation,
-and a matched live before/after measurement are outside this validation.
+zero errors and 214 warnings. Formatting and whitespace checks pass. The full sandbox race suite and `go vet` pass. Real-helper conformance passes
+111 tests, and the real jailed code-mode suite passes 414 tests. Repository
+affected gates are in progress; hosted CI and Linux signoff remain pending at
+this documentation commit. Installation and a matched live before/after
+measurement have not been performed.
 
 ## Local evidence
 
