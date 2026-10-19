@@ -141,8 +141,9 @@ wire boundary. WP-A, and the root of the dependency DAG — `core` depends on
   first- versus last-occurrence precedence, so a document or frame
   carrying duplicates has no single meaning; rejecting is the only rule
   with one interpretation.
-- **JSON string runs preserve byte boundaries.** `json.clean_run` and
-  `json.escape_runs` advance four safe bytes together; each byte is checked
+- **JSON string runs preserve byte boundaries.** `json.clean_run` advances
+  eight safe bytes together, with four-byte and single-byte tails;
+  `json.escape_runs` advances four. Each byte is checked
   for quote, backslash and C0 controls. An exceptional chunk resumes the
   single-byte step, and slices are still UTF-8 validated. Independent
   codepoint-oracle and raw-input refusal tests cover every escape/control
