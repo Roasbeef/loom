@@ -1,6 +1,6 @@
 # Web Mermaid rendering: validation and review
 
-**Status**: partial, browser validation blocked · **Date**: 2026-10-18 · **Base**: `dd43362c86b43000e69e291550a41c21f5ffc13b` · **Branch**: `feature/web-mermaid`
+**Status**: browser-validated in Chrome · **Date**: 2026-10-18, browser drive 2026-10-19 · **Base**: `dd43362c86b43000e69e291550a41c21f5ffc13b`, rebased onto `490792538` · **Branch**: `feature/web-mermaid`
 
 The web implementation follows
 [protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md).
@@ -120,3 +120,62 @@ gates. That corrects the initial publication's unverified hosted-CI status,
 but does not validate the controller-refactor head. Hosted checks for the new
 head, strict Linux signoff and the real daemon/browser drive remain required
 before the draft becomes ready.
+
+
+## Browser drive and review fixes (2026-10-19)
+
+The branch was rebased onto main `490792538` and driven against a real seeded
+daemon (`make gen-client server-shipment`, `scripts/web_seed/seed.sh` on
+private ports, then `scripts/web_mermaid_check.sh`) in Chrome for Testing,
+outside the jail that blocked the earlier attempts. The first run found two
+defects that no unit test could see, because both live in the real vendor or
+the real browser rather than in the controlled-promise fixtures.
+
+Every flowchart failed and fell back to source while sequence diagrams
+rendered. Mermaid 12 lays flowcharts out with ELK, and elkjs's browserified
+prelude reaches for a CommonJS `require` that Bun's IIFE output rewrites to an
+undefined `__require`. A debug build of the same vendor reproduced
+`ReferenceError: __require is not defined` on the ELK path. The fixed
+configuration now pins `layout: "dagre"`; with it, flowchart, state, class,
+ER, gantt, pie, mindmap and sequence diagrams all render. Directives that
+could select another layout are already refused.
+
+Dark-palette diagrams sat on an opaque white box. The frame document declared
+no colour scheme while the page declares `dark`, and a browser paints an
+opaque canvas behind a frame whose scheme differs from its iframe element's.
+The frame runtime now sets its root `color-scheme` from the request's theme.
+Screenshots after the fix show transparent frames in both themes.
+
+The drive script itself had never run and could not pass: helpers were
+installed before the ticket redirect replaced the document, the checks
+outlasted one CDP evaluation, and the streamed answer row is replaced by the
+committed row when the turn ends, so diagrams captured once went stale. Each
+is fixed in the script. After the fixes, all 21 checks pass on repeated runs:
+flowchart and sequence render under the real response CSP, the invalid fence
+keeps its source open, the frame document is inaccessible to the page, no SVG
+enters the parent shadow tree, parse failure and the 32,001-unit bound fall
+back to source, recovery and a 30-revision burst keep only the latest source,
+foreign-window and stale-revision replies are ignored, both theme transitions
+redraw, configuration, indented frontmatter and `click` directives are
+refused, and a reconnected element ignores its departed frame. The observer
+page renders the same diagrams, and the session page made no request to any
+other origin.
+
+A report-only Fable review of the rebased branch then found two lifecycle
+gaps, both fixed. The parent's ten-second deadline started when the source was
+read, so it also counted each frame's load of the 5.4 MB renderer; on a remote
+daemon with several diagrams, later frames answered after the deadline and
+stayed unavailable. The deadline now starts when the request is posted. A
+mount scheduled for the next paint could also land after the element was
+removed and install a window listener nothing would release; a detached
+element now installs nothing. The review also showed that a `flowchart-elk`
+header still selects ELK; it fails closed to source, and the docs now say so.
+The drive passed all 21 checks again after these fixes, as did the 353
+`client@ui_` route tests.
+
+The renderer's npm bundle, lock, notice collector, frame document and binding
+checks moved from `web_client/mermaid` to `web_mermaid/bundle`, so one package
+owns the frame program and its FFI checks run in its own lane. Two repeated
+phase matches were folded. Not covered here: Firefox and Safari, and memory
+with many diagrams, since each diagram is its own frame with its own copy of
+the 5.4 MB renderer served `no-store`.
