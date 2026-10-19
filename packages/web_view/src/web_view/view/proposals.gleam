@@ -219,13 +219,33 @@ fn drawer(row: board_words.Proposal) -> Element(message) {
     html.p([attribute.class("proposal-rationale")], [html.text(row.rationale)]),
     html.p([attribute.class("session-quiet")], [html.text(edit_words(row))]),
     diff.view(board_words.diff_lines(row), 0),
+    html.p([attribute.class("session-quiet")], [
+      html.text(board_words.reach_words(row)),
+    ]),
   ])
 }
 
+// What the edit does, in the same words the terminal's review uses: the file
+// named short and the size of the change, with the complete path beside it
+// because a page has the room a terminal line does not.
 fn edit_words(row: board_words.Proposal) -> String {
+  let size = board_words.change_counts(row)
+
+  // The complete path follows the short one only when they differ: a rule's
+  // target is already its own file name, and printing it twice reads as two
+  // files.
+  let path = case board_words.target_label(row.target) == row.target {
+    True -> ""
+    False -> " · " <> row.target
+  }
   case row.old {
-    "" -> "Adds a " <> board_words.kind_words(row.kind) <> " to " <> row.target
-    _ -> "Replaces text in " <> row.target
+    "" -> "Adds a " <> board_words.kind_words(row.kind) <> " · " <> size <> path
+    _ ->
+      "Changes "
+      <> board_words.target_label(row.target)
+      <> " · "
+      <> size
+      <> path
   }
 }
 

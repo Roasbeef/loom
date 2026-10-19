@@ -239,7 +239,7 @@ pub fn the_drawer_shows_the_edit_in_red_and_green_and_where_it_came_from_test() 
   assert string.contains(html, "Review the change")
   assert string.contains(html, "From session")
   assert string.contains(html, "0198c0de-0000-7000-8000-000000000001")
-  assert string.contains(html, "Replaces text in loom-rules.md")
+  assert string.contains(html, "Changes loom-rules.md · +1 -1")
   assert string.contains(html, "diff-removed")
   assert string.contains(html, "Run make test.")
   assert string.contains(html, "diff-added")
@@ -255,7 +255,7 @@ pub fn an_append_draws_only_added_lines_test() {
       )),
     )
   let html = drawn(model)
-  assert string.contains(html, "Adds a rule to loom-rules.md")
+  assert string.contains(html, "Adds a rule · +1")
   assert string.contains(html, "diff-added")
   assert !string.contains(html, "diff-removed")
 }
@@ -294,6 +294,45 @@ pub fn the_page_has_no_accent_bar_and_no_shadow_test() {
   let html = drawn(model)
   assert !string.contains(html, "box-shadow")
   assert !string.contains(html, "border-left")
+}
+
+// A configuration edit's card draws the change, not the two whole texts: the
+// shared lines are context and only the line that differs is removed and
+// added. The page names the file short and prints its complete path once.
+pub fn a_configuration_edit_draws_only_the_changed_lines_test() {
+  let config =
+    json.Object([
+      #("id", json.String("prop-0000000007")),
+      #("kind", json.String("config")),
+      #("target", json.String("/home/me/.loom/loom.toml")),
+      #("base_digest", json.String("d")),
+      #("old", json.String("[models.flash]\nmodel_id = \"v4-flash\"")),
+      #("new", json.String("[models.flash]\nmodel_id = \"v41-flash\"")),
+      #("rationale", json.String("the snapshot moved")),
+      #("source", json.Object([#("session", json.String("s"))])),
+      #("created_ms", json.Int(1)),
+      #("state", json.String("pending")),
+    ])
+  let #(model, _) = owner(Listed(board([config], 1)))
+  let html = drawn(model)
+
+  assert string.contains(html, "Changes loom.toml · +1 -1")
+  assert string.contains(html, "/home/me/.loom/loom.toml")
+  assert string.contains(html, "model_id = &quot;v4-flash&quot;")
+  assert string.contains(html, "model_id = &quot;v41-flash&quot;")
+
+  // The shared header is drawn once, as context, and never as a removed line:
+  // the point of the change is that only the differing line carries a sign.
+  assert list.length(string.split(html, "[models.flash]")) == 2
+  assert string.contains(html, "diff-context")
+  let assert Ok(removed_row) =
+    string.split(html, "diff-row diff-removed") |> list.last
+  assert string.contains(removed_row, "v4-flash")
+  assert !string.contains(removed_row, "[models.flash]")
+
+  // The configuration reach sentence, not the rule one.
+  assert string.contains(html, "Applies when a session loads loom.toml next")
+  assert !string.contains(html, "Applies to new sessions only")
 }
 
 // An unfamiliar kind or state is shown, not refused, and offers no button.
