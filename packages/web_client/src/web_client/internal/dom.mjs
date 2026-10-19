@@ -143,6 +143,17 @@ export function observe_child_list(observer, element) {
   observer.observe(element, { childList: true });
 }
 
+// Calls back only for an entry that is intersecting, so the caller hears an
+// approach and not the matching departure. The margin is a CSS rootMargin.
+export function intersection_observer(margin, callback) {
+  return new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) callback();
+    },
+    { rootMargin: margin },
+  );
+}
+
 export function disconnect(observer) {
   observer.disconnect();
 }

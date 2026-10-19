@@ -39,7 +39,8 @@ pub type Element
 /// A running event listener, which `remove_listener` stops.
 pub type Listener
 
-/// A running `ResizeObserver` or `MutationObserver`, which `disconnect` stops.
+/// A running `ResizeObserver`, `MutationObserver` or `IntersectionObserver`,
+/// which `disconnect` stops.
 pub type Observer
 
 /// A running repeating timer, which `clear_interval` stops.
@@ -344,7 +345,7 @@ pub fn remove_listener(
 @external(javascript, "./dom.mjs", "resize_observer")
 pub fn resize_observer(callback: fn() -> Nil) -> Observer
 
-/// Has a resize observer watch an element's box (`ResizeObserver.observe`).
+/// Has a resize or intersection observer watch an element (`observe`).
 /// Observing an element already observed changes nothing.
 ///
 /// ## Examples
@@ -417,7 +418,22 @@ pub fn set_title(text: String) -> Nil
 @external(javascript, "./dom.mjs", "observe_child_list")
 pub fn observe_child_list(observer: Observer, element: Element) -> Nil
 
-/// Stops an observer of either kind from reporting anything more
+/// An `IntersectionObserver` that calls `callback` whenever an observed
+/// element comes within `margin` (a CSS `rootMargin`, such as `"100% 0px"`
+/// for a viewport above and below) of the visible area, including at once
+/// when it already is. Leaving that area calls nothing. It observes nothing
+/// until `observe` names an element. `<loom-mermaid>` creates its renderer
+/// frame on the first approach (protocol-change/091).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let near = ffi_dom.intersection_observer("100% 0px", fn() { Nil })
+/// ```
+@external(javascript, "./dom.mjs", "intersection_observer")
+pub fn intersection_observer(margin: String, callback: fn() -> Nil) -> Observer
+
+/// Stops an observer of any kind from reporting anything more
 /// (`disconnect`).
 ///
 /// ## Examples
