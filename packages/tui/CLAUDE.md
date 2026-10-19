@@ -2587,7 +2587,11 @@ untouched.
   in `Shared.proposals`, so a decision's reply redraws the open row. `Alt+p`
   opens it, and the footer badge is `input_frame.Status.proposals`. A
   collapsed `history_search` result keeps 3 hits (`recall_view.excerpt_hits`)
-  and `Ctrl+g` shows all.
+  and `Ctrl+g` shows all. A row's diff is `session_view/proposals.diff_lines`,
+  which keeps the lines `old` and `new` share as quiet context: a configuration
+  edit changes a few lines of one file rather than replacing its whole text.
+  The transcript's own `propose` row draws the same diff through
+  `proposals.diff_text`, so the two surfaces cannot disagree.
 
 ## V2 integration evidence
 

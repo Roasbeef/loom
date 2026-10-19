@@ -104,7 +104,7 @@ prop-0000000003 · pending · 2h ago
 From session 019a3c1e-5b7d-7c3e-9a10-2f4b6c8d0e1f
 Why
 Two pushes failed CI because make test does not run the lint.
-Adds a rule to loom-rules.md
+Adds a rule · +1
 + Run `make check` before every push.
 When it applies
 Applies to new sessions only. A running session keeps the rules it started with.
@@ -112,6 +112,42 @@ Approving writes this rule to loom-rules.md, which sessions opened afterwards
 read. The workspace's AGENTS.md is never edited.
 a approve · r reject · ↑/↓ PgUp/PgDn scroll · Esc back
 ```
+
+The heading above the diff names what changes and how much of it does, and the
+sentence under "When it applies" is the one for the row's own kind, so a
+person deciding a rule is never told what a configuration edit reaches.
+
+**A configuration edit draws only the lines that change.** A `kind` of
+`config` (`protocol-change/089`) replaces one version of a file with another,
+so `old` and `new` share most of their lines. The review keeps the shared
+lines as quiet, unmarked context and shows the rest as one removed run beside
+one added run, with the file's short name and the size of the change in the
+heading and its complete path beneath:
+
+```
+prop-0000000004 · pending · 2h ago
+From session 019a3c1e-5b7d-7c3e-9a10-2f4b6c8d0e1f
+Why
+The 1017 snapshot is retired; the 1019 one is the current flash build.
+Changes loom.toml · +1 -1
+/Users/me/.loom/loom.toml
+  [models.flash]
+  provider = "baseten"
+- model_id = "deepseek-v4-flash"
++ model_id = "deepseek-v41-flash"
+When it applies
+Applies when a session loads loom.toml next; each session that loads it
+reopens once idle.
+```
+
+The shared lines are found as the longest run of equal lines at the head and
+at the tail of the two texts (`session_view/proposals.diff_lines`), which is
+all a proposal needs: it is a small edit to a text a person already knows, not
+a general edit script. A rule proposal shares nothing, because `old` and `new`
+are two different rules rather than two versions of one, so its two runs simply
+sit adjacent. The transcript's own row for the `propose` call draws the same
+diff from the same function (`proposals.diff_text`), so the review and the
+transcript cannot disagree about what the edit is.
 
 Pressing `a` asks `Approve this rule?`, and only a lowercase `y` sends the
 approval. The web page offers the same review in the Session pane's last
