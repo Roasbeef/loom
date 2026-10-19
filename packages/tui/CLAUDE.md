@@ -3496,7 +3496,9 @@ the reads.
 
 A fenced `mermaid` block in an answer is drawn as box-drawing text by
 `tui/mermaid`, which is pure: it reads a string and returns styled lines, with
-no process, file, escape sequence or FFI, so it runs on every streamed delta.
+no process, file, escape sequence or FFI. It is bounded but takes up to tens of
+milliseconds at the caps, so settled rows draw diagrams and the live tail shows
+the fence as source.
 `render(source, width)` returns `Result(List(span.Line), Refusal)` and
 `reason(refusal)` is the phrase shown under the source on a refusal. The
 modules under `tui/mermaid/` are `model` (the shared types, the limits and the
@@ -3530,7 +3532,11 @@ line cells), `draw` (flowcharts) and `sequence`.
   them. The search is bounded by the canvas and a cost limit, and a failure is
   `Unroutable`, never a loop.
 - **Cost:** a 32-node, 48-edge diagram takes under about 25 ms warm in the
-  worst shapes measured (typically 5-15 ms). Each route is an A* search inside
+  worst shapes measured (typically 5-15 ms). One render shares a budget of
+  `model.max_route_expansions` (60,000) search states across every edge, both
+  directions and both windows; spending it is `TooLarge(RoutingWork)`. A
+  refused worst case (a 32-node chain with six back edges to its first node,
+  about 45,000 states per direction) costs about 80 ms. Each route is an A* search inside
   a window around the two boxes (widened to the whole canvas once if that finds
   nothing), and `draw.Drawing.expansions` counts the states expanded so
   `mermaid_draw_test` bounds the work without timing it. Because a diagram is

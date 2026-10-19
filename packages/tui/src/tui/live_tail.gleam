@@ -37,7 +37,10 @@
 //// in an answer turns the shortcuts off for everything after it.
 ////
 //// The result must be byte for byte the rows `render_line` would give, since
-//// replay goldens compare frames exactly. Each part has its reason for being
+//// replay goldens compare frames exactly. The one exception is a `mermaid`
+//// fence: the tail shows it as source (`markdown.ShowSource`) and the settled
+//// row draws it, because a diagram is the costliest block to build again on
+//// every delta. Each part has its reason for being
 //// exact written where the part is built, and `test/live_tail_test.gleam`
 //// checks the whole against a full render over generated streams. What is
 //// not provably safe falls back to the full render: a stream that stopped

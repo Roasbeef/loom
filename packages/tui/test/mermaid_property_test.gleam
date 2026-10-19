@@ -212,6 +212,24 @@ pub fn render_is_total_on_arbitrary_strings_property_test() {
   })
 }
 
+// The same, behind a valid header, so the parser's body and not only its
+// refusal of an unknown first word is exercised.
+pub fn render_is_total_on_arbitrary_bodies_property_test() {
+  property(
+    qcheck.map2(
+      qcheck.bounded_int(from: 0, to: 2),
+      qcheck.string(),
+      fn(header, body) { #(at(headers, header, "graph TD\n"), body) },
+    ),
+    fn(case_) {
+      case mermaid.render(case_.0 <> case_.1, 80) {
+        Ok(lines) -> fits(lines, 80)
+        Error(_) -> Nil
+      }
+    },
+  )
+}
+
 pub fn small_graphs_are_drawn_whole_property_test() {
   property(small_graph(), fn(graph) {
     let source = graph_source(graph)
