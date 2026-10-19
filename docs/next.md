@@ -4,7 +4,7 @@ This file records the verified state and next steps for this checkout. Rewrite
 it after a body of work; retain historical measurements in their evidence
 documents rather than carrying old validation forward.
 
-Baselined October 19, 2026 against source `1f7ff1e47` on
+Baselined October 19, 2026 against source `12f791346` on
 `perf/idle-resource-cost`, from `origin/main` at
 `490792538d18577ee001402ef7377998ce1b12b3`. Claims below were checked against
 this tree, saved local logs, or the GitHub state named explicitly. This is a
@@ -18,15 +18,15 @@ an assertion that this branch's hosted gates have finished.
 | Earlier resource PR | [#1008](https://github.com/Roasbeef/loom/pull/1008) merged at `4e81e0cc0d341f2e54d820c5033f7adaa6b5e053`. Its evidence does not validate this branch. |
 | Idle helper CPU | The baseline's 20 ms host process-table acquisition reproduces the live helper cost. Notification-driven discovery removes those reads while idle. |
 | Page memory ownership | Admission owns its callback only in `Pending`; repeated authorization captures registry and identities rather than a resolved attachment. |
-| Local validation | Both production changes passed independent review. The final sandbox race suite passes. Conformance passed 111 tests; real jailed code mode passed 414. The surrounding page suites passed 276 tests. |
+| Local validation | Both production changes passed independent review. The final sandbox race suite passes. Before the batching correction, conformance passed 111 tests and real jailed code mode passed 414; final-helper E2E remains required. The surrounding page suites passed 276 tests. |
 | Publication | The owner authorized a PR with end-to-end verification. Affected repository gates are running; hosted CI and strict Linux signoff remain pending at this documentation commit. No installation or restart occurred. |
 
 The [idle resource report](review/idle-resources-2026-10-19.md) contains the
 process census, CPU and allocation measurements, memory ownership paths,
 negative controls, review correction, and remaining measurement limits.
 Three sequential baseline/candidate OS-accounting pairs reduced median idle
-tracker CPU from 5.20% to 0.48% of one core (90.7%). Baseline allocation was
-939,326 to 948,481 bytes per benchmark interval; candidate runs recorded zero.
+tracker CPU from 5.56% to 0.35% of one core (93.7%). Baseline allocation was
+926,261 to 936,643 bytes per benchmark interval; candidate runs recorded zero.
 These are isolated tracker measurements on a host that was not quiesced, not
 installed-daemon CPU or RSS savings. The report also records sampled profiles,
 including their limited active sample counts.
@@ -74,6 +74,8 @@ reopening where the ruling lives.
 lifecycle skip, birth-check/signal race and rapid-daemonization gap. Startup
 registers the gated root before capture; cancellation captures independently.
 A new descendant watch queues another snapshot, closing the registration gap.
+Notifications batch for the original 20 ms interval, avoiding a snapshot per
+fork during active bursts. Close interrupts that delay.
 A failed live queue returns to polling; failed startup refuses the execution.
 
 **Authorization remains fresh and gateway ownership remains original.** The
