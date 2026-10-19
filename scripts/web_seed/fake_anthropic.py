@@ -54,6 +54,15 @@ this is deliberately not a diagram
 The source stays available when a diagram cannot be rendered.
 '''
 
+# Many small diagrams in one answer, for measuring what each diagram's own
+# renderer frame costs. Send "mermaid many" to get it.
+MERMAID_MANY_ANSWER = "## Many diagrams\n\n" + "\n".join(
+    f"```mermaid\nflowchart LR\n    A{n}[Step {n}] --> B{n}{{Check {n}}}\n"
+    f"    B{n} -->|yes| C{n}[Done {n}]\n    B{n} -->|no| A{n}\n```\n"
+    for n in range(24)
+)
+
+
 
 def text_of(content):
     """The text of a message's content, blocks joined."""
@@ -124,6 +133,8 @@ def main_turn(messages):
         )
         return [("text", answer)], "end_turn", warm
     said = text_of(last.get("content", ""))
+    if "mermaid many" in said.lower():
+        return [("text", MERMAID_MANY_ANSWER)], "end_turn", warm
     if "mermaid" in said.lower():
         return [("text", MERMAID_ANSWER)], "end_turn", warm
     if "advisor-nudges" in said or "[advisor nudges]" in said:

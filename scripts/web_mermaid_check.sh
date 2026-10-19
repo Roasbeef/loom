@@ -80,12 +80,17 @@ window.mermaidDone = null;
   const frame = host => host.shadowRoot?.querySelector('iframe');
   const shown = host => frame(host) && !frame(host).classList.contains('mermaid-pending');
   const unavailable = host => host.shadowRoot?.querySelector('.mermaid-toolbar')?.textContent.includes('Diagram unavailable');
+  // A diagram gets its frame only near the viewport, and the page follows
+  // the newest row, so bring each frameless diagram into view while waiting.
   await waitFor(() => {
-    const [a, b, c] = current();
+    const diagrams = current();
+    for (const host of diagrams) if (!frame(host)) host.scrollIntoView({block: 'center'});
+    const [a, b, c] = diagrams;
     return c && shown(a) && shown(b) && unavailable(c);
   }, 'flowchart, sequence and invalid fallback');
   const diagrams = current();
   const first = diagrams[0];
+  first.scrollIntoView({block: 'center'});
   check(diagrams.length === 3, 'streamed Markdown produced three Mermaid elements');
   check(shown(diagrams[0]) && shown(diagrams[1]), 'flowchart and sequence render under the real response CSP');
   check(diagrams[2].shadowRoot.querySelector('details').open, 'invalid diagram leaves source expanded');
