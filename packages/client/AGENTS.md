@@ -315,8 +315,9 @@ Remote origins (protocol-change/052, as built in its addendum).
 loopback host; lowercased, port 443 dropped; at most `max_origins`), read
 once by `prepare_startup` into `ViewOn(origins)`; a list without the view, or
 a bad entry, refuses startup naming the entry, and `limits.from_fields` runs
-the same parser for the catalogue. The listener stays loopback-only
-(`bind_address` is unchanged). `ui_http.page_origin(request, ui.origins)` is
+the same parser for the catalogue. The listener stays loopback-only:
+`daemon/listen_address` owns the one grammar (`127.0.0.1:port` or
+`[::1]:port`) that `--bind` and `[daemon] bind` are both read with. `ui_http.page_origin(request, ui.origins)` is
 the host check: `Loopback(host)` or `Remote(origin)` or `403`, never reading a
 forwarded header. `server.web_view` hands that `PageOrigin` to every handler,
 and it alone chooses the socket's `Origin` rule (`origin_matches`), the cookie
@@ -893,7 +894,15 @@ catalogue without opening runtimes. Explicit admission invokes
   These metadata checks do not substitute for mapped resource and recall
   admission in the assembly layer.
 - `client/daemon/main.{Config, Serving}` selects daemon-wide state, loopback
-  binding, capacity, and lazy session defaults. The binary rejects the removed
+  binding, capacity, and lazy session defaults. The listener address comes
+  from `--bind`, else `[daemon] bind`, else `listen_address.default`
+  (`127.0.0.1:0`). `parse` cannot read the file, so `Config.bind_source`
+  (`BindDefault | BindFlag | BindFile`) records whether the flag was given,
+  and `prepare_startup` applies the file's address only over `BindDefault`.
+  The resolved address stays in `Config.bind_host`/`bind_port`, which the
+  listener binds and `publish_endpoint` records. `limits.from_fields` runs
+  `listen_address.from_fields` too, so the catalogue refuses a bad value
+  with the startup words; a reload never rebinds. The binary rejects the removed
   per-session flags; `ext` dispatch remains in `client.gleam` to avoid a cycle.
   The `--help` and `-h` flags anywhere in argv — after daemon flags as
   readily as first — and the bare word `help` in first position are
