@@ -770,3 +770,37 @@ Four points differ from the proposal or are left open.
 - **`protocol.version` did not change** for this proposal, as the Affects line states.
   The executor host's value is 3 because of remote code mode and MCP
   (protocol-change/078), not because of this document.
+
+## Addendum 2026-10-19: the executor panel is a choice in the "New session" form
+
+This addendum changes the page, not the wire. The panel this proposal's web view
+section describes, opened by a "New session on an executor" button, is now the
+"Runs on" choice at the head of the one "New session" form (protocol-change/074,
+addendum of the same date). The cards, their state pills, the advice rule (a
+`down` executor can still be chosen) and the creation (`Registered` for an
+executor, `Pooled` for a pool) are as decided. Three things differ.
+
+The first card is the daemon serving the page, worded `<name> (this machine)` and
+chosen by default, so the executors are alternatives to a choice the person can
+see and not a separate feature. The daemon's name is `Reach.self`, given to the
+page as `Start.machine`; it is a configuration value and a text node. A daemon with
+neither executors nor pools draws no choice, so a single-machine setup never meets
+the vocabulary. One line under the cards says where work happens: "Commands run on
+exec (linux/x86_64); the conversation stays on box.", or for this machine "Commands
+and the conversation stay on box."
+
+For an executor or a pool the form's workspace is a select, not a typed name. The
+page's `Report` and `PoolReport` carry `workspaces`: the names an executor's census
+registered (`node_report.ExecutorFacts.workspaces`, names and never roots), and for
+a pool the names every reached executor registered, since a first open can land on
+any of them. The select's values are positions into the list the page drew, so the
+browser can name only a workspace the page offered and "executor serves no
+workspace" cannot be reached from the form; `executor_plane`'s refusal remains the
+backstop. A place whose workspaces are not known (still being read, or down) draws
+a sentence saying so and only Cancel, because there is nothing to choose from. This
+is the one capability the earlier panel had that the form does not: it let a person
+name a workspace on an executor that had not answered.
+
+The form carries the same optional profile and model selects as the folder form
+(protocol-changes 076 and 080), with a line saying a model replaces the main model
+the profile gives. The earlier panel drew neither.

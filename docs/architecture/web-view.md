@@ -265,7 +265,7 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:495`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:503`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
@@ -1159,18 +1159,66 @@ other's fields (`text` for a rename, `name` and `shareable` for a creation), so 
 submit reaches one handler and one message. `ui_route_test`, `ui_socket_test`, `ui_sessions_test` and
 `home_test` read each refusal and the admission.
 
-#### A folder that has no session
+#### New session
 
 Protocol-change/074 adds an "Other folders" section after the home's lists
 (`view/folders`), drawn only where `view/create` is `Offered` and the page has
-read its list. It holds a "New session in another folder" button and one row for
-each remembered folder that no group already shows. The button opens a form with
-a path field and the same name and Shareable box (`create.Elsewhere`, then
-`create.Sending` while the creation is out). It is the one form whose workspace is
-a field, so `view/create.typed_fields` accepts exactly one `path`, one `name`, at
-most one `shareable` and nothing else. A creation now names a `creations.Place`:
-`Drawn(workspace)` for a workspace the page drew and `Typed(path)` for the field.
-The submit sits beneath `home.table_path`, so the owner's admission is unchanged.
+read its list. It holds one "New session" button and one row for each remembered
+folder that no group already shows. The button opens the one form for a session
+that does not belong to a group the page draws (`create.Elsewhere`, then
+`create.Sending` while the creation is out). Protocol-change/078 and 085 add
+executors and pools to the same form as a choice of where the session runs.
+
+The form has two parts. A "Runs on" choice comes first and is drawn only where the
+daemon has executors or pools (`placements.any`), so a single-machine daemon sees
+the folder form and none of the distributed vocabulary. Under it are the fields
+for the choice. The page's own state holds the choice (`create.State`: `Elsewhere`
+is this machine, `Chosen(choice)` an executor or a pool), and a card's button sends
+the choice it was drawn for, built by the server from the names it was given, so
+no executor or pool name is a form field. The submit carries only what a person
+typed or picked from a list, and a forged `executor` or `pool` field is an extra
+field and refuses the event.
+
+**Runs on.** The first card is the daemon serving the page, worded `<name> (this
+machine)` and chosen by default (`Start.machine`, the daemon's node name). Then
+come a card for each executor and each pool, in the configuration's order: the name,
+the kind, a state pill, what the executor's operator declared about it, how many
+scopes it reports free and any contradiction between its census and its
+declaration, and a Choose button. The state is what the daemon found a moment
+before the form opened, by connecting to each executor under the same bounds
+`deployment.status` uses (`client/deployment.placed`), and it is advice. A `down`
+executor is drawn with that word and can still be chosen, because the daemon
+decides again when the session opens. The state is `ready`, `degraded` (the
+executor's report names a reason), `full` (every scope it admits is held) or
+`down`, and the pill uses the three tints the page already has, `online` for
+`ready`, `pending` for `degraded` and `ended` for `full` and `down`
+(`placements.pill_class`; a card that has not been checked yet also reads
+`pending`), so no colour is added. One line under the cards says where work
+happens for the choice: "Commands run on exec (linux/x86_64); the conversation
+stays on box.", "Commands and the conversation stay on box." for this machine, and
+for a pool that the daemon picks the executor when the session first opens.
+
+The form opens at once, with cards drawn from the names the page was told when it
+opened (`Start.executors`, `Start.pools`, the daemon's startup capture), and the
+read of the states runs in a weft task the daemon starts (`ui_socket.read_task`),
+so the page's runtime never waits on a connection. Its answer replaces the cards,
+numbered so that an older read cannot overwrite a newer one; if it never comes, or
+gives nothing, the cards stay as names and the form says so. Choosing a card is a
+click beneath the sessions list's section, where the home already admits one, so
+the owner's socket admits no new event class (`ChoosingHere`, `ChoosingPlace`).
+The read's answer changes what a card says without changing `create.State`, so the
+memoized table's key includes the cards (`create.cards`).
+
+**This machine.** The workspace is a field, so `view/create.typed_fields` accepts
+exactly one `path`, one `name`, at most one `shareable` and nothing else, and the
+profile, model and remembered-folder selects are read by
+`typed_fields_with_roles`. The remembered folders are a select beside the path
+field, drawn only when the page has some: an option's value is its position in the
+list the page drew, its label is the path as a text node, and a path typed in the
+field wins over the select. A creation names a `creations.Place`: `Typed(path)`
+for either (the select is only a way to fill the same field), and `Drawn` for a
+group's own button. The submit sits beneath `home.table_path`, so the owner's
+admission is unchanged.
 
 `create_for` resolves the place before anything is created (`placed`). A typed
 path goes to `client/daemon/new_folder.check`: the text rule, `~` expansion,
@@ -1192,40 +1240,34 @@ an entry by its identity (`forget_for`), each in a task after the same owner che
 as a creation. The rows are keyed by that identity, and a path is drawn only as a
 text node.
 
-#### Executors and pools
+**An executor or a pool.** The folder field gives way to a select of the workspaces
+that place registered. The page learns them from the same read as the states:
+`placements.Report.workspaces` is the names in the executor's own report (names
+and never roots, `node_report.ExecutorFacts.workspaces`), and
+`placements.PoolReport.workspaces` is the names every reached executor of the pool
+registered, because a first open can land on any of them. The select's values are
+positions into that list and the decoder (`remote_fields`) turns a position back
+into a name, so the browser can name only a workspace the page drew and the
+daemon's "serves no workspace" refusal is a backstop the form cannot reach. A place
+whose workspaces are not known, because the read is still out or the executor is
+down or reported none, draws one sentence saying why and only Cancel
+(`unknown_words`). There is no Shareable box, because the daemon makes a session on
+an executor or in a pool session-only whatever the form says, and the profile and
+model selects are the same as on the folder form. The creation names an executor
+(`creations.Registered`) or a pool (`creations.Pooled`); the daemon checks the
+executor or pool against its configuration again (`executor_unknown`,
+`pool_unknown`), and for a pool picks the executor when the session first opens, in
+the pool's order.
 
-A deployment with `[executors.<name>]` or `[pools.<name>]` tables adds a second
-button to the same section, "New session on an executor". It opens a panel with a
-card for each executor and each pool (protocol-change/078 and 085): the name, the
-kind, a state pill, what the executor's operator declared about it, and a Choose
-button. The state is what the daemon found a moment before the panel opened, by
-connecting to each executor under the same bounds `deployment.status` uses
-(`client/deployment.placed`), and it is advice. A `down` executor is drawn with
-that word and can still be chosen, because the daemon decides again when the
-session opens and a person may know a machine is coming back. An executor that
-answered adds how many scopes it has free and, when its census disagrees with what
-its operator declared, the words saying how, each as a paragraph of text. The state
-is `ready`, `degraded` (the executor's report names a reason), `full` (every scope
-it admits is held) or `down`, and the pill uses the three tints the page already has,
-`online` for `ready`, `pending` for `degraded` and `ended` for `full` and `down`
-(`placements.pill_class`; a card that has not been checked yet also reads `pending`),
-so no colour is added.
-
-The panel opens at once, with cards drawn from the names the page was told when
-it opened (`Start.executors`, `Start.pools`, the daemon's startup capture), and
-the read of the states runs in a weft task the daemon starts
-(`ui_socket.read_task`), so the page's runtime never waits on a connection. Its
-answer replaces the cards, numbered so that an older read cannot overwrite a
-newer one; if it never comes, or gives nothing, the cards stay as names and the
-panel says so. Choosing a card is a click beneath the sessions list's section,
-where the home already admits one, so the owner's socket admits no new event
-class. The choice is the page's own state and not a field of the form that
-follows, so a submit carries only the workspace name and the session name a
-person typed, and a forged executor or pool field refuses the event. The creation
-names an executor (`creations.Registered`) or a pool (`creations.Pooled`); the
-daemon makes either session-only, checks the executor or pool against its
-configuration again (`executor_unknown`, `pool_unknown`), and for a pool picks the
-executor when the session first opens, in the pool's order.
+**Profile and model.** When the configuration defines `[profiles.<name>]` or
+`[models.<name>]` entries, every form draws a select for each, in the daemon's
+order, with "Default" first (protocol-change/076, 080). A value is a position into
+the list the page drew, so a name is never an attribute and the browser picks among
+what was drawn. A line beneath says that Default uses the configuration's roles, a
+profile sets the roles, and a model replaces the main model the profile gives; the
+server resolves them in that order (`profiles.resolve`). The line is a
+`home-create-note` and not a hint, because the stylesheet hides the hints after the
+name field once it holds a name.
 
 #### Sessions on other orchestrators
 
