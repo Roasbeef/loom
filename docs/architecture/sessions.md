@@ -462,7 +462,7 @@ and opens the session again in a process the session does not own
 shared domain does not use it. The same restart is how a session takes an edit
 to its configuration file: `client/config_watch` notices a settled change that
 loads, and the hub reopens the session once no strand is running
-([protocol 091](../../protocol-change/091-config-proposals.md)).
+([protocol 092](../../protocol-change/092-config-proposals.md)).
 
 It likewise stores the key of the `[models.<key>]` entry the session's `main`
 role was pinned to, or none ([protocol 080](../../protocol-change/080-session-model-choice.md)).

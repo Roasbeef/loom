@@ -594,7 +594,7 @@ domain owner is not done. The design is in
 `protocol-change/086-memory-proposals.md`.
 
 A proposal of kind `config` edits the `loom.toml` the proposing session loaded
-instead (`protocol-change/091-config-proposals.md`). Its `target` is that file's
+instead (`protocol-change/092-config-proposals.md`). Its `target` is that file's
 absolute path, the edited text must load under the session's own loader when it is
 filed and when it is approved, and only a session that loads that very file may
 approve it. The approval keeps the file's permission bits and refuses a symbolic

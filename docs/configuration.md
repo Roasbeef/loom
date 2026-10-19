@@ -57,7 +57,7 @@ error instead of a setting that silently does nothing.
 **A session reloads by reopening.** A session reads the file when it is built:
 when it is created, opened, or resumed, and keeps what it read while it runs. A
 daemon session also watches the file it loaded
-([protocol-change/091](../protocol-change/091-config-proposals.md)): once an edit
+([protocol-change/092](../protocol-change/092-config-proposals.md)): once an edit
 has settled (two reads a second apart agree) and the new text loads under the
 session's profile and model, the session reopens as soon as no strand is
 running, which rebuilds everything the file configures. A save that does not load

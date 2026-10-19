@@ -111,7 +111,7 @@
 //// that one key (`Admin.channel`), so an owner page open in any session
 //// re-reads the queue when a proposal is filed or decided in another.
 ////
-//// ## Configuration edits (protocol-change/091)
+//// ## Configuration edits (protocol-change/092)
 ////
 //// A proposal of kind `Config` edits the `loom.toml` the proposing session
 //// loaded, with the same queue, lease, digest and exactly-once checks as a rule.
@@ -200,7 +200,7 @@ pub type Kind {
   /// A rule in the rules file, which the prompt carries.
   Rule
 
-  /// The `loom.toml` the proposing session loaded (protocol-change/091).
+  /// The `loom.toml` the proposing session loaded (protocol-change/092).
   Config
 }
 
