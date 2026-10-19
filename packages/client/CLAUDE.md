@@ -193,6 +193,36 @@ before `api.open_published` and retires directly after `Runtime`, because
 tools run until the runtime drains. `build_effects(config)` keeps the capturing
 closure for tests, the scripted demo and extension hooks.
 
+## Layering on `harness` (issue #1030)
+
+The provider-routing core of `client/wiring` lives in the `harness` package
+(`packages/harness/CLAUDE.md`, `docs/design-notes/harness-extraction.md`), which
+imports nothing from this package so a program can embed a session without the
+daemon. `wiring` builds `harness/provider.Provider` and `harness/routing.Routing`
+from its `Config` (`provider_configuration`, `provider_routing`) and keeps every
+public name as a one-line delegation, so the suites that pin routing, fallback
+order and admission run unchanged. What stays here is daemon-specific: `Config`,
+the compaction hooks and the notes checkpoint they read, `run_tool` with its
+`Authority` and `WorkspaceView` halves, `run_placed`, the escalation seams and
+the holder.
+
+- **The daemon builds the unchecked floor.** `harness.new` refuses a gateway
+  which does not route the role and a non-positive fallback; `wiring` does not
+  call it, because several fixtures assemble a gateway which routes only part of
+  the roles and that is a runtime condition (`resolution` answers
+  `ModelUnresolved`) here. Do not route the daemon through the checked door.
+- **`catalog.ImageReading` stays the catalogue's.** `wiring.lookup_of` maps it
+  onto `harness/model_facts.ImageReading` at the one place the facts closure is
+  handed over, because a Gleam alias does not re-export constructors and
+  `catalog.TextOnly` is the spelling of the `vision` key throughout the parser
+  and the tests.
+- **`client/vision` delegates.** The rule moved to `harness/vision`; this
+  module keeps its names so `vision_test` is unchanged. `client/notes.strand_of`
+  delegates to `harness/session_read`.
+- **Compaction hooks call `harness/admission.admit` and
+  `harness/routing.resolution`** where they called private copies, so admission
+  cannot drift between a daemon session and an embedded one.
+
 ## Code-mode alternatives on direct tools
 
 `contributions.built_in` appends a concrete capability call and result shape to
@@ -3916,6 +3946,8 @@ these forks because they define the same modules.
 - **Depends on**: `host` (shared daemon OS bootstrap and WebSocket transport),
   `core` (json, codec, entries, messages), `session`,
   `runtime` (`api`, `effects`, `escalation`, `supervisor`, `writer`),
+  `harness` (the provider-routing core `wiring` builds on; no `client`
+  dependency),
   `events` (the bus as a hint source), `storage` (catch-up scans),
   `machine` (`acceptance`, `queue`, `codec` — structural preparation and
   typed durable state), `broker` (`policy.Grant`,
