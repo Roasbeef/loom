@@ -294,7 +294,12 @@ type Signal {
 // A serving page is the two things the socket does with its component:
 // hand it a browser frame (or drop it), and shut it down.
 type Phase {
-  Pending(signals: process.Subject(Signal))
+  // Admission owns the resolved attachment only until the component starts.
+  // Keeping it in the handler would retain that runtime after Serving begins.
+  Pending(
+    signals: process.Subject(Signal),
+    admit: fn(process.Subject(Signal)) -> mist.Next(Phase, Signal),
+  )
   Serving(
     forward: fn(String) -> Nil,
     shutdown: fn() -> Nil,
@@ -521,9 +526,16 @@ pub fn upgrade(
         digest: attachment.digest,
         signin: option.map(seen.login, fn(issuer) { issuer.fingerprint }),
       ),
-      check: ui_relay.while_open(fn() { authorize(attachment) }, fn() {
-        result.replace(open(), Nil)
-      }),
+      check: ui_relay.while_open(
+        authorize_for(
+          attachment.registry,
+          attachment.epoch,
+          attachment.session_id,
+          attachment.incarnation,
+          attachment.digest,
+        ),
+        fn() { result.replace(open(), Nil) },
+      ),
       ceiling:,
       failed_reader: stop_reader_for(
         attachment.registry,
@@ -678,23 +690,23 @@ fn websocket(
         // `Admit` is the first message the handler sees.
         process.send(signals, Admit)
         #(
-          Pending(signals),
+          Pending(signals, admit),
           Some(process.new_selector() |> process.select(signals)),
         )
       },
       handler: fn(phase, event, socket) {
         case phase, event {
-          Pending(signals), mist.Custom(Admit) -> admit(signals)
+          Pending(signals, begin), mist.Custom(Admit) -> begin(signals)
 
           // Nothing can reach a pending socket before its own `Admit`; the
           // arms are spelled out so a change to that order fails closed.
-          Pending(_), mist.Text(_)
-          | Pending(_), mist.Binary(_)
-          | Pending(_), mist.Closed
-          | Pending(_), mist.Shutdown
-          | Pending(_), mist.Custom(Client(_))
-          | Pending(_), mist.Custom(Ended(_))
-          | Pending(_), mist.Custom(Stop(_))
+          Pending(..), mist.Text(_)
+          | Pending(..), mist.Binary(_)
+          | Pending(..), mist.Closed
+          | Pending(..), mist.Shutdown
+          | Pending(..), mist.Custom(Client(_))
+          | Pending(..), mist.Custom(Ended(_))
+          | Pending(..), mist.Custom(Stop(_))
           -> mist.stop()
 
           // The browser's client runtime speaks Lustre's protocol. What the
@@ -738,7 +750,7 @@ fn websocket(
       on_close: fn(phase) {
         case phase {
           Serving(shutdown:, ..) -> shutdown()
-          Pending(_) -> Nil
+          Pending(..) -> Nil
         }
       },
     )
@@ -6209,13 +6221,24 @@ fn admin_act_for(standing, tickets, open, epoch, state_root, address, abandon) {
   }
 }
 
-fn authorize(attachment: server.Attachment(instance)) {
-  manager.frame_authority(
-    attachment.registry,
-    epoch: attachment.epoch,
-    id: attachment.session_id,
-    incarnation: attachment.incarnation,
-    digest: attachment.digest,
-  )
-  |> result.map_error(fn(_) { ending.reason(ending.AccessRevoked) })
+// Authorization outlives routing in both the relay and the gateway. Project
+// its immutable identities before retaining the callback, so neither owner
+// copies the resolved runtime and its unrelated effects.
+fn authorize_for(
+  registry: manager.Manager(instance),
+  epoch: String,
+  session_id: String,
+  incarnation: String,
+  digest: access.Digest,
+) {
+  fn() {
+    manager.frame_authority(
+      registry,
+      epoch:,
+      id: session_id,
+      incarnation:,
+      digest:,
+    )
+    |> result.map_error(fn(_) { ending.reason(ending.AccessRevoked) })
+  }
 }

@@ -475,8 +475,15 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   and `rename_for_admin` are the home's and the admin page's daemon checks;
   `home_rename_self_capability` hands the home its capability, and `home_event` admits a
   `submit` beneath `home.signins_path`.
-- `daemon/ui_socket`: the page's mist socket. It transfers the permit in
-  its first handler turn and starts `web_view/component` for an observer's
+- `daemon/ui_socket`: the page's mist socket. Its pending phase owns the
+  admission callback until the component starts; the serving handler retains
+  no copy of that callback or its resolved runtime. The relay's repeated
+  authorization callback captures only the registry, epoch, session,
+  incarnation and credential digest. The real-upgrade regression in
+  `session_socket_test` varies an unused runtime hook, bounds the owned
+  socket's collected process capacity and the gateway attachment's flattened
+  state growth, and witnesses relay admission and close cleanup. It transfers
+  the permit in its first handler turn and starts `web_view/component` for an observer's
   attachment or `web_view/operator_page` for an operator's, with a
   transport over `ui_relay` whose `connect` returns at once, and with the
   session's catalogue name and workspace for the page's heading, from the
