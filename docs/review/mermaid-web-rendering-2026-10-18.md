@@ -63,10 +63,12 @@ It establishes no complete client-suite result. An initial broad `ui_` filter
 also selected `tui_` fixtures; the exact `client@ui_` module prefix was used for
 the separate, passing web UI run above. This does not replace the full suite.
 
-The disposable browser seed could not start through `bin/loomd`: its launcher
-reported that `/bin/ps` could not be consulted. Permission was requested to use
-the same freshly built daemon's supported Erlang shipment entrypoint inside the
-jail and with disposable state. That alternative has not been run.
+The disposable browser seed could not start through `bin/loomd`: daemon
+startup reported that `/bin/ps` could not be consulted. The check is in
+`host_bootstrap_ffi.erl`'s native process-identity path. An initial suggestion
+to use the shipment entrypoint directly was wrong: inspection confirms that
+`bin/loomd` already executes that entrypoint, so it would reach the same check.
+The identity check is unchanged; a live daemon run needs an unjailed runner.
 
 Consequently, `scripts/web_mermaid_check.sh` has not been executed. Real SVG
 contents, browser CSP enforcement, layout, source disclosure/copy interaction,
