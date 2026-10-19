@@ -80,3 +80,34 @@ pub fn a_sequence_diagram_is_drawn_in_a_transcript_test() {
   assert string.contains(shown, "▶")
   assert string.contains(shown, "hi")
 }
+
+fn text_rows(lines: List(span.Line)) -> List(String) {
+  list.map(lines, fn(line) {
+    let span.Line(spans:, ..) = line
+    spans |> list.map(fn(piece) { piece.content }) |> string.concat
+  })
+}
+
+pub fn the_live_tail_shows_a_mermaid_fence_as_source_test() {
+  // The live tail renders a growing answer again on every delta, so it leaves
+  // the diagram to the settled row.
+  let source = "```mermaid\ngraph TD\nA --> B\n```"
+  assert text_rows(markdown.render_live(source, 40))
+    == ["▎ mermaid", "▎ graph TD", "▎ A --> B", ""]
+  assert text_rows(markdown.render_sanitized(source, 40, markdown.ShowSource))
+    == text_rows(markdown.render_live(source, 40))
+  assert text_rows(markdown.render(source, 40))
+    != text_rows(markdown.render_live(source, 40))
+}
+
+pub fn the_live_tail_still_shows_a_quoted_mermaid_fence_as_source_test() {
+  let quoted = "> ```mermaid\n> graph TD\n> A --> B\n> ```"
+  assert list.any(text_rows(markdown.render_live(quoted, 40)), string.contains(
+    _,
+    "graph TD",
+  ))
+  assert !list.any(text_rows(markdown.render_live(quoted, 40)), string.contains(
+    _,
+    "▼",
+  ))
+}

@@ -42,7 +42,7 @@ pub fn a_hostile_run_renders_as_its_text_test() {
     let rows = markdown.render(source, 80)
     assert list.map(rows, line_text) == [source, ""]
     let safe = text_hygiene.multiline(source)
-    assert markdown.render_sanitized(safe, 80) == rows
+    assert markdown.render_sanitized(safe, 80, markdown.DrawDiagrams) == rows
   })
 }
 
@@ -56,7 +56,10 @@ pub fn a_hostile_run_rerenders_as_a_growing_prefix_test() {
       let text = string.slice(source, 0, step * count)
       assert list.map(markdown.render(text, 80), line_text) == [text, ""]
         as { "prefix " <> int.to_string(count) <> " renders as its text" }
-      assert list.map(markdown.render_sanitized(text, 80), line_text)
+      assert list.map(
+          markdown.render_sanitized(text, 80, markdown.DrawDiagrams),
+          line_text,
+        )
         == [text, ""]
         as { "prefix " <> int.to_string(count) <> " renders as its text" }
     })

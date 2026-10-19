@@ -304,7 +304,7 @@ fn fresh(
 // The whole line rendered from scratch: what `render.render_line` does for
 // a Markdown speaker, and what every fallback here draws.
 fn full_rows(text: String, layout: Layout) -> List(span.Line) {
-  markdown.render(text, layout.room)
+  markdown.render_live(text, layout.room)
   |> markdown.wrap_lines(layout.room)
   |> layout.finish(OpensLine)
 }
@@ -371,17 +371,26 @@ fn tail_lines(
   let room = layout.room
   let whole = fn() {
     #(
-      markdown.render_sanitized(tail, room),
+      markdown.render_sanitized(tail, room, markdown.ShowSource),
       Slot(..slot, head: NoHead, plain: Barred),
     )
   }
   case slot.head {
-    NoHead -> #(markdown.render_sanitized(tail, room), slot)
+    NoHead -> #(
+      markdown.render_sanitized(tail, room, markdown.ShowSource),
+      slot,
+    )
     Head(at:, line:) ->
       case open_text(slot, text, bits, at) {
         Ok(rest) ->
           case keeps_paragraph(rest) {
-            True -> #(joined(line, markdown.render_sanitized(rest, room)), slot)
+            True -> #(
+              joined(
+                line,
+                markdown.render_sanitized(rest, room, markdown.ShowSource),
+              ),
+              slot,
+            )
             False -> whole()
           }
         Error(Nil) -> whole()
@@ -578,10 +587,17 @@ fn checked_cut(
   use before <- result.try(text_between(bits, from, at))
   use first <- result.try(text_between(bits, at, line_end))
   use whole <- result.try(text_between(bits, from, line_end))
-  let parts = markdown.render_sanitized(before, layout.room)
+  let parts =
+    markdown.render_sanitized(before, layout.room, markdown.ShowSource)
   let separate =
-    list.append(parts, markdown.render_sanitized(first, layout.room))
-  case markdown.render_sanitized(whole, layout.room) == separate {
+    list.append(
+      parts,
+      markdown.render_sanitized(first, layout.room, markdown.ShowSource),
+    )
+  case
+    markdown.render_sanitized(whole, layout.room, markdown.ShowSource)
+    == separate
+  {
     True -> Ok(parts)
     False -> Error(Nil)
   }
@@ -699,7 +715,11 @@ fn moved(
   let placed = {
     use passed <- result.try(text_between(bits, start, at))
     use line <- result.try(
-      one_paragraph(markdown.render_sanitized(passed, layout.room)),
+      one_paragraph(markdown.render_sanitized(
+        passed,
+        layout.room,
+        markdown.ShowSource,
+      )),
     )
     case slot.head {
       // The passed lines must also be free of a setext underline and a
@@ -712,7 +732,8 @@ fn moved(
         }
       NoHead -> {
         use rest <- result.try(open_text(slot, text, bits, at))
-        let parsed = markdown.render_sanitized(rest, layout.room)
+        let parsed =
+          markdown.render_sanitized(rest, layout.room, markdown.ShowSource)
         case keeps_paragraph(rest) && joined(line, parsed) == lines {
           True -> Ok(Head(at:, line:))
           False -> Error(Nil)
