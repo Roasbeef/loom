@@ -122,6 +122,17 @@ func (t *processTracker) run() {
 				delete(t.watched, int(event.Ident))
 			}
 		}
+		// Fork bursts coalesce in the queue during the original discovery
+		// interval. Reading a host table for every fork would multiply active
+		// allocation even though idle polling has disappeared. Close still
+		// interrupts this wait, and signal captures independently.
+		delay := time.NewTimer(processTrackInterval)
+		select {
+		case <-t.stop:
+			delay.Stop()
+			return
+		case <-delay.C:
+		}
 		if err := t.captureAndWatch(); err != nil {
 			t.runPolling()
 			return

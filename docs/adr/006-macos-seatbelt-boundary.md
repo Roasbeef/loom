@@ -200,7 +200,9 @@ stat-ing a directory.
 The helper now registers kqueue fork/exit notifications for the gated root and
 observed descendants, taking a fresh host snapshot when a notification arrives.
 A newly installed watch queues a further snapshot, covering live descendants
-forked between the previous snapshot and registration. An idle timeout does
+forked between the previous snapshot and registration. Notifications coalesce
+for the existing 20 ms discovery interval to bound table acquisition during fork
+bursts; close interrupts that wait. An idle timeout does
 not acquire a process table. The fresh startup and
 cancellation captures remain, and a live notification failure falls back to the
 previous 20 ms polling path. Startup registration failure refuses the execution

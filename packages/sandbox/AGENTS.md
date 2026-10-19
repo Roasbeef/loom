@@ -191,7 +191,8 @@ only Go module.
   process-group signals for children that call `setsid(2)`. The gated root
   receives a kqueue fork/exit watch before a fresh startup capture. Observed
   descendants receive their own watches; process events trigger fresh captures
-  rather than reading the entire host table every 20 ms while idle. Installing
+  rather than reading the entire host table every 20 ms while idle. Events
+  coalesce for that same 20 ms interval, bounding snapshots during fork bursts. Installing
   a new watch queues another snapshot to cover forks before registration. Darwin
   does not implement recursive `NOTE_TRACK`, so discovery remains best effort.
   A failed live queue or descendant registration returns to 20 ms polling;
