@@ -7896,7 +7896,11 @@ The box's deadline and retention (slice S4):
   and rings the upward drainer. `delegate_drain.question_step` sends the record
   (`escalation_view.view`, with `admitted` set from the ceiling), marks the row
   `Acknowledged`, sends the decided state once and drops the row, or drops it when
-  a newer raise or the closed window made it moot. `ChildEscalation` is served by
+  a newer raise or the closed answer window (`delegate_outbox.answer_window_ms`,
+  five minutes past the call's five-second park) made it moot. The laptop clears
+  filed requests only for a refused spawn (`remote_child.clear_requests`); a
+  settled child's requests stay answerable: the box still commits a decision, and the
+  child's next run (started by the parent's `agent_send`) spends an approval. `ChildEscalation` is served by
   `ChildHost.escalation` (`main.child_host`) into `agency.ChildInbox.escalation`,
   which finds the stub by name in any state and files the record with
   `remote_escalation_store.keep` (newest seq wins, under

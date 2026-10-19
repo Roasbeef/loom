@@ -484,6 +484,19 @@ spawner's node is connected (`delegate_outbox.answers`). Nothing dials: the box
 only notices that the laptop reached it. A call that settles in band writes no
 row.
 
+**After the park.** A parked call waits only for the five-second grace every
+refusal gets, then settles in band and leaves the record pending. A later
+decision steers the child if its run is still open (`escalate.notify_decision`);
+a notice never opens a run on a subagent, so an approval for a child that went
+idle waits for its next run, which the parent's `agent_send` starts within the
+child's deadline, and re-issuing the call there spends it. So the row
+outlives the park: the drainer keeps asking for `delegate_outbox.answer_window_ms`
+(five minutes) past it, and sends the decided state whenever the decision comes
+inside that window. The laptop keeps a settled child's requests for the same
+reason; only a refused spawn clears them (`remote_child.clear_requests`). A
+record still pending when the window closes is the box owner's, and a laptop
+decision on it still reaches the box and files the record the box answers.
+
 **The ceiling.** `[spawners.<name>.approval_ceiling]`
 (`client/approval_ceiling`) has one key for each kind of grant. The box admits a
 decision (`client/remote_decision`) with the checks a local `approve` makes (the

@@ -258,6 +258,37 @@ the box remembers. Withdrawing a spawner's grant today is the box owner's list
   next open of the delegate session and not while it is resident (ruling).
 - `decided_by` crosses as text and is provenance only (ruling).
 
+## Addendum, 2026-10-19: the row outlives the park (async approvals)
+
+Asynchronous approvals (`client+tools: wake or steer strands on async
+approvals`) cut the park from five minutes to a five-second grace. When the
+grace closes the call settles in band, the record stays pending, and a later
+decision steers the strand if its run is open; a subagent is never woken by a
+notice, so an approval for an idle child waits for its next run, which the
+parent's `agent_send` starts, and re-issuing the call there spends it. This
+proposal was written for the five-minute park, and two of its rules ended the
+question with the park:
+
+- The drainer dropped a pending row once the park window closed. With a
+  five-second window, a request whose first send to a laptop a network away did
+  not land in time was never shown, and an acknowledged one never sent its
+  decided state.
+- The laptop cleared a child's filed requests when its stub settled. A child
+  that is refused usually reports and ends its run within seconds, so the card
+  disappeared before its operator could read it, and an approval taken from the
+  card answered `unknown_escalation`.
+
+The end-to-end drive of 2026-10-19 hit both. The row's window is now
+`delegate_outbox.answer_window_ms` (five minutes, the window this proposal was
+built around) past the instant the call stopped parking, and the drainer table's
+row "The park window closed" now means that window. The laptop clears filed
+requests only for a refused spawn; a settled child's requests stay until the box
+sends a decided state or the laptop's own decision files the record the box
+answered. What it costs: the drainer ticks for up to five minutes for a question
+nobody answers, as it did before asynchronous approvals, and a card for a child
+whose delegate session the box has since released stays, and a decision tried
+on it is answered with the box's refusal.
+
 ## Model
 
 No change to the P model. The single-consume state machine that makes an
