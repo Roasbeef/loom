@@ -5,6 +5,7 @@
 //// allocation or an RSS estimate. Session configuration cannot change a running
 //// daemon's limits; the owner's startup configuration is the only input.
 
+import client/daemon/ui_origin
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -82,8 +83,8 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
   use _ <- result.try(
     list.try_map(dict.keys(fields), fn(key) {
       case key {
-        "profile" | "ui" | "max_connections" | "max_reserved_message_bytes" ->
-          Ok(Nil)
+        "profile" | "ui" | "ui_origins" -> Ok(Nil)
+        "max_connections" | "max_reserved_message_bytes" -> Ok(Nil)
         _ -> Error("unknown key `" <> key <> "` in [daemon]")
       }
     }),
@@ -96,6 +97,11 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
     Error(Nil) | Ok(tom.Bool(_)) -> Ok(Nil)
     Ok(_) -> Error("daemon.ui must be true or false")
   })
+
+  // The listed web-view origins are parsed whole here too, so a session's
+  // catalogue and the daemon's startup refuse the same bad entry with the
+  // same words (protocol-change/052).
+  use _origins <- result.try(ui_origin.from_fields(fields))
   use connections <- result.try(positive(
     fields,
     "max_connections",

@@ -848,7 +848,7 @@ was asked.
   host writes `memory/note` and nothing else.
 - **`propose` is a seam over `client/proposals` with no path argument.**
   `target` names one of the two files the host owns, `rules` (the default) or
-  `config` (the session's `loom.toml`, protocol-change/089), and is
+  `config` (the session's `loom.toml`, protocol-change/092), and is
   `Submission.target` (`Rules | Configuration`). `Proposals.configuration` is
   the session's configuration path, which the description names so the model
   can read the file first, and `None` drops the config sentence. It validates

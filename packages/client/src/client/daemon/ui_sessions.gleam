@@ -615,6 +615,23 @@ pub fn mint_device(
   ask_mint(sessions, grant, Some(until), login, Device)
 }
 
+/// Mints a device link's ticket for a launcher rather than a page: it lives
+/// `device_ms`, as `mint_device`'s does, so a person has time to carry the
+/// link to a phone, and it carries no page deadline and no login, because no
+/// page made it. The page it becomes is an ordinary one that ends
+/// `session_ms` after its exchange, and the login its exchange sets begins a
+/// family of its own, as a `loom ui` home link's does. This is `loom ui
+/// --device` (protocol-change/052, the addendum).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_sessions.mint_carried(sessions, grant)
+/// ```
+pub fn mint_carried(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
+  ask_mint(sessions, grant, None, None, Device)
+}
+
 /// Mints a ticket on behalf of a browser login that has just verified: the
 /// ticket carries the login, so the page its exchange opens is that login's
 /// browser, and it is `Forgotten` so the exchange sets no further login.

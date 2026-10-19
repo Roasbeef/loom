@@ -303,11 +303,30 @@ See `protocol-change/036-stream-response-handoff.md`.
 ## Web view (`loomd --ui`)
 
 `protocol-change/051`, its operator addendum, and ADR-014. `daemon/main`
-parses `--ui` into `Config.view` (`ViewOff | ViewOn`). With it, `run`
-starts `daemon/ui_sessions` and passes `server.Ui(sessions, upgrade)` to
+parses `--ui` into `Config.view` (`ViewOff | ViewOn(origins)`). With it, `run`
+starts `daemon/ui_sessions` and passes `server.Ui(sessions, origins, upgrade)` to
 `listen_serving`; without it `server.Config.ui` is `None`, every `/ui` path
 is a 404, the control `hello` has no `ui` field and `ui.link` answers
 `unavailable`.
+
+Remote origins (protocol-change/052, as built in its addendum).
+`daemon/ui_origin` parses `[daemon] ui_origins` into opaque `Origin`s
+(`https` only, host and optional port, no path, query, user information or
+loopback host; lowercased, port 443 dropped; at most `max_origins`), read
+once by `prepare_startup` into `ViewOn(origins)`; a list without the view, or
+a bad entry, refuses startup naming the entry, and `limits.from_fields` runs
+the same parser for the catalogue. The listener stays loopback-only
+(`bind_address` is unchanged). `ui_http.page_origin(request, ui.origins)` is
+the host check: `Loopback(host)` or `Remote(origin)` or `403`, never reading a
+forwarded header. `server.web_view` hands that `PageOrigin` to every handler,
+and it alone chooses the socket's `Origin` rule (`origin_matches`), the cookie
+names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
+`Secure` on remote, keyed paths kept on both), the policy's `ws://` or
+`wss://` (`socket_origin`) and `PageGrant.address` (`ui_http.address`). The
+`hello`'s `ui` object carries `origins` when any is listed. `ui.link` with
+`"device": true` parses to `protocol.DeviceLink(page)` and mints with
+`ui_sessions.mint_carried`: a `Home`, `Remembered`, `Fresh` ticket living
+`device_ms`, with no page deadline and no parent login.
 
 - `daemon/ui_project`: derives each workspace's project for the web view's
   lists, with no cache and no process. `locate(workspace)` reads
@@ -428,10 +447,13 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   the form's `token` and optional `name`, each once and no other field. `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
   its socket at `.../ws` with the `csrf-token` query, and five assets),
-  `loopback_host`, `exchange_allowed` and `navigation_allowed`
+  `page_origin` (over `loopback_host` and the listed origins),
+  `exchange_allowed` and `navigation_allowed`
   (`Sec-Fetch-Site` is `none` or `same-origin`), `origin_matches`, the
-  `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`) and
-  `secured`, whose `Referrer-Policy: no-referrer` is load-bearing. `route`
+  `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`;
+  `__Secure-loom_ui` and `Secure` on a listed origin) and
+  `secured`, whose `Referrer-Policy: no-referrer` is load-bearing. Every
+  origin-dependent function takes the `PageOrigin` the host check returned. `route`
   also routes `Image(key, id, ref, position)` for
   `/ui/p/<key>/sessions/<id>/image/<ref>/<position>` (a name of digits, `.`,
   `~` and `-` up to 48 characters, and a position below `max_position`;
@@ -9130,7 +9152,7 @@ stream grows to its first request, the first grows by `every_bytes`, and the
 first request ends. `landed` now writes the idle stream into the book before
 `consider` weighs the relaunch, and the `coalesce` tag holds it there.
 
-## Configuration reload and edits (protocol-change/089)
+## Configuration reload and edits (protocol-change/092)
 
 A daemon session takes an edit to the `loom.toml` it loaded without a daemon
 restart. `client/config_watch` is a weft actor in the session's restartable

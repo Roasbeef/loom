@@ -57,7 +57,7 @@ error instead of a setting that silently does nothing.
 **A session reloads by reopening.** A session reads the file when it is built:
 when it is created, opened, or resumed, and keeps what it read while it runs. A
 daemon session also watches the file it loaded
-([protocol-change/089](../protocol-change/089-config-proposals.md)): once an edit
+([protocol-change/092](../protocol-change/092-config-proposals.md)): once an edit
 has settled (two reads a second apart agree) and the new text loads under the
 session's profile and model, the session reopens as soon as no strand is
 running, which rebuilds everything the file configures. A save that does not load
@@ -428,6 +428,7 @@ RSS. See [daemon](architecture/daemon.md).
 | `max_connections` | integer | `64` | positive | HTTP upgrades reserved and WebSockets admitted, combined. |
 | `max_reserved_message_bytes` | integer | `536870912` | positive | The sum, over admitted connections, of each one's reserved inbound message and delivery allowance. The default is 512 MiB, room for twelve ordinary terminal pairs. |
 | `ui` | boolean | `false` | `true`, `false` | Turns the web view on for the life of the daemon, as `loomd --ui` does. Either one enables it; the file cannot turn off a view the flag turned on. See [web view](architecture/web-view.md). |
+| `ui_origins` | array of strings | `[]` | each a full origin `https://host[:port]`: no user information, path, query or fragment, not a loopback host; at most 16 | The `https` origins the web view is also served at, through a TLS proxy on the daemon's own host such as Tailscale Serve (protocol-change 052). A request whose `Host` names one is admitted, with `Secure` `__Secure-` cookies and a `wss:` socket. The daemon still binds loopback only, and reads no `X-Forwarded-*` header. Needs the view (`ui = true` or `--ui`): a list without it, or a bad entry, refuses startup and names the entry. `--bind 127.0.0.1:<port>` gives the proxy a fixed target. See [web view](architecture/web-view.md#remote-origins). |
 | `profile` | boolean | `false` | `true`, `false` | Read by the shell launcher, not the daemon, to start the daemon as a profiling node (`scripts/profile-launcher.sh`). The daemon accepts and ignores it. |
 
 ## `[advisor]`

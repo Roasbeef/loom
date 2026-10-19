@@ -1231,7 +1231,10 @@ page keys and nonces, and the relay into the session's gateway.
   document's head by `icon_link`),
   `runtime_asset`) and where each is on disk (`static_file`,
   `runtime_file`), the keyed paths (`keyed_prefix`, `session_path`) and
-  `content_security_policy(host)`.
+  `content_security_policy(socket)`, whose argument is the page's whole socket
+  origin, `ws://<loopback host>` or `wss://<listed host>`, which the daemon
+  derives from the origin the request was admitted under
+  (protocol-change/052).
 
 ## Relationships
 

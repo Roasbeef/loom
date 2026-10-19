@@ -22,6 +22,7 @@ import client/daemon/root
 import client/daemon/server
 import client/daemon/ui_assets
 import client/daemon/ui_login
+import client/daemon/ui_origin
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/daemon_claim_test
@@ -222,6 +223,12 @@ fn fixture_lasting_with_root(
     as "the login's root key is ready"
   let assert Ok(assets) = ui_assets.load()
     as "the web view's assets are in web_view's and lustre's priv"
+
+  // Every fixture lists one remote origin, as a daemon behind Tailscale Serve
+  // would (protocol-change/052). A loopback request is admitted exactly as
+  // before, so only the tests that present this origin's `Host` see it.
+  let assert Ok(listed) = ui_origin.parse(remote_origin)
+    as "the fixture's remote origin parses"
   let config =
     server.Config(
       peer_endpoint: fn(_) { None },
@@ -237,6 +244,7 @@ fn fixture_lasting_with_root(
       session_upgrade: fn(_, _) { stub(501, "v2 adapter absent") },
       ui: Some(server.Ui(
         sessions:,
+        origins: [listed],
         result_reader: fn(_) { ui_result_test.reader(ui_result_test.payload()) },
         assets:,
         root_key:,
@@ -9365,5 +9373,178 @@ pub fn an_expired_page_reads_neither_a_result_page_nor_download_test() {
       })
       == poll.Answered(Nil)
     assert result_read(port, page, "download").status == 401
+  })
+}
+
+// --- a listed remote origin (protocol-change/052) ----------------------------
+
+// The `https` origin every fixture lists, as Tailscale Serve would present it
+// for a daemon whose loopback listener it forwards to.
+const remote_origin = "https://loom.test.example:8443"
+
+// The `Host` a browser sends for that origin.
+const remote_host = "loom.test.example:8443"
+
+// The cookie value a remote exchange set, under the `__Secure-` name.
+fn remote_cookie_of(answer: Answer) -> String {
+  let assert Ok(set) = list.key_find(answer.headers, "set-cookie")
+    as "the exchange sets a cookie"
+  let assert Ok(#(pair, _)) = string.split_once(set, ";") as "attributes follow"
+  let assert Ok(#("__Secure-loom_ui", value)) = string.split_once(pair, "=")
+    as "the cookie is __Secure-loom_ui"
+  value
+}
+
+// The Host matrix: loopback is admitted as before, the listed origin is
+// admitted in any letter case, and the listed name on another port, a name
+// that is not listed, and a foreign name that claims the listed one in
+// `X-Forwarded-Host` are each refused before any route is looked at.
+pub fn only_loopback_and_a_listed_origin_pass_the_host_check_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "remote-hosts", 5201)
+    let path = link(port, credential, session)
+    let from = fn(headers) {
+      get(port, path, [#("sec-fetch-site", "none"), ..headers]).status
+    }
+    assert from([#("host", "loom.test.example:9443")]) == 403
+    assert from([#("host", "loom.test.example")]) == 403
+    assert from([#("host", "other.test.example:8443")]) == 403
+    assert from([
+        #("host", "evil.example"),
+        #("x-forwarded-host", remote_host),
+        #("forwarded", "host=" <> remote_host),
+      ])
+      == 403
+
+    // A listed origin's exchange spends the ticket, so the admitted case is
+    // last, and the header's case does not matter.
+    assert from([#("host", "LOOM.Test.Example:8443")]) == 200
+  })
+}
+
+// A page reached through the listed origin is the loopback page with three
+// rules changed by that one fact: its cookie is `__Secure-loom_ui` and
+// `Secure`, its policy names `wss://`, and its socket needs the listed
+// `https` origin. A loopback cookie is not read on the remote origin and the
+// remote cookie is not read on loopback.
+pub fn a_listed_origin_gets_its_own_cookie_policy_and_socket_rule_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "remote-page", 5202)
+    let path = operate(port, credential, session)
+    let answer =
+      get(port, path, [#("host", remote_host), #("sec-fetch-site", "none")])
+    assert answer.status == 200
+    let assert Ok(set) = list.key_find(answer.headers, "set-cookie")
+      as "the exchange sets a cookie"
+    assert string.starts_with(set, "__Secure-loom_ui=")
+    assert string.contains(set, "; HttpOnly; SameSite=Strict; Path=/ui/p/")
+    assert string.ends_with(set, "; Secure")
+    let assert Ok(policy) =
+      list.key_find(answer.headers, "content-security-policy")
+      as "the exchange carries the policy"
+    assert string.contains(policy, "connect-src 'self' wss://" <> remote_host)
+    assert !string.contains(policy, "ws://127.0.0.1")
+
+    let cookie = remote_cookie_of(answer)
+    let next = attribute(answer.body, "data-next")
+    let nonce = attribute(answer.body, "data-nonce")
+    let page = fn(host, cookie_header) {
+      get(port, next, [
+        #("host", host),
+        #("sec-fetch-site", "same-origin"),
+        #("cookie", cookie_header),
+      ]).status
+    }
+    assert page(remote_host, "__Secure-loom_ui=" <> cookie) == 200
+    assert page(remote_host, "loom_ui=" <> cookie) == 401
+    assert page(
+        "127.0.0.1:" <> int.to_string(port),
+        "__Secure-loom_ui=" <> cookie,
+      )
+      == 401
+
+    let socket = fn(origin) {
+      get(port, next <> "/ws?csrf-token=" <> nonce, [
+        #("host", remote_host),
+        #("cookie", "__Secure-loom_ui=" <> cookie),
+        #("origin", origin),
+      ]).status
+    }
+    assert socket("http://" <> remote_host) == 403
+    assert socket("https://loom.test.example:9443") == 403
+    assert socket("http://127.0.0.1:" <> int.to_string(port)) == 403
+
+    // The owner asked for an operator's page, which the stub answers as 298.
+    assert socket(remote_origin) == 298
+  })
+}
+
+// The `hello` names the listed origins beside the view's path, so `loom ui
+// --device` can build its link on one of them.
+pub fn the_hello_names_the_listed_origins_test() {
+  fixture(fn(_ready, port, credential) {
+    let #(socket, _) =
+      daemon_server_test.connect(port, credential, "/v2/control")
+    let hello = daemon_server_test.frame(socket, within_ms: 1000)
+    let _ = ffi_ws.tcp_close(socket)
+    let assert Ok(body) = field(hello, "body") as "the hello has a body"
+    let assert Ok(view) = field(body, "ui") as "the hello names the view"
+    assert field(view, "path") == Ok(json.String("/ui"))
+    assert field(view, "origins")
+      == Ok(json.Array([json.String(remote_origin)]))
+  })
+}
+
+// `ui.link` with `"device": true` is the home's ticket living the device
+// link's ten minutes, and it sets a browser login when exchanged on the
+// listed origin, under that origin's cookie name. It names no session and
+// cannot decline the login.
+pub fn a_device_link_is_a_ten_minute_remembered_home_ticket_test() {
+  fixture(fn(ready, port, credential) {
+    let session = create_session(ready, "device-link", 5203)
+    let ask = fn(fields) {
+      let #(socket, _) =
+        daemon_server_test.connect(port, credential, "/v2/control")
+      let _hello = daemon_server_test.frame(socket, within_ms: 1000)
+      let reply =
+        daemon_server_test.send(
+          socket,
+          1,
+          "ui.link",
+          json.Object([#("device", json.Bool(True)), ..fields]),
+          within_ms: 1000,
+        )
+      let _ = ffi_ws.tcp_close(socket)
+      reply
+    }
+    let assert Ok(body) = field(ask([]), "body") as "the reply has a body"
+    assert field(body, "expires_in_ms") == Ok(json.Int(ui_sessions.device_ms))
+    let assert Ok(json.String(path)) = field(body, "path") as "a link"
+    assert string.starts_with(path, "/ui/home?ticket=")
+
+    // The refusals carry no link.
+    assert field(ask([#("session_id", json.String(session))]), "body")
+      |> result.try(field(_, "path"))
+      |> result.is_error
+    assert field(ask([#("remember", json.Bool(False))]), "body")
+      |> result.try(field(_, "path"))
+      |> result.is_error
+
+    let answer =
+      get(port, path, [#("host", remote_host), #("sec-fetch-site", "none")])
+    assert answer.status == 200
+    let cookies =
+      list.filter_map(answer.headers, fn(header) {
+        case header.0 {
+          "set-cookie" -> Ok(header.1)
+          _ -> Error(Nil)
+        }
+      })
+    assert list.any(cookies, string.starts_with(_, "__Secure-loom_ui="))
+    let assert Ok(login) =
+      list.find(cookies, string.starts_with(_, "__Secure-loom_login="))
+      as "a device link sets a login"
+    assert string.contains(login, "; Path=/ui/l/")
+    assert string.ends_with(login, "; Secure")
   })
 }

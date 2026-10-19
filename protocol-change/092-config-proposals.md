@@ -1,4 +1,4 @@
-# protocol-change/089: configuration edits in the proposal queue
+# protocol-change/092: configuration edits in the proposal queue
 
 **Status**: PROPOSED 2026-10-18. **Affects**: the `proposals` board (a second
 `kind`, `config`, whose `target` is an absolute path) and the `propose` tool (an

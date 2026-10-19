@@ -825,6 +825,12 @@ cookie, an exact `https` `Origin` rule and a `wss:` socket policy. A
 teammate mints their own ticket with `loom --ui --addr wss://…` and their
 member credential.
 
+On 2026-10-18 052 was accepted as built in its own addendum, which lists the
+origins in `[daemon] ui_origins` rather than a flag, keeps this proposal's
+keyed cookie paths under `__Secure-` names rather than a `__Host-` cookie at
+`/`, and adds `loom ui --device`. The teammate's `--addr` launch is not built.
+The loopback admission above is unchanged.
+
 ## Addendum: the pinned composer and the approval card (2026-09-27)
 
 The operator addendum placed the approval card in its own region below the

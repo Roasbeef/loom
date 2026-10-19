@@ -65,6 +65,7 @@ import client/daemon/server
 import client/daemon/session_socket
 import client/daemon/ui_assets
 import client/daemon/ui_login
+import client/daemon/ui_origin
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/delegate_host
@@ -224,7 +225,12 @@ pub type WebView {
   ViewOff
 
   /// `loomd --ui` or `[daemon] ui = true`: the listener serves the view.
-  ViewOn
+  /// `origins` are the `https` origins of `[daemon] ui_origins` the view is
+  /// also admitted under (protocol-change/052), empty until
+  /// `prepare_startup` reads the file. A list exists only on a daemon that
+  /// serves the view, so an origin without the view cannot be represented
+  /// once startup is prepared.
+  ViewOn(origins: List(ui_origin.Origin))
 }
 
 /// A ready root and its original public listener, with no per-session token.
@@ -436,7 +442,8 @@ fn parse_loop(
     [] -> Ok(config)
     ["--state-dir", value, ..rest] ->
       parse_loop(rest, Config(..config, state_root: value))
-    ["--ui", ..rest] -> parse_loop(rest, Config(..config, view: ViewOn))
+    ["--ui", ..rest] ->
+      parse_loop(rest, Config(..config, view: ViewOn(origins: [])))
     ["--owner-name", value, ..rest] if value != "" ->
       parse_loop(rest, Config(..config, owner_display_name: value))
     ["--capacity", value, ..rest] -> {
@@ -2044,11 +2051,30 @@ pub fn prepare_startup(
   let view = case dict.get(document, "daemon") {
     Ok(tom.Table(fields)) ->
       case dict.get(fields, "ui") {
-        Ok(tom.Bool(True)) -> ViewOn
+        Ok(tom.Bool(True)) -> ViewOn(origins: [])
         _ -> config.view
       }
     _ -> config.view
   }
+
+  // The listed origins belong to the view, so a list on a daemon that does
+  // not serve it is refused rather than ignored: the owner who wrote it
+  // expects a page there (protocol-change/052).
+  use origins <- result.try(
+    ui_origin.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use view <- result.try(case view, origins {
+    ViewOff, [] -> Ok(ViewOff)
+    ViewOff, [_, ..] ->
+      Error(
+        configuration
+        <> ": daemon."
+        <> ui_origin.key
+        <> " needs the web view; set daemon.ui = true or pass --ui",
+      )
+    ViewOn(_), _ -> Ok(ViewOn(origins:))
+  })
   use peer_policy <- result.try(
     peer_defaults.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -2985,7 +3011,7 @@ fn run(
         <> "/owner.token)",
       )
       case config.view {
-        ViewOn ->
+        ViewOn(_) ->
           io.println("loomd: web view on; run `loom ui` for your home page")
         ViewOff -> Nil
       }
@@ -3006,7 +3032,7 @@ fn web_view(
 ) -> Result(Option(server.Ui(serve.Resident)), String) {
   case config.view {
     ViewOff -> Ok(None)
-    ViewOn -> {
+    ViewOn(origins:) -> {
       // The page's assets are read once, here, so a release that lost one
       // refuses `--ui` at startup rather than serving a page without it.
       use assets <- result.try(ui_assets.load())
@@ -3026,6 +3052,7 @@ fn web_view(
       Some(
         server.Ui(
           sessions:,
+          origins:,
           result_reader: fn(resident: serve.Resident) { resident.result_reader },
           assets:,
           root_key:,

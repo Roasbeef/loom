@@ -187,6 +187,15 @@ pub type Command {
     remember: Option(Remembering),
   )
 
+  /// Mints a link that signs another device in to this principal's home:
+  /// `ui.link` with `"device": true` (protocol-change/052, the addendum). It
+  /// is the home's ticket, always `Remember`, living the device link's ten
+  /// minutes rather than sixty seconds, so `loom ui --device` can print it as
+  /// a code a phone scans. `page` is the page's ceiling, as for `UiLink`. A
+  /// device link names no session and cannot decline the login, since
+  /// setting one is what it is for.
+  DeviceLink(page: access.Role)
+
   /// Lists authorized metadata after one canonical identity.
   ListSessions(after: String, revision: Option(Int))
 
@@ -587,10 +596,16 @@ fn decode_fields(
       use id <- result.try(optional_session_id(fields))
       use page <- result.try(page_ceiling(fields))
       use remember <- result.try(remembering(fields))
-      case id, remember {
-        Some(_), Some(_) ->
+      use link <- result.try(link_kind(fields))
+      case link, id, remember {
+        DeviceSignIn, Some(_), _ ->
+          Error("a device link opens the home and names no session")
+        DeviceSignIn, None, Some(Forget) ->
+          Error("a device link always sets a browser login")
+        DeviceSignIn, None, _ -> Ok(DeviceLink(page))
+        PageLink, Some(_), Some(_) ->
           Error("remember applies to the home link and not to a session's")
-        _, _ -> Ok(UiLink(id, page, remember))
+        PageLink, _, _ -> Ok(UiLink(id, page, remember))
       }
     }
     "sessions.list" -> {
@@ -1171,6 +1186,23 @@ fn remembering(
     Ok(json.Bool(True)) -> Ok(Some(Remember))
     Ok(json.Bool(False)) -> Ok(Some(Forget))
     Ok(_) -> Error("remember must be true or false")
+  }
+}
+
+// Which link `ui.link` asks for: an ordinary page link, or, with
+// `"device": true`, a device sign-in link (protocol-change/052, the addendum).
+type LinkKind {
+  PageLink
+  DeviceSignIn
+}
+
+// The `device` field. Absent or `false` is the page link every launcher sent
+// before the field existed.
+fn link_kind(fields: List(#(String, JsonValue))) -> Result(LinkKind, String) {
+  case list.key_find(fields, "device") {
+    Error(Nil) | Ok(json.Bool(False)) -> Ok(PageLink)
+    Ok(json.Bool(True)) -> Ok(DeviceSignIn)
+    Ok(_) -> Error("device must be true or false")
   }
 }
 

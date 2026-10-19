@@ -376,7 +376,7 @@ pub fn a_hello_names_the_web_view_only_when_it_is_served_test() {
         "owner",
         65_536,
         None,
-        protocol.WebViewAt("/ui"),
+        protocol.WebViewAt("/ui", []),
       )),
     )
   let assert Error(_) =
@@ -385,7 +385,7 @@ pub fn a_hello_names_the_web_view_only_when_it_is_served_test() {
     )
     as "a malformed view field is refused, not ignored"
 
-  assert tui.view_served(protocol.WebViewAt("/ui")) == Ok(Nil)
+  assert tui.view_served(protocol.WebViewAt("/ui", [])) == Ok(Nil)
   let assert Error(reason) = tui.view_served(protocol.NoWebView)
     as "a daemon without the view is refused"
   assert string.contains(reason, "started without --ui")
