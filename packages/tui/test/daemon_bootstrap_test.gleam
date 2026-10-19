@@ -25,22 +25,17 @@ fn paths(name) {
   paths
 }
 
-pub fn daemon_bootstrap_launch_arguments_are_global_and_port_zero_test() {
+// The launcher leaves the listener address to the daemon, so `[daemon] bind`
+// in the file is not overridden by a flag the owner never wrote.
+pub fn daemon_bootstrap_launch_arguments_are_global_and_leave_bind_to_the_file_test() {
   assert bootstrap.daemon_launch_arguments("/state", "/bin/sleep", "")
-    == ["--state-dir", "/state", "--bind", "127.0.0.1:0"]
+    == ["--state-dir", "/state"]
   assert bootstrap.daemon_launch_arguments(
       "/state",
       "/bin/sleep",
       "/trusted/config",
     )
-    == [
-      "--state-dir",
-      "/state",
-      "--bind",
-      "127.0.0.1:0",
-      "--config",
-      "/trusted/config",
-    ]
+    == ["--state-dir", "/state", "--config", "/trusted/config"]
 }
 
 pub fn daemon_bootstrap_live_starting_timeout_preserves_fence_test() {

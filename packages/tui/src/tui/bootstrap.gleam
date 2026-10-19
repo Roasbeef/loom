@@ -134,8 +134,11 @@ fn resolve_daemon_with(
 
 /// Builds only global daemon flags from trusted launcher configuration.
 ///
-/// Port zero is resolved by the daemon's listener before Ready publication;
-/// workspace paths and per-session credentials never enter these arguments.
+/// No `--bind` is passed. The daemon then takes its listener address from
+/// `[daemon] bind` in the configuration file, or binds loopback on an
+/// ephemeral port, which its listener resolves before Ready publication. A
+/// flag here would outrank the file and silently discard the owner's choice.
+/// Workspace paths and per-session credentials never enter these arguments.
 ///
 /// ## Examples
 ///
@@ -148,7 +151,7 @@ pub fn daemon_launch_arguments(
   server: String,
   config: String,
 ) -> List(String) {
-  let arguments = ["--state-dir", state, "--bind", "127.0.0.1:0"]
+  let arguments = ["--state-dir", state]
   let arguments = case config {
     "" -> arguments
     path -> list.append(arguments, ["--config", path])
