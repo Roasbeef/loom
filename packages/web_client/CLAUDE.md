@@ -772,8 +772,11 @@ the revision before the 350 ms debounce; unchanged patches do nothing. Only
 the current render can publish a height, limited to 120 through 2000 pixels.
 A ten-second unanswered render becomes source fallback, not a retry loop.
 
-`mermaid.Resources` owns a source observer, explicit-theme observer, system
-palette listener and window message listener. Disconnect releases them and
+`mermaid.Resources` owns a source observer, explicit-theme observer, an
+approach observer, system palette listener and window message listener. The
+iframe exists only after the approach observer reports the element within a
+viewport of the visible area (`Distance` is `Distant` until then), so a long
+transcript runs renderers only for diagrams a reader has come near. Disconnect releases them and
 advances the revision, invalidating callbacks from the old connection. Bounded
 callbacks retain only a revision and dispatch, not the source. The parent
 checks frame-window identity before `mermaid_rule.reply` decodes a JSON string;

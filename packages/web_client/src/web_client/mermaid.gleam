@@ -8,6 +8,12 @@
 //// error crosses that boundary. The default slot stays selectable under a
 //// native source disclosure, and a failed render leaves it open.
 ////
+//// A frame is created only once the element comes within a viewport of the
+//// visible area. Each frame carries its own copy of the 5.4 MB renderer and
+//// its heap, about 20 to 40 MB, so a transcript opened with two dozen
+//// diagrams used to start that many renderers at once. Until then the source
+//// stays disclosed and any request waits for the frame's ready message.
+////
 //// Observers and listeners live only while connected. Debounce and deadline
 //// callbacks capture only a revision and dispatch, expire within ten seconds,
 //// and cannot act on a disconnected or superseded revision.
@@ -39,6 +45,15 @@ pub type Frame {
   Ready
 }
 
+/// Whether the element has come near enough to the viewport to own a frame.
+pub type Distance {
+  /// Not yet within a viewport of the visible area; no frame exists.
+  Distant
+
+  /// Seen within that margin at least once while connected; the frame stays.
+  Near
+}
+
 /// The last explicit clipboard action, never a renderer-supplied message.
 pub type Copy {
   /// No clipboard write has completed for this source.
@@ -60,6 +75,8 @@ pub type Resources {
     source: ffi_dom.Observer,
     /// Explicit theme changes trigger another read.
     theme: ffi_dom.Observer,
+    /// Reports the element coming within a viewport of the visible area.
+    approach: ffi_dom.Observer,
     /// System palette changes matter when no explicit theme is selected.
     media: ffi_dom.Element,
     /// The system palette listener, removed on disconnect.
@@ -76,6 +93,8 @@ pub type Model {
     diagram: rule.State,
     /// Whether the child has completed its initial load.
     frame: Frame,
+    /// Whether a frame may exist at all yet.
+    distance: Distance,
     /// Owned only while connected.
     resources: Option(Resources),
     /// Fixed feedback for an explicit copy press.
@@ -93,6 +112,9 @@ pub type Msg {
 
   /// Its listeners and observers have been installed.
   Mounted(resources: Resources)
+
+  /// The element came within a viewport of the visible area.
+  Approached
 
   /// Its source and effective theme were read as text.
   Read(source: String, theme: rule.Theme, units: Int)
@@ -129,7 +151,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
 }
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
-  #(Model(rule.new(), Loading, None, Untouched), effect.none())
+  #(Model(rule.new(), Loading, Distant, None, Untouched), effect.none())
 }
 
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
@@ -147,8 +169,12 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           model.diagram.revision + 1,
           rule.Empty,
         )
-      #(Model(diagram, Loading, None, Untouched), cleanup(model.resources))
+      #(
+        Model(diagram, Loading, Distant, None, Untouched),
+        cleanup(model.resources),
+      )
     }
+    Approached -> #(Model(..model, distance: Near), effect.none())
     Read(source, theme, units) -> reread(model, source, theme, units)
     Due(revision) -> {
       let diagram = rule.due(model.diagram, revision)
@@ -251,13 +277,27 @@ fn install(
   ffi_dom.observe_text(source, host)
   ffi_dom.observe_attribute(theme, ffi_dom.document_element(), "data-theme")
 
+  // The observer reports the first approach at once when the element is
+  // already in view, so a visible diagram is not delayed by it.
+  let approach =
+    ffi_dom.intersection_observer("100% 0px", fn() { dispatch(Approached) })
+  ffi_dom.observe(approach, host)
+
   let media_listener = ffi_dom.add_listener(media, "change", fn(_) { read() })
   let messages =
     ffi_dom.add_listener(ffi_dom.get_window(), "message", fn(event) {
       dispatch(Answered(frame_reply(root, event)))
     })
   dispatch(
-    Mounted(Resources(root, source, theme, media, media_listener, messages)),
+    Mounted(Resources(
+      root,
+      source,
+      theme,
+      approach,
+      media,
+      media_listener,
+      messages,
+    )),
   )
   read()
 }
@@ -320,6 +360,7 @@ fn cleanup(resources: Option(Resources)) -> Effect(Msg) {
     Some(resources) -> {
       ffi_dom.disconnect(resources.source)
       ffi_dom.disconnect(resources.theme)
+      ffi_dom.disconnect(resources.approach)
       ffi_dom.remove_listener(
         resources.media,
         "change",
@@ -384,9 +425,13 @@ fn view(model: Model) -> Element(Msg) {
         html.text(label),
       ]),
     ]),
-    case model.diagram.phase {
-      rule.Empty | rule.TooLarge -> element.none()
-      rule.Waiting | rule.Rendering | rule.Shown(_) | rule.Unavailable ->
+    case model.distance, model.diagram.phase {
+      Distant, _ | Near, rule.Empty | Near, rule.TooLarge -> element.none()
+      Near, rule.Waiting
+      | Near, rule.Rendering
+      | Near, rule.Shown(_)
+      | Near, rule.Unavailable
+      ->
         element.element(
           "iframe",
           [
