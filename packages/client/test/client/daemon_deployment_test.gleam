@@ -147,6 +147,7 @@ fn reporting(
   let reach =
     deployment.Reach(
       self:,
+      footing: deployment.Distributed,
       dial: fn(node, _within_ms) {
         process.send(told, Dialled(node))
         case list.key_find(answers, node) {
@@ -192,6 +193,7 @@ pub fn the_owner_reads_every_configured_node_as_the_daemon_found_it_test() {
       assert field(reply, "event") == json.String("deployment.status")
       let body = field(reply, "body")
       assert field(body, "self") == json.String(self)
+      assert field(body, "distribution") == json.String("configured")
       assert field(body, "state") == json.String("degraded")
       assert field(body, "reasons")
         == json.Array([
@@ -319,6 +321,7 @@ pub fn a_key_narrows_the_read_to_the_node_it_names_test() {
       assert !has(body, "edges")
       assert !has(body, "placements")
       assert !has(body, "orchestrators")
+      assert !has(body, "distribution")
       let _ = ffi_ws.tcp_close(socket)
       assert dialled(told) == ["executor@10.0.0.2"]
     },
@@ -391,9 +394,12 @@ pub fn a_daemon_with_no_peers_answers_with_itself_alone_test() {
     let _hello = wire.frame(socket, within_ms: 1000)
 
     // The default fixture lists an executor on a placeholder node and has no
-    // distribution, so its one executor is down and the daemon says so.
+    // distribution, so its one executor is down and the daemon says so, and
+    // the reply says the daemon runs without distribution, which is why the
+    // Admin page does not draw the name `nonode@nohost`.
     let body = field(status(socket, 1, json.Object([])), "body")
     assert field(body, "self") == json.String("nonode@nohost")
+    assert field(body, "distribution") == json.String("none")
     let assert json.Array([asking, executor]) = field(body, "nodes")
     assert field(asking, "state") == json.String("ok")
     assert field(executor, "state") == json.String("down")
