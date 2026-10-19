@@ -21,8 +21,9 @@ remaining gates](review/image-followups-herdr-2026-10-19.md).
 
 The full affected gate passed on `2a666d224` after rebasing onto
 `ba4f1321498ff4d1544197ffdffa35a7d83ae2c4`, including 4,877 client tests and a
-clean skip census. The original image and Herdr changes passed independent
-review. Subsequent CI repair is in progress and needs its own final gates.
+clean skip census. The original image and Herdr changes and the subsequent CI repairs each passed
+an independent adversarial review with no actionable findings. The repair head
+still needs its final full local and hosted gates.
 
 The owner authorized repair of the failing CI fixtures and merge once checks
 pass. A failed delegate reopen exposed a reachable Closing-state race, while

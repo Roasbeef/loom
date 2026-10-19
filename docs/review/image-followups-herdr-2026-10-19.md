@@ -101,9 +101,11 @@ a reproducible cause.
 
 The owner authorized repairing CI before merge and explicitly waived the
 dedicated Linux signoff while obelisk is offline and no alternate host is
-available. That signoff has not run. Final repair review, local validation and
-hosted checks remain required; the earlier baseline does not validate the new
-repairs. The repaired HTTP module passed 189 tests, the satellite module passed
+available. That signoff has not run. A fresh independent adversarial review of
+repair source `6cacd892e` found no actionable findings across invariants,
+simplification and nearby variants. Final local validation and hosted checks
+remain required; the earlier baseline does not validate the new repairs.
+The repaired HTTP module passed 189 tests, the satellite module passed
 39, the delegate module passed 32 and the daemon manager module passed 50.
 All three deliberate delegate mutants failed the new regressions: terminal
 Closing in the waiting resolver, terminal Closing at admission, and retryable
