@@ -55,6 +55,7 @@ import client/catalog
 import client/catalogue_page
 import client/config_watch
 import client/daemon/limits
+import client/daemon/listen_address
 import client/daemon/listener
 import client/daemon/manager
 import client/daemon/node_facts
@@ -160,6 +161,9 @@ pub type Config {
     bind_host: String,
     /// Zero requests an ephemeral port.
     bind_port: Int,
+    /// Where `bind_host` and `bind_port` came from, which decides whether
+    /// `[daemon] bind` may still replace them at startup.
+    bind_source: BindSource,
     /// Maximum occupied session reservations, including unconfirmed cleanup.
     capacity: Int,
     /// Display name used only when creating the first stable owner identity.
@@ -231,6 +235,25 @@ pub type WebView {
   /// serves the view, so an origin without the view cannot be represented
   /// once startup is prepared.
   ViewOn(origins: List(ui_origin.Origin))
+}
+
+/// Which source chose the listener address, in the order they take
+/// precedence: an explicit `--bind` over `[daemon] bind` over the built-in
+/// default (`listen_address.default`).
+///
+/// `parse` cannot read the file, so it records whether the flag was given and
+/// `prepare_startup` applies the file only over the default. A `Config` whose
+/// address equals the default is otherwise indistinguishable from one where
+/// the owner passed `--bind 127.0.0.1:0`, and that flag must still win.
+pub type BindSource {
+  /// Neither the flag nor the file named an address.
+  BindDefault
+
+  /// `--bind` named the address. The file's value is validated but unused.
+  BindFlag
+
+  /// `[daemon] bind` named the address, applied by `prepare_startup`.
+  BindFile
 }
 
 /// A ready root and its original public listener, with no per-session token.
@@ -404,8 +427,9 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
   let initial =
     Config(
       "",
-      "127.0.0.1",
-      0,
+      listen_address.default.host,
+      listen_address.default.port,
+      BindDefault,
       8,
       "Owner",
       [],
@@ -456,8 +480,16 @@ fn parse_loop(
       }
     }
     ["--bind", value, ..rest] -> {
-      use #(bind_host, bind_port) <- result.try(bind_address(value))
-      parse_loop(rest, Config(..config, bind_host:, bind_port:))
+      use address <- result.try(listen_address.parse(value, from: "--bind"))
+      parse_loop(
+        rest,
+        Config(
+          ..config,
+          bind_host: address.host,
+          bind_port: address.port,
+          bind_source: BindFlag,
+        ),
+      )
     }
     ["--read-scope", value, ..rest] -> {
       use _scope <- result.try(catalog.parse_read_scope(value))
@@ -515,21 +547,6 @@ fn parse_loop(
           )
       }
     [unknown, ..] -> Error("unknown or incomplete daemon argument: " <> unknown)
-  }
-}
-
-fn bind_address(value: String) -> Result(#(String, Int), String) {
-  use #(host, port) <- result.try(case string.split(value, ":") {
-    ["127.0.0.1", port] -> Ok(#("127.0.0.1", port))
-    ["[", "", "1]", port] -> Ok(#("::1", port))
-    _ -> Error("--bind requires loopback 127.0.0.1:port or [::1]:port")
-  })
-  use port <- result.try(
-    int.parse(port) |> result.replace_error("invalid --bind port"),
-  )
-  case port >= 0 && port <= 65_535 {
-    True -> Ok(#(host, port))
-    False -> Error("--bind port is outside 0..65535")
   }
 }
 
@@ -2008,6 +2025,8 @@ pub fn prepare(
 /// The returned configuration owns the web-view choice for this daemon's life.
 /// The startup file is read once for UI and connection limits alike; a session's
 /// catalogue cannot turn routes on or off. An explicit `--ui` always enables it.
+/// The listener address comes from `--bind`, else `[daemon] bind`, else the
+/// loopback default, and is fixed for the daemon's life.
 ///
 /// ## Examples
 ///
@@ -2045,6 +2064,16 @@ pub fn prepare_startup(
     limits.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+
+  // The limits read above has already validated `[daemon] bind`, so this
+  // read fails only on the same words with the path in front. The address
+  // is captured once here and never reread, so a changed `bind` needs a
+  // restart.
+  use file_address <- result.try(
+    listen_address.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  let config = with_file_address(config, file_address)
 
   // Validation above makes a missing or false UI setting the only other
   // possibility. The command-line opt-in remains authoritative over the file.
@@ -2298,6 +2327,26 @@ pub fn prepare_startup(
     ),
   )
   |> result.map(fn(daemon) { #(config, daemon) })
+}
+
+// An explicit `--bind` outranks the file, so the file's address replaces only
+// the built-in default. The resolved address is written back into the
+// `Config`, which is what the listener binds and `publish_endpoint` records
+// for clients to discover.
+fn with_file_address(
+  config: Config,
+  file_address: Option(listen_address.Address),
+) -> Config {
+  case config.bind_source, file_address {
+    BindDefault, Some(address) ->
+      Config(
+        ..config,
+        bind_host: address.host,
+        bind_port: address.port,
+        bind_source: BindFile,
+      )
+    BindDefault, None | BindFlag, _ | BindFile, _ -> config
+  }
 }
 
 /// How often a session's Agency reaps overdue children on its own, or `None`.

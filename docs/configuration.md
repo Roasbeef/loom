@@ -104,7 +104,7 @@ is not in this list is refused.
 | `workspace` | table | Read scope, extra mounts and Go caches for jails. | [`[workspace]`](#workspace) |
 | `tools` | table | Network and environment of jailed tool shells. | [`[tools]`](#tools) |
 | `secrets` | table | Host commands that supply named credentials. | [`[secrets]`](#secrets) |
-| `daemon` | table | Connection limits and the web view. | [`[daemon]`](#daemon) |
+| `daemon` | table | The listener address, connection limits and the web view. | [`[daemon]`](#daemon) |
 | `advisor` | table | What the advisor strand may read and how often it is fed. | [`[advisor]`](#advisor) |
 | `memory` | table | What memory each run starts with. | [`[memory]`](#memory) |
 | `jobs` | table | Background job wall ceiling and idle heartbeat. | [`[jobs]`](#jobs) |
@@ -417,18 +417,19 @@ timeout is one warning line naming the variable and never refuses the session. S
 
 ## `[daemon]`
 
-Optional. Connection limits and the web view belong to the daemon, not to a
-session. The daemon reads the table once at startup from the last `--config`
+Optional. The listener address, connection limits and the web view belong to
+the daemon, not to a session. The daemon reads the table once at startup from the last `--config`
 file, and a running daemon never rereads it. The two limits reserve potential
 payload capacity. They do not allocate memory in advance and do not bound total
 RSS. See [daemon](architecture/daemon.md).
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
+| `bind` | string | `"127.0.0.1:0"` | `127.0.0.1:<port>` or `[::1]:<port>`, port 0 to 65535 | The loopback address the daemon listens on. Port 0 asks for an ephemeral port, which the daemon publishes in its endpoint record for `loom` to find. An explicit `loomd --bind` outranks it; `loom` passes no `--bind` when it starts the daemon, so the file decides. Any other host, such as `0.0.0.0` or `localhost`, refuses startup. A changed value takes effect only when the daemon restarts. |
 | `max_connections` | integer | `64` | positive | HTTP upgrades reserved and WebSockets admitted, combined. |
 | `max_reserved_message_bytes` | integer | `536870912` | positive | The sum, over admitted connections, of each one's reserved inbound message and delivery allowance. The default is 512 MiB, room for twelve ordinary terminal pairs. |
 | `ui` | boolean | `false` | `true`, `false` | Turns the web view on for the life of the daemon, as `loomd --ui` does. Either one enables it; the file cannot turn off a view the flag turned on. See [web view](architecture/web-view.md). |
-| `ui_origins` | array of strings | `[]` | each a full origin `https://host[:port]`: no user information, path, query or fragment, not a loopback host; at most 16 | The `https` origins the web view is also served at, through a TLS proxy on the daemon's own host such as Tailscale Serve (protocol-change 052). A request whose `Host` names one is admitted, with `Secure` `__Secure-` cookies and a `wss:` socket. The daemon still binds loopback only, and reads no `X-Forwarded-*` header. Needs the view (`ui = true` or `--ui`): a list without it, or a bad entry, refuses startup and names the entry. `--bind 127.0.0.1:<port>` gives the proxy a fixed target. See [web view](architecture/web-view.md#remote-origins). |
+| `ui_origins` | array of strings | `[]` | each a full origin `https://host[:port]`: no user information, path, query or fragment, not a loopback host; at most 16 | The `https` origins the web view is also served at, through a TLS proxy on the daemon's own host such as Tailscale Serve (protocol-change 052). A request whose `Host` names one is admitted, with `Secure` `__Secure-` cookies and a `wss:` socket. The daemon still binds loopback only, and reads no `X-Forwarded-*` header. Needs the view (`ui = true` or `--ui`): a list without it, or a bad entry, refuses startup and names the entry. `bind = "127.0.0.1:<port>"` (or `--bind`) gives the proxy a fixed target. See [web view](architecture/web-view.md#remote-origins). |
 | `profile` | boolean | `false` | `true`, `false` | Read by the shell launcher, not the daemon, to start the daemon as a profiling node (`scripts/profile-launcher.sh`). The daemon accepts and ignores it. |
 
 ## `[advisor]`

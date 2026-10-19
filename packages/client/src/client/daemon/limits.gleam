@@ -5,6 +5,7 @@
 //// allocation or an RSS estimate. Session configuration cannot change a running
 //// daemon's limits; the owner's startup configuration is the only input.
 
+import client/daemon/listen_address
 import client/daemon/ui_origin
 import gleam/dict.{type Dict}
 import gleam/int
@@ -61,8 +62,9 @@ pub fn parse(text: String) -> Result(Limits, String) {
 
 /// Validates the shared daemon table for startup and catalogue loading alike.
 ///
-/// Profiling is launcher-owned, but it and the web-view setting share this table's
-/// contract. Omission keeps profiling disabled and each limit at its default.
+/// Profiling is launcher-owned, but it, the web-view settings and the listener
+/// address share this table's contract. Omission keeps profiling disabled and
+/// each limit at its default.
 ///
 /// ## Examples
 ///
@@ -83,7 +85,7 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
   use _ <- result.try(
     list.try_map(dict.keys(fields), fn(key) {
       case key {
-        "profile" | "ui" | "ui_origins" -> Ok(Nil)
+        "bind" | "profile" | "ui" | "ui_origins" -> Ok(Nil)
         "max_connections" | "max_reserved_message_bytes" -> Ok(Nil)
         _ -> Error("unknown key `" <> key <> "` in [daemon]")
       }
@@ -102,6 +104,11 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Limits, String) {
   // catalogue and the daemon's startup refuse the same bad entry with the
   // same words (protocol-change/052).
   use _origins <- result.try(ui_origin.from_fields(fields))
+
+  // The listener address is read through the same parser for the same
+  // reason. Only startup acts on it; a catalogue reload validates it and
+  // never rebinds, so a changed address waits for a restart.
+  use _address <- result.try(listen_address.from_fields(fields))
   use connections <- result.try(positive(
     fields,
     "max_connections",

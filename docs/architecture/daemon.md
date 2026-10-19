@@ -82,7 +82,9 @@ the wrapper execs the VM, and `client/daemon/main` runs these steps:
 
 1. **Parse flags.** `main.parse` reads `--state-dir` (default
    `$HOME/.loom`), `--bind` (a literal `127.0.0.1:port` or `[::1]:port`;
-   port 0 asks the kernel for one), `--capacity` (1 to 1024, default 8),
+   port 0 asks the kernel for one; without the flag, step 3 takes
+   `[daemon] bind` from the file, else `127.0.0.1:0`), `--capacity` (1 to
+   1024, default 8),
    `--owner-name`, and `--ui`, which turns the web view on for the life of
    the daemon. The remaining flags (`--config`, `--helper`,
    `--read-scope`, `--network`, `--codemode-seed`, `--codemode-seams`,
@@ -96,8 +98,9 @@ the wrapper execs the VM, and `client/daemon/main` runs these steps:
    writes a fresh `Starting` record if the old owner is observed gone, and
    refuses if a live VM still owns the record. A daemon started by hand in
    the foreground writes its own reservation in this step.
-3. **Prepare the root.** `main.prepare` reads the `[daemon]` limits from the
-   last `--config` file, if any (the [configuration reference](../configuration.md)
+3. **Prepare the root.** `main.prepare` reads the `[daemon]` limits, and
+   the listener address when no `--bind` named one, from the last `--config`
+   file, if any (the [configuration reference](../configuration.md)
    lists that table's keys, and how the whole file is found and read), and calls `root.start` with a
    `manager.Assembly`: the four callbacks the registry uses to build a
    domain, build a session, list a session's fatal processes, and drain a
