@@ -107,7 +107,12 @@ now acknowledges the initial `Clear` result through its existing `Options.pass`
 callback before enqueueing; the actor completes the same turn's Idle transition
 before processing the later doorbell. The expected delays remain unchanged.
 A controlled 355 ms suspension preserved the expected sequence with this
-barrier, and the complete peer-outbox module passed all 16 tests.
+barrier. Independent rechecking confirmed the ordering and found the adjacent
+saved-recipient fixture's same race: its 200 ms negative wait could end before
+the empty pass. A controlled suspension reproduced that path too. Both fixtures
+now use the same acknowledgement helper, retaining the existing negative timer
+assertion and every expected delay. The complete peer-outbox module passed all
+16 tests after the shared repair.
 
 That integration run also had a scripted-provider rejection before any LSP
 execution and an observation deadline that expired before references were
