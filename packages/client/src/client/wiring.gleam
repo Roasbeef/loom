@@ -10,29 +10,33 @@
 ////
 //// ## Flow
 ////
-//// `build_effects` → `dispatch` → `prepare_dispatch` → `provider_request` → `generation_request`; `build_effects` → `run_tool` → `read_authority`, `run_workspace_tool` → `tool_context`; `run_placed` → `run_tool_held`
+//// `build_effects` → `compaction_hooks`; `build_effects` → `run_tool` → `read_authority`, `run_workspace_tool` → `tool_context`; `run_placed` → `run_tool_held`
 ////
 //// 1. `build_effects` assembles the `Effects` record a host hands to
 ////    `runtime/api.open`: clock, entropy, timers, a provider surface, a tool
 ////    surface and `compaction_hooks`.
-//// 2. A model call enters at `dispatch`, which is `prepare_dispatch` followed
-////    by the begin permit; only a generation reaches the gateway, and polls
-////    and summaries are refused as unsupported.
-//// 3. `provider_request` picks the target. `request_image_bearing` and
-////    `vision_route` send an image-bearing request from a text-only model down
-////    the vision chain, and `generation_request` builds the wire request.
-//// 4. A tool call enters at `run_tool`, which is two halves. `read_authority`
+//// 2. **The provider half belongs to the harness package.** A model call enters at
+////    `harness/provider.dispatch`: only a generation reaches the gateway, and
+////    polls and summaries are refused as unsupported. `harness/routing` picks
+////    the target, `harness/admission` makes the pre-request decision, and an
+////    image-bearing request from a text-only model goes down the vision chain.
+////    This module builds the harness records (`provider_routing`,
+////    `provider_configuration`) from its own `Config` and keeps the public
+////    names (`provider_request`, `request_target`, `strand_window`, ...) as
+////    one-line delegations. `docs/design-notes/harness-extraction.md` has the
+////    map of what moved and why.
+//// 3. A tool call enters at `run_tool`, which is two halves. `read_authority`
 ////    reads the session's stored directory and permission grants from the
 ////    store. `run_workspace_tool` revalidates them against the local
 ////    filesystem, widens the base policy with them, and dispatches through
 ////    `tool_context`'s `Ctx`. Only `Authority` and the `ToolRun` pass between
 ////    the halves, so a workspace on another node can sit behind the second.
-//// 5. `run_placed` is how a session which has a workspace half routes a call:
+//// 4. `run_placed` is how a session which has a workspace half routes a call:
 ////    by `tool_placement.placement`, a workspace-side tool reads its `Authority` here
 ////    and runs on the plane, and every other call takes `run_tool` as before.
 ////    `clear`, `replay_still_safe` and `execution_mode` answer the machine's
-////    declaration questions from the projected table.
-//// 6. `compaction_hooks` wires admission and the compaction signals, using
+////    declaration questions from the projected table, through `harness/tool_table`.
+//// 5. `compaction_hooks` wires admission and the compaction signals, using
 ////    the same model facts `strand_window` reports.
 ////
 //// ## Mapping decisions (each recorded here because the spec leaves the
@@ -168,37 +172,31 @@ import client/notes
 import client/permissions
 import client/tool_holder
 import client/tool_placement
-import client/vision
-import core/accounting
 import core/clock.{type Clock}
 import core/entry
 import core/ids.{type OpId}
 import core/message.{type AgentMessage}
 import gleam/bool
-import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
-import machine/operation.{
-  type CompactionSettings, type ReplayPolicy, OperationError,
-}
+import harness/admission
+import harness/model_facts
+import harness/provider
+import harness/routing
+import harness/tool_table
+import machine/operation.{type CompactionSettings, type ReplayPolicy}
 import machine/planner.{
-  type ModelResolution, type RequestAdmission, type StructuralVerdict, Admitted,
-  ModelResolved, ModelUnresolved, ThresholdExceeded, ThresholdNotExceeded,
-  VerdictDeclined, VerdictSupplied,
+  type ModelResolution, type StructuralVerdict, ThresholdExceeded,
+  ThresholdNotExceeded, VerdictDeclined, VerdictSupplied,
 }
-import machine/strand.{
-  type ModelIdentity, type StrandConfiguration, ModelIdentity,
-}
+import machine/strand.{type ModelIdentity, type StrandConfiguration}
 import provider/gateway.{type Gateway}
-import provider/image_budget
 import provider/model.{
   type ProviderRequest, type RequestTarget, type ResolvedModel, type Role,
-  type ToolSpec, ForResolved, ForRole, ProviderRequest, ResolvedModel, ToolSpec,
+  type ToolSpec,
 }
-import provider/stream.{type StreamHandle}
 import runtime/effects.{type Effects}
 import runtime/hooks
 import session/session.{type Session}
@@ -307,46 +305,58 @@ pub type Config {
 }
 
 // A provider request owns routing facts and rendered definitions, never tool
-// executors, jail policy, environment or broker clearance callbacks. The routing
-// projection also serves public target queries without building a tool table.
-type ProviderRouting {
-  ProviderRouting(
-    gateway: Gateway,
-    role: Role,
-    facts: fn(ModelIdentity) ->
-      Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
-    api: String,
-    fallback_context_window: Int,
-    fallback_max_output_tokens: Int,
-  )
-}
-
-type ProviderConfiguration {
-  ProviderConfiguration(
-    routing: ProviderRouting,
-    session: Session,
-    system: Option(String),
-    definitions: Dict(String, ToolSpec),
-  )
-}
-
-fn provider_routing(config: Config) -> ProviderRouting {
-  ProviderRouting(
+// executors, jail policy, environment or broker clearance callbacks. Both
+// records are `harness`'s own; the daemon builds them here, without the
+// checks `harness.new` makes, so that a gateway which routes only part of the
+// roles stays a runtime condition (`resolution` answers `ModelUnresolved`)
+// exactly as it always was.
+fn provider_routing(config: Config) -> routing.Routing {
+  routing.Routing(
     gateway: config.gateway,
     role: config.role,
-    facts: config.facts,
-    api: config.api,
-    fallback_context_window: config.fallback_context_window,
-    fallback_max_output_tokens: config.fallback_max_output_tokens,
+    lookup: lookup_of(config.facts),
+    fallback: fallback_of(config),
   )
 }
 
-fn provider_configuration(config: Config) -> ProviderConfiguration {
-  ProviderConfiguration(
-    routing: provider_routing(config),
-    session: config.session,
+fn provider_configuration(config: Config) -> provider.Provider {
+  provider.new(
+    provider_routing(config),
+    config.session,
     system: config.system,
-    definitions: tool_definitions(config.registry),
+    registry: config.registry,
+  )
+}
+
+// The catalogue's facts seam, as `harness` names it. The catalogue keeps its
+// own `ImageReading` because its constructors are the spelling of the
+// `vision` key throughout the parser and the tests, and a Gleam type alias
+// does not re-export constructors; this is the one place the two are mapped.
+fn lookup_of(
+  facts: fn(ModelIdentity) ->
+    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
+) -> model_facts.Lookup {
+  fn(identity) {
+    facts(identity)
+    |> result.map(fn(known) {
+      let #(resolved, api, reading) = known
+      model_facts.Known(resolved:, api:, reading: image_reading(reading))
+    })
+  }
+}
+
+fn image_reading(reading: catalog.ImageReading) -> model_facts.ImageReading {
+  case reading {
+    catalog.ReadsImages -> model_facts.ReadsImages
+    catalog.TextOnly -> model_facts.TextOnly
+  }
+}
+
+fn fallback_of(config: Config) -> model_facts.Fallback {
+  model_facts.Fallback(
+    api: config.api,
+    context_window: config.fallback_context_window,
+    max_output_tokens: config.fallback_max_output_tokens,
   )
 }
 
@@ -436,24 +446,14 @@ fn effects_over(
   // retaining either provider facade, so executable registrations stay only in
   // the tool surface. Active names are still chosen from each request's own
   // durable configuration, not from this boot-time projection.
-  let provider = provider_configuration(config)
+  let provided = provider_configuration(config)
 
   effects.Effects(
     clock: config.clock,
     entropy: config.entropy,
     timers: effects.real_timers(),
-    provider: effects.PreparedProviderSurface(
-      request: fn(spec) { dispatch(provider, spec) },
-      prepare: fn(spec) { prepare_dispatch(provider, spec) },
-      timeout_ms: config.provider_timeout_ms,
-    ),
-    tools: effects.ToolSurface(
-      clear: fn(query) { clear(declared, query) },
-      run:,
-      replay_still_safe: fn(name) { replay_still_safe(declared, name) },
-      execution_mode: fn(name) { execution_mode(declared, name) },
-      recover: None,
-    ),
+    provider: provider.surface(provided, timeout_ms: config.provider_timeout_ms),
+    tools: tool_table.surface(declared, run),
     hooks: compaction_hooks(config),
   )
 }
@@ -482,10 +482,8 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   let compaction = config.compaction
   let gateway = config.gateway
   let role = config.role
-  let facts = config.facts
-  let api = config.api
-  let fallback_context_window = config.fallback_context_window
-  let fallback_max_output_tokens = config.fallback_max_output_tokens
+  let lookup = lookup_of(config.facts)
+  let fallback = fallback_of(config)
   let clock = config.clock
 
   // Compaction asks the registry one question — whether this host offers
@@ -510,28 +508,13 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   let threshold_for = fn(strand) {
     hooks.threshold(
       compaction,
-      context_window: strand_facts_from(
-        opened,
-        facts,
-        api,
-        fallback_context_window,
-        fallback_max_output_tokens,
-        strand,
-      ).context_window,
+      context_window: model_facts.of_strand(opened, lookup, fallback, strand).context_window,
       estimate: hooks.estimate_message,
     )
   }
   hooks.new()
   |> hooks.with_admission(fn(query: effects.AdmissionQuery) {
-    admit_projected(
-      opened,
-      gateway,
-      facts,
-      api,
-      fallback_context_window,
-      fallback_max_output_tokens,
-      query,
-    )
+    admission.admit(opened, gateway, lookup, fallback, query)
   })
   |> hooks.with_threshold(fn(query: effects.ThresholdQuery) {
     // First decide whether to compact from the driver's existing context.
@@ -563,10 +546,8 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
   |> hooks.with_context(fn(operation, messages) {
     near_limit_reminder_projected(
       opened,
-      facts,
-      api,
-      fallback_context_window,
-      fallback_max_output_tokens,
+      lookup,
+      fallback,
       compaction,
       clock,
       operation,
@@ -574,7 +555,7 @@ pub fn compaction_hooks(config: Config) -> effects.Hooks {
     )
   })
   |> hooks.with_resolution(fn(_configuration) {
-    resolution_projected(gateway, role)
+    routing.resolution(gateway, role)
   })
   |> hooks.build
 }
@@ -707,11 +688,8 @@ fn recall_projected(
 // nothing to remind about.
 fn near_limit_reminder_projected(
   opened: Session,
-  facts: fn(ModelIdentity) ->
-    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
-  fallback_api: String,
-  fallback_context_window: Int,
-  fallback_max_output_tokens: Int,
+  lookup: model_facts.Lookup,
+  fallback: model_facts.Fallback,
   compaction: CompactionSettings,
   clock: Clock,
   operation: OpId,
@@ -723,10 +701,8 @@ fn near_limit_reminder_projected(
     Ok(strand) ->
       reminded_projected(
         opened,
-        facts,
-        fallback_api,
-        fallback_context_window,
-        fallback_max_output_tokens,
+        lookup,
+        fallback,
         compaction,
         clock,
         strand,
@@ -752,11 +728,8 @@ fn near_limit_reminder_projected(
 // read a stale total and raised the reminder against room that was there.
 fn reminded_projected(
   opened: Session,
-  facts: fn(ModelIdentity) ->
-    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
-  fallback_api: String,
-  fallback_context_window: Int,
-  fallback_max_output_tokens: Int,
+  lookup: model_facts.Lookup,
+  fallback: model_facts.Fallback,
   compaction: CompactionSettings,
   clock: Clock,
   strand: String,
@@ -773,14 +746,7 @@ fn reminded_projected(
     )
   let total = hooks.context_tokens(projected, hooks.estimate_message)
   let window =
-    strand_facts_from(
-      opened,
-      facts,
-      fallback_api,
-      fallback_context_window,
-      fallback_max_output_tokens,
-      strand,
-    ).context_window
+    model_facts.of_strand(opened, lookup, fallback, strand).context_window
   case total > checkpoint.reminder_point(window, compaction) {
     False -> messages
     True ->
@@ -821,54 +787,6 @@ fn carried_by_session(opened: Session, strand: String) -> Int {
 
 // Dispatches one request spec. Generations go to the gateway; polls and
 // summary requests settle immediately in-band (see the module doc).
-
-fn dispatch(
-  config: ProviderConfiguration,
-  spec: effects.RequestSpec,
-) -> StreamHandle {
-  prepare_dispatch(config, spec)
-  |> stream.start_prepared
-}
-
-// Production dispatch keeps role resolution and secret lookup behind the
-// begin permit. The immediate error cases still use the same shape so every
-// wrapper can apply one prepare, publish, begin protocol.
-fn prepare_dispatch(
-  config: ProviderConfiguration,
-  spec: effects.RequestSpec,
-) -> stream.PreparedStream {
-  case spec {
-    effects.GenerationRequest(operation:, ..) -> {
-      let request = provider_request_from(config, spec)
-      let protected = case image_budget.count(request.messages) {
-        0 -> 0
-        _ -> active_run_images(config.session, operation) |> result.unwrap(0)
-      }
-      let scoped =
-        gateway.with_protected_images(config.routing.gateway, protected)
-      gateway.prepare(scoped, request)
-    }
-    effects.PollRequest(..) ->
-      prepared_unsupported(
-        "deferred polls are not wired to a provider surface yet",
-      )
-
-    // Unreachable in production: every compaction is answered at the
-    // decision with a checkpoint, so the machine never enters its
-    // generate path here. Total all the same, and terminal rather than
-    // retryable, because a summary request that somehow reached the wire
-    // has no prompt it could be made with.
-    effects.SummaryRequest(..) ->
-      prepared_unsupported(
-        "this host answers compaction with a notes checkpoint and dispatches "
-        <> "no summary request",
-      )
-  }
-}
-
-fn prepared_unsupported(reason: String) -> stream.PreparedStream {
-  stream.PreparedStream(handle: unsupported(reason), begin: fn() { Nil })
-}
 
 // The operator's `Compact(strand, instructions)` text, read from the
 // operation's durable state. It reaches the checkpoint through here
@@ -919,135 +837,10 @@ pub fn resolution(
   config: Config,
   _configuration: StrandConfiguration,
 ) -> ModelResolution {
-  case gateway.resolve(config.gateway, config.role) {
-    Ok(_resolved) -> ModelResolved
-    Error(_missing) ->
-      ModelUnresolved(error: OperationError(
-        code: "model_unavailable",
-        message: "no configured route resolves to a usable provider",
-        details: None,
-      ))
-  }
-}
-
-fn resolution_projected(
-  provider_gateway: Gateway,
-  role: Role,
-) -> ModelResolution {
-  case gateway.resolve(provider_gateway, role) {
-    Ok(_resolved) -> ModelResolved
-    Error(_missing) ->
-      ModelUnresolved(error: OperationError(
-        code: "model_unavailable",
-        message: "no configured route resolves to a usable provider",
-        details: None,
-      ))
-  }
+  routing.resolution(config.gateway, config.role)
 }
 
 // --- the catalogue's model facts -------------------------------------------
-
-// The window, output ceiling and adapter api one identity is accounted
-// against. Read from the identity's *own* catalogue entry, so a strand
-// switched off the configured route is admitted, compacted and captured
-// against what it will actually be dispatched to. An identity the
-// catalogue does not know falls back to the config's declared facts,
-// which is what keeps a session with a moved route running rather than
-// admitting requests against numbers nobody stands behind.
-type ModelFacts {
-  ModelFacts(
-    api: String,
-    context_window: Int,
-    max_output_tokens: Int,
-    reading: catalog.ImageReading,
-  )
-}
-
-// The fallback reading is `ReadsImages`, the same answer the catalogue
-// gives an entry that never wrote the key: an identity the catalogue
-// does not know was switched to by an operator or seeded from an
-// environment the catalogue never described, and routing consults only
-// the blind declarations the catalogue actually made.
-fn model_facts(config: ProviderRouting, identity: ModelIdentity) -> ModelFacts {
-  model_facts_from(
-    config.facts,
-    config.api,
-    config.fallback_context_window,
-    config.fallback_max_output_tokens,
-    identity,
-  )
-}
-
-fn model_facts_from(
-  facts: fn(ModelIdentity) ->
-    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
-  fallback_api: String,
-  fallback_context_window: Int,
-  fallback_max_output_tokens: Int,
-  identity: ModelIdentity,
-) -> ModelFacts {
-  case facts(identity) {
-    Ok(#(resolved, api, reading)) ->
-      ModelFacts(
-        api:,
-        context_window: resolved.context_window,
-        max_output_tokens: resolved.max_output_tokens,
-        reading:,
-      )
-    Error(Nil) ->
-      ModelFacts(
-        api: fallback_api,
-        context_window: fallback_context_window,
-        max_output_tokens: fallback_max_output_tokens,
-        reading: catalog.ReadsImages,
-      )
-  }
-}
-
-// The figures for an identity nobody stands behind: the config's own
-// declared fallbacks, stated once so the two readers cannot drift.
-// One strand's facts, read from its durable configuration. A strand whose
-// configuration is unreadable is accounted against the fallback figures:
-// a token count that cannot be taken must not halt a strand
-// (`runtime/hooks`' own rule for a failed projection).
-fn strand_facts_from(
-  opened: Session,
-  facts: fn(ModelIdentity) ->
-    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
-  fallback_api: String,
-  fallback_context_window: Int,
-  fallback_max_output_tokens: Int,
-  strand: String,
-) -> ModelFacts {
-  case strand_identity(opened, strand) {
-    Some(identity) ->
-      model_facts_from(
-        facts,
-        fallback_api,
-        fallback_context_window,
-        fallback_max_output_tokens,
-        identity,
-      )
-    None ->
-      ModelFacts(
-        api: fallback_api,
-        context_window: fallback_context_window,
-        max_output_tokens: fallback_max_output_tokens,
-        reading: catalog.ReadsImages,
-      )
-  }
-}
-
-// The identity a strand's durable configuration captured, or nothing
-// when the cell is absent or the store would not answer.
-fn strand_identity(session: Session, strand: String) -> Option(ModelIdentity) {
-  case session.strand_configuration(session, strand) {
-    Ok(Some(session.Cell(value: configuration, ..))) ->
-      Some(configuration.model)
-    Ok(None) -> None
-    Error(_unreadable) -> None
-  }
-}
 
 /// The context window a strand is measured against: its captured
 /// identity's own catalogue entry when `facts` knows it, `fallback`
@@ -1069,163 +862,7 @@ pub fn strand_window(
   strand: String,
   fallback fallback: Int,
 ) -> Int {
-  case
-    strand_identity(session, strand)
-    |> option.then(fn(identity) { option.from_result(facts(identity)) })
-  {
-    Some(#(resolved, _api, _reading)) -> resolved.context_window
-    None -> fallback
-  }
-}
-
-// The pre-request admission, answered from the query's own configuration
-// rather than from a closure frozen at boot. Three durable values ride on
-// it — the intended output limit and context window overflow
-// classification is stable against, and the `request_api` a deferred
-// handle is validated against (ORCH-L4) — and all three are properties of
-// the identity *this attempt* will reach, which a boot-time answer cannot
-// know for a strand that switched models since.
-//
-// The fourth question is the vision rule (issue #358): an
-// image-bearing request from a strand whose model cannot read images
-// is admitted against the *vision head's* facts — the identity this
-// attempt will actually reach — and refused in band when no usable
-// vision route resolves. The image classification reads the strand's
-// durable projection, the same place the threshold and overflow hooks
-// decide from, so a decision taken before a crash is taken again after
-// it. Dispatch classifies the request context instead, which is that
-// projection after the `context` hook; the run-start digests are
-// durable, so the two agree unless an extension rewrites the current
-// turn, and then the request is placeholdered rather than sent blind.
-// A store that will not answer classifies as imageless: a read that
-// fails must not strand the conversation (the `strand_facts` rule
-// above).
-fn admit_projected(
-  opened: Session,
-  provider_gateway: Gateway,
-  facts: fn(ModelIdentity) ->
-    Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
-  fallback_api: String,
-  fallback_context_window: Int,
-  fallback_max_output_tokens: Int,
-  query: effects.AdmissionQuery,
-) -> RequestAdmission {
-  let identity = query.configuration.model
-  let model =
-    model_facts_from(
-      facts,
-      fallback_api,
-      fallback_context_window,
-      fallback_max_output_tokens,
-      identity,
-    )
-
-  // An image-capable model keeps its route for every transcript. Consult
-  // that fact first, so only text-only admission pays for image projection.
-  case
-    model.reading == catalog.TextOnly
-    && image_bearing_projected(opened, query.operation)
-  {
-    False ->
-      Admitted(
-        stream_options: query.stream_options,
-        intended_output_limit: model.max_output_tokens,
-        context_window: model.context_window,
-        api: model.api,
-      )
-    True ->
-      case gateway.resolve(provider_gateway, model.Vision) {
-        Error(_missing) -> vision.no_route_refusal(identity)
-        Ok(head) ->
-          case facts(identity_of(head)) {
-            Ok(#(_resolved, _api, catalog.TextOnly)) ->
-              vision.blind_route_refusal(head)
-            Ok(#(_resolved, _api, catalog.ReadsImages)) | Error(Nil) -> {
-              let head_facts =
-                model_facts_from(
-                  facts,
-                  fallback_api,
-                  fallback_context_window,
-                  fallback_max_output_tokens,
-                  identity_of(head),
-                )
-              Admitted(
-                stream_options: query.stream_options,
-                intended_output_limit: head_facts.max_output_tokens,
-                context_window: head_facts.context_window,
-                api: head_facts.api,
-              )
-            }
-          }
-      }
-  }
-}
-
-// The admission for an image-bearing request a strand's own model
-// cannot read: through the vision chain when one resolves and its
-// head reads images, or refused in band. The head's facts — not the
-// strand's — are what the request is admitted against, because they
-// are the facts of the identity the request will actually reach.
-// The identity a resolved model dispatches to, back on the seam's own
-// terms: `Config.facts` is keyed by the durable identity shape.
-fn identity_of(resolved: ResolvedModel) -> ModelIdentity {
-  ModelIdentity(provider: resolved.provider, model_id: resolved.model_id)
-}
-
-// Whether the current turn of this operation's strand projection
-// carries an image.
-fn image_bearing_projected(opened: Session, operation: OpId) -> Bool {
-  case notes.strand_of(opened, operation) {
-    Error(Nil) -> False
-    Ok(strand) ->
-      request_image_bearing_projected(
-        opened,
-        operation,
-        hooks.project(opened, strand).messages,
-      )
-  }
-}
-
-// A held batch and its tool continuations belong to one admitted run, even
-// when its newest attributed prompt contains no images. Protect every image
-// since the immutable source leaf. Compaction preserves parent links, so walk
-// through it and count original messages once, never the copied retained tail.
-// Retained tails are contiguous suffixes: if compaction removed current-run
-// images, it also removed all older history. The gateway's cap to the actual
-// projected count then protects exactly the surviving current-run images.
-fn active_run_images(opened: Session, operation: OpId) -> Result(Int, Nil) {
-  use cell <- result.try(
-    session.op_meta(opened, operation) |> result.replace_error(Nil),
-  )
-  use cell <- result.try(option.to_result(cell, Nil))
-  let meta = cell.value
-  use leaf_cell <- result.try(
-    session.strand_leaf(opened, meta.strand) |> result.replace_error(Nil),
-  )
-  use leaf_cell <- result.try(option.to_result(leaf_cell, Nil))
-  use leaf <- result.try(option.to_result(leaf_cell.value, Nil))
-
-  let scan = storage.branch_scan(leaf)
-  let scan = case meta.source_leaf {
-    None -> scan
-    Some(source) -> storage.branch_stop_at_id(scan, source)
-  }
-  use entries <- result.try(
-    storage.scan_branch(opened.store, scan) |> result.replace_error(Nil),
-  )
-  entries
-  |> list.filter_map(fn(item) {
-    case item {
-      entry.MessageEntry(id:, message:, ..) if Some(id) != meta.source_leaf ->
-        Ok(message)
-      entry.MessageEntry(..)
-      | entry.CompactionEntry(..)
-      | entry.BranchSummaryEntry(..)
-      | entry.CustomEntry(..) -> Error(Nil)
-    }
-  })
-  |> image_budget.count
-  |> Ok
+  model_facts.strand_window(session, lookup_of(facts), strand, fallback:)
 }
 
 /// Whether the dispatcher sends this generation to the `vision` chain when
@@ -1253,7 +890,7 @@ pub fn request_image_bearing(
   operation: OpId,
   context: List(AgentMessage),
 ) -> Bool {
-  request_image_bearing_projected(config.session, operation, context)
+  admission.image_bearing(config.session, operation, context)
 }
 
 /// Captures the session alone for observers that share dispatch's image rule.
@@ -1274,73 +911,7 @@ pub fn request_image_classifier(
   config: Config,
 ) -> fn(OpId, List(AgentMessage)) -> Bool {
   let opened = config.session
-  fn(operation, context) {
-    request_image_bearing_projected(opened, operation, context)
-  }
-}
-
-fn request_image_bearing_projected(
-  opened: Session,
-  operation: OpId,
-  context: List(AgentMessage),
-) -> Bool {
-  vision.image_bearing(context)
-  || admitted_image_bearing(opened, operation) |> result.unwrap(False)
-}
-
-fn admitted_image_bearing(
-  session: Session,
-  operation: OpId,
-) -> Result(Bool, Nil) {
-  use cell <- result.try(
-    session.op_meta(session, operation) |> result.replace_error(Nil),
-  )
-  use cell <- result.try(option.to_result(cell, Nil))
-  let meta = cell.value
-  use last_prompt <- result.try(case meta.intent {
-    operation.RunIntent(prompt_entries:) -> list.last(prompt_entries)
-    operation.CompactionIntent(..) | operation.NavigationIntent(..) ->
-      Error(Nil)
-  })
-  let scan = storage.branch_scan(last_prompt)
-  let scan = case meta.source_leaf {
-    None -> scan
-    Some(leaf) -> storage.branch_stop_at_id(scan, leaf)
-  }
-  use entries <- result.try(
-    storage.scan_branch(session.store, scan) |> result.replace_error(Nil),
-  )
-  Ok(
-    list.any(entries, fn(item) {
-      case item {
-        entry.MessageEntry(id:, message:, ..) ->
-          Some(id) != meta.source_leaf && vision.image_bearing([message])
-        entry.CompactionEntry(..)
-        | entry.BranchSummaryEntry(..)
-        | entry.CustomEntry(..) -> False
-      }
-    }),
-  )
-}
-
-// A handle whose single event is an in-band, terminally-classified
-// failure. `StreamError` with a non-transient error type is Terminal
-// under `retry.classify`, so the machine fails the operation at once
-// instead of burning its whole retry ladder against a surface that can
-// never succeed (a transport failure would read as retryable).
-fn unsupported(reason: String) -> StreamHandle {
-  let events = process.new_subject()
-  process.send(
-    events,
-    stream.Failed(
-      error: stream.StreamError(
-        api_error_type: "unsupported_request",
-        message: reason,
-      ),
-      accounting: accounting.empty(),
-    ),
-  )
-  stream.immediate(events:, cancel: fn() { Nil })
+  fn(operation, context) { admission.image_bearing(opened, operation, context) }
 }
 
 /// Maps a generation or poll spec onto the provider-neutral request
@@ -1364,7 +935,7 @@ pub fn provider_request(
   config: Config,
   spec: effects.RequestSpec,
 ) -> ProviderRequest {
-  provider_request_from(provider_configuration(config), spec)
+  provider.request(provider_configuration(config), spec)
 }
 
 /// Captures only provider-shaped configuration for request observers.
@@ -1380,82 +951,7 @@ pub fn request_builder(
   config: Config,
 ) -> fn(effects.RequestSpec) -> ProviderRequest {
   let configuration = provider_configuration(config)
-  fn(spec) { provider_request_from(configuration, spec) }
-}
-
-fn provider_request_from(
-  config: ProviderConfiguration,
-  spec: effects.RequestSpec,
-) -> ProviderRequest {
-  case spec {
-    effects.SummaryRequest(configuration:, ..) ->
-      ProviderRequest(
-        target: request_target_from(config.routing, configuration),
-        system: None,
-        messages: [],
-        tools: [],
-        max_output_tokens: None,
-      )
-    effects.GenerationRequest(operation:, configuration:, context:, ..) -> {
-      // The vision rule's dispatch half (issue #358): the request's
-      // own content, not the strand's pinned model, decides the target
-      // when the two disagree about images. An image-bearing request
-      // from a text-only model dispatches through the `vision` chain —
-      // admitted there already, so an unresolvable chain here means
-      // the registry moved between admission and dispatch, and the
-      // ordinary target plus placeholders below is the honest fallback.
-      // Every other request to a text-only identity has its images
-      // placeholdered, because an image the model cannot read is
-      // invalid input on any turn, not just the newest one.
-      let reading = model_facts(config.routing, configuration.model).reading
-      let routed = case
-        reading == catalog.TextOnly
-        && request_image_bearing_projected(config.session, operation, context)
-      {
-        True -> vision_route(config.routing, configuration)
-        False -> None
-      }
-      case routed {
-        Some(target) ->
-          generation_request(config, configuration, context, target)
-        None ->
-          generation_request(
-            config,
-            configuration,
-            case reading {
-              catalog.TextOnly -> vision.placeholdered(context)
-              catalog.ReadsImages -> context
-            },
-            request_target_from(config.routing, configuration),
-          )
-      }
-    }
-
-    // A poll never walks a chain: the handle it would fetch belongs to
-    // the identity that minted it. See `resolved_target`.
-    effects.PollRequest(configuration:, ..) ->
-      generation_request(
-        config,
-        configuration,
-        [],
-        resolved_target_from(config.routing, configuration),
-      )
-  }
-}
-
-fn generation_request(
-  config: ProviderConfiguration,
-  configuration: StrandConfiguration,
-  messages: List(AgentMessage),
-  target: RequestTarget,
-) -> ProviderRequest {
-  ProviderRequest(
-    target:,
-    system: config.system,
-    messages:,
-    tools: tool_specs_from(config.definitions, configuration.active_tool_names),
-    max_output_tokens: None,
-  )
+  fn(spec) { provider.request(configuration, spec) }
 }
 
 /// Resolves the captured identity into a generation's dispatch target.
@@ -1488,42 +984,7 @@ pub fn request_target(
   config: Config,
   configuration: StrandConfiguration,
 ) -> RequestTarget {
-  request_target_from(provider_routing(config), configuration)
-}
-
-fn request_target_from(
-  config: ProviderRouting,
-  configuration: StrandConfiguration,
-) -> RequestTarget {
-  case routed_role(config, configuration.model) {
-    Ok(role) ->
-      ForRole(
-        role:,
-        thinking: Some(thinking_level(configuration.thinking_level)),
-      )
-    Error(Nil) -> resolved_target_from(config, configuration)
-  }
-}
-
-// The vision chain's target for one image-bearing request, or `None`
-// when no usable chain resolves. The thinking overlay is the strand's
-// own per-turn level, carried onto every target the walk attempts,
-// exactly as `request_target` carries it for the strand's own route: a
-// turn that raised its reasoning budget reaches the vision model with
-// the same budget it would have reached its own with.
-fn vision_route(
-  config: ProviderRouting,
-  configuration: StrandConfiguration,
-) -> Option(RequestTarget) {
-  case gateway.resolve(config.gateway, model.Vision) {
-    Ok(_head) ->
-      Some(
-        vision.routed_target(
-          thinking: Some(thinking_level(configuration.thinking_level)),
-        ),
-      )
-    Error(_missing) -> None
-  }
+  routing.request_target(provider_routing(config), configuration)
 }
 
 /// The dispatch target for a request that must reach exactly the captured
@@ -1547,61 +1008,7 @@ pub fn resolved_target(
   config: Config,
   configuration: StrandConfiguration,
 ) -> RequestTarget {
-  resolved_target_from(provider_routing(config), configuration)
-}
-
-fn resolved_target_from(
-  config: ProviderRouting,
-  configuration: StrandConfiguration,
-) -> RequestTarget {
-  let identity = configuration.model
-  let facts = model_facts(config, identity)
-  ForResolved(resolved: ResolvedModel(
-    provider: identity.provider,
-    model_id: identity.model_id,
-    thinking: thinking_level(configuration.thinking_level),
-    context_window: facts.context_window,
-    max_output_tokens: facts.max_output_tokens,
-  ))
-}
-
-// Which role, if any, this dispatch is *on route* for.
-//
-// An `effects.RequestSpec` carries no strand name, and one wiring config
-// serves every strand of a session, so the configured role cannot say
-// whether a subagent strand is on its own route. The identity can: a role
-// serves a request exactly when the head of its usable chain is the
-// identity the intent captured, because the head is what `gateway.resolve`
-// would have stored and what the walk will try first.
-//
-// Candidates are taken in canonical order so the answer is a function of
-// durable state alone — a tie between `main` and `subagent` routed to the
-// same entry resolves to `main`, every time, on every boot. The
-// configured role leads only when it is neither of them, which is the one
-// case a host has said something the canonical order does not cover.
-fn routed_role(
-  config: ProviderRouting,
-  identity: ModelIdentity,
-) -> Result(Role, Nil) {
-  list.find(candidate_roles(config.role), fn(role) {
-    case gateway.resolve(config.gateway, role) {
-      Ok(resolved) ->
-        resolved.provider == identity.provider
-        && resolved.model_id == identity.model_id
-      Error(_missing) -> False
-    }
-  })
-}
-
-fn candidate_roles(configured: Role) -> List(Role) {
-  case configured {
-    model.Main | model.Subagent -> [model.Main, model.Subagent]
-    model.Plan | model.Summarize | model.Vision | model.Custom(..) -> [
-      configured,
-      model.Main,
-      model.Subagent,
-    ]
-  }
+  routing.resolved_target(provider_routing(config), configuration)
 }
 
 /// Collapses the machine's seven-point thinking scale onto the
@@ -1614,13 +1021,7 @@ fn candidate_roles(configured: Role) -> List(Role) {
 /// ```
 ///
 pub fn thinking_level(level: strand.ThinkingLevel) -> model.ThinkingLevel {
-  case level {
-    strand.ThinkingOff -> model.ThinkingOff
-    strand.ThinkingMinimal | strand.ThinkingLow -> model.ThinkingLow
-    strand.ThinkingMedium -> model.ThinkingMedium
-    strand.ThinkingHigh | strand.ThinkingXHigh | strand.ThinkingMax ->
-      model.ThinkingHigh
-  }
+  routing.thinking_level(level)
 }
 
 /// Lifts a catalogue entry's declared thinking level onto the machine's
@@ -1643,12 +1044,7 @@ pub fn thinking_level(level: strand.ThinkingLevel) -> model.ThinkingLevel {
 pub fn strand_thinking_level(
   level: model.ThinkingLevel,
 ) -> strand.ThinkingLevel {
-  case level {
-    model.ThinkingOff -> strand.ThinkingOff
-    model.ThinkingLow -> strand.ThinkingLow
-    model.ThinkingMedium -> strand.ThinkingMedium
-    model.ThinkingHigh -> strand.ThinkingHigh
-  }
+  routing.strand_thinking_level(level)
 }
 
 /// The wire-facing specs for the active tool names: registry lookups
@@ -1663,50 +1059,7 @@ pub fn strand_thinking_level(
 /// ```
 ///
 pub fn tool_specs(config: Config, active: List(String)) -> List(ToolSpec) {
-  tool_specs_from(tool_definitions(config.registry), active)
-}
-
-// The table is rendered data alone. A schema or description may be large, but
-// each is required on the provider wire; a tool's executor and requirements are
-// not, and must not be copied into every owner of the provider surface.
-fn tool_definitions(registry: Registry) -> Dict(String, ToolSpec) {
-  tool.registered(registry)
-  |> list.map(fn(registered) {
-    #(
-      registered.name,
-      ToolSpec(
-        name: registered.name,
-        description: registered.description,
-        input_schema: registered.schema,
-      ),
-    )
-  })
-  |> dict.from_list
-}
-
-fn tool_specs_from(
-  definitions: Dict(String, ToolSpec),
-  active: List(String),
-) -> List(ToolSpec) {
-  // The sort is load-bearing, not tidiness. Tool definitions render
-  // ahead of the system prompt and the messages in a provider request,
-  // and prompt caching matches on an exact byte prefix of that render:
-  // the Anthropic adapter hangs one cache breakpoint on the last tool
-  // definition and a second on the system block, so this array is a
-  // strict prefix of both cached regions. Two requests whose active
-  // set is the same but whose configuration lists it in a different
-  // order would render different bytes and miss the cache entirely,
-  // paying the write again on every turn. Deduping is the same
-  // argument plus an honesty one: a name listed twice would advertise
-  // the same tool twice on the wire.
-  //
-  // Neither step touches authorization. `clear` below decides what may
-  // run by `list.contains` on the same list, and set membership is
-  // blind to order and multiplicity.
-  active
-  |> list.sort(string.compare)
-  |> list.unique
-  |> list.filter_map(fn(name) { dict.get(definitions, name) })
+  provider.tool_specs(provider.definitions(config.registry), active)
 }
 
 // --- the tool surface -----------------------------------------------------
@@ -1733,31 +1086,7 @@ pub fn clear(
   declared: tool.Declarations,
   query: effects.ClearanceQuery,
 ) -> effects.Clearance {
-  let name = query.call.name
-  case list.contains(query.configuration.active_tool_names, name) {
-    False ->
-      effects.ClearanceRefused(
-        reason: "the tool `"
-        <> name
-        <> "` is not active for this strand. The system prompt lists the "
-        <> "session's tools, and a strand may hold fewer; this one can call "
-        <> "only: "
-        <> string.join(query.configuration.active_tool_names, ", ")
-        <> ".",
-      )
-    True ->
-      case tool.declared(declared, name) {
-        Ok(declaration) ->
-          effects.Cleared(
-            effective_arguments: query.call.arguments,
-            replay: replay_policy(declaration.replay),
-          )
-        Error(Nil) ->
-          effects.ClearanceRefused(
-            reason: "the tool `" <> name <> "` is unavailable",
-          )
-      }
-  }
+  tool_table.clear(declared, query)
 }
 
 /// Runs one cleared call: a fresh `Ctx` per call, `tool.dispatch`
@@ -1799,7 +1128,8 @@ pub fn run_tool(config: Config, run: effects.ToolRun) -> effects.ToolOutcome {
         run,
         authority,
       )
-    Error(reason) -> finished(tool.failure(reason), run, config.clock)
+    Error(reason) ->
+      tool_table.finished(tool.failure(reason), run, config.clock)
   }
 }
 
@@ -1952,19 +1282,7 @@ pub fn run_workspace_tool(
       tool.dispatch(workspace.registry, ctx, run.call.name, run.arguments)
     }
   }
-  finished(outcome, run, workspace.clock)
-}
-
-// The one place a settled outcome is stamped with the time and wrapped as the
-// result message; shared by the run and the refused-to-run paths so both
-// build the same shape.
-fn finished(
-  outcome: tool.ToolOutcome,
-  run: effects.ToolRun,
-  clock: Clock,
-) -> effects.ToolOutcome {
-  let #(now, _clock) = clock.read(clock)
-  completed(outcome, run, now)
+  tool_table.finished(outcome, run, workspace.clock)
 }
 
 /// `run_tool` over the configuration a `tool_holder` keeps for the session.
@@ -2015,7 +1333,7 @@ fn holder_unavailable(
     tool_holder.TimedOut -> held <> " did not answer in time"
   }
   let #(now, _clock) = clock.read(clock)
-  completed(
+  tool_table.completed(
     tool.failure("the tool `" <> run.call.name <> "` did not run: " <> reason),
     run,
     now,
@@ -2081,7 +1399,7 @@ fn run_on_workspace(
     Ok(on_workspace) ->
       case read_authority(session, run) {
         Ok(authority) -> on_workspace(run, authority)
-        Error(reason) -> finished(tool.failure(reason), run, clock)
+        Error(reason) -> tool_table.finished(tool.failure(reason), run, clock)
       }
   }
 }
@@ -2092,24 +1410,6 @@ fn run_on_workspace(
 // at once through its monitor and never reaches it.
 const holder_deadline_ms = 5000
 
-// The one place a tool outcome becomes the effect plane's answer, shared by
-// the executed and the refused-to-run paths so both build the same shape.
-fn completed(
-  outcome: tool.ToolOutcome,
-  run: effects.ToolRun,
-  now: Int,
-) -> effects.ToolOutcome {
-  effects.ToolCompleted(
-    result: tool.to_result_message(
-      outcome,
-      tool_call_id: run.call.id,
-      tool_name: run.call.name,
-      timestamp: now,
-    ),
-    terminate: terminates(outcome.terminate),
-  )
-}
-
 /// The tool vocabulary's answer as the effect plane's frozen field.
 ///
 /// ## Examples
@@ -2119,10 +1419,7 @@ fn completed(
 /// ```
 ///
 pub fn terminates(terminate: tool.Terminate) -> Bool {
-  case terminate {
-    tool.ContinueRun -> False
-    tool.TerminateRun -> True
-  }
+  tool_table.terminates(terminate)
 }
 
 /// The per-call tool context: the caller's durable coordinates from the
@@ -2329,14 +1626,7 @@ fn run_grants(run: effects.ToolRun) -> List(Grant) {
 /// ```
 ///
 pub fn replay_still_safe(declared: tool.Declarations, name: String) -> Bool {
-  case tool.declared(declared, name) {
-    Ok(declaration) ->
-      case declaration.replay {
-        tool.Safe -> True
-        tool.Never -> False
-      }
-    Error(Nil) -> False
-  }
+  tool_table.replay_still_safe(declared, name)
 }
 
 /// The named tool's scheduling constraint, mapped from its registration.
@@ -2354,14 +1644,7 @@ pub fn execution_mode(
   declared: tool.Declarations,
   name: String,
 ) -> effects.ExecutionMode {
-  case tool.declared(declared, name) {
-    Ok(declaration) ->
-      case declaration.execution_mode {
-        tool.Exclusive -> effects.ExclusiveExecution
-        tool.Concurrent -> effects.ConcurrentExecution
-      }
-    Error(Nil) -> effects.ExclusiveExecution
-  }
+  tool_table.execution_mode(declared, name)
 }
 
 /// Maps the tool package's replay declaration onto the machine's
@@ -2374,8 +1657,5 @@ pub fn execution_mode(
 /// ```
 ///
 pub fn replay_policy(safety: tool.ReplaySafety) -> ReplayPolicy {
-  case safety {
-    tool.Never -> operation.ReplayNever
-    tool.Safe -> operation.ReplaySafe
-  }
+  tool_table.replay_policy(safety)
 }
