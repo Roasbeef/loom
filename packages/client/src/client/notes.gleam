@@ -56,6 +56,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import harness/session_read
 import runtime/effects
 import session/session.{type Session}
 import storage/storage
@@ -144,14 +145,9 @@ fn message_for(
 /// ```
 ///
 pub fn strand_of(session: Session, operation: OpId) -> Result(String, Nil) {
-  case session.op_meta(session, operation) {
-    Ok(Some(session.Cell(value: meta, ..))) -> Ok(meta.strand)
-
-    // No metadata, or a store that would not answer. A run is never held
-    // up for a digest.
-    Ok(None) -> Error(Nil)
-    Error(_unreadable) -> Error(Nil)
-  }
+  // The read itself is `harness`'s, shared with request admission, so the
+  // digest and the routing resolve a strand the same way.
+  session_read.strand_of(session, operation)
 }
 
 /// The rendered digest for one strand, or `None` when it has no notes.

@@ -14,6 +14,7 @@ machine = { path = "../machine" }
 prompt = { path = "../prompt" }
 events = { path = "../events" }
 runtime = { path = "../runtime" }
+harness = { path = "../harness" }
 broker = { path = "../broker" }
 provider = { path = "../provider" }
 tools = { path = "../tools" }

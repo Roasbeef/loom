@@ -43,6 +43,7 @@ packages = [
   { name = "gose", version = "2.2.0", build_tools = ["gleam"], requirements = ["gleam_json", "gleam_stdlib", "gleam_time", "kryptos", "splitter"], otp_app = "gose", source = "hex", outer_checksum = "D46667C0A6634A38F0C5D90B5F6BA9D68107F90EA0950EEBC95C2ADC41DDA118" },
   { name = "gramps", version = "6.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/gramps.git", commit = "a37a8ae3fe2531375b49b865c155eb2987d4d22a" },
   { name = "gun", version = "2.6.0", build_tools = ["make", "rebar3"], requirements = ["cowlib"], otp_app = "gun", source = "hex", outer_checksum = "69BB957F4BD6C475B5714460FD65C26FC7EB85760AA64B74754DE36CE5CCED7D" },
+  { name = "harness", version = "0.1.0", build_tools = ["gleam"], requirements = ["broker", "core", "gleam_erlang", "gleam_stdlib", "machine", "provider", "runtime", "session", "storage", "tools"], source = "local", path = "../harness" },
   { name = "horus", version = "0.5.1", build_tools = ["rebar3", "mix"], requirements = [], otp_app = "horus", source = "hex", outer_checksum = "A19C89D2580796FF38D4BA9A47A3DBE0E83E0464814B2A621FD8114C1077E8A7" },
   { name = "host", version = "0.2.0", build_tools = ["gleam"], requirements = ["core", "envoy", "filepath", "glaml", "gleam_crypto", "gleam_erlang", "gleam_http", "gleam_regexp", "gleam_stdlib", "gleam_time", "simplifile", "stratus", "weft"], source = "local", path = "../host" },
   { name = "houdini", version = "1.2.1", build_tools = ["gleam"], requirements = [], otp_app = "houdini", source = "hex", outer_checksum = "6F8AC2F12974567FB744BEA66AC93CEB76AAEA19AD28564623F76CDA9BC26A85" },
@@ -104,6 +105,7 @@ gleam_time = { version = ">= 1.0.0 and < 2.0.0" }
 gleamy_bench = { version = ">= 0.6.0 and < 1.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 gose = { version = "== 2.2.0" }
+harness = { path = "../harness" }
 host = { path = "../host" }
 khepri = { version = "== 0.19.3" }
 lsp = { path = "../lsp" }
