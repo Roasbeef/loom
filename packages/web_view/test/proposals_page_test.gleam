@@ -263,14 +263,19 @@ pub fn an_append_draws_only_added_lines_test() {
 pub fn many_rows_keep_their_order_and_only_a_pending_row_has_buttons_test() {
   let #(model, _) = owner(Listed(many()))
   let html = drawn(model)
-  let assert [_, after_three] = string.split(html, "prop-0000000003")
+  let assert Ok(#(_, section)) = string.split_once(html, "id=\"proposals\"")
+    as "the Session pane holds the proposals section"
+  let assert [_, after_three] = string.split(section, "prop-0000000003")
+    as "prop-0000000003 appears once in the proposals section"
   let assert [three_to_two, after_two] =
     string.split(after_three, "prop-0000000002")
+    as "prop-0000000002 follows prop-0000000003"
   let assert [two_to_one, _] = string.split(after_two, "prop-0000000001")
+    as "prop-0000000001 follows prop-0000000002"
   assert string.contains(three_to_two, "Approve</button>")
   assert !string.contains(two_to_one, "Approve</button>")
   assert !string.contains(two_to_one, "Reject</button>")
-  assert list.length(string.split(html, "Approve</button>")) == 2
+  assert list.length(string.split(section, "Approve</button>")) == 2
 }
 
 pub fn a_stale_row_says_why_nothing_was_written_test() {
@@ -571,4 +576,25 @@ pub fn the_pane_is_the_eighth_child_of_the_session_pane_test() {
       string.starts_with(key, component.peers_path)
     })
     == []
+}
+
+pub fn pending_proposals_render_as_inline_cards_in_the_dock_above_the_composer_test() {
+  let #(model, _) = owner(Listed(many()))
+  let html = drawn(model)
+  let assert Ok(#(_, from_dock)) =
+    string.split_once(html, "<footer class=\"dock\">")
+    as "the page draws a dock"
+  let assert Ok(#(dock, _)) = string.split_once(from_dock, "</footer>")
+    as "the dock is closed"
+  let assert Ok(#(above_composer, _)) =
+    string.split_once(dock, "class=\"composer\"")
+    as "the dock holds the composer"
+  assert string.contains(above_composer, "class=\"approvals\"")
+  assert string.contains(above_composer, "proposal-card")
+  assert string.contains(above_composer, "prop-0000000003")
+  assert string.contains(above_composer, "Keep commits small.")
+  assert string.contains(above_composer, "Reject rule")
+  assert string.contains(above_composer, "Approve rule…")
+  assert !string.contains(above_composer, "prop-0000000002")
+  assert !string.contains(above_composer, "prop-0000000001")
 }
