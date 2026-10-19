@@ -301,8 +301,8 @@ pub fn the_cards_show_the_state_the_daemon_found_test() {
 }
 
 // While the daemon's read is out a card can be chosen, because a state is advice
-// and its absence blocks nothing, but the workspaces it registered are not known
-// yet, so the form says so and offers only Cancel.
+// and its absence blocks nothing. The workspaces it registered are not known
+// yet, so the form says so and takes the name as typed text.
 pub fn a_card_is_choosable_before_the_read_arrives_test() {
   let asked = process.new_subject()
   let start = hearing([], ["box"], [], pending, asked)
@@ -310,10 +310,17 @@ pub fn a_card_is_choosable_before_the_read_arrives_test() {
   assert string.contains(drawn(model), "not checked")
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
   let html = drawn(model)
-  assert string.contains(html, "Looking up the workspaces")
-  assert !string.contains(html, "name=\"workspace\"")
-  assert !string.contains(html, "Create session")
-  assert string.contains(html, "Cancel")
+  assert string.contains(
+    html,
+    "box has not reported its workspaces; type the name it serves.",
+  )
+  assert string.contains(
+    html,
+    "placeholder=\"Workspace name, for example app\"",
+  )
+  assert !string.contains(html, "<select name=\"workspace\"")
+  assert string.contains(html, "Create session")
+  assert string.contains(html, "name=\"name\"")
 }
 
 // Choosing an executor swaps the folder field for the workspaces it registered,
@@ -329,6 +336,8 @@ pub fn choosing_an_executor_offers_its_workspaces_test() {
   assert string.contains(html, "name=\"workspace\"")
   assert string.contains(html, "<option value=\"0\">app</option>")
   assert string.contains(html, "<option value=\"1\">tools</option>")
+  assert !string.contains(html, "Workspace name, for example")
+  assert !string.contains(html, "has not reported")
   assert !string.contains(html, "name=\"path\"")
   assert !string.contains(html, "name=\"shareable\"")
   assert string.contains(
@@ -339,8 +348,12 @@ pub fn choosing_an_executor_offers_its_workspaces_test() {
 
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("gpu")))
   let html = drawn(model)
-  assert !string.contains(html, "name=\"workspace\"")
-  assert string.contains(html, "could not reach this executor")
+  assert string.contains(
+    html,
+    "gpu has not reported its workspaces; type the name it serves.",
+  )
+  assert !string.contains(html, "<select name=\"workspace\"")
+  assert string.contains(html, "Create session")
   assert string.contains(html, "Commands run on gpu; the conversation")
   assert the_asked(asked) == Error(Nil)
 
@@ -348,7 +361,69 @@ pub fn choosing_an_executor_offers_its_workspaces_test() {
   let model = run(model, home.ChoosingHere)
   let html = drawn(model)
   assert string.contains(html, "name=\"path\"")
-  assert !string.contains(html, "could not reach")
+  assert !string.contains(html, "has not reported")
+}
+
+// A place whose list is unknown submits the typed name: the creation names the
+// executor and exactly the text the person typed, trimmed.
+pub fn an_unknown_list_submits_the_typed_name_test() {
+  let asked = process.new_subject()
+  let model = opened(executing([], ["box"], asked))
+  let model = run(model, home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
+  let html = drawn(model)
+  assert string.contains(html, "name=\"workspace\"")
+  let _ =
+    run(model, home.CreatingRemote("served", "review", creations.default_roles))
+  assert the_asked(asked)
+    == Ok(#(
+      creations.Registered("box", "served"),
+      "review",
+      creations.Shareable,
+      creations.default_roles,
+    ))
+}
+
+// The daemon's refusal of a name the executor does not serve comes back on the
+// form, in the executor's own words, and the typed field is still there to
+// correct.
+pub fn a_refusal_for_an_unknown_name_renders_on_the_form_test() {
+  let asked = process.new_subject()
+  let model = opened(executing([], ["box"], asked))
+  let model = run(model, home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
+  let model =
+    run(model, home.CreatingRemote("nope", "", creations.default_roles))
+  let model =
+    run(model, home.Created(creations.Declined(creations.InvalidWorkspaceName)))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    creations.reason_words(creations.InvalidWorkspaceName),
+  )
+  assert string.contains(
+    html,
+    "placeholder=\"Workspace name, for example app\"",
+  )
+  assert string.contains(html, "Create session")
+
+  // A refusal that arrives as a start failure names the executor's own words.
+  let model =
+    run(model, home.CreatingRemote("nope", "", creations.default_roles))
+  let model =
+    run(
+      model,
+      home.Created(creations.Unstarted(
+        why: Some("executor serves no workspace named `nope`"),
+        remains: creations.Dropped,
+      )),
+    )
+  let html = drawn(model)
+  assert string.contains(html, "executor serves no workspace named")
+  assert string.contains(
+    html,
+    "placeholder=\"Workspace name, for example app\"",
+  )
 }
 
 // A pool offers the workspaces every executor it could use has registered, and
@@ -581,8 +656,18 @@ pub fn the_fields_decode_totally_test() {
   assert fields([#("workspace", "2"), #("name", "")]) == Error(Nil)
   assert fields([#("workspace", "-1"), #("name", "")]) == Error(Nil)
   assert fields([#("workspace", ""), #("name", "")]) == Error(Nil)
-  assert create.remote_fields([#("workspace", "0"), #("name", "")], [])
-    == Error(Nil)
+
+  // With no list the value is typed text, held to the grammar the daemon
+  // applies to a registered name (`creations.registered_name`).
+  let typed = fn(text) {
+    create.remote_fields([#("workspace", text), #("name", "")], [])
+  }
+  assert typed(" app ") == Ok(#("app", ""))
+  assert typed("") == Error(Nil)
+  assert typed("/work/app") == Error(Nil)
+  assert typed("a/b") == Error(Nil)
+  assert typed("a\nb") == Error(Nil)
+  assert typed(string.repeat("a", 129)) == Error(Nil)
 
   // A missing, repeated or extra field refuses the event.
   assert fields([#("workspace", "0")]) == Error(Nil)

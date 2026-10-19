@@ -64,10 +64,12 @@
 //// The card a person chooses is the page's own state (`Chosen`), not a field of
 //// the form. For an executor or a pool the folder field gives way to a select of
 //// the workspaces that place registered, drawn from its report and decoded from
-//// positions like the profile select, so the browser can name only a workspace
-//// the page drew and the daemon's "serves no workspace" refusal is a backstop the
-//// form cannot reach. A place whose workspaces are not known (it is down, or the
-//// read has not answered) draws a sentence saying so and no form. There is no
+//// positions like the profile select, so with a list the browser can name only a
+//// workspace the page drew and the daemon's "serves no workspace" refusal is a
+//// backstop the form cannot reach. A place whose workspaces are not known (it is
+//// down, not heard, or the read has not answered) says so in a note and takes the
+//// name as typed text instead, held to `creations.registered_name`; the daemon's
+//// refusal of a name it does not serve returns on the form. There is no
 //// Shareable box there, because the daemon makes a session on an executor or in
 //// a pool session-only whatever the form says. The placement is not a field of
 //// the form: a card's button sends the choice it was drawn for, built by the
@@ -590,22 +592,6 @@ fn platform_words(cards: Cards, name: String) -> String {
   }
 }
 
-// The row of buttons while the form has nothing to submit: the only button is
-// the one that closes it.
-fn only_cancel(cancel: message, fields: Fields) -> Element(message) {
-  html.div([attribute.class("home-create-actions")], [
-    html.button(
-      [
-        attribute.type_("button"),
-        attribute.class("home-create-cancel"),
-        event.on_click(cancel),
-        ..locks(fields)
-      ],
-      [html.text("Cancel")],
-    ),
-  ])
-}
-
 // Whether a card is the chosen one, so the card can mark itself.
 type Mark {
   Marked
@@ -836,8 +822,10 @@ fn card(
 // workspaces that place reported, and the optional session name. There is no
 // Shareable box, because the daemon makes a session on an executor or in a pool
 // session-only (its workspace aggregate is keyed by a path on the daemon's
-// host), which is what Shareable asks for. A place that reported no workspace
-// has nothing to submit, so the form says why and offers only Cancel.
+// host), which is what Shareable asks for. A place that has reported no
+// workspace (still being read, down, not heard, or none registered) offers a
+// text field for the name it serves instead, under a note saying so: the
+// daemon's refusal of a name the executor does not serve is the backstop.
 fn registered(
   cards: Cards,
   choice: Choice,
@@ -847,66 +835,65 @@ fn registered(
   profiles: List(String),
   models: List(String),
 ) -> Element(message) {
-  case placements.workspaces(cards, choice) {
-    [] ->
-      html.div([attribute.class("home-create")], [
+  let workspaces = placements.workspaces(cards, choice)
+  html.form(
+    [
+      attribute.class("home-create"),
+      attribute.aria_label("New session"),
+      event.on("submit", remote_submitted(submit, workspaces, profiles, models))
+        |> event.prevent_default,
+    ],
+    [
+      case workspaces {
+        [] -> typed_workspace_field(fields)
+        _ -> workspace_field(fields, workspaces)
+      },
+      html.p([attribute.class("home-create-hint")], [
+        html.text(case workspaces {
+          [] -> unknown_words(choice)
+          _ ->
+            "The workspaces registered there. A workspace is a name, not a folder on this machine."
+        }),
+      ]),
+      name_field(fields),
+      ..list.append(role_fields(fields, profiles, models), [
         html.p([attribute.class("home-create-hint")], [
-          html.text(unknown_words(cards, choice)),
+          html.text("Left blank, the session is named for the workspace."),
         ]),
-        only_cancel(cancel, fields),
+        actions(fields, cancel),
       ])
-    workspaces ->
-      html.form(
-        [
-          attribute.class("home-create"),
-          attribute.aria_label("New session"),
-          event.on(
-            "submit",
-            remote_submitted(submit, workspaces, profiles, models),
-          )
-            |> event.prevent_default,
-        ],
-        [
-          workspace_field(fields, workspaces),
-          html.p([attribute.class("home-create-hint")], [
-            html.text(
-              "The workspaces registered there. A workspace is a name, not a folder on this machine.",
-            ),
-          ]),
-          name_field(fields),
-          ..list.append(role_fields(fields, profiles, models), [
-            html.p([attribute.class("home-create-hint")], [
-              html.text("Left blank, the session is named for the workspace."),
-            ]),
-            actions(fields, cancel),
-          ])
-        ],
-      )
+    ],
+  )
+}
+
+// Why the form asks for a typed name: the place has not reported its
+// workspaces. The name of the executor or pool is a text node.
+fn unknown_words(choice: Choice) -> String {
+  case choice {
+    placements.OnExecutor(name:) ->
+      name <> " has not reported its workspaces; type the name it serves."
+    placements.InPool(name:) ->
+      "No workspace is known to be served by every executor in pool "
+      <> name
+      <> "; type the name they serve."
   }
 }
 
-// Why a place offers no workspace: the daemon is still asking, the executor is
-// down or was not heard, or what it reported has none to offer.
-fn unknown_words(cards: Cards, choice: Choice) -> String {
-  case cards.readiness, choice {
-    placements.Checking, _ -> "Looking up the workspaces registered there."
-    placements.Checked, placements.OnExecutor(name:) ->
-      case
-        list.find(cards.placements.executors, fn(each) { each.name == name })
-      {
-        Ok(placements.Executor(
-          report: Some(placements.Report(state: placements.Down, ..)),
-          ..,
-        ))
-        | Ok(placements.Executor(report: None, ..))
-        | Error(Nil) ->
-          "The daemon could not reach this executor, so its workspaces are not known. Choose another machine, or try again when it is back."
-        Ok(_) ->
-          "This executor has no workspace registered. Register one on that machine, then open this form again."
-      }
-    placements.Checked, placements.InPool(_) ->
-      "No workspace is registered on every executor that could take the session. Register one on those machines, or choose an executor."
-  }
+// The text field for a workspace name the page could not list. The name is the
+// browser's text, judged by `creations.registered_name` when the form is read
+// and again by the daemon.
+fn typed_workspace_field(fields: Fields) -> Element(message) {
+  html.input([
+    attribute.type_("text"),
+    attribute.name("workspace"),
+    attribute.class("home-create-path"),
+    attribute.placeholder("Workspace name, for example app"),
+    attribute.aria_label("Workspace name"),
+    attribute.attribute("maxlength", "128"),
+    attribute.autocomplete("off"),
+    attribute.autofocus(True),
+    ..locks(fields)
+  ])
 }
 
 fn workspace_field(
@@ -1319,9 +1306,11 @@ fn at(position: String, offered: List(String)) -> Result(String, Nil) {
 }
 
 /// The workspace name and session name a submitted registered-workspace form's
-/// fields stand for: exactly one `workspace`, whose value is the position of one
-/// of the workspaces the form offered and is turned back into the name here,
-/// exactly one `name`, and no other field. The executor or pool is not a field:
+/// fields stand for: exactly one `workspace`, exactly one `name`, and no other
+/// field. When the form offered workspaces the value is the position of one of
+/// them and is turned back into the name here. When it offered none the value is
+/// the typed name, which must satisfy `creations.registered_name` (the grammar
+/// the daemon applies) and is returned trimmed. The executor or pool is not a field:
 /// it is the card the person chose, which the page recorded, so a forged
 /// `executor` or `pool` field is refused with any other extra one. The browser
 /// can name only a workspace the page drew, and the daemon judges it again.
@@ -1338,6 +1327,10 @@ fn at(position: String, offered: List(String)) -> Result(String, Nil) {
 ///   == Error(Nil)
 /// assert create.remote_fields([#("workspace", "3"), #("name", "")], ["app"])
 ///   == Error(Nil)
+/// assert create.remote_fields([#("workspace", " app "), #("name", "")], [])
+///   == Ok(#("app", ""))
+/// assert create.remote_fields([#("workspace", "/w/app"), #("name", "")], [])
+///   == Error(Nil)
 /// ```
 pub fn remote_fields(
   listed: List(#(String, String)),
@@ -1346,9 +1339,13 @@ pub fn remote_fields(
   let chosen = list.filter(listed, fn(field) { field.0 == "workspace" })
   let names = list.filter(listed, fn(field) { field.0 == "name" })
   case chosen, names, list.length(listed) {
-    [#(_, position)], [#(_, name)], 2 ->
-      at(position, workspaces)
-      |> result.map(fn(workspace) { #(workspace, name) })
+    [#(_, text)], [#(_, name)], 2 -> {
+      let found = case workspaces {
+        [] -> creations.registered_name(text)
+        _ -> at(text, workspaces)
+      }
+      result.map(found, fn(workspace) { #(workspace, name) })
+    }
     _, _, _ -> Error(Nil)
   }
 }
