@@ -1,151 +1,122 @@
-// Deterministic adapter tests, not a substitute for the real browser drive.
-// The vendor is replaced by a controllable promise so superseded renders and
-// parser failures can be tested without npm dependencies or a browser DOM.
+// These checks cover only the minimal foreign binding. Request validation,
+// queueing, SVG policy and publication regressions run as Gleam controller tests.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const source = readFileSync(new URL('./renderer.js', import.meta.url), 'utf8');
-assert.equal(source.split('import mermaid from "mermaid";').length, 2);
-const adapter = source.replace('import mermaid from "mermaid";', '');
+const binding = readFileSync(new URL('../../web_mermaid/src/web_mermaid/internal/dom.mjs', import.meta.url), 'utf8');
+const bootstrap = readFileSync(new URL('./renderer.js', import.meta.url), 'utf8');
+const names = [...binding.matchAll(/export function (\w+)/g)].map(match => match[1]);
+const executable = binding.replace(/^import .*;\n/m, '').replaceAll('export function ', 'function ') +
+  '\nglobalThis.bridge = {' + names.join(',') + '};';
 let passed = 0;
 
-function fixture() {
+class Ok { constructor(value) { this.value = value; } }
+class ErrorResult { constructor(value) { this.value = value; } }
+
+function fixture(overrides = {}) {
   const sent = [];
-  const pending = [];
-  const configurations = [];
-  let receive;
-  let resize;
-  const parent = { postMessage: text => sent.push(JSON.parse(text)) };
-  const host = {
-    children: [],
-    replaceChildren(...children) { this.children = children; },
-    querySelector() { return this.children[0] || null; },
+  const listeners = [];
+  const parent = { postMessage: (text, origin) => sent.push({text, origin}) };
+  const document = {documentElement: {}, importNode: node => ({copied: node})};
+  const context = {
+    Ok, Error: ErrorResult, toList: Array.from,
+    document, window: {parent, addEventListener: (name, handler) => listeners.push({name, handler})},
+    DOMParser: class { parseFromString(text, type) { return {text, type}; } },
+    ResizeObserver: class { constructor(callback) { this.callback = callback; } observe(node) { this.node = node; } },
+    ...overrides,
   };
-  class Parser {
-    parseFromString(markup) {
-      const unsafe = /<(a|foreignObject|script|image)(\s|>)/.test(markup);
-      const root = {
-        localName: markup.startsWith('<svg') ? 'svg' : 'html',
-        attributes: markup.includes('external-href') ? [{name: 'href', value:'https://not-used.invalid'}] : [],
-        querySelector: () => unsafe ? {} : null,
-        querySelectorAll: () => [],
-        setAttribute() {},
-        style: {},
-        getBoundingClientRect: () => ({height: 300}),
-      };
-      return {documentElement: root, querySelector: () => null};
-    }
-  }
-  const mermaid = {
-    initialize: config => configurations.push(config),
-    render: (id, text) => new Promise((resolve, reject) => pending.push({id, text, resolve, reject})),
-  };
-  vm.runInNewContext(adapter, {
-    mermaid, parent, DOMParser: Parser,
-    document: { getElementById: () => host, documentElement: {}, importNode: node => node },
-    window: { addEventListener: (_event, handler) => { receive = handler; } },
-    ResizeObserver: class { constructor(handler) { resize = handler; } observe() {} },
-  });
-  return {
-    sent, pending, configurations, host,
-    request(revision, text = 'flowchart LR\nA-->B', theme = 'dark', sender = parent) {
-      receive({source: sender, data: JSON.stringify({source: text, theme, revision})});
-    },
-    raw(data, sender = parent) { receive({source: sender, data}); },
-    resize(width) { resize([{contentRect: {width}}]); },
-  };
+  vm.runInNewContext(executable, context);
+  return {bridge: context.bridge, sent, listeners, parent, document};
 }
 
-async function settle() {
-  // Cross-context promise continuations run before this turn of the host loop.
-  await new Promise(resolve => setTimeout(resolve, 0));
+async function check(name, body) {
+  await body();
+  passed++;
+  console.log('ok ' + name);
 }
 
-function test(name, run) {
-  return Promise.resolve().then(run).then(() => { passed++; console.log('ok ' + name); });
-}
-
-await test('ready handshake and malformed or foreign requests do not render', () => {
-  const f = fixture();
-  assert.deepEqual(f.sent, [{kind:'ready'}]);
-  for (const data of [null, {}, 'not JSON', '{}', 'null', '[]']) f.raw(data);
-  f.request(1, 'flowchart LR\nA-->B', 'dark', {});
-  f.request(0);
-  f.request(-1);
-  f.request(1.5);
-  f.request(1, 'flowchart LR\nA-->B', 'forest');
-  f.request(1, 'x'.repeat(32001));
-  assert.equal(f.pending.length, 0);
-  assert.deepEqual(f.sent, [{kind:'ready'}]);
+await check('bootstrap injects a vendor but owns no controller state', () => {
+  assert.match(bootstrap, /import \{ start \} from .*web_mermaid\.mjs/);
+  assert.match(bootstrap, /start\(mermaid\)/);
+  assert.doesNotMatch(bootstrap, /\b(let|var|initialize|render|addEventListener|DOMParser)\s*[=(]/);
 });
 
-await test('configuration and navigation directives are refused before vendor parsing', () => {
-  const f = fixture();
-  const refused = [
-    '%%{init: {"securityLevel":"loose"}}%%\nflowchart LR\nA-->B',
-    '---\nconfig:\n  theme: forest\n---\nflowchart LR\nA-->B',
-    '  ---\n  config:\n    theme: forest\n  ---\nflowchart LR\nA-->B',
-    '\t---\nconfig:\n  theme: forest\n\t---\nflowchart LR\nA-->B',
-    'flowchart LR\n A-->B\n click A "https://not-used.invalid"',
-  ];
-  refused.forEach((text, index) => f.request(index + 1, text));
-  assert.equal(f.pending.length, 0);
-  assert.deepEqual(f.sent.slice(1), refused.map((_, index) => ({kind:'failed', revision:index + 1})));
+await check('configuration conversion and XML exceptions become typed refusal', () => {
+  const {bridge} = fixture();
+  let actual;
+  assert.ok(bridge.initialize({initialize: config => { actual = config; }}, '{"theme":"dark"}') instanceof Ok);
+  assert.equal(actual.theme, 'dark');
+  assert.ok(bridge.initialize({initialize() { throw new Error('private diagnostic'); }}, '{}') instanceof ErrorResult);
+  assert.ok(bridge.initialize({}, 'invalid JSON') instanceof ErrorResult);
+  const parsed = bridge.parse_svg('<not-svg/>');
+  assert.ok(parsed instanceof Ok);
+  assert.equal(parsed.value.type, 'image/svg+xml');
+  const failing = fixture({DOMParser: class { parseFromString() { throw new Error('private diagnostic'); } }});
+  assert.ok(failing.bridge.parse_svg('x') instanceof ErrorResult);
 });
 
-await test('only the newest queued revision renders and publishes', async () => {
-  const f = fixture();
-  f.request(1, 'flowchart LR\nA-->Old');
-  f.request(2, 'flowchart LR\nA-->Skipped');
-  f.request(3, 'flowchart LR\nA-->Latest');
-  assert.equal(f.pending.length, 1);
-  f.pending[0].resolve({svg:'<svg></svg>'});
-  await settle();
-  assert.equal(f.pending.length, 2);
-  assert.match(f.pending[1].text, /Latest/);
-  assert.equal(f.sent.length, 1);
-  f.pending[1].resolve({svg:'<svg></svg>'});
-  await settle();
-  assert.deepEqual(f.sent[1], {kind:'rendered', revision:3, height:300});
-  f.request(3);
-  assert.equal(f.pending.length, 2);
-  const config = f.configurations.at(-1);
-  assert.equal(config.securityLevel, 'strict');
-  assert.equal(config.startOnLoad, false);
-  assert.equal(config.htmlLabels, false);
-  assert.equal(config.flowchart.htmlLabels, false);
-  assert.equal(config.maxTextSize, 32000);
-  assert.equal(config.maxEdges, 250);
+await check('vendor promise reports SVG exactly once without invoking callbacks', async () => {
+  const {bridge} = fixture();
+  const host = {};
+  let calls = 0;
+  let bound = false;
+  const vendor = {render(id, source, target) {
+    assert.equal(id, 'id');
+    assert.equal(source, 'source');
+    assert.equal(target, host);
+    return Promise.resolve({svg:'<svg/>', bindFunctions() { bound = true; }});
+  }};
+  const outcome = await new Promise(resolve => bridge.render(vendor, 'id', 'source', host, result => {
+    calls++;
+    resolve(result);
+  }));
+  assert.ok(outcome instanceof Ok);
+  assert.equal(outcome.value, '<svg/>');
+  assert.equal(calls, 1);
+  assert.equal(bound, false);
 });
 
-await test('unsafe generated SVG is refused without forwarding markup', async () => {
-  for (const svg of ['<html></html>', '<svg><a href="https://not-used.invalid"></a></svg>', '<svg><foreignObject></foreignObject></svg>', '<svg><script></script></svg>', '<svg><image href="x"></image></svg>', '<svg external-href></svg>']) {
-    const f = fixture();
-    f.request(1);
-    f.pending[0].resolve({svg});
-    await settle();
-    assert.deepEqual(f.sent.at(-1), {kind:'failed', revision:1});
-    assert.equal(f.host.children.length, 0);
+await check('sync throws, rejection and malformed vendor output do not leak diagnostics', async () => {
+  const {bridge} = fixture();
+  for (const vendor of [
+    {render() { throw new Error('private diagnostic'); }},
+    {render() { return Promise.reject(new Error('private diagnostic')); }},
+    {render() { return Promise.resolve(null); }},
+    {render() { return Promise.resolve({svg: false}); }},
+  ]) {
+    let calls = 0;
+    const outcome = await new Promise(resolve => bridge.render(vendor, 'id', 'source', {}, result => {
+      calls++;
+      resolve(result);
+    }));
+    assert.ok(outcome instanceof ErrorResult);
+    assert.equal(outcome.value, undefined);
+    assert.equal(calls, 1);
   }
 });
 
-await test('parser errors are fixed status messages and width changes do not loop', async () => {
-  const f = fixture();
-  f.request(1);
-  f.pending[0].reject(new Error('private source and vendor diagnostic'));
-  await settle();
-  assert.deepEqual(f.sent.at(-1), {kind:'failed', revision:1});
-  f.request(2);
-  f.pending[1].resolve({svg:'<svg></svg>'});
-  await settle();
-  f.resize(600);
-  const count = f.sent.length;
-  f.resize(600);
-  assert.equal(f.sent.length, count);
-  f.resize(400);
-  assert.deepEqual(f.sent.at(-1), {kind:'rendered', revision:2, height:300});
-  assert.equal(f.sent.length, count + 1);
+await check('DOM primitives preserve identity and do not choose message or SVG policy', () => {
+  const {bridge, parent, listeners, sent} = fixture();
+  assert.equal(bridge.is_parent_message({source: parent}), true);
+  assert.equal(bridge.is_parent_message({source: {}}), false);
+  const text = '{"kind":"ready"}';
+  bridge.send_text(text);
+  assert.equal(sent[0].text, text);
+  assert.equal(sent[0].origin, '*');
+  const handler = () => {};
+  bridge.listen_messages(handler);
+  assert.equal(listeners[0].handler, handler);
+  assert.equal(listeners[0].name, 'message');
+  assert.equal(bridge.message_data({data: 42}), 42);
+  assert.ok(bridge.query_selector({querySelector() { return null; }}, '*') instanceof ErrorResult);
+  const attribute = {name:'href', value:'https://not-followed.invalid'};
+  assert.equal(bridge.attribute_name(attribute), 'href');
+  assert.equal(bridge.attribute_value(attribute), 'https://not-followed.invalid');
+  // Rejection of this external reference belongs to the Gleam SVG policy.
+  const root = {};
+  assert.equal(bridge.document_root({documentElement: root}).value, root);
+  assert.ok(bridge.document_root({documentElement: null}) instanceof ErrorResult);
 });
 
-console.log(`${passed} renderer adapter checks passed`);
+console.log(`${passed} renderer FFI checks passed`);

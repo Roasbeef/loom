@@ -1381,8 +1381,14 @@ bundle and parses generated SVG; its HTTP sandbox denies same-origin access,
 and its separate content policy denies network resources and forms. No SVG or
 vendor diagnostic is sent back to the session page.
 
-This is not permission to add HTML-writing calls to `internal/dom.mjs`, import
-Mermaid into the session bundle, or weaken its `script-src`/`style-src`. The
+The frame controller is also Gleam, in the separate internal `web_mermaid`
+program. Its Lustre application renders an empty view into a hidden mount
+beside the vendor-owned diagram node. Queueing and policy are pure, and its
+runtime interprets ordered effects over frame-only foreign bindings.
+
+This is not permission to add HTML-writing calls to the session client's
+`internal/dom.mjs`, import Mermaid into the session bundle, or weaken its
+`script-src`/`style-src`. The
 only frame replies accepted are fixed status words, revision and bounded
 height, after checking the exact frame window. See
 [protocol-change/091](../protocol-change/091-isolated-mermaid-diagrams.md) for

@@ -73,6 +73,9 @@ mermaid_inputs() {
   echo "$client/mermaid/package.json"
   echo "$client/mermaid/package-lock.json"
   echo "$client/mermaid/renderer.js"
+  echo packages/web_mermaid/gleam.toml
+  echo packages/web_mermaid/manifest.toml
+  find packages/web_mermaid/src \( -name '*.gleam' -o -name '*.mjs' \) | LC_ALL=C sort
 }
 
 # The copied files: the scripts and the favicon.
@@ -209,6 +212,7 @@ build() {
 	stamp "$scratch/web_client.css" "$static/web_client.css" stylesheet_inputs \
 		"The web view's stylesheet"
 	mkdir -p "$client/build"
+	(cd packages/web_mermaid && gleam build --warnings-as-errors)
 	(cd "$client/mermaid" && npm ci --ignore-scripts --no-audit --no-fund)
 
 	# Reuse the platform binary whose version and hash Lustre just verified.

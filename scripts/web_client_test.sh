@@ -29,6 +29,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+package=${1:-web_client}
+case "$package" in
+web_client | web_mermaid) ;;
+*) echo "unknown browser package: $package" >&2; exit 2 ;;
+esac
+
 runtime=""
 for candidate in node bun deno; do
 	if command -v "$candidate" >/dev/null 2>&1; then
@@ -42,14 +48,16 @@ if [ -z "$runtime" ]; then
 	exit 0
 fi
 
-cd packages/web_client
+cd "packages/$package"
 
 # The isolated renderer's adapter is tested with a controlled DOM and vendor
 # promise. It reads only source files, not installed npm dependencies.
-case "$runtime" in
-node | bun) "$runtime" mermaid/renderer_test.mjs ;;
-deno) deno run --allow-read mermaid/renderer_test.mjs ;;
-esac
+if [ "$package" = web_client ]; then
+	case "$runtime" in
+	node | bun) "$runtime" mermaid/renderer_test.mjs ;;
+	deno) deno run --allow-read mermaid/renderer_test.mjs ;;
+	esac
+fi
 
 python3 ../../scripts/with_timeout.py 600 -- \
 	gleam test --target javascript --runtime "$runtime"

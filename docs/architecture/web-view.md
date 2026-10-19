@@ -1988,8 +1988,16 @@ sandbox and content policy. Its response admits its own classic bundled
 script and inline diagram styles, but no network-backed resources or forms.
 No SVG returns to the parent. `ui_http` and `ui_assets` extend the closed asset
 table; `server` replaces the ordinary page policy only for the frame document.
+The frame's internal `web_mermaid` program is Gleam: a pure controller returns
+ordered effects for its runtime to interpret over minimal DOM/vendor bindings.
+Its empty Lustre view mounts separately from vendor SVG, so updates never
+reconcile away a diagram. Request policy, Drawing/Checking stages, latest-only
+queueing, SVG policy and reply encoding contain no handwritten JS. The npm
+bootstrap only injects the pinned vendor. Neither this program nor its FFI is
+a dependency of the session client.
+
 The generated renderer has its own offline source/lock/body digest gate in
-`scripts/web_assets.sh`. The session bundle's no-markup DOM binding is unchanged.
+`scripts/web_assets.sh`, including the frame program's Gleam sources and lock. The session bundle's no-markup DOM binding is unchanged.
 
 The renderer intentionally refuses configuration and navigation directives.
 A native source disclosure and explicit Copy source action remain available

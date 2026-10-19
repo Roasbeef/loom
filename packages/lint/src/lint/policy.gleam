@@ -295,12 +295,15 @@ pub type Wall {
   )
 }
 
-/// The walled packages. `web_client` is the one: its tests run on Node, Bun
+/// The browser packages' pure tests run on Node, Bun
 /// or Deno, and anything that loads `lustre`'s client runtime or the
 /// package's DOM bindings (`web_client/internal`) throws on a Node without a
 /// global `CustomEvent` before the first test runs. `lint/test_imports`
 /// carries the argument. Data rather than a `case` for the reason
 /// `portable_packages` is: the tests can enumerate it.
 pub fn import_walls() -> List(Wall) {
-  [Wall(package: "web_client", forbidden: ["lustre", "web_client/internal"])]
+  [
+    Wall(package: "web_client", forbidden: ["lustre", "web_client/internal"]),
+    Wall(package: "web_mermaid", forbidden: ["lustre", "web_mermaid/internal"]),
+  ]
 }
