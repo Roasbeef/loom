@@ -399,6 +399,7 @@ pub fn workspace_tools(
         None -> []
         Some(available) -> [job_tool.scheme(available)]
       },
+      [fs.blob_scheme()],
     ])
   list.flatten([
     with_code_mode_hints(

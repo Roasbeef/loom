@@ -19,6 +19,7 @@ import client/goalcommand
 import client/grants
 import client/memory_config
 import client/memory_overview
+import client/notice
 import client/permissions
 import client/profile_switch
 import client/proposals
@@ -2822,6 +2823,31 @@ pub fn delayed_approve_cannot_answer_reopened_same_action_test() {
     as "an old approval cannot answer the reopened question"
   assert stored(harness, "same-question").status == durable.Pending
   assert stored(harness, "same-question").origin == None
+}
+
+pub fn gateway_approve_wakes_strand_when_escalation_detached_async_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let action = durable.Action("bash", "d-async", "{\"command\":\"make\"}")
+  claim(harness, "esc-async", scope_on("main", op_id(90)), action, [wall(60)])
+  let displayed = next_escalation(harness)
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      "client/escalation_async/esc-async",
+      json.Int(displayed.seq),
+    )
+  assert notice.activity(harness.runtime, "main") == Ok(notice.Idle)
+  send(
+    harness,
+    803,
+    protocol.Approve("esc-async", [wall(60)], "d-async", displayed.seq),
+  )
+  let reply = next_reply(harness, 803, 8)
+  let assert protocol.EscalationEvent(record:) = reply.event
+  assert record.status == "approved"
+  assert stored(harness, "esc-async").status == durable.Approved
+  assert notice.activity(harness.runtime, "main") == Ok(notice.Busy)
 }
 
 pub fn delayed_deny_cannot_answer_reopened_same_action_test() {

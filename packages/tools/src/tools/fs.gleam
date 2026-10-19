@@ -31,8 +31,9 @@
 ////
 //// 1. `read_tool_with` registers any virtual `Scheme`s (with `blob_scheme` and
 ////    `read_blob_scheme` built in for `blob://`); `run_read` decodes the
-////    window, then sends a `scheme://` reference to `scheme_outcome` and
-////    every other path to `file_outcome`.
+////    window, then sends a `scheme://` reference to `scheme_outcome` (which
+////    renders through `scheme_read_outcome`, `clamp_scheme_window`, and
+////    `take_lines_within_bytes`) and every other path to `file_outcome`.
 //// 2. `resolve_invocation` asks for approval of the exact target when it lies
 ////    outside the workspace, then resolves through `resolve_readable` or
 ////    `resolve_writable` (`carved_blob_roots`, `entry_covers_carved`, and
@@ -1383,14 +1384,18 @@ fn scheme_refusal_outcome(refusal: SchemeRefusal) -> ToolOutcome {
 }
 
 // Virtual text uses the same line window and inline byte limit as files, but
-// has no digest or edit anchors because no file edit can target it.
+// has no digest or edit anchors because no file edit can target it. When a
+// multi-line virtual window exceeds the inline threshold (the ordinary case for
+// a spilled blob read with the default 2000-line limit), `clamp_scheme_window`
+// trims the window to the lines that fit and marks `has_more` so the caller
+// pages forward with `offset` instead of failing on the first read.
 fn scheme_read_outcome(
   scheme: String,
   body: String,
   offset: Int,
   limit: Int,
 ) -> ToolOutcome {
-  let window = hashline.window(body, offset:, limit:)
+  let window = clamp_scheme_window(hashline.window(body, offset:, limit:))
   let text = case window.lines {
     [] -> empty_window_text(window.total_lines, offset)
     lines -> string.join(list.map(lines, fn(line) { line.text }), "\n")
@@ -1412,6 +1417,48 @@ fn scheme_read_outcome(
       #("has_more", json.Bool(window.has_more)),
     ]),
   )
+}
+
+// Headroom reserved for the trailing `(lines X-Y of Z; read the rest with offset W)`
+// continuation notice when clamping a multi-line virtual read to the inline byte cap.
+const scheme_continuation_reserve_bytes = 128
+
+// Clamps a multi-line virtual read window so that its joined lines plus the
+// continuation footer fit within `blob.overflow_threshold_bytes`. A single line
+// that already exceeds the threshold is kept as-is so `scheme_read_outcome`
+// still rejects an unwindowable single-line payload.
+fn clamp_scheme_window(window: hashline.Window) -> hashline.Window {
+  let budget = blob.overflow_threshold_bytes - scheme_continuation_reserve_bytes
+  let #(kept, trimmed) = take_lines_within_bytes(window.lines, budget, 0, [])
+  case trimmed {
+    False -> window
+    True -> hashline.Window(..window, lines: kept, has_more: True)
+  }
+}
+
+fn take_lines_within_bytes(
+  remaining: List(hashline.AnchoredLine),
+  budget: Int,
+  used: Int,
+  acc: List(hashline.AnchoredLine),
+) -> #(List(hashline.AnchoredLine), Bool) {
+  case remaining, acc {
+    [], _ -> #(list.reverse(acc), False)
+    [line, ..rest], [] -> {
+      let line_bytes = bit_array.byte_size(<<line.text:utf8>>)
+      case line_bytes <= budget {
+        True -> take_lines_within_bytes(rest, budget, line_bytes, [line])
+        False -> #([line], rest != [])
+      }
+    }
+    [line, ..rest], _ -> {
+      let next_used = used + 1 + bit_array.byte_size(<<line.text:utf8>>)
+      case next_used <= budget {
+        True -> take_lines_within_bytes(rest, budget, next_used, [line, ..acc])
+        False -> #(list.reverse(acc), True)
+      }
+    }
+  }
 }
 
 // File contents determine the media type; a misleading extension must not

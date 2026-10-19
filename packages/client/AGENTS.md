@@ -1149,22 +1149,28 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/effect_abort.{Message, supervised, abort}` — the late-bound route from
   an Agency reap to `broker.abort`; see "A reap also cancels the child's broker
   executions".
-- `client/escalate.{Config, Message, Refused, Decision, Escalations,
-  seam, start, none, record_id, action_digest, action_preview,
-  default_config}` — parking: what a production tool call does when the
-  broker refuses it on policy. `seam` closes over a process *name* (the
-  Agency's knot, the Agency's answer) and `start` puts the runtime
-  behind that name after `api.open`; `record_id` is the deterministic
-  `{strand, tool, wanted diff}` digest a retry loop dedupes onto, with a
-  limit grant contributing its field and not its model-supplied
-  magnitude; `action_digest` is the *other* identity, over the call's
-  effective arguments canonicalised (objects key-sorted recursively,
-  arrays left ordered), which is what an approval binds to;
-  `action_preview` is its bounded human rendering, display-only and cut
-  at 2 KB on a codepoint boundary; `Config.max_records` caps the
-  distinct wants a session will file and `Config.max_asks` caps the
-  questions any one of them may put; `none()` is the no-plane seam under
-  which a refusal settles exactly as it did before escalations existed.
+- `client/escalate.{Config, Message, Refused, Decision, Escalations, OperatorDecision,
+  seam, start, none, record_id, action_record_id, action_digest, action_preview,
+  notify_decision, decision_notice_text, default_config}` — parking and async
+  detachment: what a production tool call does when the broker refuses it on
+  policy. `seam` closes over a process *name* (the Agency's knot, the Agency's
+  answer) and `start` puts the runtime behind that name after `api.open`;
+  `record_id` is the deterministic `{strand, tool, wanted diff}` want digest
+  (with a limit grant contributing its field and not its model-supplied
+  magnitude), and `action_record_id` pairs that coarse want with `action_digest`
+  so concurrent async questions for different actions on the same want do not
+  overwrite one another; `action_digest` is over the call's effective arguments
+  canonicalised (objects key-sorted recursively, arrays left ordered), which is
+  what an approval binds to; `action_preview` is its bounded human rendering,
+  display-only and cut at 2 KB on a codepoint boundary; `Config.max_records`
+  caps the distinct records a session will file and `Config.max_asks` caps the
+  unconsumed questions any one coarse want may put; when the short grace park
+  window closes (`default_config` sets 5s, polling every 200ms) with the record
+  still `Pending`, the detached seq is recorded under `client/escalation_async/`
+  and a later operator decision through `gateway` or `remote_decision` calls
+  `notify_decision`, which wakes or steers the strand via `client/notice`;
+  `none()` is the no-plane seam under which a refusal settles exactly as it did
+  before escalations existed.
 - `client/gateway.attached` — how many connections are attached right
   now. The honest answer to "is a human there?", which is what the
   escalation seam asks before it holds a call open. A hub that is gone,

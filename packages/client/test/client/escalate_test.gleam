@@ -27,6 +27,7 @@ import broker/policy
 import broker/token
 import client/escalate
 import client/grants
+import client/notice
 import client/permissions
 import client/protocol
 import client/wiring
@@ -224,6 +225,7 @@ fn start(setup: Setup) -> Harness {
       escalate.Config(
         ..escalate.default_config(name, seam_clock),
         interactive:,
+        park_timeout_ms: 300_000,
         poll_interval_ms: 1,
         rest: fn(_slice) {
           let _slices = bump(rests)
@@ -961,9 +963,13 @@ pub fn a_model_supplied_timeout_cannot_multiply_records_test() {
   assert string.contains(first, "policy refused")
   let _second = wiring.run_tool(harness.config, bash_run_waiting("c2", 45_000))
   let _third = wiring.run_tool(harness.config, bash_run_waiting("c3", 60_000))
+  let _fourth = wiring.run_tool(harness.config, bash_run_waiting("c4", 75_000))
+  let _fifth = wiring.run_tool(harness.config, bash_run_waiting("c5", 90_000))
   let assert Ok(records) = api.escalations(harness.runtime)
     as "the records must list"
-  assert list.length(records) == 1
+  // Each distinct action files its own record up to the per-want max_asks cap (3),
+  // and further variations on the same coarse want are refused without adding rows.
+  assert list.length(records) == 3
 }
 
 // And the other half of bounding the set: past the cap, a refusal that
@@ -1251,12 +1257,14 @@ pub fn an_approval_never_moves_to_a_different_action_test() {
 
   // One row throughout — the two calls really did collide on one record
   // id, which is what makes this the hole and not a miss.
-  let assert Ok([record]) = api.escalations(harness.runtime)
-    as "still exactly one record"
-  assert record.id == raised.id
-  // The approval did not survive as a standing capability: the question
-  // is open again, bound to what the live call would run, with nothing
-  // a human authorized carried into it.
+  let assert Ok(records) = api.escalations(harness.runtime)
+    as "both action-scoped records must list"
+  assert list.length(records) == 2
+  let assert Ok(original) = list.find(records, fn(r) { r.id == raised.id })
+    as "the original approved record remains intact"
+  assert original.status == escalation.Approved
+  let assert Ok(record) = list.find(records, fn(r) { r.id != raised.id })
+    as "the different action opens its own pending record"
   assert record.status == escalation.Pending
   assert record.grants == []
   assert record.action
@@ -1753,9 +1761,14 @@ pub fn an_approval_never_widens_a_different_program_test() {
 
   // One row throughout — the two submissions really did collide on one
   // record id, which is what makes this the hole and not a miss.
-  let assert Ok([record]) = api.escalations(harness.runtime)
-    as "still exactly one record"
-  assert record.id == raised.id
+  let assert Ok(records) = api.escalations(harness.runtime)
+    as "both action-scoped records must list"
+  assert list.length(records) == 2
+  let assert Ok(original) = list.find(records, fn(r) { r.id == raised.id })
+    as "the original approved record remains intact"
+  assert original.status == escalation.Approved
+  let assert Ok(record) = list.find(records, fn(r) { r.id != raised.id })
+    as "the different program opens its own pending record"
   assert record.status == escalation.Pending
   assert record.grants == []
   assert record.action
@@ -1876,5 +1889,114 @@ pub fn session_dialog_approval_resumes_native_write_and_remembers_the_exact_file
   ) = wiring.run_tool(harness.config, again)
     as "another invocation uses the saved permission without asking again"
   assert api.escalations(harness.runtime) == Ok([decided])
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+// --- async approvals: detach, wake/steer, and spend on re-run -------------
+
+pub fn an_async_approval_wakes_an_idle_strand_and_spends_on_rerun_test() {
+  let harness = start_harness(fn() { True }, short_park)
+  // 1. Call exceeds the short grace window and settles in band as async-pending.
+  let first = result_text(wiring.run_tool(harness.config, bash_run("call_1")))
+  assert string.contains(first, "policy refused")
+  assert string.contains(first, "[loom] approval notice")
+  let assert Ok([pending]) = api.escalations(harness.runtime)
+    as "the pending record must exist"
+  let assert Ok(cell) = api.escalation_cell(harness.runtime, pending.id)
+    as "the pending cell must read back"
+  assert cell.record.status == escalation.Pending
+
+  // 2. Operator approves later while the strand is idle.
+  approve_with_the_wanted_diff(harness.runtime)(pending.id)
+  let assert Ok(delivered) =
+    escalate.notify_decision(harness.runtime, cell, escalate.ApprovedOnce)
+    as "the async approval notice must deliver"
+  assert delivered == notice.Delivered
+  let assert Ok(notice.Busy) = notice.activity(harness.runtime, "main")
+    as "the notice wakes the idle main strand into a fresh run"
+  // A duplicate notification for the same cell seq is idempotent.
+  assert escalate.notify_decision(harness.runtime, cell, escalate.ApprovedOnce)
+    == Ok(notice.AlreadyDelivered)
+
+  // 3. When the woken strand re-issues the same tool call, it spends the approval immediately,
+  // even if the operator has since disconnected (`recording(harness)`).
+  let rerun =
+    result_text(wiring.run_tool(recording(harness), bash_run("call_2")))
+  assert string.contains(rerun, "no sandbox helper")
+  assert !string.contains(rerun, "policy refused")
+  let assert Ok([spent]) = api.escalations(harness.runtime)
+    as "the record must be consumed"
+  assert spent.status == escalation.Consumed
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+pub fn an_async_denial_wakes_an_idle_strand_with_the_rejection_notice_test() {
+  let harness = start_harness(fn() { True }, short_park)
+  let _first = wiring.run_tool(harness.config, bash_run("call_1"))
+  let assert Ok([pending]) = api.escalations(harness.runtime)
+  let assert Ok(cell) = api.escalation_cell(harness.runtime, pending.id)
+  let assert Ok(_) = api.deny_escalation_at(harness.runtime, cell, None)
+  assert escalate.notify_decision(harness.runtime, cell, escalate.Denied)
+    == Ok(notice.Delivered)
+  assert string.contains(
+    escalate.decision_notice_text(cell.record, escalate.Denied),
+    "denied for bash",
+  )
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+pub fn an_in_grace_approval_does_not_emit_a_duplicate_async_notice_test() {
+  let harness = start_harness(fn() { True }, fn(config) { config })
+  let notified = process.new_subject()
+  approve_when_pending(harness.runtime, fn(id) {
+    let assert Ok(cell) = api.escalation_cell(harness.runtime, id)
+    approve_with_the_wanted_diff(harness.runtime)(id)
+    // Because the call is still parked inside its grace window, `notify_decision`
+    // withholds the async notice so the strand is not steered a second time.
+    let verdict =
+      escalate.notify_decision(harness.runtime, cell, escalate.ApprovedOnce)
+    process.send(notified, verdict)
+  })
+  let text = result_text(wiring.run_tool(harness.config, bash_run("call_1")))
+  assert string.contains(text, "no sandbox helper")
+  assert process.receive(notified, 1000) == Ok(Ok(notice.Withheld))
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+pub fn concurrent_async_questions_for_different_actions_keep_distinct_records_test() {
+  let harness = start_harness(fn() { True }, short_park)
+  // Task 1 asks for permission for command A and detaches after the grace window.
+  let _a =
+    wiring.run_tool(harness.config, bash_run_command("call_a", "echo task-a"))
+  // While Task 1 is pending, Task 2 asks for the same want for command B.
+  let _b =
+    wiring.run_tool(harness.config, bash_run_command("call_b", "echo task-b"))
+  let assert Ok(records) = api.escalations(harness.runtime)
+  assert list.length(records) == 2
+  let id_a =
+    escalate.action_record_id(
+      "main",
+      "bash",
+      [policy.GrantEnv(name: "PATH")],
+      escalate.action_digest(bash_arguments("echo task-a", 120_000)),
+    )
+  let id_b =
+    escalate.action_record_id(
+      "main",
+      "bash",
+      [policy.GrantEnv(name: "PATH")],
+      escalate.action_digest(bash_arguments("echo task-b", 120_000)),
+    )
+  assert id_a != id_b
+  // Approving command A spends only command A when re-run, leaving command B pending.
+  approve_with_the_wanted_diff(harness.runtime)(id_a)
+  let rerun_a =
+    result_text(wiring.run_tool(
+      harness.config,
+      bash_run_command("call_a2", "echo task-a"),
+    ))
+  assert string.contains(rerun_a, "no sandbox helper")
+  let assert Ok(cell_b) = api.escalation_cell(harness.runtime, id_b)
+  assert cell_b.record.status == escalation.Pending
   let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
 }

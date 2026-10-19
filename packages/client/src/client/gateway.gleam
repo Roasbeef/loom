@@ -202,6 +202,7 @@ import client/catalog
 import client/daemon/transfer
 import client/delegate_outbox
 import client/directories
+import client/escalate
 import client/escalation_view
 import client/goal_pending
 import client/goalcommand
@@ -7277,7 +7278,14 @@ fn commit_approval(
       )
   }
   case committed {
-    Ok(_) -> Ok(Nil)
+    Ok(_) -> {
+      let _ =
+        escalate.notify_decision(state.runtime, cell, case lifetime {
+          Once -> escalate.ApprovedOnce
+          ForSession -> escalate.ApprovedForSession
+        })
+      Ok(Nil)
+    }
     Error(api.RaceLost) -> Error(moved_under_the_answer(state, cell.record.id))
     Error(error) -> {
       let #(code, text) = describe_api_error(error, "")
@@ -7385,6 +7393,7 @@ fn deny(
     connection,
     id,
   )
+  let _ = escalate.notify_decision(state.runtime, cell, escalate.Denied)
   reply_with_committed(state, connection, id, fn(emit) {
     escalation_emitted(emit, escalation_id, "rejected")
   })

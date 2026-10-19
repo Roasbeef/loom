@@ -155,6 +155,23 @@ pub fn blob_scheme_reads_from_blob_root_and_refuses_traversal_test() {
   assert string.contains(first_text(escaped), "malformed reference")
 }
 
+pub fn blob_scheme_clamps_multiline_spilled_payload_to_inline_threshold_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let ref =
+    "sha256-422a89f2dc1c4fab318c8da6305f4826e8a756851f402ce531f6935fc1c9f828"
+  // 1,000 lines of 100 bytes each (~100 KiB > 64 KiB threshold, < 2,000 default line limit).
+  let line = string.repeat("x", 99) <> "\n"
+  let body = string.repeat(line, 1000)
+  let assert Ok(Nil) =
+    filesystem.write(ctx.blob_root <> "/" <> ref, <<body:utf8>>)
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("blob://" <> ref))]))
+  assert !outcome.is_error
+  assert string.contains(first_text(outcome), "read the rest with offset ")
+  let assert Some(json.Object(details)) = outcome.details
+  assert list.contains(details, #("has_more", json.Bool(True)))
+}
+
 pub fn carved_blob_root_under_protected_state_root_reads_and_blocks_siblings_test() {
   let #(ctx, filesystem) = memory_ctx()
   let blob_root = "/state/workspaces/s1/blobs"

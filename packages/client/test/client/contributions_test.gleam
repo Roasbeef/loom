@@ -102,6 +102,7 @@ pub fn wired_host_advertises_only_its_available_virtual_reads_test() {
   let assert Ok(reader) = tool.lookup(registry, "fs_read")
   assert string.contains(reader.description, "cap://<module>")
   assert string.contains(reader.description, "job://<id>")
+  assert string.contains(reader.description, "blob://<ref>")
   let discovered =
     tool.dispatch(
       registry,
@@ -119,6 +120,7 @@ pub fn wired_host_advertises_only_its_available_virtual_reads_test() {
   let assert Ok(bare) = tool.lookup(core_only, "fs_read")
   assert !string.contains(bare.description, "cap://")
   assert !string.contains(bare.description, "job://")
+  assert string.contains(bare.description, "blob://<ref>")
 }
 
 // These offers exercise the actual registry builder, including a capability
