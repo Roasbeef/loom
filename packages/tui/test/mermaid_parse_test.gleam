@@ -270,3 +270,41 @@ pub fn malformed_sequence_lines_name_their_line_test() {
   assert refusal("sequenceDiagram")
     == model.Malformed(1, "at least one participant")
 }
+
+pub fn a_message_in_both_directions_is_refused_test() {
+  assert refusal("sequenceDiagram\nA<<->>B: hi")
+    == model.Unsupported("bidirectional message")
+  assert refusal("sequenceDiagram\nA<<-->>B: hi")
+    == model.Unsupported("bidirectional message")
+}
+
+pub fn a_long_line_in_a_sequence_is_read_in_linear_time_test() {
+  // About 16 KiB on one line with no operator, then one with an operator at
+  // the far end. Finding the operator used to cost the square of the length.
+  let prose = string.repeat("word ", 3200)
+  assert refusal("sequenceDiagram\n" <> prose)
+    == model.Malformed(2, "a message such as A->>B: text")
+
+  // A participant name that long is over the label limit, which is the answer;
+  // the point is that the operator is found and the line refused promptly.
+  assert refusal("sequenceDiagram\n" <> string.repeat("a", 16_000) <> "->>b")
+    == model.TooLarge(model.LabelCells)
+}
+
+pub fn bidirectional_format_characters_are_unmeasurable_test() {
+  list.each(
+    [
+      "\u{061C}",
+      "\u{200E}",
+      "\u{200F}",
+      "\u{202A}",
+      "\u{202E}",
+      "\u{2066}",
+      "\u{2069}",
+    ],
+    fn(mark) {
+      assert refusal("graph TD\nA[a" <> mark <> "b]")
+        == model.Unmeasurable("a" <> mark <> "b")
+    },
+  )
+}

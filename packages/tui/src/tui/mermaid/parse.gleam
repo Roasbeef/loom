@@ -640,19 +640,26 @@ fn break_lines(label: String) -> String {
 // zero-width joiner) is drawn at a width that differs between terminals. A box
 // cannot be sized around either reliably, so both are refused. The one
 // multi-codepoint cluster accepted is a base with a variation selector, whose
-// width the terminal width function already accounts for.
+// width the terminal width function already accounts for. A bidirectional
+// format character is refused too: it has no width of its own but reorders the
+// text around it, so a box drawn beside it would not line up. The live path
+// strips them already, and this covers callers that render directly.
 fn check_label(label: String) -> Result(Nil, Refusal) {
   let unmeasurable =
     list.any(string.to_graphemes(label), fn(grapheme) {
-      case
+      let points =
         list.map(
           string.to_utf_codepoints(grapheme),
           string.utf_codepoint_to_int,
         )
-      {
-        [_, 0xFE0F] | [_, 0xFE0E] -> False
-        [_] -> text.grapheme_cell_width(grapheme) == 0
-        _ -> True
+      case list.any(points, is_bidi_format) {
+        True -> True
+        False ->
+          case points {
+            [_, 0xFE0F] | [_, 0xFE0E] -> False
+            [_] -> text.grapheme_cell_width(grapheme) == 0
+            _ -> True
+          }
       }
     })
   case unmeasurable, text.cell_width(label) > model.max_label_cells {
@@ -660,6 +667,16 @@ fn check_label(label: String) -> Result(Nil, Refusal) {
     False, True -> Error(model.TooLarge(model.LabelCells))
     False, False -> Ok(Nil)
   }
+}
+
+// The Arabic letter mark, the left and right marks, the embedding and override
+// controls, and the isolates.
+fn is_bidi_format(point: Int) -> Bool {
+  point == 0x061C
+  || point == 0x200E
+  || point == 0x200F
+  || { point >= 0x202A && point <= 0x202E }
+  || { point >= 0x2066 && point <= 0x2069 }
 }
 
 // ---------------------------------------------------------------------------
@@ -870,7 +887,7 @@ fn parse_message(
     Ok(#(head, body)) -> #(head, string.trim(body))
     Error(_) -> #(text, "")
   }
-  case find_operator(head, 0) {
+  case find_operator(head) {
     None -> Error(model.Malformed(line, "a message such as A->>B: text"))
     Some(#(position, operator, stroke, end)) -> {
       let source = string.trim(string.slice(head, 0, position))
@@ -890,10 +907,16 @@ fn message_between(
   body: String,
   line: Int,
 ) -> Result(SeqBuilder, Refusal) {
-  case source, target {
-    "", _ | _, "" -> Error(model.Malformed(line, "two participants"))
-    _, "+" <> _ | _, "-" <> _ -> Error(model.Unsupported("message activation"))
-    _, _ -> {
+  case has_bracket(source, target), source, target {
+    _, "", _ | _, _, "" -> Error(model.Malformed(line, "two participants"))
+
+    // `A<<->>B` is a message in both directions. The earliest operator in it
+    // is the right-hand arrow, which would leave `A<<` as a participant and
+    // draw a one-way message, so a name holding an arrow bracket is refused.
+    True, _, _ -> Error(model.Unsupported("bidirectional message"))
+    _, _, "+" <> _ | _, _, "-" <> _ ->
+      Error(model.Unsupported("message activation"))
+    _, _, _ -> {
       use text <- result.try(edge_label(body))
       use #(builder, from) <- result.try(participant(builder, source, None))
       use #(builder, to) <- result.try(participant(builder, target, None))
@@ -905,20 +928,30 @@ fn message_between(
   }
 }
 
-fn find_operator(
-  head: String,
-  position: Int,
-) -> Option(#(Int, String, Stroke, MessageEnd)) {
-  case string.drop_start(head, position) {
-    "" -> None
-    here ->
-      case
-        list.find(message_operators, fn(candidate) {
-          string.starts_with(here, candidate.0)
-        })
-      {
-        Ok(#(operator, stroke, end)) -> Some(#(position, operator, stroke, end))
-        Error(_) -> find_operator(head, position + 1)
-      }
-  }
+fn has_bracket(source: String, target: String) -> Bool {
+  string.contains(source, "<")
+  || string.contains(source, ">")
+  || string.contains(target, "<")
+  || string.contains(target, ">")
+}
+
+// The earliest operator in the part before the colon, and where it starts.
+// Each operator is searched for once, so the work is the line's length times
+// the six operators and not its square. The list is longest first and a later
+// operator only wins by starting strictly earlier, so at one position the
+// longest spelling is the one read.
+fn find_operator(head: String) -> Option(#(Int, String, Stroke, MessageEnd)) {
+  list.fold(message_operators, None, fn(best, candidate) {
+    let #(operator, stroke, end) = candidate
+    case string.split_once(head, operator), best {
+      Error(_), _ -> best
+      Ok(#(before, _)), Some(#(known, _, _, _)) ->
+        case string.length(before) < known {
+          True -> Some(#(string.length(before), operator, stroke, end))
+          False -> best
+        }
+      Ok(#(before, _)), None ->
+        Some(#(string.length(before), operator, stroke, end))
+    }
+  })
 }
