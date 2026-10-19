@@ -7,8 +7,15 @@
 set -euo pipefail
 url=${1:?usage: web_mermaid_check.sh <seeded operator URL | URL file>}
 if [ -f "$url" ]; then url=$(head -n 1 "$url"); fi
+# The seeded turn streams its answer and runs the advisor before the third
+# fence settles, which outlasts agent-browser's 25 s default wait.
+export AGENT_BROWSER_DEFAULT_TIMEOUT=${AGENT_BROWSER_DEFAULT_TIMEOUT:-120000}
 export AGENT_BROWSER_SESSION=${AGENT_BROWSER_SESSION:-$(agent-browser session id --scope worktree --prefix mermaid)}
 agent-browser open "$url" >/dev/null
+
+# A ticket link redirects to the keyed page. Helpers installed before that
+# navigation would be lost with the document they were defined in.
+agent-browser wait --fn "location.pathname.startsWith('/ui/p/')" >/dev/null
 
 # The helper crosses Lustre's server and client shadow roots, not frame
 # boundaries. Source and SVG must never share the session page's origin.
@@ -50,7 +57,10 @@ agent-browser eval --stdin <<'JS'
 JS
 agent-browser wait --fn "(() => { const el = mermaidFind(document, 'loom-mermaid'); return el && el.parentNode.querySelectorAll('loom-mermaid').length >= 3; })()" >/dev/null
 
+# The checks outlast one CDP evaluation, so they run in the page and publish
+# their outcome; the shell polls for it rather than awaiting the promise.
 agent-browser eval --stdin <<'JS'
+window.mermaidDone = null;
 (async () => {
   const check = (ok, label) => { if (!ok) throw new Error(label); results.push(label); };
   const results = [];
@@ -61,12 +71,21 @@ agent-browser eval --stdin <<'JS'
       await new Promise(resolve => setTimeout(resolve, 30));
     }
   };
-  const first = mermaidFind(document, 'loom-mermaid');
-  const diagrams = Array.from(first.parentNode.querySelectorAll('loom-mermaid'));
+  // The streamed row is replaced by the committed one when the turn ends, so
+  // the elements are found again on every poll rather than captured once.
+  const current = () => {
+    const found = mermaidFind(document, 'loom-mermaid');
+    return found ? Array.from(found.parentNode.querySelectorAll('loom-mermaid')) : [];
+  };
   const frame = host => host.shadowRoot?.querySelector('iframe');
   const shown = host => frame(host) && !frame(host).classList.contains('mermaid-pending');
   const unavailable = host => host.shadowRoot?.querySelector('.mermaid-toolbar')?.textContent.includes('Diagram unavailable');
-  await waitFor(() => shown(diagrams[0]) && shown(diagrams[1]) && unavailable(diagrams[2]), 'flowchart, sequence and invalid fallback');
+  await waitFor(() => {
+    const [a, b, c] = current();
+    return c && shown(a) && shown(b) && unavailable(c);
+  }, 'flowchart, sequence and invalid fallback');
+  const diagrams = current();
+  const first = diagrams[0];
   check(diagrams.length === 3, 'streamed Markdown produced three Mermaid elements');
   check(shown(diagrams[0]) && shown(diagrams[1]), 'flowchart and sequence render under the real response CSP');
   check(diagrams[2].shadowRoot.querySelector('details').open, 'invalid diagram leaves source expanded');
@@ -139,6 +158,25 @@ agent-browser eval --stdin <<'JS'
   check(restored.getAttribute('height') === restoredHeight, 'a disconnected frame cannot alter its replacement');
   check(source.textContent === original, 'reconnection preserves the original source');
   return {passed: results.length, checks: results};
-})()
+})().then(
+  outcome => { window.mermaidDone = {ok: true, ...outcome}; },
+  error => {
+    // Report each diagram's state; a failed drive is otherwise a bare label.
+    const first = mermaidFind(document, 'loom-mermaid');
+    const state = first ? Array.from(first.parentNode.querySelectorAll('loom-mermaid'), host => {
+      const frame = host.shadowRoot?.querySelector('iframe');
+      const toolbar = host.shadowRoot?.querySelector('.mermaid-toolbar')?.textContent;
+      return (frame ? frame.className + ' height=' + frame.getAttribute('height') : 'no frame') + ' | ' + toolbar;
+    }) : [];
+    window.mermaidDone = {ok: false, error: String(error), state, events: mermaidEvents.map(e => e.data)};
+  },
+);
+true
 JS
-agent-browser snapshot -i
+agent-browser wait --fn "window.mermaidDone !== null" >/dev/null
+outcome=$(agent-browser eval "JSON.stringify(window.mermaidDone)")
+echo "$outcome"
+case "$outcome" in
+*'\"ok\":true'* | *'"ok":true'*) ;;
+*) exit 1 ;;
+esac
