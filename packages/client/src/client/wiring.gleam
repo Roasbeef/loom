@@ -844,7 +844,7 @@ pub fn resolution(
 
 /// The context window a strand is measured against: its captured
 /// identity's own catalogue entry when `facts` knows it, `fallback`
-/// otherwise — the rule `strand_facts` applies for admission and the
+/// otherwise — the rule `model_facts.of_strand` applies for admission and the
 /// compaction threshold, stated once. Public so a host can build the
 /// `context_remaining` seam from it before this `Config` exists: the tool
 /// registry that seam lands in is one of the config's inputs.
@@ -920,7 +920,7 @@ pub fn request_image_classifier(
 /// `build_effects` routes through it.
 ///
 /// A structural summary is not a request this host makes: `dispatch`
-/// refuses one before anything is built (see `prepare_dispatch`). The
+/// refuses one before anything is built (see `harness/provider.prepare`). The
 /// arm here keeps the function total and deliberately carries nothing,
 /// because sending a strand's context under a summarization intent would
 /// be worse than sending nothing.

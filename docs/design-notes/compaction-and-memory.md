@@ -104,7 +104,7 @@ wrapped only by `agency.reaping_hooks` for child-reaping. The defaults
    overflow-preparation default is `EmptyPreparation`, which drains as
    failure before the decision hook is even consulted (planner line
    1438). In production today, an overflowing run simply dies.
-3. **The provider surface refuses summaries.** `client/wiring.dispatch`
+3. **The provider surface refuses summaries.** `harness/provider.prepare`
    settles any `SummaryRequest` as a terminal in-band
    `unsupported_request` error ("structural summaries are not wired to a
    provider surface yet").
@@ -397,7 +397,7 @@ stop overflowing. They are Stage 2 candidates, behind evidence.
 
 This is the genuinely contentious decision. Two defensible shapes:
 
-**(a) Serialized preparation, pi-style.** `client/wiring.dispatch` maps
+**(a) Serialized preparation, pi-style.** `harness/provider.prepare` maps
 a `SummaryRequest` to a plain generation: the summarization system
 prompt, one user message containing the serialized
 `messages_to_summarize` (plus `<previous-summary>` when present, plus
