@@ -1372,14 +1372,42 @@ row says its people and scope after its path, from `Snapshot.summaries`, one
 #### Deployment: the machines list and a page for each machine
 
 Below People and Sessions the admin page draws a Deployment section
-(protocol-change/085, the addendum of 2026-10-16). Its first line is the verdict
-(`machines.verdict_words`, for example "Deployment · 5 nodes · 1 degraded · 1 down"),
-then a line when this daemon's copy of the session directory is unconfirmed and one
-when the daemon left something out of the reply to fit a frame, then a table with a
-row for each machine: name, roles, state pill, platform, enforcement, toolchains,
-capacity, standing in the ledger and the age of its last report
-(`view/admin_machines`). The pill is one of the three tints the page already has
-(`machines.pill_class`).
+(protocol-change/085, the addenda of 2026-10-16 and 2026-10-19). Under its heading is
+one line that counts the machines by group and says whether all are ok or how many
+need a look, with the first reason one is not ok (`machines.summary_words`, for example
+"5 machines · 2 orchestrators · 3 executors · 1 degraded · 1 down · 1 not linked from
+here: box: …"), then a line when this daemon's copy of the session directory is
+unconfirmed and one when the daemon left something out of the reply to fit a frame
+(`view/admin_machines`).
+
+The machines are grouped by what they do (`machines.group_of`): Orchestrators, with
+this daemon first and marked "this daemon", Executors, and directory members that are
+neither, then the Pools the daemon configures (`placements.pools` of the reply). A
+group with nothing in it is not drawn. A row is the machine's name and state pill and,
+quieter under them, its node string when that differs from the name
+(`machines.title`), and then only the facts its group has: an orchestrator's build,
+resident sessions, slots, uptime and last report, or an executor's platform,
+enforcement, toolchains, open scopes and last report. A fact the machine did not state
+is left out rather than drawn as a dash, and the ledger's standing is stated only on a
+daemon that runs from a ledger. A pool's row says how many of its executors could take
+a session now and which executors it admits; it is not a button. The pill is one of
+the three tints the page already has (`machines.pill_class`).
+
+A daemon with no `[distribution]` table is named by the BEAM (`nonode@nohost`, or a
+generated profile name), which means nothing to a person. The reply says so
+(`"distribution": "none"`, from `deployment.Footing`), and when it lists only the
+asking daemon the section draws one card named "This machine" with its build and
+sessions and a quiet note that distribution is not configured, pointing to
+`docs/distributed-setup.md`. The made-up name is drawn nowhere, the machine's own page
+included.
+
+The markup is one tree at every width and no row is a table cell, so no column can
+starve another. Each group is a list tinted like a raised surface with a hairline
+border and a hairline between rows. On a wide screen a row's name block is on the left
+(at most 15rem) and its facts wrap on the right; at 640 px and narrower the facts stack
+under the name as label and value. Pills and fact labels never wrap, a name breaks only
+where it would overflow, and only the node string may break anywhere. The home and the
+admin page keep a 16px side gutter on a phone.
 
 A machine is a node the daemon dials or a member of the membership ledger that it
 does not (`web_view/machines`). The second kind is listed because the ledger is the
@@ -1397,7 +1425,7 @@ behind the owner check (`admin_deployment_for`), apart from the people read, so 
 fan-out that waits seconds on a node never delays the catalogue. The page numbers its
 deployment reads (`Model.deployed`) and drops an answer a newer press overtook, rather
 than holding to one read at a time. Pressing a machine's name (`MachineChosen`) reads
-that one node, which returns its long lists, and opens its page under the table. The
+that one node, which returns its long lists, and opens its page under the section. The
 asking daemon is listed and is not read, because the daemon resolves a key against its
 configuration and it is no key of it.
 
