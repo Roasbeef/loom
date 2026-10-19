@@ -3529,6 +3529,15 @@ line cells), `draw` (flowcharts) and `sequence`.
   a node with several edges on a side is made wide (or tall in LR) enough for
   them. The search is bounded by the canvas and a cost limit, and a failure is
   `Unroutable`, never a loop.
+- **Cost:** a 32-node, 48-edge diagram takes under about 25 ms warm in the
+  worst shapes measured (typically 5-15 ms). Each route is an A* search inside
+  a window around the two boxes (widened to the whole canvas once if that finds
+  nothing), and `draw.Drawing.expansions` counts the states expanded so
+  `mermaid_draw_test` bounds the work without timing it. Because a diagram is
+  still the costliest block, the live tail does not draw it:
+  `markdown.render_live` and `render_sanitized(_, _, ShowSource)` leave a
+  mermaid fence as a source code block, and the settled row
+  (`render.render_line`, `markdown.render`) draws it.
 - **Fallback:** on any refusal `tui/markdown.render_mermaid` shows the source
   as an ordinary code block and one quiet row naming the reason. The parser
   in `session_view/markdown` does not say whether a fence was closed, so a
