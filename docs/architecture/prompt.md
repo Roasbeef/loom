@@ -525,7 +525,7 @@ behind the pack and its stability contract is Part B of
 
 ## Semantic capability guidance
 
-The shipped `loom-default-16` pack prefers `cap/lsp` in code mode when that
+The shipped `loom-default-17` pack prefers `cap/lsp` in code mode when that
 module is offered, and `cap/lsp_sql` for joins, counts and filters over explicit
 observations when its separate module is offered. It names `cap://lsp` and
 `cap://lsp_sql` as the API reads to perform before writing unfamiliar calls.
@@ -552,7 +552,18 @@ The guidance keeps reuse separate from observation freshness. A saved LSP
 summary program collects fresh facts each time it runs, then reuses its SQL
 observation for local queries within that invocation. Saving source preserves
 neither an observation nor permission to execute it. Existing pinned prompts
-retain their original text; fresh sessions receive version 16.
+retain their original text; fresh sessions receive the current version.
+
+## Diagram guidance
+
+`loom-default-17` adds one paragraph to `conduct`: draw a flow, call sequence
+or dependency set as a small `mermaid` fence, a flowchart or sequence diagram
+of about a dozen nodes without subgraphs or styling. That is the subset both
+clients draw. The web view renders it in an isolated frame
+(protocol-change/091) and the TUI draws it as text (`tui/mermaid`); anything
+outside the subset falls back to the source, so the hint only shapes what the
+model reaches for. It sits in `conduct` because it is about how an answer is
+written, not about any tool.
 
 ## Batching read-only queries
 

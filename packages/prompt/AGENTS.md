@@ -2,7 +2,7 @@
 
 ## Code-mode guidance
 
-The shipped `loom-default-16` pack asks for code mode on any batch of reads,
+The shipped `loom-default-17` pack asks for code mode on any batch of reads,
 searches, `git`/`gh` queries or checks the agent can already list, including
 the first round of an investigation: it judges between programs, not between
 commands. Independent probes stay independent, and a runtime failure is fixed
