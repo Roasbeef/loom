@@ -105,10 +105,12 @@ pub fn the_ledger_and_the_directory_and_the_moves_are_read_test() {
   assert move.reason == Some("the destination is busy")
 }
 
-pub fn the_verdict_line_counts_what_needs_a_look_test() {
-  assert machines.verdict_words([]) == "Deployment · no machines"
-  assert machines.verdict_words(fleet.overview("box").machines)
-    == "Deployment · 5 nodes · 1 degraded · 1 down · 1 not linked from here"
+// The line under the heading counts the machines by group and what needs a
+// look, and says the first reason one is not ok.
+pub fn the_summary_line_counts_what_needs_a_look_test() {
+  assert machines.summary_words([]) == "No machines"
+  assert machines.summary_words(fleet.overview("box").machines)
+    == "5 machines · 2 orchestrators · 3 executors · 1 degraded · 1 down · 1 not linked from here: box: a scope is stuck closing or closed with unknown cleanup; only an operator's release frees it"
   let assert json.Object(fields) = fleet.document("box")
   let healthy =
     json.Object(
@@ -121,8 +123,44 @@ pub fn the_verdict_line_counts_what_needs_a_look_test() {
       }),
     )
   let assert Ok(single) = machines.decode_overview(healthy)
-  assert machines.verdict_words(single.machines)
-    == "Deployment · 1 node · all ok"
+  assert machines.summary_words(single.machines)
+    == "1 machine · 1 orchestrator · all ok"
+}
+
+// The pools come from the reply's placements, and a reply that says the daemon
+// runs with distribution is read as distributed.
+pub fn the_pools_and_the_footing_are_read_test() {
+  let snapshot = fleet.overview("box")
+  assert snapshot.distribution == machines.Distributed
+  assert snapshot.pools == [machines.Pool("linux", ["box", "exec2"], ["box"])]
+  let assert json.Object(fields) = fleet.document("box")
+  let unstated =
+    json.Object(
+      list.filter(fields, fn(field) {
+        field.0 != "distribution" && field.0 != "placements"
+      }),
+    )
+  let assert Ok(older) = machines.decode_overview(unstated)
+  assert older.distribution == machines.Distributed
+  assert older.pools == []
+}
+
+// A daemon with no distribution is "This machine": the node name the BEAM gave
+// it is never the name it is drawn under. Every other machine keeps its name,
+// with its node under it when the two differ.
+pub fn a_standalone_daemon_is_this_machine_test() {
+  let snapshot = fleet.standalone()
+  assert snapshot.distribution == machines.Standalone
+  let assert [own] = snapshot.machines
+  assert machines.title(snapshot, own)
+    == machines.Title(name: "This machine", node: None)
+  let fleet_snapshot = fleet.overview("box")
+  assert machines.title(fleet_snapshot, member(fleet_snapshot, "box"))
+    == machines.Title(name: "box", node: Some(fleet.box_node))
+  assert machines.group_of(member(fleet_snapshot, "alpha"))
+    == machines.OrchestratorGroup
+  assert machines.group_of(member(fleet_snapshot, "box"))
+    == machines.ExecutorGroup
 }
 
 fn only_alpha(fields: List(#(String, JsonValue))) -> JsonValue {

@@ -42,15 +42,17 @@
 ////
 //// ## Flow
 ////
-//// `decode_overview` → `decode_detail` → `verdict_words` → `age_words`
+//// `decode_overview` → `decode_detail` → `summary_words` → `title` → `age_words`
 ////
 //// 1. `decode_overview` reads the whole-deployment document into a `Snapshot`.
 ////    It reads the nodes, merges the ledger's members into the machines, and
-////    reads the links, the directory and the moves.
+////    reads the links, the directory, the moves, the pools and whether the
+////    asking daemon runs with distribution.
 //// 2. `decode_detail` reads the document a read for one node returns, which
 ////    carries that node's long lists.
-//// 3. `verdict_words` is the first line of the Deployment section, and `age_words`
-////    words the time since a report.
+//// 3. `summary_words` is the line under the Deployment heading, `title` is the
+////    name a machine is drawn under (`group_of` says which list it is in), and
+////    `age_words` words the time since a report.
 
 import core/json.{type JsonValue}
 import core/json_wire
@@ -345,6 +347,58 @@ pub type Directory {
   )
 }
 
+/// Whether the asking daemon runs with distribution (protocol-change/085, the
+/// addendum of 2026-10-19). A daemon without it connects to no other machine,
+/// and its node name is one the BEAM made up (`nonode@nohost`, or a generated
+/// profile name), so the page never draws that name and calls the machine "This
+/// machine". A document that does not say is read as `Distributed`, which draws
+/// every name as it came, as the page did before the member existed.
+pub type Distribution {
+  /// The daemon started distribution under a configured node name.
+  Distributed
+
+  /// The daemon has no `[distribution]` table.
+  Standalone
+}
+
+/// A named group of executors a session may be placed on without naming one,
+/// as the daemon's `[pools.<name>]` configures it.
+pub type Pool {
+  Pool(
+    /// The pool's name.
+    name: String,
+    /// The executors the pool admits, by their configuration names, in the order
+    /// they are tried.
+    executors: List(String),
+    /// Those of `executors` that could take a session now: neither down nor
+    /// full.
+    eligible: List(String),
+  )
+}
+
+/// The group a machine is listed under on the Admin page, by what it does.
+pub type Group {
+  /// It owns sessions. The asking daemon is always one.
+  OrchestratorGroup
+
+  /// It serves workspaces and owns no sessions.
+  ExecutorGroup
+
+  /// It is only a member of the session directory's cluster.
+  MemberGroup
+}
+
+/// How a machine is named to a person: its configured or ledger name, and under
+/// it the node string when that says something the name does not.
+pub type Title {
+  Title(
+    /// The name drawn first.
+    name: String,
+    /// The node string drawn under it, quieter, or none.
+    node: Option(String),
+  )
+}
+
 /// What the whole-deployment read gave.
 pub type Snapshot {
   Snapshot(
@@ -366,6 +420,10 @@ pub type Snapshot {
     moves: List(Move),
     /// What the daemon left out to fit one frame, by name.
     omitted: List(String),
+    /// Whether the asking daemon runs with distribution.
+    distribution: Distribution,
+    /// The pools the asking daemon configures.
+    pools: List(Pool),
   )
 }
 
@@ -553,6 +611,13 @@ pub fn decode_overview(document: JsonValue) -> Result(Snapshot, String) {
       |> option.from_result,
     moves: optional_list(document, "moves", move),
     omitted: optional_list(document, "omitted", text),
+    distribution: case optional_text(document, "distribution") {
+      Some("none") -> Standalone
+      Some(_) | None -> Distributed
+    },
+    pools: field(document, "placements")
+      |> result.map(optional_list(_, "pools", pool))
+      |> result.unwrap([]),
   ))
 }
 
@@ -675,6 +740,15 @@ fn directory(value: JsonValue) -> Result(Directory, String) {
     Some("unconfirmed") -> Some(Unconfirmed)
     Some(_) | None -> None
   })
+}
+
+fn pool(value: JsonValue) -> Result(Pool, String) {
+  use name <- result.map(text_at(value, "name"))
+  Pool(
+    name:,
+    executors: optional_list(value, "executors", text),
+    eligible: optional_list(value, "eligible", text),
+  )
 }
 
 fn ledger(value: JsonValue) -> Result(Ledger, String) {
@@ -926,36 +1000,150 @@ fn optional_list(
 
 // --- words ----------------------------------------------------------------------
 
-/// The first line of the Deployment section: how many machines there are and how
-/// many of them need a look. A degraded or down machine, and one the daemon does
-/// not dial, are counted apart, because each sends the owner to a different
-/// place.
+/// The line under the Deployment heading: how many machines there are, how many
+/// of each group, and how many need a look, with the first reason a machine
+/// needs one. A degraded or down machine, and one the daemon does not dial, are
+/// counted apart, because each sends the owner to a different place.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert machines.verdict_words([]) == "Deployment · no machines"
+/// assert machines.summary_words([]) == "No machines"
 /// ```
-pub fn verdict_words(machines: List(Machine)) -> String {
+pub fn summary_words(machines: List(Machine)) -> String {
   let degraded = count_where(machines, is_state(_, Degraded))
   let down = count_where(machines, is_state(_, Down))
   let unlinked = count_where(machines, is_unlinked)
-  let counts =
+  let groups =
+    list.flatten([
+      counted_as(
+        grouped(machines, OrchestratorGroup),
+        "orchestrator",
+        "orchestrators",
+      ),
+      counted_as(grouped(machines, ExecutorGroup), "executor", "executors"),
+      counted_as(
+        grouped(machines, MemberGroup),
+        "directory member",
+        "directory members",
+      ),
+    ])
+  let needs =
     list.flatten([
       counted(degraded, "degraded"),
       counted(down, "down"),
       counted(unlinked, "not linked from here"),
     ])
+
+  // The verdict is "all ok" only when nothing is counted against it.
+  let verdict = case needs {
+    [] -> ["all ok"]
+    _ -> needs
+  }
   case machines {
-    [] -> "Deployment · no machines"
+    [] -> "No machines"
     [_, ..] ->
-      "Deployment · "
-      <> plural(list.length(machines), "node", "nodes")
-      <> " · "
-      <> case counts {
-        [] -> "all ok"
-        _ -> string.join(counts, " · ")
+      string.join(
+        [
+          plural(list.length(machines), "machine", "machines"),
+          ..list.append(groups, verdict)
+        ],
+        " · ",
+      )
+      <> first_reason(machines)
+  }
+}
+
+// The first reason a dialled machine gives for not being ok, as ": box: it runs
+// another build than this daemon", so the line says why and not only how many.
+// A machine that is ok, or that the daemon does not dial, gives none.
+fn first_reason(machines: List(Machine)) -> String {
+  let found =
+    list.find_map(machines, fn(machine) {
+      case machine.here {
+        Dialled(findings: Findings(state: Healthy, ..)) | NotLinkedFromHere ->
+          Error(Nil)
+        Dialled(findings: Findings(reasons: [reason, ..], ..)) ->
+          Ok(#(machine.name, reason))
+        Dialled(findings: Findings(reasons: [], why: Some(reason), ..)) ->
+          Ok(#(machine.name, reason))
+        Dialled(findings: Findings(reasons: [], why: None, ..)) -> Error(Nil)
       }
+    })
+  case found {
+    Ok(#(name, reason)) -> ": " <> name <> ": " <> reason_words(reason)
+    Error(Nil) -> ""
+  }
+}
+
+// How many of the machines are listed under one group.
+fn grouped(machines: List(Machine), group: Group) -> Int {
+  list.count(machines, fn(machine) { group_of(machine) == group })
+}
+
+fn counted_as(count: Int, one: String, many: String) -> List(String) {
+  case count {
+    0 -> []
+    _ -> [plural(count, one, many)]
+  }
+}
+
+/// The group a machine is listed under: an orchestrator wherever it also serves
+/// or votes, then an executor, then a directory member that is neither.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert machines.group_of(executor) == machines.ExecutorGroup
+/// ```
+pub fn group_of(machine: Machine) -> Group {
+  case
+    list.contains(machine.roles, Orchestrator),
+    list.contains(machine.roles, Executor)
+  {
+    True, _ -> OrchestratorGroup
+    False, True -> ExecutorGroup
+    False, False -> MemberGroup
+  }
+}
+
+/// The name a machine is drawn under. A standalone daemon's own node name is one
+/// the BEAM made up, so it is "This machine" with no node line. Any other machine
+/// is its name, with its node string under it when the two differ.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert machines.title(standalone, own).name == "This machine"
+/// ```
+pub fn title(snapshot: Snapshot, machine: Machine) -> Title {
+  case snapshot.distribution, machine.whose {
+    Standalone, This -> Title(name: "This machine", node: None)
+    Standalone, Other | Distributed, _ ->
+      case machine.node == machine.name {
+        True -> Title(name: machine.name, node: None)
+        False -> Title(name: machine.name, node: Some(machine.node))
+      }
+  }
+}
+
+/// A machine's build as one line, the version with the first eight characters
+/// of its commit, or none when the machine stated neither. Eight characters name
+/// a commit among the builds an owner runs, and a whole hash does not fit a row
+/// on a phone.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert machines.build_words(findings) == Some("0.2.0 (b4eeb50c)")
+/// ```
+pub fn build_words(found: Findings) -> Option(String) {
+  let short = option.map(found.build_commit, string.slice(_, 0, 8))
+  case found.build_version, short {
+    Some(version), Some(commit) -> Some(version <> " (" <> commit <> ")")
+    Some(version), None -> Some(version)
+    None, Some(commit) -> Some(commit)
+    None, None -> None
   }
 }
 

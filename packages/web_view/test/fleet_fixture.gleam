@@ -129,6 +129,23 @@ pub fn document(box_name: String) -> JsonValue {
       ]),
     ),
     #(
+      "placements",
+      json.Object([
+        #("executors", json.Array([])),
+        #(
+          "pools",
+          json.Array([
+            json.Object([
+              #("name", text("linux")),
+              #("executors", strings([box_name, "exec2"])),
+              #("eligible", strings([box_name])),
+            ]),
+          ]),
+        ),
+      ]),
+    ),
+    #("distribution", text("configured")),
+    #(
       "directory",
       json.Object([
         #("members", strings(["alpha@10.0.0.1"])),
@@ -285,6 +302,51 @@ pub fn detail_document() -> JsonValue {
       ]),
     ),
   ])
+}
+
+/// The node name a daemon without distribution is given by the BEAM's profile
+/// boot, which means nothing to a person and is never drawn.
+pub const standalone_node =
+  "loom_daemon_profile_50242_5e12ebec8c7ed73e5501f7c6bf984aeb@127.0.0.1"
+
+/// A daemon with no `[distribution]` table: itself, an orchestrator that
+/// answered with its build and uptime and no orchestrator facts, since such a
+/// daemon has no orchestrator port to read them from, and nothing else.
+pub fn standalone_document() -> JsonValue {
+  json.Object([
+    #("as_of_ms", json.Int(1_760_190_131_000)),
+    #("self", text(standalone_node)),
+    #("state", text("ok")),
+    #("reasons", json.Array([])),
+    #(
+      "nodes",
+      json.Array([
+        json.Object([
+          #("node", text(standalone_node)),
+          #("name", text(standalone_node)),
+          #("roles", strings(["orchestrator"])),
+          #("state", text("ok")),
+          #("self", json.Bool(True)),
+          #("build_version", text("0.3.0")),
+          #("build_commit", text("ca9a21f02bc67201de0dbed2bc6debe308377fac")),
+          #("uptime_ms", json.Int(7_500_000)),
+        ]),
+      ]),
+    ),
+    #(
+      "placements",
+      json.Object([#("executors", json.Array([])), #("pools", json.Array([]))]),
+    ),
+    #("orchestrators", json.Array([])),
+    #("distribution", text("none")),
+  ])
+}
+
+/// The standalone daemon's reading.
+pub fn standalone() -> machines.Snapshot {
+  let assert Ok(snapshot) = machines.decode_overview(standalone_document())
+    as "the fixture decodes"
+  snapshot
 }
 
 /// The page's reading of the whole deployment with the executor named
