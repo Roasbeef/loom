@@ -8,12 +8,15 @@ The operator described the measured workload as idle; the live daemon still
 had three resident sessions and six declared strands. Live measurements below
 are an observational baseline, not a controlled before/after comparison.
 
-Source inspection uses `490792538d18577ee001402ef7377998ce1b12b3` on
+Baseline source inspection uses `490792538d18577ee001402ef7377998ce1b12b3` on
 `perf/idle-resource-cost`. Both installed helpers report build
 `dd43362c86b43000e69e291550a41c21f5ffc13b` from their shipment. The tracker
 source is unchanged between that build and the inspected head. Pickglass does
 not identify the daemon's application revision, so the helper's revision is
 not proof of the daemon's loaded BEAM code.
+
+The final tracker source is `12f791346`; the page ownership repair is
+`c5776c1d3`. Later evidence commits change documentation only.
 
 ## The helpers keep scanning while their children wait
 
@@ -45,8 +48,8 @@ took 14.65 to 14.86 microseconds with zero steady allocations. Optimizing that
 traversal again would leave the expensive acquisition and periodic wakeups.
 
 The repaired tracker registers kqueue fork/exit watches before releasing the
-root's start gate, then watches observed descendants. Notifications trigger
-fresh snapshots; an idle event timeout does not query the process table.
+root's start gate, then watches observed descendants. Notifications coalesce for the existing 20 ms discovery interval before
+triggering fresh snapshots; an idle event timeout does not query the process table.
 Installing a new descendant watch queues another snapshot, covering children
 forked between the previous snapshot and watch registration. Cancellation still
 takes a fresh snapshot and checks each remembered birth before signalling.
@@ -63,16 +66,16 @@ execution still reports its lifecycle skip.
 
 The committed idle benchmark uses the same 20 ms sleep workload as the baseline
 probe. Notification profiles measured 0.49% and 0.55% of one core, against
-9.62% for the baseline. The final reviewed idle-only profile measured 0.14%
+9.62% for the baseline. The pre-batching reviewed idle-only profile measured 0.14%
 (20 ms of samples over 14.32 seconds). Such sparse samples do not establish a
 precise improvement percentage; all three cuts show the process-table cost
-removed from the idle path. The final idle benchmark allocated 25 bytes per
+removed from the idle path. That idle benchmark allocated 25 bytes per
 interval, rounded to zero allocations, against 899,429 bytes before. The reviewed
 startup benchmark measured 211.8 microseconds and 933,146 bytes per operation.
 Startup still acquires a full table, and these allocation counters describe
 cumulative allocation rather than retained memory or RSS.
 
-Three additional sequential baseline/candidate pairs ran the already-built test
+Before batching, three additional sequential baseline/candidate pairs ran the already-built test
 binaries without CPU sampling, using `/usr/bin/time -p` to count user plus
 system CPU over each run's elapsed time. Baseline CPU was 3.65%, 5.20% and
 12.98% of one core; candidate CPU was 0.48%, 0.35% and 0.49%. Median CPU fell
@@ -82,6 +85,27 @@ should not be treated as a universal percentage. Baseline allocation was
 939,326 to 948,481 bytes per interval; each candidate run recorded zero bytes
 and allocations. Startup remains included in OS process totals but outside the
 benchmark's reported per-interval allocation counters.
+
+The active-fork benchmark exposed an important regression in that prototype.
+Repeated short `/usr/bin/true` children allocated 2.44 to 2.49 MB per child with
+immediate event-driven captures, versus 75 to 80 KB with the original poller.
+The final tracker batches queued notifications for the original 20 ms interval.
+Close interrupts that delay, and cancellation still captures independently.
+The same active workload then allocated 63 to 64 KB per child. Wall time was
+1.15 to 1.19 ms per child, versus 1.32 to 1.42 ms for the baseline; the host was
+not quiesced, so those timings establish a bounded comparison rather than an
+application-wide throughput claim. Both idle and active benchmarks are kept
+in the repository. Independent review approved the batching correction, and
+the complete native race suite and `go vet` pass again.
+
+Three final idle OS-accounting pairs at `12f791346` measured baseline CPU at
+4.24%, 5.56% and 6.94% of one core, and candidate CPU at 0.21%, 0.56% and
+0.35%. Medians were 5.56% and 0.35%, a 93.7% reduction in that harness.
+Baseline allocation was 926,261 to 936,643 bytes per interval; all three
+candidate runs recorded zero bytes and allocations. Variation across the two
+series is not evidence that batching itself improved idle CPU: batching is
+entered only after notifications, and the host's other activity was uncontrolled.
+The final series independently confirms that batching preserves the idle benefit.
 
 The new regressions witness automatic child and grandchild discovery before
 cancellation, retain an observed orphan after its parent exits, exercise queue
@@ -184,8 +208,9 @@ The full surrounding suites pass: 12 session-socket, 63 page-socket, 18 relay,
 and 183 UI-route tests (276 total). The final focused regression also passes
 after strengthening the hook-delivery witness. The complete 12-test socket suite passes again after the cleanup correction.
 Client lint has zero errors and 731 census warnings. Documentation checks have
-zero errors and 214 warnings. Formatting and whitespace checks pass. The full sandbox race suite and `go vet` pass. Real-helper conformance passes
-111 tests, and the real jailed code-mode suite passes 414 tests. Repository
+zero errors and 214 warnings. Formatting and whitespace checks pass. The full sandbox race suite and `go vet` pass. Before the final batching correction, real-helper conformance passed
+111 tests and the real jailed code-mode suite passed 414 tests. Final-helper
+end-to-end verification remains required on the publication head. Repository
 affected gates are in progress; hosted CI and Linux signoff remain pending at
 this documentation commit. Installation and a matched live before/after
 measurement have not been performed.
