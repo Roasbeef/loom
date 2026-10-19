@@ -42,6 +42,7 @@ pub fn every_document_links_the_tab_icon_test() {
       page.admin_shell(),
       page.login_page(),
       page.claim_page(None),
+      page.exchange_confirmation(page.OpensHome, page.StaysSignedIn, "a", "t"),
       page.enter("/ui/p/k/home", "n"),
       page.enter_remembered("/ui/p/k/home", "n", "lk", "ln"),
       page.refusal(ending.PageEnded, "0192ab"),
@@ -308,6 +309,75 @@ pub fn the_admin_pages_documents_are_the_homes_in_their_own_words_test() {
   )
   assert !string.contains(refused, "--session")
   assert !string.contains(refused, "eight hours")
+}
+
+// --- the exchange's confirmation (protocol-change/051, links from an app) ---
+
+// The confirmation is a fixed document with one form, which posts the ticket in
+// a hidden field to the exchange's own address and never back into a URL. It
+// names the origin, the page the link opens and how long the browser stays
+// signed in, and holds no script and no inline style.
+pub fn the_exchange_confirmation_posts_the_ticket_in_a_hidden_field_test() {
+  let ticket = string.repeat("0f", 32)
+  let document =
+    page.exchange_confirmation(
+      page.OpensHome,
+      page.StaysSignedIn,
+      "https://loom.example.ts.net",
+      ticket,
+    )
+  assert string.contains(
+    document,
+    "<form class=\"claim-form\" method=\"post\" action=\"/ui/home\">",
+  )
+  assert string.contains(
+    document,
+    "<input type=\"hidden\" name=\"ticket\" value=\"" <> ticket <> "\">",
+  )
+  assert string.contains(document, "on https://loom.example.ts.net?")
+  assert string.contains(document, "thirty days")
+  assert string.contains(document, "your Loom home")
+  assert string.contains(document, page.confirmation_reason())
+  assert !string.contains(document, "?ticket=")
+  assert !string.contains(document, "<script")
+  assert !string.contains(document, "<style")
+
+  // Each page the link may open has its own words and its own address, and a
+  // link that sets no login says so.
+  let session =
+    page.exchange_confirmation(
+      page.OpensSession("S"),
+      page.ForThisPage,
+      "http://127.0.0.1:4000",
+      ticket,
+    )
+  assert string.contains(session, "action=\"/ui/sessions/S\"")
+  assert string.contains(session, "a page for one session")
+  assert !string.contains(session, "thirty days")
+  let admin =
+    page.exchange_confirmation(
+      page.OpensAdmin,
+      page.ForThisPage,
+      "http://127.0.0.1:4000",
+      ticket,
+    )
+  assert string.contains(admin, "action=\"/ui/admin\"")
+  assert string.contains(admin, "admin page")
+}
+
+// Whatever reaches the confirmation from a request is escaped: the session
+// path's segment and the ticket are attribute values, and the address is text.
+pub fn the_exchange_confirmation_escapes_what_it_carries_test() {
+  let document =
+    page.exchange_confirmation(
+      page.OpensSession("a\"><script>"),
+      page.ForThisPage,
+      "http://<b>",
+      "\"><x",
+    )
+  assert !string.contains(document, "<script>")
+  assert !string.contains(document, "<b>")
+  assert !string.contains(document, "\"><x")
 }
 
 // --- the browser claim (protocol-change/065, PR 9) --------------------------
