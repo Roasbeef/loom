@@ -236,13 +236,14 @@ pub type DelegateRequest {
   )
 }
 
-/// The delegate session of a pair, admitted or being admitted.
+/// The delegate session of a pair and its current admission or custody state.
 pub type Delegated {
   Delegated(
     /// This daemon's identity for the session.
     session_id: String,
-    /// Where admission stands: `Resident` when the session is serving, and
-    /// `Opening` when its builder is still running.
+    /// `Resident` is serving and `Opening` is building. A retained slot reports
+    /// `Stopping` while original custody drains or `RecoveryBlocked` when its
+    /// cleanup proof was lost, so callers can distinguish retry from refusal.
     status: Status,
   )
 }

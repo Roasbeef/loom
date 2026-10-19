@@ -19,9 +19,20 @@ private-session capture verified Loom's 480 by 280 demo image transmission.
 Non-empty `NO_COLOR` still suppresses previews. See the [scoped evidence and
 remaining gates](review/image-followups-herdr-2026-10-19.md).
 
-Next: finish the exact-head affected gates, hosted CI and Linux signoff for the
-Loom PR. The independent review found no substantive issues. No installation,
-restart of the operator's daemon, or merge is authorized by this task.
+The full affected gate passed on `2a666d224` after rebasing onto
+`ba4f1321498ff4d1544197ffdffa35a7d83ae2c4`, including 4,877 client tests and a
+clean skip census. The original image and Herdr changes passed independent
+review. Subsequent CI repair is in progress and needs its own final gates.
+
+The owner authorized repair of the failing CI fixtures and merge once checks
+pass. A failed delegate reopen exposed a reachable Closing-state race, while
+the HTTP and code-mode fixtures relied on timing that did not establish the
+state their assertions required. The owner explicitly waived the dedicated
+Linux signoff because obelisk is offline and no alternate host is available;
+that signoff has not run. Next: finish the repairs, review them, validate the
+final head including raw macOS advisory logs, then merge
+[Loom PR #1022](https://github.com/Roasbeef/loom/pull/1022). No installation or
+restart of the operator's daemon is authorized.
 
 The following resource and Mermaid handoff is preserved historical context;
 those claims were not re-audited by the image fix.
