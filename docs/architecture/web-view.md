@@ -229,6 +229,31 @@ sequenceDiagram
    `SameSite=Strict` cookie is not sent on a redirect that started from
    another site, so a link clicked on a cross-site page would land on a
    `401`.
+
+   The exchange redeems at once only when `Sec-Fetch-Site` is `none` (a link
+   pasted into the address bar or opened from a bookmark) or `same-origin`.
+   Any other link is answered with a confirmation instead, and so is one that
+   carries no `Sec-Fetch-Site` at all. That is how a phone's camera, a QR
+   scanner or a chat app opens a link: as `cross-site`, or with no header.
+   The confirmation (`page.exchange_confirmation`, from
+   `server.confirm_exchange`) names the origin, the page the link opens and,
+   for a link that sets a browser login, the thirty days it lasts, and holds
+   one button. The button is a form that posts the ticket, in a hidden field,
+   to the exchange's own path (`POST /ui/sessions/<id>`, `/ui/home` or
+   `/ui/admin`), never back into a URL. `server.confirmed_exchange` accepts
+   the post only with `Sec-Fetch-Site: same-origin` and a declared, bounded
+   URL-encoded form, as the login's resume does, and then redeems through
+   the same `server.redeem_ticket` the fast path uses. Loading the
+   confirmation spends nothing (`ui_sessions.preview` reads the ticket and
+   leaves it), and a dead ticket is answered with the "link expired" page
+   rather than a button.
+
+   The check exists so another page cannot put a keyed page in front of the
+   person or sign their browser in with an attacker's ticket (login CSRF).
+   The confirmation keeps that: an attacker's page can still navigate the
+   person to it, but cannot finish the exchange without the person pressing
+   a button on Loom's own origin that says what it does. A cross-site form
+   posting the ticket directly is refused by the same-origin rule.
 2. **The page.** `GET /ui/p/<key>/sessions/<id>` returns the shell
    (`web_view/page.shell`), one empty `<lustre-server-component>` element
    and the page script. The script reads the nonce back, sets it as the
@@ -1745,7 +1770,11 @@ loom ui --device
 
 prints a link on the listed origin and, on standard error, a QR code of it.
 Scan the code with the phone's camera, or open the link on the other device,
-within ten minutes. The exchange opens the home page and signs that browser
+within ten minutes. A link the camera or another app opens arrives without
+`Sec-Fetch-Site: none`, so the phone first shows a page asking "Sign this
+browser in to Loom on https://…?" with one Sign in button; pressing it is the
+exchange (see "Exchanging the ticket" above). A link pasted into the address
+bar skips that page. The exchange opens the home page and signs that browser
 in for thirty days, so its bookmark works without `loom` afterwards. With
 several listed origins, `--origin https://…` picks one; with none listed the
 command refuses and names `ui_origins`. `loom ui --origin https://…` without
@@ -1815,7 +1844,7 @@ keeps a page from acting.
 | `--ui` flag | Any `/ui` surface on a daemon that did not ask for one. | `client/daemon/main`, `server.handle` |
 | Loopback or listed `Host` | DNS rebinding: an attacker's page reaches the listener under its own host name and gets `403`. A `Host` that names an origin in `[daemon] ui_origins` is admitted as that origin, and forwarded headers are never read (protocol-change/052). | `ui_http.page_origin`, `ui_http.loopback_host` |
 | Single-use ticket | A replayed or forwarded link. 60 s, redeemed once inside one actor, digest stored, minted only for a member. | `ui_sessions.mint`, `ui_sessions.redeem` |
-| `Sec-Fetch-Site` | Another site, or another loopback port, driving the exchange or navigating to the keyed page. Only `none` and `same-origin` pass. | `ui_http.navigation_allowed` |
+| `Sec-Fetch-Site` | Another site, or another loopback port, driving the exchange or navigating to the keyed page. Only `none` and `same-origin` pass. An exchange link that fails it gets a confirmation that spends nothing, and only that confirmation's `same-origin` form post redeems. | `ui_http.navigation_allowed`, `ui_http.same_origin_post`, `server.offered_exchange` |
 | Cookie attributes | Script reading the cookie (`HttpOnly`) and cross-site requests sending it (`SameSite=Strict`). No `Max-Age`; the UI session lives 8 hours. The login cookie has the same attributes and a `Max-Age` to its token's expiry. On a listed origin both are `__Secure-` and `Secure`, so neither travels over `http`. | `ui_http.set_cookie`, `ui_http.set_login_cookie` |
 | Login chain | A forged, altered or narrowed-past token. Verified from the root key before the catalogue is asked; every comparison is constant time. | `host/login`, `ui_login.resume` |
 | Login nonce, key and sender | A cookie planted by another port or copied alone. The nonce stays in `localStorage` and is posted by the daemon's own page; the key is in the path; `Sec-Fetch-Site: same-origin` is required. | `web_view_resume.js`, `ui_http.same_origin_post`, `ui_login.resume` |
