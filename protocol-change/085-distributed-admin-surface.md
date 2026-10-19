@@ -797,9 +797,10 @@ any of them. The select's values are positions into the list the page drew, so t
 browser can name only a workspace the page offered and "executor serves no
 workspace" cannot be reached from the form; `executor_plane`'s refusal remains the
 backstop. A place whose workspaces are not known (still being read, or down) draws
-a sentence saying so and only Cancel, because there is nothing to choose from. This
-is the one capability the earlier panel had that the form does not: it let a person
-name a workspace on an executor that had not answered.
+a note and a text field for the name it serves, held to `creations.registered_name`,
+so a person can still name a workspace on an executor that has not answered, as the
+earlier panel allowed; the daemon's refusal of an unserved name returns on the form.
+As soon as a list is known the select replaces the field.
 
 The form carries the same optional profile and model selects as the folder form
 (protocol-changes 076 and 080), with a line saying a model replaces the main model

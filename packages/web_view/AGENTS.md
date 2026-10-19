@@ -1580,8 +1580,9 @@ separate button and no `Remote` state: `home.ChoosingHere` returns to this machi
 The workspace form for a choice is a select of the workspaces that place
 registered (`name=workspace`, values are positions into
 `placements.workspaces(cards, choice)`, decoded by `create.remote_fields`) and the
-optional session name; a place with no known workspace draws one sentence and only
-Cancel. There is no Shareable box, because the daemon makes a session on an
+optional session name; a place with no known workspace draws a note and a text field for the name
+(`create.typed_workspace_field`, held to `creations.registered_name` by
+`remote_fields`), and the daemon's refusal returns on the form. There is no Shareable box, because the daemon makes a session on an
 executor or in a pool session-only, and the profile and model selects are the same
 as on the folder form (`create.remote_fields_with_roles`). `Start.machine` is the
 daemon's own name, worded `<name> (this machine)` on the first card.

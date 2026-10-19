@@ -1247,11 +1247,16 @@ and never roots, `node_report.ExecutorFacts.workspaces`), and
 `placements.PoolReport.workspaces` is the names every reached executor of the pool
 registered, because a first open can land on any of them. The select's values are
 positions into that list and the decoder (`remote_fields`) turns a position back
-into a name, so the browser can name only a workspace the page drew and the
-daemon's "serves no workspace" refusal is a backstop the form cannot reach. A place
+into a name, so, when a list is known, the browser can name only a workspace the page drew
+and the daemon's "serves no workspace" refusal is a backstop the form cannot
+reach; it can be reached only through the typed fallback below. A place
 whose workspaces are not known, because the read is still out or the executor is
-down or reported none, draws one sentence saying why and only Cancel
-(`unknown_words`). There is no Shareable box, because the daemon makes a session on
+down, not heard or reported none, draws a note ("exec has not reported its
+workspaces; type the name it serves.", `unknown_words`) and a text field for the
+name instead. `remote_fields` then holds the typed text to
+`creations.registered_name`, the grammar the daemon applies, and the daemon's
+refusal of a name the executor does not serve comes back on the form and leaves the
+field to correct. As soon as a list is known the select replaces the field. There is no Shareable box, because the daemon makes a session on
 an executor or in a pool session-only whatever the form says, and the profile and
 model selects are the same as on the folder form. The creation names an executor
 (`creations.Registered`) or a pool (`creations.Pooled`); the daemon checks the
