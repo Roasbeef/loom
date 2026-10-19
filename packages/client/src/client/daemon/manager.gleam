@@ -4770,7 +4770,21 @@ fn returning_delegate(
   case claim_delegate(book, request, session_id) {
     Error(error) -> #(book, Error(error))
     Ok(Nil) -> {
-      let #(book, admitted) = admit(phase, book, session_id)
+      // A retained slot carries a more precise answer than admission's
+      // Unavailable: Closing may retire, while Blocked has lost that proof.
+      // The delegate resolver needs that distinction to decide whether its
+      // sender should retry. Neither descriptor grants a replacement slot.
+      let #(book, admitted) = case dict.get(book.slots, session_id) {
+        Ok(Slot(phase: Closing, operation:, ..)) -> #(
+          book,
+          Ok(Stopping(operation)),
+        )
+        Ok(Slot(phase: Blocked(reason), ..)) -> #(
+          book,
+          Ok(RecoveryBlocked(reason)),
+        )
+        Ok(_) | Error(Nil) -> admit(phase, book, session_id)
+      }
       #(book, delegated(session_id, admitted))
     }
   }

@@ -7965,9 +7965,16 @@ The box's deadline and retention (slice S4):
   `remote_spawn.NotYetOpen`, and `remote_spawner.answer` reads it as
   `Unreachable`, so the laptop resends and the stub stays `Requested`. After a
   box is killed, the dead writer's lease on the session file refuses every open
-  until it expires (up to `lease_ttl_ms`, 60 s), and before this a spawn in that
-  minute left its stub `Refused` for good. `remote_release_test` and the shipped
-  remote subagents test, which kills and restarts the box, cover it.
+  until it expires (up to `lease_ttl_ms`, 60 s). A failed reopen can retain its
+  slot as `Closing` while the original custody drains. Both a resolver already
+  waiting and a new admission must preserve that retry: `returning_delegate`
+  returns the existing `Stopping` descriptor and `resident` answers
+  `NotYetOpen`. A retained `RecoveryBlocked` descriptor still gives a definitive
+  store failure, and a released parent still wins before either descriptor.
+  The held-cleanup regressions in `delegate_host_test` cover both Closing entry
+  paths, reuse of the durable pair, blocked cleanup and release priority.
+  `remote_release_test` and the shipped remote subagents test cover the sender
+  and the box restart.
 - Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`
   (`glanceSeenMs`, absent reads 0) is the parent's clock when
   `remote_child.progressed` kept the glance; every stub write publishes
