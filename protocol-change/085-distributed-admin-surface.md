@@ -796,8 +796,9 @@ a pool the names every reached executor registered, since a first open can land 
 any of them. The select's values are positions into the list the page drew, so the
 browser can name only a workspace the page offered and "executor serves no
 workspace" cannot be reached from the form; `executor_plane`'s refusal remains the
-backstop. A place whose workspaces are not known (still being read, or down) draws
-a note and a text field for the name it serves, held to `creations.registered_name`,
+backstop. A place whose workspaces are not known (still being read, down, an executor
+that reported but registers nothing, or a pool whose reached executors share no
+workspace name) draws a note and a text field for the name it serves, held to `creations.registered_name`,
 so a person can still name a workspace on an executor that has not answered, as the
 earlier panel allowed; the daemon's refusal of an unserved name returns on the form.
 As soon as a list is known the select replaces the field.
@@ -859,6 +860,14 @@ adds one optional member to the whole-deployment reply.
   with its build and sessions and a quiet note that distribution is not configured
   and that `docs/distributed-setup.md` says how to add machines. The made-up node
   name is drawn nowhere, not on the card and not on the machine's own page.
+- **This daemon is titled by its ledger name.** The asking daemon used to be the one
+  row titled by its raw node string (`box@100.116.224.112`) while its peers were
+  titled by their short names. A daemon that runs from a ledger now takes the name
+  the ledger gives it (`Reach.self_name`, set by `deployment.named` in
+  `main.deployment_reach`), and the node string sits quietly beneath it as it does
+  for a peer. The home's "Runs on" card for this machine (`HomeAttachment.machine`)
+  reads the same field, so both pages agree. A daemon without a ledger has no such
+  name and keeps its node string.
 - **Unlinked members stay listed.** A ledger member this daemon does not dial is
   listed in its group, quieter than the rest, with "not linked from here" where the
   pill would be.

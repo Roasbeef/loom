@@ -147,6 +147,7 @@ fn reporting(
   let reach =
     deployment.Reach(
       self:,
+      self_name: self,
       footing: deployment.Distributed,
       host: Some("studio"),
       dial: fn(node, _within_ms) {

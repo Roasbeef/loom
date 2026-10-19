@@ -176,6 +176,7 @@ fn reach(
 ) {
   deployment.Reach(
     self:,
+    self_name: self,
     footing: deployment.Distributed,
     host: None,
     dial: fn(node, _within_ms) {
@@ -323,6 +324,7 @@ pub fn a_connected_node_that_waits_out_its_bound_reads_as_a_timeout_test() {
   let waiting =
     deployment.Reach(
       self:,
+      self_name: self,
       footing: deployment.Distributed,
       host: None,
       dial: fn(_node, _within_ms) { Ok(Nil) },
@@ -352,6 +354,7 @@ pub fn slow_targets_do_not_starve_the_fast_ones_test() {
   let world =
     deployment.Reach(
       self:,
+      self_name: self,
       footing: deployment.Distributed,
       host: None,
       dial: fn(node, _within_ms) {
@@ -391,6 +394,7 @@ pub fn a_node_that_is_not_connected_is_not_asked_test() {
     deployment.probe(
       deployment.Reach(
         self:,
+        self_name: self,
         footing: deployment.Distributed,
         host: None,
         dial: fn(_node, _within_ms) { Error(Unreachable) },
@@ -413,6 +417,7 @@ pub fn a_connection_that_never_settles_reads_as_down_by_the_deadline_test() {
   let stuck =
     deployment.Reach(
       self:,
+      self_name: self,
       footing: deployment.Distributed,
       host: None,
       dial: fn(_node, _within_ms) {
@@ -431,6 +436,7 @@ pub fn a_report_that_never_arrives_reads_as_down_by_the_deadline_test() {
   let stuck =
     deployment.Reach(
       self:,
+      self_name: self,
       footing: deployment.Distributed,
       host: None,
       dial: fn(_node, _within_ms) { Ok(Nil) },
@@ -449,6 +455,7 @@ pub fn a_connection_that_crashes_reads_as_down_test() {
   let crashing =
     deployment.Reach(
       self:,
+      self_name: self,
       footing: deployment.Distributed,
       host: None,
       dial: fn(_node, _within_ms) { panic as "boom" },
@@ -1533,6 +1540,26 @@ pub fn a_daemon_without_distribution_names_itself_and_connects_to_nobody_test() 
     deployment.status(alone, [OrchestratorRole], [], [], [], None)
   assert asker.node == "nonode@nohost"
   assert option.is_some(asker.report)
+}
+
+// A daemon is titled the way its peers are: by the name its ledger gives it, with
+// the node string beside it. Without a ledger the node string is all there is.
+pub fn the_asking_daemon_is_titled_by_its_ledger_name_test() {
+  let alone = deployment.alone("alpha@10.0.0.1")
+  let assert Ok(deployment.Overview(self: unnamed, ..)) =
+    deployment.status(alone, [OrchestratorRole], [], [], [], None)
+  assert unnamed.name == "alpha@10.0.0.1"
+  let assert Ok(deployment.Overview(self: named, ..)) =
+    deployment.status(
+      deployment.named(alone, "hub"),
+      [OrchestratorRole],
+      [],
+      [],
+      [],
+      None,
+    )
+  assert named.name == "hub"
+  assert named.node == "alpha@10.0.0.1"
 }
 
 // The creation panel's read connects to the executors and to nothing else: the

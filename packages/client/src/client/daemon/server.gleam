@@ -753,7 +753,7 @@ fn home_upgrade(
             executors: list.map(roster.rows(config.executors), fn(executor) {
               executor.name
             }),
-            machine: config.deployment.self,
+            machine: config.deployment.self_name,
             pools: list.map(config.pools, fn(pool) { pool.name }),
             placements: fn() {
               deployment.placed(

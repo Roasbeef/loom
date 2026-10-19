@@ -1769,6 +1769,13 @@ fn deployment_reach(config: Config) -> deployment.Reach {
     Some(membership) -> deployment.over(membership, self)
     None -> deployment.alone(self)
   }
+
+  // In ledger mode the daemon is a member, and the ledger's name for it is the
+  // one its peers use for it, so pages title it the way they title a peer.
+  let reach = case config.ledger {
+    Some(handle) -> deployment.named(reach, handle.name)
+    None -> reach
+  }
   deployment.Reach(..reach, host: ffi_os.host_name() |> option.from_result)
 }
 

@@ -202,6 +202,12 @@ pub type Reach {
   Reach(
     /// The asking daemon's node name.
     self: String,
+    /// The name pages show for the asking daemon: its name in the membership
+    /// ledger when it runs from one (`named`), and its node name otherwise.
+    /// Peers are titled by their short name with the node beneath, and this
+    /// keeps the asking daemon from being the one row titled by a raw node
+    /// string.
+    self_name: String,
     /// Whether the daemon runs with distribution: `Standalone` from `alone`,
     /// `Distributed` from `over`.
     footing: Footing,
@@ -253,6 +259,7 @@ fn unreported(self: String) -> fn() -> NodeReport {
 pub fn alone(self: String) -> Reach {
   Reach(
     self:,
+    self_name: self,
     footing: Standalone,
     host: None,
     dial: fn(_node, _within_ms) { Error(Unavailable) },
@@ -277,6 +284,7 @@ pub fn alone(self: String) -> Reach {
 pub fn over(membership: distribution.Membership, self: String) -> Reach {
   Reach(
     self:,
+    self_name: self,
     footing: Distributed,
     host: None,
     dial: fn(node, within_ms) {
@@ -315,6 +323,20 @@ pub fn over(membership: distribution.Membership, self: String) -> Reach {
     },
     own: unreported(self),
   )
+}
+
+/// The same reach with the asking daemon titled by `name`, the one its
+/// membership ledger gives it. `alone` and `over` title it by its node name,
+/// which is all a daemon without a ledger has.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert deployment.named(deployment.alone("loom@hub.example"), "hub").self_name
+///   == "hub"
+/// ```
+pub fn named(reach: Reach, name: String) -> Reach {
+  Reach(..reach, self_name: name)
 }
 
 /// The same reach with the closure that builds the asking daemon's own report.
@@ -870,7 +892,7 @@ fn survey(
   let asker =
     Node(
       node: reach.self,
-      name: reach.self,
+      name: reach.self_name,
       roles:,
       health: Reachable,
       report: own,
