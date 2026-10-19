@@ -32,7 +32,7 @@ esac
 # build time because a release is unpacked where there is no git checkout;
 # `unknown` is what a tree built without one honestly has, and the `||` keeps
 # that from failing the build under `set -e`.
-BUILD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+BUILD_COMMIT="$(scripts/build-commit.sh)"
 STRIP_ERTS="${DIST_STRIP_ERTS:-1}"
 [ "$DEBUG" = 1 ] && STRIP_ERTS=0
 REL_ROOT="$ROOT/build/release"

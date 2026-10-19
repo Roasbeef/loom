@@ -26,7 +26,7 @@ ROOT="$(pwd)"
 # tarball with no git metadata beside it; `unknown` is what a tree built
 # without one honestly has, and the `||` keeps that from failing the build
 # under `set -e`.
-BUILD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+BUILD_COMMIT="$(scripts/build-commit.sh)"
 
 # DIST_STRIP_ERTS covers every third-party binary the release copies in:
 # the ERTS ones and the bundled `gleam`. DIST_CODEMODE=0 builds the lean
