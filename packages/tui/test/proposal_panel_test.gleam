@@ -47,6 +47,28 @@ fn row(id: String, state: String, old: String, new: String) -> json.JsonValue {
   ])
 }
 
+// A configuration edit, the kind whose `old` and `new` are two versions of one
+// file, which is what makes the shared-context rendering visible.
+fn config_row(old: String, new: String) -> json.JsonValue {
+  json.Object([
+    #("id", json.String("prop-0000000009")),
+    #("kind", json.String("config")),
+    #("target", json.String("/home/me/.loom/loom.toml")),
+    #("base_digest", json.String("cbf29ce484222325-0")),
+    #("old", json.String(old)),
+    #("new", json.String(new)),
+    #("rationale", json.String("the 1017 snapshot is retired")),
+    #(
+      "source",
+      json.Object([
+        #("session", json.String("0198c0de-0000-7000-8000-000000000001")),
+      ]),
+    ),
+    #("created_ms", json.Int(now - 7_200_000)),
+    #("state", json.String("pending")),
+  ])
+}
+
 fn board(rows: List(json.JsonValue), pending: Int) -> proposals.Board {
   let assert Ok(decoded) =
     proposals.decode(
@@ -171,10 +193,10 @@ pub fn enter_opens_the_row_and_shows_the_edit_and_the_sentence_test() {
     "From session 0198c0de-0000-7000-8000-000000000001",
   )
   assert string.contains(text, "it failed twice")
-  assert string.contains(text, "Replaces text in loom-rules.md")
+  assert string.contains(text, "Changes loom-rules.md · +1 -1")
   assert string.contains(text, "- Run make test.")
   assert string.contains(text, "+ Run make check.")
-  assert string.contains(text, "A rule applies to new sessions only.")
+  assert string.contains(text, "Applies to new sessions only.")
   assert string.contains(text, "a approve · r reject")
 }
 
@@ -216,7 +238,7 @@ pub fn an_append_has_no_removed_line_test() {
   let board =
     Some(board([row("prop-0000000003", "pending", "", "Be brief.")], 1))
   let text = paint(open_first(board), board, "")
-  assert string.contains(text, "Adds a rule to loom-rules.md")
+  assert string.contains(text, "Adds a rule · +1")
   assert string.contains(text, "+ Be brief.")
   assert !string.contains(text, "- Be brief.")
 }
@@ -425,4 +447,94 @@ pub fn a_refused_read_is_drawn_in_the_open_review_test() {
     )
   assert string.contains(painted(refused), "Only the daemon's owner can review")
   assert !string.contains(painted(refused), "proposals 1")
+}
+
+// A configuration edit is drawn as the change it is: the file named short in
+// the heading, its complete path beneath, and the lines the two versions share
+// kept quiet around the one line that differs. That is the whole point of the
+// review — reading what changes, not reading two files.
+pub fn a_configuration_edit_draws_only_the_lines_that_change_test() {
+  let changed =
+    Some(board(
+      [
+        config_row(
+          "[models.flash]\nprovider = \"baseten\"\nmodel_id = \"v4-flash\"",
+          "[models.flash]\nprovider = \"baseten\"\nmodel_id = \"v41-flash\"",
+        ),
+      ],
+      1,
+    ))
+  let text = paint(open_first(changed), changed, "")
+  assert string.contains(text, "Changes loom.toml · +1 -1")
+  assert string.contains(text, "/home/me/.loom/loom.toml")
+  assert string.contains(text, "- model_id = \"v4-flash\"")
+  assert string.contains(text, "+ model_id = \"v41-flash\"")
+
+  // The unchanged lines are still shown, as context, and shown once each:
+  // exactly one row carries the header and exactly one carries the provider.
+  let rows = string.split(text, "\n")
+  assert list.length(
+      list.filter(rows, fn(row) { string.contains(row, "[models.flash]") }),
+    )
+    == 1
+  assert list.length(
+      list.filter(rows, fn(row) {
+        string.contains(row, "provider = \"baseten\"")
+      }),
+    )
+    == 1
+
+  // The complete old text is not shown as a removed block: the shared lines
+  // are context, so a line that did not change carries neither sign.
+  assert !string.contains(text, "- [models.flash]")
+  assert !string.contains(text, "+ [models.flash]")
+}
+
+// The sentence about what an approval reaches follows the row's own kind: a
+// person deciding a configuration edit must not be told the rule sentence.
+pub fn a_configuration_edit_says_what_a_configuration_approval_reaches_test() {
+  let changed = Some(board([config_row("a = 1", "a = 2")], 1))
+  let text = paint(open_first(changed), changed, "")
+  assert string.contains(
+    text,
+    "Applies when a session loads loom.toml next; each session that loads it",
+  )
+  assert !string.contains(text, "Applies to new sessions only")
+}
+
+// A rule's own review keeps the sentence about new sessions, so the config
+// wording did not leak into every proposal.
+pub fn a_rule_still_says_it_applies_to_new_sessions_test() {
+  let rules = Some(two())
+  assert string.contains(
+    paint(open_first(rules), rules, ""),
+    "Applies to new sessions only",
+  )
+}
+
+// Context lines are quiet and unmarked, so the coloured bands are only the
+// lines that actually change.
+pub fn context_lines_are_drawn_quiet_and_unmarked_test() {
+  let changed =
+    Some(board(
+      [
+        config_row("keep\nold", "keep\nnew"),
+      ],
+      1,
+    ))
+  let drawn =
+    proposal_panel.render(
+      buffer.buffer_new(area()),
+      area(),
+      open_first(changed),
+      changed,
+      "",
+      now,
+    )
+  let rows = string.split(frame.buffer_to_text(drawn), "\n")
+  let context = cell_of(drawn, rows, "keep")
+  assert context.style.fg == theme.quiet
+  assert !string.contains(frame.buffer_to_text(drawn), "- keep")
+  assert string.contains(frame.buffer_to_text(drawn), "- old")
+  assert string.contains(frame.buffer_to_text(drawn), "+ new")
 }
