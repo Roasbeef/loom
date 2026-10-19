@@ -208,7 +208,16 @@ fn reread(
         | rule.TooLarge
         | rule.Unavailable -> effect.none()
       }
-      #(Model(..model, diagram:, copy: Untouched), wait)
+      // Empty and oversized source drop the iframe from the view, so the
+      // next one loads afresh and must announce itself before a post; a
+      // stale Ready would post into the unloaded window and start the
+      // deadline against the load.
+      let frame = case diagram.phase {
+        rule.Empty | rule.TooLarge -> Loading
+        rule.Waiting | rule.Rendering | rule.Shown(_) | rule.Unavailable ->
+          model.frame
+      }
+      #(Model(..model, diagram:, frame:, copy: Untouched), wait)
     }
   }
 }
