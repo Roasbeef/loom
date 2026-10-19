@@ -11,6 +11,7 @@ import gleam/int
 import gleam/list
 import gleam/string
 import tui/mermaid
+import tui/mermaid/draw
 import tui/mermaid/layout
 import tui/mermaid/model
 import tui/mermaid/parse
@@ -74,10 +75,10 @@ pub fn decision_with_labelled_branches_test() {
         " ╔════════╗",
         " ║ Ready? ║",
         " ╚════════╝",
-        "    │    │",
-        "    │    └───┐",
-        "    │ yes    │ no",
-        "    ▼        ▼",
+        "   │     │",
+        "   │     │ no",
+        "   │ yes └───┐",
+        "   ▼         ▼",
         "┌────┐    ┌──────┐",
         "│ Go │    │ Wait │",
         "└────┘    └──────┘",
@@ -186,4 +187,50 @@ pub fn reasons_are_short_phrases_test() {
     == "not drawn: too wide for this terminal"
   assert mermaid.reason(model.Unsupported("subgraph statements"))
     == "not drawn: subgraph statements are not supported"
+}
+
+// --- the router's work is bounded ---------------------------------------
+
+// The most search states the router may expand to draw a diagram at the caps,
+// 32 nodes and 48 edges. Drawing such a diagram takes about 16,000 on the
+// shapes below. The budget leaves room to double that and still sits two orders
+// of magnitude under what a search over the whole canvas for every edge spent
+// before the search was windowed and guided, so a change that brings the
+// blow-up back fails here on a count, which does not vary with the machine.
+const expansion_budget = 40_000
+
+// A chart of 32 nodes and 48 edges whose targets are scattered by a multiplier,
+// so edges skip layers, cross, and close cycles.
+fn scattered(multiplier: Int) -> model.Flowchart {
+  let lines =
+    model.indices(48)
+    |> list.map(fn(index) {
+      let from = index % 32
+      let to = { multiplier * index + 3 } % 32
+      let target = case to == from {
+        True -> { to + 1 } % 32
+        False -> to
+      }
+      "N" <> int.to_string(from) <> " --> N" <> int.to_string(target)
+    })
+  let assert Ok(model.Flow(chart)) =
+    parse.parse("graph TD\n" <> string.join(lines, "\n"))
+  chart
+}
+
+// A direction may be refused as unroutable, and `mermaid.render` then draws the
+// other, so each shape must draw in at least one direction and every drawing
+// that succeeds must stay within the budget.
+pub fn the_router_expands_a_bounded_number_of_states_test() {
+  list.each([3, 7, 17, 29], fn(multiplier) {
+    let drawn =
+      [model.TopDown, model.LeftRight]
+      |> list.filter_map(fn(direction) {
+        draw.flowchart(scattered(multiplier), direction)
+      })
+    assert drawn != []
+    list.each(drawn, fn(drawing) {
+      assert drawing.expansions <= expansion_budget
+    })
+  })
 }

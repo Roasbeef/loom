@@ -42,6 +42,13 @@ import tui/mermaid/model.{
 }
 import tui/mermaid/route.{type Side}
 
+/// A finished flowchart drawing, and how many search states the router
+/// expanded to route its edges. The count is the measure of the renderer's
+/// work that does not depend on the machine, so a test can bound it.
+pub type Drawing {
+  Drawing(canvas: Canvas, expansions: Int)
+}
+
 /// Draws a flowchart for a direction onto a canvas, or says why it cannot.
 ///
 /// The caller crops and styles the canvas with `canvas.rows`. A routing
@@ -51,14 +58,14 @@ import tui/mermaid/route.{type Side}
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(canvas) = draw.flowchart(chart, model.TopDown)
+/// let assert Ok(drawing) = draw.flowchart(chart, model.TopDown)
 /// ```
 pub fn flowchart(
   chart: Flowchart,
   direction: Direction,
-) -> Result(Canvas, Refusal) {
+) -> Result(Drawing, Refusal) {
   use placement <- result.try(layout.place(chart, direction))
-  let painted = paint_boxes(chart, placement)
+  let painted = Drawing(canvas: paint_boxes(chart, placement), expansions: 0)
   let order = routing_order(chart.edges, placement.boxes)
   list.try_fold(order, painted, fn(current, index) {
     route_edge(current, chart, placement, index)
@@ -117,21 +124,24 @@ fn flow_of(flows: List(layout.Flow), index: Int) -> layout.Flow {
 }
 
 fn route_edge(
-  current: Canvas,
+  current: Drawing,
   chart: Flowchart,
   placement: Placement,
   index: Int,
-) -> Result(Canvas, Refusal) {
+) -> Result(Drawing, Refusal) {
   use edge <- result.try(edge_at(chart.edges, index))
   let #(exit, entry) =
     sides_for(placement.direction, flow_of(placement.flows, index))
   let source = box_at(placement.boxes, edge.from)
   let target = box_at(placement.boxes, edge.to)
-  case route.find(current, source, exit, target, entry) {
+  case route.find(current.canvas, source, exit, target, entry) {
     Error(_) -> Error(model.Unroutable)
-    Ok(path) ->
-      commit(current, path, exit, entry, edge)
+    Ok(route.Found(cells: path, expansions:)) ->
+      commit(current.canvas, path, exit, entry, edge)
       |> place_label(path, edge.label, placement.direction)
+      |> result.map(fn(painted) {
+        Drawing(canvas: painted, expansions: current.expansions + expansions)
+      })
   }
 }
 

@@ -53,47 +53,58 @@ import tui/theme
 /// ```
 pub fn render(source: String, width: Int) -> Result(List(span.Line), Refusal) {
   use diagram <- result.try(parse.parse(source))
-  use drawn <- result.try(case diagram {
+  use picture <- result.try(case diagram {
     model.Flow(chart) -> fit(chart, width)
-    model.Sequenced(sequence) -> sequence.draw(sequence)
+    model.Sequenced(sequence) -> sequence.draw(sequence) |> result.map(read_out)
   })
-  case canvas.drawn_width(drawn) <= width {
-    True -> Ok(lines(drawn))
+  case picture.width <= width {
+    True -> Ok(lines(picture.rows))
     False -> Error(model.TooWide)
   }
 }
 
+// A drawing read out of its canvas once: its rows, and how wide the widest is.
+type Picture {
+  Picture(rows: List(List(canvas.Run)), width: Int)
+}
+
+fn read_out(drawn: Canvas) -> Picture {
+  let rows = canvas.rows(drawn)
+  Picture(rows:, width: canvas.rows_width(rows))
+}
+
 // The first direction that draws within the width, the declared one before the
-// transposed one. If neither fits, the declared drawing is returned for the
-// caller's width check to refuse, so a refusal always names the declared one.
-fn fit(chart: Flowchart, width: Int) -> Result(Canvas, Refusal) {
-  let declared = draw.flowchart(chart, chart.direction)
-  case declared {
-    Ok(drawn) ->
-      case canvas.drawn_width(drawn) <= width {
-        True -> Ok(drawn)
-        False -> transposed_or(drawn, chart, width)
+// transposed one. The transposed layout is only built when the declared one is
+// too wide or cannot be drawn. If neither fits, the declared picture is
+// returned for the caller's width check to refuse, so a refusal always names
+// the declared one.
+fn fit(chart: Flowchart, width: Int) -> Result(Picture, Refusal) {
+  case draw.flowchart(chart, chart.direction) {
+    Ok(drawn) -> {
+      let declared = read_out(drawn.canvas)
+      case declared.width <= width {
+        True -> Ok(declared)
+        False -> Ok(transposed_or(declared, chart, width))
       }
+    }
     Error(refusal) ->
       case draw.flowchart(chart, transpose(chart.direction)) {
-        Ok(drawn) -> Ok(drawn)
+        Ok(drawn) -> Ok(read_out(drawn.canvas))
         Error(_) -> Error(refusal)
       }
   }
 }
 
-fn transposed_or(
-  declared: Canvas,
-  chart: Flowchart,
-  width: Int,
-) -> Result(Canvas, Refusal) {
+fn transposed_or(declared: Picture, chart: Flowchart, width: Int) -> Picture {
   case draw.flowchart(chart, transpose(chart.direction)) {
-    Ok(drawn) ->
-      case canvas.drawn_width(drawn) <= width {
-        True -> Ok(drawn)
-        False -> Ok(declared)
+    Ok(drawn) -> {
+      let other = read_out(drawn.canvas)
+      case other.width <= width {
+        True -> other
+        False -> declared
       }
-    Error(_) -> Ok(declared)
+    }
+    Error(_) -> declared
   }
 }
 
@@ -104,9 +115,8 @@ fn transpose(direction: Direction) -> Direction {
   }
 }
 
-fn lines(drawn: Canvas) -> List(span.Line) {
-  canvas.rows(drawn)
-  |> list.map(fn(runs) {
+fn lines(read: List(List(canvas.Run))) -> List(span.Line) {
+  list.map(read, fn(runs) {
     case runs {
       [] -> span.line_plain("")
       _ -> span.line_new(list.map(runs, run_span))

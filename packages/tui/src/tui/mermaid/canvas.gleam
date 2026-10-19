@@ -431,8 +431,21 @@ fn drop_trailing_blank(runs: List(Run)) -> List(Run) {
 /// // -> 2
 /// ```
 pub fn drawn_width(canvas: Canvas) -> Int {
-  rows(canvas)
-  |> list.fold(0, fn(widest, row) {
+  rows_width(rows(canvas))
+}
+
+/// The width in cells of the widest of some rows already read out. A caller
+/// that needs both the rows and their width reads the canvas once and measures
+/// the rows, rather than reading it twice.
+///
+/// ## Examples
+///
+/// ```gleam
+/// canvas.rows_width([[canvas.Run("ab", canvas.Body)]])
+/// // -> 2
+/// ```
+pub fn rows_width(read: List(List(Run))) -> Int {
+  list.fold(read, 0, fn(widest, row) {
     int.max(
       widest,
       list.fold(row, 0, fn(total, run) { total + text.cell_width(run.text) }),
