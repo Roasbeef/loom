@@ -549,7 +549,7 @@
   /* The home's bar is the session bar's: the principal in the bar's sans face
      with the ceiling as a quiet pill, and the status as the same pill. */
   .session-head .home-who{display:flex;align-items:center;gap:8px;margin-left:auto;color:var(--color-fg);font:500 13px/1.4 var(--font-sans);}
-  .home-badge{padding:0 8px;border:1px solid var(--color-divider);border-radius:99px;color:var(--color-fg-quiet);font:12px/1.6 var(--font-sans);}
+  .home-badge{padding:0 8px;border:1px solid var(--color-divider);border-radius:99px;color:var(--color-fg-quiet);font:12px/1.6 var(--font-sans);white-space:nowrap;}
   main.centre > .home-sessions{flex:1 1 0;min-height:0;max-width:960px;padding-bottom:24px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
   .home-heading{margin:0 0 12px 0;font:600 15px/1.4 var(--font-sans);}
   .home-empty{margin:0;color:var(--color-fg-quiet);}
@@ -1463,18 +1463,39 @@
   .admin-body loom-copy{display:flex;align-items:center;gap:8px;}
   .admin-body loom-reveal{display:none;}
   /* The Deployment section and the machines' pages (protocol-change/085, the
-     addendum of 2026-10-16). The table scrolls sideways inside its box so its
-     columns keep their widths on a narrow screen. A machine's page is a tinted
-     block with a hairline border, and the chosen tab and row are tinted: no
-     coloured edge and no shadow anywhere. */
+     addenda of 2026-10-16 and 2026-10-19). Each group of machines is one list
+     tinted like a raised surface, ringed by a hairline, with a hairline between
+     rows: no coloured edge and no shadow. A row is the name, its state pill and
+     a quiet line under them on the left, and the facts in a wrapping line on the
+     right. Nothing here is a table cell, so a long name cannot starve a column:
+     the pills and the labels never wrap, a name breaks only where it would
+     overflow, and only the node string may break anywhere. On a phone the facts
+     stack under the name as label and value. A machine's page is a tinted block
+     with a hairline border, and the chosen tab and row are tinted. */
   .admin-notes{display:flex;flex-direction:column;gap:2px;}
-  .admin-machines-wrap{overflow-x:auto;border:1px solid var(--color-divider);border-radius:8px;}
-  table.admin-machines{width:100%;border-collapse:collapse;font:13px/1.4 var(--font-sans);}
-  table.admin-machines th{padding:6px 10px;text-align:left;font-weight:500;color:var(--color-fg-quiet);border-bottom:1px solid var(--color-divider);white-space:nowrap;}
-  table.admin-machines td{padding:2px 10px;border-bottom:1px solid var(--color-divider);vertical-align:middle;overflow-wrap:anywhere;}
-  table.admin-machines tr:last-child td{border-bottom:0;}
-  tr.admin-machine-row[aria-current]{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
-  table.admin-machines .admin-pick{width:auto;min-height:36px;padding:4px 0;}
+  .admin-summary{margin:2px 0 8px 0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);overflow-wrap:break-word;}
+  .admin-group{margin:16px 0 0 0;}
+  .admin-group > .admin-subheading{margin:0 0 6px 0;}
+  .admin-group > .admin-note{margin:8px 0 0 0;}
+  ul.admin-fleet{list-style:none;margin:0;padding:0;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);overflow:hidden;}
+  li.admin-node{margin:0;}
+  li.admin-node + li.admin-node{border-top:1px solid var(--color-divider);}
+  .admin-node-pick{display:grid;grid-template-columns:minmax(0,15rem) minmax(0,1fr);grid-template-areas:"head facts" "sub facts";align-items:start;align-content:start;gap:2px 20px;box-sizing:border-box;width:100%;min-height:44px;margin:0;padding:8px 12px;border:0;border-radius:0;background:transparent;color:inherit;font:inherit;text-align:left;}
+  .admin-node-pick[aria-current]{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
+  .admin-node-head{grid-area:head;display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;min-width:0;}
+  .admin-node-head .admin-name{min-width:0;overflow-wrap:break-word;}
+  .admin-node-sub{grid-area:sub;display:flex;flex-wrap:wrap;gap:0 8px;min-width:0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .admin-node-id{min-width:0;font:12px/1.4 var(--font-mono);overflow-wrap:anywhere;}
+  .admin-node-facts{grid-area:facts;display:flex;flex-wrap:wrap;gap:2px 18px;min-width:0;font:13px/1.5 var(--font-sans);}
+  .admin-node-fact{display:inline-flex;align-items:baseline;gap:6px;min-width:0;max-width:100%;}
+  .admin-node-label{flex:0 0 auto;color:var(--color-fg-quiet);font:12px/1.5 var(--font-sans);white-space:nowrap;}
+  .admin-node-value{min-width:0;overflow-wrap:break-word;}
+  li.admin-node.unlinked .admin-name,li.admin-node.unlinked .admin-node-value{color:var(--color-fg-quiet);}
+  @media (max-width:640px){
+    .admin-node-pick{grid-template-columns:minmax(0,1fr);grid-template-areas:"head" "sub" "facts";}
+    .admin-node-facts{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;margin-top:6px;}
+    .admin-node-fact{display:contents;}
+  }
   section.admin-machine{margin:12px 0 0 0;padding:12px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg-raised);}
   .admin-machine-head{display:flex;flex-direction:column;gap:2px;margin:0 0 8px 0;}
   .admin-machine-title{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;}
@@ -1485,6 +1506,13 @@
   button.admin-tab:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   button.admin-tab[aria-selected="true"]{color:var(--color-fg);background:color-mix(in srgb,var(--color-current) 12%,transparent);}
   button.admin-tab:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  /* A machine's four tabs stay on one row on a phone and scroll sideways in
+     their own strip when the row is narrower than they are, so Activity does
+     not drop under Overview. */
+  @media (max-width:640px){
+    .admin-tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;}
+    button.admin-tab{flex:0 0 auto;padding:4px 10px;}
+  }
   .admin-tabpanel{display:flex;flex-direction:column;gap:8px;}
   dl.admin-facts{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:0;}
   dt.admin-fact-label{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
@@ -1658,7 +1686,7 @@
   button.steer{border-color:var(--color-signal);color:var(--color-signal-text);}
   button.steer:hover{background:color-mix(in srgb,var(--color-signal) 10%,transparent);}
   /* A status pill (the connected state in the bar). */
-  .pill{display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:999px;font:12px/1.6 var(--font-sans);}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:999px;font:12px/1.6 var(--font-sans);white-space:nowrap;}
   .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:0 0 auto;}
   .pill.online{background:var(--color-pill-ok-bg);color:var(--color-added-text);}
   .pill.pending{background:var(--color-pill-wait-bg);color:var(--color-signal-text);}
@@ -1700,6 +1728,9 @@
     ul.settled-chips{flex-direction:column;}
   }
   @media (max-width:640px){main.centre{padding:12px 12px 0;}li.chip{width:200px;} .line.user{padding:6px 10px;} .hint{display:none;}}
+  /* The home and the admin page are lists, not a transcript, and keep a 16px
+     gutter on a phone so a row's text stops short of the screen's edge. */
+  @media (max-width:640px){main.centre:has(> .home-sessions),main.centre:has(> .admin-body){padding-left:16px;padding-right:16px;}}
   @media (prefers-reduced-motion:reduce){*:not(.arming):not(.arm-note){transition:none!important;animation:none!important;}}
 }
 
