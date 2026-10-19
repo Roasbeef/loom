@@ -67,7 +67,7 @@
    input 305d0be7424c3d5ba8caaf6d2a83dbc82c335df1fdb8a6701f7e37ac18e5a7a3  packages/web_view/src/web_view/names.gleam
    input d3576abf7781f7a23eb533c25ccb72c5facf3242881512c9c94a81d367dacf07  packages/web_view/src/web_view/notes.gleam
    input 01d9f63333a262193bbe6589c89f1c478938b904d28ad4e45856536c13b30130  packages/web_view/src/web_view/operator_commands.gleam
-   input 2b1306eb007f7f384694585298e8c107368c8419ba49a5750474ff09a9e8ed76  packages/web_view/src/web_view/operator_page.gleam
+   input 7dd7c2a494fb397819c4fc80921b68474243777415513356795872a24d043855  packages/web_view/src/web_view/operator_page.gleam
    input ab1cbd8b1f51f6018d153b0c6ca5a3f1edb14f95c050e6df12adb55c1efd5103  packages/web_view/src/web_view/page.gleam
    input d1ee8ae66bc605c456fb34fc32a94178102d101b09eaea870d543dd78f274474  packages/web_view/src/web_view/peer_links.gleam
    input c71647a6dcc77167e7c2f6315f6fe8dd99922aab08f3989a3b8caeb8624f5be4  packages/web_view/src/web_view/placements.gleam
@@ -111,7 +111,7 @@
    input d5a064ff3c89026a6b74133741f083a07676357aa4c82a4d4a0292c0590bdaac  packages/web_view/src/web_view/view/peek.gleam
    input 9c689ab2851ea7166ec4ddd537a3f50e5df694a0880ceb0fabd4fac2312a954d  packages/web_view/src/web_view/view/peer_links.gleam
    input 54e7411eb767bba9e110b877c91ddbb01a94d383751b0e9308fc57072912bbfb  packages/web_view/src/web_view/view/program_card.gleam
-   input fb40a0dc49b030cd23e4f207530e92cf11a27abe76dcdf5f5ec7717ecd8a1217  packages/web_view/src/web_view/view/proposals.gleam
+   input 56cebffdf0c30b80619dd2470607b13931c1446ad4f1b61d4b81b9b8a9dce2ad  packages/web_view/src/web_view/view/proposals.gleam
    input 435bd95d42fb973c7fa1d2279406532e94906558318d29b091c81bebbe1cb678  packages/web_view/src/web_view/view/queue_input.gleam
    input 8f3bced1f7722420506cff7c998ae3b63c7dd1fdbb87a6239e0f7eb522b56b8f  packages/web_view/src/web_view/view/remembered.gleam
    input fcfe8c7f95e07b4fa7f12732c09d3e1ebaf63357419975a9fe8551a6c9712ffb  packages/web_view/src/web_view/view/rename.gleam

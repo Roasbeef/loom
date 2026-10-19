@@ -41,6 +41,28 @@ fn row(id: String, state: String, old: String, new: String) -> json.JsonValue {
   ])
 }
 
+// A configuration edit: the same shape as a rule's row, with the kind and the
+// host-filled path a config proposal carries.
+fn config_row(old: String, new: String) -> json.JsonValue {
+  json.Object([
+    #("id", json.String("prop-0000000002")),
+    #("kind", json.String("config")),
+    #("target", json.String("/home/me/.loom/loom.toml")),
+    #("base_digest", json.String("cbf29ce484222325-0")),
+    #("old", json.String(old)),
+    #("new", json.String(new)),
+    #("rationale", json.String("the snapshot moved")),
+    #(
+      "source",
+      json.Object([
+        #("session", json.String("0198c0de-0000-7000-8000-000000000001")),
+      ]),
+    ),
+    #("created_ms", json.Int(1_790_000_000_000)),
+    #("state", json.String("pending")),
+  ])
+}
+
 fn board(rows: List(json.JsonValue), pending: Int) -> json.JsonValue {
   json.Object([
     #("proposals", json.Array(rows)),
@@ -249,6 +271,112 @@ pub fn an_append_has_no_removed_lines_test() {
   let assert [only] = decoded.proposals
   assert list.map(proposals.diff_lines(only), fn(line) { line.kind })
     == [diff_view.Added]
+}
+
+// A configuration edit is the case the shared-line walk exists for: its old
+// and new texts are two versions of one file, so the lines around the change
+// are context and the change itself is one removed row beside one added row.
+pub fn a_configuration_edit_keeps_the_shared_lines_as_context_test() {
+  let assert Ok(decoded) =
+    proposals.decode(board(
+      [
+        config_row(
+          "[models.flash]\nprovider = \"baseten\"\nmodel_id = \"v4-flash\"",
+          "[models.flash]\nprovider = \"baseten\"\nmodel_id = \"v41-flash\"",
+        ),
+      ],
+      1,
+    ))
+  let assert [only] = decoded.proposals
+  let lines = proposals.diff_lines(only)
+  assert list.map(lines, fn(line) { line.kind })
+    == [
+      diff_view.Context,
+      diff_view.Context,
+      diff_view.Removed,
+      diff_view.Added,
+    ]
+  assert list.map(lines, fn(line) { line.text })
+    == [
+      "[models.flash]",
+      "provider = \"baseten\"",
+      "model_id = \"v4-flash\"",
+      "model_id = \"v41-flash\"",
+    ]
+}
+
+// The runs must be drawn in the order the texts hold them. A walk that finds
+// the shared tail by reversing both texts returns its middles reversed too,
+// and a single changed line would hide that: it needs two lines either side.
+pub fn removed_and_added_runs_keep_their_own_order_test() {
+  let lines =
+    proposals.edit_lines(
+      "head\nremoved-one\nremoved-two\ntail",
+      "head\nadded-one\nadded-two\ntail",
+    )
+  assert lines
+    |> list.map(fn(line) { #(line.kind, line.text) })
+    == [
+      #(diff_view.Context, "head"),
+      #(diff_view.Removed, "removed-one"),
+      #(diff_view.Removed, "removed-two"),
+      #(diff_view.Added, "added-one"),
+      #(diff_view.Added, "added-two"),
+      #(diff_view.Context, "tail"),
+    ]
+}
+
+// A rule proposal replaces one rule with another rather than two versions of
+// one text, so nothing is shared: the two runs sit adjacent, as they always
+// did, and no line is wrongly presented as unchanged context.
+pub fn a_rule_that_shares_no_line_is_only_removed_and_added_test() {
+  let kinds =
+    proposals.edit_lines("Run make test.", "Run make check.")
+    |> list.map(fn(line) { line.kind })
+  assert kinds == [diff_view.Removed, diff_view.Added]
+}
+
+pub fn the_change_count_counts_only_the_changed_lines_test() {
+  assert proposals.edit_counts(
+      "[models.flash]\nmodel_id = \"a\"",
+      "[models.flash]\nmodel_id = \"b\"",
+    )
+    == "+1 -1"
+  assert proposals.edit_counts("", "one\ntwo") == "+2"
+  assert proposals.edit_counts("gone", "") == "-1"
+  assert proposals.edit_counts("same", "same") == "no change"
+}
+
+pub fn a_target_is_labelled_by_its_last_segment_test() {
+  assert proposals.target_label("/home/me/.loom/loom.toml") == "loom.toml"
+  assert proposals.target_label("loom-rules.md") == "loom-rules.md"
+  assert proposals.target_label("/a/b/") == "b"
+}
+
+// What an approval reaches depends on what it approves: a rule binds sessions
+// opened after it, and a configuration edit reopens the sessions that load the
+// file. The rule sentence must not be told to somebody deciding a config edit.
+pub fn what_an_approval_reaches_follows_the_rows_kind_test() {
+  let assert Ok(decoded) =
+    proposals.decode(board(
+      [
+        config_row("a = 1", "a = 2"),
+      ],
+      1,
+    ))
+  let assert [config] = decoded.proposals
+  assert proposals.reach_words(config)
+    == "Applies when a session loads loom.toml next; each session that loads it reopens once idle."
+  let assert Ok(rule_board) =
+    proposals.decode(board(
+      [
+        row("prop-0000000002", "pending", "old rule", "new rule"),
+      ],
+      1,
+    ))
+  let assert [rule] = rule_board.proposals
+  assert proposals.reach_words(rule)
+    == "Applies to new sessions only. A running session keeps the rules it started with."
 }
 
 pub fn the_badge_shows_only_when_something_waits_test() {

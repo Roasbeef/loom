@@ -1577,6 +1577,50 @@ pub fn bash_tool_call_shows_the_command_not_its_json_envelope_test() {
     == "Bash($ gleam test --target erlang)"
 }
 
+// A `propose` call is the one tool row whose arguments were ever shown as raw
+// JSON, and that is exactly the row a person reads before approving a
+// configuration change. It says what file and how much changes instead, and
+// its expanded detail draws the edit as a diff rather than as escaped quotes.
+pub fn propose_tool_call_says_what_would_change_test() {
+  let arguments =
+    json.Object([
+      #("target", json.String("config")),
+      #("old", json.String("model_id = \"v4-flash\"")),
+      #("new", json.String("model_id = \"v41-flash\"")),
+      #("rationale", json.String("the snapshot is retired")),
+    ])
+
+  let compact = transcript_lines.tool_call_summary("propose", arguments, False)
+  assert compact
+    == "propose · the configuration · +1 -1 · the snapshot is retired"
+
+  // Nothing of the transport envelope survives: no braces, no key names, and
+  // no escaped quote standing in for a quote the model wrote.
+  assert !string.contains(compact, "{")
+  assert !string.contains(compact, "\\\"")
+
+  // The same call expanded keeps the same one-line summary, and its detail
+  // rows carry the edit as the diff it is.
+  assert transcript_lines.tool_call_summary("propose", arguments, True)
+    == compact
+  let detail =
+    transcript_lines.assistant_block_lines(
+      message.AssistantToolCall(message.ToolCall(
+        id: "call-1",
+        name: "propose",
+        arguments: arguments,
+        thought_signature: None,
+        namespace: None,
+      )),
+      False,
+      None,
+    )
+    |> list.map(fn(line) { line.text })
+    |> string.join("\n")
+  assert string.contains(detail, "-model_id = \"v4-flash\"")
+  assert string.contains(detail, "+model_id = \"v41-flash\"")
+}
+
 // A run of reads on one file is only distinguishable in the transcript if
 // the row says which window each one asked for, and the absence of
 // `offset` has to be visible as an absence.

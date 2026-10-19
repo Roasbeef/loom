@@ -219,13 +219,33 @@ fn drawer(row: board_words.Proposal) -> Element(message) {
     html.p([attribute.class("proposal-rationale")], [html.text(row.rationale)]),
     html.p([attribute.class("session-quiet")], [html.text(edit_words(row))]),
     diff.view(board_words.diff_lines(row), 0),
+    html.p([attribute.class("session-quiet")], [
+      html.text(board_words.reach_words(row)),
+    ]),
   ])
 }
 
+// What the edit does, in the same words the terminal's review uses: the file
+// named short and the size of the change, with the complete path beside it
+// because a page has the room a terminal line does not.
 fn edit_words(row: board_words.Proposal) -> String {
+  let size = board_words.change_counts(row)
+
+  // The complete path follows the short one only when they differ: a rule's
+  // target is already its own file name, and printing it twice reads as two
+  // files.
+  let path = case board_words.target_label(row.target) == row.target {
+    True -> ""
+    False -> " · " <> row.target
+  }
   case row.old {
-    "" -> "Adds a " <> board_words.kind_words(row.kind) <> " to " <> row.target
-    _ -> "Replaces text in " <> row.target
+    "" -> "Adds a " <> board_words.kind_words(row.kind) <> " · " <> size <> path
+    _ ->
+      "Changes "
+      <> board_words.target_label(row.target)
+      <> " · "
+      <> size
+      <> path
   }
 }
 
@@ -298,6 +318,86 @@ fn question(
       ),
     ]),
   ])
+}
+
+/// Pending, decidable proposals from `board` rendered as inline approval-style
+/// cards for the dock above the composer. Each card is keyed by its index in
+/// the pending list so no model-authored text is ever a key or attribute.
+/// A board with no pending proposals returns `[]`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert proposals_view.dock_cards(None, proposals.new(), presses) == []
+/// ```
+pub fn dock_cards(
+  board: Option(board_words.Board),
+  state: State,
+  presses: Presses(message),
+) -> List(#(String, Element(message))) {
+  case board {
+    None -> []
+    Some(board) -> {
+      let pending_rows = list.filter(board.proposals, board_words.decidable)
+      list.index_map(pending_rows, fn(row, index) {
+        #(int.to_string(index), dock_card(row, state, presses))
+      })
+    }
+  }
+}
+
+fn dock_card(
+  row: board_words.Proposal,
+  state: State,
+  presses: Presses(message),
+) -> Element(message) {
+  html.article([attribute.class("approval-card proposal-card")], [
+    html.p([attribute.class("approval-head")], [
+      html.b([attribute.class("approval-strand")], [html.text(row.id)]),
+      html.text(" proposes a " <> board_words.kind_words(row.kind) <> " for "),
+      html.span([attribute.class("proposal-ref")], [html.text(row.target)]),
+      html.text(" · " <> board_words.change_counts(row)),
+    ]),
+    html.p([attribute.class("approval-question")], [html.text(row.rationale)]),
+    diff.view(board_words.diff_lines(row), 0),
+    html.p([attribute.class("session-quiet")], [
+      html.text(board_words.reach_words(row)),
+    ]),
+    dock_ending(row, state, presses),
+  ])
+}
+
+fn dock_ending(
+  row: board_words.Proposal,
+  state: State,
+  presses: Presses(message),
+) -> Element(message) {
+  case proposals.asking(state, row.id) {
+    True -> question(row, presses)
+    False ->
+      html.div(
+        [attribute.class("approval-actions"), attribute.class("arming")],
+        [
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("approval-deny proposal-reject"),
+              event.on_click(presses.reject(row.id)),
+            ],
+            [html.text("Reject " <> board_words.kind_words(row.kind))],
+          ),
+          html.button(
+            [
+              attribute.type_("button"),
+              attribute.class("approval-allow proposal-approve"),
+              event.on_click(presses.ask(row.id)),
+            ],
+            [html.text("Approve " <> board_words.kind_words(row.kind) <> "…")],
+          ),
+          html.span([attribute.class("arm-note")], [html.text("Arming…")]),
+        ],
+      )
+  }
 }
 
 /// The badge a heading or a tab may show for the board: nothing when none are
