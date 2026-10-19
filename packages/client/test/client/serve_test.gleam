@@ -1874,6 +1874,25 @@ pub fn configured_tools_precede_system_launchers_test() {
   assert path == "/tool/bin:/opt/homebrew/bin:/usr/bin:/bin"
 }
 
+pub fn host_otp_precedes_bundled_release_erts_in_tool_environment_test() {
+  // A packaged release's `erts-<vsn>/bin` carries only the bare emulator for
+  // satellites (without `eunit`). Host and configured OTP directories must
+  // precede it so `gleam test` in a tool shell uses the full OTP installation,
+  // while the bundled `erts-<vsn>/bin` still precedes `/usr/local/bin`.
+  let #(environment, _unset) =
+    workspace_policy.tool_environment(
+      "/work",
+      Some("/release/bin:/release/erts-17.0.5/bin:/usr/local/bin:/usr/bin:/bin"),
+      None,
+      networked_tools(),
+      reading: fn(_name) { Error(Nil) },
+    )
+  let assert Ok(path) = list.key_find(environment, "PATH")
+    as "tool environment always carries PATH"
+  assert path
+    == "/release/bin:/opt/homebrew/bin:/release/erts-17.0.5/bin:/usr/local/bin:/usr/bin:/bin"
+}
+
 pub fn an_unset_configured_name_is_skipped_and_reported_test() {
   // Skipped, not defaulted to the empty string: a `gh` handed
   // `GH_TOKEN=""` reads as logged out in a way no operator asked for.

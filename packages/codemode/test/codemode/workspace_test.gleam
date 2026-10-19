@@ -762,7 +762,13 @@ pub fn a_missed_find_is_stale_and_applies_nothing_test() {
 pub fn an_ambiguous_find_is_refused_with_its_count_test() {
   let edits = [workspace.Replacement(find: "a", replace_with: "b")]
   assert workspace.apply_replacements("a a a", edits)
-    == Error(workspace.AmbiguousFind(find: "a", count: 3))
+    == Error(workspace.AmbiguousFind(find: "a", count: 3, lines: [1, 1, 1]))
+}
+
+pub fn an_ambiguous_find_reports_one_based_match_lines_test() {
+  let edits = [workspace.Replacement(find: "dup", replace_with: "fixed")]
+  assert workspace.apply_replacements("first\ndup\nthird\ndup\n", edits)
+    == Error(workspace.AmbiguousFind(find: "dup", count: 2, lines: [2, 4]))
 }
 
 pub fn an_overlapping_find_counts_non_overlapping_matches_test() {
@@ -788,7 +794,7 @@ pub fn an_overlapping_find_with_two_matches_is_ambiguous_test() {
   // never have touched.
   let edits = [workspace.Replacement(find: "aa", replace_with: "X")]
   assert workspace.apply_replacements("aaaa", edits)
-    == Error(workspace.AmbiguousFind(find: "aa", count: 2))
+    == Error(workspace.AmbiguousFind(find: "aa", count: 2, lines: [1, 1]))
 }
 
 pub fn an_empty_find_is_refused_test() {
@@ -812,10 +818,13 @@ pub fn a_stale_find_travels_as_stale_content_test() {
 pub fn an_ambiguous_find_travels_as_invalid_argument_test() {
   let denial =
     workspace.fs_denial(
-      workspace.EditRefused(workspace.AmbiguousFind(find: "x", count: 2)),
+      workspace.EditRefused(
+        workspace.AmbiguousFind(find: "x", count: 2, lines: [12, 45]),
+      ),
     )
   assert denial.code == workspace.invalid_argument_code
   assert string.contains(denial.message, "2")
+  assert string.contains(denial.message, "at lines 12, 45")
 }
 
 pub fn a_long_find_is_excerpted_in_the_refusal_test() {
