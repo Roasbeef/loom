@@ -149,13 +149,15 @@ Step by step:
    the tool's effect process.
 2. **Compute the two identities.** `escalate.record_id` digests
    `{strand, tool, wanted diff}` into `policy-` followed by 32 hex
-   characters. The wanted diff is sorted, and a limit grant contributes only
+   characters, and `escalate.action_record_id` pairs that coarse want with
+   `action_digest` so concurrent async questions for different actions on the
+   same want do not overwrite one another. The wanted diff is sorted, and a limit grant contributes only
    the field it raises, never its magnitude, because `bash` derives `wall_s`
    from a model-chosen `timeout_ms`; a retry loop that stepped the timeout
-   would otherwise open one record, and one prompt, per attempt.
+   is bounded across the coarse want by `max_asks` (3).
    `escalate.action_digest` digests the call's post-clearance arguments,
    with every object's keys sorted and arrays left in order, so
-   re-serialization cannot re-prompt and any value change does.
+   re-serialization cannot re-prompt and any value difference does.
    `action_preview` renders the same canonical JSON, cut at 2 KB on a
    codepoint boundary.
 3. **Check the cap.** A refusal that lands on an existing record always
@@ -168,17 +170,7 @@ Step by step:
    a compare-and-set. The transition depends on the record's status, as the
    next section describes. A claim that answers `Exhausted`, a commit
    fault, or a lost writer settles the call in band.
-5. **Park, or settle.** The call parks only when the claim succeeded *and*
-   `Config.interactive` reports someone attached. Parking holds the call
-   open on the tool's own effect process, never on the strand driver, which
-   must keep serving `Nudge`, `RequestAbort` and `PollTick` so the operator
-   can abort the run being asked about. The wait is a `weft/poll` loop on
-   the session's clock that reads the record every `poll_interval_ms`
-   (1 s). The window closes at the earlier of `park_timeout_ms` (five
-   minutes) and the deadline the refusal carries. On the escalating-runner
-   path that is the call's own budget deadline, because the broker's ledger
-   refuses any reservation past it. The `raise_refusal` path carries a
-   deadline ten minutes out, so the five-minute bound applies first.
+5. **Park briefly, or detach asynchronously.** An already-approved record is spent immediately. Otherwise, the call parks for a short grace window (`park_timeout_ms`, 5 s by default, polling every 200 ms) when `Config.interactive` reports someone attached. Parking holds the call open on the tool's own effect process, never on the strand driver, which must keep serving `Nudge`, `RequestAbort` and `PollTick`. If the grace window expires with the record still `Pending` (or if nobody is attached), `detach_or_spend` records the pending sequence under `client/escalation_async/<id>` and settles the tool call in band so the strand can continue with other work or go idle. When an operator later approves or denies the pending question through the gateway or `remote_decision`, `escalate.notify_decision` delivers a single-use `[loom]` notice via `client/notice` — steering the strand if busy or waking it into a fresh run if idle — so the model can re-issue the call and spend the approval immediately.
 6. **Watch the record.** Each poll reads the record's cell, which includes
    the register seq. A record whose scope no longer names this call settles
    the call, because another call has taken the claim and will spend the
@@ -602,7 +594,7 @@ domain owner is not done. The design is in
 `protocol-change/086-memory-proposals.md`.
 
 A proposal of kind `config` edits the `loom.toml` the proposing session loaded
-instead (`protocol-change/089-config-proposals.md`). Its `target` is that file's
+instead (`protocol-change/092-config-proposals.md`). Its `target` is that file's
 absolute path, the edited text must load under the session's own loader when it is
 filed and when it is approved, and only a session that loads that very file may
 approve it. The approval keeps the file's permission bits and refuses a symbolic

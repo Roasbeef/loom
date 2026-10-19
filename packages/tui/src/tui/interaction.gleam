@@ -2710,18 +2710,20 @@ fn reconcile_queue_draft(model: Model) -> Model {
   let state = model.view.queue_editor
   case state.draft {
     Some(draft) if draft.delivery != queue_editor.Saving -> {
-      use <- bool.guard(
+      use <- bool.lazy_guard(
         draft.namespace != session_model.queue_namespace(model.shared),
-        Model(
-          ..model,
-          view: view_set.queue_editor(
-            model.view,
-            queue_editor.State(
-              ..state,
-              message: "Queue namespace changed; this retained draft cannot be rebound",
+        fn() {
+          Model(
+            ..model,
+            view: view_set.queue_editor(
+              model.view,
+              queue_editor.State(
+                ..state,
+                message: "Queue namespace changed; this retained draft cannot be rebound",
+              ),
             ),
-          ),
-        ),
+          )
+        },
       )
       let fetch =
         queue_request.Fetch(

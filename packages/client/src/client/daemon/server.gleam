@@ -59,6 +59,7 @@ import client/daemon/root
 import client/daemon/ui_assets
 import client/daemon/ui_http
 import client/daemon/ui_login
+import client/daemon/ui_origin
 import client/daemon/ui_relay
 import client/daemon/ui_result
 import client/daemon/ui_sessions
@@ -160,6 +161,10 @@ pub type Ui(instance) {
   Ui(
     /// The ticket and UI-session tables.
     sessions: ui_sessions.Sessions,
+    /// The `https` origins the owner listed in `[daemon] ui_origins`, read
+    /// once at startup (protocol-change/052). A request whose `Host` names one
+    /// is admitted as `ui_http.Remote`; an empty list admits loopback alone.
+    origins: List(ui_origin.Origin),
     /// Reads only immutable result records from the authorized resident.
     result_reader: fn(instance) -> storage_snapshot.Reader,
     /// The page's stylesheet and scripts and Lustre's client runtime, read
@@ -270,9 +275,11 @@ pub type PageGrant {
     /// its exchange set, the one that resumed it, or the one the page that
     /// minted its ticket belonged to.
     login: Option(ui_sessions.Issuer),
-    /// This daemon's web address as the browser reached it, `http://` and the
-    /// request's loopback host, which a device link and the bookmark are drawn
-    /// under. It is the validated `Host` and not anything the page said.
+    /// This daemon's web address as the browser reached it, which a device
+    /// link and the bookmark are drawn under: `http://` and the loopback
+    /// `Host`, or the listed `https` origin the request was admitted under
+    /// (`ui_http.address`). It is the validated origin and not anything the
+    /// page said.
     address: String,
   )
 }
@@ -474,33 +481,53 @@ pub fn handle(
 // host first, then the check that belongs to the route, then the cookie and
 // the credential behind it. Every response carries the view's headers except
 // the socket's upgrade, which carries mist's.
+//
+// The host check is where the page's origin is decided, once, and the
+// decision is handed to every handler below (protocol-change/052). A `Host`
+// that is neither loopback nor one of the owner's listed origins is refused
+// here, which is the DNS rebinding defence; no forwarded header is read.
 fn web_view(config: Config(instance), ui: Ui(instance), request) {
-  case ui_http.loopback_host(request) {
+  case ui_http.page_origin(request, ui.origins) {
     Error(Nil) -> ui_http.refused(plain(403, "forbidden host"))
-    Ok(host) ->
+    Ok(origin) ->
       case ui_http.route(request) {
         ui_http.Socket(key, id, nonce) ->
-          web_socket(config, ui, request, host, key, id, nonce)
+          web_socket(config, ui, request, origin, key, id, nonce)
         ui_http.HomeSocket(key, nonce) ->
-          home_socket(config, ui, request, host, key, nonce)
+          home_socket(config, ui, request, origin, key, nonce)
 
         // The resume page holds the one form a login's visit posts, so it is
         // served under the policy that lets that form submit to this origin.
         // Every other document, the answer to the post included, keeps
         // `form-action 'none'`.
         ui_http.LoginPage(key) ->
-          ui_http.secured_for(login_page(request, key), host, page.OwnForms)
+          ui_http.secured_for(login_page(request, key), origin, page.OwnForms)
 
         // The claim form is the second document that holds a form, so it is
         // served under the same policy. Its answers are secured by the handler,
         // which knows which of them draws the form again.
         ui_http.ClaimPage ->
-          ui_http.secured_for(claim_page(request), host, page.OwnForms)
-        ui_http.ClaimSubmit -> claim_submit(config, ui, request, host)
+          ui_http.secured_for(claim_page(request), origin, page.OwnForms)
+        ui_http.ClaimSubmit -> claim_submit(config, ui, request, origin)
 
         ui_http.AdminSocket(key, nonce) ->
-          admin_socket(config, ui, request, host, key, nonce)
-        route -> ui_http.secured(web_document(config, ui, request, route), host)
+          admin_socket(config, ui, request, origin, key, nonce)
+        route -> {
+          let secured =
+            ui_http.secured(
+              web_document(config, ui, request, origin, route),
+              origin,
+            )
+          case route {
+            ui_http.Asset(ui_http.MermaidFrame) ->
+              response.set_header(
+                secured,
+                "content-security-policy",
+                page.mermaid_content_security_policy,
+              )
+            _ -> secured
+          }
+        }
       }
   }
 }
@@ -513,13 +540,13 @@ fn web_socket(
   config: Config(instance),
   ui: Ui(instance),
   request,
-  host: String,
+  origin: ui_http.PageOrigin,
   key: String,
   id: String,
   nonce: Option(String),
 ) {
   let checked = {
-    use Nil <- result.try(case ui_http.origin_matches(request, host) {
+    use Nil <- result.try(case ui_http.origin_matches(request, origin) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden origin"))
     })
@@ -535,6 +562,7 @@ fn web_socket(
       config,
       ui,
       request,
+      origin,
       key,
       id,
     ))
@@ -549,7 +577,7 @@ fn web_socket(
     Ok(#(state, ui_sessions.grant(page), cookie))
   }
   case checked {
-    Error(response) -> ui_http.secured(response, host)
+    Error(response) -> ui_http.secured(response, origin)
     Ok(#(state, grant, cookie)) -> {
       let open = ui_sessions.open_until(ui.sessions, cookie, grant)
       let register = ui_sessions.register_images(ui.sessions, cookie, _)
@@ -557,7 +585,7 @@ fn web_socket(
         PageGrant(
           grant:,
           login: ui_sessions.login_of(ui.sessions, cookie),
-          address: "http://" <> host,
+          address: ui_http.address(origin),
         )
       resident_upgrade(
         config,
@@ -583,12 +611,12 @@ fn home_socket(
   config: Config(instance),
   ui: Ui(instance),
   request,
-  host: String,
+  origin: ui_http.PageOrigin,
   key: String,
   nonce: Option(String),
 ) {
   let checked = {
-    use Nil <- result.try(case ui_http.origin_matches(request, host) {
+    use Nil <- result.try(case ui_http.origin_matches(request, origin) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden origin"))
     })
@@ -600,6 +628,7 @@ fn home_socket(
       config,
       ui,
       request,
+      origin,
       key,
     ))
     use Nil <- result.try(case ui_sessions.admits(page, nonce) {
@@ -609,7 +638,7 @@ fn home_socket(
     Ok(#(state, ui_sessions.grant(page), cookie, principal))
   }
   case checked {
-    Error(response) -> ui_http.secured(response, host)
+    Error(response) -> ui_http.secured(response, origin)
     Ok(#(state, grant, cookie, principal)) ->
       home_upgrade(
         config,
@@ -620,7 +649,7 @@ fn home_socket(
         PageGrant(
           grant:,
           login: ui_sessions.login_of(ui.sessions, cookie),
-          address: "http://" <> host,
+          address: ui_http.address(origin),
         ),
         ui_sessions.open_until(ui.sessions, cookie, grant),
       )
@@ -715,12 +744,12 @@ fn admin_socket(
   config: Config(instance),
   ui: Ui(instance),
   request,
-  host: String,
+  origin: ui_http.PageOrigin,
   key: String,
   nonce: Option(String),
 ) {
   let checked = {
-    use Nil <- result.try(case ui_http.origin_matches(request, host) {
+    use Nil <- result.try(case ui_http.origin_matches(request, origin) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden origin"))
     })
@@ -732,6 +761,7 @@ fn admin_socket(
       config,
       ui,
       request,
+      origin,
       key,
     ))
     use Nil <- result.try(case ui_sessions.admits(page, nonce) {
@@ -741,7 +771,7 @@ fn admin_socket(
     Ok(#(state, ui_sessions.grant(page), cookie, principal))
   }
   case checked {
-    Error(response) -> ui_http.secured(response, host)
+    Error(response) -> ui_http.secured(response, origin)
     Ok(#(state, grant, cookie, principal)) ->
       admin_upgrade(
         config,
@@ -853,6 +883,7 @@ fn web_document(
   config: Config(instance),
   ui: Ui(instance),
   request,
+  origin: ui_http.PageOrigin,
   route: ui_http.Route,
 ) {
   case route {
@@ -875,7 +906,7 @@ fn web_document(
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden navigation")
         True ->
-          case page_grant(config, ui, request, key, id) {
+          case page_grant(config, ui, request, origin, key, id) {
             Error(response) -> response
             Ok(_) -> document(200, "text/html; charset=utf-8", page.shell(id))
           }
@@ -890,7 +921,7 @@ fn web_document(
     ui_http.Image(key, id, ref, position) ->
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden fetch")
-        True -> image_of(config, ui, request, key, id, ref, position)
+        True -> image_of(config, ui, request, origin, key, id, ref, position)
       }
 
     // Every explicit result read repeats the page's current authorization and
@@ -898,13 +929,14 @@ fn web_document(
     ui_http.ResultPage(key, id, ref, index) ->
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden fetch")
-        True -> result_of(config, ui, request, key, id, ref, Some(index))
+        True ->
+          result_of(config, ui, request, origin, key, id, ref, Some(index))
       }
 
     ui_http.ResultDownload(key, id, ref) ->
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden fetch")
-        True -> result_of(config, ui, request, key, id, ref, None)
+        True -> result_of(config, ui, request, origin, key, id, ref, None)
       }
 
     // A ticket presented against another session's path, or a home's ticket
@@ -928,7 +960,13 @@ fn web_document(
             Error(ui_sessions.OtherScope) ->
               plain(403, "ticket names another session")
             Ok(redeemed) ->
-              entered(config, ui, redeemed, page.session_path(redeemed.key, id))
+              entered(
+                config,
+                ui,
+                origin,
+                redeemed,
+                page.session_path(redeemed.key, id),
+              )
           }
       }
 
@@ -939,7 +977,7 @@ fn web_document(
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden navigation")
         True ->
-          case home_grant(config, ui, request, key) {
+          case home_grant(config, ui, request, origin, key) {
             Error(response) -> response
             Ok(_) ->
               document(200, "text/html; charset=utf-8", page.home_shell())
@@ -953,7 +991,7 @@ fn web_document(
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden navigation")
         True ->
-          case admin_grant(config, ui, request, key) {
+          case admin_grant(config, ui, request, origin, key) {
             Error(response) -> response
             Ok(_) ->
               document(200, "text/html; charset=utf-8", page.admin_shell())
@@ -976,7 +1014,13 @@ fn web_document(
             Error(ui_sessions.OtherScope) ->
               plain(403, "ticket names another page")
             Ok(redeemed) ->
-              entered(config, ui, redeemed, page.admin_path(redeemed.key))
+              entered(
+                config,
+                ui,
+                origin,
+                redeemed,
+                page.admin_path(redeemed.key),
+              )
           }
       }
 
@@ -994,13 +1038,19 @@ fn web_document(
             Error(ui_sessions.OtherScope) ->
               plain(403, "ticket names another page")
             Ok(redeemed) ->
-              entered(config, ui, redeemed, page.home_path(redeemed.key))
+              entered(
+                config,
+                ui,
+                origin,
+                redeemed,
+                page.home_path(redeemed.key),
+              )
           }
       }
 
     // A browser's visit to its bookmark: the verification, and then a home page
     // the login mints (protocol-change/065, PR 8).
-    ui_http.LoginResume(key) -> login_resume(config, ui, request, key)
+    ui_http.LoginResume(key) -> login_resume(config, ui, request, origin, key)
   }
 }
 
@@ -1028,7 +1078,13 @@ fn login_key(key: String) -> Bool {
 // verified from the cookies and the posted nonce before the catalogue is asked
 // anything. Every refusal of the login is the same `401` with a fixed document
 // that echoes nothing.
-fn login_resume(config: Config(instance), ui: Ui(instance), request, key) {
+fn login_resume(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key,
+) {
   case
     ui_http.same_origin_post(request),
     login_key(key),
@@ -1048,7 +1104,7 @@ fn login_resume(config: Config(instance), ui: Ui(instance), request, key) {
           plain(503, "daemon not ready")
         }
         Ok(permit) -> {
-          let answer = resumed_page(config, ui, request, key)
+          let answer = resumed_page(config, ui, request, origin, key)
           root.release(config.daemon, permit)
           answer
         }
@@ -1056,7 +1112,13 @@ fn login_resume(config: Config(instance), ui: Ui(instance), request, key) {
   }
 }
 
-fn resumed_page(config: Config(instance), ui: Ui(instance), request, key) {
+fn resumed_page(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key,
+) {
   case mist.read_body(request, max_body_limit: ui_http.max_form_bytes) {
     Error(_) -> plain(400, "bad request")
     Ok(body) ->
@@ -1068,14 +1130,14 @@ fn resumed_page(config: Config(instance), ui: Ui(instance), request, key) {
             ui_login.resume(
               ui.root_key,
               state.registry,
-              ui_http.login_cookies(request),
+              ui_http.login_cookies(request, origin),
               key,
               nonce,
               bootstrap.system_time_ms(),
             )
           {
             Error(Nil) -> document_refused()
-            Ok(resumed) -> resume_exchange(config, ui, resumed)
+            Ok(resumed) -> resume_exchange(config, ui, origin, resumed)
           }
       }
   }
@@ -1110,18 +1172,23 @@ fn claim_page(request) {
 // a refusal that a person can correct is the form again with fixed words above
 // it, which needs the policy that lets the form post, so this handler secures
 // its own answers.
-fn claim_submit(config: Config(instance), ui: Ui(instance), request, host) {
+fn claim_submit(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+) {
   case ui_http.same_origin_post(request), ui_http.form_declared(request) {
-    False, _ -> ui_http.secured(plain(403, "forbidden sender"), host)
-    True, False -> ui_http.secured(plain(400, "bad request"), host)
+    False, _ -> ui_http.secured(plain(403, "forbidden sender"), origin)
+    True, False -> ui_http.secured(plain(400, "bad request"), origin)
     True, True ->
       case mist.read_body(request, max_body_limit: ui_http.max_form_bytes) {
-        Error(_) -> ui_http.secured(plain(400, "bad request"), host)
+        Error(_) -> ui_http.secured(plain(400, "bad request"), origin)
         Ok(body) ->
           case ui_http.posted_claim(body.body) {
-            Error(Nil) -> ui_http.secured(plain(400, "bad request"), host)
+            Error(Nil) -> ui_http.secured(plain(400, "bad request"), origin)
             Ok(#(typed, name)) ->
-              reserve_claim(config, ui, host, string.trim(typed), name)
+              reserve_claim(config, ui, origin, string.trim(typed), name)
           }
       }
   }
@@ -1135,7 +1202,7 @@ fn claim_submit(config: Config(instance), ui: Ui(instance), request, host) {
 fn reserve_claim(
   config: Config(instance),
   ui: Ui(instance),
-  host,
+  origin: ui_http.PageOrigin,
   typed: String,
   name: Option(String),
 ) {
@@ -1144,16 +1211,16 @@ fn reserve_claim(
     Error(_) -> Error(catalogue.Invalid("not a claim token"))
   }
   case hashed {
-    Error(_) -> claim_refused(host, 400, page.NotAClaim)
+    Error(_) -> claim_refused(origin, 400, page.NotAClaim)
     Ok(presented) ->
       case root.acquire_claim(config.daemon, presented, within: 1000) {
-        Error(root.ClaimInFlight) -> claim_refused(host, 409, page.ClaimBusy)
+        Error(root.ClaimInFlight) -> claim_refused(origin, 409, page.ClaimBusy)
         Error(root.NotAdmitted(reason)) -> {
           upgrade_log.refused(upgrade_log.Page, "acquire", reason)
-          ui_http.secured(plain(503, "daemon not ready"), host)
+          ui_http.secured(plain(503, "daemon not ready"), origin)
         }
         Ok(permit) -> {
-          let answer = redeem_claim(config, ui, host, presented, name)
+          let answer = redeem_claim(config, ui, origin, presented, name)
           root.release(config.daemon, permit)
           answer
         }
@@ -1164,12 +1231,12 @@ fn reserve_claim(
 fn redeem_claim(
   config: Config(instance),
   ui: Ui(instance),
-  host,
+  origin: ui_http.PageOrigin,
   presented: access.ClaimDigest,
   name: Option(String),
 ) {
   case ready(config, upgrade_log.Page) {
-    Error(_) -> ui_http.secured(plain(503, "daemon not ready"), host)
+    Error(_) -> ui_http.secured(plain(503, "daemon not ready"), origin)
     Ok(state) ->
       case
         ui_login.claim(
@@ -1180,8 +1247,8 @@ fn redeem_claim(
           bootstrap.system_time_ms(),
         )
       {
-        Error(refusal) -> claim_unbound(host, refusal)
-        Ok(bound) -> claim_opened(ui, host, bound)
+        Error(refusal) -> claim_unbound(origin, refusal)
+        Ok(bound) -> claim_opened(ui, origin, bound)
       }
   }
 }
@@ -1192,7 +1259,11 @@ fn redeem_claim(
 // browser". The ticket is minted and redeemed in this one request and is never
 // seen by the browser. A claim that bound and then found the table gone is
 // spent with a login nobody holds; the owner rotates, as for a lost reply.
-fn claim_opened(ui: Ui(instance), host, bound: ui_login.Claimed) {
+fn claim_opened(
+  ui: Ui(instance),
+  origin: ui_http.PageOrigin,
+  bound: ui_login.Claimed,
+) {
   let grant =
     ui_sessions.Grant(
       scope: ui_sessions.Home,
@@ -1211,7 +1282,7 @@ fn claim_opened(ui: Ui(instance), host, bound: ui_login.Claimed) {
     |> result.replace_error(Nil)
   }
   case redeemed {
-    Error(Nil) -> ui_http.secured(plain(503, "daemon not ready"), host)
+    Error(Nil) -> ui_http.secured(plain(503, "daemon not ready"), origin)
     Ok(redeemed) -> {
       ui_sessions.attach_login(
         ui.sessions,
@@ -1220,11 +1291,12 @@ fn claim_opened(ui: Ui(instance), host, bound: ui_login.Claimed) {
       )
       ui_http.secured(
         enter_response(
+          origin,
           redeemed,
           page.home_path(redeemed.key),
           Ok(option.Some(bound.minted)),
         ),
-        host,
+        origin,
       )
     }
   }
@@ -1232,28 +1304,32 @@ fn claim_opened(ui: Ui(instance), host, bound: ui_login.Claimed) {
 
 // A claim that bound nothing, in the words for its reason. Each is the form
 // again so the person can correct it.
-fn claim_unbound(host, refusal: manager.ClaimError) {
+fn claim_unbound(origin: ui_http.PageOrigin, refusal: manager.ClaimError) {
   case refusal {
     manager.ClaimRefused(access.UnknownClaim) ->
-      claim_refused(host, 404, page.ClaimUnknown)
+      claim_refused(origin, 404, page.ClaimUnknown)
     manager.ClaimRefused(access.ExpiredClaim) ->
-      claim_refused(host, 410, page.ClaimExpired)
+      claim_refused(origin, 410, page.ClaimExpired)
     manager.ClaimRefused(access.ConflictingClaim) ->
-      claim_refused(host, 409, page.ClaimUsed)
+      claim_refused(origin, 409, page.ClaimUsed)
     manager.ClaimRefused(access.InvalidClaimName) ->
-      claim_refused(host, 400, page.NameRefused)
+      claim_refused(origin, 400, page.NameRefused)
     manager.ClaimRefused(access.ClaimStore(_)) | manager.ClaimUnavailable ->
-      claim_refused(host, 503, page.ClaimBusy)
+      claim_refused(origin, 503, page.ClaimBusy)
   }
 }
 
-fn claim_refused(host, status: Int, notice: page.ClaimNotice) {
+fn claim_refused(
+  origin: ui_http.PageOrigin,
+  status: Int,
+  notice: page.ClaimNotice,
+) {
   document(
     status,
     "text/html; charset=utf-8",
     page.claim_page(option.Some(notice)),
   )
-  |> ui_http.secured_for(host, page.OwnForms)
+  |> ui_http.secured_for(origin, page.OwnForms)
 }
 
 // What a verified login mints. A login narrowed to one session mints a page of
@@ -1265,6 +1341,7 @@ fn claim_refused(host, status: Int, notice: page.ClaimNotice) {
 fn resume_exchange(
   config: Config(instance),
   ui: Ui(instance),
+  origin: ui_http.PageOrigin,
   resumed: ui_login.Resumed,
 ) {
   let ceiling = case resumed.allowance.ceiling {
@@ -1305,7 +1382,7 @@ fn resume_exchange(
   }
   case redeemed {
     Error(Nil) -> plain(503, "daemon not ready")
-    Ok(redeemed) -> entered(config, ui, redeemed, address(redeemed.key))
+    Ok(redeemed) -> entered(config, ui, origin, redeemed, address(redeemed.key))
   }
 }
 
@@ -1319,6 +1396,7 @@ fn resume_exchange(
 fn entered(
   config: Config(instance),
   ui: Ui(instance),
+  origin: ui_http.PageOrigin,
   redeemed: ui_sessions.Redeemed,
   next: String,
 ) {
@@ -1326,7 +1404,7 @@ fn entered(
     ui_sessions.Remembered -> remembered(config, ui, redeemed)
     ui_sessions.Forgotten -> Ok(option.None)
   }
-  enter_response(redeemed, next, minted)
+  enter_response(origin, redeemed, next, minted)
 }
 
 // The response itself, from the redeemed ticket and the login to set with it,
@@ -1337,11 +1415,12 @@ fn entered(
 // here with the login its claim bound, so it too sets its login in the one place
 // a login is set.
 fn enter_response(
+  origin: ui_http.PageOrigin,
   redeemed: ui_sessions.Redeemed,
   next: String,
   minted: Result(Option(ui_login.Minted), Nil),
 ) {
-  let page_cookie = ui_http.set_cookie(redeemed.cookie, redeemed.key)
+  let page_cookie = ui_http.set_cookie(redeemed.cookie, redeemed.key, origin)
   case minted {
     Error(Nil) -> refused_home(401, ending.LinkExpired)
     Ok(option.None) ->
@@ -1359,7 +1438,12 @@ fn enter_response(
       )
       |> response.set_header(
         "set-cookie",
-        ui_http.set_login_cookie(login.token, login.key, login.max_age_s),
+        ui_http.set_login_cookie(
+          login.token,
+          login.key,
+          login.max_age_s,
+          origin,
+        ),
       )
       |> response.prepend_header("set-cookie", page_cookie)
   }
@@ -1416,11 +1500,12 @@ fn page_grant(
   config: Config(instance),
   ui: Ui(instance),
   request,
+  origin: ui_http.PageOrigin,
   key: String,
   id: String,
 ) {
   use #(cookie, page) <- result.try(
-    keyed_page(ui, request, key)
+    keyed_page(ui, request, origin, key)
     |> result.map_error(fn(_) { refused_page(401, ending.PageEnded, id) }),
   )
   let grant = ui_sessions.grant(page)
@@ -1450,8 +1535,13 @@ fn page_grant(
 // The cookie value whose UI session is live under `key`, with that session,
 // which is what both kinds of page start from. A planted value that names no
 // UI session under the key is passed over.
-fn keyed_page(ui: Ui(instance), request, key: String) {
-  ui_http.session_cookies(request)
+fn keyed_page(
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key: String,
+) {
+  ui_http.session_cookies(request, origin)
   |> list.find_map(fn(cookie) {
     use page <- result.try(ui_sessions.lookup(ui.sessions, cookie))
     case ui_sessions.keyed(page, key) {
@@ -1471,10 +1561,11 @@ fn home_grant(
   config: Config(instance),
   ui: Ui(instance),
   request,
+  origin: ui_http.PageOrigin,
   key: String,
 ) {
   use #(cookie, page) <- result.try(
-    keyed_page(ui, request, key)
+    keyed_page(ui, request, origin, key)
     |> result.map_error(fn(_) { refused_home(401, ending.PageEnded) }),
   )
   let grant = ui_sessions.grant(page)
@@ -1507,10 +1598,11 @@ fn admin_grant(
   config: Config(instance),
   ui: Ui(instance),
   request,
+  origin: ui_http.PageOrigin,
   key: String,
 ) {
   use #(cookie, page) <- result.try(
-    keyed_page(ui, request, key)
+    keyed_page(ui, request, origin, key)
     |> result.map_error(fn(_) { refused_admin(401, ending.PageEnded) }),
   )
   let grant = ui_sessions.grant(page)
@@ -1544,16 +1636,24 @@ fn image_of(
   config: Config(instance),
   ui: Ui(instance),
   request,
+  origin: ui_http.PageOrigin,
   key: String,
   id: String,
   ref: String,
   position: Int,
 ) {
   let found = {
-    use #(_, _, cookie) <- result.try(page_grant(config, ui, request, key, id))
+    use #(_, _, cookie) <- result.try(page_grant(
+      config,
+      ui,
+      request,
+      origin,
+      key,
+      id,
+    ))
     ui_sessions.images(ui.sessions, cookie)
     |> result.map(fn(read) { picture(read(ref, position)) })
-    |> result.replace_error(plain(404, "unknown image"))
+    |> result.map_error(fn(_) { plain(404, "unknown image") })
   }
   case found {
     Ok(answer) | Error(answer) -> answer
@@ -1568,13 +1668,21 @@ fn result_of(
   config: Config(instance),
   ui: Ui(instance),
   request,
+  origin: ui_http.PageOrigin,
   key,
   id,
   ref,
   index,
 ) {
   let found = {
-    use #(ready, _, _) <- result.try(page_grant(config, ui, request, key, id))
+    use #(ready, _, _) <- result.try(page_grant(
+      config,
+      ui,
+      request,
+      origin,
+      key,
+      id,
+    ))
     use resident <- result.try(
       manager.resolve(ready.registry, id)
       |> result.map_error(fn(_) { plain(404, "session unavailable") }),
@@ -1612,7 +1720,7 @@ fn result_of(
         |> response.set_body(mist.Bytes(bytes))
       }
     })
-    use _ <- result.map(page_grant(config, ui, request, key, id))
+    use _ <- result.map(page_grant(config, ui, request, origin, key, id))
     answer
   }
   case found {
@@ -1628,10 +1736,9 @@ fn result_of(
 // might sniff from the bytes.
 fn picture(found: Result(transcript_image.Image, Nil)) {
   let served = {
-    use held <- result.try(result.replace_error(
-      found,
-      plain(404, "unknown image"),
-    ))
+    use held <- result.try(
+      result.map_error(found, fn(_) { plain(404, "unknown image") }),
+    )
     use image.Served(mime_type:, bytes:) <- result.map(
       image.serve(held)
       |> result.map_error(fn(refusal) {
@@ -2075,10 +2182,29 @@ fn control_upgrade(
 }
 
 // The `hello` names the web view only when the daemon serves it, so a
-// client can tell a daemon started with `--ui` from one that was not.
+// client can tell a daemon started with `--ui` from one that was not. When
+// the owner listed `https` origins they are named too (protocol-change/052),
+// normalized as a browser writes them, so `loom ui --device` can build a link
+// on one of them. The hello is sent only after the control endpoint has
+// authenticated the connection.
 fn hello_view(config: Config(instance)) -> List(#(String, JsonValue)) {
   case config.ui {
-    Some(_) -> [#("ui", json.Object([#("path", json.String(page.prefix))]))]
+    Some(ui) -> {
+      let origins = case ui.origins {
+        [] -> []
+        listed -> [
+          #(
+            "origins",
+            json.Array(
+              list.map(listed, fn(origin) {
+                json.String(ui_origin.to_string(origin))
+              }),
+            ),
+          ),
+        ]
+      }
+      [#("ui", json.Object([#("path", json.String(page.prefix)), ..origins]))]
+    }
     None -> []
   }
 }
@@ -2115,7 +2241,7 @@ fn claim_route(config: Config(instance), request) {
     use presented <- result.try(claim_header(request))
     use state <- result.try(
       root.ready(config.daemon, within: 1000)
-      |> result.replace_error(plain(503, "daemon unavailable")),
+      |> result.map_error(fn(_) { plain(503, "daemon unavailable") }),
     )
     use Nil <- result.try(case manager.claim_known(state.registry, presented) {
       Ok(Nil) -> Ok(Nil)
@@ -2349,11 +2475,11 @@ fn control(
             control_use(request.command),
             within: 1000,
           )
-          |> result.replace_error(control_refusal("unavailable")),
+          |> result.map_error(fn(_) { control_refusal("unavailable") }),
         )
         use principal <- result.try(
           manager.authenticate(current.registry, digest)
-          |> result.replace_error(control_refusal("unauthorized")),
+          |> result.map_error(fn(_) { control_refusal("unauthorized") }),
         )
         dispatch(config, state, digest, principal, request.id, request.command)
       }
@@ -2384,6 +2510,7 @@ fn control(
             | protocol.RenamePrincipal(..)
             | protocol.SessionMembers(..)
             | protocol.UiLink(..)
+            | protocol.DeviceLink(..)
             | protocol.ListSessions(..)
             | protocol.SessionActivity(..)
             | protocol.ListArchivedSessions(..)
@@ -2428,6 +2555,7 @@ fn control_use(command: protocol.Command) {
     | protocol.CredentialSignins(..)
     | protocol.SessionMembers(..)
     | protocol.UiLink(..)
+    | protocol.DeviceLink(..)
     | protocol.InspectPeers(..)
     | protocol.ListSessions(..)
     | protocol.SessionActivity(..)
@@ -3277,6 +3405,33 @@ fn dispatch_class(
       ))
       link_reply(page.home_exchange_path(issued.ticket), issued)
     }
+
+    // A device link for `loom ui --device` (protocol-change/052, the
+    // addendum): the home ticket above, always `Remembered`, minted to live
+    // the device link's ten minutes so the person can carry it to a phone.
+    // The credential that asked holds the same power to mint a home link
+    // every minute, so the page's grant allowance, which keeps a stolen page
+    // from minting credentials, is not spent here. The reply is the ordinary
+    // `ui.link` reply, whose `expires_in_ms` says how long the ticket lives.
+    protocol.DeviceLink(page: ceiling) -> {
+      use ui <- result.try(option.to_result(config.ui, "unavailable"))
+      use issued <- result.map(
+        ui_sessions.mint_carried(
+          ui.sessions,
+          ui_sessions.Grant(
+            scope: ui_sessions.Home,
+            credential: digest,
+            principal: principal.id,
+            ceiling:,
+            reach: ui_sessions.Workspace,
+            origin: ui_sessions.Fresh,
+            remember: ui_sessions.Remembered,
+          ),
+        )
+        |> result.replace_error("unavailable"),
+      )
+      link_reply(page.home_exchange_path(issued.ticket), issued)
+    }
     protocol.ListSessions(after, revision) -> {
       use #(current, views) <- result.try(
         manager.authorized_page(state.registry, digest, after:)
@@ -3425,7 +3580,7 @@ fn dispatch_class(
       use Nil <- result.try(epoch(state, supplied))
       use Nil <- result.try(
         inbound_settled(config, state.registry, id)
-        |> result.replace_error(admin_error_code(manager.AdminBusy)),
+        |> result.map_error(fn(_) { admin_error_code(manager.AdminBusy) }),
       )
       use through_directory <- result.try(deleted_through_directory(
         config,

@@ -171,7 +171,7 @@ import session_view/history_view
 import session_view/inbox
 import session_view/lane_fold
 import session_view/memory_overview as memory_words
-import session_view/model.{type Shared, Shared} as session_model
+import session_view/model.{type Shared} as session_model
 import session_view/msg
 import session_view/notice_words
 import session_view/operator
@@ -184,6 +184,7 @@ import session_view/remote_transcript
 import session_view/reviewer_status
 import session_view/session_channel
 import session_view/session_summary
+import session_view/shared_set
 import session_view/snapshot
 import session_view/snapshot_view
 import session_view/step
@@ -1572,7 +1573,7 @@ pub fn update(
     Opened(socket:) -> {
       let lane = session_channel.start(socket, model.view.expected, now: at)
       let shared =
-        Shared(..model.shared, peer: session_model.Attached)
+        shared_set.peer(model.shared, session_model.Attached)
         |> session_model.hold_channel(lane)
 
       // The jobs clock starts here, so the first tick-driven ask comes one
@@ -1874,7 +1875,7 @@ fn jobs_wanted(model: Model(socket), at: Int) -> Model(socket) {
   case due, model.shared.jobs_awaiting {
     True, None ->
       Model(
-        shared: Shared(..model.shared, jobs_refresh: worktree_view.Requested),
+        shared: shared_set.jobs_refresh(model.shared, worktree_view.Requested),
         view: View(..model.view, jobs_asked_at: Some(at)),
       )
     True, Some(_) | False, _ -> model
@@ -2081,7 +2082,9 @@ fn taken(model: Model(socket)) -> Model(socket) {
         })
       let returned = list.append(model.view.returned, numbered)
       Model(
-        shared: Shared(..model.shared, returned_drafts: [], answer: ""),
+        shared: model.shared
+          |> shared_set.returned_drafts([])
+          |> shared_set.answer(""),
         view: View(
           ..model.view,
           refusal: None,
@@ -2172,7 +2175,7 @@ fn notes_pressed(
       stepping(
         Model(
           ..changed,
-          shared: Shared(..model.shared, notes_requested: Some(strand(model))),
+          shared: shared_set.notes_requested(model.shared, Some(strand(model))),
         ),
         [tick_at(at)],
         at,
@@ -2452,9 +2455,9 @@ fn resumed(model: Model(socket)) -> Model(socket) {
     history_view.Reading, history_view.Quiet, Some(#(cut, view)) ->
       Model(
         ..model,
-        shared: Shared(
-          ..shared,
-          scrollback: history_view.resume(shared.scrollback)
+        shared: shared_set.scrollback(
+          shared,
+          history_view.resume(shared.scrollback)
             |> history_view.capture(cut.window, view, shared.active_strand),
         ),
       )
@@ -2523,7 +2526,7 @@ fn labels_wanted(model: Model(socket)) -> Model(socket) {
       model.shared.summaries,
       turn_labels.keys(model.view.pieces),
     )
-  Model(..model, shared: Shared(..model.shared, summaries:))
+  Model(..model, shared: shared_set.summaries(model.shared, summaries))
 }
 
 // A historical page draws the oldest blocks that fit. Its raw record window
@@ -2580,7 +2583,7 @@ fn browsed(
     [] -> scrollback
   }
   Model(
-    shared: Shared(..model.shared, scrollback:),
+    shared: shared_set.scrollback(model.shared, scrollback),
     view: View(
       ..model.view,
       blocks:,
@@ -2755,9 +2758,9 @@ fn trimmed(model: Model(socket)) -> Model(socket) {
     seq ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          scrollback: history_view.retain_from(model.shared.scrollback, seq),
+        shared: shared_set.scrollback(
+          model.shared,
+          history_view.retain_from(model.shared.scrollback, seq),
         ),
       )
   }
@@ -2806,12 +2809,9 @@ fn read(
         Error(Nil) ->
           Model(
             ..model,
-            shared: Shared(
-              ..shared,
-              scrollback: history_view.scan_older(
-                shared.scrollback,
-                branch.unloaded,
-              ),
+            shared: shared_set.scrollback(
+              shared,
+              history_view.scan_older(shared.scrollback, branch.unloaded),
             ),
           )
       }
@@ -2989,9 +2989,9 @@ fn sealed_of(
 // Ends the page's read: what it read is dropped and the page wants nothing.
 fn ended(model: Model(socket)) -> Model(socket) {
   Model(
-    shared: Shared(
-      ..model.shared,
-      scrollback: history_view.scan_end(model.shared.scrollback),
+    shared: shared_set.scrollback(
+      model.shared,
+      history_view.scan_end(model.shared.scrollback),
     ),
     view: View(..model.view, purpose: Resting),
   )
@@ -3751,7 +3751,7 @@ fn begun(
         )
       let started =
         Model(
-          shared: Shared(..model.shared, scrollback:),
+          shared: shared_set.scrollback(model.shared, scrollback),
           view: View(..model.view, purpose:),
         )
       let read = read(started, purpose, cut, view)
@@ -4183,9 +4183,9 @@ fn submitting(
         Error(notice) -> refused_draft(model, notice)
         Ok(session) -> {
           let attaching =
-            Shared(
-              ..model.shared,
-              attachments: list.map(attached, composer.ImageAttachment),
+            shared_set.attachments(
+              model.shared,
+              list.map(attached, composer.ImageAttachment),
             )
 
           // The lane's admission check is read before the command runs, as
@@ -4203,7 +4203,7 @@ fn submitting(
             )
           #(
             Model(
-              shared: Shared(..next.shared, attachments: []),
+              shared: shared_set.attachments(next.shared, []),
               view: View(..next.view, refusals: next.view.refusals + kept),
             ),
             effects,
@@ -4315,9 +4315,9 @@ fn owing_permissions(model: Model(socket), answer: Answer) -> Model(socket) {
     AllowForSession ->
       Model(
         ..model,
-        shared: Shared(
-          ..model.shared,
-          remembered_refresh: worktree_view.Requested,
+        shared: shared_set.remembered_refresh(
+          model.shared,
+          worktree_view.Requested,
         ),
       )
     AllowOnce | Deny -> model
@@ -4349,9 +4349,9 @@ pub fn want_permissions(model: Model(socket)) -> Model(socket) {
     False, _, _ -> model
     True, True, worktree_view.Settled ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          remembered_refresh: worktree_view.Requested,
+        shared: shared_set.remembered_refresh(
+          model.shared,
+          worktree_view.Requested,
         ),
         view: View(
           ..model.view,
@@ -4554,18 +4554,16 @@ pub fn want_memory(model: Model(socket)) -> Model(socket) {
         None, worktree_view.Settled ->
           Model(
             ..model,
-            shared: Shared(
-              ..model.shared,
-              memory_refresh: worktree_view.Requested,
-              memory_watch: session_model.WatchingMemory,
-            ),
+            shared: model.shared
+              |> shared_set.memory_refresh(worktree_view.Requested)
+              |> shared_set.memory_watch(session_model.WatchingMemory),
           )
         _, _ ->
           Model(
             ..model,
-            shared: Shared(
-              ..model.shared,
-              memory_watch: session_model.WatchingMemory,
+            shared: shared_set.memory_watch(
+              model.shared,
+              session_model.WatchingMemory,
             ),
           )
       }
@@ -4627,9 +4625,9 @@ pub fn want_proposals(model: Model(socket)) -> Model(socket) {
     False, _, _ -> model
     True, True, worktree_view.Settled ->
       Model(
-        shared: Shared(
-          ..model.shared,
-          proposals_refresh: worktree_view.Requested,
+        shared: shared_set.proposals_refresh(
+          model.shared,
+          worktree_view.Requested,
         ),
         view: View(
           ..model.view,
@@ -4835,9 +4833,9 @@ pub fn control(
       commanded(
         Model(
           ..model,
-          shared: Shared(
-            ..model.shared,
-            context: context_view.compact_asked(model.shared.context),
+          shared: shared_set.context(
+            model.shared,
+            context_view.compact_asked(model.shared.context),
           ),
         ),
         msg.Control(command: command.Compact),
@@ -4959,7 +4957,7 @@ pub fn reply(
       let number = model.view.returns + 1
       #(
         Model(
-          shared: Shared(..model.shared, answer: ""),
+          shared: shared_set.answer(model.shared, ""),
           view: View(
             ..model.view,
             refusal: None,
@@ -5033,7 +5031,7 @@ fn commanded(
   // read, and not the words of whatever the session said before it.
   let #(shared, effects) =
     step.update_retaining_surfaces(
-      Shared(..model.shared, notice: "", answer: ""),
+      model.shared |> shared_set.notice("") |> shared_set.answer(""),
       msg.Input(at: stamp(at), event: msg.Acted(command)),
     )
   let consumed = case list.any(shared.surface_facts, took_draft) {
@@ -6094,7 +6092,7 @@ fn focus_at(
       focus_strand_at(
         Model(
           ..model,
-          shared: Shared(..model.shared, peek: remote_transcript.Closed),
+          shared: shared_set.peek(model.shared, remote_transcript.Closed),
         ),
         strand,
         at,
@@ -6125,21 +6123,18 @@ fn focus_strand_at(
     model.view.status
   {
     False, True, Connected -> {
+      // A queued notes read belongs to the departing scope. The in-flight
+      // lane reply may finish, but no unsent read should delay the new one.
       let parked =
-        Shared(
-          ..shared,
-          scrollback: case model.view.paging {
-            Browsing ->
-              history_view.cancel(shared.scrollback) |> history_view.scan_end
-            Tail | Paged | Full | Crowded ->
-              history_view.resume(shared.scrollback)
-          },
-          // A queued notes read belongs to the departing scope. The in-flight
-          // lane reply may finish, but no unsent read should delay the new one.
-          notes_requested: None,
-          notice: "",
-          answer: "",
-        )
+        shared_set.scrollback(shared, case model.view.paging {
+          Browsing ->
+            history_view.cancel(shared.scrollback) |> history_view.scan_end
+          Tail | Paged | Full | Crowded ->
+            history_view.resume(shared.scrollback)
+        })
+        |> shared_set.notes_requested(None)
+        |> shared_set.notice("")
+        |> shared_set.answer("")
       let #(focused, effects) = step.focus(parked, strand, stamp(at))
 
       // The row limit and the closed turns are parked with the history window
@@ -6271,7 +6266,7 @@ fn browse_at(
   let scrollback = history_view.older(scrollback, branch.unloaded)
   stepping(
     Model(
-      shared: Shared(..model.shared, scrollback:),
+      shared: shared_set.scrollback(model.shared, scrollback),
       view: View(
         ..model.view,
         paging: Browsing,
@@ -6308,7 +6303,7 @@ fn latest_at(
       }
       finished(
         Model(
-          shared: Shared(..model.shared, scrollback:),
+          shared: shared_set.scrollback(model.shared, scrollback),
           view: View(
             ..model.view,
             paging: Tail,
@@ -6373,7 +6368,7 @@ fn older_at(
       let scrollback =
         history_view.older(model.shared.scrollback, branch.unloaded)
       stepping(
-        Model(..model, shared: Shared(..model.shared, scrollback:)),
+        Model(..model, shared: shared_set.scrollback(model.shared, scrollback)),
         [tick_at(at)],
         at,
       )
@@ -6417,9 +6412,9 @@ fn context_refresh_at(
       stepping(
         Model(
           ..model,
-          shared: Shared(
-            ..model.shared,
-            context: context_view.invalidate(model.shared.context),
+          shared: shared_set.context(
+            model.shared,
+            context_view.invalidate(model.shared.context),
           ),
         ),
         [tick_at(at)],

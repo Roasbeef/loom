@@ -1958,7 +1958,9 @@ fn confirm_first(
   action: actions.Action,
   session: String,
 ) -> #(Model, Effect(Msg)) {
-  use <- bool.guard(opening_now(model, session), #(model, effect.none()))
+  use <- bool.lazy_guard(opening_now(model, session), fn() {
+    #(model, effect.none())
+  })
   case model.start.manage, model.status, model.acting {
     Some(_), Connected, actions.Calm
     | Some(_), Connected, actions.Confirming(..)

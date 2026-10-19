@@ -244,7 +244,20 @@ pub fn prepare(config: Config) -> Result(Prepared, String) {
   Prepared(
     pid: started.pid,
     begin: fn() {
-      use Nil <- result.try(exchange(shared, Begin) |> result.flatten)
+      // `Begin` opens and migrates the SQLite index under `busy_timeout`
+      // (`timeout_ms`, up to 5000 ms), so the call window must outlast the
+      // lock wait rather than expiring at the exact same millisecond.
+      use Nil <- result.try(
+        call.try_call(
+          shared.subject,
+          waiting: shared.timeout_ms + 2000,
+          sending: Begin,
+        )
+        |> result.map_error(fn(error) {
+          "shared history unavailable: " <> string.inspect(error)
+        })
+        |> result.flatten,
+      )
       Ok(shared)
     },
     retire: fn() { retire(shared) },

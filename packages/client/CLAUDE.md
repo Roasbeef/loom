@@ -303,11 +303,31 @@ See `protocol-change/036-stream-response-handoff.md`.
 ## Web view (`loomd --ui`)
 
 `protocol-change/051`, its operator addendum, and ADR-014. `daemon/main`
-parses `--ui` into `Config.view` (`ViewOff | ViewOn`). With it, `run`
-starts `daemon/ui_sessions` and passes `server.Ui(sessions, upgrade)` to
+parses `--ui` into `Config.view` (`ViewOff | ViewOn(origins)`). With it, `run`
+starts `daemon/ui_sessions` and passes `server.Ui(sessions, origins, upgrade)` to
 `listen_serving`; without it `server.Config.ui` is `None`, every `/ui` path
 is a 404, the control `hello` has no `ui` field and `ui.link` answers
 `unavailable`.
+
+Remote origins (protocol-change/052, as built in its addendum).
+`daemon/ui_origin` parses `[daemon] ui_origins` into opaque `Origin`s
+(`https` only, host and optional port, no path, query, user information or
+loopback host; lowercased, port 443 dropped; at most `max_origins`), read
+once by `prepare_startup` into `ViewOn(origins)`; a list without the view, or
+a bad entry, refuses startup naming the entry, and `limits.from_fields` runs
+the same parser for the catalogue. The listener stays loopback-only:
+`daemon/listen_address` owns the one grammar (`127.0.0.1:port` or
+`[::1]:port`) that `--bind` and `[daemon] bind` are both read with. `ui_http.page_origin(request, ui.origins)` is
+the host check: `Loopback(host)` or `Remote(origin)` or `403`, never reading a
+forwarded header. `server.web_view` hands that `PageOrigin` to every handler,
+and it alone chooses the socket's `Origin` rule (`origin_matches`), the cookie
+names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
+`Secure` on remote, keyed paths kept on both), the policy's `ws://` or
+`wss://` (`socket_origin`) and `PageGrant.address` (`ui_http.address`). The
+`hello`'s `ui` object carries `origins` when any is listed. `ui.link` with
+`"device": true` parses to `protocol.DeviceLink(page)` and mints with
+`ui_sessions.mint_carried`: a `Home`, `Remembered`, `Fresh` ticket living
+`device_ms`, with no page deadline and no parent login.
 
 - `daemon/ui_project`: derives each workspace's project for the web view's
   lists, with no cache and no process. `locate(workspace)` reads
@@ -428,10 +448,13 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   the form's `token` and optional `name`, each once and no other field. `route` (the exchange at
   `/ui/sessions/<id>?ticket=`, the page at `/ui/p/<key>/sessions/<id>`,
   its socket at `.../ws` with the `csrf-token` query, and five assets),
-  `loopback_host`, `exchange_allowed` and `navigation_allowed`
+  `page_origin` (over `loopback_host` and the listed origins),
+  `exchange_allowed` and `navigation_allowed`
   (`Sec-Fetch-Site` is `none` or `same-origin`), `origin_matches`, the
-  `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`) and
-  `secured`, whose `Referrer-Policy: no-referrer` is load-bearing. `route`
+  `loom_ui` cookie (`HttpOnly`, `SameSite=Strict`, `Path=/ui/p/<key>`;
+  `__Secure-loom_ui` and `Secure` on a listed origin) and
+  `secured`, whose `Referrer-Policy: no-referrer` is load-bearing. Every
+  origin-dependent function takes the `PageOrigin` the host check returned. `route`
   also routes `Image(key, id, ref, position)` for
   `/ui/p/<key>/sessions/<id>/image/<ref>/<position>` (a name of digits, `.`,
   `~` and `-` up to 48 characters, and a position below `max_position`;
@@ -475,8 +498,15 @@ is a 404, the control `hello` has no `ui` field and `ui.link` answers
   and `rename_for_admin` are the home's and the admin page's daemon checks;
   `home_rename_self_capability` hands the home its capability, and `home_event` admits a
   `submit` beneath `home.signins_path`.
-- `daemon/ui_socket`: the page's mist socket. It transfers the permit in
-  its first handler turn and starts `web_view/component` for an observer's
+- `daemon/ui_socket`: the page's mist socket. Its pending phase owns the
+  admission callback until the component starts; the serving handler retains
+  no copy of that callback or its resolved runtime. The relay's repeated
+  authorization callback captures only the registry, epoch, session,
+  incarnation and credential digest. The real-upgrade regression in
+  `session_socket_test` varies an unused runtime hook, bounds the owned
+  socket's collected process capacity and the gateway attachment's flattened
+  state growth, and witnesses relay admission and close cleanup. It transfers
+  the permit in its first handler turn and starts `web_view/component` for an observer's
   attachment or `web_view/operator_page` for an operator's, with a
   transport over `ui_relay` whose `connect` returns at once, and with the
   session's catalogue name and workspace for the page's heading, from the
@@ -864,7 +894,15 @@ catalogue without opening runtimes. Explicit admission invokes
   These metadata checks do not substitute for mapped resource and recall
   admission in the assembly layer.
 - `client/daemon/main.{Config, Serving}` selects daemon-wide state, loopback
-  binding, capacity, and lazy session defaults. The binary rejects the removed
+  binding, capacity, and lazy session defaults. The listener address comes
+  from `--bind`, else `[daemon] bind`, else `listen_address.default`
+  (`127.0.0.1:0`). `parse` cannot read the file, so `Config.bind_source`
+  (`BindDefault | BindFlag | BindFile`) records whether the flag was given,
+  and `prepare_startup` applies the file's address only over `BindDefault`.
+  The resolved address stays in `Config.bind_host`/`bind_port`, which the
+  listener binds and `publish_endpoint` records. `limits.from_fields` runs
+  `listen_address.from_fields` too, so the catalogue refuses a bad value
+  with the startup words; a reload never rebinds. The binary rejects the removed
   per-session flags; `ext` dispatch remains in `client.gleam` to avoid a cycle.
   The `--help` and `-h` flags anywhere in argv — after daemon flags as
   readily as first — and the bare word `help` in first position are
@@ -1149,22 +1187,28 @@ catalogue without opening runtimes. Explicit admission invokes
 - `client/effect_abort.{Message, supervised, abort}` — the late-bound route from
   an Agency reap to `broker.abort`; see "A reap also cancels the child's broker
   executions".
-- `client/escalate.{Config, Message, Refused, Decision, Escalations,
-  seam, start, none, record_id, action_digest, action_preview,
-  default_config}` — parking: what a production tool call does when the
-  broker refuses it on policy. `seam` closes over a process *name* (the
-  Agency's knot, the Agency's answer) and `start` puts the runtime
-  behind that name after `api.open`; `record_id` is the deterministic
-  `{strand, tool, wanted diff}` digest a retry loop dedupes onto, with a
-  limit grant contributing its field and not its model-supplied
-  magnitude; `action_digest` is the *other* identity, over the call's
-  effective arguments canonicalised (objects key-sorted recursively,
-  arrays left ordered), which is what an approval binds to;
-  `action_preview` is its bounded human rendering, display-only and cut
-  at 2 KB on a codepoint boundary; `Config.max_records` caps the
-  distinct wants a session will file and `Config.max_asks` caps the
-  questions any one of them may put; `none()` is the no-plane seam under
-  which a refusal settles exactly as it did before escalations existed.
+- `client/escalate.{Config, Message, Refused, Decision, Escalations, OperatorDecision,
+  seam, start, none, record_id, action_record_id, action_digest, action_preview,
+  notify_decision, decision_notice_text, default_config}` — parking and async
+  detachment: what a production tool call does when the broker refuses it on
+  policy. `seam` closes over a process *name* (the Agency's knot, the Agency's
+  answer) and `start` puts the runtime behind that name after `api.open`;
+  `record_id` is the deterministic `{strand, tool, wanted diff}` want digest
+  (with a limit grant contributing its field and not its model-supplied
+  magnitude), and `action_record_id` pairs that coarse want with `action_digest`
+  so concurrent async questions for different actions on the same want do not
+  overwrite one another; `action_digest` is over the call's effective arguments
+  canonicalised (objects key-sorted recursively, arrays left ordered), which is
+  what an approval binds to; `action_preview` is its bounded human rendering,
+  display-only and cut at 2 KB on a codepoint boundary; `Config.max_records`
+  caps the distinct records a session will file and `Config.max_asks` caps the
+  unconsumed questions any one coarse want may put; when the short grace park
+  window closes (`default_config` sets 5s, polling every 200ms) with the record
+  still `Pending`, the detached seq is recorded under `client/escalation_async/`
+  and a later operator decision through `gateway` or `remote_decision` calls
+  `notify_decision`, which wakes or steers the strand via `client/notice`;
+  `none()` is the no-plane seam under which a refusal settles exactly as it did
+  before escalations existed.
 - `client/gateway.attached` — how many connections are attached right
   now. The honest answer to "is a human there?", which is what the
   escalation seam asks before it holds a call open. A hub that is gone,
@@ -9117,7 +9161,7 @@ stream grows to its first request, the first grows by `every_bytes`, and the
 first request ends. `landed` now writes the idle stream into the book before
 `consider` weighs the relaunch, and the `coalesce` tag holds it there.
 
-## Configuration reload and edits (protocol-change/089)
+## Configuration reload and edits (protocol-change/092)
 
 A daemon session takes an edit to the `loom.toml` it loaded without a daemon
 restart. `client/config_watch` is a weft actor in the session's restartable
@@ -9178,3 +9222,16 @@ mutations (admitting a second slot over a building one, dropping the token
 comparison) fail every run. Three branches race; the census test fails if
 generation stops pairing an `Open`, a `Stop` and a stale request across
 branches.
+
+## Isolated Mermaid assets (protocol-change/091)
+
+The fixed `ui_http.Asset` table includes the Mermaid frame document and its
+bundled classic script. `ui_assets.load` reads them once at startup like the
+other assets. The HTML response uses its separate renderer content policy
+after ordinary security headers have been applied; appending that policy to
+the session page policy would leave `frame-ancestors 'none'` active and block
+the frame. Only the fixed renderer document route receives this exception.
+The HTTP sandbox is also effective on a direct visit. No session input enters
+these routes, and source travels between the parent and its opaque child only
+as revisioned JSON string messages. See
+[protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md).

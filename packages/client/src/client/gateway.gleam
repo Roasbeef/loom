@@ -202,6 +202,7 @@ import client/catalog
 import client/daemon/transfer
 import client/delegate_outbox
 import client/directories
+import client/escalate
 import client/escalation_view
 import client/goal_pending
 import client/goalcommand
@@ -2123,13 +2124,17 @@ fn continue(state: State) -> actor.Next(State, Message) {
 }
 
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  continue(dispatch_message(state, message))
+}
+
+fn dispatch_message(state: State, message: Message) -> State {
   case message {
     ObservationReported(connection:, pulled:) ->
-      continue(observation_reported(state, connection, pulled))
+      observation_reported(state, connection, pulled)
     CaptureReported(capture:, pulled:) ->
-      continue(capture_reported(state, capture, pulled))
+      capture_reported(state, capture, pulled)
     ResolveReported(resolve:, pulled:) ->
-      continue(resolve_reported(state, resolve, pulled))
+      resolve_reported(state, resolve, pulled)
     DecideForSpawner(
       parent:,
       escalation_id:,
@@ -2149,55 +2154,45 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           decided_by,
         ),
       )
-      continue(state)
+      state
     }
     LeasePreview(pid, expires, reply) ->
-      continue(lease_preview(state, pid, expires, reply))
+      lease_preview(state, pid, expires, reply)
     Preview(source, operation, generation, kind, text, reply) ->
-      continue(record_preview(
-        state,
-        source,
-        operation,
-        generation,
-        kind,
-        text,
-        reply,
-      ))
+      record_preview(state, source, operation, generation, kind, text, reply)
     ReleasePreview(source, reply) -> {
       let state = forget_preview(state, source)
       process.send(reply, Nil)
-      continue(state)
+      state
     }
     Request(connection, text, reply) ->
-      continue(request_frame(state, connection, text, reply))
+      request_frame(state, connection, text, reply)
 
     // Idle maintenance owns retention only. Authority is checked at command
     // admission and delivery, where failure must refuse the operation; asking
     // here would let registry latency close an attachment doing no work.
-    MaintainTransfers -> continue(expire_transfers(state))
+    MaintainTransfers -> expire_transfers(state)
     Attach(sink:, reply:) -> {
       let id = state.next_connection
       process.send(reply, id)
-      continue(
-        State(
-          ..state,
-          connections: dict.insert(
-            state.connections,
-            id,
-            Connection(
-              sink:,
-              flush: fn(reply) { process.send(reply, Nil) },
-              consumer: None,
-              subscription: Unsubscribed,
-              authentication: HostFixture,
-              origin: None,
-              transfer: None,
-              response: None,
-              read_failed: fn() { Nil },
-            ),
+      State(
+        ..state,
+        connections: dict.insert(
+          state.connections,
+          id,
+          Connection(
+            sink:,
+            flush: fn(reply) { process.send(reply, Nil) },
+            consumer: None,
+            subscription: Unsubscribed,
+            authentication: HostFixture,
+            origin: None,
+            transfer: None,
+            response: None,
+            read_failed: fn() { Nil },
           ),
-          next_connection: id + 1,
         ),
+        next_connection: id + 1,
       )
     }
     AttachAuthenticated(
@@ -2221,7 +2216,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       case admitted {
         Error(reason) -> {
           process.send(reply, Error(reason))
-          continue(state)
+          state
         }
         Ok(principal) -> {
           let id = state.next_connection
@@ -2252,33 +2247,32 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             reply,
             Ok(ConnectionHandle(state.subject, id, process.self())),
           )
-          continue(state)
+          state
         }
       }
     }
-    SocketDown(down) -> continue(remove_socket(state, down))
+    SocketDown(down) -> remove_socket(state, down)
     Attached(reply:) -> {
       process.send(reply, dict.size(state.connections))
-      continue(state)
+      state
     }
-    Detach(connection:) -> continue(remove_connection(state, connection))
+    Detach(connection:) -> remove_connection(state, connection)
     FromClient(connection:, text:) ->
       case state.delivery {
-        HostOnly ->
-          continue(dispatch(revalidate(state, connection), connection, text))
-        Network -> continue(remove_connection(state, connection))
+        HostOnly -> dispatch(revalidate(state, connection), connection, text)
+        Network -> remove_connection(state, connection)
       }
-    CommitHint -> continue(pull_and_broadcast(revalidate_all(state)))
+    CommitHint -> pull_and_broadcast(revalidate_all(state))
 
     // The pull that follows decides: an idle session reopens now, and a busy
     // one when the pull that sees its last run end comes round.
     ConfigChanged ->
-      continue(pull_and_broadcast(
+      pull_and_broadcast(
         State(..state, reload: case state.reload {
           Current -> Owed
           owed -> owed
         }),
-      ))
+      )
 
     // A running command's tail is display state and not a hint: nothing
     // in the store moved, so there is nothing to pull, and the frame
@@ -2307,7 +2301,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         tail,
         total_bytes,
       )
-      continue(state)
+      state
     }
 
     // A summarizer label is display text on the same feed, and like a tail
@@ -2321,7 +2315,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         state,
         protocol.BlockSummaryEvent(subject: summary_subject(subject), text:),
       )
-      continue(state)
+      state
     }
 
     // Goal reads are auxiliary: a capture cannot refresh this reserved cell.
@@ -2329,7 +2323,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // a data-free push through deliver, which rechecks its binding at emission.
     BusHint(published: bus.Published(event: bus.GoalChanged, ..)) -> {
       push_to_subscribed(state, protocol.GoalChanged)
-      continue(state)
+      state
     }
 
     // The proposal queue moved: a model queued a suggestion or a person
@@ -2337,28 +2331,30 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // the queue again through the same bounded command.
     BusHint(published: bus.Published(event: bus.ProposalsChanged, ..)) -> {
       push_to_subscribed(state, protocol.ProposalsChanged)
-      continue(state)
+      state
     }
 
-    // A remote child's stub changed. The stubs are read again and pushed
-    // whole, so a lost hint costs a stale strip until the next change, and
-    // no pull runs: a stub is a reserved fact, which no emit carries.
+    // A remote child's stub changed. The stubs are read again in a weft run
+    // and pushed whole to every subscribed peer, so the hub's turn never
+    // waits on the store, a lost hint costs a stale strip until the next
+    // change, and no pull runs: a stub is a reserved fact, which no emit
+    // carries.
     BusHint(published: bus.Published(event: bus.RemoteChildrenChanged, ..)) -> {
-      push_to_subscribed(state, remote_children_event(state))
-      continue(state)
+      broadcast_remote_children(state)
+      state
     }
-    BusHint(published: _) -> continue(pull_and_broadcast(revalidate_all(state)))
+    BusHint(published: _) -> pull_and_broadcast(revalidate_all(state))
 
     // No `revalidate_all` ahead of a delta: `deliver` re-checks each peer
     // as the frame leaves, and a second check on the same evidence in the
     // same turn would only double the registry calls per token per peer.
     ProviderDelta(operation:, generation:, delta:) -> {
       broadcast_delta(state, operation, generation, Some(delta))
-      continue(state)
+      state
     }
     ProviderEnded(operation:, generation:) -> {
       broadcast_delta(state, operation, generation, None)
-      continue(state)
+      state
     }
 
     // The ack follows the walk rather than preceding it, so a caller whose
@@ -2375,7 +2371,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         connection.flush(flushed)
       })
       process.send(reply, dict.size(state.connections))
-      continue(state)
+      state
     }
   }
 }
@@ -4885,14 +4881,41 @@ fn begin_history(
   begin_observation(state, connection, id, HistoryObservation, capture)
 }
 
-// The session's remote children as one snapshot event, read from the stubs in
-// its store at this moment. Stubs that cannot be read give an empty list, which
-// a client draws as no remote child: the list is a display, and nothing that
-// decides reads it.
-fn remote_children_event(state: State) -> WireEvent {
-  protocol.SnapshotEvent(
-    protocol.RemoteChildrenSnapshot(children: remote_agents(state.runtime)),
-  )
+// Pushes the session's remote children to every subscribed connection when a
+// stub changes, reading the stubs in a weft run so a slow store cannot stall
+// the hub's turn.
+fn broadcast_remote_children(state: State) -> Nil {
+  let subscribed =
+    dict.values(state.connections)
+    |> list.filter(fn(link) { link.subscription == Subscribed })
+  case subscribed {
+    [] -> Nil
+    links -> {
+      let runtime = state.runtime
+      let hub = process.self()
+      let _witnessed: weft.Witnessed =
+        weft.new([
+          fn() {
+            let event =
+              protocol.SnapshotEvent(
+                protocol.RemoteChildrenSnapshot(children: remote_agents(runtime)),
+              )
+            let frame =
+              protocol.encode_event(EventEnvelope(
+                reply_to: None,
+                seq: None,
+                event:,
+              ))
+            list.each(links, deliver(_, frame))
+            Ok(Nil)
+          },
+        ])
+        |> weft.deadline(remote_children_push_ms)
+        |> weft.cancel_when_exits(hub)
+        |> weft.start_witnessed
+      Nil
+    }
+  }
 }
 
 // The session's clock, the one the Agency stamps a glance's arrival and a
@@ -7255,7 +7278,14 @@ fn commit_approval(
       )
   }
   case committed {
-    Ok(_) -> Ok(Nil)
+    Ok(_) -> {
+      let _ =
+        escalate.notify_decision(state.runtime, cell, case lifetime {
+          Once -> escalate.ApprovedOnce
+          ForSession -> escalate.ApprovedForSession
+        })
+      Ok(Nil)
+    }
     Error(api.RaceLost) -> Error(moved_under_the_answer(state, cell.record.id))
     Error(error) -> {
       let #(code, text) = describe_api_error(error, "")
@@ -7363,6 +7393,7 @@ fn deny(
     connection,
     id,
   )
+  let _ = escalate.notify_decision(state.runtime, cell, escalate.Denied)
   reply_with_committed(state, connection, id, fn(emit) {
     escalation_emitted(emit, escalation_id, "rejected")
   })
@@ -7942,14 +7973,6 @@ fn seeded_thinking(
   }
 }
 
-fn entry_in_force(
-  state: State,
-  provider: String,
-) -> Result(catalog.CatalogModel, Nil) {
-  use catalogue <- result.try(option.to_result(state.catalog, Nil))
-  catalog.find(catalogue, provider)
-}
-
 fn strands_snapshot(state: State) -> WireEvent {
   use <- bool.lazy_guard(state.delivery == Network, fn() {
     mutation_outcome("committed")
@@ -8337,7 +8360,7 @@ fn set_profile(
 fn retarget_moves(
   state: State,
   retargets: List(catalog.Retarget),
-) -> Result(List(#(String, machine_strand.ModelIdentity)), String) {
+) -> Result(List(#(String, catalog.CatalogModel)), String) {
   list.try_fold(strand_names(state), [], fn(moves, strand) {
     use cell <- result.try(
       session.strand_configuration(state.runtime.session, strand)
@@ -8347,17 +8370,7 @@ fn retarget_moves(
       None -> Ok(moves)
       Some(session.Cell(value:, ..)) ->
         case followed_head(retargets, value.model) {
-          Ok(entry) ->
-            Ok([
-              #(
-                strand,
-                machine_strand.ModelIdentity(
-                  provider: entry.name,
-                  model_id: entry.model_id,
-                ),
-              ),
-              ..moves
-            ])
+          Ok(entry) -> Ok([#(strand, entry), ..moves])
           Error(Nil) -> Ok(moves)
         }
     }
@@ -8380,20 +8393,18 @@ fn followed_head(
 }
 
 // Writes the moved strands' models in one commit, by the path `set_config`
-// uses, and leaves their thinking levels alone for the reason `model_name`
-// does: the level belongs to whoever is having the conversation.
+// uses, seeding the new entry's thinking level when a strand still holds its
+// previous entry's seed and leaving an operator-chosen level alone.
 fn apply_moves(
   state: State,
-  moves: List(#(String, machine_strand.ModelIdentity)),
+  moves: List(#(String, catalog.CatalogModel)),
   author: Option(message.Origin),
 ) -> Result(State, String) {
   use <- bool.guard(list.is_empty(moves), Ok(state))
   let change = fn(plan) {
     list.fold(moves, Ok(plan), fn(plan, move) {
       use plan <- result.try(plan)
-      update_configuration(plan, move.0, fn(configuration) {
-        machine_strand.StrandConfiguration(..configuration, model: move.1)
-      })
+      update_configuration(plan, move.0, switch_to_entry(state, _, move.1))
     })
   }
   apply_changes(state, None, [change], author)
@@ -8875,10 +8886,18 @@ fn apply_config(
   fields: List(#(String, JsonValue)),
   author: Option(message.Origin),
 ) -> Result(#(State, JsonValue), String) {
-  // Validate everything before applying anything: a refused key must
-  // leave no partial effect.
-  use changes <- result.try(
+  // Validate everything in the caller's order before applying anything: a
+  // refused key must leave no partial effect, and an explicit thinking_level
+  // runs after model_name so it always overrides the entry's seed.
+  use _ <- result.try(
     list.try_map(fields, fn(field) { validate_config_key(state, strand, field) }),
+  )
+  let #(thinking, others) =
+    list.partition(fields, fn(field) { field.0 == "thinking_level" })
+  use changes <- result.try(
+    list.try_map(list.append(others, thinking), fn(field) {
+      validate_config_key(state, strand, field)
+    }),
   )
   apply_changes(state, strand, changes, author)
 }
@@ -9129,11 +9148,11 @@ fn json_string_item(item: JsonValue) -> Result(String, String) {
 // `model_name`'s change: the catalogue entry's identity, applied to one
 // strand's configuration when named, or to every strand's otherwise.
 //
-// **It does not touch `thinking_level`,** even though the entry declares
-// one. A catalogue's `thinking` seeds a strand at creation; the per-turn
-// level afterwards belongs to whoever is having the conversation, and
-// switching model mid-run is not a request to un-raise a reasoning budget
-// somebody deliberately raised. A client that wants both sends both keys.
+// When the strand's `thinking_level` still matches the previous entry's seed,
+// it moves to the new entry's declared `thinking` level; a level the operator
+// raised or lowered away from the previous seed is left alone so switching
+// model mid-run does not un-raise a budget somebody deliberately chose. A
+// client that sends both keys gets its explicit `thinking_level`.
 fn model_name_change(
   state: State,
   strand: Option(String),
@@ -9148,15 +9167,45 @@ fn model_name_change(
       "unknown model name: " <> name
     }),
   )
-  let identity =
-    machine_strand.ModelIdentity(provider: entry.name, model_id: entry.model_id)
-  let change = fn(configuration) {
-    machine_strand.StrandConfiguration(..configuration, model: identity)
-  }
+  let change = switch_to_entry(state, _, entry)
   case strand {
     Some(strand) -> Ok(update_configuration(_, strand, change))
     None -> Ok(update_all_configurations(_, change))
   }
+}
+
+// Switches a strand's model to `entry`, seeding `thinking_level` from `entry`
+// when the strand still holds its previous model's seeded level (or `off` when
+// the previous model is not in the catalogue) and leaving an operator-chosen
+// level untouched.
+fn switch_to_entry(
+  state: State,
+  configuration: machine_strand.StrandConfiguration,
+  entry: catalog.CatalogModel,
+) -> machine_strand.StrandConfiguration {
+  let identity =
+    machine_strand.ModelIdentity(provider: entry.name, model_id: entry.model_id)
+  let previous_seed = case entry_in_force(state, configuration.model.provider) {
+    Ok(previous) -> wiring.strand_thinking_level(previous.thinking)
+    Error(Nil) -> machine_strand.ThinkingOff
+  }
+  let thinking_level = case configuration.thinking_level == previous_seed {
+    True -> wiring.strand_thinking_level(entry.thinking)
+    False -> configuration.thinking_level
+  }
+  machine_strand.StrandConfiguration(
+    ..configuration,
+    model: identity,
+    thinking_level:,
+  )
+}
+
+fn entry_in_force(
+  state: State,
+  provider: String,
+) -> Result(catalog.CatalogModel, Nil) {
+  use catalogue <- result.try(option.to_result(state.catalog, Nil))
+  catalog.find(catalogue, provider)
 }
 
 // The durable form of an active-tools list: every name checked against

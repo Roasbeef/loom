@@ -5210,7 +5210,8 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
       // near the source cap costs a few short turns instead of one turn that
       // parks every queued authorization behind five hundred catalogue reads.
       let commands = book.commands
-      let sources = fn() { collect_sources(commands, selected.id, "", [], 0) }
+      let domain_id = selected.id
+      let sources = fn() { collect_sources(commands, domain_id, "", [], 0) }
 
       // Domain hosts also keep their builder after publication. Retain the
       // callback alone, not the registry and its resident instances.
@@ -5489,9 +5490,11 @@ fn close_unused_domain(book: Book(instance), id, slot: DomainSlot) {
 // halves of a page therefore cost one bounded handler turn each.
 const source_page = 100
 
-// The bounded total a domain may contribute to recall. An oversized domain is
-// refused rather than silently truncated to an authorized-looking prefix.
-const source_limit = 512
+// The bounded total of conversation sessions a domain may contribute to
+// recall: 511, leaving one slot in `shared_history`'s 512-source ceiling for
+// the domain's `loom-memory.db` store (`serve.with_memory_source`). An
+// oversized domain is refused rather than silently truncated.
+const source_limit = 511
 
 // The page walk runs on the caller's process, one registry call per half-page,
 // so the cap is enforced here rather than inside a handler turn. SQL filters

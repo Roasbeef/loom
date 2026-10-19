@@ -1,6 +1,8 @@
 # protocol-change/052: the web view behind a TLS origin
 
-**Status**: PROPOSED 2026-09-26, design only · **Affects**: Part 1.6 client
+**Status**: PROPOSED 2026-09-26; ACCEPTED 2026-10-18, as built in the
+addendum below, which differs on the configuration, the cookie names and
+the launcher · **Affects**: Part 1.6 client
 protocol (the `/ui` admission checks, the `hello` `ui` field, one daemon
 flag) and the `loom --ui` launch · **Raised by**: the Open item "Remote
 access" in [protocol-change/051](051-web-view-route.md) · **Decision
@@ -361,3 +363,218 @@ because they would let one principal's ticket act for another.
   remote page gains the member's full role, and the stolen-cookie cost
   above grows with it. That phase should revisit the lifetime and the
   fragment together.
+
+## Addendum: accepted, as built (2026-10-18)
+
+The owner wants to open the web view of a daemon on a Linux machine from a
+phone, through Tailscale Serve on that machine. Serve terminates TLS at
+`https://<node>.<tailnet>.ts.net:<port>` and forwards to the daemon's loopback
+listener, which is the same-host TLS proxy this proposal chose. This addendum
+records what was built and where it differs from the proposal above.
+
+### What did not change
+
+The daemon still binds loopback only. `--bind` still refuses anything but
+`127.0.0.1:<port>` and `[::1]:<port>`, and it already pins the port, so a
+proxy has a stable target with `loomd --ui --bind 127.0.0.1:<port>`. No
+configuration key for the port was added.
+
+The daemon reads no `X-Forwarded-*` or `Forwarded` header, anywhere. A test
+sends a foreign `Host` with `X-Forwarded-Host` and `Forwarded` naming the
+listed origin and gets `403`.
+
+Admission is the resolution the proposal gives. `ui_http.page_origin` turns
+the request's `Host` into `Loopback(host)`, exactly as 051 admits it, or
+`Remote(origin)`, when the `Host` names a listed origin, or refuses it with
+`403`. The `Host` is compared lowercased and with an explicit `:443`
+dropped, against the origin's host and port as a browser writes them, so
+the listed name on another port, or with a trailing dot, is refused. Every
+later rule is a function of that one value: the socket's `Origin` rule
+(`ui_http.origin_matches`), the cookie names and attributes
+(`ui_http.set_cookie`, `ui_http.set_login_cookie`, and the readers
+`ui_http.session_cookies` and `ui_http.login_cookies`), the policy's socket
+origin (`ui_http.socket_origin`, then `page.content_security_policy_for`),
+and the address a page mints links under (`ui_http.address`, which is
+`PageGrant.address`). This is why the allow-list replaces the loopback check
+rather than weakening it: a DNS rebinding page still presents its own name,
+which is neither loopback nor listed, and is refused at the same point and
+with the same status as under 051.
+
+The `Origin` rule, the `Sec-Fetch-Site` rules, the policy and the `hello`
+field are as proposed.
+
+### The configuration is a file key, not a flag
+
+The proposal named `loomd --ui-origin`. The list is read instead from the
+daemon's configuration file, once at startup:
+
+```toml
+[daemon]
+ui = true
+ui_origins = ["https://obelisk.tail0a99b.ts.net:8443"]
+```
+
+A proxy's origin is part of a deployment that outlives one command line (a
+Serve configuration survives a reboot), and `[daemon]` already holds `ui`,
+the file form of `--ui`. One place to read keeps the rules in one parser
+(`client/daemon/ui_origin`), which the catalogue's `[daemon]` validation
+(`limits.from_fields`) calls too, so a session's configuration file and the
+daemon's startup refuse the same bad entry with the same words. No flag was
+added. The key is named for the view, beside `ui`, rather than
+`allowed_origins`, because nothing else in `[daemon]` is admitted by it: the
+`/v2` endpoints take bearers and never read the list.
+
+Each entry is parsed whole, and a bad one refuses the daemon's start with an
+error that quotes it. An entry is `https://`, a host, and an optional port,
+with nothing else: no user information, path, query or fragment, and no
+percent-encoding. A single trailing `/` is accepted and dropped. The host is
+a DNS name, an IPv4 literal or a bracketed IPv6 literal. The scheme and host
+are lowercased and the port is dropped when it is 443, which is the form a
+browser writes in `Origin` and `Host`. At most sixteen entries are read, and
+a repeated one is kept once.
+
+`http` is refused for every host, including loopback ones, for three
+reasons. The cookies on a listed origin are `Secure`, which a browser will
+not send over `http`. An `http` origin on another machine would carry
+tickets and cookies across the network in clear text, which is what the
+proxy exists to prevent. And the loopback names are already admitted
+without a list, so an `http://127.0.0.1` entry could add nothing. A listed
+loopback host (`localhost`, `127.0.0.1`, `[::1]`) is refused for the last
+reason, as a likely mistake.
+
+A list on a daemon that does not serve the view refuses startup, as the
+proposal's flag did without `--ui`. The type keeps the rule after startup:
+the list is a field of `main.ViewOn`, so a daemon without the view has no
+list to consult.
+
+### The cookies are `__Secure-` and keep their keyed paths
+
+The proposal chose `__Host-loom_ui` with `Path=/`. It was written before the
+page keys (051, the operator addendum) and the browser login (065) gave each
+cookie a path of its own: a page's cookie is scoped to `/ui/p/<page key>`
+and a login's to `/ui/l/<login key>`. A remote origin keeps those paths, and
+its cookies are `__Secure-loom_ui` and `__Secure-loom_login`, each with
+`Secure` added to the loopback attributes:
+
+| | `Loopback(host)` | `Remote(origin)` |
+|---|---|---|
+| Page cookie | `loom_ui=…; HttpOnly; SameSite=Strict; Path=/ui/p/<key>` | `__Secure-loom_ui=…; HttpOnly; SameSite=Strict; Path=/ui/p/<key>; Secure` |
+| Login cookie | `loom_login=…; HttpOnly; SameSite=Strict; Path=/ui/l/<key>; Max-Age=…` | `__Secure-loom_login=…; HttpOnly; SameSite=Strict; Path=/ui/l/<key>; Max-Age=…; Secure` |
+
+`__Host-` requires `Path=/`, and `Path=/` would cost two things the keyed
+path provides:
+
+- **Other ports of the same name.** Browsers do not scope a cookie by port.
+  A Tailscale node name commonly serves other things through Serve on other
+  ports, and a cookie at `/` would be sent to every one of them. The keyed
+  path is what keeps the page's cookie off every path that does not name its
+  key, and so off every other service on that name.
+- **Several pages in one browser.** One cookie name at `/` holds one value,
+  so a second page would overwrite the first page's cookie. 051's addendum
+  on several pages per principal and session relies on each page's cookie
+  living under its own path.
+
+What `__Host-` adds over `__Secure-` is that a sibling subdomain cannot set
+the cookie. The keyed design already holds against what such a cookie could
+do. A request is read only by the name its origin implies, and every value
+it carries under that name is tried, up to four, so a planted value that
+sorts first cannot shadow the real one. A value is accepted only when its UI
+session is live under the key in the path, so a planted value is passed over
+unless it is the planter's own page, and that page lives under the planter's
+key, at a path the victim's browser has no reason to visit. Steering the
+victim there takes a navigation from the sibling, which is `Sec-Fetch-Site:
+same-site` and refused. A login cookie must verify under the daemon's root
+key, carry the key in its path, and match the nonce the victim's own page
+keeps in `localStorage`, and its resume is a `POST` that must be
+`same-origin`. The residue is a denial of the page: a sibling that knows the
+page key can plant four values under longer paths and push the real cookie
+past the bound. It gains no access.
+
+Two assumptions sit under that argument. Which sites count as siblings
+depends on the Public Suffix List: if `ts.net` is listed, the siblings of a
+Serve origin are the other nodes of the same tailnet, and if it is not, every
+`*.ts.net` name is same-site. The defence above does not depend on which.
+And neither prefix isolates another service on the same host name and a
+different port, because browsers do not scope cookies by port. Such a service
+that learns a page key can overwrite that page's cookie, or have the browser
+send the cookie to its own port at `/ui/p/<key>` and so read it. Against a
+service on the same name, the secrecy of the page key is the whole defence,
+as it is for another loopback port under 051. The owner should run on that
+name only services they trust.
+
+A remote request that presents only `loom_ui` gets `401`, and a loopback
+request that presents only `__Secure-loom_ui` gets `401`.
+
+### Links on a listed origin, and a device link
+
+`ui.link` is unchanged for a page link: the reply is a path, and the client
+joins it to the origin it chooses. `loom ui --origin <origin>` builds the
+link on a listed origin instead of the loopback listener. The origin must be
+one the `hello` lists, compared after the daemon's normalization, or the
+command refuses before anything is minted.
+
+`ui.link` gains one optional field, `device`. With `"device": true` the
+request asks for a link that signs another device in to the principal's
+home: the home's ticket, `Remembered`, `Fresh`, at the asked ceiling, and
+redeemable for the device link's ten minutes (`ui_sessions.device_ms`)
+rather than sixty seconds, so a person can carry it to a phone. The reply is
+the ordinary `ui.link` reply, whose `expires_in_ms` says which lifetime the
+ticket got. A device link names no session and cannot decline the login: a
+request with `session_id`, or with `"remember": false`, is refused with
+`bad_request`. It carries no page deadline and no parent login, since no page
+made it, so the login its exchange sets has thirty days of its own, as a
+`loom ui` home link's does. It is not counted against the grant allowance a
+page's own device link spends: that allowance keeps a stolen page from
+minting credentials, and the credential that asks here can already mint a
+home link at will. A daemon that predates the field ignores it and mints a
+sixty-second home link, which the reply's `expires_in_ms` shows.
+
+`loom ui --device [--origin <origin>]` sends that request. It builds the link
+on the only listed origin, or the one `--origin` names when several are
+listed, and refuses with a message naming `ui_origins` and `[daemon]` when
+none is. It prints the link on standard output, as `loom ui` does, and a QR
+code of it on standard error with how long it lasts, so a phone can scan it
+and a script still reads one line. The code is drawn black on white with
+explicit ANSI colours, in Unicode half blocks, by `qrkit` 0.6.0, a pure Gleam
+encoder whose only dependency is `gleam_stdlib`; Loom draws the code and does
+not encode it.
+
+The page's own device link (065) now uses the page's origin as well, because
+`PageGrant.address` is `ui_http.address(origin)`. "Sign in another device"
+on a page opened through the proxy mints a link on the proxy's origin.
+
+### What was not built
+
+- **`loom --ui --addr wss://…` for a teammate.** The `hello` field it needs
+  is built and the terminal's decoder keeps it (`WebViewAt.origins`); the
+  launch against a remote daemon is not. The owner's case, a second device of
+  their own, is `loom ui --device` on the daemon's machine.
+- **The ticket in the fragment** stays Open, as above. Another proxy than
+  Serve must still be configured not to log the `ticket` parameter.
+- **HSTS.** Tailscale Serve sends no `Strict-Transport-Security` header that
+  the operator chooses. The page's `http` variant is refused at the socket
+  upgrade by the exact `Origin` rule, and the cookies are `Secure`, so a page
+  injected over `http` before a first visit gets neither the cookie nor the
+  socket. The daemon does not send the header itself, because it cannot know
+  whether the request reached the proxy over TLS.
+- **The claim command on a remote page.** A page draws `loom claim --addr
+  ws://…` only for a loopback `Host` (`ui_socket.claim_address`). A page on a
+  listed origin draws none, since the daemon cannot name a control address
+  for another machine.
+
+### Verification as built
+
+`client/ui_origin_test` covers the entry grammar (good and bad entries, the
+normalization, a fixed-seed port property), the `Host` matrix (loopback, the
+listed origin in any case, the listed name on another port, a foreign name,
+forwarded headers ignored), the socket's `Origin` rule, the cookie names and
+attributes per origin, and the policy's scheme. `client/daemon_limits_test`
+covers the startup refusals. `client/ui_route_test` drives a real listener:
+the `Host` matrix over HTTP, a remote exchange that sets `__Secure-loom_ui`
+with `Secure` and a `wss://` policy, a page that reads only its origin's
+cookie name, a socket that refuses `http://` and the wrong port and admits
+the listed origin, the `hello`'s `origins`, and a device link that lives ten
+minutes and sets `__Secure-loom_login`. `tui/view_device_test` covers the
+launcher's words, the choice of listed origin, the wire, and a QR code that
+decodes back to its link. A real drive through Tailscale Serve from a phone
+has not been run.

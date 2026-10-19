@@ -341,3 +341,33 @@ pub fn a_line_is_only_ever_text_test() {
   assert string.contains(html, "&lt;script&gt;")
   assert !string.contains(html, "<script")
 }
+
+// A Mermaid fence selects one fixed element. All renderer input remains
+// escaped source text, including markup-shaped labels and script endings.
+pub fn mermaid_fences_are_text_only_isolated_renderer_inputs_test() {
+  let html =
+    drawn(
+      "```mermaid\ngraph TD\n A[\"</pre><script>alert(1)</script>\"] --> B\n```",
+    )
+  assert string.contains(
+    html,
+    "<loom-mermaid><pre class=\"mermaid-source\">graph TD",
+  )
+  assert string.contains(
+    html,
+    "&lt;/pre&gt;&lt;script&gt;alert(1)&lt;/script&gt;",
+  )
+  assert !string.contains(html, "<script")
+  assert !string.contains(html, "<iframe")
+  assert !string.contains(html, "src=")
+  assert !string.contains(html, "<svg")
+}
+
+pub fn only_the_mermaid_language_selects_the_renderer_test() {
+  assert !string.contains(drawn("```mermaid-x\ngraph TD\n```"), "loom-mermaid")
+  assert !string.contains(drawn("```\ngraph TD\n```"), "loom-mermaid")
+  assert string.contains(
+    drawn("```mermaid\nsequenceDiagram\n A->>B: hi"),
+    "loom-mermaid",
+  )
+}

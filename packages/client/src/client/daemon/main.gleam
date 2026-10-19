@@ -55,6 +55,7 @@ import client/catalog
 import client/catalogue_page
 import client/config_watch
 import client/daemon/limits
+import client/daemon/listen_address
 import client/daemon/listener
 import client/daemon/manager
 import client/daemon/node_facts
@@ -65,6 +66,7 @@ import client/daemon/server
 import client/daemon/session_socket
 import client/daemon/ui_assets
 import client/daemon/ui_login
+import client/daemon/ui_origin
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import client/delegate_host
@@ -159,6 +161,9 @@ pub type Config {
     bind_host: String,
     /// Zero requests an ephemeral port.
     bind_port: Int,
+    /// Where `bind_host` and `bind_port` came from, which decides whether
+    /// `[daemon] bind` may still replace them at startup.
+    bind_source: BindSource,
     /// Maximum occupied session reservations, including unconfirmed cleanup.
     capacity: Int,
     /// Display name used only when creating the first stable owner identity.
@@ -224,7 +229,31 @@ pub type WebView {
   ViewOff
 
   /// `loomd --ui` or `[daemon] ui = true`: the listener serves the view.
-  ViewOn
+  /// `origins` are the `https` origins of `[daemon] ui_origins` the view is
+  /// also admitted under (protocol-change/052), empty until
+  /// `prepare_startup` reads the file. A list exists only on a daemon that
+  /// serves the view, so an origin without the view cannot be represented
+  /// once startup is prepared.
+  ViewOn(origins: List(ui_origin.Origin))
+}
+
+/// Which source chose the listener address, in the order they take
+/// precedence: an explicit `--bind` over `[daemon] bind` over the built-in
+/// default (`listen_address.default`).
+///
+/// `parse` cannot read the file, so it records whether the flag was given and
+/// `prepare_startup` applies the file only over the default. A `Config` whose
+/// address equals the default is otherwise indistinguishable from one where
+/// the owner passed `--bind 127.0.0.1:0`, and that flag must still win.
+pub type BindSource {
+  /// Neither the flag nor the file named an address.
+  BindDefault
+
+  /// `--bind` named the address. The file's value is validated but unused.
+  BindFlag
+
+  /// `[daemon] bind` named the address, applied by `prepare_startup`.
+  BindFile
 }
 
 /// A ready root and its original public listener, with no per-session token.
@@ -398,8 +427,9 @@ pub fn parse(arguments: List(String)) -> Result(Config, String) {
   let initial =
     Config(
       "",
-      "127.0.0.1",
-      0,
+      listen_address.default.host,
+      listen_address.default.port,
+      BindDefault,
       8,
       "Owner",
       [],
@@ -436,7 +466,8 @@ fn parse_loop(
     [] -> Ok(config)
     ["--state-dir", value, ..rest] ->
       parse_loop(rest, Config(..config, state_root: value))
-    ["--ui", ..rest] -> parse_loop(rest, Config(..config, view: ViewOn))
+    ["--ui", ..rest] ->
+      parse_loop(rest, Config(..config, view: ViewOn(origins: [])))
     ["--owner-name", value, ..rest] if value != "" ->
       parse_loop(rest, Config(..config, owner_display_name: value))
     ["--capacity", value, ..rest] -> {
@@ -449,8 +480,16 @@ fn parse_loop(
       }
     }
     ["--bind", value, ..rest] -> {
-      use #(bind_host, bind_port) <- result.try(bind_address(value))
-      parse_loop(rest, Config(..config, bind_host:, bind_port:))
+      use address <- result.try(listen_address.parse(value, from: "--bind"))
+      parse_loop(
+        rest,
+        Config(
+          ..config,
+          bind_host: address.host,
+          bind_port: address.port,
+          bind_source: BindFlag,
+        ),
+      )
     }
     ["--read-scope", value, ..rest] -> {
       use _scope <- result.try(catalog.parse_read_scope(value))
@@ -508,21 +547,6 @@ fn parse_loop(
           )
       }
     [unknown, ..] -> Error("unknown or incomplete daemon argument: " <> unknown)
-  }
-}
-
-fn bind_address(value: String) -> Result(#(String, Int), String) {
-  use #(host, port) <- result.try(case string.split(value, ":") {
-    ["127.0.0.1", port] -> Ok(#("127.0.0.1", port))
-    ["[", "", "1]", port] -> Ok(#("::1", port))
-    _ -> Error("--bind requires loopback 127.0.0.1:port or [::1]:port")
-  })
-  use port <- result.try(
-    int.parse(port) |> result.replace_error("invalid --bind port"),
-  )
-  case port >= 0 && port <= 65_535 {
-    True -> Ok(#(host, port))
-    False -> Error("--bind port is outside 0..65535")
   }
 }
 
@@ -1872,38 +1896,39 @@ pub fn start_movers(
     }
     Some(membership) -> {
       use ready <- result.try(root.ready(daemon, within: 20_000))
-      let directory = session_directory_of(config, ready.registry)
+      let registry = ready.registry
+      let sessions_directory = ready.sessions_directory
+      let directory = session_directory_of(config, registry)
       let #(authority, upkeep) = case directory.ownership {
         // The movers' periodic pass seeds the store from the catalogue until
         // it has once, then finishes the deletions left marked; on request it
         // writes the local sessions' records.
-        Some(ownership) -> #(
-          session_mover.Recorded(ownership:),
-          session_movers.Upkeep(
-            every_tick: fn() {
-              let _seeded =
-                migrate.seed(
-                  ready.registry,
-                  ownership,
-                  roster.rows(orchestrator_roster(config)),
-                  logger,
-                )
-              deletion.finish_pending(
-                ready.registry,
-                ready.sessions_directory,
-                ownership,
-              )
-            },
-            cover: fn() {
-              migrate.cover_local(ready.registry, ownership, logger)
-              |> result.replace(Nil)
-            },
-            release: fn(session) {
-              let _released = ownership.release_local(session)
-              Nil
-            },
-          ),
-        )
+        Some(ownership) -> {
+          let release_local = ownership.release_local
+          #(
+            session_mover.Recorded(ownership:),
+            session_movers.Upkeep(
+              every_tick: fn() {
+                let _seeded =
+                  migrate.seed(
+                    registry,
+                    ownership,
+                    roster.rows(orchestrator_roster(config)),
+                    logger,
+                  )
+                deletion.finish_pending(registry, sessions_directory, ownership)
+              },
+              cover: fn() {
+                migrate.cover_local(registry, ownership, logger)
+                |> result.replace(Nil)
+              },
+              release: fn(session) {
+                let _released = release_local(session)
+                Nil
+              },
+            ),
+          )
+        }
         None -> #(session_mover.Rows, session_movers.no_upkeep())
       }
       let environment =
@@ -2000,6 +2025,8 @@ pub fn prepare(
 /// The returned configuration owns the web-view choice for this daemon's life.
 /// The startup file is read once for UI and connection limits alike; a session's
 /// catalogue cannot turn routes on or off. An explicit `--ui` always enables it.
+/// The listener address comes from `--bind`, else `[daemon] bind`, else the
+/// loopback default, and is fixed for the daemon's life.
 ///
 /// ## Examples
 ///
@@ -2038,16 +2065,45 @@ pub fn prepare_startup(
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
 
+  // The limits read above has already validated `[daemon] bind`, so this
+  // read fails only on the same words with the path in front. The address
+  // is captured once here and never reread, so a changed `bind` needs a
+  // restart.
+  use file_address <- result.try(
+    listen_address.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  let config = with_file_address(config, file_address)
+
   // Validation above makes a missing or false UI setting the only other
   // possibility. The command-line opt-in remains authoritative over the file.
   let view = case dict.get(document, "daemon") {
     Ok(tom.Table(fields)) ->
       case dict.get(fields, "ui") {
-        Ok(tom.Bool(True)) -> ViewOn
+        Ok(tom.Bool(True)) -> ViewOn(origins: [])
         _ -> config.view
       }
     _ -> config.view
   }
+
+  // The listed origins belong to the view, so a list on a daemon that does
+  // not serve it is refused rather than ignored: the owner who wrote it
+  // expects a page there (protocol-change/052).
+  use origins <- result.try(
+    ui_origin.from_document(document)
+    |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
+  )
+  use view <- result.try(case view, origins {
+    ViewOff, [] -> Ok(ViewOff)
+    ViewOff, [_, ..] ->
+      Error(
+        configuration
+        <> ": daemon."
+        <> ui_origin.key
+        <> " needs the web view; set daemon.ui = true or pass --ui",
+      )
+    ViewOn(_), _ -> Ok(ViewOn(origins:))
+  })
   use peer_policy <- result.try(
     peer_defaults.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
@@ -2200,11 +2256,12 @@ pub fn prepare_startup(
             spawner: link,
             laptop: laptop_of(config, link),
           )
+        let session_id = registration.id
         let settings =
           serve.Settings(
             ..settings,
             first_prompt: Some(fn(text) {
-              manager.seed_subtitle(directory, registration.id, text)
+              manager.seed_subtitle(directory, session_id, text)
             }),
             profile_desk: Some(profile_desk(
               directory,
@@ -2220,7 +2277,6 @@ pub fn prepare_startup(
         // reach one says so in the reason the opening operation reports. The
         // session records the executor an open chose in its own store, and the
         // catalogue is told once so that a listing can show it.
-        let session_id = registration.id
         let chosen = fn(executor) {
           manager.seed_executor(directory, session_id, executor)
         }
@@ -2271,6 +2327,26 @@ pub fn prepare_startup(
     ),
   )
   |> result.map(fn(daemon) { #(config, daemon) })
+}
+
+// An explicit `--bind` outranks the file, so the file's address replaces only
+// the built-in default. The resolved address is written back into the
+// `Config`, which is what the listener binds and `publish_endpoint` records
+// for clients to discover.
+fn with_file_address(
+  config: Config,
+  file_address: Option(listen_address.Address),
+) -> Config {
+  case config.bind_source, file_address {
+    BindDefault, Some(address) ->
+      Config(
+        ..config,
+        bind_host: address.host,
+        bind_port: address.port,
+        bind_source: BindFile,
+      )
+    BindDefault, None | BindFlag, _ | BindFile, _ -> config
+  }
 }
 
 /// How often a session's Agency reaps overdue children on its own, or `None`.
@@ -2984,7 +3060,7 @@ fn run(
         <> "/owner.token)",
       )
       case config.view {
-        ViewOn ->
+        ViewOn(_) ->
           io.println("loomd: web view on; run `loom ui` for your home page")
         ViewOff -> Nil
       }
@@ -3005,7 +3081,7 @@ fn web_view(
 ) -> Result(Option(server.Ui(serve.Resident)), String) {
   case config.view {
     ViewOff -> Ok(None)
-    ViewOn -> {
+    ViewOn(origins:) -> {
       // The page's assets are read once, here, so a release that lost one
       // refuses `--ui` at startup rather than serving a page without it.
       use assets <- result.try(ui_assets.load())
@@ -3025,6 +3101,7 @@ fn web_view(
       Some(
         server.Ui(
           sessions:,
+          origins:,
           result_reader: fn(resident: serve.Resident) { resident.result_reader },
           assets:,
           root_key:,

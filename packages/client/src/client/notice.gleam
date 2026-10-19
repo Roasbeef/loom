@@ -93,6 +93,9 @@ pub type Work {
 
   /// An async code-mode execution, by its launch handle.
   Execution(id: String)
+
+  /// An operator decision on an async escalation question at `seq`.
+  Escalation(id: String, seq: Int)
 }
 
 /// What a completion delivery did.
@@ -138,12 +141,16 @@ pub type Due {
 /// assert notice.key(notice.Job("01JQ8")) == "client/notice/job/01JQ8"
 /// assert notice.key(notice.Execution("x1"))
 ///   == "client/notice/execution/x1"
+/// assert notice.key(notice.Escalation("policy-1", 3))
+///   == "client/notice/escalation/policy-1/3"
 /// ```
 ///
 pub fn key(work: Work) -> String {
   case work {
     Job(id:) -> key_prefix <> "job/" <> id
     Execution(id:) -> key_prefix <> "execution/" <> id
+    Escalation(id:, seq:) ->
+      key_prefix <> "escalation/" <> id <> "/" <> int.to_string(seq)
   }
 }
 

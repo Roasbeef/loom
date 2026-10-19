@@ -80,9 +80,9 @@ wrote ourselves. Nothing here is a security control.
   QualifiedDomainCall | FlowOrder | UnnamedHelper | StdoutSkip |
   TestImportWall`, printed as `R0`..`R20`.
   `error_by_default` is the staging decision as data — `[Unparseable,
-  NestingDepth, PanicInSource, PortablePurity, CommentStanza, FlowSpine,
-  TransitionTable, StateFirst, QualifiedDomainCall, StdoutSkip,
-  TestImportWall]` — and its doc comment
+  EagerFallback, NestingDepth, PanicInSource, PortablePurity,
+  AssertWithoutMessage, CommentStanza, FlowSpine, TransitionTable,
+  StateFirst, QualifiedDomainCall, StdoutSkip, TestImportWall]` — and its doc comment
   carries one census and one argument per rule, which is what a reader
   who has just been failed by one of them needs. `gate(findings, errors)`
   is the `#(errors, warnings)` split `lint/cli` prints as its last line
@@ -561,9 +561,9 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
 
 ## Staging
 
-**R0, R2, R4, R6, R10, R13, R14, R15, R16, R19 and R20 gate; R1, R3, R5,
-R7, R8, R9, R11, R12, R17 and R18 warn.** `make lint` and `make check` fail on
-any of the eleven. The warning default is deliberate
+**R0, R1, R2, R4, R6, R7, R10, R13, R14, R15, R16, R19 and R20 gate; R3, R5,
+R8, R9, R11, R12, R17 and R18 warn.** `make lint` and `make check` fail on
+any of the thirteen. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
 producing a census that is zero, decidable, and argued — not by being
@@ -621,24 +621,24 @@ for the censuses this superseded):
 | rule | findings | disposition |
 | --- | --- | --- |
 | R0 unparseable | 0 | **error level**; `glance` 7 parses the whole tree |
-| R1 eager-fallback | 20 | real, and all performance-only on cold paths; promotable once they are fixed |
+| R1 eager-fallback | 0, swept from 78 | **error level**; decidable on the AST and zero across every package |
 | R2 nesting-depth | 0 at threshold 3 | **error level**; a regression guard, promotable precisely because it finds nothing |
-| R3 catch-all | 195 | **stays a warning**; undecidable without types |
+| R3 catch-all | 557 | **stays a warning**; undecidable without types |
 | R4 panic-in-src | 0 | **error level**; `conformance/src` is exempt by package and was the whole census |
-| R5 bounded-length | 6, in `cap`, `client`, `prompt`, `provider` and `tools` | precise; promotable once those five are fixed |
-| R6 portable-purity | 0 | **error level**; zero is the invariant, not the starting point |
-| R7 assert-without-message | 84, all in `conformance/src` | Part IV rule 3 at nothing per cent; a rule cannot gate on a census it has never been at zero for |
-| R8 lone-caller-arity | 3, and moving | **stays a warning**; a shape, never a verdict |
-| R9 naked-bool | 223 | decidable; promotable once the sweep lands and the four irreducible sites are the census rather than 2% of it |
+| R5 bounded-length | 97 | precise; promotable once the remaining sites are swept |
+| R6 portable-purity | 0 | **error level**; zero is the invariant, and non-portable packages also enforce `internal/ffi_*` confinement |
+| R7 assert-without-message | 0, swept from 87 in `conformance/src` | **error level**; every admitted `let assert` names its invariant |
+| R8 lone-caller-arity | 31, and moving | **stays a warning**; a shape, never a verdict |
+| R9 naked-bool | 231 | decidable; promotable once the sweep lands and the four irreducible sites are the census rather than 2% of it |
 | R10 comment-stanza | 0, swept from 1137 | **error level**; zero in `src/` and `test/` alike, and the sweep is formatter-verified |
-| R11 dense-stanza | 17 at threshold 8 | precise, but the threshold is a judgement; treat the number as a reading |
-| R12 broad-closure-capture | 82 | **stays a warning**; record width and closure lifetime are absent from the AST |
+| R11 dense-stanza | 25 at threshold 8 | precise, but the threshold is a judgement; treat the number as a reading |
+| R12 broad-closure-capture | 119 | **stays a warning**; record width and closure lifetime are absent from the AST |
 | R13 flow-spine | 0, swept from 96 | **error level**; every module of 1000+ lines has a checked spine |
 | R14 transition-table | 0, nine tables | **error level**; zero by construction, and the gate is the rule's whole purpose |
 | R15 state-first | 0, swept from 47 | **error level**; every fix a pure move the compiler verified |
 | R16 qualified-domain-call | 0, swept from 2 | **error level**; decidable from the import alone |
 | R17 flow-order | 0 at 50% | **stays a warning**; a shared helper has no single right place |
-| R18 unnamed-helper | 859 | **stays a warning**; whether a name is a domain operation is judgement |
+| R18 unnamed-helper | 1327 | **stays a warning**; whether a name is a domain operation is judgement |
 | R19 stdout-skip | 0 | **error level**; replaced a guard that already failed the build, decidable from the call |
 | R20 test-import-wall | 0 | **error level**; same, decidable from the import graph |
 

@@ -857,7 +857,7 @@ from the same injector.
 The push `proposals_changed` only sets `Shared.proposals_refresh`, and
 `surfaces.service_proposals_read` sends the read on the next tick. A refusal is
 `proposals_notice`, never a transcript row.
-A row's `Kind` is `Rule`, `Config` (protocol-change/089, whose `target` is the
+A row's `Kind` is `Rule`, `Config` (protocol-change/092, whose `target` is the
 configuration's absolute path) or `Unrecognized`, and `decidable` is false for
 an unrecognized kind whatever its state. `approve_words(row)` and
 `settled_words(row)` word a row by its kind and target; both hosts call them.

@@ -96,6 +96,11 @@ var SystemRoots = []string{
 //     an operator's `erl` and `gleam` usually live. The Intel prefix,
 //     `/usr/local`, needs no entry of its own: `/usr` above already
 //     covers it.
+//   - `/Applications/Xcode.app/Contents/Developer/usr` holds the command-line
+//     `git` toolchain (`/usr/bin/git`'s `xcrun` target, its `libexec/git-core`
+//     helpers and `share/git-core/gitconfig`) on a Mac where Xcode rather than
+//     the standalone CommandLineTools is selected. Only that `usr` subtree is
+//     listed, never `/Applications` wholesale.
 //
 // `/Users` is absent for the same reason `/home` is absent on Linux.
 var DarwinSystemRoots = []string{
@@ -109,6 +114,7 @@ var DarwinSystemRoots = []string{
 	"/private/var/select",
 	"/dev",
 	"/opt/homebrew",
+	"/Applications/Xcode.app/Contents/Developer/usr",
 }
 
 // RootRegion is the region a whole-host grant names. A policy carrying it

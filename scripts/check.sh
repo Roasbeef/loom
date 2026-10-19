@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-packages=(host core storage session machine prompt statem statem_parallel session_view web_view web_client telemetry runtime provider broker executor mcp lsp tools cap ext codemode events client tui conformance lint sandbox)
+packages=(host core storage session machine prompt statem statem_parallel session_view web_view web_client web_mermaid telemetry runtime provider broker executor mcp lsp tools cap ext codemode events client tui conformance lint sandbox)
 targets=("${@:-${packages[@]}}")
 
 if [ $# -eq 0 ]; then
@@ -75,10 +75,10 @@ for pkg in "${targets[@]}"; do
   # there is none). The tests cover the components' decisions; what its
   # elements render is checked by web_view's rendered-output tests, its
   # bundle by the asset gate and its one JavaScript file by `make lint`.
-  if [ "$pkg" = "web_client" ]; then
+  if [ "$pkg" = "web_client" ] || [ "$pkg" = "web_mermaid" ]; then
     echo "==> $pkg (JavaScript)"
     (cd "packages/$pkg" && gleam format --check src test && gleam build --warnings-as-errors)
-    scripts/web_client_test.sh
+    scripts/web_client_test.sh "$pkg"
     continue
   fi
   echo "==> $pkg"

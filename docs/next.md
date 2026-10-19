@@ -4,120 +4,150 @@ This file records the verified state and next steps for this checkout. Rewrite
 it after a body of work; retain historical measurements in their evidence
 documents rather than carrying old validation forward.
 
-Baselined October 18, 2026 against source head
-`2a99a8b448c3b79fc4ebe6b5a744a5a465fd5dc6` on
-`perf/daemon-resource-cost`, from `928d0ae50dfe70277512a4c05116626c7c28d942`.
-The claims below were checked against this tree, local test logs, and recorded
-measurements. This is a local performance handoff, not a new project-wide CI
-or release audit. The local `main` ref pointed to the older `e289d93ab` when checked;
-the publication base is `origin/main` at `928d0ae50`. The profiling evidence
-and architecture note are committed at `de96eff4f`.
+Baselined October 19, 2026 against source `12f791346` on
+`perf/idle-resource-cost`, from `origin/main` at
+`490792538d18577ee001402ef7377998ce1b12b3`. Claims below were checked against
+this tree, saved local logs, or the GitHub state named explicitly. This is a
+scoped idle-resource handoff, not a fresh audit of every architecture wave or
+an assertion that this branch's hosted gates have finished.
+
+The web Mermaid rows and steps were added on October 19, 2026 by
+[PR #1018](https://github.com/Roasbeef/loom/pull/1018) (`feature/web-mermaid`),
+rebased onto `ae1b65159` after #1020 merged, and checked against a real
+browser drive. They do not re-audit the idle-resource claims.
 
 ## Where the tree is
 
 | Work | Verified state |
 |---|---|
-| Local daemon profiling | Memory snapshot, 10-second CPU profile, 5-second allocation trace, and a snapshot after workload completion recorded on unchanged PID 71417. |
-| Call-worker copying | `c470b82a0` projects the precheck and settlement subject before constructing closures; both independent broad-capture mutations fail the regression. |
-| Provider request lifetime | `2a99a8b44` confines gateway/request/time inputs to the parked phase, transferring them to the pump on begin. |
-| Local validation | Code-mode 413 tests and provider 319 tests pass. Package lint has zero errors. Independent source review found no actionable findings. |
-| Deployment and overall savings | No installation or restart. Daemon-wide CPU/RSS improvement has not been demonstrated. Full repository checks, hosted CI, and Linux signoff are unverified for this branch. |
+| Earlier resource PR | [#1008](https://github.com/Roasbeef/loom/pull/1008) merged at `4e81e0cc0d341f2e54d820c5033f7adaa6b5e053`. Its evidence does not validate this branch. |
+| Idle helper CPU | The baseline's 20 ms host process-table acquisition reproduces the live helper cost. Notification-driven discovery removes those reads while idle. |
+| Page memory ownership | Admission owns its callback only in `Pending`; repeated authorization captures registry and identities rather than a resolved attachment. |
+| Local validation | Both production changes passed independent review. The final sandbox race suite passes. Before the batching correction, conformance passed 111 tests and real jailed code mode passed 414; final-helper E2E remains required. The surrounding page suites passed 276 tests. |
+| Publication | The owner authorized a PR with end-to-end verification. Affected repository gates are running; hosted CI and strict Linux signoff remain pending at this documentation commit. No installation or restart occurred. |
+| Web Mermaid fences | A `mermaid` fence keeps its source as page text and renders in an opaque, script-only frame run by the `web_mermaid` package (protocol-change/091). Flowchart and sequence diagrams render in Chrome in both themes; invalid, oversized and refused source falls back to source. `scripts/web_mermaid_check.sh` passes all 21 checks against a seeded daemon. |
 
-The [resource report](review/daemon-resources-2026-10-18.md) contains the exact
-scope, drivers, aggregate results, capture hashes, negative controls,
-validation, and limits. In the 5,000-extra-ceiling synthetic fixture, worker
-heap capacity falls from 372,240 to 2,728 bytes; median CPU for 50 complete
-fixtures falls from 76 to 70 ms across five pairs. The zero-extra-ceiling CPU
-control is unchanged at median 68 ms. In the 10,000-message provider fixture,
-active guard application-state size falls from 160,219 to 146 words while the
-pump and encoded body retain their required sizes. These are fixture results,
-not a measured percentage reduction for the operator's daemon.
+The [idle resource report](review/idle-resources-2026-10-19.md) contains the
+process census, CPU and allocation measurements, memory ownership paths,
+negative controls, review correction, and remaining measurement limits.
+Three sequential baseline/candidate OS-accounting pairs reduced median idle
+tracker CPU from 5.56% to 0.35% of one core (93.7%). Baseline allocation was
+926,261 to 936,643 bytes per benchmark interval; candidate runs recorded zero.
+These are isolated tracker measurements on a host that was not quiesced, not
+installed-daemon CPU or RSS savings. The report also records sampled profiles,
+including their limited active sample counts.
 
-The previous edition mixed configuration, startup, distributed-runtime,
-side-query, and memory-recall handoffs from several heads and CI runs. It is
-preserved verbatim in [the prior snapshot](next-2026-10-18-before-resources.md).
-Its historical PR, merge, CI, and signoff claims were not reverified in this
-performance task and must not be read as validation or authorization for this
-branch. In particular, a prior head's green run does not establish that this
-head is green. No earlier measurement is replaced by a claim about the current
-daemon.
+The authenticated real-page regression varies an unused runtime hook by
+8,192 messages. After both repairs, three fresh fixture VMs measured socket
+capacity of 6,216 to 22,192 bytes with the payload, versus 973,624 bytes before.
+Gateway attachment growth remains 388 to 414 words. Each broad-capture
+negative control independently violates its bound. These results establish
+fixture ownership and copying bounds, not a daemon-wide resident-memory delta.
+
+The previous edition is preserved in
+[the prior snapshot](next-2026-10-19-before-idle-resources.md). Its next step
+still described PR #1008 as awaiting merge; that is now false, as confirmed by
+GitHub. Its architecture-wave and older runtime claims were not re-audited in
+this task and remain historical, with their owning specifications and reports.
+The local `main` ref remains `e289d93ab`; use the fetched `origin/main` above
+for publication comparisons. The latest main CI run, `39203768078`, completed
+successfully for `490792538`, but is not this branch's validation.
 
 ## What to do next
 
-1. PR [#1008](https://github.com/Roasbeef/loom/pull/1008) publishes the focused
-   ownership changes. The owner authorized its merge once review, hosted CI,
-   and strict Linux signoff are green. Rebase
-   onto the chosen publication base and repeat affected gates if it advances.
-   **Exit:** exact published head has the required CI and Linux evidence.
-   The owner also approved a separate CI repair: the ordinary Linux runner
-   declares the existing remote-depth prerequisite skip, while a dedicated
-   delegated step must run that fixture with an empty skip allowance. Fixture
-   assertions and prerequisite conditions are unchanged. The JSON/polling path
-   has no change in this branch.
-2. Obtain operator authorization for installation and a coordinated daemon
-   restart, then measure a matched busy workload. **Exit:** compare CPU,
-   cumulative allocation, process/binary memory, and RSS at matching request,
-   concurrency, runtime, and lifecycle cuts. The current run has completed;
-   comparing its old busy capture to a new idle daemon proves no optimization.
-3. Investigate polling/decoding only if a new profile supports it. The trace
-   attributed cumulative allocation to `read_decoded`, SQLite register reads,
-   and JSON parsing, but did not establish retained memory or a leak.
-   **Exit:** a bounded source path and reproducible workload establish the
-   cost before another change is proposed.
+1. Publish the focused CPU and page-memory PR and finish its gates.
+   **Exit:** independent review, hosted CI including raw advisory macOS logs,
+   and strict normal/containerised Linux signoff with a clean skip census
+   refer to the exact published head. Revalidate after any source or base
+   change. Keep installation and unrelated candidates outside this PR.
+2. Obtain operator authorization for installation and a coordinated restart,
+   then measure a matched workload. **Exit:** compare CPU, cumulative
+   allocation, BEAM process/binary memory and OS RSS/footprint at matching
+   concurrency and lifecycle cuts. A finished busy run compared with a new
+   idle process cannot demonstrate savings.
+3. Profile remaining owners only when a bounded workload supports a change.
+   **Exit:** identify the allocating/retaining path and a failing ownership
+   bound before proposing another repair. The report records an unmeasured
+   component callback candidate and the separate language-server RSS owner.
+4. Drive the Mermaid check in Firefox and Safari once. **Exit:** the same 21
+   checks pass, or the differences are filed. Terminal rendering stays a
+   separate discussion; the
+   [TUI note](design-notes/mermaid-terminal-graphics.md) is research only.
 
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the
 reopening where the ruling lives.
 
-**Memory metrics describe different properties.** The
+**Notifications are discovery hints, not kernel ownership.** The
+[ADR-006 addendum](adr/006-macos-seatbelt-boundary.md) preserves Darwin's
+lifecycle skip, birth-check/signal race and rapid-daemonization gap. Startup
+registers the gated root before capture; cancellation captures independently.
+A new descendant watch queues another snapshot, closing the registration gap.
+Notifications batch for the original 20 ms interval, avoiding a snapshot per
+fork during active bursts. Close interrupts that delay.
+A failed live queue returns to polling; failed startup refuses the execution.
+
+**Authorization remains fresh and gateway ownership remains original.** The
+[client package account](../packages/client/CLAUDE.md) documents the narrow
+page callback and pending-only admission lifetime. Saving memory must not
+cache authorization or redirect an admitted relay to another gateway.
+
+**Memory counters describe different properties.** The
 [BEAM review guidance](../skills/beam-memory-review/SKILL.md) and
-[resource report](review/daemon-resources-2026-10-18.md) distinguish cumulative
-allocation, application-state words, post-collection heap capacity, binary
-ownership, and RSS. None substitutes for another.
+[idle report](review/idle-resources-2026-10-19.md) distinguish allocation,
+application-state words, post-collection capacity, binary ownership and RSS.
 
-**Request ownership follows the begin transition.** The
-[effects architecture](architecture/effects.md), under stream ownership and
-cancellation, assigns prepared inputs to the parked guard and active inputs
-to the pump. Adoption, cancellation, terminal races, and drain remain the
-guard/pump custody protocol; memory savings do not weaken them.
+**Mermaid generates markup only in the separate frame, and mocked vendors do
+not establish rendering.** [Protocol-change/091](../protocol-change/091-isolated-mermaid-diagrams.md)
+keeps SVG and vendor diagnostics out of the session page. The controlled-promise
+tests could not see that Mermaid 12 picks ELK for flowcharts (broken under
+Bun's IIFE build, hence the dagre pin) or that a frame without a matching
+`color-scheme` is painted on white. A change to the renderer, its
+configuration or the frame document needs a run of
+`scripts/web_mermaid_check.sh`; the [validation
+record](review/mermaid-web-rendering-2026-10-18.md) has the trail.
 
-**Capture only what crosses the worker boundary.** The
-[code-mode package account](../packages/codemode/CLAUDE.md) describes the
-call-worker ownership rule. The precheck and settlement closures need their
-individual capabilities, not sibling host state.
+**Mermaid frames are created near the viewport; the renderer stays
+`no-store`.** With 24 diagrams, caching `mermaid.js` saved about 0.5 s and
+100 MB, while creating frames only within a viewport of the visible area cut
+live frames from 24 to 2 and Chrome's growth from 1,018 MB to 423 MB. Each
+frame's own renderer heap is the cost, not the transfer. Re-open caching only
+with a remote-daemon measurement that shows transfer dominating.
 
 ## Deliberately open
 
 None of these is unfinished work somebody forgot.
 
-- Matched live validation is unperformed. It requires deployment permission
-  and another comparable busy workload. The after-workload snapshot shows
-  natural retirement on unchanged code, not a branch improvement.
-- The owner labels declared one session and two strands while the census
-  showed many workers. Peak concurrency and complete worker-to-strand
-  attribution are not established by those labels.
-- The sampled CPU trace contains only 80 active observations and covers
-  selected processes. Its safe-point method does not fully account for NIF
-  work. Longer profiling of a suitable busy run may change the attribution.
-- Historical project-wide follow-ups remain in the prior snapshot and their
-  owning specifications/issues. Their current status is unverified here.
+- Installed-process before/after savings remain unmeasured. Live profiling did
+  not stop, patch, collect or restart the operator's processes.
+- Idle daemon CPU was about 3.44% of one core, but the bounded sample contained
+  too few active observations to rank smaller decoding or SQLite changes.
+- The separate idle `gleam lsp` child occupied about 1.26 GiB RSS. Pickglass's
+  BEAM census does not account for it; its size alone does not prove a leak.
+- `admit` has a component session-list callback that may retain a full
+  attachment. Its retained size and a component-level regression are unmeasured;
+  the socket/gateway fix makes no claim about that owner.
+- ELK layouts are unsupported in the Mermaid frame; a `flowchart-elk` header
+  falls back to source. Network fonts, links and interactive callbacks are
+  deliberately not enabled.
 
 ## How to verify
 
-`make codemode-seed`, then `make check-codemode` and `make check-provider`
-exercise the affected packages. Run `make lint-codemode lint-provider`
-explicitly: a narrowed package check does not include the global lint step.
-`make doc-check` checks documentation coverage/mirrors, and `git diff --check`
-checks whitespace. Full `make check`, exact-head hosted CI, and strict Linux
-signoff remain publication gates where required.
+Run `make check-affected` from the publication base, with its shipped-artifact
+preparation and strict skip census. `make e2e` and `make e2e-codemode` exercise
+the actual helper; `go test -race ./...` in `packages/sandbox` covers the new
+tracker races. The notification regression must fail if only its queued rescan
+is removed. `make signoff-remote` remains the Linux publication gate.
 
-**Do not rebuild a package while its tests are using the build artifacts.**
-An earlier run loaded an old Erlang fixture with a newly compiled Gleam test
-and failed on a missing helper export. The final stable 413-test run includes
-the real jailed code-mode path with no skip lines.
+For the Mermaid path, build with `make gen-client server-shipment`, start
+`scripts/web_seed/seed.sh` on private ports (`WEB_SEED_PORT`,
+`WEB_SEED_FAKE_PORT`) with its own state directory, and pass the operator URL
+to `scripts/web_mermaid_check.sh`. Run it in one shell invocation: a harness
+that reaps the process tree between commands also kills agent-browser's
+daemon and its tab.
 
-**Check each gate's own exit status.** Read failures and skip diagnostics in
-the saved logs. A successful final `tail` or an advisory workflow badge is
-not proof that a gate passed. See [execution guidance](execution.md) for the
-remaining verification rules.
+**Do not rebuild a package while its tests use its build artifacts.**
+**Check each gate's own exit status and saved failure/skip diagnostics.**
+An advisory badge does not establish a passing underlying macOS check. See
+[execution guidance](execution.md) for the remaining verification rules.

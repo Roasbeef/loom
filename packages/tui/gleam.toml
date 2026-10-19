@@ -19,6 +19,7 @@ simplifile = ">= 2.0.0 and < 3.0.0"
 tom = ">= 2.1.0 and < 3.0.0"
 weft = "== 0.4.6"
 gun = ">= 2.6.0 and < 3.0.0"
+qrkit = ">= 0.6.0 and < 0.7.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

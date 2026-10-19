@@ -1162,9 +1162,8 @@ fn branch_of(body: List(glance.Statement)) -> Option(glance.Expression) {
         glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
           Some(item)
 
-        // `guard(when:)` given as shorthand names a variable this walk
-        // would have to synthesize a node for; drop the rows instead.
-        glance.ShorthandField(..) -> None
+        glance.ShorthandField(label:, location:) ->
+          Some(glance.Variable(location:, name: label))
       }
     _ -> None
   }
@@ -1834,12 +1833,28 @@ fn bounded_finding(
   ctx: Ctx,
 ) -> Raw {
   let #(span, call) = found
-  let #(question, stop) = case bound {
+  let #(question, advice) = case bound {
+    Some("0") -> #(
+      "a comparison against 0",
+      "test the " <> call.noun <> " directly against `" <> call.empty <> "`",
+    )
     Some(literal) -> #(
       "a comparison against " <> literal,
-      call.stop <> literal <> ")",
+      "test `"
+        <> call.stop
+        <> literal
+        <> ")` against `"
+        <> call.empty
+        <> "` and stop at the bound",
     )
-    None -> #("a comparison against a bound", call.stop <> "bound)")
+    None -> #(
+      "a comparison against a bound",
+      "test `"
+        <> call.stop
+        <> "bound)` against `"
+        <> call.empty
+        <> "` and stop at the bound",
+    )
   }
   Raw(
     rule: finding.BoundedLength,
@@ -1855,11 +1870,8 @@ fn bounded_finding(
       <> question
       <> ", which only needs the "
       <> call.unit
-      <> " up to it; test `"
-      <> stop
-      <> "` against `"
-      <> call.empty
-      <> "` and stop at the bound",
+      <> " up to it; "
+      <> advice,
   )
 }
 

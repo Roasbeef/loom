@@ -218,7 +218,7 @@ fn value_field(value, name) {
   case value {
     json.Object(fields) ->
       list.key_find(fields, name)
-      |> result.replace_error("missing field: " <> name)
+      |> result.map_error(fn(_) { "missing field: " <> name })
     _ -> Error("side board must be an object")
   }
 }

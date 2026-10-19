@@ -38,6 +38,7 @@ fn config(
       "",
       "127.0.0.1",
       0,
+      main.BindDefault,
       8,
       "Owner",
       [],

@@ -127,6 +127,95 @@ pub fn unknown_virtual_scheme_never_falls_back_to_a_file_test() {
   assert !string.contains(first_text(outcome), "no such file")
 }
 
+pub fn blob_scheme_reads_from_blob_root_and_refuses_traversal_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let ref = "sha256-0123456789abcdef"
+  let assert Ok(Nil) =
+    filesystem.write(ctx.blob_root <> "/" <> ref, <<"alpha\nbeta\ngamma":utf8>>)
+    as "seed blob content"
+  let reader = fs.read_tool()
+  let outcome =
+    reader.run(
+      ctx,
+      args([
+        #("path", json.String("blob://" <> ref)),
+        #("offset", json.Int(2)),
+        #("limit", json.Int(1)),
+      ]),
+    )
+  assert !outcome.is_error
+  assert string.starts_with(first_text(outcome), "beta")
+  assert string.contains(first_text(outcome), "offset 3")
+  let assert Some(json.Object(details)) = outcome.details
+    as "blob virtual read carries scheme details"
+  assert list.contains(details, #("scheme", json.String("blob")))
+  let escaped =
+    reader.run(ctx, args([#("path", json.String("blob://sha256-../secret"))]))
+  assert escaped.is_error
+  assert string.contains(first_text(escaped), "malformed reference")
+}
+
+pub fn blob_scheme_clamps_multiline_spilled_payload_to_inline_threshold_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let ref =
+    "sha256-422a89f2dc1c4fab318c8da6305f4826e8a756851f402ce531f6935fc1c9f828"
+  // 1,000 lines of 100 bytes each (~100 KiB > 64 KiB threshold, < 2,000 default line limit).
+  let line = string.repeat("x", 99) <> "\n"
+  let body = string.repeat(line, 1000)
+  let assert Ok(Nil) =
+    filesystem.write(ctx.blob_root <> "/" <> ref, <<body:utf8>>)
+  let outcome =
+    fs.read_tool().run(ctx, args([#("path", json.String("blob://" <> ref))]))
+  assert !outcome.is_error
+  assert string.contains(first_text(outcome), "read the rest with offset ")
+  let assert Some(json.Object(details)) = outcome.details
+  assert list.contains(details, #("has_more", json.Bool(True)))
+}
+
+pub fn carved_blob_root_under_protected_state_root_reads_and_blocks_siblings_test() {
+  let #(ctx, filesystem) = memory_ctx()
+  let blob_root = "/state/workspaces/s1/blobs"
+  let blob_file = blob_root <> "/sha256-abcdef"
+  let sibling_secret = "/state/workspaces/s1/loom-search.db"
+  let assert Ok(Nil) = filesystem.write(blob_file, <<"line1\nline2\n":utf8>>)
+    as "seed carved blob"
+  let assert Ok(Nil) = filesystem.write(sibling_secret, <<"secret":utf8>>)
+    as "seed sibling protected file"
+  let base =
+    policy.SandboxPolicy(..ctx.base_policy, readable_roots: ["/"], protected: [
+      "/state/workspaces",
+    ])
+  let ctx = tool.Ctx(..ctx, base_policy: base, blob_root:)
+  let read_blob =
+    fs.read_tool().run(ctx, args([#("path", json.String(blob_file))]))
+  assert !read_blob.is_error
+  assert string.contains(first_text(read_blob), "|line1")
+  let read_uri = fs.read_text(ctx, "blob://sha256-abcdef")
+  assert read_uri == Ok("line1\nline2\n")
+  let read_sibling =
+    fs.read_tool().run(ctx, args([#("path", json.String(sibling_secret))]))
+  assert read_sibling.is_error
+  let reads = fs.exempting_blob_root(base, blob_root)
+  assert fs.refuse_protected_read_in(filesystem, reads, blob_file, blob_file)
+    == Ok(blob_file)
+  let assert Error(fs.ProtectedPath(..)) =
+    fs.refuse_protected_read_in(
+      filesystem,
+      reads,
+      sibling_secret,
+      sibling_secret,
+    )
+    as "sibling under protected parent stays refused"
+  assert !list.contains(
+    fs.walk_exclusions(filesystem, reads.protected, blob_root),
+    "/state/workspaces",
+  )
+  assert list.contains(
+    fs.walk_exclusions(filesystem, reads.protected, "/work"),
+    "/state/workspaces",
+  )
+}
+
 // Exactly the text provider adapters expose to the model, without borrowing
 // the presentation-only details that used to hide this edit prerequisite.
 fn visible_digest(outcome: tool.ToolOutcome) -> String {
@@ -1372,6 +1461,33 @@ pub fn resolve_readable_judges_roots_and_protection_from_one_policy_test() {
     == protected
   assert fs.resolve_readable(filesystem, "/work", confined, "/state/token")
     == protected
+
+  // Even if an explicit root or grant sits strictly inside a protected entry,
+  // neither `resolve_readable` nor `resolve_writable_roots` carves it out: only
+  // `exempting_blob_root` opens a session's blob store for reads.
+  let assert Ok(Nil) =
+    filesystem.write("/work/.git/hooks/pre-commit", <<"h":utf8>>)
+  let with_hook_root =
+    policy.SandboxPolicy(
+      ..confined,
+      readable_roots: ["/work", "/work/.git/hooks"],
+      protected: ["/work/.git"],
+    )
+  assert fs.resolve_readable(
+      filesystem,
+      "/work",
+      with_hook_root,
+      ".git/hooks/pre-commit",
+    )
+    == Error(fs.ProtectedPath(".git/hooks/pre-commit", "/work/.git"))
+  assert fs.resolve_writable_roots(
+      filesystem,
+      "/work",
+      ["/work/.git/hooks"],
+      ["/work/.git"],
+      ".git/hooks/pre-commit",
+    )
+    == Error(fs.ProtectedPath(".git/hooks/pre-commit", "/work/.git"))
 }
 
 pub fn host_reads_refuse_the_roots_the_jail_replaces_test() {

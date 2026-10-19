@@ -848,7 +848,7 @@ was asked.
   host writes `memory/note` and nothing else.
 - **`propose` is a seam over `client/proposals` with no path argument.**
   `target` names one of the two files the host owns, `rules` (the default) or
-  `config` (the session's `loom.toml`, protocol-change/089), and is
+  `config` (the session's `loom.toml`, protocol-change/092), and is
   `Submission.target` (`Rules | Configuration`). `Proposals.configuration` is
   the session's configuration path, which the description names so the model
   can read the file first, and `None` drops the config sentence. It validates
@@ -1121,9 +1121,13 @@ the description teaches is known to compile rather than merely to render.
 and total resolver. `fs.read_tool_with` routes `://` references before file
 resolution. An unknown namespace returns `unknown_scheme`; a resolver returns
 typed not-found, unavailable, or malformed refusals. A virtual answer is
-windowed by line and bounded inline, without a file digest or edit anchors.
+windowed by line and bounded inline (clamping multi-line windows to fit within
+`blob.overflow_threshold_bytes` and setting `has_more` so spilled `blob://`
+reads succeed with the default 2000-line limit), without a file digest or edit
+anchors.
 Ordinary paths still use `resolve_invocation`, and ordinary images still return
-`ToolResultImage` blocks.
+`ToolResultImage` blocks. `fs.blob_scheme()` is registered in
+`client/contributions` alongside `cap://` and `job://`.
 
 `codemode.cap_scheme` projects only offered-seam allowlists into `cap://`.
 The index and full module blocks come from the same generated prelude artifact;

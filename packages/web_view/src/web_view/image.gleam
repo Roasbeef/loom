@@ -212,9 +212,9 @@ pub fn admit(
       )
     [] -> {
       let text = list.fold(encoded, 0, fn(n, one) { n + string.byte_size(one) })
-      use <- bool.guard(
+      use <- bool.lazy_guard(
         text > max_attached_bytes / 3 * 4 + 4 * max_attached,
-        Error(too_large()),
+        fn() { Error(too_large()) },
       )
       use images <- result.try(list.try_map(encoded, decoded))
       let total =

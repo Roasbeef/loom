@@ -231,6 +231,9 @@ pub type Config {
     /// The seed every run derives from. There is no default: the caller
     /// chooses it, so a gate is deterministic.
     seed: Int,
+    /// The fewest commands in one generated list (clamped to `0..max_commands`).
+    /// Zero by default; shrinking still tries shorter lists down to `[]`.
+    min_commands: Int,
     /// The most commands in one generated list. A list may be shorter, and
     /// ends early when the precondition keeps rejecting what the generator
     /// offers.
@@ -263,6 +266,7 @@ pub fn default_config(seed seed: Int) -> Config {
   Config(
     test_count: 100,
     seed: seed,
+    min_commands: 0,
     max_commands: 30,
     max_shrinks: 1000,
     shrink_retries: 1,
@@ -292,6 +296,19 @@ pub fn with_test_count(config: Config, count: Int) -> Config {
 /// ```gleam
 /// statem.default_config(seed: 7) |> statem.with_max_commands(12)
 /// ```
+/// Replace the shortest generated list. Clamped to at least zero; when above
+/// `max_commands`, generation clamps the lower bound to `max_commands`.
+/// Shrinking is unaffected and still tries shorter lists down to `[]`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// statem.default_config(seed: 7) |> statem.with_min_commands(20)
+/// ```
+pub fn with_min_commands(config: Config, length: Int) -> Config {
+  Config(..config, min_commands: int.max(length, 0))
+}
+
 pub fn with_max_commands(config: Config, length: Int) -> Config {
   Config(..config, max_commands: int.max(length, 0))
 }
@@ -698,7 +715,10 @@ fn draw(
   seed: qcheck.Seed,
 ) -> List(Tree(cmd)) {
   let #(drawn, _) =
-    qcheck.generate_tree(sequence_generator(spec, config.max_commands), seed)
+    qcheck.generate_tree(
+      sequence_generator(spec, config.min_commands, config.max_commands),
+      seed,
+    )
   let Tree(trees, _) = drawn
 
   trees
@@ -710,9 +730,12 @@ fn draw(
 /// generator's own tree is trivial because the driver does the shrinking.
 fn sequence_generator(
   spec: Spec(model, cmd, sut),
+  min_commands: Int,
   max_commands: Int,
 ) -> qcheck.Generator(List(Tree(cmd))) {
-  let length = qcheck.bounded_int(from: 0, to: max_commands)
+  let high = int.max(max_commands, 0)
+  let low = int.clamp(min_commands, min: 0, max: high)
+  let length = qcheck.bounded_int(from: low, to: high)
   let Spec(initial:, command:, precondition:, next_model:, ..) = spec
 
   qcheck.Generator(fn(seed) {

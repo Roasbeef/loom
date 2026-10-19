@@ -1693,6 +1693,22 @@ pub fn only_an_owners_socket_admits_the_peer_link_controls_test() {
   assert component.peers_path == "0\t3\t2\t6"
   assert ui_socket.operator_accepts(click_on("0\t3\t2\t60"))
   assert ui_socket.operator_accepts(click_on(component.remembered_path))
+
+  // Protocol-change/086: the owner's proposals review section is likewise
+  // admitted only on an owner's socket and dropped on a member operator's.
+  let proposals_at = component.proposals_path
+  list.each(
+    [proposals_at, proposals_at <> "\t0\t1", proposals_at <> "\t1"],
+    fn(path) {
+      assert ui_socket.owner_accepts(submit_on(path))
+      assert ui_socket.owner_accepts(click_on(path))
+      assert !ui_socket.operator_accepts(submit_on(path))
+      assert !ui_socket.operator_accepts(click_on(path))
+      assert !ui_socket.observer_accepts(click_on(path))
+    },
+  )
+  assert component.proposals_path == "0\t3\t2\t7"
+  assert ui_socket.operator_accepts(click_on("0\t3\t2\t70"))
 }
 
 // Only an owner's page is handed the capability to read and change peer links.

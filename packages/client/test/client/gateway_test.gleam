@@ -19,6 +19,7 @@ import client/goalcommand
 import client/grants
 import client/memory_config
 import client/memory_overview
+import client/notice
 import client/permissions
 import client/profile_switch
 import client/proposals
@@ -1860,6 +1861,39 @@ pub fn set_config_model_name_leaves_thinking_level_alone_test() {
     == Ok(json.String("off"))
 }
 
+// Switching to a catalogue entry whose declared `thinking` differs from the
+// previous entry's seed updates the strand's thinking level when the strand
+// was still at its previous seed (such as switching from an unseeded/off entry
+// to `gemini-argon` or from `gemini-argon` to `gemini-argon-high`).
+pub fn set_config_model_name_seeds_thinking_when_at_previous_seed_test() {
+  let assert [head, tail] = test_catalog().models
+    as "the test catalogue must have two entries"
+  let catalog =
+    catalog.Catalog(..test_catalog(), models: [
+      head,
+      catalog.CatalogModel(..tail, thinking: model.ThinkingHigh),
+    ])
+  let harness = start_harness_with(catalog: Some(catalog))
+  subscribe(harness)
+  assert field_of(effective_config(harness, 34, "main"), "thinking_level")
+    == Ok(json.String("off"))
+  send(
+    harness,
+    35,
+    protocol.SetConfig(
+      strand: Some("main"),
+      config: json.Object([#("model_name", json.String("fallback"))]),
+    ),
+  )
+  let envelope = next(harness)
+  assert envelope.reply_to == Some(35)
+  let assert protocol.SnapshotEvent(protocol.ConfigSnapshot(config:)) =
+    envelope.event
+    as "switching model replies with the updated config snapshot"
+  assert field_of(config, "model_name") == Ok(json.String("fallback"))
+  assert field_of(config, "thinking_level") == Ok(json.String("high"))
+}
+
 // A strand the hub seeds takes its per-turn level from the catalogue
 // entry its identity names — the entry in force — and not from whatever
 // level the source strand happened to be sitting at. A copied strand has
@@ -2789,6 +2823,31 @@ pub fn delayed_approve_cannot_answer_reopened_same_action_test() {
     as "an old approval cannot answer the reopened question"
   assert stored(harness, "same-question").status == durable.Pending
   assert stored(harness, "same-question").origin == None
+}
+
+pub fn gateway_approve_wakes_strand_when_escalation_detached_async_test() {
+  let harness = start_harness()
+  subscribe(harness)
+  let action = durable.Action("bash", "d-async", "{\"command\":\"make\"}")
+  claim(harness, "esc-async", scope_on("main", op_id(90)), action, [wall(60)])
+  let displayed = next_escalation(harness)
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      harness.runtime,
+      "client/escalation_async/esc-async",
+      json.Int(displayed.seq),
+    )
+  assert notice.activity(harness.runtime, "main") == Ok(notice.Idle)
+  send(
+    harness,
+    803,
+    protocol.Approve("esc-async", [wall(60)], "d-async", displayed.seq),
+  )
+  let reply = next_reply(harness, 803, 8)
+  let assert protocol.EscalationEvent(record:) = reply.event
+  assert record.status == "approved"
+  assert stored(harness, "esc-async").status == durable.Approved
+  assert notice.activity(harness.runtime, "main") == Ok(notice.Busy)
 }
 
 pub fn delayed_deny_cannot_answer_reopened_same_action_test() {

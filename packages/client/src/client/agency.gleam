@@ -25,7 +25,9 @@
 //// 5. `wait` borrows the runtime outside the holder, checks descent with
 ////    `is_descendant`, and `reap_overdue` marks late children.
 //// 6. `wait_loop` polls with `settle_pass` until every handle settles or the
-////    budget runs out, and `ready` reads each settled child's notes.
+////    budget runs out, and `ready` reads each settled child's notes and recovers
+////    any partial assistant progress (`latest_strand_activity`, `walk_strand_activity`,
+////    `entry_activity`, `assistant_block_activity`).
 //// 7. `send` and `roster` read the ledger to decide whom a strand may reach;
 ////    `note` and `notes` keep a child's notes under its own prefix.
 //// 8. `reaping_hooks` spawns `reap_run` unlinked, off the driver, at a run end.
@@ -501,25 +503,17 @@ pub const delegate_deadline_tick_ms = 15_000
 
 /// Sensible defaults for a production host.
 ///
-/// `max_wait_ms` is 30 s rather than the 60 s a single-handle wait was
-/// once costed at, and the arithmetic is worth writing down because it
-/// changed. A wait holds an operation open, and a human steering that
-/// strand meanwhile is committed but undrainable until the batch ends —
-/// so the number that matters is the worst-case time a *batch* can hold
-/// the strand, not the time one child can take. Making the wait
-/// multi-handle removed the fan-out multiplier: joining eight children is
-/// one window, not eight. What remains is the number of `agent_wait`
-/// calls a model can put in one batch, which nothing bounds, so the cap
-/// is halved to keep the ordinary two-call batch inside the same latency
-/// budget the single 60 s window was justified against. The residual — a
-/// model that emits many waits in one batch — is real, stated, and
-/// bounded only by `abort`, which stays the immediate exit.
+/// `max_wait_ms` is 300 s (five minutes) so a parent waiting on a batch of
+/// subagents can join a multi-turn investigation in a single `agent_wait` call
+/// without polling every 30 s. Making the wait multi-handle removed the fan-out
+/// multiplier: joining eight children is one window, not eight, and `abort`
+/// stays the immediate exit if an operator interrupts the batch.
 ///
 /// It is also the smaller half of a cross-package ordering: `max_wait_ms`
-/// must stay **below** `client/codemode.default_call_timeout_ms`, so that
-/// a `strand.wait` reaching this seam through the code-mode cap channel
+/// must stay **below** `client/codemode.default_call_timeout_ms` (600 s), so
+/// that a `strand.wait` reaching this seam through the code-mode cap channel
 /// is answered by this ceiling rather than abandoned by the satellite
-/// host's. Raise it past 120 s and every such wait answers `unsettled`.
+/// host's. Raise it past 600 s and every such wait answers `unsettled`.
 /// `codemode_test` pins the relation.
 ///
 /// ## Examples
@@ -538,7 +532,7 @@ pub fn default_config(name: address.Address(Message), clock: Clock) -> Config {
     depth_cap: 1,
     fan_out: 8,
     session_strands: 16,
-    max_wait_ms: 30_000,
+    max_wait_ms: 300_000,
     default_within_ms: Some(child_run.default_within_ms),
     first_slice_ms: 25,
     max_slice_ms: 250,
@@ -2485,10 +2479,16 @@ fn ready(
     agent.blackboard_prefix <> handle.strand <> "/",
   ))
   let outcome = run_outcome(runtime, handle, last)
+  let final = report_of(runtime, last)
+  let activity = case outcome, final {
+    Completed, _ -> ""
+    _, "" -> latest_strand_activity(runtime, handle.strand)
+    _, _ -> ""
+  }
   Ok(Ready(
     handle:,
     outcome:,
-    report: partial_report(outcome, report_of(runtime, last), notes),
+    report: partial_report(outcome, final, activity, notes),
     // The notes are already in hand, so the contract costs one point read
     // for the schema and no second listing: the result cell *is* a note,
     // which is the whole reason the blackboard was the right place to put
@@ -2504,6 +2504,7 @@ fn ready(
 fn partial_report(
   outcome: Outcome,
   final: String,
+  activity: String,
   notes: List(#(String, JsonValue)),
 ) -> String {
   case outcome {
@@ -2526,9 +2527,12 @@ fn partial_report(
           "Partial reviewer output (child token budget spent)."
         Completed -> "Reviewer output."
       }
-      case final, notes {
-        "", [] -> heading <> " No final answer or saved notes are available."
-        "", _ -> {
+      case final, notes, activity {
+        "", [], "" ->
+          heading <> " No final answer or saved notes are available."
+        "", [], latest ->
+          heading <> "\n\nLatest assistant activity before stop:\n\n" <> latest
+        "", _, _ -> {
           let excerpt =
             notes
             |> list.take(8)
@@ -2546,11 +2550,16 @@ fn partial_report(
               }
             })
             |> string.join("\n\n")
+          let trailing = case activity {
+            "" -> ""
+            latest -> "\n\nLatest assistant activity before stop:\n\n" <> latest
+          }
           heading
           <> "\n\nLatest saved notes; these may include work from earlier turns:\n\n"
           <> excerpt
+          <> trailing
         }
-        _, _ -> heading <> "\n\n" <> final
+        _, _, _ -> heading <> "\n\n" <> final
       }
     }
   }
@@ -2635,6 +2644,66 @@ fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
           |> string.join("\n")
         _ -> ""
       }
+  }
+}
+
+// Walks backward from a stopped child strand's leaf within the current turn
+// (stopping at the user message that opened the turn) to recover its latest
+// assistant draft or tool-call summary when no final answer was committed.
+fn latest_strand_activity(runtime: api.Runtime, strand: String) -> String {
+  case api.leaf(api.on_strand(runtime, strand)) {
+    Ok(Some(leaf)) -> walk_strand_activity(runtime, leaf, 8)
+    Ok(None) | Error(_) -> ""
+  }
+}
+
+fn walk_strand_activity(
+  runtime: api.Runtime,
+  id: EntryId,
+  remaining: Int,
+) -> String {
+  use <- bool.guard(when: remaining <= 0, return: "")
+  let entry =
+    writer.get_entries(runtime.tree.writer, [id])
+    |> result.replace_error(Nil)
+    |> result.try(dict.get(_, id))
+  case entry {
+    Error(Nil) | Ok(entry.MessageEntry(message: message.UserMessage(..), ..)) ->
+      ""
+    Ok(entry.MessageEntry(
+      message: message.AssistantMessage(content:, ..),
+      parent:,
+      ..,
+    )) -> {
+      let summary = entry_activity(content)
+      case summary, parent {
+        "", Some(previous) ->
+          walk_strand_activity(runtime, previous, remaining - 1)
+        _, _ -> summary
+      }
+    }
+    Ok(other) ->
+      case other.parent {
+        Some(previous) -> walk_strand_activity(runtime, previous, remaining - 1)
+        None -> ""
+      }
+  }
+}
+
+fn entry_activity(content: List(message.AssistantBlock)) -> String {
+  content
+  |> list.filter_map(assistant_block_activity)
+  |> string.join("\n")
+}
+
+fn assistant_block_activity(
+  block: message.AssistantBlock,
+) -> Result(String, Nil) {
+  case block {
+    message.AssistantText(text:, ..) if text != "" ->
+      Ok(string.slice(text, 0, 2048))
+    message.AssistantToolCall(call:) -> Ok("[tool call: " <> call.name <> "]")
+    message.AssistantText(..) | message.AssistantThinking(..) -> Error(Nil)
   }
 }
 
@@ -2836,7 +2905,7 @@ fn send_remote(
         Some(_) | None -> Error(Nil)
       }
     })
-    |> result.replace_error(still_starting_or_unknown(kept, to)),
+    |> result.map_error(fn(_) { still_starting_or_unknown(kept, to) }),
   )
 
   // A message must not revive a child: the remote starts a run only inside the

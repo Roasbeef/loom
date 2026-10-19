@@ -1433,7 +1433,9 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       session_path:,
       bind_host:,
       bind_port:,
-      token_path: option.unwrap(flags.token_file, session_path <> ".token"),
+      token_path: option.lazy_unwrap(flags.token_file, fn() {
+        session_path <> ".token"
+      }),
       workspace:,
       domain_paths: None,
       peer_directory: None,
@@ -2450,12 +2452,13 @@ fn code_mode_arms(
   layer: mcp_wiring.Layer,
   peer_wiring: peers.Wiring,
 ) -> fn(codemode_wiring.Config) -> codemode_wiring.Config {
+  let seams = settings.codemode_seams
   fn(config) {
     config
     // Which seams this server offers is the operator's decision, and the
     // Agency the orchestration one routes onto is the same seam the
     // `agent_*` tools call — one messaging plane, reached two ways.
-    |> codemode_wiring.serving(settings.codemode_seams, over: agency_seam)
+    |> codemode_wiring.serving(seams, over: agency_seam)
     // `schedule.*` is answered by the same door the `schedule_*` tools
     // call, so a program and a tool call cannot disagree about what this
     // session's schedules are. A shut door leaves the capabilities
@@ -3439,7 +3442,7 @@ fn assemble_in(
     Some(shared), Some(#(_, identity)) ->
       Ok(
         option.map(domain_service.history(shared), fn(shared) {
-          history.seam_for(shared, identity)
+          history.seam_for_with_logger(shared, identity, logger:)
         }),
       )
     Some(_), None ->
@@ -3597,16 +3600,18 @@ fn assemble_in(
   // connected. The connection is read, never made, because the box does not dial
   // its spawner. A raised request is announced as a row in the session's outbox,
   // which the delegate drainer sends on.
+  let spawner = settings.spawner
+  let laptop = settings.laptop
   let escalate_config =
     escalate.Config(
       ..escalate.default_config(escalate_name, clock),
       interactive: fn() {
         hub.attached(hub.Gateway(name:)) > 0
-        || delegate_outbox.answers(settings.spawner, settings.laptop)
+        || delegate_outbox.answers(spawner, laptop)
       },
       parked: fn(opened_runtime, id, until) {
         announce_to_spawner(
-          settings,
+          spawner,
           opened_runtime,
           id,
           until,
@@ -5154,7 +5159,7 @@ fn with_upward_drain(
                 now
               },
               link,
-              option.unwrap(settings.laptop, delegate_outbox.absent()),
+              option.lazy_unwrap(settings.laptop, delegate_outbox.absent),
               logger,
             ),
             runtime.effects.timers.after,
@@ -5528,7 +5533,11 @@ fn history_seam(
       log.info(logger, "history.ready", [
         field.text(key: "index", value: index_path),
       ])
-      Some(history.seam(name, timeout_ms: history.default_timeout_ms))
+      Some(history.seam_with_logger(
+        name,
+        timeout_ms: history.default_timeout_ms,
+        logger:,
+      ))
     }
     Error(reason) -> {
       log.warn(logger, "history.unavailable", [
@@ -6072,14 +6081,14 @@ fn withdraw_outside_the_ceiling(
 // costs the spawner's operator the question and nothing else: the record stands,
 // and the box's owner can still answer it.
 fn announce_to_spawner(
-  settings: Settings,
+  spawner: Option(delegate_outbox.SpawnerLink),
   runtime: api.Runtime,
   id: String,
   until: Int,
   drain: address.Address(peer_outbox_drain.Message),
   logger: Logger,
 ) -> Nil {
-  case settings.spawner {
+  case spawner {
     Some(delegate_outbox.SpawnerLink(ceiling: Some(_), ..)) ->
       case delegate_outbox.announce(runtime, id, until:) {
         Ok(Nil) -> peer_outbox_drain.ring(drain)

@@ -38,7 +38,8 @@
 ////    directories, and writes the ignore files that keep them out of
 ////    `git status`.
 //// 6. `tool_environment` builds the environment every jailed child inherits,
-////    from the shell, the toolchain `PATH` and the `[tools]` table.
+////    from the shell, the toolchain `PATH` and the `[tools]` table (`extending_path`
+////    and `is_erts_bin` keep the host's full OTP ahead of a release's stripped ERTS).
 
 import broker/exec.{type Pool}
 import broker/policy
@@ -954,7 +955,9 @@ fn extending_path(
             let current = string.split(value, ":")
             let fallback = ["/usr/local/bin", "/usr/bin", "/bin"]
             let bundled =
-              list.filter(current, fn(path) { !list.contains(fallback, path) })
+              list.filter(current, fn(path) {
+                !list.contains(fallback, path) && !is_erts_bin(path)
+              })
             let ordered =
               list.flatten([bundled, dirs, current])
               |> list.filter(fn(path) { filepath.is_absolute(path) })
@@ -965,6 +968,18 @@ fn extending_path(
         }
       })
   }
+}
+
+// An `erts-<vsn>/bin` directory from a packaged release carries the bare ERTS
+// emulator for satellites, without development applications such as `eunit`.
+// Keep it in `current` ahead of `/usr/local/bin` as a fallback while letting
+// the operator's and host's full OTP installation in `dirs` precede it.
+fn is_erts_bin(path: String) -> Bool {
+  filepath.base_name(path) == "bin"
+  && string.starts_with(
+    filepath.base_name(filepath.directory_name(path)),
+    "erts-",
+  )
 }
 
 /// The operator's `[tools]` table applied to the session base: the

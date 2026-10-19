@@ -165,7 +165,7 @@ specifies them and [the web view](architecture/web-view.md) describes them.
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:454-187`).
+Source: `handle` (`client/daemon/server.gleam:461-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -244,14 +244,25 @@ a claim-shaped value where a bearer belongs; `loom --token` and
 
 ### 2.4 Transport security
 
-The daemon binds loopback only. Its `--bind` flag accepts `127.0.0.1:port`
-or `[::1]:port` and refuses anything else, so there is no cleartext
-listener on a routable address to protect.
-Source: (`client/daemon/main.gleam:260-272`).
+The daemon binds loopback only. Its `--bind` flag and the `[daemon] bind`
+key in its startup configuration share one parser, which accepts
+`127.0.0.1:port` or `[::1]:port` and refuses anything else, so there is no
+cleartext listener on a routable address to protect. The flag outranks the
+key, and the key outranks the default `127.0.0.1:0`.
+Source: (`client/daemon/listen_address.gleam:61-84`).
 
 The daemon terminates no TLS of its own. A client reaching a daemon from
 another host MUST do so through a trusted TLS endpoint or an
 authenticated tunnel, and MUST NOT send a bearer over unprotected TCP.
+
+The web view's `/ui` routes admit a request whose `Host` is a loopback name,
+or names one of the `https` origins listed in `[daemon] ui_origins`, which a
+TLS-terminating proxy on the daemon's own host serves
+([protocol-change/052](../protocol-change/052-web-view-remote-origin.md), as
+built in its addendum). Any other `Host` is refused with HTTP 403. The daemon
+reads no `X-Forwarded-*` or `Forwarded` header. A request admitted under a
+listed origin gets `__Secure-` cookies with `Secure`, and its socket upgrade
+must carry that origin, exactly, in `Origin`.
 
 ### 2.5 Roles
 
@@ -399,9 +410,10 @@ carries the daemon epoch that most control commands must echo.
 | `limits.connections` | integer | required | Maximum simultaneous reservations and admitted sockets. |
 | `limits.reserved_message_bytes` | integer | required | Aggregate admission budget across all connections. |
 | `ui.path` | string | optional | Present only when the daemon was started with `--ui`: the web view's route prefix, `"/ui"`. A client that does not know the field ignores it. |
+| `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:2030`).
+`hello_view` (`client/daemon/server.gleam:2137`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -546,7 +558,7 @@ Source: (`client/daemon/server.gleam:839-860`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3314`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3469`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1058,7 +1070,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2349-1130`).
+`control_use` (`client/daemon/server.gleam:2475-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -1228,7 +1240,7 @@ the `hello` states with its `ui` field. The request carries the canonical
 
 `page` is the page's ceiling: `"observer"`, which is also the value when
 the field is absent, or `"operator"`. Any other value is refused with
-`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1179`). The
+`bad_request` (`page_ceiling`, `client/daemon/protocol.gleam:1211`). The
 ceiling caps the page's role and never grants one: the page acts with the
 smallest of the principal's membership role, the ceiling, and Operator.
 
@@ -1254,6 +1266,21 @@ to the same path, and `POST /ui/l/<key>/home` verifies the login and answers
 with the exchange page of a new home page, which can start no admin page and
 make no device link (a "resumed" home).
 
+With `"device": true` the request asks for a device link
+([protocol-change/052](../protocol-change/052-web-view-remote-origin.md), the
+addendum): the home's ticket, which always sets the browser login and is
+redeemable for 600,000 milliseconds instead of 60,000, so a person can carry
+it to a phone. `loom ui --device` sends it. A device link names no session
+and cannot decline the login: with `session_id`, or with `"remember": false`,
+the request is refused with `bad_request`, as is a `device` that is not a
+boolean. Absent or `false` is the ordinary link. A daemon that predates the
+field ignores it and mints a 60-second home ticket, which the reply's
+`expires_in_ms` shows.
+
+```json
+{"v":2,"id":13,"cmd":"ui.link","body":{"device":true,"page":"operator"}}
+```
+
 Reply:
 
 ```json
@@ -1263,7 +1290,7 @@ Reply:
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `path` | string | required | The exchange path, holding the ticket. The client joins it to the address it connected to; the reply carries no host. |
-| `expires_in_ms` | integer | required | The ticket's remaining lifetime in milliseconds, 60,000 when issued. It is a duration, so the client needs no clock agreement with the daemon. |
+| `expires_in_ms` | integer | required | The ticket's remaining lifetime in milliseconds, 60,000 when issued, or 600,000 for a device link. It is a duration, so the client needs no clock agreement with the daemon. |
 
 The server checks the caller's membership with the call a session upgrade
 makes, `manager.session_authority`, and refuses a non-member; it refuses
@@ -2377,7 +2404,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:7138`).
+   is `stale_approval`. Source: (`client/gateway.gleam:7160`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -3038,7 +3065,7 @@ a full queue never prevents an attach. A row is:
 | Field | Type | Presence | Meaning |
 |---|---|---|---|
 | `id` | string | required | `prop-` and ten lower-case hexadecimal digits. |
-| `kind` | string | required | `rule`, or `config` for an edit to the `loom.toml` the proposing session loaded ([protocol-change/089](../protocol-change/089-config-proposals.md)). A client MUST show a kind it does not know as unknown rather than refuse the board, and MUST NOT offer a decision on it. |
+| `kind` | string | required | `rule`, or `config` for an edit to the `loom.toml` the proposing session loaded ([protocol-change/092](../protocol-change/092-config-proposals.md)). A client MUST show a kind it does not know as unknown rather than refuse the board, and MUST NOT offer a decision on it. |
 | `target` | string | required | For `rule`, the rules file's name, `loom-rules.md`, a name and never a path. For `config`, the configuration's absolute path; only a session that loads that file approves it. |
 | `base_digest` | string | required | The digest of the target file's exact text when the proposal was judged. An approval is applied only to a file that still has it. |
 | `old` | string | required | Existing rule text to replace, which matched the file exactly once when proposed. Empty means the proposal appends `new` as a new rule. |
@@ -4363,7 +4390,7 @@ below have not been edited.
    loopback and that remote deployment requires TLS at a trusted
    endpoint.** The code accepts no non-loopback bind at all, so there is
    no cleartext remote listener to protect, and the daemon terminates no
-   TLS itself (`client/daemon/main.gleam:260-272`).
+   TLS itself (`client/daemon/listen_address.gleam:61-84`).
 
 5. **The `attachment` event is unreachable over the authenticated
    transport.** It is built and sent on the in-process fixture path
@@ -4394,7 +4421,7 @@ below have not been edited.
    `docs/loom-implementation-spec.md` §1.6 names ten control commands.
    The code implements six more: `sessions.isolate`, `sessions.invite`,
    `sessions.set_role`, `sessions.revoke`, `credentials.rotate` and
-   `credentials.revoke` (`client/daemon/protocol.gleam:522`). The
+   `credentials.revoke` (`client/daemon/protocol.gleam:531`). The
    six are specified in `protocol-change/015`'s addenda, so the gap is
    in the spec's summary rather than in the decision record.
    `protocol-change/053` adds a third route, `/v2/claim`, with its one

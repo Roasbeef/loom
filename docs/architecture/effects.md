@@ -752,12 +752,19 @@ still alive. The group delivers immediately to ordinary descendants. The
 tracker covers an observed child that called `setsid(2)`, rechecking its
 birth time immediately before signalling.
 
-The tracker reads a fresh kernel process table every 20 ms. It indexes parent
-heads and sibling links within that snapshot, preserving snapshot order
-without copying every process record or allocating child slices for the
-entire host. Remembered descendant identities remain traversal roots after
-reparenting. This reduces allocation without lengthening the sampling interval
-or changing the identity check at signal delivery.
+The tracker watches the gated root with kqueue before its first fresh process
+snapshot. Fork and exit notifications trigger another snapshot and watches for
+newly observed descendants. Installing a new watch queues another snapshot to
+cover forks before registration. Events coalesce for the existing 20 ms
+discovery interval, so a fork burst does not cause a host snapshot per child.
+An idle wait does not read the host process table.
+Darwin does not implement recursive `NOTE_TRACK`, so these events are discovery
+hints rather than ownership. A live queue or registration failure restores the
+previous 20 ms polling path; startup failure refuses before opening the gate.
+Cancellation always captures afresh. Parent-head and sibling indices avoid
+copying process records or allocating child slices, and remembered identities
+remain eligible for signalling after reparenting. Close wakes and joins the
+reader before closing its descriptor.
 
 The Darwin tracker has two known gaps. Darwin has no stable process
 handle, so the birth check is not atomic with `kill(2)`. Nor can the

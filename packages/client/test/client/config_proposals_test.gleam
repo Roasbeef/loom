@@ -1,4 +1,4 @@
-//// Configuration edits through the proposal queue (protocol-change/089),
+//// Configuration edits through the proposal queue (protocol-change/092),
 //// driven through any sequence of proposals, decisions, hand edits and
 //// decisions from a session that loads another file (`statem`).
 ////

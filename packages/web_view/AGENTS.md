@@ -1231,7 +1231,10 @@ page keys and nonces, and the relay into the session's gateway.
   document's head by `icon_link`),
   `runtime_asset`) and where each is on disk (`static_file`,
   `runtime_file`), the keyed paths (`keyed_prefix`, `session_path`) and
-  `content_security_policy(host)`.
+  `content_security_policy(socket)`, whose argument is the page's whole socket
+  origin, `ws://<loopback host>` or `wss://<listed host>`, which the daemon
+  derives from the origin the request was admitted under
+  (protocol-change/052).
 
 ## Relationships
 
@@ -1852,3 +1855,20 @@ reaching every paging state, an open fold, or a divider after a resumed turn.
 It needs no Lustre runtime: the frames the page writes go to a subject the
 test owns. The fixture's conversation continues only once, so a resume ends the
 history.
+
+## Mermaid fences (protocol-change/091)
+
+`markdown_view` maps exactly a `mermaid` code fence to `<loom-mermaid>` with
+one `pre.mermaid-source` text child. The portable Markdown tree is unchanged,
+so the terminal retains its ordinary code-source view. No source becomes an
+attribute, URL or markup in this package. The browser component owns a native
+source disclosure, Copy source and the isolated rendering lifecycle.
+
+`page` names two more fixed assets, `mermaid.html` and `mermaid.js`. The ordinary
+page policy permits same-origin frames without relaxing scripts or styles.
+The daemon gives only the renderer HTML its distinct sandboxed policy, which
+allows its bundled script and inline diagram styles but no network resources,
+forms or nested frames. See
+[protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md).
+`markdown_view_test` pins text escaping and exact fence dispatch; the real
+browser drive is `scripts/web_mermaid_check.sh` against `scripts/web_seed`.

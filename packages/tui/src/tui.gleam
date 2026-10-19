@@ -123,6 +123,7 @@ import tui/daemon/protocol as control_protocol
 import tui/daemon/selection as daemon_selection
 import tui/demo_image
 import tui/deployment_view
+import tui/device_code
 import tui/directory_view
 import tui/effect
 import tui/elsewhere_view
@@ -1707,8 +1708,9 @@ fn unreadable_deployment(reason: String) -> String {
 }
 
 /// What `loom ui` was asked for: the daemon options, the session to link
-/// (`None` for the home page, protocol-change/065), which page to link, and
-/// whether to open the link as well as print it.
+/// (`None` for the home page, protocol-change/065), which page to link, which
+/// origin the link is built on, which ticket it carries, and whether to open
+/// the link as well as print it.
 @internal
 pub type ViewRequest {
   ViewRequest(
@@ -1719,7 +1721,39 @@ pub type ViewRequest {
     /// `--no-remember` declines (protocol-change/065).
     remember: control_protocol.Remembering,
     delivery: view_link.Delivery,
+    /// The origin the printed link starts with: the loopback listener, or one
+    /// of the daemon's listed `https` origins (protocol-change/052).
+    origin: LinkOrigin,
+    /// Which ticket the link carries: a page's sixty-second ticket, or a
+    /// device link's ten-minute one (`--device`).
+    ticket: LinkTicket,
   )
+}
+
+/// The origin a `loom ui` link is built on.
+@internal
+pub type LinkOrigin {
+  /// The daemon's loopback listener over `http`, for a browser on this
+  /// machine. The default.
+  LoopbackOrigin
+
+  /// One of the `https` origins the daemon's `hello` lists from `[daemon]
+  /// ui_origins`: the one `--origin` named, or, with `None`, the only one
+  /// listed. A link for another machine reaches the daemon through the
+  /// proxy that serves that origin.
+  ListedOrigin(asked: Option(String))
+}
+
+/// The ticket a `loom ui` link carries.
+@internal
+pub type LinkTicket {
+  /// The page's own ticket, redeemable for sixty seconds.
+  PageTicket
+
+  /// A device link (`--device`): the home's ticket, redeemable for ten
+  /// minutes and always setting a browser login, printed with a QR code
+  /// for a phone to scan.
+  DeviceTicket
 }
 
 /// Parses the words after `loom ui` (or what is left of argv once `--ui`
@@ -1752,12 +1786,14 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
   let #(operate, arguments) = take_switch(arguments, "--operate")
   let #(observe, arguments) = take_switch(arguments, "--observe")
   let #(forget, arguments) = take_switch(arguments, "--no-remember")
+  let #(device, arguments) = take_switch(arguments, "--device")
   let #(open, rest) = take_switch(arguments, "--open")
   let delivery = case open {
     True -> view_link.OpenInBrowser
     False -> view_link.PrintLink
   }
   use session <- result.try(view_session(rest))
+  use asked <- result.try(view_origin(rest))
   use remember <- result.try(case session, forget {
     Some(_), True ->
       Error(
@@ -1766,6 +1802,26 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
       )
     None, True -> Ok(control_protocol.Forget)
     _, False -> Ok(control_protocol.Remember)
+  })
+
+  // A device link signs a browser in to the home, so it names no session and
+  // cannot decline the login. It is for another machine, so it is built on a
+  // listed origin even when `--origin` does not name one.
+  use #(origin, ticket) <- result.try(case device, session, forget, asked {
+    True, Some(_), _, _ ->
+      Error(
+        "--device signs another device in to your home page, which no "
+        <> "--session names\n"
+        <> ui_usage(),
+      )
+    True, None, True, _ ->
+      Error(
+        "--device always signs the device in, so it takes no --no-remember\n"
+        <> ui_usage(),
+      )
+    True, None, False, _ -> Ok(#(ListedOrigin(asked), DeviceTicket))
+    False, _, _, Some(_) -> Ok(#(ListedOrigin(asked), PageTicket))
+    False, _, _, None -> Ok(#(LoopbackOrigin, PageTicket))
   })
   let asked = case operate, observe {
     True, True -> AskedBoth
@@ -1776,13 +1832,102 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
   use page <- result.try(view_page(session, asked))
   case
     parse_local_options(
-      without_flag(rest, "--session"),
+      without_flag(without_flag(rest, "--session"), "--origin"),
       default_bootstrap_options(),
     )
   {
     Ok(options) ->
-      Ok(ViewRequest(options:, session:, page:, remember:, delivery:))
+      Ok(ViewRequest(
+        options:,
+        session:,
+        page:,
+        remember:,
+        delivery:,
+        origin:,
+        ticket:,
+      ))
     Error(reason) -> Error(reason <> "\n" <> ui_usage())
+  }
+}
+
+// The origin `--origin` names, or none. A `--origin` with no value after it
+// is an error, so a forgotten origin never falls back to loopback.
+fn view_origin(arguments: List(String)) -> Result(Option(String), String) {
+  case list.contains(arguments, "--origin") {
+    False -> Ok(None)
+    True ->
+      session_control.flag_value(arguments, "--origin")
+      |> result.map(Some)
+      |> result.map_error(fn(_) {
+        "loom ui needs an origin after --origin, such as "
+        <> "https://box.example.ts.net:8443\n"
+        <> ui_usage()
+      })
+  }
+}
+
+/// The listed origin a link is built on, from the origins the daemon's
+/// `hello` lists and the one `--origin` asked for (protocol-change/052).
+///
+/// With none listed it refuses and names the configuration key, since the
+/// daemon would refuse the link's `Host` anyway. With one listed and none
+/// asked, that one. With several and none asked, it refuses and lists them.
+/// An asked origin is compared after the daemon's own normalization, the
+/// scheme and host lowercased and a trailing `/` and the default `:443`
+/// dropped, and must be listed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.listed_origin(["https://box.example:8443"], None)
+///   == Ok("https://box.example:8443")
+/// let assert Error(_) = tui.listed_origin([], None)
+/// ```
+@internal
+pub fn listed_origin(
+  listed: List(String),
+  asked: Option(String),
+) -> Result(String, String) {
+  case listed, asked {
+    [], _ ->
+      Error(
+        "the daemon lists no web view origin for another machine. Add the "
+        <> "https origin your proxy serves, such as "
+        <> "https://box.example.ts.net:8443, to ui_origins in the [daemon] "
+        <> "table of the daemon's loom.toml and restart the daemon.",
+      )
+    [only], None -> Ok(only)
+    [_, _, ..], None ->
+      Error(
+        "the daemon lists several web view origins ("
+        <> string.join(listed, ", ")
+        <> "); pick one with --origin.",
+      )
+    _, Some(wanted) -> {
+      let wanted = normalized_origin(wanted)
+      list.find(listed, fn(origin) { origin == wanted })
+      |> result.map_error(fn(_) {
+        "the daemon does not list "
+        <> wanted
+        <> " as a web view origin; it lists "
+        <> string.join(listed, ", ")
+        <> "."
+      })
+    }
+  }
+}
+
+// The daemon's normalization of an origin (`client/daemon/ui_origin`), so
+// `--origin HTTPS://Box.example:443/` finds the listed `https://box.example`.
+fn normalized_origin(origin: String) -> String {
+  let origin = string.lowercase(origin)
+  let origin = case string.ends_with(origin, "/") {
+    True -> string.drop_end(origin, 1)
+    False -> origin
+  }
+  case string.ends_with(origin, ":443") {
+    True -> string.drop_end(origin, 4)
+    False -> origin
   }
 }
 
@@ -1795,9 +1940,9 @@ fn view_session(arguments: List(String)) -> Result(Option(String), String) {
     True ->
       session_control.flag_value(arguments, "--session")
       |> result.map(Some)
-      |> result.replace_error(
-        "loom ui needs a session id after --session\n" <> ui_usage(),
-      )
+      |> result.map_error(fn(_) {
+        "loom ui needs a session id after --session\n" <> ui_usage()
+      })
   }
 }
 
@@ -1842,7 +1987,15 @@ fn without_flag(arguments: List(String), flag: String) -> List(String) {
 // The link is printed before any opener runs, and the ticket in it is
 // written nowhere but standard output and the opener's argument vector.
 fn run_view(request: ViewRequest) -> Nil {
-  let ViewRequest(options:, session:, page:, remember:, delivery:) = request
+  let ViewRequest(
+    options:,
+    session:,
+    page:,
+    remember:,
+    delivery:,
+    origin: asked_origin,
+    ticket:,
+  ) = request
   let outcome = {
     use connected <- result.try(bootstrap.resolve_viewing_daemon(
       options,
@@ -1851,24 +2004,33 @@ fn run_view(request: ViewRequest) -> Nil {
     ))
     let control = connected.control
     let linked = {
-      use Nil <- result.try(view_served(daemon.hello(control).view))
-      use origin <- result.try(web_origin(connected.record))
+      let view = daemon.hello(control).view
+      use Nil <- result.try(view_served(view))
+
+      // The origin is chosen before anything is minted, so a link for an
+      // origin the daemon does not list is refused without spending a
+      // ticket.
+      use origin <- result.try(case asked_origin {
+        LoopbackOrigin -> web_origin(connected.record)
+        ListedOrigin(asked) -> listed_origin(view_origins(view), asked)
+      })
       use host <- result.try(view_host(
         connected.record,
         connected.paths.token,
         control,
       ))
       use Nil <- result.try(opened_for_link(host, session))
+      let command = case ticket {
+        PageTicket -> control_protocol.UiLink(session, page, remember)
+        DeviceTicket -> control_protocol.UiDeviceLink(page)
+      }
       use reply <- result.try(
-        daemon.request(
-          control,
-          control_protocol.UiLink(session, page, remember),
-          5000,
-        )
+        daemon.request(control, command, 5000)
         |> result.map_error(daemon_selection.failure),
       )
       case reply {
-        control_protocol.UiLinkReply(path:, ..) -> Ok(origin <> path)
+        control_protocol.UiLinkReply(path:, expires_in_ms:) ->
+          Ok(#(origin <> path, expires_in_ms))
         _other -> Error("ui.link returned an unexpected control reply")
       }
     }
@@ -1876,18 +2038,72 @@ fn run_view(request: ViewRequest) -> Nil {
     linked
   }
   case outcome {
-    Ok(link) ->
+    Ok(#(link, expires_in_ms)) -> {
       view_link.deliver(
         link,
         delivery,
         view_link.system_opener(),
         print_view_output,
       )
+      case ticket {
+        PageTicket -> Nil
+        DeviceTicket -> print_device_code(link, expires_in_ms)
+      }
+    }
     Error(reason) -> {
       io.println_error("loom ui: " <> reason)
       ffi_terminal.halt(1)
       Nil
     }
+  }
+}
+
+// The listed origins a running daemon's `hello` names, which only a daemon
+// that serves the view can name.
+fn view_origins(view: control_protocol.WebView) -> List(String) {
+  case view {
+    control_protocol.WebViewAt(origins:, ..) -> origins
+    control_protocol.NoWebView -> []
+  }
+}
+
+// A device link's QR code and how long it lasts, on standard error: the link
+// on standard output stays the command's one line for a script, and the code
+// is for the person holding a phone up to this terminal.
+fn print_device_code(link: String, expires_in_ms: Int) -> Nil {
+  case device_code.render(link) {
+    Ok(code) -> io.println_error(code)
+    Error(Nil) ->
+      io.println_error("loom ui: the link is too long for a QR code")
+  }
+  io.println_error(
+    "loom ui: open the link on the other device within "
+    <> device_lifetime(expires_in_ms)
+    <> "; it signs that browser in to your home page for 30 days.",
+  )
+}
+
+/// How long a device link lasts, in the words `loom ui --device` prints:
+/// whole minutes when it lasts a minute or more, seconds otherwise. A daemon
+/// that predates device links mints its sixty-second home ticket instead, and
+/// this is how the person learns that.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert tui.device_lifetime(600_000) == "10 minutes"
+/// assert tui.device_lifetime(30_000) == "30 seconds"
+/// ```
+@internal
+pub fn device_lifetime(expires_in_ms: Int) -> String {
+  let seconds = expires_in_ms / 1000
+  case seconds >= 60 {
+    True ->
+      case seconds / 60 {
+        1 -> "1 minute"
+        minutes -> int.to_string(minutes) <> " minutes"
+      }
+    False -> int.to_string(seconds) <> " seconds"
   }
 }
 
@@ -1917,12 +2133,12 @@ fn print_view_output(output: view_link.Output) -> Nil {
 /// ## Examples
 ///
 /// ```gleam
-/// assert view_served(control_protocol.WebViewAt("/ui")) == Ok(Nil)
+/// assert view_served(control_protocol.WebViewAt("/ui", [])) == Ok(Nil)
 /// ```
 @internal
 pub fn view_served(view: control_protocol.WebView) -> Result(Nil, String) {
   case view {
-    control_protocol.WebViewAt(_) -> Ok(Nil)
+    control_protocol.WebViewAt(..) -> Ok(Nil)
     control_protocol.NoWebView ->
       Error(
         "the running daemon was started without --ui. Stop it and run "
@@ -2402,7 +2618,7 @@ pub fn launch_token(arguments: List(String)) -> Result(String, String) {
         )
         bit_array.to_string(bytes)
         |> result.map(string.trim)
-        |> result.replace_error("--token-file " <> path <> " is not text")
+        |> result.map_error(fn(_) { "--token-file " <> path <> " is not text" })
       }
       Error(Nil) ->
         Ok(
@@ -2449,6 +2665,10 @@ fn launch_usage() -> String {
   <> "                      which is read-only unless --operate. --open also\n"
   <> "                      opens it in the default browser. --ui is still\n"
   <> "                      accepted as another spelling.\n"
+  <> "  ui --device [--origin <https-origin>]\n"
+  <> "                      Print a link and QR code that sign a phone or\n"
+  <> "                      another computer in to your home page, through\n"
+  <> "                      an origin listed in [daemon] ui_origins.\n"
   <> "  access <command>    Owner access: list, show, invite, rotate, revoke.\n"
   <> "                      Runs against the local daemon, or a remote one\n"
   <> "                      with --addr and --token-file.\n"
@@ -2480,6 +2700,7 @@ fn launch_usage() -> String {
 
 fn ui_usage() -> String {
   "usage: loom ui [--session <id>] [--operate | --observe] [--no-remember] "
+  <> "[--device] [--origin <https-origin>] "
   <> "[--open] [--state-dir <path>] [--config <loom.toml>] "
   <> "[--server <path>]\n"
   <> "  Print a link to the web view, starting a daemon that serves it when\n"
@@ -2490,7 +2711,13 @@ fn ui_usage() -> String {
   <> "  the link to hand to someone who may only watch. --open also opens the\n"
   <> "  link in the default browser. The home page also signs the browser in for\n"
   <> "  30 days, so its bookmark works without `loom ui`; --no-remember opens\n"
-  <> "  the page and signs nothing in. Options may come in any order.\n"
+  <> "  the page and signs nothing in. --origin builds the link on one of the\n"
+  <> "  https origins the daemon lists in [daemon] ui_origins, for a browser\n"
+  <> "  on another machine that reaches the daemon through a proxy such as\n"
+  <> "  Tailscale Serve. --device prints a link and a QR code that sign\n"
+  <> "  another device in to your home page; it lasts ten minutes and uses the\n"
+  <> "  only listed origin unless --origin picks one. Options may come in any\n"
+  <> "  order.\n"
   <> "  `loom --ui ...` is the same command."
 }
 

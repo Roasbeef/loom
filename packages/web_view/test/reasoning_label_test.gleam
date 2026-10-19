@@ -199,6 +199,8 @@ pub fn a_reasoning_block_beside_an_answer_has_its_line_count_test() {
   list.each(drawn(model), fn(html) {
     assert count(html, raw) == 2
     assert count(html, "· 2 lines") == 2
+    assert count(html, "<loom-expand") == 2
+    assert string.contains(html, "Then compare it with what the second reader")
   })
 
   let labelled =
@@ -206,6 +208,8 @@ pub fn a_reasoning_block_beside_an_answer_has_its_line_count_test() {
   list.each(drawn(labelled), fn(html) {
     assert count(html, summarized) == 2
     assert count(html, "· 2 lines") == 2
+    assert count(html, "<loom-expand") == 2
+    assert string.contains(html, "Then compare it with what the second reader")
   })
 }
 

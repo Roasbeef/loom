@@ -653,6 +653,8 @@ fn plane_over(
     Ok(facts) -> {
       let children = built.started.children
       let broker_actor = plane.broker
+      let close_plane = plane.close
+      let logger = machine.logger
       Ok(
         host.Plane(
           run: plane.run,
@@ -677,8 +679,8 @@ fn plane_over(
             |> children.lsp_manager
           },
           close: fn(retire_children) {
-            let outcome = retire(plane.close, retire_children, cleanups)
-            settle_scope(machine.logger, scope, outcome)
+            let outcome = retire(close_plane, retire_children, cleanups)
+            settle_scope(logger, scope, outcome)
             outcome
           },
         ),
@@ -694,6 +696,8 @@ fn plane_over(
 // errored value, which the record then holds.
 fn executing(built: Built) -> fn(host.ExecutionStart) -> json.JsonValue {
   let census = built.started.plane.census
+  let base_policy = census.base_policy
+  let env = census.env
   let root = built.root
   let demand = built.machine.demand
   let code_mode = built.code_mode
@@ -720,10 +724,10 @@ fn executing(built: Built) -> fn(host.ExecutionStart) -> json.JsonValue {
             step_id: start.step,
             source_index: terms.source_index,
             workspace: root,
-            base_policy: census.base_policy,
+            base_policy:,
             directory_access: terms.access,
             demand:,
-            env: census.env,
+            env:,
             within_ms: start.remaining_ms,
             grants: terms.grants,
             observe_output: fn(_tail) { Nil },

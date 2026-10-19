@@ -25,8 +25,9 @@ fn skips(code: String) -> List(Finding) {
 }
 
 fn wall() -> policy.Wall {
-  let assert [wall] = policy.import_walls()
-    as "web_client is the one walled package"
+  let assert Ok(wall) =
+    list.find(policy.import_walls(), fn(wall) { wall.package == "web_client" })
+    as "web_client has an import wall"
   wall
 }
 
@@ -314,6 +315,31 @@ pub fn an_import_of_a_module_outside_the_package_ends_the_branch_test() {
 pub fn an_unparseable_module_in_the_walk_is_not_this_rules_finding_test() {
   assert walk("import web_client/broken\n", [#("web_client/broken", "import (")])
     == []
+}
+
+pub fn the_isolated_renderer_has_the_same_pure_test_wall_test() {
+  let assert Ok(wall) =
+    list.find(policy.import_walls(), fn(wall) { wall.package == "web_mermaid" })
+    as "the isolated renderer has a pure test import wall"
+  let path = "packages/web_mermaid/test/controller_test.gleam"
+  let modules =
+    dict.from_list([
+      #(
+        "web_mermaid/controller",
+        #(
+          "packages/web_mermaid/src/web_mermaid/controller.gleam",
+          "import web_mermaid/internal/ffi_dom\n",
+        ),
+      ),
+    ])
+  let assert [found] =
+    test_imports.findings(
+      wall,
+      [#(path, "import web_mermaid/controller\n")],
+      modules,
+    )
+    as "a transitive renderer DOM import must be refused"
+  assert string.contains(found.detail, "web_mermaid/internal/ffi_dom")
 }
 
 pub fn r20_gates_test() {

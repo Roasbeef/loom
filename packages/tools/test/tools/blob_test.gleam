@@ -94,6 +94,9 @@ pub fn bounded_text_names_the_path_and_how_to_read_it_test() {
   assert string.starts_with(text, "HEAD")
   assert string.ends_with(text, "TAIL")
   assert string.contains(text, "/blobs/sha256-abc")
+  assert string.contains(text, "blob://sha256-abc")
+  assert string.contains(text, "fs_read")
+  assert string.contains(text, "search.read_lines")
   assert string.contains(text, "not by re-running")
   assert string.contains(text, "70000 bytes")
 }

@@ -339,9 +339,11 @@ pub fn rules() -> List(Rule) {
 pub fn error_by_default() -> List(Rule) {
   [
     Unparseable,
+    EagerFallback,
     NestingDepth,
     PanicInSource,
     PortablePurity,
+    AssertWithoutMessage,
     CommentStanza,
     FlowSpine,
     TransitionTable,

@@ -9,7 +9,20 @@
 //// browser might send, without a listener. `client/daemon/server` applies
 //// them in the order 051 gives: the host first, then the check that belongs
 //// to the route, then the cookie.
+////
+//// The host check resolves the request to one `PageOrigin`
+//// (protocol-change/052): `Loopback`, a loopback `Host` exactly as 051
+//// admits it, or `Remote`, a `Host` that names one of the `https` origins
+//// the owner listed in `[daemon] ui_origins`. Every later rule that differs
+//// between the two is a function of that one value and never of a second
+//// input: the `Origin` a socket upgrade must present, the cookie's name and
+//// its `Secure` attribute, and the socket scheme the content security policy
+//// names. So a request admitted as `Remote` can never be handed a loopback
+//// cookie or be checked against a loopback origin. No `X-Forwarded-*` or
+//// `Forwarded` header is read anywhere, because the daemon cannot tell a
+//// proxy's header from one any local process wrote.
 
+import client/daemon/ui_origin
 import core/ids
 import gleam/bit_array
 import gleam/http
@@ -24,11 +37,34 @@ import gleam/uri
 import web_view/image
 import web_view/page
 
-/// The cookie that carries a UI session.
+/// The cookie that carries a UI session on a loopback origin.
 pub const cookie_name = "loom_ui"
 
-/// The cookie that carries a browser login (protocol-change/065).
+/// The cookie that carries a browser login (protocol-change/065) on a
+/// loopback origin.
 pub const login_cookie_name = "loom_login"
+
+/// The cookie that carries a UI session on a listed `https` origin
+/// (protocol-change/052, the addendum). The `__Secure-` prefix makes a
+/// browser refuse the cookie unless it is `Secure` and was set over `https`.
+pub const remote_cookie_name = "__Secure-loom_ui"
+
+/// The cookie that carries a browser login on a listed `https` origin.
+pub const remote_login_cookie_name = "__Secure-loom_login"
+
+/// Which origin a `/ui` request was admitted under. The host check is the one
+/// place this is decided, and every rule after it is chosen by it.
+pub type PageOrigin {
+  /// The request's `Host` is `127.0.0.1`, `[::1]` or `localhost`, with any
+  /// port, exactly as protocol-change/051 admits it. `host` is the header as
+  /// the browser sent it.
+  Loopback(host: String)
+
+  /// The request's `Host` names this origin, one the owner listed in
+  /// `[daemon] ui_origins` (protocol-change/052). It reached the daemon
+  /// through a TLS proxy on the daemon's own host.
+  Remote(origin: ui_origin.Origin)
+}
 
 /// One `/ui` request, by route.
 ///
@@ -123,6 +159,12 @@ pub type Asset {
 
   /// The tab icon, an SVG.
   Favicon
+
+  /// The isolated Mermaid child-frame document.
+  MermaidFrame
+
+  /// The isolated Mermaid renderer script.
+  MermaidScript
 }
 
 /// The most images one row may carry that the route will ask the page for.
@@ -199,6 +241,8 @@ pub fn route(request: Request(body)) -> Route {
         _ if name == page.resume_asset -> Asset(ResumeScript)
         _ if name == page.client_asset -> Asset(Client)
         _ if name == page.favicon_asset -> Asset(Favicon)
+        _ if name == page.mermaid_frame_asset -> Asset(MermaidFrame)
+        _ if name == page.mermaid_script_asset -> Asset(MermaidScript)
         _ -> Unknown
       }
     _, _ -> Unknown
@@ -210,6 +254,34 @@ fn query(request: Request(body), name: String) -> Option(String) {
   |> result.unwrap([])
   |> list.key_find(name)
   |> option.from_result
+}
+
+/// Resolves the request's `Host` to the origin it is admitted under, or
+/// refuses it. A loopback name is `Loopback`, exactly as `loopback_host`
+/// says. Any other `Host` is `Remote` only when it names one of `allowed`,
+/// the owner's `[daemon] ui_origins`, compared case-insensitively and with
+/// the port required to match the origin's (`ui_origin.names_host`).
+///
+/// This is the DNS rebinding defence as well as the remote admission: a
+/// rebinding page reaches the listener under its own name, which is neither
+/// loopback nor listed. No forwarded header is consulted.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_http.page_origin(request, []) == Ok(ui_http.Loopback("127.0.0.1:4000"))
+/// ```
+pub fn page_origin(
+  request: Request(body),
+  allowed: List(ui_origin.Origin),
+) -> Result(PageOrigin, Nil) {
+  loopback_host(request)
+  |> result.map(Loopback)
+  |> result.lazy_or(fn() {
+    use host <- result.try(request.get_header(request, "host"))
+    list.find(allowed, ui_origin.names_host(_, host))
+    |> result.map(Remote)
+  })
 }
 
 /// The request's `Host` when it names loopback, with any port.
@@ -398,18 +470,100 @@ fn named(name: String) -> Option(String) {
   }
 }
 
-/// Whether a WebSocket upgrade came from this origin: `Origin` is present
-/// and is `http://` followed by the request's host.
+/// Whether a WebSocket upgrade came from this origin: `Origin` is present and
+/// is exactly the page's own address (`address`). For `Loopback` that is
+/// `http://` and the request's host; for `Remote` it is the listed origin,
+/// byte for byte, so an `http://` page on the listed name, which a network
+/// attacker could serve, is refused, as is the listed name on another port.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.origin_matches(request, "127.0.0.1:4000")
+/// // ui_http.origin_matches(request, ui_http.Loopback("127.0.0.1:4000"))
 /// ```
-pub fn origin_matches(request: Request(body), host: String) -> Bool {
+pub fn origin_matches(request: Request(body), origin: PageOrigin) -> Bool {
   case request.get_header(request, "origin") {
-    Ok(origin) -> origin == "http://" <> host
+    Ok(sent) -> sent == address(origin)
     Error(Nil) -> False
+  }
+}
+
+/// The page's own address, scheme and authority, as a browser writes it in
+/// `Origin`: `http://` and the host for `Loopback`, the listed `https` origin
+/// for `Remote`. A link the page mints, such as a device sign-in link, starts
+/// with it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_http.address(ui_http.Loopback("127.0.0.1:4000"))
+///   == "http://127.0.0.1:4000"
+/// ```
+pub fn address(origin: PageOrigin) -> String {
+  case origin {
+    Loopback(host) -> "http://" <> host
+    Remote(listed) -> ui_origin.to_string(listed)
+  }
+}
+
+/// The origin the page's socket connects to, for the content security
+/// policy's `connect-src`: `ws://` and the host for `Loopback`, `wss://` and
+/// the listed host for `Remote`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_http.socket_origin(ui_http.Loopback("127.0.0.1:4000"))
+///   == "ws://127.0.0.1:4000"
+/// ```
+pub fn socket_origin(origin: PageOrigin) -> String {
+  case origin {
+    Loopback(host) -> "ws://" <> host
+    Remote(listed) -> "wss://" <> ui_origin.host(listed)
+  }
+}
+
+/// The name a UI session's cookie has on this origin: `loom_ui` on loopback,
+/// `__Secure-loom_ui` on a listed origin. A request is looked up by the name
+/// its origin implies and the other name is ignored, so a cookie set on one
+/// kind of origin is never accepted on the other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_http.session_cookie_name(ui_http.Loopback("127.0.0.1:4000"))
+///   == "loom_ui"
+/// ```
+pub fn session_cookie_name(origin: PageOrigin) -> String {
+  case origin {
+    Loopback(_) -> cookie_name
+    Remote(_) -> remote_cookie_name
+  }
+}
+
+/// The name a browser login's cookie has on this origin, chosen as
+/// `session_cookie_name` chooses.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_http.login_cookie_name_for(ui_http.Loopback("127.0.0.1:4000"))
+///   == "loom_login"
+/// ```
+pub fn login_cookie_name_for(origin: PageOrigin) -> String {
+  case origin {
+    Loopback(_) -> login_cookie_name
+    Remote(_) -> remote_login_cookie_name
+  }
+}
+
+// The attributes after the path that only a listed origin carries. `Secure`
+// keeps the cookie off plain `http`, which the `__Secure-` prefix also
+// requires before a browser will store the cookie at all.
+fn transport(origin: PageOrigin) -> String {
+  case origin {
+    Loopback(_) -> ""
+    Remote(_) -> "; Secure"
   }
 }
 
@@ -419,7 +573,8 @@ pub fn origin_matches(request: Request(body), host: String) -> Bool {
 /// costing a UI-session lookup each.
 pub const max_session_cookies = 4
 
-/// Every `loom_ui` value the request carries, in the order the browser sent
+/// Every UI-session cookie value the request carries under the name its
+/// origin implies (`session_cookie_name`), in the order the browser sent
 /// them, up to `max_session_cookies`. The caller accepts the one whose UI
 /// session is live under the page's key, so a value planted under a longer
 /// path, which the browser sends first, cannot shadow the real one.
@@ -427,12 +582,16 @@ pub const max_session_cookies = 4
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.session_cookies(request) == ["planted", "real"]
+/// // ui_http.session_cookies(request, origin) == ["planted", "real"]
 /// ```
-pub fn session_cookies(request: Request(body)) -> List(String) {
+pub fn session_cookies(
+  request: Request(body),
+  origin: PageOrigin,
+) -> List(String) {
+  let name = session_cookie_name(origin)
   request.get_cookies(request)
   |> list.filter_map(fn(pair) {
-    case pair.0 == cookie_name {
+    case pair.0 == name {
       True -> Ok(pair.1)
       False -> Error(Nil)
     }
@@ -448,19 +607,24 @@ pub fn session_cookies(request: Request(body)) -> List(String) {
 /// verification each.
 pub const max_login_cookies = 4
 
-/// Every `loom_login` value the request carries, in the order the browser sent
-/// them, up to `max_login_cookies`. The caller opens each in turn and takes the
-/// first that verifies and holds for the request.
+/// Every login cookie value the request carries under the name its origin
+/// implies (`login_cookie_name_for`), in the order the browser sent them, up
+/// to `max_login_cookies`. The caller opens each in turn and takes the first
+/// that verifies and holds for the request.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.login_cookies(request) == ["planted", "real"]
+/// // ui_http.login_cookies(request, origin) == ["planted", "real"]
 /// ```
-pub fn login_cookies(request: Request(body)) -> List(String) {
+pub fn login_cookies(
+  request: Request(body),
+  origin: PageOrigin,
+) -> List(String) {
+  let name = login_cookie_name_for(origin)
   request.get_cookies(request)
   |> list.filter_map(fn(pair) {
-    case pair.0 == login_cookie_name {
+    case pair.0 == name {
       True -> Ok(pair.1)
       False -> Error(Nil)
     }
@@ -479,19 +643,28 @@ pub fn login_cookies(request: Request(body)) -> List(String) {
 /// is the cookie that outlives the browser, and it ends when its token's
 /// expiry does, so the browser drops it when the token would stop verifying.
 ///
+/// On a listed origin it is `__Secure-loom_login` and `Secure`, for the
+/// reasons `set_cookie` gives.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.set_login_cookie(token, key, 2_592_000)
+/// // ui_http.set_login_cookie(token, key, 2_592_000, origin)
 /// ```
-pub fn set_login_cookie(value: String, key: String, max_age: Int) -> String {
-  login_cookie_name
+pub fn set_login_cookie(
+  value: String,
+  key: String,
+  max_age: Int,
+  origin: PageOrigin,
+) -> String {
+  login_cookie_name_for(origin)
   <> "="
   <> value
   <> "; HttpOnly; SameSite=Strict; Path="
   <> page.login_prefix(key)
   <> "; Max-Age="
   <> int.to_string(max_age)
+  <> transport(origin)
 }
 
 /// The `Set-Cookie` value for a new UI session whose page key is `key`.
@@ -503,17 +676,26 @@ pub fn set_login_cookie(value: String, key: String, max_age: Int) -> String {
 /// port. It has no `Max-Age`, so the browser drops it when its session
 /// ends; the daemon's own lifetime bounds it either way.
 ///
+/// On a listed `https` origin (protocol-change/052, the addendum) the cookie
+/// is `__Secure-loom_ui` and adds `Secure`, so it never travels over plain
+/// `http`. It keeps the keyed path rather than taking the `__Host-` prefix,
+/// which requires `Path=/`: browsers do not scope a cookie by port, so
+/// `Path=/` would send it to every other service the same proxy serves on
+/// another port of that name, and one cookie name at `/` would let a second
+/// page in the same browser overwrite the first page's cookie.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.set_cookie("abc", "key")
+/// // ui_http.set_cookie("abc", "key", ui_http.Loopback("127.0.0.1:4000"))
 /// ```
-pub fn set_cookie(value: String, key: String) -> String {
-  cookie_name
+pub fn set_cookie(value: String, key: String, origin: PageOrigin) -> String {
+  session_cookie_name(origin)
   <> "="
   <> value
   <> "; HttpOnly; SameSite=Strict; Path="
   <> page.keyed_prefix(key)
+  <> transport(origin)
 }
 
 /// Adds the view's headers to a refusal made before the host was trusted.
@@ -538,15 +720,16 @@ pub fn refused(response: Response(body)) -> Response(body) {
   |> response.set_header("cache-control", "no-store")
 }
 
-/// Adds the headers every `/ui` response carries.
+/// Adds the headers every `/ui` response carries, for a request admitted
+/// under `origin`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.secured(response, "127.0.0.1:4000")
+/// // ui_http.secured(response, ui_http.Loopback("127.0.0.1:4000"))
 /// ```
-pub fn secured(response: Response(body), host: String) -> Response(body) {
-  secured_for(response, host, page.NoForms)
+pub fn secured(response: Response(body), origin: PageOrigin) -> Response(body) {
+  secured_for(response, origin, page.NoForms)
 }
 
 /// `secured` for a document that holds a form, whose policy lets that form
@@ -556,17 +739,17 @@ pub fn secured(response: Response(body), host: String) -> Response(body) {
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_http.secured_for(response, "127.0.0.1:4000", page.OwnForms)
+/// // ui_http.secured_for(response, origin, page.OwnForms)
 /// ```
 pub fn secured_for(
   response: Response(body),
-  host: String,
+  origin: PageOrigin,
   forms: page.Forms,
 ) -> Response(body) {
   response
   |> response.set_header(
     "content-security-policy",
-    page.content_security_policy_for(host, forms),
+    page.content_security_policy_for(socket_origin(origin), forms),
   )
   |> response.set_header("x-content-type-options", "nosniff")
   |> response.set_header("referrer-policy", "no-referrer")

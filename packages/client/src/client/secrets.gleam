@@ -443,7 +443,7 @@ pub fn host_runner() -> Runner {
       [program, ..arguments] -> {
         use executable <- result.try(
           ffi_os.find_executable(program)
-          |> result.replace_error("`" <> program <> "` is not on PATH"),
+          |> result.map_error(fn(_) { "`" <> program <> "` is not on PATH" }),
         )
         use #(status, output) <- result.map(ffi_os.run_capture(
           executable,

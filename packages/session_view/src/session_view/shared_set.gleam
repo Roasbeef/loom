@@ -1236,3 +1236,42 @@ pub fn jobs_request(
 pub fn answer(shared: Shared(a, b, c, d), answer) -> Shared(a, b, c, d) {
   Shared(..shared, answer:)
 }
+
+/// Replaces `Shared.returned_drafts`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.returned_drafts(shared, [])
+/// ```
+@internal
+pub fn returned_drafts(
+  shared: Shared(a, b, c, d),
+  returned_drafts,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, returned_drafts:)
+}
+
+/// Replaces `Shared.peek`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.peek(shared, remote_transcript.Closed)
+/// ```
+@internal
+pub fn peek(shared: Shared(a, b, c, d), peek) -> Shared(a, b, c, d) {
+  Shared(..shared, peek:)
+}
+
+/// Replaces `Shared.btw`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.btw(shared, btw.new())
+/// ```
+@internal
+pub fn btw(shared: Shared(a, b, c, d), btw) -> Shared(a, b, c, d) {
+  Shared(..shared, btw:)
+}
