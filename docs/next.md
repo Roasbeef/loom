@@ -3,8 +3,10 @@
 This file records the verified state and next steps for this checkout. Rewrite
 it after a body of work; retain measurements in their evidence documents.
 
-Baselined October 19, 2026 against source `a0c42df95` on
-`perf/swarm-resources`, from `c444fca2511759619dd3eee324fe206c018eee02`.
+Baselined October 19, 2026 against source `17030ada2` on
+`perf/swarm-resources`, integrated with `origin/main` at
+`4f583390740d9baa1407e732995bace1fcaf5f9f`. The profiling comparisons retain
+their original `c444fca25` baseline.
 The claims below were checked against this tree, the saved local gates and the
 live observations identified in the report. This is a scoped resource handoff,
 not a fresh audit of the repository's architecture or hosted CI.
@@ -17,7 +19,7 @@ not a fresh audit of the repository's architecture or hosted CI.
 | JSON CPU | `35a0957cb` adds an eight-byte ordinary-run scan while preserving the four-byte and byte tails. Three alternating fixture pairs reduce median reductions by 10.0% on plain text, 3.8% on escaped text and 2.7% on transcript-shaped input. Heap allocation is unchanged. |
 | Page ownership | `a0c42df95` narrows component session-list and sign-in callbacks to registry and identity fields. The observer fixture's enlarged-hook component falls from 191,308 to 9,550 flattened words. This is a copy-size bound, not installed RSS. |
 | Validation | The complete core gate and socket/page/relay modules pass 259 tests. The 882-input complete-result JSON equivalence digest matches baseline. Formatting, targeted lint and documentation checks pass; independent adversarial review found no blocking issue. |
-| Publication and installation | Commits are local. No PR, push, installation or restart was performed. The full client suite, full repository gate, hosted CI and strict Linux signoff have not run for these commits. |
+| Publication and installation | The owner authorized publication, full gates and merge when green. Main's harness extraction was integrated cleanly before publication. The recorded 259 tests precede that integration; the PR's exact-head checks and signoff must establish final readiness. Installation and restart remain separate. |
 
 The [resource report](review/swarm-resources-2026-10-19.md) records the probe
 coverage, counter meanings, fixture methods, test results and remaining limits.
@@ -38,7 +40,7 @@ were not re-audited during this profiling task.
    and lifecycle behavior. Owner-page capabilities in `ui_socket.upgrade`
    still capture attachments; the current observer fixture does not validate
    the owner-only sign-in callback's retained size.
-2. Finish publication gates if publication is requested. **Exit:** full affected
+2. Finish the authorized PR and full publication gates. **Exit:** full affected
    coverage, independent review, hosted checks and strict Linux signoff refer
    to the published source. Local targeted checks are not a hosted-green claim.
 3. Coordinate an authorized update and matched installed comparison. **Exit:**
