@@ -128,8 +128,8 @@ pub fn a_session_runs_with_custom_tools_a_terminating_submit_and_a_prompt_test()
       poll_interval_ms: 25,
       idle_poll_interval_ms: 25,
     )
-  let assert Ok(runtime) = api.open(opened, harness.effects(config), options)
-    as "the runtime opens over the harness effects"
+  let assert Ok(runtime) = harness.open(config, options)
+    as "the runtime opens over the configuration's own session"
   let assert Ok(operation) =
     api.prompt(runtime, [
       message.UserMessage(

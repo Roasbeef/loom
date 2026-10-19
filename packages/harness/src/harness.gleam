@@ -31,8 +31,7 @@
 ////     gateway:, session:, registry:, clock:, fallback:,
 ////     tools: harness.Embedded(workspace: "/work", blob_root: "/work/.blobs"),
 ////   ))
-//// let assert Ok(runtime) =
-////   api.open(session, harness.effects(config), api.default_options(strand))
+//// let assert Ok(runtime) = harness.open(config, api.default_options(strand))
 //// let assert Ok(operation) = api.prompt(runtime, [user_message])
 //// let assert Ok(result) = api.await_result(runtime, operation, within_ms: 60_000)
 //// ```
@@ -79,6 +78,7 @@ import harness/routing.{Routing}
 import harness/tool_table
 import provider/gateway.{type Gateway}
 import provider/model.{type Role}
+import runtime/api
 import runtime/effects.{type Effects}
 import runtime/hooks
 import session/session.{type Session}
@@ -111,7 +111,11 @@ pub type Settings {
   Settings(
     /// The provider gateway, fully routed.
     gateway: Gateway,
-    /// The session the runtime will open. Read for image classification.
+    /// The session the runtime will open. Read for image classification, so
+    /// the runtime must be opened over this same session: `open` does that,
+    /// and a plain `api.open` must be handed this value, never another. A
+    /// different session would classify images and measure windows against
+    /// the wrong store without any error.
     session: Session,
     /// The tools the model may call.
     registry: Registry,
@@ -293,6 +297,27 @@ fn absolute(path: String) -> Bool {
     "/" <> _ -> True
     _ -> False
   }
+}
+
+/// Opens the runtime over the configuration's own session: the documented
+/// entry point.
+///
+/// The session appears once, in `Settings`, and this passes that same value
+/// to `runtime/api.open` with the effects built from it. Calling `api.open`
+/// directly with `effects` works only if it is given the session the
+/// configuration was built over.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(runtime) = harness.open(config, api.default_options(strand))
+/// ```
+///
+pub fn open(
+  config: HarnessConfig,
+  options: api.Options,
+) -> Result(api.Runtime, String) {
+  api.open(config.provider.session, effects(config), options)
 }
 
 /// Builds the `Effects` record a host hands to `runtime/api.open`.

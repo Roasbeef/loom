@@ -28,6 +28,9 @@ placement across machines and the holder process.
 - `harness.Tools` — `Embedded(workspace, blob_root)` runs tools in this VM
   under a context with no broker (`embedded_context`), `Hosted(context)` under
   one the embedder builds per call.
+- `harness.open(config, options)` — the documented entry point: `api.open` over
+  the configuration's own session, so the session is named once. A plain
+  `api.open` must be given the same session.
 - `harness.effects(config)` — the `Effects` record: the provider surface, the
   registry-driven tool surface, and the runtime's default hooks with
   `admission` and `resolution` replaced. No compaction, no escalation channel.
@@ -107,7 +110,7 @@ placement across machines and the holder process.
 `test/harness/embedding_test.gleam` is the contract in code: a custom
 `tool.Tool` whose `run` closes over a per-job grant, a `submit` tool returning
 `tool.TerminateRun`, a custom system prompt, `session.open_memory`, a routed
-gateway over a scripted Anthropic transport, `api.open`, `api.prompt` and
+gateway over a scripted Anthropic transport, `harness.open`, `api.prompt` and
 `api.await_result`, ending in `RunCompleted(CompletedByTerminatedTools)` with
 exactly two model requests. The embedder starts the session under its own
 supervisor; `api.open` links the tree to its caller.
