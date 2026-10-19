@@ -194,6 +194,7 @@ fn reread(
     True -> #(model, effect.none())
     False -> {
       let revision = diagram.revision
+
       // The render deadline is armed in `send`, when the request is posted,
       // not here: counting the frame's bundle download against it marked
       // renderable diagrams unavailable on a slow link.
@@ -208,6 +209,7 @@ fn reread(
         | rule.TooLarge
         | rule.Unavailable -> effect.none()
       }
+
       // Empty and oversized source drop the iframe from the view, so the
       // next one loads afresh and must announce itself before a post; a
       // stale Ready would post into the unloaded window and start the
