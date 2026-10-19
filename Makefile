@@ -4,7 +4,7 @@
 # what CI runs and what you run locally are the same commands.
 
 PACKAGES := host core storage session machine prompt statem statem_parallel session_view web_view telemetry runtime provider \
-	broker executor mcp lsp tools cap ext codemode events client conformance tui lint
+	broker executor mcp lsp tools cap ext codemode events harness client conformance tui lint
 # Packages that target JavaScript. They are formatted, built and documented
 # with the rest; their pure tests run on a JavaScript runtime.
 JS_PACKAGES := web_client web_mermaid
