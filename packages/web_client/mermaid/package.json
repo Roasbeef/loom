@@ -1,0 +1,12 @@
+{
+  "name": "loom-mermaid-renderer",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun build renderer.js --target browser --format iife --minify --outfile ../build/mermaid.js"
+  },
+  "dependencies": {
+    "mermaid": "12.2.0"
+  }
+}
