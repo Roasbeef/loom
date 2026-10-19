@@ -783,8 +783,9 @@ and reports clipboard refusal without hiding the selectable source.
 The frame controller is the separate internal Gleam program `web_mermaid`,
 not an exception to the session bundle's no-markup binding. Its pure state
 machine owns queueing, fixed configuration, request/SVG validation and replies;
-its runtime interprets effects over a minimal frame-only DOM/vendor FFI. The
-npm package in `mermaid/` retains only the fixed bootstrap and pinned vendor.
+its runtime interprets effects over a minimal frame-only DOM/vendor FFI. Its
+`bundle/` directory holds the fixed bootstrap, pinned vendor lock and frame
+document; nothing of the renderer lives in this package.
 They are bundled as one classic script in `web_view/priv/static/mermaid.js`.
 It runs only in `mermaid.html` under an HTTP sandbox and its own restricted
 policy. `make gen-client` rebuilds it and `make client-check` validates its

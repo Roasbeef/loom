@@ -1,6 +1,6 @@
 // The fixed frame bootstrap injects the pinned vendor into its Gleam runtime.
 // No renderer state, validation or configuration policy lives in this file.
 import mermaid from "mermaid";
-import { start } from "../../web_mermaid/build/dev/javascript/web_mermaid/web_mermaid.mjs";
+import { start } from "../build/dev/javascript/web_mermaid/web_mermaid.mjs";
 
 start(mermaid);

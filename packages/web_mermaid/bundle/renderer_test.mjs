@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const binding = readFileSync(new URL('../../web_mermaid/src/web_mermaid/internal/dom.mjs', import.meta.url), 'utf8');
+const binding = readFileSync(new URL('../src/web_mermaid/internal/dom.mjs', import.meta.url), 'utf8');
 const bootstrap = readFileSync(new URL('./renderer.js', import.meta.url), 'utf8');
 const names = [...binding.matchAll(/export function (\w+)/g)].map(match => match[1]);
 const executable = binding.replace(/^import .*;\n/m, '').replaceAll('export function ', 'function ') +

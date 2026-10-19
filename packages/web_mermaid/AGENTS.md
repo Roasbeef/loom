@@ -4,8 +4,9 @@
 
 The internal browser program that runs only in the opaque Mermaid frame. It
 is a JavaScript-target Gleam package, not a general Mermaid library and not a
-dependency of `web_client`. The fixed bootstrap in
-`web_client/mermaid/renderer.js` injects the pinned vendor object into `start`.
+dependency of `web_client`. The fixed bootstrap in `bundle/renderer.js`
+injects the pinned vendor object into `start`; `bundle/` also holds the npm
+lock, the notice collector and the frame document `mermaid.html`.
 `make gen-client` compiles this program and bundles it with the vendor as the
 separate `mermaid.js` asset. The session page's bundle never imports it.
 
@@ -77,9 +78,13 @@ owns the application, message listener and observer; teardown removes them all.
 - Nothing is attached from parsed XML before `safe_svg` accepts its projection.
   This filter supplements the sandbox and CSP; it is not the isolation boundary.
 - Test modules cannot import the browser runtime or FFI. `make test-web_mermaid`
-  executes controller tests under Node/Bun/Deno; the neighboring FFI checks in
-  `web_client/mermaid/renderer_test.mjs` test exception and promise normalization.
-  Neither is proof of full daemon/browser E2E behavior.
+  executes controller tests under Node/Bun/Deno, and the FFI checks in
+  `bundle/renderer_test.mjs` test exception and promise normalization. Neither
+  runs the real vendor; `scripts/web_mermaid_check.sh` is the browser drive.
+- The configuration pins `layout: "dagre"`. ELK, Mermaid 12's flowchart
+  default, fails inside the IIFE bundle (`__require is not defined`).
+- The frame root's `color-scheme` follows the request's theme. A frame whose
+  scheme differs from its iframe element's is painted on an opaque backdrop.
 
 ## Deep docs
 

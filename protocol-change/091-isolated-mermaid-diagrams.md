@@ -73,10 +73,10 @@ session content from making browser requests or triggering application actions.
 
 `web_view/markdown_view` selects the new client element without changing the
 portable Markdown tree or transcript format. `web_client/mermaid` owns the
-source disclosure, explicit clipboard action and revision lifecycle. The
-separate `web_client/mermaid/` npm package is the only handwritten rendering
-JavaScript; none enters the session page bundle or its `internal/dom.mjs`
-binding. Its generated bundle and source lock are covered by the offline
+source disclosure, explicit clipboard action and revision lifecycle. The frame
+program is the separate JavaScript-target package `web_mermaid`, whose
+`bundle/` directory holds the vendor bootstrap and npm lock; none of it enters
+the session page bundle or its `internal/dom.mjs` binding. Its generated bundle and source lock are covered by the offline
 asset digest gate. Regenerate both browser bundles with `make gen-client`.
 
 A release carries two more fixed static assets and the Mermaid dependency's

@@ -52,10 +52,10 @@ cd "packages/$package"
 
 # The isolated renderer's adapter is tested with a controlled DOM and vendor
 # promise. It reads only source files, not installed npm dependencies.
-if [ "$package" = web_client ]; then
+if [ "$package" = web_mermaid ]; then
 	case "$runtime" in
-	node | bun) "$runtime" mermaid/renderer_test.mjs ;;
-	deno) deno run --allow-read mermaid/renderer_test.mjs ;;
+	node | bun) "$runtime" bundle/renderer_test.mjs ;;
+	deno) deno run --allow-read bundle/renderer_test.mjs ;;
 	esac
 fi
 

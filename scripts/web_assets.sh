@@ -46,6 +46,7 @@ self=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$(dirname "$0")/.."
 
 client="packages/web_client"
+mermaid="packages/web_mermaid"
 static="packages/web_view/priv/static"
 scratch="$client/build/web_assets"
 marker="/* --- generated body: the digests above cover everything below this line --- */"
@@ -66,21 +67,23 @@ stylesheet_inputs() {
 	find packages/web_view/src "$client/src" -name '*.gleam' | LC_ALL=C sort
 }
 
+# The frame program's inputs. web_client's manifest pins the Lustre dev tools
+# whose verified Bun builds the bundle.
 mermaid_inputs() {
-  echo scripts/web_assets.sh
-  echo "$client/manifest.toml"
-  echo "$client/mermaid/licenses.py"
-  echo "$client/mermaid/package.json"
-  echo "$client/mermaid/package-lock.json"
-  echo "$client/mermaid/renderer.js"
-  echo packages/web_mermaid/gleam.toml
-  echo packages/web_mermaid/manifest.toml
-  find packages/web_mermaid/src \( -name '*.gleam' -o -name '*.mjs' \) | LC_ALL=C sort
+	echo scripts/web_assets.sh
+	echo "$client/manifest.toml"
+	echo "$mermaid/gleam.toml"
+	echo "$mermaid/manifest.toml"
+	echo "$mermaid/bundle/licenses.py"
+	echo "$mermaid/bundle/package.json"
+	echo "$mermaid/bundle/package-lock.json"
+	echo "$mermaid/bundle/renderer.js"
+	find "$mermaid/src" \( -name '*.gleam' -o -name '*.mjs' \) | LC_ALL=C sort
 }
 
 # The copied files: the scripts and the favicon.
 scripts() {
-	ls "$client"/assets/*.js "$client"/assets/*.svg "$client"/assets/*.html | LC_ALL=C sort
+	ls "$client"/assets/*.js "$client"/assets/*.svg "$mermaid"/bundle/mermaid.html | LC_ALL=C sort
 }
 
 digest_of() {
@@ -211,9 +214,8 @@ build() {
 		"The web view's client components"
 	stamp "$scratch/web_client.css" "$static/web_client.css" stylesheet_inputs \
 		"The web view's stylesheet"
-	mkdir -p "$client/build"
-	(cd packages/web_mermaid && gleam build --warnings-as-errors)
-	(cd "$client/mermaid" && npm ci --ignore-scripts --no-audit --no-fund)
+	(cd "$mermaid" && gleam build --warnings-as-errors)
+	(cd "$mermaid/bundle" && npm ci --ignore-scripts --no-audit --no-fund)
 
 	# Reuse the platform binary whose version and hash Lustre just verified.
 	# The system Bun must not silently choose a different renderer build.
@@ -228,12 +230,12 @@ build() {
 		fi
 	done
 	[ -n "$bun" ] || { echo "web_assets: Lustre's verified Bun is missing" >&2; return 1; }
-	"$bun" build "$client/mermaid/renderer.js" --target browser --format iife \
-		--minify --outfile "$client/build/mermaid.js"
-	stamp "$client/build/mermaid.js" "$static/mermaid.js" mermaid_inputs \
+	"$bun" build "$mermaid/bundle/renderer.js" --target browser --format iife \
+		--minify --outfile "$scratch/mermaid.js"
+	stamp "$scratch/mermaid.js" "$static/mermaid.js" mermaid_inputs \
 		"Isolated Mermaid renderer"
-	python3 "$client/mermaid/licenses.py" "$client/build/mermaid-licenses.txt"
-	stamp "$client/build/mermaid-licenses.txt" "$static/mermaid-licenses.txt" \
+	python3 "$mermaid/bundle/licenses.py" "$scratch/mermaid-licenses.txt"
+	stamp "$scratch/mermaid-licenses.txt" "$static/mermaid-licenses.txt" \
 		mermaid_inputs "Mermaid third-party notices"
 	for path in $(scripts); do
 		cp "$path" "$static/$(basename "$path")"

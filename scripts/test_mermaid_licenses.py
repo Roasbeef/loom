@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-MODULE = Path(__file__).resolve().parents[1] / "packages/web_client/mermaid/licenses.py"
+MODULE = Path(__file__).resolve().parents[1] / "packages/web_mermaid/bundle/licenses.py"
 spec = importlib.util.spec_from_file_location("mermaid_licenses", MODULE)
 licenses = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(licenses)
