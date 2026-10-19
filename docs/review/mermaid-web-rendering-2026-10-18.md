@@ -8,7 +8,7 @@ The source stays in the session page as text, and a separate opaque frame owns
 Mermaid's DOM generation. The TUI remains unchanged. These results describe the
 local implementation, not an installed release or a completed end-to-end signoff.
 
-## Verified locally
+## Initial implementation: local gates
 
 | Gate | Observed result |
 | --- | --- |
@@ -27,7 +27,7 @@ They prove the adapter's queue, request restrictions, result vocabulary and
 rejection behavior, not actual Mermaid layout or browser enforcement. The route
 tests prove response headers and asset selection, not that a browser applied them.
 
-## Independent review
+## Initial implementation: independent review
 
 One report-only adversarial pass examined the isolation contract, revision and
 lifecycle ownership, build gate and test failure modes. Every reported finding
@@ -50,7 +50,7 @@ The build also retains dependency license notices as a separately stamped
 release artifact. No test was removed or assertion weakened to address the
 local environment failures below.
 
-## Unfinished validation
+## Initial publication: unfinished validation
 
 `make check` failed before package execution in five unchanged script tests:
 four installer pruning expectations and one signoff fixture's fake Git remote
@@ -75,3 +75,48 @@ contents, browser CSP enforcement, layout, source disclosure/copy interaction,
 streaming recovery, theme changes and reconnect behavior still need the live
 browser drive. Full hosted CI and strict Linux signoff are also unverified.
 The branch must remain draft until those validation requirements are met.
+
+
+## Gleam controller follow-up
+
+Baseline: controller `22891231e`, generated assets `2c4d5a5f3`. The earlier
+adapter measurements above describe the JavaScript implementation before this
+refactor. Its policy and lifecycle cases now live in `web_mermaid`'s pure
+controller tests. The five remaining JavaScript tests cover only the minimal
+DOM/vendor binding, including promise and exception conversion. The unchanged
+parent protocol and content policies remain those accepted in protocol 091.
+
+The combined `scripts/check.sh web_client web_mermaid web_view` run passed:
+309 parent tests, five FFI checks, 19 controller tests and 1,131 view tests.
+After the final tail-recursion fix, the controller suite passed all 20 tests
+and built warning-free. Asset regeneration and the offline gate, format and
+doc-check passed again. Frame-package lint has zero errors and two R18 helper
+census warnings; session-client lint has zero errors. Metadata regressions
+passed: 35 test-scope cases, 27 affected-package cases and 23 orientation cases.
+The parent bundle is unchanged and contains no frame-program or SVG-parser
+imports. The renderer bundle is about 5.4 MB uncompressed.
+
+A fresh report-only review of the refactor reproduced a source-policy
+regression: Gleam's trim and LF-only splitting accepted NBSP/BOM-indented or
+CR-only frontmatter that the pinned vendor treats as configuration. The guard
+now uses ECMAScript codepoint whitespace and line boundaries. The old compiled
+controller fails the NBSP refusal assertion; the fixed controller covers every
+ECMAScript whitespace character, line boundary and cross-line click arguments.
+A focused re-check found that the new line scan could exhaust the JavaScript
+call stack on a source with 31,980 newlines. Its recursive call is now in tail
+position, with a near-limit regression. Independent Node assertions confirmed
+the generated loop and both fixes, with no further delta findings.
+
+A standalone component fixture served the actual compiled frame with its
+production child policy, but Chrome exited before publishing a DevTools
+endpoint. No browser DOM or CSP test executed. The offline diagnostic found
+Chrome installed and no active browser daemons. The named browser session was
+explicitly closed, and the temporary fixture server was stopped and observed
+terminal. No sandbox-disabling launch was attempted.
+
+Hosted CI run [39197514303](https://github.com/Roasbeef/loom/actions/runs/39197514303)
+is green for the previously published `746cb0bfb`, including both platform
+gates. That corrects the initial publication's unverified hosted-CI status,
+but does not validate the controller-refactor head. Hosted checks for the new
+head, strict Linux signoff and the real daemon/browser drive remain required
+before the draft becomes ready.
