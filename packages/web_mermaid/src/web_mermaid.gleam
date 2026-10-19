@@ -127,6 +127,15 @@ fn begin(
       controller.configuration(request.theme),
     ))
     use host <- result.try(diagram_host())
+
+    // A frame whose colour scheme differs from its iframe element's gets an
+    // opaque canvas backdrop, which painted dark diagrams on white. The
+    // request's theme is the page's effective one, so match it here.
+    ffi_dom.set_style(
+      ffi_dom.document_element(),
+      "color-scheme",
+      controller.color_scheme(request.theme),
+    )
     ffi_dom.clear(host)
     ffi_dom.render(
       vendor,

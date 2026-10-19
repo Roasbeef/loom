@@ -148,10 +148,32 @@ pub fn malformed_request_fields_and_unsafe_revisions_never_reach_the_vendor_test
 }
 
 pub fn configuration_pins_every_security_and_layout_option_test() {
-  let expected = #(False, "strict", True, 32_000, 250, False, "dark", False)
+  let expected = #(
+    False,
+    "strict",
+    True,
+    32_000,
+    250,
+    False,
+    "dark",
+    "dagre",
+    False,
+  )
   assert json.parse(c.configuration(c.Dark), config_decoder()) == Ok(expected)
   assert json.parse(c.configuration(c.Light), config_decoder())
-    == Ok(#(False, "strict", True, 32_000, 250, False, "default", False))
+    == Ok(#(
+      False,
+      "strict",
+      True,
+      32_000,
+      250,
+      False,
+      "default",
+      "dagre",
+      False,
+    ))
+  assert c.color_scheme(c.Dark) == "dark"
+  assert c.color_scheme(c.Light) == "light"
   assert c.reply_json(c.Ready) == "{\"kind\":\"ready\"}"
   assert c.reply_json(c.FailedReply(3))
     == "{\"kind\":\"failed\",\"revision\":3}"
@@ -193,7 +215,7 @@ pub fn svg_restrictions_cover_root_descendants_and_all_reference_attributes_test
 }
 
 fn config_decoder() -> decode.Decoder(
-  #(Bool, String, Bool, Int, Int, Bool, String, Bool),
+  #(Bool, String, Bool, Int, Int, Bool, String, String, Bool),
 ) {
   use start <- decode.field("startOnLoad", decode.bool)
   use security <- decode.field("securityLevel", decode.string)
@@ -202,9 +224,20 @@ fn config_decoder() -> decode.Decoder(
   use edges <- decode.field("maxEdges", decode.int)
   use labels <- decode.field("htmlLabels", decode.bool)
   use theme <- decode.field("theme", decode.string)
+  use layout <- decode.field("layout", decode.string)
   use flow <- decode.field("flowchart", {
     use labels <- decode.field("htmlLabels", decode.bool)
     decode.success(labels)
   })
-  decode.success(#(start, security, errors, size, edges, labels, theme, flow))
+  decode.success(#(
+    start,
+    security,
+    errors,
+    size,
+    edges,
+    labels,
+    theme,
+    layout,
+    flow,
+  ))
 }

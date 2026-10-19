@@ -220,6 +220,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, List(Effect)) {
 
 /// Produces the fixed renderer configuration; source cannot influence it.
 ///
+/// The layout is pinned to dagre. Mermaid 12 otherwise lays flowcharts out
+/// with ELK, whose browserified bundle calls a CommonJS `require` that the
+/// frame's IIFE build does not define, so every flowchart failed to render.
+/// Configuration and frontmatter directives are refused, so no source can
+/// select ELK again.
+///
 /// ## Examples
 /// ```gleam
 /// assert string.contains(configuration(Light), "\"theme\":\"default\"")
@@ -237,9 +243,24 @@ pub fn configuration(theme: Theme) -> String {
     #("maxEdges", json.int(max_edges)),
     #("htmlLabels", json.bool(False)),
     #("theme", json.string(theme_name)),
+    #("layout", json.string("dagre")),
     #("flowchart", json.object([#("htmlLabels", json.bool(False))])),
   ])
   |> json.to_string
+}
+
+/// The CSS colour scheme matching a theme, so the frame's canvas agrees
+/// with the parent page's and the browser paints no opaque backdrop.
+///
+/// ## Examples
+/// ```gleam
+/// assert color_scheme(Light) == "light"
+/// ```
+pub fn color_scheme(theme: Theme) -> String {
+  case theme {
+    Dark -> "dark"
+    Light -> "light"
+  }
 }
 
 /// Encodes only fixed parent protocol response fields.
