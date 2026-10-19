@@ -12,7 +12,7 @@ import core/json
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string
 import lustre/element.{type Element}
 import page_fixture
@@ -20,6 +20,8 @@ import session_view/connection_event
 import session_view/proposals
 import web_view/component
 import web_view/operator_page
+import web_view/proposals as page_state
+import web_view/view/proposals as view_words
 
 @external(erlang, "page_events_ffi", "handlers")
 fn every_handler(view: Element(message)) -> List(String)
@@ -321,14 +323,20 @@ pub fn a_configuration_edit_draws_only_the_changed_lines_test() {
   assert string.contains(html, "model_id = &quot;v4-flash&quot;")
   assert string.contains(html, "model_id = &quot;v41-flash&quot;")
 
-  // The shared header is drawn once, as context, and never as a removed line:
+  // Within one diff, the shared header is context and never a removed line:
   // the point of the change is that only the differing line carries a sign.
-  assert list.length(string.split(html, "[models.flash]")) == 2
+  // The count is per diff, not per page, because a pending proposal is drawn
+  // in both the dock and the Session tab.
   assert string.contains(html, "diff-context")
-  let assert Ok(removed_row) =
+
+  // One removed row, bounded at the next row so the added line below it is not
+  // read as part of it.
+  let assert Ok(after_removed) =
     string.split(html, "diff-row diff-removed") |> list.last
+  let assert [removed_row, ..] = string.split(after_removed, "diff-row")
   assert string.contains(removed_row, "v4-flash")
   assert !string.contains(removed_row, "[models.flash]")
+  assert !string.contains(removed_row, "v41-flash")
 
   // The configuration reach sentence, not the rule one.
   assert string.contains(html, "Applies when a session loads loom.toml next")
@@ -636,4 +644,67 @@ pub fn pending_proposals_render_as_inline_cards_in_the_dock_above_the_composer_t
   assert string.contains(above_composer, "Approve rule…")
   assert !string.contains(above_composer, "prop-0000000002")
   assert !string.contains(above_composer, "prop-0000000001")
+}
+
+// --- the dock cards -----------------------------------------------------------
+
+// The messages the dock's buttons send, in a shape a test can inspect without
+// driving the whole page.
+fn presses() -> view_words.Presses(Nil) {
+  view_words.Presses(
+    ask: fn(_id) { Nil },
+    approve: Nil,
+    keep: Nil,
+    reject: fn(_id) { Nil },
+  )
+}
+
+// The dock is where a pending proposal actually gets decided, so its card has to
+// carry the same reading the review does: the change, its size, and what
+// approving it reaches. A stale row never reaches the dock at all.
+pub fn the_dock_cards_draw_a_pending_proposal_with_its_change_test() {
+  let assert Ok(decoded) = proposals.decode(many())
+  let cards = view_words.dock_cards(Some(decoded), page_state.new(), presses())
+  // One card: the two rows that are no longer pending are filtered out.
+  assert list.length(cards) == 1
+  let assert [only] = cards
+  let key = only.0
+  let card = only.1
+  assert key == "0"
+  let html = element.to_string(card)
+  assert string.contains(html, "proposes a rule for")
+  assert string.contains(html, "reviewer asked")
+  assert string.contains(html, "Keep commits small.")
+  // It is the first of the two pending rows, and the only one drawn.
+  assert !string.contains(html, "prop-0000000002")
+  assert !string.contains(html, "old rule")
+}
+
+// The card's key is the row's index, never anything a model wrote: a key is a
+// DOM identity, and model text reaching one would let it name another node.
+pub fn a_dock_card_key_is_a_position_and_never_model_text_test() {
+  let assert Ok(decoded) = proposals.decode(many())
+  let cards = view_words.dock_cards(Some(decoded), page_state.new(), presses())
+  let keys = list.map(cards, fn(card) { card.0 })
+  assert keys == ["0"]
+}
+
+pub fn an_empty_or_unread_board_draws_no_dock_cards_test() {
+  assert view_words.dock_cards(None, page_state.new(), presses()) == []
+  let assert Ok(decoded) = proposals.decode(board([], 0))
+  assert view_words.dock_cards(Some(decoded), page_state.new(), presses()) == []
+}
+
+// Every card offers the two-step approval and the one-press rejection, as the
+// Session tab's own buttons do.
+pub fn a_dock_card_offers_approve_behind_a_question_and_reject_at_once_test() {
+  let assert Ok(decoded) = proposals.decode(many())
+  let assert [only] =
+    view_words.dock_cards(Some(decoded), page_state.new(), presses())
+  let html = element.to_string(only.1)
+  assert string.contains(html, "Approve rule…")
+  assert string.contains(html, "Reject rule")
+  // The arming guard is markup the stylesheet reveals, so its presence is the
+  // guard being wired up rather than a claim that it is visible.
+  assert string.contains(html, "arm-note")
 }

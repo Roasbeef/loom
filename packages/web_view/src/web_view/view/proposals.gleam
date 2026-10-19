@@ -356,9 +356,13 @@ fn dock_card(
       html.b([attribute.class("approval-strand")], [html.text(row.id)]),
       html.text(" proposes a " <> board_words.kind_words(row.kind) <> " for "),
       html.span([attribute.class("proposal-ref")], [html.text(row.target)]),
+      html.text(" · " <> board_words.change_counts(row)),
     ]),
     html.p([attribute.class("approval-question")], [html.text(row.rationale)]),
     diff.view(board_words.diff_lines(row), 0),
+    html.p([attribute.class("session-quiet")], [
+      html.text(board_words.reach_words(row)),
+    ]),
     dock_ending(row, state, presses),
   ])
 }
