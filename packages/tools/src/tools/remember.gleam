@@ -279,13 +279,13 @@ fn decoded_note(args: JsonValue) -> Result(Note, String) {
   use name <- result.try(tool.required_string(args, "kind"))
   use kind <- result.try(
     kind_named(name)
-    |> result.replace_error(
+    |> result.map_error(fn(_) {
       "`kind` must be one of "
       <> string.join(list.map(kinds, kind_name), ", ")
       <> ", not `"
       <> name
-      <> "`",
-    ),
+      <> "`"
+    }),
   )
   use text <- result.map(tool.required_string(args, "note"))
   Note(kind:, title:, description:, text:)

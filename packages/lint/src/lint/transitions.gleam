@@ -62,9 +62,19 @@ pub fn findings(
   policy: Policy,
   own_path: String,
 ) -> List(Raw) {
+  findings_with_doc(module, module_doc.lines(code), lines, policy, own_path)
+}
+
+/// `findings`, taking the already-lexed module doc lines.
+pub fn findings_with_doc(
+  module: glance.Module,
+  doc: List(DocLine),
+  lines: Lines,
+  policy: Policy,
+  own_path: String,
+) -> List(Raw) {
   let _ = #(lines, policy)
-  code
-  |> module_doc.lines
+  doc
   |> markers
   |> list.flat_map(check_marker(module, own_path, _))
 }

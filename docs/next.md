@@ -4,6 +4,61 @@ This file records the verified state and next steps for this checkout. Rewrite
 it after a body of work; retain historical measurements in their evidence
 documents rather than carrying old validation forward.
 
+## Architecture review & four-wave stack — October 18
+
+A four-wave stacked PR chain on `main` (`arch/wave-1-robustness-and-hotspots` ->
+`arch/wave-2-linter-and-rules` -> `arch/wave-3-simplification-and-perf` ->
+`arch/wave-4-weft-and-statem`) resolves the architecture review findings across
+all five axes:
+
+- **Wave 1 (Robustness & recall edges).** `tools/fs.exempting_blob_root` and
+  `refuse_protected_except` now carve out `blob_root` when it sits under a
+  masked parent directory (`<state_root>/workspaces`), so `fs_read`,
+  `cap/fs.read`, `cap/search.read_lines` and `cap/search.stat` can read spilled
+  tool blobs under the daemon while keeping sibling workspaces, domain databases,
+  and all write paths masked. `packages/sandbox` includes `/Applications/Xcode.app/Contents/Developer/usr`
+  in `DarwinSystemRoots` so macOS minimal Seatbelt profiles (`gleam lsp` /
+  `gleam deps download`) can execute `xcrun`-resolved Git. In `packages/client`,
+  `BusHint(RemoteChildrenChanged)` now reads stubs in a 5 s `weft` run off the
+  gateway actor's turn, `shared_history` gives `Begin` `timeout_ms + 2000` ms to
+  outlast SQLite's `busy_timeout`, `manager.source_limit` reserves one slot
+  (511) for `loom-memory.db`, `serve` wires session logger context into
+  `history.seam_with_logger` / `seam_for_with_logger`, and `ui_socket.reaches`
+  gates `component.proposals_path` at the operator socket layer.
+- **Wave 2 (Linter promotion & FFI confinement).** All 87 `let assert` sites in
+  `conformance/storage_suite.gleam` now carry `as` invariant messages and all
+  78 `R1` (`eager-fallback`) findings across 11 packages are replaced with lazy
+  equivalents. `R1` (`EagerFallback`) and `R7` (`AssertWithoutMessage`) are
+  promoted to `finding.error_by_default()`. `R6` (`lint/portable.externals_at`)
+  now enforces `internal/ffi_*.gleam` confinement across non-portable packages;
+  `R1` recognizes shorthand fields in `branch_of`; `R12` inspects callbacks
+  passed to retaining process/actor/state-machine builders; `module_doc` tracks
+  code fences and is lexed once per file in `lint.check_with`.
+- **Wave 3 (Closure retention, JSON field accessors & `erlc` compile time).**
+  Long-lived closures in `serve`, `executor_plane`, `ui_socket`, `daemon/main`,
+  `daemon/manager`, `codemode` and `tui/render` project narrow fields instead of
+  retaining full `Settings`, `Attachment`, `Machine`, `Census` or `Model`
+  records (reducing `client` `R12` findings from 77 to 54). `core/json_wire`
+  exposes direct non-closure JSON field accessors (`field`, `bounded_text`,
+  `text_at`, `optional_text_at`, `count_at`, `optional_count_at`) shared by
+  `tui/deployment_view` and `web_view/machines`. Replacing all 27 inline
+  `Shared(..)` wide-record updates in `web_view/component.gleam` with
+  `session_view/shared_set` cuts `web_view@component` `erlc` CPU from 2,802 ms
+  to 1,309 ms (-53.3%).
+- **Wave 4 (Weft state machine ports & `statem` / `statem_parallel` expansion).**
+  `codemode/satellite.RunHost` is ported from `gleam/otp/actor` + raw
+  `process.send_after` to `weft/state_machine` (`AwaitingConnection |
+  ConnectedPhase` with `sm.with_state_timeout`). `btw` and `ui_relay` start
+  unlinked (`sm.unlinked` / `actor.unlinked` + `actor.continuing`), `jobs` and
+  `codex/network` match all seven `weft.Outcome` variants explicitly, and
+  `ledger_service.ask`, `async_runs.ask`, `btw.query`, `advisor.ask`,
+  `escalate.ask`, `history.ask` and `scratch.ask` route through monitored
+  `broker/internal/call.try_call`. `statem.Config` gains `with_min_commands`
+  (restoring the 20..80 schedule floor in `session_channel_property_test`),
+  `client/scratch` gains `statem` and `statem_parallel` linearizability specs,
+  and redundant example tests in `tail_test`, `blocksummarybook_test`,
+  `glancepace_test`, `scratch_test` and `machine/property_test` are consolidated.
+
 Baselined October 18, 2026 against source head
 `2a99a8b448c3b79fc4ebe6b5a744a5a465fd5dc6` on
 `perf/daemon-resource-cost`, from `928d0ae50dfe70277512a4c05116626c7c28d942`.

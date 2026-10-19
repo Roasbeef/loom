@@ -1683,10 +1683,17 @@ pub fn hash(term: String) -> Int
   |> should.be_true
 }
 
-/// Elsewhere `@external` is confined, not forbidden; R6 has nothing to say.
+/// Elsewhere `@external` is confined to `internal/ffi_*.gleam` (gleam-style
+/// Part IV §4): an `@external` in an ordinary module is flagged, while one in
+/// `internal/ffi_*.gleam` is allowed.
 pub fn r6_leaves_an_external_outside_the_three_alone_test() {
-  r6_in("broker", erlang_external)
+  in_package_at("broker", "broker/internal/ffi_exec", erlang_external)
+  |> list.map(fn(found) { found.rule })
+  |> list.contains(finding.PortablePurity)
   |> should.be_false
+
+  r6_in("broker", erlang_external)
+  |> should.be_true
 }
 
 /// The `@external` half is lexed rather than parsed, so a file `glance`
@@ -1833,9 +1840,11 @@ pub fn r6_names_what_it_protects_test() {
 pub fn the_gating_rules_are_pinned_test() {
   should.equal(finding.error_by_default(), [
     finding.Unparseable,
+    finding.EagerFallback,
     finding.NestingDepth,
     finding.PanicInSource,
     finding.PortablePurity,
+    finding.AssertWithoutMessage,
     finding.CommentStanza,
     finding.FlowSpine,
     finding.TransitionTable,
@@ -2047,12 +2056,12 @@ pub fn an_unpromoted_rule_still_only_warns_test() {
 /// Neither new rule may touch the exit code. R7's census is eighty-four, in
 /// the one tree R4 exempts, so it has never once been at zero; R8 reports a
 /// shape rather than a defect and can never be promoted at all.
-pub fn the_new_rules_only_warn_test() {
+pub fn r7_gates_unnamed_assert_in_harness_and_r8_warns_test() {
   gate_of(
     "packages/conformance/src/conformance/runner.gleam",
     module("fn f(value) { let assert Ok(inner) = value inner }"),
   )
-  |> should.equal(#(0, 1))
+  |> should.equal(#(1, 0))
 
   gate_of(
     "packages/core/src/core/wide.gleam",

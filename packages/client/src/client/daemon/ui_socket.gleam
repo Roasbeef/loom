@@ -475,6 +475,7 @@ fn reaches(reach: Reach, path: String) -> Bool {
       !beneath(path, component.invite_path)
       && !beneath(path, component.rename_path)
       && !beneath(path, component.peers_path)
+      && !beneath(path, component.proposals_path)
   }
 }
 
@@ -524,15 +525,11 @@ pub fn upgrade(
         result.replace(open(), Nil)
       }),
       ceiling:,
-      failed_reader: fn() {
-        let _ =
-          manager.stop_if_incarnation(
-            attachment.registry,
-            attachment.session_id,
-            attachment.incarnation,
-          )
-        Nil
-      },
+      failed_reader: stop_reader_for(
+        attachment.registry,
+        attachment.session_id,
+        attachment.incarnation,
+      ),
     )
   let expected =
     snapshot.Expected(
@@ -753,6 +750,17 @@ fn websocket(
     mist.Bytes(_) | mist.Chunked | mist.File(..) | mist.ServerSentEvents -> Nil
   }
   response
+}
+
+fn stop_reader_for(
+  registry: manager.Manager(instance),
+  session_id: String,
+  incarnation: String,
+) -> fn() -> Nil {
+  fn() {
+    let _ = manager.stop_if_incarnation(registry, session_id, incarnation)
+    Nil
+  }
 }
 
 /// Upgrades one checked home request to the home component's socket
@@ -982,6 +990,7 @@ pub fn upgrade_home(
   // The page's own sign-ins. Every home reads and ends its principal's logins,
   // whatever its ceiling, since they are the principal's own. Only a fresh home
   // is handed the capability to make a device link.
+  let epoch = attachment.epoch
   let signing =
     Signing(
       read: fn() { signins_read(standing, open) },
@@ -989,16 +998,14 @@ pub fn upgrade_home(
       bookmark: option.map(seen.login, fn(issuer) {
         seen.address <> page.login_home_path(issuer.key)
       }),
-      out: fn(fingerprint) {
-        sign_out_for(standing, attachment.epoch, open, fingerprint)
-      },
-      all: fn() { sign_out_all_for(standing, attachment.epoch, open) },
+      out: fn(fingerprint) { sign_out_for(standing, epoch, open, fingerprint) },
+      all: fn() { sign_out_all_for(standing, epoch, open) },
       device: device_capability(seen.grant.origin, fn() {
         device_link_for(standing, tickets, open, seen.address)
       }),
       who: fn() { name_read(standing, open) },
       rename_self: home_rename_self_capability(ceiling, fn(name, deliver) {
-        rename_self_task(standing, open, attachment.epoch, name, deliver)
+        rename_self_task(standing, open, epoch, name, deliver)
       }),
     )
   websocket(request, limit, settled, fn(signals) {
@@ -1387,9 +1394,7 @@ fn admit_home(
       open: opening,
       resume: resuming,
       now: bootstrap.system_time_ms,
-      activity: fn(ids, deliver) {
-        activity_task(attachment.activity, ids, deliver)
-      },
+      activity: home_activity(attachment.activity),
       rename:,
       manage: managing,
       create: creating,
@@ -1400,14 +1405,14 @@ fn admit_home(
       placements: placing,
       folders:,
       elsewhere:,
-      signins: fn(deliver) { read_task(deliver, signing.read) },
+      signins: read_task_for(signing.read),
       login: signing.login,
       bookmark: signing.bookmark,
       sign_out: signing.out,
       sign_out_all: signing.all,
       device: signing.device,
       admin: administering,
-      who: fn(deliver) { read_task(deliver, signing.who) },
+      who: read_task_for(signing.who),
       rename_self: signing.rename_self,
     )
   let started = case transferred {
@@ -1619,9 +1624,7 @@ fn admit(
       sessions: fn(deliver) {
         listed_task(role, fn() { listed(attachment) }, deliver)
       },
-      activity: fn(ids, deliver) {
-        activity_for(role, attachment.activity, ids, deliver)
-      },
+      activity: session_activity_for(role, attachment.activity),
       open: fn(target) {
         opened_for(role, fn() { ticket_for(standing, tickets, open, target) })
       },
@@ -1664,37 +1667,41 @@ fn admit(
   // The start takes its standing as an argument because reading it can wait on
   // the registry for seconds, which only a page whose permit transferred should
   // pay.
+  let session_id = attachment.session_id
+  let registration = attachment.registration
+  let models_fn = attachment.models
+  let profiles_fn = attachment.profiles
   let start = fn(standing) {
     component.Start(
-      session_id: attachment.session_id,
+      session_id:,
       // The route read the registration when it resolved the session,
       // so the heading's name and workspace cost no second lookup.
       label: Some(component.Label(
-        name: attachment.registration.name,
-        workspace: attachment.registration.workspace,
+        name: registration.name,
+        workspace: registration.workspace,
         // Where the session runs is the owner's configuration, so only the
         // owner's page says it. A member or an observer is told the workspace
         // and nothing about the machines behind it.
         executor: case role {
-          Owning -> attachment.registration.executor
+          Owning -> registration.executor
           Observing | Operating -> ""
         },
         pool: case role {
-          Owning -> attachment.registration.pool
+          Owning -> registration.pool
           Observing | Operating -> ""
         },
       )),
       // The digest, not the path, is what the page's storage is keyed by.
-      workspace_digest: digest(attachment.registration.workspace),
+      workspace_digest: digest(registration.workspace),
       expected:,
       standing:,
       completion_models: case role {
         Observing -> []
-        Operating | Owning -> attachment.models()
+        Operating | Owning -> models_fn()
       },
       completion_profiles: case role {
         Observing -> []
-        Operating | Owning -> attachment.profiles()
+        Operating | Owning -> profiles_fn()
       },
       transport:,
     )
@@ -3608,7 +3615,8 @@ fn invitation(
     invites.Observer -> access.Observer
     invites.Operator -> access.Operator
   }
-  let name = option.unwrap(named, "Guest " <> string.drop_start(id, 6))
+  let name =
+    option.lazy_unwrap(named, fn() { "Guest " <> string.drop_start(id, 6) })
   use principal <- result.map(
     manager.administer(
       registry,
@@ -4861,19 +4869,15 @@ fn admit_admin(
           process.send(signals, Ended(reason))
         })
       },
-      act: fn(action, deliver) {
-        admin_task(
-          standing,
-          tickets,
-          open,
-          epoch,
-          attachment.state_root,
-          address,
-          attachment.abandon,
-          action,
-          deliver,
-        )
-      },
+      act: admin_act_for(
+        standing,
+        tickets,
+        open,
+        epoch,
+        attachment.state_root,
+        address,
+        attachment.abandon,
+      ),
       now: bootstrap.system_time_ms,
       login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
       ends_at:,
@@ -6177,6 +6181,34 @@ fn launch(
 // The same check a terminal socket makes, with the digest of the credential
 // that minted the page's ticket, so revoking that credential or the
 // membership stops the page's pushes and closes it.
+fn home_activity(activity) {
+  fn(ids, deliver) { activity_task(activity, ids, deliver) }
+}
+
+fn read_task_for(read) {
+  fn(deliver) { read_task(deliver, read) }
+}
+
+fn session_activity_for(role, activity) {
+  fn(ids, deliver) { activity_for(role, activity, ids, deliver) }
+}
+
+fn admin_act_for(standing, tickets, open, epoch, state_root, address, abandon) {
+  fn(action, deliver) {
+    admin_task(
+      standing,
+      tickets,
+      open,
+      epoch,
+      state_root,
+      address,
+      abandon,
+      action,
+      deliver,
+    )
+  }
+}
+
 fn authorize(attachment: server.Attachment(instance)) {
   manager.frame_authority(
     attachment.registry,
@@ -6185,5 +6217,5 @@ fn authorize(attachment: server.Attachment(instance)) {
     incarnation: attachment.incarnation,
     digest: attachment.digest,
   )
-  |> result.replace_error(ending.reason(ending.AccessRevoked))
+  |> result.map_error(fn(_) { ending.reason(ending.AccessRevoked) })
 }

@@ -1387,15 +1387,21 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
   let scroll = inspector.scroll
   case inspector.detail {
     agents.Overview -> None
-    agents.Messages ->
+    agents.Messages -> {
+      let messages = model.shared.agent_messages
       Some(fn(area: Rect) {
-        agent_message_content(model, selected, message, scroll, area).lines
+        messages
+        |> agent_messages.for_strand(selected)
+        |> agent_message_panel.render(message, scroll, area)
+        |> fn(rendered) { rendered.lines }
       })
+    }
     agents.Notes ->
       Some(fn(area: Rect) { notes_content(model, area, selected).lines })
-    agents.Collaboration ->
+    agents.Collaboration -> {
+      let captured = model.shared.captured
       Some(fn(area: Rect) {
-        case model.shared.captured {
+        case captured {
           Some(#(cut, view)) ->
             collaboration_view.lines(
               view,
@@ -1406,19 +1412,8 @@ fn agent_detail_content(model: Model, inspector: agents.Inspector) {
           None -> [span.line_plain("Collaboration capture unavailable")]
         }
       })
+    }
   }
-}
-
-fn agent_message_content(
-  model: Model,
-  selected: String,
-  message: Option(String),
-  scroll: Int,
-  area: Rect,
-) -> span.Text {
-  model.shared.agent_messages
-  |> agent_messages.for_strand(selected)
-  |> agent_message_panel.render(message, scroll, area)
 }
 
 fn notes_content(model: Model, area: Rect, target: String) -> span.Text {

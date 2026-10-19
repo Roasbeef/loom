@@ -3141,7 +3141,8 @@ pub fn workspace_seam_with_access(
   // one reading of where `schedule.*` is answered, whichever way it is
   // reached: the extension bridge has no seam of its own and asks for the
   // workspace seam's.
-  let arms = owner_arms(config, vet_policy.WorkspaceSeam)
+  let schedules = owner_arms(config, vet_policy.WorkspaceSeam).schedules
+  let writable = access.writable
   let protected = session_base.protected
   let reads =
     fs.exempting_blob_root(
@@ -3154,10 +3155,10 @@ pub fn workspace_seam_with_access(
     },
     fs_list: fn(path) { list_in(filesystem, root, reads, path) },
     fs_write: fn(path, contents) {
-      write_in(filesystem, root, access.writable, protected, path, contents)
+      write_in(filesystem, root, writable, protected, path, contents)
     },
     fs_edit: fn(path, edits) {
-      edit_in(filesystem, root, access.writable, protected, path, edits)
+      edit_in(filesystem, root, writable, protected, path, edits)
     },
     kv_get: config.scratch.get,
     kv_set: config.scratch.set,
@@ -3169,11 +3170,11 @@ pub fn workspace_seam_with_access(
     // program reaches its own strand and strands it spawned, and
     // nothing else.
     schedule_create: fn(request) {
-      schedule_create_in(arms.schedules, request, on: request_strand)
+      schedule_create_in(schedules, request, on: request_strand)
     },
-    schedule_list: fn() { schedule_list_in(arms.schedules, request_strand) },
+    schedule_list: fn() { schedule_list_in(schedules, request_strand) },
     schedule_cancel: fn(name, target) {
-      schedule_cancel_in(arms.schedules, name, target, on: request_strand)
+      schedule_cancel_in(schedules, name, target, on: request_strand)
     },
     // Bound to the same strand and to the caller's real operation, and
     // to nothing a program can write: ownership of a job is the strand,

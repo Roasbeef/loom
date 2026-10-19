@@ -65,7 +65,7 @@ fn owned(name: String) -> Result(String, String) {
 fn read(name: String, path: Result(String, Nil)) -> Result(String, String) {
   path
   |> result.try(fn(path) { simplifile.read(path) |> result.replace_error(Nil) })
-  |> result.replace_error("web view asset " <> name <> " is unreadable")
+  |> result.map_error(fn(_) { "web view asset " <> name <> " is unreadable" })
 }
 
 /// One asset's content type and body.

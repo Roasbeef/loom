@@ -5,7 +5,9 @@ import core/json.{type JsonValue}
 import core/msgpack.{type MsgPackValue}
 import gleam/dict
 import gleam/list
+import gleam/option.{type Option}
 import gleam/result
+import gleam/string
 
 /// One JsonValue as the msgpack value the wire carries.
 ///
@@ -95,4 +97,120 @@ fn unique_keys(
     }
   })
   |> result.replace(Nil)
+}
+
+// --- direct JSON object field accessors ------------------------------------
+
+/// Looks up one member of a JSON object by `key`.
+///
+/// Direct value-taking function (no closure wrapper), so callers do not
+/// construct higher-order decoder closures.
+///
+/// ## Examples
+///
+/// ```gleam
+/// json_wire.field(json.Object([#("a", json.Int(1))]), "a") == Ok(json.Int(1))
+/// ```
+pub fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
+  case value {
+    json.Object(members) ->
+      list.key_find(members, key)
+      |> result.map_error(fn(_) { "missing " <> key })
+    json.Array(_)
+    | json.String(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error("expected an object")
+  }
+}
+
+/// Decodes a non-empty UTF-8 string of at most `limit` bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// json_wire.bounded_text(json.String("ok"), 16) == Ok("ok")
+/// ```
+pub fn bounded_text(value: JsonValue, limit: Int) -> Result(String, String) {
+  case value {
+    json.String(word) ->
+      case word != "" && string.byte_size(word) <= limit {
+        True -> Ok(word)
+        False -> Error("expected nonempty bounded text")
+      }
+    json.Object(_)
+    | json.Array(_)
+    | json.Int(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error("expected text")
+  }
+}
+
+/// Reads a required non-empty string field of at most `limit` bytes from an
+/// object.
+///
+/// ## Examples
+///
+/// ```gleam
+/// json_wire.text_at(json.Object([#("k", json.String("v"))]), "k", 16) == Ok("v")
+/// ```
+pub fn text_at(
+  value: JsonValue,
+  key: String,
+  limit: Int,
+) -> Result(String, String) {
+  use found <- result.try(field(value, key))
+  bounded_text(found, limit)
+  |> result.map_error(fn(reason) { key <> ": " <> reason })
+}
+
+/// Reads an optional non-empty string field of at most `limit` bytes from an
+/// object, returning `None` when absent, null, or malformed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// json_wire.optional_text_at(json.Object([]), "k", 16) == option.None
+/// ```
+pub fn optional_text_at(
+  value: JsonValue,
+  key: String,
+  limit: Int,
+) -> Option(String) {
+  text_at(value, key, limit) |> option.from_result
+}
+
+/// Reads a required non-negative integer field from an object.
+///
+/// ## Examples
+///
+/// ```gleam
+/// json_wire.count_at(json.Object([#("n", json.Int(3))]), "n") == Ok(3)
+/// ```
+pub fn count_at(value: JsonValue, key: String) -> Result(Int, String) {
+  use found <- result.try(field(value, key))
+  case found {
+    json.Int(count) if count >= 0 -> Ok(count)
+    json.Int(_)
+    | json.Object(_)
+    | json.Array(_)
+    | json.String(_)
+    | json.Float(_)
+    | json.Bool(_)
+    | json.Null -> Error(key <> " is not a count")
+  }
+}
+
+/// Reads an optional non-negative integer field from an object, returning
+/// `None` when absent, null, or malformed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// json_wire.optional_count_at(json.Object([]), "n") == option.None
+/// ```
+pub fn optional_count_at(value: JsonValue, key: String) -> Option(Int) {
+  count_at(value, key) |> option.from_result
 }

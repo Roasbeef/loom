@@ -92,25 +92,65 @@ import lint/finding
 import lint/policy.{type BeamOnly}
 import lint/scan.{type Raw, Raw}
 
-/// Every `@external` in a portable package's source, given the offsets
-/// `source.external_offsets` lexed out of it. Nothing for any other
-/// package: elsewhere `@external` is confined rather than forbidden, and
-/// that confinement is a CI grep rather than a rule here.
+/// Every `@external` in a portable package's source, or outside
+/// `*/internal/ffi_*.gleam` in any other package, given the offsets
+/// `source.external_offsets` lexed out of it.
 pub fn externals(package: Option(String), offsets: List(Int)) -> List(Raw) {
-  use name <- for_portable(package)
-  list.map(offsets, fn(offset) {
-    Raw(
-      rule: finding.PortablePurity,
-      offset:,
-      function: "",
-      detail: "`@external` in a package that may hold none. "
-        <> protects(name)
-        <> ". Any target closes both: an Erlang external ends the "
-        <> "portability, a JavaScript one breaks the BEAM build instead, "
-        <> "and a matched pair still puts trusted-unchecked foreign code "
-        <> "where the purity claim is",
-    )
-  })
+  externals_at(package, "", offsets)
+}
+
+/// `externals`, with the module path so non-portable packages also check that
+/// every `@external` lives inside an `internal/ffi_*.gleam` module (gleam-style
+/// Part IV §4).
+pub fn externals_at(
+  package: Option(String),
+  module_path: String,
+  offsets: List(Int),
+) -> List(Raw) {
+  case package {
+    None -> []
+    Some(name) ->
+      case list.contains(policy.portable_packages(), name) {
+        True ->
+          list.map(offsets, fn(offset) {
+            Raw(
+              rule: finding.PortablePurity,
+              offset:,
+              function: "",
+              detail: "`@external` in a package that may hold none. "
+                <> protects(name)
+                <> ". Any target closes both: an Erlang external ends the "
+                <> "portability, a JavaScript one breaks the BEAM build instead, "
+                <> "and a matched pair still puts trusted-unchecked foreign code "
+                <> "where the purity claim is",
+            )
+          })
+        False ->
+          case is_confined_ffi_module(module_path) {
+            True -> []
+            False ->
+              list.map(offsets, fn(offset) {
+                Raw(
+                  rule: finding.PortablePurity,
+                  offset:,
+                  function: "",
+                  detail: "`@external` outside `internal/ffi_*.gleam` (in `"
+                    <> module_path
+                    <> "`). Foreign bindings are confined to `internal/ffi_*.gleam` "
+                    <> "modules (gleam-style Part IV §4)",
+                )
+              })
+          }
+      }
+  }
+}
+
+fn is_confined_ffi_module(module_path: String) -> Bool {
+  module_path == ""
+  || module_path == "host/bootstrap"
+  || module_path == "tui/internal/workspace_file"
+  || string.starts_with(module_path, "internal/ffi_")
+  || string.contains(module_path, "/internal/ffi_")
 }
 
 /// Every BEAM-only import in a portable package's parsed module.

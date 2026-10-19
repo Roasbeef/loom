@@ -320,11 +320,13 @@ pub fn mutation_refusal(
   command: command.Session,
 ) -> Option(String) {
   let mutates = mutating_submission(shared, command)
-  use <- bool.guard(
+  use <- bool.lazy_guard(
     mutates
       && shared.captured != None
       && !session_model.is_known_strand(shared.strands, shared.active_strand),
-    Some("recipient unavailable; draft retained for " <> shared.active_strand),
+    fn() {
+      Some("recipient unavailable; draft retained for " <> shared.active_strand)
+    },
   )
   case mutates, shared.peer, shared.channel {
     False, _, _ -> None

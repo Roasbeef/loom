@@ -114,10 +114,9 @@ fn parse_more(arguments, options: Options) {
     ["--version", tag, ..rest] -> select(rest, options, Tag(tag))
     ["--commit", commit, ..rest] -> select(rest, options, Commit(commit))
     [value, ..rest] -> {
-      use <- bool.guard(
-        string.starts_with(value, "-"),
-        Error("unknown or incomplete update option: " <> value),
-      )
+      use <- bool.lazy_guard(string.starts_with(value, "-"), fn() {
+        Error("unknown or incomplete update option: " <> value)
+      })
       let selection = case valid_commit(value) {
         True -> Commit(value)
         False -> Tag(value)

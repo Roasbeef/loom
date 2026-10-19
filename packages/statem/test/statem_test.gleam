@@ -384,6 +384,7 @@ pub fn config_builders_clamp_negative_values_test() {
     == Config(
       test_count: 0,
       seed: 1,
+      min_commands: 0,
       max_commands: 0,
       max_shrinks: 0,
       shrink_retries: 1,

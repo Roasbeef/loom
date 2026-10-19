@@ -117,9 +117,9 @@ pub fn verify(
 ) -> Result(Nil, String) {
   use present <- result.try(
     simplifile.read(root <> "/gleam.toml")
-    |> result.replace_error(
-      "no seed at " <> root <> "; run `make codemode-seed`",
-    ),
+    |> result.map_error(fn(_) {
+      "no seed at " <> root <> "; run `make codemode-seed`"
+    }),
   )
   use _ <- result.try(case present == compile.project_toml(dependencies) {
     True -> Ok(Nil)

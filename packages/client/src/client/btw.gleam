@@ -802,6 +802,7 @@ fn generate(
       ),
     )
     |> sm.on_event(collect)
+    |> sm.unlinked
     |> sm.start
   use started <- result.try(
     collector

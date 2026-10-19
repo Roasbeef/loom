@@ -554,9 +554,9 @@ fn boot_strands(
       False -> registry.Primary
     }
     ensure_strand_running(registry_name, factory_name, strand_name)
-    |> result.replace_error(
-      "the strand booter could not start strand " <> strand_name,
-    )
+    |> result.map_error(fn(_) {
+      "the strand booter could not start strand " <> strand_name
+    })
   })
 }
 

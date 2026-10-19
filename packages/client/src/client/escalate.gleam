@@ -142,6 +142,7 @@
 //// and a crash all end in the in-band refusal.
 
 import broker/escalation.{type Denial}
+import broker/internal/call
 import broker/policy.{type Grant}
 import client/grants
 import client/internal/session_owner
@@ -894,18 +895,6 @@ fn ask(
   waiting timeout: Int,
   sending make_request: fn(Subject(reply)) -> message,
 ) -> Result(reply, Nil) {
-  use owner <- result.try(process.subject_owner(subject))
-  let monitor = process.monitor(owner)
-  let reply_to = process.new_subject()
-
-  // The monitor and request must name the same incarnation. A named send would
-  // perform a second lookup and could either panic or reach a replacement.
-  process.send(subject, make_request(reply_to))
-  let answer =
-    process.new_selector()
-    |> process.select_map(reply_to, Ok)
-    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive(within: timeout)
-  process.demonitor_process(monitor)
-  result.flatten(answer)
+  call.try_call(subject, waiting: timeout, sending: make_request)
+  |> result.replace_error(Nil)
 }

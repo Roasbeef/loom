@@ -103,8 +103,9 @@ pub fn fetch_with(
     | [weft.Abandoned(_)]
     | [weft.NeverStarted(_)]
     | [weft.DrainProofLost(_, _)]
-    | [weft.CancellationUnconfirmed(_)] -> Error("request_transport_failed")
-    _ -> Error("request_transport_failed")
+    | [weft.CancellationUnconfirmed(_)]
+    | []
+    | [_, _, ..] -> Error("request_transport_failed")
   }
 }
 

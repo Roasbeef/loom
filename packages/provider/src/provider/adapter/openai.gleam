@@ -589,9 +589,9 @@ fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
     Ok(error) ->
       HttpError(
         status:,
-        api_error_type: result.unwrap(
+        api_error_type: result.lazy_unwrap(
           wire.string_field(error, "type"),
-          or: wire.string_field_or(error, "code", or: ""),
+          or: fn() { wire.string_field_or(error, "code", or: "") },
         ),
         message: wire.string_field_or(error, "message", or: ""),
         retry_after_ms: acc.retry_after_ms,

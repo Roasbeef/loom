@@ -349,9 +349,9 @@ pub fn patches(state: State) -> List(PatchRow) {
   case state.board {
     None -> []
     Some(board) -> {
-      use <- bool.guard(
+      use <- bool.lazy_guard(
         state.selected == list.length(board.files) + 1,
-        committed_rows(board.committed),
+        fn() { committed_rows(board.committed) },
       )
       let files = case state.selected {
         0 -> board.files
@@ -425,10 +425,9 @@ fn number(fields, name) {
 fn retained_selection(state: State, board: Board) -> Int {
   case state.board, state.selected {
     Some(previous), index if index > 0 -> {
-      use <- bool.guard(
-        index == list.length(previous.files) + 1,
-        list.length(board.files) + 1,
-      )
+      use <- bool.lazy_guard(index == list.length(previous.files) + 1, fn() {
+        list.length(board.files) + 1
+      })
       let selected = previous.files |> list.drop(index - 1) |> list.first
       case selected {
         Ok(file) ->
