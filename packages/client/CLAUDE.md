@@ -9191,3 +9191,16 @@ mutations (admitting a second slot over a building one, dropping the token
 comparison) fail every run. Three branches race; the census test fails if
 generation stops pairing an `Open`, a `Stop` and a stale request across
 branches.
+
+## Isolated Mermaid assets (protocol-change/091)
+
+The fixed `ui_http.Asset` table includes the Mermaid frame document and its
+bundled classic script. `ui_assets.load` reads them once at startup like the
+other assets. The HTML response uses its separate renderer content policy
+after ordinary security headers have been applied; appending that policy to
+the session page policy would leave `frame-ancestors 'none'` active and block
+the frame. Only the fixed renderer document route receives this exception.
+The HTTP sandbox is also effective on a direct visit. No session input enters
+these routes, and source travels between the parent and its opaque child only
+as revisioned JSON string messages. See
+[protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md).

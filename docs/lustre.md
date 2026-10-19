@@ -1370,3 +1370,20 @@ Source at the `v5.7.1` tag:
 
 The runtime, transport, cache, path and diff modules are internal and have
 no documentation page; the links above are the only reference for them.
+
+## Mermaid renderer boundary (protocol-change/091)
+
+The session page still renders session content only as text, including a
+Mermaid fence's `pre.mermaid-source` child. `<loom-mermaid>` is Gleam over the
+same no-markup DOM binding as the other client components. Its fixed iframe
+address is not built from source text. Only that frame runs Mermaid's separate
+bundle and parses generated SVG; its HTTP sandbox denies same-origin access,
+and its separate content policy denies network resources and forms. No SVG or
+vendor diagnostic is sent back to the session page.
+
+This is not permission to add HTML-writing calls to `internal/dom.mjs`, import
+Mermaid into the session bundle, or weaken its `script-src`/`style-src`. The
+only frame replies accepted are fixed status words, revision and bounded
+height, after checking the exact frame window. See
+[protocol-change/091](../protocol-change/091-isolated-mermaid-diagrams.md) for
+the full contract and `scripts/web_mermaid_check.sh` for the live browser drive.

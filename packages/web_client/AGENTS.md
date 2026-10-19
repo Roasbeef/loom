@@ -312,7 +312,7 @@ client components inside a server component, because 051 keeps the session
 on the BEAM (`docs/lustre.md`).
 
 The package targets JavaScript only (`target = "javascript"`) and depends on
-`lustre == 5.7.1`, `gleam_stdlib` and `gleam_json`. Its only JavaScript is
+`lustre == 5.7.1`, `gleam_stdlib` and `gleam_json`. Its only JavaScript under `src` is
 `src/web_client/internal/dom.mjs`, one DOM call or property read per export
 with no logic, declared in `internal/ffi_dom.gleam`; every decision the
 components make is Gleam over it (see `internal/ffi_dom` under Key Types).
@@ -534,7 +534,7 @@ time builds anything.
   from it, and acts after the paint, so the server's own handler has read the
   form first.
 - `internal/ffi_dom` and `internal/dom.mjs`: the package's only browser
-  API and its only JavaScript. Every function is one DOM call or property
+  API in the session page and its only JavaScript under `src`. Every function is one DOM call or property
   access: `host`, `as_element`, `same`, `is_connected`, `first_element_child`,
   `children`, `closest`, `query_selector`, `query_selector_all`, `dataset_get`,
   `text_content`, `scroll_top`, `set_scroll_top`, `scroll_by`,
@@ -761,3 +761,32 @@ It handles no key outside notes and cannot reach the approval dock or composer.
 state and `notes` as its existing layout-storage word. `.pane-notes` is shown
 only on that tab, which also hides pending advisor nudges. Browser storage holds
 the tab preference and never a note, query or selection.
+
+## Mermaid diagrams (protocol-change/091)
+
+`<loom-mermaid>` takes no source attribute. Its light child is the server's
+`pre.mermaid-source`, drawn as text only. `mermaid_rule.State` owns source,
+effective theme, revision and `Phase` (`Empty`, `Waiting`, `Rendering`,
+`Shown(height)`, `TooLarge`, `Unavailable`). A changed source or theme advances
+the revision before the 350 ms debounce; unchanged patches do nothing. Only
+the current render can publish a height, limited to 120 through 2000 pixels.
+A ten-second unanswered render becomes source fallback, not a retry loop.
+
+`mermaid.Resources` owns a source observer, explicit-theme observer, system
+palette listener and window message listener. Disconnect releases them and
+advances the revision, invalidating callbacks from the old connection. Bounded
+callbacks retain only a revision and dispatch, not the source. The parent
+checks frame-window identity before `mermaid_rule.reply` decodes a JSON string;
+no SVG or vendor diagnostic is accepted. Copy source is an explicit user action
+and reports clipboard refusal without hiding the selectable source.
+
+The renderer is a separate npm package in `mermaid/`, not an exception to the
+session bundle's no-markup binding. Its pinned Mermaid dependency and local
+adapter are compiled as one classic script in `web_view/priv/static/mermaid.js`.
+It runs only in `mermaid.html` under an HTTP sandbox and its own restricted
+policy. `make gen-client` rebuilds it and `make client-check` validates its
+source/lock/body digests without npm or Bun. See
+[protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md)
+for the frame contract and deliberate restrictions. The pure lifecycle tests
+are `test/mermaid_test.gleam`; `scripts/web_mermaid_check.sh` drives the real
+seeded daemon's streaming, recovery, theme and frame-identity paths.
