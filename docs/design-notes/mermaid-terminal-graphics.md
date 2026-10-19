@@ -1,9 +1,17 @@
 # Mermaid in terminal graphics
 
-**Status:** Exploration, not a work package.
-**Date:** 2026-10-18.
+**Status:** Partly implemented. The TUI draws a text subset in-process; the PNG path below remains unexplored.
+**Date:** 2026-10-18, updated with the text renderer.
 
-[Protocol-change 091](../../protocol-change/091-isolated-mermaid-diagrams.md) accepts web-first Mermaid rendering: the transcript keeps source text, and an isolated browser frame renders it. The TUI continues to show source. This note records a possible later terminal path, not an implementation plan or a change to that boundary.
+[Protocol-change 091](../../protocol-change/091-isolated-mermaid-diagrams.md) accepts web-first Mermaid rendering: the transcript keeps source text, and an isolated browser frame renders it. That boundary is unchanged for the web view.
+
+## What the TUI does now
+
+The TUI draws flowcharts (`flowchart` and `graph`, all four directions) and sequence diagrams as box-drawing text, in process, as pure Gleam (`tui/mermaid` and `tui/mermaid/*`; `tui/CLAUDE.md`, "Mermaid diagrams"). It needs no graphics probe, no converter, no isolated execution and no image cache, because the output is ordinary styled text that scrolls, wraps and replays like any other transcript row, and plain and `NO_COLOR` palettes get it unstyled. The renderer is bounded rather than isolated: source 16 KiB, 32 nodes, 48 edges, 40 cells per label line and a 64K-cell canvas, with a bounded search for edge routes. Model-influenced source never executes; it is parsed by a total reader.
+
+Anything outside that subset, such as subgraphs, styling, directives and every other diagram type, is a typed refusal, and the transcript shows the source with a line naming the reason. A diagram too wide for the pane is drawn in the transposed direction or refused. Settled rows draw the diagram; the live tail shows the fence as source until the answer settles, because a diagram is the costliest block to draw again on every delta.
+
+The sections below are the earlier exploration of drawing a rasterised diagram through the PNG path. It is still not proposed, and it would only matter for diagram types or fidelity the text subset cannot reach.
 
 ## Existing image path
 

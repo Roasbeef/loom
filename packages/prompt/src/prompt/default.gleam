@@ -37,7 +37,7 @@
 ///
 pub const source =
   "%% loom-prompt-pack 1
-%% version loom-default-16
+%% version loom-default-17
 %% # The default Loom system prompt.
 %% #
 %% # Sections whose name begins with _ are fragments: never rendered on
@@ -202,6 +202,12 @@ it; if you did not run it, say what you did instead.
 
 Say early and plainly when you are wrong, blocked, or out of your depth.
 An honest dead end is worth more than a confident detour.
+
+When a flow, a sequence of calls or a set of dependencies is easier to
+see than to read, draw it as a small ```mermaid fenced block: a
+flowchart or a sequence diagram of a dozen or so nodes, without
+subgraphs or styling. The web view and the terminal both render it, and
+the source stays readable everywhere else.
 
 %% section environment
 Workspace root: {workspace}

@@ -1297,6 +1297,8 @@ boundaries and the split's measurements under Invariants.
 - `tui/markdown` takes a code fence's token classes from
   `session_view/code_tokens`, the scanner the web view also draws, and keeps
   only the style for each class (`code_span`).
+- `tui/markdown` hands a `mermaid` fence to `tui/mermaid` (see "Mermaid
+  diagrams"); every other fence is a code block as before.
 - `tui/markdown` walks `session_view/markdown`'s closed tree, the one the
   web view also draws, and emits etui spans directly. `render_detail` is
   `render` for a tool's detail rows (`ToolDetail`): the harness's fences
@@ -3503,3 +3505,65 @@ combine with `--to`.
 `tui/memory_panel` is the read-only Alt+m overlay. `tick.watch_memory` derives
 `memory_watch` from the open overlay, so any way of leaving the overlay stops
 the reads.
+
+## Mermaid diagrams
+
+A fenced `mermaid` block in an answer is drawn as box-drawing text by
+`tui/mermaid`, which is pure: it reads a string and returns styled lines, with
+no process, file, escape sequence or FFI. It is bounded but takes up to tens of
+milliseconds at the caps, so settled rows draw diagrams and the live tail shows
+the fence as source.
+`render(source, width)` returns `Result(List(span.Line), Refusal)` and
+`reason(refusal)` is the phrase shown under the source on a refusal. The
+modules under `tui/mermaid/` are `model` (the shared types, the limits and the
+closed `Refusal`), `parse`, `layout` (layers, ordering, coordinates), `route`
+(a bounded shortest-path search per edge), `canvas` (a sparse grid of ink and
+line cells), `draw` (flowcharts) and `sequence`.
+
+- **Drawn:** `flowchart` and `graph` with TD, TB, BT, LR and RL, rectangle,
+  rounded and decision nodes (decisions use a double-lined box), the edge
+  strokes `-->`, `---`, `-.->`, `==>` and their open forms, pipe and infix
+  labels, chains and `&` groups; and `sequenceDiagram` with participants,
+  aliases, the six message operators, self-messages and `Note over`, `left of`
+  and `right of`. `%%` comment lines are skipped.
+- **Refused by name:** subgraphs, `style`, `classDef`, `class`, `click`,
+  `%%{` directives, front matter, every other diagram type, self-loop edges,
+  other node shapes, bidirectional edges, and sequence blocks such as `loop`
+  and `activate`.
+- **Limits** (each a `TooLarge` refusal naming it): source 16 KiB, 32 nodes,
+  48 edges, 40 display cells per label line, 65,536 canvas cells including the
+  router's margins. A label with a control character or a multi-codepoint
+  cluster is `Unmeasurable`. Widths use `etui/text.cell_width`.
+- **Width:** a flowchart wider than the room is drawn in the transposed
+  direction (TD/BT to LR, LR/RL to TD) and the first that fits is used;
+  otherwise `TooWide`. The drawing gets the pane width less the two cells of
+  the code gutter, so `wrap_lines` never has to split a drawn row.
+- **Routing:** each edge is one search over free cells, step 1, turn +3,
+  crossing +5. A route crosses another only perpendicular at a straight cell
+  and never runs along one, so routes cross as `┼` and never merge into a tee.
+  Ports are chosen by the search; two ports on a side are never adjacent, and
+  a node with several edges on a side is made wide (or tall in LR) enough for
+  them. The search is bounded by the canvas and a cost limit, and a failure is
+  `Unroutable`, never a loop.
+- **Cost:** a 32-node, 48-edge diagram takes under about 25 ms warm in the
+  worst shapes measured (typically 5-15 ms). One render shares a budget of
+  `model.max_route_expansions` (60,000) search states across every edge, both
+  directions and both windows; spending it is `TooLarge(RoutingWork)`. A
+  refused worst case (a 32-node chain with six back edges to its first node,
+  about 45,000 states per direction) costs about 80 ms. Each route is an A* search inside
+  a window around the two boxes (widened to the whole canvas once if that finds
+  nothing), and `draw.Drawing.expansions` counts the states expanded so
+  `mermaid_draw_test` bounds the work without timing it. Because a diagram is
+  still the costliest block, the live tail does not draw it:
+  `markdown.render_live` and `render_sanitized(_, _, ShowSource)` leave a
+  mermaid fence as a source code block, and the settled row
+  (`render.render_line`, `markdown.render`) draws it.
+- **Fallback:** on any refusal `tui/markdown.render_mermaid` shows the source
+  as an ordinary code block and one quiet row naming the reason. The parser
+  in `session_view/markdown` does not say whether a fence was closed, so a
+  fence still streaming is rendered from whatever has arrived and is drawn or
+  falls back like any other source.
+- Tests: `mermaid_parse_test`, `mermaid_draw_test` (golden pictures),
+  `mermaid_property_test` (qcheck on a fixed seed, and every directed graph on
+  three nodes in all four directions read back from the text) and
+  `mermaid_markdown_test`.

@@ -26,7 +26,8 @@
 ////    `render_sanitized` does the same job for text already known to be safe: it
 ////    parses with `tree.parse` and renders each block in order.
 //// 2. `render_block` dispatches on the block: headings and paragraphs go through
-////    `inline_lines`, code blocks through `code_spans`, quotes and alerts through
+////    `inline_lines`, code blocks through `code_spans`, a mermaid fence through
+////    `render_mermaid` (a drawn diagram, or the source and a reason), quotes and alerts through
 ////    `render_quote` and `render_alert`, lists through `render_list`, tables
 ////    through `render_table`.
 //// 3. `inline_lines` turns inline nodes into styled parts (`inline_parts`) and
@@ -57,7 +58,24 @@ import session_view/code_tokens.{
 }
 import session_view/markdown as tree
 import session_view/text_hygiene
+import tui/mermaid
 import tui/theme
+
+/// Whether a fenced diagram is drawn or left as its source.
+///
+/// A settled answer draws a `mermaid` fence as a diagram. The live tail
+/// renders a growing answer again on every delta, sometimes more than once, and
+/// a diagram is the one block whose cost grows with its content and not with
+/// the text added, so the tail shows the fence as source and the settled row
+/// replaces it with the drawing. That also spares the reader a block that would
+/// flip between source and drawing as each delta made the source parse or fail.
+pub type Diagrams {
+  /// Draw a diagram the renderer accepts, and fall back to source otherwise.
+  DrawDiagrams
+
+  /// Show every fence, diagram or not, as source under the code gutter.
+  ShowSource
+}
 
 // A span is segmented and measured once before hard wrapping. Continuations
 // retain the unconsumed list tail, so a huge row never rebuilds or remeasures
@@ -136,7 +154,19 @@ const min_column = 3
 /// let lines = markdown.render("**bounded** output", 80)
 /// ```
 pub fn render(markdown: String, width: Int) -> List(span.Line) {
-  render_sanitized(text_hygiene.multiline(markdown), width)
+  render_sanitized(text_hygiene.multiline(markdown), width, DrawDiagrams)
+}
+
+/// `render` for the live tail: a `mermaid` fence stays source.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = markdown.render_live("```mermaid\ngraph TD\nA --> B\n```", 80)
+/// ```
+@internal
+pub fn render_live(markdown: String, width: Int) -> List(span.Line) {
+  render_sanitized(text_hygiene.multiline(markdown), width, ShowSource)
 }
 
 /// `render` for text that has already been through
@@ -152,13 +182,18 @@ pub fn render(markdown: String, width: Int) -> List(span.Line) {
 ///
 /// ```gleam
 /// let safe = text_hygiene.multiline("**bounded** output")
-/// assert markdown.render_sanitized(safe, 80) == markdown.render(safe, 80)
+/// assert markdown.render_sanitized(safe, 80, markdown.DrawDiagrams)
+///   == markdown.render(safe, 80)
 /// ```
 @internal
-pub fn render_sanitized(safe: String, width: Int) -> List(span.Line) {
+pub fn render_sanitized(
+  safe: String,
+  width: Int,
+  diagrams: Diagrams,
+) -> List(span.Line) {
   safe
   |> tree.parse
-  |> list.flat_map(render_block(_, width))
+  |> list.flat_map(render_block(_, width, diagrams))
 }
 
 /// `render` for a tool's detail rows, which draws the labels of the
@@ -183,7 +218,7 @@ pub fn render_detail(markdown: String, width: Int) -> List(span.Line) {
   text_hygiene.multiline(markdown)
   |> tree.parse
   |> list.flat_map(fn(block) {
-    let rows = render_block(block, width)
+    let rows = render_block(block, width, DrawDiagrams)
     case block {
       tree.CodeBlock(language: Some(label), ..) ->
         case harness_label(label) {
@@ -700,7 +735,11 @@ fn is_grid_span(value: span.Span) -> Bool {
   }
 }
 
-fn render_block(block: tree.Block, width: Int) -> List(span.Line) {
+fn render_block(
+  block: tree.Block,
+  width: Int,
+  diagrams: Diagrams,
+) -> List(span.Line) {
   case block {
     // Claude Code, and every other terminal renderer a reader is likely to
     // have seen, marks a heading with weight alone. The bar that used to sit
@@ -711,32 +750,80 @@ fn render_block(block: tree.Block, width: Int) -> List(span.Line) {
     tree.Paragraph(inlines:) ->
       inline_lines(inlines, style.default_style())
       |> trailing_blank
+    tree.CodeBlock(language: Some("mermaid"), text:) ->
+      case diagrams {
+        DrawDiagrams -> render_mermaid(text, width)
+        ShowSource -> code_block(Some("mermaid"), text) |> trailing_blank
+      }
     tree.CodeBlock(language:, text:) ->
-      source_lines(text)
-      |> list.map(fn(line) {
-        span.line_new([
-          span.span_styled(code_gutter, theme.signal_bold()),
-          ..code_spans(language, line)
-        ])
-      })
-      |> prepend_code_language(language)
+      code_block(language, text)
       |> trailing_blank
 
     // A quote's bar costs two cells of every row it covers, and quotes nest,
     // so the inner width is floored at one: a block measured against a width
     // of zero or less would have no room at all to lay itself out. An alert
     // indents its body by the same two cells.
-    tree.Quote(blocks:) -> render_quote(blocks, int.max(1, width - 2))
+    tree.Quote(blocks:) -> render_quote(blocks, int.max(1, width - 2), diagrams)
     tree.Alert(kind:, blocks:) ->
-      render_alert(kind, blocks, int.max(1, width - 2))
-    tree.BulletList(items:) -> render_list(items, None, width)
-    tree.OrderedList(start:, items:) -> render_list(items, Some(start), width)
+      render_alert(kind, blocks, int.max(1, width - 2), diagrams)
+    tree.BulletList(items:) -> render_list(items, None, width, diagrams)
+    tree.OrderedList(start:, items:) ->
+      render_list(items, Some(start), width, diagrams)
     tree.Table(header:, rows:) -> render_table(header, rows, width)
-    tree.Footnote(label:, blocks:) -> render_footnote(label, blocks, width)
+    tree.Footnote(label:, blocks:) ->
+      render_footnote(label, blocks, width, diagrams)
     tree.Rule -> [
       span.line_new([span.span_styled("────────────────", theme.quiet_text())]),
       span.line_plain(""),
     ]
+  }
+}
+
+// A code block under its gutter and, when it names a language, a label row.
+fn code_block(language: Option(String), text: String) -> List(span.Line) {
+  source_lines(text)
+  |> list.map(fn(line) {
+    span.line_new([
+      span.span_styled(code_gutter, theme.signal_bold()),
+      ..code_spans(language, line)
+    ])
+  })
+  |> prepend_code_language(language)
+}
+
+// A Mermaid fence is drawn as a diagram when the renderer accepts it, under
+// the same gutter and `mermaid` label a code block carries so the two read as
+// one kind of block. The renderer is given the width left after the gutter,
+// so a drawn row never needs the hard wrap that would break a diagram.
+//
+// A diagram the renderer refuses is shown as the source it was given, with one
+// quiet row under it saying why, so the reader never loses the model's text.
+// A fence still streaming in is only partial source, and the same fallback
+// covers it: the parser does not say whether a fence was closed, and the
+// partial text is either refused or drawn as far as it already parses.
+fn render_mermaid(source: String, width: Int) -> List(span.Line) {
+  let room = int.max(1, width - string.length(code_gutter))
+  case mermaid.render(source, room) {
+    Ok(rows) ->
+      rows
+      |> list.map(fn(row) {
+        let span.Line(spans:, ..) = row
+        span.line_new([
+          span.span_styled(code_gutter, theme.signal_bold()),
+          ..spans
+        ])
+      })
+      |> prepend_code_language(Some("mermaid"))
+      |> trailing_blank
+    Error(refusal) ->
+      code_block(Some("mermaid"), source)
+      |> list.append([
+        span.line_new([
+          span.span_styled(code_gutter, theme.signal_bold()),
+          span.span_styled(mermaid.reason(refusal), theme.quiet_text()),
+        ]),
+      ])
+      |> trailing_blank
   }
 }
 
@@ -750,9 +837,13 @@ fn source_lines(text: String) -> List(String) {
   }
 }
 
-fn render_quote(blocks: List(tree.Block), width: Int) -> List(span.Line) {
+fn render_quote(
+  blocks: List(tree.Block),
+  width: Int,
+  diagrams: Diagrams,
+) -> List(span.Line) {
   blocks
-  |> list.flat_map(render_block(_, width))
+  |> list.flat_map(render_block(_, width, diagrams))
   |> prefix_lines([span.span_styled(quote_gutter, theme.current_bold())], [
     span.span_styled(quote_gutter, theme.current_bold()),
   ])
@@ -765,6 +856,7 @@ fn render_alert(
   alert: tree.AlertKind,
   blocks: List(tree.Block),
   width: Int,
+  diagrams: Diagrams,
 ) -> List(span.Line) {
   let title =
     span.line_new([
@@ -773,7 +865,7 @@ fn render_alert(
     ])
   let body =
     blocks
-    |> list.flat_map(render_block(_, width))
+    |> list.flat_map(render_block(_, width, diagrams))
     |> prefix_lines([span.span_plain("  ")], [span.span_plain("  ")])
   [title, ..body]
 }
@@ -807,11 +899,12 @@ fn render_footnote(
   label: String,
   blocks: List(tree.Block),
   width: Int,
+  diagrams: Diagrams,
 ) -> List(span.Line) {
   let marker = "[" <> label <> "] "
   let inner = int.max(1, width - string.length(marker))
   blocks
-  |> list.flat_map(render_block(_, inner))
+  |> list.flat_map(render_block(_, inner, diagrams))
   |> trim_trailing_blank
   |> prefix_lines([span.span_styled(marker, theme.quiet_text())], [
     span.span_plain(string.repeat(" ", string.length(marker))),
@@ -971,6 +1064,7 @@ fn render_list(
   items: List(List(tree.Block)),
   ordered_start: Option(Int),
   width: Int,
+  diagrams: Diagrams,
 ) -> List(span.Line) {
   items
   |> list.index_map(fn(blocks, index) {
@@ -985,7 +1079,7 @@ fn render_list(
     let inner = int.max(1, width - string.length(marker))
 
     blocks
-    |> list.flat_map(render_block(_, inner))
+    |> list.flat_map(render_block(_, inner, diagrams))
     |> trim_trailing_blank
     |> prefix_lines([span.span_styled(marker, theme.signal_bold())], [
       span.span_plain(string.repeat(" ", string.length(marker))),
