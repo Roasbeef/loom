@@ -32,7 +32,9 @@ provenance rather than proof of the integrated head.
 The owner authorized repair of the failing CI fixtures and merge once checks
 pass. A failed delegate reopen exposed a reachable Closing-state race, while
 the HTTP and code-mode fixtures relied on timing that did not establish the
-state their assertions required. The owner explicitly waived the dedicated
+state their assertions required. The integrated run also exposed an advisor
+fixture using a mutating run-start drain as a barrier; the existing inert
+barrier now preserves the phase its assertions inspect. The owner explicitly waived the dedicated
 Linux signoff because obelisk is offline and no alternate host is available;
 that signoff has not run. Next: finish the repairs, review them, validate the
 final head including raw macOS advisory logs, then merge

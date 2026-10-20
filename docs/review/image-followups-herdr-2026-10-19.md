@@ -134,6 +134,15 @@ Those fixtures remain unchanged, with one bounded full integration retry
 required. The preceding full gate on `d207589d0` passed every package and a
 clean skip census in 1,231 seconds; it does not validate the newer base.
 
+An integrated run after the harness extraction exposed an advisor-fixture
+ordering error. Its final `settle` call was a synthetic primary run start,
+answered before goal evaluation; that evaluation could re-offer the unanswered
+feed before the assertion read `Idle`. A private existing-BEAM probe forced
+that ordering and reproduced the exact awaiting-verdict value. The existing
+inert `barrier` leaves `Idle` without submitting another run-start event. The
+fixture now uses that barrier while preserving its unanswered count, active
+status and idle-phase assertions. No production advisor behavior changed.
+
 The owner authorized repairing CI before merge and explicitly waived the
 dedicated Linux signoff while obelisk is offline and no alternate host is
 available. That signoff has not run. A fresh independent adversarial review of
