@@ -1263,9 +1263,10 @@ pub fn record_start_failure(
 
 /// Reads the failure kept for a session, or `None` when it has none.
 ///
-/// A stored row that breaks the bound fails the read with `Invalid` rather than
-/// reading as "no failure", so damage is not mistaken for a creation in
-/// progress.
+/// A stored row that breaks the grammar fails this read with `Invalid` rather
+/// than reading as "no failure". The registry's listing treats that error
+/// conservatively and shows a plain reservation, so damaged text is never drawn
+/// and never blocks the row.
 ///
 /// ## Examples
 ///
@@ -1282,27 +1283,6 @@ pub fn start_failure(
     [row] -> decode_start_failure(row.reason, row.failed_at) |> result.map(Some)
     [_, _, ..] -> Error(Invalid("duplicate start failure"))
   }
-}
-
-/// Reads every kept failure in one statement, for a listing that names the
-/// failed starts of a whole page.
-///
-/// A row that does not decode is left out, so display shows a plain
-/// reservation. `start_failure` still fails on the same row.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // catalogue.start_failures(store) == Ok([])
-/// ```
-pub fn start_failures(
-  catalogue: Catalogue,
-) -> Result(List(#(String, StartFailure)), Error) {
-  use rows <- result.map(query(catalogue, sql.all_start_failures()))
-  list.filter_map(rows, fn(row) {
-    decode_start_failure(row.reason, row.failed_at)
-    |> result.map(fn(failure) { #(row.session_id, failure) })
-  })
 }
 
 /// Forgets the failure kept for a session, when a retry begins. A session with

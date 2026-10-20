@@ -196,7 +196,6 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.start_failure("").0,
     sql.upsert_start_failure("", "", 0).0,
     sql.delete_start_failure("").0,
-    sql.all_start_failures().0,
   ]
   assert normalize_queries(source)
     == normalize_queries(string.join(generated, "\n"))
@@ -2893,7 +2892,6 @@ pub fn a_start_failure_survives_a_reopen_and_leaves_the_reservation_alone_test()
       at: 1_700_000_000_500,
     )
   assert catalogue.start_failure(store, record.id) == Ok(Some(failure))
-  assert catalogue.start_failures(store) == Ok([#(record.id, failure)])
 
   // The revision moved, so an open listing is refused and re-read, and the
   // registration is exactly the one a retry under its key resumes.
@@ -2968,7 +2966,6 @@ pub fn deleting_a_session_removes_its_start_failure_test() {
   assert catalogue.record_start_failure(store, record.id, "boom", at: 5)
     == Ok(Nil)
   assert catalogue.delete(store, record.id) == Ok(record)
-  assert catalogue.start_failures(store) == Ok([])
   assert catalogue.start_failure(store, record.id) == Ok(None)
   assert catalogue.close(store) == Ok(Nil)
 }

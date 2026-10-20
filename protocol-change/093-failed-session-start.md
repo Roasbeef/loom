@@ -57,8 +57,7 @@ registration. `storage/catalogue` exposes it as
 pub type StartFailure { StartFailure(reason: String, at: Int) }
 ```
 
-with `record_start_failure`, `start_failure`, `start_failures` and
-`clear_start_failure`. It is a separate row and not a field of `Registration`,
+with `record_start_failure`, `start_failure` and `clear_start_failure`. It is a separate row and not a field of `Registration`,
 so the creation request a retry compares is unchanged, in the way a custody row
 is separate from the registration it describes. The kept failure is therefore
 not a `Bool` on a record, and "no failure" is the absence of a row.

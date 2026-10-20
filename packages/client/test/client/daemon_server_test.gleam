@@ -1123,7 +1123,7 @@ pub fn a_failed_start_is_listed_as_reserved_with_its_failure_test() {
       )
     assert field(deleted, "event") == json.String("sessions.delete")
     assert field(field(deleted, "body"), "session_id") == json.String(id)
-    assert catalogue.start_failures(store) == Ok([])
+    assert catalogue.start_failure(store, id) == Ok(option.None)
     assert catalogue.close(store) == Ok(Nil)
     let _ = ffi_ws.tcp_close(socket)
     Nil

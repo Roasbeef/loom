@@ -197,8 +197,8 @@ or close; there is no transaction, lease or authorization cache.
   `record_start_failure` replaces the row, accepts only a `Reserved` registration
   (`Conflict` for a `Saved` one) and one to `start_failure_limit` (512) bytes of
   printable text, and moves the revision. `start_failure` reads one (a stored row
-  outside the grammar fails with `Invalid`), `start_failures` reads all for a
-  listing, and `clear_start_failure` deletes one, moving the revision only when a
+  outside the grammar fails with `Invalid`, which the registry's listing reads as
+  a plain reservation), and `clear_start_failure` deletes one, moving the revision only when a
   row was there. `confirm` clears the row in its own transaction and `delete`
   removes it first, so a row cannot describe a session that started or outlive
   its registration.

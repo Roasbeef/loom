@@ -218,6 +218,3 @@ ON CONFLICT(session_id) DO UPDATE SET reason = excluded.reason, failed_at = excl
 
 -- name: DeleteStartFailure :exec
 DELETE FROM catalogue_start_failures WHERE session_id = ?;
-
--- name: AllStartFailures :many
-SELECT session_id, reason, failed_at FROM catalogue_start_failures ORDER BY session_id;
