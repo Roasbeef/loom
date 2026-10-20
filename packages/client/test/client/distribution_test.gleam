@@ -7,6 +7,7 @@ import client/catalog
 import client/daemon/distribution_cli
 import client/distribution
 import client/internal/ffi_os
+import client/tui_e2e_test.{type EunitTest, Timeout}
 import gleam/dict
 import gleam/int
 import gleam/io
@@ -214,6 +215,16 @@ pub fn the_options_command_writes_a_private_file_test() {
 
 // --- two real emulators -----------------------------------------------------
 
+// The budget of a three-member directory scenario. Its children live up to
+// 300 s, and each step carries a deadline of its own between 60 and 150 s, so
+// a step that stalls fails with its name; EUnit's scaled default of 50 s ended
+// a healthy run that a loaded host had stretched past it. EUnit scales a
+// generator's timeout by ten too, so the number given is the seconds wanted
+// divided by ten.
+const cluster_seconds = 360
+
+const scale = 10
+
 @external(erlang, "client_distribution_fixture_ffi", "scenario")
 fn scenario(name: String) -> Result(Nil, String)
 
@@ -353,23 +364,27 @@ pub fn a_member_with_connect_all_on_is_refused_test() {
   )
 }
 
-pub fn a_member_that_lost_its_disk_rejoins_and_catches_up_test() {
-  proves(
-    "directory_rejoin",
-    "A bootstrapped cluster takes two members in as voters; a member whose "
-      <> "directory is deleted while the leader writes past a snapshot rejoins, is promoted, "
-      <> "and reads the last write; a cut link is made again; and a member sees "
-      <> "the store running on another.",
-  )
+pub fn a_member_that_lost_its_disk_rejoins_and_catches_up_test_() -> EunitTest {
+  Timeout(cluster_seconds / scale, fn() {
+    proves(
+      "directory_rejoin",
+      "A bootstrapped cluster takes two members in as voters; a member whose "
+        <> "directory is deleted while the leader writes past a snapshot rejoins, is promoted, "
+        <> "and reads the last write; a cut link is made again; and a member sees "
+        <> "the store running on another.",
+    )
+  })
 }
 
-pub fn a_member_killed_as_it_joins_never_starts_a_cluster_of_its_own_test() {
-  proves(
-    "directory_join_kill",
-    "A member whose emulator is killed the moment its joined marker exists "
-      <> "comes back into the cluster it joined and lists both members; it "
-      <> "never starts a cluster of its own.",
-  )
+pub fn a_member_killed_as_it_joins_never_starts_a_cluster_of_its_own_test_() -> EunitTest {
+  Timeout(cluster_seconds / scale, fn() {
+    proves(
+      "directory_join_kill",
+      "A member whose emulator is killed the moment its joined marker exists "
+        <> "comes back into the cluster it joined and lists both members; it "
+        <> "never starts a cluster of its own.",
+    )
+  })
 }
 
 pub fn the_ledger_path_is_optional_and_absolute_test() {
