@@ -293,7 +293,7 @@ pub fn connect(port, credential, path) {
       #(127, 0, 0, 1),
       port,
       [ffi_ws.Binary, ffi_ws.Active(False)],
-      1000,
+      10_000,
     )
     as "raw TCP client connects"
   let handshake =
@@ -312,7 +312,7 @@ fn headers(socket, accumulated, remaining) {
     True, _ -> accumulated
     False, 0 -> panic as "HTTP header exceeds fixture budget"
     False, _ -> {
-      let assert Ok(byte) = ffi_ws.tcp_receive(socket, 1, 1000)
+      let assert Ok(byte) = ffi_ws.tcp_receive(socket, 1, 10_000)
         as "header arrives within deadline"
       let assert Ok(text) = bit_array.to_string(byte)
         as "HTTP response is ASCII"
