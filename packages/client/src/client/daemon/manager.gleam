@@ -5085,14 +5085,6 @@ fn prepare_slot(
       catalogue.NotDeleting -> Ok(Nil)
     })
 
-    // Every refusal above has passed, so this is a real attempt. It supersedes
-    // whatever the last one failed at, durably as well as in the memo below, so
-    // a reservation being retried is listed as starting again and not as a
-    // failure that no longer describes it.
-    use Nil <- result.try(
-      catalogue.clear_start_failure(book.catalogue, record.id)
-      |> result.map_error(Catalogue),
-    )
     domain.for_session(book.catalogue, record.id) |> result.map_error(Catalogue)
   }
   case selected {
@@ -5104,6 +5096,21 @@ fn prepare_slot(
         Ok(_operation) -> prepare_domain_slot(book, record, selected)
       }
     }
+  }
+}
+
+// A fresh attempt supersedes whatever the last one failed at, durably as well
+// as in the memo, so a reservation being retried is listed as starting again
+// and not as a failure that no longer describes it.
+//
+// It runs only once the attempt has a host. Every earlier refusal (a blocked or
+// drained domain, a failed preparation) creates no slot, so nothing would ever
+// record a new failure, and clearing first would lose the reason of the last
+// real one. A clear that fails leaves a stale reason that the next failure
+// replaces or the file's confirmation clears, so it does not refuse the open.
+fn clear_kept_failure(store: catalogue.Catalogue, id: String) -> Nil {
+  case catalogue.clear_start_failure(store, id) {
+    Ok(Nil) | Error(_) -> Nil
   }
 }
 
@@ -5148,6 +5155,7 @@ fn prepare_domain_slot(
   {
     Error(reason) -> #(book, Error(Preparation(reason)))
     Ok(host) -> {
+      clear_kept_failure(book.catalogue, record.id)
       let watch = process.monitor(host.owner(host))
       let slot =
         Slot(
