@@ -36,7 +36,7 @@ pub fn placeholder(mime_type: String) -> UserBlock {
   vision.placeholder(mime_type)
 }
 
-/// Whether the projection's current turn carries an image.
+/// Whether any user or tool-result image remains in the projected context.
 ///
 /// ## Examples
 ///

@@ -392,8 +392,14 @@ fn resident(
           poll.Fail(remote_spawn.NotYetOpen(
             reason: "the delegate session did not open",
           ))
+
+        // A failed open retains its slot while original custody drains.
+        // Like Saved after that drain, this can open on a later spawn, so it
+        // must not permanently refuse the sender's durable Requested stub.
         Ok(manager.View(status: manager.Stopping(_), ..)) ->
-          failed("the delegate session is stopping")
+          poll.Fail(remote_spawn.NotYetOpen(
+            reason: "the delegate session is stopping",
+          ))
         Ok(manager.View(status: manager.RecoveryBlocked(reason:), ..)) ->
           failed("the delegate session cannot recover: " <> reason)
       }

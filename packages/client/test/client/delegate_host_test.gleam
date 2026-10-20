@@ -13,6 +13,7 @@ import client/daemon/main as daemon_main
 import client/daemon/manager
 import client/delegate_host
 import client/internal/ffi_os
+import client/internal/instance_owner as custody
 import client/peer_outbox_drain
 import client/remote_child
 import client/remote_escalation
@@ -37,6 +38,7 @@ import support/fake_orchestrators
 import support/remote_stubs
 import telemetry/log
 import tools/agent
+import weft
 import weft/poll
 
 fn configuration(placement: String) -> String {
@@ -375,11 +377,219 @@ pub fn a_session_that_cannot_open_ends_the_wait_with_a_refusal_test() {
   let resolve =
     delegate_host.resolver(context(registry, "/delegate-host/sessions"))
   let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
-  let assert Error(remote_spawn.StoreFailure(reason:)) =
-    resolve(laptop, parent(30))
+  let remote = parent(30)
+  let here = context(registry, "/delegate-host/sessions")
+  let assert Ok(made) = delegate_host.creation(laptop, remote)
+    as "the initial creation names its placement"
+  let assert Ok(delegated) =
+    manager.delegate_session(
+      registry,
+      manager.DelegateRequest(
+        spawner: laptop.name,
+        parent_session: remote.session,
+        creation: made,
+        directory: here.sessions_directory,
+        generator: here.generator(),
+        configuration: "",
+        limit: laptop.max_sessions,
+        now_ms: here.now_ms(),
+      ),
+    )
+    as "the initial creation is admitted before its builder fails"
+
+  // Once failed creation has drained, the uninitialized registration remains
+  // Reserved. This is a definitive failure, unlike a saved delegate reopening.
+  assert eventually(fn() {
+    case manager.get(registry, delegated.session_id) {
+      Ok(manager.View(status: manager.Reserved, ..)) -> True
+      Ok(_) | Error(_) -> False
+    }
+  })
+  let assert Error(remote_spawn.StoreFailure(reason:)) = resolve(laptop, remote)
   assert reason != ""
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
+}
+
+// Opening a saved session may fail while the dead daemon's writer lease is
+// still live. Custody retirement and the next admission are separate turns,
+// so both an in-flight resolver and a later resolver can see Closing.
+pub fn a_failed_reopen_keeps_retrying_until_original_custody_retires_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let builds = process.new_subject()
+  let registry = gated_registry(store, builds)
+  let here = context(registry, "/delegate-host/sessions")
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(31)
+  let resolve = delegate_host.resolver(here)
+
+  // Establish a saved identity before injecting the failed reopen. A failed
+  // initial creation is deliberately still Reserved and has different rules.
+  let initial = resolving(here, laptop, remote)
+  let assert Ok(#(_owner, answer)) = process.receive(builds, 2000)
+    as "the first build reaches its publication barrier"
+  process.send(answer, Ok(tagged(1)))
+  let assert Ok(first) = resolved(initial) as "initial delegate opens"
+  assert tag_of(first) == 1
+  let assert Ok(Some(row)) =
+    catalogue.delegate_for(store, laptop.name, remote.session)
+    as "the pair has exactly one durable identity"
+  let assert Ok(_) = manager.stop_session(registry, row.session_id)
+    as "the original resident begins its clean close"
+  assert eventually(fn() {
+    case manager.get(registry, row.session_id) {
+      Ok(manager.View(status: manager.Saved, ..)) -> True
+      Ok(_) | Error(_) -> False
+    }
+  })
+
+  // Hold cleanup after a failed open rather than hoping the resolver samples
+  // the short Closing interval. No replacement may start before this proof.
+  let failing = resolving(here, laptop, remote)
+  let assert Ok(#(owner, answer)) = process.receive(builds, 2000)
+    as "the saved delegate begins reopening"
+  let draining = process.new_subject()
+  assert custody.publish(owner, custody.Storage, fn() {
+      let release = process.new_subject()
+      process.send(draining, release)
+      process.receive_forever(release)
+      Ok(Nil)
+    })
+    == Ok(Nil)
+  process.send(answer, Error("another writer still holds the lease"))
+  let assert Ok(release) = process.receive(draining, 2000)
+    as "failed assembly has entered retained cleanup"
+  let assert Error(remote_spawn.NotYetOpen(_)) = resolved(failing)
+    as "a resolver already waiting does not permanently refuse Closing"
+  let assert Error(remote_spawn.NotYetOpen(_)) = resolve(laptop, remote)
+    as "a new resolver does not permanently refuse Closing admission"
+  assert process.receive(builds, 0) == Error(Nil)
+  assert catalogue.delegates_held(store, laptop.name) == Ok(1)
+
+  // Releasing the original witness admits the same saved identity. The retry
+  // publishes a new endpoint only after that retirement has completed.
+  process.send(release, Nil)
+  assert eventually(fn() {
+    case manager.get(registry, row.session_id) {
+      Ok(manager.View(status: manager.Saved, ..)) -> True
+      Ok(_) | Error(_) -> False
+    }
+  })
+  let retry = resolving(here, laptop, remote)
+  let assert Ok(#(_owner, answer)) = process.receive(builds, 2000)
+    as "the same delegate opens again after its custody retires"
+  process.send(answer, Ok(tagged(2)))
+  let assert Ok(reopened) = resolved(retry) as "retry reaches the new endpoint"
+  assert tag_of(reopened) == 2
+  let assert Ok(Some(reused)) =
+    catalogue.delegate_for(store, laptop.name, remote.session)
+    as "the successful retry retains the pair"
+  assert reused.session_id == row.session_id
+  assert catalogue.delegates_held(store, laptop.name) == Ok(1)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// A lost cleanup proof is permanent, unlike a cleanup that is still running.
+// A release still wins over either state before a spawn can reach the Agency.
+pub fn a_blocked_delegate_is_definitive_and_release_has_priority_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let builds = process.new_subject()
+  let registry = gated_registry(store, builds)
+  let here = context(registry, "/delegate-host/sessions")
+  let laptop = spawner("executor = \"runner\"\nworkspace = \"loom\"\n")
+  let remote = parent(32)
+  let opening = resolving(here, laptop, remote)
+  let assert Ok(#(owner, answer)) = process.receive(builds, 2000)
+    as "the delegate reaches its publication barrier"
+  assert custody.publish(owner, custody.Runtime, fn() {
+      Error("original cleanup proof was lost")
+    })
+    == Ok(Nil)
+  process.send(answer, Ok(tagged(3)))
+  let assert Ok(_) = resolved(opening) as "the initial delegate is resident"
+  let assert Ok(Some(row)) =
+    catalogue.delegate_for(store, laptop.name, remote.session)
+    as "the pair has one durable identity"
+  let assert Ok(_) = manager.stop_session(registry, row.session_id)
+    as "the failing cleanup begins"
+  assert eventually(fn() {
+    case manager.get(registry, row.session_id) {
+      Ok(manager.View(status: manager.RecoveryBlocked(_), ..)) -> True
+      Ok(_) | Error(_) -> False
+    }
+  })
+
+  let resolve = delegate_host.resolver(here)
+  let assert Error(remote_spawn.StoreFailure(reason)) = resolve(laptop, remote)
+    as "an unconfirmed cleanup is never reported as retryable admission"
+  assert string.contains(reason, "original cleanup proof was lost")
+  assert process.receive(builds, 0) == Error(Nil)
+  assert catalogue.delegates_held(store, laptop.name) == Ok(1)
+
+  // Deletion fences admission before waiting on custody, so even an already
+  // blocked session answers ParentRunEnded once its parent releases it.
+  assert delegate_host.releaser(here)(laptop, remote) == Ok(0)
+  assert resolve(laptop, remote) == Error(remote_spawn.ParentRunEnded)
+  assert process.receive(builds, 0) == Error(Nil)
+  manager.shutdown(registry)
+
+  // The unresolved witness deliberately remains until this test VM exits;
+  // replacing or killing it would erase the failed retirement proof.
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+// Each assembly waits for this test's answer on a subject it owns. Publishing
+// cleanup while it is parked makes the tested retirement order deterministic.
+fn gated_registry(
+  store: catalogue.Catalogue,
+  builds: process.Subject(
+    #(custody.Owner, process.Subject(Result(agency.DelegateEndpoint, String))),
+  ),
+) -> manager.Manager(agency.DelegateEndpoint) {
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, _, _) { Ok(domain_service.inert()) },
+        build: fn(_record, _domain, _services, owner, _registry) {
+          let answer = process.new_subject()
+          process.send(builds, #(owner, answer))
+          process.receive_forever(answer)
+        },
+        drain: fn(_, _) { Nil },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "delegate-host-gated-test",
+      limit: 4,
+    )
+    as "the gated registry starts"
+  registry
+}
+
+fn resolving(
+  here: delegate_host.Context(agency.DelegateEndpoint),
+  laptop: spawners.Spawner,
+  remote: remote_spawn.Parent,
+) -> weft.Detached(
+  Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
+  Nil,
+) {
+  weft.new([fn() { Ok(delegate_host.resolver(here)(laptop, remote)) }])
+  |> weft.deadline(5000)
+  |> weft.start_detached
+}
+
+fn resolved(
+  opening: weft.Detached(
+    Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal),
+    Nil,
+  ),
+) -> Result(agency.DelegateEndpoint, remote_spawn.SpawnRefusal) {
+  let assert weft.PulledOutcome(weft.Completed(0, answer)) =
+    weft.pull(opening, within: 5000)
+    as "the bounded resolver completes"
+  answer
 }
 
 // --- the retention sweep ------------------------------------------------------

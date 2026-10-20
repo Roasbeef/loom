@@ -236,13 +236,14 @@ pub type DelegateRequest {
   )
 }
 
-/// The delegate session of a pair, admitted or being admitted.
+/// The delegate session of a pair and its current admission or custody state.
 pub type Delegated {
   Delegated(
     /// This daemon's identity for the session.
     session_id: String,
-    /// Where admission stands: `Resident` when the session is serving, and
-    /// `Opening` when its builder is still running.
+    /// `Resident` is serving and `Opening` is building. A retained slot reports
+    /// `Stopping` while original custody drains or `RecoveryBlocked` when its
+    /// cleanup proof was lost, so callers can distinguish retry from refusal.
     status: Status,
   )
 }
@@ -4770,7 +4771,21 @@ fn returning_delegate(
   case claim_delegate(book, request, session_id) {
     Error(error) -> #(book, Error(error))
     Ok(Nil) -> {
-      let #(book, admitted) = admit(phase, book, session_id)
+      // A retained slot carries a more precise answer than admission's
+      // Unavailable: Closing may retire, while Blocked has lost that proof.
+      // The delegate resolver needs that distinction to decide whether its
+      // sender should retry. Neither descriptor grants a replacement slot.
+      let #(book, admitted) = case dict.get(book.slots, session_id) {
+        Ok(Slot(phase: Closing, operation:, ..)) -> #(
+          book,
+          Ok(Stopping(operation)),
+        )
+        Ok(Slot(phase: Blocked(reason), ..)) -> #(
+          book,
+          Ok(RecoveryBlocked(reason)),
+        )
+        Ok(_) | Error(Nil) -> admit(phase, book, session_id)
+      }
       #(book, delegated(session_id, admitted))
     }
   }

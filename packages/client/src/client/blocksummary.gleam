@@ -750,10 +750,10 @@ fn same_endpoint(
 /// chain. The dispatcher's own classifier decides which one a request is
 /// (`client/wiring.request_image_bearing`).
 pub type Turn {
-  /// No image in the current turn: a text-only identity answers itself.
+  /// No retained image in the request: a text-only identity answers itself.
   TextTurn
 
-  /// An image in the current turn, or a request that cannot say. A
+  /// An image in the projected context or admitted batch, or an unknown request. A
   /// text-only identity is dispatched to the `vision` chain.
   ImageTurn
 }
@@ -767,7 +767,7 @@ pub type Turn {
 /// heads a role's chain is dispatched to that role, and the gateway walks
 /// the chain on a retryable failure, so a fallback may answer from another
 /// service. A text-only identity is dispatched to the `vision` chain
-/// instead, but only on a turn that carries an image (`ImageTurn`), and the
+/// instead when its context retains an image (`ImageTurn`), and the
 /// request says which turn it is. So the identity is admitted only when
 /// every target that could answer shares the summarizer's endpoint: the
 /// identity itself, every chain it heads, and, when it cannot read images

@@ -1324,20 +1324,33 @@ pub fn a_deadline_keeps_the_calls_made_so_far_test() {
   let dir = fresh_dir("rec-deadline")
   let broker = start_broker(holding())
   let admitted = process.new_subject()
+  let workers = process.new_subject()
   let cfg =
-    satellite.SatelliteConfig(..config(dir), precheck: fn(_request) {
-      process.send(admitted, Nil)
-      Ok(Nil)
-    })
+    satellite.SatelliteConfig(
+      ..config(dir),
+      router: fn(_request) {
+        Ok(
+          satellite.ScopedService(fn() {
+            process.send(workers, process.self())
+            process.send(admitted, Nil)
+            process.sleep_forever()
+            framing.CapOk(msgpack.NilValue)
+          }),
+        )
+      },
+      call_timeout_ms: 60_000,
+    )
   let launch =
     satellite_peer.launcher(fn(ctx) {
       satellite_peer.send_proc_run(ctx, ctx.token, 1, ["held"])
       satellite_peer.wait_for_close(ctx)
     })
 
-  // Precheck runs after the host records admission. Waiting before connection
-  // handoff starts the real 200 ms timer only once there is a call to retain,
-  // rather than racing peer scheduling against the deadline under host load.
+  // The managed service is already holding an admitted call before connection
+  // handoff arms the real 200 ms wall deadline. Unlike a broker clearance, this
+  // fixture cannot settle early because helper startup or clearance failed.
+  // Its own call timeout lies beyond EUnit's bound, so only host cancellation
+  // can reap the held worker while this assertion is running.
   let ran =
     satellite.run(
       artifact(),
@@ -1358,6 +1371,9 @@ pub fn a_deadline_keeps_the_calls_made_so_far_test() {
   assert ran.outcome == Error(satellite.DeadlineExceeded)
   assert ran.calls.total == 1
   assert ran.calls.unsettled == 1
+  let assert Ok(worker) = process.receive(workers, 1000)
+    as "the retained call entered its managed service worker"
+  assert died_within(worker, 1000)
 }
 
 pub fn a_dead_satellite_keeps_the_calls_made_so_far_test() {

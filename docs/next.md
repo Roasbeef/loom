@@ -3,6 +3,57 @@
 This file records the verified state and next steps for this checkout. Rewrite
 it after a body of work; keep historical measurements in their evidence reports.
 
+## Image follow-ups and Herdr, October 19
+
+The image fix is based on Loom source `47d4b54a6` and pins etui
+`43969f88075a17044640e5e7cc43682b86a988ab` ([etui PR #10](https://github.com/Roasbeef/etui/pull/10)).
+The original image turn was dispatched to Gemini; its later text follow-up
+returned to GLM with a placeholder. The records do not preserve the original
+HTTP image payload. Follow-ups now retain vision while images
+remain in the strand's projected context. Historical image limits and active
+run protection remain separate. Navigation or compaction can remove those
+pixels and return the strand to text.
+
+Herdr supports standard Kitty graphics after removal of its bespoke API.
+The corrected probe accepts its positive `libghostty` reply, and a native
+private-session capture verified Loom's 480 by 280 demo image transmission.
+Non-empty `NO_COLOR` still suppresses previews. See the [scoped evidence and
+remaining gates](review/image-followups-herdr-2026-10-19.md).
+
+The reviewed implementation is integrated with main `b65857090` at
+`6f5616787`. Every code patch retained its original diff; only this handoff
+needed conflict resolution. The shared image rule lives in `harness/vision`,
+with admission, dispatch and the live observer using
+`harness/admission.image_bearing`. The client facade delegates to that boundary.
+
+The latest integration passed 33 vision, 12 socket, 192 HTTP, 610 session-view,
+26 harness, 1,554 terminal and 112 conformance tests. Fresh native shipments
+passed all 25 bootstrap cases. House lint, documentation and the integration
+skip census passed. Independent reviews of the image change, CI repairs,
+harness integration and advisor fixture left no open findings.
+
+Validation is not fully green. The full native run on predecessor `d6b70aeae`
+failed a fixture-copy timeout and bootstrap readiness check; the entire unchanged
+modules then passed all 30 and five cases respectively. Combined coverage
+includes all 4,895 client cases, and the remaining native packages passed.
+Hosted validation of that predecessor passed every actual Linux lane, macOS
+E2E and macOS shard two. Stock macOS release smoke failed with a WebSocket
+startup timeout; the unchanged local stock-toolchain smoke passed in 3.46
+seconds. MacOS shard one and the final hosted census remained unfinished.
+These results do not establish why the failed invocations missed their limits.
+
+The owner explicitly authorized immediate merge of
+[Loom PR #1022](https://github.com/Roasbeef/loom/pull/1022), accepting that smoke
+failure, unfinished macOS validation and the native module reruns. This replaces
+the earlier repair-before-merge condition for this PR; it does not make those
+runs green. The dedicated Linux signoff was separately waived because obelisk
+is offline and no alternate host is available. No operator installation or
+daemon restart is authorized. Any later validation failure needs its own
+classification rather than an assumption that this exception fixed it.
+
+The following resource and Mermaid handoff is preserved historical context;
+those claims were not re-audited by the image fix.
+
 Baselined October 19, 2026 against main
 `698a693de5f7a22a65f7081ab0fce4f7523624dd`, with the approved fixture follow-up
 on `test/admin-read-budget`. The merge, source diff, independent review and

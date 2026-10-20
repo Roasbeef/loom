@@ -17,8 +17,9 @@
 ////    real probe to `detect`.
 //// 2. `detect` applies Loom's own rules first. A plain palette (no colour,
 ////    or a dumb terminal) means no images, and the probe is not sent.
-////    Next etui's own check skips the probe inside Herdr, whose panes do not
-////    pass graphics through, and under NO_COLOR. Only then does it run the
+////    A non-empty NO_COLOR also skips it. Herdr panes are asked like any
+////    other terminal: their standard Kitty protocol remains available after
+////    removal of the separate pane-graphics API. Only then does it run the
 ////    probe, a round trip of at most 200 milliseconds that must happen
 ////    before the alternate screen opens, because its replies are read in raw
 ////    mode and must not be drawn. The caller supplies the probe as a
@@ -66,7 +67,7 @@ pub type Why {
   /// The palette is plain, so there is no colour to draw an image with.
   PlainPalette
 
-  /// The terminal is a Herdr pane, which does not pass graphics through.
+  /// A legacy unprobed Herdr model. New launches probe pane capabilities.
   InsideHerdr
 
   /// `NO_COLOR` is set to a non-empty value.
@@ -86,8 +87,8 @@ pub const guessed_cell = graphics.CellSize(width: 8, height: 16)
 /// Chooses what to draw with, asking the terminal if it is worth asking.
 ///
 /// `run` is the probe: `probe.run` in the launcher, a fake in a test. It is
-/// called at most once, and not at all for a plain palette or an environment
-/// `graphics.decide` skips.
+/// called at most once, and not at all for a plain palette or non-empty
+/// NO_COLOR. Herdr support is established by the same positive probe.
 ///
 /// ## Examples
 ///
