@@ -1480,23 +1480,6 @@ pub fn delete_start_failure(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
-pub type AllStartFailures {
-  AllStartFailures(session_id: String, reason: String, failed_at: Int)
-}
-
-pub fn all_start_failures() {
-  let sql =
-    "SELECT session_id, reason, failed_at FROM catalogue_start_failures ORDER BY session_id"
-  #(sql, [], all_start_failures_decoder())
-}
-
-pub fn all_start_failures_decoder() -> decode.Decoder(AllStartFailures) {
-  use session_id <- decode.field(0, decode.string)
-  use reason <- decode.field(1, decode.string)
-  use failed_at <- decode.field(2, decode.int)
-  decode.success(AllStartFailures(session_id:, reason:, failed_at:))
-}
-
 pub type DomainById {
   DomainById(
     domain_id: String,
