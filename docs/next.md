@@ -67,6 +67,97 @@ The second advisory shard and macOS combined census remain unfinished.
 The owner explicitly directed merge after basic checks rather than waiting
 for those full gates; no fully green CI claim is made.
 
+## 2026-10-19: the real-machine distributed drive
+
+This section is separate from the resource handoff above. It records a drive of
+the distributed runtime on real machines, the fixes it produced, and what is
+still open.
+
+### What was driven
+
+The topology was a laptop orchestrator and an exe.dev Linux box, all on one
+tailnet. The box ran two daemons: a second orchestrator (`box`) and an executor
+(`exec`). The model was GLM-5.3. Every combination worked:
+
+1. Laptop orchestrator, local session.
+2. Laptop to `exec`, repo workspace.
+3. Laptop to `exec`, the `lnd-test` workspace.
+4. Laptop to the `linux` pool.
+5. Box orchestrator, local session.
+6. Box orchestrator to `exec`.
+7. Laptop spawning a remote subagent on `box`, including sending a message to
+   an idle child and answering the child's approvals remotely.
+8. The web view reached from a phone through Tailscale Serve.
+
+The executor's sandbox self-test passed 11 of 11 under a delegated cgroup. The
+evidence (logs, screenshots, transcripts) stayed in a scratch directory outside
+the repository, so nothing here is a recorded measurement in `docs/review/`.
+
+### Deploying an executor from a source build
+
+[The distributed setup guide](distributed-setup.md) covers the Docker
+deployment and the cgroup delegation its entrypoint performs, but not a bare
+systemd service on a Linux host. These four requirements cost time during the
+drive:
+
+- **The daemon must run inside a delegated cgroup v2.** Use a systemd user
+  service with `Delegate=yes`. Its start-up script must split the service's
+  cgroup into `supervisor/` and `base/`, move the daemon into `supervisor/`,
+  and export `LOOM_CGROUP_BASE` pointing at `base/`. Without that, every `bash`
+  call fails with "sandbox was lost" or "ran without the demanded enforcement".
+- **A source build needs two extra inputs.** Pass
+  `--codemode-seed <build>/build/codemode-seed` (made by `make codemode-seed`)
+  and put `gleam` on the service's `PATH`. Otherwise the executor's census
+  reports no code-mode toolchain.
+- **Scopes can stay `unknown` after a restart.** When the executor daemon
+  restarts with sessions open, their scopes are left `unknown`. Stop the daemon
+  and run `loom executor release SESSION --state-dir ~/.loom`, as the setup
+  guide's troubleshooting section describes.
+- **A restart must wait for the old daemon VM to exit** before the new one
+  starts. Starting early leaves two daemons contending for the same state
+  directory and ports.
+
+These belong in the setup guide as a systemd quick start. They are recorded
+here until that section is written.
+
+### What landed
+
+- [#1009](https://github.com/Roasbeef/loom/pull/1009): the web view through a
+  listed https origin, and `loom ui --device`.
+- [#1025](https://github.com/Roasbeef/loom/pull/1025): a `[daemon]` bind setting.
+- [#1027](https://github.com/Roasbeef/loom/pull/1027): a confirmation page for
+  sign-in links opened from other apps.
+- [#1028](https://github.com/Roasbeef/loom/pull/1028): builds from a git archive
+  carry their commit.
+- [#1038](https://github.com/Roasbeef/loom/pull/1038): one New session form, a
+  grouped Admin deployment view, a phone layout, a host name card, and the
+  daemon titled by its ledger name.
+- [#1036](https://github.com/Roasbeef/loom/pull/1036): remote approvals stay
+  answerable, and a spawner's decision wakes an idle remote child.
+- [#1039](https://github.com/Roasbeef/loom/pull/1039): remote approval cards
+  are addressed by id, and daemon options may precede the verb.
+- [#1043](https://github.com/Roasbeef/loom/pull/1043): protocol-change 093, a
+  durable failed session start.
+
+The Linux signoff host was down, so these merges had package gates, reviews and
+live checks but no full signoff.
+
+### Open follow-ups
+
+- Issue #1042: the laptop's stub for a remote child does not track the child's
+  later runs.
+- A device link's expiry was seen once on first open and was not reproduced.
+- A `name` key on `[distribution]` is needed for self names in peers mode.
+- The web "other orchestrators" list shows a peer's failed start as reserved.
+- GLM-5.3-Flash returned 502 responses on large prompts, so the box's child
+  profile was switched to GLM-5.3.
+- The laptop keeps a request row whose answer window closed on the box. This
+  behavior is documented in protocol-change 089.
+- Some client tests are load-sensitive under `LOOM_TEST_PARALLEL=8`. A
+  separate fix session is working on them.
+- Joining the owner's everyday daemon to the deployment waits for the owner's
+  go-ahead. Nothing has touched that daemon or `~/.loom`.
+
 ## What to do next
 
 1. Publish and merge the authorized rebased PR after basic checks and the
