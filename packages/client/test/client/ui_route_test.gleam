@@ -2844,12 +2844,30 @@ fn operator_home(port: Int, credential: String) -> String {
 }
 
 fn home_socket(port: Int, entered: Entered, more) -> Answer {
-  get(port, entered.page <> "/ws?csrf-token=" <> entered.nonce, [
-    host(port),
-    #("cookie", "loom_ui=" <> entered.cookie),
-    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
-    ..more
-  ])
+  home_socket_within(port, entered, more, 1000)
+}
+
+// Admin snapshots complete synchronous registry reads before sending their
+// response head. Ordinary routing probes retain their one-second bound.
+fn home_socket_within(
+  port: Int,
+  entered: Entered,
+  more,
+  within_ms: Int,
+) -> Answer {
+  send_request_within(
+    port,
+    "GET",
+    entered.page <> "/ws?csrf-token=" <> entered.nonce,
+    [
+      host(port),
+      #("cookie", "loom_ui=" <> entered.cookie),
+      #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ..more
+    ],
+    "",
+    within_ms,
+  )
 }
 
 // The three routes of the home work in order: the ticket exchange, the keyed
@@ -6820,7 +6838,8 @@ fn admin_read(
   page: Entered,
   chosen: String,
 ) -> #(String, String, String) {
-  let answer = home_socket(port, page, [#("x-admin-chosen", chosen)])
+  let answer =
+    home_socket_within(port, page, [#("x-admin-chosen", chosen)], 5000)
   assert answer.status == 279
   let assert [people, listed, selection] = string.split(answer.body, "\n")
     as "a read is three lines"
