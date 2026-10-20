@@ -411,6 +411,12 @@ for a host with no surfaces.
   the spawner's ceiling admits (`outside` keeps the rest). `approval.asker`
   words `child @ orchestrator` and `approval.outside_lines` the withheld grants
   with their reason; both are session text for the caller to draw as text.
+- `snapshot_view.lookup_keys(id)`: the registers an exact `escalations_get` of `id`
+  may be answered from. An id holding a slash may be a remote child's request,
+  so it names `remote-escalation/<id>` as well as `escalation/<id>`; the daemon's
+  gateway reads the same list, and `lookup` accepts a cell under either key. A
+  lookup that read only `escalation/` reported every answered remote request as
+  missing, which wrote the `Decisions not available` line.
 - `cache_miss` (a miss reconstructed from two usage rows, and the TTL
   outlook the rows prove) and `cache_watch.Ledger` (which rows may be
   compared: `admit`, `settle`, `capture`, `observe`, `forget`, and `shown`,

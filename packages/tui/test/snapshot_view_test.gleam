@@ -8,10 +8,13 @@ import core/json
 import core/message
 import core/register
 import core/usage_evidence
+import etui/buffer
+import etui/geometry
 import etui/keys
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/string
 import machine/codec as machine_codec
 import machine/strand
 import session_view/approval
@@ -23,6 +26,7 @@ import session_view/snapshot
 import session_view/snapshot_view
 import session_view/transcript_line
 import tui/approval_panel
+import tui/frame
 import tui/inbound
 import tui/model as tui_model
 import tui/view_set
@@ -695,4 +699,80 @@ pub fn metadata_refresh_preserves_the_footer_notice_test() {
   assert refreshed.shared.notice == prior.shared.notice
     as "a metadata refresh replaced current feedback with presence"
   assert refreshed.shared.captured == Some(#(captured, view))
+}
+
+// A child's request on another orchestrator, as the parent session files it
+// under `remote-escalation/` (protocol-change/089): the client's identity is
+// the orchestrator, a slash and the box's identity.
+fn remote_cut(seq: Int, status: String) -> snapshot.Captured {
+  let grant =
+    json.Object([
+      #("type", json.String("writable_root")),
+      #("path", json.String("/shared/output")),
+    ])
+  let value =
+    json.Object([
+      #("seq", json.Int(9)),
+      #("escalation_id", json.String("box/policy-ab")),
+      #("op", json.String("op-1")),
+      #("strand", json.String("sub:^main/build-0123456789abcdef")),
+      #("status", json.String(status)),
+      #("tool", json.String("fs_write")),
+      #("action", json.String("captured-action")),
+      #("preview", json.String("write the requested file")),
+      #("denial", json.Object([#("wanted", json.Array([grant]))])),
+      #("placement", json.String("box")),
+      #("admitted", json.Array([grant])),
+    ])
+  let row = cell(register.FactCustom, "remote-escalation/box/policy-ab", value)
+  snapshot.Captured(..cut(metadata([row]), snapshot.empty()), next_seq: seq + 1)
+}
+
+pub fn lookup_answers_a_remote_id_from_its_own_register_test() {
+  let remote =
+    cell(
+      register.FactCustom,
+      "remote-escalation/box/policy-ab",
+      json.Object([]),
+    )
+  let lookup = fn(cells, missing) {
+    cut(
+      json.Object([
+        #("cells", json.Array(cells)),
+        #("missing", json.Array(list.map(missing, json.String))),
+      ]),
+      snapshot.empty(),
+    )
+  }
+  let assert Ok(#([found], [])) =
+    snapshot_view.lookup(lookup([remote], []), ["box/policy-ab"])
+    as "the remote register answers the id the client holds"
+  assert found.key == "remote-escalation/box/policy-ab"
+
+  // The register of a different id is still an unrequested one, and a local
+  // id never reads the remote namespace.
+  let neighbour =
+    cell(
+      register.FactCustom,
+      "remote-escalation/box/policy-cd",
+      json.Object([]),
+    )
+  let assert Error(_) =
+    snapshot_view.lookup(lookup([neighbour], []), ["box/policy-ab"])
+  let assert Error(_) =
+    snapshot_view.lookup(lookup([remote], []), ["policy-ab"])
+  assert snapshot_view.lookup_keys("policy-ab") == ["escalation/policy-ab"]
+}
+
+pub fn a_remote_card_names_the_child_and_its_orchestrator_test() {
+  let opened = capture_permission(pushed.attached(), remote_cut(20, "pending"))
+  let assert tui_model.ApprovalInspector(panel) = opened.view.overlay
+    as "a remote child's pending request opens a card like any other"
+  let screen = geometry.rect_new(0, 0, 100, 30)
+  let text =
+    approval_panel.render(buffer.buffer_new(screen), screen, panel, waiting: 1)
+    |> frame.buffer_to_text
+  assert string.contains(text, "sub:^main/build-0123456789abcdef")
+  assert string.contains(text, "on box")
+  assert !string.contains(text, "owner unavailable")
 }

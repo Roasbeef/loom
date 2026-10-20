@@ -881,9 +881,15 @@ pub fn captured_approval_panel(model: Model, review: approval.Review) {
     Ok(#(owner, operation))
   }
   approval_panel.new(review)
-  |> approval_panel.with_context(case context {
-    Ok(#(owner, operation)) -> approval_panel.CapturedRequest(owner, operation)
-    Error(_) ->
+  |> approval_panel.with_context(case review.remote, context {
+    // A child's request on another orchestrator is filed whole under
+    // `remote-escalation/`, and its scope is the other machine's, so the card
+    // names the child and where it runs rather than a local owner.
+    Some(approval.Remote(orchestrator:, child:, ..)), _ ->
+      approval_panel.RemoteRequest(child, orchestrator)
+    None, Ok(#(owner, operation)) ->
+      approval_panel.CapturedRequest(owner, operation)
+    None, Error(_) ->
       approval_panel.RequestContextUnavailable(
         "Request owner unavailable in this capture",
       )
