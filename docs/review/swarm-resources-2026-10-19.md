@@ -164,9 +164,22 @@ warnings. These warning totals include existing repository findings.
 Independent adversarial review found no blocking correctness or simplification
 findings; it checked the eight-byte guards, fresh authorization, lookup failure
 behavior and the original/candidate regression logs. Source commits are
-`35a0957cb` (CPU) and `a0c42df95` (page ownership). The full client suite, full
-repository gate, hosted CI, strict Linux signoff and an installed matched-workload
-comparison have not run for these changes.
+`35a0957cb` (CPU) and `a0c42df95` (page ownership). At the original measurement cut, the full client suite, repository gate and
+hosted CI had not run. Subsequent validation is recorded below; an installed
+matched-workload comparison remains open.
+
+The preceding main integration passed all 4,891 client cases across two
+CI-mode native shards after the model-boundary refinement. The final rebase
+onto `0e00dc736` preserves both production patches and the refined test exactly.
+Its basic parser and harness gates pass. Independent review found no open
+production or integration findings. Historical hosted head `8bdb8ac0e` passed
+all Linux lanes and its combined skip census, plus macOS E2E. Its first macOS
+advisory shard failed `tools_interleave_test` ("the armed crash bomb never fired");
+five fresh module runs and the complete 207-test runtime suite passed locally.
+The second macOS shard and combined census remained unfinished when the owner
+explicitly authorized merge after basic checks without waiting for the full
+gate. This exception does not establish fully green CI or the cause of the
+original failure. Obelisk was separately excluded as a merge prerequisite.
 
 We did not force GC, restart, hotpatch or inspect application state on the live
 daemon. The full-GC socket observation and component state read belong only to

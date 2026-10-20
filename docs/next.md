@@ -6,7 +6,7 @@ it after a body of work; retain measurements in their evidence documents.
 Baselined October 19, 2026 against resource commits `35a0957cb` and
 `a0c42df95` on `perf/swarm-resources`. This edition includes their
 published integration `4f3c6f458` and the subsequent main updates through
-`b65857090`. The profiling comparisons retain
+`0e00dc736`. The profiling comparisons retain
 their original `c444fca25` baseline.
 The claims below were checked against this tree, the saved local gates and the
 live observations identified in the report. This is a scoped resource handoff,
@@ -20,8 +20,8 @@ not a fresh audit of the repository's architecture or hosted CI.
 | JSON CPU | `35a0957cb` adds an eight-byte ordinary-run scan while preserving the four-byte and byte tails. Three alternating fixture pairs reduce median reductions by 10.0% on plain text, 3.8% on escaped text and 2.7% on transcript-shaped input. Heap allocation is unchanged. |
 | Page ownership | `a0c42df95` narrows component session-list and sign-in callbacks to registry and identity fields. The observer fixture's enlarged-hook component falls from 191,308 to 9,550 flattened words. This is a copy-size bound, not installed RSS. |
 | Prior-head validation | On `96554f554`, all local package and static stages passed after selecting Homebrew's `rg` for the Seatbelt PATH fixture. Client passed 4,885 tests, TUI 1,544 and conformance 111. All hosted Linux jobs and the combined skip census passed. The 882-input complete-result JSON equivalence digest matches baseline. Independent adversarial and integration reviews found no blocking issue. These results precede the latest integration. |
-| Upstream integration | Main `b65857090` includes remote-approval fixes from PRs #1036 and #1039, the sparse-renderer resource fix from PR #1023, and the private admin-read fixture adjustment from PR #1040. Their source changes and fixture repairs are retained. Incoming handoffs are preserved in the linked snapshots below. |
-| Publication and installation | PR #1037 is authorized for merge once current-head hosted CI and independent review are green. The owner accepts hosted CI as the Linux evidence; remote Obelisk signoff is not a prerequisite. Installation and restart remain separate. |
+| Upstream integration | Main `0e00dc736` includes remote-approval fixes from PRs #1036 and #1039, the sparse-renderer resource fix from PR #1023, and the private admin-read fixture adjustment from PR #1040. It also includes image-follow-up and Herdr support from PR #1022. Their source changes and fixture repairs are retained. Incoming handoffs are preserved in the linked snapshots below. |
+| Publication and installation | The owner explicitly authorized merge after the rebase, basic checks and independent review, without waiting for the full gate. Earlier CI is historical evidence; this exception does not make unfinished or failed checks green. The owner accepts hosted CI as the Linux evidence; remote Obelisk signoff is not a prerequisite. Installation and restart remain separate. |
 
 The [resource report](review/swarm-resources-2026-10-19.md) records the probe
 coverage, counter meanings, fixture methods, test results and remaining limits.
@@ -44,15 +44,36 @@ that PR merged in `698a693de`. The renderer measurements remain in the
 The [incoming admin-read handoff](next-2026-10-19-before-swarm-admin-integration.md)
 preserves the renderer merge exception and fixture follow-up evidence. PR #1040
 has since merged at `b65857090`; its private admin-read wait is five seconds,
-while ordinary routing probes retain one second. The known-failure merge
-exception described there applied to #1023 only.
+and the later image integration moves generic HTTP reads to the managed fixture
+deadline. Explicit timing probes retain their own bounds. The known-failure
+merge exception described there applied to #1023 only.
+
+The [incoming image handoff](next-2026-10-19-before-swarm-image-integration.md)
+preserves PR #1022's measurements and its explicit known-failure merge exception.
+That exception applies to #1022 only. The current integration retains its image
+and Herdr changes without altering either production resource patch.
+
+The page regression now measures the component model that owns the callbacks,
+excluding Lustre's runtime rendering cache. Five fresh fixture runs pass; three
+original-capture controls fail the unchanged 4,096-word growth bound. The full
+client coverage on the preceding integration passed 4,891 tests in two shards.
+The rebased core and harness package gates pass. Formatting, lint, documentation and prelude checks passed before publication. Historical hosted
+head `8bdb8ac0e` passed every Linux lane and its combined skip census, plus
+macOS E2E. Its first advisory macOS shard failed internally in
+`tools_interleave_test` with "the armed crash bomb never fired"; its success
+badge conceals the failed runner. Five fresh interleave-module runs and all
+207 runtime tests passed locally, without establishing the original cause.
+The second advisory shard and macOS combined census remain unfinished.
+The owner explicitly directed merge after basic checks rather than waiting
+for those full gates; no fully green CI claim is made.
 
 ## What to do next
 
-1. Finish the authorized PR and full publication gates. **Exit:** full hosted
-   coverage and independent review refer to the published source. Inspect raw
-   advisory macOS results and the skip census before declaring CI green.
-   Hosted Linux CI is the acceptance evidence; Obelisk is not a merge gate.
+1. Publish and merge the authorized rebased PR after basic checks and the
+   completed independent review. **Exit:** the published SHA matches the checked
+   source and GitHub confirms the guarded merge. Preserve the failed and
+   unfinished CI results above; the owner waived waiting for the full gate.
+   Obelisk is not a merge gate.
 2. Measure remaining memory owners with an isolated fixture. **Exit:** identify
    the retaining callback and prove its bound while preserving authorization
    and lifecycle behavior. Owner-page capabilities in `ui_socket.upgrade`
