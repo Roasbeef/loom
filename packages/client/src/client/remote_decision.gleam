@@ -44,7 +44,18 @@
 //// 3. `decide` reads the record and applies steps 2 and 3 above, and `canonical`
 ////    is the path test of step 4.
 //// 4. `approve` and `deny` commit the two decisions on the record that `decide`
-////    read, and `answered` reads the record back as the box now has it.
+////    read, and `answered` tells the child and reads the record back as the box
+////    now has it.
+////
+//// ## Telling the child
+////
+//// A child's refused call parks only for a short grace, so the decision usually
+//// arrives after the call settled in band and often after the child's run ended.
+//// `answered` hands a committed decision to `escalate.notify_spawner_decision`,
+//// which steers a child that is still running and opens a run on one that is
+//// idle, bounded by the child's deadline as a parent's `agent_send` would be.
+//// The child is told after the commit, never before, so the run it is woken
+//// into finds the grant already in the store.
 
 import broker/policy.{type Grant}
 import client/approval_ceiling.{type Ceiling}
@@ -331,8 +342,15 @@ fn answered(
   decision: escalate.OperatorDecision,
 ) -> Answer {
   case committed {
+    // The decision, and for a session approval the remembered grant, are
+    // durable in the commit that answered `Ok`, and only then is the child told.
+    // The notice may open a run on an idle child, and that run's retry re-checks
+    // the call against the store, so it is admitted after the grant it spends
+    // and cannot race it. A decision that lost its compare-and-set, or a second
+    // decision on a record no longer pending, never reaches this arm, so a child
+    // is woken at most once for a record's `seq`.
     Ok(_) -> {
-      let _ = escalate.notify_decision(runtime, cell, decision)
+      let _ = escalate.notify_spawner_decision(runtime, cell, decision)
       read_back(runtime, cell)
     }
     Error(api.RaceLost) ->

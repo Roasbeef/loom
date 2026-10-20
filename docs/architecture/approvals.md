@@ -486,16 +486,38 @@ row.
 
 **After the park.** A parked call waits only for the five-second grace every
 refusal gets, then settles in band and leaves the record pending. A later
-decision steers the child if its run is still open (`escalate.notify_decision`);
-a notice never opens a run on a subagent, so an approval for a child that went
-idle waits for its next run, which the parent's `agent_send` starts within the
-child's deadline, and re-issuing the call there spends it. So the row
+decision steers the child if its run is still open, and wakes it if it went idle
+(see "Waking the child" below), and re-issuing the call in that run spends an
+approval. So the row
 outlives the park: the drainer keeps asking for `delegate_outbox.answer_window_ms`
 (five minutes) past it, and sends the decided state whenever the decision comes
 inside that window. The laptop keeps a settled child's requests for the same
 reason; only a refused spawn clears them (`remote_child.clear_requests`). A
 record still pending when the window closes is the box owner's, and a laptop
 decision on it still reaches the box and files the record the box answers.
+
+**Waking the child.** A notice never opens a run on a subagent
+(`notice.may_wake`), with one exception: a decision by the spawner's operator on
+a request from a child whose parent is on the other machine. `remote_decision`
+commits the decision, and for a session approval the remembered grant, then
+calls `escalate.notify_spawner_decision`. Through `notice.deliver_to_remote_child`
+that admits a run on an idle child with `api.send_to_strand_marking`, the call a
+parent's `agent_send` into an idle remote child makes (protocol-change/084, S9).
+The runtime gives such a run the child's own spawn deadline and refuses one past
+it, so the wake never lengthens the child's life; a refused wake falls back to
+the steer, which leaves an idle child idle. The run opens with the `[loom]`
+decision notice, which names the record and tells the child to re-issue the call
+(approved) or take another route (denied); a denial wakes the child too, so it
+can report and finish. A busy child is steered and gets no second run. The
+notice's mark (`client/notice/escalation/{id}/{seq}`) is spent with the
+admission, and a second decision on the record is `Stale` before it commits, so
+one record's decision opens at most one run. The order is what lets the retry
+succeed: the run is admitted only after the commit that wrote the grant, and its
+retry re-checks against the store. A grandchild whose parent is a local strand
+is only steered, since the runtime would give its run a fresh budget, and a
+decision by the box's own operator (`gateway`, `notify_decision`) wakes no
+subagent. A decision for a released child never reaches a session, so it wakes
+nothing.
 
 **The ceiling.** `[spawners.<name>.approval_ceiling]`
 (`client/approval_ceiling`) has one key for each kind of grant. The box admits a

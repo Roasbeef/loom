@@ -684,9 +684,9 @@ fn whole(
 /// The call itself parks only for the short grace `client/escalate` gives every
 /// refusal (five seconds), then settles in band and leaves the record pending.
 /// The record stays decidable after that: a decision commits it,
-/// `escalate.notify_decision` steers the child if its run is still open, and
-/// otherwise the approval waits for the child's next run, where re-issuing the
-/// call spends it. Ending the row with the
+/// `escalate.notify_spawner_decision` steers the child if its run is still
+/// open and otherwise opens one within the child's deadline, where re-issuing
+/// the call spends it. Ending the row with the
 /// park would end the question for the laptop while the box still accepts its
 /// answer, and a request whose first send did not land inside five seconds would
 /// never be shown at all. Five minutes is the window protocol-change/089 was

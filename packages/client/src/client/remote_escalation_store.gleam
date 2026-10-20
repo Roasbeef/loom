@@ -35,8 +35,8 @@
 //// 3. `clear` removes the requests filed for a spawn the orchestrator refused, so
 ////    a card whose child never existed does not wait for an answer nobody can
 ////    use. A child that finished keeps its requests: the box still takes a
-////    decision on them, and the child's next run spends an approval by
-////    re-issuing the call.
+////    decision on them, and the decision wakes the child into a run that
+////    spends an approval by re-issuing the call.
 
 import client/protocol.{type EscalationRecord}
 import client/remote_escalation

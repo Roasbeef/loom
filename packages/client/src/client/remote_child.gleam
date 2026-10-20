@@ -689,9 +689,9 @@ pub fn refused(
 //
 // A settled child keeps its requests. Its call stopped waiting after the short
 // grace, but the box keeps the record decidable: a decision steers a child that
-// is still running, and an approval waits for the next run of one that went idle
-// (a notice never opens a run on a subagent; the parent's `agent_send` does,
-// within the child's deadline), where re-issuing the call spends it. A child
+// is still running and opens a run on one that went idle, within the child's
+// deadline (`escalate.notify_spawner_decision`), where re-issuing the call
+// spends an approval. A child
 // that gives up and reports within seconds of being refused is the common case,
 // and clearing on its settle would take the card away before its operator could
 // read it, and answer the approval `unknown_escalation`. The card clears when the box sends the decided

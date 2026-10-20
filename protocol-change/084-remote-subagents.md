@@ -890,7 +890,10 @@ record gets the absolute deadline the spawn gave the child, not a fresh budget,
 so any number of sends cannot lengthen the child's life. A send after that
 deadline is refused by the box (`ReadFailed`, "the child's deadline has
 passed") and, earlier, by the laptop, which knows the deadline from the stub. `within_ms` on a send to a remote child
-is refused. An `Unreachable` send writes `remote-send/{message id}` on the laptop
+is refused. A decision by the parent's operator on one of the child's requests
+for more authority starts a run on an idle child through the same admission,
+with the same bound ([089](089-remote-approvals.md), addendum of 2026-10-19). An
+`Unreachable` send writes `remote-send/{message id}` on the laptop
 and answers `queued`; the third step of `remote_drain.pass` resends it and removes
 it on any answer. A handle for a later run of a remote child belongs to the child's
 stub by its strand, so a wait on it joins on the box. `agency.refuse_remote_child`

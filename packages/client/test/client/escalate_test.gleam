@@ -25,11 +25,16 @@ import broker/escalation as denial
 import broker/exec
 import broker/policy
 import broker/token
+import client/approval_ceiling
+import client/delegate_outbox
 import client/escalate
 import client/grants
 import client/notice
 import client/permissions
 import client/protocol
+import client/remote_decision
+import client/remote_escalation
+import client/remote_spawn
 import client/wiring
 import core/clock.{type Clock}
 import core/ids
@@ -40,6 +45,7 @@ import core/register
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/string
 import machine/operation
 import machine/strand.{
@@ -51,12 +57,15 @@ import provider/model
 import provider/secret
 import provider/stream
 import runtime/api
+import runtime/child_run
 import runtime/effects
 import runtime/escalation
+import runtime/lineage
 import session/session
 import session_view/approval
 import session_view/snapshot_view
 import simplifile
+import storage/storage
 import support/addresses
 import support/owner_probe
 import support/provider as provider_test
@@ -1998,5 +2007,337 @@ pub fn concurrent_async_questions_for_different_actions_keep_distinct_records_te
   assert string.contains(rerun_a, "no sandbox helper")
   let assert Ok(cell_b) = api.escalation_cell(harness.runtime, id_b)
   assert cell_b.record.status == escalation.Pending
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+// --- a spawner's decision wakes an idle remote child (protocol-change/089) --
+//
+// A child that a parent on another orchestrator spawned asks that parent's
+// operator for more authority. Its call parks for the short grace, settles in
+// band, and the child's run usually ends soon after. These cases decide the
+// record through the box's own door (`remote_decision.admit`) and check what
+// the child is then given: an idle child gets one run, bounded by its spawn
+// deadline, whose retry of the refused call spends the approval; a busy one is
+// steered; a child past its deadline, or a grandchild whose parent is a local
+// strand, gets no run.
+
+const remote_child = "sub:^main/wake-0123456789abcdef"
+
+// Far past anything the session clock reaches in a test, and the value a
+// woken run's record must carry unchanged.
+const spawn_deadline = 1_756_003_600_000
+
+fn op_seeded(seed: Int) -> ids.OpId {
+  let #(op, _generator) = ids.mint_op(ids.generator(clock.fixed(at: 0), seed:))
+  op
+}
+
+// The lineage cell a delegate session writes for its child: the parent edge
+// is the `^main` reference, which is what makes the record the parent's to
+// decide and what bounds a run the runtime starts on the child.
+fn spawned(
+  runtime: api.Runtime,
+  strand: String,
+  parent: String,
+  deadline: Option(Int),
+) -> Nil {
+  let assert Ok(Nil) =
+    api.put_reserved_fact(
+      runtime,
+      lineage.register_key(strand),
+      lineage.encode(lineage.Lineage(
+        strand:,
+        parent:,
+        depth: 1,
+        minted_by: lineage.CallSite(
+          operation: op_seeded(41),
+          step_id: "step",
+          source_index: 0,
+        ),
+        brief: op_seeded(42),
+        tools: ["bash"],
+        default_within_ms: None,
+        deadline:,
+        detached: True,
+        reaped: False,
+        orchestrator: None,
+      )),
+    )
+    as "the child's lineage cell must commit"
+
+  // The child's strand exists and sits idle, as one whose first run ended.
+  let assert Ok(Nil) =
+    api.create_idle_strand(
+      runtime,
+      named: strand,
+      configuration: configuration(),
+      at: None,
+    )
+    as "the child's strand must be seeded"
+  Nil
+}
+
+fn child_run_of(call_id: String, strand: String) -> effects.ToolRun {
+  effects.ToolRun(..bash_run(call_id), strand:)
+}
+
+fn spawner_link() -> delegate_outbox.SpawnerLink {
+  delegate_outbox.SpawnerLink(
+    parent_session: "0198c0de-0000-7000-8000-000000000001",
+    spawner: "laptop",
+    node: "laptop@100.64.0.5",
+    ceiling: Some(
+      approval_ceiling.Ceiling(..approval_ceiling.nothing(), env: ["PATH"]),
+    ),
+  )
+}
+
+// The spawner's operator answers the record at the `seq` it was shown.
+fn spawner_decides(
+  runtime: api.Runtime,
+  id: String,
+  seq: Int,
+  decision: remote_escalation.Decision,
+) -> remote_escalation.Answer {
+  remote_decision.admit(
+    runtime,
+    spawner_link(),
+    remote_spawn.Parent(
+      session: "0198c0de-0000-7000-8000-000000000001",
+      strand: "main",
+    ),
+    id,
+    decision,
+    seq,
+    remote_escalation.Decider(principal: "ab12cd", name: "Ola"),
+    1000,
+  )
+}
+
+fn approval_of(record: escalation.Escalation) -> remote_escalation.Decision {
+  let assert Ok(decoded) = grants.decode_denial(record.denial)
+    as "the stored denial must decode"
+  remote_escalation.Approve(
+    grants: decoded.wanted,
+    action: option.unwrap(record.action, ""),
+    scope: remote_escalation.Once,
+  )
+}
+
+// Refuses the child's call, lets its park close, and answers the record left
+// pending for the spawner's operator.
+fn refused_and_detached(
+  harness: Harness,
+  strand: String,
+) -> api.EscalationCell {
+  let first =
+    result_text(wiring.run_tool(harness.config, child_run_of("call_1", strand)))
+  assert string.contains(first, "policy refused")
+  let assert Ok([pending]) = api.escalations(harness.runtime)
+    as "the refusal must file one record"
+  let assert Ok(cell) = api.escalation_cell(harness.runtime, pending.id)
+    as "the pending cell must read back"
+  assert cell.record.status == escalation.Pending
+  cell
+}
+
+fn current_operation(runtime: api.Runtime, strand: String) -> Option(ids.OpId) {
+  case session.strand_state(runtime.session, strand) {
+    Ok(Some(cell)) -> cell.value.current_operation
+    Ok(None) | Error(_) -> None
+  }
+}
+
+// Every run record the session holds, which is one per run a child was given.
+fn child_runs(runtime: api.Runtime) -> List(child_run.Run) {
+  let assert Ok(cells) = api.reserved_facts(runtime, child_run.key_prefix)
+    as "the run records must list"
+  list.filter_map(cells, fn(cell) {
+    child_run.decode(cell.1) |> result.replace_error(Nil)
+  })
+}
+
+// The text of every user message on the child's branch.
+fn told(harness: Harness, strand: String) -> List(String) {
+  let assert Ok(Some(session.Cell(value: Some(leaf), ..))) =
+    session.strand_leaf(harness.config.session, strand)
+    as "the child's branch must have a leaf"
+  let assert Ok(entries) =
+    storage.scan_branch(
+      harness.config.session.store,
+      storage.branch_scan(from: leaf),
+    )
+    as "the child's branch must read"
+  session.project_scan(entries)
+  |> list.flat_map(fn(projected) {
+    case projected {
+      message.UserMessage(content:, ..) ->
+        list.filter_map(content, fn(block) {
+          case block {
+            message.UserText(text:, ..) -> Ok(text)
+            message.UserImage(..) -> Error(Nil)
+          }
+        })
+      _ -> []
+    }
+  })
+}
+
+pub fn a_spawner_approval_wakes_an_idle_remote_child_once_and_its_retry_spends_it_test() {
+  let harness = start_harness(fn() { True }, short_park)
+  spawned(harness.runtime, remote_child, "^main", Some(spawn_deadline))
+  let cell = refused_and_detached(harness, remote_child)
+  assert child_runs(harness.runtime) == []
+
+  let assert remote_escalation.Decided(record) =
+    spawner_decides(
+      harness.runtime,
+      cell.record.id,
+      cell.seq,
+      approval_of(cell.record),
+    )
+  assert record.status == "approved"
+
+  // One run, detached and bounded by the deadline the spawn gave the child.
+  let assert Some(woken) = current_operation(harness.runtime, remote_child)
+    as "the approval opens a run on the idle child"
+  assert child_runs(harness.runtime)
+    == [
+      child_run.Run(
+        strand: remote_child,
+        owner: None,
+        deadline: Some(spawn_deadline),
+        stop: child_run.Unstopped,
+      ),
+    ]
+  assert list.any(told(harness, remote_child), fn(text) {
+    string.contains(text, "[loom] approval " <> cell.record.id <> " approved")
+  })
+
+  // The same decision again is stale, and the notice is spent: no second run.
+  let assert remote_escalation.Stale(..) =
+    spawner_decides(
+      harness.runtime,
+      cell.record.id,
+      cell.seq,
+      approval_of(cell.record),
+    )
+  assert escalate.notify_spawner_decision(
+      harness.runtime,
+      cell,
+      escalate.ApprovedOnce,
+    )
+    == Ok(notice.AlreadyDelivered)
+  assert current_operation(harness.runtime, remote_child) == Some(woken)
+  assert list.length(child_runs(harness.runtime)) == 1
+
+  // The woken run's retry of the refused call clears policy under the grant.
+  let rerun =
+    result_text(wiring.run_tool(
+      recording(harness),
+      child_run_of("call_2", remote_child),
+    ))
+  assert string.contains(rerun, "no sandbox helper")
+  assert !string.contains(rerun, "policy refused")
+  let assert Ok([spent]) = api.escalations(harness.runtime)
+  assert spent.status == escalation.Consumed
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+pub fn a_spawner_denial_wakes_an_idle_remote_child_with_the_denial_test() {
+  let harness = start_harness(fn() { True }, short_park)
+  spawned(harness.runtime, remote_child, "^main", Some(spawn_deadline))
+  let cell = refused_and_detached(harness, remote_child)
+  let assert remote_escalation.Decided(record) =
+    spawner_decides(
+      harness.runtime,
+      cell.record.id,
+      cell.seq,
+      remote_escalation.Deny,
+    )
+  assert record.status == "rejected"
+
+  // The denial opens a run too, so the child can report and finish instead of
+  // waiting out its deadline.
+  let assert Some(_) = current_operation(harness.runtime, remote_child)
+    as "the denial opens a run on the idle child"
+  assert list.length(child_runs(harness.runtime)) == 1
+  assert list.contains(
+    told(harness, remote_child),
+    escalate.decision_notice_text(cell.record, escalate.Denied),
+  )
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+pub fn a_spawner_approval_steers_a_busy_remote_child_without_a_second_run_test() {
+  let harness = start_harness(fn() { True }, short_park)
+  spawned(harness.runtime, remote_child, "^main", Some(spawn_deadline))
+
+  // A run a parent's send opened, still going: the provider never answers.
+  let assert Ok(running) =
+    api.prompt(api.on_strand(harness.runtime, remote_child), [
+      message.UserMessage(
+        content: [message.UserText(text: "keep going", text_signature: None)],
+        timestamp: 0,
+        origin: None,
+      ),
+    ])
+    as "the child's run must start"
+  let cell = refused_and_detached(harness, remote_child)
+  let assert remote_escalation.Decided(_) =
+    spawner_decides(
+      harness.runtime,
+      cell.record.id,
+      cell.seq,
+      approval_of(cell.record),
+    )
+  assert current_operation(harness.runtime, remote_child) == Some(running)
+  assert list.length(child_runs(harness.runtime)) == 1
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+pub fn a_remote_child_past_its_deadline_is_not_woken_and_the_decision_stands_test() {
+  let harness = start_harness(fn() { True }, short_park)
+  spawned(harness.runtime, remote_child, "^main", Some(1))
+  let cell = refused_and_detached(harness, remote_child)
+  let assert remote_escalation.Decided(record) =
+    spawner_decides(
+      harness.runtime,
+      cell.record.id,
+      cell.seq,
+      approval_of(cell.record),
+    )
+  assert record.status == "approved"
+  assert current_operation(harness.runtime, remote_child) == None
+  assert child_runs(harness.runtime) == []
+
+  // The notice is withheld and its mark left unspent, as for any subagent.
+  assert escalate.notify_spawner_decision(
+      harness.runtime,
+      cell,
+      escalate.ApprovedOnce,
+    )
+    == Ok(notice.Withheld)
+  let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
+}
+
+pub fn a_grandchild_whose_parent_is_local_is_not_woken_test() {
+  let harness = start_harness(fn() { True }, short_park)
+  let grandchild = "sub:" <> remote_child <> "/deeper-0123456789abcdef"
+  spawned(harness.runtime, remote_child, "^main", Some(spawn_deadline))
+  spawned(harness.runtime, grandchild, remote_child, Some(spawn_deadline))
+  let cell = refused_and_detached(harness, grandchild)
+
+  // The runtime would give a run of a child with a local parent a fresh
+  // budget, so the decision is noticed only into a run the grandchild has.
+  let assert remote_escalation.Decided(_) =
+    spawner_decides(
+      harness.runtime,
+      cell.record.id,
+      cell.seq,
+      approval_of(cell.record),
+    )
+  assert current_operation(harness.runtime, grandchild) == None
+  assert child_runs(harness.runtime) == []
   let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
 }

@@ -988,7 +988,9 @@ pub fn a_registry_that_does_not_answer_a_claim_is_a_store_failure_test() {
 // A message about a child that exists (a send into it, a decision about its
 // request) is served by the pair's session if one is open, and never makes one.
 // A stale card answered after the child finished and its session was deleted
-// must not open a fresh session only to refuse the message.
+// must not open a fresh session only to refuse the message. The refusal is also
+// why a decision on a released child wakes nothing: it never reaches a session
+// that could commit it, so `remote_decision` never tells a child about it.
 pub fn a_send_or_a_decision_for_a_pair_with_no_session_creates_none_test() {
   let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
   let registry = started(store, fn(built) { Ok(tagged(built)) })
