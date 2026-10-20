@@ -1,105 +1,74 @@
 # Current handoff
 
 This file records the verified state and next steps for this checkout. Rewrite
-it after a body of work; retain historical measurements in their evidence
-reports rather than carrying old validation forward.
+it after a body of work; keep historical measurements in their evidence reports.
 
-Baselined October 19, 2026 against renderer source `9b471953a` on
-`perf/live-resource-followup`, from `origin/main` at
-`361ffa9f444383a684347606688269f620eb3a15`. The claims below were checked
-against this source, saved local evidence, or the explicitly named GitHub
-state. This is a scoped profiling handoff, not a new architecture audit.
-
-Main advanced while integration checks were pending. The agency fixture repair
-`15efea614` retains the original holder and monitor and requires its death before
-closing the runtime. Its 209 focused tests and independent review passed. The
-resulting merge `36d5ffebc` with main `ca9a21f02` passed the full native affected
-gate, hosted Linux and macOS E2E. Both advisory macOS package shards failed
-before reaching the client: an admin timer receive exceeded 100 ms, and the
-runtime idle-poll fixture missed growth during a fixed 200 ms sample. The final
-macOS census was skipped despite green badges, so this is not merge acceptance.
-
-The approved test-only commit `cf09476e9` aligns the admin timer's two positive
-waits with the existing home fixture's one-second budget. Independent review
-and all 1,132 native web-view tests passed; its five-millisecond timer interval
-and behavioral assertions remain intact. The unchanged idle-poll test passed
-three native repetitions, but its CI failure's cause remains unproven. No
-runtime repair is included. The new timer adjustment needs fresh native and
-hosted integration checks. The renderer source blob remains unchanged from
-the original review; no same-head retries remain.
-
-Main subsequently advanced again to `4f5833907` with the harness extraction
-(PR #1034), including client wiring, test scripts and CI. The six scoped commits
-were rebased without conflicts or patch changes; the renderer and both approved
-fixture files remain byte-identical to their reviewed versions. The previous
-native pass and Linux results belong to merge `5b77e00d` with the older main
-`c444fca25`, so current integration checks must be refreshed before merge.
-
-Main advanced once more to `361ffa9f4` with the grouped admin and New-session
-form (PR #1038), including the admin module and its tests. All six patches
-rebased unchanged onto it. The older `a162c3f7` integration passed every hosted
-Linux gate and its real census while macOS was queued. Its native harness gate
-passed 26 tests, but the parallel-eight native client lane hit two unchanged
-callback-fixture timeouts. Each passed three isolated native repetitions, and
-both passed hosted Linux. Their cause remains unproven; the refreshed native
-gate uses CI's four-module client setting without changing any assertions.
-The old failed logs are preserved, and fresh integration gates are required.
-
-The Mermaid follow-up and rulings below preserve the upstream validation record.
-This terminal-only change does not claim a new browser validation run.
+Baselined October 19, 2026 against main
+`698a693de5f7a22a65f7081ab0fce4f7523624dd`, with the approved fixture follow-up
+on `test/admin-read-budget`. The merge, source diff, independent review and
+named local results were checked for this edition. Hosted validation of the
+follow-up remains pending; no current fully green CI claim is made here.
 
 ## Where the tree is
 
 | Work | Verified state |
 | --- | --- |
-| Earlier idle-resource PR | [#1020](https://github.com/Roasbeef/loom/pull/1020) merged at `ae1b65159976bd50a65cfaa04f813a43816ee0ee`. |
-| Installed build | The freshly observed terminal and helper report `3cd330739`. Pickglass leaves the daemon application revision unknown. |
-| Full-frame allocation | `render.repaint_canvas` preserves the sparse empty-cell default and the existing first-column repaint markers. |
-| Local validation | Native `make check-tui` passed all 1,479 tests. Terminal lint has zero errors. The exact-cell/ANSI comparison passes 28 canvas cases. Independent source review approved. |
-| Web Mermaid | The upstream validation record retains the 21-check Chrome drive; Firefox and Safari remain follow-ups. |
-| Terminal Mermaid | Upstream PR #1024 merged the bounded text renderer. Its PNG path remains research. |
-| Publication gates | PR [#1023](https://github.com/Roasbeef/loom/pull/1023) is ready for review. Native, Linux and macOS E2E passed before the latest timer-fixture adjustment; fresh integration gates are pending, and the earlier advisory package failures remain recorded. No installation, restart or hotpatch was performed in this pass. |
+| Resource optimization | PR [#1023](https://github.com/Roasbeef/loom/pull/1023) merged at `698a693de`, with parents `f46b2e161` and `4fd4477f9`, tree `feb0b62a82d94c2084fe7c01a4a9ce0f322d0e8f`. |
+| Merge authorization | The operator explicitly authorized merging the published resource revision with the known macOS admin HTTP fixture failure and putting its adjustment in a follow-up PR. This exception does not make the failed run green. |
+| Admin-read follow-up | Only the private test helper gives admin snapshot reads a five-second HTTP-head wait. Ordinary routing probes retain one second; the forty-second fixture deadline and every response assertion remain intact. Independent review approved the exact patch. |
+| Local follow-up validation | All 191 router tests passed on the merged-main base, direct exit zero in 42.37 seconds. Formatting is clean; client lint reports zero errors. |
+| Deployment | No installation, daemon restart, hotpatch or forced collection was performed. Installed CPU and RSS benefits remain unmeasured. |
 
-The [fresh profiling report](review/live-frame-resources-2026-10-19.md) records
-both live capture rounds, the allocation attribution, matched renderer
-measurements and their limits. Three sequential baseline/candidate VM pairs at
-200 by 50 cells reduce full-paint allocation by 15.4% and reductions by 11.7%.
-Forty scrolling updates use 13.6% fewer words and 8.8% fewer reductions. All
-complete styled-cell, cursor and scrolling-frame witnesses match. The report
-separates these fixture results from installed CPU and RSS savings, which remain
-unmeasured for this candidate.
+The previous edition still described #1023 as awaiting merge. GitHub now confirms
+the merge above. Its CI run tested the earlier integration `878de0cd` with main
+`361ffa9f4`; the actual merge also includes the subsequent remote-approval fix
+in `f46b2e161`. The clean merge tree is verified, but the earlier CI evidence
+must not be presented as validation of that new tree.
 
-The previous edition still described PR #1020 as awaiting publication and its
-gates. That is now false: GitHub confirms the merge above. Its earlier idle
-measurements remain historical evidence in the
-[idle-resource report](review/idle-resources-2026-10-19.md), rather than current
-running-instance numbers. The new installed helper also supersedes the earlier
-observation of a helper still running the old process-table poller. We did not
-install or restart it as part of this pass.
+The resource run passed every hosted Linux job and its real census, plus macOS
+E2E. Its second macOS package shard nevertheless failed one admin HTTP read
+after membership revocation had returned success and the catalogue showed no
+grant. The fixture timed out before receiving the response head. Its advisory
+badge was green; the underlying runner exited one. The approved follow-up
+aligns this functional read probe's wait with the five-second registry calls it
+awaits. The log does not prove why the response was late.
+
+All three real remote-daemon scenarios, including partition, passed in that
+macOS shard without skips, as did the previously failing admin timer, idle-poll
+and LSP deadline fixtures. The earlier broad native client run remained red:
+two failures and a distribution-test cancellation. Focused LSP and distribution
+repetitions passed; partition repetitions were mixed because the fixture's
+file-write and eight-second command preconditions raced observation. Those
+results are preserved and are not a passing full native affected gate.
+
+The [profiling report](review/live-frame-resources-2026-10-19.md) records the
+capture boundaries and three matched renderer VM pairs. At 200 by 50 cells,
+full paints allocate 15.4% fewer words and use 11.7% fewer reductions; forty
+scrolling updates allocate 13.6% fewer words and use 8.8% fewer reductions.
+Every complete styled-cell, cursor and scrolling-frame witness matches.
+These are fixture measurements, not installed CPU or RSS savings.
 
 ## What to do next
 
-1. Finish the focused rendering PR and its affected gates.
-   **Exit:** independent review, `make check-affected` and hosted checks refer to
-   the exact published head. The approved client-fixture repair expands the
-   selector to client, terminal, conformance, lint and global static gates. Its
-   package-level rule now requests Linux signoff; the operator has authorized
-   hosted CI as the Linux acceptance evidence while the separate host is offline.
-   Inspect raw advisory macOS results and the skip census before declaring CI
-   green. Keep changes to authentication and dependencies outside this PR.
-2. Continue attributing the remaining CPU only from bounded captures.
+1. Publish and finish the approved admin-read fixture follow-up.
+   **Exit:** its exact published head passes the complete hosted Linux and macOS
+   checks, actual advisory runner outcomes and executed skip censuses. Keep the
+   change confined to fixture tolerance and its validation record; add no
+   retries, skipped tests, authentication changes or production timeouts.
+   The operator accepts hosted CI as Linux evidence while the separate signoff
+   host is offline. The known-failure merge exception applied to #1023 only.
+2. Coordinate any installation and restart with the operator.
+   **Exit:** explicit lifecycle authorization, then matched session, connection
+   and activity measurements. Publication does not update a running process.
+3. Attribute remaining CPU and memory only from bounded captures.
    **Exit:** identify a reachable owner and compare the same workload before
-   proposing another fix. Unicode width scans and text painting remain visible
-   in the terminal profile. Daemon SQL and filesystem samples do not establish
-   one sole cause, and the selected registry process mostly waited.
-3. Coordinate any candidate installation and restart with the operator.
-   **Exit:** authorize the live lifecycle change, then compare matched session,
-   connection and activity cuts. Publication does not update a running process.
-
-4. Drive the Mermaid check in Firefox and Safari once. **Exit:** the same 21
-   checks pass, or the differences are filed. The
-   [TUI note](design-notes/mermaid-terminal-graphics.md) records the merged text
-   renderer and separates it from the unimplemented PNG exploration.
+   proposing another repair. Terminal Unicode measurement and text painting
+   remain visible; daemon SQL and filesystem samples do not establish one sole
+   bottleneck. Separate language-server memory has no new measured repair.
+4. Retain the Mermaid follow-ups from the prior validation record.
+   **Exit:** the recorded browser checks pass in Firefox and Safari or their
+   differences are filed. The [TUI note](design-notes/mermaid-terminal-graphics.md)
+   separates the existing text renderer from the unimplemented PNG exploration.
 
 ## Rulings already made
 

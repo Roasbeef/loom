@@ -188,6 +188,35 @@ The scoped patches rebased unchanged onto the admin update, and the next
 native gate uses CI's four-module client setting. Fresh native and hosted
 integration checks remain required before merge.
 
+## Owner-authorized merge and admin-read follow-up
+
+The operator explicitly directed the published resource head `4fd4477f9` to
+merge with its known macOS admin HTTP fixture failure, with the approved
+fixture adjustment in a separate follow-up PR. PR #1023 merged at
+`698a693de5f7a22a65f7081ab0fce4f7523624dd`, with main `f46b2e161` and tree
+`feb0b62a82d94c2084fe7c01a4a9ce0f322d0e8f`. The original CI run tested
+`878de0cd` with the earlier main `361ffa9f4`, not that final integration.
+This authorization is not a claim that the failed CI run passed.
+
+Every hosted Linux gate and the actual census passed. macOS E2E also passed,
+and the second macOS package shard exercised all three real remote-daemon
+scenarios without skips. That shard failed the admin read immediately after
+membership revocation had returned 294 and a separate catalogue query found
+no grant. Its one-second HTTP-head receive expired; the underlying snapshot
+makes several registry calls, each with a five-second budget. The log does
+not establish the cause of the delay. Three unchanged focused native
+repetitions and all 191 unchanged router tests passed.
+
+The separately approved and independently reviewed follow-up gives only
+`admin_read` a five-second head receive through the existing request helper.
+It preserves the exact GET path, headers, empty body, status and content
+assertions. Ordinary route probes retain one second, and the managed fixture
+still bounds the whole body at forty seconds. There are no retries or
+production timeout changes. All 191 router tests passed on the merged-main
+base with the adjustment; hosted checks of its new published head remain
+pending. The earlier full native affected run remains red and is not replaced
+by these focused passes.
+
 ## Repeat capture during elevated CPU
 
 A newly opened terminal was sampled for another thirty seconds after our
