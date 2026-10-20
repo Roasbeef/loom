@@ -14,9 +14,10 @@ import client/peers
 import core/clock
 import core/ids
 import core/json
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{Some}
+import gleam/otp/system
 import runtime/api
 import simplifile
 import support/addresses
@@ -30,6 +31,37 @@ type Arming {
   Arming(delay_ms: Int, wake: fn() -> Nil)
 }
 
+// Records each arming into `armings`. The recorded `wake` rings the timer and
+// then returns only once the drainer has handled the ring, pass and all.
+//
+// That is what keeps these tests off the wall clock. A test that rang the
+// open pass and went straight on to queue a message raced the pass: under a
+// loaded host the pass could run after the message was queued, find it, and
+// arm a retry the test never expected — doubled, for a saved recipient. The
+// injected `after` runs inside the drainer's own loop, so `process.self()`
+// there is the drainer, and the ring travels from the test process to it.
+// Same-sender order puts the ring ahead of the barrier's system message.
+fn recorder(armings: Subject(Arming)) -> fn(Int, fn() -> Nil) -> Nil {
+  fn(delay_ms, wake) {
+    let drainer = process.self()
+    process.send(
+      armings,
+      Arming(delay_ms:, wake: fn() {
+        wake()
+        settle(drainer)
+      }),
+    )
+  }
+}
+
+// Returns once `drainer` has handled every message this process sent it
+// before the call. A system message is answered by the loop in mailbox order,
+// behind whatever the drainer was already doing.
+fn settle(drainer: Pid) -> Nil {
+  let _state = system.get_state(drainer)
+  Nil
+}
+
 // Starts a drainer over `rig` whose timer arms into the returned subject
 // rather than into the clock, and the name a doorbell reaches it by.
 fn drainer(
@@ -37,10 +69,7 @@ fn drainer(
 ) -> #(Subject(Arming), address.Address(peer_outbox_drain.Message)) {
   let armings = process.new_subject()
   let name = addresses.new()
-  let options =
-    peer_outbox_drain.options(rig.wiring, fn(delay_ms, wake) {
-      process.send(armings, Arming(delay_ms:, wake:))
-    })
+  let options = peer_outbox_drain.options(rig.wiring, recorder(armings))
   let assert Ok(_) = peer_outbox_drain.start(options, name)
     as "the drainer starts"
   #(armings, name)
@@ -55,10 +84,7 @@ fn idle_drainer(
   let armings = process.new_subject()
   let scans = process.new_subject()
   let name = addresses.new()
-  let options =
-    peer_outbox_drain.options(rig.wiring, fn(delay_ms, wake) {
-      process.send(armings, Arming(delay_ms:, wake:))
-    })
+  let options = peer_outbox_drain.options(rig.wiring, recorder(armings))
   let pass = options.pass
   let options =
     peer_outbox_drain.Options(..options, pass: fn() {
@@ -71,23 +97,41 @@ fn idle_drainer(
   let open = arming(armings)
   open.wake()
 
-  let assert Ok(peer_outbox_drain.Clear) = process.receive(scans, 2000)
+  let assert Ok(peer_outbox_drain.Clear) = process.receive(scans, 30_000)
     as "the initial empty pass completes before the first message is queued"
   #(armings, name)
 }
 
+// The bound is a backstop rather than a measurement: every arming but the
+// first follows a ring or a doorbell the drainer has already handled, so it
+// is in the mailbox by the time it is asked for.
 fn arming(armings: Subject(Arming)) -> Arming {
-  let assert Ok(found) = process.receive(armings, 2000)
+  let assert Ok(found) = process.receive(armings, 30_000)
     as "the drainer armed its timer"
   found
 }
 
-// A timer that was not armed is shown by waiting out a window in which one
-// would have been.
-fn assert_no_arming(armings: Subject(Arming)) -> Nil {
-  let assert Error(Nil) = process.receive(armings, 200)
+// A timer that was not armed is shown once the drainer has handled everything
+// sent to it: an arming it was going to make would already be in the mailbox.
+// A fixed quiet window would prove nothing on a loaded host, where the arming
+// can land after the window and be taken by the next `arming` instead.
+fn assert_no_arming(
+  armings: Subject(Arming),
+  name: address.Address(peer_outbox_drain.Message),
+) -> Nil {
+  drained(name)
+  let assert Error(Nil) = process.receive(armings, 0)
     as "the drainer holds no timer"
   Nil
+}
+
+// Settles the drainer a doorbell reaches by `name`, for the waits that follow
+// a poke rather than a recorded ring.
+fn drained(name: address.Address(peer_outbox_drain.Message)) -> Nil {
+  let assert Ok(subject) = address.lookup(name) as "the drainer is registered"
+  let assert Ok(drainer) = process.subject_owner(subject)
+    as "the drainer's subject has an owner"
+  settle(drainer)
 }
 
 fn wait_for(what: String, check: fn() -> Bool) -> Nil {
@@ -104,7 +148,7 @@ fn wait_for(what: String, check: fn() -> Bool) -> Nil {
 
 pub fn an_outbox_with_nothing_owed_runs_one_pass_and_keeps_no_timer_test() {
   let rig = peer_rig.rig(2000, [], Pass)
-  let #(armings, _name) = drainer(rig)
+  let #(armings, name) = drainer(rig)
 
   // The pass at session open is armed at once.
   let first = arming(armings)
@@ -112,7 +156,7 @@ pub fn an_outbox_with_nothing_owed_runs_one_pass_and_keeps_no_timer_test() {
   first.wake()
 
   // It finds nothing, so nothing is armed after it.
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   assert peer_rig.counts(rig) == #(0, 0)
 }
 
@@ -123,7 +167,7 @@ pub fn the_drainer_delivers_one_message_after_the_owner_was_unreachable_twice_te
   let #(armings, name) = drainer(rig)
   let open = arming(armings)
   open.wake()
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
 
   let assert Ok(queued) = peer_rig.send(rig, "m1")
   assert peers.is_queued(queued)
@@ -141,7 +185,7 @@ pub fn the_drainer_delivers_one_message_after_the_owner_was_unreachable_twice_te
   wait_for("the recipient admitted the message", fn() {
     peer_rig.receipts(rig.recipient) == 1
   })
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   assert peer_rig.counts(rig) == #(3, 3)
   assert peer_rig.stored_receipt(rig, "m1") != json.Null
   assert peer_rig.due(rig) == []
@@ -166,19 +210,19 @@ pub fn a_lost_reply_is_delivered_once_and_settled_by_the_drainer_test() {
 
   // The repeat got the stored receipt: still one message.
   assert peer_rig.receipts(rig.recipient) == 1
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
 }
 
 pub fn a_definitive_refusal_is_never_attempted_again_test() {
   let rig = peer_rig.rig(2030, [], Pass)
   peer_rig.set_resident(rig, Gone)
   assert peer_rig.send(rig, "m1") == Error(peers.not_running)
-  let #(armings, _name) = drainer(rig)
+  let #(armings, name) = drainer(rig)
   let open = arming(armings)
   open.wake()
 
   // The refused row is finished: no further lookup, no delivery, no timer.
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   assert peer_rig.counts(rig) == #(0, 1)
 }
 
@@ -193,7 +237,7 @@ pub fn a_poke_while_waiting_does_not_arm_a_second_timer_test() {
   assert waiting.delay_ms == peer_outbox_drain.retry_interval_ms
   peer_outbox_drain.poke(name)
   peer_outbox_drain.poke(name)
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
 }
 
 pub fn a_session_that_did_not_answer_is_asked_once_per_pass_test() {
@@ -239,7 +283,7 @@ pub fn a_message_owed_for_an_hour_is_refused_and_ends_the_timer_test() {
   // No attempt was made for the expired message, and the timer stopped: a new
   // message arms it again, which a machine still waiting would not.
   assert peer_rig.counts(rig) == #(1, 1)
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   let assert Ok(_) = peer_rig.send(rig, "m2")
   peer_outbox_drain.poke(name)
   let again = arming(armings)
@@ -261,7 +305,7 @@ pub fn unlinking_a_queued_message_ends_its_delivery_test() {
   // The pass found no row, so nothing was delivered and nothing is armed. The
   // machine is idle again: a new message arms it, which a waiting one would
   // not.
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   assert peer_rig.receipts(rig.recipient) == 0
   assert peer_rig.counts(rig) == #(1, 1)
   let assert Ok(_) =
@@ -277,7 +321,7 @@ pub fn a_saved_recipient_slows_the_drainer_to_a_cap_and_is_delivered_once_open_t
   let rig = peer_rig.rig(2090, [], Pass)
   peer_rig.set_resident(rig, Saved)
   let #(armings, name) = idle_drainer(rig)
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   let assert Ok(queued) = peer_rig.send(rig, "m1")
   assert peers.is_queued(queued)
   peer_outbox_drain.poke(name)
@@ -308,7 +352,7 @@ pub fn a_saved_recipient_slows_the_drainer_to_a_cap_and_is_delivered_once_open_t
   wait_for("the recipient admitted the message", fn() {
     peer_rig.receipts(rig.recipient) == 1
   })
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   assert peer_rig.stored_receipt(rig, "m1") != json.Null
 }
 
@@ -402,7 +446,7 @@ pub fn a_message_to_a_saved_recipient_is_not_reattempted_by_a_doorbell_test() {
   // put the interval back to the fixed one.
   peer_outbox_drain.poke(name)
   peer_outbox_drain.poke(name)
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   second.wake()
   let third = arming(armings)
   assert third.delay_ms == 20_000
@@ -444,7 +488,7 @@ pub fn a_reopened_sender_resumes_draining_what_it_owed_test() {
   let second = notes_session.open(path, clock.fixed(1000))
   let after =
     peer_rig.attach(network, second.runtime, "sender", clock.fixed(1000))
-  let #(armings, _name) = drainer(after)
+  let #(armings, name) = drainer(after)
   let open = arming(armings)
   assert open.delay_ms == 0
   open.wake()
@@ -454,7 +498,7 @@ pub fn a_reopened_sender_resumes_draining_what_it_owed_test() {
   wait_for("the row recorded the receipt", fn() {
     peer_rig.stored_receipt(after, "m1") != json.Null
   })
-  assert_no_arming(armings)
+  assert_no_arming(armings, name)
   assert api.close(second.runtime) == Ok(Nil)
   let _removed = simplifile.delete_all([root])
   Nil
@@ -498,7 +542,7 @@ fn scripted_pass(
     |> actor.start
     as "the scripted pass starts"
   let script = started.data
-  #(fn() { process.call(script, 1000, fn(reply) { Next(reply:) }) }, script)
+  #(fn() { process.call(script, 10_000, fn(reply) { Next(reply:) }) }, script)
 }
 
 // The machine owns the timing and nothing else, so an instance over any pass
@@ -513,10 +557,7 @@ pub fn an_instance_over_another_pass_keeps_the_same_timing_test() {
     ])
   let armings = process.new_subject()
   let name = addresses.new()
-  let options =
-    peer_outbox_drain.over(pass, fn(delay_ms, wake) {
-      process.send(armings, Arming(delay_ms:, wake:))
-    })
+  let options = peer_outbox_drain.over(pass, recorder(armings))
   let assert Ok(_) = peer_outbox_drain.start(options, name)
     as "the drainer starts"
 
@@ -533,16 +574,16 @@ pub fn an_instance_over_another_pass_keeps_the_same_timing_test() {
   second.wake()
 
   // The third pass finds nothing, and nothing is armed after it.
-  assert_no_arming(armings)
-  assert process.call(script, 1000, fn(reply) { Ran(reply:) }) == 3
+  assert_no_arming(armings, name)
+  assert process.call(script, 10_000, fn(reply) { Ran(reply:) }) == 3
 
   // A doorbell wakes the idle machine for one interval, as `peers.send` does.
   peer_outbox_drain.poke(name)
   let rung = arming(armings)
   assert rung.delay_ms == peer_outbox_drain.retry_interval_ms
   rung.wake()
-  assert_no_arming(armings)
-  assert process.call(script, 1000, fn(reply) { Ran(reply:) }) == 4
+  assert_no_arming(armings, name)
+  assert process.call(script, 10_000, fn(reply) { Ran(reply:) }) == 4
 }
 
 pub fn a_ring_runs_a_pass_at_once_where_a_poke_waits_an_interval_test() {
@@ -555,7 +596,7 @@ pub fn a_ring_runs_a_pass_at_once_where_a_poke_waits_an_interval_test() {
         process.send(passes, Nil)
         peer_outbox_drain.Clear
       },
-      fn(delay_ms, wake) { process.send(armings, Arming(delay_ms:, wake:)) },
+      recorder(armings),
     )
   let assert Ok(_) = peer_outbox_drain.start(options, name)
     as "the drainer starts"
@@ -563,15 +604,16 @@ pub fn a_ring_runs_a_pass_at_once_where_a_poke_waits_an_interval_test() {
   // The pass at open runs when its arming rings.
   let open = arming(armings)
   open.wake()
-  let assert Ok(Nil) = process.receive(passes, 2000) as "the open pass ran"
+  let assert Ok(Nil) = process.receive(passes, 0) as "the open pass ran"
 
   // A poke only arms a timer one interval away, and runs nothing.
   peer_outbox_drain.poke(name)
   let waiting = arming(armings)
   assert waiting.delay_ms == peer_outbox_drain.retry_interval_ms
-  assert process.receive(passes, 200) == Error(Nil)
+  drained(name)
+  assert process.receive(passes, 0) == Error(Nil)
 
   // A ring runs a pass now.
   peer_outbox_drain.ring(name)
-  let assert Ok(Nil) = process.receive(passes, 2000) as "the ring ran a pass"
+  let assert Ok(Nil) = process.receive(passes, 30_000) as "the ring ran a pass"
 }
