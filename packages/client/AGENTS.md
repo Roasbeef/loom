@@ -548,8 +548,10 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   incarnation and credential digest. The real-upgrade regression in
   `session_socket_test` varies an unused runtime hook, bounds the owned
   socket's collected process capacity, the gateway attachment's flattened
-  state growth and the observer component's retained state, and witnesses
-  relay admission and close cleanup. The component's session-list and sign-in
+  state growth and the observer component model's transport-callback growth,
+  and witnesses relay admission and close cleanup. The pinned Lustre model
+  excludes renderer caches whose startup sizes vary independently. The
+  component's session-list and sign-in
   callbacks project registry and identity fields before construction, so they
   retain no attachment runtime. Each read still authenticates with the original
   credential. It transfers
