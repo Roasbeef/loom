@@ -36,6 +36,7 @@ import host/bootstrap as host_bootstrap
 import host/endpoint as daemon_endpoint
 import session_view/launch_words
 import session_view/snapshot
+import session_view/text_hygiene
 import tui/bootstrap
 import tui/daemon
 import tui/daemon/protocol
@@ -230,6 +231,16 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
       Error(
         "this session was reserved but never initialized; "
         <> "retry its creation or delete it instead of opening it",
+      )
+
+    // A reservation whose start failed is refused the same way, and the line
+    // carries the reason the daemon kept so the operator need not look it up
+    // (protocol-change/093).
+    protocol.FailedStart(reason:, ..) ->
+      Error(
+        "this session's start failed: "
+        <> text_hygiene.single_line(reason)
+        <> "; retry its creation or delete it instead of opening it",
       )
 
     // The daemon refuses an open while the move lasts, and the row already says
@@ -533,7 +544,10 @@ fn remove_using(
       Error("stop returned an unexpected control reply; session kept")
   })
   use _ <- result.try(case status {
-    protocol.Saved | protocol.Reserved | protocol.Moving(_) -> Ok(Nil)
+    protocol.Saved
+    | protocol.Reserved
+    | protocol.FailedStart(..)
+    | protocol.Moving(_) -> Ok(Nil)
     protocol.Stopping(operation) ->
       await_retirement(session, operation, request)
     protocol.RecoveryBlocked -> Error("cleanup is not confirmed; session kept")
@@ -586,8 +600,10 @@ fn await_retirement(session, operation, request) {
           }
         Ok(protocol.SessionReply(row)) if row.session_id == session -> {
           case row.status {
-            protocol.Saved | protocol.Reserved | protocol.Moving(_) ->
-              poll.Done(Nil)
+            protocol.Saved
+            | protocol.Reserved
+            | protocol.FailedStart(..)
+            | protocol.Moving(_) -> poll.Done(Nil)
             protocol.Stopping(current) if current == operation -> poll.Retry
             protocol.RecoveryBlocked ->
               poll.Fail("cleanup is not confirmed; session kept")
@@ -887,6 +903,7 @@ fn target(
     protocol.Resident(incarnation) -> Ok(incarnation)
     protocol.Opening(operation) -> await(host, session, operation)
     protocol.Reserved
+    | protocol.FailedStart(..)
     | protocol.Saved
     | protocol.Moving(_)
     | protocol.Stopping(_)
@@ -982,6 +999,7 @@ fn await(host: Host, session, operation) {
             protocol.Resident(incarnation) -> poll.Done(incarnation)
             protocol.Opening(_) -> poll.Retry
             protocol.Reserved
+            | protocol.FailedStart(..)
             | protocol.Saved
             | protocol.Moving(_)
             | protocol.Stopping(_)

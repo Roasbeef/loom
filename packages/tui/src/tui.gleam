@@ -2468,6 +2468,7 @@ fn registration_line(row: control_protocol.Session) -> String {
   <> placement.label(row.executor, row.workspace)
   <> "  "
   <> text_hygiene.single_line(row.name)
+  <> session_table.failure_note(row.status)
 }
 
 fn remove_registration(

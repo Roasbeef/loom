@@ -833,7 +833,7 @@ boundaries and the split's measurements under Invariants.
   remembers explicit dismissal. One requested refresh survives an in-flight
   worktree observation.
 - Confirmed session deletion sends `StopSession` once, waits through `weft/poll`
-  for the daemon's saved/reserved observation, then sends `DeleteSession` once.
+  for the daemon's saved/reserved/failed-start observation, then sends `DeleteSession` once.
   Unconfirmed cleanup, a replacement incarnation, or an uncertain reply keeps
   the registration. The picker runs this within its existing managed job.
 - Usage labels distinguish cumulative totals from input context at the latest
@@ -918,7 +918,9 @@ boundaries and the split's measurements under Invariants.
   status. `list` shows the resident track by default — every lifecycle but
   a saved registration and a bare reservation, which `session_table.resident_track`
   tells apart from the rest — and prints one trailing line on a terminal
-  naming each hidden lifecycle by its own count, `"4 saved, 1 reserved not
+  naming each hidden lifecycle by its own count (a `FailedStart` is stuck, so
+  it stays on the resident track and its state word is `failed`, with the
+  daemon's reason after the name), `"4 saved, 1 reserved not
   shown (use --all)"`, when it held any back; `--all` (`tui.Showing`'s
   `Every`) widens either format to the whole catalogue, and off a terminal
   that trailing line never prints, since a parser was not expecting it.

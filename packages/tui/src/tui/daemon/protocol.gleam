@@ -474,6 +474,14 @@ pub type Lifecycle {
   /// selection can open it — only a create retry under its request key.
   Reserved
 
+  /// A reserved identity whose start failed, with the one cleaned line the
+  /// daemon kept for it and when it failed in Unix milliseconds
+  /// (`protocol-change/093`). It is a `Reserved` in what a client may do: no
+  /// selection can open it, and the owner may delete it or retry the creation.
+  /// The daemon reports it as `reserved` with a `failure` member, so a
+  /// `failure` that does not decode reads as a plain `Reserved`.
+  FailedStart(reason: String, at: Int)
+
   /// Metadata is registered without a running session.
   Saved
 
@@ -1600,7 +1608,7 @@ fn deletion(body: json.JsonValue) {
 fn lifecycle(body: json.JsonValue) {
   use state <- result.try(text_at(body, "state", 64))
   case state {
-    "reserved" -> Ok(Reserved)
+    "reserved" -> Ok(reserved(body))
     "saved" -> Ok(Saved)
     "opening" -> result.map(text_at(body, "operation", 512), Opening)
     "resident" -> result.map(text_at(body, "incarnation", 512), Resident)
@@ -1608,6 +1616,24 @@ fn lifecycle(body: json.JsonValue) {
     "recovery_blocked" -> Ok(RecoveryBlocked)
     _ -> Error("invalid session lifecycle")
   }
+}
+
+// A reservation, and the failure the daemon kept for it when it sent one that
+// is well formed: a nonblank single line of at most 512 bytes and a time. The
+// member is an addition to the status object, so one that is missing or does
+// not decode leaves the plain reservation an older daemon sent, and never fails
+// the row (`protocol-change/093`).
+fn reserved(body: json.JsonValue) -> Lifecycle {
+  let failure = {
+    use kept <- result.try(field(body, "failure"))
+    use reason <- result.try(text_at(kept, "reason", 512))
+    use at <- result.try(number_at(kept, "at"))
+    case string.contains(reason, "\n") || string.contains(reason, "\r") {
+      True -> Error("failure reason spans lines")
+      False -> Ok(FailedStart(reason:, at:))
+    }
+  }
+  result.unwrap(failure, Reserved)
 }
 
 fn optional_id(value: json.JsonValue) {

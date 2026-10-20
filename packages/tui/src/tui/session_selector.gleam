@@ -301,6 +301,7 @@ pub fn presence(state: State, row: protocol.Session) -> Presence {
           Unobserved
       }
     protocol.Reserved
+    | protocol.FailedStart(..)
     | protocol.Saved
     | protocol.Moving(_)
     | protocol.Opening(_)
@@ -435,6 +436,7 @@ pub fn resident_ids(state: State) -> List(String) {
     case row.status {
       protocol.Resident(_) -> Ok(row.session_id)
       protocol.Reserved
+      | protocol.FailedStart(..)
       | protocol.Saved
       | protocol.Moving(_)
       | protocol.Opening(_)
@@ -1315,6 +1317,7 @@ fn summary_phrase(
     Inactive, _ ->
       case row.status {
         protocol.RecoveryBlocked -> "recovery blocked"
+        protocol.FailedStart(..) -> "failed to start"
         protocol.Reserved
         | protocol.Saved
         | protocol.Moving(_)
@@ -1371,6 +1374,10 @@ fn reason(
         // The row cannot be opened from here until the move ends, so it offers
         // no Enter.
         protocol.Moving(_) -> "cannot be opened until the move ends"
+
+        // The reason is the daemon's own line, drawn as one row of text.
+        protocol.FailedStart(reason:, ..) ->
+          "failed to start: " <> text_hygiene.single_line(reason)
         protocol.Reserved
         | protocol.Saved
         | protocol.Opening(_)
@@ -1915,6 +1922,7 @@ fn question(value: String, width: Int) -> span.Line {
 fn lifecycle(status) {
   case status {
     protocol.Reserved -> "reserved"
+    protocol.FailedStart(..) -> "failed to start"
     protocol.Saved -> "saved"
     protocol.Moving(to) -> "moving to " <> to
     protocol.Opening(_) -> "opening"
