@@ -7,8 +7,9 @@ it after a body of work; keep historical measurements in their evidence reports.
 
 The image fix is based on Loom source `47d4b54a6` and pins etui
 `43969f88075a17044640e5e7cc43682b86a988ab` ([etui PR #10](https://github.com/Roasbeef/etui/pull/10)).
-The original reported image turn reached Gemini; its later text follow-up
-returned to GLM with a placeholder. Follow-ups now retain vision while images
+The original image turn was dispatched to Gemini; its later text follow-up
+returned to GLM with a placeholder. The records do not preserve the original
+HTTP image payload. Follow-ups now retain vision while images
 remain in the strand's projected context. Historical image limits and active
 run protection remain separate. Navigation or compaction can remove those
 pixels and return the strand to text.
@@ -19,27 +20,36 @@ private-session capture verified Loom's 480 by 280 demo image transmission.
 Non-empty `NO_COLOR` still suppresses previews. See the [scoped evidence and
 remaining gates](review/image-followups-herdr-2026-10-19.md).
 
-The full affected gate passed on `e8d2071af` over `c444fca25`, including
-4,884 client tests, 1,545 TUI tests and a clean skip census. Its hosted Linux
-gate, macOS E2E and both macOS shards also passed. The provider-routing
-extraction in
-[PR #1034](https://github.com/Roasbeef/loom/pull/1034) moved the shared rule into
-`harness/vision`. The client wrapper delegates there, and admission, dispatch
-and the live observer share `harness/admission.image_bearing`. This integration
-requires a fresh full gate and review; earlier validation is historical
-provenance rather than proof of the integrated head.
+The reviewed implementation is integrated with main `b65857090` at
+`6f5616787`. Every code patch retained its original diff; only this handoff
+needed conflict resolution. The shared image rule lives in `harness/vision`,
+with admission, dispatch and the live observer using
+`harness/admission.image_bearing`. The client facade delegates to that boundary.
 
-The owner authorized repair of the failing CI fixtures and merge once checks
-pass. A failed delegate reopen exposed a reachable Closing-state race, while
-the HTTP and code-mode fixtures relied on timing that did not establish the
-state their assertions required. The integrated run also exposed an advisor
-fixture using a mutating run-start drain as a barrier; the existing inert
-barrier now preserves the phase its assertions inspect. The owner explicitly waived the dedicated
-Linux signoff because obelisk is offline and no alternate host is available;
-that signoff has not run. Next: finish the repairs, review them, validate the
-final head including raw macOS advisory logs, then merge
-[Loom PR #1022](https://github.com/Roasbeef/loom/pull/1022). No installation or
-restart of the operator's daemon is authorized.
+The latest integration passed 33 vision, 12 socket, 192 HTTP, 610 session-view,
+26 harness, 1,554 terminal and 112 conformance tests. Fresh native shipments
+passed all 25 bootstrap cases. House lint, documentation and the integration
+skip census passed. Independent reviews of the image change, CI repairs,
+harness integration and advisor fixture left no open findings.
+
+Validation is not fully green. The full native run on predecessor `d6b70aeae`
+failed a fixture-copy timeout and bootstrap readiness check; the entire unchanged
+modules then passed all 30 and five cases respectively. Combined coverage
+includes all 4,895 client cases, and the remaining native packages passed.
+Hosted validation of that predecessor passed every actual Linux lane, macOS
+E2E and macOS shard two. Stock macOS release smoke failed with a WebSocket
+startup timeout; the unchanged local stock-toolchain smoke passed in 3.46
+seconds. MacOS shard one and the final hosted census remained unfinished.
+These results do not establish why the failed invocations missed their limits.
+
+The owner explicitly authorized immediate merge of
+[Loom PR #1022](https://github.com/Roasbeef/loom/pull/1022), accepting that smoke
+failure, unfinished macOS validation and the native module reruns. This replaces
+the earlier repair-before-merge condition for this PR; it does not make those
+runs green. The dedicated Linux signoff was separately waived because obelisk
+is offline and no alternate host is available. No operator installation or
+daemon restart is authorized. Any later validation failure needs its own
+classification rather than an assumption that this exception fixed it.
 
 The following resource and Mermaid handoff is preserved historical context;
 those claims were not re-audited by the image fix.
