@@ -300,7 +300,7 @@ already has and now carries on its title row; the approval as a full-width
 block under a rule with numbered choices, a key hint and a one-line reason,
 which replaces the bottom-anchored dialog's three vertical choices, keeping
 the rule that nothing is selected on opening and Enter confirms
-(`render`, `tui/approval_panel.gleam:285`, keeps its capture of the exact
+(`render`, `tui/approval_panel.gleam:296`, keeps its capture of the exact
 sequence, action and grants); the single footer line with an activity label
 on the left, which the compact footer already is; and the pinned todo as one
 line that expands.
@@ -747,7 +747,7 @@ No single key sends a decision.
 | Session tab: cost, context | usage, context estimate | yes | `usage` (`session_view/model.gleam:404`), `money` (`session_view/transcript_lines.gleam:4458`), `footer` (`session_view/context_view.gleam:414`) |
 | Session tab: last completion | completion evidence | yes | `lines` (`session_view/completion_summary.gleam:514`) |
 | Sessions column, picker | rows, activity | yes, minus an age | section 1.1 |
-| Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:393`), `render` (`tui/approval_panel.gleam:286`) |
+| Approval block | the exact escalation | yes | `approvals` (`session_view/model.gleam:393`), `render` (`tui/approval_panel.gleam:296`) |
 | Todo line | the strand's board | yes | `height` (`tui/todo_panel.gleam:50`), `todo_boards` (`session_view/model.gleam:348`) |
 | Scrollback position | rows above the tail | yes | `reading_history` (`tui/model.gleam:1340`), `viewport_backlog` (`tui/model.gleam:756`) |
 | Images | bytes, type, pixel size | partly | `Image` (`session_view/transcript_image.gleam:29`) holds the bytes and type; the pixel size is decoded client-side from the PNG, JPEG, GIF or WebP header, no wire change; drawing needs etui |

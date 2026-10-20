@@ -896,7 +896,13 @@ boundaries and the split's measurements under Invariants.
   the child's own status. `Replay` is the same shape for a different
   reason: `loom replay <path>` drives a recording through the virtual
   backend and prints frames, so it installs no terminal state and opens no
-  socket either. `Sessions` is `loom sessions list`, `loom sessions rm
+  socket either. `parse_launch` first moves the daemon options (`--server`,
+  `--state-dir`, `--config`) written before `sessions`, `deployment`, `directory`
+  or `ui` behind the verb (`hoist_daemon_options`), so `loom --server X sessions
+  list` parses as `loom sessions list --server X`. `approval_panel.RemoteRequest`
+  is the card context of a remote child's request: `inbound.captured_approval_panel`
+  reads it from `review.remote` (child and orchestrator) because the scope of a
+  `remote-escalation/` record is the other machine's. `Sessions` is `loom sessions list`, `loom sessions rm
   <id>` and `loom sessions move <id> --to <orchestrator>` (protocol-change/078,
   phase 5; `--to` is checked against `placement.is_orchestrator_name` before any
   daemon is started, `MoveSession` is a mutation, and the answer `MovedReply`

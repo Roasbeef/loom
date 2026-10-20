@@ -1109,6 +1109,48 @@ pub fn with_recording(model: Model, path: String) -> Model {
 }
 
 fn parse_launch(arguments: List(String)) -> Launch {
+  parse_words(hoist_daemon_options(arguments))
+}
+
+// The daemon options a subcommand shares with a local launch, written before
+// the subcommand: `loom --server X sessions list` means the same as `loom
+// sessions list --server X`. The subcommand parsers read their options after
+// the verb, so the leading pairs are moved behind it here, once, and no parser
+// learns a second spelling. Only the subcommands whose usage lists the options
+// take them this way; a launch, and the forwarded verbs that own their own
+// flags, are left exactly as written. A flag with no value, or one that looks
+// like the next flag, ends the leading run, so the subcommand parser then
+// reports it the way it does for the trailing spelling.
+fn hoist_daemon_options(arguments: List(String)) -> List(String) {
+  let #(leading, rest) = leading_daemon_options(arguments, [])
+  case leading, rest {
+    [], _ -> arguments
+    _, [verb, ..after] ->
+      case list.contains(["sessions", "deployment", "directory", "ui"], verb) {
+        True -> list.flatten([[verb], after, leading])
+        False -> arguments
+      }
+    _, [] -> arguments
+  }
+}
+
+fn leading_daemon_options(
+  arguments: List(String),
+  taken: List(String),
+) -> #(List(String), List(String)) {
+  case arguments {
+    [flag, value, ..rest]
+      if flag == "--server" || flag == "--state-dir" || flag == "--config"
+    ->
+      case string.starts_with(value, "-") {
+        True -> #(list.reverse(taken), arguments)
+        False -> leading_daemon_options(rest, [value, flag, ..taken])
+      }
+    _ -> #(list.reverse(taken), arguments)
+  }
+}
+
+fn parse_words(arguments: List(String)) -> Launch {
   case arguments {
     [] -> Local(default_bootstrap_options(), "")
     ["--demo"] -> Demo
@@ -1220,6 +1262,30 @@ pub fn launch_sessions(
     Sessions(command:, ..) -> Ok(command)
     Invalid(reason) -> Error(reason)
     _other -> Error("not a sessions launch")
+  }
+}
+
+/// Classifies a whole argument vector that names a `sessions`, `deployment` or
+/// `directory` command, answering the daemon options it settled on or the
+/// refusal. It is the test seam for the options written before the verb.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(options) =
+///   tui.launch_daemon_options(["--server", "/bin/loomd", "sessions", "list"])
+/// assert options.server == "/bin/loomd"
+/// ```
+@internal
+pub fn launch_daemon_options(
+  arguments: List(String),
+) -> Result(bootstrap.Options, String) {
+  case parse_launch(arguments) {
+    Sessions(options:, ..)
+    | Deployment(options:, ..)
+    | Directory(options:, ..) -> Ok(options)
+    Invalid(reason) -> Error(reason)
+    _other -> Error("not a daemon command launch")
   }
 }
 
