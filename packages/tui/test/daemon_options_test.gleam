@@ -29,16 +29,15 @@ pub fn every_shared_option_is_read_before_the_verb_test() {
 }
 
 pub fn the_verbs_own_flags_survive_the_move_test() {
-  let assert Ok(tui.ListRegistrations(
-    showing: tui.Every,
-    reach: tui.ThisDaemonOnly,
-  )) =
-    tui.launch_sessions(["list", "--all", "--local", "--server", "/bin/loomd"])
-  let assert Ok(options) =
-    tui.launch_daemon_options([
+  let assert Ok(#(command, options)) =
+    tui.launch_sessions_command([
       "--server", "/bin/loomd", "sessions", "list", "--all", "--local",
     ])
-  assert options.server == "/bin/loomd"
+  assert command == tui.ListRegistrations(tui.Every, tui.ThisDaemonOnly)
+  assert tui.launch_sessions_command([
+      "sessions", "list", "--all", "--local", "--server", "/bin/loomd",
+    ])
+    == Ok(#(command, options))
 }
 
 pub fn the_web_view_reads_options_before_its_verb_test() {
@@ -47,10 +46,15 @@ pub fn the_web_view_reads_options_before_its_verb_test() {
   assert request.session == option.Some("x")
 }
 
-pub fn a_valueless_or_unknown_option_is_still_refused_test() {
-  let assert Error(missing) =
+// A flag takes the next word as its value, so `--server sessions` consumes the
+// verb and the stray `list` is what the launch parser then refuses.
+pub fn a_flag_that_swallows_the_verb_leaves_a_stray_word_refused_test() {
+  let assert Error(stray) =
     tui.launch_daemon_options(["--server", "sessions", "list"])
-  assert string.contains(missing, "missing value")
+  assert string.contains(stray, "missing value for list")
+}
+
+pub fn an_unknown_option_is_still_refused_test() {
   let assert Error(unknown) =
     tui.launch_daemon_options(["sessions", "list", "--bogus", "x"])
   assert string.contains(unknown, "unknown local launch option")

@@ -2686,7 +2686,9 @@ fn begin_transfer(
       // An id holding a slash may name a child's request on another
       // orchestrator, filed under `remote-escalation/`, so the lookup reads
       // both registers the id can mean and the client's validator accepts
-      // either (`snapshot_view.lookup_keys`).
+      // either (`snapshot_view.lookup_keys`). Eight slash ids make sixteen
+      // exact keys, which is `storage/snapshot.validate`'s whole selection
+      // cap, so a ninth id or a third key per id would be an InvalidRequest.
       snapshot.Plan(
         list.flat_map(ids, snapshot_view.lookup_keys)
           |> list.map(snapshot.ExactKey(register.FactCustom, _)),

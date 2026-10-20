@@ -1121,12 +1121,15 @@ fn parse_launch(arguments: List(String)) -> Launch {
 // flags, are left exactly as written. A flag with no value, or one that looks
 // like the next flag, ends the leading run, so the subcommand parser then
 // reports it the way it does for the trailing spelling.
+// The subcommands whose usage lists the daemon options.
+const hoisting_verbs = ["sessions", "deployment", "directory", "ui"]
+
 fn hoist_daemon_options(arguments: List(String)) -> List(String) {
   let #(leading, rest) = leading_daemon_options(arguments, [])
   case leading, rest {
     [], _ -> arguments
     _, [verb, ..after] ->
-      case list.contains(["sessions", "deployment", "directory", "ui"], verb) {
+      case list.contains(hoisting_verbs, verb) {
         True -> list.flatten([[verb], after, leading])
         False -> arguments
       }
@@ -1260,6 +1263,28 @@ pub fn launch_sessions(
 ) -> Result(SessionsCommand, String) {
   case parse_launch(["sessions", ..arguments]) {
     Sessions(command:, ..) -> Ok(command)
+    Invalid(reason) -> Error(reason)
+    _other -> Error("not a sessions launch")
+  }
+}
+
+/// Classifies a whole argument vector that names a `sessions` command,
+/// answering the command and the daemon options together. It is the test seam
+/// for the equality of the two spellings of the daemon options.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(#(tui.ListRegistrations(..), options)) =
+///   tui.launch_sessions_command(["--server", "/bin/loomd", "sessions", "list"])
+/// assert options.server == "/bin/loomd"
+/// ```
+@internal
+pub fn launch_sessions_command(
+  arguments: List(String),
+) -> Result(#(SessionsCommand, bootstrap.Options), String) {
+  case parse_launch(arguments) {
+    Sessions(options:, command:) -> Ok(#(command, options))
     Invalid(reason) -> Error(reason)
     _other -> Error("not a sessions launch")
   }

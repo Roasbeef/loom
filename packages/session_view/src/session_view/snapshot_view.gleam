@@ -366,10 +366,12 @@ fn decode_pending_input(value) {
 /// ```
 pub fn lookup_keys(id: String) -> List(String) {
   case string.contains(id, "/") {
-    True -> ["escalation/" <> id, remote_prefix <> id]
-    False -> ["escalation/" <> id]
+    True -> [local_prefix <> id, remote_prefix <> id]
+    False -> [local_prefix <> id]
   }
 }
+
+const local_prefix = "escalation/"
 
 const remote_prefix = "remote-escalation/"
 
@@ -419,7 +421,7 @@ pub fn lookup(
     list.map(cells, fn(cell) {
       case string.starts_with(cell.key, remote_prefix) {
         True -> string.drop_start(cell.key, string.length(remote_prefix))
-        False -> string.drop_start(cell.key, 11)
+        False -> string.drop_start(cell.key, string.length(local_prefix))
       }
     })
   let answered = list.append(found, missing)
@@ -454,7 +456,7 @@ pub fn decided(captured: snapshot.Captured) -> Result(List(Cell), String) {
     missing != []
       || list.any(cells, fn(cell) {
       cell.namespace != register.FactCustom
-      || !string.starts_with(cell.key, "escalation/")
+      || !string.starts_with(cell.key, local_prefix)
     }),
     Error("decided approvals returned an unrequested register"),
   )
