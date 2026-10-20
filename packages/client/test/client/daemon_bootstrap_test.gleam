@@ -178,6 +178,14 @@ fn native_launch(paths: endpoint.Paths) {
   Ok(daemon_bootstrap.Launch(erl, arguments))
 }
 
+// How long a launcher waits for a real daemon VM to boot and publish its
+// endpoint, in milliseconds. A fresh Erlang VM starts a supervision tree, opens
+// a catalogue and binds a listener, which a host running other suites takes
+// well past ten seconds over. The wait ends when the endpoint appears, so a
+// passing test never spends it, and two such waits stay inside EUnit's scaled
+// 50 s cap for a test.
+const child_boot_ms = 40_000
+
 pub fn daemon_bootstrap_native_child_lock_handoff_and_two_workspace_reuse_test() {
   let paths = paths()
   let resolved =
@@ -185,7 +193,7 @@ pub fn daemon_bootstrap_native_child_lock_handoff_and_two_workspace_reuse_test()
       paths,
       process.self(),
       fn() { native_launch(paths) },
-      10_000,
+      child_boot_ms,
     )
   case resolved {
     Error(reason) -> {
@@ -198,7 +206,7 @@ pub fn daemon_bootstrap_native_child_lock_handoff_and_two_workspace_reuse_test()
         bootstrap.resolve_daemon(
           options(paths, "/other/workspace"),
           process.self(),
-          2000,
+          8000,
         )
       let result = daemon.request(first.control, protocol.Status, 1000)
       let _shutdown = daemon.request(first.control, protocol.Shutdown, 1000)
@@ -248,13 +256,13 @@ pub fn daemon_bootstrap_concurrent_native_launchers_share_one_child_test() {
             process.send(launched, Nil)
             native_launch(paths)
           },
-          10_000,
+          child_boot_ms,
         )
       process.send(replies, outcome)
     })
   })
-  let first = process.receive(replies, 12_000)
-  let second = process.receive(replies, 12_000)
+  let first = process.receive(replies, child_boot_ms + 5000)
+  let second = process.receive(replies, child_boot_ms + 5000)
 
   // Request shutdown before assertions so a refusal still has fixture cleanup.
   list.each([first, second], fn(outcome) {
