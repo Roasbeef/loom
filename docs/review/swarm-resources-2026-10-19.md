@@ -109,14 +109,15 @@ identity they use. Each session-list read still calls `manager.authorized_page`;
 each sign-in read still checks the page and calls `manager.signins` with the
 original credential and current time. Role gating and task ownership are unchanged.
 
-The existing authenticated page regression now measures the linked Lustre
-component's returned application state as well as socket capacity and gateway
+The authenticated page regression measures the linked Lustre component's
+model, which owns its transport callbacks, as well as socket capacity and gateway
 attachment growth. Test-only support identifies exactly one linked component
 through Lustre 5.7.1's runtime record, with bounded lookups. No production
 inspection API was added. The fixture grows only an unused `run_start` hook
 from zero to 8,192 messages and verifies that the hook still returns its payload.
 
-Three fresh VMs per version produced the same figures:
+The original experiment measured the complete returned Lustre runtime state.
+Three fresh VMs per version produced the same figures at that observation cut:
 
 | Fixture metric | Original, empty hook | Original, large hook | Repaired, empty hook | Repaired, large hook |
 | --- | ---: | ---: | ---: | ---: |
@@ -127,8 +128,23 @@ Three fresh VMs per version produced the same figures:
 With the large hook, component flattened state falls 95.0%, from about 1.46 MiB
 to 74.6 KiB at eight bytes per word. Payload-dependent growth falls from
 172,302 words to 270 words, below the regression's 4,096-word allowance. Every
-original run fails that bound and every repaired run passes. Relay admission
+original run fails that bound and every repaired run passes at that cut. Relay admission
 and close cleanup still run through the real authenticated socket.
+
+A later concurrent client run exposed why the whole runtime state is unsuitable
+for the regression bound: it varied from 9,301 to 21,265 words while startup
+messages could change the VDOM and render cache independently of the unused
+hook. The test now projects the pinned runtime's `model` field, containing
+`component.Model.view.transport`, and retains the same 4,096-word allowance.
+Five fresh full socket-module runs pass, with model sizes of 1,313 words for
+the empty hook and 1,313 or 1,316 for the enlarged hook. The concurrent full
+client shard observed 1,313 to 4,520 words, also within the unchanged growth
+allowance. Restoring only the
+original whole-attachment capture in `Transport.sessions` fails all three
+isolated controls: 4,583 grows to 61,930 words, above the 8,679-word bound.
+The historical whole-state figures above remain observations, not invariants
+across render phases. The model measurement excludes the runtime's selectors,
+VDOM and render cache; it does not establish their retained size.
 
 Flattened state estimates a copy with sharing removed; it is not the component's
 whole live heap or a daemon RSS measurement. The fixture observes an observer

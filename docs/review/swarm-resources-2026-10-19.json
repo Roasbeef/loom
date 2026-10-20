@@ -741,5 +741,86 @@
     "full_client_suite": "not run",
     "hosted_ci": "not run",
     "installed_comparison": "not run"
+  },
+  "regression_model_boundary": {
+    "base": "c10f928f702009d7c3c70fe8ee5844250b2fa2ac",
+    "scope": "Test-only projection of Lustre State.model, containing component.Model.view.transport; excludes runtime selectors, VDOM and render caches.",
+    "reason": "Concurrent whole-runtime-state observation9301 ->21265 exceeded the unrelated-payload bound due independently changing startup state.",
+    "growth_allowance_words": 4096,
+    "fixed_full_socket_module_fresh_vms": [
+      {
+        "run": 1,
+        "exit": 0,
+        "tests_passed": 12,
+        "small_model_words": 1313,
+        "large_model_words": 1316
+      },
+      {
+        "run": 2,
+        "exit": 0,
+        "tests_passed": 12,
+        "small_model_words": 1313,
+        "large_model_words": 1316
+      },
+      {
+        "run": 3,
+        "exit": 0,
+        "tests_passed": 12,
+        "small_model_words": 1313,
+        "large_model_words": 1313
+      },
+      {
+        "run": 4,
+        "exit": 0,
+        "tests_passed": 12,
+        "small_model_words": 1313,
+        "large_model_words": 1316
+      },
+      {
+        "run": 5,
+        "exit": 0,
+        "tests_passed": 12,
+        "small_model_words": 1313,
+        "large_model_words": 1316
+      }
+    ],
+    "negative_control": "Restore original whole-attachment capture only in Transport.sessions, keeping current production behavior otherwise.",
+    "negative_control_fresh_vms": [
+      {
+        "run": 1,
+        "exit": 1,
+        "small_model_words": 4583,
+        "large_model_words": 61930
+      },
+      {
+        "run": 2,
+        "exit": 1,
+        "small_model_words": 4583,
+        "large_model_words": 61930
+      },
+      {
+        "run": 3,
+        "exit": 1,
+        "small_model_words": 4583,
+        "large_model_words": 61930
+      }
+    ],
+    "production_changed_by_refinement": false,
+    "source_sha256": {
+      "packages/client/test/client/session_socket_test.gleam": "b7df73ec4f71c1e715281cf384c16976468477ae294a02019882b2413b460af5",
+      "packages/client/test/client_test_ffi.erl": "4471bea30eadd0d100d3b46c1b2ea8b53f6b2db69e1160af9aad87368834eeb2",
+      "packages/client/test/support/internal/ffi_memory.gleam": "e3d744ffe55ba5888327a3f83f8abef4700d7f076849d3907ea6faba1e6f48a9"
+    },
+    "raw_logs": "/private/tmp/loom-swarm-model-regression/",
+    "concurrent_client_shard_observation": {
+      "parallel_modules": 4,
+      "shard": "2/2",
+      "small_model_words": 1313,
+      "large_model_words": 4520,
+      "growth_words": 3207,
+      "allowance_words": 4096,
+      "log": "/private/tmp/loom-swarm-pr-model-fixed-client-shard-2.log"
+    },
+    "negative_control_patch_sha256": "afa8bd9fedbae16703b599386fb44fd435f04a75e4b60793441f8aba7c64cdde"
   }
 }
