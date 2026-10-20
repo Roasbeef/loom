@@ -23,9 +23,10 @@ fn drawn_with(profiles: List(String), models: List(String)) -> String {
     state: create.Composing("/src/loom"),
     profiles:,
     models:,
-    remote: Nil,
+    here: Nil,
     choose_place: fn(_) { Nil },
-    submit_remote: fn(_, _) { Nil },
+    submit_remote: fn(_, _, _) { Nil },
+    machine: "box",
     cards: placements.listed([], []),
   )
   |> create.form("/src/loom")
@@ -42,12 +43,33 @@ fn drawn_elsewhere(profiles: List(String), models: List(String)) -> String {
     state: create.Elsewhere,
     profiles:,
     models:,
-    remote: Nil,
+    here: Nil,
     choose_place: fn(_) { Nil },
-    submit_remote: fn(_, _) { Nil },
+    submit_remote: fn(_, _, _) { Nil },
+    machine: "box",
     cards: placements.listed([], []),
   )
-  |> create.elsewhere_form
+  |> create.new_form([])
+  |> element.to_string
+}
+
+fn drawn_with_recent(recent: List(String)) -> String {
+  create.Offered(
+    choose: fn(_) { Nil },
+    submit: fn(_, _, _, _) { Nil },
+    cancel: Nil,
+    elsewhere: Nil,
+    submit_elsewhere: fn(_, _, _, _) { Nil },
+    state: create.Elsewhere,
+    profiles: [],
+    models: [],
+    here: Nil,
+    choose_place: fn(_) { Nil },
+    submit_remote: fn(_, _, _) { Nil },
+    machine: "box",
+    cards: placements.listed([], []),
+  )
+  |> create.new_form(recent)
   |> element.to_string
 }
 
@@ -166,6 +188,7 @@ pub fn a_submitted_position_becomes_the_offered_name_test() {
       [#("path", "~/app"), #("name", ""), #("profile", "1")],
       offered,
       [],
+      [],
     )
     == Ok(#(
       "~/app",
@@ -200,6 +223,7 @@ pub fn a_submitted_position_becomes_the_offered_model_key_test() {
       [#("path", "~/app"), #("model", "1"), #("name", "")],
       [],
       models,
+      [],
     )
     == Ok(#("~/app", "", creations.Private, creations.Roles(None, Some("slow"))))
 }
@@ -239,6 +263,7 @@ pub fn a_profile_the_page_did_not_offer_is_refused_test() {
       [#("path", "~/a"), #("name", ""), #("profile", "3")],
       offered,
       [],
+      [],
     )
     == Error(Nil)
 }
@@ -277,6 +302,7 @@ pub fn a_model_the_page_did_not_offer_is_refused_test() {
       [#("path", "~/a"), #("name", ""), #("model", "3")],
       [],
       models,
+      [],
     )
     == Error(Nil)
 }
@@ -293,12 +319,95 @@ pub fn an_empty_field_is_refused_when_none_were_offered_test() {
       [#("path", "~/a"), #("name", ""), #("profile", "")],
       [],
       [],
+      [],
     )
     == Error(Nil)
   assert create.typed_fields_with_roles(
       [#("path", "~/a"), #("name", ""), #("model", "")],
       [],
       [],
+      [],
     )
     == Error(Nil)
+}
+
+// The remembered folders are a select beside the path field, drawn only when
+// the page has some. An option's value is its position and its label is the
+// path as a text node, so a path is never an attribute.
+pub fn remembered_folders_are_a_select_of_positions_test() {
+  let none = drawn_elsewhere([], [])
+  assert !string.contains(none, "name=\"folder\"")
+
+  let hostile = "/h/x\" onfocus=\"alert(1)\" <b>"
+  let html = drawn_with_recent(["/home/o/app", hostile])
+  assert string.contains(html, "name=\"folder\"")
+  assert string.contains(html, "<option value>Type a path below</option>")
+  assert string.contains(html, "<option value=\"0\">/home/o/app</option>")
+  assert string.contains(html, "<option value=\"1\">")
+  assert !string.contains(html, "onfocus=\"alert(1)\"")
+  assert string.contains(html, "&lt;b&gt;")
+}
+
+// A remembered folder becomes the path when none is typed, a typed path wins,
+// and a position outside the list, a name where a position goes and a folder
+// field on a form that offered none are refused.
+pub fn a_remembered_folder_stands_for_the_path_when_none_is_typed_test() {
+  let recent = ["/h/a", "/h/b"]
+  let none = creations.default_roles
+  assert create.typed_fields_with_roles(
+      [#("folder", "1"), #("path", ""), #("name", "n")],
+      [],
+      [],
+      recent,
+    )
+    == Ok(#("/h/b", "n", creations.Private, none))
+  assert create.typed_fields_with_roles(
+      [#("folder", "1"), #("path", "~/x"), #("name", "")],
+      [],
+      [],
+      recent,
+    )
+    == Ok(#("~/x", "", creations.Private, none))
+  assert create.typed_fields_with_roles(
+      [#("folder", ""), #("path", "~/x"), #("name", "")],
+      [],
+      [],
+      recent,
+    )
+    == Ok(#("~/x", "", creations.Private, none))
+  assert create.typed_fields_with_roles(
+      [#("folder", "2"), #("path", ""), #("name", "")],
+      [],
+      [],
+      recent,
+    )
+    == Error(Nil)
+  assert create.typed_fields_with_roles(
+      [#("folder", "/h/a"), #("path", ""), #("name", "")],
+      [],
+      [],
+      recent,
+    )
+    == Error(Nil)
+  assert create.typed_fields_with_roles(
+      [#("folder", "0"), #("path", ""), #("name", "")],
+      [],
+      [],
+      [],
+    )
+    == Error(Nil)
+}
+
+// The line saying how the profile and the model combine is drawn with the
+// selects and only with them.
+pub fn the_roles_line_goes_with_the_selects_test() {
+  assert !string.contains(drawn(), "replaces the main model")
+  assert string.contains(
+    drawn_with(["deepseek"], []),
+    "replaces the main model the profile gives",
+  )
+  assert string.contains(
+    drawn_elsewhere([], ["fast"]),
+    "replaces the main model the profile gives",
+  )
 }

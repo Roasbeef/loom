@@ -8299,10 +8299,11 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   (`weft.limit`) so black-holed targets cannot starve the rest. `orchestrator_port.ask_report`
   returns a typed `Silence`: `PortGone` (its monitor fired at once: nothing
   registered there, or the port ended) is `Down(Silent)`, and `AskTimedOut` is
-  `Down(TimedOut)`. `Reach(self, dial, ask, own)` is how it reaches: `over(
-  membership, self)` is `distribution.peer`, `distribution.connect`, then
-  `orchestrator_port.ask_report` at the connected node's port, `alone(self)` (no
-  `[distribution]`) connects to nobody, and `reporting(reach, own)` gives either
+  `Down(TimedOut)`. `Reach(self, footing, host, dial, ask, own)` is how it reaches:
+  `over(membership, self)` (`footing: Distributed`) is `distribution.peer`,
+  `distribution.connect`, then `orchestrator_port.ask_report` at the connected
+  node's port, `alone(self)` (`footing: Standalone`, no `[distribution]`) connects
+  to nobody, and `reporting(reach, own)` gives either
   the closure that reads the daemon itself, which `main.node_reads` builds once
   and hands to both the port and `listen_moving`. A task that returns `Error(why)`
   is a `Failed` outcome carrying `why`, a connected node whose report did not
@@ -8352,6 +8353,13 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   reordered by health. The `directory` block is `directory_json`
   (`directory_status_json`, moved here from `server`, plus `copy`) and `moves`
   names each destination as the asking daemon names it.
+- A whole-deployment reply carries `distribution` (`footing_word`: `configured`
+  or `none`) and, when the daemon could read it, `host`, both added by
+  `server.with_footing`, so the Admin page titles a daemon with no distribution
+  by its host name under "This machine" and never by its made-up node name
+  (protocol-change/085, the addendum of 2026-10-19). `Reach.host` is read once by
+  `main.deployment_reach` through `ffi_os.host_name` (`inet:gethostname/0`,
+  decoded by `host_name_of`); `alone` and `over` leave it `None`.
 - `server.Config.deployment` is the `Reach`; `main.deployment_reach` builds it
   from `Config.membership` and the node's own name and `listen_moving` gives it
   `reads.report`. `server.deployment_status` adds `MemberRole` to the asking
@@ -8366,7 +8374,10 @@ reports; the 2026-10-16 addendum of 085 records the spellings it chose.
   alone (`WithoutSelf`, so a slow directory read never delays the cards), and
   `deployment.for_page` reduces the result to `web_view/placements` (a state, the
   free scope count, any contradiction, the operator's declaration, a pool's trial
-  order and the members that can take a session; no node name or address).
+  order and the members that can take a session, and the workspace names the
+  new-session form offers: each executor's own, and for a pool those every reached
+  executor registered; no node name or address). `server.HomeAttachment.machine`
+  is `Reach.self`, which the form words as "this machine".
   `server.HomeAttachment` gains `pools` (the startup capture of the `[pools]`
   names, like `executors`) and `placements`, the blocking read, which
   `ui_socket.upgrade_home` hands the page as `read_task(deliver,

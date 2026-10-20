@@ -176,6 +176,9 @@ fn reach(
 ) {
   deployment.Reach(
     self:,
+    self_name: self,
+    footing: deployment.Distributed,
+    host: None,
     dial: fn(node, _within_ms) {
       process.send(asked, node)
       case list.key_find(answers, node) {
@@ -321,6 +324,9 @@ pub fn a_connected_node_that_waits_out_its_bound_reads_as_a_timeout_test() {
   let waiting =
     deployment.Reach(
       self:,
+      self_name: self,
+      footing: deployment.Distributed,
+      host: None,
       dial: fn(_node, _within_ms) { Ok(Nil) },
       ask: fn(_node, within_ms) {
         process.sleep(within_ms)
@@ -348,6 +354,9 @@ pub fn slow_targets_do_not_starve_the_fast_ones_test() {
   let world =
     deployment.Reach(
       self:,
+      self_name: self,
+      footing: deployment.Distributed,
+      host: None,
       dial: fn(node, _within_ms) {
         case string.starts_with(node, "slow") {
           True -> {
@@ -385,6 +394,9 @@ pub fn a_node_that_is_not_connected_is_not_asked_test() {
     deployment.probe(
       deployment.Reach(
         self:,
+        self_name: self,
+        footing: deployment.Distributed,
+        host: None,
         dial: fn(_node, _within_ms) { Error(Unreachable) },
         ask: fn(node, _within_ms) {
           process.send(told, node)
@@ -405,6 +417,9 @@ pub fn a_connection_that_never_settles_reads_as_down_by_the_deadline_test() {
   let stuck =
     deployment.Reach(
       self:,
+      self_name: self,
+      footing: deployment.Distributed,
+      host: None,
       dial: fn(_node, _within_ms) {
         process.sleep(60_000)
         Ok(Nil)
@@ -421,6 +436,9 @@ pub fn a_report_that_never_arrives_reads_as_down_by_the_deadline_test() {
   let stuck =
     deployment.Reach(
       self:,
+      self_name: self,
+      footing: deployment.Distributed,
+      host: None,
       dial: fn(_node, _within_ms) { Ok(Nil) },
       ask: fn(_node, _within_ms) {
         process.sleep(60_000)
@@ -437,6 +455,9 @@ pub fn a_connection_that_crashes_reads_as_down_test() {
   let crashing =
     deployment.Reach(
       self:,
+      self_name: self,
+      footing: deployment.Distributed,
+      host: None,
       dial: fn(_node, _within_ms) { panic as "boom" },
       ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
       sessions: listed_sessions.unlisted,
@@ -1521,6 +1542,26 @@ pub fn a_daemon_without_distribution_names_itself_and_connects_to_nobody_test() 
   assert option.is_some(asker.report)
 }
 
+// A daemon is titled the way its peers are: by the name its ledger gives it, with
+// the node string beside it. Without a ledger the node string is all there is.
+pub fn the_asking_daemon_is_titled_by_its_ledger_name_test() {
+  let alone = deployment.alone("alpha@10.0.0.1")
+  let assert Ok(deployment.Overview(self: unnamed, ..)) =
+    deployment.status(alone, [OrchestratorRole], [], [], [], None)
+  assert unnamed.name == "alpha@10.0.0.1"
+  let assert Ok(deployment.Overview(self: named, ..)) =
+    deployment.status(
+      deployment.named(alone, "hub"),
+      [OrchestratorRole],
+      [],
+      [],
+      [],
+      None,
+    )
+  assert named.name == "hub"
+  assert named.node == "alpha@10.0.0.1"
+}
+
 // The creation panel's read connects to the executors and to nothing else: the
 // orchestrators are not its business, and a slow one must not delay the cards.
 pub fn the_creation_panel_reads_the_executors_alone_test() {
@@ -1599,10 +1640,12 @@ pub fn the_page_is_told_states_declarations_and_no_node_test() {
         enforcement: None,
         toolchains: [],
         free_scopes: None,
+        workspaces: [],
         contradiction: None,
       )),
     )
   let assert Some(report) = exec2_card.report
+  assert report.workspaces == ["proj"]
   assert report.state == page.Degraded
   assert report.free_scopes == Some(12)
   assert report.platform == Some("linux/x86_64")
@@ -1612,8 +1655,65 @@ pub fn the_page_is_told_states_declarations_and_no_node_test() {
   assert pool
     == page.Pool(
       "builders",
-      Some(page.PoolReport(executors: ["exec2", "box"], eligible: ["box"])),
+      Some(
+        page.PoolReport(
+          executors: ["exec2", "box"],
+          eligible: ["box"],
+          workspaces: [],
+        ),
+      ),
     )
+}
+
+// A pool offers the workspace names every executor that could take the session
+// registered, because a first open can land on any of them. An executor that is
+// down is not asked, and a pool with none reachable offers nothing.
+pub fn a_pool_is_told_the_workspaces_all_its_reachable_executors_share_test() {
+  let facts = fn(name, workspaces) {
+    Some(
+      node_report.NodeReport(
+        ..bare(name),
+        executor: Some(
+          node_report.ExecutorFacts(
+            ..executor_facts(scopes(open: 4, closing: 0, unknown: 0)),
+            workspaces:,
+          ),
+        ),
+      ),
+    )
+  }
+  let pool = fn(eligible) {
+    deployment.PoolEntry(
+      name: "builders",
+      executors: ["exec2", "box"],
+      eligible:,
+    )
+  }
+  let told = fn(eligible) {
+    let assert page.Placements(pools: [card], ..) =
+      deployment.for_page(
+        deployment.Placements(
+          executors: [
+            deployment.ExecutorEntry(
+              box(),
+              Reachable,
+              facts("box@10.0.0.2", ["app", "tools", "docs"]),
+            ),
+            deployment.ExecutorEntry(
+              exec2(),
+              Reachable,
+              facts("exec2@10.0.0.9", ["tools", "app"]),
+            ),
+          ],
+          pools: [pool(eligible)],
+        ),
+      )
+    let assert Some(report) = card.report
+    report.workspaces
+  }
+  assert told(["exec2", "box"]) == ["app", "tools"]
+  assert told(["box"]) == ["app", "tools", "docs"]
+  assert told([]) == []
 }
 
 pub fn a_down_or_full_executor_is_drawn_with_that_state_test() {

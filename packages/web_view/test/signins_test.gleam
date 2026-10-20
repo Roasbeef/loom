@@ -89,6 +89,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     rename_self: None,
     executors: [],
     pools: [],
+    machine: "box",
     placements: fn(_) { Nil },
   )
 }

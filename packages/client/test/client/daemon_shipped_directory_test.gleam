@@ -624,7 +624,8 @@ fn remote(
 // deployment over its control socket, the page's own decoder reads the reply the
 // way the page's read does (`server.admin_deployment` makes this very read), and
 // the Deployment section draws a row for each of the three nodes, the asking
-// daemon, its peer orchestrator and the executor.
+// daemon, its peer orchestrator and the executor. A distributed daemon says so,
+// so every node keeps the name its configuration gives it.
 //
 // No shipped fixture drives the browser's WebSocket and the page's ticket chain,
 // so the page is not reached through them; the daemon's half of the read is the
@@ -646,17 +647,21 @@ pub fn the_admin_page_lists_each_machine_of_the_deployment_test_() -> EunitTest 
     assert list.contains(names, "bravo")
     assert list.contains(names, remote_duo.executor_name)
     let html =
-      admin_machines.view(admin_machines.Section(
-        held: machines.Known(snapshot),
-        chosen: option.None,
-        choose: fn(_) { Nil },
-        page: element.none(),
-      ))
+      admin_machines.view(
+        admin_machines.Section(
+          held: machines.Known(snapshot),
+          chosen: option.None,
+          choose: fn(_) { Nil },
+          page: element.none(),
+          entries: [],
+        ),
+      )
       |> element.to_string
     list.each(names, fn(name) {
       assert string.contains(html, ">" <> name <> "<")
     })
-    assert string.contains(html, "Deployment · 3 nodes")
+    assert snapshot.distribution == machines.Distributed
+    assert string.contains(html, "3 machines · ")
     Nil
   })
 }
