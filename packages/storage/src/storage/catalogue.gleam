@@ -72,6 +72,7 @@ import storage/catalogue_profiles_schema
 import storage/catalogue_recent_folders_schema
 import storage/catalogue_releases_schema
 import storage/catalogue_spend_schema
+import storage/catalogue_start_failures_schema
 import storage/catalogue_subtitles_schema
 import storage/sql
 import storage/sql_schema
@@ -280,7 +281,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 17
+pub const current_version = 18
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -303,6 +304,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(15, catalogue_delegates_schema.schema),
     #(16, catalogue_releases_schema.schema),
     #(17, catalogue_spend_schema.schema),
+    #(18, catalogue_start_failures_schema.schema),
   ]
 }
 
@@ -456,6 +458,9 @@ pub fn confirm_in_transaction(
   case record.state {
     Saved -> Ok(record)
     Reserved -> {
+      // A confirmed file is the end of a failed start: whatever reason was kept
+      // for the reservation no longer describes it.
+      use Nil <- result.try(clear_in_transaction(catalogue, id))
       use Nil <- result.try(statement(catalogue, sql.confirm_registration(id)))
       use Nil <- result.try(statement(
         catalogue,
@@ -1193,6 +1198,159 @@ fn decode_custody(
         "imported" -> Ok(Imported(op:, from: peer))
         _ -> Error(Invalid("unknown move state"))
       }
+  }
+}
+
+/// Why a creation's start failed, kept on the reservation it belongs to
+/// (protocol-change/093).
+///
+/// A reservation is deliberately durable: a retry under the same request key
+/// resumes the same identity and any partial database. The reason a start
+/// failed used to live only in the registry's memory, so after a restart nobody
+/// could tell a failed start from a creation in progress. This row is that
+/// reason, and it never changes what a retry may do.
+pub type StartFailure {
+  StartFailure(
+    /// One cleaned line of at most `start_failure_limit` bytes.
+    reason: String,
+    /// When the start failed, in Unix milliseconds.
+    at: Int,
+  )
+}
+
+/// The longest start failure reason, in bytes: the column's own bound.
+pub const start_failure_limit = 512
+
+/// Records why the reserved session's start failed, replacing an earlier
+/// failure, so a registration holds at most one.
+///
+/// Only a `Reserved` registration can hold a failure: a `Saved` one has a
+/// verified file and so is not a creation that failed, and answers `Conflict`.
+/// The reason must be one to `start_failure_limit` bytes with no line break or
+/// control character. Cleaning an arbitrary failure into that shape is the
+/// caller's job, because the catalogue owns rows and not display text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.record_start_failure(store, session_id, "census reports []", at: 1_000)
+/// ```
+pub fn record_start_failure(
+  catalogue: Catalogue,
+  id: String,
+  reason: String,
+  at at: Int,
+) -> Result(Nil, Error) {
+  use failure <- result.try(decode_start_failure(reason, at))
+  transaction(catalogue.connection, fn() {
+    use record <- result.try(get(catalogue, id))
+    case record.state {
+      Saved -> Error(Conflict)
+      Reserved -> {
+        use Nil <- result.try(statement(
+          catalogue,
+          sql.upsert_start_failure(
+            session_id: id,
+            reason: failure.reason,
+            failed_at: failure.at,
+          ),
+        ))
+        statement(catalogue, sql.increment_catalogue_revision())
+      }
+    }
+  })
+}
+
+/// Reads the failure kept for a session, or `None` when it has none.
+///
+/// A stored row that breaks the bound fails the read with `Invalid` rather than
+/// reading as "no failure", so damage is not mistaken for a creation in
+/// progress.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.start_failure(store, session_id) == Ok(None)
+/// ```
+pub fn start_failure(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Option(StartFailure), Error) {
+  use rows <- result.try(query(catalogue, sql.start_failure(id)))
+  case rows {
+    [] -> Ok(None)
+    [row] -> decode_start_failure(row.reason, row.failed_at) |> result.map(Some)
+    [_, _, ..] -> Error(Invalid("duplicate start failure"))
+  }
+}
+
+/// Reads every kept failure in one statement, for a listing that names the
+/// failed starts of a whole page.
+///
+/// A row that does not decode is left out, so display shows a plain
+/// reservation. `start_failure` still fails on the same row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.start_failures(store) == Ok([])
+/// ```
+pub fn start_failures(
+  catalogue: Catalogue,
+) -> Result(List(#(String, StartFailure)), Error) {
+  use rows <- result.map(query(catalogue, sql.all_start_failures()))
+  list.filter_map(rows, fn(row) {
+    decode_start_failure(row.reason, row.failed_at)
+    |> result.map(fn(failure) { #(row.session_id, failure) })
+  })
+}
+
+/// Forgets the failure kept for a session, when a retry begins. A session with
+/// none is left alone and the revision does not move.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.clear_start_failure(store, session_id) == Ok(Nil)
+/// ```
+pub fn clear_start_failure(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Nil, Error) {
+  transaction(catalogue.connection, fn() { clear_in_transaction(catalogue, id) })
+}
+
+fn clear_in_transaction(
+  catalogue: Catalogue,
+  id: String,
+) -> Result(Nil, Error) {
+  use kept <- result.try(start_failure(catalogue, id))
+  case kept {
+    None -> Ok(Nil)
+    Some(_) -> {
+      use Nil <- result.try(statement(catalogue, sql.delete_start_failure(id)))
+      statement(catalogue, sql.increment_catalogue_revision())
+    }
+  }
+}
+
+// The one grammar of a kept reason: one to `start_failure_limit` bytes of
+// printable text. The table's CHECK holds the same length bound, and the
+// control-character half is held here, where the text is judged on its way in
+// and again on its way out.
+fn decode_start_failure(
+  reason: String,
+  at: Int,
+) -> Result(StartFailure, Error) {
+  let size = string.byte_size(reason)
+  let plain =
+    list.all(string.to_utf_codepoints(reason), fn(codepoint) {
+      let code = string.utf_codepoint_to_int(codepoint)
+      code >= 0x20 && code != 0x7f
+    })
+  case size >= 1 && size <= start_failure_limit && plain && at >= 0 {
+    True -> Ok(StartFailure(reason:, at:))
+    False -> Error(Invalid("invalid start failure"))
   }
 }
 
@@ -2115,6 +2273,9 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
     // A deletion mark (version 14) refers to the registration, and a delete
     // that went through the directory's record leaves with its mark.
     use Nil <- result.try(statement(catalogue, sql.delete_session_deletion(id)))
+
+    // A kept start failure refers to the registration the same way.
+    use Nil <- result.try(statement(catalogue, sql.delete_start_failure(id)))
 
     // Dependants first: foreign keys are enabled on this connection, so the
     // registration row cannot leave while anything still references it.
