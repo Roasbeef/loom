@@ -530,7 +530,7 @@ of the section sits beneath `admin.body_path`, which the Admin socket already ad
 and nothing else (`admin_accepts`). The existing 065 admin addendum's description of
 the page in [the web view](../architecture/web-view.md) gets a paragraph for the
 section. Its reads run in weft tasks with a read number, next to the people and
-session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:5226`).
+session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:5235`).
 
 **Terminal.** A compact rendering, from the same snapshot:
 
