@@ -1444,6 +1444,59 @@ pub fn prune_spawner_spend(
   #(sql, [dev.ParamString(spawner), dev.ParamInt(hour_bucket)])
 }
 
+pub type StartFailure {
+  StartFailure(reason: String, failed_at: Int)
+}
+
+pub fn start_failure(session_id session_id: String) {
+  let sql =
+    "SELECT reason, failed_at FROM catalogue_start_failures WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], start_failure_decoder())
+}
+
+pub fn start_failure_decoder() -> decode.Decoder(StartFailure) {
+  use reason <- decode.field(0, decode.string)
+  use failed_at <- decode.field(1, decode.int)
+  decode.success(StartFailure(reason:, failed_at:))
+}
+
+pub fn upsert_start_failure(
+  session_id session_id: String,
+  reason reason: String,
+  failed_at failed_at: Int,
+) {
+  let sql =
+    "INSERT INTO catalogue_start_failures (session_id, reason, failed_at) VALUES (?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET reason = excluded.reason, failed_at = excluded.failed_at"
+  #(sql, [
+    dev.ParamString(session_id),
+    dev.ParamString(reason),
+    dev.ParamInt(failed_at),
+  ])
+}
+
+pub fn delete_start_failure(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_start_failures WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub type AllStartFailures {
+  AllStartFailures(session_id: String, reason: String, failed_at: Int)
+}
+
+pub fn all_start_failures() {
+  let sql =
+    "SELECT session_id, reason, failed_at FROM catalogue_start_failures ORDER BY session_id"
+  #(sql, [], all_start_failures_decoder())
+}
+
+pub fn all_start_failures_decoder() -> decode.Decoder(AllStartFailures) {
+  use session_id <- decode.field(0, decode.string)
+  use reason <- decode.field(1, decode.string)
+  use failed_at <- decode.field(2, decode.int)
+  decode.success(AllStartFailures(session_id:, reason:, failed_at:))
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
