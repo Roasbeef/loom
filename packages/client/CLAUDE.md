@@ -547,8 +547,14 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   authorization callback captures only the registry, epoch, session,
   incarnation and credential digest. The real-upgrade regression in
   `session_socket_test` varies an unused runtime hook, bounds the owned
-  socket's collected process capacity and the gateway attachment's flattened
-  state growth, and witnesses relay admission and close cleanup. It transfers
+  socket's collected process capacity, the gateway attachment's flattened
+  state growth and the observer component model's transport-callback growth,
+  and witnesses relay admission and close cleanup. The pinned Lustre model
+  excludes renderer caches whose startup sizes vary independently. The
+  component's session-list and sign-in
+  callbacks project registry and identity fields before construction, so they
+  retain no attachment runtime. Each read still authenticates with the original
+  credential. It transfers
   the permit in its first handler turn and starts `web_view/component` for an observer's
   attachment or `web_view/operator_page` for an operator's, with a
   transport over `ui_relay` whose `connect` returns at once, and with the
@@ -2972,27 +2978,19 @@ catalogue without opening runtimes. Explicit admission invokes
   because a grant that cannot be attributed to the call in hand must
   widen nothing.
 - `client/wiring.{run_tool, terminates}` — the tool-dispatch boundary and
-- `client/vision` — the vision routing rule (issue #358): a request
-  whose current turn carries an attached or tool-result image, on a strand whose catalogue
-  entry is text-only, dispatches through the routed
-  `vision` chain (`ForRole(Vision)`, admitted and accounted against
-  the vision head's own facts) or is refused in band at admission with
-  a worded reason — `image_unsupported` when no chain resolves,
-  `vision_misconfigured` when the routed head is itself declared
-  `TextOnly`. Every other request to a text-only identity carries its
-  `UserImage` and `ToolResultImage` blocks replaced with text placeholders, in the transient
-  projection only; the durable transcript keeps the images. The
-  classifier walks the current turn from the latest attributed human
-  prompt or settled assistant boundary. Digests have no origin and tool
-  steps do not close a turn. A disk image returned by `fs_read` switches the
-  next request to vision and subsequent tool steps retain that route.
-  Human attribution also survives projection of failed assistant responses,
-  allowing the next text prompt to end a rejected image turn. The immutable
-  operation admission batch is checked as well, including captured inputs
-  before its explicit prompts. An image-bearing admitted run stays on vision
-  through tool and run-end continuations, so a held image followed by a text
-  instruction cannot be silently placeholdered. A new text-only run does not
-  inherit the previous run's image requirement. Explicit `vision` declarations override the built-in capability.
+- `harness/vision`, exposed through `client/vision`, keeps requests with images
+  through the `vision` chain when the strand's configured identity is text-only.
+  Admission uses the vision head's accounting facts and refuses an unavailable
+  or blind route before dispatch. The shared classifier examines this strand's
+  projected context plus its immutable admitted batch. A new text prompt, an
+  assistant answer, a sibling message or a stopped run does not hide historical
+  pixels. Compaction or navigation that removes all images allows the next
+  text-only run to return to the strand's configured route. No other strand's
+  history is scanned. The live block-summary observer uses the same classifier
+  so a vision follow-up retains the endpoint confidentiality restriction.
+  Text-only fallback projections use an honest unavailable-image placeholder;
+  they never claim an earlier model described the image. Explicit `vision`
+  declarations override the built-in capability.
   Before preparing dispatch, wiring counts the original user and tool-result
   images after the operation's source leaf and gives the gateway a request-local
   protected count. The scan crosses compactions through their preserved parent
@@ -3002,8 +3000,8 @@ catalogue without opening runtimes. Explicit admission invokes
   images from protection; compaction cannot reclassify retained history as new.
   GLM-5.3 (with or without the `zai-org/` prefix) defaults to text-only;
   GLM-5.3-Flash remains distinct. Unknown identifiers retain the legacy
-  image-capable default. A following attributed text prompt can recover from a failed image request
-  with historical image placeholders, even after projection removes the error.
+  image-capable default. A text follow-up retains vision even after projection
+  removes a preceding failed assistant message.
   The catalogue parse refuses a `vision` chain that names a
   `vision = false` entry, so a retryable walk cannot deliver an image
   to a model that cannot read it. `Config.facts` carries the entry's
@@ -5873,9 +5871,9 @@ definition the hosts also strip. Protocol-change 059's reader draws `StrandOrigi
 in the same release: `agency.brief_message` and the
 `agent_send` payload carry `Some(StrandOrigin(caller.strand))`, set from the
 authenticated caller and from nothing a model emitted, with the framed text
-unchanged. The origin is attribution only. `vision.collect_turn` ends the
-current turn at such a message as it does at a peer message, and
-`wiring.admitted_image_bearing` still protects an image admitted earlier in
+unchanged. The origin is attribution only. `vision.image_bearing` retains
+image access across a sibling message in this strand's projection, and
+`harness/admission.image_bearing` also covers an image admitted earlier in
 the same run; `vision_test` pins that image-then-sibling order, and
 `agency_test` pins the origin for briefs (with and without a result schema),
 downward sends and upward reports.
@@ -7980,9 +7978,16 @@ The box's deadline and retention (slice S4):
   `remote_spawn.NotYetOpen`, and `remote_spawner.answer` reads it as
   `Unreachable`, so the laptop resends and the stub stays `Requested`. After a
   box is killed, the dead writer's lease on the session file refuses every open
-  until it expires (up to `lease_ttl_ms`, 60 s), and before this a spawn in that
-  minute left its stub `Refused` for good. `remote_release_test` and the shipped
-  remote subagents test, which kills and restarts the box, cover it.
+  until it expires (up to `lease_ttl_ms`, 60 s). A failed reopen can retain its
+  slot as `Closing` while the original custody drains. Both a resolver already
+  waiting and a new admission must preserve that retry: `returning_delegate`
+  returns the existing `Stopping` descriptor and `resident` answers
+  `NotYetOpen`. A retained `RecoveryBlocked` descriptor still gives a definitive
+  store failure, and a released parent still wins before either descriptor.
+  The held-cleanup regressions in `delegate_host_test` cover both Closing entry
+  paths, reuse of the durable pair, blocked cleanup and release priority.
+  `remote_release_test` and the shipped remote subagents test cover the sender
+  and the box restart.
 - Observation (phase 4, slice S12, protocol-change/090). `Stub.glance_seen_ms`
   (`glanceSeenMs`, absent reads 0) is the parent's clock when
   `remote_child.progressed` kept the glance; every stub write publishes

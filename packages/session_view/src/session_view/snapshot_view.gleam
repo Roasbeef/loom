@@ -349,6 +349,32 @@ fn decode_pending_input(value) {
   }
 }
 
+/// The registers an exact lookup of `id` may be answered from.
+///
+/// A session's own request lives at `escalation/<id>`. A child's request on
+/// another orchestrator lives at `remote-escalation/<id>`, where the id the
+/// client holds is `<orchestrator>/<id there>` (protocol-change/089), so an id
+/// holding a slash names that second register as well. Local ids never hold a
+/// slash, and a lookup that finds only one of the two is answered from it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert snapshot_view.lookup_keys("esc-1") == ["escalation/esc-1"]
+/// assert snapshot_view.lookup_keys("box/policy-ab")
+///   == ["escalation/box/policy-ab", "remote-escalation/box/policy-ab"]
+/// ```
+pub fn lookup_keys(id: String) -> List(String) {
+  case string.contains(id, "/") {
+    True -> [local_prefix <> id, remote_prefix <> id]
+    False -> [local_prefix <> id]
+  }
+}
+
+const local_prefix = "escalation/"
+
+const remote_prefix = "remote-escalation/"
+
 /// Decodes only requested exact escalation keys, including explicit absences.
 ///
 /// The result cannot replace strand/configuration metadata or the history
@@ -385,11 +411,19 @@ pub fn lookup(
   use <- bool.guard(
     list.any(cells, fn(cell) {
       cell.namespace != register.FactCustom
-      || !list.any(requested, fn(id) { cell.key == "escalation/" <> id })
+      || !list.any(requested, fn(id) {
+        list.contains(lookup_keys(id), cell.key)
+      })
     }),
     Error("lookup returned an unrequested register"),
   )
-  let found = list.map(cells, fn(cell) { string.drop_start(cell.key, 11) })
+  let found =
+    list.map(cells, fn(cell) {
+      case string.starts_with(cell.key, remote_prefix) {
+        True -> string.drop_start(cell.key, string.length(remote_prefix))
+        False -> string.drop_start(cell.key, string.length(local_prefix))
+      }
+    })
   let answered = list.append(found, missing)
   use <- bool.guard(
     list.length(answered) != list.length(requested)
@@ -422,7 +456,7 @@ pub fn decided(captured: snapshot.Captured) -> Result(List(Cell), String) {
     missing != []
       || list.any(cells, fn(cell) {
       cell.namespace != register.FactCustom
-      || !string.starts_with(cell.key, "escalation/")
+      || !string.starts_with(cell.key, local_prefix)
     }),
     Error("decided approvals returned an unrequested register"),
   )

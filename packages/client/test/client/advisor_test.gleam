@@ -1980,7 +1980,9 @@ pub fn an_unanswered_review_is_counted_and_left_for_the_tick_test() {
   // The advisor's own run ends without a verdict — the provider's
   // failure shape.
   process.send(subject, advisor.AdvisorRunEnded(operation: feed))
-  let _drained = settle(subject)
+
+  // Wait without opening another primary run and re-offering the goal feed.
+  barrier(subject)
 
   let goal = goal_cell(rig)
   assert goal.unanswered_feeds == 1

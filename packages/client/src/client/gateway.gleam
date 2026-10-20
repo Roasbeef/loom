@@ -270,6 +270,7 @@ import session_view/btw as btw_view
 import session_view/protocol as session_wire
 import session_view/remote_agent
 import session_view/remote_usage
+import session_view/snapshot_view
 import storage/access
 import storage/snapshot
 import storage/storage.{type EntryHead}
@@ -2682,13 +2683,15 @@ fn begin_transfer(
   let now = bootstrap.monotonic_time_ms()
   let plan = case window {
     transfer.Escalations(ids) ->
+      // An id holding a slash may name a child's request on another
+      // orchestrator, filed under `remote-escalation/`, so the lookup reads
+      // both registers the id can mean and the client's validator accepts
+      // either (`snapshot_view.lookup_keys`). Eight slash ids make sixteen
+      // exact keys, which is `storage/snapshot.validate`'s whole selection
+      // cap, so a ninth id or a third key per id would be an InvalidRequest.
       snapshot.Plan(
-        list.map(ids, fn(id) {
-          snapshot.ExactKey(
-            register.FactCustom,
-            runtime_escalation.register_key(id),
-          )
-        }),
+        list.flat_map(ids, snapshot_view.lookup_keys)
+          |> list.map(snapshot.ExactKey(register.FactCustom, _)),
         [],
         0,
       )
@@ -2890,7 +2893,7 @@ fn captured_transfer(
             list.filter_map(ids, fn(id) {
               case
                 list.any(cut.cells, fn(cell) {
-                  cell.key == runtime_escalation.register_key(id)
+                  list.contains(snapshot_view.lookup_keys(id), cell.key)
                 })
               {
                 True -> Error(Nil)

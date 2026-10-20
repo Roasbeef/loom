@@ -1316,12 +1316,11 @@ fn send_request(
   headers: List(#(String, String)),
   body: String,
 ) -> Answer {
-  send_request_within(port, method, path, headers, body, 1000)
+  send_request_within(port, method, path, headers, body, fixture_body_ms)
 }
 
-// A synchronous session change waits for its final outcome before writing the
-// response head. Its caller can use the managed body's existing lifetime while
-// ordinary routing probes retain their one-second receive bound.
+// One deadline covers connection, headers and body. Functional requests use the
+// managed fixture's existing lifetime; explicit timing probes retain their bound.
 fn send_request_within(
   port: Int,
   method: String,
@@ -1330,12 +1329,13 @@ fn send_request_within(
   body: String,
   within_ms: Int,
 ) -> Answer {
+  let deadline = bootstrap.monotonic_time_ms() + within_ms
   let assert Ok(socket) =
     ffi_daemon_socket.connect(
       #(127, 0, 0, 1),
       port,
       [ffi_ws.Binary, ffi_ws.Active(False)],
-      1000,
+      response_remaining(deadline),
     )
     as "raw TCP client connects"
   let lines =
@@ -1350,7 +1350,8 @@ fn send_request_within(
     <> body
   assert ffi_daemon_socket.send(socket, bit_array.from_string(request))
     == Ok(Nil)
-  let head = read_head_within(socket, "", within_ms)
+  let assert Ok(#(head, buffered)) = read_response_head(socket, <<>>, deadline)
+    as "the complete response head arrives inside the request deadline"
   let assert [status_line, ..header_lines] = string.split(head, "\r\n")
     as "a status line"
   let assert [_, code, ..] = string.split(status_line, " ") as "a status code"
@@ -1368,9 +1369,22 @@ fn send_request_within(
     |> result.unwrap(0)
   let raw = case length > 0 && status != 101 {
     True -> {
-      let assert Ok(bytes) = ffi_ws.tcp_receive(socket, length, 1000)
-        as "the body arrives"
-      bytes
+      let present = int.min(length, bit_array.byte_size(buffered))
+      let assert Ok(prefix) = bit_array.slice(buffered, 0, present)
+        as "the buffered body prefix stays within Content-Length"
+      case present == length {
+        True -> prefix
+        False -> {
+          let assert Ok(suffix) =
+            ffi_ws.tcp_receive(
+              socket,
+              length - present,
+              response_remaining(deadline),
+            )
+            as "the remaining body arrives inside the request deadline"
+          <<prefix:bits, suffix:bits>>
+        }
+      }
     }
     False -> <<>>
   }
@@ -1378,22 +1392,97 @@ fn send_request_within(
   Answer(status, parsed, result.unwrap(bit_array.to_string(raw), ""), raw)
 }
 
-fn read_head(socket, accumulated: String) -> String {
-  read_head_within(socket, accumulated, 1000)
+fn response_remaining(deadline: Int) -> Int {
+  int.max(0, deadline - bootstrap.monotonic_time_ms())
 }
 
-// The managed fixture still bounds the entire response, including every byte
-// read here, and owns the socket if the body reaches that deadline.
-fn read_head_within(socket, accumulated: String, within_ms: Int) -> String {
+// Chunk reads avoid a socket call per header byte. The split retains any body
+// bytes coalesced with the final header chunk, without interpreting them as text.
+fn read_response_head(socket, accumulated: BitArray, deadline: Int) {
+  case split_response_head(accumulated, 0) {
+    Ok(head) -> Ok(head)
+    Error(Nil) -> {
+      use _ <- result.try(case response_remaining(deadline) > 0 {
+        True -> Ok(Nil)
+        False -> Error(Nil)
+      })
+      use chunk <- result.try(
+        ffi_ws.tcp_receive(socket, 0, response_remaining(deadline))
+        |> result.map_error(fn(_) { Nil }),
+      )
+      read_response_head(socket, <<accumulated:bits, chunk:bits>>, deadline)
+    }
+  }
+}
+
+fn split_response_head(buffer: BitArray, offset: Int) {
+  case buffer {
+    <<head:bytes-size(offset), "\r\n\r\n":utf8, body:bits>> -> {
+      let assert Ok(head) = bit_array.to_string(head)
+        as "the response head is UTF-8"
+      Ok(#(head, body))
+    }
+    <<_:bytes-size(offset), _:size(32), _:bits>> ->
+      split_response_head(buffer, offset + 1)
+    _ -> Error(Nil)
+  }
+}
+
+// A raw upgrade must leave the first WebSocket frame on the socket. This path
+// deliberately reads exactly through the header terminator and no further.
+fn read_head(socket, accumulated: String) -> String {
   case string.split_once(accumulated, "\r\n\r\n") {
     Ok(#(head, _)) -> head
     Error(Nil) -> {
-      let assert Ok(byte) = ffi_ws.tcp_receive(socket, 1, within_ms)
+      let assert Ok(byte) = ffi_ws.tcp_receive(socket, 1, 1000)
         as "the response head arrives"
       let assert Ok(text) = bit_array.to_string(byte) as "the head is ASCII"
-      read_head_within(socket, accumulated <> text, within_ms)
+      read_head(socket, accumulated <> text)
     }
   }
+}
+
+// Functional replies share the managed fixture's lifetime. A split header may
+// wait longer than a second, and its final chunk may already carry binary data.
+pub fn a_functional_http_read_waits_for_chunks_and_keeps_body_bytes_test() {
+  let assert Ok(listener) =
+    ffi_ws.tcp_listen(0, [ffi_ws.Binary, ffi_ws.Active(False)])
+    as "the response fixture has a private listener"
+  let assert Ok(port) = ffi_ws.tcp_port(listener)
+    as "the response fixture's ephemeral port is known"
+  let body = <<0, 255, 13, 10, 128>>
+  let outcomes =
+    weft.new([
+      fn() {
+        let answer = get(port, "/", [host(port)])
+        assert answer.status == 200
+        assert list.key_find(answer.headers, "x-test") == Ok("split")
+        assert answer.raw == body
+        Ok(Nil)
+      },
+      fn() {
+        let assert Ok(peer) = ffi_ws.tcp_accept(listener, fixture_body_ms)
+          as "the reader connects to its response fixture"
+        let assert Ok(_) = ffi_ws.tcp_receive(peer, 0, fixture_body_ms)
+          as "the fixture receives the request before replying"
+        assert ffi_daemon_socket.send(peer, <<
+            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nX-Test: ":utf8,
+          >>)
+          == Ok(Nil)
+
+        // This separates the header across the old per-byte receive bound.
+        process.sleep(1200)
+        assert ffi_daemon_socket.send(peer, <<"split\r\n\r\n":utf8, body:bits>>)
+          == Ok(Nil)
+        let _ = ffi_ws.tcp_close(peer)
+        Ok(Nil)
+      },
+    ])
+    |> weft.deadline(fixture_body_ms)
+    |> weft.start
+  let _ = ffi_ws.tcp_close(listener)
+  let assert [weft.Completed(0, Nil), weft.Completed(1, Nil)] = outcomes
+    as "both response peers finish within the unchanged fixture lifetime"
 }
 
 fn field(value, key) {
@@ -2844,12 +2933,30 @@ fn operator_home(port: Int, credential: String) -> String {
 }
 
 fn home_socket(port: Int, entered: Entered, more) -> Answer {
-  get(port, entered.page <> "/ws?csrf-token=" <> entered.nonce, [
-    host(port),
-    #("cookie", "loom_ui=" <> entered.cookie),
-    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
-    ..more
-  ])
+  home_socket_within(port, entered, more, 1000)
+}
+
+// Admin snapshots complete synchronous registry reads before sending their
+// response head. Ordinary routing probes retain their one-second bound.
+fn home_socket_within(
+  port: Int,
+  entered: Entered,
+  more,
+  within_ms: Int,
+) -> Answer {
+  send_request_within(
+    port,
+    "GET",
+    entered.page <> "/ws?csrf-token=" <> entered.nonce,
+    [
+      host(port),
+      #("cookie", "loom_ui=" <> entered.cookie),
+      #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ..more
+    ],
+    "",
+    within_ms,
+  )
 }
 
 // The three routes of the home work in order: the ticket exchange, the keyed
@@ -6820,7 +6927,8 @@ fn admin_read(
   page: Entered,
   chosen: String,
 ) -> #(String, String, String) {
-  let answer = home_socket(port, page, [#("x-admin-chosen", chosen)])
+  let answer =
+    home_socket_within(port, page, [#("x-admin-chosen", chosen)], 5000)
   assert answer.status == 279
   let assert [people, listed, selection] = string.split(answer.body, "\n")
     as "a read is three lines"

@@ -644,10 +644,36 @@ fn parse_string_body(
 // How many leading bytes are neither a quote, a backslash nor a control.
 // Every byte of a multi-byte codepoint is at least 0x80, so the count can
 // only stop on an ASCII byte and the run it measures is whole codepoints.
-// Four-byte chunks check every byte; any exceptional byte resumes the
-// single-byte path, preserving the exact stop and the one-to-three-byte tail.
+// Eight-byte chunks check every byte. The four-byte and single-byte paths
+// finish short runs without rescanning each byte before a nearby delimiter.
 fn clean_run(rest: BitArray, count: Int) -> Int {
   case rest {
+    <<a, b, c, d, e, f, g, h, more:bits>>
+      if a >= 0x20
+      && a != 0x22
+      && a != 0x5C
+      && b >= 0x20
+      && b != 0x22
+      && b != 0x5C
+      && c >= 0x20
+      && c != 0x22
+      && c != 0x5C
+      && d >= 0x20
+      && d != 0x22
+      && d != 0x5C
+      && e >= 0x20
+      && e != 0x22
+      && e != 0x5C
+      && f >= 0x20
+      && f != 0x22
+      && f != 0x5C
+      && g >= 0x20
+      && g != 0x22
+      && g != 0x5C
+      && h >= 0x20
+      && h != 0x22
+      && h != 0x5C
+    -> clean_run(more, count + 8)
     <<a, b, c, d, more:bits>>
       if a >= 0x20
       && a != 0x22

@@ -34,6 +34,7 @@ import gleam/dynamic/decode
 import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/system
@@ -370,12 +371,25 @@ fn attachment_growth(payload_size) {
 // The socket's handler survives admission. Its startup closure must not keep
 // a second runtime after the phase has transferred custody to the component.
 pub fn admitted_page_socket_releases_its_startup_runtime_test() {
-  let #(small, small_hub) = page_socket_memory(0)
-  let #(large, large_hub) = page_socket_memory(8192)
+  let #(small, small_hub, small_component) = page_socket_memory(0)
+  let #(large, large_hub, large_component) = page_socket_memory(8192)
+  io.println_error(
+    "Page callback model words: "
+    <> int.to_string(small_component)
+    <> " -> "
+    <> int.to_string(large_component),
+  )
   assert large <= small + 65_536
     as "the serving socket releases its admission-only runtime capture"
   assert large_hub <= small_hub + 512
     as "the page's live authorization callback retains only its identities"
+  assert large_component <= small_component + 4096
+    as {
+      "the component's retained callbacks exclude unrelated runtime hooks: "
+      <> int.to_string(small_component)
+      <> " -> "
+      <> int.to_string(large_component)
+    }
 }
 
 fn page_socket_memory(payload_size) {
@@ -467,6 +481,12 @@ fn page_socket_memory(payload_size) {
         let hub_growth =
           ffi_memory.flat_words(system.get_state(hub_pid)) - before
 
+        // The component model retains the transport after admission. Measure
+        // its callbacks without Lustre's independently changing render cache.
+        let assert Ok(component_model) = ffi_memory.page_component_model(pid)
+          as "the socket links exactly one Lustre component"
+        let component_words = ffi_memory.flat_words(component_model)
+
         // The system message runs after the admission handler returns, so the
         // owned socket has entered Serving before its explicit fixture collection.
         let _ = system.get_state(pid)
@@ -493,7 +513,7 @@ fn page_socket_memory(payload_size) {
             }
           })
           as "the page's relay releases its gateway attachment after close"
-        #(bytes, hub_growth)
+        #(bytes, hub_growth, component_words)
       },
     )
   })
@@ -782,6 +802,53 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
       as "the exact raw payload retains its resolution author"
     assert record.status == escalation.Rejected
     assert record.origin == Some(author)
+
+    // A child's request on another orchestrator lives under
+    // `remote-escalation/`, and the id the client holds for it is the
+    // orchestrator and the box's identity. The same lookup finds it there and
+    // still reports an id with no register in either namespace as missing.
+    let assert Ok(remote_commit) =
+      writer.commit(
+        harness.runtime.tree.writer,
+        tx.Tx(
+          [
+            tx.SetRegister(
+              register.FactCustom,
+              "remote-escalation/box/esc-r",
+              register.value(
+                json.Object([#("escalation_id", json.String("box/esc-r"))]),
+              ),
+            ),
+          ],
+          [],
+        ),
+      )
+      as "the remote request commits"
+    let remote =
+      request(
+        socket,
+        80,
+        "escalations_get",
+        json.Object([
+          #(
+            "ids",
+            json.Array([json.String("box/esc-r"), json.String("box/none")]),
+          ),
+        ]),
+        within_ms: 1000,
+      )
+    let assert json.String(remote_id) =
+      field(field(remote, "body"), "snapshot_id")
+      as "a remote id uses the same exact lookup"
+    let metadata =
+      drain(socket, remote_id, 0, [], 20, within_ms: 1000)
+      |> decoded_record("metadata")
+    assert field(metadata, "missing") == json.Array([json.String("box/none")])
+    let assert json.Array([remote_cell]) = field(metadata, "cells")
+      as "only the remote register answers"
+    assert field(remote_cell, "key")
+      == json.String("remote-escalation/box/esc-r")
+    assert field(remote_cell, "seq") == json.Int(remote_commit.first_seq)
     ffi_ws.tcp_close(socket)
   })
 }

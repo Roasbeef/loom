@@ -46,6 +46,36 @@ fn drainer(
   #(armings, name)
 }
 
+// Completes the initial empty scan before a fixture can queue its first row.
+// The pass acknowledgement orders the later Queued after the same actor turn's
+// transition to Idle, regardless of scheduling delay.
+fn idle_drainer(
+  rig: peer_rig.Rig,
+) -> #(Subject(Arming), address.Address(peer_outbox_drain.Message)) {
+  let armings = process.new_subject()
+  let scans = process.new_subject()
+  let name = addresses.new()
+  let options =
+    peer_outbox_drain.options(rig.wiring, fn(delay_ms, wake) {
+      process.send(armings, Arming(delay_ms:, wake:))
+    })
+  let pass = options.pass
+  let options =
+    peer_outbox_drain.Options(..options, pass: fn() {
+      let backlog = pass()
+      process.send(scans, backlog)
+      backlog
+    })
+  let assert Ok(_) = peer_outbox_drain.start(options, name)
+    as "the observed drainer starts"
+  let open = arming(armings)
+  open.wake()
+
+  let assert Ok(peer_outbox_drain.Clear) = process.receive(scans, 2000)
+    as "the initial empty pass completes before the first message is queued"
+  #(armings, name)
+}
+
 fn arming(armings: Subject(Arming)) -> Arming {
   let assert Ok(found) = process.receive(armings, 2000)
     as "the drainer armed its timer"
@@ -246,9 +276,7 @@ pub fn unlinking_a_queued_message_ends_its_delivery_test() {
 pub fn a_saved_recipient_slows_the_drainer_to_a_cap_and_is_delivered_once_open_test() {
   let rig = peer_rig.rig(2090, [], Pass)
   peer_rig.set_resident(rig, Saved)
-  let #(armings, name) = drainer(rig)
-  let open = arming(armings)
-  open.wake()
+  let #(armings, name) = idle_drainer(rig)
   assert_no_arming(armings)
   let assert Ok(queued) = peer_rig.send(rig, "m1")
   assert peers.is_queued(queued)
@@ -287,9 +315,7 @@ pub fn a_saved_recipient_slows_the_drainer_to_a_cap_and_is_delivered_once_open_t
 pub fn an_owner_that_does_not_answer_returns_the_drainer_to_the_fixed_interval_test() {
   let rig = peer_rig.rig(2100, [], Down)
   peer_rig.set_resident(rig, Saved)
-  let #(armings, name) = drainer(rig)
-  let open = arming(armings)
-  open.wake()
+  let #(armings, name) = idle_drainer(rig)
   let assert Ok(_) = peer_rig.send(rig, "m1")
   peer_outbox_drain.poke(name)
   assert waits(armings, 3) == [5000, 10_000, 20_000]

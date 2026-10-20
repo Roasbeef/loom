@@ -354,39 +354,19 @@ pub fn no_vision_route_leaves_placeholders_test() {
     == message.UserText(text: "what is in this picture", text_signature: None)
   assert placeholder
     == message.UserText(
-      text: "[image: image/png, described earlier in this conversation]",
+      text: "[image: image/png, unavailable to this text-only model; original retained in conversation history]",
       text_signature: None,
     )
 }
 
-// A later text-only request to the text-only model placeholders the
-// *older* image: the model cannot read it on any turn, and a provider
-// that rejects one stale image would fail a request whose own newest
-// message is plain text.
-pub fn later_text_request_placeholders_the_older_image_test() {
+// A text follow-up can refer to the retained image after an answer.
+// Admission and dispatch must keep its pixels available through vision.
+pub fn later_text_request_keeps_the_older_image_on_vision_test() {
+  let context = [image_user(), assistant_answer(), text_user("and in prose?")]
   let request =
-    wiring.provider_request(
-      config_with(vision_gateway()),
-      generation([
-        image_user(),
-        assistant_answer(),
-        text_user("and in prose?"),
-      ]),
-    )
-  assert request.target
-    == model.ForRole(role: model.Main, thinking: Some(model.ThinkingOff))
-  let assert [
-    message.UserMessage(content: [_, first_placeholder], ..),
-    message.AssistantMessage(..),
-    message.UserMessage(content: [final_text], ..),
-  ] = request.messages
-  assert first_placeholder
-    == message.UserText(
-      text: "[image: image/png, described earlier in this conversation]",
-      text_signature: None,
-    )
-  assert final_text
-    == message.UserText(text: "and in prose?", text_signature: None)
+    wiring.provider_request(config_with(vision_gateway()), generation(context))
+  assert request.target == client_vision.routed_target(Some(model.ThinkingOff))
+  assert request.messages == context
 }
 
 fn assistant_answer() -> message.AgentMessage {
@@ -701,21 +681,18 @@ pub fn a_run_start_injection_does_not_mask_the_image_test() {
   assert client_vision.image_bearing([image_user(), digest, reminder])
 }
 
-// A reminder alone — the operator's turn answered, only the harness
-// speaking since — is not image-bearing.
-pub fn a_lone_reminder_classifies_imageless_test() {
-  assert !client_vision.image_bearing([
+// A reminder after an answer still carries the earlier image context.
+pub fn a_reminder_does_not_hide_retained_images_test() {
+  assert client_vision.image_bearing([
     image_user(),
     assistant_answer(),
     text_user("[loom] Your context window is nearly full."),
   ])
 }
 
-// Once an assistant has answered the image turn, the image is a past
-// turn: a text follow-up routes to the strand's own model, and the
-// placeholderer — not the router — handles the image.
-pub fn an_answered_image_is_a_past_turn_test() {
-  assert !client_vision.image_bearing([
+// An answer does not discard the image a follow-up may ask about.
+pub fn an_answered_image_remains_available_test() {
+  assert client_vision.image_bearing([
     image_user(),
     assistant_answer(),
     text_user("and in prose?"),
@@ -733,8 +710,8 @@ pub fn a_tool_step_in_an_image_turn_is_still_image_bearing_test() {
   ])
 }
 
-// Two steps deep is still the same turn, and a settled answer ends it.
-pub fn a_turn_ends_at_the_answer_not_at_the_tool_call_test() {
+// Tool continuations and later answers retain the same projected pixels.
+pub fn answers_and_tool_calls_keep_retained_images_available_test() {
   assert client_vision.image_bearing([
     image_user(),
     assistant_tool_call(),
@@ -742,7 +719,7 @@ pub fn a_turn_ends_at_the_answer_not_at_the_tool_call_test() {
     assistant_tool_call(),
     tool_result(),
   ])
-  assert !client_vision.image_bearing([
+  assert client_vision.image_bearing([
     image_user(),
     assistant_tool_call(),
     tool_result(),
@@ -751,17 +728,16 @@ pub fn a_turn_ends_at_the_answer_not_at_the_tool_call_test() {
   ])
 }
 
-// A message from a strand of the same session opens a turn as a peer's
-// does: an image sent before it belongs to an earlier turn. The origin
-// bounds the turn and decides nothing about authority.
-pub fn a_strand_origin_message_bounds_the_turn_test() {
+// A sibling message does not remove images from this strand's context.
+// Classification never scans the sibling's separate history.
+pub fn a_strand_message_does_not_hide_retained_images_test() {
   let sibling =
     message.UserMessage(
       content: [message.UserText("[message from main]", None)],
       timestamp: 0,
       origin: Some(message.StrandOrigin("main")),
     )
-  assert !client_vision.image_bearing([image_user(), sibling])
+  assert client_vision.image_bearing([image_user(), sibling])
   assert client_vision.image_bearing([sibling, image_user()])
 }
 
@@ -843,7 +819,7 @@ fn owner_prompt(content: List(message.UserBlock)) -> message.AgentMessage {
   )
 }
 
-pub fn text_prompt_after_fourteen_images_and_provider_failure_recovers_test() {
+pub fn text_prompt_after_failure_retains_historical_images_test() {
   let context =
     projected_failure_then_prompt(
       owner_prompt([message.UserText("test", None)]),
@@ -852,9 +828,9 @@ pub fn text_prompt_after_fourteen_images_and_provider_failure_recovers_test() {
     wiring.provider_request(config_with(vision_gateway()), generation(context))
   assert list.length(context) == 16
     as "the failed response was removed by the production projection"
-  assert request.messages == client_vision.placeholdered(context)
-  assert request.target != client_vision.routed_target(Some(model.ThinkingOff))
-  assert !client_vision.image_bearing(context)
+  assert request.messages == context
+  assert request.target == client_vision.routed_target(Some(model.ThinkingOff))
+  assert client_vision.image_bearing(context)
 }
 
 pub fn new_image_prompt_after_failure_stays_on_vision_through_tools_test() {
@@ -874,7 +850,7 @@ pub fn new_image_prompt_after_failure_stays_on_vision_through_tools_test() {
 }
 
 /// Catalogue defaults must reach dispatch, not merely a parsing assertion.
-pub fn default_glm_routes_images_and_recovers_text_requests_test() {
+pub fn default_glm_routes_image_followups_through_vision_test() {
   let catalogue = model_catalogue("zai-org/GLM-5.3", "")
   let assert [entry] = catalogue.models as "the fixture has one model"
   let config = config_with(vision_gateway())
@@ -905,12 +881,12 @@ pub fn default_glm_routes_images_and_recovers_text_requests_test() {
     )
   let text_request =
     wiring.provider_request(config, effects.GenerationRequest(..spec, context:))
-  assert text_request.messages == client_vision.placeholdered(context)
-  assert text_request.target != image_request.target
+  assert text_request.messages == context
+  assert text_request.target == image_request.target
 }
 
 /// An image prompt followed by a sibling's message in one admitted run: the
-/// turn bound ends the vision turn at the sibling (`vision.image_bearing` of
+/// projected context retains the image across the sibling (`vision.image_bearing` of
 /// the context alone is false), so the admitted batch is the second source
 /// that keeps the run on the vision model (protocol-change 059, release N+1,
 /// where the Agency starts writing `StrandOrigin`).
@@ -975,8 +951,8 @@ pub fn an_image_then_a_sibling_message_stays_on_vision_through_admission_test() 
     as "the held batch and its admission must commit"
   let config = config_on(vision_gateway(), opened)
 
-  // The context alone shows no image: the sibling opened a newer turn.
-  assert !client_vision.image_bearing([image_user(), sibling])
+  // Both projected context and the admitted batch retain this image.
+  assert client_vision.image_bearing([image_user(), sibling])
 
   // Admission accounts against the vision model all the same.
   let assert planner.Admitted(context_window: 64_000, ..) =
@@ -1162,9 +1138,9 @@ pub fn held_image_and_text_batch_routes_admission_and_dispatch_test() {
         next_prompt,
       ]),
     )
-  assert recovered.target == model.ForRole(model.Main, Some(model.ThinkingOff))
-  assert recovered.messages
-    == client_vision.placeholdered([image_user(), text, next_prompt])
+  assert recovered.target
+    == client_vision.routed_target(Some(model.ThinkingOff))
+  assert recovered.messages == [image_user(), text, next_prompt]
 }
 
 // This exercises the production disk seam and tool-result conversion before
@@ -1287,8 +1263,7 @@ pub fn disk_image_read_routes_to_vision_and_preserves_pixels_test() {
     )
   assert string.contains(wire.body, "data:image/png;base64," <> data)
 
-  // Further tool steps stay on vision; a later human text prompt can recover
-  // even if projection has removed a failed provider response.
+  // Further tool steps and text follow-ups retain access to the disk image.
   let continued = list.append(context, [assistant_tool_call(), tool_result()])
   assert wiring.provider_request(config, generation(continued)).target
     == request.target
@@ -1297,8 +1272,8 @@ pub fn disk_image_read_routes_to_vision_and_preserves_pixels_test() {
       owner_prompt([message.UserText("continue in text", None)]),
     ])
   let next = wiring.provider_request(config, generation(next_context))
-  assert next.target == model.ForRole(model.Main, Some(model.ThinkingOff))
-  assert next.messages == client_vision.placeholdered(next_context)
+  assert next.target == request.target
+  assert next.messages == next_context
   let text_wire =
     openai.build_request(
       "https://example.test",
@@ -1306,11 +1281,7 @@ pub fn disk_image_read_routes_to_vision_and_preserves_pixels_test() {
       resolved("loom-text", 200_000),
       next,
     )
-  assert !string.contains(text_wire.body, data)
-  assert string.contains(
-    text_wire.body,
-    "described earlier in this conversation",
-  )
+  assert string.contains(text_wire.body, data)
 }
 
 pub fn historical_tool_image_placeholder_preserves_result_metadata_test() {
@@ -1332,7 +1303,7 @@ pub fn historical_tool_image_placeholder_preserves_result_metadata_test() {
     message.ToolResultMessage(..original, content: [
       message.ToolResultText("photo.png", None),
       message.ToolResultText(
-        "[image: image/png, described earlier in this conversation]",
+        "[image: image/png, unavailable to this text-only model; original retained in conversation history]",
         None,
       ),
     ])
@@ -1342,7 +1313,7 @@ pub fn historical_tool_image_placeholder_preserves_result_metadata_test() {
     assistant_tool_call(),
     original,
   ])
-  assert !client_vision.image_bearing([original, assistant_answer()])
+  assert client_vision.image_bearing([original, assistant_answer()])
 }
 
 // The gateway protects a whole admitted batch, then releases that protection
@@ -1550,4 +1521,17 @@ pub fn image_budget_after_compaction_keeps_the_operation_boundary_test() {
   assert string.contains(body, "Yg==")
   assert string.contains(body, "omitted from this request")
   assert session.project_context(opened, Some(compacted)) == Ok(context)
+}
+
+// A compacted projection without pixels returns to the strand's text route.
+// Historical images in another projection are not consulted by classification.
+pub fn projection_without_retained_images_returns_to_text_test() {
+  let context = [
+    text_user("Earlier context summarized."),
+    text_user("continue"),
+  ]
+  let request =
+    wiring.provider_request(config_with(vision_gateway()), generation(context))
+  assert request.target == model.ForRole(model.Main, Some(model.ThinkingOff))
+  assert request.messages == context
 }
