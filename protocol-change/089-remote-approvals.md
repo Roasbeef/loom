@@ -331,7 +331,19 @@ decision opens at most one run.
 wrote the decision (and, for a session approval, the remembered grant) returned
 `Ok`, on the same process. The run is admitted after that commit, and its retry
 re-checks the call against the record and the remembered grants in the store, so
-the first retry always sees the grant.
+a run the wake opens sees the grant on its first retry. The commit and the
+notice are two steps, not one transaction. A box that stops between the commit
+and the notice loses the wake; the approval is still committed and waits for a
+parent send, as before this addendum.
+
+**A laptop card past the box's window.** The laptop keeps a filed request whose
+box-side answer window closed while it was still pending: the laptop has no
+expiry of its own for these rows today, and a settled stub is not deleted. A
+decision taken on such a card later is still sent to the box. The box answers
+`Stale` if the record has moved on, and if the record is still pending and the
+delegate session is alive it commits the decision and wakes the child as above.
+Nothing new was built for this; it is recorded so the behaviour is not a
+surprise.
 
 What it costs: a subagent can now be given a run that neither its parent's model
 nor its spawn asked for, by a person on the parent's side. The run is inside the

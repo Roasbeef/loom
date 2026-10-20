@@ -2293,6 +2293,23 @@ pub fn a_spawner_approval_steers_a_busy_remote_child_without_a_second_run_test()
     )
   assert current_operation(harness.runtime, remote_child) == Some(running)
   assert list.length(child_runs(harness.runtime)) == 1
+
+  // The decision did reach the open run: the steer was admitted with the
+  // notice's mark, so the mark is spent and noticing it again delivers nothing.
+  // The steer waits in the run's queue for the next turn, which this harness's
+  // silent provider never reaches, so the branch is not read here.
+  let assert Ok(Some(_)) =
+    api.fact(
+      harness.runtime,
+      notice.key(notice.Escalation(id: cell.record.id, seq: cell.seq)),
+    )
+    as "the steer spends the notice's mark"
+  assert escalate.notify_spawner_decision(
+      harness.runtime,
+      cell,
+      escalate.ApprovedOnce,
+    )
+    == Ok(notice.AlreadyDelivered)
   let assert Ok(Nil) = api.close(harness.runtime) as "the fixture must drain"
 }
 
