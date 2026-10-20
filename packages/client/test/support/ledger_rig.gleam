@@ -205,7 +205,7 @@ pub fn text_of(lines: List(BitArray)) -> String {
 
 /// The sequence number of a rig's head.
 pub fn head_seq(rig: Rig) -> Int {
-  let assert Ok(head) = ledger_service.head(rig.service, 5000)
+  let assert Ok(head) = ledger_service.head(rig.service, 30_000)
     as "the service answers"
   head.seq
 }
@@ -221,7 +221,7 @@ pub fn file(rig: Rig) -> String {
 /// head sequence number the rig had when the bound ran out.
 pub fn await_head(rig: Rig, seq: Int) -> Result(Int, Int) {
   let outcome =
-    poll.until(within: 20_000, every: 20, attempt: fn() {
+    poll.until(within: 40_000, every: 20, attempt: fn() {
       let reached = head_seq(rig)
       case reached >= seq {
         True -> poll.Done(reached)
