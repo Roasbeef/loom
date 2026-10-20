@@ -14,6 +14,7 @@ import client/daemon/ui_relay
 import client/gateway
 import client/gateway_test
 import client/grants
+import client/tui_e2e_test.{type EunitTest, Timeout}
 import core/clock
 import core/ids
 import gleam/erlang/process.{type Subject}
@@ -51,6 +52,15 @@ fn fixture_id(seed: Int) -> ids.SessionId {
 // tests already use for a reply under the same load
 // (`tui_approval_effect_test.reply_wait_ms`).
 const patience_ms = 20_000
+
+// The budget of the whole test: three waits of `patience_ms` each, plus the
+// fixture, which is more than EUnit's scaled default of 50 s allows, so a run
+// whose steps a loaded host had stretched was ended with no step named. EUnit
+// scales a generator's timeout by ten, so the number given is the seconds
+// wanted divided by ten.
+const test_seconds = 90
+
+const scale = 10
 
 fn alice() -> access.Principal {
   access.Principal("alice", "Alice", access.MemberPrincipal)
@@ -123,7 +133,9 @@ fn start_page(
 // following the session. The bound is one deadline for the whole wait: a
 // page that keeps redrawing without connecting must not restart it with
 // each patch, or a wait meant to be `within` long could run for that long
-// per message.
+// per message. A page that ended is final, since this test page has no
+// reconnect, so the wait stops there and names the ending it drew rather
+// than spending the rest of the deadline on a state that cannot come.
 fn await_connected(client, within: Int) -> Nil {
   await_connected_until(client, bootstrap.monotonic_time_ms() + within)
 }
@@ -134,13 +146,21 @@ fn await_connected_until(client, deadline: Int) -> Nil {
     as "the page draws until it follows the session, inside the deadline"
   let text =
     gleam_json.to_string(server_component.client_message_to_json(message))
-  case string.contains(text, "\"connected\"") {
-    True -> Nil
-    False -> await_connected_until(client, deadline)
+  case
+    string.contains(text, "\"connected\""),
+    string.contains(text, "\"disconnected\"")
+  {
+    True, _ -> Nil
+    False, True -> panic as { "the page ended before it connected: " <> text }
+    False, False -> await_connected_until(client, deadline)
   }
 }
 
-pub fn an_operators_page_prompts_and_denies_through_the_gateway_test() {
+pub fn an_operators_page_prompts_and_denies_through_the_gateway_test_() -> EunitTest {
+  Timeout(test_seconds / scale, prompts_and_denies)
+}
+
+fn prompts_and_denies() -> Nil {
   let harness = gateway_test.reserved_fixture(fixture_id(5201))
   let assert Ok(Nil) =
     api.raise_escalation(
