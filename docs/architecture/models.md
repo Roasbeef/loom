@@ -757,7 +757,7 @@ reporting, not routing.
 registry, and listed, but it is reserved vocabulary with no dispatch site,
 because the harness has no plan-generation step. `docs/spec-gaps.md`
 records this. (`vision` used to share this limit; it now serves
-image-bearing turns through `client/vision`, as described under the roles
+image-bearing turns through `harness/vision`, as described under the roles
 above.)
 
 ### Closed limits

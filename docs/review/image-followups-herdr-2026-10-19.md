@@ -32,6 +32,17 @@ Without a usable vision route, a text-only identity retaining images refuses
 admission. This costs additional vision turns while images remain in context;
 it avoids a heuristic that guesses whether the wording refers to an image.
 
+## Harness extraction integration
+
+While this PR was being validated, [PR #1034](https://github.com/Roasbeef/loom/pull/1034)
+moved provider routing into `harness`. The retained-image classifier and neutral
+placeholders now live in `harness/vision`; `client/vision` remains a delegation.
+Admission, dispatch and the live client observer share
+`harness/admission.image_bearing`. The moved implementation is syntax-identical
+to the tested `e8d2071af` implementation after excluding documentation. The
+existing client and conformance regressions exercise these shared entry points.
+The integrated head still requires its own full validation.
+
 ## Herdr finding
 
 Herdr removed its bespoke pane-graphics API while retaining standard Kitty

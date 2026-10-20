@@ -53,7 +53,8 @@ placement across machines and the holder process.
   `execution_mode`, `replay_policy`, `terminates`, `completed`, `finished`,
   `run_registry`.
 - `harness/vision` — the image-bearing classification, the placeholders and
-  the two refusals, moved unchanged from `client/vision`, which now delegates.
+  the two refusals. Every retained projected image participates, including
+  images before an answer or stopped run; `client/vision` delegates here.
 - `harness/session_read` — `strand_of` and `strand_identity`, the two durable
   reads routing needs. `client/notes.strand_of` delegates here.
 
@@ -102,6 +103,10 @@ placement across machines and the holder process.
 - **`embedded_context` refuses every broker execution.** `clear_call` answers
   `BrokerUnavailable` and `raise_refusal` settles in band. A tool which needs a
   jail uses `Hosted`.
+- **Retained images keep vision.** Admission, dispatch and client observers use
+  `admission.image_bearing`, which combines the projected context with the
+  immutable admitted batch. Only the active run receives image-budget
+  protection; historical pixels retain the gateway's existing limits.
 - **A `Fallback` is positive.** `new` checks the window and ceiling; the
   daemon's `Config` documents the same rule and does not check it.
 

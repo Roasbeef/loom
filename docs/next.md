@@ -19,11 +19,15 @@ private-session capture verified Loom's 480 by 280 demo image transmission.
 Non-empty `NO_COLOR` still suppresses previews. See the [scoped evidence and
 remaining gates](review/image-followups-herdr-2026-10-19.md).
 
-The full affected gate passed on `2a666d224` after rebasing onto
-`ba4f1321498ff4d1544197ffdffa35a7d83ae2c4`, including 4,877 client tests and a
-clean skip census. The original image and Herdr changes and the subsequent CI repairs each passed
-an independent adversarial review with no actionable findings. The repair head
-still needs its final full local and hosted gates.
+The full affected gate passed on `e8d2071af` over `c444fca25`, including
+4,884 client tests, 1,545 TUI tests and a clean skip census. Its hosted Linux
+gate, macOS E2E and both macOS shards also passed. The provider-routing
+extraction in
+[PR #1034](https://github.com/Roasbeef/loom/pull/1034) moved the shared rule into
+`harness/vision`. The client wrapper delegates there, and admission, dispatch
+and the live observer share `harness/admission.image_bearing`. This integration
+requires a fresh full gate and review; earlier validation is historical
+provenance rather than proof of the integrated head.
 
 The owner authorized repair of the failing CI fixtures and merge once checks
 pass. A failed delegate reopen exposed a reachable Closing-state race, while

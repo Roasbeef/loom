@@ -2965,7 +2965,7 @@ catalogue without opening runtimes. Explicit admission invokes
   because a grant that cannot be attributed to the call in hand must
   widen nothing.
 - `client/wiring.{run_tool, terminates}` — the tool-dispatch boundary and
-- `client/vision` routes any request retaining an attached or tool-result image
+- `harness/vision`, exposed through `client/vision`, keeps requests with images
   through the `vision` chain when the strand's configured identity is text-only.
   Admission uses the vision head's accounting facts and refuses an unavailable
   or blind route before dispatch. The shared classifier examines this strand's
@@ -2987,8 +2987,8 @@ catalogue without opening runtimes. Explicit admission invokes
   images from protection; compaction cannot reclassify retained history as new.
   GLM-5.3 (with or without the `zai-org/` prefix) defaults to text-only;
   GLM-5.3-Flash remains distinct. Unknown identifiers retain the legacy
-  image-capable default. A following attributed text prompt can recover from a failed image request
-  with historical image placeholders, even after projection removes the error.
+  image-capable default. A text follow-up retains vision even after projection
+  removes a preceding failed assistant message.
   The catalogue parse refuses a `vision` chain that names a
   `vision = false` entry, so a retryable walk cannot deliver an image
   to a model that cannot read it. `Config.facts` carries the entry's
@@ -5860,7 +5860,7 @@ in the same release: `agency.brief_message` and the
 authenticated caller and from nothing a model emitted, with the framed text
 unchanged. The origin is attribution only. `vision.image_bearing` retains
 image access across a sibling message in this strand's projection, and
-`wiring.admitted_image_bearing` also covers an image admitted earlier in
+`harness/admission.image_bearing` also covers an image admitted earlier in
 the same run; `vision_test` pins that image-then-sibling order, and
 `agency_test` pins the origin for briefs (with and without a result schema),
 downward sends and upward reports.
