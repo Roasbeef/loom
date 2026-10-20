@@ -86,8 +86,8 @@ import lustre/element/html
 import lustre/element/svg
 import lustre/event
 import web_view/sessions.{
-  type Activity, type Entry, type Group, Blocked, Idle, Live, Moving, NeedsYou,
-  Saved, Working,
+  type Activity, type Entry, type Group, Blocked, FailedStart, Idle, Live,
+  Moving, NeedsYou, Saved, Working,
 }
 import web_view/view/archiving.{type Archiving}
 import web_view/view/resume.{type Resume}
@@ -291,7 +291,7 @@ fn partition(
 fn is_running(entry: Entry) -> Bool {
   case entry.residency {
     Live -> True
-    Saved | Blocked | Moving(_) -> False
+    Saved | Blocked | FailedStart(_) | Moving(_) -> False
   }
 }
 
@@ -338,7 +338,7 @@ fn toggle_words(entries: List(Entry)) -> String {
   let blocked =
     list.count(entries, fn(entry) {
       case entry.residency {
-        Blocked -> True
+        Blocked | FailedStart(_) -> True
         Live | Saved | Moving(_) -> False
       }
     })
@@ -410,6 +410,7 @@ fn entry(
     // A row nothing runs and a page cannot open says so, in the words the home
     // table uses for it, rather than passing for a saved session that resumes.
     Blocked, _ -> #(["saved"], "○", "needs attention")
+    FailedStart(_), _ -> #(["saved"], "○", "failed to start")
 
     // A session being handed to another orchestrator says where it goes. The
     // destination is the operator's own configuration, drawn as a text node.
@@ -495,7 +496,11 @@ fn entry(
         ..archiving.button(archiving, entry)
       ])
 
-    _, False, Saved | _, False, Blocked | _, False, Moving(_) ->
+    _, False, Saved
+    | _, False, Blocked
+    | _, False, FailedStart(_)
+    | _, False, Moving(_)
+    ->
       case kind {
         resume.Button(press:) ->
           html.li([attribute.class("session")], [

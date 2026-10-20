@@ -1907,6 +1907,40 @@ pub fn a_blocked_row_draws_archive_and_delete_test() {
   assert !string.contains(html, "home-act")
 }
 
+// A reservation whose start failed says so with the daemon's reason, as text,
+// and offers the same Archive and Delete a blocked row does
+// (protocol-change/093). The reason is drawn escaped, never as an attribute.
+pub fn a_failed_start_row_says_why_and_draws_archive_and_delete_test() {
+  let ask = fn(_action, _session, _deliver) { Nil }
+  let listed = fn(deliver) {
+    deliver(
+      home.Listed([
+        entry(
+          "X",
+          "stuck",
+          "/src/weft",
+          1,
+          sessions.FailedStart("census <b>reports</b> []"),
+        ),
+      ]),
+    )
+  }
+  let #(owner, _) =
+    opened(home.Start(..start(), manage: Some(ask), sessions: listed))
+  let html = drawn(owner)
+  assert string.contains(html, "failed to start: census &lt;b&gt;reports")
+  assert !string.contains(html, "<b>reports")
+  assert !string.contains(html, "title=\"census")
+  assert !string.contains(html, ">Stop<")
+  assert list.length(string.split(html, ">Archive<")) == 2
+  assert list.length(string.split(html, ">Delete<")) == 2
+
+  let #(plain, _) = opened(home.Start(..start(), sessions: listed))
+  let html = drawn(plain)
+  assert string.contains(html, "failed to start")
+  assert !string.contains(html, ">Delete<")
+}
+
 // --- Stop asks first on a busy row (round 5, F110) ---------------------------
 
 // A page whose manage capability records what the daemon is asked, and whose

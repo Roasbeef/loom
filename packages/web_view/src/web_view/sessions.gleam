@@ -70,6 +70,17 @@ pub type Residency {
   /// registry refuses it as busy.
   Blocked
 
+  /// A creation whose start failed (protocol-change/093). It is a `Blocked`
+  /// that the daemon can say more about: nothing runs it, a page cannot open
+  /// it, and the owner may delete it, but the row also carries `reason`, the one
+  /// cleaned line of at most 512 bytes the daemon kept for the failure. It is
+  /// text a host or a configuration wrote, so a page draws it as a text node
+  /// and nowhere else: never an attribute, a class, a key or a title.
+  FailedStart(
+    /// Why the start failed.
+    reason: String,
+  )
+
   /// The session is stopped, as a saved one is, and the daemon is handing it to
   /// the orchestrator `to` (protocol-change/078, phase 5). It is the one
   /// owner's until the move ends, but this daemon will not open, archive or

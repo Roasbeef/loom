@@ -460,7 +460,10 @@ fn held_here(entries: List(Entry)) -> String {
     list.count(entries, fn(entry) {
       case entry.residency {
         sessions.Live -> True
-        sessions.Saved | sessions.Blocked | sessions.Moving(..) -> False
+        sessions.Saved
+        | sessions.Blocked
+        | sessions.FailedStart(..)
+        | sessions.Moving(..) -> False
       }
     })
   int.to_string(list.length(entries))

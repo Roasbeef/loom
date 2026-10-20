@@ -40,7 +40,7 @@ import lustre/element.{type Element}
 import lustre/element/html
 import lustre/event
 import web_view/actions.{type Action, type Stage}
-import web_view/sessions.{type Entry, Blocked, Live, Moving, Saved}
+import web_view/sessions.{type Entry, Blocked, FailedStart, Live, Moving, Saved}
 
 /// What a page offers for archiving a sidebar row.
 pub type Archiving(message) {
@@ -88,7 +88,7 @@ pub type Turn {
 pub fn action(entry: Entry) -> Action {
   case entry.residency {
     Live -> actions.StopArchive
-    Saved | Blocked | Moving(_) -> actions.Archive
+    Saved | Blocked | FailedStart(_) | Moving(_) -> actions.Archive
   }
 }
 
@@ -176,7 +176,7 @@ pub fn button(
           "Stop this session, then archive it: hide it and keep its history",
           "■",
         )
-        Saved | Blocked | Moving(_) -> #(
+        Saved | Blocked | FailedStart(_) | Moving(_) -> #(
           "Archive",
           "Archive this session: hide it and keep its history",
           "×",
