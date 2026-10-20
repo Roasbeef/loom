@@ -222,7 +222,7 @@ fn start(settings: serve.Settings) {
 
 fn resident(registry, id) {
   let assert poll.Answered(instance) =
-    poll.until(within: 5000, every: 5, attempt: fn() {
+    poll.until(within: lifecycle_ms, every: 25, attempt: fn() {
       case manager.resolve(registry, id) {
         Ok(instance) -> poll.Done(instance)
         Error(_) -> poll.Retry
@@ -258,7 +258,7 @@ fn create(serving: daemon_main.Serving(serve.Instance), workspace, seed) {
 
 fn helper(instance: serve.Instance) {
   let assert Ok(helper) =
-    exec.checkout(local_workspace.pool(instance), waiting: 3000)
+    exec.checkout(local_workspace.pool(instance), waiting: lifecycle_ms)
     as "every incarnation owns a real handshaken native helper"
   let owner = exec.pid(helper)
   exec.checkin(local_workspace.pool(instance), helper)
@@ -276,7 +276,7 @@ fn attach(serving: daemon_main.Serving(serve.Instance), token, id) {
   let #(socket, headers) =
     wire.connect(serving.listener.port, token, "/v2/sessions/" <> id <> "/ws")
   assert string.contains(headers, "101 Switching Protocols")
-  let #(begin, snapshot) = transfer.begin(socket, id, within_ms: 1000)
+  let #(begin, snapshot) = transfer.begin(socket, id, within_ms: reply_ms)
   assert field(begin, "session_id") == json.String(id)
   assert field(begin, "epoch") == json.String(serving.ready.epoch)
   #(socket, snapshot)
@@ -364,16 +364,16 @@ fn measure_snapshot(
         }
       },
     ])
-    |> weft.deadline(5000)
+    |> weft.deadline(lifecycle_ms)
     |> weft.start_relayed(replies)
-  let assert Ok(stopped) = process.receive(ready, 1000)
+  let assert Ok(stopped) = process.receive(ready, reply_ms)
     as "the sampler publishes its own stop inbox before timing begins"
   let #(timing, entries) = snapshot_measurement(serving, token, id)
   process.send(stopped, Nil)
   let assert Ok(weft.PulledOutcome(weft.Completed(0, Probes(probes, ended)))) =
-    process.receive(replies, 6000)
+    process.receive(replies, lifecycle_ms + 1000)
     as "the bounded sampler completes without losing its observation"
-  let assert Ok(weft.AllDelivered) = process.receive(replies, 1000)
+  let assert Ok(weft.AllDelivered) = process.receive(replies, reply_ms)
     as "the sampler has retired before the pair is evaluated"
   #(SnapshotTiming(..timing, probes:, probe_end: ended), entries)
 }
@@ -388,7 +388,7 @@ fn snapshot_measurement(
     wire.connect(serving.listener.port, token, "/v2/sessions/" <> id <> "/ws")
   let connected = bootstrap.monotonic_time_ms()
   assert string.contains(headers, "101 Switching Protocols")
-  let #(begin, snapshot) = transfer.begin(socket, id, within_ms: 1000)
+  let #(begin, snapshot) = transfer.begin(socket, id, within_ms: reply_ms)
   let subscribed = bootstrap.monotonic_time_ms()
   assert field(begin, "session_id") == json.String(id)
   assert field(begin, "epoch") == json.String(serving.ready.epoch)
@@ -436,7 +436,7 @@ fn timed_drain(socket, snapshot_id, index, accumulated, remaining) {
         #("snapshot_id", json.String(snapshot_id)),
         #("index", json.Int(index)),
       ]),
-      within_ms: 1000,
+      within_ms: reply_ms,
     )
   let completed = bootstrap.monotonic_time_ms()
   assert string.byte_size(json.to_string(frame)) <= 65_536
@@ -560,7 +560,7 @@ fn stall_entry(socket, snapshot, index, remaining) {
         #("snapshot_id", json.String(snapshot)),
         #("index", json.Int(index)),
       ]),
-      within_ms: 1000,
+      within_ms: reply_ms,
     )
   assert field(frame, "event") == json.String("snapshot_chunk")
   let body = field(frame, "body")
@@ -593,7 +593,7 @@ fn stall_entry(socket, snapshot, index, remaining) {
         False -> <<0x81, 0xfe, size:16, 0:32, bytes:bits>>
       }
       assert tcp.send(socket, frame) == Ok(Nil)
-      assert ffi_ws.tcp_receive(socket, 1, 1000) == Ok(<<0x81>>)
+      assert ffi_ws.tcp_receive(socket, 1, reply_ms) == Ok(<<0x81>>)
     }
     _ -> panic as "the captured durable record must follow metadata"
   }
@@ -793,14 +793,14 @@ fn close_a(
   let assert Ok(helper_down) =
     process.new_selector()
     |> process.select_specific_monitor(helper_watch, fn(down) { down })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(lifecycle_ms)
     as "the helper owner retains native exit proof before normal retirement"
   assert helper_down.reason == process.Normal
   list.each(watches, fn(watch) {
     let assert Ok(down) =
       process.new_selector()
       |> process.select_specific_monitor(watch, fn(down) { down })
-      |> process.selector_receive(5000)
+      |> process.selector_receive(lifecycle_ms)
       as "every original helper and instance child retires before reuse"
     case down.reason {
       process.Normal -> Nil
@@ -813,7 +813,7 @@ fn close_a(
     }
   })
   let assert poll.Answered(Nil) =
-    poll.until(within: 5000, every: 5, attempt: fn() {
+    poll.until(within: lifecycle_ms, every: 25, attempt: fn() {
       case manager.get(serving.ready.registry, id) {
         Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
         Ok(manager.View(status: manager.RecoveryBlocked(reason), ..)) ->
@@ -932,7 +932,7 @@ fn drive(
       let assert Ok(operation.RunLastResult(
         outcome: operation.RunCompleted(_),
         ..,
-      )) = api.await_result(b.runtime, op, within_ms: 5000)
+      )) = api.await_result(b.runtime, op, within_ms: lifecycle_ms)
         as "B's original runtime durably settles while A remains unread"
       let _ = sample(directory, "unread", cycle, daemon, b, queue, latency)
       close_a(serving, a_id, a, helper_owner)
@@ -958,6 +958,20 @@ fn timing_summary(timing: SnapshotTiming) -> String {
   |> string.join("/")
 }
 
+// How long a reply that is certain to arrive may take, in milliseconds. The
+// latency being measured is read from the monotonic clock around these calls,
+// so the bound decides only when a stalled host is called a failure.
+const reply_ms = 10_000
+
+// How long one lifecycle step may take, in milliseconds: a runtime open, a
+// helper checkout, a close. Each ends when its work does.
+const lifecycle_ms = 30_000
+
+// The seconds of the whole run. EUnit scales a generator's timeout by ten, so
+// the budget handed to it is this divided by ten, and the run's own deadline is
+// a minute short of it to leave the final shutdown its time.
+const run_seconds = 600
+
 /// Runs two warmups and sixteen measured real incarnations with finite waits.
 ///
 /// ## Examples
@@ -965,12 +979,12 @@ fn timing_summary(timing: SnapshotTiming) -> String {
 /// `scripts/test.sh client --match daemon_soak` writes daemon-soak.jsonl beside
 /// its fresh fixture directory. OS RSS and FD values are observations only.
 pub fn daemon_soak_reclaims_incarnations_while_unread_peer_isolated_test_() -> EunitTest {
-  Timeout(30, fn() {
+  Timeout(run_seconds / 10, fn() {
     let settings = settings()
     let #(daemon, config, directory) = start(settings)
     let outcomes =
       weft.new([fn() { drive(daemon, config, directory, settings) }])
-      |> weft.deadline(150_000)
+      |> weft.deadline({ run_seconds - 60 } * 1000)
       |> weft.start
     let retired = root.shutdown(daemon, within: 15_000)
     assert retired == Ok(Nil)
