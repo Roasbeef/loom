@@ -2181,6 +2181,11 @@ Like `history`, it does not move the client's adopted history cursor.
 
 An empty array, more than eight ids, or a non-string element refuses the
 command with `bad_request`. Duplicate ids are collapsed.
+
+An id holding a slash is `<orchestrator>/<id there>`, the identity of a child's
+request on another orchestrator (protocol-change/089). It is read from the
+register `remote-escalation/<id>` as well as `escalation/<id>`, and is missing
+only when neither holds a cell. A local id never holds a slash.
 Source: (`client/protocol.gleam:744-764`).
 
 ```json

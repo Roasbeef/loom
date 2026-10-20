@@ -782,6 +782,53 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
       as "the exact raw payload retains its resolution author"
     assert record.status == escalation.Rejected
     assert record.origin == Some(author)
+
+    // A child's request on another orchestrator lives under
+    // `remote-escalation/`, and the id the client holds for it is the
+    // orchestrator and the box's identity. The same lookup finds it there and
+    // still reports an id with no register in either namespace as missing.
+    let assert Ok(remote_commit) =
+      writer.commit(
+        harness.runtime.tree.writer,
+        tx.Tx(
+          [
+            tx.SetRegister(
+              register.FactCustom,
+              "remote-escalation/box/esc-r",
+              register.value(
+                json.Object([#("escalation_id", json.String("box/esc-r"))]),
+              ),
+            ),
+          ],
+          [],
+        ),
+      )
+      as "the remote request commits"
+    let remote =
+      request(
+        socket,
+        80,
+        "escalations_get",
+        json.Object([
+          #(
+            "ids",
+            json.Array([json.String("box/esc-r"), json.String("box/none")]),
+          ),
+        ]),
+        within_ms: 1000,
+      )
+    let assert json.String(remote_id) =
+      field(field(remote, "body"), "snapshot_id")
+      as "a remote id uses the same exact lookup"
+    let metadata =
+      drain(socket, remote_id, 0, [], 20, within_ms: 1000)
+      |> decoded_record("metadata")
+    assert field(metadata, "missing") == json.Array([json.String("box/none")])
+    let assert json.Array([remote_cell]) = field(metadata, "cells")
+      as "only the remote register answers"
+    assert field(remote_cell, "key")
+      == json.String("remote-escalation/box/esc-r")
+    assert field(remote_cell, "seq") == json.Int(remote_commit.first_seq)
     ffi_ws.tcp_close(socket)
   })
 }

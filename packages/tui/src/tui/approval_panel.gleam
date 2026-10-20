@@ -55,6 +55,11 @@ pub type RequestContext {
   /// Both values came from the exact captured escalation revision.
   CapturedRequest(owner: String, operation: String)
 
+  /// The request is a child's on another orchestrator. Its scope names a
+  /// strand and operation on that machine, which this capture does not hold,
+  /// so the card names the child and the orchestrator it runs on instead.
+  RemoteRequest(child: String, orchestrator: String)
+
   /// The exact capture did not carry a complete requester scope.
   RequestContextUnavailable(reason: String)
 }
@@ -144,6 +149,11 @@ pub fn with_context(state: State, context: RequestContext) -> State {
       CapturedRequest(
         text_hygiene.single_line(owner),
         text_hygiene.single_line(operation),
+      )
+    RemoteRequest(child, orchestrator) ->
+      RemoteRequest(
+        text_hygiene.single_line(child),
+        text_hygiene.single_line(orchestrator),
       )
     RequestContextUnavailable(reason) ->
       RequestContextUnavailable(text_hygiene.single_line(reason))
@@ -468,6 +478,12 @@ fn detail_lines(
     NoRequestContext, _, _ -> []
     RequestContextUnavailable(reason), _, _ ->
       styled_lines(reason, quiet(), width)
+    RemoteRequest(child, orchestrator), _, _ ->
+      styled_lines(
+        "Requested by " <> child <> " on " <> orchestrator,
+        style.new(theme.current, style.Default, style.none()),
+        width,
+      )
     CapturedRequest(owner, operation), _, Raw ->
       styled_lines(
         "Requested by " <> owner <> " · operation " <> operation,
