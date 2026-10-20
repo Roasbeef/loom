@@ -190,7 +190,7 @@ pub fn a_raised_request_leaves_a_row_at_its_seq_for_its_parent_test() {
         seq:,
         parent_strand: "main",
         child: agent.Handle(..handle, operation: an_op(3)),
-        until: 5000,
+        until: 5000 + delegate_outbox.answer_window_ms,
         sending: delegate_outbox.NotAcknowledged,
       ),
     ]
@@ -245,11 +245,21 @@ pub fn a_disconnected_laptop_is_not_asked_and_a_live_request_stays_owed_test() {
     == owed()
   assert process.receive(heard, 0) == Error(Nil)
 
-  // Once the window has closed nobody is parked, so the pass does not wait on it.
+  // The call stopped parking at 5000, but the record is still decidable, so the
+  // pass keeps waiting for the laptop through the answer window.
   assert pass(
       runtime,
       laptop: laptop(connected: False, answer: Ok(Ok(Nil)), heard:),
       now: 6000,
+    )
+    == owed()
+
+  // Once the answer window has closed the record is the box owner's, and the
+  // pass does not wait on it.
+  assert pass(
+      runtime,
+      laptop: laptop(connected: False, answer: Ok(Ok(Nil)), heard:),
+      now: 5000 + delegate_outbox.answer_window_ms,
     )
     == peer_outbox_drain.Clear
   let assert Ok(Nil) = api.close(runtime)
@@ -322,15 +332,45 @@ pub fn a_row_a_newer_raise_replaced_is_dropped_without_a_send_test() {
   let assert Ok(Nil) = api.close(runtime)
 }
 
-pub fn a_window_that_closed_drops_the_row_and_sends_nothing_test() {
+// The e2e drive of 2026-10-19 found this: since a refused call parks for only a
+// five-second grace, a row that ended with the park was dropped before a laptop
+// a network away was told, and the request was never shown. The call has
+// stopped waiting here, but the record is still decidable and the child's next
+// run spends an approval, so the laptop is still asked.
+pub fn a_request_whose_call_stopped_parking_is_still_sent_test() {
+  let runtime = session("after-park")
+  let _ = child(runtime)
+  let seq = raise(runtime, "policy-1")
+  let assert Ok(Nil) = delegate_outbox.announce(runtime, "policy-1", until: 50)
+  let heard = process.new_subject()
+  let up = laptop(connected: True, answer: Ok(Ok(Nil)), heard:)
+  assert pass(runtime, laptop: up, now: 100) == owed()
+  let assert Ok(Asked(record)) = process.receive(heard, 0)
+  assert record.seq == seq
+  assert record.status == "pending"
+
+  // A decision taken after the park still reaches the laptop as the decided
+  // state, which is what clears its card.
+  let assert Ok(cell) = api.escalation_cell(runtime, "policy-1")
+  let assert Ok(_) = api.deny_escalation_at(runtime, cell, None)
+  assert pass(runtime, laptop: up, now: 200) == peer_outbox_drain.Clear
+  let assert Ok(Asked(decided)) = process.receive(heard, 0)
+  assert decided.status == "rejected"
+  assert rows(runtime) == []
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn an_answer_window_that_closed_drops_the_row_and_sends_nothing_test() {
   let runtime = session("closed")
   let _ = child(runtime)
   let _ = raise(runtime, "policy-1")
   let assert Ok(Nil) = delegate_outbox.announce(runtime, "policy-1", until: 50)
   let heard = process.new_subject()
   let up = laptop(connected: True, answer: Ok(Ok(Nil)), heard:)
-  assert pass(runtime, laptop: up, now: 100) == peer_outbox_drain.Clear
+  assert pass(runtime, laptop: up, now: 50 + delegate_outbox.answer_window_ms)
+    == peer_outbox_drain.Clear
   assert process.receive(heard, 0) == Error(Nil)
+  assert rows(runtime) == []
   let assert Ok(Nil) = api.close(runtime)
 }
 

@@ -7809,7 +7809,12 @@ pub fn a_request_from_the_wrong_node_or_about_an_unknown_child_is_refused_test()
   close(harness)
 }
 
-pub fn a_finished_child_takes_its_filed_requests_with_it_test() {
+// A child that is refused and gives up within seconds settles before its
+// operator can read the card. The box keeps the record decidable and the
+// child's next run spends an approval, so the card must outlive the settle; the
+// e2e drive of 2026-10-19 lost an approval to the clear this test used to
+// assert.
+pub fn a_finished_childs_filed_requests_stay_answerable_test() {
   let #(harness, box, child) = requested_parent()
   let inbox = agency.child_inbox(harness.config)
   assert inbox.escalation(
@@ -7822,12 +7827,12 @@ pub fn a_finished_child_takes_its_filed_requests_with_it_test() {
   let assert Some(_) = filed_request(harness)
 
   // The child is started and then finishes: the join's report settles the stub,
-  // and the card for a call that can no longer be answered clears.
+  // and the request it raised is still filed for its operator to answer.
   fake_orchestrators.set_mode(box, fake_orchestrators.Up)
   let _backlog = drain(harness)
   assert option.is_some(filed_request(harness))
   let assert Ok([kept]) = remote_child.all(harness.runtime)
-  let assert Ok(_) =
+  let assert Ok(settled) =
     remote_child.settled(
       harness.runtime,
       kept.key,
@@ -7841,7 +7846,12 @@ pub fn a_finished_child_takes_its_filed_requests_with_it_test() {
       ),
       0,
     )
-  assert filed_request(harness) == None
+
+  // The stub really settled, so the request survived the transition that used
+  // to clear it rather than a settle that never applied.
+  let assert remote_child.Settled(..) = settled.state
+  let assert Some(still) = filed_request(harness)
+  assert still.status == "pending"
   close(harness)
 }
 

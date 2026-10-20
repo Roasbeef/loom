@@ -44,6 +44,18 @@
 //// reads the child's result, not the child's jobs. A heartbeat to an idle
 //// subagent is skipped for the same reason.
 ////
+//// One subagent is the exception, and only for one notice. A child this
+//// session runs for a parent on another orchestrator (protocol-change/084)
+//// asked that parent's operator for more authority (protocol-change/089),
+//// and that operator's decision is the answer the child's run gave up
+//// waiting for. `deliver_to_remote_child` opens a run on such a child when
+//// it is idle, through the same admission a parent's `agent_send` uses
+//// (084's S9 addendum): the runtime gives a run of a child whose parent is a
+//// `^` reference the child's own absolute deadline and refuses one past it,
+//// so the wake cannot lengthen what the spawner allowed. A child whose
+//// parent is a strand of this session is held to the rule above, because
+//// the runtime would give its run a fresh budget.
+////
 //// The advisor strand is held to the same rule for a different reason:
 //// `client/advisor` alone decides when it runs, rationing its reviews, so
 //// a run it did not open would be a review nobody asked for.
@@ -62,6 +74,7 @@ import gleam/string
 import machine/acceptance
 import machine/queue
 import runtime/api.{type Runtime}
+import runtime/lineage
 import session/session
 
 /// The reserved prefix every completion mark lives under. Inside
@@ -204,6 +217,78 @@ fn steer_only(
     }
     Error(api.QueueRejected(reason: queue.NoActiveRun)) -> Ok(Withheld)
     Error(error) -> Error(error)
+  }
+}
+
+/// Sends `text` to `owner` as a completion notice for `work`, and opens a run
+/// on `owner` when it is an idle child of a parent on another orchestrator.
+/// Any other owner is served by `deliver`. See the module doc for why this one
+/// child may be woken.
+///
+/// The run is admitted by `api.send_to_strand_marking`, the call a parent's
+/// `agent_send` into an idle remote child makes (`agency.delegate_send`). The
+/// runtime gives a run started that way the deadline the child's lineage cell
+/// keeps, and refuses one once that deadline has passed. A refused wake falls
+/// back to `deliver`'s steer, so a child past its deadline is left idle and the
+/// notice is `Withheld`, exactly as for any other subagent. A child with an
+/// open run takes the notice as a steer, as it would from `deliver`, so a busy
+/// child never gets a second run. The mark is spent with the admission either
+/// way, so a decision noticed twice opens at most one run.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // notice.deliver_to_remote_child(runtime, "sub:^main/build-01",
+/// //   notice.Escalation(id: "policy-1", seq: 4), text)
+/// //   -> Ok(notice.Delivered)
+/// ```
+///
+pub fn deliver_to_remote_child(
+  runtime: Runtime,
+  owner: String,
+  work: Work,
+  text: String,
+) -> Result(Delivered, String) {
+  case remote_parent(runtime, owner) {
+    NotRemote -> deliver(runtime, owner, work, text)
+    Remote -> {
+      let mark = api.Mark(key: key(work), value: json.Null)
+      let message = harness_message(runtime, text)
+      case api.send_to_strand_marking(runtime, to: owner, message:, mark:) {
+        Ok(_delivery) -> Ok(Delivered)
+        Error(api.FactConflict(_)) -> Ok(AlreadyDelivered)
+
+        // The runtime would not open a run: the child's deadline has passed,
+        // or its state could not be read. The steer is what any subagent gets,
+        // and an idle child is left idle by it.
+        Error(_refused) -> deliver(runtime, owner, work, text)
+      }
+    }
+  }
+}
+
+// Whether a strand's parent is on another orchestrator, which is what makes
+// the runtime bound a run it starts by the child's own deadline.
+type Parentage {
+  Remote
+  NotRemote
+}
+
+// Reads the parent edge from the lineage cell, the same cell runtime admission
+// reads to choose the deadline. A strand with no readable cell is not a child of
+// a remote parent, and gets no wake.
+fn remote_parent(runtime: Runtime, strand: String) -> Parentage {
+  let parent =
+    api.fact(runtime, lineage.register_key(strand))
+    |> result.replace_error(Nil)
+    |> result.try(option.to_result(_, Nil))
+    |> result.try(fn(value) {
+      lineage.decode(value) |> result.replace_error(Nil)
+    })
+    |> result.map(fn(cell) { cell.parent })
+  case result.map(parent, string.starts_with(_, api.parent_reference_prefix)) {
+    Ok(True) -> Remote
+    Ok(False) | Error(Nil) -> NotRemote
   }
 }
 

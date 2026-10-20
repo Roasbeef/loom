@@ -33,9 +33,10 @@
 //// asked (protocol-change/089). `question_step` is the part of the pass that
 //// asks. Each request row names a record and the `seq` it was raised at, and the
 //// pass sends the record as it is when it sends. A row ends in one of four ways:
-//// a newer raise replaced it, the park window closed, the record was decided and
-//// the decided state was sent, or the laptop said it would never admit the
-//// message. A row whose record is still pending and was acknowledged waits, and
+//// a newer raise replaced it, its answer window closed
+//// (`delegate_outbox.answer_window_ms` past the call's park, because a decision
+//// after the park still reaches the child), the record was decided and the
+//// decided state was sent, or the laptop said it would never admit the message. A row whose record is still pending and was acknowledged waits, and
 //// the pass stays owed for it, because the decision can come at any moment and
 //// nothing rings the drainer for it.
 ////
@@ -312,8 +313,9 @@ fn send_glances(
 // --- requests for more authority ------------------------------------------------
 
 // Whether a request row is still worth keeping the pass alive for, when the
-// laptop is away and nothing can be sent. A row whose window has closed will be
-// dropped when the laptop is back, and does not keep the pass ticking until then.
+// laptop is away and nothing can be sent. A row whose answer window has closed
+// will be dropped when the laptop is back, and does not keep the pass ticking
+// until then.
 fn questions_waiting(runtime: api.Runtime, now: Int) -> Bool {
   case delegate_outbox.question_rows(runtime) {
     Ok(rows) -> list.any(rows, fn(row) { row.1.until > now })
@@ -324,8 +326,8 @@ fn questions_waiting(runtime: api.Runtime, now: Int) -> Bool {
 // Sends what each request row owes and answers whether any row is still waiting.
 //
 // A row is judged against the record it names, read as it is now. A newer raise
-// leaves the older row nothing to say, and a closed window means nobody is parked
-// on the answer. Otherwise a pending record is sent until the laptop acknowledges
+// leaves the older row nothing to say, and a closed answer window hands the
+// record to the box's owner. Otherwise a pending record is sent until the laptop acknowledges
 // that `seq`, and a decided one is sent once more, so that the laptop clears the
 // card, before its row is dropped.
 fn question_step(
@@ -390,7 +392,7 @@ fn one_question(
 }
 
 // A row whose record is still pending. `Error(Nil)` says the row has nothing
-// left to say, because a newer raise replaced it or the park window closed, and
+// left to say, because a newer raise replaced it or its answer window closed, and
 // the caller drops it. `Ok` says whether the row is still waiting.
 fn pending_question(
   runtime: api.Runtime,

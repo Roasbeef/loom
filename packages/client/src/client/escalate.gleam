@@ -27,7 +27,7 @@
 ////
 //// ## Flow
 ////
-//// `seam` → `decide` → `raise` → `decide_claimed` → `park` → `look` → `look_at_record` → `spend`; `detach_or_spend` → `detach_cell` → `recheck_after_detach`; `notify_decision` → `decision_notice_text`
+//// `seam` → `decide` → `raise` → `decide_claimed` → `park` → `look` → `look_at_record` → `spend`; `detach_or_spend` → `detach_cell` → `recheck_after_detach`; `notify_decision` → `notify_spawner_decision` → `notify_with` → `decision_notice_text`
 ////
 //// 1. `default_config`, `start` and `none` configure the holder; `seam` closes
 ////    over the holder's name and routes every refusal to `decide`, which borrows
@@ -301,17 +301,20 @@ type Parked {
   )
 }
 
-/// The default policy: park for at most five minutes, polling every
-/// second, and never park at all unless the host says someone is
+/// The default policy: park for a five-second grace, polling every 200
+/// milliseconds, and never park at all unless the host says someone is
 /// attached.
 ///
-/// Five minutes is a compromise between the two ways this can go wrong.
-/// Longer and a call held for a decision nobody is coming back for keeps
-/// an exclusive tool's slot and a strand's turn alive well past the point
-/// the model could have routed around the refusal; shorter and a human
-/// who stepped away from a prompt loses a decision they were going to
-/// make. Neither is a safety property — the record survives either way —
-/// so a host that knows its operators may set whatever it likes.
+/// The grace is short because a decision no longer has to arrive while
+/// the call waits. When it closes with the record still pending, the
+/// call settles in band and the record stays decidable; a later decision
+/// steers or wakes the strand (`notify_decision`, and for a remote child
+/// `notify_spawner_decision`) so the model re-issues
+/// the call and spends the approval. A longer park would only hold an
+/// exclusive tool's slot and a strand's turn for a person who may not be
+/// coming back. Neither length is a safety property — the record survives
+/// either way — so a host that knows its operators may set whatever it
+/// likes.
 ///
 /// The record cap is a different kind of number: 256 distinct wants in
 /// one session is already far past what a person would work through, and
@@ -504,12 +507,58 @@ pub fn notify_decision(
   cell: api.EscalationCell,
   decision: OperatorDecision,
 ) -> Result(notice.Delivered, String) {
+  notify_with(runtime, cell, decision, notice.deliver)
+}
+
+/// `notify_decision` for a decision taken by the spawner's operator on another
+/// orchestrator (protocol-change/089), which also wakes the requesting child
+/// when it is idle.
+///
+/// A child that a remote parent spawned gave up waiting on its request after
+/// the park's short grace, and usually ended its run soon after. A notice never
+/// opens a run on a subagent, so without this the approval would wait for the
+/// parent to `agent_send` the child before its deadline. Here the notice opens
+/// that run itself, through `notice.deliver_to_remote_child`, which admits it
+/// the way such a send does: detached, bounded by the child's existing deadline
+/// and refused past it. A denial wakes the child too, so it can report and
+/// finish instead of sitting out its deadline. A child with an open run is
+/// steered, as by `notify_decision`. A local operator's decision goes through
+/// `notify_decision` and wakes no subagent.
+///
+/// The caller must have committed the decision first. The woken run's retry
+/// re-checks the call against the record and the remembered grants as they are
+/// in the store, so a run admitted after the commit can only see the decision.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // escalate.notify_spawner_decision(runtime, cell, escalate.ApprovedOnce)
+/// ```
+///
+pub fn notify_spawner_decision(
+  runtime: api.Runtime,
+  cell: api.EscalationCell,
+  decision: OperatorDecision,
+) -> Result(notice.Delivered, String) {
+  notify_with(runtime, cell, decision, notice.deliver_to_remote_child)
+}
+
+// The notice is owed only once the call stopped parking at this `seq`: a call
+// still inside its grace spends the decision on its next poll slice, and a
+// notice then would tell the model about a decision its call already used.
+fn notify_with(
+  runtime: api.Runtime,
+  cell: api.EscalationCell,
+  decision: OperatorDecision,
+  deliver: fn(api.Runtime, String, notice.Work, String) ->
+    Result(notice.Delivered, String),
+) -> Result(notice.Delivered, String) {
   case cell.record.scope {
     None -> Ok(notice.Withheld)
     Some(scope) ->
       case api.fact(runtime, async_key(cell.record.id)) {
         Ok(Some(json.Int(detached_seq))) if detached_seq == cell.seq ->
-          notice.deliver(
+          deliver(
             runtime,
             scope.strand,
             notice.Escalation(id: cell.record.id, seq: cell.seq),

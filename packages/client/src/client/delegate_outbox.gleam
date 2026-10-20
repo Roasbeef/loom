@@ -30,8 +30,9 @@
 //// at, and the pass builds what it sends from the record as it is then. The row
 //// is `NotAcknowledged` until the laptop acknowledges that `seq`, then `Acknowledged`. It is
 //// deleted once the record has been decided and the decided state was sent, or
-//// once a newer raise superseded it, or once the park window closed. Nothing on
-//// the laptop depends on the row after that.
+//// once a newer raise superseded it, or once its answer window closed
+//// (`answer_window_ms` past the call's park). Nothing on the laptop depends on
+//// the row after that.
 ////
 //// ## A row settles on an answer, never on age
 ////
@@ -508,10 +509,12 @@ pub type Question {
     seq: Int,
     /// The parent strand the child reports to.
     parent_strand: String,
-    /// The child that is parked on the request.
+    /// The child whose call raised the request. It waits on the record only
+    /// for the park's short grace; the row outlives that.
     child: Handle,
-    /// When the park window closes, on the session's clock in milliseconds. After
-    /// it nobody is waiting for an answer and the row is dropped.
+    /// When the box stops asking, on the session's clock in milliseconds:
+    /// `answer_window_ms` past the instant the child's call stopped parking.
+    /// After it the row is dropped and the record waits for the box's owner.
     until: Int,
     /// How far it has got.
     sending: Sending,
@@ -675,10 +678,34 @@ fn whole(
   }
 }
 
+/// How long after a child's call stops parking the box keeps asking the
+/// spawner's operator, in milliseconds: five minutes.
+///
+/// The call itself parks only for the short grace `client/escalate` gives every
+/// refusal (five seconds), then settles in band and leaves the record pending.
+/// The record stays decidable after that: a decision commits it,
+/// `escalate.notify_spawner_decision` steers the child if its run is still
+/// open and otherwise opens one within the child's deadline, where re-issuing
+/// the call spends it. Ending the row with the
+/// park would end the question for the laptop while the box still accepts its
+/// answer, and a request whose first send did not land inside five seconds would
+/// never be shown at all. Five minutes is the window protocol-change/089 was
+/// built around, when a call parked that long: it bounds how long the drainer
+/// ticks for a question nobody answers, and a record still pending after it is
+/// the box owner's, as one outside the ceiling is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_outbox.answer_window_ms == 300_000
+/// ```
+pub const answer_window_ms = 300_000
+
 /// Writes the row for a request a child has just raised and is about to wait on.
 ///
-/// The record is read as it is, so the row names the `seq` the child will be
-/// parked at. The parent strand comes from the child's lineage, which names it as
+/// `until` is the instant the child's call stops parking, and the row is kept
+/// `answer_window_ms` past it. The record is read as it is, so the row names the
+/// `seq` the child will be parked at. The parent strand comes from the child's lineage, which names it as
 /// a reference (`^main`). A record that names no call, or a call whose strand has
 /// no lineage, is not a child's and gets no row: nobody on the laptop could
 /// answer it for a parent.
@@ -714,7 +741,7 @@ pub fn announce(
         string.length(api.parent_reference_prefix),
       ),
       child: agent.Handle(strand: scope.strand, operation: scope.operation),
-      until:,
+      until: until + answer_window_ms,
       sending: NotAcknowledged,
     ),
   )

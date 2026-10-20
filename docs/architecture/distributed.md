@@ -1412,8 +1412,13 @@ the record stands: unknown (no answer yet), running, past its deadline (nothing
 has read how it ended), settled with its outcome, or refused with the reason. Messages go both ways since phase 2 (slice S9): a
 message to a remote child is sent as `ChildSend` with a receipt, and a child's
 message upward arrives as `ChildMail` over a connection the laptop keeps up
-(`client/remote/link_keeper`, protocol-change/084). `context: my_conversation`
-is refused with `on`.
+(`client/remote/link_keeper`, protocol-change/084). A send into an idle child
+starts a detached run whose record carries the deadline the spawn gave the child
+(`runtime/api` admission), so no number of sends lengthens it, and a send past
+that deadline is refused. The parent's operator deciding one of the child's
+requests for more authority starts a run the same way when the child is idle
+(`escalate.notify_spawner_decision`, protocol-change/089). `context:
+my_conversation` is refused with `on`.
 
 **The end of a run.** A remote child is always detached, and the laptop sends
 nothing when a run ends. The run-end hook spawns `reap_run` off the strand driver
