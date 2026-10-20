@@ -161,6 +161,8 @@ fn named(name: String) -> Option(String) {
 fn status_of(status: manager.Status) -> listed_sessions.ListedStatus {
   case status {
     manager.Reserved -> listed_sessions.Reserved
+    manager.FailedStart(reason:, at:) ->
+      listed_sessions.FailedStart(reason:, at:)
     manager.Saved -> listed_sessions.Saved
     manager.Opening(operation:) -> listed_sessions.Opening(operation:)
     manager.Resident(incarnation:) -> listed_sessions.Resident(incarnation:)

@@ -491,7 +491,8 @@ fn await_resident(connected, id) {
 fn await_retired(connected, id) {
   daemon_observation.until(connected, id, fn(row) {
     case row.status {
-      protocol.Saved | protocol.Reserved -> poll.Done(Nil)
+      protocol.Saved | protocol.Reserved | protocol.FailedStart(..) ->
+        poll.Done(Nil)
       protocol.Opening(_) | protocol.Stopping(_) -> poll.Retry
       other -> poll.Fail(string.inspect(other))
     }

@@ -128,7 +128,9 @@ fn stopped(
             manager.Saved | manager.Resident(_) | manager.Opening(_) ->
               poll.Done(Nil)
             manager.Stopping(_) -> poll.Retry
-            manager.Reserved | manager.RecoveryBlocked(_) -> poll.Fail(Nil)
+            manager.Reserved
+            | manager.FailedStart(..)
+            | manager.RecoveryBlocked(_) -> poll.Fail(Nil)
           }
       }
     })
@@ -161,6 +163,7 @@ pub fn reopened(
             manager.Resident(_) -> poll.Done(Nil)
             manager.Opening(_) -> poll.Retry
             manager.Reserved
+            | manager.FailedStart(..)
             | manager.Saved
             | manager.Stopping(_)
             | manager.RecoveryBlocked(_) -> poll.Fail(Nil)

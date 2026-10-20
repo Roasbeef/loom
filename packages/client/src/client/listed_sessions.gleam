@@ -50,6 +50,12 @@ pub type ListedStatus {
   /// retry of that creation can finish it.
   Reserved
 
+  /// A reservation whose start failed, with the cleaned reason the answering
+  /// daemon kept and when it failed in Unix milliseconds
+  /// (protocol-change/093). On the wire it is `reserved` with a `failure`
+  /// member, so an asker that does not know the member reads `reserved`.
+  FailedStart(reason: String, at: Int)
+
   /// No runtime is held for the session.
   Saved
 
@@ -199,6 +205,16 @@ pub fn row_json(row: Row) -> JsonValue {
 pub fn status_json(status: ListedStatus) -> JsonValue {
   case status {
     Reserved -> state("reserved", [])
+    FailedStart(reason:, at:) ->
+      state("reserved", [
+        #(
+          "failure",
+          json.Object([
+            #("reason", json.String(reason)),
+            #("at", json.Int(at)),
+          ]),
+        ),
+      ])
     Saved -> state("saved", [])
     Opening(operation:) ->
       state("opening", [#("operation", json.String(operation))])

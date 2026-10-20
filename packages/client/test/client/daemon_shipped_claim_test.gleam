@@ -295,6 +295,7 @@ fn await_resident(control, session: String, paths: endpoint.Paths) -> Nil {
         case row.status {
           protocol.Resident(..) -> poll.Done(Nil)
           protocol.Reserved
+          | protocol.FailedStart(..)
           | protocol.Saved
           | protocol.Moving(_)
           | protocol.Opening(_)

@@ -273,6 +273,7 @@ fn open_endpoint(
       resident(context, session_id) |> result.map(Some)
     Ok(manager.View(status: manager.Opening(_), ..))
     | Ok(manager.View(status: manager.Reserved, ..))
+    | Ok(manager.View(status: manager.FailedStart(..), ..))
     | Ok(manager.View(status: manager.Saved, ..))
     | Ok(manager.View(status: manager.Stopping(_), ..))
     | Ok(manager.View(status: manager.RecoveryBlocked(_), ..)) -> Ok(None)
@@ -388,6 +389,8 @@ fn resident(
           }
         Ok(manager.View(status: manager.Reserved, ..)) ->
           failed("the delegate session was reserved and never created")
+        Ok(manager.View(status: manager.FailedStart(reason:, ..), ..)) ->
+          failed("the delegate session failed to start: " <> reason)
         Ok(manager.View(status: manager.Saved, ..)) ->
           poll.Fail(remote_spawn.NotYetOpen(
             reason: "the delegate session did not open",

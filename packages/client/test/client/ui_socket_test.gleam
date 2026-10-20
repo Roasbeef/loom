@@ -602,6 +602,11 @@ pub fn a_running_session_is_live_and_the_rest_are_saved_or_blocked_test() {
       assert ui_socket.listed_entry(view(status)).residency == sessions.Blocked
     },
   )
+
+  // A reservation whose start failed is a blocked row that also says why
+  // (protocol-change/093).
+  assert ui_socket.listed_entry(view(manager.FailedStart("no census", 5))).residency
+    == sessions.FailedStart("no census")
 }
 
 // An observer's page is supplied no list, and the read is never made: a

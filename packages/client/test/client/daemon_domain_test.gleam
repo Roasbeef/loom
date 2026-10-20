@@ -46,8 +46,20 @@ fn resident(registry, id) {
   assert answer == poll.Answered(Nil)
 }
 
+// A reservation whose domain failed is listed with the reason its start failed
+// (protocol-change/093), so settling on a reservation accepts either word.
 fn reserved(registry, id) {
-  settles(registry, id, manager.Reserved)
+  let answer =
+    poll.until(within: 2000, every: 1, attempt: fn() {
+      case manager.get(registry, id) {
+        Ok(manager.View(status: manager.Reserved, ..))
+        | Ok(manager.View(status: manager.FailedStart(..), ..)) ->
+          poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(string.inspect(error))
+      }
+    })
+  assert answer == poll.Answered(Nil)
 }
 
 fn saved(registry, id) {

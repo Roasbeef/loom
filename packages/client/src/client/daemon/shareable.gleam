@@ -219,8 +219,10 @@ fn stopped(
           at_rest(registry, id, Running)
         }
       }
-    manager.Reserved | manager.Opening(_) | manager.RecoveryBlocked(_) ->
-      Error(Unavailable)
+    manager.Reserved
+    | manager.FailedStart(..)
+    | manager.Opening(_)
+    | manager.RecoveryBlocked(_) -> Error(Unavailable)
   }
 }
 
@@ -247,8 +249,9 @@ fn at_rest(
             manager.Saved -> poll.Done(found)
             manager.Stopping(_) | manager.Resident(_) | manager.Opening(_) ->
               poll.Retry
-            manager.Reserved | manager.RecoveryBlocked(_) ->
-              poll.Fail(NotStopped)
+            manager.Reserved
+            | manager.FailedStart(..)
+            | manager.RecoveryBlocked(_) -> poll.Fail(NotStopped)
           }
       }
     })

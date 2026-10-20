@@ -1038,6 +1038,98 @@ pub fn a_member_cannot_delete_a_session_it_can_read_test() {
   })
 }
 
+// A reservation whose start failed keeps the `reserved` state word and adds the
+// optional `failure` member, so an older client still draws `reserved` while a
+// newer one decodes the reason. The owner's delete removes it with its failure
+// (protocol-change/093).
+pub fn a_failed_start_is_listed_as_reserved_with_its_failure_test() {
+  fixture(fn(_, ready, port, credential) {
+    let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")
+      as "the fixture seeds a reservation in the daemon catalogue"
+    let #(identity, _) = ids.mint_session(ids.generator(clock.fixed(1000), 893))
+    let id = ids.session_id_to_string(identity)
+    let registration =
+      catalogue.Registration(
+        id,
+        ready.sessions_directory <> "/" <> id <> ".db",
+        ready.state_root,
+        "Failed start",
+        "",
+        1000,
+        "wire-failed-start",
+        catalogue.Reserved,
+        profile: option.None,
+        model: option.None,
+        executor: "",
+        pool: "",
+        subtitle: option.None,
+      )
+    assert catalogue.reserve(store, registration) == Ok(registration)
+    assert catalogue.record_start_failure(
+        store,
+        id,
+        "executor census reports []",
+        at: 1_700_000_000_500,
+      )
+      == Ok(Nil)
+    let #(socket, _) = connect(port, credential, "/v2/control")
+    let _hello = frame(socket, within_ms: 1000)
+
+    // An older client dispatches on `state` and ignores what it does not know.
+    let listed =
+      send(
+        socket,
+        1,
+        "sessions.list",
+        json.Object([#("after", json.String(""))]),
+        within_ms: 1000,
+      )
+    let assert json.Array([record]) = field(field(listed, "body"), "sessions")
+      as "the reservation is the one listed session"
+    let status = field(record, "status")
+    assert field(status, "state") == json.String("reserved")
+    assert field(status, "failure")
+      == json.Object([
+        #("reason", json.String("executor census reports []")),
+        #("at", json.Int(1_700_000_000_500)),
+      ])
+
+    // The terminal's own codec reads the same frame as a failed start.
+    let assert Ok(terminal_protocol.Answer(
+      1,
+      "sessions.list",
+      terminal_protocol.SessionsReply(page),
+    )) = terminal_protocol.decode(json.to_string(listed))
+      as "the terminal decodes the actual list response"
+    assert list.map(page.sessions, fn(session) { session.status })
+      == [
+        terminal_protocol.FailedStart(
+          "executor census reports []",
+          1_700_000_000_500,
+        ),
+      ]
+
+    // Deleting the reservation takes its failure with it.
+    let deleted =
+      send(
+        socket,
+        2,
+        "sessions.delete",
+        json.Object([
+          #("session_id", json.String(id)),
+          #("epoch", json.String(ready.epoch)),
+        ]),
+        within_ms: 1000,
+      )
+    assert field(deleted, "event") == json.String("sessions.delete")
+    assert field(field(deleted, "body"), "session_id") == json.String(id)
+    assert catalogue.start_failures(store) == Ok([])
+    assert catalogue.close(store) == Ok(Nil)
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
 pub fn owner_archives_and_restores_through_the_control_socket_test() {
   fixture(fn(_, ready, port, credential) {
     let assert Ok(store) = catalogue.open(ready.state_root <> "/catalogue.db")

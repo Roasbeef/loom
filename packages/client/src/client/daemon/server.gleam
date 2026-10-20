@@ -2101,6 +2101,7 @@ fn resident(route: upgrade_log.Route, status) {
   let refusal = case status {
     manager.Resident(incarnation) -> Ok(incarnation)
     manager.Reserved -> Error("session is reserved")
+    manager.FailedStart(..) -> Error("session failed to start")
     manager.Saved -> Error("session is saved, not open")
     manager.Opening(_) -> Error("session is opening")
     manager.Stopping(_) -> Error("session is stopping")
@@ -4782,6 +4783,21 @@ fn status_json(status) {
     // with the row: a reservation has no database and only a create retry
     // under its original request key can finish it.
     manager.Reserved -> json.Object([#("state", json.String("reserved"))])
+
+    // A reservation whose start failed keeps the `reserved` word, so a client
+    // that dispatches on it still draws a row it can delete and retry, and adds
+    // the reason as a member that client ignores (protocol-change/093).
+    manager.FailedStart(reason:, at:) ->
+      json.Object([
+        #("state", json.String("reserved")),
+        #(
+          "failure",
+          json.Object([
+            #("reason", json.String(reason)),
+            #("at", json.Int(at)),
+          ]),
+        ),
+      ])
 
     manager.Saved -> json.Object([#("state", json.String("saved"))])
     manager.Opening(operation) ->

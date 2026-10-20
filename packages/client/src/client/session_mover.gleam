@@ -587,7 +587,8 @@ fn stopped(
       poll.until(within: budget.drain_ms - 1000, every: 50, attempt: fn() {
         case manager.get(environment.registry, move.session) {
           Ok(manager.View(status: manager.Saved, ..)) -> poll.Done(Nil)
-          Ok(manager.View(status: manager.Reserved, ..)) ->
+          Ok(manager.View(status: manager.Reserved, ..))
+          | Ok(manager.View(status: manager.FailedStart(..), ..)) ->
             poll.Fail(Abandon("the session has not finished being created"))
           Ok(manager.View(status: manager.RecoveryBlocked(reason:), ..)) ->
             poll.Fail(Stall("the session's cleanup is blocked: " <> reason))
