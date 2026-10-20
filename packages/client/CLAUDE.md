@@ -1232,7 +1232,8 @@ catalogue without opening runtimes. Explicit admission invokes
   executions".
 - `client/escalate.{Config, Message, Refused, Decision, Escalations, OperatorDecision,
   seam, start, none, record_id, action_record_id, action_digest, action_preview,
-  notify_decision, decision_notice_text, default_config}` — parking and async
+  notify_decision, notify_spawner_decision, decision_notice_text,
+  default_config}` — parking and async
   detachment: what a production tool call does when the broker refuses it on
   policy. `seam` closes over a process *name* (the Agency's knot, the Agency's
   answer) and `start` puts the runtime behind that name after `api.open`;
@@ -1248,8 +1249,11 @@ catalogue without opening runtimes. Explicit admission invokes
   unconsumed questions any one coarse want may put; when the short grace park
   window closes (`default_config` sets 5s, polling every 200ms) with the record
   still `Pending`, the detached seq is recorded under `client/escalation_async/`
-  and a later operator decision through `gateway` or `remote_decision` calls
-  `notify_decision`, which wakes or steers the strand via `client/notice`;
+  and a later operator decision through `gateway` calls `notify_decision`,
+  which wakes or steers the strand via `client/notice` (never waking a
+  subagent); a spawner's operator's decision through `remote_decision` calls
+  `notify_spawner_decision`, which also wakes an idle remote child within its
+  spawn deadline (`notice.deliver_to_remote_child`);
   `none()` is the no-plane seam under which a refusal settles exactly as it did
   before escalations existed.
 - `client/gateway.attached` — how many connections are attached right
@@ -2586,13 +2590,19 @@ catalogue without opening runtimes. Explicit admission invokes
   for the operator who wants a bounded ladder that fails the run instead
   of long-polling a provider that is refusing.
 - `client/notice.{Work, Delivered, Activity, Due, IdleClock, key_prefix,
-  heartbeat_tick_ms, default_heartbeat_ms, key, deliver, activity, beat,
+  heartbeat_tick_ms, default_heartbeat_ms, key, deliver,
+  deliver_to_remote_child, activity, beat,
   idle_clock, observe, retain, heartbeat_text, minutes}` — harness
   notices about work that outlives its tool call. `deliver` is the
   completion notice a finished job or async execution sends its owner:
   `runtime/api.send_to_strand_marking` with a mark under
   `client/notice/job/<id>` or `client/notice/execution/<id>`, so a steer
-  into an open run or a fresh run on an idle strand, spent at most once.
+  into an open run or a fresh run on an idle strand, spent at most once;
+  a subagent is only steered (`may_wake`). `deliver_to_remote_child` is the
+  one exception, for a spawner's decision (protocol-change/089): a child
+  whose lineage parent is a `^` reference is woken by the same admission an
+  S9 send uses, which gives the run the child's own spawn deadline and
+  refuses one past it (then it falls back to the steer, so `Withheld`).
   `beat` is the idle heartbeat's wake, an `api.prompt` that treats
   `StrandBusy` as success. `IdleClock` is the pure, volatile record of
   when each sampled owner went idle: a busy sample forgets the strand and
@@ -7928,7 +7938,16 @@ The box's deadline and retention (slice S4):
   and rings the upward drainer. `delegate_drain.question_step` sends the record
   (`escalation_view.view`, with `admitted` set from the ceiling), marks the row
   `Acknowledged`, sends the decided state once and drops the row, or drops it when
-  a newer raise or the closed window made it moot. `ChildEscalation` is served by
+  a newer raise or the closed answer window (`delegate_outbox.answer_window_ms`,
+  five minutes past the call's five-second park) made it moot. The laptop clears
+  filed requests only for a refused spawn (`remote_child.clear_requests`); a
+  settled child's requests stay answerable: the box still commits a decision, and
+  `remote_decision.answered` then calls `escalate.notify_spawner_decision`, which
+  steers a running child and wakes an idle one (`notice.deliver_to_remote_child`,
+  the S9 admission: detached, bounded by the child's spawn deadline, refused past
+  it) into a run that re-issues the call and spends an approval; a denial wakes it
+  too. A grandchild whose parent is a local strand is only steered, and a local
+  operator's decision (`notify_decision`) never wakes a subagent. `ChildEscalation` is served by
   `ChildHost.escalation` (`main.child_host`) into `agency.ChildInbox.escalation`,
   which finds the stub by name in any state and files the record with
   `remote_escalation_store.keep` (newest seq wins, under

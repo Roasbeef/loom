@@ -258,6 +258,98 @@ the box remembers. Withdrawing a spawner's grant today is the box owner's list
   next open of the delegate session and not while it is resident (ruling).
 - `decided_by` crosses as text and is provenance only (ruling).
 
+## Addendum, 2026-10-19: the row outlives the park (async approvals)
+
+Asynchronous approvals (`client+tools: wake or steer strands on async
+approvals`) cut the park from five minutes to a five-second grace. When the
+grace closes the call settles in band, the record stays pending, and a later
+decision steers the strand if its run is open; a subagent is never woken by a
+notice, so an approval for an idle child waits for its next run, which the
+parent's `agent_send` starts, and re-issuing the call there spends it (the
+next addendum changes this: the decision now starts that run). This proposal
+was written for the five-minute park, and two of its rules ended the
+question with the park:
+
+- The drainer dropped a pending row once the park window closed. With a
+  five-second window, a request whose first send to a laptop a network away did
+  not land in time was never shown, and an acknowledged one never sent its
+  decided state.
+- The laptop cleared a child's filed requests when its stub settled. A child
+  that is refused usually reports and ends its run within seconds, so the card
+  disappeared before its operator could read it, and an approval taken from the
+  card answered `unknown_escalation`.
+
+The end-to-end drive of 2026-10-19 hit both. The row's window is now
+`delegate_outbox.answer_window_ms` (five minutes, the window this proposal was
+built around) past the instant the call stopped parking, and the drainer table's
+row "The park window closed" now means that window. The laptop clears filed
+requests only for a refused spawn; a settled child's requests stay until the box
+sends a decided state or the laptop's own decision files the record the box
+answered. What it costs: the drainer ticks for up to five minutes for a question
+nobody answers, as it did before asynchronous approvals, and a card for a child
+whose delegate session the box has since released stays, and a decision tried
+on it is answered with the box's refusal.
+
+## Addendum, 2026-10-19: a decision wakes an idle child
+
+With the park cut to a grace, the common case is a child that was refused,
+reported, and went idle before its parent's operator answered. Under the
+previous addendum the approval then waited for the parent to `agent_send` the
+child before its deadline, which the parent's model had no reason to do: it did
+not know the operator had answered. The owner ruled on 2026-10-19 that the
+decision itself wakes the child.
+
+**What wakes.** A decision committed by `remote_decision` (the spawner's
+operator, through `Resolve`) on a record whose call already stopped parking at
+that `seq` is delivered by `escalate.notify_spawner_decision`. For a child whose
+lineage parent is a `^` reference, `notice.deliver_to_remote_child` admits the
+`[loom]` decision notice with `api.send_to_strand_marking`, the same call a
+parent's `ChildSend` into an idle child makes (084, S9). Allow once, allow for
+the session, and deny all wake the child: an approval so it re-issues the call,
+a denial so it can report and finish instead of waiting out its deadline. The
+notice names the record, the tool and the action preview, and says which of
+those two to do.
+
+**Its bound.** The run is the S9 run: detached (no owner on this machine) and
+given the absolute deadline the spawn gave the child, never a fresh budget. Past
+that deadline the runtime refuses the admission, the notice falls back to the
+steer every subagent gets, and an idle child stays idle; the decision is still
+committed and still sent to the laptop as the decided state. A child with an open
+run takes the notice as a steer and gets no second run. A released child's
+delegate session is deleted and a `Resolve` for it is refused before any
+session is found, so nothing is woken. A grandchild whose parent is a strand of
+the delegate session is only steered, because the runtime would give its run a
+fresh budget. Decisions by the box's own operator are unchanged: they go through
+`notify_decision`, which never wakes a subagent.
+
+**At most once.** The notice's mark `client/notice/escalation/{id}/{seq}` is
+spent in the admission's commit, and a repeated `Resolve` at the same `seq`
+finds the record no longer pending and answers `Stale` before it commits, so one
+decision opens at most one run.
+
+**Ordering.** `remote_decision.answered` notifies only after the commit that
+wrote the decision (and, for a session approval, the remembered grant) returned
+`Ok`, on the same process. The run is admitted after that commit, and its retry
+re-checks the call against the record and the remembered grants in the store, so
+a run the wake opens sees the grant on its first retry. The commit and the
+notice are two steps, not one transaction. A box that stops between the commit
+and the notice loses the wake; the approval is still committed and waits for a
+parent send, as before this addendum.
+
+**A laptop card past the box's window.** The laptop keeps a filed request whose
+box-side answer window closed while it was still pending: the laptop has no
+expiry of its own for these rows today, and a settled stub is not deleted. A
+decision taken on such a card later is still sent to the box. The box answers
+`Stale` if the record has moved on, and if the record is still pending and the
+delegate session is alive it commits the decision and wakes the child as above.
+Nothing new was built for this; it is recorded so the behaviour is not a
+surprise.
+
+What it costs: a subagent can now be given a run that neither its parent's model
+nor its spawn asked for, by a person on the parent's side. The run is inside the
+spawn's deadline and the spawner's per-day budgets, and it carries one message
+that names the decision, so it buys nothing a parent's `agent_send` could not.
+
 ## Model
 
 No change to the P model. The single-consume state machine that makes an

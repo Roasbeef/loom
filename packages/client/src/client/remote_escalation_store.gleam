@@ -32,8 +32,11 @@
 //// 1. `keep` files a record the box sent, if it is newer than the filed one.
 //// 2. `find` reads one request by the identity its clients were shown, and `all`
 ////    reads every request of the session.
-//// 3. `clear` removes the requests of a child that is finished, so a card whose
-////    child is gone does not wait for an answer nobody can use.
+//// 3. `clear` removes the requests filed for a spawn the orchestrator refused, so
+////    a card whose child never existed does not wait for an answer nobody can
+////    use. A child that finished keeps its requests: the box still takes a
+////    decision on them, and the decision wakes the child into a run that
+////    spends an approval by re-issuing the call.
 
 import client/protocol.{type EscalationRecord}
 import client/remote_escalation
@@ -126,10 +129,10 @@ fn keep_loop(
 }
 
 /// Removes every request filed for one child of an orchestrator, and answers how
-/// many there were. The session calls it when a child's stub is recorded as
-/// settled or refused: the child is gone, so its parked calls are too, and an
-/// operator answering the card afterwards could only be told the question moved.
-/// A request is the child's when its record names the child's strand.
+/// many there were. The session calls it when a child's spawn is recorded as
+/// refused: no child was made, so an operator answering the card afterwards
+/// could only be told the question moved. A request is the child's when its
+/// record names the child's strand.
 ///
 /// ## Examples
 ///
