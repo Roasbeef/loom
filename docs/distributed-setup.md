@@ -1039,9 +1039,10 @@ remote session's workspace as `box:proj`.
 `loom ui` answers `the running daemon was started without --ui` and starts
 nothing, because it will not stop a daemon that other terminals may be using. When
 the orchestrator configures any
-executor, the home page's "Other folders" section has a "New session on an
-executor" button. It opens a form with the executor to choose, the registered
-workspace name to type, and an optional session name. A remote session is listed
+executor, the home page's "Other folders" section has a "New session" button
+whose form opens with a "Runs on" choice: this machine, then each executor and
+pool. Choosing an executor swaps the folder field for a list of the workspaces it
+registered, and the form also takes an optional session name. A remote session is listed
 under a `box:proj` heading, and that heading has no "New session" button of its
 own: use the form.
 

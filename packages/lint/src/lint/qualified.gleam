@@ -51,6 +51,7 @@ pub fn loom_roots() -> List(String) {
     "events",
     "executor",
     "ext",
+    "harness",
     "host",
     "lint",
     "lsp",

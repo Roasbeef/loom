@@ -263,6 +263,7 @@ pub fn view(
     element.ref(stage(manage)),
     element.ref(explains(manage)),
     element.ref(create.state(offer)),
+    element.ref(create.cards(offer)),
     element.ref(folders_view.listed(folders)),
     element.ref(elsewhere_view.keyed(elsewhere)),
     element.ref(opening),

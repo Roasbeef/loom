@@ -1761,13 +1761,22 @@ fn session_directory_of(
 
 // How `deployment.status` connects to the nodes of this daemon's own
 // configuration: over the distribution it started, under its own node name. A
-// daemon with no `[distribution]` table has no peers to connect to.
+// daemon with no `[distribution]` table has no peers to connect to. The host
+// name is read here, once, so a reply never makes the call.
 fn deployment_reach(config: Config) -> deployment.Reach {
   let self = atom.to_string(node.name(node.self()))
-  case config.membership {
+  let reach = case config.membership {
     Some(membership) -> deployment.over(membership, self)
     None -> deployment.alone(self)
   }
+
+  // In ledger mode the daemon is a member, and the ledger's name for it is the
+  // one its peers use for it, so pages title it the way they title a peer.
+  let reach = case config.ledger {
+    Some(handle) -> deployment.named(reach, handle.name)
+    None -> reach
+  }
+  deployment.Reach(..reach, host: ffi_os.host_name() |> option.from_result)
 }
 
 // The executors this daemon uses: the `[executors.<name>]` rows of its file

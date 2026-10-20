@@ -253,7 +253,7 @@ pub fn the_daemon_is_what_loomd_is_built_from_test() {
     == names([
       "client", "host", "core", "storage", "session", "machine", "prompt",
       "events", "runtime", "broker", "provider", "tools", "codemode", "mcp",
-      "lsp", "telemetry",
+      "lsp", "telemetry", "harness",
     ])
   list.each(
     [

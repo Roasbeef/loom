@@ -1414,6 +1414,7 @@ fn admit_home(
       models:,
       executors:,
       pools:,
+      machine: attachment.machine,
       placements: placing,
       folders:,
       elsewhere:,

@@ -166,13 +166,55 @@ pub type Dial =
 pub type Ask =
   fn(String, Int) -> Result(NodeReport, orchestrator_port.Silence)
 
+/// Whether the asking daemon runs with distribution, which decides whether its
+/// own node name means anything to a person. A daemon with a `[distribution]`
+/// table is named by its configuration, `box@100.116.224.112`, and the Admin
+/// page shows that name. A daemon without one is called whatever the BEAM gave
+/// it, `nonode@nohost` or a generated profile name, and the page calls it "This
+/// machine" instead.
+pub type Footing {
+  /// The daemon started distribution under a configured node name.
+  Distributed
+
+  /// The daemon has no distribution and connects to no other machine.
+  Standalone
+}
+
+/// The wire word for a footing: the `distribution` member a whole-deployment
+/// reply carries (protocol-change/085, the addendum of 2026-10-19).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert deployment.footing_word(deployment.Standalone) == "none"
+/// ```
+pub fn footing_word(footing: Footing) -> String {
+  case footing {
+    Distributed -> "configured"
+    Standalone -> "none"
+  }
+}
+
 /// What the daemon asks with: its own node name, which the reply is "as seen
-/// from", how it connects, how it asks a connected node for its report, and how
-/// it reports itself.
+/// from", whether it runs with distribution, how it connects, how it asks a
+/// connected node for its report, and how it reports itself.
 pub type Reach {
   Reach(
     /// The asking daemon's node name.
     self: String,
+    /// The name pages show for the asking daemon: its name in the membership
+    /// ledger when it runs from one (`named`), and its node name otherwise.
+    /// Peers are titled by their short name with the node beneath, and this
+    /// keeps the asking daemon from being the one row titled by a raw node
+    /// string.
+    self_name: String,
+    /// Whether the daemon runs with distribution: `Standalone` from `alone`,
+    /// `Distributed` from `over`.
+    footing: Footing,
+    /// The machine's host name, which the daemon reads once at start
+    /// (`main.deployment_reach`), or none when it could not be read. Both
+    /// constructors leave it out.
+    host: Option(String),
     /// Connects to a configured node.
     dial: Dial,
     /// Asks a connected node for its report.
@@ -217,6 +259,9 @@ fn unreported(self: String) -> fn() -> NodeReport {
 pub fn alone(self: String) -> Reach {
   Reach(
     self:,
+    self_name: self,
+    footing: Standalone,
+    host: None,
     dial: fn(_node, _within_ms) { Error(Unavailable) },
     ask: fn(_node, _within_ms) { Error(orchestrator_port.PortGone) },
     sessions: listed_sessions.unlisted,
@@ -239,6 +284,9 @@ pub fn alone(self: String) -> Reach {
 pub fn over(membership: distribution.Membership, self: String) -> Reach {
   Reach(
     self:,
+    self_name: self,
+    footing: Distributed,
+    host: None,
     dial: fn(node, within_ms) {
       use peer <- result.try(
         distribution.peer(membership, node)
@@ -275,6 +323,20 @@ pub fn over(membership: distribution.Membership, self: String) -> Reach {
     },
     own: unreported(self),
   )
+}
+
+/// The same reach with the asking daemon titled by `name`, the one its
+/// membership ledger gives it. `alone` and `over` title it by its node name,
+/// which is all a daemon without a ledger has.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert deployment.named(deployment.alone("loom@hub.example"), "hub").self_name
+///   == "hub"
+/// ```
+pub fn named(reach: Reach, name: String) -> Reach {
+  Reach(..reach, self_name: name)
 }
 
 /// The same reach with the closure that builds the asking daemon's own report.
@@ -830,7 +892,7 @@ fn survey(
   let asker =
     Node(
       node: reach.self,
-      name: reach.self,
+      name: reach.self_name,
       roles:,
       health: Reachable,
       report: own,
@@ -1242,6 +1304,7 @@ pub fn for_page(placed: Placements) -> page.Placements {
           ),
           toolchains: entry.executor.toolchains,
           free_scopes: option.map(facts, free_scopes),
+          workspaces: registered_names(entry),
           contradiction: option.then(facts, fn(found) {
             contradiction_of(Some(entry.executor), found)
           }),
@@ -1254,10 +1317,43 @@ pub fn for_page(placed: Placements) -> page.Placements {
         report: Some(page.PoolReport(
           executors: entry.executors,
           eligible: entry.eligible,
+          workspaces: shared_names(placed.executors, entry.eligible),
         )),
       )
     }),
   )
+}
+
+// The workspace names an executor's report lists, or none when it did not
+// report. The names are the executor's own census and never a root.
+fn registered_names(entry: ExecutorEntry) -> List(String) {
+  entry.report
+  |> option.then(fn(report) { report.executor })
+  |> option.map(fn(facts) { facts.workspaces })
+  |> option.unwrap([])
+}
+
+// The names every named executor registered, in the first one's order. A first
+// open lands on whichever eligible executor takes it, so only a name all of them
+// serve is certain to be found; with no eligible executor nothing is offered.
+fn shared_names(
+  executors: List(ExecutorEntry),
+  eligible: List(String),
+) -> List(String) {
+  let lists =
+    list.filter_map(executors, fn(entry) {
+      case list.contains(eligible, entry.executor.name) {
+        True -> Ok(registered_names(entry))
+        False -> Error(Nil)
+      }
+    })
+  case lists {
+    [] -> []
+    [first, ..rest] ->
+      list.filter(first, fn(name) {
+        list.all(rest, fn(other) { list.contains(other, name) })
+      })
+  }
 }
 
 // The state a card for an executor shows: full when it would refuse the next

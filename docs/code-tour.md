@@ -735,7 +735,7 @@ human approved. What the clearance won then travels onto the dispatch it
 authorized — `take_cleared` (`runtime/strand_runtime.gleam:2201`) hands
 `ToolRun.grants` only the carry keyed to this call's own step and source
 index — and `client/wiring.tool_context` decodes it there onto
-`Ctx.grants` (`run_grants`, `client/wiring.gleam:2178`). That is the
+`Ctx.grants` (`run_grants`, `client/wiring.gleam:1606`). That is the
 whole channel: an approval a human gave for this call, reaching the
 policy composition this call is judged by. It used to stop at the query.
 
@@ -743,7 +743,7 @@ Then `Dispatch` again — intent commit, then the effect — and the tool
 runs on its own spawned process. `client/wiring.run_tool` builds a fresh
 `Ctx` per call carrying the driver's own durable coordinates —
 `{strand, op_id, step_id, source_index}` — and dispatches through the
-registry (`run_tool`, `client/wiring.gleam:1789`). All four come from the driver, so a
+registry (`run_tool`, `client/wiring.gleam:1121`). All four come from the driver, so a
 model that names another strand in its arguments does not become it.
 
 `tool.dispatch` is total (`tools/tool.gleam:747`): an unknown name yields
@@ -1624,7 +1624,7 @@ post-commit publication is production's only hint source.
 Escalation, on the other hand, is now wired end to end, and the shape is
 worth knowing. A tool reaches the broker through `Ctx.clear_call`, and in
 production that closure is not the bare broker runner: `escalating_runner`
-(`client/wiring.gleam:1979`) wraps it, so a `PolicyRefused` — and only a
+(`client/wiring.gleam:1568`) wraps it, so a `PolicyRefused` — and only a
 policy refusal, the one refusal a human can overturn — goes to the
 escalation seam before it becomes a result. `decide`
 (`client/escalate.gleam:814`) files a durable, call-scoped record under an

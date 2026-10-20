@@ -770,3 +770,110 @@ Four points differ from the proposal or are left open.
 - **`protocol.version` did not change** for this proposal, as the Affects line states.
   The executor host's value is 3 because of remote code mode and MCP
   (protocol-change/078), not because of this document.
+
+## Addendum 2026-10-19: the executor panel is a choice in the "New session" form
+
+This addendum changes the page, not the wire. The panel this proposal's web view
+section describes, opened by a "New session on an executor" button, is now the
+"Runs on" choice at the head of the one "New session" form (protocol-change/074,
+addendum of the same date). The cards, their state pills, the advice rule (a
+`down` executor can still be chosen) and the creation (`Registered` for an
+executor, `Pooled` for a pool) are as decided. Three things differ.
+
+The first card is the daemon serving the page, worded `<name> (this machine)` and
+chosen by default, so the executors are alternatives to a choice the person can
+see and not a separate feature. The daemon's name is `Reach.self`, given to the
+page as `Start.machine`; it is a configuration value and a text node. A daemon with
+neither executors nor pools draws no choice, so a single-machine setup never meets
+the vocabulary. One line under the cards says where work happens: "Commands run on
+exec (linux/x86_64); the conversation stays on box.", or for this machine "Commands
+and the conversation stay on box."
+
+For an executor or a pool the form's workspace is a select, not a typed name. The
+page's `Report` and `PoolReport` carry `workspaces`: the names an executor's census
+registered (`node_report.ExecutorFacts.workspaces`, names and never roots), and for
+a pool the names every reached executor registered, since a first open can land on
+any of them. The select's values are positions into the list the page drew, so the
+browser can name only a workspace the page offered and "executor serves no
+workspace" cannot be reached from the form; `executor_plane`'s refusal remains the
+backstop. A place whose workspaces are not known (still being read, down, an executor
+that reported but registers nothing, or a pool whose reached executors share no
+workspace name) draws a note and a text field for the name it serves, held to `creations.registered_name`,
+so a person can still name a workspace on an executor that has not answered, as the
+earlier panel allowed; the daemon's refusal of an unserved name returns on the form.
+As soon as a list is known the select replaces the field.
+
+The form carries the same optional profile and model selects as the folder form
+(protocol-changes 076 and 080), with a line saying a model replaces the main model
+the profile gives. The earlier panel drew neither.
+
+## Addendum 2026-10-19: the Deployment section grouped by role, and a daemon on its own
+
+The machines list of the 2026-10-16 addendum was a nine-column table. On a phone
+its cells broke one character to a line, and on a desktop a long node name took
+the width and broke the state pill and the roles cell. The owner also asked what
+a daemon with no `[distribution]` table should show, since its node name is one
+the BEAM made up (`nonode@nohost`, or a generated profile name such as
+`loom_daemon_profile_50242_…@127.0.0.1`). This addendum replaces the table and
+adds one optional member to the whole-deployment reply.
+
+- **`deployment.status` gains `distribution`.** A whole-deployment reply carries
+  `"distribution": "configured"` when the daemon started distribution under a
+  configured node name and `"none"` when it has no `[distribution]` table
+  (`deployment.Footing`, set by `deployment.over` and `deployment.alone`). A reply
+  for one node does not carry it. A reader that does not know the member ignores
+  it, and the page reads a reply without it as `configured`, which draws every name
+  as it came, as before. No other member changed, and `protocol.version` did not
+  change.
+- **The page reads the pools.** `web_view/machines` now decodes
+  `placements.pools` (name, executors, eligible), which the reply already carried
+  for the home's creation cards.
+- **The machines are grouped by role.** The section's heading is "Deployment", and
+  under it one line counts the machines by group and says whether all are ok or how
+  many are degraded, down or not linked from here, with the first reason one is not
+  ok (`machines.summary_words`, for example "5 machines · 2 orchestrators · 3
+  executors · 1 degraded · 1 down · 1 not linked from here: box: …"). Then
+  Orchestrators (this daemon first, marked "this daemon"), Executors, directory
+  members that are neither, and Pools, each under a small heading and drawn only
+  when it has something in it (`machines.group_of`).
+- **A row shows what matters for its role.** A row is its name, its state pill and,
+  quieter under them, the node string when it differs from the name
+  (`machines.title`). An orchestrator states its build, resident sessions, slots,
+  uptime and last report; an executor its platform, enforcement, toolchains, open
+  scopes and last report. A fact the machine did not state is left out instead of
+  drawn as a dash, and the ledger's standing is stated only on a daemon that runs
+  from a ledger. A pool states how many of its executors could take a session now
+  ("1 of 2 ready") and which executors it admits; it is not a machine and its row
+  is not a button. The names of the workspaces an executor serves are not in the
+  whole-deployment reply, so they stay on the machine's own page.
+- **`deployment.status` gains `host`.** A whole-deployment reply carries the
+  answering daemon's host name as `host` when the daemon could read it. The daemon
+  reads it once at start (`main.deployment_reach`, into `Reach.host`) with
+  `inet:gethostname/0`, the one new Erlang call, in `client/internal/ffi_os`
+  (`host_name`, decoded totally: anything but a non-empty `{ok, Charlist}` of at
+  most 253 bytes is no host name). No library the package uses exposes the host
+  name. The member is optional like `distribution`, and a reply for one node does
+  not carry it.
+- **A daemon on its own is one card.** When the reply says `"none"` and lists only
+  the asking daemon, the section draws one card titled by the host name and
+  labelled "This machine" (or titled "This machine" when the reply has no `host`),
+  with its build and sessions and a quiet note that distribution is not configured
+  and that `docs/distributed-setup.md` says how to add machines. The made-up node
+  name is drawn nowhere, not on the card and not on the machine's own page.
+- **This daemon is titled by its ledger name.** The asking daemon used to be the one
+  row titled by its raw node string (`box@100.116.224.112`) while its peers were
+  titled by their short names. A daemon that runs from a ledger now takes the name
+  the ledger gives it (`Reach.self_name`, set by `deployment.named` in
+  `main.deployment_reach`), and the node string sits quietly beneath it as it does
+  for a peer. The home's "Runs on" card for this machine (`HomeAttachment.machine`)
+  reads the same field, so both pages agree. A daemon without a ledger has no such
+  name and keeps its node string.
+- **Unlinked members stay listed.** A ledger member this daemon does not dial is
+  listed in its group, quieter than the rest, with "not linked from here" where the
+  pill would be.
+- **One tree for every width.** Each group is a list tinted like a raised surface
+  with a hairline border, and no row is a table cell. On a wide screen a row is the
+  name on the left and its facts in a wrapping line on the right; at 640 px and
+  narrower the facts stack under the name as label and value. Pills and labels never
+  wrap. The handlers, paths and the machine's page are unchanged: a row is still a
+  click beneath `admin.body_path` that sends `MachineChosen`.

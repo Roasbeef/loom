@@ -90,8 +90,8 @@ pub const check_order: List(String) = [
   "host", "core", "storage", "session", "machine", "prompt", "statem",
   "statem_parallel", "session_view", "web_view", "web_client", "web_mermaid",
   "telemetry", "runtime", "provider", "broker", "executor", "mcp", "lsp",
-  "tools", "cap", "ext", "codemode", "events", "client", "tui", "conformance",
-  "lint", "sandbox",
+  "tools", "cap", "ext", "codemode", "events", "harness", "client", "tui",
+  "conformance", "lint", "sandbox",
 ]
 
 /// Package lanes, taken from `scripts/signoff.sh` so that the packages which

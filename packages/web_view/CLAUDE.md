@@ -235,12 +235,13 @@ page keys and nonces, and the relay into the session's gateway.
   (`home.Folders(recent, forget)`, `Some` where `create` is) reads the owner's
   remembered folders after each list (`FoldersRead`) and forgets one by identity
   (`Forgetting(id)`). `view/folders` draws the section after the lists: the
-  "New session in another folder" button (`OpeningElsewhere`, state
-  `create.Elsewhere`, then `CreatingElsewhere(path, name, sharing)` and
-  `create.Sending`) and the remembered folders no group shows, keyed by
+  one "New session" button (`OpeningElsewhere`, state `create.Elsewhere`, then
+  `CreatingElsewhere(path, name, sharing)` and `create.Sending`) and the remembered folders no group shows, keyed by
   `creations.Recent.id`, each with the usual form (`Choosing`) and "Forget this
   folder". `create.typed_fields` accepts exactly one `path`, one `name`, at most
-  one `shareable` and nothing else. `creations.typed_path`, `expanded` and `inside`
+  one `shareable` and nothing else; `typed_fields_with_roles` also reads at most
+  one `folder`, the position of a remembered folder in the select beside the path
+  field (a typed path wins). `creations.typed_path`, `expanded` and `inside`
   are the pure half of the rule for a typed path; the daemon holds the filesystem
   half. A path is drawn only as a text node, never an attribute or a key, and a
   refusal is one fixed sentence per reason (`NotAFolder`, `OutsideHome`,
@@ -1571,21 +1572,27 @@ opened is `creations.UnknownModel`, whose fixed words say to reload the page.
 `[pools.<name>]` names the daemon was configured with, `[]` unless `Start.create`
 is `Some` (`ui_socket.upgrade_home` copies `server.HomeAttachment.executors` and
 `.pools`, the daemon's startup capture, so no read is made for the names). When
-either is not empty the section for folders (`view/folders`) draws a second
-button, "New session on an executor", and `create.State` gains `Remote` (panel
-open, nothing chosen), `Chosen(choice)` (a card chosen, its form drawn) and
-`Dispatching(choice)` (creation out), which behave as `Elsewhere` and `Sending`
-do. The form (`create.remote_form`) is a text field for the registered workspace
-name (`name=workspace`, at most 128 bytes) and the optional session name; there is
-no Shareable box and no profile or model select, because the daemon makes a
-session on an executor or in a pool session-only and a registered session takes
-the configuration's default roles (`creations.default_roles`) from this form.
+either is not empty the one "New session" form (`create.new_form`) opens with a
+"Runs on" choice, and `create.State` gains `Chosen(choice)` (an executor or a pool
+chosen, its workspace form drawn) and `Dispatching(choice)` (creation out), which
+behave as `Elsewhere` (this machine, the default) and `Sending` do. There is no
+separate button and no `Remote` state: `home.ChoosingHere` returns to this machine.
+The workspace form for a choice is a select of the workspaces that place
+registered (`name=workspace`, values are positions into
+`placements.workspaces(cards, choice)`, decoded by `create.remote_fields`) and the
+optional session name; a place with no known workspace draws a note and a text field for the name
+(`create.typed_workspace_field`, held to `creations.registered_name` by
+`remote_fields`), and the daemon's refusal returns on the form. There is no Shareable box, because the daemon makes a session on an
+executor or in a pool session-only, and the profile and model selects are the same
+as on the folder form (`create.remote_fields_with_roles`). `Start.machine` is the
+daemon's own name, worded `<name> (this machine)` on the first card.
 
 ## Executor and pool cards (protocol-change/085)
 
-The panel draws a card for each executor and each pool (`create.panel`,
-`executor_card`, `pool_card`), in the configuration's order, executors first: the
-name, the kind, a state pill, the facts, and a Choose button. The cards come from
+The "Runs on" choice draws a card for this machine and then for each executor and
+each pool (`create.places`, `here_card`, `executor_card`, `pool_card`), in the
+configuration's order, executors first: the name, the kind, a state pill, the
+facts, and a Choose button. The cards come from
 `placements.Cards`: `placements.listed` builds them from the names alone
 (`Readiness` `Checking`), and the daemon's read replaces them
 (`placements.after`, which marks the cards `Checked`; the daemon's read always
@@ -1603,7 +1610,8 @@ is what its operator declared (worded as a claim); a pool's are how many of its
 admitted executors were reached and the order a first open tries them, which
 health does not change.
 
-`Start.placements` starts the read: `home.OpeningRemote` numbers it
+`Start.placements` starts the read: `home.OpeningElsewhere` (when the daemon has
+any place) numbers it
 (`Model.place_reads`) and runs it through `placing`, an `effect.from` that hands
 the daemon a function and returns at once; the answer is
 `home.PlacementsRead(serial, read)`, dropped when a newer read overtook it, and
@@ -1617,12 +1625,15 @@ and no node name, address or key.
 
 A card's button sends `home.ChoosingPlace(choice)`, with `placements.Choice` =
 `OnExecutor(name)` | `InPool(name)` built by the server from the names it holds,
-so the browser names no text; the component honours it only while the panel is
+so the browser names no text; the component honours it only while the form is
 open, no creation is out, and `placements.offers` finds the card. The chosen
 placement is the page's state, not a field of the form: `create.remote_fields`
-accepts exactly one `workspace` and one `name`, so a forged `executor` or `pool`
-field is an extra field and refuses the event, and `home.CreatingRemote(workspace,
-name)` asks the daemon only from `Chosen`. The cards are a keyed list whose keys
+accepts exactly one `workspace` (a position), one `name` and the two optional
+selects, so a forged `executor` or `pool` field is an extra field and refuses the
+event, and `home.CreatingRemote(workspace, name, roles)` asks the daemon only from
+`Chosen`. `placements.Report.workspaces` and `PoolReport.workspaces` carry the
+names the select offers (`deployment.for_page` fills them from the executors'
+reports). The cards are a keyed list whose keys
 are positions (`e0`, `p1`), never a name: the lists are the daemon's startup
 capture and cannot change while the page is open. No event class is added: a card
 is a click beneath the sessions list's section, where the home already admits
@@ -1773,10 +1784,11 @@ account.
   clicks beneath `home.table_path`. `home_test` pins the group, the silent line, the
   detail, "Show more" and the dropped stale page.
 
-## The Admin page's machines (protocol-change/085, addendum 2026-10-16)
+## The Admin page's machines (protocol-change/085, addenda 2026-10-16 and 2026-10-19)
 
-The admin page draws a Deployment section below People and Sessions: the verdict, a
-table of machines, and a page for the machine the owner chose.
+The admin page draws a Deployment section below People and Sessions: a summary line,
+the machines grouped by role (or one "This machine" card for a daemon with no
+distribution), the pools, and a page for the machine the owner chose.
 `docs/architecture/web-view.md` ("Deployment: the machines list and a page for each
 machine") is the account.
 
@@ -1784,8 +1796,13 @@ machine") is the account.
   roles, whose, here, link, ledgered)` with `Here` (`Dialled(findings) |
   NotLinkedFromHere`) and `Ledgered` (`Enrolled(standing) | NotListed | Unledgered`),
   `Findings`, `Snapshot`, `Detail` (the long lists of one node), `Reading` (`Heard |
-  HeardOne | Unread`), `Held`, `Detailed`, `Tab`, and the words (`verdict_words`,
-  `reason_words`, `age_words`, `pill_class`). `decode_overview` merges the document's
+  HeardOne | Unread`), `Held`, `Detailed`, `Tab`, `Distribution` (`Distributed |
+  Standalone`, from the reply's optional `distribution`), `Pool` (from
+  `placements.pools`), `Group` (`OrchestratorGroup | ExecutorGroup | MemberGroup`, by
+  `group_of`), `Title` (by `title`: a standalone daemon's own row is its host name,
+  the reply's optional `host`, labelled "This machine", or "This machine" alone; its
+  node name the BEAM made up is never drawn), and the words
+  (`summary_words`, `build_words`, `reason_words`, `age_words`, `pill_class`). `decode_overview` merges the document's
   nodes with the ledger's members by node name; `decode_detail` reads a read for one
   node. `text_limit` 256 and `list_limit` 128 bound it.
 - `web_view/operator_commands` writes `renew`, `revoke`, `enroll` and `release`. `quote`
@@ -1798,10 +1815,13 @@ machine") is the account.
   by its key unless it is the asking daemon or not dialled; `TabChosen` reads the other
   orchestrators for the Sessions tab; `MachineClosed` overtakes any read out. The
   deployment follows the timer, one read together with the people read.
-- `view/admin_machines` is the section and table, `view/admin_machine` the page and its
-  four tabs. Every name is a text node, the classes are fixed words and the only data
-  chosen ones are the pill tints, rows are keyed by position, and every handler is a
-  click beneath `admin.body_path`.
+- `view/admin_machines` is the section: the groups as tinted lists, each row a button
+  with only the facts its group has (a fact not stated is left out, not a dash), and
+  the pools; `view/admin_machine` is the page and its four tabs. One tree serves every
+  width: no table cells, facts beside the name on a wide screen and stacked under it at
+  640 px and narrower. Every name is a text node, the classes are fixed words and the
+  only data-chosen ones are the pill tints and the `unlinked` modifier, rows are keyed
+  by position, and every handler is a click beneath `admin.body_path`.
 - `view/elsewhere.strip` is the one-line strip the owner's operating home draws in the
   first child of its centre, so `home.table_path` does not move.
 - Tests: `machines_test` (decoder, bounds, words), `operator_commands_test` (the fixed

@@ -594,8 +594,8 @@ lowercase letters, digits, `_` or `-`, at most 32 characters. The tables require
 `[distribution]` table, because an executor is a pinned peer, and a daemon
 without `[executors]` refuses every creation that names an executor. A session is
 created on one with `loom --executor <name> --workspace <registered name>` or with
-the web home's "New session on an executor" form, which is offered only when this
-table has an entry; see [Setting up a distributed Loom](distributed-setup.md).
+the web home's "New session" form, whose "Runs on" choice lists executors only when
+this table has an entry; see [Setting up a distributed Loom](distributed-setup.md).
 
 An executor may also declare what its machine provides. A declaration is a claim
 written in this file, not something the daemon discovers. A pool that requires a

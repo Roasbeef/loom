@@ -1,13 +1,14 @@
 //// Creating a session on an executor or in a pool from the home page
 //// (protocol-change/078, 085).
 ////
-//// The owner's page gains a panel beside the form for a typed folder: a card for
-//// each executor and each pool the daemon gave the page, with the state the
-//// daemon found when the panel opened, and, for the card that is chosen, a form
-//// for the name the workspace is registered under there and an optional session
-//// name. These tests pin what the panel offers and when, what a choice and a
-//// submit ask the daemon for, how the browser's fields decode, and how a remote
-//// session is listed.
+//// Where the daemon has executors or pools the one "New session" form opens with
+//// a "Runs on" choice: a card for this machine, chosen by default, and one for
+//// each executor and each pool with the state the daemon found when the form
+//// opened. For a chosen executor or pool the folder field gives way to a select
+//// of the workspaces it registered, and an optional session name. These tests
+//// pin what the choice offers and when, what a choice and a submit ask the
+//// daemon for, how the browser's fields decode, and how a remote session is
+//// listed.
 
 import gleam/erlang/process.{type Subject}
 import gleam/list
@@ -87,6 +88,7 @@ fn page(
     rename_self: None,
     executors:,
     pools:,
+    machine: "alpha",
     placements: read,
   )
 }
@@ -133,6 +135,7 @@ fn report(state: placements.State) -> placements.Report {
     enforcement: None,
     toolchains: [],
     free_scopes: None,
+    workspaces: [],
     contradiction: None,
   )
 }
@@ -151,6 +154,7 @@ fn reported() -> placements.Read {
               platform: Some("linux/x86_64"),
               enforcement: Some("enforced"),
               toolchains: ["codemode"],
+              workspaces: ["app", "tools"],
             ),
           ),
         ),
@@ -160,7 +164,11 @@ fn reported() -> placements.Read {
         placements.Pool(
           "builders",
           Some(
-            placements.PoolReport(executors: ["gpu", "box"], eligible: ["box"]),
+            placements.PoolReport(
+              executors: ["gpu", "box"],
+              eligible: ["box"],
+              workspaces: ["app", "tools"],
+            ),
           ),
         ),
       ],
@@ -211,21 +219,24 @@ fn the_asked(
   process.receive(asked, 0)
 }
 
-// The panel is offered only where the daemon gave an executor or a pool and the
-// page may create, and draws a card for each, in the configuration's order,
-// executors first. Until the daemon answers the cards carry names alone.
-pub fn the_panel_is_offered_only_when_there_is_somewhere_to_run_test() {
+// The choice is offered only where the daemon gave an executor or a pool and the
+// page may create. A single-machine daemon draws the folder form alone and none
+// of the vocabulary, and the cards carry names alone until the daemon answers.
+pub fn the_choice_is_offered_only_when_there_is_somewhere_to_run_test() {
   let asked = process.new_subject()
-  let none = opened(executing([], [], asked))
-  assert !string.contains(drawn(none), "on an executor")
-  let none = run(none, home.OpeningRemote)
-  assert !string.contains(drawn(none), "home-cards")
+  let none = run(opened(executing([], [], asked)), home.OpeningElsewhere)
+  let html = drawn(none)
+  assert string.contains(html, "name=\"path\"")
+  assert !string.contains(html, "Runs on")
+  assert !string.contains(html, "home-cards")
+  assert !string.contains(html, "this machine")
+  assert !string.contains(html, "executor")
 
   let listed =
     opened(hearing([], ["build-box", "gpu"], ["builders"], pending, asked))
-  assert string.contains(drawn(listed), "New session on an executor")
   assert !string.contains(drawn(listed), "home-cards")
-  let html = drawn(run(listed, home.OpeningRemote))
+  let html = drawn(run(listed, home.OpeningElsewhere))
+  assert string.contains(html, "Runs on")
   assert string.contains(html, "home-cards")
   assert string.contains(
     html,
@@ -237,19 +248,51 @@ pub fn the_panel_is_offered_only_when_there_is_somewhere_to_run_test() {
   assert string.contains(html, "not checked")
   assert string.contains(html, "Checking which are reachable")
 
-  // No form until a card is chosen, and no executor select ever.
-  assert !string.contains(html, "name=\"workspace\"")
-  assert !string.contains(html, "name=\"executor\"")
-
   // A pool alone is somewhere to run.
   let pooled = opened(hearing([], [], ["builders"], pending, asked))
-  assert string.contains(drawn(pooled), "New session on an executor")
+  assert string.contains(drawn(run(pooled, home.OpeningElsewhere)), "Runs on")
 
   // A page that may not create offers nothing whatever the daemon listed.
   let member = opened(page([], ["build-box"], [], pending, None))
-  assert !string.contains(drawn(member), "on an executor")
-  let member = run(member, home.OpeningRemote)
+  let member = run(member, home.OpeningElsewhere)
   assert !string.contains(drawn(member), "home-cards")
+  assert !string.contains(drawn(member), "Runs on")
+}
+
+// This machine is the first card, named for the daemon, chosen without a press,
+// and the form under it is the folder form, as it was before the choice existed.
+pub fn this_machine_is_the_default_choice_test() {
+  let asked = process.new_subject()
+  let start =
+    hearing([], ["box", "gpu"], ["builders"], answering(reported()), asked)
+  let html = drawn(run(opened(start), home.OpeningElsewhere))
+  assert string.contains(html, "alpha (this machine)")
+  assert string.contains(html, "Commands and the conversation stay on alpha.")
+  assert string.contains(html, "name=\"path\"")
+  assert !string.contains(html, "name=\"workspace\"")
+  assert string.contains(html, "name=\"shareable\"")
+
+  // This machine's card is the pressed one, and it is listed before the
+  // executors.
+  let assert [before, after] = string.split(html, "alpha (this machine)")
+  assert string.contains(before, "home-card chosen")
+  assert !string.contains(before, "home-card-kind")
+  assert string.contains(after, "aria-pressed=\"true\"")
+}
+
+// The card for this machine carries the name the daemon was given for itself,
+// the one its ledger uses for it, and not its node string.
+pub fn this_machine_is_titled_by_the_name_the_daemon_gives_it_test() {
+  let asked = process.new_subject()
+  let start =
+    home.Start(
+      ..hearing([], ["box"], [], answering(reported()), asked),
+      machine: "hub",
+    )
+  let html = drawn(run(opened(start), home.OpeningElsewhere))
+  assert string.contains(html, "hub (this machine)")
+  assert string.contains(html, "Commands and the conversation stay on hub.")
+  assert !string.contains(html, "alpha (this machine)")
 }
 
 // The daemon's answer puts a state pill on each card, in the tints the page
@@ -258,7 +301,7 @@ pub fn the_cards_show_the_state_the_daemon_found_test() {
   let asked = process.new_subject()
   let start =
     hearing([], ["box", "gpu"], ["builders"], answering(reported()), asked)
-  let html = drawn(run(opened(start), home.OpeningRemote))
+  let html = drawn(run(opened(start), home.OpeningElsewhere))
   assert string.contains(html, "<span class=\"pill online\">ready</span>")
   assert string.contains(html, "<span class=\"pill ended\">down</span>")
   assert string.contains(html, "Declared: linux/x86_64, enforced, codemode.")
@@ -272,50 +315,201 @@ pub fn the_cards_show_the_state_the_daemon_found_test() {
   assert !string.contains(html, "Checking which are reachable")
 }
 
-// While the daemon's read is out the cards carry names alone, and a person can
-// still choose one: a state is advice and its absence blocks nothing.
+// While the daemon's read is out a card can be chosen, because a state is advice
+// and its absence blocks nothing. The workspaces it registered are not known
+// yet, so the form says so and takes the name as typed text.
 pub fn a_card_is_choosable_before_the_read_arrives_test() {
   let asked = process.new_subject()
   let start = hearing([], ["box"], [], pending, asked)
-  let model = run(opened(start), home.OpeningRemote)
+  let model = run(opened(start), home.OpeningElsewhere)
   assert string.contains(drawn(model), "not checked")
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
-  assert string.contains(drawn(model), "name=\"workspace\"")
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    "box has not reported its workspaces; type the name it serves.",
+  )
+  assert string.contains(
+    html,
+    "placeholder=\"Workspace name, for example app\"",
+  )
+  assert !string.contains(html, "<select name=\"workspace\"")
+  assert string.contains(html, "Create session")
+  assert string.contains(html, "name=\"name\"")
 }
 
-// Choosing a card draws the form for it and nothing sends a creation until the
-// form is submitted. A down executor is a choice like any other.
-pub fn choosing_a_card_opens_the_form_for_it_even_when_it_is_down_test() {
+// Choosing an executor swaps the folder field for the workspaces it registered,
+// says where the work happens, and sends nothing. A down executor is a choice
+// like any other, though its workspaces are not known.
+pub fn choosing_an_executor_offers_its_workspaces_test() {
   let asked = process.new_subject()
   let start =
     hearing([], ["box", "gpu"], ["builders"], answering(reported()), asked)
-  let model = run(opened(start), home.OpeningRemote)
-  let model = run(model, home.ChoosingPlace(placements.OnExecutor("gpu")))
+  let model = run(opened(start), home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
   let html = drawn(model)
   assert string.contains(html, "name=\"workspace\"")
-  assert string.contains(html, "The session will run on executor ")
-  assert string.contains(html, "<b>gpu</b>")
-  assert string.contains(html, "Chosen")
+  assert string.contains(html, "<option value=\"0\">app</option>")
+  assert string.contains(html, "<option value=\"1\">tools</option>")
+  assert !string.contains(html, "Workspace name, for example")
+  assert !string.contains(html, "has not reported")
+  assert !string.contains(html, "name=\"path\"")
+  assert !string.contains(html, "name=\"shareable\"")
+  assert string.contains(
+    html,
+    "Commands run on box (linux/x86_64); the conversation stays on alpha.",
+  )
   assert the_asked(asked) == Error(Nil)
 
-  // Choosing another card moves the choice.
-  let model = run(model, home.ChoosingPlace(placements.InPool("builders")))
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("gpu")))
   let html = drawn(model)
-  assert string.contains(html, "The session will run in pool ")
-  assert string.contains(html, "<b>builders</b>")
-  assert !string.contains(html, "<b>gpu</b>")
+  assert string.contains(
+    html,
+    "gpu has not reported its workspaces; type the name it serves.",
+  )
+  assert !string.contains(html, "<select name=\"workspace\"")
+  assert string.contains(html, "Create session")
+  assert string.contains(html, "Commands run on gpu; the conversation")
+  assert the_asked(asked) == Error(Nil)
+
+  // Choosing this machine puts the folder form back.
+  let model = run(model, home.ChoosingHere)
+  let html = drawn(model)
+  assert string.contains(html, "name=\"path\"")
+  assert !string.contains(html, "has not reported")
 }
 
-// A submit asks the daemon for a registered place under the name typed, as a
-// shareable session (a session on an executor is session-only), and the panel is
-// locked until the answer arrives. The form draws no profile or model select, so
-// the roles are the configuration's own even when the page offers both.
+// A place whose list is unknown submits the typed name: the creation names the
+// executor and exactly the text the person typed, trimmed.
+pub fn an_unknown_list_submits_the_typed_name_test() {
+  let asked = process.new_subject()
+  let model = opened(executing([], ["box"], asked))
+  let model = run(model, home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
+  let html = drawn(model)
+  assert string.contains(html, "name=\"workspace\"")
+  // The form's own decoder trims the typed text before the page sees it.
+  let assert Ok(#(workspace, name, roles)) =
+    create.remote_fields_with_roles(
+      [#("workspace", " served "), #("name", "review")],
+      [],
+      [],
+      [],
+    )
+  let _ = run(model, home.CreatingRemote(workspace, name, roles))
+  assert the_asked(asked)
+    == Ok(#(
+      creations.Registered("box", "served"),
+      "review",
+      creations.Shareable,
+      creations.default_roles,
+    ))
+}
+
+// The submit is checked against what the form could have sent. Where the
+// daemon listed the place's workspaces the form drew a select, so a name outside
+// the list is refused and sends nothing. Where it listed none the form drew a
+// text field, and a name that cannot be a workspace name is refused too.
+pub fn a_workspace_the_form_could_not_have_sent_is_refused_test() {
+  let asked = process.new_subject()
+  let listed = hearing([], ["box"], ["builders"], answering(reported()), asked)
+  let model = run(opened(listed), home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
+  let _ =
+    run(model, home.CreatingRemote("elsewhere", "", creations.default_roles))
+  assert the_asked(asked) == Error(Nil)
+  let _ = run(model, home.CreatingRemote("tools", "", creations.default_roles))
+  assert the_asked(asked)
+    == Ok(#(
+      creations.Registered("box", "tools"),
+      "",
+      creations.Shareable,
+      creations.default_roles,
+    ))
+
+  // A pool offers the names its reached executors share.
+  let pooled = run(model, home.ChoosingPlace(placements.InPool("builders")))
+  let _ =
+    run(pooled, home.CreatingRemote("elsewhere", "", creations.default_roles))
+  assert the_asked(asked) == Error(Nil)
+
+  let unread = opened(executing([], ["box"], asked))
+  let unread = run(unread, home.OpeningElsewhere)
+  let unread = run(unread, home.ChoosingPlace(placements.OnExecutor("box")))
+  let _ =
+    run(unread, home.CreatingRemote("/work/app", "", creations.default_roles))
+  assert the_asked(asked) == Error(Nil)
+  let _ = run(unread, home.CreatingRemote("", "", creations.default_roles))
+  assert the_asked(asked) == Error(Nil)
+}
+
+// The daemon's refusal of a name the executor does not serve comes back on the
+// form, in the executor's own words, and the typed field is still there to
+// correct.
+pub fn a_refusal_for_an_unknown_name_renders_on_the_form_test() {
+  let asked = process.new_subject()
+  let model = opened(executing([], ["box"], asked))
+  let model = run(model, home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
+  let model =
+    run(model, home.CreatingRemote("nope", "", creations.default_roles))
+  let model =
+    run(model, home.Created(creations.Declined(creations.InvalidWorkspaceName)))
+  let html = drawn(model)
+  assert string.contains(
+    html,
+    creations.reason_words(creations.InvalidWorkspaceName),
+  )
+  assert string.contains(
+    html,
+    "placeholder=\"Workspace name, for example app\"",
+  )
+  assert string.contains(html, "Create session")
+
+  // A refusal that arrives as a start failure names the executor's own words.
+  let model =
+    run(model, home.CreatingRemote("nope", "", creations.default_roles))
+  let model =
+    run(
+      model,
+      home.Created(creations.Unstarted(
+        why: Some("executor serves no workspace named `nope`"),
+        remains: creations.Dropped,
+      )),
+    )
+  let html = drawn(model)
+  assert string.contains(html, "executor serves no workspace named")
+  assert string.contains(
+    html,
+    "placeholder=\"Workspace name, for example app\"",
+  )
+}
+
+// A pool offers the workspaces every executor it could use has registered, and
+// says the daemon picks the executor.
+pub fn choosing_a_pool_offers_the_shared_workspaces_test() {
+  let asked = process.new_subject()
+  let start = hearing([], ["box"], ["builders"], answering(reported()), asked)
+  let model = run(opened(start), home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.InPool("builders")))
+  let html = drawn(model)
+  assert string.contains(html, "<option value=\"0\">app</option>")
+  assert string.contains(
+    html,
+    "The daemon picks the executor from pool builders",
+  )
+}
+
+// A submit asks the daemon for a registered place under the name picked, as a
+// shareable session (a session on an executor is session-only), and the form is
+// locked until the answer arrives.
 pub fn a_creation_names_the_executor_and_the_workspace_test() {
   let asked = process.new_subject()
   let model = opened(executing([], ["build-box"], asked))
-  let model = run(model, home.OpeningRemote)
+  let model = run(model, home.OpeningElsewhere)
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("build-box")))
-  let model = run(model, home.CreatingRemote("app", "review"))
+  let model =
+    run(model, home.CreatingRemote("app", "review", creations.default_roles))
   assert the_asked(asked)
     == Ok(#(
       creations.Registered("build-box", "app"),
@@ -323,12 +517,11 @@ pub fn a_creation_names_the_executor_and_the_workspace_test() {
       creations.Shareable,
       creations.default_roles,
     ))
-  let html = drawn(model)
-  assert string.contains(html, "Creating")
-  assert string.contains(html, "disabled")
+  assert string.contains(drawn(model), "disabled")
 
   // A second submit while the first is out asks nothing.
-  let _ = run(model, home.CreatingRemote("app", "again"))
+  let _ =
+    run(model, home.CreatingRemote("app", "again", creations.default_roles))
   assert the_asked(asked) == Error(Nil)
 }
 
@@ -337,9 +530,9 @@ pub fn a_creation_names_the_executor_and_the_workspace_test() {
 pub fn a_creation_in_a_pool_names_the_pool_and_the_workspace_test() {
   let asked = process.new_subject()
   let start = hearing([], ["box"], ["builders"], answering(reported()), asked)
-  let model = run(opened(start), home.OpeningRemote)
+  let model = run(opened(start), home.OpeningElsewhere)
   let model = run(model, home.ChoosingPlace(placements.InPool("builders")))
-  let _ = run(model, home.CreatingRemote("app", ""))
+  let _ = run(model, home.CreatingRemote("app", "", creations.default_roles))
   assert the_asked(asked)
     == Ok(#(
       creations.Pooled("builders", "app"),
@@ -349,33 +542,45 @@ pub fn a_creation_in_a_pool_names_the_pool_and_the_workspace_test() {
     ))
 }
 
-// A page that offers profiles and models on its other forms still draws neither
-// on the registered form, and a registered session asks for the configuration's
-// own roles. The model select is for local folders; a registered session's model
-// can be pinned from the control command.
-pub fn the_registered_form_offers_no_profile_or_model_test() {
+// The profile and the model are choices on the registered form as well. A pick
+// is carried to the creation only if it is one the page offered, and the form
+// says how the two combine.
+pub fn the_registered_form_offers_the_profile_and_the_model_test() {
   let asked = process.new_subject()
   let start =
     home.Start(
-      ..executing([], ["build-box"], asked),
+      ..hearing([], ["box"], [], answering(reported()), asked),
       profiles: ["alt"],
       models: ["fast"],
     )
-  let model = run(opened(start), home.OpeningRemote)
-  let model = run(model, home.ChoosingPlace(placements.OnExecutor("build-box")))
+  let model = run(opened(start), home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
   let html = drawn(model)
-  assert string.contains(html, "name=\"workspace\"")
+  assert string.contains(html, "name=\"profile\"")
+  assert string.contains(html, "name=\"model\"")
+  assert string.contains(html, "replaces the main model the profile gives")
+
+  let picked = creations.Roles(Some("alt"), Some("fast"))
+  let _ = run(model, home.CreatingRemote("app", "", picked))
+  assert the_asked(asked)
+    == Ok(#(creations.Registered("box", "app"), "", creations.Shareable, picked))
+
+  // A profile the page never offered asks nothing.
+  let _ =
+    run(model, home.CreatingRemote("app", "", creations.Roles(Some("x"), None)))
+  assert the_asked(asked) == Error(Nil)
+}
+
+// A daemon that defines neither draws neither select nor the line about them.
+pub fn no_roles_are_drawn_when_the_daemon_defines_none_test() {
+  let asked = process.new_subject()
+  let start = hearing([], ["box"], [], answering(reported()), asked)
+  let model = run(opened(start), home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
+  let html = drawn(model)
   assert !string.contains(html, "name=\"profile\"")
   assert !string.contains(html, "name=\"model\"")
-
-  let _ = run(model, home.CreatingRemote("app", ""))
-  assert the_asked(asked)
-    == Ok(#(
-      creations.Registered("build-box", "app"),
-      "",
-      creations.Shareable,
-      creations.default_roles,
-    ))
+  assert !string.contains(html, "replaces the main model")
 }
 
 // The page asks only from the open form, and only for a placement a card it drew
@@ -386,12 +591,13 @@ pub fn a_placement_the_daemon_did_not_list_asks_nothing_test() {
   let start =
     hearing([], ["build-box"], ["builders"], answering(reported()), asked)
   let model = opened(start)
-  let _ = run(model, home.CreatingRemote("app", ""))
+  let none = creations.default_roles
+  let _ = run(model, home.CreatingRemote("app", "", none))
   assert the_asked(asked) == Error(Nil)
 
-  // The panel is open and nothing is chosen: a submit asks nothing.
-  let model = run(model, home.OpeningRemote)
-  let _ = run(model, home.CreatingRemote("app", ""))
+  // The form is open on this machine: a registered submit asks nothing.
+  let model = run(model, home.OpeningElsewhere)
+  let _ = run(model, home.CreatingRemote("app", "", none))
   assert the_asked(asked) == Error(Nil)
 
   // A choice outside the cards is not honoured, and neither is one that mixes
@@ -399,15 +605,15 @@ pub fn a_placement_the_daemon_did_not_list_asks_nothing_test() {
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("other")))
   let model = run(model, home.ChoosingPlace(placements.InPool("build-box")))
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("builders")))
-  let _ = run(model, home.CreatingRemote("app", ""))
+  let _ = run(model, home.CreatingRemote("app", "", none))
   assert the_asked(asked) == Error(Nil)
   assert !string.contains(drawn(model), "name=\"workspace\"")
 
-  // A choice with no panel open is not honoured either.
+  // A choice with no form open is not honoured either.
   let closed = opened(start)
   let closed =
     run(closed, home.ChoosingPlace(placements.OnExecutor("build-box")))
-  let _ = run(closed, home.CreatingRemote("app", ""))
+  let _ = run(closed, home.CreatingRemote("app", "", none))
   assert the_asked(asked) == Error(Nil)
 }
 
@@ -416,12 +622,12 @@ pub fn a_placement_the_daemon_did_not_list_asks_nothing_test() {
 pub fn a_stale_placement_answer_is_dropped_test() {
   let asked = process.new_subject()
   let start = hearing([], ["box", "gpu"], [], pending, asked)
-  let model = run(opened(start), home.OpeningRemote)
+  let model = run(opened(start), home.OpeningElsewhere)
 
   // The first read is number one and has not answered. Close and reopen the
-  // panel: the second read is number two.
+  // form: the second read is number two.
   let model = run(model, home.Cancelled)
-  let model = run(model, home.OpeningRemote)
+  let model = run(model, home.OpeningElsewhere)
   let model = run(model, home.PlacementsRead(1, reported()))
   assert !string.contains(drawn(model), "pill online\">ready<")
   assert string.contains(drawn(model), "not checked")
@@ -436,21 +642,20 @@ pub fn a_page_that_cannot_create_ignores_a_placement_answer_test() {
   assert !string.contains(drawn(model), "pill online\">ready<")
 }
 
-// One form is open at a time, and Cancel closes the panel.
-pub fn the_panel_moves_with_the_other_forms_test() {
+// One form is open at a time. Pressing "New session" again keeps the choice
+// made, another workspace's button moves the form, and Cancel closes it.
+pub fn the_form_moves_with_the_other_forms_test() {
   let asked = process.new_subject()
   let model = opened(executing([], ["build-box"], asked))
-  let model = run(model, home.OpeningRemote)
   let model = run(model, home.OpeningElsewhere)
-  assert !string.contains(drawn(model), "home-cards")
   assert string.contains(drawn(model), "name=\"path\"")
-  let model = run(model, home.OpeningRemote)
-  assert !string.contains(drawn(model), "name=\"path\"")
-  assert string.contains(drawn(model), "home-cards")
   let model = run(model, home.ChoosingPlace(placements.OnExecutor("build-box")))
   let model = run(model, home.OpeningElsewhere)
+  assert string.contains(drawn(model), "Commands run on build-box")
+  assert !string.contains(drawn(model), "name=\"path\"")
+  let model = run(model, home.Choosing("/src/loom"))
   assert !string.contains(drawn(model), "home-cards")
-  let model = run(model, home.OpeningRemote)
+  let model = run(model, home.OpeningElsewhere)
   let model = run(model, home.Cancelled)
   assert !string.contains(drawn(model), "home-cards")
 }
@@ -469,23 +674,24 @@ pub fn refusals_reopen_the_form_and_a_kept_session_closes_it_test() {
   )
 
   let asked = process.new_subject()
-  let model = opened(executing([], ["build-box"], asked))
-  let model = run(model, home.OpeningRemote)
-  let model = run(model, home.ChoosingPlace(placements.OnExecutor("build-box")))
-  let model = run(model, home.CreatingRemote("app", ""))
+  let start = hearing([], ["box"], [], answering(reported()), asked)
+  let none = creations.default_roles
+  let model = run(opened(start), home.OpeningElsewhere)
+  let model = run(model, home.ChoosingPlace(placements.OnExecutor("box")))
+  let model = run(model, home.CreatingRemote("app", "", none))
   let model =
     run(model, home.Created(creations.Declined(creations.UnknownExecutor)))
   let html = drawn(model)
   assert string.contains(html, "That executor is not in the daemon")
   assert string.contains(html, "name=\"workspace\"")
-  assert string.contains(html, "<b>build-box</b>")
+  assert string.contains(html, "Commands run on box")
 
-  let model = run(model, home.CreatingRemote("app", ""))
+  let model = run(model, home.CreatingRemote("app", "", none))
   let model =
     run(
       model,
       home.Created(creations.Unstarted(
-        why: Some("executor_unavailable: no executor named build-box"),
+        why: Some("executor_unavailable: no executor named box"),
         remains: creations.InList,
       )),
     )
@@ -494,30 +700,66 @@ pub fn refusals_reopen_the_form_and_a_kept_session_closes_it_test() {
   assert !string.contains(html, "name=\"workspace\"")
 }
 
-// The form's fields decode totally: one workspace, one name, and nothing else.
-// The placement is not a field, so a forged one is an extra field and refuses
-// the event.
+// The form's fields decode totally: one workspace picked by position from the
+// list the page drew, one name, and nothing else. The placement is not a field,
+// so a forged one is an extra field and refuses the event.
 pub fn the_fields_decode_totally_test() {
-  let fields = create.remote_fields
-  assert fields([#("workspace", "app"), #("name", "")]) == Ok(#("app", ""))
-  assert fields([#("name", "x"), #("workspace", "app")]) == Ok(#("app", "x"))
+  let offered = ["app", "tools"]
+  let fields = fn(listed) { create.remote_fields(listed, offered) }
+  assert fields([#("workspace", "0"), #("name", "")]) == Ok(#("app", ""))
+  assert fields([#("name", "x"), #("workspace", "1")]) == Ok(#("tools", "x"))
+
+  // A text that is not a position of the list refuses the event, so the browser
+  // can name only a workspace the page drew.
+  assert fields([#("workspace", "app"), #("name", "")]) == Error(Nil)
+  assert fields([#("workspace", "2"), #("name", "")]) == Error(Nil)
+  assert fields([#("workspace", "-1"), #("name", "")]) == Error(Nil)
+  assert fields([#("workspace", ""), #("name", "")]) == Error(Nil)
+
+  // With no list the value is typed text, held to the grammar the daemon
+  // applies to a registered name (`creations.registered_name`).
+  let typed = fn(text) {
+    create.remote_fields([#("workspace", text), #("name", "")], [])
+  }
+  assert typed(" app ") == Ok(#("app", ""))
+  assert typed("") == Error(Nil)
+  assert typed("/work/app") == Error(Nil)
+  assert typed("a/b") == Error(Nil)
+  assert typed("a\nb") == Error(Nil)
+  assert typed(string.repeat("a", 129)) == Error(Nil)
 
   // A missing, repeated or extra field refuses the event.
-  assert fields([#("workspace", "app")]) == Error(Nil)
+  assert fields([#("workspace", "0")]) == Error(Nil)
   assert fields([#("name", "")]) == Error(Nil)
   assert fields([]) == Error(Nil)
-  assert fields([#("workspace", "a"), #("workspace", "b"), #("name", "")])
+  assert fields([#("workspace", "0"), #("workspace", "1"), #("name", "")])
     == Error(Nil)
-  assert fields([#("workspace", "a"), #("name", ""), #("name", "")])
+  assert fields([#("workspace", "0"), #("name", ""), #("name", "")])
     == Error(Nil)
-  assert fields([#("workspace", "app"), #("name", ""), #("shareable", "on")])
+  assert fields([#("workspace", "0"), #("name", ""), #("shareable", "on")])
     == Error(Nil)
 
   // An executor or a pool in the form is a forgery: the placement is the page's
   // own state.
-  assert fields([#("workspace", "app"), #("name", ""), #("executor", "0")])
+  assert fields([#("workspace", "0"), #("name", ""), #("executor", "0")])
     == Error(Nil)
-  assert fields([#("workspace", "app"), #("name", ""), #("pool", "builders")])
+  assert fields([#("workspace", "0"), #("name", ""), #("pool", "builders")])
+    == Error(Nil)
+
+  // The roles read as they do on the other forms.
+  assert create.remote_fields_with_roles(
+      [#("workspace", "1"), #("name", ""), #("profile", "0"), #("model", "")],
+      offered,
+      ["alt"],
+      ["fast"],
+    )
+    == Ok(#("tools", "", creations.Roles(Some("alt"), None)))
+  assert create.remote_fields_with_roles(
+      [#("workspace", "1"), #("name", ""), #("model", "3")],
+      offered,
+      [],
+      ["fast"],
+    )
     == Error(Nil)
 
   // The other forms take no executor, so a forged one on them is refused.
@@ -531,8 +773,8 @@ pub fn the_fields_decode_totally_test() {
 }
 
 // A name the daemon gave is escaped as a text node and is in no attribute, on a
-// card and in the form the card opens, whether it is an executor's, a pool's or
-// text from the report.
+// card and in the form the card opens, whether it is an executor's, a pool's, a
+// workspace's or text from the report.
 pub fn a_name_is_a_text_node_and_never_an_attribute_test() {
   let hostile = "x\" onfocus=\"alert(1)\" <b>"
   let asked = process.new_subject()
@@ -546,6 +788,7 @@ pub fn a_name_is_a_text_node_and_never_an_attribute_test() {
               placements.Report(
                 ..report(placements.Ready),
                 platform: Some(hostile),
+                workspaces: [hostile],
               ),
             ),
           ),
@@ -554,7 +797,11 @@ pub fn a_name_is_a_text_node_and_never_an_attribute_test() {
           placements.Pool(
             hostile,
             Some(
-              placements.PoolReport(executors: [hostile], eligible: [hostile]),
+              placements.PoolReport(
+                executors: [hostile],
+                eligible: [hostile],
+                workspaces: [hostile],
+              ),
             ),
           ),
         ],
@@ -563,7 +810,7 @@ pub fn a_name_is_a_text_node_and_never_an_attribute_test() {
   let model =
     run(
       opened(hearing([], [hostile], [hostile], answering(read), asked)),
-      home.OpeningRemote,
+      home.OpeningElsewhere,
     )
   let html = drawn(model)
   assert !string.contains(html, "onfocus=\"alert(1)\"")
@@ -572,6 +819,7 @@ pub fn a_name_is_a_text_node_and_never_an_attribute_test() {
   let html = drawn(model)
   assert !string.contains(html, "onfocus=\"alert(1)\"")
   assert string.contains(html, "&lt;b&gt;")
+  assert string.contains(html, "<option value=\"0\">")
 }
 
 // A registered name is a name and never a path.
@@ -589,8 +837,9 @@ pub fn a_registered_name_is_never_a_path_test() {
 
 // A remote session is listed under its executor and name and not under a
 // project directory, two executors that each register `app` are two groups, and
-// a remote group has no "New session" button: the daemon would refuse a
-// directory's creation in a name it holds no folder for.
+// a remote group has no "New session" button of its own: the daemon would refuse a
+// directory's creation in a name it holds no folder for. The two buttons that
+// remain are the local group's and the one in the folders section.
 pub fn a_remote_session_is_listed_under_its_executor_test() {
   let rows = [
     entry("L", "local work", "/src/loom", 2000),
@@ -604,7 +853,7 @@ pub fn a_remote_session_is_listed_under_its_executor_test() {
   assert string.contains(html, "gpu:app")
   assert string.contains(html, "remote work")
   assert list.length(home.groups(model)) == 3
-  assert list.length(string.split(html, "New session</button>")) - 1 == 1
+  assert list.length(string.split(html, "New session</button>")) - 1 == 2
 }
 
 // A remote entry has no project and no worktree: its name is not a directory.
