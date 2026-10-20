@@ -9,6 +9,17 @@ loopback node and an owner-only, exit-cleaned cookie. This reads only the typed
 profiling setting, while the daemon keeps whole-catalogue validation. No profiler
 sampling or call tracing starts merely because a client is named.
 
+## Sparse frame canvas
+
+`render.repaint_canvas` starts every frame with the buffer's sparse empty-cell
+default. The alternate repaint phase writes only the first column's dim blank
+markers, matching the previous one-character bulk fill exactly. Later painting
+still starts from a blank frame. The existing padding and detail-collapse tests
+cover styled cells and vacated rows; the full-frame benchmark in
+`scripts/tui_perf.erl` compares cells, links, continuation markers and cursor
+across a six-agent scroll sequence. Allocation and copied-term measurements do
+not establish installed process RSS savings.
+
 ## Operator startup diagnostics
 
 Protocol 055 uses the existing daemon error envelope and credited snapshot.

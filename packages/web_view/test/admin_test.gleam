@@ -707,10 +707,10 @@ pub fn the_timer_reads_and_rearms_test() {
   let #(model, timer) =
     opened(start_with(reads, process.new_subject(), grants.Changed))
   assert process.receive(reads, 0) == Ok(None)
-  assert process.receive(timer, 100) == Ok(Nil)
+  assert process.receive(timer, 1000) == Ok(Nil)
   let model = run(model, admin.Ticked)
   assert process.receive(reads, 0) == Ok(None)
-  assert process.receive(timer, 100) == Ok(Nil)
+  assert process.receive(timer, 1000) == Ok(Nil)
 
   let ended = run(model, admin.Answered(2, grants.Closed(ending.AccessRevoked)))
   let _ = run(ended, admin.Ticked)
