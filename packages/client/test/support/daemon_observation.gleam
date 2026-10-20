@@ -119,6 +119,7 @@ pub fn saved(session: protocol.Session) -> poll.Attempt(Nil, String) {
   case session.status {
     protocol.Saved -> poll.Done(Nil)
     protocol.Reserved
+    | protocol.FailedStart(..)
     | protocol.Moving(_)
     | protocol.Opening(_)
     | protocol.Resident(_)

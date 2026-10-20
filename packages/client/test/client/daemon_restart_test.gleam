@@ -119,6 +119,7 @@ fn is_resident(status: manager.Status) -> Bool {
   case status {
     manager.Resident(_) -> True
     manager.Reserved
+    | manager.FailedStart(..)
     | manager.Saved
     | manager.Opening(_)
     | manager.Stopping(_)
@@ -130,6 +131,7 @@ fn is_saved(status: manager.Status) -> Bool {
   case status {
     manager.Saved -> True
     manager.Reserved
+    | manager.FailedStart(..)
     | manager.Opening(_)
     | manager.Resident(_)
     | manager.Stopping(_)

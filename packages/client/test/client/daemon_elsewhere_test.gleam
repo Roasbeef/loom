@@ -465,3 +465,22 @@ pub fn a_peer_that_sends_more_rows_than_asked_is_cut_to_the_page_test() {
     },
   )
 }
+
+// A foreign orchestrator's page carries a failed start the way the local list
+// does: the `reserved` word plus the optional `failure` member, so an asker
+// that does not know the member reads `reserved` (protocol-change/093).
+pub fn a_failed_start_row_renders_reserved_with_a_failure_member_test() {
+  assert listed_sessions.status_json(listed_sessions.Reserved)
+    == json.Object([#("state", json.String("reserved"))])
+  assert listed_sessions.status_json(listed_sessions.FailedStart("no census", 5))
+    == json.Object([
+      #("state", json.String("reserved")),
+      #(
+        "failure",
+        json.Object([
+          #("reason", json.String("no census")),
+          #("at", json.Int(5)),
+        ]),
+      ),
+    ])
+}

@@ -17,7 +17,7 @@ import gleam/erlang/atom
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import session/session
@@ -304,4 +304,119 @@ pub fn identity_before_confirmation_survives_crash_and_restart_test() {
   stop(registry)
   assert catalogue.close(store) == Ok(Nil)
   retry_after_restart(directory, record, selected)
+}
+
+// Reads the registry until the failed start's reason is listed for the
+// session, which happens once the failed slot has drained and the reservation
+// stands alone.
+fn failed_start(registry, id) {
+  let outcome =
+    poll.until(within: 5000, every: 1, attempt: fn() {
+      case manager.get(registry, id) {
+        Ok(manager.View(status: manager.FailedStart(reason:, at:), ..)) ->
+          poll.Done(#(reason, at))
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(error)
+      }
+    })
+  let assert poll.Answered(failure) = outcome
+    as "the failed start is listed with its reason"
+  failure
+}
+
+const census_failure =
+  "executor exec declares toolchain codemode but its census reports []"
+
+/// A failed start is kept on its reservation, survives a registry and catalogue
+/// replacement, and ends when a retry under the same key resumes the same
+/// identity (protocol-change/093).
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match failed_start_is_kept_across_restart`.
+pub fn a_failed_start_is_kept_across_restart_and_a_retry_clears_it_test() {
+  let directory = directory()
+  let assert Ok(store) = catalogue.open(directory <> "/catalogue.db")
+    as "the creation catalogue is on disk"
+  let registry = start(store, fn(_record, _owner) { Error(census_failure) })
+  let assert Ok(manager.View(record, manager.Opening(_))) =
+    create(registry, directory, request("failed-start"), 804)
+    as "creation reserves before the start fails"
+  let #(reason, at) = failed_start(registry, record.id)
+  assert reason == census_failure
+  assert at > 0
+  assert catalogue.start_failure(store, record.id)
+    == Ok(Some(catalogue.StartFailure(reason:, at:)))
+
+  // The registration is the one a retry resumes, so the failure changed
+  // nothing about what the reservation is.
+  assert catalogue.by_request_key(store, "failed-start") == Ok(record)
+  assert record.state == catalogue.Reserved
+  assert manager.open(registry, record.id) == Error(manager.NotInitialized)
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
+
+  // A new registry over a reopened catalogue lists the same failure: nothing
+  // about it lived in the first registry's memory.
+  let assert Ok(reopened) = catalogue.open(directory <> "/catalogue.db")
+    as "a fresh catalogue connection reads the durable reservation"
+  let builds = process.new_subject()
+  let restarted =
+    start(reopened, fn(record, owner) {
+      let _ = initialize(record, owner)
+      process.send(builds, record.id)
+      Ok(record.id)
+    })
+  assert manager.get(restarted, record.id)
+    == Ok(manager.View(record, manager.FailedStart(reason:, at:)))
+  let assert Ok(#(_, views)) = manager.page(restarted, after: "")
+    as "listing carries the failed start"
+  assert list.contains(
+    views,
+    manager.View(record, manager.FailedStart(reason:, at:)),
+  )
+  assert manager.open(restarted, record.id) == Error(manager.NotInitialized)
+  assert process.receive(builds, 0) == Error(Nil)
+
+  // The retry resumes the same identity, and clears the failure in the turn
+  // that starts it, so the list reads as starting again.
+  let assert Ok(manager.View(retried, manager.Opening(_))) =
+    create(restarted, directory, request("failed-start"), 999)
+    as "the original creation key resumes its original reservation"
+  assert retried == record
+  assert catalogue.start_failure(reopened, record.id) == Ok(None)
+  resident(restarted, record.id)
+  assert process.receive(builds, 1000) == Ok(record.id)
+  assert catalogue.by_request_key(reopened, "failed-start")
+    == Ok(catalogue.Registration(..record, state: catalogue.Saved))
+  assert catalogue.start_failure(reopened, record.id) == Ok(None)
+  stop(restarted)
+  assert catalogue.close(reopened) == Ok(Nil)
+}
+
+/// The kept reason is one cleaned line within the stored bound, whatever the
+/// builder's failure looked like, and a failure with no text still says so.
+///
+/// ## Examples
+///
+/// `scripts/test.sh client --match failed_start_reason_is_cleaned`.
+pub fn a_failed_start_reason_is_one_clean_bounded_line_test() {
+  let directory = directory()
+  let assert Ok(store) = catalogue.open(directory <> "/catalogue.db")
+    as "the creation catalogue is on disk"
+  let hostile =
+    "first\nsecond\u{1b}[31m red \u{7}"
+    <> string.repeat("long ", catalogue.start_failure_limit)
+  let registry = start(store, fn(_record, _owner) { Error(hostile) })
+  let assert Ok(manager.View(record, _)) =
+    create(registry, directory, request("hostile-reason"), 805)
+    as "creation reserves before the start fails"
+  let #(reason, _) = failed_start(registry, record.id)
+  assert string.byte_size(reason) <= catalogue.start_failure_limit
+  assert string.starts_with(reason, "first second")
+  assert !string.contains(reason, "\n")
+  assert !string.contains(reason, "\u{1b}")
+  assert !string.contains(reason, "\u{7}")
+  stop(registry)
+  assert catalogue.close(store) == Ok(Nil)
 }

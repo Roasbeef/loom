@@ -270,7 +270,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6103`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6114`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1077,7 +1077,9 @@ session, through the control command's own checks. `view/resume` holds the rule
 for a saved row: a button on an operator-ceiling page, "opening" while its
 resume is out, text for every other saved row meanwhile and text always on a
 read-only page or for a session the catalogue reports `Reserved` or
-`RecoveryBlocked` (`sessions.Blocked`). The press is `home.Resuming(id)` or
+`RecoveryBlocked` (`sessions.Blocked`), or a reservation whose start failed
+(`sessions.FailedStart(reason)`, drawn as "failed to start" and the reason in a
+text node, with the same Archive and Delete a blocked row has). The press is `home.Resuming(id)` or
 `operator_page.Resuming(id)`, beneath the regions the sockets already admit.
 
 The component calls `Start.resume` or `Transport.resume`, which starts the

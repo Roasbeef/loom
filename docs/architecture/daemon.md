@@ -562,7 +562,11 @@ component.
 
 - **A session fails to assemble.** Its custody owner runs the cleanups
   published so far. The slot moves to `Closing` and is freed when the
-  owner exits normally. The client receives `StartFailed`.
+  owner exits normally. The client receives `StartFailed`. When the session
+  is still a reservation, the cleaned reason is also written to the catalogue
+  (`catalogue_start_failures`), so a restart lists it as `reserved` with a
+  `failure` member instead of losing it; the next real attempt, the file's
+  confirmation or a delete ends it (protocol-change/093).
 - **A session's cleanup fails.** The custody owner stays alive, the slot
   becomes `Blocked` (`RecoveryBlocked` in status), and it keeps its
   capacity for the life of the VM. A blocked slot also prevents a normal

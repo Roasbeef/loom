@@ -98,7 +98,7 @@ What changes from today (A's list; the "before" captures are in
 - Two hint rows, in two tiers: movement and opening first, rarer keys second.
 
 Data: everything is on the page the picker already holds, so there is no wire
-change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:517`)
+change. A row is a `Session` (`packages/tui/src/tui/daemon/protocol.gleam:525`)
 (`Session`). The state, strand counts, approvals, last message and up to four
 glance lines come from `Activity` (`packages/tui/src/tui/daemon/protocol.gleam:407`)
 (`Activity`) and `GlanceLine` (`packages/tui/src/tui/daemon/protocol.gleam:427`)

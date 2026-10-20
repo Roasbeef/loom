@@ -2642,6 +2642,7 @@ fn resident_within(
             manager.Resident(_) -> poll.Done(Nil)
             manager.Opening(_) -> poll.Retry
             manager.Reserved
+            | manager.FailedStart(..)
             | manager.Saved
             | manager.Stopping(_)
             | manager.RecoveryBlocked(_) -> poll.Fail(sessions.NotOpened)
@@ -2845,7 +2846,8 @@ fn unstarted(
   let why = startup_reason(registry, session, view.status)
   let _ = drained(registry, session)
   let remains = case manager.get(registry, session) {
-    Ok(manager.View(status: manager.Reserved, ..)) ->
+    Ok(manager.View(status: manager.Reserved, ..))
+    | Ok(manager.View(status: manager.FailedStart(..), ..)) ->
       case release(session) {
         Ok(Nil) -> creations.Dropped
         Error(_) -> creations.InList
@@ -2884,6 +2886,7 @@ fn startup_reason(
         | Error(manager.SessionDeleting) -> None
       }
     manager.Reserved
+    | manager.FailedStart(..)
     | manager.Saved
     | manager.Resident(_)
     | manager.Stopping(_)
@@ -4256,7 +4259,7 @@ fn stop_for(
     }),
   )
   case status {
-    manager.Saved | manager.Reserved -> Ok(Nil)
+    manager.Saved | manager.Reserved | manager.FailedStart(..) -> Ok(Nil)
     manager.Stopping(_) ->
       case drained(registry, target) {
         poll.Failed(reason) -> Error(reason)
@@ -4284,7 +4287,8 @@ fn drained(
       Error(_) -> poll.Fail(actions.Unavailable)
       Ok(view) ->
         case view.status {
-          manager.Saved | manager.Reserved -> poll.Done(Nil)
+          manager.Saved | manager.Reserved | manager.FailedStart(..) ->
+            poll.Done(Nil)
           manager.Resident(_) | manager.Opening(_) -> poll.Done(Nil)
           manager.Stopping(_) -> poll.Retry
           manager.RecoveryBlocked(_) -> poll.Fail(actions.Unavailable)
@@ -5896,6 +5900,7 @@ fn running(status: manager.Status) -> Result(Nil, sessions.Reason) {
   case status {
     manager.Resident(_) -> Ok(Nil)
     manager.Reserved
+    | manager.FailedStart(..)
     | manager.Saved
     | manager.Opening(_)
     | manager.Stopping(_)
@@ -5927,6 +5932,7 @@ pub fn listed_entry(view: manager.View) -> sessions.Entry {
         sessions.Live
       manager.Saved -> sessions.Saved
       manager.Reserved | manager.RecoveryBlocked(..) -> sessions.Blocked
+      manager.FailedStart(reason:, ..) -> sessions.FailedStart(reason:)
     },
     subtitle: record.subtitle,
     role: None,

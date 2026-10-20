@@ -523,6 +523,7 @@ fn nothing_reopened(
   case status {
     manager.Saved -> Ok(Nil)
     manager.Reserved
+    | manager.FailedStart(..)
     | manager.Opening(_)
     | manager.Stopping(_)
     | manager.Resident(_)
@@ -610,6 +611,7 @@ fn is_resident(status: manager.Status) -> Bool {
   case status {
     manager.Resident(_) -> True
     manager.Reserved
+    | manager.FailedStart(..)
     | manager.Saved
     | manager.Opening(_)
     | manager.Stopping(_)
@@ -886,6 +888,7 @@ fn incarnation_of(daemon: Harness, id: String) -> Result(String, Failure) {
   case status {
     manager.Resident(operation) -> Ok(operation)
     manager.Reserved
+    | manager.FailedStart(..)
     | manager.Saved
     | manager.Opening(_)
     | manager.Stopping(_)

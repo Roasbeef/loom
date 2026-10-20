@@ -169,7 +169,8 @@ fn page_row(row: listed_sessions.Row) -> page.Row {
     workspace: row.workspace,
     name: row.name,
     status: case row.status {
-      listed_sessions.Reserved -> page.Reserved
+      listed_sessions.Reserved | listed_sessions.FailedStart(..) ->
+        page.Reserved
       listed_sessions.Saved -> page.Saved
       listed_sessions.Opening(..) -> page.Opening
       listed_sessions.Resident(..) -> page.Resident

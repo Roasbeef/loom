@@ -21,7 +21,7 @@
 //// the path it fired at, never a session.
 
 import gleam/option.{type Option, None, Some}
-import web_view/sessions.{type Entry, Blocked, Live, Moving, Saved}
+import web_view/sessions.{type Entry, Blocked, FailedStart, Live, Moving, Saved}
 
 /// What a page offers for saved sessions.
 pub type Resume(message) {
@@ -56,7 +56,8 @@ pub type Kind(message) {
 /// ```
 pub fn kind(resume: Resume(message), entry: Entry) -> Kind(message) {
   case entry.residency, resume {
-    Live, _ | Blocked, _ | Moving(_), _ | Saved, Never -> Text
+    Live, _ | Blocked, _ | FailedStart(_), _ | Moving(_), _ | Saved, Never ->
+      Text
     Saved, Offered(press:, pending: None) -> Button(press(entry.id))
     Saved, Offered(pending: Some(session), ..) ->
       case session == entry.id {

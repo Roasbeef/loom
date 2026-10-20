@@ -174,7 +174,10 @@ fn pick(
 fn moving_words(entry: Entry) -> String {
   case entry.residency {
     sessions.Moving(to) -> " · moving to " <> to
-    sessions.Live | sessions.Saved | sessions.Blocked -> ""
+    sessions.Live
+    | sessions.Saved
+    | sessions.Blocked
+    | sessions.FailedStart(..) -> ""
   }
 }
 
@@ -320,8 +323,11 @@ fn make_shareable(
         presses,
         busy,
       )
-    _, Some(sessions.Blocked) | _, Some(sessions.Moving(_)) | _, None ->
-      element.none()
+    _, Some(sessions.Blocked)
+    | _, Some(sessions.FailedStart(_))
+    | _, Some(sessions.Moving(_))
+    | _, None
+    -> element.none()
   }
 }
 

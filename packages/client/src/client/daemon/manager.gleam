@@ -92,6 +92,7 @@ import gleam/result
 import gleam/set
 import gleam/string
 import host/bootstrap
+import session_view/text_hygiene
 import simplifile
 import storage/access
 import storage/catalogue
@@ -106,6 +107,14 @@ pub type Status {
   /// A creation reserved this identity and never reconciled it, so no
   /// database stands behind it and only a create retry can complete it.
   Reserved
+
+  /// A creation reserved this identity, its start failed, and the catalogue
+  /// kept why (protocol-change/093). It is a `Reserved` in every other respect:
+  /// no database is promised, only a create retry under the original request
+  /// key can complete it, and the owner may delete it. The reason is one
+  /// cleaned line of at most `catalogue.start_failure_limit` bytes and `at` is
+  /// when the start failed, in Unix milliseconds.
+  FailedStart(reason: String, at: Int)
 
   /// No runtime or cleanup reservation is owned by this registry.
   Saved
@@ -5090,6 +5099,7 @@ fn prepare_slot(
       catalogue.Deleting -> Error(SessionDeleting)
       catalogue.NotDeleting -> Ok(Nil)
     })
+
     domain.for_session(book.catalogue, record.id) |> result.map_error(Catalogue)
   }
   case selected {
@@ -5101,6 +5111,21 @@ fn prepare_slot(
         Ok(_operation) -> prepare_domain_slot(book, record, selected)
       }
     }
+  }
+}
+
+// A fresh attempt supersedes whatever the last one failed at, durably as well
+// as in the memo, so a reservation being retried is listed as starting again
+// and not as a failure that no longer describes it.
+//
+// It runs only once the attempt has a host. Every earlier refusal (a blocked or
+// drained domain, a failed preparation) creates no slot, so nothing would ever
+// record a new failure, and clearing first would lose the reason of the last
+// real one. A clear that fails leaves a stale reason that the next failure
+// replaces or the file's confirmation clears, so it does not refuse the open.
+fn clear_kept_failure(store: catalogue.Catalogue, id: String) -> Nil {
+  case catalogue.clear_start_failure(store, id) {
+    Ok(Nil) | Error(_) -> Nil
   }
 }
 
@@ -5145,6 +5170,7 @@ fn prepare_domain_slot(
   {
     Error(reason) -> #(book, Error(Preparation(reason)))
     Ok(host) -> {
+      clear_kept_failure(book.catalogue, record.id)
       let watch = process.monitor(host.owner(host))
       let slot =
         Slot(
@@ -5765,6 +5791,7 @@ fn remember_failure(
   operation: String,
   reason: String,
 ) -> Book(instance) {
+  keep_start_failure(book.catalogue, id, reason)
   case
     dict.has_key(book.failed_operations, id)
     || dict.size(book.failed_operations) < book.limit
@@ -5778,6 +5805,39 @@ fn remember_failure(
         )),
       )
     False -> book
+  }
+}
+
+// Files the failure against the reservation, so it outlives this process
+// (protocol-change/093). The in-memory memo above answers the operator who is
+// polling this exact operation, and this row answers everyone after a restart.
+//
+// The text is cleaned here because the catalogue owns rows and not display
+// text: terminal sequences and invisible codepoints are replaced first, then
+// the line is collapsed and cut to the stored bound. Cleaning first matters
+// because replacing a tab or a control can lengthen the text.
+//
+// A session that is already `Saved` has no creation to describe and the
+// catalogue refuses it, and a write that fails loses only the diagnosis. Both
+// leave the reservation as it was, so neither is worth failing the cleanup
+// that called this.
+fn keep_start_failure(
+  store: catalogue.Catalogue,
+  id: String,
+  reason: String,
+) -> Nil {
+  let line = case
+    reason
+    |> text_hygiene.single_line
+    |> glance.clip(catalogue.start_failure_limit)
+  {
+    "" -> "the start failed without saying why"
+    cleaned -> cleaned
+  }
+  case
+    catalogue.record_start_failure(store, id, line, at: ffi_os.system_time_ms())
+  {
+    Ok(Nil) | Error(_) -> Nil
   }
 }
 
@@ -5861,7 +5921,7 @@ fn status(book: Book(instance), record: catalogue.Registration) -> Status {
   case dict.get(book.slots, record.id) {
     Error(Nil) ->
       case record.state {
-        catalogue.Reserved -> Reserved
+        catalogue.Reserved -> reserved_status(book, record)
         catalogue.Saved -> Saved
       }
 
@@ -5870,6 +5930,20 @@ fn status(book: Book(instance), record: catalogue.Registration) -> Status {
     Ok(Slot(phase: Running(_), operation:, ..)) -> Resident(operation)
     Ok(Slot(phase: Closing, operation:, ..)) -> Stopping(operation)
     Ok(Slot(phase: Blocked(reason), ..)) -> RecoveryBlocked(reason)
+  }
+}
+
+// A reservation with no slot is a failed start when the catalogue kept a
+// reason for it and an ordinary reservation otherwise. A read that fails shows
+// the plain reservation: the reason is a display aid layered over the
+// registration, and `Reserved` is already the conservative answer.
+fn reserved_status(
+  book: Book(instance),
+  record: catalogue.Registration,
+) -> Status {
+  case catalogue.start_failure(book.catalogue, record.id) {
+    Ok(Some(catalogue.StartFailure(reason:, at:))) -> FailedStart(reason:, at:)
+    Ok(None) | Error(_) -> Reserved
   }
 }
 

@@ -50,6 +50,25 @@ fn reserved(registry, id) {
   settles(registry, id, manager.Reserved)
 }
 
+// A reservation whose cancelled domain preparation returned an error settles as
+// a plain reservation when the normal witness exit is handled first, and as a
+// failed start (protocol-change/093) when the error result is. The two come from
+// different senders, so either order is legitimate and both leave the same
+// durable reservation.
+fn reserved_or_failed(registry, id) {
+  let answer =
+    poll.until(within: 2000, every: 1, attempt: fn() {
+      case manager.get(registry, id) {
+        Ok(manager.View(status: manager.Reserved, ..))
+        | Ok(manager.View(status: manager.FailedStart(..), ..)) ->
+          poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(string.inspect(error))
+      }
+    })
+  assert answer == poll.Answered(Nil)
+}
+
 fn saved(registry, id) {
   settles(registry, id, manager.Saved)
 }
@@ -361,8 +380,8 @@ pub fn cancelled_failed_domain_retires_all_waiting_sessions_test() {
   // Cancelled preparation never ran either builder, so neither creation was
   // ever confirmed: these two settle back to their durable reservation, not
   // to the saved state an initialized session retires into.
-  reserved(registry, first.registration.id)
-  reserved(registry, second.registration.id)
+  reserved_or_failed(registry, first.registration.id)
+  reserved_or_failed(registry, second.registration.id)
   assert process.receive(builds, 0) == Error(Nil)
 
   // The result and normal witness have different senders. This exercises the
@@ -449,4 +468,80 @@ pub fn failed_domain_cleanup_retains_admission_and_original_witness_test() {
     == Ok(process.Killed)
   assert catalogue.close(store) == Ok(Nil)
   process.trap_exits(False)
+}
+
+// A retry that is refused before it gets a slot is not a new attempt, so it must
+// not erase the reason the last real attempt failed (protocol-change/093). Here
+// the shared domain is blocked, so the retry is refused `Unavailable` and
+// nothing would ever record the failure again.
+pub fn a_refused_retry_keeps_the_recorded_start_failure_test() {
+  process.trap_exits(True)
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let owners = process.new_subject()
+  let assert Ok(registry) =
+    manager.start(
+      store,
+      manager.Assembly(
+        domain_build: fn(_, _, owner) {
+          let assert Ok(Nil) =
+            custody.publish(owner, custody.Services, fn() {
+              Error("injected shared close failure")
+            })
+            as "failing cleanup is retained before residency"
+          process.send(owners, owner)
+          Ok(domain_service.inert())
+        },
+        build: fn(record, _, _, _, _directory) { Ok(record.id) },
+        drain: fn(_, _) { Nil },
+        fatal: fn(_) { [] },
+      ),
+      epoch: "refused-retry",
+      limit: 2,
+    )
+    as "registry starts"
+  let assert Ok(first) =
+    create(registry, 40, "/workspace", domain.WorkspacePrivate)
+    as "session admitted"
+  resident(registry, first.registration.id)
+  let assert Ok(owner) = process.receive(owners, 1000)
+    as "the original domain witness is available"
+  let assert Ok(_) = manager.stop_session(registry, first.registration.id)
+    as "session cleanup starts"
+  saved(registry, first.registration.id)
+  let assert custody.RecoveryBlocked(_) = custody.close(owner, within_ms: 2000)
+    as "a failed native-close result blocks the shared domain"
+  assert poll.until(within: 2000, every: 1, attempt: fn() {
+      case manager.summary(registry) {
+        Ok(manager.Summary(domain_blocked: 1, ..)) -> poll.Done(Nil)
+        Ok(_) -> poll.Retry
+        Error(error) -> poll.Fail(string.inspect(error))
+      }
+    })
+    == poll.Answered(Nil)
+
+  // A second session in the same workspace shares the blocked domain, so its
+  // creation reserves an identity and is refused before any slot exists.
+  assert create(registry, 41, "/workspace", domain.WorkspacePrivate)
+    == Error(manager.Unavailable)
+  let assert Ok(second) = catalogue.by_request_key(store, "41")
+    as "the refused creation left its reservation"
+  assert catalogue.record_start_failure(
+      store,
+      second.id,
+      "earlier start failed",
+      at: 5,
+    )
+    == Ok(Nil)
+  assert create(registry, 41, "/workspace", domain.WorkspacePrivate)
+    == Error(manager.Unavailable)
+  assert catalogue.start_failure(store, second.id)
+    == Ok(option.Some(catalogue.StartFailure("earlier start failed", 5)))
+
+  let watch = process.monitor(manager.pid(registry))
+  process.kill(manager.pid(registry))
+  assert process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down.reason })
+    |> process.selector_receive(2000)
+    == Ok(process.Killed)
+  assert catalogue.close(store) == Ok(Nil)
 }

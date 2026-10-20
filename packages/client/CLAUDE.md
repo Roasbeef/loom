@@ -628,7 +628,9 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   to the Lustre runtime that called) and returns at once; the task's last act
   is `deliver(answer)`, which the component dispatches as `Linked`. `resumed_for`
   is the socket's gate: an observer role is refused `NotHeld` before any task.
-  `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`.
+  `listed_entry` maps `Reserved` and `RecoveryBlocked` to `sessions.Blocked`
+  and a `FailedStart` to `sessions.FailedStart(reason)`, which the home draws as
+  "failed to start: <reason>" with the same Archive and Delete a blocked row has.
   The home and the sidebar list through `held_entries`, which reads the page's
   custody once (`manager.custodies`) and applies `with_moves`: a session in a
   move becomes `sessions.Moving(to)` and a tombstone is left out
@@ -1042,7 +1044,12 @@ catalogue without opening runtimes. Explicit admission invokes
   normal daemon shutdown.
 - `manager.Status` joins the live slot with the durable registration, and both
   halves are load-bearing. Where there is no slot the catalogue state is the
-  answer: a record still `catalogue.Reserved` reports `Reserved`, not `Saved`.
+  answer: a record still `catalogue.Reserved` reports `Reserved`, not `Saved`,
+  or `FailedStart(reason, at)` when the catalogue kept why its start failed
+  (protocol-change/093: `remember_failure` writes the row through
+  `keep_start_failure`, which cleans the text with `text_hygiene.single_line` and
+  `glance.clip` to 512 bytes; the next real attempt in `prepare_slot` clears it).
+  The wire keeps `state: reserved` and adds an optional `failure` member.
   Reading liveness alone made an unreconciled creation — an identity with no
   database behind it — indistinguishable from an openable session in a listing,
   and every selection of one was refused `NotInitialized`. `tui/daemon/selection`

@@ -103,8 +103,8 @@ import session_view/move_candidates.{type Candidate}
 import web_view/actions.{type Stage}
 import web_view/renames.{type Control}
 import web_view/sessions.{
-  type Activity, type Entry, type Group, Blocked, Idle, Live, Moving, NeedsYou,
-  Saved, Working,
+  type Activity, type Entry, type Group, Blocked, FailedStart, Idle, Live,
+  Moving, NeedsYou, Saved, Working,
 }
 import web_view/view/archiving
 import web_view/view/create.{type Create}
@@ -427,6 +427,7 @@ type State {
   Running(activity: Option(String))
   Stored
   Attention
+  Unstarted(reason: String)
   Waking
   Leaving(to: String)
 }
@@ -458,6 +459,7 @@ fn standing(
     Saved, resume.Opening, _ -> Standing("opening", "…", Waking)
     Saved, _, _ -> Standing("saved", "○", Stored)
     Blocked, _, _ -> Standing("saved", "○", Attention)
+    FailedStart(reason), _, _ -> Standing("failed", "○", Unstarted(reason))
     Moving(to), _, _ -> Standing("saved", "○", Leaving(to))
   }
 }
@@ -549,7 +551,7 @@ fn row(
     // running row.
     Saved, resume.Opening ->
       html.div([attribute.class("home-item")], list.append(body, [chevron()]))
-    Saved, _ | Blocked, _ | Moving(_), _ ->
+    Saved, _ | Blocked, _ | FailedStart(_), _ | Moving(_), _ ->
       html.div([attribute.class("home-item")], body)
   }
   let classes = [attribute.class("home-row"), attribute.class(standing.class)]
@@ -633,7 +635,8 @@ fn offered(
 ) -> List(Element(message)) {
   case standing.state {
     Waking -> []
-    Running(_) | Stored | Attention | Leaving(_) -> acts(entry, rename, manage)
+    Running(_) | Stored | Attention | Unstarted(_) | Leaving(_) ->
+      acts(entry, rename, manage)
   }
 }
 
@@ -682,7 +685,9 @@ fn acts(
     // and the row says so, because releasing a slot whose holder is still
     // alive could let a second writer open the same database.
     Managed(..), Moving(_) -> []
-    Managed(archive:, delete:, ..), Blocked -> [
+    Managed(archive:, delete:, ..), Blocked
+    | Managed(archive:, delete:, ..), FailedStart(_)
+    -> [
       archive_button(entry, archive, working),
       delete_button(entry, delete, working),
     ]
@@ -1036,7 +1041,7 @@ fn quiet_line(
 ) -> List(Element(message)) {
   let line = case standing.state {
     Waking -> [html.text("Opening…")]
-    Running(_) | Stored | Attention | Leaving(_) ->
+    Running(_) | Stored | Attention | Unstarted(_) | Leaving(_) ->
       described(standing, entry, now)
   }
   case note {
@@ -1063,6 +1068,10 @@ fn described(
         html.text("needs attention"),
       ]),
     ]
+
+    // The reason is text a host or a configuration wrote, so it is a text node
+    // in the line and never a title or an attribute (protocol-change/093).
+    Unstarted(reason) -> [html.text("failed to start: " <> reason)]
   }
 
   // The person's role in this session ends the standing's words, after the
@@ -1083,7 +1092,7 @@ fn described(
       let age = created(entry.created_at, sessions.ago(now, entry.created_at))
       case entry.residency {
         Live -> list.append(lead, [html.text(" · created "), age])
-        Saved | Blocked | Moving(_) ->
+        Saved | Blocked | FailedStart(_) | Moving(_) ->
           list.append(lead, [html.text(" · "), age])
       }
     }

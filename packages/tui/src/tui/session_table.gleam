@@ -80,6 +80,7 @@ pub fn state(status: control_protocol.Lifecycle) -> #(String, style.Style) {
     control_protocol.Saved -> #("saved", theme.quiet_text())
     control_protocol.Moving(to) -> #("moving to " <> to, signal())
     control_protocol.Reserved -> #("reserved", theme.quiet_text())
+    control_protocol.FailedStart(..) -> #("failed", theme.danger_text())
     control_protocol.Opening(_) -> #("opening", signal())
     control_protocol.Resident(_) -> #("resident", theme.success_text())
     control_protocol.Stopping(_) -> #("stopping", signal())
@@ -109,6 +110,7 @@ pub fn state_token(status: control_protocol.Lifecycle) -> String {
     control_protocol.Moving(to) -> "moving:" <> to
     control_protocol.Saved
     | control_protocol.Reserved
+    | control_protocol.FailedStart(..)
     | control_protocol.Opening(_)
     | control_protocol.Resident(_)
     | control_protocol.Stopping(_)
@@ -134,6 +136,10 @@ pub fn resident_track(status: control_protocol.Lifecycle) -> Bool {
   case status {
     control_protocol.Saved -> False
     control_protocol.Reserved -> False
+
+    // A failed start is the one reservation worth showing without `--all`: it
+    // is stuck, it says why, and the owner is meant to retry or delete it.
+    control_protocol.FailedStart(..) -> True
     control_protocol.Moving(_) -> True
     control_protocol.Opening(_) -> True
     control_protocol.Resident(_) -> True
@@ -147,8 +153,37 @@ fn cells(row: control_protocol.Session) -> List(#(String, style.Style)) {
     #(row.session_id, theme.inline_code()),
     state(row.status),
     #(placement.label(row.executor, row.workspace), style.default_style()),
-    #(text_hygiene.single_line(row.name), style.default_style()),
+    #(
+      text_hygiene.single_line(row.name) <> failure_note(row.status),
+      style.default_style(),
+    ),
   ]
+}
+
+/// What follows a row's name when its start failed: two spaces, the words and
+/// the reason the daemon kept, drawn as one line. A lifecycle that did not fail
+/// adds nothing, so every other row is as it was. The last column carries it,
+/// so no other column's width moves.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert session_table.failure_note(control_protocol.Saved) == ""
+/// assert session_table.failure_note(control_protocol.FailedStart("no census", 1))
+///   == "  failed to start: no census"
+/// ```
+pub fn failure_note(status: control_protocol.Lifecycle) -> String {
+  case status {
+    control_protocol.FailedStart(reason:, ..) ->
+      "  failed to start: " <> text_hygiene.single_line(reason)
+    control_protocol.Saved
+    | control_protocol.Reserved
+    | control_protocol.Moving(_)
+    | control_protocol.Opening(_)
+    | control_protocol.Resident(_)
+    | control_protocol.Stopping(_)
+    | control_protocol.RecoveryBlocked -> ""
+  }
 }
 
 fn header_style() -> style.Style {

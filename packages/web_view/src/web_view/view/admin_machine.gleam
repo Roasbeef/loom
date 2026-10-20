@@ -476,6 +476,7 @@ fn residency_words(residency: sessions.Residency) -> String {
     sessions.Live -> "running"
     sessions.Saved -> "saved"
     sessions.Blocked -> "needs attention"
+    sessions.FailedStart(..) -> "failed to start"
     sessions.Moving(to:) -> "moving to " <> to
   }
 }

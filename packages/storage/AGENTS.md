@@ -28,7 +28,7 @@ or close; there is no transaction, lease or authorization cache.
 
 ## Key Types
 
-- The catalogue is at `user_version` 17. Each later version has its own embedded
+- The catalogue is at `user_version` 18. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
@@ -37,7 +37,7 @@ or close; there is no transaction, lease or authorization cache.
   `catalogue_pools_schema`, `catalogue_moves_schema`,
   `catalogue_deletions_schema`,
   `catalogue_delegates_schema`, `catalogue_releases_schema`,
-  `catalogue_spend_schema`), and
+  `catalogue_spend_schema`, `catalogue_start_failures_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -190,6 +190,18 @@ or close; there is no transaction, lease or authorization cache.
   read with `Invalid` and is never read as "not a delegate". `delete` removes the
   row first, which frees the slot. Claims do not move the catalogue revision,
   because no listing shows them.
+- `catalogue.StartFailure(reason, at)` is why a reservation's start failed
+  (protocol-change/093, catalogue version 18). `catalogue_start_failures(session_id,
+  reason, failed_at)` holds at most one row per registration, separate from the
+  registration so the creation request a retry compares is unchanged.
+  `record_start_failure` replaces the row, accepts only a `Reserved` registration
+  (`Conflict` for a `Saved` one) and one to `start_failure_limit` (512) bytes of
+  printable text, and moves the revision. `start_failure` reads one (a stored row
+  outside the grammar fails with `Invalid`, which the registry's listing reads as
+  a plain reservation), and `clear_start_failure` deletes one, moving the revision only when a
+  row was there. `confirm` clears the row in its own transaction and `delete`
+  removes it first, so a row cannot describe a session that started or outlive
+  its registration.
 - `catalogue.Spend` is what a spawner has used over a rolling day (protocol-change/084,
   catalogue version 17). `catalogue_spawner_spend(spawner, hour_bucket, tokens,
   spawns)` holds one row per spawner and hour, the hour being Unix milliseconds

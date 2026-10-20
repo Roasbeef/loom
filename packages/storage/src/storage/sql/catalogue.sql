@@ -208,3 +208,13 @@ ORDER BY hour_bucket;
 
 -- name: PruneSpawnerSpend :exec
 DELETE FROM catalogue_spawner_spend WHERE spawner = ? AND hour_bucket < ?;
+
+-- name: StartFailure :many
+SELECT reason, failed_at FROM catalogue_start_failures WHERE session_id = ?;
+
+-- name: UpsertStartFailure :exec
+INSERT INTO catalogue_start_failures (session_id, reason, failed_at) VALUES (?, ?, ?)
+ON CONFLICT(session_id) DO UPDATE SET reason = excluded.reason, failed_at = excluded.failed_at;
+
+-- name: DeleteStartFailure :exec
+DELETE FROM catalogue_start_failures WHERE session_id = ?;

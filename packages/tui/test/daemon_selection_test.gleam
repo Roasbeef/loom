@@ -51,6 +51,26 @@ pub fn delete_waits_for_positive_retirement_before_removing_the_selected_session
     ]
 }
 
+// A failed start is a reservation with no runtime, so the owner's delete takes
+// the same path a plain reservation takes (protocol-change/093).
+pub fn delete_removes_a_reservation_whose_start_failed_test() {
+  let commands = process.new_subject()
+  let result =
+    selection.delete_using("selected", fn(command, _) {
+      process.send(commands, command)
+      case command {
+        protocol.StopSession("selected") ->
+          Ok(protocol.LifecycleReply(protocol.FailedStart("no census", 5)))
+        protocol.DeleteSession("selected") ->
+          Ok(protocol.DeletedReply("selected"))
+        _ -> Error("unexpected command")
+      }
+    })
+  assert result == Ok("selected")
+  assert observed(commands)
+    == [protocol.StopSession("selected"), protocol.DeleteSession("selected")]
+}
+
 pub fn delete_keeps_the_session_when_retirement_is_unconfirmed_or_overtaken_test() {
   list.each(
     [

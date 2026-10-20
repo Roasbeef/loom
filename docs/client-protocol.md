@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:2250`).
+`hello_view` (`client/daemon/server.gleam:2256`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -552,19 +552,19 @@ A status object is discriminated by `state`:
 
 | `state` | Extra fields | Meaning |
 |---|---|---|
-| `reserved` | none | A creation reserved this identity and never reconciled it. No database stands behind the row, `sessions.open` refuses it with `not_initialized`, and only a `sessions.create` retry under its original request key can finish it. |
+| `reserved` | `failure` (optional) | A creation reserved this identity and never reconciled it. No database stands behind the row, `sessions.open` refuses it with `not_initialized`, and only a `sessions.create` retry under its original request key can finish it. When the start failed, `failure` is an object `{"reason": string, "at": integer}`: the one cleaned line (at most 512 bytes) the daemon kept for it, which survives a restart, and when it failed in Unix milliseconds ([protocol-change/093](../protocol-change/093-failed-session-start.md)). A retry, a confirmed file or a delete ends it. The member is omitted for a reservation with no kept failure. A client that does not know it draws `reserved`; a client that does treats a `failure` it cannot decode (no `reason`, a multi-line or oversized one, a negative `at`) as absent. |
 | `saved` | none | Not resident. |
 | `opening` | `operation` | An open is in progress under that operation id. |
 | `resident` | `incarnation` | Resident under that runtime incarnation. |
 | `stopping` | `operation` | Draining under that operation id. |
 | `recovery_blocked` | none | Retained after a failure; not openable. |
 
-Source: (`client/daemon/server.gleam:839-860`).
+Source: (`client/daemon/server.gleam:4780-4821`).
 
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3613`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3619`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1076,7 +1076,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2588-1130`).
+`control_use` (`client/daemon/server.gleam:2594-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
@@ -4119,7 +4119,7 @@ Sources: (`client/protocol.gleam:512-540`),
 | `expired` | `credentials.claim` on `/v2/claim` presented a claim whose lifetime passed before it was bound. | Ask the owner to rotate. |
 | `conflict` | A reused `request_key` with different metadata; a repeated invitation; an isolation with a retained slot. | Inspect, then decide. |
 | `capacity` | No free session slot. | Retry later, or stop a session. |
-| `not_initialized` | The named registration is still `reserved`: its creation never reconciled and no database stands behind it. | Retry `sessions.create` under its original request key. A listing renders such a row as `reserved`, so a client should not offer it for opening. |
+| `not_initialized` | The named registration is still `reserved`: its creation never reconciled and no database stands behind it. | Retry `sessions.create` under its original request key. A listing renders such a row as `reserved`, or as a failed start when its status carries `failure`, so a client should not offer it for opening. |
 | `unavailable` | The daemon is draining, or a durable read failed. | Retry later. |
 | `invalid_workspace` | `sessions.create` could not canonicalize the workspace path. | Fix the path. |
 | `invalid_configuration` | `sessions.create` could not canonicalize the configuration path. | Fix the path. |

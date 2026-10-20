@@ -377,6 +377,7 @@ fn add(tally: Tally, owned: List(manager.View)) -> Tally {
     let resident = case view.status {
       manager.Resident(..) -> 1
       manager.Reserved
+      | manager.FailedStart(..)
       | manager.Saved
       | manager.Opening(..)
       | manager.Stopping(..)

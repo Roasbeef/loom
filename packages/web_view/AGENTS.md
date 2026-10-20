@@ -373,8 +373,10 @@ page keys and nonces, and the relay into the session's gateway.
   `sessions.NoAdmin` word and address it. `admin_test`, `home_test`, `page_test`,
   `ending_test` and `grants_test` read all of it.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
-  (`Live | Saved | Blocked | Moving(to)`; `Blocked` is a saved row no page may
-  resume, and `Moving` is a saved row the daemon is handing to the orchestrator
+  (`Live | Saved | Blocked | FailedStart(reason) | Moving(to)`; `Blocked` is a
+  saved row no page may resume, `FailedStart` is a blocked row whose creation
+  failed and whose cleaned reason is drawn as a text node (protocol-change/093),
+  and `Moving` is a saved row the daemon is handing to the orchestrator
   `to`, drawn as text that says "moving to <to>" with no resume, rename, archive,
   delete or stop (the Admin drawer's row says "moving to <to>" and offers no Make
   shareable); a session that has moved is not an entry, since its new owner lists

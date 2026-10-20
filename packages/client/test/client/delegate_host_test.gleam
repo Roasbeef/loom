@@ -398,10 +398,11 @@ pub fn a_session_that_cannot_open_ends_the_wait_with_a_refusal_test() {
     as "the initial creation is admitted before its builder fails"
 
   // Once failed creation has drained, the uninitialized registration remains
-  // Reserved. This is a definitive failure, unlike a saved delegate reopening.
+  // reserved and carries why its start failed (protocol-change/093). This is a
+  // definitive failure, unlike a saved delegate reopening.
   assert eventually(fn() {
     case manager.get(registry, delegated.session_id) {
-      Ok(manager.View(status: manager.Reserved, ..)) -> True
+      Ok(manager.View(status: manager.FailedStart(..), ..)) -> True
       Ok(_) | Error(_) -> False
     }
   })
