@@ -297,9 +297,13 @@ pub fn fixed_deadline_cancels_the_pending_request_without_stopping_the_server_te
   // without ever admitting the request whose cancellation this fixture proves.
   let assert Ok(_) = manager.door(manager).outline("a.gleam")
     as "the shared server and document are ready before the deadline"
+  // The budget is short so that the references request is the one left
+  // pending, but it has to outlast the collection's own setup before that
+  // request is admitted: at 150 ms a loaded host spent it all first and the
+  // request this test withdraws was never sent.
   let scope = observation.Request(..request(root), outlines: [])
   let assert Error(_) =
-    manager.observation_door(manager).collect(scope, control(150))
+    manager.observation_door(manager).collect(scope, control(1500))
     as "the invocation bounds the entire collection"
   assert list.contains(fake_lsp.methods(fake), "textDocument/references")
   await_method(fake, "$/cancelRequest")

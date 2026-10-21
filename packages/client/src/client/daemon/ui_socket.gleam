@@ -267,7 +267,8 @@ pub const resume_wait_ms = 30_000
 // milliseconds. The component answers from a lane it holds in memory, so a
 // second is long; a component that does not answer in that time is gone or
 // stuck, and the request is refused rather than held.
-const image_wait_ms = 2000
+@internal
+pub const image_wait_ms = 2000
 
 // How long a page's socket stays open after the relay reports the page
 // ended, in milliseconds. The component reduces the close as it arrives,

@@ -60,10 +60,16 @@ fn start() -> component.Start(ui_relay.Relay) {
   )
 }
 
+// How long a wait for something that will arrive lasts, in milliseconds. A
+// started page, a read task and a reply each end the wait when they arrive, so
+// the bound only has to outlast the slowest scheduling the parallel client run
+// produces, and a passing test never spends it.
+const patience_ms = 30_000
+
 // The first thing a started page sends its browser is the mount: the whole
 // rendered tree.
 fn mounted(page: ui_socket.Page) -> String {
-  let assert Ok(mount) = process.selector_receive(page.frames, 1000)
+  let assert Ok(mount) = process.selector_receive(page.frames, patience_ms)
     as "the page sends its mount"
   json.to_string(mount)
 }
@@ -656,8 +662,17 @@ pub fn the_sidebar_read_runs_off_the_runtime_test() {
       project: option.None,
       executor: None,
     )
+
+  // The read holds at a gate the test opens, so that it is still waiting
+  // when `listed_task` has returned however long the test process was
+  // descheduled in between. A fixed sleep inside the read raced the test's
+  // own quiet window.
+  let reached = process.new_subject()
   let read = fn() {
-    process.sleep(300)
+    let gate = process.new_subject()
+    process.send(reached, gate)
+    let assert Ok(Nil) = process.receive(gate, patience_ms)
+      as "the test opens the read's gate"
     [entry]
   }
   let deliver = fn(entries) { process.send(delivered, entries) }
@@ -665,8 +680,11 @@ pub fn the_sidebar_read_runs_off_the_runtime_test() {
   // The call returns while the read is still waiting, and the answer lands
   // once the read does.
   ui_socket.listed_task(ui_socket.Operating, read, deliver)
-  assert process.receive(delivered, 100) == Error(Nil)
-  assert process.receive(delivered, 6000) == Ok([entry])
+  let assert Ok(gate) = process.receive(reached, patience_ms)
+    as "the read starts"
+  assert process.receive(delivered, 0) == Error(Nil)
+  process.send(gate, Nil)
+  assert process.receive(delivered, patience_ms) == Ok([entry])
 
   // An observer's page: the empty list, now, and the read never runs.
   ui_socket.listed_task(ui_socket.Observing, read, deliver)
@@ -743,7 +761,7 @@ pub fn both_roles_answer_for_an_image_the_page_never_drew_test() {
       let before = bootstrap.monotonic_time_ms()
       assert page.images("1.0", 0) == Error(Nil)
       assert page.images("", -1) == Error(Nil)
-      assert bootstrap.monotonic_time_ms() - before < 1000
+      assert bootstrap.monotonic_time_ms() - before < ui_socket.image_wait_ms
       page.shutdown()
     },
   )
@@ -763,18 +781,18 @@ pub fn a_reader_answers_nothing_once_its_socket_has_ended_test() {
       Nil
     })
   let monitor = process.monitor(owner)
-  let assert Ok(#(images, ended)) = process.receive(started, 2000)
+  let assert Ok(#(images, ended)) = process.receive(started, patience_ms)
     as "the reader and the way to end its owner"
   assert images("1.0", 0) == Error(Nil)
   process.send(ended, Nil)
   let assert Ok(_) =
     process.new_selector()
     |> process.select_specific_monitor(monitor, fn(down) { down })
-    |> process.selector_receive(2000)
+    |> process.selector_receive(patience_ms)
     as "the owner ends"
   let before = bootstrap.monotonic_time_ms()
   assert images("1.0", 0) == Error(Nil)
-  assert bootstrap.monotonic_time_ms() - before < 500
+  assert bootstrap.monotonic_time_ms() - before < ui_socket.image_wait_ms
 }
 
 // Protocol-change/051, the addendum on images: an operator's frame holds the
@@ -893,7 +911,7 @@ fn click_at(path: String) -> String {
 
 // Reads frames until one contains `text`, or the page goes quiet.
 fn frames_contain(page: ui_socket.Page, text: String) -> Bool {
-  case process.selector_receive(page.frames, 1000) {
+  case process.selector_receive(page.frames, patience_ms) {
     Error(Nil) -> False
     Ok(frame) ->
       case string.contains(json.to_string(frame), text) {
@@ -916,7 +934,7 @@ pub fn a_workspace_page_goes_home_and_a_one_session_page_cannot_test() {
       as "the workspace page starts"
     assert string.contains(mounted(page), "home-link")
     page.forward(click_at(component.home_path))
-    assert process.receive(asked, 1000) == Ok(Nil)
+    assert process.receive(asked, patience_ms) == Ok(Nil)
     assert frames_contain(page, "home-ticket")
     page.shutdown()
 
@@ -1603,7 +1621,7 @@ pub fn the_sidebars_activity_read_is_an_operators_alone_test() {
   ui_socket.activity_for(ui_socket.Operating, ask, ["a"], fn(rows) {
     process.send(answers, rows)
   })
-  assert process.receive(answers, 2000) == Ok([#("a", sessions.Working)])
+  assert process.receive(answers, patience_ms) == Ok([#("a", sessions.Working)])
 }
 
 // Protocol-change/073: a member operator's socket admits the remembered

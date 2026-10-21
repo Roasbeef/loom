@@ -58,6 +58,18 @@ import weft
 import weft/poll
 import weft/registry
 
+// How long a read of one websocket frame waits, in milliseconds. A first frame
+// follows the socket's admission (the permit transfer and the gateway attach)
+// and the hub's capture, which reads storage, so it is several asynchronous
+// hops and not one event-loop turn. The read returns as soon as bytes arrive,
+// so a passing test never spends the bound.
+const frame_ms = 20_000
+
+// How long fixture setup and teardown wait, in milliseconds: the root's
+// readiness, a session's assembly and the daemon's drain. Each ends when its
+// work does.
+const setup_ms = 30_000
+
 /// Runs a real v2 listener with a scripted, native-effect-free resident session.
 ///
 /// ## Examples
@@ -131,7 +143,8 @@ fn fixture_serving(
       ),
     )
     as "the daemon root starts without native effects"
-  let assert Ok(ready) = root.ready(daemon, within: 5000) as "the root is ready"
+  let assert Ok(ready) = root.ready(daemon, within: setup_ms)
+    as "the root is ready"
   let assert Ok(credential) = root.listener_credential(daemon)
     as "the owner credential exists"
   let assert Ok(view) =
@@ -154,7 +167,7 @@ fn fixture_serving(
     )
     as "explicit creation is admitted"
   let assert poll.Answered(harness) =
-    poll.until(within: 5000, every: 1, attempt: fn() {
+    poll.until(within: setup_ms, every: 10, attempt: fn() {
       case manager.resolve(ready.registry, view.registration.id) {
         Ok(instance) -> poll.Done(instance)
         Error(_) -> poll.Retry
@@ -190,7 +203,7 @@ fn fixture_serving(
     |> mist.start
     as "one loopback listener serves the real adapter"
   process.unlink(listener.pid)
-  let assert Ok(port) = process.receive(ports, within: 1000)
+  let assert Ok(port) = process.receive(ports, within: setup_ms)
     as "the bound port arrives"
 
   // The body runs on its own task because a failed assertion kills the process
@@ -214,14 +227,14 @@ fn fixture_serving(
     ])
     |> weft.deadline(40_000)
     |> weft.start
-  case root.shutdown(daemon, within: 5000) {
+  case root.shutdown(daemon, within: setup_ms) {
     Ok(Nil) | Error("daemon root is unavailable") -> Nil
     Error(reason) -> panic as reason
   }
   let assert Ok(retired) =
     process.new_selector()
     |> process.select_specific_monitor(daemon_watch, fn(down) { down })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(setup_ms)
     as "the original daemon monitor confirms retirement"
   assert retired.reason == process.Normal
     as "an already-closed daemon still needs a normal retirement witness"
@@ -260,7 +273,7 @@ fn request(socket, id, command, body, within_ms within_ms: Int) {
 /// ## Examples
 ///
 /// ```gleam
-/// // session_socket_test.drain(socket, id, 0, [], 32, within_ms: 1000)
+/// // session_socket_test.drain(socket, id, 0, [], 32, within_ms: frame_ms)
 /// ```
 @internal
 pub fn drain(
@@ -311,7 +324,7 @@ pub fn drain(
 /// ## Examples
 ///
 /// ```gleam
-/// // session_socket_test.begin(socket, selected_session, within_ms: 1000)
+/// // session_socket_test.begin(socket, selected_session, within_ms: frame_ms)
 /// ```
 @internal
 pub fn begin(socket, id, within_ms within_ms: Int) {
@@ -359,8 +372,8 @@ fn attachment_growth(payload_size) {
       let before = ffi_memory.flat_words(system.get_state(pid))
       let #(socket, _) =
         wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-      let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
-      let _ = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+      let #(_, snapshot_id) = begin(socket, id, within_ms: frame_ms)
+      let _ = drain(socket, snapshot_id, 0, [], 20, within_ms: frame_ms)
       let after = ffi_memory.flat_words(system.get_state(pid))
       let _ = ffi_ws.tcp_close(socket)
       after - before
@@ -462,7 +475,7 @@ fn page_socket_memory(payload_size) {
         let #(socket, _) =
           wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
         let assert poll.Answered(pid) =
-          poll.until(within: 5000, every: 1, attempt: fn() {
+          poll.until(within: setup_ms, every: 10, attempt: fn() {
             case addresses.owner(socket_name) {
               Ok(pid) -> poll.Done(pid)
               Error(Nil) -> poll.Retry
@@ -471,7 +484,7 @@ fn page_socket_memory(payload_size) {
           as "the component registered its serving socket"
 
         let assert poll.Answered(Nil) =
-          poll.until(within: 5000, every: 1, attempt: fn() {
+          poll.until(within: setup_ms, every: 10, attempt: fn() {
             case gateway.attached(harness.hub) == attachments + 1 {
               True -> poll.Done(Nil)
               False -> poll.Retry
@@ -503,10 +516,10 @@ fn page_socket_memory(payload_size) {
         let assert Ok(_) =
           process.new_selector()
           |> process.select_specific_monitor(closed, fn(down) { down })
-          |> process.selector_receive(5000)
+          |> process.selector_receive(setup_ms)
           as "closing the fixture client retires its socket"
         let assert poll.Answered(Nil) =
-          poll.until(within: 5000, every: 1, attempt: fn() {
+          poll.until(within: setup_ms, every: 10, attempt: fn() {
             case gateway.attached(harness.hub) == attachments {
               True -> poll.Done(Nil)
               False -> poll.Retry
@@ -546,7 +559,7 @@ fn with_page_tickets(run) {
   let assert Ok(_) =
     process.new_selector()
     |> process.select_specific_monitor(watch, fn(down) { down })
-    |> process.selector_receive(5000)
+    |> process.selector_receive(setup_ms)
     as "the fixture's ticket service exits before its outcome is reported"
   let assert [weft.Completed(0, value)] = outcomes
     as "the page fixture completed with its ticket service already retired"
@@ -578,7 +591,7 @@ pub fn admission_slower_than_the_initializer_budget_still_serves_test() {
     // A served frame is the assertion: the socket outlived a slow admission
     // and is attached to the gateway that answered late, so its subscribe was
     // answered with a real transfer rather than a closed socket.
-    let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
+    let #(_, snapshot_id) = begin(socket, id, within_ms: frame_ms)
     assert snapshot_id != ""
     ffi_ws.tcp_close(socket)
   })
@@ -588,7 +601,7 @@ pub fn coalesced_socket_frames_cannot_queue_multiple_gateway_requests_test() {
   fixture(fn(port, credential, id, _, harness) {
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
+    let #(_, snapshot_id) = begin(socket, id, within_ms: frame_ms)
     let assert Ok(subject) = registry.lookup(harness.hub.name)
       as "the original gateway subject is available"
     let assert Ok(pid) = process.subject_owner(subject)
@@ -621,7 +634,7 @@ pub fn coalesced_socket_frames_cannot_queue_multiple_gateway_requests_test() {
       )
       == Ok(Nil)
     let ready =
-      poll.until(within: 1000, every: 5, attempt: fn() {
+      poll.until(within: setup_ms, every: 10, attempt: fn() {
         case queued_gateway_requests(pid) {
           0 -> poll.Retry
           count -> poll.Done(count)
@@ -633,7 +646,7 @@ pub fn coalesced_socket_frames_cannot_queue_multiple_gateway_requests_test() {
       as "release the original gateway before assertions"
     assert ready == poll.Answered(1)
     assert retained == 1
-    let response = wire.frame(socket, within_ms: 1000)
+    let response = wire.frame(socket, within_ms: frame_ms)
     assert field(response, "event") == json.String("snapshot_chunk")
     ffi_ws.tcp_close(socket)
   })
@@ -713,9 +726,9 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
       as "the pending question commits"
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(initial, snapshot_id) = begin(socket, id, within_ms: 1000)
+    let #(initial, snapshot_id) = begin(socket, id, within_ms: frame_ms)
     let initial_metadata =
-      drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+      drain(socket, snapshot_id, 0, [], 20, within_ms: frame_ms)
       |> decoded_record("metadata")
     let assert json.Array(initial_cells) = field(initial_metadata, "cells")
       as "the pending question is in the coherent cut"
@@ -760,13 +773,13 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
         60,
         "catch_up",
         json.Object([#("from_seq", field(initial, "next_seq"))]),
-        within_ms: 1000,
+        within_ms: frame_ms,
       )
     let assert json.String(catch_id) =
       field(field(caught, "body"), "snapshot_id")
       as "metadata-only changes still start reconciliation"
     let metadata =
-      drain(socket, catch_id, 0, [], 20, within_ms: 1000)
+      drain(socket, catch_id, 0, [], 20, within_ms: frame_ms)
       |> decoded_record("metadata")
     let assert json.Array(pending_cells) = field(metadata, "cells")
       as "the next coherent cut contains current pending questions"
@@ -785,14 +798,14 @@ pub fn exact_escalation_resolution_captures_author_without_prefix_neighbors_test
         json.Object([
           #("ids", json.Array([json.String("esc-1"), json.String("missing")])),
         ]),
-        within_ms: 1000,
+        within_ms: frame_ms,
       )
     let body = field(resolved, "body")
     assert field(body, "window") == json.String("escalations")
     let assert json.String(resolution_id) = field(body, "snapshot_id")
       as "exact lookup uses the same credit protocol"
     let metadata =
-      drain(socket, resolution_id, 0, [], 20, within_ms: 1000)
+      drain(socket, resolution_id, 0, [], 20, within_ms: frame_ms)
       |> decoded_record("metadata")
     assert field(metadata, "missing") == json.Array([json.String("missing")])
     let assert json.Array([cell]) = field(metadata, "cells")
@@ -888,22 +901,22 @@ pub fn decided_escalations_return_the_newest_decided_questions_only_test() {
 
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
-    let _ = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+    let #(_, snapshot_id) = begin(socket, id, within_ms: frame_ms)
+    let _ = drain(socket, snapshot_id, 0, [], 20, within_ms: frame_ms)
     let decided =
       request(
         socket,
         80,
         "escalations_decided",
         json.Object([]),
-        within_ms: 1000,
+        within_ms: frame_ms,
       )
     let body = field(decided, "body")
     assert field(body, "window") == json.String("decided")
     let assert json.String(decided_id) = field(body, "snapshot_id")
       as "the decided read uses the same credit protocol"
     let metadata =
-      drain(socket, decided_id, 0, [], 20, within_ms: 1000)
+      drain(socket, decided_id, 0, [], 20, within_ms: frame_ms)
       |> decoded_record("metadata")
     let assert json.Array(cells) = field(metadata, "cells")
       as "the decided cells are listed"
@@ -959,8 +972,8 @@ pub fn real_metadata_and_large_entry_are_fragmented_without_legacy_reads_test() 
     let #(entry_id, _) = insert_entry(harness, 818, text)
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
-    let chunks = drain(socket, snapshot_id, 0, [], 100, within_ms: 1000)
+    let #(_, snapshot_id) = begin(socket, id, within_ms: frame_ms)
+    let chunks = drain(socket, snapshot_id, 0, [], 100, within_ms: frame_ms)
     let metadata = decoded_record(chunks, "metadata")
     let assert json.Array(cells) = field(metadata, "cells")
       as "metadata retains coherent cells"
@@ -984,7 +997,7 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
   fixture(fn(port, credential, id, _, harness) {
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(body, snapshot_id) = begin(socket, id, within_ms: 1000)
+    let #(body, snapshot_id) = begin(socket, id, within_ms: frame_ms)
     let assert json.Int(next_seq) = field(body, "next_seq")
       as "the cut names its first unseen sequence"
     let #(entry_id, seq) = insert_entry(harness, 819, "after cut")
@@ -994,12 +1007,12 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
     // but what is announced is a notice. The record behind it still waits
     // for credit, which is the property this test is about and the reason
     // the notice was chosen over an inline push.
-    let notice = wire.frame(socket, within_ms: 1000)
+    let notice = wire.frame(socket, within_ms: frame_ms)
     assert field(notice, "event") == json.String("committed")
     assert field(notice, "seq") == json.Int(seq)
     let assert Error(_) = ffi_ws.tcp_receive(socket, 1, 50)
       as "without credit no live payload enters the socket"
-    let initial = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+    let initial = drain(socket, snapshot_id, 0, [], 20, within_ms: frame_ms)
     assert !list.any(initial, fn(chunk) {
       field(chunk, "record_id") == json.String(ids.entry_id_to_string(entry_id))
     })
@@ -1009,12 +1022,12 @@ pub fn writes_during_transfer_wait_for_credited_reconciliation_test() {
         100,
         "catch_up",
         json.Object([#("from_seq", json.Int(next_seq))]),
-        within_ms: 1000,
+        within_ms: frame_ms,
       )
     let assert json.String(snapshot_id) =
       field(field(response, "body"), "snapshot_id")
       as "catch-up owns a new fixed cut"
-    let caught_up = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+    let caught_up = drain(socket, snapshot_id, 0, [], 20, within_ms: frame_ms)
     let assert Ok(entry.CustomEntry(seq: observed, ..)) =
       codec.decode_entry(decoded_record(
         caught_up,
@@ -1038,10 +1051,10 @@ pub fn a_pushed_frame_is_written_and_leaves_the_next_reply_intact_test() {
   fixture(fn(port, credential, id, _, harness) {
     let #(socket, _) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-    let #(_body, snapshot_id) = begin(socket, id, within_ms: 1000)
+    let #(_body, snapshot_id) = begin(socket, id, within_ms: frame_ms)
     let #(_entry_id, seq) = insert_entry(harness, 820, "pushed")
 
-    let notice = wire.frame(socket, within_ms: 1000)
+    let notice = wire.frame(socket, within_ms: frame_ms)
     assert field(notice, "v") == json.Int(2)
     assert field(notice, "event") == json.String("committed")
     assert field(notice, "seq") == json.Int(seq)
@@ -1052,7 +1065,7 @@ pub fn a_pushed_frame_is_written_and_leaves_the_next_reply_intact_test() {
 
     // The transfer this socket had open before the push is still its own,
     // and its credits are still answered in order.
-    assert drain(socket, snapshot_id, 0, [], 20, within_ms: 1000) != []
+    assert drain(socket, snapshot_id, 0, [], 20, within_ms: frame_ms) != []
     let _ = ffi_ws.tcp_close(socket)
     Nil
   })
@@ -1063,7 +1076,7 @@ pub fn real_session_upgrade_carries_authoritative_identity_test() {
     let #(socket, headers) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
     assert string.contains(headers, "101 Switching Protocols")
-    let metadata = wire.subscribe(socket, 1, id, within_ms: 1000)
+    let metadata = wire.subscribe(socket, 1, id, within_ms: frame_ms)
     assert field(metadata, "v") == json.Int(2)
     assert field(metadata, "event") == json.String("snapshot_begin")
     let body = field(metadata, "body")
@@ -1073,7 +1086,7 @@ pub fn real_session_upgrade_carries_authoritative_identity_test() {
     assert field(field(body, "origin"), "name") == json.String("Owner")
     let assert json.String(snapshot_id) = field(body, "snapshot_id")
       as "transfer identity is present"
-    let chunks = drain(socket, snapshot_id, 0, [], 20, within_ms: 1000)
+    let chunks = drain(socket, snapshot_id, 0, [], 20, within_ms: frame_ms)
     assert chunks != []
     let _ = ffi_ws.tcp_close(socket)
     Nil
@@ -1085,7 +1098,7 @@ pub fn original_gateway_death_closes_real_socket_test() {
     let #(socket, headers) =
       wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
     assert string.contains(headers, "101 Switching Protocols")
-    let _ = wire.subscribe(socket, 1, id, within_ms: 1000)
+    let _ = wire.subscribe(socket, 1, id, within_ms: frame_ms)
     // The test host attachment exposes no restartable network handle. Killing
     // this original actor must terminate the upgraded connection immediately.
     let assert Ok(subject) = registry.lookup(harness.hub.name)
@@ -1093,13 +1106,13 @@ pub fn original_gateway_death_closes_real_socket_test() {
     let assert Ok(pid) = process.subject_owner(subject)
       as "the original gateway owns its subject"
     process.kill(pid)
-    let assert Ok(<<0x88, size>>) = ffi_ws.tcp_receive(socket, 2, 1000)
+    let assert Ok(<<0x88, size>>) = ffi_ws.tcp_receive(socket, 2, frame_ms)
       as "original gateway death sends the socket's close frame"
     assert size <= 125
     case size {
       0 -> Nil
       _ -> {
-        let assert Ok(_) = ffi_ws.tcp_receive(socket, size, 1000)
+        let assert Ok(_) = ffi_ws.tcp_receive(socket, size, frame_ms)
           as "the bounded close payload arrives"
         Nil
       }
@@ -1124,8 +1137,8 @@ pub fn daemon_drain_writes_held_input_before_socket_teardown_test() {
       let #(socket, response) =
         wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
       assert string.contains(response, "101 Switching Protocols")
-      let #(_, snapshot_id) = begin(socket, id, within_ms: 1000)
-      let _snapshot = drain(socket, snapshot_id, 0, [], 32, within_ms: 1000)
+      let #(_, snapshot_id) = begin(socket, id, within_ms: frame_ms)
+      let _snapshot = drain(socket, snapshot_id, 0, [], 32, within_ms: frame_ms)
       let opened =
         request(
           socket,
@@ -1135,7 +1148,7 @@ pub fn daemon_drain_writes_held_input_before_socket_teardown_test() {
             #("strand", json.String("main")),
             #("text", json.String("open")),
           ]),
-          within_ms: 1000,
+          within_ms: frame_ms,
         )
       assert field(opened, "event") == json.String("mutation_outcome")
       let held =
@@ -1147,17 +1160,17 @@ pub fn daemon_drain_writes_held_input_before_socket_teardown_test() {
             #("strand", json.String("main")),
             #("text", json.String("return over the socket")),
           ]),
-          within_ms: 1000,
+          within_ms: frame_ms,
         )
       assert field(field(held, "body"), "status") == json.String("queued")
 
       // Shutdown returns only after the original custody witness retires. The
       // peer reads afterward, so queued Push messages killed with the socket
       // cannot accidentally satisfy this assertion.
-      assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+      assert root.shutdown(daemon, within: setup_ms) == Ok(Nil)
       let returned =
-        poll.until(within: 1000, every: 1, attempt: fn() {
-          let frame = wire.frame(socket, within_ms: 1000)
+        poll.until(within: setup_ms, every: 10, attempt: fn() {
+          let frame = wire.frame(socket, within_ms: frame_ms)
           case field(frame, "event") {
             json.String("held_input_returned") ->
               poll.Done(field(frame, "body"))
