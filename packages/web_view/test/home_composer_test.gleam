@@ -208,16 +208,22 @@ pub fn the_owner_opens_on_the_composer_test() {
   assert string.contains(html, "<h1>New session</h1>")
   assert string.contains(html, "Start again where you worked")
   assert string.contains(html, "Show the full session list")
-  assert string.contains(html, "Agent</span><span class=\"chip-value\">laptop")
+  assert string.contains(
+    html,
+    "Agent</span><span class=\"place-chip-value\">laptop",
+  )
 
   // The newest place a session worked in is in force before a choice is made, and
   // the sentence says so.
   assert string.contains(
     html,
-    "Code</span><span class=\"chip-value\">/src/weft",
+    "Code</span><span class=\"place-chip-value\">/src/weft",
   )
   assert string.contains(html, "<b>/src/weft</b>")
-  assert string.contains(html, "Model</span><span class=\"chip-value\">default")
+  assert string.contains(
+    html,
+    "Model</span><span class=\"place-chip-value\">default",
+  )
 }
 
 // A page that may not create, a member's or an observer-ceiling one, opens on the

@@ -366,7 +366,7 @@ fn form(pane: Pane(message)) -> Element(message) {
 
   html.form(
     [
-      attribute.class("composer"),
+      attribute.class("place-composer"),
       event.on("submit", start_fields(needed, pane.presses.start))
         |> event.prevent_default,
     ],
@@ -387,7 +387,7 @@ fn form(pane: Pane(message)) -> Element(message) {
           html.button(
             [
               attribute.type_("submit"),
-              attribute.class("send"),
+              attribute.class("place-send"),
               attribute.disabled(working),
               attribute.aria_label("Start session"),
             ],
@@ -464,7 +464,7 @@ fn chips(pane: Pane(message)) -> Element(message) {
   }
 
   html.div(
-    [attribute.class("chips")],
+    [attribute.class("place-chips")],
     list.append(scrim, [
       chip(
         pane,
@@ -512,15 +512,15 @@ fn chip(
     html.button(
       [
         attribute.type_("button"),
-        attribute.class("chip"),
+        attribute.class("place-chip"),
         attribute.attribute("aria-haspopup", "listbox"),
         attribute.attribute("aria-expanded", expanded(pane.state.open, which)),
         event.on_click(pane.presses.toggle(which)),
       ],
       [
         icon(glyph),
-        html.span([attribute.class("chip-key")], [html.text(label)]),
-        html.span([attribute.class("chip-value")], [html.text(words)]),
+        html.span([attribute.class("place-chip-key")], [html.text(label)]),
+        html.span([attribute.class("place-chip-value")], [html.text(words)]),
         icon(Chevron),
       ],
     ),

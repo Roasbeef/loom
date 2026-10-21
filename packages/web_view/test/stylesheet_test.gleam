@@ -222,3 +222,20 @@ pub fn a_recent_place_never_wraps_and_its_names_are_ellipsised_test() {
   )
   assert string.contains(css, ".recent-hint{min-width:0;")
 }
+
+// The new-session composer's chips, form and send button carry their own
+// `place-` names. The strand cards on the Strands tab draw `ul.chips` and
+// `li.chip`, the operator's composer draws `form.composer` and `button.send`,
+// and a bare `.chip{height:36px}` or `.send{border:0}` once reached all of them.
+pub fn the_new_session_composer_does_not_use_the_names_other_views_use_test() {
+  let css = stylesheet()
+  assert string.contains(css, ".place-chip{")
+  assert string.contains(css, ".place-chips{")
+  assert string.contains(css, ".place-send{")
+  assert string.contains(css, "form.place-composer{")
+  assert !string.contains(css, ".chips{position:relative;display:flex")
+  assert !string.contains(css, ".chip{display:inline-flex")
+  assert !string.contains(css, ".chip{height:44px")
+  assert !string.contains(css, ".send{display:inline-flex")
+  assert !string.contains(css, "form.composer{display:flex")
+}
