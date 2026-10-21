@@ -199,9 +199,11 @@ type Spec {
   )
 }
 
-/// How long a job waits at its gate: fifteen minutes plus a minute, the longest
-/// `attach_within_s` an operator may set and a little over.
-pub const gate_within_ms = 960_000
+/// How long a job waits at its gate: thirty minutes, which covers the worst case
+/// of one recreation (a prune, a branch check and a checkout, each with its own
+/// ceiling) and a close that queues behind another session's checkout. A job that
+/// outlives its caller's wait still finishes, and the next attach adopts its tree.
+pub const gate_within_ms = 1_800_000
 
 /// How many records a reconciliation settles between two log lines.
 pub const reconcile_report_every = 100
@@ -718,6 +720,18 @@ fn record(
 // The first attach of a session. The record comes first, so a crash between it
 // and the command leaves a row that names the directory to look at.
 fn create(env: Env, spec: Spec) -> Result(Nil, String) {
+  // A first attach has no record, so a directory at the path is not ours: the
+  // ledger may have been reset while trees remained. The `Creating` record
+  // below would let a failed add delete it, so it is refused instead.
+  use Nil <- result.try(case disk_of(spec.path) {
+    Absent -> Ok(Nil)
+    OnDisk ->
+      Error(
+        "a directory no worktree record names is at "
+        <> spec.path
+        <> "; move it away or restore the executor's ledger",
+      )
+  })
   use Nil <- result.try(record(env, spec, exec_ledger.Creating))
   use Nil <- result.try(parent_directory(spec))
   add(env, spec, ["worktree", "add", spec.path, "-b", spec.branch, spec.base])
@@ -819,6 +833,7 @@ fn add(env: Env, spec: Spec, arguments: List(String)) -> Result(Nil, String) {
 }
 
 fn undo(env: Env, spec: Spec) -> Result(Nil, String) {
+  use Nil <- result.try(parent_directory(spec))
   use Nil <- result.try(forget_directory(spec))
   use _pruned <- result.try(
     git_ok(env, spec.root, writing(spec), ["worktree", "prune"]),
@@ -879,10 +894,10 @@ fn settle(
   force: Force,
 ) -> Result(Closed, String) {
   case force {
-    Forced -> remove(env, spec)
+    Forced -> remove(env, spec, force)
     Careful ->
       case holds_work(env, spec) {
-        Ok(None) -> remove(env, spec)
+        Ok(None) -> remove(env, spec, force)
         Ok(Some(reason)) -> keep(env, spec, row, reason)
         Error(reason) ->
           keep(env, spec, row, "it could not be checked: " <> reason)
@@ -934,7 +949,7 @@ fn holds_work(env: Env, spec: Spec) -> Result(Option(String), String) {
 // `removing` is written first so that a crash during the command is finished by
 // the next start. A failed command puts the record back to `Present` when the
 // directory is still there, because then the tree is as it was.
-fn remove(env: Env, spec: Spec) -> Result(Closed, String) {
+fn remove(env: Env, spec: Spec, force: Force) -> Result(Closed, String) {
   use Nil <- result.try(record(env, spec, exec_ledger.Removing))
   case
     git_ok(env, spec.root, writing(spec), [
@@ -943,6 +958,14 @@ fn remove(env: Env, spec: Spec) -> Result(Closed, String) {
   {
     Ok(_output) -> {
       use Nil <- result.map(record(env, spec, exec_ledger.Removed))
+      Removed
+    }
+
+    // An operator who named the session wants it gone even when Git no longer
+    // recognises the directory (a removal that crashed half way leaves one):
+    // the recorded path is deleted, Git's registration pruned.
+    Error(_reason) if force == Forced -> {
+      use Nil <- result.map(undo(env, spec))
       Removed
     }
     Error(reason) -> {

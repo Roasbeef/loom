@@ -312,10 +312,17 @@ differences are these.
   default session base masks only the entries the daemon writes, so another
   session's scope was readable on a host-wide read scope. A mask over
   `worktrees/` would hide a session's own tree, and no grant carves a hole in a
-  mask, so each worktree session's policy masks the scopes and trees that exist
-  when it is built. A session that attaches later is not masked from the ones
-  before it. The isolation stays an accident guard, as the section above says,
-  and `executor_worktree_test` proves the case it holds.
+  mask, and a mask on each sibling names a directory that its close deletes,
+  which the Linux helper refuses for every later call of the session. So each
+  worktree session's policy masks the whole `scopes/` directory, which persists,
+  and does not mask sibling trees from one another. The test "cannot read
+  `<state root>/worktrees/<workspace>/<other>`" is therefore not met; the
+  isolation stays an accident guard, as the section above says, and
+  `executor_worktree_test` proves the scope mask.
+- **A first attach never deletes a directory no record names.** A directory at
+  the tree's path with no record is refused, so a failed add cannot delete work
+  after a ledger reset. An operator's `--force-session` clears a tree Git no
+  longer recognises by deleting the recorded path.
 - **Git for worktree management has a pool of its own.** `client/worktree_git`
   boots a one-helper pool, an executor service and a broker, because no session
   exists yet when the first tree is made. Each call carries its own policy:

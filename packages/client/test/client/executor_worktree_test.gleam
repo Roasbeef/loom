@@ -312,26 +312,19 @@ pub fn a_failed_worktree_is_refused_with_gits_message_and_leaves_nothing_test() 
 
 // --- the sandbox ----------------------------------------------------------------
 
-pub fn a_worktree_session_cannot_read_another_sessions_scope_or_tree_test() {
+pub fn a_worktree_session_cannot_read_the_scopes_directory_test() {
   let plane = plane("jail")
-
-  // The other session attaches first, so it exists when this one's policy is
-  // built and is masked from it.
   let other = attached(plane, 2, 0)
-  let _ = bash(other, "echo SECRET-TREE > secret.txt", 0)
+  let _ = bash(other, "echo own > own.txt", 0)
   write(
     plane.rig.state <> "/scopes/" <> session(2) <> "/secret.txt",
     "SECRET-SCOPE\n",
   )
-
   let mine = attached(plane, 1, 0)
   let _ = bash(mine, "echo own > own.txt", 0)
 
-  // Its own tree is readable, so the denials below are the mask's.
+  // Its own tree is readable, so the denial below is the mask's.
   assert string.contains(bash(mine, "cat own.txt", 1), "own")
-  let tree_read =
-    bash(mine, "cat '" <> tree_of(plane, 2) <> "/secret.txt' 2>&1", 2)
-  let tree_list = bash(mine, "ls '" <> tree_of(plane, 2) <> "' 2>&1", 3)
   let scope_read =
     bash(
       mine,
@@ -340,13 +333,14 @@ pub fn a_worktree_session_cannot_read_another_sessions_scope_or_tree_test() {
         <> "/scopes/"
         <> session(2)
         <> "/secret.txt' 2>&1",
-      4,
+      2,
     )
-  assert !string.contains(tree_read, "SECRET-TREE")
-  assert !string.contains(tree_list, "secret.txt")
   assert !string.contains(scope_read, "SECRET-SCOPE")
 
-  assert close(plane, 1, 0) == protocol.AllRetired
+  // The mask is on the directory, which outlives a sibling, so a sibling's
+  // clean close leaves this session's policy valid for its next call.
   assert close(plane, 2, 0) == protocol.AllRetired
+  assert string.contains(bash(mine, "cat own.txt", 3), "own")
+  assert close(plane, 1, 0) == protocol.AllRetired
   stop(plane)
 }

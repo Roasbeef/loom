@@ -117,7 +117,6 @@ import client/worktrees.{type Worktrees}
 import core/clock
 import core/ids
 import core/json
-import filepath
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -453,49 +452,35 @@ fn safe_component(name: String) -> Bool {
   worktrees.safe_component(name)
 }
 
-// Masks the other sessions' scopes and trees from a worktree session's jail.
-// Both directories sit under the state root, which the jail reads on the
-// default host-wide read scope, and each holds another session's files: its
-// scratch, or its own checkout of the same repository with whatever it has not
-// committed. A mask over the whole of `worktrees/` is impossible, because it
-// would hide this session's own tree, which is the workspace it works in. So
-// each sibling that exists when this session's policy is built is masked on
-// its own. A sibling that attaches later is not masked from this session. The
-// mask is therefore exact for sessions already attached and absent for those
-// attached afterwards, which is why protocol-change/095 describes worktree
-// mode as protection against accidents and not against a hostile model.
+// Masks the scopes directory from a worktree session's jail. It sits under the
+// state root, which the jail reads on the default host-wide read scope, and
+// holds every session's scratch. The whole directory is masked, and it persists,
+// so the mask cannot go stale when a sibling closes: a mask over a path that
+// has since been deleted is a policy the Linux helper refuses for every later
+// call. The same cannot be done for the sibling trees. A mask over all of
+// `worktrees/` would hide this session's own tree, and a mask on each sibling
+// would name a directory that its close deletes. Trees are therefore not masked
+// from one another, which is why protocol-change/095 describes worktree mode as
+// protection against accidents and not against a hostile model.
 fn protecting_siblings(
   base: policy.SandboxPolicy,
   state_root: String,
-  session: String,
   custody: Option(Custody),
 ) -> policy.SandboxPolicy {
   case custody {
-    Some(_) -> masking_siblings(base, state_root, session)
+    Some(_) -> masking_scopes(base, state_root)
     None -> base
   }
 }
 
-fn masking_siblings(
+fn masking_scopes(
   base: policy.SandboxPolicy,
   state_root: String,
-  session: String,
 ) -> policy.SandboxPolicy {
-  let scopes = directory_children(state_root <> "/scopes")
-  let trees =
-    directory_children(state_root <> "/" <> worktrees.directory_name)
-    |> list.flat_map(directory_children)
-  let others =
-    list.append(scopes, trees)
-    |> list.filter(fn(path) { filepath.base_name(path) != session })
-  policy.SandboxPolicy(..base, protected: list.append(base.protected, others))
-}
-
-// The paths of a directory's entries, or none for one that does not exist.
-fn directory_children(directory: String) -> List(String) {
-  simplifile.read_directory(directory)
-  |> result.unwrap([])
-  |> list.map(fn(entry) { directory <> "/" <> entry })
+  policy.SandboxPolicy(
+    ..base,
+    protected: list.append(base.protected, [state_root <> "/scopes"]),
+  )
 }
 
 // Prepares and starts the workspace half, filing every cleanup the start hands
@@ -516,7 +501,7 @@ fn start(
     |> workspace_policy.admitting_config_mounts(machine.workspace.mounts)
     |> workspace_policy.protecting_state_root(machine.state_root)
     |> workspace_policy.protecting_blobs(blob_root)
-    |> protecting_siblings(machine.state_root, spec.session, custody)
+    |> protecting_siblings(machine.state_root, custody)
   use prepared <- result.try(
     workspace_plane.prepare(
       workspace_spec(machine, root, scope, blob_root, base),

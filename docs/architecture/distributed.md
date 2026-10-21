@@ -807,10 +807,11 @@ linked worktree's Git directory and the repository's `.git` are writable from th
 tree, as `workspace_policy.widening_linked_worktree` makes them so a jailed
 `git commit` works, so a session could rewrite another's refs or set a hook; in
 shared mode it could do all of that to the checkout directly. The jail masks the
-scopes and trees of the sessions that exist when a session's policy is built. A
-mask over the whole of `worktrees/` is impossible because it would hide the
-session's own tree, so a session that attaches later is not masked from the ones
-before it.
+scopes directory, which holds every session's scratch. A mask over the whole of
+`worktrees/` is impossible because it would hide the session's own tree, and a
+mask on each sibling would name a directory its close deletes, which the Linux
+helper refuses for every later call of the session. So the trees of one
+executor's sessions are not masked from one another.
 
 ## Pools and placement
 

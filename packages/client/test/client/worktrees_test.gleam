@@ -276,19 +276,34 @@ pub fn a_failed_add_leaves_no_directory_and_a_removed_record_test() {
   )
 }
 
-pub fn a_half_made_directory_does_not_fail_every_later_attach_test() {
-  let rig = worktree_rig.rig("halfmade")
+pub fn a_directory_no_record_names_is_never_deleted_by_a_failed_attach_test() {
+  let rig = worktree_rig.rig("unrecorded")
 
-  // A directory with content is where an interrupted add can leave one, and
-  // Git will not add a tree into it.
-  write(tree_of(rig, 1) <> "/stray.txt", "left by a crash\n")
-  let assert Error(_first) = open(rig, 1)
-  assert !exists(tree_of(rig, 1))
+  // The ledger was reset while a tree remained: a first attach finds a
+  // directory at its path that no record names, and refuses rather than
+  // letting a failed add delete it.
+  write(tree_of(rig, 1) <> "/precious.txt", "uncommitted work\n")
+  let assert Error(reason) = open(rig, 1)
+  assert string.contains(reason, "no worktree record names")
+  assert exists(tree_of(rig, 1) <> "/precious.txt")
+  assert row(rig, 1) == Error(Nil)
+}
 
-  // The first failure deleted the directory the record named, so the next
-  // attach is clean.
+pub fn a_forced_sweep_clears_a_half_removed_tree_git_no_longer_knows_test() {
+  let rig = worktree_rig.rig("halfremoved")
   let tree = opened(rig, 1)
-  assert exists(tree.path <> "/README")
+
+  // A removal that crashed half way: the directory is left without the file
+  // that links it to the repository.
+  let assert Ok(Nil) = simplifile.delete(tree.path <> "/.git")
+  write(tree.path <> "/leftover.txt", "x\n")
+
+  let assert Ok(swept) =
+    worktrees.sweep(rig.trees, [rig.workspace], forced: [session(1)])
+  let by_session = list.map(swept, fn(each) { #(each.session, each.closed) })
+  assert list.key_find(by_session, session(1)) == Ok(worktrees.Removed)
+  assert !exists(tree.path)
+  assert row(rig, 1) == Ok(exec_ledger.Removed)
 }
 
 // --- reconciliation -------------------------------------------------------------

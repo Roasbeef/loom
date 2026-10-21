@@ -7241,8 +7241,9 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   that fails after the tree exists settles it. `plane_over`'s `close` calls
   `settle_tree` only after `AllRetired`: a clean tree (`git status` with
   `.codemode` excluded, and a symbolic HEAD) is removed, anything else kept.
-  `protecting_siblings` masks the scopes and trees that exist when a worktree
-  session's policy is built. The ledger rows are `exec_ledger.Tree`, written from
+  `protecting_siblings` masks `<state>/scopes` for a worktree session (sibling
+  trees are not masked: a per-sibling mask goes stale when a sibling closes and
+  the Linux helper then refuses every call). The ledger rows are `exec_ledger.Tree`, written from
   `exec_ledger.connect`ed connections of the gates' own, never the host's.
   Reconciliation is the gate's first job. Nothing deletes a branch or a directory
   the ledger does not name; `forget_directory` deletes only the layout's path for

@@ -22,8 +22,9 @@
 //// exactly the ones the caller names: nothing for `status`, and for `add` and
 //// `remove` the repository's `.git` and the workspace's directory under
 //// `<state root>/worktrees`. A hook that `git worktree add` runs therefore
-//// cannot write another session's tree, and a `status` cannot write anything,
-//// whatever `core.fsmonitor` says.
+//// cannot write another workspace's trees or the ledger, and a `status` cannot
+//// write anything, whatever `core.fsmonitor` says. It can write the other trees
+//// of its own workspace, which share that directory.
 ////
 //// ## Flow
 ////
