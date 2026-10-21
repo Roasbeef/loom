@@ -1,6 +1,6 @@
 //// The operator commands that change and read a membership ledger:
 //// `loom distribution enroll`, `revoke`, `renew`, `log` and `import`
-//// (protocol-change/086).
+//// (protocol-change/086), and `attach-file` (protocol-change/096).
 ////
 //// `provision` signs the first ledger and keeps the authority key, sealed under
 //// a passphrase, in `~/.loom/authority/<deployment id>`. These commands are
@@ -40,8 +40,8 @@
 ////
 //// ## Flow
 ////
-//// `run` → `run_with` → `parse` → `enroll` | `renew` | `revoke` | `log` |
-//// `import_file`
+//// `run` → `run_with` → `parse` → `enroll` | `renew` | `revoke` |
+//// `attach_file` | `log` | `import_file`
 ////
 //// 1. `run` hands the command to `run_with` with the socket as the way to reach
 ////    a daemon (`socket_daemon`); a test passes a ledger process of its own.
@@ -67,8 +67,9 @@
 import client/authority_key
 import client/daemon/admin
 import client/distribution
+import client/distribution_attach
 import client/distribution_bundle.{type Bundle, Bundle}
-import client/distribution_plan.{type Workspace, Executor, Workspace}
+import client/distribution_plan.{type Workspace, Executor, Tool, Workspace}
 import client/distribution_provision.{
   type Overwrite, RefuseExisting, ReplaceExisting,
 }
@@ -101,7 +102,10 @@ import simplifile
 /// assert ledger_cli.is_ledger_command("enroll")
 /// ```
 pub fn is_ledger_command(word: String) -> Bool {
-  list.contains(["enroll", "revoke", "renew", "log", "import"], word)
+  list.contains(
+    ["enroll", "revoke", "renew", "attach-file", "log", "import"],
+    word,
+  )
 }
 
 /// Whether the command signs, and so needs the authority key and a passphrase.
@@ -113,7 +117,7 @@ pub fn is_ledger_command(word: String) -> Bool {
 /// assert !ledger_cli.signs("log")
 /// ```
 pub fn signs(word: String) -> Bool {
-  list.contains(["enroll", "revoke", "renew"], word)
+  list.contains(["enroll", "revoke", "renew", "attach-file"], word)
 }
 
 /// Runs one of the five commands and returns what it prints.
@@ -146,6 +150,7 @@ pub fn run_with(
     "enroll" -> enroll(parsed, connect)
     "revoke" -> revoke(parsed, connect)
     "renew" -> renew(parsed, connect)
+    "attach-file" -> attach_file(parsed, connect)
     "log" -> log(parsed, connect)
     _ -> import_file(parsed, connect)
   }
@@ -187,6 +192,12 @@ fn flags_of(command: String) -> Flags {
         ]),
         ["--force"],
         ["--workspace"],
+      )
+    "attach-file" ->
+      Flags(
+        list.append(common, ["--node", "--host", "--links", "--out", "--wait"]),
+        ["--force"],
+        [],
       )
     "revoke" ->
       Flags(list.append(common, ["--reason", "--wait"]), ["--force"], [])
@@ -718,6 +729,156 @@ fn enroll(parsed: Parsed, connect: Connect) -> Result(String, String) {
 
 const distribution_provision_extension = ".loombundle"
 
+// --- attach-file -------------------------------------------------------------
+
+// Enrolls a tool as a member and writes the credentials a generic Erlang node
+// needs, in place of the bundle `enroll` writes. The files go in a directory
+// made before anything is signed, so a directory the operator cannot write is
+// refused while the ledger is still unchanged.
+fn attach_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
+  use name <- result.try(one_name(parsed, "attach-file"))
+  use request <- result.try(tool_enrollment_of(parsed, name))
+  use Nil <- result.try(ledger_operator.check_enrollment(request))
+  use where_ <- result.try(where_of(parsed))
+  use wait <- result.try(wait_ms(parsed))
+  use out <- result.try(required(parsed, "--out"))
+  use out <- result.try(bootstrap.absolute_path(out))
+  let files = distribution_attach.files_in(out)
+  use options <- result.try(distribution_attach.options(files))
+  use Nil <- result.try(refuse_occupied(out, overwrite_of(parsed)))
+  use Nil <- result.try(
+    bootstrap.ensure_private_directory(out)
+    |> result.map_error(fn(reason) { out <> " is unwritable: " <> reason }),
+  )
+  use authority <- result.try(unlock(parsed))
+  let time = now()
+  use #(signed, _) <- result.try(
+    sign(
+      authority,
+      where_,
+      connect,
+      fn(ledger) {
+        use #(certificate, key) <- result.try(mint(authority, request))
+        use pin <- result.try(pin_of(certificate))
+        use entry <- result.map(ledger_operator.enroll(
+          ledger,
+          request,
+          pin,
+          time,
+        ))
+        Decision(entry:, extra: #(certificate, key))
+      },
+      fn(signed, issued) {
+        write_attachment(files, options, authority, issued.0, issued.1)
+        |> result.map_error(fn(reason) {
+          name
+          <> " is enrolled as entry "
+          <> int.to_string(signed.entry.entry.seq)
+          <> " in the operator's copy of the ledger, but its files could not "
+          <> "be written: "
+          <> reason
+          <> ". `revoke` it and run `attach-file` again."
+        })
+      },
+    ),
+  )
+  let daemons =
+    list.filter_map(request.links, fn(link) {
+      membership_ledger.member(signed.ledger, link)
+      |> result.map(fn(member) { member.node })
+    })
+  Ok(string.join(
+    list.flatten([
+      [
+        "Enrolled "
+          <> name
+          <> " (tool, "
+          <> request.node
+          <> ") as entry "
+          <> int.to_string(signed.entry.entry.seq)
+          <> ".",
+        "Files in "
+          <> out
+          <> " (they hold the tool's private key and the deployment's "
+          <> "cookie; keep the directory private).",
+        "",
+        distribution_attach.instructions(files, request.node, daemons),
+        "",
+      ],
+      confirmations_text(signed, wait, []),
+    ]),
+    "\n",
+  ))
+}
+
+// The directory is made private, and five files are written into it, so a
+// directory that already holds anything is refused without `--force`. That
+// keeps `--out ~` from replacing `~/.erlang.cookie` or changing the mode of a
+// home directory, and a directory that does not exist yet is fine.
+fn refuse_occupied(out: String, overwrite: Overwrite) -> Result(Nil, String) {
+  case simplifile.read_directory(out), overwrite {
+    Ok([_, ..]), RefuseExisting ->
+      Error(
+        out
+        <> " is not empty. attach-file writes ca.pem, tool.pem, tool.key, "
+        <> ".erlang.cookie and ssl_dist.conf there and makes the directory "
+        <> "private, so name an empty or new directory, or pass --force to "
+        <> "use this one",
+      )
+    _, _ -> Ok(Nil)
+  }
+}
+
+fn links_of(parsed: Parsed) -> List(String) {
+  case value(parsed, "--links") {
+    None -> []
+    Some(text) ->
+      string.split(text, ",")
+      |> list.map(string.trim)
+      |> list.filter(fn(link) { link != "" })
+  }
+}
+
+fn tool_enrollment_of(
+  parsed: Parsed,
+  name: String,
+) -> Result(Enrollment, String) {
+  use node <- result.try(required(parsed, "--node"))
+  Ok(Enrollment(
+    name:,
+    node:,
+    role: Tool,
+    host: value(parsed, "--host"),
+    listen_port: None,
+    links: links_of(parsed),
+    directory: membership_entry.NotInDirectory,
+    workspaces: [],
+    bundle_dir: None,
+  ))
+}
+
+// The key and the cookie are written mode 0600 and the options file last, so a
+// directory that holds an options file holds all the files it names.
+fn write_attachment(
+  files: distribution_attach.Files,
+  options: String,
+  authority: Authority,
+  certificate: String,
+  key: String,
+) -> Result(Nil, String) {
+  [
+    #(files.ca, authority.certificate),
+    #(files.certificate, certificate),
+    #(files.key, key),
+    #(files.cookie, authority.cookie),
+    #(files.options, options),
+  ]
+  |> list.try_each(fn(file) {
+    bootstrap.atomic_write_private(file.0, file.1)
+    |> result.map_error(fn(reason) { file.0 <> ": " <> reason })
+  })
+}
+
 fn enrollment_of(parsed: Parsed, name: String) -> Result(Enrollment, String) {
   use node <- result.try(required(parsed, "--node"))
   use role <- result.try(
@@ -747,13 +908,7 @@ fn enrollment_of(parsed: Parsed, name: String) -> Result(Enrollment, String) {
     role:,
     host: value(parsed, "--host"),
     listen_port:,
-    links: case value(parsed, "--links") {
-      None -> []
-      Some(text) ->
-        string.split(text, ",")
-        |> list.map(string.trim)
-        |> list.filter(fn(link) { link != "" })
-    },
+    links: links_of(parsed),
     directory:,
     workspaces:,
     bundle_dir: value(parsed, "--bundle-dir"),

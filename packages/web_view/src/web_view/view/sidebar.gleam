@@ -65,8 +65,32 @@
 //// a `title` why it has none. The page decides whether the action exists by what
 //// it passes, so a page without the capability draws none of it.
 ////
+//// ## Sessions of other orchestrators
+////
+//// The owner's home can also draw the sessions its daemon relays on other
+//// orchestrators (protocol-change/094, `Relayed`): one section for each
+//// orchestrator after the saved sessions, headed "On <name>", whose rows say the
+//// session's state and where it runs, with the orchestrator's name as the agent.
+//// A row is a button whose message names the orchestrator and the session the
+//// server drew, and the page opens the relayed page only for a row it holds. An
+//// orchestrator that stopped answering keeps its last rows, drawn quieter under
+//// one line that says so (`relayed-side-note`). A session page draws none of it.
+////
 //// The module takes the groups the page holds and imports nothing from
 //// `web_view/component`, which imports it.
+////
+//// ## Flow
+////
+//// `view` / `home` → `column` → `entry` → `lead`, and `relayed_sections` →
+//// `relayed_section` → `relayed_row`
+////
+//// 1. `view` is a session page's sidebar and `home` the home's. Each memoizes on
+////    what it draws and hands `column` the groups.
+//// 2. `column` lays the column out: the top, the pills, a section for each state,
+////    the saved region, the other orchestrators' sections and the foot.
+//// 3. `entry` draws one session's row and `lead` its two lines.
+//// 4. `relayed_sections` draws the sessions of the orchestrators the daemon relays
+////    for, one `relayed_section` for each, and `relayed_row` one session of it.
 ////
 //// ## Examples
 ////
@@ -84,6 +108,8 @@ import lustre/element/html
 import lustre/element/keyed
 import lustre/event
 import web_view/listing.{type Filter, type Row, type Rows}
+import web_view/orchestrators.{type Listed}
+import web_view/relayed as relayed_words
 import web_view/sessions.{
   type Activity, type Entry, type Group, Blocked, FailedStart, Idle, Live,
   Moving, NeedsYou, Saved, Working,
@@ -155,6 +181,30 @@ pub type Page(message) {
   )
 }
 
+/// One orchestrator's sessions as the sidebar draws them.
+pub type Section {
+  Section(
+    /// The `[orchestrators.<name>]` key, drawn as a text node.
+    orchestrator: String,
+    /// The sessions, in the order they are drawn.
+    rows: List(Listed),
+    /// What to say when the list is not current, or an empty string. It is words
+    /// the page wrote from the key and a time, drawn as a text node.
+    note: String,
+  )
+}
+
+/// What the home adds to the column for the orchestrators it relays for.
+pub type Relayed(message) {
+  Relayed(
+    /// One section for each orchestrator with something to show.
+    sections: List(Section),
+    /// A row's press, given the orchestrator's key and the session's identity.
+    /// The page honours it only for a row it holds.
+    open: fn(String, String) -> message,
+  )
+}
+
 /// The sidebar a session page draws for `groups`, with the session named
 /// `current` marked, `activity` what the daemon last said each running session
 /// is doing (a session it has not named says "running"), `open` the message a
@@ -195,7 +245,16 @@ pub fn view(
   case groups {
     [] -> element.none()
     [_, ..] ->
-      column(groups, current, Known(activity), page, open, resume, archiving)
+      column(
+        groups,
+        current,
+        Known(activity),
+        page,
+        open,
+        resume,
+        archiving,
+        None,
+      )
   }
 }
 
@@ -215,10 +274,13 @@ pub fn view(
 /// "New session" button, and a daemon with no session yet is where a person
 /// starts one.
 ///
+/// `relayed` adds the sessions of the orchestrators the daemon relays for, after
+/// the saved ones, and is the memo's key as the groups are.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // sidebar.home(home.groups(model), dict.new(), page, Opening, resume.Never, archiving.Never)
+/// // sidebar.home(home.groups(model), dict.new(), page, Opening, resume.Never, archiving.Never, relayed)
 /// ```
 pub fn home(
   groups: List(Group),
@@ -227,6 +289,7 @@ pub fn home(
   open: fn(String) -> message,
   resume: Resume(message),
   archiving: Archiving(message),
+  relayed: Relayed(message),
 ) -> Element(message) {
   use <- element.memo([
     element.ref(groups),
@@ -234,8 +297,18 @@ pub fn home(
     element.ref(memoed(page)),
     element.ref(resume.pending(resume)),
     element.ref(archiving.stage(archiving)),
+    element.ref(relayed.sections),
   ])
-  column(groups, "", Doing(activity), page, open, resume, archiving)
+  column(
+    groups,
+    "",
+    Doing(activity),
+    page,
+    open,
+    resume,
+    archiving,
+    Some(relayed),
+  )
 }
 
 // The parts of a page's values that decide what is drawn, which is everything
@@ -274,6 +347,7 @@ fn column(
   open: fn(String) -> message,
   resume: Resume(message),
   archiving: Archiving(message),
+  relayed: Option(Relayed(message)),
 ) -> Element(message) {
   let all = listing.entries(groups)
   let rows =
@@ -295,10 +369,130 @@ fn column(
         state("Working", "state-working", rows.working, draw),
         idle(rows, draw),
         saved_region(rows.saved, draw),
+        relayed_sections(relayed),
       ]),
       foot(page),
     ],
   )
+}
+
+// The orchestrators' sections as one child of the scrolling region, so the
+// region's other children keep their places whether or not there is anything to
+// draw here. A session page has none.
+fn relayed_sections(relayed: Option(Relayed(message))) -> Element(message) {
+  case relayed {
+    Some(Relayed(sections: [_, ..] as sections, open:)) ->
+      html.div(
+        [attribute.class("relayed-side")],
+        list.map(sections, relayed_section(_, open)),
+      )
+    Some(Relayed(sections: [], ..)) | None -> element.none()
+  }
+}
+
+// One orchestrator's section: its heading with the count, the line saying it is
+// not answering when it is not, and its rows. A section that is not current says
+// so in `relayed-side-quiet`, which the stylesheet draws quieter.
+fn relayed_section(
+  section: Section,
+  open: fn(String, String) -> message,
+) -> Element(message) {
+  let stale = case section.note {
+    "" -> []
+    _ -> [attribute.class("relayed-side-quiet")]
+  }
+  let note = case section.note {
+    "" -> []
+    words -> [
+      html.p([attribute.class("relayed-side-note")], [html.text(words)]),
+    ]
+  }
+
+  html.section(
+    [
+      attribute.class("state-group"),
+      attribute.class("relayed-side-group"),
+      ..stale
+    ],
+    [
+      html.h3([attribute.class("state-heading")], [
+        html.text("On " <> section.orchestrator),
+        ..case section.rows {
+          [] -> []
+          rows -> [
+            html.span([attribute.class("group-count")], [
+              html.text(int.to_string(list.length(rows))),
+            ]),
+          ]
+        }
+      ]),
+      ..list.append(note, [
+        keyed.ul(
+          [attribute.class("sessions")],
+          list.map(section.rows, fn(row) {
+            #(
+              section.orchestrator <> ":" <> row.session,
+              relayed_row(section.orchestrator, row, open),
+            )
+          }),
+        ),
+      ])
+    ],
+  )
+}
+
+// One of an orchestrator's sessions: a button, since the relayed page can be
+// opened, holding the same dot and two lines a local row has. The tag's agent is
+// the orchestrator, and its code is where the session's tools run there, the
+// whole folder path a `title`. Every string is a text node.
+fn relayed_row(
+  orchestrator: String,
+  row: Listed,
+  open: fn(String, String) -> message,
+) -> Element(message) {
+  let code = case row.code {
+    listing.Folder(path:) -> [attribute.title(path)]
+    listing.Registered(..) | listing.Pooled(..) -> []
+  }
+  let words = relayed_words.activity_words(row.activity)
+
+  html.li([attribute.class("session"), attribute.class("relayed-side-row")], [
+    html.button(
+      [
+        attribute.type_("button"),
+        attribute.class("session-open"),
+        attribute.title("Open this session on " <> orchestrator),
+        event.on_click(open(orchestrator, row.session)),
+      ],
+      [
+        residency(#(["live", relayed_class(row.activity)], "●", words)),
+        html.span([attribute.class("session-text")], [
+          html.span([attribute.class("session-name")], [
+            html.text(orchestrators.label(row)),
+          ]),
+          html.span([attribute.class("session-tag")], [
+            html.span([attribute.class("tag-agent")], [html.text(orchestrator)]),
+            html.span(
+              [attribute.class("tag-arrow"), attribute.aria_hidden(True)],
+              [html.text(" → ")],
+            ),
+            html.span([attribute.class("tag-code"), ..code], [
+              html.text(listing.code_words(row.code)),
+            ]),
+          ]),
+        ]),
+      ],
+    ),
+  ])
+}
+
+// The class that colours a relayed row's dot: the same three as a local row's.
+fn relayed_class(activity: relayed_words.Activity) -> String {
+  case activity {
+    relayed_words.NeedsYou -> "needs-you"
+    relayed_words.Working -> "working"
+    relayed_words.Idle -> "idle"
+  }
 }
 
 // The activity a suffix carries, whichever page it is for.
@@ -670,7 +864,7 @@ fn lead(row: Row) -> Element(message) {
   let entry = row.entry
   let code = case row.place.code {
     listing.Folder(path:) -> [attribute.title(path)]
-    listing.Registered(..) -> []
+    listing.Registered(..) | listing.Pooled(..) -> []
   }
 
   html.span([attribute.class("session-text")], [

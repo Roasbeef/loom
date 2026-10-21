@@ -1773,6 +1773,36 @@
   .link-button{margin:0;padding:0;border:0;background:transparent;color:var(--color-current);font:12.5px/1.4 var(--font-sans);cursor:pointer;}
   .link-button:hover{text-decoration:underline;}
   .link-button:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  /* The page of a session on another orchestrator (web_view/view/relayed_session):
+     the header, the requests it waits on, the newest page of its transcript and
+     the reply form, in one column that scrolls in the centre. Hairline borders
+     and tinted grounds only; no accent bar and no shadow. */
+  main.centre > .relayed-pane{flex:1 1 0;min-height:0;max-width:780px;width:100%;box-sizing:border-box;margin:0 auto;padding:20px 14px 24px;display:flex;flex-direction:column;gap:12px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  /* Nothing in the pane shrinks. A child with overflow set, such as the approvals
+     section, has a minimum size of zero as a flex item and would otherwise be
+     squeezed to nothing by a long transcript; the pane itself scrolls. */
+  .relayed-pane > *{flex-shrink:0;}
+  .relayed-head h1{margin:0 0 6px 0;font:600 20px/1.3 var(--font-sans);overflow-wrap:anywhere;}
+  .relayed-where{margin:6px 0 0 0;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .relayed-state{font-weight:500;}
+  .relayed-needs{color:var(--color-signal-text);}
+  .relayed-working{color:var(--color-current);}
+  .relayed-idle{color:var(--color-fg-quiet);}
+  .relayed-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 0 0;}
+  .relayed-question{color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  button.relayed-stop{border-color:var(--color-danger);color:var(--color-danger-text);}
+  .relayed-stale{margin:0;padding:6px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-pill-wait-bg);color:var(--color-signal-text);font:13px/1.4 var(--font-sans);}
+  .relayed-notice{margin:0;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);}
+  .relayed-failed{color:var(--color-danger-text);}
+  .relayed-more{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .relayed-transcript{display:flex;flex-direction:column;gap:6px;min-width:0;}
+  .relayed-reply{margin:0;}
+  /* The sidebar's sections of other orchestrators' sessions (web_view/view/sidebar):
+     the quiet line under a heading that says a box is not answering, and the dimmed
+     rows of a box whose last list is what is drawn. The `relayed-side-` prefix keeps
+     them apart from the relayed session page's own classes above. */
+  .relayed-side-note{margin:0;padding:0 10px 4px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .relayed-side-quiet ul.sessions{opacity:.65;}
   /* A chip's list. The scrim sits under it and closes it when pressed. */
   .pop-scrim{position:fixed;z-index:4;inset:0;margin:0;padding:0;border:0;background:transparent;cursor:default;}
   .pop{position:absolute;z-index:5;top:calc(100% + 6px);left:0;box-sizing:border-box;min-width:320px;max-width:min(560px,calc(100vw - 48px));padding:6px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-raised);}
@@ -1797,6 +1827,8 @@
   .opt[aria-disabled="true"]{cursor:not-allowed;}
   .opt[aria-disabled="true"]:hover{background:transparent;}
   .opt[aria-disabled="true"] .opt-text > span,.opt[aria-disabled="true"] svg.i{color:var(--color-fg-quiet);opacity:.7;}
+  /* A row that cannot be chosen gives its reason in full, since the reason is what the row is for. */
+  .opt[aria-disabled="true"] .opt-text small{overflow:visible;white-space:normal;}
   /* The phone's banner: the session that most needs the person. It is drawn on a
      narrow window only, where the sidebar is shut most of the time. */
   .banner{display:none;align-items:center;gap:10px;width:100%;min-height:48px;box-sizing:border-box;margin:0 0 4px 0;padding:10px 12px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-pill-wait-bg);color:var(--color-fg);font:13px/1.4 var(--font-sans);text-align:left;cursor:pointer;}

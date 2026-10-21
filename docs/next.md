@@ -4,12 +4,18 @@ This is a scoped reconnect handoff, baselined October 21, 2026 against
 `8b97b3b70` on `fix/web-reconnect`. The source baseline was
 `bb5587a1727d4c2ebf52563c8b820fdc847e976b`. It records this repair's code and
 validation; it is not a fresh audit of main, releases or hosted CI.
+For publication, the branch integrates main `d9d1df193`, including the relayed
+page changes and TLS profiling support. The full-package validation counts
+below precede that integration; the integration row records the focused reruns.
 
 The [previous handoff](next-2026-10-21-before-web-reconnect.md) preserves the
 resource measurements, distributed-runtime drive and placement follow-ups.
 Those claims retain their original observation dates and were not revalidated
 for this repair. In particular, its publication instructions do not describe
-this branch's delivery state.
+this branch's delivery state. The
+[incoming handoff](next-2026-10-21-before-reconnect-integration.md) preserves
+main's newer relayed-session entry record exactly. PRs #1065, #1067 and #1066
+are merged in the integrated main; their earlier delivery language is historical.
 
 ## Where the tree is
 
@@ -23,7 +29,8 @@ this branch's delivery state.
 | Browser evidence | All 310 browser decision tests and the pinned Lustre transport regression passed. Removing the queue reset in an isolated source copy makes the transport regression fail by replaying the queued submit. A component regression checks that a fresh page subscribes without reissuing its old prompt. |
 | Review | One independent adversarial pass found no actionable issue in authorization, shutdown or replay. It inspected code and independently ran the transport test, not a browser DOM remount. |
 | Gates | The web-view gate passed all 1,219 tests, including the reconnect component regression. The client gate exited 2: 5,075 tests passed and the existing page startup-memory fixture failed because the component did not start. An isolated run also failed; a traced run passed, followed by all 12 socket-module tests passing. The startup failure is intermittent and its underlying cause is unproven. Package lints pass with warnings; doc-check passes with zero errors and 208 warnings. |
-| Delivery | Local commits only. No push, PR, installation, restart or hotpatch was performed by this work. |
+| Integration | With main `d9d1df193`, all 21 relay tests, the reconnect component regression, 312 browser tests and the pinned transport regression pass. The asset check and doc-check pass. The reconnect implementation itself merged unchanged. |
+| Delivery | The owner requested PR publication. The PR remains a draft while the full client gate has an unresolved failure. No installation, restart or hotpatch was performed by this work. |
 
 ## What remains
 
@@ -41,10 +48,11 @@ this branch's delivery state.
    runs the repaired head, and a real authenticated browser recovers from an
    interrupted lane without duplicate commands. The everyday daemon has not
    received this change.
-3. Resume live profiling after its separate TLS design is settled. The untracked
-   [protocol 096 draft](../protocol-change/096-tls-profiling.md) remains
-   PROPOSED and outside the reconnect commits. It is not an accepted trust
-   change, an implemented profiler or permission to restart the daemon.
+3. Resume live profiling using main's TLS profiling support from PR #1066.
+   The earlier untracked `protocol-change/096-tls-profiling.md` draft is
+   superseded by main's `096-tool-members-and-profile-over-tls.md` and remains
+   outside the reconnect commits. This integration does not install or restart
+   the everyday daemon.
 
 ## Rulings retained
 
@@ -89,3 +97,7 @@ runs are `loom-reconnect-startup-trace.log` and
 `loom-reconnect-web-view-final.log`. Shipment-building package targets must
 run sequentially: an earlier concurrent attempt raced over their shared TUI
 shipment directory before reaching the web-view tests.
+The integration reruns are `loom-reconnect-integrated-relay.log`,
+`loom-reconnect-integrated-component.log`,
+`loom-reconnect-integrated-browser.log` and
+`loom-reconnect-integrated-doc-check.log`.

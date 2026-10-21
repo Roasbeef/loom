@@ -189,10 +189,13 @@ import client/daemon/ui_peers
 import client/daemon/ui_project
 import client/daemon/ui_relay
 import client/daemon/ui_sessions
+import client/daemon/ui_top
 import client/daemon/upgrade_log
 import client/gateway
 import client/peers
 import client/protocol as session_protocol
+import client/remote/top_relay
+import client/remote_escalation
 import core/ids
 import core/json as wire
 import gleam/bit_array
@@ -233,9 +236,11 @@ import web_view/invites
 import web_view/machines
 import web_view/names
 import web_view/operator_page
+import web_view/orchestrators as relayed_roster
 import web_view/page
 import web_view/peer_links
 import web_view/placements
+import web_view/relayed
 import web_view/remembered
 import web_view/renames
 import web_view/sessions
@@ -800,6 +805,8 @@ pub fn upgrade_home(
   open: fn() -> Result(Int, Nil),
   seen: server.PageGrant,
   gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
+  relay: top_relay.Relay,
+  visit: Option(server.Visit),
 ) -> Response(mist.ResponseData) {
   let settled = process.new_subject()
   let limit = root.message_limit(root.Observer)
@@ -1025,6 +1032,40 @@ pub fn upgrade_home(
         rename_self_task(standing, open, epoch, name, deliver)
       }),
     )
+
+  // A page opened on a session of another orchestrator (protocol-change/094) is
+  // handed the functions that ask that orchestrator, and no other page is. The
+  // server admitted the route only for the owner's operating page and a
+  // configured orchestrator; every function checks the page's standing again.
+  let visiting =
+    option.map(visit, visiting_for(
+      standing,
+      open,
+      relay,
+      attachment.principal.display_name,
+      _,
+    ))
+
+  // The orchestrators the owner's page may start sessions on and list
+  // (protocol-change/094). The capability exists for the owner's operating page
+  // of a daemon configured with one, as the creation capability does, and every
+  // function in it checks the page again when it runs.
+  let orchestrating =
+    home_orchestrators_capability(
+      attachment.principal,
+      ceiling,
+      attachment.orchestrators,
+      fn() {
+        orchestrating_for(
+          standing,
+          tickets,
+          open,
+          relay,
+          attachment.orchestrators,
+          seen.key,
+        )
+      },
+    )
   websocket(request, limit, settled, fn(signals) {
     admit_home(
       daemon,
@@ -1045,6 +1086,8 @@ pub fn upgrade_home(
       elsewhere,
       signing,
       administering,
+      visiting,
+      orchestrating,
       admits,
       open,
       ceiling,
@@ -1052,6 +1095,178 @@ pub fn upgrade_home(
       settled,
     )
   })
+}
+
+/// The capability a page is handed to start sessions on the orchestrators its
+/// daemon relays for and to list theirs (protocol-change/094): `make` for the
+/// owner's operating page of a daemon configured with at least one
+/// `[orchestrators.<name>]`, and none for any other page. The daemon checks the
+/// page again when each function runs (`orchestrating_for`), so holding it grants
+/// nothing once the page's standing has changed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_socket.home_orchestrators_capability(member, access.Operator, ["box"], make) == None
+/// ```
+@internal
+pub fn home_orchestrators_capability(
+  principal: access.Principal,
+  ceiling: access.Role,
+  names: List(String),
+  make: fn() -> home.Orchestrators,
+) -> Option(home.Orchestrators) {
+  case principal.kind, ceiling, names {
+    access.OwnerPrincipal, access.Operator, [_, ..] -> Some(make())
+    access.OwnerPrincipal, access.Operator, []
+    | access.OwnerPrincipal, access.Observer, _
+    | access.MemberPrincipal, _, _
+    -> None
+  }
+}
+
+/// What the owner's page asks of the orchestrators it relays for. Each function
+/// runs in a task of its own and answers once, so the page's runtime never waits
+/// on a link, and each call is bounded by the relay's own timeouts, so a box that
+/// does not answer holds up only its own reads. A read needs the page to be open.
+/// A create is checked again as the owner's operating page, counts against the
+/// credential's creation allowance as a local creation does
+/// (`ui_sessions.reserve_creation`, protocol-change/094), and is given a request
+/// identity and a message identity drawn here, which the relay resends with if an
+/// answer is lost, so a create is made once.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.orchestrating_for(standing, tickets, open, relay, ["box"], key)
+/// ```
+@internal
+pub fn orchestrating_for(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  relay: top_relay.Relay,
+  names: List(String),
+  key: String,
+) -> home.Orchestrators {
+  home.Orchestrators(
+    key:,
+    names:,
+    refresh_ms: home.relay_refresh_ms,
+    offers: fn(orchestrator, deliver) {
+      read_task(deliver, fn() {
+        case open() {
+          Ok(_) -> ui_top.offers(relay, orchestrator)
+          Error(Nil) -> relayed_roster.Withheld(why: "this page has ended")
+        }
+      })
+    },
+    sessions: fn(orchestrator, deliver) {
+      read_task(deliver, fn() {
+        case open() {
+          Ok(_) -> ui_top.listing(relay, orchestrator)
+          Error(Nil) -> relayed_roster.Missed(why: "this page has ended")
+        }
+      })
+    },
+    create: fn(orchestrator, place, roles, prompt, deliver) {
+      read_task(deliver, fn() {
+        let allowed = {
+          use _ <- result.try(
+            owner_operating(standing, open)
+            |> result.replace_error("this page can no longer act for you"),
+          )
+          ui_sessions.reserve_creation(tickets, standing.digest)
+          |> result.map_error(fn(_) {
+            creations.reason_words(creations.TooMany)
+          })
+        }
+
+        case allowed {
+          Error(why) -> relayed_roster.Refused(why:)
+          Ok(_) ->
+            ui_top.found(
+              relay,
+              orchestrator,
+              "web-" <> hex_entropy(16),
+              hex_entropy(16),
+              place,
+              roles,
+              prompt,
+            )
+        }
+      })
+    },
+  )
+}
+
+// The functions the relayed session page asks the other orchestrator with. Each
+// runs in a task of its own, so the page's runtime never waits on the link. A
+// press is checked again as the owner's operating page before anything is sent,
+// and a reply is given a fresh message identity, which the relay resends with
+// if the answer is lost.
+fn visiting_for(
+  standing: Standing(instance),
+  open: fn() -> Result(Int, Nil),
+  relay: top_relay.Relay,
+  name: String,
+  target: server.Visit,
+) -> home.Visit {
+  let orchestrator = target.orchestrator
+  let session = target.session
+  let decider = remote_escalation.Decider(principal: standing.principal, name:)
+  let acting = fn(act: fn() -> relayed.Outcome) {
+    case owner_operating(standing, open) {
+      Ok(_) -> act()
+      Error(Nil) -> relayed.Refusal(why: "this page can no longer act for you")
+    }
+  }
+
+  home.Visit(
+    orchestrator:,
+    session:,
+    refresh_ms: home.relay_refresh_ms,
+    read: fn(deliver) {
+      read_task(deliver, fn() {
+        case open() {
+          Ok(_) -> ui_top.read(relay, orchestrator, session)
+          Error(Nil) -> relayed.Unreached(why: "this page has ended")
+        }
+      })
+    },
+    send: fn(text, deliver) {
+      read_task(deliver, fn() {
+        acting(fn() {
+          ui_top.send(relay, orchestrator, session, hex_entropy(16), text)
+        })
+      })
+    },
+    stop: fn(deliver) {
+      read_task(deliver, fn() {
+        acting(fn() { ui_top.stop(relay, orchestrator, session) })
+      })
+    },
+    archive: fn(deliver) {
+      read_task(deliver, fn() {
+        acting(fn() { ui_top.archive(relay, orchestrator, session) })
+      })
+    },
+    decide: fn(escalation, seq, choice, deliver) {
+      read_task(deliver, fn() {
+        acting(fn() {
+          ui_top.decide(
+            relay,
+            orchestrator,
+            session,
+            decider,
+            escalation,
+            seq,
+            choice,
+          )
+        })
+      })
+    },
+  )
 }
 
 // What a home page is handed to manage its principal's sign-ins and name: the
@@ -1390,6 +1605,8 @@ fn admit_home(
   elsewhere: Option(home.Elsewhere),
   signing: Signing,
   administering: Option(fn(fn(sessions.Answer) -> Nil) -> Nil),
+  visiting: Option(home.Visit),
+  orchestrating: Option(home.Orchestrators),
   admits: fn(String) -> Bool,
   open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
@@ -1442,6 +1659,8 @@ fn admit_home(
       admin: administering,
       who: read_task_for(signing.who),
       rename_self: signing.rename_self,
+      visiting:,
+      orchestrators: orchestrating,
     )
   let started = case transferred {
     Error(reason) -> {

@@ -404,12 +404,14 @@ fn named_member(
         ),
         ..inert
       ])
-    distribution_plan.Orchestrator, _ ->
+    distribution_plan.Orchestrator, _ | distribution_plan.Tool, _ ->
       Error(
         row.key
         <> " names "
         <> row.name
-        <> ", which the ledger enrolled as an orchestrator and not an executor",
+        <> ", which the ledger enrolled as "
+        <> article(member.role)
+        <> " and not an executor",
       )
   }
 }
@@ -451,5 +453,14 @@ fn describe_open(path: String, error: membership_store.OpenError) -> String {
       place
       <> " ends in an unfinished line that could not be removed: "
       <> reason
+  }
+}
+
+// The role as a noun phrase for a sentence that names the wrong one.
+fn article(role: distribution_plan.Role) -> String {
+  case role {
+    distribution_plan.Tool -> "a tool"
+    distribution_plan.Orchestrator -> "an orchestrator"
+    distribution_plan.Executor -> "an executor"
   }
 }

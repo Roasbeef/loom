@@ -204,6 +204,7 @@ pub type Ui(instance) {
       HomeAttachment(instance),
       fn() -> Result(Int, Nil),
       PageGrant,
+      Option(Visit),
     ) -> Response(mist.ResponseData),
     /// Upgrades a checked admin request to the admin component's socket
     /// (protocol-change/065, the fifth pull request). It takes the same custody
@@ -216,6 +217,21 @@ pub type Ui(instance) {
       fn() -> Result(Int, Nil),
       access.Role,
     ) -> Response(mist.ResponseData),
+  )
+}
+
+/// The session of another orchestrator a home socket is opened to show
+/// (protocol-change/094). The router has checked the grammar of both fields and
+/// the server has checked that the orchestrator is configured and that the page is
+/// the owner's operating page, so the upgrade is handed values that name a
+/// session the daemon may ask about, not one it has verified exists: the box
+/// answers that when the page reads.
+pub type Visit {
+  Visit(
+    /// The `[orchestrators.<name>]` key.
+    orchestrator: String,
+    /// The session's canonical identity on that orchestrator.
+    session: String,
   )
 }
 
@@ -291,6 +307,10 @@ pub type PageGrant {
     /// (`ui_http.address`). It is the validated origin and not anything the
     /// page said.
     address: String,
+    /// The key of the page's own address (`/ui/p/<key>/...`), which the router
+    /// matched and the cookie names. A page that departs for another keyed page
+    /// of its own, a relayed session's, builds the address under it.
+    key: String,
   )
 }
 
@@ -376,6 +396,11 @@ pub type HomeAttachment(instance) {
     /// from its runtime (`ui_socket.read_task`). A key outside the configuration
     /// is `Unread`, and nothing is dialled for it.
     elsewhere: fn(Option(String), Option(String)) -> page_elsewhere.Read,
+    /// The `[orchestrators.<name>]` keys of the daemon's configuration, in order,
+    /// which the owner's page draws in its Agent chip and sidebar and asks
+    /// through the relay (protocol-change/094). The relay dials none the page
+    /// names that is not among them.
+    orchestrators: List(String),
     /// What the owner's home may ask about moving a session: which
     /// orchestrators could take it, and the move itself
     /// (protocol-change/085, the addendum on Move and Abandon). They are the
@@ -512,7 +537,17 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
         ui_http.Socket(key, id, nonce) ->
           web_socket(config, ui, request, origin, key, id, nonce)
         ui_http.HomeSocket(key, nonce) ->
-          home_socket(config, ui, request, origin, key, nonce)
+          home_socket(config, ui, request, origin, key, nonce, None)
+        ui_http.RelayedSocket(key, orchestrator, session, nonce) ->
+          home_socket(
+            config,
+            ui,
+            request,
+            origin,
+            key,
+            nonce,
+            Some(Visit(orchestrator:, session:)),
+          )
 
         // The resume page holds the one form a login's visit posts, so it is
         // served under the policy that lets that form submit to this origin.
@@ -637,6 +672,7 @@ fn web_socket(
           grant:,
           login: ui_sessions.login_of(ui.sessions, cookie),
           address: ui_http.address(origin),
+          key:,
         )
       resident_upgrade(
         config,
@@ -665,6 +701,7 @@ fn home_socket(
   origin: ui_http.PageOrigin,
   key: String,
   nonce: Option(String),
+  visit: Option(Visit),
 ) {
   let checked = {
     use Nil <- result.try(case ui_http.origin_matches(request, origin) {
@@ -681,6 +718,12 @@ fn home_socket(
       request,
       origin,
       key,
+    ))
+    use Nil <- result.try(admitted_visit(
+      config,
+      visit,
+      principal,
+      ui_sessions.grant(page).ceiling,
     ))
     use Nil <- result.try(case ui_sessions.admits(page, nonce) {
       True -> Ok(Nil)
@@ -701,9 +744,43 @@ fn home_socket(
           grant:,
           login: ui_sessions.login_of(ui.sessions, cookie),
           address: ui_http.address(origin),
+          key:,
         ),
         ui_sessions.open_until(ui.sessions, cookie, grant),
+        visit,
       )
+  }
+}
+
+// What a relayed session's page needs beyond a home's (protocol-change/094): the
+// page is the owner's operating page, and the orchestrator is one the daemon is
+// configured with. A refusal is the plain status, because nothing here is a
+// state of the person's page that a document could advise on. A page that visits
+// nothing needs nothing.
+fn admitted_visit(
+  config: Config(instance),
+  visit: Option(Visit),
+  principal: access.Principal,
+  ceiling: access.Role,
+) -> Result(Nil, Response(mist.ResponseData)) {
+  case visit {
+    None -> Ok(Nil)
+    Some(Visit(orchestrator:, ..)) ->
+      case
+        principal.kind,
+        ceiling,
+        orchestrators.find(
+          roster.rows(config.movers.orchestrators),
+          orchestrator,
+        )
+      {
+        access.OwnerPrincipal, access.Operator, Ok(_) -> Ok(Nil)
+        access.OwnerPrincipal, access.Operator, Error(Nil) ->
+          Error(plain(404, "unknown endpoint"))
+        access.OwnerPrincipal, access.Observer, _
+        | access.MemberPrincipal, _, _
+        -> Error(plain(403, "forbidden page"))
+      }
   }
 }
 
@@ -718,6 +795,7 @@ fn home_upgrade(
   principal: access.Principal,
   seen: PageGrant,
   open: fn() -> Result(Int, Nil),
+  visit: Option(Visit),
 ) {
   let grant = seen.grant
   case
@@ -777,10 +855,15 @@ fn home_upgrade(
             elsewhere: fn(orchestrator, after) {
               heard_elsewhere(config, orchestrator, after)
             },
+            orchestrators: list.map(
+              roster.rows(config.movers.orchestrators),
+              fn(orchestrator) { orchestrator.name },
+            ),
             moves: moves_for(config, state.registry, grant.credential),
           ),
           open,
           seen,
+          visit,
         )
       root.release(config.daemon, permit)
       response
@@ -944,6 +1027,7 @@ fn web_document(
     ui_http.Unknown
     | ui_http.Socket(..)
     | ui_http.HomeSocket(..)
+    | ui_http.RelayedSocket(..)
     | ui_http.LoginPage(..)
     | ui_http.ClaimPage
     | ui_http.ClaimSubmit
@@ -1020,6 +1104,23 @@ fn web_document(
           }
       }
 
+    // The page of a session on another orchestrator (protocol-change/094): the
+    // home's two rules, and the two more every relayed request makes: the page is
+    // the owner's operating page, and the orchestrator is a configured one.
+    ui_http.RelayedPage(key, orchestrator, session) ->
+      case ui_http.navigation_allowed(request) {
+        False -> plain(403, "forbidden navigation")
+        True ->
+          relayed_document(
+            config,
+            ui,
+            request,
+            origin,
+            key,
+            Visit(orchestrator:, session:),
+          )
+      }
+
     // The admin page, kept to the same two rules: a navigation from this origin
     // or from outside any page, and a cookie under the key that names a live
     // page of the `Admin` scope whose credential is still the owner's.
@@ -1037,6 +1138,34 @@ fn web_document(
     // A browser's visit to its bookmark: the verification, and then a home page
     // the login mints (protocol-change/065, PR 8).
     ui_http.LoginResume(key) -> login_resume(config, ui, request, origin, key)
+  }
+}
+
+// The relayed session page's document, after its navigation check: the home's
+// grant, and then the two more every relayed request makes.
+fn relayed_document(
+  config: Config(instance),
+  ui: Ui(instance),
+  request,
+  origin: ui_http.PageOrigin,
+  key: String,
+  visit: Visit,
+) {
+  case home_grant(config, ui, request, origin, key) {
+    Error(response) -> response
+    Ok(#(_, held, _, principal)) ->
+      case
+        admitted_visit(
+          config,
+          Some(visit),
+          principal,
+          ui_sessions.grant(held).ceiling,
+        )
+      {
+        Error(response) -> response
+        Ok(Nil) ->
+          document(200, "text/html; charset=utf-8", page.relayed_shell())
+      }
   }
 }
 

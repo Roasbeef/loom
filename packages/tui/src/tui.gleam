@@ -2933,6 +2933,21 @@ commands:
                                   applied. Give the same --bundle-dir the node
                                   was enrolled with, so the bundle installs
                                   over its credentials in place.
+  attach-file NAME --node N --links DAEMON --out DIR [--host H] [--force]
+         [--wait SECONDS] [COMMON]
+                                  Let a debugging tool (pickglass, Observer,
+                                  `erl -remsh`) join a distributed daemon. Like
+                                  `enroll`, it mints a certificate and signs a
+                                  `member` entry, with the role `tool`, linked
+                                  to the daemon named by --links. Instead of a
+                                  bundle it writes DIR/ca.pem, tool.pem,
+                                  tool.key, .erlang.cookie and ssl_dist.conf,
+                                  and prints the `erl` flags that use them. The
+                                  tool must start as the node N. A tool holds no
+                                  sessions and is never asked anything, but it
+                                  is a full Erlang node on the daemon: revoke it
+                                  when you are done. Renew it by revoking it
+                                  and attaching again.
   log [--json] [--config PATH] [COMMON]
                                   Print the ledger's entries with their
                                   identities, then the last refusal and each
@@ -2950,7 +2965,7 @@ COMMON is [--home DIR] [--deployment ID] [--passphrase-file PATH]
 [--state-dir DIR | --addr URL --token-file PATH]. The key is found under
 DIR/.loom/authority (DIR defaults to $HOME); --deployment picks one when
 several are kept. The passphrase is asked for on the terminal, which only
-`loomd distribution` can do; `loom distribution enroll`, `revoke` and `renew`
+`loomd distribution` can do; `loom distribution enroll`, `revoke`, `renew` and `attach-file`
 need --passphrase-file. The daemon is the one on this host, found through its
 state directory (default $HOME/.loom), unless --addr names another.
 
@@ -3022,7 +3037,7 @@ pub fn server_arguments(arguments: List(String)) -> Option(List(String)) {
 // forwarded child's stdin is a pipe, so a command that opens or seals the
 // authority key cannot ask for the passphrase on the terminal, and would fail
 // only after the server booted. Those are `provision` (ledger mode, which is the
-// default) and `enroll`, `revoke` and `renew`. Refusing up front gives the
+// default) and `enroll`, `revoke`, `renew` and `attach-file`. Refusing up front gives the
 // operator the same answer and the way out, and leaves the prompt to
 // `loomd distribution`, which owns the terminal.
 fn forward_distribution(arguments: List(String)) -> Launch {
@@ -3044,7 +3059,12 @@ fn forward_distribution(arguments: List(String)) -> Launch {
             <> "only when run as `loomd distribution provision`",
           )
       }
-    [verb, ..rest] if verb == "enroll" || verb == "revoke" || verb == "renew" ->
+    [verb, ..rest]
+      if verb == "enroll"
+      || verb == "revoke"
+      || verb == "renew"
+      || verb == "attach-file"
+    ->
       case
         has(rest, "--passphrase-file") || has(rest, "--help") || has(rest, "-h")
       {

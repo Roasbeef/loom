@@ -388,6 +388,32 @@ a count above zero does, so the revoke of a laptop that is off needs `--force`. 
 ledger itself never vetoes: a log fold cannot see sessions, and a veto at apply time
 would give two nodes different tables from one log.
 
+### Tools
+
+An inspection tool (pickglass, Observer, `erl -remsh`) is an Erlang node, so on
+a TLS deployment it passes the same handshake as a peer. The operator enrolls
+it as a member with the role `tool`
+([protocol-change/096](../../protocol-change/096-tool-members-and-profile-over-tls.md))
+and the daemon's verify callback does not change: the tool's pin is in the table
+of the daemon it lists in `links`, and its certificate carries exactly the name
+it starts under. A tool is never in the directory, nothing lists it, no daemon
+dials it, and the holdings check of a revoke skips it. `distribution_plan.Role`
+has the variant, `role_from_word` (plans and bundles) refuses the word and
+`member_role_from_word` (the entry decoder) accepts it.
+
+`loom distribution attach-file` (`daemon/ledger_cli.attach_file`) enrolls one and
+writes `ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie` and `ssl_dist.conf`
+into a private directory. `client/distribution_attach` renders the options file
+and the recipe. The file names only stock `ssl` options (the three credential
+files, `verify_peer`, the TLS versions) in a `client` section alone: a tool must never listen, since a listener would trust the authority and not the ledger, so the recipes add `-hidden -dist_listen false`, because the tool's VM does not have
+Loom's verify function and does not need it: the daemon is the side that pins.
+A `renew` of a tool is refused, since no bundle holds its key.
+
+The profile launcher (`scripts/profile-launcher.sh`) no longer conflicts with a
+`[distribution]` table. For the daemon role with `LOOM_DISTRIBUTION_OPTFILE`
+set it neither names the VM nor points `HOME` at a throwaway cookie, so the VM
+boots as this section describes, plus `+Muatags true`.
+
 ### Booting a distributed VM
 
 The daemon boots without a node name and starts distribution itself, from

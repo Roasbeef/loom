@@ -26,6 +26,14 @@
 //// open list has a scrim behind it that closes it when pressed, so the page needs
 //// no listener on the document.
 ////
+//// The Agent list has a row for this daemon and one for each orchestrator the
+//// daemon relays for (protocol-change/094). An orchestrator that has not
+//// answered, or refused this page, is a row that cannot be pressed and says why.
+//// Once another orchestrator is the agent, the Code list below is that
+//// orchestrator's: its folders, executors and pools, no typed path (the daemon
+//// serving the page cannot judge a path on another machine), and one disabled row
+//// saying that the other machine's files are out of its reach.
+////
 //// The Code list is the one that grows. Its sections come in a fixed order:
 //// folders on the agent's machine, then one section for each executor with the
 //// workspaces it reported, then one for each pool. A search field narrows every
@@ -84,8 +92,8 @@ import lustre/element/html
 import lustre/element/svg
 import lustre/event
 import web_view/composer.{
-  type Chip, type Offers, type Piece, type Recent, type State, type Target,
-  type Typed,
+  type Agent, type Chip, type Offers, type Piece, type Recent, type State,
+  type Target, type Typed,
 }
 import web_view/listing
 import web_view/placements
@@ -97,6 +105,8 @@ pub type Presses(message) {
   Presses(
     /// A chip was pressed.
     toggle: fn(Chip) -> message,
+    /// A row of the Agent list was pressed.
+    agent: fn(Agent) -> message,
     /// The scrim behind an open list was pressed.
     dismiss: message,
     /// A row of the Code list, or a recent place, was pressed.
@@ -469,7 +479,7 @@ fn chips(pane: Pane(message)) -> Element(message) {
       chip(
         pane,
         composer.AgentChip,
-        Laptop,
+        agent_icon(pane.state.agent),
         "Agent",
         pane.offers.machine,
         agent_list(pane),
@@ -539,8 +549,11 @@ fn expanded(open: composer.Open, which: Chip) -> String {
   }
 }
 
-// The Agent chip's list. Only the serving daemon is offered, and a line says why
-// no other machine is.
+// The Agent chip's list: this daemon, then each orchestrator it relays for. A row
+// that can be chosen is a button whose message names the machine the page drew.
+// A row that cannot yet, or at all, is text with its reason, so a press the page
+// would refuse is never offered. The note says what a switch does to the other
+// choices, which is what `composer.kept` does.
 fn agent_list(pane: Pane(message)) -> Element(message) {
   html.div(
     [
@@ -549,21 +562,84 @@ fn agent_list(pane: Pane(message)) -> Element(message) {
       attribute.aria_label("Where the agent runs"),
     ],
     [
-      html.div([attribute.class("opt"), attribute.class("on")], [
-        icon(Laptop),
-        html.span([attribute.class("opt-text")], [
-          html.span([], [html.text(pane.offers.machine)]),
-          html.small([], [html.text("The daemon serving this page")]),
+      section_head(
+        "Agent runs on",
+        "holds the conversation and calls the model",
+      ),
+      ..list.append(list.map(pane.offers.agents, agent_row(pane, _)), [
+        html.p([attribute.class("pop-foot")], [
+          html.text(
+            "Switching keeps the workspace choice when the new machine offers it, and clears it otherwise.",
+          ),
         ]),
-        icon(Check),
-      ]),
-      html.p([attribute.class("pop-foot")], [
-        html.text(
-          "A session on another machine is started from that machine's page.",
-        ),
-      ]),
+      ])
     ],
   )
+}
+
+// One row of the Agent list. The machine in force is marked.
+fn agent_row(
+  pane: Pane(message),
+  candidate: composer.Candidate,
+) -> Element(message) {
+  let current = pick(pane.state.agent, candidate.agent)
+  let body = fn(detail: String) {
+    [
+      icon(agent_icon(candidate.agent)),
+      html.span([attribute.class("opt-text")], [
+        html.span([], [html.text(candidate.name)]),
+        ..case detail {
+          "" -> []
+          words -> [html.small([], [html.text(words)])]
+        }
+      ]),
+    ]
+  }
+
+  case candidate.standing {
+    composer.Choosable(detail:) ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("opt"),
+          attribute.role("option"),
+          attribute.aria_selected(selected(current)),
+          event.on_click(pane.presses.agent(candidate.agent)),
+        ],
+        list.append(body(detail), check_if(current)),
+      )
+    composer.Checking ->
+      html.div(
+        [
+          attribute.class("opt"),
+          attribute.role("option"),
+          attribute.aria_disabled(True),
+        ],
+        list.append(body(""), [
+          html.span([attribute.class("opt-state")], [html.text("checking")]),
+        ]),
+      )
+    composer.Unavailable(reason:) ->
+      html.div(
+        [
+          attribute.class("opt"),
+          attribute.role("option"),
+          attribute.aria_disabled(True),
+        ],
+        list.append(body(reason), [
+          html.span([attribute.class("opt-state")], [html.text("unavailable")]),
+        ]),
+      )
+  }
+}
+
+// The glyph of an agent: a laptop for this daemon, a server for another
+// orchestrator.
+fn agent_icon(agent: Agent) -> Icon {
+  case agent {
+    composer.Here -> Laptop
+    composer.Orchestrator(_) -> Server
+  }
 }
 
 // The Model chip's list: the profiles, then the main models, each with the
@@ -581,30 +657,48 @@ fn model_list(pane: Pane(message)) -> Element(message) {
     ],
     [
       section_head("Profile", "a set of models for each job"),
-      choice("Default", pick(roles.profile, None), presses.profile(None)),
       ..list.append(
-        list.map(pane.offers.profiles, fn(name) {
-          choice(
-            name,
-            pick(roles.profile, Some(name)),
-            presses.profile(Some(name)),
-          )
-        }),
-        [
-          html.div([attribute.class("sep")], []),
-          section_head("Main model", "pins the main role"),
-          choice("Default", pick(roles.model, None), presses.model(None)),
-          ..list.map(pane.offers.models, fn(name) {
+        default_profile(pane),
+        list.append(
+          list.map(pane.offers.profiles, fn(name) {
             choice(
               name,
-              pick(roles.model, Some(name)),
-              presses.model(Some(name)),
+              pick(roles.profile, Some(name)),
+              presses.profile(Some(name)),
             )
-          })
-        ],
+          }),
+          [
+            html.div([attribute.class("sep")], []),
+            section_head("Main model", "pins the main role"),
+            choice("Default", pick(roles.model, None), presses.model(None)),
+            ..list.map(pane.offers.models, fn(name) {
+              choice(
+                name,
+                pick(roles.model, Some(name)),
+                presses.model(Some(name)),
+              )
+            })
+          ],
+        ),
       )
     ],
   )
+}
+
+// The profile list's "Default" row. A box has no default profile, since a create
+// there must name one (`composer.kept`), so a box's list holds only the profiles it
+// offers.
+fn default_profile(pane: Pane(message)) -> List(Element(message)) {
+  case pane.state.agent, pane.offers.profiles {
+    composer.Orchestrator(_), [_, ..] -> []
+    composer.Orchestrator(_), [] | composer.Here, _ -> [
+      choice(
+        "Default",
+        pick(pane.state.roles.profile, None),
+        pane.presses.profile(None),
+      ),
+    ]
+  }
 }
 
 // A row of the Model list.
@@ -642,6 +736,7 @@ fn code_list(pane: Pane(message)) -> Element(message) {
   let sections =
     list.flatten([
       folder_section(pane, needle),
+      other_folders(pane, needle),
       list.flat_map(pane.offers.cards.placements.executors, fn(each) {
         executor_section(pane, needle, each)
       }),
@@ -712,15 +807,45 @@ fn folder_section(
         standing: Pressable(composer.Folder(path)),
       )
     })
-  let typed =
-    Row(
-      label: "Choose a folder…",
-      detail: "Type a path in the form",
-      glyph: Folder,
-      standing: Pressable(composer.TypedFolder),
-    )
+  let typed = case pane.offers.typing {
+    composer.MayType -> [
+      Row(
+        label: "Choose a folder…",
+        detail: "Type a path in the form",
+        glyph: Folder,
+        standing: Pressable(composer.TypedFolder),
+      ),
+    ]
+    composer.MayNotType -> []
+  }
 
-  section(pane, needle, "On " <> machine, "", list.append(folders, [typed]))
+  section(pane, needle, "On " <> machine, "", list.append(folders, typed))
+}
+
+// The folders of this daemon, when another orchestrator is the agent: one
+// disabled row that says why they cannot be chosen, so a person who looks for
+// them finds the reason and the way back.
+fn other_folders(
+  pane: Pane(message),
+  needle: String,
+) -> List(Element(message)) {
+  case pane.state.agent {
+    composer.Here -> []
+    composer.Orchestrator(_) ->
+      section(pane, needle, "On " <> pane.offers.here, "", [
+        Row(
+          label: "Folders on " <> pane.offers.here,
+          detail: pane.offers.machine
+            <> " cannot read "
+            <> pane.offers.here
+            <> "'s files. Set Agent to "
+            <> pane.offers.here
+            <> " to use them.",
+          glyph: Folder,
+          standing: Unavailable("Not offered"),
+        ),
+      ])
+  }
 }
 
 // An executor's section: the workspaces it reported, or a row that asks for a
@@ -916,7 +1041,10 @@ fn selected(pick: Pick) -> Bool {
 fn summary(pane: Pane(message)) -> Element(message) {
   html.p(
     [attribute.class("sum")],
-    list.map(composer.sentence(pane.offers.machine, pane.target), piece),
+    list.map(
+      composer.sentence_for(pane.state.agent, pane.offers.machine, pane.target),
+      piece,
+    ),
   )
 }
 
@@ -966,7 +1094,7 @@ fn refusal(state: State) -> Element(message) {
 fn code_title(code: listing.Code) -> String {
   case code {
     listing.Folder(path:) -> path
-    listing.Registered(..) -> ""
+    listing.Registered(..) | listing.Pooled(..) -> ""
   }
 }
 
@@ -983,6 +1111,7 @@ fn code_icon(target: Target) -> Icon {
 /// text and no value from the page.
 type Icon {
   Laptop
+  Server
   Folder
   Cpu
   Pool
@@ -1009,6 +1138,7 @@ fn icon(which: Icon) -> Element(message) {
 fn outline(which: Icon) -> String {
   case which {
     Laptop -> "M3 3.5h10v7H3zM1.5 12.5h13"
+    Server -> "M2.5 3.5h11v4h-11zM2.5 8.5h11v4h-11zM5 5.5h.01M5 10.5h.01"
     Folder ->
       "M2 4.5a1 1 0 011-1h3l1.5 1.5H13a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1z"
     Cpu ->

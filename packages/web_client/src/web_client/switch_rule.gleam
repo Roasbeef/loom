@@ -14,17 +14,38 @@
 //// `/ui/sessions/<id>?ticket=<ticket>`, where
 //// the identity is the canonical form of eight, four, four, four and twelve
 //// hexadecimal digits and the ticket is the 64 hexadecimal digits the
-//// daemon's entropy source yields. Anything else, an absolute URL, a path
-//// elsewhere on the origin, a second parameter, a fragment or a scheme, is no
-//// address and the element does nothing.
+//// daemon's entropy source yields.
+////
+//// The owner's home also departs for a session on another orchestrator
+//// (protocol-change/094), which has no ticket: the page's own cookie is its
+//// credential. Its address is `/ui/p/<key>/orchestrators/<name>/sessions/<id>`,
+//// where the key is the 64 hexadecimal digits of a page's key, the name is an
+//// orchestrator's key in the configuration's grammar (a letter, then letters,
+//// digits, `_` or `-`, at most 32 characters) and the identity is canonical, and
+//// nothing follows it. Anything else, an absolute URL, a path elsewhere on the
+//// origin, a second parameter, a fragment or a scheme, is no address and the
+//// element does nothing.
 ////
 //// The module imports neither Lustre nor the DOM binding, so the tests load
 //// it under Node.
 
 import gleam/list
+import gleam/result
 import gleam/string
 
 const prefix = "/ui/sessions/"
+
+// The relayed session page's address: a keyed page, the orchestrator, the session.
+const relayed_prefix = "/ui/p/"
+
+const relayed_orchestrators = "/orchestrators/"
+
+const relayed_sessions = "/sessions/"
+
+const key_digits = 64
+
+// The longest orchestrator key the configuration accepts.
+const name_limit = 32
 
 // The two exchanges that name no session, each followed by a ticket.
 const bare_prefixes = ["/ui/home", "/ui/admin"]
@@ -48,8 +69,56 @@ const identity_groups = [8, 4, 4, 4, 12]
 pub fn target(value: String) -> Result(String, Nil) {
   case list.find_map(bare_prefixes, fn(prefix) { bare_target(value, prefix) }) {
     Ok(address) -> Ok(address)
-    Error(Nil) -> session_target(value)
+    Error(Nil) ->
+      case session_target(value) {
+        Ok(address) -> Ok(address)
+        Error(Nil) -> relayed_target(value)
+      }
   }
+}
+
+// The relayed page's shape: the key, the orchestrator and the identity, with
+// nothing before, between as anything else, or after.
+fn relayed_target(value: String) -> Result(String, Nil) {
+  use rest <- result.try(case string.split_once(value, relayed_prefix) {
+    Ok(#("", rest)) -> Ok(rest)
+    Ok(#(_, _)) | Error(Nil) -> Error(Nil)
+  })
+  use #(key, rest) <- result.try(string.split_once(rest, relayed_orchestrators))
+  use #(name, identity) <- result.try(string.split_once(rest, relayed_sessions))
+
+  case
+    hexadecimal(key, key_digits)
+    && orchestrator_name(name)
+    && canonical(identity)
+  {
+    True -> Ok(value)
+    False -> Error(Nil)
+  }
+}
+
+// An orchestrator's key: a letter, then letters, digits, `_` or `-`, within the
+// limit. It holds no separator, so it cannot swallow part of the path.
+fn orchestrator_name(name: String) -> Bool {
+  case string.to_graphemes(name) {
+    [first, ..rest] ->
+      string.length(name) <= name_limit
+      && letter(first)
+      && list.all(rest, fn(grapheme) {
+        letter(grapheme)
+        || grapheme == "_"
+        || grapheme == "-"
+        || string.contains("0123456789", grapheme)
+      })
+    [] -> False
+  }
+}
+
+fn letter(grapheme: String) -> Bool {
+  string.contains(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    grapheme,
+  )
 }
 
 // An exchange that names no session: the prefix, then the ticket.

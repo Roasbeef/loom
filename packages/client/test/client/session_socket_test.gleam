@@ -445,6 +445,7 @@ fn page_socket_memory(payload_size) {
             ),
             None,
             "http://127.0.0.1",
+            "key",
           )
         ui_socket.upgrade(
           daemon,

@@ -58,7 +58,7 @@ import client/directory/settings
 import client/directory/store
 import client/distribution
 import client/distribution_plan.{
-  type Role, type Workspace, Executor, Orchestrator,
+  type Role, type Workspace, Executor, Orchestrator, Tool,
 }
 import client/ledger_control.{
   type AnswerView, type HeldView, type StatusView, AnswerView,
@@ -150,7 +150,20 @@ pub fn check_enrollment(request: Enrollment) -> Result(Nil, String) {
       Error(
         "--workspace belongs to an executor, and this node is an orchestrator",
       )
+    Tool, [_, ..] ->
+      Error("--workspace belongs to an executor, and this node is a tool")
     _, _ -> Ok(Nil)
+  })
+  use Nil <- result.try(case request.role, request.links, request.directory {
+    Tool, [], _ ->
+      Error(
+        request.name
+        <> " is a tool with no --links, so it could reach no daemon. Name the "
+        <> "daemon it attaches to.",
+      )
+    Tool, _, membership_entry.Voter | Tool, _, membership_entry.Learner ->
+      Error(request.name <> " is a tool, which cannot join the directory")
+    _, _, _ -> Ok(Nil)
   })
   list.try_each(request.workspaces, fn(workspace) {
     case
@@ -206,6 +219,7 @@ pub fn enroll(
       )
     Error(Nil) -> Ok(Nil)
   })
+  use Nil <- result.try(check_links_are_daemons(ledger, request))
   let member =
     Member(
       name: request.name,
@@ -228,6 +242,27 @@ pub fn enroll(
   entry
 }
 
+// A tool lists the daemon it attaches to, and nothing lists a tool. A daemon
+// that listed one would treat a node that runs no Loom as a peer to dial.
+fn check_links_are_daemons(
+  ledger: Ledger,
+  request: Enrollment,
+) -> Result(Nil, String) {
+  list.try_each(request.links, fn(link) {
+    case membership_ledger.member(ledger, link) {
+      Ok(Member(role: Tool, ..)) ->
+        Error(
+          request.name
+          <> " lists "
+          <> link
+          <> " in --links, but that is a tool. A tool lists the daemon it "
+          <> "attaches to, and nothing lists a tool.",
+        )
+      _ -> Ok(Nil)
+    }
+  })
+}
+
 /// The entry that replaces a member's certificate, and the member as it will
 /// be: the fields of the fold state with the new pin.
 ///
@@ -246,6 +281,15 @@ pub fn renew(
     membership_ledger.member(ledger, name)
     |> result.map_error(fn(_) { not_a_member(ledger, name) }),
   )
+  use Nil <- result.try(case current.role {
+    Tool ->
+      Error(
+        name
+        <> " is a tool, whose key is not kept in a bundle. `revoke` it and run "
+        <> "`attach-file` again to issue a new certificate.",
+      )
+    Orchestrator | Executor -> Ok(Nil)
+  })
   let member = Member(..current, pin:)
   use entry <- result.map(preflight(
     ledger,
@@ -590,6 +634,9 @@ pub fn strandings(
       case member.role {
         Orchestrator -> owned(member, answers)
         Executor -> placed(ledger, member, answers)
+
+        // A tool holds no session and has nothing placed on it.
+        Tool -> []
       }
   }
 }
@@ -711,6 +758,7 @@ pub fn describe_clear(member: Member) -> String {
       "no orchestrator linked to "
       <> member.name
       <> " has a session placed on it."
+    Tool -> member.name <> " is a tool and holds no sessions."
   }
 }
 

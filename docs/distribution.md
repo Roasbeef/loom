@@ -578,6 +578,77 @@ does not reach code-mode emulators. Use `--profile` for normal profiling
 because it creates a unique node and credential without a wrapper script.
 `make install` restores the normal stripped artifacts and launcher on disk.
 
+### Profiling a distributed daemon
+
+A daemon with a `[distribution]` table boots its VM as a TLS distribution node
+with the deployment's own cookie, so the launcher cannot also name it and give
+it a throwaway cookie. With `profile = true` (or `--profile`) and
+`LOOM_DISTRIBUTION_OPTFILE` set, the launcher starts the daemon as it would
+without profiling, adds `+Muatags true` for the allocator census, creates no
+credential directory, and prints how to attach instead of a `loom-profile`
+command. The settings no longer exclude each other
+([protocol-change 096](../protocol-change/096-tool-members-and-profile-over-tls.md)).
+
+A tool joins this daemon like any other node of the deployment: with a
+certificate under the deployment's authority, whose pin is in the ledger. The
+operator, on the machine that holds the authority key, enrolls it:
+
+```sh
+loom distribution attach-file inspector --node inspector@127.0.0.1 \
+    --links hub --out ~/inspector --passphrase-file ~/.loom-passphrase
+```
+
+`--links` names the daemon (its ledger name, as `loom distribution show`
+lists it). `--node` is the name the tool must start under: the certificate is issued for it,
+and the daemon drops a connected node whose name is not a linked member's.
+The command signs a `member` entry with
+the role `tool`, hands it to the daemon on this host, and writes five files in
+the directory (mode 0700): `ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie`
+and `ssl_dist.conf`. The last is a standard `ssl_dist_optfile` that names the
+other three. It has no Loom option in it, so every tool that starts an Erlang
+VM can use it, with standard flags and the cookie. Keep `-hidden -dist_listen
+false` on every tool: the file trusts the authority and not the ledger, so it
+has no server side, and a listening tool would accept a revoked member:
+
+```sh
+# A remote shell on the daemon.
+HOME=~/inspector erl -proto_dist inet_tls \
+    -ssl_dist_optfile ~/inspector/ssl_dist.conf \
+    -name inspector@127.0.0.1 -hidden -dist_listen false \
+    -remsh loom@hub.example
+
+# Observer, then Nodes, Connect node.
+HOME=~/inspector erl -proto_dist inet_tls \
+    -ssl_dist_optfile ~/inspector/ssl_dist.conf \
+    -name inspector@127.0.0.1 -hidden -dist_listen false \
+    -eval 'observer:start().'
+
+# Pickglass, which takes the same two options and the cookie file.
+pickglass attach --node loom@hub.example \
+    --proto-dist inet_tls --ssl-dist-optfile ~/inspector/ssl_dist.conf \
+    --cookie-file ~/inspector/.erlang.cookie --name inspector@127.0.0.1
+```
+
+`HOME` points at the directory only because Erlang reads the cookie from
+`$HOME/.erlang.cookie`; copy the cookie to your own `$HOME` instead if you
+prefer. The files are as sensitive as a node bundle: the key lets its holder
+join as the tool, and the cookie is the deployment's. A tool holds no sessions
+and is never asked anything, but it is a full Erlang node on the daemon, as
+any member is, so `loom distribution revoke inspector` when the work is done.
+To replace its certificate, revoke it and run `attach-file` again. Every
+daemon in the deployment must run a release that knows the `tool` role before
+the entry is signed. An older daemon refuses the tool entry and every entry
+after it, revokes included, until it is upgraded, so check that every daemon
+confirmed it (the report, and `--wait`) before relying on later entries. A
+daemon installed from a bundle that carries a tool line, on an old release,
+refuses to start and names the line.
+
+The node a tool dials is the daemon's ledger node, and pickglass still attaches
+only to this machine's own nodes for now, so run it on the daemon's machine.
+`loom observer` and `loom-profile` find a daemon by the node name and private
+cookie directory that a plain `--profile` launch creates, so they do not apply
+to a distributed daemon; use the commands above.
+
 ### Inspecting a running daemon with pickglass
 
 [Pickglass](https://github.com/Roasbeef/pickglass) is a separate inspector for

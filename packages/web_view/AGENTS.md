@@ -1970,3 +1970,78 @@ forms or nested frames. See
 [protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md).
 `markdown_view_test` pins text escaping and exact fence dispatch; the real
 browser drive is `scripts/web_mermaid_check.sh` against `scripts/web_seed`.
+
+## The relayed session page (protocol-change/094, slice S2b)
+
+The owner's operating page can be opened on one session that runs on another
+orchestrator, at `/ui/p/<key>/orchestrators/<name>/sessions/<id>`. It is the home
+component with a different centre, so the sidebar, the account panel and every
+ticket stay the home's.
+
+- `web_view/relayed` is the vocabulary: `Row` (name, `listing.Code`, `Activity`,
+  `Need`s), `Need` (the box's request identity and `seq`, worded by
+  `session_view/approval.presentation`, with `Ability` and `Remember`), `History`
+  (`Shown | Unreadable`), `Read` (`Heard(row, history) | Unreached(why)`), `Outcome`
+  (`Done | Refusal | Unknown`) and `Choice`. Everything in it is text from the box.
+  `listing.Code` gained `Pooled(pool, workspace)` for a pool placement.
+- `web_view/relayed_session` is the state machine: `State` (presence, row, history,
+  `Reach`, `Sending`, `Acting`, `deciding`, `decided`, `notice`, `sent`), `heard`, `update` and the
+  `replied`, `stopped`, `archived`, `decided` answers. A press is judged against the row
+  the page last read: a reply once, a stop when calm, an archive after its question,
+  a decision (whose "sent" line a later read clears once the request is no longer listed) only for a request the row lists at the revision the card showed that the
+  ceiling lets the page decide (and for the session only when `Rememberable`).
+- `view/relayed_session` draws the centre with the existing approval-card,
+  placement-strip and composer markup. The reply form accepts exactly one `message`
+  field (`reply_fields`). Every handler lies beneath `home.table_path`.
+- `home.Start.visiting` is `Some(home.Visit(orchestrator, session, refresh_ms, read,
+  send, stop, archive, decide))` only for this page. `Model` keeps `relay`,
+  `relay_timer` and `relay_reads`. `RelayTimerReady`/`RelayTicked` read every
+  `relay_refresh_ms` (5 s), `RelayRefreshed`/`RelayAnswered` carry a numbered read and
+  `Relaying`, `RelaySent`, `RelayStopped`, `RelayArchived`, `RelayDecided` are the presses
+  and their answers. Each answer is followed by a read. `Pane` gained `Relayed`.
+- `page.relayed_shell` and `page.relayed_path` are the document and the address.
+
+### Starting on another orchestrator and listing its sessions (second pull request)
+
+- `web_view/orchestrators` is what the page holds of each orchestrator the daemon is
+  configured with: a `Machine(orchestrator, offer, offer_reads, rows, reach, flight)`
+  kept for each name, so an answer changes only its machine. `Offers` (folders as
+  paths, `placements.Cards`, profiles, models), `Offer` (`Asking | Offering |
+  Refusing(why)`), `OffersRead`, `Listed` (a sidebar row), `ListRead` (`Heard | Missed`),
+  `Reach` (`Unasked | Fresh | Silent(why, last_ms)`), `Flight` (`Quiet | Out`) and
+  `Founding` (`Founded | Unsent | Refused`) are the words. `ask_offers` numbers a read and
+  keeps held offers while it refreshes; `offers_heard` drops an answer a newer read
+  overtook; `begin_listing` returns the machines with no listing read out, so a slow
+  box is asked one call at a time; `listing_heard` replaces rows or keeps them and the
+  last good time (`Silent`); `held_row` is the check a press passes; `ordered` is
+  needs-you, working, idle, each newest first.
+- `composer` gained `Agent` (`Here | Orchestrator(name)`) in `State`, `ChoseAgent`,
+  the intents `ReadAgents`, `ReadOn(orchestrator)` and `CreateOn(orchestrator, place,
+  prompt, roles)`, and on `Offers` the agent in force, `here`, the Agent chip's
+  `agents` (`Candidate(agent, name, Choosable | Checking | Unavailable)`) and `typing`
+  (`MayType | MayNotType`: a box is never given a typed path). `choosable` gates
+  `ChoseAgent` and `Started`; `kept` runs after the agent changes and keeps only an
+  executor or pool workspace the new machine offers (a folder never carries over) and
+  a profile or model it lists; `sentence_for` adds "This page relays it".
+- `view/new_session` draws the Agent list from `offers.agents` (a button for
+  `Choosable`, text with a reason otherwise), the box's offers as the Code list, one
+  disabled row for this machine's folders ("box cannot read laptop's files"), and
+  hides the recent places while a box is the agent. `Presses` gained `agent`.
+- `home.Start.orchestrators` is `Some(home.Orchestrators(key, names, refresh_ms,
+  offers, sessions, create))` only for the owner's operating page of a daemon with an
+  `[orchestrators.<name>]`. `Model` keeps `machines` and `side_timer`. `SideTimerReady`
+  and `SideTicked` start a read of every quiet machine and re-arm at a fixed interval
+  (`side_reading`); `SideListed`, `OffersAnswered` and `Founded` are the effects' own
+  messages; `OpeningRelayed(orchestrator, session)` is the sidebar row's press, honoured
+  only for a row `held_row` finds, and departs for `page.relayed_path(key, ..)`. A
+  `Founded` create departs the same way, or, `Unsent`, offers the session through
+  `composer.unsent`. `home.composer_state` and `home.machines` read the state in tests.
+- `view/sidebar.home` takes a `Relayed(sections, open)`: one `relayed-side-group` for
+  each machine with rows or a silence, headed "On <name>", under a `relayed-side-note`
+  line ("box not reachable, seen 2m ago") with the rows dimmed (`relayed-side-quiet`)
+  when it is silent. A row is a `session-open` button; its tag's agent is the
+  orchestrator. A session page's sidebar draws none. The classes are prefixed
+  `relayed-side-` because `relayed-stale` already styles the relayed page's own line.
+- Tests: `orchestrators_test` (state, a seeded ordering property), `composer_test` (agent
+  choice, kept, typed folder), `home_orchestrators_test` (the chip, the switch, create,
+  sidebar rows, unreachable box, one call at a time, admitted handlers).

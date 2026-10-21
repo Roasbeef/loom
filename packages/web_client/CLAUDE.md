@@ -162,7 +162,9 @@ renders again just for it:
   operator's page draws it hidden (an observer's page too, when it was opened
   from a home), and so does the home, and each writes `to`
   once the daemon has minted a ticket; `switch_rule.target` accepts exactly
-  those three address shapes and nothing else, and the element then calls
+  those three address shapes, and a fourth that has no ticket, a session on another
+  orchestrator (`/ui/p/<64 hex digits>/orchestrators/<name>/sessions/<id>`,
+  protocol-change/094), and nothing else, and the element then calls
   `location.assign` (one export in `dom.mjs`), so each keyed page is a history
   entry and Back returns to it with its own nonce (051, the addendum on
   navigation). `<loom-back>Home</loom-back>` calls `history.back()` and mints
@@ -399,8 +401,9 @@ time builds anything.
   arrive in either order.
 - `switch_rule.target(value)`: `Ok(value)` only for exactly
   `/ui/sessions/<canonical identity>?ticket=<64 hex digits>`,
-  `/ui/home?ticket=<64 hex digits>` or `/ui/admin?ticket=<64 hex digits>`,
-  `Error(Nil)` for
+  `/ui/home?ticket=<64 hex digits>`, `/ui/admin?ticket=<64 hex digits>` or
+  `/ui/p/<64 hex digits>/orchestrators/<name>/sessions/<canonical identity>` (a name is a
+  letter and then letters, digits, `_` or `-`, at most 32), `Error(Nil)` for
   anything else, an absolute URL or another path included. `<loom-switch>`
   navigates only to what it returns.
 - `shell_rule.Motion` (`Still` | `Animated`) and `frame_classes`: the frame

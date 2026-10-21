@@ -560,13 +560,20 @@ loom_profile_consume daemon "\$@"
 set -- -extra \${LOOM_PROFILE_ARGS[@]+"\${LOOM_PROFILE_ARGS[@]}"}
 if (( LOOM_PROFILE_ENABLED == 1 )); then
   unset LOOM_DEBUG_ARGS_FILE
-  set -- -name "\$LOOM_PROFILE_NODE" +Muatags true -env HOME "\$LOOM_PROFILE_ORIGINAL_HOME" \\
-    -kernel inet_dist_use_interface '{127,0,0,1}' "\$@"
+  if (( LOOM_PROFILE_DISTRIBUTED == 1 )); then
+    # The VM is already a TLS distribution node (below), so it gets neither a
+    # name nor a throwaway cookie home, and its listener keeps the interface the
+    # deployment configured.
+    set -- +Muatags true "\$@"
+  else
+    set -- -name "\$LOOM_PROFILE_NODE" +Muatags true -env HOME "\$LOOM_PROFILE_ORIGINAL_HOME" \\
+      -kernel inet_dist_use_interface '{127,0,0,1}' "\$@"
+  fi
 fi
 $DEBUG_START
 
 profile_exec=()
-if (( LOOM_PROFILE_ENABLED == 1 )); then
+if (( LOOM_PROFILE_ENABLED == 1 && LOOM_PROFILE_DISTRIBUTED == 0 )); then
   profile_exec=(/usr/bin/env "HOME=\$LOOM_PROFILE_COOKIE_HOME")
 fi
 

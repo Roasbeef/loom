@@ -62,6 +62,13 @@ pub type Role {
 
   /// Serves registered workspaces to the orchestrators that use it.
   Executor
+
+  /// Not a Loom daemon: a debugging or inspection tool (pickglass, Observer,
+  /// `erl -remsh`) that the operator let join a daemon's distribution
+  /// (protocol-change/096). It appears only as a ledger member. No plan names
+  /// one and no bundle carries one, because it holds no workspaces, runs no
+  /// sessions and is never asked anything.
+  Tool
 }
 
 /// One registered workspace of an executor.
@@ -291,7 +298,7 @@ fn valid_directory(plan: Plan) -> Result(Nil, String) {
               <> node.name
               <> "\" is missing",
             )
-          Orchestrator, True | Executor, _ -> Ok(Nil)
+          Orchestrator, True | Executor, _ | Tool, _ -> Ok(Nil)
         }
       })
     }
@@ -316,6 +323,7 @@ pub fn peers(plan: Plan, node: Node) -> List(Node) {
         Orchestrator, Orchestrator -> True
         Executor, Orchestrator -> list.contains(other.executors, node.name)
         Executor, Executor -> False
+        Tool, _ | _, Tool -> False
       }
       || in_directory(plan, node)
       && in_directory(plan, other)
@@ -347,10 +355,12 @@ pub fn role_word(role: Role) -> String {
   case role {
     Orchestrator -> "orchestrator"
     Executor -> "executor"
+    Tool -> "tool"
   }
 }
 
-/// Reads a role word, or says which words exist.
+/// Reads the role word of a plan or a bundle, or says which words exist. Only
+/// daemons appear in either, so `tool` is not accepted here.
 ///
 /// ## Examples
 ///
@@ -365,6 +375,20 @@ pub fn role_from_word(word: String) -> Result(Role, String) {
       Error(
         "role must be \"orchestrator\" or \"executor\", got \"" <> other <> "\"",
       )
+  }
+}
+
+/// Reads the role word of a ledger member, which is a daemon's role or `tool`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert distribution_plan.member_role_from_word("tool") == Ok(Tool)
+/// ```
+pub fn member_role_from_word(word: String) -> Result(Role, String) {
+  case word {
+    "tool" -> Ok(Tool)
+    other -> role_from_word(other)
   }
 }
 
@@ -697,6 +721,7 @@ fn valid_host(place: String, host: String) -> Result(Nil, String) {
 
 fn valid_role_keys(node: Node, place: String) -> Result(Nil, String) {
   case node.role {
+    Tool -> Error(place <> ": a plan holds daemons, and a tool is not one")
     Orchestrator ->
       case node.workspaces {
         [] -> Ok(Nil)

@@ -111,6 +111,8 @@ fn home_start(manage: Option(Ask)) -> home.Start {
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    visiting: None,
+    orchestrators: None,
     executors: [],
     pools: [],
     machine: "box",
