@@ -1480,6 +1480,216 @@ pub fn delete_start_failure(session_id session_id: String) {
   #(sql, [dev.ParamString(session_id)])
 }
 
+pub type RelayedByRequest {
+  RelayedByRequest(spawner: String, session_id: String, created_at: Int)
+}
+
+pub fn relayed_by_request(request_id request_id: String) {
+  let sql =
+    "SELECT spawner, session_id, created_at FROM catalogue_relayed_sessions
+WHERE request_id = ?"
+  #(sql, [dev.ParamString(request_id)], relayed_by_request_decoder())
+}
+
+pub fn relayed_by_request_decoder() -> decode.Decoder(RelayedByRequest) {
+  use spawner <- decode.field(0, decode.string)
+  use session_id <- decode.field(1, decode.string)
+  use created_at <- decode.field(2, decode.int)
+  decode.success(RelayedByRequest(spawner:, session_id:, created_at:))
+}
+
+pub type RelayedOfSession {
+  RelayedOfSession(spawner: String, request_id: String, created_at: Int)
+}
+
+pub fn relayed_of_session(session_id session_id: String) {
+  let sql =
+    "SELECT spawner, request_id, created_at FROM catalogue_relayed_sessions
+WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)], relayed_of_session_decoder())
+}
+
+pub fn relayed_of_session_decoder() -> decode.Decoder(RelayedOfSession) {
+  use spawner <- decode.field(0, decode.string)
+  use request_id <- decode.field(1, decode.string)
+  use created_at <- decode.field(2, decode.int)
+  decode.success(RelayedOfSession(spawner:, request_id:, created_at:))
+}
+
+pub type CountRelayedHeld {
+  CountRelayedHeld(count: Int)
+}
+
+pub fn count_relayed_held(spawner spawner: String) {
+  let sql =
+    "SELECT COUNT(*) FROM catalogue_relayed_sessions AS r
+LEFT JOIN catalogue_session_archives AS a ON a.session_id = r.session_id
+WHERE r.spawner = ? AND a.session_id IS NULL"
+  #(sql, [dev.ParamString(spawner)], count_relayed_held_decoder())
+}
+
+pub fn count_relayed_held_decoder() -> decode.Decoder(CountRelayedHeld) {
+  use count <- decode.field(0, decode.int)
+  decode.success(CountRelayedHeld(count:))
+}
+
+pub type CountRelayedSince {
+  CountRelayedSince(count: Int)
+}
+
+pub fn count_relayed_since(
+  spawner spawner: String,
+  created_at created_at: Int,
+) {
+  let sql =
+    "SELECT COUNT(*) FROM catalogue_relayed_sessions
+WHERE spawner = ? AND created_at > ?"
+  #(
+    sql,
+    [dev.ParamString(spawner), dev.ParamInt(created_at)],
+    count_relayed_since_decoder(),
+  )
+}
+
+pub fn count_relayed_since_decoder() -> decode.Decoder(CountRelayedSince) {
+  use count <- decode.field(0, decode.int)
+  decode.success(CountRelayedSince(count:))
+}
+
+pub fn insert_relayed_session(
+  request_id request_id: String,
+  spawner spawner: String,
+  session_id session_id: String,
+  created_at created_at: Int,
+) {
+  let sql =
+    "INSERT INTO catalogue_relayed_sessions (request_id, spawner, session_id, created_at)
+VALUES (?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(request_id),
+    dev.ParamString(spawner),
+    dev.ParamString(session_id),
+    dev.ParamInt(created_at),
+  ])
+}
+
+pub fn delete_relayed_session(session_id session_id: String) {
+  let sql = "DELETE FROM catalogue_relayed_sessions WHERE session_id = ?"
+  #(sql, [dev.ParamString(session_id)])
+}
+
+pub type RelayedFirstPage {
+  RelayedFirstPage(
+    request_id: String,
+    session_id: String,
+    created_at: Int,
+    name: String,
+    workspace: String,
+    executor: String,
+    pool: String,
+    archived: Int,
+  )
+}
+
+pub fn relayed_first_page(spawner spawner: String, limit limit: Int) {
+  let sql =
+    "SELECT r.request_id, r.session_id, r.created_at,
+       CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
+       s.workspace, s.executor, s.pool,
+       CAST(EXISTS (SELECT 1 FROM catalogue_session_archives AS a
+                    WHERE a.session_id = r.session_id) AS INTEGER) AS archived
+FROM catalogue_relayed_sessions AS r
+JOIN catalogue_sessions AS s ON s.session_id = r.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = r.session_id
+WHERE r.spawner = ?
+ORDER BY r.session_id DESC
+LIMIT ?"
+  #(
+    sql,
+    [dev.ParamString(spawner), dev.ParamInt(limit)],
+    relayed_first_page_decoder(),
+  )
+}
+
+pub fn relayed_first_page_decoder() -> decode.Decoder(RelayedFirstPage) {
+  use request_id <- decode.field(0, decode.string)
+  use session_id <- decode.field(1, decode.string)
+  use created_at <- decode.field(2, decode.int)
+  use name <- decode.field(3, decode.string)
+  use workspace <- decode.field(4, decode.string)
+  use executor <- decode.field(5, decode.string)
+  use pool <- decode.field(6, decode.string)
+  use archived <- decode.field(7, decode.int)
+  decode.success(RelayedFirstPage(
+    request_id:,
+    session_id:,
+    created_at:,
+    name:,
+    workspace:,
+    executor:,
+    pool:,
+    archived:,
+  ))
+}
+
+pub type RelayedPageAfter {
+  RelayedPageAfter(
+    request_id: String,
+    session_id: String,
+    created_at: Int,
+    name: String,
+    workspace: String,
+    executor: String,
+    pool: String,
+    archived: Int,
+  )
+}
+
+pub fn relayed_page_after(
+  spawner spawner: String,
+  session_id session_id: String,
+  limit limit: Int,
+) {
+  let sql =
+    "SELECT r.request_id, r.session_id, r.created_at,
+       CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
+       s.workspace, s.executor, s.pool,
+       CAST(EXISTS (SELECT 1 FROM catalogue_session_archives AS a
+                    WHERE a.session_id = r.session_id) AS INTEGER) AS archived
+FROM catalogue_relayed_sessions AS r
+JOIN catalogue_sessions AS s ON s.session_id = r.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = r.session_id
+WHERE r.spawner = ? AND r.session_id < ?
+ORDER BY r.session_id DESC
+LIMIT ?"
+  #(
+    sql,
+    [dev.ParamString(spawner), dev.ParamString(session_id), dev.ParamInt(limit)],
+    relayed_page_after_decoder(),
+  )
+}
+
+pub fn relayed_page_after_decoder() -> decode.Decoder(RelayedPageAfter) {
+  use request_id <- decode.field(0, decode.string)
+  use session_id <- decode.field(1, decode.string)
+  use created_at <- decode.field(2, decode.int)
+  use name <- decode.field(3, decode.string)
+  use workspace <- decode.field(4, decode.string)
+  use executor <- decode.field(5, decode.string)
+  use pool <- decode.field(6, decode.string)
+  use archived <- decode.field(7, decode.int)
+  decode.success(RelayedPageAfter(
+    request_id:,
+    session_id:,
+    created_at:,
+    name:,
+    workspace:,
+    executor:,
+    pool:,
+    archived:,
+  ))
+}
+
 pub type DomainById {
   DomainById(
     domain_id: String,
