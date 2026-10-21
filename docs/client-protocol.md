@@ -171,7 +171,7 @@ links from another app).
 Without `--ui`, every `/ui/` path returns HTTP 404.
 
 Any other path returns HTTP 404.
-Source: `handle` (`client/daemon/server.gleam:469-187`).
+Source: `handle` (`client/daemon/server.gleam:479-187`).
 
 `<session-id>` MUST be the canonical session identifier the control
 endpoint reported. A path segment that is not a canonical session id is
@@ -419,7 +419,7 @@ carries the daemon epoch that most control commands must echo.
 | `ui.origins` | array of strings | optional | Present only when the daemon serves the view and `[daemon] ui_origins` lists at least one origin: each listed `https` origin as a browser writes it, the host lowercased and port 443 left out ([protocol-change/052](../protocol-change/052-web-view-remote-origin.md)). `loom ui --origin` and `--device` build their link on one of them. A client that does not know the field ignores it. |
 
 Source: (`client/daemon/server.gleam:577-617`); the `ui` field is
-`hello_view` (`client/daemon/server.gleam:2265`).
+`hello_view` (`client/daemon/server.gleam:2278`).
 
 The epoch changes when the daemon restarts. A client MUST discard
 ephemeral state and re-select a session on reconnecting to a different
@@ -564,7 +564,7 @@ Source: (`client/daemon/server.gleam:4780-4821`).
 A page stops on an authorized record boundary once its encoded size
 would exceed 60000 bytes. The next request resumes after the last
 emitted id. A single record too large for that budget is refused with
-`metadata_too_large`. Source: (`client/daemon/server.gleam:3628`).
+`metadata_too_large`. Source: (`client/daemon/server.gleam:3641`).
 
 Errors: `revision_changed` when `revision` was supplied and differs from
 the catalogue's current one; `metadata_too_large`; `unavailable`.
@@ -1076,7 +1076,7 @@ While the daemon is draining, an existing control socket may still issue
 the read commands `status`, `sessions.list`, `sessions.get`,
 `sessions.default`, `operations.get`, `peers.inspect`, `sessions.activity`,
 `principals.list`, `principals.memberships`, and `ui.link`. Every mutating control command is refused. Source:
-`control_use` (`client/daemon/server.gleam:2603-1130`).
+`control_use` (`client/daemon/server.gleam:2616-1130`).
 
 That includes `sessions.delete`, which is a mutation like any other.
 
