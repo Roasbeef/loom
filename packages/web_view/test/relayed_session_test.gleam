@@ -276,6 +276,49 @@ pub fn a_decision_names_a_request_the_row_lists_at_its_revision_test() {
   assert refused.notice == Some(session.Failed("outside the ceiling"))
 }
 
+// "Your decision was sent." says so while the card may still be listed, and is gone
+// once a later read no longer lists that request. Another notice is left alone.
+pub fn the_decision_line_clears_once_the_request_is_gone_test() {
+  let #(deciding, _) =
+    session.update(plain(), session.Decided("ask-1", 4, relayed.Allow))
+  let sent = session.decided(deciding, relayed.Done)
+  assert sent.notice == Some(session.Said("Your decision was sent."))
+
+  // A read that still lists the request keeps the line.
+  let still =
+    session.heard(
+      sent,
+      relayed.Heard(
+        row: Some(row([need("ask-1", 4, relayed.Decidable, relayed.OnceOnly)])),
+        history: shown(),
+      ),
+      2000,
+    )
+  assert still.notice == Some(session.Said("Your decision was sent."))
+
+  // A read that does not list it clears the line, and only that line.
+  let gone =
+    session.heard(
+      still,
+      relayed.Heard(row: Some(row([])), history: shown()),
+      3000,
+    )
+  assert gone.notice == None
+
+  let failed =
+    session.State(
+      ..still,
+      notice: Some(session.Failed("the box did not answer")),
+    )
+  let kept =
+    session.heard(
+      failed,
+      relayed.Heard(row: Some(row([])), history: shown()),
+      3000,
+    )
+  assert kept.notice == Some(session.Failed("the box did not answer"))
+}
+
 // A forged press, or a stale one, finds no request and asks nothing: an unknown
 // identity, the right identity at a revision the card was not drawn with, and a
 // request the ceiling does not let the page decide.

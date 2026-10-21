@@ -127,3 +127,61 @@ pub fn any_other_value_is_refused_test() {
     },
   )
 }
+
+// A page departs for a session on another orchestrator (protocol-change/094) by
+// its keyed address, which has no ticket: the page's own cookie is the credential.
+fn relayed(key: String, name: String, identity: String) -> String {
+  "/ui/p/" <> key <> "/orchestrators/" <> name <> "/sessions/" <> identity
+}
+
+fn page_key() -> String {
+  string.repeat("ab12", 16)
+}
+
+pub fn the_address_of_a_relayed_session_is_an_address_test() {
+  let address = relayed(page_key(), "box", session)
+  assert switch_rule.target(address) == Ok(address)
+
+  // An orchestrator's key may hold digits, underscores and hyphens after a letter,
+  // and upper-case digits are hexadecimal too.
+  let named = relayed(string.uppercase(page_key()), "Box_2-a", session)
+  assert switch_rule.target(named) == Ok(named)
+}
+
+// The shape is exact: the key's digits, the configuration's grammar for the
+// orchestrator and a canonical identity, with nothing before, between or after.
+pub fn anything_else_near_a_relayed_address_is_no_address_test() {
+  list.each(
+    [
+      relayed(string.drop_end(page_key(), 1), "box", session),
+      relayed(page_key() <> "0", "box", session),
+      relayed(string.repeat("zz", 32), "box", session),
+      relayed("", "box", session),
+      relayed(page_key(), "", session),
+      relayed(page_key(), "9box", session),
+      relayed(page_key(), "-box", session),
+      relayed(page_key(), "bo x", session),
+      relayed(page_key(), "bo/x", session),
+      relayed(page_key(), "..", session),
+      relayed(page_key(), string.repeat("a", 33), session),
+      relayed(page_key(), "box", ""),
+      relayed(page_key(), "box", "not-a-session"),
+      relayed(page_key(), "box", string.drop_end(session, 1)),
+      relayed(page_key(), "box", session <> "/ws"),
+      relayed(page_key(), "box", session <> "?ticket=" <> ticket()),
+      relayed(page_key(), "box", session <> "#fragment"),
+      relayed(page_key(), "box", "../" <> session),
+      relayed(page_key(), "box", session <> "/sessions/" <> session),
+      "x" <> relayed(page_key(), "box", session),
+      "//elsewhere.example" <> relayed(page_key(), "box", session),
+      "https://elsewhere.example" <> relayed(page_key(), "box", session),
+      "/ui/p/" <> page_key() <> "/orchestrators/box/" <> session,
+      "/ui/p/" <> page_key() <> "/peers/box/sessions/" <> session,
+      "/ui/p/" <> page_key() <> "/home",
+      "/ui/p/" <> page_key() <> "/orchestrators/sessions/" <> session,
+    ],
+    fn(value) {
+      assert switch_rule.target(value) == Error(Nil)
+    },
+  )
+}

@@ -26,6 +26,17 @@
 ////   each be one the box offers now. The composer's lists were drawn from an
 ////   earlier read, and the box's table may have changed since.
 ////
+//// ## What the composer and the sidebar read
+////
+//// The composer's Agent chip and the sidebar's relayed rows are drawn from two
+//// more reads, `offers` and `listing`, and a create is `found`: it creates, and
+//// then delivers the first message. Each answers in the page's vocabulary
+//// (`web_view/orchestrators`) and never fails to answer: a box that cannot be
+//// reached is a `Withheld`, a `Missed` or a `Refused` with the relay's words, which
+//// is what a page draws. `listing` drops a row whose session identity is not in
+//// canonical text, so a link built from a row held by the page names a session the
+//// router will accept.
+////
 //// ## Untrusted text
 ////
 //// A request's tool, preview and grants were written on the box, some by a model.
@@ -36,7 +47,7 @@
 //// ## Flow
 ////
 //// `read` → `row_of` → `need_of` → `send` / `stop` / `archive` → `decide` →
-//// `judge` → `create`
+//// `judge` → `create` → `offers` → `listing` → `found`
 ////
 //// 1. `read` asks for the session's row and its newest transcript page.
 //// 2. `row_of` and `need_of` turn what the box listed into the page's types.
@@ -44,19 +55,25 @@
 //// 4. `decide` finds the request afresh and relays the decision.
 //// 5. `judge` checks a create against the offers, and `create` asks for fresh
 ////    offers, judges, and creates.
+//// 6. `offers` and `listing` read what the composer and the sidebar draw, and
+////    `found` creates a session and sends its first message.
 
 import broker/policy
 import client/protocol.{type EscalationRecord}
 import client/remote/top_relay.{type Failure, type Relay}
 import client/remote_escalation
 import client/remote_top
+import core/ids
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import session_view/approval
 import session_view/remote_transcript
+import web_view/creations
 import web_view/listing
+import web_view/orchestrators
+import web_view/placements
 import web_view/relayed
 
 /// Why a create did not reach the box.
@@ -68,6 +85,9 @@ pub type CreateRefusal {
     /// The name the page gave.
     name: String,
   )
+
+  /// The page chose no profile and the box offers none to start a session with.
+  NoProfile
 
   /// The offers could not be read, or the box refused or did not answer the
   /// create.
@@ -507,24 +527,278 @@ fn named(
 /// for each submit, and the relay resends it until the box answers or the window
 /// ends. The answer is the session's identity there.
 ///
+/// A page that chose no profile gets the first one the box offers now, in the
+/// order its operator wrote them, because the box has no profile of that name and
+/// a create must name one; a box that offers none is `NoProfile`.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // ui_top.create(relay, "box", request_id, remote_top.Folder("/w"), "default", None)
+/// // ui_top.create(relay, "box", request_id, remote_top.Folder("/w"), Some("default"), None)
 /// ```
 pub fn create(
   relay: Relay,
   orchestrator: String,
   request_id: String,
   placement: remote_top.Placement,
-  profile: String,
+  profile: Option(String),
   model: Option(String),
 ) -> Result(String, CreateRefusal) {
   use offers <- result.try(
     top_relay.placements(relay, orchestrator) |> result.map_error(Failed),
   )
+  use profile <- result.try(case profile, offers.profiles {
+    Some(chosen), _ -> Ok(chosen)
+    None, [first, ..] -> Ok(first)
+    None, [] -> Error(NoProfile)
+  })
   use Nil <- result.try(judge(offers, placement, profile, model))
 
   top_relay.create(relay, orchestrator, request_id, placement, profile, model)
   |> result.map_error(Failed)
+}
+
+// --- what the composer and the sidebar read ----------------------------------------
+
+/// What the box offers a new session, as the page's offers. A box that cannot be
+/// reached, or that refused this daemon, or whose answer would not read, is
+/// `Withheld` with the relay's words.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_top.offers(relay, "box")
+/// ```
+pub fn offers(relay: Relay, orchestrator: String) -> orchestrators.OffersRead {
+  case top_relay.placements(relay, orchestrator) {
+    Ok(offered) -> orchestrators.Offered(offers: offers_of(offered))
+    Error(failure) -> orchestrators.Withheld(why: top_relay.describe(failure))
+  }
+}
+
+/// The box's offers as the page's: folders as paths and executors and pools as
+/// the cards the Code list draws.
+///
+/// An executor is drawn with the state and workspaces the box reported. The box
+/// says how many machines of a pool can take a session and not which, and the Code
+/// list only asks whether any can, so a pool's report holds that many placeholder
+/// names and no more.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_top.offers_of(remote_top.no_offers()).folders == []
+/// ```
+pub fn offers_of(offered: remote_top.Offers) -> orchestrators.Offers {
+  orchestrators.Offers(
+    folders: list.map(offered.folders, fn(folder) { folder.path }),
+    cards: placements.Cards(
+      placements: placements.Placements(
+        executors: list.map(offered.executors, executor_card),
+        pools: list.map(offered.pools, pool_card),
+      ),
+      readiness: placements.Checked,
+    ),
+    profiles: offered.profiles,
+    models: offered.models,
+  )
+}
+
+fn executor_card(offer: remote_top.ExecutorOffer) -> placements.Executor {
+  placements.Executor(
+    name: offer.name,
+    report: Some(placements.Report(
+      state: case offer.state {
+        remote_top.Ready -> placements.Ready
+        remote_top.Degraded -> placements.Degraded
+        remote_top.Full -> placements.Full
+        remote_top.Down -> placements.Down
+      },
+      platform: None,
+      enforcement: None,
+      toolchains: [],
+      free_scopes: offer.free_scopes,
+      workspaces: offer.workspaces,
+      contradiction: None,
+    )),
+  )
+}
+
+fn pool_card(offer: remote_top.PoolOffer) -> placements.Pool {
+  placements.Pool(
+    name: offer.name,
+    report: Some(placements.PoolReport(
+      executors: [],
+      eligible: list.repeat("ready", offer.ready),
+      workspaces: offer.workspaces,
+    )),
+  )
+}
+
+/// The first page of the sessions the box lists for this daemon's page, for the
+/// sidebar. Only the first page is read, newest first, which is every session of
+/// a spawner at the default cap (`remote_top.max_rows` is the cap's own bound).
+/// An archived session is not drawn, and neither is a row whose session identity
+/// is not in canonical text, since the page builds a link from it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_top.listing(relay, "box")
+/// ```
+pub fn listing(relay: Relay, orchestrator: String) -> orchestrators.ListRead {
+  case top_relay.sessions(relay, orchestrator, "", remote_top.max_rows) {
+    Ok(page) -> orchestrators.Heard(rows: list.filter_map(page.rows, listed_of))
+    Error(failure) -> orchestrators.Missed(why: top_relay.describe(failure))
+  }
+}
+
+/// One of the box's rows as a sidebar row, or nothing for an archived session or
+/// one whose identity is not canonical.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_top.listed_of(row)
+/// ```
+pub fn listed_of(row: remote_top.Row) -> Result(orchestrators.Listed, Nil) {
+  case row.activity, canonical(row.session_id) {
+    remote_top.Archived, _ | _, False -> Error(Nil)
+    _, True ->
+      Ok(orchestrators.Listed(
+        session: row.session_id,
+        name: row.name,
+        code: code_of(row.placement),
+        activity: activity_of(row.activity),
+        updated_ms: row.updated_at,
+      ))
+  }
+}
+
+// Whether an identity is a session identity in the text the daemon writes it in.
+fn canonical(identity: String) -> Bool {
+  case ids.parse_session_id(identity) {
+    Ok(parsed) -> ids.session_id_to_string(parsed) == identity
+    Error(_) -> False
+  }
+}
+
+/// Creates a session on the box for the page and delivers its first message when
+/// there is one. The place must be one the page drew from the box's offers: a
+/// folder it listed, or a workspace of an executor or pool, never a typed path,
+/// which this daemon cannot judge for another machine. `create` judges the rest
+/// against a fresh read of the box.
+///
+/// A session that was made and did not take its first message is `Unsent`: the
+/// message may have arrived, so the page offers the session and does not make
+/// another. A create whose outcome is unknown is `Refused` in the words that say
+/// so.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_top.found(relay, "box", request_id, message_id, creations.Drawn("/w"), creations.default_roles, "fix it")
+/// ```
+pub fn found(
+  relay: Relay,
+  orchestrator: String,
+  request_id: String,
+  message_id: String,
+  place: creations.Place,
+  roles: creations.Roles,
+  prompt: String,
+) -> orchestrators.Founding {
+  case made(relay, orchestrator, request_id, place, roles) {
+    Error(why) -> orchestrators.Refused(why:)
+    Ok(session) ->
+      first_message(relay, orchestrator, session, message_id, prompt)
+  }
+}
+
+// The create, as the identity of the session it made or the words saying why it
+// made none. The identity is checked here because the page builds a link from it.
+fn made(
+  relay: Relay,
+  orchestrator: String,
+  request_id: String,
+  place: creations.Place,
+  roles: creations.Roles,
+) -> Result(String, String) {
+  use placement <- result.try(
+    placement_of(place)
+    |> result.replace_error(
+      "A folder typed here cannot be used on another machine. Choose one it offers.",
+    ),
+  )
+  use session <- result.try(
+    create(
+      relay,
+      orchestrator,
+      request_id,
+      placement,
+      roles.profile,
+      roles.model,
+    )
+    |> result.map_error(refusal_words),
+  )
+
+  case canonical(session) {
+    True -> Ok(session)
+    False ->
+      Error(
+        orchestrator
+        <> " answered with a session identity this page cannot use.",
+      )
+  }
+}
+
+// The first message of a session that was made: none to send, delivered, or not
+// delivered, which leaves the session for the person to open and check, since the
+// message may have arrived.
+fn first_message(
+  relay: Relay,
+  orchestrator: String,
+  session: String,
+  message_id: String,
+  prompt: String,
+) -> orchestrators.Founding {
+  case prompt {
+    "" -> orchestrators.Founded(session:)
+    text ->
+      case send(relay, orchestrator, session, message_id, text) {
+        relayed.Done -> orchestrators.Founded(session:)
+        relayed.Refusal(_) | relayed.Unknown(_) ->
+          orchestrators.Unsent(session:)
+      }
+  }
+}
+
+// The placement a page's place asks for. A typed folder is the one place a page can
+// name that only the daemon serving it can judge.
+fn placement_of(place: creations.Place) -> Result(remote_top.Placement, Nil) {
+  case place {
+    creations.Drawn(path) -> Ok(remote_top.Folder(path:))
+    creations.Registered(executor, workspace) ->
+      Ok(remote_top.Workspace(executor:, name: workspace))
+    creations.Pooled(pool, workspace) ->
+      Ok(remote_top.Pooled(pool:, name: workspace))
+    creations.Typed(_) -> Error(Nil)
+  }
+}
+
+/// A create's refusal in words for the person.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_top.refusal_words(ui_top.NoProfile)
+///   == "The orchestrator offers no profile to start a session with."
+/// ```
+pub fn refusal_words(refusal: CreateRefusal) -> String {
+  case refusal {
+    NotOffered(what:, name:) ->
+      remote_top.describe_refusal(remote_top.NotOffered(what:, name:))
+    NoProfile -> "The orchestrator offers no profile to start a session with."
+    Failed(failure:) -> top_relay.describe(failure)
+  }
 }

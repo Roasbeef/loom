@@ -32,7 +32,11 @@ import client/gateway
 import client/orchestrators
 import client/peer_mail
 import client/peers
+import client/remote/address
+import client/remote/orchestrator_port
 import client/remote/top_relay
+import client/remote_mail
+import client/remote_top
 import client/roster
 import client/session_directory
 import client/session_movers
@@ -43,6 +47,7 @@ import core/json
 import gleam/bit_array
 import gleam/bytes_tree
 import gleam/dynamic/decode
+import gleam/erlang/node
 import gleam/erlang/process
 import gleam/http/request as req
 import gleam/http/response
@@ -77,6 +82,7 @@ import web_view/home
 import web_view/invites
 import web_view/machines
 import web_view/names
+import web_view/orchestrators as relayed_roster
 import web_view/page
 import web_view/peer_links
 import web_view/renames
@@ -10278,4 +10284,230 @@ pub fn a_message_that_is_not_accepted_keeps_the_session_test() {
     assert string.starts_with(path, "/ui/sessions/")
     assert session_count(ready, credential) == before + 1
   })
+}
+
+// --- the owner's page and the orchestrators its daemon relays for -------------------
+
+// A relay to a box named "box", whose host answers its offers, records each create
+// and accepts each message. Any other name is not configured.
+fn box_relay(created: process.Subject(String)) -> top_relay.Relay {
+  let name = process.new_name("orchestrator_port")
+  let offers =
+    remote_top.Offers(
+      folders: [remote_top.FolderOffer(path: "/srv/app", label: "app")],
+      executors: [],
+      pools: [],
+      profiles: ["default"],
+      models: [],
+    )
+  let assert Ok(_) =
+    orchestrator_port.start_with_top(
+      name,
+      fn(_session) { Ok(orchestrator_port.NotOwned) },
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(_session) { Error("not_found") },
+      orchestrator_port.declining(),
+      orchestrator_port.refusing_spawns(),
+      orchestrator_port.refusing_children(),
+      orchestrator_port.unheld,
+      orchestrator_port.unreported(),
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        placements: fn(_node) { Ok(remote_top.encode_offers(offers)) },
+        create: fn(_node, request_id, _placement, _profile, _model) {
+          process.send(created, request_id)
+          Ok("0198c0de-0000-7000-8000-000000000001")
+        },
+        send: fn(_node, _session, _message_id, _text) {
+          Ok(remote_mail.encode_landing(remote_mail.Admitted))
+        },
+      ),
+    )
+    as "the port starts"
+  let port = address.Address(node: node.self(), name:)
+
+  top_relay.through(
+    fn(box) {
+      case box {
+        "box" -> Ok(port)
+        other -> Error(top_relay.NotConfigured(other))
+      }
+    },
+    top_relay.Timing(
+      retry_window_ms: 600,
+      create_ms: 150,
+      call_ms: 150,
+      first_pause_ms: 10,
+      longest_pause_ms: 40,
+    ),
+  )
+}
+
+fn orchestrating(
+  standing: ui_socket.Standing(String),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  relay: top_relay.Relay,
+) -> home.Orchestrators {
+  ui_socket.orchestrating_for(standing, tickets, open, relay, ["box"], "key")
+}
+
+// What a create task delivers, made synchronous for a test.
+fn founded(
+  held: home.Orchestrators,
+  box: String,
+  prompt: String,
+) -> relayed_roster.Founding {
+  let answered = process.new_subject()
+  held.create(
+    box,
+    creations.Drawn("/srv/app"),
+    creations.default_roles,
+    prompt,
+    fn(founding) { process.send(answered, founding) },
+  )
+  let assert Ok(founding) = process.receive(answered, 5000)
+    as "the create task answered"
+  founding
+}
+
+// The owner's operating page creates on a box through the box's own offers, and a
+// create is one of the credential's creations: after the allowance is spent a
+// create is refused in the words a local one is, and nothing more reaches the box.
+pub fn a_create_on_a_box_counts_against_the_pages_allowance_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let created = process.new_subject()
+    let held = orchestrating(standing, tickets, page_open, box_relay(created))
+
+    // The credential's allowance is `ui_sessions.creation_limit`, shared with a
+    // local creation: that many creates reach the box.
+    list.each(list.repeat(Nil, ui_sessions.creation_limit), fn(_) {
+      assert founded(held, "box", "hello")
+        == relayed_roster.Founded("0198c0de-0000-7000-8000-000000000001")
+      let assert Ok(_) = process.receive(created, 1000) as "the box created"
+    })
+
+    // The next is refused in the words a local creation's refusal has, and the
+    // box is not asked.
+    assert founded(held, "box", "")
+      == relayed_roster.Refused(creations.reason_words(creations.TooMany))
+    assert process.receive(created, 100) == Error(Nil)
+  })
+}
+
+// A page that can no longer act as the owner's operating page creates nothing, and
+// a box this daemon is not configured with is refused by the relay without a dial.
+pub fn a_create_needs_the_owners_operating_page_test() {
+  fixture(fn(ready, _, credential) {
+    let created = process.new_subject()
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Observer)
+    let held = orchestrating(standing, tickets, page_open, box_relay(created))
+
+    assert founded(held, "box", "x")
+      == relayed_roster.Refused("this page can no longer act for you")
+    assert process.receive(created, 100) == Error(Nil)
+
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let held = orchestrating(standing, tickets, page_open, box_relay(created))
+    assert founded(held, "desk", "x")
+      == relayed_roster.Refused(
+        "desk is not one of this daemon's orchestrators",
+      )
+    assert process.receive(created, 100) == Error(Nil)
+  })
+}
+
+// The reads need the page to be open, and answer in the page's words when it is
+// not, so a page that ended asks no orchestrator anything.
+pub fn the_reads_need_an_open_page_test() {
+  fixture(fn(ready, _, credential) {
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let ended = fn() { Error(Nil) }
+    let held =
+      orchestrating(standing, tickets, ended, box_relay(process.new_subject()))
+    let answered = process.new_subject()
+
+    held.offers("box", fn(read) { process.send(answered, read) })
+    assert process.receive(answered, 5000)
+      == Ok(relayed_roster.Withheld("this page has ended"))
+
+    let listed = process.new_subject()
+    held.sessions("box", fn(read) { process.send(listed, read) })
+    assert process.receive(listed, 5000)
+      == Ok(relayed_roster.Missed("this page has ended"))
+
+    // While it is open the read reaches the box and reports its offers.
+    let open =
+      orchestrating(
+        standing,
+        tickets,
+        page_open,
+        box_relay(process.new_subject()),
+      )
+    open.offers("box", fn(read) { process.send(answered, read) })
+    let assert Ok(relayed_roster.Offered(offers)) =
+      process.receive(answered, 5000)
+    assert offers.folders == ["/srv/app"]
+  })
+}
+
+// Only the owner's operating page of a daemon configured with an orchestrator is
+// handed the capability. A member's page, an observer-ceiling page and a daemon
+// with none are not, and nothing is built for them.
+pub fn only_an_owners_operating_page_is_handed_the_orchestrators_test() {
+  let make = fn() {
+    home.Orchestrators(
+      key: "k",
+      names: ["box"],
+      refresh_ms: 5,
+      offers: fn(_, _) { Nil },
+      sessions: fn(_, _) { Nil },
+      create: fn(_, _, _, _, _) { Nil },
+    )
+  }
+  let owner =
+    access.Principal(id: "p", display_name: "P", kind: access.OwnerPrincipal)
+  let member =
+    access.Principal(id: "p", display_name: "P", kind: access.MemberPrincipal)
+
+  let assert Some(_) =
+    ui_socket.home_orchestrators_capability(
+      owner,
+      access.Operator,
+      ["box"],
+      make,
+    )
+  assert ui_socket.home_orchestrators_capability(
+      owner,
+      access.Operator,
+      [],
+      make,
+    )
+    == None
+  assert ui_socket.home_orchestrators_capability(
+      owner,
+      access.Observer,
+      ["box"],
+      make,
+    )
+    == None
+  assert ui_socket.home_orchestrators_capability(
+      member,
+      access.Operator,
+      ["box"],
+      make,
+    )
+    == None
+  assert ui_socket.home_orchestrators_capability(
+      member,
+      access.Observer,
+      ["box"],
+      make,
+    )
+    == None
 }

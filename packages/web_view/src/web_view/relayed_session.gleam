@@ -46,6 +46,7 @@
 //// 4. The answer of each request is applied by the function named for it.
 //// 5. `view/relayed_session` draws the state.
 
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import web_view/composer
@@ -147,6 +148,10 @@ pub type State {
     acting: Acting,
     /// The request whose decision is out, if one is.
     deciding: Option(String),
+    /// The request whose decision the box accepted and whose card a later read
+    /// may still list, so that "Your decision was sent." is said until a read no
+    /// longer lists it.
+    decided: Option(String),
     /// What the page last said about a press.
     notice: Option(Notice),
     /// How many replies have landed, which keys the reply form so that it is
@@ -236,6 +241,7 @@ pub fn open(orchestrator: String, session: String) -> State {
     sending: Ready,
     acting: Calm,
     deciding: None,
+    decided: None,
     notice: None,
     sent: 0,
   )
@@ -267,6 +273,7 @@ pub fn heard(state: State, read: relayed.Read, now_ms: Int) -> State {
         seen_ms: Some(now_ms),
         reach: Answering,
       )
+      |> settled_decision
 
     // A session the list does not hold has nothing to act on, so nothing that
     // was pending on it stays on the page either.
@@ -280,9 +287,32 @@ pub fn heard(state: State, read: relayed.Read, now_ms: Int) -> State {
         reach: Answering,
         deciding: None,
       )
+      |> settled_decision
 
     relayed.Unreached(why:) ->
       State(..state, reach: silent(state.reach, why, now_ms))
+  }
+}
+
+// Once a read no longer lists the request whose decision was sent, the decision
+// has taken effect and the line saying it was sent has nothing left to say. Any
+// other notice stays until the next press replaces it.
+fn settled_decision(state: State) -> State {
+  case state.decided {
+    None -> state
+    Some(escalation) -> {
+      let listed = case state.row {
+        Some(row) ->
+          list.any(row.needs, fn(need) { need.escalation == escalation })
+        None -> False
+      }
+
+      case listed, state.notice {
+        True, _ -> state
+        False, Some(Said(_)) -> State(..state, decided: None, notice: None)
+        False, _ -> State(..state, decided: None)
+      }
+    }
   }
 }
 
@@ -481,6 +511,7 @@ pub fn decided(state: State, outcome: relayed.Outcome) -> State {
       State(
         ..state,
         deciding: None,
+        decided: state.deciding,
         notice: Some(Said("Your decision was sent.")),
       )
     relayed.Refusal(why:) | relayed.Unknown(why:) ->

@@ -24,6 +24,16 @@ fn offers() -> Offers {
     cards: placements.listed(["exec", "gpu"], ["linux"]),
     profiles: ["fast"],
     models: ["glm"],
+    agent: composer.Here,
+    here: "laptop",
+    agents: [
+      composer.Candidate(
+        composer.Here,
+        "laptop",
+        composer.Choosable("The daemon serving this page"),
+      ),
+    ],
+    typing: composer.MayType,
   )
 }
 
@@ -482,4 +492,246 @@ pub fn a_role_no_longer_offered_says_so_on_the_form_test() {
   assert state.sending == composer.Ready
   let assert Some(words) = state.refusal
   assert string.contains(words, "no longer offered")
+}
+
+// The offers of a daemon that relays for a box, which answered, and a second
+// orchestrator, which did not.
+fn with_orchestrators(offers: Offers) -> Offers {
+  Offers(..offers, agents: [
+    composer.Candidate(
+      composer.Here,
+      "laptop",
+      composer.Choosable("The daemon serving this page"),
+    ),
+    composer.Candidate(
+      composer.Orchestrator("box"),
+      "box",
+      composer.Choosable("1 working"),
+    ),
+    composer.Candidate(composer.Orchestrator("slow"), "slow", composer.Checking),
+    composer.Candidate(
+      composer.Orchestrator("gone"),
+      "gone",
+      composer.Unavailable("the orchestrator is not reachable"),
+    ),
+  ])
+}
+
+// The Agent chip's rows are the only machines a message can choose, and only a
+// row that can be chosen: one that is still being checked, one that did not
+// answer and one the page never drew change nothing.
+pub fn only_a_drawn_machine_that_answered_can_be_chosen_test() {
+  let held = with_orchestrators(offers())
+
+  let #(state, _) =
+    update(
+      composer.new(),
+      composer.ChoseAgent(composer.Orchestrator("box")),
+      held,
+    )
+  assert state.agent == composer.Orchestrator("box")
+  assert state.open == composer.Shut
+
+  list.each(["slow", "gone", "nowhere"], fn(name) {
+    let #(state, _) =
+      update(
+        composer.new(),
+        composer.ChoseAgent(composer.Orchestrator(name)),
+        held,
+      )
+    assert state.agent == composer.Here
+  })
+
+  // This daemon is always a row, and choosing it returns to it.
+  let #(back, _) = update(state, composer.ChoseAgent(composer.Here), held)
+  assert back.agent == composer.Here
+}
+
+// Opening the Agent chip owes a read of every orchestrator, and opening the Code
+// chip owes a read of the one that is the agent, or of this daemon's placements.
+pub fn the_chips_owe_the_reads_for_the_agent_in_force_test() {
+  let held = with_orchestrators(offers())
+
+  let #(_, intent) =
+    update(composer.new(), composer.Toggled(composer.AgentChip), held)
+  assert intent == composer.ReadAgents
+
+  let on_box =
+    update(
+      composer.new(),
+      composer.ChoseAgent(composer.Orchestrator("box")),
+      held,
+    ).0
+  let #(_, intent) = update(on_box, composer.Toggled(composer.CodeChip), held)
+  assert intent == composer.ReadOn("box")
+
+  let #(_, intent) =
+    update(composer.new(), composer.Toggled(composer.CodeChip), held)
+  assert intent == composer.ReadPlacements
+}
+
+// The box's offers, as the page holds them once the box is the agent: one folder,
+// one executor workspace, one profile, and no typed folder.
+fn box_offers() -> Offers {
+  Offers(
+    ..with_orchestrators(offers()),
+    machine: "box",
+    folders: ["/srv/app"],
+    cards: placements.listed(["exec"], []),
+    profiles: ["default"],
+    models: [],
+    agent: composer.Orchestrator("box"),
+    typing: composer.MayNotType,
+  )
+}
+
+// A start on a box is a create on that box, for a place it offered, with the
+// message trimmed and no name: the box names its own sessions.
+pub fn a_start_on_a_box_is_a_create_there_test() {
+  let state =
+    composer.State(
+      ..composer.new(),
+      agent: composer.Orchestrator("box"),
+      target: Some(composer.Folder("/srv/app")),
+    )
+  let #(state, intent) =
+    update(
+      state,
+      composer.Started("  fix it  ", composer.Nothing),
+      box_offers(),
+    )
+
+  assert intent
+    == composer.CreateOn(
+      "box",
+      creations.Drawn("/srv/app"),
+      "fix it",
+      creations.default_roles,
+    )
+  assert state.sending == composer.Out
+}
+
+// A box is never given a path the page typed, and a start whose agent stopped
+// answering asks nothing and says so.
+pub fn a_box_is_never_given_a_typed_path_test() {
+  let state =
+    composer.State(
+      ..composer.new(),
+      agent: composer.Orchestrator("box"),
+      target: Some(composer.TypedFolder),
+    )
+
+  assert !composer.offered(box_offers(), composer.TypedFolder)
+
+  // The forged target is not in force, so the default (the box's folder) is.
+  assert composer.chosen(state, box_offers(), [])
+    == Some(composer.Folder("/srv/app"))
+
+  let gone =
+    Offers(..box_offers(), agents: [
+      composer.Candidate(
+        composer.Orchestrator("box"),
+        "box",
+        composer.Unavailable("the orchestrator is not reachable"),
+      ),
+    ])
+  let #(state, intent) =
+    update(state, composer.Started("go", composer.Nothing), gone)
+  assert intent == composer.Stay
+  let assert Some(words) = state.refusal
+  assert string.contains(words, "not answering")
+}
+
+// A switch keeps the workspace choice the new machine offers and clears a folder,
+// since the same path on another machine is another folder, and a profile or model
+// the new machine does not list goes back to the default.
+pub fn a_switch_keeps_what_the_new_machine_offers_test() {
+  let on_exec =
+    composer.State(
+      ..composer.new(),
+      target: Some(composer.OnExecutor("exec", Some("repo"))),
+      roles: creations.Roles(Some("fast"), Some("glm")),
+    )
+  let held =
+    Offers(
+      ..box_offers(),
+      cards: reported(box_offers(), ["repo"]).cards,
+      profiles: ["fast"],
+      models: [],
+    )
+  let kept = composer.kept(on_exec, held)
+  assert kept.target == Some(composer.OnExecutor("exec", Some("repo")))
+  assert kept.roles == creations.Roles(Some("fast"), None)
+
+  let on_folder =
+    composer.State(..composer.new(), target: Some(composer.Folder("/srv/app")))
+  assert composer.kept(on_folder, held).target == None
+
+  let missing =
+    composer.State(
+      ..composer.new(),
+      target: Some(composer.OnExecutor("other", Some("repo"))),
+    )
+  assert composer.kept(missing, held).target == None
+}
+
+// The sentence for a box says that this page relays.
+pub fn the_sentence_for_a_box_says_the_page_relays_test() {
+  let pieces =
+    composer.sentence_for(
+      composer.Orchestrator("box"),
+      "box",
+      Some(composer.Folder("/srv/app")),
+    )
+  assert list.last(pieces)
+    == Ok(composer.Plain(" This page relays it: approvals come here."))
+  assert composer.sentence_for(composer.Here, "laptop", None)
+    == composer.sentence("laptop", None)
+}
+
+// A box has no default profile, so a switch to one names the first profile it
+// lists, which is what its create sends, and a switch back to this daemon drops a
+// profile this daemon does not list.
+pub fn a_switch_to_a_box_names_its_first_profile_test() {
+  let fresh = composer.new()
+
+  assert composer.kept(fresh, box_offers()).roles.profile == Some("default")
+
+  let chosen =
+    composer.State(..fresh, roles: creations.Roles(Some("fast"), None))
+  let two = Offers(..box_offers(), profiles: ["default", "fast"])
+  assert composer.kept(chosen, two).roles.profile == Some("fast")
+
+  let none = Offers(..box_offers(), profiles: [])
+  assert composer.kept(fresh, none).roles.profile == None
+
+  let back = composer.kept(composer.kept(fresh, box_offers()), offers())
+  assert back.roles.profile == None
+}
+
+// An empty first message is allowed for a box exactly as it is for this daemon: the
+// start is a create that sends no message, and the box names the session itself.
+pub fn an_empty_message_starts_a_box_session_without_a_message_test() {
+  let state =
+    composer.State(
+      ..composer.new(),
+      agent: composer.Orchestrator("box"),
+      target: Some(composer.Folder("/srv/app")),
+    )
+  let #(_, intent) =
+    update(state, composer.Started("   ", composer.Nothing), box_offers())
+
+  assert intent
+    == composer.CreateOn(
+      "box",
+      creations.Drawn("/srv/app"),
+      "",
+      creations.default_roles,
+    )
+
+  // The local composer does the same: `Create` with an empty prompt.
+  let here = composer.State(..state, agent: composer.Here)
+  let #(_, local) =
+    update(here, composer.Started("   ", composer.Nothing), box_offers())
+  let assert composer.Create(prompt: "", ..) = local
 }

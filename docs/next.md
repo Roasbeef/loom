@@ -216,21 +216,43 @@ live checks but no full signoff.
    branches, a reopened session recreated from its branch, clean trees removed
    with branches kept, and a dirty tree kept.
 
-   **S2b is in two pull requests.** The first (branch
-   `web/relayed-session-page`) is the relayed session page at
+   **S2b is in two pull requests, both built.** The first (branch
+   `web/relayed-session-page`, #1065) is the relayed session page at
    `/ui/p/<key>/orchestrators/<name>/sessions/<id>`: the route and its
    admission (the owner's operating page, a configured orchestrator, a
    canonical id), the home component with a relayed centre (`Pane` `Relayed`,
    `web_view/relayed`, `web_view/relayed_session`), reply, stop, archive and
-   decisions through `client/daemon/ui_top` over `remote/top_relay`, a 5 s
-   re-read, and `ui_top.create`, which judges a create against a fresh
-   `Placements`. `create` has no caller yet and nothing links to the page. The
-   second is the composer's Agent chip, the box's offers in the Code picker,
-   relayed rows in the sidebar and their re-read; it is also where the page gets
-   its links (the client's `switch_rule` accepts only today's shapes). The
-   unfinished first attempt stays on `wip/relayed-sessions-web` for its composer
-   and sidebar code. A second orchestrator for the live
-   drive is already enrolled: `mac2` is ledger entry 4, with its home at
+   decisions through `client/daemon/ui_top` over `remote/top_relay`, and a 5 s
+   re-read. The second (branch `web/relayed-session-entry`) is the way in:
+
+   - The composer's Agent chip lists this daemon and each configured
+     `[orchestrators.<name>]`. Opening it reads every orchestrator's offers
+     through `ui_top.offers`; a row is a button only for an orchestrator that
+     answered, and otherwise says why (not reachable, no `[spawners.<name>]`,
+     older build). Choosing one makes its folders, executors and pools the Code
+     list (no typed path; one disabled row says the box cannot read this
+     machine's files), keeps an executor or pool workspace the box also offers
+     and a profile or model it lists, and clears a folder.
+   - A start on an orchestrator goes through `ui_top.found`: a create judged
+     against fresh offers, then the first message. The page departs for
+     `page.relayed_path`, which `<loom-switch>` now accepts
+     (`switch_rule`). A session made whose first message did not arrive is
+     offered with the existing "Open the session" line. A create spends the same
+     per-credential allowance a local creation does.
+   - The sidebar lists each orchestrator's sessions in a section of its own
+     ("On box"), read every 5 s on a timer of its own, one call at a time for
+     each box. A box that stops answering keeps its last rows, dimmed, under
+     "box not reachable, seen 2m ago".
+
+   Not done, on purpose: the sections are not merged by state with this
+   daemon's rows (the design note says merged; a section per orchestrator needed
+   no change to `listing`), only the first page of a box's list is read, and a
+   box with no `[profiles.*]` cannot be started on from a page that chose no
+   profile, because `TopCreate` requires a profile name and the box offers none
+   (`ui_top.NoProfile` says so; the page sends the first profile the box lists
+   when none is chosen). The phone sheets were checked at 390 px against the
+   rendered HTML only, not against two live daemons. A second orchestrator for
+   the live drive is already enrolled: `mac2` is ledger entry 4, with its home at
    `~/loom-drives/e2e/mac2` and a `[spawners.mac2.top_level]` table on the box.
    **Exit:** S2b's exit criteria in section 7, driven from mac2 against the box.
    Then S4, which removes the old home form and the "Where" box.
