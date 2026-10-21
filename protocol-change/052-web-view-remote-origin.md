@@ -642,11 +642,17 @@ loopback address. RFC 6761 section 6.3 has a resolver treat every name under
 `.localhost` as loopback and not consult DNS, and Chrome and Firefox do so,
 so no DNS answer an attacker controls can point such a name at a remote
 host. A page cannot rebind one of these names the way it rebinds its own.
-Safari and some other resolvers do not pin the suffix. There the name reaches
-this daemon only if the operator adds an `/etc/hosts` line, which is the
-operator's choice. A resolver that sent the name to DNS would let an attacker
-answer it with a loopback address, which any page can already do to
-`localhost`, and not with a remote one that the daemon would then see.
+Safari and some other resolvers do not pin the suffix. There the defence is
+weaker, and it is defence in depth only. A rebinding attack answers the
+attacker's name with a remote address first and then with loopback, so on
+such a resolver a rebound page could reach the daemon under `Host:
+evil.localhost:<port>`. What bounds it is that nothing is bound to the
+attacker's name: cookies are scoped to the host and `localStorage` to the
+origin, so the rebound page holds no `loom_ui` or `loom_login` cookie and no
+login key or nonce. It gets what any unauthenticated request already gets: `/`,
+the assets, the login and claim documents, and a socket that fails
+`page_grant`. On a resolver that does pin the suffix, the rebinding step
+cannot happen at all.
 
 `ui_origins` refuses an entry that names a `.localhost` host, as it refuses
 `localhost`: the loopback check comes first, so a listed name would never be
@@ -693,6 +699,17 @@ One route and one asset are added to a frozen set, and the host rule admits a
 class of names instead of three. Both rest on the browser's own resolution of
 `.localhost`, which this daemon cannot check. The root page is a convenience
 and nothing depends on it; removing it restores `unknown endpoint`.
+
+Refusing a `.localhost` entry in `ui_origins` is a behaviour change. Before
+this addendum such an entry parsed as a `Remote` origin, so an owner who ran
+an `https` proxy on a `.localhost` name had a working listed origin. Startup
+now refuses that entry. The proxy must use a name that is not under
+`.localhost`; an `http` page on a `.localhost` name needs no entry.
+
+`loom ui` prints a link on `127.0.0.1`, so the login it sets belongs to that
+origin and a `.localhost` name does not find it. To use the name, open one
+`loom ui` link with its host changed to the name. The login is then kept for
+that origin and the page at `/` forwards to it from then on.
 
 ### Verification
 

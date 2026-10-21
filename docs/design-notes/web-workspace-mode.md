@@ -94,9 +94,9 @@ exchange redeems it once (`redeem` (`ui_sessions.gleam:756`)), the page and
 its socket are re-authorized on every request (`page_grant`
 (`client/daemon/server.gleam:356`)), and every route is checked in 051's
 order: `loopback_host` (`ui_http.gleam:283`), then `navigation_allowed`
-(`ui_http.gleam:202`) for a page, `origin_matches` (`ui_http.gleam:584`) for
+(`ui_http.gleam:202`) for a page, `origin_matches` (`ui_http.gleam:595`) for
 the socket, then the cookie under the key. The cookie's `Path` is the key's
-(`set_cookie` (`ui_http.gleam:766`)), so it reaches no other page and no other
+(`set_cookie` (`ui_http.gleam:777`)), so it reaches no other page and no other
 loopback port. A UI session lives eight hours (`session_ms`
 (`ui_sessions.gleam:79`)); a chain of switches ends with the page it began
 from (`mint_before` (`ui_sessions.gleam:572`)).

@@ -270,7 +270,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6114`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6125`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -1906,6 +1906,11 @@ honours. None, or unreadable storage, shows `loom ui` (`loom ui --device` on a
 listed origin, `ui_http.sign_in_command`). The page names no key, reads the
 nonce nowhere but in the browser, and moves the tab only to the resume page,
 which the daemon verifies as it does for a bookmark, so it adds no authority.
+
+`loom ui` always prints a `127.0.0.1` link, so its login belongs to that
+origin and `http://loom.localhost:<port>/` finds none. To use a `.localhost`
+name, open one `loom ui` link with its host changed to that name; the root page
+then forwards from that origin from then on. Or keep using `127.0.0.1`.
 
 Every rule after the host check is a function of that one answer, handed to
 each handler by `server.web_view`:
