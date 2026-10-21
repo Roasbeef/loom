@@ -2985,6 +2985,8 @@ Example:
 // same shipped acceptance.
 fn executor_usage() -> String {
   "usage: loom executor release SESSION [--state-dir PATH]   (also: loomd executor release)
+       loom executor release --worktrees --config PATH [--state-dir PATH]
+                             [--helper PATH] [--force-session SESSION]...
 
 Release a scope on this machine's executor that the executor will not reopen by
 itself. Run it on the executor, with the executor daemon stopped.
@@ -3011,7 +3013,19 @@ refused and must be started again, and `loom` may report that the daemon is
 still starting until the next daemon starts.
 
 Example:
-  loom executor release 7f3a9c1e --state-dir /var/lib/loom"
+  loom executor release 7f3a9c1e --state-dir /var/lib/loom
+
+With --worktrees, settle the Git worktrees this executor made for worktree
+workspaces instead. Deleting a session never reaches the executor, so its tree
+stays until it is removed here. A tree with no changes is removed and its branch
+loom/<session> is kept; a tree with changes or on a detached HEAD is kept, and
+--force-session SESSION removes the one named whatever it holds. Git runs in the
+sandbox. --config is the executor's loom.toml, which names the workspaces, and
+--helper names the sandbox helper when it is not the one beside loomd.
+Branches are never deleted: prune the loom/ ones with Git.
+
+Example:
+  loom executor release --worktrees --config /etc/loom/loom.toml"
 }
 
 /// The arguments `loom` would hand to the server for a passthrough command,
