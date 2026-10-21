@@ -316,20 +316,54 @@ pub fn scrimmed(frame: Frame, drawer: State) -> Bool {
   dismissal(frame, drawer) == Dismiss
 }
 
-/// Whether a click inside the sidebar was on a button, from the tags of the
-/// nodes the click passed through. A session's row, the Home entry and a
-/// saved session's row are each a button, and pressing one leaves the page or
-/// the session it was on, so the drawer that held it closes. A click on the
-/// sidebar's padding or a heading is not a press and leaves the drawer open.
+/// A node a click passed through, as the shell reads it: its tag and its `class`
+/// attribute, which is empty for a node that has none.
+pub type Pressed {
+  Pressed(
+    /// The node's tag in lower case.
+    tag: String,
+    /// The node's `class` attribute.
+    class: String,
+  )
+}
+
+/// The classes of the sidebar's buttons that leave what the page shows: a
+/// session's row, which opens or resumes it, "New session", the foot's "Admin"
+/// and a row menu's "Rename, move or delete", which show another pane. Pressing
+/// one of them is the person finishing with the drawer, so it closes. Every other
+/// button in the column changes the column in place: a machine pill narrows the
+/// list, the saved group's toggle and an idle group's "Show more" fold rows open
+/// or shut, and a row menu's archive control asks its question. The person is
+/// still working in the drawer, so those leave it open.
+pub const door_classes = [
+  "session-open", "new-session", "foot-admin", "row-manage",
+]
+
+/// Whether a click inside the sidebar was on a button that leaves what the page
+/// shows, from the nodes the click passed through. A session's row, "New
+/// session", the foot's "Admin" and a row menu's "Rename, move or delete" are each
+/// a button of a door class, and pressing one closes the drawer wherever in the
+/// button the click landed. A click on the sidebar's padding, a heading or a
+/// button that works in place (a pill, the saved group's toggle, "Show more")
+/// leaves the drawer open. Closing it on any button made the saved group's toggle
+/// shut the drawer instead of expanding the group.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert shell_rule.presses_button(["span", "button", "li", "ul"])
-/// assert !shell_rule.presses_button(["h2", "section"])
+/// assert shell_rule.presses_door([
+///   shell_rule.Pressed("span", "residency"),
+///   shell_rule.Pressed("button", "session-open"),
+/// ])
+/// assert !shell_rule.presses_door([shell_rule.Pressed("button", "saved-toggle")])
 /// ```
-pub fn presses_button(tags: List(String)) -> Bool {
-  list.contains(tags, "button")
+pub fn presses_door(path: List(Pressed)) -> Bool {
+  list.any(path, fn(node) {
+    node.tag == "button"
+    && list.any(string.split(node.class, " "), fn(word) {
+      list.contains(door_classes, word)
+    })
+  })
 }
 
 fn flipped(state: State) -> State {

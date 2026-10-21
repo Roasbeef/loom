@@ -1203,15 +1203,22 @@ fn marker() -> decode.Decoder(Msg) {
   }
 }
 
-// A press inside the sidebar that closes the drawer: the tags of the nodes the
-// click passed through hold a button, whichever child of the button was hit.
-// Any other click fails the decoder and does nothing.
+// A press inside the sidebar that closes the drawer: the nodes the click passed
+// through hold a button of a door class (`shell_rule.door_classes`), whichever
+// child of the button was hit. A button that works in place, such as the saved
+// group's toggle, and any other click fail the decoder and do nothing.
 fn row() -> decode.Decoder(Msg) {
   use event <- decode.then(decode.dynamic)
-  let tags = ffi_dom.composed_path(event) |> list.filter_map(ffi_dom.tag_name)
-  case shell_rule.presses_button(tags) {
+  let path =
+    ffi_dom.composed_path(event)
+    |> list.filter_map(fn(node) {
+      use tag <- result.map(ffi_dom.tag_name(node))
+      let class = ffi_dom.attribute(node, "class") |> result.unwrap("")
+      shell_rule.Pressed(tag:, class:)
+    })
+  case shell_rule.presses_door(path) {
     True -> decode.success(DrawerDismissed)
-    False -> decode.failure(DrawerDismissed, "a press on a sidebar button")
+    False -> decode.failure(DrawerDismissed, "a press on a sidebar door")
   }
 }
 
