@@ -216,16 +216,20 @@ live checks but no full signoff.
    branches, a reopened session recreated from its branch, clean trees removed
    with branches kept, and a dirty tree kept.
 
-   **S2b is next.** It is the web side of 094: the composer's Agent chip
-   offering other orchestrators, a relayed session page at
-   `/ui/p/<key>/orchestrators/<name>/sessions/<id>`, and relayed rows in the
-   sidebar. A first attempt stopped partway, because a tool classifier refused
-   one file write. Its unfinished, uncompiled work is on the branch
-   `wip/relayed-sessions-web`. That branch also records the design calls made:
-   the relayed page is the home component with a different centre; a
-   `client/daemon/ui_top` module re-judges every create against a fresh
-   `Placements`; and the relay is wired through `server.Ui`. Whether to take
-   the branch or start S2b again is open. A second orchestrator for the live
+   **S2b is in two pull requests.** The first (branch
+   `web/relayed-session-page`) is the relayed session page at
+   `/ui/p/<key>/orchestrators/<name>/sessions/<id>`: the route and its
+   admission (the owner's operating page, a configured orchestrator, a
+   canonical id), the home component with a relayed centre (`Pane` `Relayed`,
+   `web_view/relayed`, `web_view/relayed_session`), reply, stop, archive and
+   decisions through `client/daemon/ui_top` over `remote/top_relay`, a 5 s
+   re-read, and `ui_top.create`, which judges a create against a fresh
+   `Placements`. `create` has no caller yet and nothing links to the page. The
+   second is the composer's Agent chip, the box's offers in the Code picker,
+   relayed rows in the sidebar and their re-read; it is also where the page gets
+   its links (the client's `switch_rule` accepts only today's shapes). The
+   unfinished first attempt stays on `wip/relayed-sessions-web` for its composer
+   and sidebar code. A second orchestrator for the live
    drive is already enrolled: `mac2` is ledger entry 4, with its home at
    `~/loom-drives/e2e/mac2` and a `[spawners.mac2.top_level]` table on the box.
    **Exit:** S2b's exit criteria in section 7, driven from mac2 against the box.

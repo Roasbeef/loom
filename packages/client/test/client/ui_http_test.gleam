@@ -626,3 +626,78 @@ pub fn the_sign_in_command_follows_the_page_origin_test() {
   let assert Ok(listed) = ui_origin.parse("https://loom.test.example:8443")
   assert ui_http.sign_in_command(ui_http.Remote(listed)) == "loom ui --device"
 }
+
+const relayed_session = "0198c0de-0000-7000-8000-000000000001"
+
+// The relayed session page and its socket (protocol-change/094): both routes
+// carry the page key, a configured orchestrator's key and a canonical session
+// identity, and the socket takes the nonce from the query as every socket does.
+pub fn the_relayed_routes_are_exact_test() {
+  let page = "/ui/p/k1/orchestrators/box/sessions/" <> relayed_session
+
+  assert ui_http.route(get(page, []))
+    == ui_http.RelayedPage("k1", "box", relayed_session)
+  assert ui_http.route(
+      get(page <> "/ws", []) |> request.set_query([#("csrf-token", "n1")]),
+    )
+    == ui_http.RelayedSocket("k1", "box", relayed_session, Some("n1"))
+  assert ui_http.route(get(page <> "/ws", []))
+    == ui_http.RelayedSocket("k1", "box", relayed_session, None)
+
+  // Only a get, and only these shapes.
+  let posted =
+    request.new()
+    |> request.set_method(http.Post)
+    |> request.set_path(page)
+  assert ui_http.route(posted) == ui_http.Unknown
+  assert ui_http.route(get(page <> "/image/r/0", [])) == ui_http.Unknown
+  assert ui_http.route(get(page <> "/extra", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/p/k1/orchestrators/box", [])) == ui_http.Unknown
+  assert ui_http.route(
+      get("/ui/p/k1/peers/box/sessions/" <> relayed_session, []),
+    )
+    == ui_http.Unknown
+}
+
+pub fn a_relayed_route_parameter_outside_its_grammar_is_unknown_test() {
+  let at = fn(name, session) {
+    ui_http.route(
+      get("/ui/p/k1/orchestrators/" <> name <> "/sessions/" <> session, []),
+    )
+  }
+
+  assert at("Box", relayed_session) == ui_http.Unknown
+  assert at("9box", relayed_session) == ui_http.Unknown
+  assert at("a.b", relayed_session) == ui_http.Unknown
+  assert at("a%2Fb", relayed_session) == ui_http.Unknown
+  assert at("box", "not-a-session") == ui_http.Unknown
+  assert at("box", string.uppercase(relayed_session)) == ui_http.Unknown
+  assert at("box", relayed_session <> "0") == ui_http.Unknown
+  assert at("box", "..") == ui_http.Unknown
+}
+
+// Whatever the text, a route is made only when the name is a lower-case key of
+// at most 32 characters and the identity is canonical, so no path segment that is
+// not one reaches a handler.
+pub fn only_a_key_and_a_canonical_identity_make_a_relayed_target_test() {
+  let config =
+    qcheck.default_config()
+    |> qcheck.with_test_count(300)
+    |> qcheck.with_seed(qcheck.seed(20_261_021))
+
+  qcheck.run(config, qcheck.string(), fn(text) {
+    assert !ui_http.relayed_target(text, relayed_session)
+      || {
+        string.length(text) >= 1
+        && string.length(text) <= 32
+        && text == string.lowercase(text)
+        && !string.contains(text, "/")
+        && !string.contains(text, ".")
+      }
+    assert !ui_http.relayed_target("box", text)
+      || text == relayed_session
+      || string.length(text) == 36
+  })
+  assert ui_http.relayed_target("box", relayed_session)
+  assert ui_http.relayed_target("box-2_x", relayed_session)
+}

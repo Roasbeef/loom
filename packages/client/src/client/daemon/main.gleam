@@ -108,6 +108,7 @@ import client/remote/link_keeper
 import client/remote/orchestrator_port
 import client/remote/remote_peer
 import client/remote/remote_spawner
+import client/remote/top_relay
 import client/remote/workspace
 import client/remote_mail
 import client/remote_reach
@@ -3164,6 +3165,19 @@ fn web_view(
       // present and wrong refuses `--ui` at startup rather than serving a view
       // whose logins can never verify.
       use ready <- result.try(root.ready(daemon, within: 20_000))
+
+      // The relayed session page asks the orchestrators this daemon is configured
+      // with over its distribution (protocol-change/094). A daemon with none can
+      // name no orchestrator, so its relay answers every name as not configured.
+      let relay = case config.membership {
+        Some(membership) ->
+          top_relay.over(membership, orchestrator_roster(config))
+        None ->
+          top_relay.through(
+            fn(name) { Error(top_relay.NotConfigured(name)) },
+            top_relay.production(),
+          )
+      }
       use root_key <- result.map(ui_login.root_key(
         ready.state_root,
         ready.registry,
@@ -3188,7 +3202,7 @@ fn web_view(
               seen,
             )
           },
-          home: fn(request, attachment, open, seen) {
+          home: fn(request, attachment, open, seen, visit) {
             ui_socket.upgrade_home(
               daemon,
               request,
@@ -3197,6 +3211,8 @@ fn web_view(
               open,
               seen,
               fn(resident: serve.Resident) { Ok(resident.gateway) },
+              relay,
+              visit,
             )
           },
           admin: fn(request, attachment, open, ceiling) {

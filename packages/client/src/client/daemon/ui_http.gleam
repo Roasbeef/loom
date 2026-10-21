@@ -35,6 +35,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
+import storage/catalogue
 import web_view/image
 import web_view/page
 
@@ -102,6 +103,22 @@ pub type Route {
 
   /// `GET /ui/p/<key>/home`: the home page.
   HomePage(key: String)
+
+  /// `GET /ui/p/<key>/orchestrators/<name>/sessions/<id>`: the page of a
+  /// session that runs on another orchestrator (protocol-change/094). The router
+  /// has already checked that `orchestrator` has the grammar of a configured key
+  /// and `session_id` is a canonical identity; whether the key is configured is
+  /// the server's to check.
+  RelayedPage(key: String, orchestrator: String, session_id: String)
+
+  /// `GET /ui/p/<key>/orchestrators/<name>/sessions/<id>/ws`: the relayed page's
+  /// socket, with the nonce as the socket URL's `csrf-token`.
+  RelayedSocket(
+    key: String,
+    orchestrator: String,
+    session_id: String,
+    nonce: Option(String),
+  )
 
   /// `GET /ui/p/<key>/home/ws`: the home component's socket, with the nonce
   /// as the socket URL's `csrf-token`.
@@ -238,6 +255,16 @@ pub fn route(request: Request(body)) -> Route {
       }
     http.Post, ["ui", "home"] -> ConfirmedExchange(ui_sessions.HomeExchange)
     http.Get, ["ui", "p", key, "home"] -> HomePage(key)
+    http.Get, ["ui", "p", key, "orchestrators", name, "sessions", id] ->
+      case relayed_target(name, id) {
+        True -> RelayedPage(key, name, id)
+        False -> Unknown
+      }
+    http.Get, ["ui", "p", key, "orchestrators", name, "sessions", id, "ws"] ->
+      case relayed_target(name, id) {
+        True -> RelayedSocket(key, name, id, query(request, "csrf-token"))
+        False -> Unknown
+      }
     http.Get, ["ui", "p", key, "home", "ws"] ->
       HomeSocket(key, query(request, "csrf-token"))
     http.Get, ["ui", "l", key, "home"] -> LoginPage(key)
@@ -269,6 +296,26 @@ pub fn route(request: Request(body)) -> Route {
         _ -> Unknown
       }
     _, _ -> Unknown
+  }
+}
+
+/// Whether a relayed route names something a configured orchestrator could hold:
+/// a key in the grammar of every `[orchestrators.<name>]` key
+/// (`catalogue.is_profile_name`) and a session identity in its canonical text.
+/// Anything else is `Unknown`, so no route parameter that is not one reaches a
+/// handler (protocol-change/094).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_http.relayed_target("box", "0198c0de-0000-7000-8000-000000000001")
+/// assert !ui_http.relayed_target("Box/..", "0198c0de-0000-7000-8000-000000000001")
+/// ```
+pub fn relayed_target(orchestrator: String, session_id: String) -> Bool {
+  catalogue.is_profile_name(orchestrator)
+  && case ids.parse_session_id(session_id) {
+    Ok(parsed) -> ids.session_id_to_string(parsed) == session_id
+    Error(_) -> False
   }
 }
 

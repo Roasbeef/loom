@@ -966,7 +966,7 @@ fn refusal(state: State) -> Element(message) {
 fn code_title(code: listing.Code) -> String {
   case code {
     listing.Folder(path:) -> path
-    listing.Registered(..) -> ""
+    listing.Registered(..) | listing.Pooled(..) -> ""
   }
 }
 

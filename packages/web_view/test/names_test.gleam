@@ -68,6 +68,7 @@ fn start(
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self:,
+    visiting: None,
     executors: [],
     pools: [],
     machine: "box",

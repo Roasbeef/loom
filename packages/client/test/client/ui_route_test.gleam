@@ -29,8 +29,10 @@ import client/daemon_claim_test
 import client/daemon_server_test
 import client/deployment
 import client/gateway
+import client/orchestrators
 import client/peer_mail
 import client/peers
+import client/remote/top_relay
 import client/roster
 import client/session_directory
 import client/session_movers
@@ -238,7 +240,12 @@ fn fixture_lasting_with_root(
       executors: roster.fixed([]),
       pools: [],
       directory: session_directory.none(),
-      movers: session_movers.idle(),
+      movers: session_movers.Control(
+        ..session_movers.idle(),
+        orchestrators: roster.fixed([
+          orchestrators.plain("box", "box@127.0.0.1"),
+        ]),
+      ),
       deployment: deployment.alone("nonode@nohost"),
       ledger: None,
       generator: fn() { ids.generator(clock.fixed(1_700_000_000_000), 123) },
@@ -290,7 +297,7 @@ fn fixture_lasting_with_root(
               )
           }
         },
-        home: fn(request, attachment, open, seen) {
+        home: fn(request, attachment, open, seen, visit) {
           let ceiling = seen.grant.ceiling
           case serving {
             // The home's own socket, as the daemon serves it. A request that
@@ -325,6 +332,11 @@ fn fixture_lasting_with_root(
                     open,
                     seen,
                     fn(_) { Error(Nil) },
+                    top_relay.through(
+                      fn(name) { Error(top_relay.NotConfigured(name)) },
+                      top_relay.production(),
+                    ),
+                    visit,
                   )
                 }
               }
@@ -343,7 +355,14 @@ fn fixture_lasting_with_root(
                     open,
                   )
                 Error(Nil) ->
-                  homed(ready.state_root, request, attachment, open, ceiling)
+                  homed(
+                    ready.state_root,
+                    request,
+                    attachment,
+                    open,
+                    ceiling,
+                    visit,
+                  )
               }
 
             // The home as a row press asks for a ticket: the same call the
@@ -373,7 +392,14 @@ fn fixture_lasting_with_root(
                   )
                 Error(Nil), Error(Nil) ->
                   with_page(
-                    homed(ready.state_root, request, attachment, open, ceiling),
+                    homed(
+                      ready.state_root,
+                      request,
+                      attachment,
+                      open,
+                      ceiling,
+                      visit,
+                    ),
                     seen,
                   )
               }
@@ -383,7 +409,14 @@ fn fixture_lasting_with_root(
 
             Stubbed | Pictured | Inviting ->
               with_page(
-                homed(ready.state_root, request, attachment, open, ceiling),
+                homed(
+                  ready.state_root,
+                  request,
+                  attachment,
+                  open,
+                  ceiling,
+                  visit,
+                ),
                 seen,
               )
           }
@@ -1164,6 +1197,7 @@ fn homed(
   attachment: server.HomeAttachment(String),
   open: fn() -> Result(Int, Nil),
   ceiling: access.Role,
+  visit: option.Option(server.Visit),
 ) {
   let read = fn() {
     case ui_socket.home_listing(attachment, open, fn(_) { Nil }) {
@@ -1185,7 +1219,19 @@ fn homed(
     access.Operator -> "operator"
     access.Observer -> "observer"
   }
-  stub(280, string.join([attachment.principal.id, who, ..reads], "\n"))
+  let visiting = case visit {
+    Some(server.Visit(orchestrator:, session:)) -> [
+      "visit " <> orchestrator <> " " <> session,
+    ]
+    None -> []
+  }
+  stub(
+    280,
+    string.join(
+      list.flatten([[attachment.principal.id, who], reads, visiting]),
+      "\n",
+    ),
+  )
 }
 
 // The home's upgrade as the sign-in controls ask: the daemon's own functions
@@ -3274,6 +3320,114 @@ pub fn the_home_socket_carries_the_tickets_ceiling_test() {
     }
     assert ceiling_of(operator) == "operator"
     assert ceiling_of(observer) == "observer"
+  })
+}
+
+const relayed_identity = "0198c0de-0000-7000-8000-000000000001"
+
+// The address of a relayed session's page under a home page's key.
+fn relayed_path(
+  entered: Entered,
+  orchestrator: String,
+  session: String,
+) -> String {
+  string.replace(entered.page, "/home", "")
+  <> "/orchestrators/"
+  <> orchestrator
+  <> "/sessions/"
+  <> session
+}
+
+fn relayed_get(port: Int, entered: Entered, path: String) -> Answer {
+  get(port, path, [
+    host(port),
+    #("sec-fetch-site", "same-origin"),
+    #("cookie", "loom_ui=" <> entered.cookie),
+  ])
+}
+
+fn relayed_socket(
+  port: Int,
+  entered: Entered,
+  path: String,
+  nonce: String,
+) -> Answer {
+  get(port, path <> "/ws?csrf-token=" <> nonce, [
+    host(port),
+    #("cookie", "loom_ui=" <> entered.cookie),
+    #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+  ])
+}
+
+// The page of a session on another orchestrator is served to the owner's
+// operating page alone, and only for an orchestrator the daemon is configured
+// with and a session identity in its canonical text (protocol-change/094).
+pub fn the_relayed_page_is_the_owners_and_names_a_configured_orchestrator_test() {
+  fixture(fn(_, port, credential) {
+    let operator = enter(port, operator_home(port, credential))
+    let observer = enter(port, home_link(port, credential, []))
+    let path = relayed_path(operator, "box", relayed_identity)
+
+    let served = relayed_get(port, operator, path)
+    assert served.status == 200
+    assert string.contains(served.body, "Session — Loom")
+    assert !string.contains(served.body, relayed_identity)
+    assert !string.contains(served.body, operator.nonce)
+
+    // An orchestrator the daemon does not list, and a name or an identity that
+    // is not in the grammar, are not routes.
+    let desk = relayed_path(operator, "desk", relayed_identity)
+    assert relayed_get(port, operator, desk).status == 404
+    let upper = relayed_path(operator, "Box", relayed_identity)
+    assert relayed_get(port, operator, upper).status == 404
+    let dotted = relayed_path(operator, "box.x", relayed_identity)
+    assert relayed_get(port, operator, dotted).status == 404
+    let bad = relayed_path(operator, "box", "not-a-session")
+    assert relayed_get(port, operator, bad).status == 404
+    let shouted =
+      relayed_path(operator, "box", string.uppercase(relayed_identity))
+    assert relayed_get(port, operator, shouted).status == 404
+
+    // A page minted to read is refused, and a navigation from elsewhere too.
+    let observed = relayed_path(observer, "box", relayed_identity)
+    assert relayed_get(port, observer, observed).status == 403
+    assert get(port, path, [
+        host(port),
+        #("sec-fetch-site", "cross-site"),
+        #("cookie", "loom_ui=" <> operator.cookie),
+      ]).status
+      == 403
+  })
+}
+
+// The relayed socket takes the home's checks in the home's order and then the
+// two more, and hands the upgrade the session it was opened for.
+pub fn the_relayed_socket_is_handed_the_session_it_was_opened_for_test() {
+  fixture(fn(_, port, credential) {
+    let operator = enter(port, operator_home(port, credential))
+    let observer = enter(port, home_link(port, credential, []))
+    let path = relayed_path(operator, "box", relayed_identity)
+
+    let served = relayed_socket(port, operator, path, operator.nonce)
+    assert string.contains(served.body, "visit box " <> relayed_identity)
+    assert string.contains(served.body, "operator")
+
+    assert relayed_socket(port, operator, path, "forged").status == 403
+    assert get(port, path <> "/ws", [
+        host(port),
+        #("cookie", "loom_ui=" <> operator.cookie),
+        #("origin", "http://127.0.0.1:" <> int.to_string(port)),
+      ]).status
+      == 403
+    let desk = relayed_path(operator, "desk", relayed_identity)
+    assert relayed_socket(port, operator, desk, operator.nonce).status == 404
+    let observed = relayed_path(observer, "box", relayed_identity)
+    assert relayed_socket(port, observer, observed, observer.nonce).status
+      == 403
+
+    // The home's own socket is told of no visit.
+    let home = home_socket(port, operator, [])
+    assert !string.contains(home.body, "visit")
   })
 }
 

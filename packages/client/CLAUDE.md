@@ -9444,3 +9444,32 @@ and `gateway_test`, and `orchestrator_port_test`.
   `TopResolve` open a saved relayed session; `TopStop` does not. The box never
   dials the laptop for this. The page's browser never reaches the box.
 
+
+## The relayed session page's daemon side (protocol-change/094, slice S2b)
+
+`ui_http.route` has `RelayedPage(key, orchestrator, session_id)` and
+`RelayedSocket(.., nonce)` for `/ui/p/<key>/orchestrators/<name>/sessions/<id>[/ws]`.
+`ui_http.relayed_target` is the grammar: the name satisfies `catalogue.is_profile_name`
+and the id round-trips through `ids.parse_session_id`; anything else is `Unknown`.
+
+- `server.Visit(orchestrator, session)` is what a home socket is opened for.
+  `home_socket` takes `Option(Visit)`; `admitted_visit` refuses a page that is not the
+  owner's at the Operator ceiling (403) and an orchestrator not in
+  `config.movers.orchestrators` (404), for the page document and the socket alike.
+  `Ui.home` takes the visit as its last argument and `main.web_view` builds the relay
+  (`top_relay.over(membership, orchestrator_roster)`, or one that names nothing without
+  distribution) and passes it to `ui_socket.upgrade_home`.
+- `ui_socket.visiting_for` builds the page's `home.Visit` from the relay: each function
+  runs in a `read_task`, a press first passes `owner_operating` again, and a reply gets a
+  fresh `hex_entropy(16)` message id that the relay resends with.
+- `daemon/ui_top` is the plain-function layer over `remote/top_relay`: `read` (the row
+  from `all_sessions` plus the newest 50-entry transcript page), `row_of`/`need_of` (a
+  request becomes an `approval.Review` and is worded by `approval.presentation`, with
+  `outside_lines` for grants beyond the ceiling), `send`/`stop`/`archive`, `decide` (re-reads
+  the box's list, finds the request by identity and `seq`, builds `Approve(admitted, action,
+  scope)` from the box's own record, and refuses a moved, missing, nothing-admitted or
+  non-rememberable request before sending), and `judge`/`create` (a create is checked
+  against a fresh `Placements`). `create` has no caller until the composer's Agent chip.
+- Tests: `ui_http_test` (routes, grammar, a seeded property), `ui_route_test` (page and
+  socket admission, the visit reaching the upgrade) and `ui_top_test` (real ports on this
+  node).

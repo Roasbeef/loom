@@ -1964,3 +1964,35 @@ forms or nested frames. See
 [protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md).
 `markdown_view_test` pins text escaping and exact fence dispatch; the real
 browser drive is `scripts/web_mermaid_check.sh` against `scripts/web_seed`.
+
+## The relayed session page (protocol-change/094, slice S2b)
+
+The owner's operating page can be opened on one session that runs on another
+orchestrator, at `/ui/p/<key>/orchestrators/<name>/sessions/<id>`. It is the home
+component with a different centre, so the sidebar, the account panel and every
+ticket stay the home's.
+
+- `web_view/relayed` is the vocabulary: `Row` (name, `listing.Code`, `Activity`,
+  `Need`s), `Need` (the box's request identity and `seq`, worded by
+  `session_view/approval.presentation`, with `Ability` and `Remember`), `History`
+  (`Shown | Unreadable`), `Read` (`Heard(row, history) | Unreached(why)`), `Outcome`
+  (`Done | Refusal | Unknown`) and `Choice`. Everything in it is text from the box.
+  `listing.Code` gained `Pooled(pool, workspace)` for a pool placement.
+- `web_view/relayed_session` is the state machine: `State` (presence, row, history,
+  `Reach`, `Sending`, `Acting`, `deciding`, `notice`, `sent`), `heard`, `update` and the
+  `replied`, `stopped`, `archived`, `decided` answers. A press is judged against the row
+  the page last read: a reply once, a stop when calm, an archive after its question,
+  a decision only for a request the row lists at the revision the card showed that the
+  ceiling lets the page decide (and for the session only when `Rememberable`).
+- `view/relayed_session` draws the centre with the existing approval-card,
+  placement-strip and composer markup. The reply form accepts exactly one `message`
+  field (`reply_fields`). Every handler lies beneath `home.table_path`.
+- `home.Start.visiting` is `Some(home.Visit(orchestrator, session, refresh_ms, read,
+  send, stop, archive, decide))` only for this page. `Model` keeps `relay`,
+  `relay_timer` and `relay_reads`. `RelayTimerReady`/`RelayTicked` read every
+  `relay_refresh_ms` (5 s), `RelayRefreshed`/`RelayAnswered` carry a numbered read and
+  `Relaying`, `RelaySent`, `RelayStopped`, `RelayArchived`, `RelayDecided` are the presses
+  and their answers. Each answer is followed by a read. `Pane` gained `Relayed`.
+- `page.relayed_shell` and `page.relayed_path` are the document and the address.
+- Not in this slice: the composer's Agent chip, the box's offers in the Code picker and
+  relayed rows in the sidebar.
