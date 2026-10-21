@@ -269,3 +269,57 @@ session can do all of it to every other session directly.
   until its own records are reconciled, logged as it goes.
 - A first attach takes as long as a checkout, so `attach_within_s` has to be
   sized per executor.
+
+## Addendum: as built in slice S3
+
+Built in `client/worktrees`, `client/worktree_git`, `client/executor_plane`,
+`client/remote/host` and `storage/exec_ledger`. The decision above stands. Where
+the code differs from the words above, the code is what runs, and the
+differences are these.
+
+- **The unit of work is a gate for each workspace, not a task.** The text says
+  the per-workspace weft task "already answers attaches with `PlaneBuilding`".
+  The host's build is a weft run for each session, and `PlaneBuilding` is
+  answered for the session whose build is in flight. The serialisation `git
+  worktree` needs is a gate for each worktree workspace (`weft/actor`), a process
+  that runs one job at a time and runs the workspace's reconciliation before its
+  first. A second session of the same workspace waits at the gate inside its own
+  build, which the host already shows as `PlaneBuilding`. Reconciliation runs at
+  the workspace's first attach after the executor starts, not at the executor's
+  start, which has the same effect: no session of the workspace is admitted
+  before its records are settled.
+- **A detached HEAD keeps the tree.** The close removes a tree only when the
+  filtered status is empty and HEAD is a symbolic ref. A tree on a detached HEAD
+  holds commits that no branch names, and `git worktree remove --force` would
+  leave them to the reflog.
+- **A status that cannot be read keeps the tree.** The text says `UnknownCleanup`
+  leaves the tree; the same holds when the status call fails or the sandbox
+  refuses it.
+- **Branches are counted from the ledger, not from Git.** The census reports the
+  trees present and kept, the number of `removed` records (each is a session
+  whose `loom/<session>` branch remains), and the directories no record names. It
+  does not run Git to count `loom/` branches that have no session. The executor
+  cannot know that an orchestrator deleted a session, so it reports idle trees
+  by state, not "orphaned" ones; `loomd executor release --worktrees` settles
+  every tree under the close rule and a session named with `--force-session` is
+  removed whatever it holds.
+- **The census is the node report.** The executor's `mode` for each registered
+  workspace is `worktrees.workspaces` of its report (`node_report.WorktreeFacts`),
+  omitted when it has none. The session's `branch` is `RemoteCensus.branch`.
+  Showing it in the session header is the web view's work (slice S1).
+- **The sandbox masks siblings, not the parent.** The text says the rest of the
+  state root "stays masked as it is for `scopes/` and `blobs/`". It was not: a
+  default session base masks only the entries the daemon writes, so another
+  session's scope was readable on a host-wide read scope. A mask over
+  `worktrees/` would hide a session's own tree, and no grant carves a hole in a
+  mask, so each worktree session's policy masks the scopes and trees that exist
+  when it is built. A session that attaches later is not masked from the ones
+  before it. The isolation stays an accident guard, as the section above says,
+  and `executor_worktree_test` proves the case it holds.
+- **Git for worktree management has a pool of its own.** `client/worktree_git`
+  boots a one-helper pool, an executor service and a broker, because no session
+  exists yet when the first tree is made. Each call carries its own policy:
+  writable roots of exactly the repository's `.git` and the workspace's directory
+  of trees, or none for a read.
+- **Failure types.** A factory reports `host.PlaneFailure` (`NoPlaneBuilt` or
+  `WorktreeNotMade`) so the host can answer `NoPlane` or `WorktreeFailed`.

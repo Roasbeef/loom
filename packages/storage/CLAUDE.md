@@ -487,7 +487,9 @@ or close; there is no transaction, lease or authorization cache.
   connection). Its DDL is `sql/exec_ledger.sql` (embedded as
   `exec_ledger_schema`, with `sql/exec_ledger_releases.sql` as its second
   version, embedded as `exec_ledger_releases_schema`, and `sql/exec_ledger_acks.sql`
-  as its third, embedded as `exec_ledger_acks_schema`; `PRAGMA user_version` 3,
+  as its third, embedded as `exec_ledger_acks_schema`, and
+  `sql/exec_ledger_worktrees.sql` as its fourth, embedded as
+  `exec_ledger_worktrees_schema`; `PRAGMA user_version` 4,
   its own `application_id`; an older file gains the tables it lacks when it is
   opened) and its named queries are `src/storage/sql/exec_ledger.sql`, generated into
   `sql.gleam` with the `Ledger*` names. Two tables: `scope(session, workspace,
@@ -496,7 +498,9 @@ or close; there is no transaction, lease or authorization cache.
   admitted|terminal|unknown, outcome, outcome_digest, outcome_bytes)`, plus
   `scope_release(session, workspace, incarnation, was, released_at_ms)`, the
   operator release record, and `call_ack(session, op, step, source_index,
-  incarnation)`, the acknowledgement tombstones.
+  incarnation)`, the acknowledgement tombstones, and `scope_worktree(session,
+  workspace, path, branch, state creating|present|kept|removing|removed)`, the
+  executor's proof of the Git worktrees it made (protocol-change/095).
   `Ledger` is opaque; `Key` is the planner's call identity;
   `Limits(max_unclean_scopes, max_ledger_bytes)` is passed on every call;
   `ScopeState` is `Open | Closing | Closed(AllRetired | UnknownCleanup(n))`;
@@ -866,6 +870,14 @@ or close; there is no transaction, lease or authorization cache.
   nothing for a missing key fails
   `a_stop_with_no_row_bars_the_key_from_a_later_start_test`
   and the P model's mutant `M8-stop-does-not-fence`.
+- **Worktree records are separate from the scope's life.** `Tree` rows are
+  keyed by session, written by `record_tree` before the command that changes the
+  disk and never deleted: a `Removed` row is what lets a reopen recreate the tree
+  from the branch. They are read and written from `connect`, a second connection
+  that recovers and migrates nothing and refuses a file not at the current
+  version (`Unsupported`), because the host's connection belongs to the host actor
+  and the plane builds in a process of its own. `Summary.trees` counts them by
+  state. The executor removes only a directory a row names and never a branch.
 - **`exec_ledger.open` is restart recovery, so one opener per VM.** It turns
   every `admitted` row into `unknown` and nothing turns one back; a second
   `open` while runs are in flight would mark them lost. The node-level actor is
@@ -891,12 +903,13 @@ or close; there is no transaction, lease or authorization cache.
   decode together, a `terminal` row's outcome must match its SHA-256 digest
   and recorded size (`DigestMismatch`), and a state that fits no variant is
   `MalformedRow`. Nothing defaults.
-- **`exec_ledger_schema`, `exec_ledger_releases_schema` and
-  `exec_ledger_acks_schema` are generated** from `sql/exec_ledger.sql`,
-  `sql/exec_ledger_releases.sql` and `sql/exec_ledger_acks.sql` by `make gen-sql`, and
+- **`exec_ledger_schema`, `exec_ledger_releases_schema`,
+  `exec_ledger_acks_schema` and `exec_ledger_worktrees_schema` are generated**
+  from `sql/exec_ledger.sql`, `sql/exec_ledger_releases.sql`,
+  `sql/exec_ledger_acks.sql` and `sql/exec_ledger_worktrees.sql` by `make gen-sql`, and
   the ledger's `Ledger*` queries are in the generated `sql.gleam`;
   `exec_ledger_test` checks each embedded schema against its file. An older
-  build refuses a version 3 file as `Unsupported`.
+  build refuses a version 4 file as `Unsupported`.
 - **A read with neighbours is lease-free and identity-checked.**
   `sqlite.read_entries_around` reads an entry and up to 5 `seq` neighbours
   each side through the same read-only connection that `read_entry` uses.

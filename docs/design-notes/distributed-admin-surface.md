@@ -61,7 +61,7 @@ name (`CreatingRemote`, `web_view/home.gleam:816`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot
 change it inside a running terminal. Neither client can show whether an executor
 answers, is full, or contradicts its declaration. That is learned at the attach,
-when `contradiction` (`client/executors.gleam:375`) compares the executor's census
+when `contradiction` (`client/executors.gleam:427`) compares the executor's census
 with the declaration and the open fails. A typo in a workspace name is learned the
 same way. [The setup guide](../distributed-setup.md) tells an operator to check a
 connection with `epmd -names`, `lsof` or `ss`.
@@ -72,7 +72,7 @@ connection with `epmd -names`, `lsof` or `ss`.
 Nothing answers "what sessions do you hold".
 
 **Health.** The pieces exist and none is readable from a client. The executor's
-census is returned in `Attached` (`client/remote/protocol.gleam:162`) and kept by
+census is returned in `Attached` (`client/remote/protocol.gleam:171`) and kept by
 the live plane. The execution ledger holds the scope rows, the byte budget, the
 unacknowledged results and the scopes that block a reopen, and the only reader is
 `loomd executor release`, which runs with the daemon stopped. A move stalls with a
@@ -179,9 +179,9 @@ serves both through `detached` (`client/remote/orchestrator_port.gleam:703`), th
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:1012`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:1024`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:1061`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:1073`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.
@@ -204,7 +204,7 @@ orchestrator, an executor and a directory member at once.
   configured `[[distribution.peers]]`.
 - **Executor facts:** `protocol.version`, the scope counts by state (`ScopeState`,
   `storage/exec_ledger.gleam:211`), the limit on scopes that are not cleanly
-  closed (`Limits`, `storage/exec_ledger.gleam:197`), the scopes that block a
+  closed (`Limits`, `storage/exec_ledger.gleam:215`), the scopes that block a
   reopen (`closing`, or closed with unknown cleanup) with their session ids, bytes
   held against the ledger budget, the count of unacknowledged results, the platform
   label, the enforcement and toolchains from the most recent attach census
@@ -442,7 +442,7 @@ For each item in the owner's list: what exists, where it lives, and the proposal
 |---|---|---|
 | Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:506`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
 | Executor census (platform, enforcement, toolchains) | Returned at attach and kept in the live plane | Executor facts, from the last attach; absent before the first |
-| Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:507`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
+| Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:577`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
 | Helper pool | `pool_census` per plane, no node total | Deferred (section 10) |
 | Ledger bytes, unacknowledged results | Ledger only | Executor facts, as numbers |
 | Scopes that block a reopen | Ledger only; the operator learns of one from a refused open | Executor facts: session ids and state, with the `loom executor release` line in the page |

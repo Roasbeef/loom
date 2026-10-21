@@ -603,8 +603,12 @@ deliberate recovery-blocked boundary.
 ## The session's Git working tree
 
 A session works in the operator's own directory, and Loom neither creates
-nor removes Git worktrees. The workspace is the absolute path the
-catalogue recorded when the session was created. What Loom adds around it
+nor removes Git worktrees, with one exception: a workspace registered on an
+executor in `mode = "worktree"` gets a linked worktree for each session, which
+the executor makes, adopts and removes (see
+[distributed](distributed.md#worktree-workspaces)). Everywhere else the
+workspace is the absolute path the catalogue recorded when the session was
+created. What Loom adds around it
 is three things, all prepared during assembly on every open: a sandbox
 policy that lets `git commit` work in a linked worktree, a Git identity
 for commits made by tools, and a durable starting revision that the diff
