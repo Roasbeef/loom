@@ -545,6 +545,28 @@ pub fn a_spawner_with_no_top_level_table_is_refused_all_eight_messages_test() {
 
 // --- what the page may pick --------------------------------------------------------------
 
+// A remembered folder this daemon's own check refuses, such as one a terminal made
+// outside the home directory, is not offered, because a create in it would be
+// refused by the same check.
+pub fn a_remembered_folder_the_check_refuses_is_not_offered_test() {
+  let rig = rig("offers-checked")
+  manager.remember_folder(rig.registry, "/outside/home")
+  manager.remember_folder(rig.registry, "/srv/work")
+  let assert poll.Answered(_) =
+    poll.until(within: 3000, every: 20, attempt: fn() {
+      case manager.recent_folders(rig.registry) {
+        Ok([_, _, ..]) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+  let assert Ok(Ok(json)) =
+    orchestrator_port.ask_placements(rig.port, answers_within_ms)
+  let assert Ok(offers) = remote_top.decode_offers(json)
+
+  assert offers.folders
+    == [remote_top.FolderOffer(path: "/srv/work", label: "work")]
+}
+
 pub fn the_offers_are_what_the_table_lists_and_this_daemon_remembers_test() {
   let rig = rig("offers")
   manager.remember_folder(rig.registry, "/srv/work")

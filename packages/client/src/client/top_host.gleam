@@ -230,7 +230,10 @@ pub fn judged(
 // --- what the page may pick -----------------------------------------------------
 
 // The offers the table lets the page pick, read afresh. A folder is offered only
-// when the table allows folders, and only a remembered one; an executor or a
+// when the table allows folders, and only a remembered one that this daemon's own
+// folder check still passes, so the page is never offered a folder (one a terminal
+// made outside the home directory, or one since removed) that a create would then
+// refuse; an executor or a
 // pool only when the table lists it; a profile when the table lists it, or every
 // profile when it lists none. The survey connects to the executors, so a table
 // that lists none asks no one.
@@ -240,7 +243,10 @@ fn offers(context: Context(instance), table: TopLevel) -> remote_top.Offers {
     spawners.RecentFolders ->
       case manager.recent_folders(context.registry) {
         Ok(remembered) ->
-          list.map(remembered, fn(folder) {
+          list.filter(remembered, fn(folder) {
+            result.is_ok(context.check_folder(folder.workspace))
+          })
+          |> list.map(fn(folder) {
             remote_top.FolderOffer(
               path: folder.workspace,
               label: label_of(folder.workspace),
