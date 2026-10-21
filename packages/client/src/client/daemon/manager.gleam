@@ -66,6 +66,14 @@
 ////    `delete_delegate`, which both the drained release and the sweep use,
 ////    reads the closed file's stubs with `descendant_holders` and writes their
 ////    release rows with `owe_releases` before the registration goes.
+//// 12. A top-level session another orchestrator's page asked for
+////    (protocol-change/094) is reserved by `relay_now`, which is one catalogue
+////    transaction: the request's existing row, or the two caps counted and the
+////    registration, its mapping and the row written together. It reserves and
+////    nothing more; the session's store is made afterwards by `create`, which
+////    finds the reservation by its request key. `relayed_page_now` lists a
+////    spawner's sessions with their live status, and `archive_relayed_now`
+////    archives one that holds no slot.
 
 import broker/internal/call
 import broker/internal/ffi_crypto
@@ -281,6 +289,87 @@ pub type DelegateError {
 
   /// The registry refused or failed.
   DelegateFailed(
+    /// The registry's error.
+    error: Error,
+  )
+}
+
+/// The registry's part of a top-level session another orchestrator's page asks
+/// for (protocol-change/094): the request, the registration it would make, and
+/// the caps it is judged by.
+pub type RelayRequest {
+  RelayRequest(
+    /// The `[spawners.<name>]` key of the orchestrator that asked.
+    spawner: String,
+    /// The UUIDv7 it minted for the submit.
+    request_id: String,
+    /// The creation the request would make. Its `request_key` is
+    /// `catalogue.relayed_key(spawner, request_id)`, so the create that opens
+    /// the session afterwards finds this reservation.
+    creation: Creation,
+    /// The directory new conversation files are placed in.
+    directory: String,
+    /// The generator that mints the session's identity.
+    generator: ids.Generator,
+    /// The daemon-wide domain configuration a new session's mapping carries.
+    configuration: String,
+    /// The two caps and the clock.
+    limits: catalogue.RelayedLimits,
+  )
+}
+
+/// A relayed session after the registry reserved it, or found it reserved.
+pub type Relaying {
+  Relaying(
+    /// This daemon's identity for the session.
+    session_id: String,
+    /// The registration's state. `Reserved` means the store has not been made
+    /// and the caller finishes the session by creating it.
+    state: catalogue.State,
+  )
+}
+
+/// Why a relayed session could not be reserved.
+pub type RelayError {
+  /// A cap of the spawner's table was reached, and nothing was written.
+  RelayCapped(
+    /// Which cap.
+    cap: catalogue.RelayedCap,
+    /// Its value.
+    limit: Int,
+  )
+
+  /// The registry refused or failed.
+  RelayFailed(
+    /// The registry's error.
+    error: Error,
+  )
+
+  /// The request id was already used by another spawner.
+  RelayForeign
+}
+
+/// One relayed session of a spawner's listing, with its live status.
+pub type RelayedView {
+  RelayedView(
+    /// The row and the placement and archive state the listing reads.
+    listing: catalogue.RelayedListing,
+    /// The registration and its status now.
+    view: View,
+  )
+}
+
+/// Why a relayed session could not be archived.
+pub type RelayedArchiveError {
+  /// The session is not relayed for that spawner.
+  ArchiveNotRelayed
+
+  /// The session still holds a slot. The caller stops it and asks again once
+  /// it has drained.
+  ArchiveBusy
+
+  /// The registry refused or failed.
+  ArchiveFailed(
     /// The registry's error.
     error: Error,
   )
@@ -652,6 +741,25 @@ type Message(instance) {
     Subject(Result(View, Error)),
   )
   DelegateSession(DelegateRequest, Subject(Result(Delegated, DelegateError)))
+
+  /// Reserves a top-level session for another orchestrator's page, in one
+  /// catalogue transaction (protocol-change/094).
+  RelayReserve(RelayRequest, Subject(Result(Relaying, RelayError)))
+
+  /// The relayed row of a session, without waking it.
+  RelayedOfSession(String, Subject(Result(Option(catalogue.Relayed), Error)))
+
+  /// One page of a spawner's relayed sessions: the spawner, the identity the
+  /// page follows and the most rows.
+  RelayedSessions(
+    String,
+    String,
+    Int,
+    Subject(Result(List(RelayedView), Error)),
+  )
+
+  /// Archives a relayed session of a spawner that holds no slot.
+  ArchiveRelayed(String, String, Subject(Result(View, RelayedArchiveError)))
 
   /// Claims one spawn against a spawner's rolling day: the spawner, its two
   /// caps, the time and the reply.
@@ -1894,6 +2002,107 @@ pub fn delegate_session(
     _,
   ))
   |> result.replace_error(DelegateFailed(Unavailable))
+  |> result.flatten
+}
+
+/// Reserves a top-level session for another orchestrator's page, or finds the
+/// one its request already reserved (protocol-change/094).
+///
+/// The lookup of the request id, the count of the spawner's two caps, the
+/// registration with its domain mapping, and the row naming it run in one
+/// immediate catalogue transaction in one turn of the registry, so two creates
+/// cannot both pass a cap and a crash leaves all three writes or none. This
+/// reserves and does not make the session's store: the caller then creates the
+/// session under the same request key (`create`), which is the path that turns
+/// any reservation into a session, and a request that is resent after a crash
+/// between the two finds its reservation here and finishes it there.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.reserve_relayed(registry, request) == Ok(manager.Relaying(session_id:, state: catalogue.Reserved))
+/// ```
+@internal
+pub fn reserve_relayed(
+  manager: Manager(instance),
+  request: RelayRequest,
+) -> Result(Relaying, RelayError) {
+  call.try_call(manager.commands, waiting: 5000, sending: RelayReserve(
+    request,
+    _,
+  ))
+  |> result.replace_error(RelayFailed(Unavailable))
+  |> result.flatten
+}
+
+/// Reads the relayed row of a session, or `None` for a session no orchestrator's
+/// page asked for, without waking anything.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.relayed_of(registry, session_id) == Ok(option.None)
+/// ```
+@internal
+pub fn relayed_of(
+  manager: Manager(instance),
+  id: String,
+) -> Result(Option(catalogue.Relayed), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: RelayedOfSession(
+    id,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// One page of a spawner's relayed sessions, newest first, each with its
+/// registration and live status. The read opens no conversation file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.relayed_sessions(registry, "laptop", after: "", limit: 64) == Ok([])
+/// ```
+@internal
+pub fn relayed_sessions(
+  manager: Manager(instance),
+  spawner: String,
+  after after: String,
+  limit limit: Int,
+) -> Result(List(RelayedView), Error) {
+  call.try_call(manager.commands, waiting: 5000, sending: RelayedSessions(
+    spawner,
+    after,
+    limit,
+    _,
+  ))
+  |> result.unwrap(Error(Unavailable))
+}
+
+/// Archives a relayed session of the spawner, which must hold no slot
+/// (protocol-change/094). The slot check, the relayed check and the catalogue
+/// transaction share one registry turn, so no open can take the session between
+/// deciding it is stopped and hiding it. Archiving an archived session is not an
+/// error. There is no delete here: deleting is the owner's, on this daemon's own
+/// page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // manager.archive_relayed(registry, "laptop", session_id)
+/// ```
+@internal
+pub fn archive_relayed(
+  manager: Manager(instance),
+  spawner: String,
+  id: String,
+) -> Result(View, RelayedArchiveError) {
+  call.try_call(manager.commands, waiting: 5000, sending: ArchiveRelayed(
+    spawner,
+    id,
+    _,
+  ))
+  |> result.replace_error(ArchiveFailed(Unavailable))
   |> result.flatten
 }
 
@@ -3489,6 +3698,25 @@ fn handle(
       process.send(reply, outcome)
       step(phase, book)
     }
+    RelayReserve(request, reply) -> {
+      process.send(reply, relay_now(phase, book, request))
+      sm.keep(book)
+    }
+    RelayedOfSession(id, reply) -> {
+      process.send(
+        reply,
+        catalogue.relayed_of(book.catalogue, id) |> result.map_error(Catalogue),
+      )
+      sm.keep(book)
+    }
+    RelayedSessions(spawner, after, limit, reply) -> {
+      process.send(reply, relayed_page_now(book, spawner, after, limit))
+      sm.keep(book)
+    }
+    ArchiveRelayed(spawner, id, reply) -> {
+      process.send(reply, archive_relayed_now(phase, book, spawner, id))
+      sm.keep(book)
+    }
     ClaimSpawn(spawner, token_budget, max_per_day, now_ms, reply) -> {
       process.send(
         reply,
@@ -4690,6 +4918,153 @@ fn create_session(
   }
 }
 
+// A relayed session reserved, in one turn. A request id that already has a row
+// is answered from the row, and needs no new identity. A new one is minted the
+// way any creation is, and the catalogue judges the two caps and writes the
+// registration, its mapping and the row in one transaction. The registry's turn
+// is what orders the creates of one daemon, and the transaction is what holds
+// between connections.
+fn relay_now(
+  phase: Phase,
+  book: Book(instance),
+  request: RelayRequest,
+) -> Result(Relaying, RelayError) {
+  case phase {
+    ShuttingDown -> Error(RelayFailed(Unavailable))
+    Ready -> {
+      let failed = fn(error) {
+        case error {
+          catalogue.Conflict -> RelayForeign
+          other -> RelayFailed(Catalogue(other))
+        }
+      }
+      use found <- result.try(
+        catalogue.relayed_for(
+          book.catalogue,
+          request.spawner,
+          request.request_id,
+        )
+        |> result.map_error(failed),
+      )
+      case found {
+        Some(row) -> relaying(book, row.session_id)
+        None -> {
+          let record =
+            new_registration(
+              request.creation,
+              request.directory,
+              request.generator,
+            )
+          use selected <- result.try(
+            select_creation_domain(
+              book.catalogue,
+              record,
+              domain.SessionOnly,
+              request.configuration,
+              filepath.directory_name(request.directory),
+            )
+            |> result.map_error(failed),
+          )
+          use claim <- result.try(
+            domain.reserve_relayed(
+              book.catalogue,
+              request.spawner,
+              request.request_id,
+              request.limits,
+              record,
+              selected,
+            )
+            |> result.map_error(failed),
+          )
+          case claim {
+            catalogue.RelayedCapped(cap:, limit:) ->
+              Error(RelayCapped(cap:, limit:))
+            catalogue.RelayedFound(record: row) ->
+              relaying(book, row.session_id)
+            catalogue.RelayedMade(registration:, ..) ->
+              Ok(Relaying(
+                session_id: registration.id,
+                state: registration.state,
+              ))
+          }
+        }
+      }
+    }
+  }
+}
+
+// What a reserved session's registration says now.
+fn relaying(
+  book: Book(instance),
+  session_id: String,
+) -> Result(Relaying, RelayError) {
+  catalogue.get(book.catalogue, session_id)
+  |> result.map(fn(record) { Relaying(session_id:, state: record.state) })
+  |> result.map_error(fn(error) { RelayFailed(Catalogue(error)) })
+}
+
+// One page of a spawner's relayed sessions with the status each holds now. A
+// row whose registration cannot be read fails the page, because a page that
+// silently dropped it would let the spawner think the session was gone.
+fn relayed_page_now(
+  book: Book(instance),
+  spawner: String,
+  after: String,
+  limit: Int,
+) -> Result(List(RelayedView), Error) {
+  use listings <- result.try(
+    catalogue.relayed_page(book.catalogue, spawner, after:, limit:)
+    |> result.map_error(Catalogue),
+  )
+  list.try_map(listings, fn(listing) {
+    use record <- result.map(
+      catalogue.get(book.catalogue, listing.record.session_id)
+      |> result.map_error(Catalogue),
+    )
+    RelayedView(listing:, view: View(record, status(book, record)))
+  })
+}
+
+// Archives a relayed session of the spawner that holds no slot. The relayed row
+// is read in this turn, so a session another spawner started, or none, is
+// refused as not relayed whatever its state.
+fn archive_relayed_now(
+  phase: Phase,
+  book: Book(instance),
+  spawner: String,
+  id: String,
+) -> Result(View, RelayedArchiveError) {
+  case phase {
+    ShuttingDown -> Error(ArchiveFailed(Unavailable))
+    Ready -> {
+      use found <- result.try(
+        catalogue.relayed_of(book.catalogue, id)
+        |> result.map_error(fn(error) { ArchiveFailed(Catalogue(error)) }),
+      )
+      use Nil <- result.try(case found {
+        Some(row) if row.spawner == spawner -> Ok(Nil)
+        Some(_) | None -> Error(ArchiveNotRelayed)
+      })
+      use Nil <- result.try(case dict.has_key(book.slots, id) {
+        True -> Error(ArchiveBusy)
+        False -> Ok(Nil)
+      })
+      use Nil <- result.try(case catalogue.custody(book.catalogue, id) {
+        Ok(catalogue.Moving(op:, to:)) ->
+          Error(ArchiveFailed(SessionMoving(op:, to:)))
+        Ok(catalogue.Moved(to:, ..)) -> Error(ArchiveFailed(SessionMoved(to:)))
+        Ok(catalogue.Resident) | Ok(catalogue.Imported(..)) -> Ok(Nil)
+        Error(error) -> Error(ArchiveFailed(Catalogue(error)))
+      })
+      use record <- result.map(
+        catalogue.set_visibility(book.catalogue, id, catalogue.Archived)
+        |> result.map_error(fn(error) { ArchiveFailed(Catalogue(error)) }),
+      )
+      View(record, status(book, record))
+    }
+  }
+}
+
 // The pair's session, admitted. An existing record is answered whatever the
 // count is, since the cap bounds how many sessions a spawner opens and not how
 // often it returns to one. A pair with none is created and recorded in this
@@ -4884,6 +5259,32 @@ fn delegated(
   }
 }
 
+// The registration a creation would make: a fresh identity, the path its file
+// would have, and the creation's metadata, in the `Reserved` state.
+fn new_registration(
+  request: Creation,
+  directory: String,
+  generator: ids.Generator,
+) -> catalogue.Registration {
+  let #(id, _) = ids.mint_session(generator)
+  let text = ids.session_id_to_string(id)
+  catalogue.Registration(
+    id: text,
+    path: filepath.join(directory, text <> ".db"),
+    workspace: request.workspace,
+    name: request.name,
+    configuration: request.configuration,
+    created_at: ids.session_id_timestamp_ms(id),
+    request_key: request.request_key,
+    state: catalogue.Reserved,
+    profile: request.profile,
+    model: request.model,
+    executor: request.executor,
+    pool: request.pool,
+    subtitle: option.None,
+  )
+}
+
 // Only a missing key permits allocation. Corrupt or unavailable metadata must
 // not produce a second file under a new identity, even if the caller retries.
 fn reserve_creation(
@@ -4915,24 +5316,7 @@ fn reserve_creation(
         False -> Error(catalogue.Conflict)
       }
     Error(catalogue.Missing) -> {
-      let #(id, _) = ids.mint_session(generator)
-      let text = ids.session_id_to_string(id)
-      let record =
-        catalogue.Registration(
-          id: text,
-          path: filepath.join(directory, text <> ".db"),
-          workspace: request.workspace,
-          name: request.name,
-          configuration: request.configuration,
-          created_at: ids.session_id_timestamp_ms(id),
-          request_key: request.request_key,
-          state: catalogue.Reserved,
-          profile: request.profile,
-          model: request.model,
-          executor: request.executor,
-          pool: request.pool,
-          subtitle: option.None,
-        )
+      let record = new_registration(request, directory, generator)
       use selected <- result.try(select_creation_domain(
         store,
         record,

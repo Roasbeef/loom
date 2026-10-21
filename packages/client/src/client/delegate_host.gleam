@@ -448,9 +448,17 @@ pub fn refused(error: manager.DelegateError) -> SpawnRefusal {
   }
 }
 
-// What the registry's error says, in words for a spawner. A catalogue failure
-// is named by its kind and not by its detail, which can hold a path.
-fn describe(error: manager.Error) -> String {
+/// What the registry's error says, in words for a spawner. A catalogue failure
+/// is named by its kind and not by its detail, which can hold a path. The host
+/// of a spawner's page (`client/top_host`) words its refusals the same way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert delegate_host.describe(manager.Capacity)
+///   == "this daemon is at its session capacity"
+/// ```
+pub fn describe(error: manager.Error) -> String {
   case error {
     manager.Catalogue(catalogue.Unsupported) ->
       "the catalogue is not one this build supports"
