@@ -42,6 +42,7 @@
 //// 4. `shell`, `home_shell` and `admin_shell` are the keyed pages, and
 ////    `refusal`, `home_refusal` and `admin_refusal` what a refused one gets.
 //// 5. `login_page` and `claim_page` are the two other documents with a form.
+////    `root_page` is the document at `/`, which has none.
 //// 6. `content_security_policy_for` is the policy each is served under, and
 ////    `asset_path`, `static_file` and `runtime_file` say where the assets are.
 
@@ -74,6 +75,9 @@ pub const page_asset = "web_view_page.js"
 
 /// The script the resume page runs to post the login nonce.
 pub const resume_asset = "web_view_resume.js"
+
+/// The script the root page runs to forward to a remembered login.
+pub const root_asset = "web_view_root.js"
 
 /// The tab icon: the woven mark of the logo, one SVG that switches its weft
 /// colour with the browser's colour scheme. Every document's `<head>` links it,
@@ -559,6 +563,54 @@ pub fn login_page() -> String {
   <> "\"></script></body></html>\n"
 }
 
+/// The document served at `/` (protocol-change/052, the addendum on the root
+/// page): fixed words, and a script that looks in this origin's `localStorage`
+/// for the logins `web_view_enter.js` keeps. One remembered login moves the tab
+/// to its resume page. Several are listed as links, in key order. None leaves
+/// the words that say how to sign in, with `command` in a copy box: `loom ui`
+/// on a loopback origin and `loom ui --device` on a listed one.
+///
+/// It names no key and holds no credential, and nothing in it varies with the
+/// request, so it is served under the policy every `/ui` answer has and needs
+/// no form.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.root_page("loom ui"), "web_view_root.js")
+/// ```
+pub fn root_page(command: String) -> String {
+  "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+  <> "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+  <> "<title>Loom</title>"
+  <> icon_link()
+  <> "<link rel=\"stylesheet\" href=\""
+  <> asset_path(stylesheet_asset)
+  <> "\"><script type=\"module\" src=\""
+  <> asset_path(client_asset)
+  <> "\"></script></head><body><main class=\"ended-page\">"
+  <> "<section class=\"ended-document\" role=\"status\">"
+  <> "<p class=\"ended-brand\">Loom</p>"
+  <> "<p class=\"ended-headline\" id=\"root-status\">"
+  <> "Looking for a sign-in.</p>"
+  <> "<ul id=\"root-logins\" hidden></ul>"
+  <> "<div id=\"root-help\" hidden>"
+  <> fresh_link_box(Some(command), NoWay)
+  <> "</div>"
+  <> "<noscript><p class=\"ended-advice\">"
+  <> houdini.escape(root_script_notice(command))
+  <> "</p></noscript>"
+  <> "</section></main><script src=\""
+  <> asset_path(root_asset)
+  <> "\"></script></body></html>\n"
+}
+
+fn root_script_notice(command: String) -> String {
+  "Finding your sign-in needs scripts. Run "
+  <> command
+  <> " in a terminal and open the link it prints."
+}
+
 /// What the resume page says when this browser holds no nonce for the login:
 /// a new profile, cleared storage or a private window. The way back in is
 /// `loom ui` for a person who has it, and for one who does not, a new
@@ -938,8 +990,8 @@ fn enter_document(next: String, nonce: String, login: String) -> String {
 }
 
 /// The `localStorage` item prefix a login's nonce is kept under: the item is
-/// this and the login key. The enter and resume scripts spell the same name; the
-/// daemon's route tests check that the served scripts carry it.
+/// this and the login key. The enter, resume and root scripts spell the same
+/// name; the daemon's route tests check that the served scripts carry it.
 pub const login_nonce_item = "loom.login."
 
 /// The `sessionStorage` item prefix a page's nonce is kept under: the item is
