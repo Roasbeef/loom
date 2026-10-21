@@ -130,10 +130,24 @@
 //// life of its VM, and `loomd executor release`, the only other opener, takes
 //// the same reservation before it calls `open`, so the two cannot overlap.
 ////
+//// ## Worktree records
+////
+//// A workspace in worktree mode gives each session its own Git worktree on the
+//// executor (protocol-change/095), and a session's `Tree` row says which
+//// directory and branch the executor made for it and how far its life has got.
+//// The row is the executor's proof of what it created: start-up reconciliation
+//// and a close remove a directory only when a row names it, so a tree an
+//// operator made beside Loom's is never touched. The row is written before the
+//// command that makes the tree runs, never deleted, and independent of the
+//// scope's own transitions, because a tree outlives a scope close that found
+//// user changes in it. The executor's workspace plane reads and writes these
+//// rows from its own connection (`connect`), since the host's connection
+//// belongs to the host actor and the plane builds in a process of its own.
+////
 //// ## Flow
 ////
 //// `open` → `attach` → `admit` → `finish` → `query` → `query_or_fence` → `ack` →
-//// `begin_close` → `finish_close` → `release` → `summary`
+//// `begin_close` → `finish_close` → `release` → `summary` → `connect`
 ////
 //// 1. `open` validates or creates the schema, sets full synchronous durability,
 ////    and records every run the previous VM had in flight as lost.
@@ -154,6 +168,9 @@
 //// 7. `summary` counts scopes by state, lists the ones that block a reopen,
 ////    and totals the bytes and unacknowledged calls, for the report an
 ////    executor gives of itself (protocol-change/085).
+//// 8. `connect` opens the workspace plane's own connection, and `record_tree`,
+////    `tree`, `workspace_trees` and `all_trees` keep the worktree records
+////    (protocol-change/095).
 
 import gleam/bit_array
 import gleam/bool
@@ -169,6 +186,7 @@ import sqlight
 import storage/exec_ledger_acks_schema
 import storage/exec_ledger_releases_schema
 import storage/exec_ledger_schema
+import storage/exec_ledger_worktrees_schema
 import storage/sql
 import storage/sqlite_policy
 
@@ -238,6 +256,56 @@ pub type Scope {
     state: ScopeState,
     /// The only attach token admission accepts.
     token: BitArray,
+  )
+}
+
+/// Where a session's worktree is in its life.
+pub type TreeState {
+  /// The row was written and `git worktree add` may or may not have run.
+  Creating
+
+  /// The tree is on disk.
+  Present
+
+  /// A close found user changes in the tree and left it.
+  Kept
+
+  /// `git worktree remove` was about to run, or is running.
+  Removing
+
+  /// The tree is gone. The branch stays, and a reopen recreates the tree from it.
+  Removed
+}
+
+/// The worktree an executor made for one session.
+pub type Tree {
+  Tree(
+    /// The orchestrator session. A session has at most one tree.
+    session: String,
+    /// The `[workspaces.<name>]` the tree is a worktree of.
+    workspace: String,
+    /// The tree's directory: `<state root>/worktrees/<workspace>/<session>`.
+    path: String,
+    /// The branch checked out in it: `loom/<session>`.
+    branch: String,
+    /// The tree's life stage.
+    state: TreeState,
+  )
+}
+
+/// How many trees the ledger holds in each state.
+pub type TreeCounts {
+  TreeCounts(
+    /// Rows written before the tree was made.
+    creating: Int,
+    /// Trees on disk.
+    present: Int,
+    /// Trees a close left because they held user changes.
+    kept: Int,
+    /// Trees whose removal began.
+    removing: Int,
+    /// Trees that are gone, with their branches still in the repository.
+    removed: Int,
   )
 }
 
@@ -385,6 +453,8 @@ pub type Summary {
     /// The calls with a stored result or a lost outcome that the orchestrator
     /// has not acknowledged.
     unacknowledged: Int,
+    /// The worktree records by state (protocol-change/095).
+    trees: TreeCounts,
   )
 }
 
@@ -496,7 +566,7 @@ const fence_tool = "(fence)"
 // ledger from opening, and recovering rows in, some other SQLite file.
 const application_id = 1_279_607_884
 
-const schema_version = 3
+const schema_version = 4
 
 /// The limits the design note fixes: sixteen unclean scopes, and the default
 /// byte budget.
@@ -1097,6 +1167,173 @@ pub fn scope(ledger: Ledger, session: String) -> Result(Option(Scope), Error) {
   find_scope(ledger.connection, session)
 }
 
+/// Opens a second connection to a ledger the host already opened, for the
+/// executor's workspace plane to read and write worktree records from its own
+/// process.
+///
+/// Unlike `open` it recovers nothing: the file's `admitted` rows belong to the
+/// host's VM, and turning them `unknown` from a second connection would end
+/// live calls. It also creates and migrates nothing, so a file that is not at
+/// the current version is `Unsupported`. SQLite serialises the two writers, and
+/// every write the plane makes is one statement.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.connect(state_root <> "/exec-ledger.db")
+/// ```
+pub fn connect(path: String) -> Result(Ledger, Error) {
+  use Nil <- result.try(
+    sqlite_policy.refusing_unopenable_path(path)
+    |> result.map_error(Database),
+  )
+  use connection <- result.try(
+    sqlight.open(path) |> result.map_error(sql_error),
+  )
+  let checked = {
+    use Nil <- result.try(
+      sqlite_policy.configure_connection(connection, sqlite_policy.defaults())
+      |> result.map_error(sql_error),
+    )
+    use Nil <- result.try(execute(connection, "PRAGMA synchronous = FULL"))
+    use found <- result.try(number(connection, "PRAGMA application_id"))
+    use version <- result.try(number(connection, "PRAGMA user_version"))
+    case found == application_id && version == schema_version {
+      True -> Ok(Nil)
+      False -> Error(Unsupported)
+    }
+  }
+  case checked {
+    Ok(Nil) -> Ok(Ledger(connection))
+    Error(error) -> {
+      let _closed = sqlight.close(connection)
+      Error(error)
+    }
+  }
+}
+
+/// Writes a session's worktree record, replacing the one it had.
+///
+/// One statement, so one transaction. The caller writes `Creating` before it
+/// runs `git worktree add` and `Removing` before it runs `git worktree remove`,
+/// which is what leaves a record for a crash to be reconciled from.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.record_tree(ledger, Tree("s", "repo", "/w/repo/s", "loom/s", Creating))
+/// ```
+pub fn record_tree(ledger: Ledger, tree: Tree) -> Result(Nil, Error) {
+  use Nil <- result.try(case tree.session == "" || tree.path == "" {
+    True -> Error(Invalid("a worktree record needs a session and a path"))
+    False -> Ok(Nil)
+  })
+  statement(
+    ledger.connection,
+    sql.put_ledger_worktree(
+      session: tree.session,
+      workspace: tree.workspace,
+      path: tree.path,
+      branch: tree.branch,
+      state: tree_state_text(tree.state),
+    ),
+  )
+}
+
+/// The session's worktree record, or `None` when the executor never made one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.tree(ledger, "s")
+/// ```
+pub fn tree(ledger: Ledger, session: String) -> Result(Option(Tree), Error) {
+  use found <- result.try(rows(ledger.connection, sql.ledger_worktree(session)))
+  case found {
+    [] -> Ok(None)
+    [row] -> result.map(decode_tree(row), Some)
+    [_, _, ..] -> Error(MalformedRow("a session has two worktree records"))
+  }
+}
+
+/// Every worktree record of one workspace, ordered by session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.workspace_trees(ledger, "repo")
+/// ```
+pub fn workspace_trees(
+  ledger: Ledger,
+  workspace: String,
+) -> Result(List(Tree), Error) {
+  use found <- result.try(rows(
+    ledger.connection,
+    sql.ledger_workspace_worktrees(workspace),
+  ))
+  list.try_map(found, fn(row) {
+    decode_tree(sql.LedgerWorktree(
+      session: row.session,
+      workspace: row.workspace,
+      path: row.path,
+      branch: row.branch,
+      state: row.state,
+    ))
+  })
+}
+
+/// Every worktree record, ordered by workspace and session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.all_trees(ledger)
+/// ```
+pub fn all_trees(ledger: Ledger) -> Result(List(Tree), Error) {
+  use found <- result.try(rows(ledger.connection, sql.ledger_all_worktrees()))
+  list.try_map(found, fn(row) {
+    decode_tree(sql.LedgerWorktree(
+      session: row.session,
+      workspace: row.workspace,
+      path: row.path,
+      branch: row.branch,
+      state: row.state,
+    ))
+  })
+}
+
+fn decode_tree(row: sql.LedgerWorktree) -> Result(Tree, Error) {
+  use state <- result.map(tree_state(row.state))
+  Tree(
+    session: row.session,
+    workspace: row.workspace,
+    path: row.path,
+    branch: row.branch,
+    state:,
+  )
+}
+
+fn tree_state(text: String) -> Result(TreeState, Error) {
+  case text {
+    "creating" -> Ok(Creating)
+    "present" -> Ok(Present)
+    "kept" -> Ok(Kept)
+    "removing" -> Ok(Removing)
+    "removed" -> Ok(Removed)
+    other -> Error(MalformedRow("unknown worktree state " <> other))
+  }
+}
+
+fn tree_state_text(state: TreeState) -> String {
+  case state {
+    Creating -> "creating"
+    Present -> "present"
+    Kept -> "kept"
+    Removing -> "removing"
+    Removed -> "removed"
+  }
+}
+
 /// Releases a scope that no close will finish: `Closing`, or `Closed` with
 /// `UnknownCleanup`. It becomes `Closed(AllRetired)`, so the next attach reopens
 /// it at one incarnation higher, and a `scope_release` row records what it was
@@ -1201,7 +1438,34 @@ pub fn summary(ledger: Ledger) -> Result(Summary, Error) {
   use bytes <- result.try(only(reserved, "reserved byte total"))
   use unacked <- result.try(rows(connection, sql.ledger_unacked_count()))
   use calls <- result.try(only(unacked, "unacknowledged call count"))
-  Ok(Summary(scopes:, unclean:, bytes: bytes.bytes, unacknowledged: calls.calls))
+  use trees <- result.try(tree_counts(connection))
+  Ok(Summary(
+    scopes:,
+    unclean:,
+    bytes: bytes.bytes,
+    unacknowledged: calls.calls,
+    trees:,
+  ))
+}
+
+// The worktree records grouped by state. A state the table's check constraint
+// would have refused cannot appear, so an unreadable one is damage.
+fn tree_counts(connection: sqlight.Connection) -> Result(TreeCounts, Error) {
+  use grouped <- result.try(rows(connection, sql.ledger_worktree_states()))
+  list.try_fold(
+    grouped,
+    TreeCounts(creating: 0, present: 0, kept: 0, removing: 0, removed: 0),
+    fn(counts, row) {
+      use state <- result.try(tree_state(row.state))
+      case state {
+        Creating -> Ok(TreeCounts(..counts, creating: row.trees))
+        Present -> Ok(TreeCounts(..counts, present: row.trees))
+        Kept -> Ok(TreeCounts(..counts, kept: row.trees))
+        Removing -> Ok(TreeCounts(..counts, removing: row.trees))
+        Removed -> Ok(TreeCounts(..counts, removed: row.trees))
+      }
+    },
+  )
 }
 
 // The grouped rows carry a count each, and a state and close outcome that decode
@@ -1289,17 +1553,28 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
     use found <- result.try(number(connection, "PRAGMA application_id"))
     use version <- result.try(number(connection, "PRAGMA user_version"))
     case found, version {
-      id, 3 if id == application_id -> Ok(Nil)
+      id, 4 if id == application_id -> Ok(Nil)
 
       // Each version added one table, so a migration is the tables the file
       // lacks and the version stamp. An older build refuses the result.
-      id, 2 if id == application_id -> migrate_to_acks(connection)
+      id, 3 if id == application_id -> migrate_to_worktrees(connection)
+      id, 2 if id == application_id -> {
+        use Nil <- result.try(execute(
+          connection,
+          exec_ledger_acks_schema.schema,
+        ))
+        migrate_to_worktrees(connection)
+      }
       id, 1 if id == application_id -> {
         use Nil <- result.try(execute(
           connection,
           exec_ledger_releases_schema.schema,
         ))
-        migrate_to_acks(connection)
+        use Nil <- result.try(execute(
+          connection,
+          exec_ledger_acks_schema.schema,
+        ))
+        migrate_to_worktrees(connection)
       }
       0, 0 -> {
         use tables <- result.try(number(connection, "PRAGMA schema_version"))
@@ -1317,6 +1592,7 @@ fn create_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use Nil <- result.try(execute(connection, exec_ledger_schema.schema))
   use Nil <- result.try(execute(connection, exec_ledger_releases_schema.schema))
   use Nil <- result.try(execute(connection, exec_ledger_acks_schema.schema))
+  use Nil <- result.try(execute(connection, exec_ledger_worktrees_schema.schema))
   execute(
     connection,
     "PRAGMA application_id = "
@@ -1326,8 +1602,8 @@ fn create_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   )
 }
 
-fn migrate_to_acks(connection: sqlight.Connection) -> Result(Nil, Error) {
-  use Nil <- result.try(execute(connection, exec_ledger_acks_schema.schema))
+fn migrate_to_worktrees(connection: sqlight.Connection) -> Result(Nil, Error) {
+  use Nil <- result.try(execute(connection, exec_ledger_worktrees_schema.schema))
   execute(connection, "PRAGMA user_version = " <> int.to_string(schema_version))
 }
 

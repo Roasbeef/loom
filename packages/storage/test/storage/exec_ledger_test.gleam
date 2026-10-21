@@ -34,6 +34,7 @@ import storage/exec_ledger.{
 import storage/exec_ledger_acks_schema
 import storage/exec_ledger_releases_schema
 import storage/exec_ledger_schema
+import storage/exec_ledger_worktrees_schema
 import support/fixtures
 
 fn path(name: String) -> String {
@@ -120,12 +121,15 @@ pub fn embedded_schema_matches_the_sqlc_input_test() {
   let assert Ok(acks) = simplifile.read("sql/exec_ledger_acks.sql")
     as "the tombstone schema is checked in"
   assert exec_ledger_acks_schema.schema == acks
+  let assert Ok(worktrees) = simplifile.read("sql/exec_ledger_worktrees.sql")
+    as "the worktree schema is checked in"
+  assert exec_ledger_worktrees_schema.schema == worktrees
 }
 
 pub fn a_new_ledger_is_stamped_with_the_current_version_test() {
   let file = path("version")
   let _ledger = open_at(file)
-  assert count(file, "PRAGMA user_version") == 3
+  assert count(file, "PRAGMA user_version") == 4
 }
 
 pub fn admit_finish_query_ack_round_trip_test() {
@@ -667,7 +671,7 @@ pub fn a_file_that_is_not_a_ledger_is_refused_test() {
   let versioned = path("future")
   let first = open_at(versioned)
   let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
-  tamper(versioned, "PRAGMA user_version = 4;")
+  tamper(versioned, "PRAGMA user_version = 5;")
   assert result_is_unsupported(exec_ledger.open(versioned))
 }
 
@@ -1775,7 +1779,7 @@ pub fn a_version_one_ledger_gains_the_release_record_on_open_test() {
   // What an executor wrote before the release record existed.
   tamper(
     file,
-    "DROP TABLE scope_release; DROP TABLE call_ack; PRAGMA user_version = 1;",
+    "DROP TABLE scope_release; DROP TABLE call_ack; DROP TABLE scope_worktree; PRAGMA user_version = 1;",
   )
   let migrated = open_at(file)
 
@@ -1786,7 +1790,7 @@ pub fn a_version_one_ledger_gains_the_release_record_on_open_test() {
       incarnation: 0,
       was: exec_ledger.Closing,
     ))
-  assert count(file, "PRAGMA user_version") == 3
+  assert count(file, "PRAGMA user_version") == 4
 }
 
 // --- acknowledgement tombstones ----------------------------------------------
@@ -1912,12 +1916,15 @@ pub fn a_version_two_ledger_gains_the_tombstone_table_on_open_test() {
   let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
 
   // What an executor wrote before acknowledgements left tombstones.
-  tamper(file, "DROP TABLE call_ack; PRAGMA user_version = 2;")
+  tamper(
+    file,
+    "DROP TABLE call_ack; DROP TABLE scope_worktree; PRAGMA user_version = 2;",
+  )
   let migrated = open_at(file)
 
   assert exec_ledger.ack(migrated, call(0)) == Ok(Nil)
   assert exec_ledger.query(migrated, call(0)) == Ok(Found(exec_ledger.Acked))
-  assert count(file, "PRAGMA user_version") == 3
+  assert count(file, "PRAGMA user_version") == 4
 }
 
 // --- summary ---------------------------------------------------------------
@@ -1931,6 +1938,16 @@ fn counts(open: Int, closing: Int, clean: Int, unknown: Int) {
   )
 }
 
+fn no_trees() -> exec_ledger.TreeCounts {
+  exec_ledger.TreeCounts(
+    creating: 0,
+    present: 0,
+    kept: 0,
+    removing: 0,
+    removed: 0,
+  )
+}
+
 pub fn an_empty_ledger_summarises_to_zeros_test() {
   let ledger = open_at(path("summary-empty"))
   assert exec_ledger.summary(ledger)
@@ -1939,6 +1956,7 @@ pub fn an_empty_ledger_summarises_to_zeros_test() {
       unclean: [],
       bytes: 0,
       unacknowledged: 0,
+      trees: no_trees(),
     ))
 }
 
@@ -1984,6 +2002,7 @@ pub fn scopes_are_counted_by_state_and_the_blocking_ones_are_listed_test() {
       ],
       bytes: 0,
       unacknowledged: 0,
+      trees: no_trees(),
     ))
 }
 
@@ -2034,4 +2053,132 @@ pub fn a_scope_whose_state_and_outcome_disagree_is_a_malformed_row_test() {
     == Error(exec_ledger.MalformedRow(
       "scope state does not match its close outcome",
     ))
+}
+
+// --- worktree records (protocol-change/095) ------------------------------------
+
+fn tree(session: String, state: exec_ledger.TreeState) -> exec_ledger.Tree {
+  exec_ledger.Tree(
+    session:,
+    workspace: "repo",
+    path: "/state/worktrees/repo/" <> session,
+    branch: "loom/" <> session,
+    state:,
+  )
+}
+
+pub fn a_session_with_no_tree_reads_none_test() {
+  let ledger = open_at(path("tree-none"))
+  assert exec_ledger.tree(ledger, "s") == Ok(None)
+  assert exec_ledger.all_trees(ledger) == Ok([])
+}
+
+pub fn a_tree_record_is_replaced_in_place_as_its_state_moves_test() {
+  let ledger = open_at(path("tree-moves"))
+  let states = [
+    exec_ledger.Creating,
+    exec_ledger.Present,
+    exec_ledger.Kept,
+    exec_ledger.Removing,
+    exec_ledger.Removed,
+  ]
+  list.each(states, fn(state) {
+    assert exec_ledger.record_tree(ledger, tree("s", state)) == Ok(Nil)
+    assert exec_ledger.tree(ledger, "s") == Ok(Some(tree("s", state)))
+  })
+  assert exec_ledger.all_trees(ledger) == Ok([tree("s", exec_ledger.Removed)])
+}
+
+pub fn trees_are_listed_by_workspace_and_counted_by_state_test() {
+  let ledger = open_at(path("tree-list"))
+  let other =
+    exec_ledger.Tree(..tree("c", exec_ledger.Present), workspace: "docs")
+  list.each(
+    [
+      tree("b", exec_ledger.Kept),
+      tree("a", exec_ledger.Present),
+      other,
+      tree("d", exec_ledger.Present),
+    ],
+    fn(each) {
+      let assert Ok(Nil) = exec_ledger.record_tree(ledger, each)
+      Nil
+    },
+  )
+  assert exec_ledger.workspace_trees(ledger, "repo")
+    == Ok([
+      tree("a", exec_ledger.Present),
+      tree("b", exec_ledger.Kept),
+      tree("d", exec_ledger.Present),
+    ])
+  let assert Ok(summary) = exec_ledger.summary(ledger)
+  assert summary.trees
+    == exec_ledger.TreeCounts(
+      creating: 0,
+      present: 3,
+      kept: 1,
+      removing: 0,
+      removed: 0,
+    )
+}
+
+pub fn a_record_without_a_session_or_path_is_refused_test() {
+  let ledger = open_at(path("tree-invalid"))
+  let blank = exec_ledger.Tree(..tree("s", exec_ledger.Creating), path: "")
+  let assert Error(exec_ledger.Invalid(_)) =
+    exec_ledger.record_tree(ledger, blank)
+  assert exec_ledger.all_trees(ledger) == Ok([])
+}
+
+pub fn a_stored_state_this_build_does_not_know_fails_closed_test() {
+  let file = path("tree-damaged")
+  let ledger = open_at(file)
+  assert exec_ledger.record_tree(ledger, tree("s", exec_ledger.Present))
+    == Ok(Nil)
+  tamper(file, "UPDATE scope_worktree SET state = 'lost';")
+  let assert Error(exec_ledger.MalformedRow(_)) = exec_ledger.tree(ledger, "s")
+}
+
+pub fn a_second_connection_shares_records_and_recovers_nothing_test() {
+  let file = path("tree-connect")
+  let host = open_at(file)
+  attached(host)
+  assert admit(host, call(0), 8) == Ok(Fresh)
+
+  // The plane's connection sees the host's file and writes its own rows, and
+  // opening it leaves the host's live call `admitted`, where `open` would have
+  // turned it unknown.
+  let assert Ok(plane) = exec_ledger.connect(file)
+  assert exec_ledger.record_tree(plane, tree("s", exec_ledger.Creating))
+    == Ok(Nil)
+  assert exec_ledger.tree(host, "s")
+    == Ok(Some(tree("s", exec_ledger.Creating)))
+  assert exec_ledger.query(host, call(0)) == Ok(Found(Admitted))
+}
+
+pub fn a_second_connection_refuses_a_file_that_is_not_the_current_ledger_test() {
+  let missing = path("tree-connect-fresh")
+  let assert Error(exec_ledger.Unsupported) = exec_ledger.connect(missing)
+
+  let old = path("tree-connect-old")
+  let first = open_at(old)
+  let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
+  tamper(old, "PRAGMA user_version = 3;")
+  let assert Error(exec_ledger.Unsupported) = exec_ledger.connect(old)
+}
+
+pub fn a_version_three_ledger_gains_the_worktree_table_on_open_test() {
+  let file = path("worktree-migrate")
+  let first = open_at(file)
+  attached(first)
+  let assert Ok(Nil) = exec_ledger.close(first) as "the ledger closes"
+
+  // What an executor wrote before worktree workspaces existed.
+  tamper(file, "DROP TABLE scope_worktree; PRAGMA user_version = 3;")
+  let migrated = open_at(file)
+
+  assert exec_ledger.tree(migrated, "s") == Ok(None)
+  assert exec_ledger.record_tree(migrated, tree("s", exec_ledger.Present))
+    == Ok(Nil)
+  assert count(file, "PRAGMA user_version") == 4
 }
