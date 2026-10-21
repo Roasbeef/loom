@@ -56,9 +56,9 @@ pub const remote_login_cookie_name = "__Secure-loom_login"
 /// Which origin a `/ui` request was admitted under. The host check is the one
 /// place this is decided, and every rule after it is chosen by it.
 pub type PageOrigin {
-  /// The request's `Host` is `127.0.0.1`, `[::1]` or `localhost`, with any
-  /// port, exactly as protocol-change/051 admits it. `host` is the header as
-  /// the browser sent it.
+  /// The request's `Host` is `127.0.0.1`, `[::1]`, `localhost` or a name under
+  /// `.localhost`, with any port, as protocol-change/051 and the 052 addendum
+  /// admit it. `host` is the header as the browser sent it.
   Loopback(host: String)
 
   /// The request's `Host` names this origin, one the owner listed in
@@ -137,6 +137,11 @@ pub type Route {
   /// another app). `exchange` is the one the path names.
   ConfirmedExchange(exchange: ui_sessions.Exchange)
 
+  /// `GET /`: the forwarder page (protocol-change/052, the addendum on
+  /// `.localhost` names and the root page). It is the one route outside `/ui`
+  /// and it holds no credential.
+  Root
+
   /// `GET /ui/assets/<name>`, for one of the fixed asset names.
   Asset(asset: Asset)
 
@@ -161,6 +166,9 @@ pub type Asset {
   /// The resume page's script, which posts the login nonce.
   ResumeScript
 
+  /// The root page's script, which forwards to a remembered login.
+  RootScript
+
   /// The client components' bundle.
   Client
 
@@ -179,9 +187,9 @@ pub type Asset {
 /// request from naming a position no row could have.
 pub const max_position = 256
 
-/// Routes a `/ui` request; every route is a `GET` except the login's resume,
-/// the claim's submission and the three exchanges' confirmed presses, which
-/// are `POST`s. The session ID is returned as the path gave it; the caller
+/// Routes a web view request, `/ui` or the root; every route is a `GET` except
+/// the login's resume, the claim's submission and the three exchanges'
+/// confirmed presses, which are `POST`s. The session ID is returned as the path gave it; the caller
 /// parses it as a canonical ID before using it. The home's three routes and the
 /// admin page's three name no session (protocol-change/065).
 ///
@@ -192,6 +200,8 @@ pub const max_position = 256
 /// ```
 pub fn route(request: Request(body)) -> Route {
   case request.method, request.path_segments(request) {
+    http.Get, [] -> Root
+
     // Only the exchange lives at the unkeyed session path. A page asked for
     // there has no key, so no cookie scoped to a key reaches it.
     http.Get, ["ui", "sessions", id] ->
@@ -251,6 +261,7 @@ pub fn route(request: Request(body)) -> Route {
         _ if name == page.enter_asset -> Asset(EnterScript)
         _ if name == page.page_asset -> Asset(PageScript)
         _ if name == page.resume_asset -> Asset(ResumeScript)
+        _ if name == page.root_asset -> Asset(RootScript)
         _ if name == page.client_asset -> Asset(Client)
         _ if name == page.favicon_asset -> Asset(Favicon)
         _ if name == page.mermaid_frame_asset -> Asset(MermaidFrame)
@@ -298,6 +309,16 @@ pub fn page_origin(
 
 /// The request's `Host` when it names loopback, with any port.
 ///
+/// A name is loopback when it is `127.0.0.1`, `[::1]`, `localhost`, or one or
+/// more DNS labels followed by `.localhost` (RFC 6761 section 6.3), compared
+/// lowercased. The last is what lets an operator keep a stable name such as
+/// `loom.localhost` beside a fixed `[daemon] bind` port. It is safe for the
+/// reason the other names are: Chrome and Firefox resolve every `*.localhost`
+/// name to loopback themselves and never ask DNS, so a page cannot rebind one
+/// to a remote address. A name that merely contains `localhost`
+/// (`localhost.evil.example`), ends in a dot (`evil.example.localhost.`), has
+/// an empty label, or has a label that is not a DNS label is refused.
+///
 /// The listener binds only loopback, and a browser that reaches it through
 /// a local forward presents the forward's port, so the port is not checked.
 /// The name is: a DNS rebinding attack reaches the listener under its own
@@ -307,6 +328,7 @@ pub fn page_origin(
 ///
 /// ```gleam
 /// // ui_http.loopback_host(request) == Ok("127.0.0.1:4000")
+/// // A request with `Host: loom.localhost:7440` is also Ok.
 /// ```
 pub fn loopback_host(request: Request(body)) -> Result(String, Nil) {
   use host <- result.try(request.get_header(request, "host"))
@@ -321,8 +343,49 @@ pub fn loopback_host(request: Request(body)) -> Result(String, Nil) {
   }
   case string.lowercase(name.0), valid_port(name.1) {
     "127.0.0.1", True | "[::1]", True | "localhost", True -> Ok(host)
-    _, _ -> Error(Nil)
+    lowered, True ->
+      case under_localhost(lowered) {
+        True -> Ok(host)
+        False -> Error(Nil)
+      }
+    _, False -> Error(Nil)
   }
+}
+
+// The longest host name DNS allows, in text form without a trailing dot.
+const max_name_length = 253
+
+// The longest DNS label.
+const max_label_length = 63
+
+// Whether a lowercased name is one or more DNS labels and then `.localhost`.
+// The suffix is stripped and what remains must be non-empty labels, so
+// `.localhost`, `a..localhost` and a name ending in a dot all fail: the first
+// two have an empty label and the last does not end in `.localhost`.
+fn under_localhost(name: String) -> Bool {
+  case string.ends_with(name, ".localhost") {
+    False -> False
+    True -> {
+      let labels =
+        string.drop_end(name, string.length(".localhost"))
+        |> string.split(".")
+      string.length(name) <= max_name_length && list.all(labels, dns_label)
+    }
+  }
+}
+
+// One DNS label as a host name spells it (RFC 1123): letters, digits and
+// hyphens, one to 63 of them, with no hyphen at either end. An underscore,
+// which a URL host may carry, and any non-ASCII character are not in it.
+fn dns_label(label: String) -> Bool {
+  let letters = string.to_graphemes(label)
+  letters != []
+  && list.length(letters) <= max_label_length
+  && list.all(letters, fn(letter) {
+    string.contains("abcdefghijklmnopqrstuvwxyz0123456789-", letter)
+  })
+  && !string.starts_with(label, "-")
+  && !string.ends_with(label, "-")
 }
 
 fn valid_port(suffix: String) -> Bool {
@@ -559,6 +622,23 @@ pub fn socket_origin(origin: PageOrigin) -> String {
   case origin {
     Loopback(host) -> "ws://" <> host
     Remote(listed) -> "wss://" <> ui_origin.host(listed)
+  }
+}
+
+/// The command that mints a sign-in link for a browser on this origin: `loom
+/// ui` for a browser on the daemon's own machine, `loom ui --device` for one
+/// that reaches it through a listed origin (protocol-change/052).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert ui_http.sign_in_command(ui_http.Loopback("127.0.0.1:4000"))
+///   == "loom ui"
+/// ```
+pub fn sign_in_command(origin: PageOrigin) -> String {
+  case origin {
+    Loopback(_) -> "loom ui"
+    Remote(_) -> "loom ui --device"
   }
 }
 

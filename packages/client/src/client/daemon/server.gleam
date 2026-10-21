@@ -476,7 +476,7 @@ pub fn handle(
     ["v2", "control"] -> authenticated(config, request, None)
     ["v2", "sessions", id, "ws"] -> authenticated(config, request, Some(id))
     ["v2", "claim"] -> claim_route(config, request)
-    ["ui", ..] ->
+    [] | ["ui", ..] ->
       case config.ui {
         Some(ui) -> web_view(config, ui, request)
         None -> plain(404, "unknown endpoint")
@@ -940,6 +940,15 @@ fn web_document(
     | ui_http.AdminExchange(..)
     | ui_http.ConfirmedExchange(..)
     | ui_http.AdminSocket(..) -> plain(404, "unknown endpoint")
+
+    // The root page holds no credential and has no effect, so it asks nothing
+    // of the request beyond the host check the router already made.
+    ui_http.Root ->
+      document(
+        200,
+        "text/html; charset=utf-8",
+        page.root_page(ui_http.sign_in_command(origin)),
+      )
 
     ui_http.Asset(asset) -> {
       let #(content_type, body) = ui_assets.body(ui.assets, asset)
