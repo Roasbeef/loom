@@ -1,305 +1,91 @@
 # Current handoff
 
-This file records the verified state and next steps for this checkout. Rewrite
-it after a body of work; retain measurements in their evidence documents.
+This is a scoped reconnect handoff, baselined October 21, 2026 against
+`8b97b3b70` on `fix/web-reconnect`. The source baseline was
+`bb5587a1727d4c2ebf52563c8b820fdc847e976b`. It records this repair's code and
+validation; it is not a fresh audit of main, releases or hosted CI.
 
-Baselined October 19, 2026 against resource commits `35a0957cb` and
-`a0c42df95` on `perf/swarm-resources`. This edition includes their
-published integration `4f3c6f458` and the subsequent main updates through
-`0e00dc736`. The profiling comparisons retain
-their original `c444fca25` baseline.
-The claims below were checked against this tree, the saved local gates and the
-live observations identified in the report. This is a scoped resource handoff,
-not a fresh audit of the repository's architecture or hosted CI.
-
-The proposal review's rendering was changed on October 19, 2026 by
-[PR #1017](https://github.com/Roasbeef/loom/pull/1017) (`feat/inline-proposal-cards`),
-merged at `f71ab190e`. It does not re-audit the idle-resource claims either.
-
-**What #1017 changed.** The surfaces that show a proposed edit now draw the
-change instead of two whole texts. `session_view/proposals.edit_lines` keeps
-the lines the old and new texts share at their head and tail as context and
-marks only the lines between them, so a one-line change to `loom.toml` reads
-as one removed row beside one added row rather than as two near-identical
-paragraphs. `diff_lines`, `change_counts`, `target_label`, `reach_words` and
-`diff_text` are the rest of that surface, shared by the terminal's review, the
-transcript's own `propose` row (which no longer prints the transport JSON) and
-both web surfaces. The PR also added the first tests over `dock_cards`,
-including its index-key property.
-
-**Its conformance gate is red for an infrastructure reason, not a code one.**
-`check (linux, conformance)` failed at *"Install gopls for SQL language-server
-conformance"*: `go install` could not download `golang.org/x/sys@v0.46.0`
-(`proxy.golang.org`, `stream error: INTERNAL_ERROR`), so the actual
-`make check (conformance)` step was **skipped** and nothing was tested. Run
-locally on the merged tree, `make check-conformance` passes every test. The
-job cannot be re-run while its workflow run is live, and that run does not
-settle while macOS jobs wait for runners; `main`'s own runs queued behind the
-same shortage. Treat the run for `f71ab190e` as inconclusive rather than as
-evidence either way, and confirm `main` is green from the run for a later
-commit once runners free up.
-
-The merge commit's own run, `39326787387`, was **cancelled** rather than
-completed, because `ca9a21f02` (#1027) was merged on top of it minutes later.
+The [previous handoff](next-2026-10-21-before-web-reconnect.md) preserves the
+resource measurements, distributed-runtime drive and placement follow-ups.
+Those claims retain their original observation dates and were not revalidated
+for this repair. In particular, its publication instructions do not describe
+this branch's delivery state.
 
 ## Where the tree is
 
 | Work | Verified state |
 | --- | --- |
-| Live profiling | Pickglass sampled installed daemon PID 50242, launch metadata commit `3cd330739`, OTP 29 / ERTS 17.0.5. The captures declared five sessions and ten strands. No live restart, forced GC or application-state walk occurred. |
-| JSON CPU | `35a0957cb` adds an eight-byte ordinary-run scan while preserving the four-byte and byte tails. Three alternating fixture pairs reduce median reductions by 10.0% on plain text, 3.8% on escaped text and 2.7% on transcript-shaped input. Heap allocation is unchanged. |
-| Page ownership | `a0c42df95` narrows component session-list and sign-in callbacks to registry and identity fields. The observer fixture's enlarged-hook component falls from 191,308 to 9,550 flattened words. This is a copy-size bound, not installed RSS. |
-| Prior-head validation | On `96554f554`, all local package and static stages passed after selecting Homebrew's `rg` for the Seatbelt PATH fixture. Client passed 4,885 tests, TUI 1,544 and conformance 111. All hosted Linux jobs and the combined skip census passed. The 882-input complete-result JSON equivalence digest matches baseline. Independent adversarial and integration reviews found no blocking issue. These results precede the latest integration. |
-| Upstream integration | Main `0e00dc736` includes remote-approval fixes from PRs #1036 and #1039, the sparse-renderer resource fix from PR #1023, and the private admin-read fixture adjustment from PR #1040. It also includes image-follow-up and Herdr support from PR #1022. Their source changes and fixture repairs are retained. Incoming handoffs are preserved in the linked snapshots below. |
-| Publication and installation | The owner explicitly authorized merge after the rebase, basic checks and independent review, without waiting for the full gate. Earlier CI is historical evidence; this exception does not make unfinished or failed checks green. The owner accepts hosted CI as the Linux evidence; remote Obelisk signoff is not a prerequisite. Installation and restart remain separate. |
+| Protocol | `4449f2afb` records protocol 097: reconnect the page without replaying an uncertain command. The owner requested recovery, logging and a no-replay regression. |
+| Implementation | `18c36bd1d` makes `ConnectionFailed` retryable and propagates a live lane's close to the browser socket. Authorization is rechecked; revoked access and expired pages stay final. Component teardown still only detaches. |
+| Diagnostics | `daemon.page_request_failed` records timeout versus dead gateway versus returned failure, identifiers, elapsed request time and request bytes. `daemon.page_connection_ended` records request failure, lane close, gateway close or gateway death. Command frames and page credentials are omitted. |
+| Generated assets | `8b97b3b70` refreshes the stylesheet's source digest. The rendered CSS and browser bundle are unchanged. |
+| Focused evidence | All 21 relay tests passed in the full client run. The real gateway commits a prompt, holds delivery beyond the six-second reply deadline, and accepts a fresh relay afterward. The transcript contains one prompt; the old relay's queued prompt is absent. Revocation during lane closure remains final. |
+| Browser evidence | All 310 browser decision tests and the pinned Lustre transport regression passed. Removing the queue reset in an isolated source copy makes the transport regression fail by replaying the queued submit. A component regression checks that a fresh page subscribes without reissuing its old prompt. |
+| Review | One independent adversarial pass found no actionable issue in authorization, shutdown or replay. It inspected code and independently ran the transport test, not a browser DOM remount. |
+| Gates | The web-view gate passed all 1,219 tests, including the reconnect component regression. The client gate exited 2: 5,075 tests passed and the existing page startup-memory fixture failed because the component did not start. An isolated run also failed; a traced run passed, followed by all 12 socket-module tests passing. The startup failure is intermittent and its underlying cause is unproven. Package lints pass with warnings; doc-check passes with zero errors and 208 warnings. |
+| Delivery | Local commits only. No push, PR, installation, restart or hotpatch was performed by this work. |
 
-The [resource report](review/swarm-resources-2026-10-19.md) records the probe
-coverage, counter meanings, fixture methods, test results and remaining limits.
-Its [numeric evidence](review/swarm-resources-2026-10-19.json) retains all 36
-final JSON observations and twelve component measurements. Raw captures and logs
-remain local under `/private/tmp/loom-swarm-20261019-*`.
+## What remains
 
-The [previous handoff](next-2026-10-19-before-swarm-resources.md) described an
-older idle-resource branch and Mermaid work. Its branch baseline does not
-identify this tree, and its pending-publication statements do not establish
-current GitHub state. They remain historical; their PRs and browser follow-ups
-were not re-audited during this profiling task.
+1. Resolve the intermittent component startup failure before claiming the full
+   client gate is green. **Exit:** inspect each
+   command's own exit status and saved output, including failures and skip
+   diagnostics. The failed fixture is
+   `session_socket_test.admitted_page_socket_releases_its_startup_runtime_test`;
+   the socket reported `start_page: the component did not start`, then the
+   fixture expired waiting for its registered socket. No deadline or assertion
+   was relaxed. Current client fixtures automatically skip
+   code-mode cases without `build/codemode-seed` and shipped-release cases
+   without `LOOM_BOOTSTRAP_E2E_SERVER`; these are not a live-browser acceptance.
+2. Install and drive the repair only when requested. **Exit:** a fresh release
+   runs the repaired head, and a real authenticated browser recovers from an
+   interrupted lane without duplicate commands. The everyday daemon has not
+   received this change.
+3. Resume live profiling after its separate TLS design is settled. The untracked
+   [protocol 096 draft](../protocol-change/096-tls-profiling.md) remains
+   PROPOSED and outside the reconnect commits. It is not an accepted trust
+   change, an implemented profiler or permission to restart the daemon.
 
-The [incoming renderer handoff](next-2026-10-19-before-swarm-integration.md)
-preserves the upstream resource measurements, fixture failures and Mermaid
-follow-ups. Its statement that PR #1023 is awaiting publication is now false:
-that PR merged in `698a693de`. The renderer measurements remain in the
-[frame-resource report](review/live-frame-resources-2026-10-19.md).
+## Rulings retained
 
-The [incoming admin-read handoff](next-2026-10-19-before-swarm-admin-integration.md)
-preserves the renderer merge exception and fixture follow-up evidence. PR #1040
-has since merged at `b65857090`; its private admin-read wait is five seconds,
-and the later image integration moves generic HTTP reads to the managed fixture
-deadline. Explicit timing probes retain their own bounds. The known-failure
-merge exception described there applied to #1023 only.
+**Reconnect the connection, never replay the command.** A lost acknowledgement
+is an unknown outcome. Discard the retired relay and its queued commands;
+repeat authorization and read a new snapshot through a fresh lane. Protocol
+[097](../protocol-change/097-reconnect-failed-pages.md) records the decision.
 
-The [incoming image handoff](next-2026-10-19-before-swarm-image-integration.md)
-preserves PR #1022's measurements and its explicit known-failure merge exception.
-That exception applies to #1022 only. The current integration retains its image
-and Herdr changes without altering either production resource patch.
+**A failed live lane must close the browser socket.** Otherwise the browser
+can remain connected to a component whose lane has ended. Component death is
+separate: its monitor detaches without initiating a reconnect.
 
-The page regression now measures the component model that owns the callbacks,
-excluding Lustre's runtime rendering cache. Five fresh fixture runs pass; three
-original-capture controls fail the unchanged 4,096-word growth bound. The full
-client coverage on the preceding integration passed 4,891 tests in two shards.
-The rebased core and harness package gates pass. Formatting, lint, documentation and prelude checks passed before publication. Historical hosted
-head `8bdb8ac0e` passed every Linux lane and its combined skip census, plus
-macOS E2E. Its first advisory macOS shard failed internally in
-`tools_interleave_test` with "the armed crash bomb never fired"; its success
-badge conceals the failed runner. Five fresh interleave-module runs and all
-207 runtime tests passed locally, without establishing the original cause.
-The second advisory shard and macOS combined census remain unfinished.
-The owner explicitly directed merge after basic checks rather than waiting
-for those full gates; no fully green CI claim is made.
+**Diagnostic records are metadata.** Identifiers, byte counts, elapsed time and
+sanitized gateway reasons identify the failing boundary without copying the
+command body or a page's authentication material into logs.
 
-## 2026-10-19: the real-machine distributed drive
+## Verification
 
-This section is separate from the resource handoff above. It records a drive of
-the distributed runtime on real machines, the fixes it produced, and what is
-still open.
-
-### What was driven
-
-The topology was a laptop orchestrator and an exe.dev Linux box, all on one
-tailnet. The box ran two daemons: a second orchestrator (`box`) and an executor
-(`exec`). The model was GLM-5.3. Every combination worked:
-
-1. Laptop orchestrator, local session.
-2. Laptop to `exec`, repo workspace.
-3. Laptop to `exec`, the `lnd-test` workspace.
-4. Laptop to the `linux` pool.
-5. Box orchestrator, local session.
-6. Box orchestrator to `exec`.
-7. Laptop spawning a remote subagent on `box`, including sending a message to
-   an idle child and answering the child's approvals remotely.
-8. The web view reached from a phone through Tailscale Serve.
-
-The executor's sandbox self-test passed 11 of 11 under a delegated cgroup. The
-evidence (logs, screenshots, transcripts) stayed in a scratch directory outside
-the repository, so nothing here is a recorded measurement in `docs/review/`.
-
-### Deploying an executor from a source build
-
-[The distributed setup guide](distributed-setup.md) covers the Docker
-deployment and the cgroup delegation its entrypoint performs, but not a bare
-systemd service on a Linux host. These four requirements cost time during the
-drive:
-
-- **The daemon must run inside a delegated cgroup v2.** Use a systemd user
-  service with `Delegate=yes`. Its start-up script must split the service's
-  cgroup into `supervisor/` and `base/`, move the daemon into `supervisor/`,
-  and export `LOOM_CGROUP_BASE` pointing at `base/`. Without that, every `bash`
-  call fails with "sandbox was lost" or "ran without the demanded enforcement".
-- **A source build needs two extra inputs.** Pass
-  `--codemode-seed <build>/build/codemode-seed` (made by `make codemode-seed`)
-  and put `gleam` on the service's `PATH`. Otherwise the executor's census
-  reports no code-mode toolchain.
-- **Scopes can stay `unknown` after a restart.** When the executor daemon
-  restarts with sessions open, their scopes are left `unknown`. Stop the daemon
-  and run `loom executor release SESSION --state-dir ~/.loom`, as the setup
-  guide's troubleshooting section describes.
-- **A restart must wait for the old daemon VM to exit** before the new one
-  starts. Starting early leaves two daemons contending for the same state
-  directory and ports.
-
-These belong in the setup guide as a systemd quick start. They are recorded
-here until that section is written.
-
-### What landed
-
-- [#1009](https://github.com/Roasbeef/loom/pull/1009): the web view through a
-  listed https origin, and `loom ui --device`.
-- [#1025](https://github.com/Roasbeef/loom/pull/1025): a `[daemon]` bind setting.
-- [#1027](https://github.com/Roasbeef/loom/pull/1027): a confirmation page for
-  sign-in links opened from other apps.
-- [#1028](https://github.com/Roasbeef/loom/pull/1028): builds from a git archive
-  carry their commit.
-- [#1038](https://github.com/Roasbeef/loom/pull/1038): one New session form, a
-  grouped Admin deployment view, a phone layout, a host name card, and the
-  daemon titled by its ledger name.
-- [#1036](https://github.com/Roasbeef/loom/pull/1036): remote approvals stay
-  answerable, and a spawner's decision wakes an idle remote child.
-- [#1039](https://github.com/Roasbeef/loom/pull/1039): remote approval cards
-  are addressed by id, and daemon options may precede the verb.
-- [#1043](https://github.com/Roasbeef/loom/pull/1043): protocol-change 093, a
-  durable failed session start.
-
-The Linux signoff host was down, so these merges had package gates, reviews and
-live checks but no full signoff.
-
-### Open follow-ups
-
-- Issue #1042: the laptop's stub for a remote child does not track the child's
-  later runs.
-- A device link's expiry was seen once on first open and was not reproduced.
-- A `name` key on `[distribution]` is needed for self names in peers mode.
-- The web "other orchestrators" list shows a peer's failed start as reserved.
-- GLM-5.3-Flash returned 502 responses on large prompts, so the box's child
-  profile was switched to GLM-5.3.
-- The laptop keeps a request row whose answer window closed on the box. This
-  behavior is documented in protocol-change 089.
-- Some client tests are load-sensitive under `LOOM_TEST_PARALLEL=8`. A
-  separate fix session is working on them.
-- Joining the owner's everyday daemon to the deployment waits for the owner's
-  go-ahead. Nothing has touched that daemon or `~/.loom`.
-
-## What to do next
-
-1. Publish and merge the authorized rebased PR after basic checks and the
-   completed independent review. **Exit:** the published SHA matches the checked
-   source and GitHub confirms the guarded merge. Preserve the failed and
-   unfinished CI results above; the owner waived waiting for the full gate.
-   Obelisk is not a merge gate.
-2. Measure remaining memory owners with an isolated fixture. **Exit:** identify
-   the retaining callback and prove its bound while preserving authorization
-   and lifecycle behavior. Owner-page capabilities in `ui_socket.upgrade`
-   still capture attachments; the current observer fixture does not validate
-   the owner-only sign-in callback's retained size.
-3. Coordinate an authorized update and matched installed comparison. **Exit:**
-   compare CPU, cumulative allocation, process/binary memory and OS RSS/footprint
-   at the same concurrency and lifecycle cuts. Keep active swarm interruption
-   outside an unannounced profiling step.
-4. Attribute remaining storage and JSON work before another repair. **Exit:** a
-   bounded workload identifies removable work. SQLite sample widths alone do
-   not justify statement caching, new synchronization or allocator tuning.
-5. Finish the web placement revamp of
-   [docs/design-notes/placement-revamp.md](design-notes/placement-revamp.md).
-   As of 2026-10-21, S1 (sidebar and composer), the S2 relay backend
-   (protocol-change/094) and S3 (a worktree per session, protocol-change/095)
-   are on main through the queue merge #1062. S3 was driven live on the exe.dev
-   executor, on Linux with bubblewrap: separate trees and `loom/<session>`
-   branches, a reopened session recreated from its branch, clean trees removed
-   with branches kept, and a dirty tree kept.
-
-   **S2b is next.** It is the web side of 094: the composer's Agent chip
-   offering other orchestrators, a relayed session page at
-   `/ui/p/<key>/orchestrators/<name>/sessions/<id>`, and relayed rows in the
-   sidebar. A first attempt stopped partway, because a tool classifier refused
-   one file write. Its unfinished, uncompiled work is on the branch
-   `wip/relayed-sessions-web`. That branch also records the design calls made:
-   the relayed page is the home component with a different centre; a
-   `client/daemon/ui_top` module re-judges every create against a fresh
-   `Placements`; and the relay is wired through `server.Ui`. Whether to take
-   the branch or start S2b again is open. A second orchestrator for the live
-   drive is already enrolled: `mac2` is ledger entry 4, with its home at
-   `~/loom-drives/e2e/mac2` and a `[spawners.mac2.top_level]` table on the box.
-   **Exit:** S2b's exit criteria in section 7, driven from mac2 against the box.
-   Then S4, which removes the old home form and the "Where" box.
-
-   Open issues from the drive: #1061, where a remote session commits without a
-   git identity and an agent's repo-local fix lands in the shared `.git/config`;
-   #1059, where a saved session hides its pending approvals; #1056, a possible
-   orphan delegate on a crash during spawn; and #1050, so pickglass can attach
-   over TLS distribution, letting `[daemon] profile` and `[distribution]` live
-   together. The executor now speaks node protocol 4, so an orchestrator on an
-   older build is refused at attach until it updates.
-
-## Rulings already made
-
-Each of these is settled. Re-open one only with new evidence, and record the
-reopening where the ruling lives.
-
-**Counter scope remains explicit.** The [BEAM memory review
-skill](../skills/beam-memory-review/SKILL.md) distinguishes heap allocation,
-flattened copied terms, process capacity, binary ownership and RSS. The report
-keeps live observations separate from offline comparisons.
-
-**Narrowing captures does not cache authorization.** The [client package
-account](../packages/client/CLAUDE.md) records the callback ownership. Each
-session-list read still authenticates its original credential; each sign-in
-read still checks the page and registry. Admission remains bound to its
-original gateway.
-
-**The scanner preserves the durability boundary.** The [core package
-account](../packages/core/CLAUDE.md) records checked byte boundaries and total
-error behavior. The complete-result equivalence corpus matches unchanged
-corruption reports, not just accepted values. The wider scan adds no FFI or
-public API.
-
-**Blank frames keep sparse cells.** The [terminal package
-account](../packages/tui/CLAUDE.md) records the inherited sparse-canvas and
-first-column repaint-marker invariants. The frame-resource report retains the
-renderer comparison; the swarm report measures the parser and page callbacks.
-
-## Deliberately open
-
-None of these is unfinished work somebody forgot.
-
-- Installed CPU and RSS savings are unmeasured. Three fixture pairs support
-  parser-work reductions; active host load makes timing much noisier.
-- Other owner-page callbacks retain attachments. The component measurement
-  observes returned application state and excludes other actor-loop roots.
-- A selected 96-byte JSON string still references its 1,048,679-byte input in
-  the existing ownership probe. The scanner does not change binary ownership.
-- The older idle-resource and Mermaid follow-ups remain in the linked previous
-  handoffs. Their cross-browser state is unverified here.
-
-## How to verify
-
-From the repository root:
+Run shipment-building package gates sequentially:
 
 ```sh
-bash scripts/check.sh core
-LOOM_TEST_TIMEOUT_SECONDS=180 bash scripts/test.sh client --match session_socket_test
-LOOM_TEST_TIMEOUT_SECONDS=180 bash scripts/test.sh client --match ui_socket_test
-LOOM_TEST_TIMEOUT_SECONDS=180 bash scripts/test.sh client --match ui_relay_test
-bash scripts/lint.sh packages/core/src packages/client/src
+make check-client
+make check-web_view
+bash scripts/web_client_test.sh
+make lint-client lint-web_view lint-web_client
 make doc-check
 ```
 
-Put `/opt/homebrew/bin` first on PATH for native gates. The Seatbelt PATH
-fixture must select the installed Homebrew tool rather than a bundled `rg`
-under `/Applications`, which is outside the jail's filesystem grants.
+The targeted relay command is
+`LOOM_TEST_TIMEOUT_SECONDS=180 bash scripts/test.sh client --match ui_relay_test`.
+Its timeout regression intentionally spends the real six-second request budget.
+`node packages/web_client/test/reconnect_transport_test.mjs` exercises the built
+pinned dependency with controlled sockets and timers; it needs the browser
+package built first. It is also part of `scripts/web_client_test.sh`.
 
-Use `scripts/json_decode_perf.sh` with separately built baseline/candidate
-artifacts for performance comparisons, and its `equivalence` mode for complete
-results. Run builds one at a time per checkout and measure timing without a
-concurrent repository gate. The extended page regression intentionally fails
-against the original callback capture. Its forced collection belongs only to
-its owned fixture socket, never to a live daemon. See
-[execution guidance](execution.md) for build, sandbox and exact-gate hazards.
+Logs for this work are local under `/private/tmp/loom-reconnect-*`. Read
+[docs/execution.md](execution.md) before treating a gate or a skip as evidence.
+The full client run is `loom-reconnect-client-check.log`; the isolated failure
+is `loom-reconnect-startup-rerun-1.log`; the passing trace and socket-module
+runs are `loom-reconnect-startup-trace.log` and
+`loom-reconnect-socket-module-rerun.log`. The passing web-view gate is
+`loom-reconnect-web-view-final.log`. Shipment-building package targets must
+run sequentially: an earlier concurrent attempt raced over their shared TUI
+shipment directory before reaching the web-view tests.
