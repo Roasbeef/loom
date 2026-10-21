@@ -273,7 +273,7 @@ sequenceDiagram
 <<<<<<< ours
    (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6125`).
 =======
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6126`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6216`).
 >>>>>>> theirs
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
@@ -834,9 +834,13 @@ search is an `input` event the owner's socket admits beneath `home.table_path` a
 nowhere else. A session's header carries a placement strip (`view/placement`), and
 the admin page has the same sidebar (its rows are text, since the admin page mints
 no ticket) and two tabs, Machines and People. The old home form and list stay
-reachable behind a link until the removal slice. What S1 leaves for later slices is
-in the design note: another orchestrator as the agent machine, a worktree per
-session, nested remote subagents, and the first prompt of a session.
+reachable behind a link until the removal slice. The composer's box is the
+session's first message: the daemon creates the session as before, names it from
+the message's first line, sends the message to the main strand through the same
+gateway frame a session page's composer sends, and opens the page, keeping the
+session and saying so in one line if the message was not accepted. What S1 leaves
+for later slices is in the design note: another orchestrator as the agent machine,
+a worktree per session, and nested remote subagents.
 
 **The sidebar.** `ui_socket` gives the component `Transport.sessions`, the
 authorized catalogue read the terminal's session picker uses

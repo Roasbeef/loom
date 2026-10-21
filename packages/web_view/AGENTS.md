@@ -418,10 +418,25 @@ page keys and nonces, and the relay into the session's gateway.
   and list stay reachable through "Show the full session list" until S4. The admin
   page opens on the Machines tab (`admin.Part`), has the sidebar (`Start.machine`,
   `Start.activity`; `admin.sidebar_path`, whose clicks `admin_accepts` admits) and a
-  machine's "Show its sessions", which narrows the sidebar in place. The first
-  message of a session is not carried: the daemon's creation takes a name and no
-  prompt, so the composer's text field names the session and the first prompt is
-  typed on the session's own page.
+  machine's "Show its sessions", which narrows the sidebar in place.
+  The composer's box is the session's first message. `Start.create` takes the
+  message as its fifth argument; `ui_socket.create_with` (which `create_for`
+  wraps with no message) creates the session exactly as before, opens it, and then
+  calls `send` once, for the new session, when the message is not empty:
+  `first_message_for` resolves the session as the page's principal and
+  `first_prompt` attaches to its gateway with the page's authority capped at
+  Operator, subscribes as a page's lane does, sends the one `prompt` frame to the
+  main strand and detaches. The text rides inside a JSON string, so it is stored as
+  a user message and never interpreted. The session is named from the message's
+  first line (`composer.session_name`: trimmed, made safe for one line, at most
+  `composer.name_limit` characters). A session that was created and opened but did
+  not take the message is kept: the answer is `creations.Unsent(path)`, and the
+  composer draws one line and an "Open the session" button, which departs with the
+  ticket held in `composer.State.unsent` and never drawn. A message past
+  `composer.prompt_limit` is refused on the form before anything is created.
+  `upgrade_home` takes `gateway_of`, the one place the concrete instance's gateway
+  is read. The bar's own Admin button is not drawn where the sidebar has one in its
+  foot, and the bar's brand gives way to the sidebar's top line on a wide window.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved | Blocked | FailedStart(reason) | Moving(to)`; `Blocked` is a
   saved row no page may resume, `FailedStart` is a blocked row whose creation
