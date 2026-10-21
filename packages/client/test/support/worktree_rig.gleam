@@ -78,6 +78,26 @@ pub fn rig_at(name: String, base: String) -> Rig {
   Rig(trees:, workspace:, root:, state:, ledger_path:)
 }
 
+/// The same executor after its daemon restarted: the old worktrees stopped, new
+/// ones started over the same state root, repository and ledger. The first job
+/// the new gates run reconciles the ledger with the disk.
+pub fn restart(rig: Rig) -> Rig {
+  worktrees.stop(rig.trees)
+  let assert Ok(trees) =
+    worktrees.start(
+      worktrees.Config(
+        state_root: rig.state,
+        ledger_path: rig.ledger_path,
+        helper_path: absolute("../sandbox/loom-exec"),
+        demand: exec.BestEffort,
+        logger: log.discard(),
+      ),
+      [rig.workspace],
+    )
+    as "the worktrees restart"
+  Rig(..rig, trees:)
+}
+
 /// The entries a daemon creates in its state root before it builds any
 /// session's policy. A jail masks them and cannot mask a path that does not
 /// exist, so a rig standing in for a daemon creates them as a daemon would.

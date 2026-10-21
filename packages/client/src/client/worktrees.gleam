@@ -479,7 +479,8 @@ pub fn unrecorded(worktrees: Worktrees, served: List(Workspace)) -> Int {
       let present = simplifile.read_directory(directory) |> result.unwrap([])
       Ok(
         list.count(present, fn(entry) {
-          !list.contains(recorded, directory <> "/" <> entry)
+          let path = directory <> "/" <> entry
+          disk_of(path) == OnDisk && !list.contains(recorded, path)
         }),
       )
     })
@@ -740,11 +741,28 @@ fn reopen(env: Env, spec: Spec, row: Row) -> Result(Nil, String) {
       use Nil <- result.try(forget_directory(spec))
       recreate(env, spec)
     }
-    exec_ledger.Creating, _ | exec_ledger.Removing, _ ->
-      Error(
-        "the worktree record for this session is mid-change; restart the "
-        <> "executor so that its start reconciles it",
-      )
+    exec_ledger.Creating, disk | exec_ledger.Removing, disk ->
+      interrupted(env, spec, row, disk)
+  }
+}
+
+// A record left `Creating` or `Removing` while the executor ran: the undo that
+// would have closed it failed to write. The reconciliation rule for the state
+// settles it, and the session then opens as if the record had been tidy. A rule
+// that left the record where it was would be the same refusal again, so that
+// case is the error it is.
+fn interrupted(
+  env: Env,
+  spec: Spec,
+  row: Row,
+  disk: Disk,
+) -> Result(Nil, String) {
+  use Nil <- result.try(reconcile_state(env, spec, row.state, disk))
+  use settled <- result.try(recorded(env, spec.session))
+  case settled {
+    Some(next) if next.state != row.state -> reopen(env, spec, next)
+    Some(_) | None ->
+      Error("the worktree record for this session could not be settled")
   }
 }
 

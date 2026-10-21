@@ -377,6 +377,30 @@ pub fn every_record_state_against_every_disk_state_reconciles_test() {
   assert list.contains(branches(rig), worktrees.branch_of(session(4)))
 }
 
+pub fn a_record_left_mid_change_while_the_executor_ran_is_settled_at_the_next_open_test() {
+  let rig = worktree_rig.rig("midchange")
+
+  // The gate has reconciled by now, so nothing but the open can settle a row
+  // that an undo failed to close.
+  let _first = opened(rig, 9)
+  write(tree_of(rig, 1) <> "/half.txt", "left by a failed undo\n")
+  plant(rig, 1, exec_ledger.Creating)
+
+  let tree = opened(rig, 1)
+
+  assert exists(tree.path <> "/README")
+  assert !exists(tree.path <> "/half.txt")
+  assert row(rig, 1) == Ok(exec_ledger.Present)
+}
+
+pub fn a_directory_that_is_not_ours_is_counted_and_a_file_is_not_test() {
+  let rig = worktree_rig.rig("count")
+  let _first = opened(rig, 1)
+  write(rig.state <> "/worktrees/repo/stranger/note.txt", "x\n")
+  write(rig.state <> "/worktrees/repo/.DS_Store", "x\n")
+  assert worktrees.unrecorded(rig.trees, [rig.workspace]) == 1
+}
+
 pub fn a_record_whose_path_is_not_the_layouts_is_never_acted_on_test() {
   let rig = worktree_rig.rig("tampered")
   let victim = rig.state <> "/victim"
