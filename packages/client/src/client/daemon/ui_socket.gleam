@@ -5862,9 +5862,10 @@ pub fn browser_claim_address(address: String) -> String {
 /// was reached at, then `/v2/control`, when `loom claim` accepts it.
 ///
 /// The router has already required the host to be a loopback name
-/// (`ui_http.loopback_host`), and `localhost` is written as `127.0.0.1`
-/// because `loom claim` refuses a `ws` address that is not a literal loopback
-/// one. The command therefore works on the machine that runs the daemon,
+/// (`ui_http.loopback_host`), and every name that is not an IP literal,
+/// `localhost` and each `<name>.localhost`, is written as `127.0.0.1` with the
+/// same port because `loom claim` refuses a `ws` address that is not a literal
+/// loopback one. The command therefore works on the machine that runs the daemon,
 /// which the page says. A daemon reached through a proxy on another origin
 /// would need its own address, which no page can learn from a `Host` that the
 /// router refused.
@@ -5877,9 +5878,18 @@ pub fn browser_claim_address(address: String) -> String {
 @internal
 pub fn claim_address(request: Request(body)) -> Result(String, Nil) {
   use host <- result.try(ui_http.loopback_host(request))
-  let literal = case string.lowercase(host) {
-    "localhost" <> rest -> "127.0.0.1" <> rest
-    other -> other
+  let literal = case host {
+    "[" <> _ -> host
+    _ -> {
+      let #(name, port) = case string.split_once(host, ":") {
+        Ok(#(name, port)) -> #(name, ":" <> port)
+        Error(Nil) -> #(host, "")
+      }
+      case string.lowercase(name) {
+        "127.0.0.1" -> host
+        _ -> "127.0.0.1" <> port
+      }
+    }
   }
   let address = "ws://" <> literal <> "/v2/control"
   claim.remote_address(address)

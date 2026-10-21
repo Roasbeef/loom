@@ -545,6 +545,12 @@ pub fn a_malformed_name_under_localhost_is_refused_test() {
     assert host_of(name <> " x.localhost") == Error(Nil)
     assert host_of(name <> "@evil.example.localhost") == Error(Nil)
     assert host_of(name <> "\u{e9}.localhost") == Error(Nil)
+
+    // Lowercasing folds U+212A (the Kelvin sign) to `k`, so a name that is
+    // ASCII only after folding must still be refused.
+    assert host_of(name <> ".localhost") == Ok(name <> ".localhost")
+    assert host_of(name <> "\u{212A}.localhost") == Error(Nil)
+    assert host_of("\u{212A}.localhost") == Error(Nil)
   })
 }
 

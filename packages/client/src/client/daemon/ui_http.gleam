@@ -341,14 +341,25 @@ pub fn loopback_host(request: Request(body)) -> Result(String, Nil) {
         Error(Nil) -> #(host, "")
       }
   }
-  case string.lowercase(name.0), valid_port(name.1) {
-    "127.0.0.1", True | "[::1]", True | "localhost", True -> Ok(host)
-    lowered, True ->
-      case under_localhost(lowered) {
-        True -> Ok(host)
-        False -> Error(Nil)
-      }
-    _, False -> Error(Nil)
+  case loopback_name(name.0) && valid_port(name.1) {
+    True -> Ok(host)
+    False -> Error(Nil)
+  }
+}
+
+// Whether a host name, without its port, is one the view treats as loopback:
+// the three literals, or a name under `.localhost`. The name must be ASCII as
+// sent, because lowercasing folds some non-ASCII characters (U+212A, the
+// Kelvin sign, becomes `k`) and so would let a different name pass.
+fn loopback_name(name: String) -> Bool {
+  let ascii = string.byte_size(name) == string.length(name)
+  let lowered = string.lowercase(name)
+  ascii
+  && {
+    lowered == "127.0.0.1"
+    || lowered == "[::1]"
+    || lowered == "localhost"
+    || under_localhost(lowered)
   }
 }
 
