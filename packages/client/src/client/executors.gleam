@@ -55,6 +55,7 @@
 import client/distribution
 import client/ledger_reference
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -90,8 +91,19 @@ pub type Executor {
     /// contain: `codemode` for the code-mode toolchain, or an `[lsp.<name>]`
     /// key. Empty when none was declared.
     toolchains: List(String),
+    /// How many seconds an attach keeps retrying while the executor answers
+    /// that it is still preparing the workspace (protocol-change/095). A
+    /// first attach to a worktree workspace runs a whole checkout, so the
+    /// operator sizes this to the largest one the executor serves.
+    attach_within_s: Int,
   )
 }
+
+/// The seconds an attach is retried when the table names none.
+pub const default_attach_within_s = 30
+
+/// The most seconds `attach_within_s` may name: fifteen minutes.
+pub const max_attach_within_s = 900
 
 /// What an attach census says about the machine, reduced to the three facts
 /// a declaration makes claims about.
@@ -115,7 +127,14 @@ pub type Observed {
 /// assert executors.plain("box", "exec@10.0.0.2").toolchains == []
 /// ```
 pub fn plain(name: String, node: String) -> Executor {
-  Executor(name:, node:, platform: None, enforcement: None, toolchains: [])
+  Executor(
+    name:,
+    node:,
+    platform: None,
+    enforcement: None,
+    toolchains: [],
+    attach_within_s: default_attach_within_s,
+  )
 }
 
 /// The wording of an enforcement in the configuration file.
@@ -237,7 +256,7 @@ fn row(name: String, value: tom.Toml) -> Result(Executor, String) {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
         dict.keys(fields),
-        ["node", "platform", "enforcement", "toolchains"],
+        ["node", "platform", "enforcement", "toolchains", "attach_within_s"],
         "[executors." <> name <> "]",
       ))
       use node <- result.try(case dict.get(fields, "node") {
@@ -248,8 +267,16 @@ fn row(name: String, value: tom.Toml) -> Result(Executor, String) {
       let place = "executors." <> name
       use platform <- result.try(platform_of(fields, place))
       use enforcement <- result.try(enforcement_of(fields, place))
-      use toolchains <- result.map(toolchains_of(fields, place))
-      Executor(name:, node:, platform:, enforcement:, toolchains:)
+      use toolchains <- result.try(toolchains_of(fields, place))
+      use waiting <- result.map(attach_within_of(fields, place))
+      Executor(
+        name:,
+        node:,
+        platform:,
+        enforcement:,
+        toolchains:,
+        attach_within_s: option.unwrap(waiting, default_attach_within_s),
+      )
     }
     _ -> Error("executors." <> name <> " must be a table")
   }
@@ -298,6 +325,31 @@ fn is_word(text: String) -> Bool {
   && list.all(string.to_graphemes(text), fn(grapheme) {
     string.contains("abcdefghijklmnopqrstuvwxyz0123456789_", grapheme)
   })
+}
+
+/// Reads the optional `attach_within_s` key of an executor row, or of a pool: a
+/// whole number of seconds from 1 to `max_attach_within_s`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert executors.attach_within_of(dict.new(), "executors.box") == Ok(None)
+/// ```
+pub fn attach_within_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Option(Int), String) {
+  case dict.get(fields, "attach_within_s") {
+    Error(Nil) -> Ok(None)
+    Ok(tom.Int(seconds)) if seconds >= 1 && seconds <= max_attach_within_s ->
+      Ok(Some(seconds))
+    Ok(_) ->
+      Error(
+        place
+        <> ".attach_within_s must be a whole number of seconds from 1 to "
+        <> int.to_string(max_attach_within_s),
+      )
+  }
 }
 
 /// Reads the optional `enforcement` key of an executor row, or of a pool's

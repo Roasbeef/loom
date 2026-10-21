@@ -86,6 +86,7 @@ packages/client/src/client/workspaces.gleam|row|call|[workspaces.<name>]|
 packages/client/src/client/orchestrators.gleam|row|call|[orchestrators.<name>]|
 packages/client/src/client/directory/settings.gleam|table|call|[directory]|
 packages/client/src/client/spawners.gleam|row|call|[spawners.<name>]|
+packages/client/src/client/spawners.gleam|top_level_of|call|[spawners.<name>.top_level]|
 packages/client/src/client/approval_ceiling.gleam|from_table|call|[spawners.<name>.approval_ceiling]|
 SPEC
 }

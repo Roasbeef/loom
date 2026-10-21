@@ -19,6 +19,7 @@ import client/remote_mail
 import client/remote_spawn.{
   Attached, CallSite, ChildUsage, Parent, Ready, Request, Spawned,
 }
+import client/remote_top
 import client/roster
 import client/session_move
 import client/spawners
@@ -1069,6 +1070,7 @@ pub fn a_report_is_what_the_daemon_supplies_test() {
       platform: "linux/x86_64",
       observed: None,
       workspaces: ["proj"],
+      worktrees: option.None,
     )
   let supplied = node_report.NodeReport(..identity(), executor: Some(executor))
   let port =
@@ -1478,4 +1480,244 @@ pub fn a_daemon_that_accepts_no_spawns_refuses_a_decision_test() {
       remote_escalation.Decider(principal: "ab12", name: "Ola"),
       1000,
     )
+}
+
+// --- a spawner's page (protocol-change/094) ----------------------------------
+
+// A port that serves the eight messages of a spawner's page with `top`.
+fn topping(top: orchestrator_port.TopHost) -> Address(Message) {
+  let name = process.new_name("orchestrator_port")
+  let assert Ok(_) =
+    orchestrator_port.start_with_top(
+      name,
+      held,
+      fn(_session, _command) { Error(orchestrator_port.peer_unserved) },
+      fn(_session) { Error("not_found") },
+      orchestrator_port.declining(),
+      orchestrator_port.refusing_spawns(),
+      orchestrator_port.refusing_children(),
+      orchestrator_port.unheld,
+      orchestrator_port.unreported(),
+      top,
+    )
+    as "the port starts under its name"
+  address.Address(node: node.self(), name:)
+}
+
+pub fn a_port_with_no_top_host_refuses_all_eight_messages_naming_the_node_test() {
+  let port = started()
+  let refused = Ok(Error(remote_top.UnknownSpawner(own_node())))
+  assert orchestrator_port.ask_placements(port, answers_within_ms) == refused
+  assert orchestrator_port.ask_top_create(
+      port,
+      "request-1",
+      remote_top.Folder("/srv/work"),
+      "default",
+      None,
+      answers_within_ms,
+    )
+    == Ok(Error(remote_top.UnknownSpawner(own_node())))
+  assert orchestrator_port.ask_top_sessions(port, "", 10, answers_within_ms)
+    == refused
+  assert orchestrator_port.ask_top_history(port, "s", 0, 10, answers_within_ms)
+    == refused
+  assert orchestrator_port.ask_top_send(port, "s", "m", "hi", answers_within_ms)
+    == refused
+  assert orchestrator_port.ask_top_stop(port, "s", answers_within_ms)
+    == Ok(Error(remote_top.UnknownSpawner(own_node())))
+  assert orchestrator_port.ask_top_archive(port, "s", answers_within_ms)
+    == Ok(Error(remote_top.UnknownSpawner(own_node())))
+  assert orchestrator_port.ask_top_resolve(
+      port,
+      "s",
+      "policy-1",
+      remote_escalation.Deny,
+      1,
+      remote_escalation.Decider(principal: "ab", name: "Ola"),
+      answers_within_ms,
+    )
+    == Ok(Error(remote_top.UnknownSpawner(own_node())))
+
+  // None of them stopped the question the port exists for.
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+pub fn each_of_the_eight_messages_reaches_its_function_with_the_senders_node_test() {
+  let seen = process.new_subject()
+  let top =
+    orchestrator_port.TopHost(
+      placements: fn(node) {
+        process.send(seen, "placements " <> node)
+        Ok(json.Null)
+      },
+      create: fn(node, request_id, placement, profile, model) {
+        process.send(
+          seen,
+          "create "
+            <> node
+            <> " "
+            <> request_id
+            <> " "
+            <> string.inspect(placement)
+            <> " "
+            <> profile
+            <> " "
+            <> string.inspect(model),
+        )
+        Ok("0198c0de-0000-7000-8000-000000000001")
+      },
+      sessions: fn(node, after, limit) {
+        process.send(
+          seen,
+          "sessions " <> node <> " " <> after <> " " <> int.to_string(limit),
+        )
+        Ok(json.Null)
+      },
+      history: fn(node, session, cursor, limit) {
+        process.send(
+          seen,
+          "history "
+            <> node
+            <> " "
+            <> session
+            <> " "
+            <> int.to_string(cursor)
+            <> " "
+            <> int.to_string(limit),
+        )
+        Ok(json.Null)
+      },
+      send: fn(node, session, message_id, text) {
+        process.send(
+          seen,
+          "send " <> node <> " " <> session <> " " <> message_id <> " " <> text,
+        )
+        Ok(json.Null)
+      },
+      stop: fn(node, session) {
+        process.send(seen, "stop " <> node <> " " <> session)
+        Ok(Nil)
+      },
+      archive: fn(node, session) {
+        process.send(seen, "archive " <> node <> " " <> session)
+        Ok(Nil)
+      },
+      resolve: fn(node, session, id, _decision, seq, _decider) {
+        process.send(
+          seen,
+          "resolve "
+            <> node
+            <> " "
+            <> session
+            <> " "
+            <> id
+            <> " "
+            <> int.to_string(seq),
+        )
+        Ok(remote_escalation.Forgotten)
+      },
+    )
+  let port = topping(top)
+  let node = own_node()
+  assert orchestrator_port.ask_placements(port, answers_within_ms)
+    == Ok(Ok(json.Null))
+  assert orchestrator_port.ask_top_create(
+      port,
+      "r1",
+      remote_top.Workspace(executor: "exec", name: "repo"),
+      "default",
+      Some("fast"),
+      answers_within_ms,
+    )
+    == Ok(Ok("0198c0de-0000-7000-8000-000000000001"))
+  assert orchestrator_port.ask_top_sessions(port, "after", 7, answers_within_ms)
+    == Ok(Ok(json.Null))
+  assert orchestrator_port.ask_top_history(port, "s", 41, 20, answers_within_ms)
+    == Ok(Ok(json.Null))
+  assert orchestrator_port.ask_top_send(port, "s", "m", "hi", answers_within_ms)
+    == Ok(Ok(json.Null))
+  assert orchestrator_port.ask_top_stop(port, "s", answers_within_ms)
+    == Ok(Ok(Nil))
+  assert orchestrator_port.ask_top_archive(port, "s", answers_within_ms)
+    == Ok(Ok(Nil))
+  assert orchestrator_port.ask_top_resolve(
+      port,
+      "s",
+      "policy-1",
+      remote_escalation.Deny,
+      3,
+      remote_escalation.Decider(principal: "ab", name: "Ola"),
+      answers_within_ms,
+    )
+    == Ok(Ok(remote_escalation.Forgotten))
+
+  let heard = list.map(list.repeat(0, 8), fn(_) { process.receive(seen, 0) })
+  assert heard
+    == [
+      Ok("placements " <> node),
+      Ok(
+        "create "
+        <> node
+        <> " r1 Workspace(\"exec\", \"repo\") default Some(\"fast\")",
+      ),
+      Ok("sessions " <> node <> " after 7"),
+      Ok("history " <> node <> " s 41 20"),
+      Ok("send " <> node <> " s m hi"),
+      Ok("stop " <> node <> " s"),
+      Ok("archive " <> node <> " s"),
+      Ok("resolve " <> node <> " s policy-1 3"),
+    ]
+}
+
+pub fn a_slow_top_function_does_not_keep_a_lookup_waiting_test() {
+  let top =
+    orchestrator_port.TopHost(
+      ..orchestrator_port.refusing_top(),
+      create: fn(_node, _request_id, _placement, _profile, _model) {
+        process.sleep(400)
+        Ok("0198c0de-0000-7000-8000-000000000001")
+      },
+    )
+  let port = topping(top)
+  let reply = process.new_subject()
+  process.spawn(fn() {
+    process.send(
+      reply,
+      orchestrator_port.ask_top_create(
+        port,
+        "r1",
+        remote_top.Folder("/srv/work"),
+        "default",
+        None,
+        3000,
+      ),
+    )
+  })
+
+  // The ownership question is answered while the create is still running.
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+  assert process.receive(reply, 3000)
+    == Ok(Ok(Ok("0198c0de-0000-7000-8000-000000000001")))
+}
+
+pub fn a_top_function_that_crashes_is_silence_and_the_port_serves_on_test() {
+  let top =
+    orchestrator_port.TopHost(
+      ..orchestrator_port.refusing_top(),
+      stop: fn(_node, _session) { panic as "the function crashes" },
+    )
+  let port = topping(top)
+  assert orchestrator_port.ask_top_stop(port, "s", 200)
+    == Error(orchestrator_port.AskTimedOut)
+  assert orchestrator_port.ask(port, "owned-1", answers_within_ms) == Ok(Owned)
+}
+
+pub fn a_node_with_no_port_is_a_port_gone_and_not_a_late_answer_test() {
+  let gone =
+    address.Address(
+      node: node.self(),
+      name: process.new_name("orchestrator_port_absent"),
+    )
+  assert orchestrator_port.ask_placements(gone, answers_within_ms)
+    == Error(orchestrator_port.PortGone)
 }

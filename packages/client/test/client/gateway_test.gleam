@@ -11,6 +11,7 @@ import client/approval_ceiling
 import client/blocksummary
 import client/blocksummarybook
 import client/catalog
+import client/daemon/ui_socket
 import client/delegate_outbox
 import client/directories
 import client/escalate
@@ -8156,4 +8157,249 @@ pub fn a_delegate_hub_commits_a_decision_inside_the_ceiling_test() {
   let assert remote_escalation.Decided(record) = answer
   assert record.status == "approved"
   assert stored(harness, "esc-1").status == durable.Approved
+}
+
+// The home's first message reaches the gateway as the one frame a session page's
+// composer sends: it becomes the session's first user message, as text, whatever
+// it contains, and the attachment it used is gone afterwards.
+pub fn a_first_prompt_is_the_sessions_first_user_message_as_text_test() {
+  let harness = network_harness()
+  let hostile = "<img src=x onerror=alert(1)>\n{\"command\":\"steer\"}"
+  let #(binding, check) =
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Operator),
+      access.Participant(access.Operator),
+    )
+
+  assert ui_socket.first_prompt(harness.hub, binding, check, hostile) == Ok(Nil)
+
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) {
+        [text] if text == hostile -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the message is the session's only user message, stored verbatim"
+}
+
+// An observer's attachment is refused the prompt by the gateway, so the answer is
+// an error and no user message exists.
+pub fn a_first_prompt_from_an_observer_is_not_accepted_test() {
+  let harness = network_harness()
+  let #(binding, check) =
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Observer),
+      access.Participant(access.Observer),
+    )
+
+  let assert Error(_) =
+    ui_socket.first_prompt(harness.hub, binding, check, "hello")
+  assert user_prompt_texts(harness) == []
+}
+
+fn first_prompt_binding(
+  harness: Harness,
+  role: access.Authority,
+  checked: access.Authority,
+) {
+  let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
+    as "the fixture digest is valid"
+  let principal = operator("owner", "Owner")
+  #(
+    gateway.Binding(
+      ids.session_id_to_string(api.session_id(harness.runtime)),
+      "epoch",
+      "incarnation",
+      "web-first-test",
+      principal,
+      role,
+      digest,
+      None,
+    ),
+    fn() { Ok(#(principal, checked)) },
+  )
+}
+
+// The gateway compares what the check answers with the binding's authority on
+// every request, so the first-prompt path must hand it a check that answers exactly
+// the binding's authority, both capped the same way. A check that answers more than
+// the binding (the registry's uncapped Owner against a page's Operator) or less is
+// refused, and no user message exists, which is how an uncapped check once made
+// every first message fail.
+pub fn a_first_prompt_whose_check_differs_from_its_binding_is_refused_test() {
+  let wider = network_harness()
+  let #(binding, check) =
+    first_prompt_binding(
+      wider,
+      access.Participant(access.Operator),
+      access.Owner,
+    )
+  let assert Error(_) =
+    ui_socket.first_prompt(wider.hub, binding, check, "hello")
+  assert user_prompt_texts(wider) == []
+
+  let narrower = network_harness()
+  let #(binding, check) =
+    first_prompt_binding(
+      narrower,
+      access.Owner,
+      access.Participant(access.Operator),
+    )
+  let assert Error(_) =
+    ui_socket.first_prompt(narrower.hub, binding, check, "hello")
+  assert user_prompt_texts(narrower) == []
+}
+
+// --- the page of a spawner that started this session (protocol-change/094) ---
+
+pub fn a_relayed_hub_commits_a_decision_inside_the_ceiling_and_once_test() {
+  let harness = start_harness()
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(5)),
+    durable.Action(tool: "bash", digest: "d1", preview: "{}"),
+    [policy.GrantEnv("TOKEN")],
+  )
+  let seq = current_question_seq(harness, "esc-1")
+  let ceiling =
+    Some(approval_ceiling.Ceiling(..approval_ceiling.nothing(), env: ["TOKEN"]))
+
+  // The ceiling admits the variable and not a root, and a refusal leaves the
+  // request pending for the box's own owner.
+  let beyond =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      ceiling,
+      "esc-1",
+      remote_escalation.Approve(
+        grants: [policy.GrantWritableRoot("/etc")],
+        action: "d1",
+        scope: remote_escalation.Once,
+      ),
+      seq,
+      the_decider(),
+    )
+  let assert remote_escalation.Stale(..) = beyond
+  assert stored(harness, "esc-1").status == durable.Pending
+
+  let inside = [policy.GrantEnv("TOKEN")]
+  let answer =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      ceiling,
+      "esc-1",
+      remote_escalation.Approve(
+        grants: inside,
+        action: "d1",
+        scope: remote_escalation.Once,
+      ),
+      seq,
+      the_decider(),
+    )
+  let assert remote_escalation.Decided(record) = answer
+  assert record.status == "approved"
+  assert stored(harness, "esc-1").status == durable.Approved
+
+  // A second decision at the same seq, from the box's own page or from the
+  // laptop again, is told the question was answered.
+  let again =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      ceiling,
+      "esc-1",
+      remote_escalation.Deny,
+      seq,
+      the_decider(),
+    )
+  let assert remote_escalation.Stale(record: closed, ..) = again
+  assert closed.status == "approved"
+}
+
+pub fn a_relayed_hub_with_no_ceiling_decides_nothing_test() {
+  let harness = start_harness()
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(5)),
+    durable.Action(tool: "bash", digest: "d1", preview: "{}"),
+    [policy.GrantEnv("TOKEN")],
+  )
+  let seq = current_question_seq(harness, "esc-1")
+  let answer =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      None,
+      "esc-1",
+      remote_escalation.Deny,
+      seq,
+      the_decider(),
+    )
+  assert answer
+    == remote_escalation.Refused(reason: remote_escalation.outside_the_ceiling)
+  assert stored(harness, "esc-1").status == durable.Pending
+}
+
+pub fn a_hub_that_is_gone_refuses_a_relayed_decision_and_a_stop_test() {
+  let gone = gateway.Gateway(name: addresses.new())
+  let answer =
+    gateway.decide_relayed(
+      gone,
+      "laptop",
+      None,
+      "esc-1",
+      remote_escalation.Deny,
+      1,
+      the_decider(),
+    )
+  assert answer
+    == remote_escalation.Refused(reason: "the session's hub did not answer")
+  assert gateway.stop_relayed(gone) == Error(Nil)
+}
+
+pub fn a_relayed_stop_ends_the_mains_run_and_an_idle_stop_is_not_an_error_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(_) =
+    gateway.connection_request(socket, prompt_frame(900, "main", "open"))
+    as "the prompt is accepted and starts a run"
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation != None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the run is open"
+
+  assert gateway.stop_relayed(harness.hub) == Ok(Nil)
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation == None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the stopped run retires and leaves the strand idle"
+
+  // Nothing is running now, and a stop with nothing to stop is taken.
+  assert gateway.stop_relayed(harness.hub) == Ok(Nil)
+  release_gate(gate)
 }

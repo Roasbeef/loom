@@ -238,6 +238,12 @@ pub type AdminAttachment(instance) {
     permit: root.Permit,
     /// The registry the page's reads and changes go to.
     registry: manager.Manager(instance),
+    /// The daemon's own node name, which the admin page's sidebar names beside the
+    /// product and tags every session with as the machine that runs its agent.
+    machine: String,
+    /// Asks the named sessions what they are doing, as the home's does
+    /// (`HomeAttachment.activity`), for the admin sidebar's dots.
+    activity: fn(List(String)) -> List(#(String, listed_sessions.Activity)),
     /// The daemon's own state directory, which an isolated session's fresh
     /// stores are minted under (`manager.isolate`). It is the daemon's value and
     /// never a page's.
@@ -418,6 +424,10 @@ pub type Attachment(instance) {
     /// cost a round trip per frame, and a timeout on that round trip once
     /// dropped the incarnation stop a poisoned reader depends on.
     registry: manager.Manager(instance),
+    /// The daemon's own node name, which a session page's sidebar and header name
+    /// as the machine that runs the agent. It is the name `deployment.status`
+    /// gives the asker (`Reach.self`), a configuration value and not a secret.
+    machine: String,
     /// The daemon's own state directory, which making the session shareable
     /// isolates it under (`client/daemon/shareable`). It is the daemon's value
     /// and never a page's.
@@ -753,7 +763,7 @@ fn home_upgrade(
             executors: list.map(roster.rows(config.executors), fn(executor) {
               executor.name
             }),
-            machine: config.deployment.self_name,
+            machine: page_machine(config.deployment),
             pools: list.map(config.pools, fn(pool) { pool.name }),
             placements: fn() {
               deployment.placed(
@@ -859,6 +869,8 @@ fn admin_upgrade(
             digest: grant.credential,
             permit:,
             registry: state.registry,
+            machine: page_machine(config.deployment),
+            activity: home_activity(config, state.registry, grant.credential),
             state_root: state.state_root,
             login:,
             deployment: fn(node) { admin_deployment(config, node) },
@@ -2080,6 +2092,7 @@ fn resident_upgrade(
                 digest:,
                 permit:,
                 registry: state.registry,
+                machine: page_machine(config.deployment),
                 state_root: state.state_root,
                 sessions_directory: state.sessions_directory,
                 registration:,
@@ -5187,4 +5200,16 @@ fn peer_endpoint(
     manager.resolve(registry, id) |> result.map_error(error_code),
   )
   config.peer_endpoint(resident) |> option.to_result("peer_service_unavailable")
+}
+
+// The name a page gives the daemon that serves it: the node name when the daemon
+// runs with distribution, and the machine's host name when it does not, since the
+// node name of a standalone daemon is one the BEAM made up (`nonode@nohost`) and
+// the admin page never draws it either (`machines.Standalone`). A host the daemon
+// could not read is "this machine".
+fn page_machine(reach: deployment.Reach) -> String {
+  case reach.footing {
+    deployment.Distributed -> reach.self_name
+    deployment.Standalone -> option.unwrap(reach.host, "this machine")
+  }
 }

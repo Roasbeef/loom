@@ -87,6 +87,7 @@
 //// | none out | sends one, or arms a revocation | nothing to answer | stays none |
 //// | one out | asks nothing | clears it, shows a claim or the words, then reads again | clears it |
 
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/int
@@ -105,23 +106,36 @@ import web_view/elsewhere as peers
 import web_view/ending.{type Ending}
 import web_view/grants.{type Action, type Answer, type Claim, type Reading}
 import web_view/invites
+import web_view/listing
 import web_view/machines
+import web_view/sessions
 import web_view/view/admin_buttons.{type Busy, type Presses}
 import web_view/view/admin_machine
 import web_view/view/admin_machines
 import web_view/view/admin_people
 import web_view/view/admin_sessions
+import web_view/view/archiving
 import web_view/view/ended
 import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/notice.{type Spoken, Spoken}
+import web_view/view/resume
 import web_view/view/shell
+import web_view/view/sidebar
+
+/// The Lustre event path of the page's sidebar, the frame's second child. Its
+/// handlers are the machine pills, so the admin page's socket admits a click
+/// beneath it. A row of the sidebar is text on this page, since the admin page
+/// draws no way to another page (`sidebar.RowsShown`). `admin_test` fails if the
+/// view moves the region.
+pub const sidebar_path = "0\t1"
 
 /// The Lustre event path of the page's body: the centre column is the third
 /// child of the frame (`view/shell`), and the body is the centre's second child,
-/// after the notice's place. Every handler of the page is beneath it, so the
-/// admin page's socket admits a click or a submit beneath this path and no other
-/// event. `admin_test` fails if the view moves the region.
+/// after the notice's place. Every other handler of the page is beneath it, so
+/// the admin page's socket admits a click or a submit beneath this path, a click
+/// beneath `sidebar_path` and no other event. `admin_test` fails if the view
+/// moves the region.
 pub const body_path = "0\t2\t1"
 
 /// How long the page's snapshot stands before it is read again, in milliseconds.
@@ -173,6 +187,16 @@ pub type Start {
     /// Asks the daemon what the other orchestrators list and returns at once. The
     /// answer goes to the function it is given as `Peered`'s message.
     elsewhere: fn(fn(peers.Read) -> Nil) -> Nil,
+    /// The daemon's own name, which the sidebar names beside the product and tags
+    /// every session with as the machine that runs its agent. It is configuration
+    /// text, drawn as a text node.
+    machine: String,
+    /// Asks the daemon what the named running sessions are doing, at most
+    /// `sessions.activity_limit` of them, all of which the page's own list holds.
+    /// It returns at once and answers from the daemon's own task as `Observed`,
+    /// as the home's does.
+    activity: fn(List(String), fn(List(#(String, sessions.Activity))) -> Nil) ->
+      Nil,
   )
 }
 
@@ -279,7 +303,23 @@ pub opaque type Model {
     detail: machines.Detailed,
     /// What the other orchestrators listed, once the Sessions tab has asked.
     listed: Option(List(peers.Group)),
+    /// Which of the page's two parts is shown.
+    part: Part,
+    /// The machine the sidebar's list is narrowed to.
+    filter: listing.Filter,
+    /// What the daemon last said each running session is doing, by identity.
+    activity: dict.Dict(String, sessions.Activity),
   )
+}
+
+/// The two parts of the admin page. The sidebar shows the sessions, so the page
+/// itself is about the machines and the people.
+pub type Part {
+  /// The deployment: where agents run and where code lives.
+  MachinesPart
+
+  /// Who can use the daemon and what each can do.
+  PeoplePart
 }
 
 /// Everything the component can be told. A browser sends only the presses; the
@@ -347,6 +387,21 @@ pub type Msg {
   /// The answer to a read of the other orchestrators, with its number. It is the
   /// effect's own message and no handler carries it.
   Peered(serial: Int, read: peers.Read)
+
+  /// A sidebar pill, or a machine's "Show its sessions": narrow the sidebar's list
+  /// to the machine named. The page honours only a name the list it holds offers a
+  /// pill for (`listing.chosen`).
+  Narrowing(machine: String)
+
+  /// The sidebar's "All" pill.
+  Widening
+
+  /// A tab of the page was pressed.
+  PartChosen(part: Part)
+
+  /// The daemon's answer to the activity read. It is the effect's own message and
+  /// no handler carries it.
+  Observed(rows: List(#(String, sessions.Activity)))
 }
 
 /// The application the daemon's socket starts, one per admin page.
@@ -392,6 +447,9 @@ pub fn new(start: Start) -> Model {
     tab: machines.OverviewTab,
     detail: machines.Withheld,
     listed: None,
+    part: MachinesPart,
+    filter: listing.Everywhere,
+    activity: dict.new(),
   )
 }
 
@@ -436,6 +494,29 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       case model.status {
         Ended(_) -> #(model, effect.none())
         Connecting | Connected -> refreshing(model)
+      }
+
+    Narrowing(machine:) ->
+      case model.snapshot {
+        Some(snapshot) ->
+          case listing.chosen(snapshot.sessions, model.start.machine, machine) {
+            Ok(filter) -> #(Model(..model, filter:), effect.none())
+            Error(Nil) -> #(model, effect.none())
+          }
+        None -> #(model, effect.none())
+      }
+
+    Widening -> #(Model(..model, filter: listing.Everywhere), effect.none())
+
+    PartChosen(part:) -> #(Model(..model, part:), effect.none())
+
+    Observed(rows:) ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> #(
+          Model(..model, activity: dict.from_list(rows)),
+          effect.none(),
+        )
       }
 
     Answered(serial:, reading:) ->
@@ -577,6 +658,29 @@ fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
   let #(model, people) = reading(model, Rearm)
   let #(model, fleet) = deploying(model, None)
   #(model, effect.batch([people, fleet]))
+}
+
+// Starts the activity read for the running sessions the snapshot that just
+// landed listed, in the order it holds them and no more than `activity_limit`,
+// and returns at once, so the sidebar's dots arrive with its rows and not a
+// refresh later. A page with no snapshot yet asks nothing.
+fn observing(model: Model) -> Effect(Msg) {
+  let running = case model.snapshot {
+    Some(snapshot) ->
+      snapshot.sessions
+      |> list.filter(fn(entry) { entry.residency == sessions.Live })
+      |> list.take(sessions.activity_limit)
+      |> list.map(fn(entry) { entry.id })
+    None -> []
+  }
+
+  case running, model.status {
+    [], _ | _, Ended(_) | _, Connecting -> effect.none()
+    [_, ..], Connected -> {
+      use dispatch <- effect.from
+      model.start.activity(running, fn(rows) { dispatch(Observed(rows)) })
+    }
+  }
 }
 
 // Asks the daemon to read the deployment, or the one machine `node` names, under
@@ -905,8 +1009,11 @@ fn landed(model: Model, result: Reading) -> #(Model, Effect(Msg)) {
     False -> Model(..after, chosen: model.chosen)
   }
   case then, after.status {
-    Again, Connecting | Again, Connected -> reading(after, Continue)
-    Again, Ended(_) | Nothing, _ -> #(after, effect.none())
+    Again, Connecting | Again, Connected -> {
+      let #(after, more) = reading(after, Continue)
+      #(after, effect.batch([observing(after), more]))
+    }
+    Again, Ended(_) | Nothing, _ -> #(after, observing(after))
   }
 }
 
@@ -1092,13 +1199,57 @@ pub fn view(model: Model) -> Element(Msg) {
       notice: ended.admin(ended_ending(model.status)),
       trailing: back_home(),
     ),
-    shell.Unlisted,
+    sidebar_place(model),
     [element.none(), body(model)],
     element.none(),
     0,
     0,
     "",
+    waiting(model),
   )
+}
+
+// The sidebar's place in the frame: the owner's sessions as the last snapshot
+// listed them, or none before the first read. Its rows are text, and its pills
+// narrow the list in place, which is how a machine's "Show its sessions" works.
+fn sidebar_place(model: Model) -> shell.Sidebar(Msg) {
+  case model.snapshot {
+    None -> shell.Unlisted
+    Some(snapshot) ->
+      case sessions.grouped(snapshot.sessions) {
+        [] -> shell.Unlisted
+        groups ->
+          shell.Listed(sidebar.view(
+            groups,
+            "",
+            model.activity,
+            sidebar.Page(
+              doors: sidebar.RowsShown,
+              machine: model.start.machine,
+              filter: model.filter,
+              narrowing: Narrowing,
+              widening: Widening,
+              starting: None,
+              administering: None,
+              managing: None,
+              who: model.start.name,
+            ),
+            fn(_) { Widening },
+            resume.Never,
+            archiving.Never,
+          ))
+      }
+  }
+}
+
+// How many of the owner's sessions wait on a decision, for the count on the
+// menu button of a narrow window.
+fn waiting(model: Model) -> Int {
+  case model.snapshot {
+    Some(snapshot) ->
+      list.length(listing.waiting(snapshot.sessions, model.activity))
+    None -> 0
+  }
 }
 
 // The milliseconds the page has left as of the last read, which is when `now`
@@ -1129,51 +1280,96 @@ fn body(model: Model) -> Element(Msg) {
   let busy = busy(model)
   html.div([attribute.class("admin-body")], [
     html.p([attribute.class("admin-lead")], [
-      html.text("Who can use this daemon, and what each can do."),
+      html.text("The machines this daemon uses, and who can use it."),
     ]),
+    tabs(model.part),
     ..case model.snapshot {
       None -> [
         html.p([attribute.class("home-empty")], [
           html.text("Reading the catalogue."),
         ]),
       ]
-      Some(snapshot) -> [
-        admin_people.principals(
-          snapshot.principals,
-          snapshot.more_principals,
-          snapshot.logins,
-          model.start.login,
-          model.now,
-          model.armed,
-          model.notice,
-          model.claim,
-          model.editing,
-          presses,
-          busy,
-        ),
-        admin_sessions.view(
-          snapshot.sessions,
-          model.chosen,
-          snapshot.selection,
-          snapshot.summaries,
-          model.armed,
-          model.waiting,
-          model.notice,
-          model.claim,
-          model.invited,
-          presses,
-          busy,
-        ),
-        admin_machines.view(admin_machines.Section(
-          held: model.held,
-          chosen: model.machine,
-          choose: MachineChosen,
-          page: machine_page(model, snapshot),
-          entries: snapshot.sessions,
-        )),
-      ]
+      Some(snapshot) ->
+        case model.part {
+          PeoplePart -> people(model, snapshot, presses, busy)
+          MachinesPart -> [
+            admin_machines.view(admin_machines.Section(
+              held: model.held,
+              chosen: model.machine,
+              choose: MachineChosen,
+              page: machine_page(model, snapshot),
+              entries: snapshot.sessions,
+            )),
+          ]
+        }
     }
   ])
+}
+
+// The page's two tabs. Each is a real button that says whether it is the one
+// shown, and a press changes only what the page draws.
+fn tabs(shown: Part) -> Element(Msg) {
+  html.div(
+    [
+      attribute.class("admin-tabs"),
+      attribute.role("group"),
+      attribute.aria_label("Admin sections"),
+    ],
+    [tab("Machines", MachinesPart, shown), tab("People", PeoplePart, shown)],
+  )
+}
+
+fn tab(label: String, part: Part, shown: Part) -> Element(Msg) {
+  html.button(
+    [
+      attribute.type_("button"),
+      attribute.class("admin-tab"),
+      attribute.aria_pressed(case part == shown {
+        True -> "true"
+        False -> "false"
+      }),
+      event.on_click(PartChosen(part)),
+    ],
+    [html.text(label)],
+  )
+}
+
+// The People tab: each person once with their sign-ins, then the sessions to
+// invite someone to.
+fn people(
+  model: Model,
+  snapshot: grants.Snapshot,
+  presses: Presses(Msg),
+  busy: Busy,
+) -> List(Element(Msg)) {
+  [
+    admin_people.principals(
+      snapshot.principals,
+      snapshot.more_principals,
+      snapshot.logins,
+      model.start.login,
+      model.now,
+      model.armed,
+      model.notice,
+      model.claim,
+      model.editing,
+      presses,
+      busy,
+    ),
+    admin_sessions.view(
+      snapshot.sessions,
+      model.chosen,
+      snapshot.selection,
+      snapshot.summaries,
+      model.armed,
+      model.waiting,
+      model.notice,
+      model.claim,
+      model.invited,
+      presses,
+      busy,
+    ),
+  ]
 }
 
 // The chosen machine's page, or nothing when none is chosen or the deployment no
@@ -1190,23 +1386,52 @@ fn machine_page(model: Model, snapshot: grants.Snapshot) -> Element(Msg) {
     })
   case found {
     Some(#(held, machine)) ->
-      admin_machine.view(admin_machine.Page(
-        machine:,
-        snapshot: held,
-        detail: model.detail,
-        tab: model.tab,
-        entries: snapshot.sessions,
-        peers: model.listed,
-        pick: TabChosen,
-        close: MachineClosed,
-        arm: Arming,
-        ask: Asking,
-        disarm: Disarming,
-        armed: model.armed,
-        waiting: model.waiting,
-        notice: model.notice,
-      ))
+      html.div([attribute.class("machine-wrap")], [
+        show_sessions(model, snapshot, machine.name),
+        admin_machine.view(admin_machine.Page(
+          machine:,
+          snapshot: held,
+          detail: model.detail,
+          tab: model.tab,
+          entries: snapshot.sessions,
+          peers: model.listed,
+          pick: TabChosen,
+          close: MachineClosed,
+          arm: Arming,
+          ask: Asking,
+          disarm: Disarming,
+          armed: model.armed,
+          waiting: model.waiting,
+          notice: model.notice,
+        )),
+      ])
     None -> element.none()
+  }
+}
+
+// A machine's "Show its sessions": it narrows the sidebar to the machine, so the
+// admin page points at the sessions without listing them. It is drawn only for a
+// machine the sidebar has a pill for, which is one some session uses, and the
+// press is honoured only for such a name (`listing.chosen`), so it never does
+// nothing quietly.
+fn show_sessions(
+  model: Model,
+  snapshot: grants.Snapshot,
+  machine: String,
+) -> Element(Msg) {
+  case listing.chosen(snapshot.sessions, model.start.machine, machine) {
+    Ok(_) ->
+      html.p([attribute.class("show-sessions")], [
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("link-button"),
+            event.on_click(Narrowing(machine)),
+          ],
+          [html.text("Show its sessions")],
+        ),
+      ])
+    Error(Nil) -> element.none()
   }
 }
 

@@ -23,7 +23,7 @@ import core/clock
 import core/json
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import runtime/effects
 import storage/exec_ledger
@@ -87,6 +87,7 @@ pub fn census_over(
     ),
     broker: executor_broker,
     mcp: [],
+    branch: None,
   )
 }
 

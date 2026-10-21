@@ -433,7 +433,7 @@ function on the node directly.
 
 Because the peers are trusted, a message is a typed Erlang term matched
 directly, not decoded from untrusted bytes. The only guard on its shape is
-`Attach.version` (`protocol.version`, 3 today). `Attach` keeps the shape it had
+`Attach.version` (`protocol.version`, 4 today). `Attach` keeps the shape it had
 in version 2, so a peer of either version reaches that check, and the host
 refuses a different version with `VersionMismatch`, creates nothing and stays
 up. Anything newer a peer needs at attach, such as the MCP plan, is asked for
@@ -542,7 +542,8 @@ the build lands; a rebound attach reuses the plane it already has and is
 answered at once. While a build is in flight, a second `Attach`, a `Run` and a
 `Close` for that session are refused with `PlaneBuilding` before the ledger is
 touched, and `surface.attach` re-sends the same attach with the same token
-until its 30-second window runs out. The reply carries the census, the
+until its window runs out: `attach_within_s` of the executor's table, 30 seconds
+unless it is set. The reply carries the census, the
 executor's clock reading at the moment of the reply, and the session's
 unacknowledged terminal and unknown keys.
 
@@ -592,7 +593,7 @@ There is no cancel message. The runtime aborts a call by killing its effect
 process, and the host monitors the process that owns each `Run`'s reply subject.
 A `DOWN` with any reason except `noconnection` means someone asked to stop, and
 when the run's last waiter is gone the host cancels it
-(`cancels_run`, `remote/host.gleam:481`). A `noconnection` `DOWN` means only
+(`cancels_run`, `remote/host.gleam:491`). A `noconnection` `DOWN` means only
 that the orchestrator is unreachable. The run continues to completion or to its
 own deadline, which is built on the executor's clock, and its outcome waits in
 the ledger. An abort issued during a partition arrives only as `noconnection`,
@@ -610,7 +611,7 @@ holds that call pending, that is, the operation's state is gone or its batch no
 longer lists the call as planned or running. A lost `Ack` is therefore found
 again on the next pass, and no row leaks.
 
-`exec_ledger.ack` (`storage/exec_ledger.gleam:778`) deletes a `terminal` or
+`exec_ledger.ack` (`storage/exec_ledger.gleam:848`) deletes a `terminal` or
 `unknown` row, releases its bytes, and writes a tombstone in `call_ack`. A key
 with a tombstone is never admitted again in that incarnation. The tombstone
 closes a race the P model found. When a runtime restarts inside one open, the
@@ -754,6 +755,63 @@ reopened. Its close finds no plane, so no witness, and records
 operator runs `loomd executor release`. That is the routine way out of an
 executor restart, and the setup guide's troubleshooting section walks through
 it.
+
+## Worktree workspaces
+
+A `[workspaces.<name>]` with `mode = "worktree"` gives each session its own
+linked Git worktree of the workspace's repository and its own branch
+(protocol-change/095, built in `client/worktrees`). The tree is
+`<state>/worktrees/<workspace>/<session>`, outside the repository, so a tool that
+walks the checkout never sees another session's tree. The branch is
+`loom/<session id>`. The session's workspace, which is to say the sandbox's
+writable root, the tools' working directory, the language servers' root and the
+code-mode work directory, is the tree, and the repository's own checkout is not
+writable to it. The census carries the branch.
+
+The plane build opens the tree, in the same weft run that builds the plane, so a
+long checkout delays only the session that asked and the host keeps answering the
+others, which see `PlaneBuilding`. That is also why `attach_within_s` exists: an
+orchestrator retries a `PlaneBuilding` attach for that many seconds, and a cold
+checkout of a large repository can outlast the 30 that were fixed before.
+
+Each tree has a row in the execution ledger (`scope_worktree`, ledger version
+4): `creating` is written before `git worktree add` runs, `present` after it, and
+`removing` before `git worktree remove`, so a crash on either side of a command
+leaves a row that names the directory to look at. The executor removes only what
+a row names, and never a branch.
+
+| Moment | What happens |
+|---|---|
+| First attach | `creating`, then `git worktree add <path> -b loom/<session> <base>`, then `present`. A failure deletes the directory the row names, prunes, writes `removed`, and refuses the attach with `WorktreeFailed` carrying Git's message, so a half-made directory cannot fail every later attach. |
+| Reopen | A tree on disk is adopted after `git worktree repair`. A removed one, or one deleted by hand, is recreated from the session's branch (from the base if the branch is gone too). |
+| Clean close | After the scope retires with `AllRetired`: `git status` with `.codemode` excluded. Nothing to report: `removing`, `git worktree remove --force`, `removed`; the branch stays. Changes, or a detached HEAD whose commits no branch holds: `kept`, files untouched. A status that cannot be read: `kept`. |
+| Unknown cleanup | The tree and its row are left as they are, as the scope directory is. |
+| Executor start | Per workspace, ahead of its first attach, the gate reconciles every row against the disk: `creating` is finished (the tree is there and Git lists it) or undone; `removing` is finished under the close rule; `removed` with a directory present deletes the leftover; `present` or `kept` with the directory missing becomes `removed`. Then `git worktree prune`. A directory with no row is left in place and counted. |
+
+All Git runs in the sandbox, through the same broker and helper that run tools,
+and never in the executor's own VM (`client/worktree_git`). Each call carries its
+own policy: the host readable with the state root's secrets masked, no network,
+and writable roots of exactly the repository's `.git` and the workspace's
+directory of trees, or nothing for a read. All the Git work of one workspace
+goes through a gate, a process that runs one job at a time and reconciles the
+workspace before its first.
+
+Deleting a session never reaches the executor, so its tree stays until
+`loomd executor release --worktrees` settles it under the close rule. The node
+report names the workspaces in worktree mode and counts the trees present, the
+trees kept, the branches left behind by removed trees and the unrecorded
+directories.
+
+The isolation protects against accidents, not against a hostile model. The
+linked worktree's Git directory and the repository's `.git` are writable from the
+tree, as `workspace_policy.widening_linked_worktree` makes them so a jailed
+`git commit` works, so a session could rewrite another's refs or set a hook; in
+shared mode it could do all of that to the checkout directly. The jail masks the
+scopes directory, which holds every session's scratch. A mask over the whole of
+`worktrees/` is impossible because it would hide the session's own tree, and a
+mask on each sibling would name a directory its close deletes, which the Linux
+helper refuses for every later call of the session. So the trees of one
+executor's sessions are not masked from one another.
 
 ## Pools and placement
 
@@ -1084,7 +1142,7 @@ there.
 
 ## Background code mode and MCP on a remote session
 
-**Status: built, at protocol version 3.** The rules are in the protocol-change/078
+**Status: built, introduced at protocol version 3 (the current version is 4).** The rules are in the protocol-change/078
 addendum "background code mode and MCP façades on a remote session", together
 with the failure table for both paths. This section shows how the parts fit.
 
@@ -1457,6 +1515,91 @@ orchestrator below the policy's depth cap. The sections of the design note
 [remote-subagents.md](../design-notes/remote-subagents.md) are the reasoning; the
 addenda of protocol-change/084 are the spellings.
 
+## A spawner's page on this orchestrator
+
+(Protocol-change/094.) Subagents are children of a session the laptop runs. This
+adds sessions with no parent: the laptop's page starts one whose agent runs on the
+box, lists the ones it started, reads one, messages it, stops its run, archives it
+and decides its requests. The owner of the box opts in per spawner with a
+`[spawners.<name>.top_level]` table, which lists the executors, pools, folders and
+profiles the page may pick, caps the sessions it may hold and start per hour, and
+sets the `approval_ceiling` a decision from the page may grant.
+
+The protocol is pull-only. Eight messages go from the laptop to the box over the
+pinned link, dialled on demand: `Placements`, `TopCreate`, `TopSessions`,
+`TopHistory`, `TopSend`, `TopStop`, `TopArchive` and `TopResolve`. The box sends
+nothing on its own, so there is no outbox, no drainer and no link from the box to
+the laptop. A page that is open asks again every five seconds, and a pending
+request is read from the box each time, so a laptop restart loses nothing. The
+browser talks only to the laptop.
+
+### Judging on the box
+
+The node a message came from resolves to a spawner (`UnknownSpawner` otherwise),
+and the spawner must have the table (`TopLevelOff`). A create is refused before it
+reserves anything if the placement, folder, profile or model is outside the table,
+so a refusal charges no cap. The registry reserves the session in one catalogue
+transaction: the request id's existing row, or `max_sessions` counted by a join
+against the archive table and `max_per_hour` over the rolling hour, then the
+registration in `reserved` state, its mapping and the `catalogue_relayed_sessions`
+row together. Two creates at the cap cannot both pass, and a crash leaves all
+three writes or none. The session's store is made afterwards by the path that
+turns any reservation into a session. A create resent after a crash or a lost
+answer finds the row by its request id and finishes the session. Nothing sweeps an
+unfinished reservation: it stays listed, counts against `max_sessions`, and is
+deleted on the box's own page, which removes it with its row (#1056 tracks the
+same shape for delegate sessions).
+
+Every other message names a session, which must have a row for this spawner
+(`NotRelayed`). A session the owner started, or another spawner did, is
+unreachable by this door. A message about a saved session opens it first, within a
+budget inside the laptop's seven seconds. A listing opens nothing: a saved session
+is listed idle with no requests, and its requests are read when the page opens it.
+
+### A row and a page
+
+`TopSessions` pages the spawner's sessions newest first, 64 rows and 64 KiB at
+most, with the request id the create carried so the laptop can reconcile a create
+whose answer it never received. A row is whole or absent. Its requests are the
+oldest eight by seq in the protocol's own record shape, with `admitted` set from
+the ceiling, and `more` counts the rest; a row too large for the row bound sheds
+its newest requests first, so it is always small enough to be a page by itself.
+The laptop decodes the page with a total decoder and refuses it whole if any bound
+or word is wrong.
+
+### A decision
+
+`TopResolve` is judged in the session hub's turn by the same function that judges
+a child's request (`remote_decision`), without the descent test: against the
+ceiling, the echoed action, the wanted list and the canonical paths, with the
+seq compare-and-set. The first of two decisions at one seq wins, whether it came
+from the laptop's page or the box's own. A table with no ceiling lets the page see
+the request and decide nothing.
+
+### When the link drops
+
+The session keeps running on the box. The laptop refuses a create at once when it
+cannot connect, and resends one that was sent and lost its answer, with the same
+request id, for 30 seconds, pausing 500 ms and doubling to 4 s; if the window ends
+the outcome is unknown and the next page names the session if it was made. A
+message is resent the same way with its message id. A decision is asked once. The
+last list is kept, marked stale with the time the failures began
+(`remote/top_view`). A port that does not know these messages stops on them, which
+a connected laptop reports as an older build; both ends run the same build.
+
+### Where the code lives
+
+| Module | What it holds |
+| --- | --- |
+| `client/spawners` | The `top_level` table |
+| `client/remote_top` | Placements, refusals, offers, rows and pages, and their total decoders |
+| `client/remote/orchestrator_port` | The eight messages, `TopHost`, the `ask_top_*` sending ends |
+| `client/top_host`; `daemon/main.start_orchestrator_port` | The judging and serving on the box |
+| `daemon/manager.reserve_relayed`, `relayed_sessions`, `archive_relayed`; `storage/catalogue.claim_relayed`; `storage/domain.reserve_relayed` | The reservation and the listing |
+| `client/relayed_session`; `Resident.relay` | What a resident session answers |
+| `client/remote_decision.admit_relayed`; `gateway.decide_relayed`, `stop_relayed` | The hub's two doors |
+| `client/remote/top_relay`, `client/remote/top_view` | The laptop's sending end and the last list |
+
 ## Failures
 
 This table lists each failure, what the system does, and what an operator or
@@ -1628,6 +1771,7 @@ The directory holds no state of its own, so it has no model.
 | `client/tool_placement` | Which side runs each tool |
 | `client/remote/protocol`, `client/remote/address`, `client/remote/codec` | The closed node vocabulary and its transport |
 | `client/remote/host`, `client/executor_plane`; `daemon/main.start_executor` | The executor's host and its real plane factory |
+| `client/worktrees`, `client/worktree_git` | A worktree workspace's trees: lifecycle, reconciliation, and the sandboxed Git |
 | `client/remote/surface`, `client/remote/workspace`, `client/remote/scope` | The orchestrator's attach, run, recover and scope record |
 | `client/remote/owner_port`, `client/remote/owner_link`, `client/owner_services` | Owner callbacks and the acknowledgement reconciler |
 | `storage/exec_ledger`; `daemon/executor_cli` | The execution ledger and the operator's release |

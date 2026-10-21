@@ -37,6 +37,17 @@ No second type names it.
   the pure parts: argv, env, default; scratch writable with network off;
   the JSON line; wall-clock microseconds.
 
+## Worktree workspaces are not here
+
+The distributed executor's host, plane factory and worktree handling live in
+`packages/client` (`client/remote/host`, `client/executor_plane`,
+`client/worktrees`, `client/worktree_git`; protocol-change/095), not in this
+package, which stays the standalone entrypoint with no `client` dependency. The
+only link is the shape: `client/worktree_git` boots a pool, a service and a
+broker of the kind `executor.boot` boots, and clears each Git call through it
+under a policy built for the call. Nothing in this package changes for a
+worktree workspace.
+
 ## Relationships
 
 Depends on `broker` (`broker`, `budget`, `census`, `exec`, `executor`,

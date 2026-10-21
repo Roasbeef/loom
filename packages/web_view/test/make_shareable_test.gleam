@@ -48,6 +48,7 @@ fn page(
       reader: component.DaemonOwner,
       sharing: Some(sharing),
       opening: component.FromLink,
+      machine: "laptop",
     ),
     transport: component.Transport(
       ..start.transport,
@@ -265,6 +266,7 @@ pub fn a_bookmarks_page_draws_a_sentence_and_no_button_test() {
         reader: component.DaemonOwner,
         sharing: Some(sharing),
         opening: component.FromBookmark,
+        machine: "laptop",
       ),
     )
     |> component.new

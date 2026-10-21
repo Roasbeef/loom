@@ -58,6 +58,7 @@ import client/daemon/limits
 import client/daemon/listen_address
 import client/daemon/listener
 import client/daemon/manager
+import client/daemon/new_folder
 import client/daemon/node_facts
 import client/daemon/profiles
 import client/daemon/restart
@@ -100,6 +101,7 @@ import client/peer_outbox_drain
 import client/peers
 import client/pools
 import client/profile_switch
+import client/relayed_session
 import client/remote/address
 import client/remote/host as executor_host
 import client/remote/link_keeper
@@ -120,7 +122,9 @@ import client/session_mover
 import client/session_movers
 import client/spawners
 import client/system_prompt
+import client/top_host
 import client/workspaces
+import client/worktrees
 import core/clock
 import core/glance
 import core/ids
@@ -148,6 +152,7 @@ import telemetry/field
 import telemetry/handler
 import telemetry/log.{type Logger}
 import tom
+import web_view/creations
 import weft/actor
 import weft/poll
 import weft/registry as names
@@ -895,6 +900,7 @@ pub fn start_executor(
         logger,
       ))
       let limits = executor_plane.scope_limits()
+      use trees <- result.try(executor_plane.worktrees_of(machine, configured))
       use started <- result.try(
         executor_host.start_reporting(executor_host.Config(
           name: address.default(),
@@ -903,7 +909,7 @@ pub fn start_executor(
           max_result_bytes: executor_host.default_max_result_bytes,
           execution_result_bytes: executor_host.default_execution_result_bytes,
           clock: clock.from_function(ffi_os.system_time_ms),
-          factory: executor_plane.factory(machine, configured),
+          factory: executor_plane.factory(machine, configured, trees),
         ))
         |> result.map_error(fn(error) {
           "the executor host did not start: " <> string.inspect(error)
@@ -915,12 +921,22 @@ pub fn start_executor(
       ])
       let platform = system_prompt.platform(ffi_os.platform())
       let names = list.map(configured, fn(workspace) { workspace.name })
+      let in_trees =
+        list.filter(configured, worktrees.is_worktree)
+        |> list.map(fn(workspace) { workspace.name })
       let summarize = started.data.summarize
       Ok(
         Some(
           ExecutorHost(monitor: process.monitor(started.pid), facts: fn() {
             summarize(executor_summary_ms)
-            |> result.map(node_facts.executor_facts(_, limits, platform, names))
+            |> result.map(fn(snapshot) {
+              node_facts.executor_facts(snapshot, limits, platform, names)
+              |> node_facts.with_worktrees(
+                snapshot.ledger.trees,
+                in_trees,
+                unrecorded: worktrees.unrecorded(trees, configured),
+              )
+            })
             |> option.from_result
           }),
         ),
@@ -1009,7 +1025,7 @@ pub fn directory_path(state_root: String) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, inbox, orchestrator_port.unreported()) == Ok(Nil)
+/// // assert main.start_orchestrator_port(Config(..config, membership: None), daemon, logger, peer, delegate, inbox, relay, movers, orchestrator_port.unreported()) == Ok(Nil)
 /// ```
 @internal
 pub fn start_orchestrator_port(
@@ -1019,6 +1035,8 @@ pub fn start_orchestrator_port(
   peer_endpoint: fn(instance) -> Option(peer_mail.Endpoint),
   delegate_endpoint: fn(instance) -> agency.DelegateEndpoint,
   child_inbox: fn(instance) -> agency.ChildInbox,
+  relay_endpoint: fn(instance) -> relayed_session.Endpoint,
+  movers: session_movers.Control,
   reads: orchestrator_port.Reads,
 ) -> Result(Nil, String) {
   case config.membership {
@@ -1055,8 +1073,48 @@ pub fn start_orchestrator_port(
           now_ms: ffi_os.system_time_ms,
           endpoint: delegate_endpoint,
         )
+      let top =
+        top_host.host(top_host.Context(
+          spawners: config.spawners,
+          registry: ready.registry,
+          endpoint: relay_endpoint,
+          sessions_directory: ready.sessions_directory,
+          domain_configuration:,
+          generator: delegates.generator,
+          now_ms: ffi_os.system_time_ms,
+          has_executor: fn(name) {
+            executors.find(roster.rows(executor_roster(config)), name)
+            |> result.is_ok
+          },
+          has_pool: fn(name) { pools.find(config.pools, name) |> result.is_ok },
+          survey: fn() {
+            deployment.placed(
+              deployment_reach(config),
+              roster.rows(executor_roster(config)),
+              config.pools,
+            )
+          },
+          check_folder: fn(path) {
+            new_folder.check(path, ready.state_root)
+            |> result.map_error(creations.reason_words)
+          },
+          record: fn(session) {
+            case session_directory_of(config, ready.registry).ownership {
+              None -> Ok(Nil)
+              Some(ownership) ->
+                case ownership.create(session) {
+                  Ok(Nil) -> Ok(Nil)
+                  Error(store.NoQuorum(_)) ->
+                    Error("the session directory has no quorum")
+                  Error(store.Mismatch(_)) ->
+                    Error("the session directory holds a conflicting record")
+                }
+            }
+          },
+          covered: movers.cover,
+        ))
       use _started <- result.try(
-        orchestrator_port.start_with(
+        orchestrator_port.start_with_top(
           orchestrator_port.default(),
           catalogue_holds(ready.registry),
           peer_command(ready.registry, peer_endpoint),
@@ -1074,6 +1132,7 @@ pub fn start_orchestrator_port(
             executor_roster(config),
           ),
           reads,
+          top,
         )
         |> result.map_error(fn(error) {
           "the orchestrator port did not start: " <> string.inspect(error)
@@ -3023,6 +3082,8 @@ fn run(
         fn(resident: serve.Resident) { Some(resident.peer) },
         fn(resident: serve.Resident) { resident.spawns },
         fn(resident: serve.Resident) { resident.inbox },
+        fn(resident: serve.Resident) { resident.relay },
+        movers,
         reads,
       ))
       use Nil <- result.try(start_release_drain(config, daemon, logger))
@@ -3135,6 +3196,7 @@ fn web_view(
               sessions,
               open,
               seen,
+              fn(resident: serve.Resident) { Ok(resident.gateway) },
             )
           },
           admin: fn(request, attachment, open, ceiling) {

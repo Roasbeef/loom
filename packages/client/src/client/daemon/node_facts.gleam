@@ -37,7 +37,7 @@ import client/remote/host.{type Snapshot}
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option.{type Option, None, Some}
 import storage/exec_ledger
 import weft
 
@@ -210,7 +210,44 @@ pub fn executor_facts(
     platform:,
     observed: option.map(snapshot.census, remote_census.observed),
     workspaces: list.take(workspaces, node_report.max_workspaces),
+    worktrees: None,
   )
+}
+
+/// The executor facts with the worktree census added (protocol-change/095).
+///
+/// `worktree_workspaces` are the registered names in worktree mode and
+/// `unrecorded` is the number of directories under the trees' directory that no
+/// ledger record names. A configuration with no worktree workspace adds
+/// nothing, so a shared-only executor reports what it always did. The counts
+/// come from the ledger's summary: trees present or kept, and the sessions
+/// whose tree is gone while their branch remains.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // node_facts.with_worktrees(facts, snapshot.ledger.trees, ["repo"], unrecorded: 0)
+/// ```
+pub fn with_worktrees(
+  facts: ExecutorFacts,
+  trees: exec_ledger.TreeCounts,
+  worktree_workspaces: List(String),
+  unrecorded unrecorded: Int,
+) -> ExecutorFacts {
+  case worktree_workspaces {
+    [] -> facts
+    names ->
+      node_report.ExecutorFacts(
+        ..facts,
+        worktrees: Some(node_report.WorktreeFacts(
+          workspaces: list.take(names, node_report.max_workspaces),
+          present: trees.present + trees.creating + trees.removing,
+          kept: trees.kept,
+          branches_left: trees.removed,
+          unrecorded:,
+        )),
+      )
+  }
 }
 
 // The ledger lists only scopes that block a reopen, so the two states below

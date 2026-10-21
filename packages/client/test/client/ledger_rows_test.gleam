@@ -147,6 +147,7 @@ pub fn a_written_row_with_the_same_name_replaces_the_derived_one_test() {
       platform: Some("linux/x86_64"),
       enforcement: Some(executors.Enforced),
       toolchains: ["codemode"],
+      attach_within_s: 30,
     )
   let rows = ledger_rows.executors_of(ledger, hub, [written])
 

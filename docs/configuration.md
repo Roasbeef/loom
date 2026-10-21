@@ -611,6 +611,7 @@ than it declared is not contradicted.
 | `platform` | string | none declared | `<os>/<architecture>`, such as `linux/x86_64` or `macos/arm64` | The platform the machine reports in the system prompt. |
 | `enforcement` | string | none declared | `enforced` or `degraded` | Whether the machine's sandbox helper confines what it runs. |
 | `toolchains` | array of strings | none declared | distinct lowercase names | What the machine provides: `codemode` for the code-mode toolchain, or the key of an `[lsp.<name>]` server it serves. |
+| `attach_within_s` | integer | `30` | `1` to `900` | How long an attach to this executor keeps retrying while the executor answers that it is still preparing the workspace (protocol-change 095). A first attach to a [`worktree` workspace](#worktree-workspaces) runs a whole checkout; time `git worktree add` once on the executor for the largest such workspace and set this to twice that. |
 
 ### Executors that come from the ledger
 
@@ -674,6 +675,7 @@ is skipped, because the daemon would be guessing.
 | `platform` | string | no requirement | `<os>/<architecture>` | Admit only executors that declared this platform. |
 | `enforcement` | string | no requirement | `enforced` or `degraded` | Admit only executors that declared this enforcement. |
 | `toolchains` | array of strings | no requirement | distinct lowercase names | Admit only executors that declared all of these toolchains. |
+| `attach_within_s` | integer | each member's own | `1` to `900` | Replaces the `attach_within_s` of every member for sessions placed through this pool. |
 
 ## `[workspaces.<name>]`
 
@@ -696,6 +698,40 @@ directory, in `scopes/<session>`, and removed when the session's scope closes.
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `root` | string | required | an absolute path with no `..` segment, naming an existing directory | The checkout served under this name. The daemon refuses to start when it is not a directory. |
+| `mode` | string | `shared` | `shared` or `worktree` | `shared`: every session attached under this name runs in `root`, as before. `worktree` (protocol-change 095): each session gets its own linked Git worktree of `root` and its own branch `loom/<session id>`, created when the session first attaches. With `worktree` the daemon refuses to start unless `root` is the top of a non-bare Git repository whose `.git` is a directory (a primary checkout, not itself a linked worktree). |
+| `base` | string | `HEAD` | a branch, tag or commit name; refused with `shared` | With `worktree`, the commit each new branch starts from, resolved in `root` when the worktree is created. A name that is empty, starts with `-` or holds a space or control character is refused. |
+
+### Worktree workspaces
+
+A workspace in `worktree` mode keeps each session's files apart. The tree is
+`<state directory>/worktrees/<workspace>/<session id>`, outside `root`, so a tool
+that walks `root` never sees another session's tree and `git status` in `root`
+lists none. The executor creates the tree at the session's first attach and keeps
+it across scope closes. A close removes the tree when `git status` finds nothing
+in it except Loom's own `.codemode` directory, and leaves it, never touching its
+files, when it holds changes. A reopen adopts a tree that was kept, and recreates
+a removed one from the session's branch. The branch is never deleted: one
+accumulates per session until you prune them with Git.
+
+Deleting a session on the orchestrator does not reach the executor, so its tree
+stays until you remove it. `loom executor release --worktrees --config PATH
+[--state-dir PATH] [--helper PATH] [--force-session SESSION]...` settles the trees
+the executor made under the rule of a close: a clean tree is removed, and a tree
+with changes, or on a detached HEAD, is kept unless you name its session with
+`--force-session`. `--config` is this executor's `loom.toml`. Stop the daemon
+first, as for a scope release. The command never deletes a branch.
+
+A first attach runs `git worktree add`, which checks out the whole tree. The
+orchestrator keeps retrying an attach the executor answers "still preparing" for
+`attach_within_s` seconds ([`[executors.<name>]`](#executorsname)), 30 unless set.
+Time `git worktree add` once on the executor for the largest worktree workspace it
+serves, and set `attach_within_s` to twice that.
+
+The isolation protects against accidents, two agents editing one file or
+switching branches under each other. It does not protect against a hostile model:
+the linked worktree's Git directory and `root`'s `.git` are writable from the
+tree, as `root` and its `.git` are writable in shared mode, so a session could
+rewrite another session's refs or set a hook.
 
 ## `[orchestrators.<name>]`
 
@@ -834,6 +870,7 @@ still be running.
 | `max_per_day` | integer | none (unmetered) | at least 1 | The spawns admitted for this spawner over a rolling day. A new spawn is refused with `max_per_day` named once the day's count has reached it. A resent spawn that finds its child already started is answered with that child and is not counted. |
 | `approval_ceiling` | table | none (no ceiling) | a [`[spawners.<name>.approval_ceiling]`](#spawnersnameapproval_ceiling) table | What the spawning orchestrator's operator may approve for a child that asks for more than its sandbox allows (protocol-change 089). With no table, a delegate session counts as unattended and a refused call settles in band, as it always has, and no decision from the spawner is accepted. With a table, a refused call is held open while the spawner's node is connected, the spawner's operator is asked, and a decision is accepted only if every grant it carries is inside the table. |
 | `transcript` | string | `"hidden"` | `"visible"` or `"hidden"` | Whether the spawning orchestrator may read its children's transcripts here, one bounded page at a time (protocol-change/090). With `"hidden"` a request for one is refused and the spawner sees a child's result, notes and glances and nothing of its working. The transcript is recorded on this machine and may hold what its tools returned, so it is this daemon's owner who allows it. |
+| `top_level` | table | none (no top-level sessions) | a [`[spawners.<name>.top_level]`](#spawnersnametop_level) table | Lets the spawning orchestrator's page start sessions of its own here and drive them (protocol-change 094). With no table, every message of the relay is refused with `TopLevelOff`. |
 
 ## `[spawners.<name>.approval_ceiling]`
 
@@ -869,6 +906,39 @@ revokes what the old ceiling let through.
 | `env` | array of strings | none | environment variable names | These variables may be added to the allowlist. |
 | `limits` | table | none | any of `cpu_s`, `wall_s`, `mem_bytes`, `pids`, `fsize_bytes`, `output_bytes`, each a positive integer | A limit may be raised up to the value listed. A request for unlimited (`0`) is never admitted. |
 | `scratch` | array of strings | none | `"tmpfs"`, or absolute paths | The scratch choices that may be granted: a fresh tmpfs, or a host path at or under one of the listed paths. |
+
+## `[spawners.<name>.top_level]`
+
+(From protocol-change 094.) Optional, written on the box inside a
+`[spawners.<name>]` table, and read with it when the daemon starts. It lets the
+spawning orchestrator's page, the laptop's, start sessions here that are not the
+children of any session it runs, and read, message, stop, archive and decide the
+requests of the ones it started. The agent of such a session runs on this
+machine. Where its tools run is a placement the table offers: a workspace on an
+executor, a workspace in a pool, or a folder this daemon remembers. The browser
+talks only to the laptop. This daemon sends nothing on its own, and the laptop
+asks for the sessions it started each time a page needs them.
+
+The table bounds an honest spawner and a mistaken page. It is not a security
+boundary against a compromised peer: a pinned distribution peer is fully trusted
+(see protocol-change 094, "Security argument"). A session is relayed when the
+laptop's request created it. A message about any other session, including one the
+owner of this machine started, is refused with `NotRelayed`.
+
+A table with no keys is present and offers nothing: the laptop sees an empty list
+of placements. The daemon refuses a name that is not configured on this machine, a
+`folders` value other than the two below, a `max_sessions` outside 1 to 64, and
+any key it does not know.
+
+| Key | Type | Required, default | Allowed values | Meaning |
+| --- | --- | --- | --- | --- |
+| `executors` | array of strings | none | distinct names of `[executors.<name>]` tables, or in ledger mode names the ledger gave an executor | The executors whose registered workspaces the page may pick. |
+| `pools` | array of strings | none | distinct names of `[pools.<name>]` tables | The pools whose registered workspaces the page may pick. |
+| `folders` | string | `"recent"` | `"none"` or `"recent"` | `"none"` offers no folder on this machine. `"recent"` offers only the folders this daemon remembers, and each is judged again by the folder checks of protocol-change 074 when the session is created. |
+| `profiles` | array of strings | every `[profiles.<name>]` | distinct names of `[profiles.<name>]` tables | The profiles a relayed session may start with. Models are this daemon's catalogue. |
+| `max_sessions` | integer | 8 | 1 to 64 | The relayed sessions of this spawner that are not archived. Archiving one frees its place. A session that was reserved and never finished still counts until it is deleted on this daemon's own page. |
+| `max_per_hour` | integer | 10 | at least 1 | Creations over a rolling hour, counted on this daemon. The laptop's page has its own allowance of the same size. |
+| `approval_ceiling` | table | none (no deciding) | a table with the keys of [`[spawners.<name>.approval_ceiling]`](#spawnersnameapproval_ceiling) | What a decision from the laptop's page may grant to a relayed session. With no table the page shows the session's requests and cannot decide them, and the request stays pending for this daemon's own page. |
 
 ## Provisioning a deployment
 
@@ -1018,6 +1088,9 @@ closes, because the new daemon has no workspace for the scope to retire. A daemo
 that ends in the middle of a close leaves the scope closing, which is refused in
 the same way. Each such scope holds one of the executor's sixteen slots for scopes
 that are not cleanly closed.
+
+`loom executor release --worktrees` is the other form of the command, for the Git
+worktrees of a [worktree workspace](#worktree-workspaces); it is described there.
 
 `loom executor release SESSION [--state-dir PATH]` is the operator's override. It
 is also `loomd executor release`. Run it on the executor, with the executor daemon

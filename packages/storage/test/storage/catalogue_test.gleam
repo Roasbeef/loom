@@ -100,7 +100,7 @@ pub fn version_three_catalogue_migrates_claims_without_losing_principals_test() 
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; PRAGMA user_version=3",
       on: old,
     )
     == Ok(Nil)
@@ -196,6 +196,14 @@ pub fn generated_queries_match_the_sqlc_input_test() {
     sql.start_failure("").0,
     sql.upsert_start_failure("", "", 0).0,
     sql.delete_start_failure("").0,
+    sql.relayed_by_request("").0,
+    sql.relayed_of_session("").0,
+    sql.count_relayed_held("").0,
+    sql.count_relayed_since("", 0).0,
+    sql.insert_relayed_session("", "", "", 0).0,
+    sql.delete_relayed_session("").0,
+    sql.relayed_first_page("", 0).0,
+    sql.relayed_page_after("", "", 0).0,
   ]
   assert normalize_queries(source)
     == normalize_queries(string.join(generated, "\n"))
@@ -258,7 +266,7 @@ pub fn version_one_catalogue_migrates_without_losing_creation_test() {
   let assert Ok(old) = sqlight.open(path)
     as "fixture downgrades only its new empty table"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; DROP TABLE catalogue_session_names; PRAGMA user_version=1",
       on: old,
     )
     == Ok(Nil)
@@ -634,7 +642,7 @@ pub fn version_two_catalogue_migrates_archive_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; DROP TABLE access_claims; DROP TABLE catalogue_session_archives; PRAGMA user_version=2",
       on: old,
     )
     == Ok(Nil)
@@ -697,7 +705,7 @@ pub fn version_four_catalogue_migrates_subtitles_without_losing_names_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
       on: old,
     )
     == Ok(Nil)
@@ -921,7 +929,7 @@ pub fn version_five_catalogue_migrates_every_credential_to_bearer_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=5",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; PRAGMA user_version=5",
       on: old,
     )
     == Ok(Nil)
@@ -968,7 +976,7 @@ pub fn version_six_catalogue_gains_the_login_columns_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; PRAGMA user_version=6",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; PRAGMA user_version=6",
       on: old,
     )
     == Ok(Nil)
@@ -1036,7 +1044,7 @@ pub fn version_four_catalogue_migrates_through_subtitles_and_kinds_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; ALTER TABLE catalogue_sessions DROP COLUMN profile; DROP TABLE catalogue_recent_folders; ALTER TABLE access_credentials DROP COLUMN issued_by; ALTER TABLE access_credentials DROP COLUMN expires_at_ms; ALTER TABLE access_credentials DROP COLUMN last_resumed_ms; ALTER TABLE access_credentials DROP COLUMN issued_at_ms; ALTER TABLE access_credentials DROP COLUMN kind; DROP TABLE catalogue_session_subtitles; PRAGMA user_version=4",
       on: old,
     )
     == Ok(Nil)
@@ -1239,7 +1247,7 @@ pub fn version_ten_catalogue_gains_an_empty_executor_column_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; PRAGMA user_version=10",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; PRAGMA user_version=10",
       on: old,
     )
     == Ok(Nil)
@@ -1274,7 +1282,7 @@ pub fn version_eleven_catalogue_gains_an_empty_pool_column_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; PRAGMA user_version=11",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; PRAGMA user_version=11",
       on: old,
     )
     == Ok(Nil)
@@ -1415,7 +1423,7 @@ pub fn version_nine_catalogue_migrates_through_the_model_column_to_the_current_v
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; PRAGMA user_version=9",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; ALTER TABLE catalogue_sessions DROP COLUMN pool; ALTER TABLE catalogue_sessions DROP COLUMN executor; ALTER TABLE catalogue_sessions DROP COLUMN model; PRAGMA user_version=9",
       on: old,
     )
     == Ok(Nil)
@@ -2018,7 +2026,7 @@ pub fn version_twelve_catalogue_gains_the_move_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; PRAGMA user_version=12",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; DROP TABLE catalogue_session_moves; PRAGMA user_version=12",
       on: old,
     )
     == Ok(Nil)
@@ -2084,7 +2092,7 @@ pub fn version_thirteen_catalogue_gains_the_deletion_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; PRAGMA user_version=13",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; DROP TABLE catalogue_session_deletions; PRAGMA user_version=13",
       on: old,
     )
     == Ok(Nil)
@@ -2446,7 +2454,7 @@ pub fn version_fourteen_catalogue_gains_the_delegate_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; PRAGMA user_version=14",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; DROP TABLE catalogue_delegate_sessions; PRAGMA user_version=14",
       on: old,
     )
     == Ok(Nil)
@@ -2497,7 +2505,7 @@ pub fn version_fifteen_catalogue_gains_the_state_and_release_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; ALTER TABLE catalogue_delegate_sessions DROP COLUMN state; PRAGMA user_version=15",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; DROP TABLE catalogue_remote_releases; ALTER TABLE catalogue_delegate_sessions DROP COLUMN state; PRAGMA user_version=15",
       on: old,
     )
     == Ok(Nil)
@@ -2711,7 +2719,7 @@ pub fn version_sixteen_catalogue_gains_the_spend_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; PRAGMA user_version=16",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; DROP TABLE catalogue_spawner_spend; PRAGMA user_version=16",
       on: old,
     )
     == Ok(Nil)
@@ -2849,7 +2857,7 @@ pub fn version_seventeen_catalogue_gains_the_start_failure_table_test() {
   assert catalogue.close(store) == Ok(Nil)
   let assert Ok(old) = sqlight.open(path) as "fixture connection opens"
   assert sqlight.exec(
-      "DROP TABLE catalogue_start_failures; PRAGMA user_version=17",
+      "DROP TABLE catalogue_relayed_sessions; DROP TABLE catalogue_start_failures; PRAGMA user_version=17",
       on: old,
     )
     == Ok(Nil)

@@ -9,6 +9,7 @@
 //// contradicts closes the scope, and the executor chosen is reported.
 
 import client/executors
+import client/pools
 import client/remote/protocol
 import client/remote/scope
 import client/remote/workspace
@@ -357,5 +358,26 @@ pub fn a_record_that_names_an_unconfigured_executor_fails_the_open_test() {
   let assert Error(reason) = open(only("a", a), opened, session: "s")
 
   assert reason == "executor_unavailable: no executor named gone"
+  rig.stop(a)
+}
+
+pub fn a_pools_wait_replaces_the_executors_and_an_unsized_pool_leaves_it_test() {
+  let #(_probe, a) = executor_of(1)
+  let found = rig.candidate("a", a)
+  let sized =
+    pools.Pool(
+      name: "big",
+      executors: ["a"],
+      platform: None,
+      enforcement: None,
+      toolchains: [],
+      attach_within_s: Some(240),
+    )
+  let unsized = pools.Pool(..sized, attach_within_s: None)
+
+  assert workspace.waiting_as_pool(found, sized).reach.attach_within_ms
+    == 240_000
+  assert workspace.waiting_as_pool(found, unsized).reach.attach_within_ms
+    == found.reach.attach_within_ms
   rig.stop(a)
 }

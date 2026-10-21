@@ -66,6 +66,7 @@ import support/extensions
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import web_view/actions
+import web_view/admin
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
 import web_view/ending
@@ -323,6 +324,7 @@ fn fixture_lasting_with_root(
                     sessions,
                     open,
                     seen,
+                    fn(_) { Error(Nil) },
                   )
                 }
               }
@@ -670,7 +672,7 @@ fn creating_from_home(
     Ok(chosen) -> Some(chosen)
     Error(Nil) -> None
   }
-  let ask = fn(place, name, sharing, roles, deliver) {
+  let ask = fn(place, name, sharing, roles, prompt, deliver) {
     ui_socket.create_task(
       standing,
       tickets,
@@ -691,6 +693,8 @@ fn creating_from_home(
       name,
       sharing,
       roles,
+      prompt,
+      fn(_, _) { Ok(Nil) },
       deliver,
     )
   }
@@ -709,15 +713,21 @@ fn creating_from_home(
         Ok(_) -> creations.Typed(workspace)
         Error(Nil) -> creations.Drawn(workspace)
       }
-      ask(place, name, sharing, creations.Roles(profile:, model:), fn(answer) {
-        process.send(answers, answer)
-      })
+      ask(
+        place,
+        name,
+        sharing,
+        creations.Roles(profile:, model:),
+        "",
+        fn(answer) { process.send(answers, answer) },
+      )
       case process.receive(answers, 10_000) {
         Ok(creations.Ticketed(path)) -> reported(stub(290, path), reach)
         Ok(creations.Declined(reason)) ->
           reported(stub(291, string.inspect(reason)), reach)
         Ok(creations.Unstarted(..) as unstarted) ->
           reported(stub(292, string.inspect(unstarted)), reach)
+        Ok(creations.Unsent(path)) -> reported(stub(293, path), reach)
         Error(Nil) -> stub(298, "the task never answered")
       }
     }
@@ -2428,6 +2438,24 @@ fn connect_socket(port: Int, entered: Entered, more: List(#(String, String))) {
   let head = read_head(socket, "")
   assert string.starts_with(head, "HTTP/1.1 101")
   socket
+}
+
+// One masked client text frame carrying a Lustre `click` at `path`, as a browser
+// sends it. The mask key is zero, so the payload goes out as written.
+fn client_click(path: String) -> BitArray {
+  let escaped = string.replace(path, "\t", "\\t")
+  let payload =
+    bit_array.from_string(
+      "{\"kind\":1,\"path\":\""
+      <> escaped
+      <> "\",\"name\":\"click\",\"event\":{}}",
+    )
+  let size = bit_array.byte_size(payload)
+  let head = case size < 126 {
+    True -> <<0x81, 1:1, size:7>>
+    False -> <<0x81, 1:1, 126:7, size:16>>
+  }
+  bit_array.concat([head, <<0, 0, 0, 0>>, payload])
 }
 
 // Reads server frames, which are never masked, until a close frame or the
@@ -5204,6 +5232,8 @@ pub fn the_creation_runs_off_the_callers_process_test() {
       "slow",
       creations.Private,
       creations.default_roles,
+      "",
+      fn(_, _) { Ok(Nil) },
       fn(answer) { process.send(answers, #(answer, process.self())) },
     )
     assert process.receive(answers, 0) == Error(Nil)
@@ -7885,6 +7915,13 @@ pub fn the_real_admin_socket_carries_no_claim_test() {
     let page = enter(port, pressed.body)
     let socket = connect_socket(port, page, [])
 
+    // The page opens on its Machines tab. One admitted click on the People tab,
+    // which is the body's second child (the tabs) and that row's second button,
+    // sends the people, the pending invitation and the sessions through the same
+    // socket, so the negative asserts below are about frames that carry them.
+    let people_tab = admin.body_path <> "\t1\t1"
+    assert ffi_daemon_socket.send(socket, client_click(people_tab)) == Ok(Nil)
+
     // The page stays open, so "closed" here means no frame for five seconds.
     let closed = read_until_closed(socket, [])
     let _ = ffi_ws.tcp_close(socket)
@@ -9970,5 +10007,121 @@ pub fn a_device_link_from_a_qr_code_is_confirmed_on_the_listed_origin_test() {
       as "the press sets the device's login"
     assert string.ends_with(login, "; Secure")
     assert !list.any(cookies, string.starts_with(_, "loom_ui="))
+  })
+}
+
+// The composer's first message follows the creation. The session is created
+// exactly as `create_for` makes it, opened, and only then is the message sent,
+// once, for the session just made; the answer is the ticket that opens it.
+pub fn a_first_message_is_sent_once_after_the_session_exists_test() {
+  fixture(fn(ready, _, credential) {
+    let _known = create_session(ready, "first-known-1310", 1310)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let before = session_count(ready, credential)
+    let sent = process.new_subject()
+    let send = fn(session, text) {
+      // The session is already in the registry and running when it is sent to.
+      let assert Ok(manager.View(status: manager.Resident(_), ..)) =
+        manager.get(ready.registry, session)
+        as "the session is resident when its first message is sent"
+      process.send(sent, #(session, text))
+      Ok(Nil)
+    }
+
+    let assert creations.Ticketed(path) =
+      ui_socket.create_with(
+        standing,
+        tickets,
+        page_open,
+        registry_create(ready, 1301),
+        registry_release(ready, credential),
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        "fix the retry test",
+        creations.Private,
+        creations.default_roles,
+        "fix the retry test\nthen the docs",
+        send,
+        within: 3000,
+      )
+    assert session_count(ready, credential) == before + 1
+    assert process.receive(sent, 0)
+      == Ok(#(session_of(path), "fix the retry test\nthen the docs"))
+    assert process.receive(sent, 0) == Error(Nil)
+  })
+}
+
+// An empty message creates the session and sends nothing, and a creation the
+// daemon refuses sends nothing either.
+pub fn an_empty_message_or_a_refused_creation_sends_nothing_test() {
+  fixture(fn(ready, _, credential) {
+    let _known = create_session(ready, "first-known-1311", 1311)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let sent = process.new_subject()
+    let send = fn(session, text) {
+      process.send(sent, #(session, text))
+      Ok(Nil)
+    }
+    let attempt = fn(seed, place, prompt) {
+      ui_socket.create_with(
+        standing,
+        tickets,
+        page_open,
+        registry_create(ready, seed),
+        registry_release(ready, credential),
+        new_folder.check(_, ready.state_root),
+        place,
+        "",
+        creations.Private,
+        creations.default_roles,
+        prompt,
+        send,
+        within: 3000,
+      )
+    }
+
+    let assert creations.Ticketed(_) =
+      attempt(1302, creations.Drawn(ready.state_root), "")
+    assert process.receive(sent, 0) == Error(Nil)
+
+    // A workspace the owner holds no session in and never remembered is refused,
+    // and the message is not sent to anything.
+    let refused = attempt(1303, creations.Drawn("/nowhere/at/all"), "hello")
+    assert refused == creations.Declined(creations.NotKnown)
+    assert process.receive(sent, 0) == Error(Nil)
+  })
+}
+
+// A session that was created and opened but did not take the message is kept: the
+// answer is `Unsent` with the ticket that opens it, the session is in the list,
+// and nothing is deleted.
+pub fn a_message_that_is_not_accepted_keeps_the_session_test() {
+  fixture(fn(ready, _, credential) {
+    let _known = create_session(ready, "first-known-1312", 1312)
+    let #(standing, tickets) =
+      creator_standing(ready, credential, access.Operator)
+    let before = session_count(ready, credential)
+    let answer =
+      ui_socket.create_with(
+        standing,
+        tickets,
+        page_open,
+        registry_create(ready, 1304),
+        registry_release(ready, credential),
+        new_folder.check(_, ready.state_root),
+        creations.Drawn(ready.state_root),
+        "",
+        creations.Private,
+        creations.default_roles,
+        "hello",
+        fn(_, _) { Error("the session did not accept the message") },
+        within: 3000,
+      )
+
+    let assert creations.Unsent(path) = answer
+    assert string.starts_with(path, "/ui/sessions/")
+    assert session_count(ready, credential) == before + 1
   })
 }

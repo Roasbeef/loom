@@ -6842,13 +6842,16 @@ below.
   `CloseOutcome`. The census is a type parameter the host never reads.
   `unknown_outcome_text` is the model's wording for a lost call and
   `did_not_run_text` the wording of a fenced one. `Attach` carries
-  `protocol.version` (3); the host refuses any other value with `VersionMismatch`.
+  `protocol.version` (4); the host refuses any other value with `VersionMismatch`.
   Change the version whenever a constructor or field changes. Version 2 moved
   the executor's clock reading out of the census and into `Attached`, so each
   reply carries the time it was sent. Version 3 added background executions
   (`StartExecution`, `StopExecution`, `LaunchExecution`, `InteractExecution`,
   `Unacked.executions`, `Lookup.Executed`) and `AskMcpPlan`, the MCP plan the
-  executor asks the owner port for while it builds a plane. `Attach` keeps the
+  executor asks the owner port for while it builds a plane. Version 4 added the
+  `WorktreeFailed` refusal and `RemoteCensus.branch` for worktree workspaces
+  (protocol-change/095), and `host.PlaneFailure` is how a factory says which
+  refusal a failed build is. `Attach` keeps the
   shape it had in version 2, so a peer of either version reaches the version
   check and is refused by value; never add a field to it, or the refusal
   becomes a crash of the host and the executor daemon. Every other message
@@ -7183,8 +7186,10 @@ path with mutants M8 to M12.
 A `loomd` whose `--config` file has `[distribution]` and at least one
 `[workspaces.<name>]` row serves those checkouts to the peers it pins.
 
-- `client/workspaces` decodes `[workspaces.<name>]` (`root` only: absolute, no
-  `..` segment) the way `client/executors` decodes executors, and requires
+- `client/workspaces` decodes `[workspaces.<name>]` (`root`: absolute, no
+  `..` segment; `mode`, `shared` or `worktree`; and `base`, only with `worktree`,
+  which parses into `Mode = Shared | Worktree(base)` so a base on a shared
+  workspace cannot exist) the way `client/executors` decodes executors, and requires
   `[distribution]`. `catalog.parse` validates it; `catalog.parse_lsp` reads only
   the `[lsp.<name>]` tables because an executor has no model catalogue. A new key
   means `workspaces.row`, `scripts/config_keys.sh` and `docs/configuration.md`
@@ -7225,6 +7230,27 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   the `Helpers` cleanup (`executor.close`, which ends in `exec.close_pool`)
   succeeded. No helper cleanup means `UnknownCleanup`. The scope directory is
   removed only on `AllRetired`.
+- **Worktree workspaces** (protocol-change/095). `executor_plane.worktrees_of`
+  starts `client/worktrees` (the sandboxed Git of `client/worktree_git` and one
+  gate for each worktree workspace) and `factory` takes the result. For a
+  worktree workspace `build` calls `worktrees.open`, which creates, adopts or
+  recreates the session's tree at `<state>/worktrees/<workspace>/<session>` on
+  `loom/<session>`, and builds the plane over the tree's path, so `Built.root`,
+  the policy's writable root, `seed_of` and `gocache_of` all see the tree. A
+  failed open is `host.WorktreeNotMade`, answered as `WorktreeFailed`; a build
+  that fails after the tree exists settles it. `plane_over`'s `close` calls
+  `settle_tree` only after `AllRetired`: a clean tree (`git status` with
+  `.codemode` excluded, and a symbolic HEAD) is removed, anything else kept.
+  `protecting_siblings` masks `<state>/scopes` for a worktree session (sibling
+  trees are not masked: a per-sibling mask goes stale when a sibling closes and
+  the Linux helper then refuses every call). The ledger rows are `exec_ledger.Tree`, written from
+  `exec_ledger.connect`ed connections of the gates' own, never the host's.
+  Reconciliation is the gate's first job. Nothing deletes a branch or a directory
+  the ledger does not name; `forget_directory` deletes only the layout's path for
+  the session. `daemon/executor_cli` has `release --worktrees` (`worktrees.sweep`).
+  Tests: `worktrees_test` (the lifecycle against a real repository, the
+  reconciliation matrix, the operator sweep), `executor_worktree_test` (the plane,
+  the jail and the close through the host), `daemon_executor_cli_test`.
 - `daemon/main.start_executor` starts `remote/host` under `address.default()`
   with the ledger at `<state>/exec-ledger.db`; a daemon with no rows starts
   nothing. The host is unlinked and monitored; its death halts the daemon.
@@ -9162,6 +9188,13 @@ orchestrator the daemon is configured with for a page of its sessions.
   `ui_socket.elsewhere_for` repeats the owner check inside the weft task
   (`read_task`) before the daemon dials. "Where" and "Show more" are clicks beneath
   `home.table_path`, so `home_accepts` admits them and no admission was added.
+  The placement revamp (S1) adds to the web sockets only an `input` event for the
+  owner's home beneath `home.table_path` (the composer's code-picker search;
+  `home_event` admits it for `Submitting` and `Administering`, never `Browsing`) and
+  a click beneath `admin.sidebar_path` for the admin socket (the sidebar's pills).
+  `Attachment` and `AdminAttachment` carry `machine` (`server.page_machine`), and
+  `AdminAttachment` carries `activity`, the home's own read, for the admin sidebar's
+  dots.
 - Tests: `remote/orchestrator_port_test` (paging over a real registry, `moving` and
   `moved` absent, a whole catalogue page of moved sessions skipped, the clamp, an
   unreadable catalogue), `daemon_elsewhere_test` (the owner's read, the key and
@@ -9322,3 +9355,92 @@ The HTTP sandbox is also effective on a direct visit. No session input enters
 these routes, and source travels between the parent and its opaque child only
 as revisioned JSON string messages. See
 [protocol-change/091](../../protocol-change/091-isolated-mermaid-diagrams.md).
+
+## Sessions another orchestrator's page starts (protocol-change/094)
+
+A `[spawners.<name>.top_level]` table on the box lets the spawning orchestrator's
+page start top-level sessions there and drive them. The relay is pull-only: every
+message goes laptop to box over the pinned link, dialled on demand, and the box
+sends nothing on its own. Tests: `remote_top_test`, `relayed_session_test`,
+`top_host_test`, `top_relay_test`, the relayed cases of `remote_decision_test`
+and `gateway_test`, and `orchestrator_port_test`.
+
+- **The table** is `spawners.TopLevel` (`Spawner.top_level`, `None` means the
+  spawner may create none): `executors`, `pools`, `folders` (`NoFolders` or
+  `RecentFolders`, default recent), `profiles` (`None` is every profile),
+  `max_sessions` (1 to 64, default 8), `max_per_hour` (default 10) and
+  `approval_ceiling`. The decoder refuses an executor, pool or profile this file
+  does not configure, a `folders` word other than the two, and any key it does
+  not know, so the dropped `list = "owner"` and typed folders fail the file.
+- **The vocabulary** is `client/remote_top`, with no process in it. `Placement`
+  is `Folder`, `Workspace` or `Pooled`; `Refusal` is `UnknownSpawner`,
+  `TopLevelOff`, `NotOffered`, `CapReached`, `NotRelayed`, `InvalidArgument`,
+  `NotYetOpen` and `StoreFailure`, and `retryable` is true only for the last two.
+  The offers, a page of sessions and a row cross as JSON so the box can measure
+  them, and the laptop reads them with total decoders (`decode_offers`,
+  `decode_page`, `decode_row`, `decode_placement`) that check every bound and
+  refuse a page whole. A page is at most 64 rows and 64 KiB, offers at most 256
+  entries, a row at most `max_row_bytes` and eight requests. `fit_requests` keeps
+  a row's oldest pending requests by seq that fit under the row bound and counts
+  the rest, so a row is always whole or absent and always small enough to be a
+  page.
+- **The port** has eight more constructors (`Placements`, `TopCreate`,
+  `TopSessions`, `TopHistory`, `TopSend`, `TopStop`, `TopArchive`, `TopResolve`)
+  served by a `TopHost` of eight functions each handed the sender's node, each in
+  a task of its own. `refusing_top` answers `UnknownSpawner(node)` and is what
+  `start_with` uses; `start_with_top` takes the host. The `ask_top_*` functions
+  answer `Result(Result(a, Refusal), Silence)`, so the laptop can tell a port that
+  is gone from one that is slow.
+- **The box's host** is `client/top_host`. `judged` resolves the node to its
+  spawner and table. `create` judges the placement against the table (a folder
+  must be listed, remembered and pass `new_folder.check`), the profile against
+  the table and the model against the catalogue, all before anything is reserved;
+  `manager.reserve_relayed` then reserves in one registry turn and one catalogue
+  transaction (the request id's row, or both caps counted and the registration,
+  its mapping and the row together); and `manager.create_scoped` makes the store
+  by the path that turns any reservation into a session, under the same request
+  key (`catalogue.relayed_key`). A resent create finds the row and finishes a
+  reservation whose store was never made. Nothing sweeps a `Reserved`
+  registration: it stays listed and counted until the owner deletes it, which
+  removes the row with it. Every other message names a session that must be in
+  `catalogue_relayed_sessions` for the sender's spawner (`NotRelayed`
+  otherwise). A message about a saved session opens it first (`reached`, bounded
+  by `open_budget_ms`); a listing never opens one. A relayed session is
+  session-only (`domain.SessionOnly`), like a delegate session.
+- **A session's answers** are `relayed_session.Endpoint`, published in
+  `Resident.relay` beside `spawns` and `inbox`: `overview(ceiling)` (what it is
+  doing from `peer_mail.standing`, when its main branch last grew, its pending
+  requests with their seq and the part the ceiling admits, its remote children),
+  `send` (a receipt under `client/relay/receipt/<id>` written in the delivering
+  commit, a steer onto an open run or a started run), `history` (the main
+  strand's branch under the child transcript bound), and the hub's `stop` and
+  `resolve`.
+- **The hub's doors** are `gateway.decide_relayed` and `gateway.stop_relayed`.
+  `remote_decision.admit_relayed` is `admit` without the descent test, over one
+  `judge`, so the ceiling, the echoed action, the wanted subset, the canonical
+  paths and the compare-and-set are shared; the hub's turn is what makes the
+  first of two decisions at one seq win. `abort_run` is the body of the
+  operator's abort, shared with the stop.
+- **The registry** gained `reserve_relayed`, `relayed_of`, `relayed_sessions`
+  (a page with each row's live status) and `archive_relayed` (the slot check and
+  the archive in one turn; the host stops the session and retries until it has
+  drained). `new_registration` is the minting both `reserve_creation` and the
+  relayed reservation use.
+- **The laptop's relay** is `client/remote/top_relay`: `over` (the production
+  dial through the membership and the roster) or `through` (an injected dial and
+  `Timing`, for tests). `placements`, `sessions`, `history`, `stop`, `archive` and
+  `resolve` are asked once; `create` and `send` are resent with the same request
+  or message id for `retry_window_ms` (30 s, pausing 500 ms doubling to 4 s) when
+  the answer was lost or the box said `NotYetOpen` or `StoreFailure`. A first try
+  that cannot connect fails at once as `Unreachable`; one that was sent and then
+  lost the link ends `Silent`, and `session_for_request` finds the session in the
+  next page by its request id. A connected node whose port is gone is
+  `OlderBuild`. `all_sessions` reads up to `max_pages` pages.
+  `client/remote/top_view` keeps the last good rows and when they were read,
+  marks them stale through a failure and keeps the time the failures began.
+- **Invariants.** A refusal reserves nothing and charges no cap. A create is
+  idempotent by request id and a send by message id. No sweep drops a reserved
+  relayed registration. A listing opens nothing. `TopHistory`, `TopSend` and
+  `TopResolve` open a saved relayed session; `TopStop` does not. The box never
+  dials the laptop for this. The page's browser never reaches the box.
+

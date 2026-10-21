@@ -171,7 +171,7 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 `start_effect_plane_in` (`client/workspace_plane.gleam:1371`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2270`),
+fatal child of the instance (`instance_children`, `client/serve.gleam:2283`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is
@@ -1407,6 +1407,17 @@ one of another, and nothing resumes.
 in field order, never refusing on features. It has no caller until #697 pairs
 two sides: S4 defines the refusal and does not wire it. The census, the
 pairing and the refusal are the pieces #697 consumes.
+
+## A second instance: Git for worktree workspaces
+
+The distributed executor boots one more pool, service and broker of this kind,
+beside the ones its sessions' planes run on. `client/worktree_git` starts them
+the way the standalone entrypoint does, with a lazy single-helper pool, and
+clears each Git call through the broker with a policy built for that call
+(protocol-change/095). It exists because making a session's tree has to run
+`git worktree add` in a repository the session's model may have configured,
+before the session has a plane, and Rule Zero forbids running that in the
+harness VM. A daemon with no worktree workspace never starts it.
 
 ## Protocol changes
 

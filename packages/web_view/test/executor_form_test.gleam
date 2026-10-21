@@ -57,6 +57,7 @@ fn page(
       String,
       creations.Sharing,
       creations.Roles,
+      String,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
   ),
@@ -121,7 +122,7 @@ fn hearing(
     executors,
     pools,
     read,
-    Some(fn(place, name, sharing, roles, _) {
+    Some(fn(place, name, sharing, roles, _, _) {
       process.send(asked, #(place, name, sharing, roles))
     }),
   )
@@ -205,8 +206,12 @@ fn settle(model: home.Model, dispatched: Subject(home.Msg)) -> home.Model {
   }
 }
 
+// The owner's page opens on the composer, and these tests read the earlier form,
+// which stays reachable behind the full session list until the old home form is
+// removed, so the page is put on the list first.
 fn opened(start: home.Start) -> home.Model {
-  run(home.new(start), home.TimerReady(process.new_subject()))
+  let listed = run(home.new(start), home.ShowingList)
+  run(listed, home.TimerReady(process.new_subject()))
 }
 
 fn drawn(model: home.Model) -> String {
@@ -853,7 +858,9 @@ pub fn a_remote_session_is_listed_under_its_executor_test() {
   assert string.contains(html, "gpu:app")
   assert string.contains(html, "remote work")
   assert list.length(home.groups(model)) == 3
-  assert list.length(string.split(html, "New session</button>")) - 1 == 2
+
+  // Two group heads and the sidebar's own button.
+  assert list.length(string.split(html, "New session</button>")) - 1 == 3
 }
 
 // A remote entry has no project and no worktree: its name is not a directory.

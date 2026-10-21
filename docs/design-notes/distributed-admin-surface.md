@@ -55,24 +55,24 @@ exclusive names and then reads `workspace` as a registered name, not a path
 The daemon holds the names from its `[executors.<name>]` and `[pools.<name>]`
 tables, with each executor's declared platform, enforcement and toolchains
 (`Executor`, `client/executors.gleam:76`). The web home is told only the names
-(`HomeAttachment`, `client/daemon/server.gleam:290`, whose `executors` field is
+(`HomeAttachment`, `client/daemon/server.gleam:300`, whose `executors` field is
 `List(String)`), draws them in a select, and asks the owner to type the workspace
-name (`CreatingRemote`, `web_view/home.gleam:816`). The terminal builds a
+name (`CreatingRemote`, `web_view/home.gleam:840`). The terminal builds a
 `Placement` from launch flags (`Placement`, `tui/placement.gleam:31`) and cannot
 change it inside a running terminal. Neither client can show whether an executor
 answers, is full, or contradicts its declaration. That is learned at the attach,
-when `contradiction` (`client/executors.gleam:375`) compares the executor's census
+when `contradiction` (`client/executors.gleam:427`) compares the executor's census
 with the declaration and the open fails. A typo in a workspace name is learned the
 same way. [The setup guide](../distributed-setup.md) tells an operator to check a
 connection with `epmd -names`, `lsof` or `ss`.
 
 **The session list.** `sessions.list` reads this daemon's catalogue
-(`ListSessions`, `client/daemon/server.gleam:3594`). The orchestrator port answers
-`Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:200`).
+(`ListSessions`, `client/daemon/server.gleam:3607`). The orchestrator port answers
+`Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:218`).
 Nothing answers "what sessions do you hold".
 
 **Health.** The pieces exist and none is readable from a client. The executor's
-census is returned in `Attached` (`client/remote/protocol.gleam:162`) and kept by
+census is returned in `Attached` (`client/remote/protocol.gleam:171`) and kept by
 the live plane. The execution ledger holds the scope rows, the byte budget, the
 unacknowledged results and the scopes that block a reopen, and the only reader is
 `loomd executor release`, which runs with the daemon stopped. A move stalls with a
@@ -80,7 +80,7 @@ reason that goes to one log line (`Stalled`, `client/session_mover.gleam:233`) a
 is forgotten, and the movers keep only the time the stall began (`Entry`,
 `client/session_movers.gleam:140`). `directory.status` reports the configured
 members, Ra's members with their votes, the leader and this member's applied index
-(`directory_status_json`, `client/daemon/server.gleam:3795`). It does not compare
+(`directory_status_json`, `client/daemon/server.gleam:3808`). It does not compare
 the applied index with the leader's, so it cannot say whether this copy has caught
 up. The only "not caught up" signal today is `voter: false`, which holds while a
 joining member is a non-voter.
@@ -173,15 +173,15 @@ vocabulary can halt a node ("What the closed vocabularies limit",
 that rule and add no second mechanism. Mixed builds stay unsupported, as for every
 other constructor.
 
-`Message` (`client/remote/orchestrator_port.gleam:200`) gains `Report(reply)` and
-`Sessions(after, limit, reply)`. `answer` (`client/remote/orchestrator_port.gleam:713`)
-serves both through `detached` (`client/remote/orchestrator_port.gleam:703`), the
+`Message` (`client/remote/orchestrator_port.gleam:218`) gains `Report(reply)` and
+`Sessions(after, limit, reply)`. `answer` (`client/remote/orchestrator_port.gleam:748`)
+serves both through `detached` (`client/remote/orchestrator_port.gleam:655`), the
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
-record, and `start_orchestrator_port` (`client/daemon/main.gleam:1012`) builds it
+record, and `start_orchestrator_port` (`client/daemon/main.gleam:1024`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:1061`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:1119`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.
@@ -204,7 +204,7 @@ orchestrator, an executor and a directory member at once.
   configured `[[distribution.peers]]`.
 - **Executor facts:** `protocol.version`, the scope counts by state (`ScopeState`,
   `storage/exec_ledger.gleam:211`), the limit on scopes that are not cleanly
-  closed (`Limits`, `storage/exec_ledger.gleam:197`), the scopes that block a
+  closed (`Limits`, `storage/exec_ledger.gleam:215`), the scopes that block a
   reopen (`closing`, or closed with unknown cleanup) with their session ids, bytes
   held against the ledger budget, the count of unacknowledged results, the platform
   label, the enforcement and toolchains from the most recent attach census
@@ -442,7 +442,7 @@ For each item in the owner's list: what exists, where it lives, and the proposal
 |---|---|---|
 | Orchestrator and executor reachable | Internal: `distribution.connect` results, and a link keeper for directory members only (`connect`, `client/distribution.gleam:506`) | `state` on each node in `deployment.status`, from the asker's own connect attempt |
 | Executor census (platform, enforcement, toolchains) | Returned at attach and kept in the live plane | Executor facts, from the last attach; absent before the first |
-| Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:507`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
+| Capacity and live scopes | Ledger rows and the limit (`default_limits`, `storage/exec_ledger.gleam:577`; `LOOM_EXECUTOR_MAX_SCOPES`) | Executor facts: counts by state and the limit, as numbers |
 | Helper pool | `pool_census` per plane, no node total | Deferred (section 10) |
 | Ledger bytes, unacknowledged results | Ledger only | Executor facts, as numbers |
 | Scopes that block a reopen | Ledger only; the operator learns of one from a refused open | Executor facts: session ids and state, with the `loom executor release` line in the page |
@@ -530,7 +530,7 @@ of the section sits beneath `admin.body_path`, which the Admin socket already ad
 and nothing else (`admin_accepts`). The existing 065 admin addendum's description of
 the page in [the web view](../architecture/web-view.md) gets a paragraph for the
 section. Its reads run in weft tasks with a read number, next to the people and
-session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:5235`).
+session reads (`admin_read_task`, `client/daemon/ui_socket.gleam:5337`).
 
 **Terminal.** A compact rendering, from the same snapshot:
 

@@ -211,6 +211,7 @@ import web_view/ending.{type Ending}
 import web_view/grants
 import web_view/image as web_image
 import web_view/invites
+import web_view/listing
 import web_view/notes
 import web_view/peer_links
 import web_view/proposals as proposing
@@ -233,6 +234,7 @@ import web_view/view/nudges
 import web_view/view/panel
 import web_view/view/peek
 import web_view/view/peer_links as peer_links_view
+import web_view/view/placement
 import web_view/view/queue_input
 import web_view/view/rename as rename_view
 import web_view/view/session_tab
@@ -531,6 +533,12 @@ pub type Standing {
     /// access, so it is handed neither the invitation nor the make-shareable
     /// capability and draws a sentence in their place (`invites.Bookmarked`).
     opening: Opening,
+    /// The name of the daemon serving the page, from its configuration. The
+    /// sidebar names it beside the product, tags every row with it as the machine
+    /// that runs the agent, and the header's placement strip says the session
+    /// runs on it. It is text the operator wrote, drawn as a text node and never
+    /// an attribute, a class or a key.
+    machine: String,
   )
 }
 
@@ -559,7 +567,7 @@ pub type Reader {
 /// A standing that says nothing: a member, and a session whose sharing was not
 /// read. Fixtures and hosts with no catalogue start from it.
 pub const unplaced =
-  Standing(reader: Participant, sharing: None, opening: FromLink)
+  Standing(reader: Participant, sharing: None, opening: FromLink, machine: "")
 
 /// What the daemon's catalogue says about a session, for the page's
 /// heading. Neither field comes from the session's transcript: the name is
@@ -979,6 +987,8 @@ type View(socket) {
     workspace_digest: String,
     expected: snapshot.Expected,
     reader: Reader,
+    /// The serving daemon's name (`Standing.machine`).
+    machine: String,
     transport: Transport(socket),
     completion_models: List(String),
     completion_profiles: List(String),
@@ -1087,6 +1097,11 @@ type View(socket) {
     /// so the next one waits `sessions_refresh_ms`.
     groups: List(sessions.Group),
     listed_at: Option(Int),
+    /// The machine the sidebar's list is narrowed to. It is the page's own
+    /// state: a press of a pill sets it (`narrow`), and it is never read from the
+    /// daemon or the browser except as a name `listing.chosen` found among the
+    /// pills the page drew.
+    filter: listing.Filter,
     /// What the sidebar's running sessions were last said to be doing, by
     /// identity. It is asked for after each read of the list and again every
     /// `activity_refresh_ms`, and a session with no answer says "running".
@@ -1393,6 +1408,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       workspace_digest: start.workspace_digest,
       expected: start.expected,
       reader: start.standing.reader,
+      machine: start.standing.machine,
       transport: start.transport,
       completion_models: start.completion_models,
       completion_profiles: start.completion_profiles,
@@ -1436,6 +1452,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       status: Connecting,
       groups: [],
       listed_at: None,
+      filter: listing.Everywhere,
       activity_asked_at: None,
       activity: dict.new(),
       departure: None,
@@ -6920,6 +6937,86 @@ pub fn session_groups(model: Model(socket)) -> List(sessions.Group) {
   model.view.groups
 }
 
+/// The name of the daemon serving the page: the machine every session on the
+/// sidebar's list runs its agent on, until a page can list another
+/// orchestrator's sessions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_machine(model)
+/// ```
+pub fn session_machine(model: Model(socket)) -> String {
+  model.view.machine
+}
+
+/// The machine the sidebar's list is narrowed to.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.session_filter(model)
+/// ```
+pub fn session_filter(model: Model(socket)) -> listing.Filter {
+  model.view.filter
+}
+
+/// Narrows the sidebar's list to the machine a pill named. Only a name that
+/// `listing.chosen` finds among the pills the page's own list offers changes
+/// anything, so a press that names no pill, as a forged one does, leaves the list
+/// as it was.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.narrow(model, "exec")
+/// ```
+pub fn narrow(model: Model(socket), machine: String) -> Model(socket) {
+  let all = listing.entries(model.view.groups)
+
+  case listing.chosen(all, model.view.machine, machine) {
+    Ok(filter) -> Model(..model, view: View(..model.view, filter:))
+    Error(Nil) -> model
+  }
+}
+
+/// Shows every session again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.widen(model)
+/// ```
+pub fn widen(model: Model(socket)) -> Model(socket) {
+  Model(..model, view: View(..model.view, filter: listing.Everywhere))
+}
+
+/// How many sessions on the sidebar's list are waiting on the person's decision,
+/// by the page's own reading of its session and the daemon's activity read of
+/// the rest. The phone's menu button shows the count.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.waiting_count(model)
+/// ```
+pub fn waiting_count(model: Model(socket)) -> Int {
+  listing.waiting(listing.entries(model.view.groups), session_activity(model))
+  |> list.length
+}
+
+/// Whether the page can take its person to the home page, which is where a
+/// session is started: the daemon handed it a way home.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.can_go_home(model)
+/// ```
+pub fn can_go_home(model: Model(socket)) -> Bool {
+  option.is_some(model.view.transport.home)
+}
+
 /// What the sidebar's running sessions are doing, by identity. The other
 /// rows carry what the daemon's activity read last said, a few seconds old at
 /// most. The page's own session is the exception: the page is its lane, so the
@@ -7419,6 +7516,7 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
     needing(model),
     proposals_pending(model),
     workspace_digest(model),
+    0,
   )
 }
 
@@ -7769,7 +7867,18 @@ pub fn heading(
     cost: transcript_lines.cost_words(model.shared.usage),
     rate: session_model.output_rate_tps(model.shared),
     notice: ended.view(ended_ending(model.view.status), model.shared.session),
+    placement: placement.view(model.view.machine, current_code(model)),
   )
+}
+
+// Where the page's own session keeps its code, from the list the sidebar read:
+// nothing until the read has the session, which a page that opened a moment ago
+// may not yet.
+fn current_code(model: Model(socket)) -> Option(listing.Code) {
+  listing.entries(model.view.groups)
+  |> list.find(fn(entry) { entry.id == model.shared.session })
+  |> result.map(fn(entry) { listing.place(entry, model.view.machine).code })
+  |> option.from_result
 }
 
 // The top bar's context figure. The primary strand's has no value until its

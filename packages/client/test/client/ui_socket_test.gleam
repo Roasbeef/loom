@@ -1102,7 +1102,6 @@ pub fn the_home_socket_admits_a_rename_submit_only_for_an_owner_test() {
       submit_on("0"),
       "{\"kind\":1,\"name\":\"submit\"}",
       "{\"kind\":1,\"path\":\"0\\t2\\t1\\t1\",\"name\":\"keydown\"}",
-      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t1\",\"name\":\"input\"}",
       "{\"kind\":3,\"messages\":[]}",
       "{\"kind\":2,\"name\":\"value\"}",
       "not json",
@@ -1141,7 +1140,7 @@ pub fn a_card_needs_no_new_event_class_test() {
 // operate, as the rename capability is, and the two are separate: each is given
 // by its own function and neither implies the other.
 pub fn only_an_owners_operating_home_may_create_test() {
-  let ask = fn(_place, _name, _sharing, _profile, _deliver) { Nil }
+  let ask = fn(_place, _name, _sharing, _profile, _prompt, _deliver) { Nil }
   let owner = home_principal(access.OwnerPrincipal)
   let member = home_principal(access.MemberPrincipal)
   let assert Some(_) =
@@ -1379,7 +1378,8 @@ pub fn the_home_socket_admits_the_admin_click_only_for_a_home_that_may_open_it_t
 }
 
 // The admin socket admits a click or a submit beneath the page's body, where
-// every control is, alone or batched, and drops every other frame: the bar, the
+// every control is, and a click beneath the sidebar, where the pills are, alone or
+// batched, and drops every other frame: the bar, the
 // notice's place, the body's own path, a sibling that shares its digits, a path
 // of another page, other events, and any batch with one of them in it.
 pub fn the_admin_socket_admits_only_events_beneath_the_pages_body_test() {
@@ -1405,9 +1405,7 @@ pub fn the_admin_socket_admits_only_events_beneath_the_pages_body_test() {
       click_on("0\t2\t2"),
       click_on("0\t0\t5"),
       click_on("0\t0"),
-      click_on("0\t1\t0"),
       click_on("0\t3\t0"),
-      click_on(home.sidebar_path <> "\t1\t0"),
       click_on(""),
       "{\"kind\":1,\"name\":\"click\"}",
       "{\"kind\":1,\"path\":\"0\\t2\\t1\\t0\",\"name\":\"keydown\"}",
@@ -1869,4 +1867,85 @@ pub fn the_other_orchestrators_need_no_new_admission_test() {
   assert !ui_socket.home_accepts(click_on("0\t0\t0"))
   assert !ui_socket.home_accepts(click_on(home.table_path <> "9"))
   assert !ui_socket.home_accepts(click_on("0\t3\t1\t6\t1\t1"))
+}
+
+fn input_on(path: String) -> String {
+  "{\"kind\":1,\"path\":"
+  <> json.to_string(json.string(path))
+  <> ",\"name\":\"input\",\"event\":{\"target\":{\"value\":\"x\"}}}"
+}
+
+// The composer's code picker narrows its rows as the owner types, so the owner's
+// home admits an `input` event beneath the sessions region, where the composer is,
+// and nowhere else: not the region's own path, not the sidebar, not the sign-ins,
+// not a sibling that shares its digits. A member's or an observer-ceiling home
+// admits none, since the composer is never drawn there, and the admin socket
+// admits none either. A batch with one forbidden event is dropped whole.
+pub fn the_owners_home_admits_a_typed_search_only_beneath_the_composer_test() {
+  let search = home.table_path <> "\t0\t1\t0\t1\t0"
+  assert ui_socket.home_owner_accepts(input_on(search))
+  assert ui_socket.home_admin_accepts(input_on(search))
+  assert ui_socket.home_owner_accepts(
+    "{\"kind\":3,\"messages\":["
+    <> input_on(search)
+    <> ","
+    <> click_on(search)
+    <> "]}",
+  )
+
+  list.each(
+    [
+      input_on(home.table_path),
+      input_on(home.table_path <> "0"),
+      input_on(home.sidebar_path <> "\t1\t0"),
+      input_on(home.signins_path <> "\t0"),
+      input_on("0\t0\t5"),
+      input_on(""),
+      "{\"kind\":1,\"name\":\"input\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t0\",\"name\":\"change\"}",
+      "{\"kind\":1,\"path\":\"0\\t2\\t1\\t0\",\"name\":\"keydown\"}",
+      "{\"kind\":3,\"messages\":["
+        <> input_on(search)
+        <> ","
+        <> input_on(home.sidebar_path <> "\t1")
+        <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.home_owner_accepts(frame)
+      assert !ui_socket.home_admin_accepts(frame)
+    },
+  )
+
+  // A member's home, and the admin page, take no typed text at all.
+  assert !ui_socket.home_accepts(input_on(search))
+  assert !ui_socket.admin_accepts(input_on(search))
+  assert !ui_socket.admin_accepts(input_on(admin.body_path <> "\t0"))
+}
+
+// The admin page's sidebar has pills, which are clicks, so its socket admits a
+// click beneath the sidebar's region and nothing else there: not a submit, not a
+// typed input, not the region's own path.
+pub fn the_admin_socket_admits_only_clicks_beneath_the_sidebar_test() {
+  let pill = admin.sidebar_path <> "\t1\t0\t1"
+  assert ui_socket.admin_accepts(click_on(pill))
+  assert ui_socket.admin_accepts(
+    "{\"kind\":3,\"messages\":[" <> click_on(pill) <> "]}",
+  )
+
+  list.each(
+    [
+      submit_on(pill),
+      input_on(pill),
+      click_on(admin.sidebar_path),
+      click_on(admin.sidebar_path <> "0"),
+      "{\"kind\":3,\"messages\":["
+        <> click_on(pill)
+        <> ","
+        <> submit_on(pill)
+        <> "]}",
+    ],
+    fn(frame) {
+      assert !ui_socket.admin_accepts(frame)
+    },
+  )
 }

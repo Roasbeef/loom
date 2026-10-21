@@ -309,7 +309,7 @@
   /* Where the panel is a column the transcript keeps 360px (grip_rule.centre_floor), and the panel, which may shrink, gives way when a window cannot hold its width and that floor. */
   @media (min-width:980px){.shell-centre{min-width:360px;}}
   .region{flex:0 0 auto;min-height:0;overflow:hidden;transition:width 180ms ease,min-width 180ms ease;}
-  .region-sidebar{width:232px;}
+  .region-sidebar{width:288px;}
   /* The panel's column holds the tab bar above the slot. It carries the
      column's border and background, so the bar and the panes share them. */
   .region-panel{flex:0 1 auto;width:var(--panel-width,340px);min-width:280px;display:flex;flex-direction:column;box-sizing:border-box;background:var(--color-bg);border-left:1px solid var(--color-divider);}
@@ -445,29 +445,53 @@
   .peek-entry{display:grid;row-gap:2px;min-width:0;}
   .peek-speaker{color:var(--color-fg-quiet);font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;}
   .peek-text{margin:0;font:12px/1.5 var(--font-sans);white-space:pre-wrap;overflow-wrap:anywhere;}
-  /* The session sidebar, the left column: the principal's sessions by
-     workspace, read-only. It is a column of the frame and scrolls on its own.
-     Below 1212px it is a drawer over the centre, opened from the bar. */
-  aside.sidebar{position:relative;width:232px;height:100%;box-sizing:border-box;min-height:0;padding:12px 10px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin; background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
-  /* The sections are set apart quietly: a small eyebrow above each group, a
-     one-pixel hairline in the divider colour between groups, and space on
-     both sides of it, with no box or background of its own. The list's
-     title stays in the page for assistive technology and is not drawn, since
-     the eyebrows are the labels a sighted reader needs and a second one
-     above them would read as a section of its own. */
+  /* The session sidebar, the left column (web_view/view/sidebar): the daemon's
+     name and "New session" at the top, the machine pills, the sessions by what
+     each needs from the person, and the pages that are not sessions at the foot.
+     It is a column of the frame. Only the sessions scroll, so the top and the foot
+     stay in view. Below 1212px it is a drawer over the centre, opened from the bar. */
+  aside.sidebar{position:relative;display:flex;flex-direction:column;width:100%;height:100%;box-sizing:border-box;min-height:0;padding:0;overflow:hidden;background:var(--color-bg-sunk);border-right:1px solid var(--color-divider);}
+  /* The list's title stays in the page for assistive technology and is not
+     drawn, since the group headings are the labels a sighted reader needs. */
   .sidebar-title{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
-  section.workspace-group{margin:0;}
-  section.workspace-group + section.workspace-group{margin-top:12px;padding-top:12px;border-top:1px solid var(--color-divider);}
-  .workspace-group .workspace{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin:0 0 6px 0;font:500 11px/1.4 var(--font-sans);text-transform:uppercase;letter-spacing:.06em;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
-  .group-count{flex:0 0 auto;font-weight:400;letter-spacing:0;font-variant-numeric:tabular-nums;}
+  .side-top{flex:0 0 auto;display:flex;flex-direction:column;gap:2px;padding:12px 10px 4px;}
+  .side-top .brand{display:flex;align-items:center;gap:8px;margin:0;padding:2px 8px 10px;font:600 14px/1.4 var(--font-sans);}
+  .side-top .here{display:inline-flex;align-items:center;gap:6px;min-width:0;overflow:hidden;color:var(--color-fg-quiet);font:400 12.5px/1.4 var(--font-sans);text-overflow:ellipsis;white-space:nowrap;}
+  .dot-ok{display:inline-block;flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--color-added);}
+  .new-session{display:flex;align-items:center;gap:10px;width:100%;height:36px;margin:0;padding:0 10px;border:0;border-radius:8px;background:color-mix(in srgb,var(--color-fg) 8%,transparent);color:var(--color-fg);font:13.5px/1 var(--font-sans);text-align:left;cursor:pointer;}
+  .new-session:hover{background:color-mix(in srgb,var(--color-fg) 12%,transparent);}
+  .new-session:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  /* The machine pills: one row that wraps nowhere and scrolls sideways when the
+     machines outnumber the width. Each is a real button that says whether it is the
+     one chosen. */
+  .filters{flex:0 0 auto;display:flex;gap:6px;padding:8px 10px 2px;overflow-x:auto;scrollbar-width:none;}
+  .fp{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;height:28px;margin:0;padding:0 10px;border:1px solid var(--color-divider);border-radius:999px;background:transparent;color:var(--color-fg-quiet);font:12px/1 var(--font-sans);white-space:nowrap;cursor:pointer;}
+  .fp:hover{color:var(--color-fg);}
+  .fp[aria-pressed="true"]{border-color:var(--color-fg-quiet);background:color-mix(in srgb,var(--color-fg) 8%,transparent);color:var(--color-fg);}
+  .fp:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .fp-count{font-variant-numeric:tabular-nums;}
+  .side-scroll{flex:1 1 auto;min-height:0;padding:2px 10px 8px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  /* A group of sessions: a quiet heading with the count at its right, then the
+     rows. The groups are set apart by space alone. */
+  section.state-group{margin:12px 0 0 0;}
+  .state-heading{display:flex;align-items:baseline;gap:6px;margin:0;padding:4px 10px;color:var(--color-fg-quiet);font:400 12.5px/1.4 var(--font-sans);}
+  .group-count{margin-left:auto;font-weight:400;letter-spacing:0;font-variant-numeric:tabular-nums;}
   ul.sessions{list-style:none;margin:0;padding:0;}
-  li.session{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:3px 7px;border:1px solid transparent;border-radius:6px;font-size:13px;}
-  li.session.current{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 28%,transparent);}
-  .session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  details.idle-more > summary{padding:4px 10px;color:var(--color-fg-quiet);font:12.5px/1.4 var(--font-sans);list-style:none;cursor:pointer;}
+  details.idle-more > summary::-webkit-details-marker{display:none;}
+  details.idle-more > summary:hover{color:var(--color-fg);}
+  details.idle-more[open] > summary{display:none;}
+  /* A row is two lines: the name, then where the agent runs and where its code
+     lives. The dot at the left follows what the session is doing. */
+  li.session{position:relative;display:flex;align-items:flex-start;border-radius:8px;min-height:44px;font-size:13.5px;}
+  li.session:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  li.session.current{background:color-mix(in srgb,var(--color-fg) 9%,transparent);}
+  li.session:not(:has(>.session-open)){gap:9px;padding:6px 10px;}
   .session-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;}
+  .session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .session-tag{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:11.5px/1.4 var(--font-sans);}
+  .tag-agent{color:var(--color-fg);font-weight:500;}
   .session-subtitle{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
-  /* A session in a git worktree leads its quiet line with the worktree's name. */
-  .session-tree{color:var(--color-fg-quiet);}
   /* The saved sessions: a quiet "N saved" line ends the sidebar, and the saved
      groups sit behind it until <loom-saved> publishes the custom state `shown`.
      The groups stay in the document while folded, so the switcher still reads
@@ -481,8 +505,8 @@
   .saved-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .saved-panel{display:none;margin-top:8px;}
   loom-saved:state(shown) + .saved-panel{display:block;}
-  .residency{flex:0 0 auto;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
-  .residency .glyph{margin-right:4px;}
+  .residency{flex:0 0 auto;margin-top:3px;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
+  .residency .glyph{font-size:10px;line-height:1.6;}
   .residency.live .glyph{color:var(--color-current);}
   .residency.opening{color:var(--color-current);}
   .residency.needs-you,.residency.needs-you .glyph{color:var(--color-signal-text);}
@@ -499,34 +523,41 @@
   @keyframes pulse{50%{opacity:.35;}}
   /* A row that opens its session is a button filling the row, drawn like the
      row's text until it is hovered or focused. */
-  li.session:has(>.session-open){padding:0 30px 0 0;}
-  .session-open{flex:1 1 auto;display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;margin:0;padding:3px 7px;border:0;border-radius:6px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
-  .session-open:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  .session-open{flex:1 1 auto;display:flex;align-items:flex-start;gap:9px;min-width:0;margin:0;padding:6px 10px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;}
   .session-open:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
-  /* The archive action of a row (web_view/view/archiving): a 24px square at the
-     row's right edge, in a column every row reserves with its right padding,
-     whether or not it carries a button, so the dot and the activity word sit in
-     one place down the list. The button never lies over the title, the dot or
-     the activity word, and the row's own button gets every click on the row's
-     body. It is drawn on hover and on
-     keyboard focus and stays in the tab order when hidden, so the keyboard
-     reaches it; while hidden it takes no pointer. Touch has no hover, so there
-     it is always drawn. Its question replaces the row, on a tinted background with a tinted
-     hairline, and neither draws a shadow or an edge bar. */
-  li.session{position:relative;padding-right:30px;}
-  /* A row that is not a button (the page's own, a saved row while another
-     resume is out) has no 7px of the button's padding, so its activity word
-     would end 7px to the right of the words in the rows that are buttons.
-     It reserves them, and one column holds every row's word and dot. */
-  li.session:not(:has(>.session-open)){padding-right:37px;}
-  .session-archive{position:absolute;top:50%;right:4px;transform:translateY(-50%);box-sizing:border-box;width:24px;height:24px;margin:0;padding:0;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-raised);color:var(--color-fg-quiet);font:14px/1 var(--font-sans);text-align:center;cursor:pointer;opacity:0;pointer-events:none;}
-  li.session:hover>.session-archive,li.session:focus-within>.session-archive,.session-archive:focus-visible{opacity:1;pointer-events:auto;}
-  .session-archive:hover:not(:disabled){background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));color:var(--color-fg);}
-  .session-archive:disabled{opacity:.6;pointer-events:none;cursor:default;}
-  .session-archive:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  /* The words of a running row's dot are for assistive technology, and a row
+     that cannot be opened and says why (needs attention, failed, moving) shows
+     them, at the row's right. */
+  .residency-word{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;}
+  .residency.notable{order:2;margin-left:auto;align-self:center;}
+  .residency.notable .residency-word{position:static;width:auto;height:auto;overflow:visible;clip-path:none;}
+  /* The row's menu (web_view/view/archiving fills it): a native disclosure whose
+     toggle is three dots at the row's right, drawn on hover and on keyboard focus and
+     always on touch, which has no hover. The body floats under the row and takes
+     a hairline border, with no shadow. The archive control keeps its own class and
+     is drawn as a labelled menu item here. */
+  details.row-menu{position:relative;flex:0 0 auto;}
+  .row-menu-toggle{display:grid;place-items:center;width:32px;height:32px;margin:6px 4px 0 0;border-radius:8px;color:var(--color-fg-quiet);font:16px/1 var(--font-sans);list-style:none;cursor:pointer;opacity:0;}
+  .row-menu-toggle::-webkit-details-marker{display:none;}
+  li.session:hover .row-menu-toggle,li.session:focus-within .row-menu-toggle,details.row-menu[open] > .row-menu-toggle{opacity:1;}
+  .row-menu-toggle:hover{background:color-mix(in srgb,var(--color-fg) 8%,transparent);color:var(--color-fg);}
+  .row-menu-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .row-menu-body{position:absolute;z-index:6;top:calc(100% - 2px);right:4px;display:flex;flex-direction:column;gap:2px;min-width:200px;padding:6px;border:1px solid var(--color-divider);border-radius:10px;background:var(--color-bg-raised);}
+  .row-menu-body button{display:block;width:100%;margin:0;padding:8px 10px;border:0;border-radius:8px;background:transparent;color:var(--color-fg);font:13px/1.3 var(--font-sans);text-align:left;cursor:pointer;}
+  .row-menu-body button:hover:not(:disabled){background:color-mix(in srgb,var(--color-fg) 8%,transparent);}
+  .row-menu-body button:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .row-menu-body button:disabled{opacity:.6;cursor:default;}
+  .session-archive{font-size:0;}
+  .session-archive::after{content:attr(aria-label);font:13px/1.3 var(--font-sans);}
   @media (hover:none){
-    .session-archive{opacity:1;pointer-events:auto;}
+    .row-menu-toggle{opacity:1;width:44px;height:44px;margin:0;}
   }
+  /* The foot: the pages that are not sessions, and who the page is for. */
+  .side-foot{flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--color-divider);}
+  .foot-admin{margin:0;padding:0 10px;height:36px;border:0;border-radius:8px;background:transparent;color:var(--color-fg);font:13.5px/1 var(--font-sans);cursor:pointer;}
+  .foot-admin:hover{background:color-mix(in srgb,var(--color-fg) 8%,transparent);}
+  .foot-admin:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .foot-who{margin-left:auto;min-width:0;overflow:hidden;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);text-overflow:ellipsis;white-space:nowrap;}
   li.session.confirming{display:block;padding:8px;background:color-mix(in srgb,var(--color-current) 7%,transparent);border-color:color-mix(in srgb,var(--color-current) 35%,var(--color-divider));}
   .session-confirm-lead{margin:0;font:500 12px/1.4 var(--font-sans);}
   .session-confirm-name{margin:2px 0 8px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
@@ -543,9 +574,6 @@
      runs the session, and when it was created. The table scrolls in the
      centre, which does not scroll itself. */
   :host(.loom-home) .region-panel,:host(.loom-home) .panel-grip,:host(.loom-home) .toggle-panel{display:none;}
-  .sidebar-home{display:flex;align-items:center;gap:8px;margin:0 0 12px 0;padding:4px 7px;border-radius:6px;font:13px/1.4 var(--font-sans);}
-  .sidebar-home[aria-current]{background:color-mix(in srgb,var(--color-current) 10%,var(--color-bg-raised));}
-  .nav-glyph{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round;}
   /* The home's bar is the session bar's: the principal in the bar's sans face
      with the ceiling as a quiet pill, and the status as the same pill. */
   .session-head .home-who{display:flex;align-items:center;gap:8px;margin-left:auto;color:var(--color-fg);font:500 13px/1.4 var(--font-sans);}
@@ -1694,6 +1722,121 @@
   button.approval-deny{border-color:var(--color-danger);color:var(--color-danger-text);}
   button.approval-allow{border-color:var(--color-added);color:var(--color-added-text);}
   button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  /* The new-session view (web_view/view/new_session): a centred composer, the
+     places a session worked in, three chips and a sentence. It fills the centre
+     and scrolls there. A chip's list is a popover under its chip on a wide
+     window and a sheet from the bottom edge on a phone: one tree, two looks. No
+     shadow and no coloured edge. */
+  main.centre > .new-pane{flex:1 1 0;min-height:0;max-width:none;display:flex;flex-direction:column;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  .new-wrap{flex:1 0 auto;display:flex;flex-direction:column;align-items:center;padding:56px 8px 24px;}
+  .new-col{width:100%;max-width:780px;}
+  .new-col h1{margin:0 0 6px 0;font:600 26px/1.25 var(--font-sans);letter-spacing:-.01em;text-align:center;}
+  .new-col .lede{margin:0 0 22px 0;color:var(--color-fg-quiet);text-align:center;}
+  .recent{margin:0 0 12px 0;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-raised);overflow:hidden;}
+  .recent-head{margin:0;padding:8px 14px 4px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  ul.recent-list{list-style:none;margin:0;padding:0;}
+  .recent-row{display:flex;align-items:center;gap:10px;width:100%;min-height:40px;margin:0;padding:0 14px;border:0;background:transparent;color:var(--color-fg);font:13.5px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  .recent-row:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  .recent-row:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .recent-place{display:flex;align-items:center;gap:8px;min-width:0;}
+  .recent-agent{font-weight:500;}
+  .recent-hint{margin-left:auto;padding-left:12px;overflow:hidden;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);text-overflow:ellipsis;white-space:nowrap;}
+  .arrow{color:var(--color-fg-quiet);}
+  svg.i{flex:0 0 auto;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
+  form.composer{display:flex;flex-direction:column;gap:8px;padding:12px 14px 10px;border:1px solid var(--color-divider);border-radius:16px;background:var(--color-bg-raised);}
+  .composer-name,.composer-typed{width:100%;box-sizing:border-box;margin:0;padding:8px 2px;border:0;border-bottom:1px solid transparent;border-radius:0;background:transparent;color:var(--color-fg);font:15px/1.4 var(--font-sans);}
+  .composer-name:focus-visible,.composer-typed:focus-visible{outline:none;border-bottom-color:var(--color-fg-quiet);}
+  .composer-typed{border-top:1px solid var(--color-divider);font-size:14px;}
+  .cbar{display:flex;align-items:center;gap:8px;}
+  .send{display:inline-flex;align-items:center;gap:8px;height:36px;margin:0 0 0 auto;padding:0 14px;border:0;border-radius:10px;background:var(--color-fg);color:var(--color-bg);font:13.5px/1 var(--font-sans);cursor:pointer;}
+  .send:hover:not(:disabled){opacity:.9;}
+  .send:disabled{opacity:.5;cursor:default;}
+  .send:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  .chips{position:relative;display:flex;flex-wrap:wrap;align-items:flex-start;gap:6px;margin:10px 0 0 0;}
+  .cw{position:relative;}
+  .chip{display:inline-flex;align-items:center;gap:8px;max-width:100%;height:36px;margin:0;padding:0 10px;border:1px solid var(--color-divider);border-radius:10px;background:transparent;color:var(--color-fg);font:13px/1 var(--font-sans);white-space:nowrap;cursor:pointer;}
+  .chip:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  .chip[aria-expanded="true"]{border-color:var(--color-fg-quiet);background:color-mix(in srgb,var(--color-fg) 8%,transparent);}
+  .chip:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
+  .chip svg.i{color:var(--color-fg-quiet);width:15px;height:15px;}
+  .chip-key{color:var(--color-fg-quiet);}
+  .chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;}
+  .sum{margin:12px 2px 0 2px;color:var(--color-fg-quiet);font:13px/1.5 var(--font-sans);}
+  .sum b{color:var(--color-fg);font-weight:500;}
+  .new-refusal{margin:10px 2px 0 2px;color:var(--color-danger-text);font:13px/1.5 var(--font-sans);}
+  .new-old{margin:18px 2px 0 2px;}
+  .link-button{margin:0;padding:0;border:0;background:transparent;color:var(--color-current);font:12.5px/1.4 var(--font-sans);cursor:pointer;}
+  .link-button:hover{text-decoration:underline;}
+  .link-button:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  /* A chip's list. The scrim sits under it and closes it when pressed. */
+  .pop-scrim{position:fixed;z-index:4;inset:0;margin:0;padding:0;border:0;background:transparent;cursor:default;}
+  .pop{position:absolute;z-index:5;top:calc(100% + 6px);left:0;box-sizing:border-box;min-width:320px;max-width:min(560px,calc(100vw - 48px));padding:6px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-raised);}
+  .pop.wide{top:auto;bottom:calc(100% + 6px);width:560px;max-height:460px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;}
+  .pop-head{display:flex;align-items:baseline;gap:6px;margin:0;padding:8px 10px 4px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .pop-head small{font-size:11.5px;}
+  .pop-foot{margin:0;padding:6px 10px 4px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .sep{height:1px;margin:6px 4px;background:var(--color-divider);}
+  .search{display:flex;align-items:center;gap:8px;height:36px;margin:2px 2px 4px 2px;padding:0 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);color:var(--color-fg-quiet);}
+  .search-field{flex:1 1 auto;min-width:0;margin:0;padding:0;border:0;background:transparent;color:var(--color-fg);font:13px/1.4 var(--font-sans);}
+  .search-field:focus-visible{outline:none;}
+  .opt{display:flex;align-items:center;gap:10px;width:100%;min-height:40px;box-sizing:border-box;margin:0;padding:4px 10px;border:0;border-radius:8px;background:transparent;color:var(--color-fg);font:13.5px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  .opt:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
+  .opt[aria-selected="true"],.opt.on{background:color-mix(in srgb,var(--color-fg) 8%,transparent);}
+  .opt:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .opt svg.i{color:var(--color-fg-quiet);}
+  .opt .opt-text{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;}
+  .opt .opt-text > span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .opt .opt-text small{overflow:hidden;color:var(--color-fg-quiet);font-size:11.5px;text-overflow:ellipsis;white-space:nowrap;}
+  .opt .opt-state{flex:0 0 auto;color:var(--color-fg-quiet);font-size:11.5px;}
+  .opt[aria-selected="true"] svg.i:last-child,.opt.on svg.i:last-child{margin-left:auto;color:var(--color-current);}
+  .opt[aria-disabled="true"]{cursor:not-allowed;}
+  .opt[aria-disabled="true"]:hover{background:transparent;}
+  .opt[aria-disabled="true"] .opt-text > span,.opt[aria-disabled="true"] svg.i{color:var(--color-fg-quiet);opacity:.7;}
+  /* The phone's banner: the session that most needs the person. It is drawn on a
+     narrow window only, where the sidebar is shut most of the time. */
+  .banner{display:none;align-items:center;gap:10px;width:100%;min-height:48px;box-sizing:border-box;margin:0 0 4px 0;padding:10px 12px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-pill-wait-bg);color:var(--color-fg);font:13px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
+  .banner-dot{flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:var(--color-signal);}
+  .banner-text{display:flex;flex-direction:column;flex:1 1 auto;min-width:0;}
+  .banner-title,.banner-sub{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .banner-sub{color:var(--color-fg-quiet);font-size:11.5px;}
+  .banner-go{flex:0 0 auto;color:var(--color-signal-text);font-size:12px;}
+  .banner:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
+  /* The placement strip of a session's header: where the agent runs and where
+     its commands run, on a row of its own beneath the title. */
+  .placement-strip{display:flex;flex-wrap:wrap;gap:6px;flex:1 0 100%;margin:0;}
+  .placement-tag{display:inline-flex;align-items:center;gap:7px;min-height:26px;padding:0 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);font:12.5px/1.4 var(--font-sans);}
+  .placement-label{color:var(--color-fg-quiet);}
+  /* The count of sessions waiting on the person, on the sidebar's menu button,
+     for the window where the sidebar is a drawer. <loom-shell> carries it as
+     `waiting`, a number the component counted, capped at ten. */
+  .toggle-sidebar{position:relative;}
+  :host([waiting]) .toggle-sidebar::after{content:"";position:absolute;top:5px;right:3px;box-sizing:border-box;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--color-signal);color:var(--color-on-danger);font:700 10.5px/16px var(--font-sans);text-align:center;}
+  :host([waiting="1"]) .toggle-sidebar::after{content:"1";}
+  :host([waiting="2"]) .toggle-sidebar::after{content:"2";}
+  :host([waiting="3"]) .toggle-sidebar::after{content:"3";}
+  :host([waiting="4"]) .toggle-sidebar::after{content:"4";}
+  :host([waiting="5"]) .toggle-sidebar::after{content:"5";}
+  :host([waiting="6"]) .toggle-sidebar::after{content:"6";}
+  :host([waiting="7"]) .toggle-sidebar::after{content:"7";}
+  :host([waiting="8"]) .toggle-sidebar::after{content:"8";}
+  :host([waiting="9"]) .toggle-sidebar::after{content:"9";}
+  :host([waiting="10"]) .toggle-sidebar::after{content:"9+";}
+  /* The admin page's two tabs (web_view/admin): Machines and People, one real
+     button each, the shown one underlined as the strand panel's tabs are. */
+  .admin-tabs{display:flex;gap:4px;margin:6px 0 16px 0;border-bottom:1px solid var(--color-divider);}
+  .admin-tab{margin:0 0 -1px 0;padding:10px 14px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13.5px/1.4 var(--font-sans);cursor:pointer;}
+  .admin-tab:hover{color:var(--color-fg);}
+  .admin-tab[aria-pressed="true"]{border-bottom-color:var(--color-fg);color:var(--color-fg);}
+  .admin-tab:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
+  .show-sessions{margin:0 0 8px 0;}
+  /* A page with the sidebar says each thing once. The sidebar's foot has Admin, so
+     the bar's own Admin button is not drawn; it stays in the document, since the
+     session switcher lists it as a place and presses it. The bar's product name is
+     the sidebar's top line where the sidebar is a column. */
+  .session-head .home-admin{display:none;}
+  @media (min-width:1212px){
+    loom-shell[sidebar="listed"] .session-head .brand{display:none;}
+  }
   /* The narrow frames. Below 1212px the sidebar's column is dropped, and the
      sidebar is a 232px drawer over the page, opened by its bar button or the
      shortcut, behind a scrim that a click closes (web_client/shell). The
@@ -1704,7 +1847,7 @@
      Below 640px the centre's padding shrinks. */
   @media (max-width:1211px){
     .region-sidebar{display:none;}
-    .region-sidebar.drawer{display:block;position:absolute;z-index:20;top:0;bottom:0;left:0;box-shadow:var(--shadow-float);}
+    .region-sidebar.drawer{display:block;position:absolute;z-index:20;top:0;bottom:0;left:0;max-width:calc(100vw - 48px);box-shadow:var(--shadow-float);}
     .drawer-scrim{position:absolute;z-index:19;inset:0;background:rgba(0,0,0,.3);}
   }
   @media (max-width:979px){
@@ -1731,6 +1874,27 @@
   /* The home and the admin page are lists, not a transcript, and keep a 16px
      gutter on a phone so a row's text stops short of the screen's edge. */
   @media (max-width:640px){main.centre:has(> .home-sessions),main.centre:has(> .admin-body){padding-left:16px;padding-right:16px;}}
+  /* The phone. The banner shows, the composer sits at the bottom within reach of
+     a thumb with the places a session worked in above it, the chips wrap rather than
+     run off the screen, and a chip's list is a sheet from the bottom edge over a
+     scrim. Targets are at least 44px. */
+  @media (max-width:640px){
+    .banner{display:flex;}
+    .new-wrap{padding:8px 0 8px;}
+    .new-col{flex:1 0 auto;display:flex;flex-direction:column;}
+    .new-col h1{font-size:22px;text-align:left;}
+    .new-col .lede{margin-bottom:14px;text-align:left;}
+    form.composer{margin-top:auto;}
+    .recent-hint{display:none;}
+    .recent-row{min-height:44px;}
+    .chip{height:44px;}
+    .pop,.pop.wide{position:fixed;z-index:21;top:auto;left:0;right:0;bottom:0;width:auto;min-width:0;max-width:none;max-height:82dvh;padding:12px 12px 20px 12px;border-width:1px 0 0 0;border-radius:18px 18px 0 0;overflow-y:auto;}
+    .pop-scrim{z-index:20;background:rgba(0,0,0,.45);}
+    .opt{min-height:48px;}
+    .fp{height:36px;}
+    .new-session{height:44px;}
+    .session-open,li.session:not(:has(>.session-open)){min-height:48px;}
+  }
   @media (prefers-reduced-motion:reduce){*:not(.arming):not(.arm-note){transition:none!important;animation:none!important;}}
 }
 

@@ -4,8 +4,9 @@
 //// table does not know is refused wherever the file is read.
 
 import client/catalog
-import client/workspaces.{Workspace}
+import client/workspaces
 import gleam/dict
+import gleam/list
 import gleam/string
 
 const distribution =
@@ -43,12 +44,12 @@ root = \"/srv/checkouts/alpha\"
 "
   assert workspaces.parse(text)
     == Ok([
-      Workspace("alpha", "/srv/checkouts/alpha"),
-      Workspace("loom", "/srv/checkouts/loom"),
+      workspaces.shared("alpha", "/srv/checkouts/alpha"),
+      workspaces.shared("loom", "/srv/checkouts/loom"),
     ])
   let assert Ok(configured) = workspaces.parse(text)
   assert workspaces.find(configured, "loom")
-    == Ok(Workspace("loom", "/srv/checkouts/loom"))
+    == Ok(workspaces.shared("loom", "/srv/checkouts/loom"))
   assert workspaces.find(configured, "elsewhere") == Error(Nil)
 }
 
@@ -76,8 +77,8 @@ pub fn names_keys_and_types_are_checked_with_the_full_key_test() {
     "workspaces.a/b is not a workspace name",
   )
   refused(
-    distribution <> "[workspaces.loom]\nroot = \"/srv\"\nmode = \"rw\"\n",
-    "unknown key `mode` in [workspaces.loom] (allowed: root)",
+    distribution <> "[workspaces.loom]\nroot = \"/srv\"\nkind = \"rw\"\n",
+    "unknown key `kind` in [workspaces.loom] (allowed: root, mode, base)",
   )
   refused(
     distribution <> "[workspaces.loom]\nroot = 4\n",
@@ -103,4 +104,73 @@ pub fn lsp_tables_parse_without_a_model_catalogue_test() {
   assert catalog.parse_lsp("") == Ok([])
   let assert Error(reason) = catalog.parse_lsp("lsp = 3\n")
   assert string.contains(reason, "lsp must be a table")
+}
+
+// --- mode and base (protocol-change/095) ---------------------------------------
+
+fn table(extra: String) -> String {
+  distribution <> "[workspaces.loom]\nroot = \"/srv/loom\"\n" <> extra
+}
+
+pub fn a_table_with_no_mode_is_shared_test() {
+  assert workspaces.parse(table(""))
+    == Ok([workspaces.Workspace("loom", "/srv/loom", workspaces.Shared)])
+  assert workspaces.parse(table("mode = \"shared\"\n"))
+    == Ok([workspaces.shared("loom", "/srv/loom")])
+}
+
+pub fn worktree_mode_starts_each_branch_at_head_unless_told_otherwise_test() {
+  assert workspaces.parse(table("mode = \"worktree\"\n"))
+    == Ok([
+      workspaces.Workspace("loom", "/srv/loom", workspaces.Worktree("HEAD")),
+    ])
+  assert workspaces.parse(table("mode = \"worktree\"\nbase = \"origin/main\"\n"))
+    == Ok([
+      workspaces.Workspace(
+        "loom",
+        "/srv/loom",
+        workspaces.Worktree("origin/main"),
+      ),
+    ])
+}
+
+pub fn a_base_needs_worktree_mode_test() {
+  refused(
+    table("base = \"origin/main\"\n"),
+    "workspaces.loom.base needs mode = \"worktree\"",
+  )
+  refused(
+    table("mode = \"shared\"\nbase = \"origin/main\"\n"),
+    "workspaces.loom.base needs mode = \"worktree\"",
+  )
+}
+
+pub fn a_mode_is_one_of_two_words_test() {
+  refused(
+    table("mode = \"copy\"\n"),
+    "workspaces.loom.mode must be \"shared\" or \"worktree\"",
+  )
+  refused(table("mode = 2\n"), "workspaces.loom.mode must be a string")
+}
+
+pub fn a_base_cannot_be_read_by_git_as_an_option_or_hold_a_space_test() {
+  list.each(["", "-D", "--detach", "a b", "tab\there"], fn(base) {
+    let text =
+      table("mode = \"worktree\"\nbase = \"" <> escaped(base) <> "\"\n")
+    refused(text, "workspaces.loom.base must be a branch, tag or commit name")
+  })
+  refused(
+    table("mode = \"worktree\"\nbase = 3\n"),
+    "workspaces.loom.base must be a string",
+  )
+}
+
+fn escaped(text: String) -> String {
+  text
+  |> string.replace("\t", "\\t")
+}
+
+pub fn the_census_word_for_a_mode_is_the_configuration_word_test() {
+  assert workspaces.mode_word(workspaces.Shared) == "shared"
+  assert workspaces.mode_word(workspaces.Worktree("HEAD")) == "worktree"
 }

@@ -623,7 +623,7 @@ pub fn candidate(
         distribution.connect(peer, connect_within_ms)
         |> result.map_error(distribution.describe)
       },
-      attach_within_ms: attach_within_ms,
+      attach_within_ms: executor.attach_within_s * 1000,
     ),
   ))
 }
@@ -691,17 +691,43 @@ pub fn pooled(
         admitted ->
           list.try_map(admitted, fn(executor) {
             candidate(membership, configured, executor.name)
+            |> result.map(waiting_as_pool(_, found))
           })
       }
     },
-    named: fn(each) { candidate(membership, configured, each) },
+    named: fn(each) {
+      let found = candidate(membership, configured, each)
+      case pools.find(available, pool) {
+        Ok(listed) -> result.map(found, waiting_as_pool(_, listed))
+        Error(Nil) -> found
+      }
+    },
     chosen:,
   )
 }
 
-const connect_within_ms = 10_000
+/// The candidate with the pool's `attach_within_s` in place of its own, when
+/// the pool names one. The pool is what the operator sized for the workspaces
+/// its members serve, so it wins over a member's value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace.waiting_as_pool(candidate, pool).reach.attach_within_ms
+/// ```
+@internal
+pub fn waiting_as_pool(found: Candidate, pool: pools.Pool) -> Candidate {
+  case pool.attach_within_s {
+    None -> found
+    Some(seconds) ->
+      Candidate(
+        ..found,
+        reach: Reach(..found.reach, attach_within_ms: seconds * 1000),
+      )
+  }
+}
 
-const attach_within_ms = 30_000
+const connect_within_ms = 10_000
 
 fn unavailable(reason: String) -> String {
   "executor_unavailable: " <> reason

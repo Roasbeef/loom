@@ -53,6 +53,13 @@ fn executor() -> node_report.ExecutorFacts {
         unclean: [],
         bytes: 0,
         unacknowledged: 0,
+        trees: exec_ledger.TreeCounts(
+          creating: 0,
+          present: 0,
+          kept: 0,
+          removing: 0,
+          removed: 0,
+        ),
       ),
       census: None,
     ),
@@ -144,9 +151,42 @@ fn snapshot(
       unclean:,
       bytes: 4096,
       unacknowledged: 5,
+      trees: exec_ledger.TreeCounts(
+        creating: 0,
+        present: 0,
+        kept: 0,
+        removing: 0,
+        removed: 0,
+      ),
     ),
     census: None,
   )
+}
+
+pub fn the_worktree_census_comes_from_the_ledgers_tree_counts_test() {
+  let trees =
+    exec_ledger.TreeCounts(
+      creating: 1,
+      present: 2,
+      kept: 3,
+      removing: 1,
+      removed: 9,
+    )
+  let facts = executor()
+
+  // A shared-only executor reports what it always did.
+  assert node_facts.with_worktrees(facts, trees, [], unrecorded: 4) == facts
+
+  let assert Some(census) =
+    node_facts.with_worktrees(facts, trees, ["repo"], unrecorded: 4).worktrees
+  assert census
+    == node_report.WorktreeFacts(
+      workspaces: ["repo"],
+      present: 4,
+      kept: 3,
+      branches_left: 9,
+      unrecorded: 4,
+    )
 }
 
 pub fn the_ledgers_counts_become_the_reports_facts_test() {
@@ -188,6 +228,7 @@ pub fn the_ledgers_counts_become_the_reports_facts_test() {
       platform: "macos/arm64",
       observed: None,
       workspaces: ["proj", "docs"],
+      worktrees: option.None,
     )
 }
 

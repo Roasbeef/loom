@@ -127,6 +127,14 @@ pub type Msg(socket) {
   /// (protocol-change/051, the addendum on switching sessions).
   Opening(session: String)
 
+  /// A sidebar machine pill: narrow the list to the machine the pill names. The
+  /// name is the one the server drew on the pill, and the page honours it only if
+  /// the list it holds still offers a pill by that name (`component.narrow`).
+  Narrowing(machine: String)
+
+  /// The sidebar's "All" pill: show every session.
+  Widening
+
   /// A saved sidebar row's button: the operator asks the daemon to resume that
   /// session and open its page (protocol-change/065, the third pull request).
   /// The identity is the catalogue's, as for `Opening`, and the daemon checks
@@ -265,6 +273,8 @@ pub fn update(
     Controlled(control:) -> component.control(model, control)
     Replying(key:) -> component.reply(model, key)
     Opening(session:) -> component.switch_to(model, session)
+    Narrowing(machine:) -> #(component.narrow(model, machine), effect.none())
+    Widening -> #(component.widen(model), effect.none())
     Resuming(session:) -> component.resume(model, session)
     Inviting(role:) -> component.invite(model, role)
     Dismissing -> #(component.dismiss_invitation(model), effect.none())
@@ -487,6 +497,7 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
     component.needing(model),
     component.proposals_pending(model),
     component.workspace_digest(model),
+    component.waiting_count(model),
   )
 }
 
@@ -501,11 +512,33 @@ fn sidebar_place(model: component.Model(socket)) -> shell.Sidebar(Msg(socket)) {
         groups,
         component.session_id(model),
         component.session_activity(model),
+        sidebar_page(model),
         Opening,
         resume.Offered(Resuming, component.resuming_session(model)),
         archive_offer(model),
       ))
   }
+}
+
+// What the sidebar's top and foot offer. "New session" goes to the home page,
+// where a session is started, so it exists where the page can go there. A
+// session page has no admin to open and no list of rows to manage, and the
+// name of the person is not something the page holds.
+fn sidebar_page(model: component.Model(socket)) -> sidebar.Page(Msg(socket)) {
+  sidebar.Page(
+    doors: sidebar.RowsOpen,
+    machine: component.session_machine(model),
+    filter: component.session_filter(model),
+    narrowing: Narrowing,
+    widening: Widening,
+    starting: case component.can_go_home(model) {
+      True -> Some(Observed(component.GoingHome))
+      False -> None
+    },
+    administering: None,
+    managing: None,
+    who: "",
+  )
 }
 
 // What the sidebar offers for archiving a row: the quiet button and its

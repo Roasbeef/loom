@@ -28,7 +28,7 @@ or close; there is no transaction, lease or authorization cache.
 
 ## Key Types
 
-- The catalogue is at `user_version` 18. Each later version has its own embedded
+- The catalogue is at `user_version` 19. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
@@ -37,7 +37,8 @@ or close; there is no transaction, lease or authorization cache.
   `catalogue_pools_schema`, `catalogue_moves_schema`,
   `catalogue_deletions_schema`,
   `catalogue_delegates_schema`, `catalogue_releases_schema`,
-  `catalogue_spend_schema`, `catalogue_start_failures_schema`), and
+  `catalogue_spend_schema`, `catalogue_start_failures_schema`,
+  `catalogue_relayed_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -190,6 +191,23 @@ or close; there is no transaction, lease or authorization cache.
   read with `Invalid` and is never read as "not a delegate". `delete` removes the
   row first, which frees the slot. Claims do not move the catalogue revision,
   because no listing shows them.
+- `catalogue.Relayed` is a top-level session another orchestrator's page started
+  here (protocol-change/094, catalogue version 19).
+  `catalogue_relayed_sessions(request_id, spawner, session_id, created_at)` has the
+  request id as its primary key and a unique `session_id` that references
+  `catalogue_sessions`. `claim_relayed` runs inside the caller's immediate
+  transaction (`domain.reserve_relayed` is the caller): a request id that has a
+  row answers `RelayedFound` and writes nothing; otherwise the spawner's sessions
+  that are not archived (a join against the archive table) and its rows created in
+  the rolling hour are counted against `RelayedLimits`, a reached cap answers
+  `RelayedCapped(cap, limit)` and writes nothing, and a new request reserves the
+  registration (key `relayed_key`), binds its session-only domain mapping and
+  inserts the row, all or none. A request id that belongs to another spawner is
+  `Conflict`. `relayed_for`, `relayed_of`, `relayed_held` and `relayed_since` are
+  the reads, `relayed_page` lists a spawner's rows newest first in pages of at most
+  `relayed_page_limit` (64) with the name and placement, skipping archived sessions so the listing is bounded by the cap, and `delete`
+  removes the row before the registration, which frees the place. The table is
+  defined in `sql/catalogue_relayed.sql`.
 - `catalogue.StartFailure(reason, at)` is why a reservation's start failed
   (protocol-change/093, catalogue version 18). `catalogue_start_failures(session_id,
   reason, failed_at)` holds at most one row per registration, separate from the
@@ -487,7 +505,9 @@ or close; there is no transaction, lease or authorization cache.
   connection). Its DDL is `sql/exec_ledger.sql` (embedded as
   `exec_ledger_schema`, with `sql/exec_ledger_releases.sql` as its second
   version, embedded as `exec_ledger_releases_schema`, and `sql/exec_ledger_acks.sql`
-  as its third, embedded as `exec_ledger_acks_schema`; `PRAGMA user_version` 3,
+  as its third, embedded as `exec_ledger_acks_schema`, and
+  `sql/exec_ledger_worktrees.sql` as its fourth, embedded as
+  `exec_ledger_worktrees_schema`; `PRAGMA user_version` 4,
   its own `application_id`; an older file gains the tables it lacks when it is
   opened) and its named queries are `src/storage/sql/exec_ledger.sql`, generated into
   `sql.gleam` with the `Ledger*` names. Two tables: `scope(session, workspace,
@@ -496,7 +516,9 @@ or close; there is no transaction, lease or authorization cache.
   admitted|terminal|unknown, outcome, outcome_digest, outcome_bytes)`, plus
   `scope_release(session, workspace, incarnation, was, released_at_ms)`, the
   operator release record, and `call_ack(session, op, step, source_index,
-  incarnation)`, the acknowledgement tombstones.
+  incarnation)`, the acknowledgement tombstones, and `scope_worktree(session,
+  workspace, path, branch, state creating|present|kept|removing|removed)`, the
+  executor's proof of the Git worktrees it made (protocol-change/095).
   `Ledger` is opaque; `Key` is the planner's call identity;
   `Limits(max_unclean_scopes, max_ledger_bytes)` is passed on every call;
   `ScopeState` is `Open | Closing | Closed(AllRetired | UnknownCleanup(n))`;
@@ -866,6 +888,14 @@ or close; there is no transaction, lease or authorization cache.
   nothing for a missing key fails
   `a_stop_with_no_row_bars_the_key_from_a_later_start_test`
   and the P model's mutant `M8-stop-does-not-fence`.
+- **Worktree records are separate from the scope's life.** `Tree` rows are
+  keyed by session, written by `record_tree` before the command that changes the
+  disk and never deleted: a `Removed` row is what lets a reopen recreate the tree
+  from the branch. They are read and written from `connect`, a second connection
+  that recovers and migrates nothing and refuses a file not at the current
+  version (`Unsupported`), because the host's connection belongs to the host actor
+  and the plane builds in a process of its own. `Summary.trees` counts them by
+  state. The executor removes only a directory a row names and never a branch.
 - **`exec_ledger.open` is restart recovery, so one opener per VM.** It turns
   every `admitted` row into `unknown` and nothing turns one back; a second
   `open` while runs are in flight would mark them lost. The node-level actor is
@@ -891,12 +921,13 @@ or close; there is no transaction, lease or authorization cache.
   decode together, a `terminal` row's outcome must match its SHA-256 digest
   and recorded size (`DigestMismatch`), and a state that fits no variant is
   `MalformedRow`. Nothing defaults.
-- **`exec_ledger_schema`, `exec_ledger_releases_schema` and
-  `exec_ledger_acks_schema` are generated** from `sql/exec_ledger.sql`,
-  `sql/exec_ledger_releases.sql` and `sql/exec_ledger_acks.sql` by `make gen-sql`, and
+- **`exec_ledger_schema`, `exec_ledger_releases_schema`,
+  `exec_ledger_acks_schema` and `exec_ledger_worktrees_schema` are generated**
+  from `sql/exec_ledger.sql`, `sql/exec_ledger_releases.sql`,
+  `sql/exec_ledger_acks.sql` and `sql/exec_ledger_worktrees.sql` by `make gen-sql`, and
   the ledger's `Ledger*` queries are in the generated `sql.gleam`;
   `exec_ledger_test` checks each embedded schema against its file. An older
-  build refuses a version 3 file as `Unsupported`.
+  build refuses a version 4 file as `Unsupported`.
 - **A read with neighbours is lease-free and identity-checked.**
   `sqlite.read_entries_around` reads an entry and up to 5 `seq` neighbours
   each side through the same read-only connection that `read_entry` uses.
