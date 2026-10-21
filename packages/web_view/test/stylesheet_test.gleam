@@ -197,3 +197,15 @@ pub fn reduced_motion_stills_the_working_marks_test() {
   assert string.contains(css, ".busy-dot{")
   assert string.contains(css, ".running-time{")
 }
+
+// A page with the sidebar says Admin once: the bar's own button is not drawn, though
+// it stays in the document for the switcher, and the bar's product name gives way to
+// the sidebar's top line where the sidebar is a column.
+pub fn the_bar_does_not_repeat_what_the_sidebar_says_test() {
+  let css = stylesheet()
+  assert string.contains(css, ".session-head .home-admin{display:none}")
+  assert string.contains(
+    css,
+    "loom-shell[sidebar=listed] .session-head .brand{display:none}",
+  )
+}

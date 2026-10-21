@@ -1829,6 +1829,14 @@
   .admin-tab[aria-pressed="true"]{border-bottom-color:var(--color-fg);color:var(--color-fg);}
   .admin-tab:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   .show-sessions{margin:0 0 8px 0;}
+  /* A page with the sidebar says each thing once. The sidebar's foot has Admin, so
+     the bar's own Admin button is not drawn; it stays in the document, since the
+     session switcher lists it as a place and presses it. The bar's product name is
+     the sidebar's top line where the sidebar is a column. */
+  .session-head .home-admin{display:none;}
+  @media (min-width:1212px){
+    loom-shell[sidebar="listed"] .session-head .brand{display:none;}
+  }
   /* The narrow frames. Below 1212px the sidebar's column is dropped, and the
      sidebar is a 232px drawer over the page, opened by its bar button or the
      shortcut, behind a scrim that a click closes (web_client/shell). The

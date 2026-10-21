@@ -410,6 +410,7 @@ pub type Start {
         String,
         Sharing,
         creations.Roles,
+        String,
         fn(creations.Answer) -> Nil,
       ) -> Nil,
     ),
@@ -1552,6 +1553,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           ),
           effect.none(),
         )
+        creations.Unsent(path:) -> #(
+          Model(..model, compose: composer.unsent(model.compose, path)),
+          effect.none(),
+        )
         creations.Unstarted(why:, remains:) -> #(
           Model(
             ..model,
@@ -2257,9 +2262,13 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
       case intent {
         composer.Stay -> #(model, effect.none())
         composer.ReadPlacements -> reading_cards(model)
-        composer.Create(place:, name:, roles:) -> #(
+        composer.Create(place:, name:, prompt:, roles:) -> #(
           Model(..model, note: None),
-          creation(ask, place, name, creations.Private, roles),
+          creating(ask, place, name, creations.Private, roles, prompt),
+        )
+        composer.Depart(path:) -> #(
+          Model(..model, departure: Some(path)),
+          effect.none(),
         )
       }
     }
@@ -2324,6 +2333,7 @@ fn creation(
     String,
     Sharing,
     creations.Roles,
+    String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
   place: creations.Place,
@@ -2331,8 +2341,30 @@ fn creation(
   sharing: Sharing,
   roles: creations.Roles,
 ) -> Effect(Msg) {
+  creating(ask, place, name, sharing, roles, "")
+}
+
+// The same, for the composer, which also carries the session's first message:
+// empty sends none, and anything else is sent to the new session once it is open.
+fn creating(
+  ask: fn(
+    creations.Place,
+    String,
+    Sharing,
+    creations.Roles,
+    String,
+    fn(creations.Answer) -> Nil,
+  ) -> Nil,
+  place: creations.Place,
+  name: String,
+  sharing: Sharing,
+  roles: creations.Roles,
+  prompt: String,
+) -> Effect(Msg) {
   use dispatch <- effect.from
-  ask(place, name, sharing, roles, fn(answer) { dispatch(Created(answer)) })
+  ask(place, name, sharing, roles, prompt, fn(answer) {
+    dispatch(Created(answer))
+  })
 }
 
 // Whether submitted roles are ones the page offered: the default is always
@@ -2691,6 +2723,7 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
       search: fn(text) { Composed(composer.Searched(text)) },
       start: fn(name, typed) { Composed(composer.Started(name, typed)) },
       open: Opening,
+      depart: Composed(composer.OpenedUnsent),
       listing: ShowingList,
     ),
   )

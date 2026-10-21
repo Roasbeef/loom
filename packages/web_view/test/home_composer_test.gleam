@@ -60,7 +60,9 @@ fn rows() -> List(Entry) {
 }
 
 type Asked =
-  Subject(#(creations.Place, String, creations.Sharing, creations.Roles))
+  Subject(
+    #(creations.Place, String, creations.Sharing, creations.Roles, String),
+  )
 
 fn recording(
   asked: Asked,
@@ -69,10 +71,11 @@ fn recording(
   String,
   creations.Sharing,
   creations.Roles,
+  String,
   fn(creations.Answer) -> Nil,
 ) -> Nil {
-  fn(place, name, sharing, roles, _) {
-    process.send(asked, #(place, name, sharing, roles))
+  fn(place, name, sharing, roles, prompt, _) {
+    process.send(asked, #(place, name, sharing, roles, prompt))
   }
 }
 
@@ -252,6 +255,7 @@ pub fn a_start_asks_the_daemon_once_for_the_chosen_place_test() {
       "docs",
       creations.Private,
       creations.Roles(Some("fast"), Some("glm")),
+      "docs",
     ))
 
   let model = run(model, compose(composer.Started("again", composer.Nothing)))
@@ -284,6 +288,7 @@ pub fn a_forged_choice_is_refused_and_never_asked_test() {
       "x",
       creations.Private,
       creations.default_roles,
+      "x",
     ))
   assert !string.contains(drawn(model), "/etc")
 }
@@ -350,6 +355,7 @@ pub fn an_executors_workspace_is_asked_as_a_registered_place_test() {
       "",
       creations.Private,
       creations.default_roles,
+      "",
     ))
   // The page is waiting on the daemon, so it is not asked again.
   assert string.contains(drawn(model), "Starting")
@@ -374,40 +380,41 @@ pub fn typed_text_is_judged_before_the_daemon_is_asked_test() {
       "x",
       creations.Private,
       creations.default_roles,
+      "x",
     ))
 }
 
 // The form carries exactly the fields it was drawn with: a name, and the one more
 // the chosen target needs.
 pub fn the_form_accepts_exactly_the_fields_it_was_drawn_with_test() {
-  assert new_session.fields([#("name", "x")], new_session.NameOnly)
+  assert new_session.fields([#("prompt", "x")], new_session.NameOnly)
     == Ok(#("x", composer.Nothing))
-  assert new_session.fields([#("name", "x")], new_session.NameAndPath)
+  assert new_session.fields([#("prompt", "x")], new_session.NameAndPath)
     == Error(Nil)
   assert new_session.fields(
-      [#("path", "~/a"), #("name", "x")],
+      [#("path", "~/a"), #("prompt", "x")],
       new_session.NameAndPath,
     )
     == Ok(#("x", composer.Path("~/a")))
   assert new_session.fields(
-      [#("name", "x"), #("workspace", "w")],
+      [#("prompt", "x"), #("workspace", "w")],
       new_session.NameAndWorkspace,
     )
     == Ok(#("x", composer.Workspace("w")))
 
   // A repeated name, an executor field and an unknown field refuse the event.
   assert new_session.fields(
-      [#("name", "x"), #("name", "y")],
+      [#("prompt", "x"), #("prompt", "y")],
       new_session.NameOnly,
     )
     == Error(Nil)
   assert new_session.fields(
-      [#("name", "x"), #("executor", "exec")],
+      [#("prompt", "x"), #("executor", "exec")],
       new_session.NameOnly,
     )
     == Error(Nil)
   assert new_session.fields(
-      [#("name", "x"), #("path", "/"), #("workspace", "w")],
+      [#("prompt", "x"), #("path", "/"), #("workspace", "w")],
       new_session.NameAndPath,
     )
     == Error(Nil)
@@ -418,7 +425,7 @@ pub fn the_form_accepts_exactly_the_fields_it_was_drawn_with_test() {
 pub fn the_form_draws_the_field_its_target_needs_test() {
   let model = opened(owner(process.new_subject()))
   let plain = drawn(model)
-  assert string.contains(plain, "name=\"name\"")
+  assert string.contains(plain, "name=\"prompt\"")
   assert !string.contains(plain, "name=\"path\"")
   assert !string.contains(plain, "name=\"workspace\"")
 
@@ -555,4 +562,84 @@ pub fn the_sidebar_and_the_link_switch_between_the_composer_and_the_list_test() 
 
   let back = run(listed, home.ShowingNew)
   assert string.contains(drawn(back), "What should the agent work on?")
+}
+
+// The box is the session's first message. A start asks the daemon for the place
+// the chips chose, the name the message's first line gives, and the message
+// itself, once, and a second press while it is out asks nothing, so one press
+// creates one session and sends one message.
+pub fn a_start_carries_the_first_message_once_test() {
+  let asked = process.new_subject()
+  let model = opened(owner(asked))
+  let text = "fix the retry test\nthen update the docs"
+  let model = run(model, compose(composer.Started(text, composer.Nothing)))
+
+  assert process.receive(asked, 0)
+    == Ok(#(
+      creations.Drawn("/src/weft"),
+      "fix the retry test",
+      creations.Private,
+      creations.default_roles,
+      text,
+    ))
+
+  let model = run(model, compose(composer.Started(text, composer.Nothing)))
+  assert process.receive(asked, 0) == Error(Nil)
+  assert string.contains(drawn(model), "Starting")
+}
+
+// The box says what it is for, and an empty message creates the session and asks
+// for nothing to be sent.
+pub fn the_box_asks_for_a_task_and_an_empty_one_sends_none_test() {
+  let asked = process.new_subject()
+  let model = opened(owner(asked))
+  let html = drawn(model)
+  assert string.contains(html, "<textarea")
+  assert string.contains(html, "Describe a task or ask a question")
+  assert !string.contains(html, "Name this session")
+
+  let _ = run(model, compose(composer.Started("", composer.Nothing)))
+  let assert Ok(#(_, name, _, _, prompt)) = process.receive(asked, 0)
+  assert name == ""
+  assert prompt == ""
+}
+
+// The message is untrusted text. It is handed to the daemon as it was typed, to be
+// sent as a user message and nothing else, and it is never drawn back by the page:
+// not in the box, not in a refusal and not in the sentence.
+pub fn a_hostile_message_is_handed_over_and_never_drawn_test() {
+  let asked = process.new_subject()
+  let hostile = "<img src=x onerror=alert(1)><script>alert(2)</script>"
+  let model = opened(owner(asked))
+  let model = run(model, compose(composer.Started(hostile, composer.Nothing)))
+
+  let assert Ok(#(_, _, _, _, prompt)) = process.receive(asked, 0)
+  assert prompt == hostile
+
+  let model = run(model, home.Created(creations.Declined(creations.NotAFolder)))
+  let html = drawn(model)
+  assert !string.contains(html, "<img")
+  assert !string.contains(html, "<script")
+  assert !string.contains(html, "alert(")
+}
+
+// A session that was created and kept without its first message is offered, in one
+// plain line and a button; the page does not depart until the button is pressed,
+// and then departs for the session the daemon kept.
+pub fn a_kept_session_without_its_message_is_offered_not_deleted_test() {
+  let model = opened(owner(process.new_subject()))
+  let model = run(model, compose(composer.Started("hello", composer.Nothing)))
+  let model =
+    run(model, home.Created(creations.Unsent("/ui/sessions/S?ticket=T")))
+  let html = drawn(model)
+
+  assert string.contains(html, "its first message was not sent")
+  assert string.contains(html, "Open the session")
+  assert !string.contains(html, "Starting")
+
+  // The ticket is the daemon's text: not drawn, and not departed with yet.
+  assert !string.contains(html, "/ui/sessions/S")
+
+  let departed = run(model, compose(composer.OpenedUnsent))
+  assert string.contains(drawn(departed), "/ui/sessions/S?ticket=T")
 }

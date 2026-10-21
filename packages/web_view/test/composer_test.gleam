@@ -192,6 +192,7 @@ pub fn a_start_asks_once_for_the_place_the_form_describes_test() {
     == composer.Create(
       creations.Drawn("/src/loom"),
       "review",
+      "review",
       creations.default_roles,
     )
   assert out.sending == composer.Out
@@ -366,4 +367,99 @@ pub fn the_chip_words_say_what_is_chosen_test() {
     == "default · glm"
   assert composer.hint(["a", "b", "c", "d"]) == "a, 3 more"
   assert composer.hint(["a", "b"]) == "a, b"
+}
+
+// A session is named by the first line of its first message that has any text:
+// trimmed, made safe for one line and cut to a bound on a character boundary. A
+// message with no text gives no name, so the daemon's default applies.
+pub fn the_name_is_the_first_line_of_the_message_test() {
+  assert composer.session_name("fix the retry test") == "fix the retry test"
+  assert composer.session_name("\n   \n  fix the retry test  \nthen the docs")
+    == "fix the retry test"
+  assert composer.session_name("") == ""
+  assert composer.session_name("  \n \t ") == ""
+
+  // A control or direction character never reaches the name the daemon judges.
+  let cleaned = composer.session_name("a\u{0}b\u{202e}c")
+  assert !string.contains(cleaned, "\u{0}")
+  assert !string.contains(cleaned, "\u{202e}")
+
+  // The cap is in characters, never in the middle of one.
+  let long = composer.session_name(string.repeat("é", 300))
+  assert string.length(long) == composer.name_limit
+  assert long == string.repeat("é", composer.name_limit)
+}
+
+// A start carries the message and the name the message gives, and trims the
+// message's ends; an empty message still starts a session, with none to send.
+pub fn a_start_carries_the_message_and_its_name_test() {
+  let chosen =
+    update(
+      composer.new(),
+      composer.ChoseTarget(composer.Folder("/src/loom")),
+      offers(),
+    ).0
+
+  let #(_, intent) =
+    update(
+      chosen,
+      composer.Started(
+        "\n  fix the retry test\nthen the docs \n",
+        composer.Nothing,
+      ),
+      offers(),
+    )
+  assert intent
+    == composer.Create(
+      creations.Drawn("/src/loom"),
+      "fix the retry test",
+      "fix the retry test\nthen the docs",
+      creations.default_roles,
+    )
+
+  let #(_, intent) =
+    update(chosen, composer.Started("  ", composer.Nothing), offers())
+  assert intent
+    == composer.Create(
+      creations.Drawn("/src/loom"),
+      "",
+      "",
+      creations.default_roles,
+    )
+}
+
+// A message past the bound asks nothing and says so in words, and the session is
+// not created, so no text is lost to a bound the person could not see.
+pub fn a_message_past_the_bound_is_refused_on_the_form_test() {
+  let chosen =
+    update(
+      composer.new(),
+      composer.ChoseTarget(composer.Folder("/src/loom")),
+      offers(),
+    ).0
+  let long = string.repeat("a", composer.prompt_limit + 1)
+
+  let #(state, intent) =
+    update(chosen, composer.Started(long, composer.Nothing), offers())
+  assert intent == composer.Stay
+  assert state.sending == composer.Ready
+  let assert Some(words) = state.refusal
+  assert string.contains(words, "too long")
+
+  let exact = string.repeat("a", composer.prompt_limit)
+  let #(_, intent) =
+    update(chosen, composer.Started(exact, composer.Nothing), offers())
+  assert intent != composer.Stay
+}
+
+// A session kept without its message offers the person its page, once; nothing
+// departs before they press, and a page with no such session offers nothing.
+pub fn an_unsent_session_is_opened_only_on_a_press_test() {
+  let state = composer.unsent(composer.new(), "/ui/sessions/S?ticket=T")
+  assert state.sending == composer.Ready
+  let #(_, intent) = update(state, composer.OpenedUnsent, offers())
+  assert intent == composer.Depart("/ui/sessions/S?ticket=T")
+
+  let #(_, intent) = update(composer.new(), composer.OpenedUnsent, offers())
+  assert intent == composer.Stay
 }

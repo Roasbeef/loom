@@ -57,6 +57,7 @@ fn page(
       String,
       creations.Sharing,
       creations.Roles,
+      String,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
   ),
@@ -121,7 +122,7 @@ fn hearing(
     executors,
     pools,
     read,
-    Some(fn(place, name, sharing, roles, _) {
+    Some(fn(place, name, sharing, roles, _, _) {
       process.send(asked, #(place, name, sharing, roles))
     }),
   )

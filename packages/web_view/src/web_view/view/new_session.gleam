@@ -36,20 +36,37 @@
 ////
 //// ## The one form
 ////
-//// The composer is one form. It has a name field, the one other field the chosen
+//// The composer is one form. It has a message box, the one other field the chosen
 //// target needs (a folder's path, or a workspace's name, and only for those
 //// targets), and a Start button. `fields` accepts exactly that and nothing else,
 //// and refuses an event with an extra field, a repeat or a missing one, as every
 //// form of this page does. The target, the profile and the model are not fields:
 //// they are state the page holds, which the chips' buttons set.
 ////
-//// The name field is the session's name. Starting a session with a first message
-//// is a change to the daemon's creation request, which this page does not make,
-//// so the field says what it is and the session's own page takes the first prompt.
+//// The box is the session's first message. The daemon creates the session as it
+//// always did, names it from the message's first line, sends the message to the
+//// main strand as the owner's first prompt and opens the page. The text is the
+//// browser's and is never drawn back: the box is uncontrolled, the server never
+//// writes into it, and the session's own page draws the message as a user line,
+//// as text. A message that was not accepted leaves the session kept, and this view
+//// says so in one line with a button that opens it.
 ////
 //// Every name, folder, executor, pool, profile and model is a text node. A folder's
 //// whole path is a `title` Lustre escapes. The only strings that become classes
 //// are fixed words chosen by `case`.
+////
+//// ## Flow
+////
+//// `view` → `banner` → `recent` → `form` → `chips` → `summary`
+////
+//// 1. `view` lays the pane out: the banner, the heading, then the rest.
+//// 2. `banner` is the phone's line for the session that needs the person, and
+////    `recent` is the places a session worked in.
+//// 3. `form` draws the message box, the field the target needs and Start, with
+////    `start_fields` as its submit's decoder and `fields` as its one rule.
+//// 4. `chips` draws the three chips, each with its list while open
+////    (`agent_list`, `code_list`, `model_list`), and `summary` the sentence.
+//// 5. `refusal` and `unsent` say what a refused or half-done start left.
 ////
 //// ## Examples
 ////
@@ -90,8 +107,11 @@ pub type Presses(message) {
     model: fn(Option(String)) -> message,
     /// The code list's search text changed.
     search: fn(String) -> message,
-    /// The form was submitted with this name and this typed field.
+    /// The form was submitted with this message and this typed field.
     start: fn(String, Typed) -> message,
+    /// The "Open the session" button, shown after a creation whose first message
+    /// was not sent.
+    depart: message,
     /// A session's row, in the banner, was pressed.
     open: fn(String) -> message,
     /// The link to the full session list was pressed.
@@ -120,13 +140,13 @@ pub type Pane(message) {
 
 /// Which extra field a target needs the form to carry.
 pub type Needs {
-  /// Only the name.
+  /// Only the message.
   NameOnly
 
-  /// The name and a folder's path.
+  /// The message and a folder's path.
   NameAndPath
 
-  /// The name and a workspace's name.
+  /// The message and a workspace's name.
   NameAndWorkspace
 }
 
@@ -152,27 +172,27 @@ pub fn needs(target: Option(Target)) -> Needs {
   }
 }
 
-/// The name and the typed field a submitted form's fields stand for, given what
-/// the form was drawn to carry: exactly one `name`, the one other field `needs`
+/// The message and the typed field a submitted form's fields stand for, given what
+/// the form was drawn to carry: exactly one `prompt`, the one other field `needs`
 /// names and, for `NameOnly`, nothing else. A repeat, an unknown field or a
 /// missing one refuses the event.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert new_session.fields([#("name", "x")], new_session.NameOnly)
+/// assert new_session.fields([#("prompt", "x")], new_session.NameOnly)
 ///   == Ok(#("x", composer.Nothing))
-/// assert new_session.fields([#("name", "x"), #("path", "/w")], new_session.NameOnly)
+/// assert new_session.fields([#("prompt", "x"), #("path", "/w")], new_session.NameOnly)
 ///   == Error(Nil)
-/// assert new_session.fields([#("path", "/w"), #("name", "x")], new_session.NameAndPath)
+/// assert new_session.fields([#("path", "/w"), #("prompt", "x")], new_session.NameAndPath)
 ///   == Ok(#("x", composer.Path("/w")))
 /// ```
 pub fn fields(
   listed: List(#(String, String)),
   needs: Needs,
 ) -> Result(#(String, Typed), Nil) {
-  let names = list.filter(listed, fn(field) { field.0 == "name" })
-  let rest = list.filter(listed, fn(field) { field.0 != "name" })
+  let names = list.filter(listed, fn(field) { field.0 == "prompt" })
+  let rest = list.filter(listed, fn(field) { field.0 != "prompt" })
 
   case names, rest, needs {
     [#(_, name)], [], NameOnly -> Ok(#(name, composer.Nothing))
@@ -199,7 +219,7 @@ pub fn view(pane: Pane(message)) -> Element(message) {
         html.h1([], [html.text("What should the agent work on?")]),
         html.p([attribute.class("lede")], [
           html.text(
-            "Choose where the agent runs and where the code is, then name the session.",
+            "Choose where the agent runs and where the code is, then describe the task.",
           ),
         ]),
         recent(pane),
@@ -207,6 +227,7 @@ pub fn view(pane: Pane(message)) -> Element(message) {
         chips(pane),
         summary(pane),
         refusal(pane.state),
+        unsent(pane),
         html.p([attribute.class("new-old")], [
           html.button(
             [
@@ -350,15 +371,17 @@ fn form(pane: Pane(message)) -> Element(message) {
         |> event.prevent_default,
     ],
     [
-      html.input([
-        attribute.type_("text"),
-        attribute.name("name"),
-        attribute.class("composer-name"),
-        attribute.aria_label("Session name"),
-        attribute.placeholder("Name this session (optional)"),
-        attribute.attribute("maxlength", "256"),
-        attribute.autocomplete("off"),
-      ]),
+      html.textarea(
+        [
+          attribute.name("prompt"),
+          attribute.class("composer-name"),
+          attribute.aria_label("Task"),
+          attribute.placeholder("Describe a task or ask a question"),
+          attribute.attribute("rows", "3"),
+          attribute.attribute("maxlength", "16000"),
+        ],
+        "",
+      ),
       ..list.append(extra, [
         html.div([attribute.class("cbar")], [
           html.button(
@@ -901,6 +924,29 @@ fn piece(piece: Piece) -> Element(message) {
   case piece {
     composer.Plain(text:) -> html.text(text)
     composer.Named(text:) -> html.b([], [html.text(text)])
+  }
+}
+
+// After a creation whose session was kept and did not take its first message:
+// one plain line and a button that opens the session. The button's handler is the
+// page's own message; the ticket it opens is held in the state and never drawn.
+fn unsent(pane: Pane(message)) -> Element(message) {
+  case pane.state.unsent {
+    Some(_) ->
+      html.p([attribute.class("new-refusal"), attribute.role("alert")], [
+        html.text(
+          "The session was created, but its first message was not sent. Open it and send the message there. ",
+        ),
+        html.button(
+          [
+            attribute.type_("button"),
+            attribute.class("link-button"),
+            event.on_click(pane.presses.depart),
+          ],
+          [html.text("Open the session")],
+        ),
+      ])
+    None -> element.none()
   }
 }
 

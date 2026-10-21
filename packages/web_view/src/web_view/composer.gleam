@@ -52,10 +52,20 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import session_view/text_hygiene
 import web_view/creations
 import web_view/listing
 import web_view/placements
 import web_view/sessions.{type Entry}
+
+/// The most bytes of a first message the composer sends. A longer one is refused
+/// on the form with words, and nothing is created, so a person never loses a
+/// session's worth of text to a bound they could not see.
+pub const prompt_limit = 16_384
+
+/// The most characters of a session's name taken from the first line of its
+/// first message.
+pub const name_limit = 80
 
 /// The most bytes of search text the code picker keeps. It narrows rows the page
 /// drew and nothing else, so a short bound is enough.
@@ -162,6 +172,10 @@ pub type State {
     sending: Sending,
     /// The fixed words of the last refusal, drawn under the form, or `None`.
     refusal: Option(String),
+    /// The ticket path of a session that was created and kept but did not take
+    /// its first message, until the person opens it. It is the daemon's text and
+    /// is never drawn.
+    unsent: Option(String),
   )
 }
 
@@ -186,9 +200,15 @@ pub type Msg {
   /// The code picker's search text changed.
   Searched(text: String)
 
-  /// The form was submitted: the name field, and the one other field the chosen
-  /// target needs, if any.
-  Started(name: String, typed: Typed)
+  /// The form was submitted: the first message, and the one other field the
+  /// chosen target needs, if any. The message is the browser's text: it names the
+  /// session by its first line and, when it is not empty, is sent to the new
+  /// session as its first user message. It is bounded here and never drawn.
+  Started(prompt: String, typed: Typed)
+
+  /// The "Open the session" button, drawn after a creation whose first message
+  /// was not sent: depart for the session the daemon kept.
+  OpenedUnsent
 }
 
 /// What the page owes after a message.
@@ -200,14 +220,23 @@ pub type Intent {
   /// are current.
   ReadPlacements
 
-  /// Ask the daemon to create a session.
+  /// Ask the daemon to create a session and send it its first message.
   Create(
     /// Where, as the daemon is asked.
     place: creations.Place,
-    /// The name as typed, possibly empty.
+    /// The session's name, from the message's first line, or empty for the
+    /// daemon's default.
     name: String,
+    /// The first message, or empty to send none.
+    prompt: String,
     /// The profile and model.
     roles: creations.Roles,
+  )
+
+  /// Depart for a session whose ticket the daemon minted.
+  Depart(
+    /// The ticket's exchange path, which the daemon wrote.
+    path: String,
   )
 }
 
@@ -265,6 +294,7 @@ pub fn new() -> State {
     search: "",
     sending: Ready,
     refusal: None,
+    unsent: None,
   )
 }
 
@@ -295,7 +325,12 @@ pub fn update(
     ChoseProfile(profile:) -> #(chose_profile(state, offers, profile), Stay)
     ChoseModel(model:) -> #(chose_model(state, offers, model), Stay)
     Searched(text:) -> #(searched(state, text), Stay)
-    Started(name:, typed:) -> started(state, offers, recent, name, typed)
+    Started(prompt:, typed:) -> started(state, offers, recent, prompt, typed)
+    OpenedUnsent ->
+      case state.unsent {
+        Some(path) -> #(state, Depart(path))
+        None -> #(state, Stay)
+      }
   }
 }
 
@@ -321,7 +356,46 @@ pub fn refused(state: State, words: String) -> State {
 /// assert composer.settled(composer.State(..composer.new(), sending: composer.Out)).sending == composer.Ready
 /// ```
 pub fn settled(state: State) -> State {
-  State(..state, sending: Ready, refusal: None)
+  State(..state, sending: Ready, refusal: None, unsent: None)
+}
+
+/// The state after a creation whose session was kept and did not take its first
+/// message: nothing is out, and the person is offered the session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.unsent(composer.new(), "/ui/sessions/S?ticket=T").unsent
+///   == Some("/ui/sessions/S?ticket=T")
+/// ```
+pub fn unsent(state: State, path: String) -> State {
+  State(..state, sending: Ready, refusal: None, unsent: Some(path))
+}
+
+/// The name a first message gives its session: the first line that has any text,
+/// made safe for one line, trimmed and cut to `name_limit` characters on a
+/// character boundary. A message with no text gives none, so the daemon names the
+/// session for its folder as it always did.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.session_name("\n  fix the retry test \nthen more") == "fix the retry test"
+/// assert composer.session_name("   ") == ""
+/// ```
+pub fn session_name(prompt: String) -> String {
+  let first =
+    string.split(prompt, "\n")
+    |> list.map(string.trim)
+    |> list.find(fn(line) { line != "" })
+    |> result.unwrap("")
+
+  text_hygiene.single_line(first)
+  |> string.trim
+  |> string.to_graphemes
+  |> list.take(name_limit)
+  |> string.concat
+  |> string.trim
 }
 
 /// The code target in force: the person's choice while the page still offers it,
@@ -595,6 +669,10 @@ fn in_workspace(workspace: Option(String)) -> List(Piece) {
   }
 }
 
+// The words for a message past the bound.
+const too_long =
+  "That message is too long to send. Shorten it, or send the rest from the session's page."
+
 // The words for a form that still needs a workspace name.
 const unnamed = "Name the workspace, or choose another."
 
@@ -681,7 +759,7 @@ fn started(
   state: State,
   offers: Offers,
   recent: List(Recent),
-  name: String,
+  prompt: String,
   typed: Typed,
 ) -> #(State, Intent) {
   case state.sending, chosen(state, offers, recent) {
@@ -690,13 +768,23 @@ fn started(
       case
         in_list(offers.profiles, state.roles.profile)
         && in_list(offers.models, state.roles.model),
+        string.byte_size(prompt) > prompt_limit,
         place(target, typed)
       {
-        False, _ -> #(state, Stay)
-        True, Error(words) -> #(State(..state, refusal: Some(words)), Stay)
-        True, Ok(place) -> #(
-          State(..state, sending: Out, refusal: None),
-          Create(place:, name:, roles: state.roles),
+        False, _, _ -> #(state, Stay)
+        True, True, _ -> #(State(..state, refusal: Some(too_long)), Stay)
+        True, False, Error(words) -> #(
+          State(..state, refusal: Some(words)),
+          Stay,
+        )
+        True, False, Ok(place) -> #(
+          State(..state, sending: Out, refusal: None, unsent: None),
+          Create(
+            place:,
+            name: session_name(prompt),
+            prompt: string.trim(prompt),
+            roles: state.roles,
+          ),
         )
       }
   }

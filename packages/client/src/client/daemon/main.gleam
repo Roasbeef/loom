@@ -3135,6 +3135,7 @@ fn web_view(
               sessions,
               open,
               seen,
+              fn(resident: serve.Resident) { Ok(resident.gateway) },
             )
           },
           admin: fn(request, attachment, open, ceiling) {

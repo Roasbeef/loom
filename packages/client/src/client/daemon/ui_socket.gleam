@@ -192,6 +192,7 @@ import client/daemon/ui_sessions
 import client/daemon/upgrade_log
 import client/gateway
 import client/peers
+import client/protocol as session_protocol
 import core/ids
 import core/json as wire
 import gleam/bit_array
@@ -798,6 +799,7 @@ pub fn upgrade_home(
   tickets: ui_sessions.Sessions,
   open: fn() -> Result(Int, Nil),
   seen: server.PageGrant,
+  gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
 ) -> Response(mist.ResponseData) {
   let settled = process.new_subject()
   let limit = root.message_limit(root.Observer)
@@ -824,7 +826,7 @@ pub fn upgrade_home(
     home_create_capability(
       attachment.principal,
       ceiling,
-      fn(place, name, sharing, roles, deliver) {
+      fn(place, name, sharing, roles, prompt, deliver) {
         create_task(
           standing,
           tickets,
@@ -845,6 +847,8 @@ pub fn upgrade_home(
           name,
           sharing,
           roles,
+          prompt,
+          first_message_for(attachment, gateway_of),
           deliver,
         )
       },
@@ -1146,6 +1150,7 @@ pub fn home_create_capability(
     String,
     creations.Sharing,
     creations.Roles,
+    String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
 ) -> Option(
@@ -1154,6 +1159,7 @@ pub fn home_create_capability(
     String,
     creations.Sharing,
     creations.Roles,
+    String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
 ) {
@@ -1371,6 +1377,7 @@ fn admit_home(
       String,
       creations.Sharing,
       creations.Roles,
+      String,
       fn(creations.Answer) -> Nil,
     ) -> Nil,
   ),
@@ -2784,6 +2791,57 @@ pub fn create_for(
   roles: creations.Roles,
   within within: Int,
 ) -> creations.Answer {
+  create_with(
+    standing,
+    tickets,
+    open,
+    create,
+    release,
+    folder,
+    place,
+    name,
+    sharing,
+    roles,
+    "",
+    fn(_, _) { Ok(Nil) },
+    within:,
+  )
+}
+
+/// `create_for`, and then the session's first message: when `prompt` is not
+/// empty it is sent to the new session's main strand, once it is open, through
+/// `send` (the session's own id and the text), which is how the operator's session
+/// page sends a message, as the daemon's owner. The creation, its checks and its
+/// ticket are exactly `create_for`'s, and nothing else about them depends on the
+/// message. A session that was created and opened but did not take the message is
+/// kept: the answer is `Unsent`, carrying the ticket that opens it, and nothing is
+/// deleted. An empty `prompt` sends nothing, and `send` is called at most once.
+///
+/// The text is the browser's. It is passed to `send` as it is, to be sent as a
+/// user message and nothing else, and is never drawn by this module.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.create_with(standing, tickets, open, create, release, folder, place, "", creations.Private, creations.default_roles, "fix it", send, within: 30_000)
+/// ```
+@internal
+pub fn create_with(
+  standing: Standing(instance),
+  tickets: ui_sessions.Sessions,
+  open: fn() -> Result(Int, Nil),
+  create: fn(access.Principal, manager.Creation, domain.Scope) ->
+    Result(manager.View, String),
+  release: fn(String) -> Result(Nil, manager.AdminError),
+  folder: fn(String) -> Result(String, creations.Reason),
+  place: creations.Place,
+  name: String,
+  sharing: creations.Sharing,
+  roles: creations.Roles,
+  prompt: String,
+  send: fn(String, String) -> Result(Nil, String),
+  within within: Int,
+) -> creations.Answer {
   let outcome = {
     use principal <- result.try(authorized_owner(standing, open))
     use workspace <- result.try(placed(standing, folder, place))
@@ -2825,10 +2883,38 @@ pub fn create_for(
         field.ident("via", "page"),
       ])
       case opened_ticket(standing, tickets, open, session, within) {
-        sessions.Ticketed(path:) -> creations.Ticketed(path)
+        sessions.Ticketed(path:) ->
+          first_message_sent(path, session, prompt, send)
         sessions.Declined(_) -> unstarted(standing.registry, release, view)
       }
     }
+  }
+}
+
+// The answer for a session that was created and opened: its ticket, once the first
+// message, if there is one, has been sent. A session that did not take the message
+// is kept and the answer says so, with the same ticket, and the reason goes to the
+// daemon's log. An empty message sends nothing.
+fn first_message_sent(
+  path: String,
+  session: String,
+  prompt: String,
+  send: fn(String, String) -> Result(Nil, String),
+) -> creations.Answer {
+  case prompt {
+    "" -> creations.Ticketed(path)
+    text ->
+      case send(session, text) {
+        Ok(Nil) -> creations.Ticketed(path)
+        Error(reason) -> {
+          log.warn(
+            log.erlang(threshold: level.Info),
+            "daemon.first_message_not_sent",
+            [field.ident("session", session), field.text("reason", reason)],
+          )
+          creations.Unsent(path)
+        }
+      }
   }
 }
 
@@ -3098,12 +3184,14 @@ pub fn create_task(
   name: String,
   sharing: creations.Sharing,
   roles: creations.Roles,
+  prompt: String,
+  send: fn(String, String) -> Result(Nil, String),
   deliver: fn(creations.Answer) -> Nil,
 ) -> Nil {
   let _ =
     weft.new([
       fn() {
-        deliver(create_for(
+        deliver(create_with(
           standing,
           tickets,
           open,
@@ -3114,6 +3202,8 @@ pub fn create_task(
           name,
           sharing,
           roles,
+          prompt,
+          send,
           within: resume_wait_ms,
         ))
         Ok(Nil)
@@ -6276,5 +6366,138 @@ fn authorize_for(
       digest:,
     )
     |> result.map_error(fn(_) { ending.reason(ending.AccessRevoked) })
+  }
+}
+
+// What the home sends a new session as its first message: the daemon's own path
+// for the owner's page, made from the page's attachment. It resolves the session
+// as the page's principal (the membership and its role, the same read a page's
+// ticket makes), finds the resident incarnation and its gateway, and sends the text
+// as a prompt to the main strand under a binding with the page's authority capped
+// at Operator, as every page's is.
+fn first_message_for(
+  attachment: server.HomeAttachment(instance),
+  gateway_of: fn(instance) -> Result(gateway.Gateway, Nil),
+) -> fn(String, String) -> Result(Nil, String) {
+  fn(session, text) {
+    use #(principal, authority) <- result.try(
+      manager.session_authority(attachment.registry, attachment.digest, session)
+      |> result.replace_error("the session is not held"),
+    )
+    use view <- result.try(
+      manager.get(attachment.registry, session)
+      |> result.replace_error("the session is not available"),
+    )
+    use incarnation <- result.try(case view.status {
+      manager.Resident(incarnation) -> Ok(incarnation)
+      _ -> Error("the session is not running")
+    })
+    use instance <- result.try(
+      manager.resolve_incarnation(attachment.registry, session, incarnation)
+      |> result.replace_error("the session is not available"),
+    )
+    use hub <- result.try(
+      gateway_of(instance) |> result.replace_error("the session has no gateway"),
+    )
+    let binding =
+      gateway.Binding(
+        session_id: session,
+        epoch: attachment.epoch,
+        incarnation:,
+        connection_id: "web-first-" <> hex_entropy(8),
+        principal:,
+        authority: ui_relay.capped(authority, access.Operator),
+        digest: attachment.digest,
+        signin: None,
+      )
+
+    // The gateway compares what the check answers with the binding's authority
+    // on every request, so the check is capped as the binding is, as a page's
+    // relay caps its own.
+    let check =
+      authorize_for(
+        attachment.registry,
+        attachment.epoch,
+        session,
+        incarnation,
+        attachment.digest,
+      )
+    first_prompt(
+      hub,
+      binding,
+      fn() {
+        use #(who, held) <- result.map(check())
+        #(who, ui_relay.capped(held, access.Operator))
+      },
+      text,
+    )
+  }
+}
+
+/// Sends `text` to a gateway as a prompt to the main strand over an attachment of
+/// its own, and detaches. It is the one frame a session page's composer sends, so
+/// the gateway does what it does for that page: the text becomes a user message,
+/// attributed to the binding's principal, and a run starts or the message queues.
+/// The answer is `Ok` only for the gateway's own acceptance of the message
+/// (`admitted` or `queued`); a refusal, an attachment the gateway refused or a
+/// reply that did not come is the words saying so, and the caller keeps the session.
+///
+/// The text is never interpreted here: it is a JSON string inside the frame, so it
+/// cannot name another command.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // ui_socket.first_prompt(hub, binding, check, "fix the retry test")
+/// ```
+@internal
+pub fn first_prompt(
+  hub: gateway.Gateway,
+  binding: gateway.Binding,
+  check: fn() -> Result(#(access.Principal, access.Authority), String),
+  text: String,
+) -> Result(Nil, String) {
+  use connection <- result.try(gateway.attach_authenticated(
+    hub,
+    binding,
+    check,
+    fn(_) { Nil },
+    fn() { Nil },
+    fn() { Nil },
+    process.self(),
+  ))
+
+  // The gateway answers a mutation only to an attachment that has subscribed, as
+  // a page's lane does before it sends anything. The snapshot the subscribe
+  // starts goes to the sink, which drops it.
+  let reply = {
+    use _ <- result.try(gateway.connection_request(
+      connection,
+      session_protocol.encode_command(session_protocol.CommandEnvelope(
+        id: 1,
+        command: session_protocol.Subscribe(binding.session_id, None),
+      )),
+    ))
+    gateway.connection_request(
+      connection,
+      session_protocol.encode_command(session_protocol.CommandEnvelope(
+        id: 2,
+        command: session_protocol.Prompt(strand: "main", text:),
+      )),
+    )
+  }
+  gateway.connection_detach(connection)
+
+  use frame <- result.try(reply)
+  case session_protocol.decode_event(frame) {
+    Ok(session_protocol.EventEnvelope(
+      event: session_protocol.MutationOutcome(wire.Object(fields)),
+      ..,
+    )) ->
+      case list.key_find(fields, "status") {
+        Ok(wire.String("admitted")) | Ok(wire.String("queued")) -> Ok(Nil)
+        _ -> Error("the session did not accept the message")
+      }
+    _ -> Error("the session did not accept the message")
   }
 }
