@@ -48,6 +48,16 @@
 //// one across a reload is `web_client/layout_rule`'s, over the same types:
 //// the two columns and the tab are the whole of what is stored, and a page
 //// with nothing stored starts from `initial`.
+////
+//// ## Flow
+////
+//// A page starts from `initial` and reads its regions through `state`. A
+//// toggle goes through `toggled`, and on a narrow frame the sidebar's
+//// wrapper follows `sidebar_state`, changed by `sidebar_pressed` and closed
+//// by `dismissal` or by a press that `presses_door` recognises. A tab press
+//// is `chosen`. A relayed click is `relay`, then `relayed`, then
+//// `card_selector`. A key is `intent`, and `cancels` says whether it stops
+//// the browser's own handling.
 
 import gleam/int
 import gleam/list
