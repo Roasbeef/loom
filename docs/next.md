@@ -207,6 +207,13 @@ live checks but no full signoff.
 4. Attribute remaining storage and JSON work before another repair. **Exit:** a
    bounded workload identifies removable work. SQLite sample widths alone do
    not justify statement caching, new synchronization or allocator tuning.
+5. Build the web placement revamp in the slices of
+   [docs/design-notes/placement-revamp.md](design-notes/placement-revamp.md)
+   section 7: S1 the sidebar and composer over today's backend, S2 top-level
+   sessions on another orchestrator (protocol-change/094), S3 a worktree per
+   session on executor workspaces (protocol-change/095), S4 removal of the old
+   home form and docs. **Exit:** each slice's own exit criteria in that
+   section. Issues #1050, #1051 and #1052.
 
 ## Rulings already made
 
