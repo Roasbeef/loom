@@ -470,13 +470,21 @@ fn placed(
           Error(remote_top.NotOffered(remote_top.OfferedFolder, path))
         spawners.RecentFolders -> remembered(context, path)
       })
-      use canonical <- result.map(
+      use canonical <- result.try(
         context.check_folder(path)
         |> result.map_error(fn(words) {
           remote_top.InvalidArgument(reason: words)
         }),
       )
-      Place(workspace: canonical, executor: "", pool: "")
+
+      // A folder the laptop could not read back in a listing is not started in.
+      case remote_top.fits(canonical) {
+        True -> Ok(Place(workspace: canonical, executor: "", pool: ""))
+        False ->
+          Error(remote_top.InvalidArgument(
+            reason: "that folder's path is too long to relay",
+          ))
+      }
     }
     remote_top.Workspace(executor:, name:) -> {
       use Nil <- result.try(
@@ -631,32 +639,46 @@ fn overviews_of(
   table: TopLevel,
   views: List(manager.RelayedView),
 ) -> List(Option(relayed_session.Overview)) {
+  // Only a resident row has anything to ask. The others are idle by
+  // definition, and spawning a task for them would only fail.
   let asks =
     list.map(views, fn(view) {
       case manager.resolve(context.registry, view.listing.record.session_id) {
         Ok(instance) -> {
           let endpoint = context.endpoint(instance)
-          fn() { endpoint.overview(table.approval_ceiling) }
+          Some(fn() { endpoint.overview(table.approval_ceiling) })
         }
-        Error(_) -> fn() { Error(remote_top.NotRelayed) }
+        Error(_) -> None
       }
     })
   let outcomes =
-    asks
+    option.values(asks)
     |> weft.new
     |> weft.deadline(overview_budget_ms)
     |> weft.start
-  list.map(outcomes, fn(outcome) {
-    case outcome {
-      weft.Completed(value: overview, ..) -> Some(overview)
-      weft.Failed(..)
-      | weft.Crashed(..)
-      | weft.Abandoned(..)
-      | weft.NeverStarted(..)
-      | weft.DrainProofLost(..)
-      | weft.CancellationUnconfirmed(..) -> None
-    }
-  })
+    |> list.map(fn(outcome) {
+      case outcome {
+        weft.Completed(value: overview, ..) -> Some(overview)
+        weft.Failed(..)
+        | weft.Crashed(..)
+        | weft.Abandoned(..)
+        | weft.NeverStarted(..)
+        | weft.DrainProofLost(..)
+        | weft.CancellationUnconfirmed(..) -> None
+      }
+    })
+  rejoin(asks, outcomes)
+}
+
+// Puts each outcome back at the row that asked, in order, and leaves a row that
+// asked nothing without one.
+fn rejoin(asks: List(Option(a)), outcomes: List(Option(b))) -> List(Option(b)) {
+  case asks, outcomes {
+    [], _ -> []
+    [None, ..rest], _ -> [None, ..rejoin(rest, outcomes)]
+    [Some(_), ..rest], [outcome, ..later] -> [outcome, ..rejoin(rest, later)]
+    [Some(_), ..rest], [] -> [None, ..rejoin(rest, [])]
+  }
 }
 
 // One row. The requests are cut to what a row may carry, oldest by seq, so the

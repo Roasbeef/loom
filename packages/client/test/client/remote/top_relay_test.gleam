@@ -34,9 +34,9 @@ import weft/actor
 // answer shorter than the slowest thing a test makes the box do.
 fn quick() -> top_relay.Timing {
   top_relay.Timing(
-    retry_window_ms: 600,
-    create_ms: 80,
-    call_ms: 80,
+    retry_window_ms: 1200,
+    create_ms: 150,
+    call_ms: 150,
     first_pause_ms: 10,
     longest_pause_ms: 40,
   )
@@ -305,7 +305,7 @@ pub fn a_lost_answer_is_sent_again_and_the_box_answers_the_same_session_test() {
           process.send(entries, request_id)
           case tick(tries) {
             0 | 1 -> {
-              process.sleep(200)
+              process.sleep(400)
               Ok("0198c0de-0000-7000-8000-00000000000a")
             }
             _ -> Ok("0198c0de-0000-7000-8000-00000000000a")
@@ -326,7 +326,7 @@ pub fn a_box_that_never_answers_ends_the_window_with_the_outcome_unknown_test() 
       orchestrator_port.TopHost(
         ..orchestrator_port.refusing_top(),
         create: fn(_node, _id, _placement, _profile, _model) {
-          process.sleep(400)
+          process.sleep(800)
           Ok("0198c0de-0000-7000-8000-00000000000a")
         },
       ),
@@ -349,7 +349,7 @@ pub fn a_link_that_drops_after_the_first_send_is_waited_for_not_given_up_on_test
         create: fn(_node, _id, _placement, _profile, _model) {
           case tick(tries) {
             0 -> {
-              process.sleep(300)
+              process.sleep(600)
               Ok("0198c0de-0000-7000-8000-00000000000a")
             }
             _ -> Ok("0198c0de-0000-7000-8000-00000000000a")
@@ -376,7 +376,7 @@ pub fn a_window_that_ends_on_a_downed_link_is_silence_not_unreachable_test() {
       orchestrator_port.TopHost(
         ..orchestrator_port.refusing_top(),
         create: fn(_node, _id, _placement, _profile, _model) {
-          process.sleep(300)
+          process.sleep(600)
           Ok("0198c0de-0000-7000-8000-00000000000a")
         },
       ),
@@ -420,7 +420,7 @@ pub fn a_message_is_sent_again_with_the_same_id_and_lands_once_test() {
           process.send(entries, session <> " " <> message_id <> " " <> text)
           case tick(tries) {
             0 -> {
-              process.sleep(200)
+              process.sleep(400)
               Ok(remote_mail.encode_landing(remote_mail.Admitted))
             }
             _ -> Ok(remote_mail.encode_landing(remote_mail.Admitted))
@@ -441,7 +441,7 @@ pub fn a_decision_a_stop_and_an_archive_are_asked_once_test() {
   let tries = counter()
   let slow = fn() {
     let _ = tick(tries)
-    process.sleep(300)
+    process.sleep(600)
   }
   let relay =
     relay_to(

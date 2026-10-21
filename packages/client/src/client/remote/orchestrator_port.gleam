@@ -1433,8 +1433,9 @@ fn served(command: peer_mail.Command) -> Bool {
 // The requester is on another node, so its death or disconnection arrives as a
 // monitor `DOWN` and cancels the run, as it does for the executor's owner port.
 // A run that crashes sends nothing, and the asker's deadline turns that into
-// silence. `compute` is handed the requester's node name, which only the
-// subagent messages read.
+// silence. `compute` is handed the requester's node name, which the
+// subagent messages and the messages of a spawner's page read to judge the
+// sender.
 fn detached(reply: Subject(reply), compute: fn(String) -> reply) -> Nil {
   case process.subject_owner(reply) {
     Ok(requester) -> {

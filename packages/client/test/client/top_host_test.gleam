@@ -355,7 +355,11 @@ fn port_at(rig: Rig, now: Int) -> Address(Message) {
         case path {
           "/srv/work" -> Ok("/srv/work")
           "/srv/old" -> Ok("/srv/old")
-          _ -> Error("That is not a folder you can use.")
+          other ->
+            case string.starts_with(other, "/long/") {
+              True -> Ok(other)
+              False -> Error("That is not a folder you can use.")
+            }
         }
       },
       record: fn(session) {
@@ -1113,8 +1117,9 @@ pub fn an_archived_session_is_listed_archived_and_the_first_prompt_names_it_test
     as "the first prompt becomes the name"
   assert orchestrator_port.ask_top_archive(rig.port, session, answers_within_ms)
     == Ok(Ok(Nil))
-  let assert [row] = rows(rig, "", 10)
-  assert row.activity == remote_top.Archived
+
+  // The laptop never shows an archived session, so the box does not list it.
+  assert rows(rig, "", 10) == []
 }
 
 // --- messages about a session -----------------------------------------------------------------------
@@ -1354,4 +1359,59 @@ pub fn deleting_a_session_removes_its_row_and_frees_the_place_test() {
   let assert Ok(_) = catalogue.delete(rig.store, first)
   assert manager.relayed_of(rig.registry, first) == Ok(None)
   let _fourth = made(rig, 4)
+}
+
+pub fn an_over_long_remembered_folder_is_not_offered_or_started_in_and_breaks_no_page_test() {
+  let rig = rig("long-folder")
+  let long = "/long/" <> string.repeat("d", 600)
+  manager.remember_folder(rig.registry, long)
+  manager.remember_folder(rig.registry, "/srv/work")
+  let assert poll.Answered(_) =
+    poll.until(within: 3000, every: 20, attempt: fn() {
+      case manager.recent_folders(rig.registry) {
+        Ok([_, _, ..]) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+
+  // The offers leave it out and still decode.
+  let assert Ok(Ok(json)) =
+    orchestrator_port.ask_placements(rig.port, answers_within_ms)
+  let assert Ok(offers) = remote_top.decode_offers(json)
+  assert offers.folders
+    == [remote_top.FolderOffer(path: "/srv/work", label: "work")]
+
+  // A create there is refused, and nothing is reserved.
+  let assert Error(remote_top.InvalidArgument(..)) =
+    refused_create(rig, remote_top.Folder(long), "alt", None)
+  assert catalogue.relayed_held(rig.store, "laptop") == Ok(0)
+}
+
+pub fn a_session_listing_is_active_only_and_old_active_ones_stay_on_the_page_test() {
+  let rig =
+    rig_with(
+      "active-only",
+      "
+[spawners.laptop.top_level]
+executors = [\"exec\"]
+profiles = [\"alt\"]
+max_sessions = 3
+max_per_hour = 100
+",
+      1_700_000_000_000,
+    )
+  let oldest = made(rig, 1)
+  resident(rig, oldest)
+  list.each([2, 3, 4, 5], fn(n) {
+    let session = made(rig, n)
+    resident(rig, session)
+    assert orchestrator_port.ask_top_archive(
+        rig.port,
+        session,
+        answers_within_ms,
+      )
+      == Ok(Ok(Nil))
+  })
+  let listed = rows(rig, "", 64)
+  assert list.map(listed, fn(row) { row.session_id }) == [oldest]
 }

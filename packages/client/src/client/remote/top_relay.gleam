@@ -298,10 +298,10 @@ pub fn sessions(
   remote_top.decode_page(json) |> result.map_error(Unreadable)
 }
 
-/// The most pages `all_sessions` reads. A spawner holds at most 64 sessions that
-/// are not archived (`max_sessions`), and archived ones are listed after them
-/// for as long as they exist, so eight pages of 64 reach well past any session a
-/// page still draws.
+/// The most pages `all_sessions` reads. The box lists only sessions that are not
+/// archived, and a spawner holds at most 64 of them (`max_sessions`), so the
+/// listing fits one page and the bound only stops a box that never says it is
+/// done.
 pub const max_pages = 8
 
 /// Every session of this daemon's page on the orchestrator, newest first, read

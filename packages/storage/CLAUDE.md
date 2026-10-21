@@ -205,7 +205,7 @@ or close; there is no transaction, lease or authorization cache.
   inserts the row, all or none. A request id that belongs to another spawner is
   `Conflict`. `relayed_for`, `relayed_of`, `relayed_held` and `relayed_since` are
   the reads, `relayed_page` lists a spawner's rows newest first in pages of at most
-  `relayed_page_limit` (64) with the name, placement and archive state, and `delete`
+  `relayed_page_limit` (64) with the name and placement, skipping archived sessions so the listing is bounded by the cap, and `delete`
   removes the row before the registration, which frees the place. The table is
   defined in `sql/catalogue_relayed.sql`.
 - `catalogue.StartFailure(reason, at)` is why a reservation's start failed

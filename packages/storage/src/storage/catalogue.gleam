@@ -2423,8 +2423,9 @@ pub fn claim_relayed(
 
 /// Lists a spawner's relayed sessions newest first, at most `limit` of them
 /// (and never more than `relayed_page_limit`), after the identity `after`. An
-/// empty `after` starts at the newest. Archived sessions are listed with their
-/// visibility, so the page can show them as archived.
+/// empty `after` starts at the newest. Archived sessions are not listed, so the
+/// listing is bounded by the spawner's `max_sessions` however many it has
+/// archived.
 ///
 /// The read opens no conversation file. A page is a coherent snapshot, and the
 /// caller continues after the last row's identity.

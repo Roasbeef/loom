@@ -4938,6 +4938,9 @@ fn relay_now(
           other -> RelayFailed(Catalogue(other))
         }
       }
+
+      // This read spares a resend a new identity and is an optimisation. The
+      // check that decides is the one inside the reserving transaction.
       use found <- result.try(
         catalogue.relayed_for(
           book.catalogue,

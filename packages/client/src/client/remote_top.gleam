@@ -78,10 +78,6 @@ pub const max_row_children = 16
 /// The most bytes of one name, path or label that the decoder accepts.
 pub const max_text_bytes = 512
 
-/// The most bytes of text a `TopSend` carries, the same bound as a message into
-/// a child.
-pub const max_send_bytes = 32_768
-
 /// Where a relayed session's tools run, as the page chose it.
 pub type Placement {
   /// A folder on the orchestrator that holds the session.
@@ -363,6 +359,27 @@ pub fn entries(offers: Offers) -> Int {
 /// assert remote_top.bounded(remote_top.no_offers()) == remote_top.no_offers()
 /// ```
 pub fn bounded(offers: Offers) -> Offers {
+  // Text the laptop's decoder would refuse is left out, so one over-long name
+  // cannot make the whole answer unreadable.
+  let offers =
+    Offers(
+      folders: list.filter(offers.folders, fn(folder) {
+        fits(folder.path) && fits(folder.label)
+      }),
+      executors: list.filter(offers.executors, fn(offer) { fits(offer.name) })
+        |> list.map(fn(offer) {
+          ExecutorOffer(
+            ..offer,
+            workspaces: list.filter(offer.workspaces, fits),
+          )
+        }),
+      pools: list.filter(offers.pools, fn(offer) { fits(offer.name) })
+        |> list.map(fn(offer) {
+          PoolOffer(..offer, workspaces: list.filter(offer.workspaces, fits))
+        }),
+      profiles: list.filter(offers.profiles, fits),
+      models: list.filter(offers.models, fits),
+    )
   let folders = list.take(offers.folders, max_offers)
   let room = max_offers - list.length(folders)
 
@@ -397,6 +414,32 @@ pub fn bounded(offers: Offers) -> Offers {
     profiles:,
     models: list.take(offers.models, room),
   )
+}
+
+/// Whether a text is within what the laptop's decoder accepts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_top.fits("work")
+/// ```
+pub fn fits(text: String) -> Bool {
+  string.byte_size(text) <= max_text_bytes
+}
+
+/// A text cut to `max_text_bytes`, on a character boundary. A text that fits is
+/// returned as it is.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert remote_top.clip("work") == "work"
+/// ```
+pub fn clip(text: String) -> String {
+  case fits(text) {
+    True -> text
+    False -> string.drop_end(text, string.byte_size(text) - max_text_bytes)
+  }
 }
 
 /// The offers as the wire object.
@@ -702,10 +745,10 @@ fn more_word(more: More) -> String {
 /// ```
 pub fn encode_row(row: Row) -> JsonValue {
   json.Object([
-    #("session_id", json.String(row.session_id)),
-    #("request_id", json.String(row.request_id)),
-    #("name", json.String(row.name)),
-    #("placement", encode_placement(row.placement)),
+    #("session_id", json.String(clip(row.session_id))),
+    #("request_id", json.String(clip(row.request_id))),
+    #("name", json.String(clip(row.name))),
+    #("placement", encode_placement(clipped(row.placement))),
     #("activity", json.String(activity_word(row.activity))),
     #("updated_at", json.Int(row.updated_at)),
     #(
@@ -733,6 +776,18 @@ fn activity_of(word: String) -> Result(Activity, String) {
     "idle" -> Ok(Idle)
     "archived" -> Ok(Archived)
     _ -> Error("activity is not a known activity")
+  }
+}
+
+// A placement whose texts are cut to what the laptop accepts. A row is
+// information, and a path too long to send is shown cut and not allowed to make
+// the whole page unreadable.
+fn clipped(placement: Placement) -> Placement {
+  case placement {
+    Folder(path:) -> Folder(path: clip(path))
+    Workspace(executor:, name:) ->
+      Workspace(executor: clip(executor), name: clip(name))
+    Pooled(pool:, name:) -> Pooled(pool: clip(pool), name: clip(name))
   }
 }
 

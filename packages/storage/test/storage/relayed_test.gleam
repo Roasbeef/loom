@@ -258,17 +258,41 @@ pub fn a_page_lists_newest_first_and_continues_after_the_last_row_test() {
   assert list.map(rest, fn(row) { row.record.session_id })
     == list.drop(newest_first, 2)
 
-  // Only the spawner's own rows, with the archive state and the name.
+  // Only the spawner's own rows that are not archived, with the name.
   let assert Ok(archived) = list.first(newest_first)
   let assert Ok(_) =
     catalogue.set_visibility(store, archived, catalogue.Archived)
   let assert Ok(all) =
     catalogue.relayed_page(store, "laptop", after: "", limit: 64)
-  assert list.length(all) == 5
+  assert list.length(all) == 4
+  assert !list.any(all, fn(row) { row.record.session_id == archived })
   let assert Ok(head) = list.first(all)
-  assert head.visibility == catalogue.Archived
-  assert head.name == "Relayed 50"
+  assert head.visibility == catalogue.Active
   assert catalogue.close(store) == Ok(Nil)
+}
+
+pub fn an_active_session_older_than_many_archived_ones_is_still_listed_test() {
+  let assert Ok(store) = catalogue.open(":memory:") as "catalogue opens"
+  let assert Ok(catalogue.RelayedMade(registration: oldest, ..)) =
+    create(store, "laptop", 1, 1, limits(1000, 1000, 5000))
+  list.each(numbers(80), fn(n) {
+    let assert Ok(catalogue.RelayedMade(registration: saved, ..)) =
+      create(store, "laptop", n + 1, n + 1, limits(1000, 1000, 5000))
+    let assert Ok(_) =
+      catalogue.set_visibility(store, saved.id, catalogue.Archived)
+    Nil
+  })
+
+  // Eighty newer sessions are archived, more than a page holds, and the one
+  // that is still active is on the first page.
+  let assert Ok(page) =
+    catalogue.relayed_page(store, "laptop", after: "", limit: 64)
+  assert list.map(page, fn(row) { row.record.session_id }) == [oldest.id]
+  assert catalogue.close(store) == Ok(Nil)
+}
+
+fn numbers(count: Int) -> List(Int) {
+  list.index_map(list.repeat(0, count), fn(_, index) { index + 1 })
 }
 
 pub fn a_page_is_never_larger_than_the_bound_test() {

@@ -381,6 +381,10 @@ do what.
   oldest requests by seq are kept while they fit, and the rest are counted in
   `more`. Without that bound a session with large pending requests could be a row
   that no page could carry.
+- `TopSessions` lists only relayed sessions that are not archived, so the listing
+  is bounded by `max_sessions` and an old active session cannot be pushed off by
+  newer archived ones. The laptop never shows archived relayed sessions; the
+  `Archived` activity word stays in the vocabulary and is not sent.
 - `TopArchive` stops the session and archives it once its slot has drained, within
   five seconds, answering `NotYetOpen` if it has not.
 - A connected node whose port is gone answers the laptop's ask as `PortGone`, which

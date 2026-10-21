@@ -532,3 +532,39 @@ pub fn the_placement_decoder_is_total_test() {
     }
   })
 }
+
+pub fn text_over_the_bound_is_cut_in_a_row_and_left_out_of_the_offers_test() {
+  let long = string.repeat("é", remote_top.max_text_bytes)
+  assert string.byte_size(remote_top.clip(long)) <= remote_top.max_text_bytes
+  assert remote_top.clip("work") == "work"
+  assert remote_top.fits("work")
+  assert !remote_top.fits(long)
+
+  // A row with an over-long name and folder still decodes, so one remembered
+  // folder cannot make a page unreadable.
+  let wide =
+    remote_top.Row(
+      ..row(1, []),
+      name: long,
+      placement: Folder(path: "/" <> long),
+    )
+  let page = remote_top.SessionsPage(rows: [wide], more: remote_top.Last)
+  let assert Ok(read) = remote_top.decode_page(remote_top.encode_page(page))
+  let assert [only] = read.rows
+  assert remote_top.fits(only.name)
+
+  // The offers drop what the decoder would refuse.
+  let offers =
+    Offers(
+      ..offers(),
+      folders: [
+        FolderOffer(path: "/" <> long, label: "x"),
+        FolderOffer(path: "/srv/work", label: "work"),
+      ],
+      profiles: [long, "alt"],
+    )
+  let kept = remote_top.bounded(offers)
+  assert kept.folders == [FolderOffer(path: "/srv/work", label: "work")]
+  assert kept.profiles == ["alt"]
+  assert result.is_ok(remote_top.decode_offers(remote_top.encode_offers(kept)))
+}
