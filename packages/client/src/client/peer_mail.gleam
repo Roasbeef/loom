@@ -1230,28 +1230,8 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
   )
   use glances <- result.try(current_glances(runtime, states))
   let last = option.map(last, fn(cell) { cell.value })
-  let approvals =
-    list.count(escalations, fn(record) { record.status == escalation.Pending })
-  let working = list.count(states, fn(pair) { option.is_some(pair.1) })
-
-  // A failed main run asks for the operator only once main has stopped: a
-  // main already running its next operation has moved past the failure.
-  let main_running = case list.key_find(states, "main") {
-    Ok(Some(_)) -> True
-    Ok(None) | Error(Nil) -> False
-  }
-  let failed = case last {
-    Some(operation.RunLastResult(outcome: operation.RunFailed(_), ..)) -> True
-    Some(operation.RunLastResult(..))
-    | Some(operation.CompactionLastResult(..))
-    | Some(operation.NavigationLastResult(..))
-    | None -> False
-  }
-  let state = case approvals > 0 || { failed && !main_running }, working > 0 {
-    True, _ -> "needs_you"
-    False, True -> "working"
-    False, False -> "idle"
-  }
+  let #(doing, approvals, working) = standing_from(states, escalations, last)
+  let state = doing_word(doing)
   let model = case configuration {
     Some(cell) ->
       json.String(glance.clip(cell.value.model.model_id, overview_model_bytes))
@@ -1266,6 +1246,84 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
     #("model", model),
   ]
   Ok(fit_overview(base, final_message(runtime, last), glances))
+}
+
+/// What a session is doing, as its overview words it and as a spawner's
+/// sidebar draws it (protocol-change/094).
+pub type Doing {
+  /// A request is pending, or main's last run failed and nothing has run since.
+  NeedsAnswer
+
+  /// A strand is running and nothing is asked.
+  Running
+
+  /// Nothing is running and nothing is asked.
+  Resting
+}
+
+/// What a session is doing and how many approvals it holds, from the same reads
+/// the overview makes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // peer_mail.standing(runtime) == Ok(#(peer_mail.Resting, 0))
+/// ```
+pub fn standing(runtime: api.Runtime) -> Result(#(Doing, Int), String) {
+  use states <- result.try(strand_operations(runtime))
+  use escalations <- result.try(
+    api.escalations(runtime) |> result.map_error(string.inspect),
+  )
+  use last <- result.map(
+    session.last_result(runtime.session, "main")
+    |> result.map_error(string.inspect),
+  )
+  let #(doing, approvals, _working) =
+    standing_from(
+      states,
+      escalations,
+      option.map(last, fn(cell) { cell.value }),
+    )
+  #(doing, approvals)
+}
+
+// The one rule for the three words, shared by the overview and `standing`. A
+// failed main run asks for the operator only once main has stopped: a main
+// already running its next operation has moved past the failure. The figures
+// are the doing, the pending approvals and the strands with a run.
+fn standing_from(
+  states: List(#(String, Option(OpId))),
+  escalations: List(escalation.Escalation),
+  last: Option(operation.LastResult),
+) -> #(Doing, Int, Int) {
+  let approvals =
+    list.count(escalations, fn(record) { record.status == escalation.Pending })
+  let working = list.count(states, fn(pair) { option.is_some(pair.1) })
+  let main_running = case list.key_find(states, "main") {
+    Ok(Some(_)) -> True
+    Ok(None) | Error(Nil) -> False
+  }
+  let failed = case last {
+    Some(operation.RunLastResult(outcome: operation.RunFailed(_), ..)) -> True
+    Some(operation.RunLastResult(..))
+    | Some(operation.CompactionLastResult(..))
+    | Some(operation.NavigationLastResult(..))
+    | None -> False
+  }
+  let doing = case approvals > 0 || { failed && !main_running }, working > 0 {
+    True, _ -> NeedsAnswer
+    False, True -> Running
+    False, False -> Resting
+  }
+  #(doing, approvals, working)
+}
+
+fn doing_word(state: Doing) -> String {
+  case state {
+    NeedsAnswer -> "needs_you"
+    Running -> "working"
+    Resting -> "idle"
+  }
 }
 
 // Every strand's current operation, from one listing of the strand-state
