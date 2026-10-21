@@ -400,6 +400,25 @@ sentence that says so. Run `enroll` for it again on the operator's machine and
 `loom distribution install --force` the new bundle on the node (the name gets a
 new certificate).
 
+### Attaching Observer, pickglass or a shell to a daemon
+
+An inspection tool joins a TLS deployment as one more node. `attach-file`
+enrolls it as a `tool` member of the ledger and writes the files an ordinary
+Erlang node needs, instead of a bundle:
+
+```sh
+loom distribution attach-file inspector --node inspector@127.0.0.1 --links hub \
+    --out ~/inspector --passphrase-file ~/.loom/authority-passphrase
+```
+
+`--links` is the daemon it may reach; `--node` is the name the tool must start
+under. The directory then holds `ca.pem`, `tool.pem`, `tool.key`,
+`.erlang.cookie` and a standard `ssl_dist.conf`, and the command prints the
+`erl` flags that use them. [Profiling a distributed
+daemon](distribution.md#profiling-a-distributed-daemon) has the commands for a
+remote shell, Observer and pickglass. `revoke` the tool when you are done; to
+replace its certificate, revoke it and attach again.
+
 ### The test fixture
 
 `scripts/distributed/mint-fixture.sh` writes the same files with plain `openssl`.
