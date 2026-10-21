@@ -473,16 +473,23 @@ fn page_socket_memory(payload_size) {
           as "the hub subject has its original owner"
         let before = ffi_memory.flat_words(system.get_state(hub_pid))
         let attachments = gateway.attached(harness.hub)
-        let #(socket, _) =
-          wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws")
-        let assert poll.Answered(pid) =
-          poll.until(within: setup_ms, every: 10, attempt: fn() {
-            case addresses.owner(socket_name) {
-              Ok(pid) -> poll.Done(pid)
-              Error(Nil) -> poll.Retry
-            }
-          })
-          as "the component registered its serving socket"
+        // Every measurement crosses a retryable first close, so the probe
+        // cannot quietly regress to waiting on a socket that already ended.
+        // The next attempt is the real authenticated adapter whose live
+        // socket, component and gateway attachment we measure below.
+        let first = process.new_subject()
+        process.send(first, Nil)
+        let #(socket, pid) =
+          connected_page_socket(
+            fn() {
+              case process.receive(first, 0) {
+                Ok(Nil) -> retrying_page_socket()
+                Error(Nil) ->
+                  wire.connect(port, credential, "/v2/sessions/" <> id <> "/ws").0
+              }
+            },
+            socket_name,
+          )
 
         let assert poll.Answered(Nil) =
           poll.until(within: setup_ms, every: 10, attempt: fn() {
@@ -531,6 +538,63 @@ fn page_socket_memory(payload_size) {
       },
     )
   })
+}
+
+// A page can miss Lustre's initializer budget and close with 4000 before it
+// registers. Like the browser, this probe opens a fresh connection after that
+// close. A final close, malformed frame or failed read still fails the test.
+// Reading the first mount header also witnesses that registration completed;
+// memory measurement does not need to consume the rendered mount itself.
+fn connected_page_socket(connect, socket_name) {
+  let assert poll.Answered(connected) =
+    poll.until(within: setup_ms, every: 500, attempt: fn() {
+      let socket = connect()
+      let assert Ok(header) = ffi_ws.tcp_receive(socket, 2, frame_ms)
+        as "the page sends its mount or an explicit close"
+      case header {
+        <<0x81, _>> -> {
+          let assert Ok(pid) = addresses.owner(socket_name)
+            as "a mounted component registered its serving socket"
+          poll.Done(#(socket, pid))
+        }
+        <<0x88, size>> -> {
+          let assert Ok(<<4000:16, _:bytes>>) =
+            ffi_ws.tcp_receive(socket, size, frame_ms)
+            as "only a retryable page close permits another admission"
+          let _ = ffi_ws.tcp_close(socket)
+          poll.Retry
+        }
+        _ -> panic as "the first page frame is a mount or retryable close"
+      }
+    })
+    as "a fresh page admission starts within the fixture setup deadline"
+  connected
+}
+
+// The failed attempt is a real passive TCP peer carrying the same close as
+// the page socket. Its successor still goes through the real authenticated
+// upgrade; the probe sends neither a browser event nor a session command.
+fn retrying_page_socket() {
+  let assert Ok(listener) =
+    ffi_ws.tcp_listen(0, [ffi_ws.Binary, ffi_ws.Active(False)])
+    as "the retry fixture binds its own ephemeral listener"
+  let assert Ok(port) = ffi_ws.tcp_port(listener)
+    as "the retry fixture knows its bound port"
+  let assert Ok(socket) =
+    ffi_daemon_socket.connect(
+      #(127, 0, 0, 1),
+      port,
+      [ffi_ws.Binary, ffi_ws.Active(False)],
+      setup_ms,
+    )
+    as "the retry fixture connects its passive client"
+  let assert Ok(peer) = ffi_ws.tcp_accept(listener, setup_ms)
+    as "the retry fixture accepts its own connection"
+  assert ffi_daemon_socket.send(peer, <<0x88, 2, 4000:16>>) == Ok(Nil)
+    as "the failed attempt carries the daemon's retryable close"
+  let _ = ffi_ws.tcp_close(peer)
+  let _ = ffi_ws.tcp_close(listener)
+  socket
 }
 
 // The HTTP upgrader exits normally, which cannot retire a linked ticket

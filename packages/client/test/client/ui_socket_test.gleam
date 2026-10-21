@@ -92,6 +92,35 @@ pub fn an_observer_gets_the_observers_page_test() {
   page.shutdown()
 }
 
+// A blocked initializer must end within Lustre's existing start budget, and
+// its component must be gone before a fresh admission can own that transport.
+// The startup log records the fixed timeout category, never the callback data.
+pub fn a_timed_out_component_retires_its_initializer_test() {
+  let reached = process.new_subject()
+  let initial = start()
+  let blocked =
+    component.Start(
+      ..initial,
+      transport: component.Transport(..initial.transport, connect: fn(_, _) {
+        let gate = process.new_subject()
+        process.send(reached, process.self())
+        let _ = process.receive(gate, patience_ms)
+        Nil
+      }),
+    )
+  let assert Error(Nil) = ui_socket.start_page(ui_socket.Observing, blocked)
+    as "the component keeps its bounded initializer"
+  let assert Ok(pid) = process.receive(reached, patience_ms)
+    as "the component reached the deliberately blocked initializer"
+  let watch = process.monitor(pid)
+  let assert Ok(_) =
+    process.new_selector()
+    |> process.select_specific_monitor(watch, fn(down) { down })
+    |> process.selector_receive(patience_ms)
+    as "the timed-out component is reaped"
+  assert !process.is_alive(pid)
+}
+
 pub fn an_operator_gets_the_operators_page_test() {
   list.each([ui_socket.Operating, ui_socket.Owning], fn(role) {
     let assert Ok(page) = ui_socket.start_page(role, start())
