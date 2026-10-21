@@ -129,6 +129,39 @@ pub fn reserve_session(
   })
 }
 
+/// Atomically answers a create that another orchestrator's page asked for
+/// (protocol-change/094): the request's existing row, or the caps judged and a
+/// new `Reserved` registration with its domain mapping and the relayed row that
+/// names it, all in one immediate transaction.
+///
+/// Two creates cannot both pass a cap, because each counts inside the
+/// transaction that inserts, and a crash leaves either the registration, its
+/// mapping and its row, or none of them. A request id that already has a row
+/// answers without writing, so the caller can finish a registration whose store
+/// was never made.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // domain.reserve_relayed(store, "laptop", request_id, limits, registration, mapping)
+/// ```
+pub fn reserve_relayed(
+  store: Catalogue,
+  spawner: String,
+  request_id: String,
+  limits: catalogue.RelayedLimits,
+  record: catalogue.Registration,
+  mapping: Domain,
+) -> Result(catalogue.RelayedClaim, Error) {
+  catalogue.atomic(store, fn() {
+    catalogue.claim_relayed(store, spawner, request_id, limits, fn() {
+      use saved <- result.try(catalogue.reserve_in_transaction(store, record))
+      use _ <- result.try(bind_initial(store, saved, mapping))
+      Ok(saved)
+    })
+  })
+}
+
 /// Takes in a session that another orchestrator handed over: registers it with
 /// its domain mapping, confirms it and records the import, in one transaction.
 ///

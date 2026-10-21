@@ -46,6 +46,11 @@
 //// 12. `add_spawner_spend` adds tokens and spawns to the hour a clock reading
 ////     falls in, and `spawner_spend` sums the rolling day of 24 hours that
 ////     ends at a reading. A spawner's day caps are judged against that sum.
+//// 13. `claim_relayed` records the top-level session another orchestrator's
+////     page asked for (protocol-change/094) under the spawner's two caps, in
+////     the caller's transaction with the registration it names. `relayed_of`
+////     is the marker that says a session is one, and `relayed_page` lists a
+////     spawner's sessions newest first.
 
 import core/ids
 import gleam/bit_array
@@ -70,6 +75,7 @@ import storage/catalogue_names_schema
 import storage/catalogue_pools_schema
 import storage/catalogue_profiles_schema
 import storage/catalogue_recent_folders_schema
+import storage/catalogue_relayed_schema
 import storage/catalogue_releases_schema
 import storage/catalogue_spend_schema
 import storage/catalogue_start_failures_schema
@@ -281,7 +287,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
 /// raise this fails `migrations_end_at_the_current_version_test` rather than
 /// leaving a catalogue that claims a version whose migration never ran.
 @internal
-pub const current_version = 18
+pub const current_version = 19
 
 /// The migration schemas in version order, each applied to a catalogue that
 /// lacks its version.
@@ -305,6 +311,7 @@ pub fn migrations() -> List(#(Int, String)) {
     #(16, catalogue_releases_schema.schema),
     #(17, catalogue_spend_schema.schema),
     #(18, catalogue_start_failures_schema.schema),
+    #(19, catalogue_relayed_schema.schema),
   ]
 }
 
@@ -2104,6 +2111,410 @@ pub fn delegates_held(
   }
 }
 
+/// A top-level session another orchestrator's page started here
+/// (protocol-change/094, catalogue version 19).
+pub type Relayed {
+  Relayed(
+    /// The `[spawners.<name>]` key of the orchestrator that asked.
+    spawner: String,
+    /// The request id that orchestrator minted for the submit. A resent
+    /// create carries the same one.
+    request_id: String,
+    /// This daemon's identity for the session.
+    session_id: String,
+    /// When the row was written, in Unix milliseconds.
+    created_at: Int,
+  )
+}
+
+/// One of the two caps a spawner's `top_level` table sets on its relayed
+/// sessions.
+pub type RelayedCap {
+  /// Relayed sessions of the spawner that are not archived.
+  RelayedSessions
+
+  /// Creations over the rolling hour that ends at the request's clock.
+  RelayedPerHour
+}
+
+/// What `claim_relayed` decided.
+pub type RelayedClaim {
+  /// The request id already had a row, so nothing was written. The session may
+  /// still be a `Reserved` registration whose store was never made, and the
+  /// caller finishes that.
+  RelayedFound(record: Relayed)
+
+  /// The request was new: the registration, in the `Reserved` state, and the
+  /// row that names it were written together.
+  RelayedMade(record: Relayed, registration: Registration)
+
+  /// A cap was reached. Nothing was written.
+  RelayedCapped(
+    /// Which cap.
+    cap: RelayedCap,
+    /// Its value.
+    limit: Int,
+  )
+}
+
+/// One line of a spawner's relayed sessions, as `relayed_page` reads it.
+pub type RelayedListing {
+  RelayedListing(
+    /// The row.
+    record: Relayed,
+    /// The session's display name, with a rename applied.
+    name: String,
+    /// The workspace, or the executor's workspace name.
+    workspace: String,
+    /// The executor the session is on, or the empty string.
+    executor: String,
+    /// The pool the session is in, or the empty string.
+    pool: String,
+    /// Whether the owner archived the session.
+    visibility: Visibility,
+  )
+}
+
+/// The most rows `relayed_page` returns.
+pub const relayed_page_limit = 64
+
+/// The most bytes of a request id the catalogue stores.
+pub const request_id_limit = 64
+
+/// The length of the rolling window `max_per_hour` counts over, in
+/// milliseconds.
+pub const relayed_hour_ms = 3_600_000
+
+/// What a create asks the catalogue to judge: the caps of the spawner's
+/// `top_level` table and the clock.
+pub type RelayedLimits {
+  RelayedLimits(
+    /// The most relayed sessions that are not archived.
+    max_sessions: Int,
+    /// The most creations over the rolling hour that ends at `now_ms`.
+    max_per_hour: Int,
+    /// The current time, in Unix milliseconds.
+    now_ms: Int,
+  )
+}
+
+/// Whether the text is a request id: one to 64 ASCII letters, numbers or
+/// hyphens. The orchestrator that asks mints a UUIDv7, and the grammar is
+/// what keeps the id usable as part of a registration key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.is_request_id("0198c0de-0000-7000-8000-000000000001")
+/// assert !catalogue.is_request_id("")
+/// ```
+pub fn is_request_id(text: String) -> Bool {
+  let graphemes = string.to_graphemes(text)
+  graphemes != []
+  && string.byte_size(text) <= request_id_limit
+  && list.all(graphemes, fn(grapheme) {
+    is_letter(grapheme)
+    || grapheme == "-"
+    || list.contains(string.to_graphemes("0123456789"), grapheme)
+  })
+}
+
+/// The registration key a relayed create is reserved under. It is derived from
+/// the spawner and the request id, so a create resent after a crash finds the
+/// registration it reserved.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert catalogue.relayed_key("laptop", "0198c0de") == "relayed:laptop:0198c0de"
+/// ```
+pub fn relayed_key(spawner: String, request_id: String) -> String {
+  "relayed:" <> spawner <> ":" <> request_id
+}
+
+fn validate_relayed(spawner: String, request_id: String) -> Result(Nil, Error) {
+  case is_profile_name(spawner) && is_request_id(request_id) {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid relayed session metadata"))
+  }
+}
+
+/// Reads the row a create request left, or `None` when the request is new.
+///
+/// A spawner outside the profile-name grammar and a request id outside its own
+/// are `Invalid`. A row that belongs to another spawner is `Conflict`: one
+/// request id names one spawner's create.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.relayed_for(store, "laptop", "0198c0de") == Ok(None)
+/// ```
+pub fn relayed_for(
+  catalogue: Catalogue,
+  spawner: String,
+  request_id: String,
+) -> Result(Option(Relayed), Error) {
+  use Nil <- result.try(validate_relayed(spawner, request_id))
+  use rows <- result.try(query(catalogue, sql.relayed_by_request(request_id)))
+  case rows {
+    [] -> Ok(None)
+    [row] ->
+      case row.spawner == spawner {
+        True ->
+          Ok(
+            Some(Relayed(
+              spawner:,
+              request_id:,
+              session_id: row.session_id,
+              created_at: row.created_at,
+            )),
+          )
+        False -> Error(Conflict)
+      }
+    [_, _, ..] -> Error(Invalid("duplicate relayed session metadata"))
+  }
+}
+
+/// Reads the relayed row of a session, or `None` for a session no orchestrator
+/// asked for.
+///
+/// A stored row that is duplicated is `Invalid` and is never read as "not
+/// relayed", because that would let a damaged row hand a relayed session's
+/// conversation to a caller that must not have it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.relayed_of(store, session_id) == Ok(None)
+/// ```
+pub fn relayed_of(
+  catalogue: Catalogue,
+  session_id: String,
+) -> Result(Option(Relayed), Error) {
+  use rows <- result.try(query(catalogue, sql.relayed_of_session(session_id)))
+  case rows {
+    [] -> Ok(None)
+    [row] ->
+      Ok(
+        Some(Relayed(
+          spawner: row.spawner,
+          request_id: row.request_id,
+          session_id:,
+          created_at: row.created_at,
+        )),
+      )
+    [_, _, ..] -> Error(Invalid("duplicate relayed session metadata"))
+  }
+}
+
+/// How many relayed sessions of the spawner are not archived. The count joins
+/// the rows against the catalogue's own archive state, so archiving a session
+/// frees its place the moment the archive commits.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.relayed_held(store, "laptop") == Ok(0)
+/// ```
+pub fn relayed_held(
+  catalogue: Catalogue,
+  spawner: String,
+) -> Result(Int, Error) {
+  use rows <- result.try(query(catalogue, sql.count_relayed_held(spawner)))
+  case rows {
+    [row] -> Ok(row.count)
+    [] | [_, _, ..] -> Error(Invalid("expected one relayed count row"))
+  }
+}
+
+/// How many creations the spawner has had since `since_ms`, in Unix
+/// milliseconds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.relayed_since(store, "laptop", 0) == Ok(0)
+/// ```
+pub fn relayed_since(
+  catalogue: Catalogue,
+  spawner: String,
+  since_ms: Int,
+) -> Result(Int, Error) {
+  use rows <- result.try(query(
+    catalogue,
+    sql.count_relayed_since(spawner, since_ms),
+  ))
+  case rows {
+    [row] -> Ok(row.count)
+    [] | [_, _, ..] -> Error(Invalid("expected one relayed count row"))
+  }
+}
+
+/// Records, or finds, the session another orchestrator's page asked for, in
+/// the caller's existing immediate transaction (protocol-change/094).
+///
+/// The steps run in this order, and every one is in the caller's transaction,
+/// so none of them can be interleaved with another create:
+///
+/// 1. A request id that has a row answers `RelayedFound` and writes nothing.
+/// 2. The spawner's sessions that are not archived, and its creations over the
+///    last hour, are counted against the limits. A cap that is reached answers
+///    `RelayedCapped` and writes nothing.
+/// 3. `reserve` writes the registration in the `Reserved` state, with whatever
+///    else must commit with it, and the row naming it is inserted.
+///
+/// `reserve` is the caller's step because the registration's domain mapping
+/// belongs to `storage/domain`, which sits above this module.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.atomic(store, fn() { catalogue.claim_relayed(store, "laptop", id, limits, reserve) })
+/// ```
+@internal
+pub fn claim_relayed(
+  catalogue: Catalogue,
+  spawner: String,
+  request_id: String,
+  limits: RelayedLimits,
+  reserve: fn() -> Result(Registration, Error),
+) -> Result(RelayedClaim, Error) {
+  use found <- result.try(relayed_for(catalogue, spawner, request_id))
+  case found {
+    Some(record) -> Ok(RelayedFound(record:))
+    None -> {
+      use held <- result.try(relayed_held(catalogue, spawner))
+      use recent <- result.try(relayed_since(
+        catalogue,
+        spawner,
+        limits.now_ms - relayed_hour_ms,
+      ))
+      case held >= limits.max_sessions, recent >= limits.max_per_hour {
+        True, _ ->
+          Ok(RelayedCapped(cap: RelayedSessions, limit: limits.max_sessions))
+        False, True ->
+          Ok(RelayedCapped(cap: RelayedPerHour, limit: limits.max_per_hour))
+        False, False -> {
+          use registration <- result.try(reserve())
+          use Nil <- result.map(statement(
+            catalogue,
+            sql.insert_relayed_session(
+              request_id,
+              spawner,
+              registration.id,
+              limits.now_ms,
+            ),
+          ))
+          RelayedMade(
+            record: Relayed(
+              spawner:,
+              request_id:,
+              session_id: registration.id,
+              created_at: limits.now_ms,
+            ),
+            registration:,
+          )
+        }
+      }
+    }
+  }
+}
+
+/// Lists a spawner's relayed sessions newest first, at most `limit` of them
+/// (and never more than `relayed_page_limit`), after the identity `after`. An
+/// empty `after` starts at the newest. Archived sessions are listed with their
+/// visibility, so the page can show them as archived.
+///
+/// The read opens no conversation file. A page is a coherent snapshot, and the
+/// caller continues after the last row's identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // catalogue.relayed_page(store, "laptop", after: "", limit: 64) == Ok([])
+/// ```
+pub fn relayed_page(
+  catalogue: Catalogue,
+  spawner: String,
+  after after: String,
+  limit limit: Int,
+) -> Result(List(RelayedListing), Error) {
+  use Nil <- result.try(case is_profile_name(spawner) {
+    True -> Ok(Nil)
+    False -> Error(Invalid("invalid relayed session metadata"))
+  })
+  let bound = int.max(1, int.min(limit, relayed_page_limit))
+  snapshot(catalogue.connection, fn() {
+    case after {
+      "" -> {
+        use rows <- result.try(query(
+          catalogue,
+          sql.relayed_first_page(spawner, bound),
+        ))
+        list.try_map(rows, fn(row) {
+          relayed_listing(
+            spawner,
+            row.request_id,
+            row.session_id,
+            row.created_at,
+            row.name,
+            row.workspace,
+            row.executor,
+            row.pool,
+            row.archived,
+          )
+        })
+      }
+      after -> {
+        use rows <- result.try(query(
+          catalogue,
+          sql.relayed_page_after(spawner, after, bound),
+        ))
+        list.try_map(rows, fn(row) {
+          relayed_listing(
+            spawner,
+            row.request_id,
+            row.session_id,
+            row.created_at,
+            row.name,
+            row.workspace,
+            row.executor,
+            row.pool,
+            row.archived,
+          )
+        })
+      }
+    }
+  })
+}
+
+fn relayed_listing(
+  spawner: String,
+  request_id: String,
+  session_id: String,
+  created_at: Int,
+  name: String,
+  workspace: String,
+  executor: String,
+  pool: String,
+  archived: Int,
+) -> Result(RelayedListing, Error) {
+  use visibility <- result.map(case archived {
+    0 -> Ok(Active)
+    1 -> Ok(Archived)
+    _ -> Error(Invalid("invalid archive metadata"))
+  })
+  RelayedListing(
+    record: Relayed(spawner:, request_id:, session_id:, created_at:),
+    name:,
+    workspace:,
+    executor:,
+    pool:,
+    visibility:,
+  )
+}
+
 /// How long one spend bucket is, in milliseconds.
 pub const spend_bucket_ms = 3_600_000
 
@@ -2279,6 +2690,10 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
     // A delegate session's row names its registration, so it leaves first. The
     // spawner's cap then counts one session fewer.
     use Nil <- result.try(statement(catalogue, sql.delete_delegate_session(id)))
+
+    // A relayed session's row (version 19) names the registration the same
+    // way and leaves with it, so the spawner's caps count one session fewer.
+    use Nil <- result.try(statement(catalogue, sql.delete_relayed_session(id)))
     use Nil <- result.try(statement(catalogue, sql.delete_registration(id)))
 
     // The revision moves so an open listing page is refused rather than
