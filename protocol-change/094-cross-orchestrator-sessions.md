@@ -166,10 +166,12 @@ deadline (30 s for `TopCreate`, 7 s otherwise).
   sessions, newest first: `{session_id, request_id, name, placement, activity,
   updated_at, requests, children}`. `activity` is `NeedsYou`, `Working`,
   `Idle` or `Archived`. `requests` are the session's pending escalation
-  records, in 089's record shape with `placement` and `admitted`, at most 8
-  per row. `children` are the session's own child stubs. At most 64 rows and
-  64 KiB per page, the bound of 090. `request_id` lets the laptop reconcile a
-  create whose answer it never received.
+  records, in 089's record shape with `placement` and `admitted`: the 8
+  oldest by `seq`, with `more: n` counting the rest. `children` are the
+  session's own child stubs. At most 64 rows and 64 KiB per page, cut at the
+  byte bound as in 090; a row's `requests` is never split across pages, so a
+  row is either whole on a page or absent from it. `request_id` lets the
+  laptop reconcile a create whose answer it never received.
 - `TopHistory(session, cursor, limit, reply)`. A transcript page, as
   `ChildHistory` in 090, for a relayed session of this spawner.
 - `TopSend(session, message_id, text, reply)`. Delivers `text` to the
@@ -183,7 +185,12 @@ deadline (30 s for `TopCreate`, 7 s otherwise).
   `client/remote_decision` judges 089's `Resolve`: against
   `[spawners.laptop.top_level.approval_ceiling]`, against the stored `wanted`
   list, and with the same seq compare-and-set. The descendant check is
-  replaced by "the session is relayed for this spawner".
+  replaced by "the session is relayed for this spawner". A relayed session
+  with a pending record may be saved rather than resident; `TopResolve` on a
+  saved session opens it the way `TopSend` does, then is judged in the hub's
+  turn. A decision on a call that already settled in band is remembered and
+  applies at the next run, as a local operator's decision is; it does not
+  start a run.
 
 Every message other than `Placements` and `TopCreate` refuses a session that
 is not in `catalogue_relayed_sessions` for this spawner with `NotRelayed`.
@@ -194,16 +201,19 @@ is not in `catalogue_relayed_sessions` for this spawner with `NotRelayed`.
 ### Records
 
 On the box, in the catalogue, at the next catalogue version:
-`catalogue_relayed_sessions(spawner, request_id, session_id, created_at,
-archived)`, with `request_id` unique, `session_id` unique and referencing
+`catalogue_relayed_sessions(spawner, request_id, session_id, created_at)`,
+with `request_id` unique, `session_id` unique and referencing
 `catalogue_sessions`.
 
 A create runs one immediate catalogue transaction that does all of the
 following or none of it:
 
-1. Look up `request_id`. A row answers its session, and nothing else is done.
-2. Count this spawner's rows that are not archived against `max_sessions`,
-   and its rows created in the last hour against `max_per_hour`. Either cap
+1. Look up `request_id`. A row answers its session, and nothing else is
+   done in the transaction; after it, a `reserved` registration whose store
+   was never made is finished as below.
+2. Count this spawner's relayed sessions that are not archived, by a join
+   against the catalogue's own session state, against `max_sessions`, and its
+   rows created in the last hour against `max_per_hour`. Either cap
    answers `CapReached(key, limit)` and writes nothing.
 3. Insert the session's registration in 078's `reserved` state.
 4. Insert the relayed row naming it.
@@ -214,6 +224,10 @@ row are inserted together, a crash leaves either both or neither. The
 session's store is created after the transaction, by the same path that turns
 a `reserved` registration into a session today; a crash there leaves a
 reserved session that a resent `TopCreate` finds by `request_id` and finishes.
+When boot reconciliation drops an abandoned `reserved` registration (the
+`Reserved` status of `client/daemon/manager`), its relayed row is deleted in
+the same transaction, and a later resend of that `request_id` creates
+afresh.
 
 The same shape is wrong in today's 084 path: a delegate session is registered
 (`reserve`) before `claim_delegate` (`catalogue.gleam:1719`) inserts its
@@ -221,7 +235,7 @@ delegate row in a second transaction, so a box crash between the two leaves a
 registered session with no delegate row, and a resent `Spawn` creates a second
 one. This change does not fix it; it will be tracked separately.
 
-Archiving sets `archived` and keeps the row; deleting the session on the box's
+Archiving changes only the session's own state and keeps the row; deleting the session on the box's
 page removes the row with the session.
 
 On the laptop: nothing durable. A relay worker (a weft managed task) per

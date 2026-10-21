@@ -328,8 +328,8 @@ dialled on demand, and the box sends nothing on its own.
 - **Tests.** Port tests for each constructor's refusals (unknown spawner,
   `top_level` off, cap reached, placement not offered, session not relayed,
   ceiling exceeded); a catalogue test that two concurrent creates at the cap
-  do not both pass, and that a crash between registration and row is
-  impossible because they share a transaction; a two-daemon test in the shape
+  do not both pass, and that a `TopCreate` resent after the transaction and
+  before the store exists answers the same session and finishes it; a two-daemon test in the shape
   of the 084 S9 tests covering link loss, resend after loss, reconciliation of
   a lost create by `request_id`, and same-build checks; the web socket's
   admission pins for relayed rows.

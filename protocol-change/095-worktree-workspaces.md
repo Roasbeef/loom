@@ -169,16 +169,38 @@ trees deleted outside Loom. A directory under `worktrees/<workspace>/` with no
 record is left in place and reported in the census, never deleted: Loom
 removes only what its ledger says it created.
 
-Reconciliation runs in a weft task before the host admits attaches. It logs
-`executor.worktree_reconcile` with the count done and the count left every
-100 records, and gives up after 60 s with the rest left for the next start; a
-workspace whose records were not all reconciled refuses attaches with
-`PlaneBuilding` until they are.
+Reconciliation runs per workspace inside that workspace's plane build: the
+per-workspace weft task that already answers attaches with `PlaneBuilding`
+while it runs. A workspace is admitted as soon as its own records are
+reconciled, independent of the others, and the task logs
+`executor.worktree_reconcile` with the workspace, the count done and the count
+left every 100 records. There is no time limit and nothing is left for a later
+start.
+
+### Where the Git work runs, and how long an attach may take
+
+`git worktree add` at a first attach, and the recreation at a reopen, also run
+inside the plane build, never in the host actor's turn, so a long checkout
+delays only the session that asked and other attaches on the same workspace,
+which see `PlaneBuilding`. The orchestrator retries a `PlaneBuilding` attach
+within `attach_within_ms` (`client/remote/surface`, the attach loop), which is
+the constant `attach_within_ms` of 30 000 ms today
+(`workspace.gleam:704`). That must cover a full checkout of the repository,
+and 30 s does not for a large one. S3 therefore adds `attach_within_s` to
+`[executors.<name>]` and `[pools.<name>]` on the orchestrator, default 30, at
+most 900, which the owner sizes to a cold checkout of the largest worktree
+workspace the executor serves (time `git worktree add` once on the executor
+and double it). It is documented in `docs/configuration.md` when S3 lands.
 
 ### The sandbox
 
-`root.directories` (`daemon/root.gleam:920`), which creates the state root's
-directories, gains `worktrees/`. A worktree session's writable roots are its
+The function `directories` in `client/daemon/root`
+(`daemon/root.gleam:920`), which creates the state root's directories at
+start, gains `worktrees/`, made with mode 0700 before any session is
+admitted, for the same reason the socket root is made there: a directory that
+holds another session's files must exist with its owner and mode fixed before
+anything can race to create it. `scopes/` and `blobs/` stay as they are, made
+lazily by `executor_plane`. A worktree session's writable roots are its
 own tree and the two linked Git directories below; the rest of the state root
 stays masked as it is for `scopes/` and `blobs/` today, so `worktrees/` is not
 covered by any mask over the whole root that would hide a session's own tree.
@@ -243,5 +265,7 @@ session can do all of it to every other session directly.
   must agree on the version. A session that a pool placed on an executor that
   has not upgraded is refused at attach until that executor upgrades; it is
   never moved to another executor.
-- Start-up reconciliation adds time before an executor admits attaches,
-  bounded at 60 s and logged as it goes.
+- Start-up reconciliation delays each worktree workspace's first attach
+  until its own records are reconciled, logged as it goes.
+- A first attach takes as long as a checkout, so `attach_within_s` has to be
+  sized per executor.
