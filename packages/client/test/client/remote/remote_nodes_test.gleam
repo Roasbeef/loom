@@ -32,6 +32,16 @@ pub fn a_real_workspace_serves_file_tools_to_another_node_test() {
   )
 }
 
+pub fn two_sessions_get_a_tree_each_on_a_worktree_workspace_across_nodes_test() {
+  proves(
+    "remote_worktrees",
+    "Two sessions attaching to a worktree workspace from another node must "
+      <> "each get a tree and a branch, edit the same file without seeing each "
+      <> "other, and on close the clean tree must be removed while the one with "
+      <> "an unsaved file is kept.",
+  )
+}
+
 pub fn a_connection_lost_while_the_tool_runs_does_not_run_it_twice_test() {
   proves(
     "remote_short_outage",

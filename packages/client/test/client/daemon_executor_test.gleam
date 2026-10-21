@@ -20,6 +20,7 @@ import gleam/string
 import host/bootstrap
 import simplifile
 import support/remote_fixtures as fixtures
+import support/worktree_rig
 import telemetry/log
 
 fn absolute(path: String) -> String {
@@ -136,5 +137,76 @@ pub fn a_missing_helper_refuses_the_start_with_a_reason_test() {
       log.discard(),
     )
   assert string.contains(reason, "the helper binary does not exist")
+  assert process.named(address.default()) == Error(Nil)
+}
+
+// --- worktree workspaces (protocol-change/095) ----------------------------------
+
+fn tree_scratch(name: String) -> #(String, String) {
+  let scratch = absolute(fixtures.scratch(name))
+  let state = scratch <> "/state"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(state)
+    as "the state root is created"
+  let assert Ok(state) = bootstrap.canonical_directory(state)
+    as "the state root resolves"
+  worktree_rig.establish(state)
+  #(scratch, state)
+}
+
+pub fn a_daemon_that_serves_a_worktree_workspace_reports_it_in_its_census_test() {
+  let #(scratch, state) = tree_scratch("daemon-executor-trees")
+  let repository = worktree_rig.repository(scratch <> "/repo")
+  let served = [
+    workspaces.Workspace("proj", repository, workspaces.Worktree("main")),
+  ]
+  let arguments = [
+    "--helper",
+    absolute("../sandbox/loom-exec"),
+    "--best-effort",
+  ]
+
+  let assert Ok(Some(hosted)) =
+    main.start_executor(config(state, served, arguments), log.discard())
+  let assert Ok(host) = process.named(address.default())
+    as "the host registers under the fixed name"
+
+  // Nothing attached yet, so no tree, and the stray directory is counted.
+  worktree_rig.write(state <> "/worktrees/proj/stranger/note.txt", "x\n")
+  let assert Some(facts) = hosted.facts()
+  assert facts.workspaces == ["proj"]
+  assert facts.worktrees
+    == Some(node_report.WorktreeFacts(
+      workspaces: ["proj"],
+      present: 0,
+      kept: 0,
+      branches_left: 0,
+      unrecorded: 1,
+    ))
+
+  process.demonitor_process(hosted.monitor)
+  process.kill(host)
+  assert fixtures.eventually(fn() {
+    process.named(address.default()) == Error(Nil)
+  })
+}
+
+pub fn a_worktree_root_that_is_not_a_primary_checkout_refuses_the_start_test() {
+  let #(scratch, state) = tree_scratch("daemon-executor-notrepo")
+  let plain = scratch <> "/plain"
+  let assert Ok(Nil) = simplifile.create_directory_all(plain)
+    as "a plain directory is created"
+  let served = [
+    workspaces.Workspace("proj", plain, workspaces.Worktree("main")),
+  ]
+  let arguments = [
+    "--helper",
+    absolute("../sandbox/loom-exec"),
+    "--best-effort",
+  ]
+
+  let assert Error(reason) =
+    main.start_executor(config(state, served, arguments), log.discard())
+
+  assert string.contains(reason, "primary checkout")
   assert process.named(address.default()) == Error(Nil)
 }
