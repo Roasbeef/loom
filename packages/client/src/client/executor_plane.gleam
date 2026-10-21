@@ -49,6 +49,18 @@
 //// session's store into a checkout: registered sessions exist only from this
 //// design on, and a session's placement is fixed when it is created.
 ////
+//// ## A worktree for each session
+////
+//// A workspace configured with `mode = "worktree"` does not run its sessions in
+//// `root`. The build first asks `client/worktrees` for the session's own Git
+//// worktree and builds the plane over that directory, so the tools, the
+//// sandbox's writable root, the language servers and the code-mode work
+//// directory are all the tree's and `root` is not writable to the session. The
+//// ask is part of the build, which runs in a task of its own, so a long
+//// checkout delays only the session that asked and the host answers the others'
+//// attaches meanwhile. When the scope retires cleanly the close removes a clean
+//// tree and leaves one with changes (protocol-change/095).
+////
 //// ## Why the build collects its cleanups
 ////
 //// `workspace_plane.start` hands each started resource to a `Retain` function
@@ -63,16 +75,21 @@
 ////
 //// ## Flow
 ////
-//// `machine` → `factory` → `build` → `plane_over` → `retire`
+//// `machine` → `worktrees_of` → `factory` → `build` → `plane_over` → `retire`
 ////
 //// 1. `machine` reads this executor's own settings once, at daemon start.
-//// 2. `factory` closes over the machine and the configured workspaces.
-//// 3. `build` resolves the workspace name, makes the scope directory, and starts
-////    the workspace half.
-//// 4. `plane_over` reads the prompt facts once and wraps the started plane as the
+//// 2. `worktrees_of` starts the sandboxed Git and the gates of the worktree
+////    workspaces.
+//// 3. `factory` closes over the machine, the configured workspaces and those
+////    worktrees.
+//// 4. `build` resolves the workspace name, opens the session's tree when the
+////    workspace has one, makes the scope directory, and starts the workspace
+////    half.
+//// 5. `plane_over` reads the prompt facts once and wraps the started plane as the
 ////    host's plane, with the census as plain data.
-//// 5. `retire` closes a scope: language servers, children, broker, then helpers,
-////    and reports a clean close only on the helper witness.
+//// 6. `retire` closes a scope: language servers, children, broker, then helpers,
+////    and reports a clean close only on the helper witness. A clean close then
+////    settles the session's tree.
 
 import broker/broker
 import broker/exec.{type EnforcementDemand}
@@ -96,9 +113,11 @@ import client/serve
 import client/workspace_plane
 import client/workspace_policy
 import client/workspaces.{type Workspace}
+import client/worktrees.{type Worktrees}
 import core/clock
 import core/ids
 import core/json
+import filepath
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -249,55 +268,143 @@ pub fn machine(
   ))
 }
 
+/// Starts what the configured worktree workspaces need: the sandboxed Git and a
+/// gate for each. A configuration with none starts nothing. A worktree
+/// workspace whose root is not the top of a primary Git checkout is refused
+/// here, so the daemon does not start.
+///
+/// The processes are linked to the caller, which is the process that starts the
+/// executor host and lives as long as the daemon.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_plane.worktrees_of(machine, workspaces)
+/// ```
+pub fn worktrees_of(
+  machine: Machine,
+  configured: List(Workspace),
+) -> Result(Worktrees, String) {
+  worktrees.start(
+    worktrees.Config(
+      state_root: machine.state_root,
+      ledger_path: ledger_path(machine.state_root),
+      helper_path: machine.helper_path,
+      demand: machine.demand,
+      logger: machine.logger,
+    ),
+    configured,
+  )
+}
+
+/// Where the executor's execution ledger lives under its state root.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert executor_plane.ledger_path("/s") == "/s/exec-ledger.db"
+/// ```
+pub fn ledger_path(state_root: String) -> String {
+  state_root <> "/exec-ledger.db"
+}
+
 /// The factory the executor host builds planes with.
 ///
 /// A name that is not in `configured` is refused with a reason an operator can
 /// act on, before anything is made. Every other failure is the reason
 /// `workspace_plane` gave, and leaves nothing running: whatever the build had
-/// started is stopped before the error returns.
+/// started is stopped before the error returns. A worktree workspace's session
+/// first gets its tree from `trees`, and a tree that cannot be made is refused
+/// as `WorktreeNotMade` with Git's message.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // host.Config(.., factory: executor_plane.factory(machine, workspaces))
+/// // host.Config(.., factory: executor_plane.factory(machine, workspaces, trees))
 /// ```
 pub fn factory(
   machine: Machine,
   configured: List(Workspace),
+  trees: Worktrees,
 ) -> host.PlaneFactory(remote_census.RemoteCensus) {
-  fn(spec: host.AttachSpec) { build(machine, configured, spec) }
+  fn(spec: host.AttachSpec) { build(machine, configured, trees, spec) }
 }
 
 fn build(
   machine: Machine,
   configured: List(Workspace),
+  trees: Worktrees,
   spec: host.AttachSpec,
-) -> Result(host.Plane(remote_census.RemoteCensus), String) {
+) -> Result(host.Plane(remote_census.RemoteCensus), host.PlaneFailure) {
   use workspace <- result.try(
     workspaces.find(configured, spec.workspace)
     |> result.map_error(fn(_missing) {
-      "this executor serves no workspace named `" <> spec.workspace <> "`"
+      host.NoPlaneBuilt(
+        "this executor serves no workspace named `" <> spec.workspace <> "`",
+      )
     }),
   )
   use root <- result.try(
     bootstrap.canonical_directory(workspace.root)
     |> result.map_error(fn(reason) {
-      "the workspace `"
-      <> workspace.name
-      <> "` is not a directory on this executor: "
-      <> reason
+      host.NoPlaneBuilt(
+        "the workspace `"
+        <> workspace.name
+        <> "` is not a directory on this executor: "
+        <> reason,
+      )
     }),
   )
-  use blob_root <- result.try(blob_directory(machine.state_root, spec.session))
-  use scope <- result.try(scope_directory(machine.state_root, spec.session))
-  let outcome = start(machine, root, scope, blob_root, spec)
-  case outcome {
-    Ok(plane) -> Ok(plane)
-    Error(reason) -> {
-      remove_scope(machine.logger, scope)
-      Error(reason)
+  case workspace.mode {
+    workspaces.Shared -> build_in(machine, root, None, spec)
+    workspaces.Worktree(..) -> {
+      use tree <- result.try(
+        worktrees.open(trees, workspace, spec.session)
+        |> result.map_error(host.WorktreeNotMade),
+      )
+      let custody = Some(Custody(trees:, workspace:, branch: tree.branch))
+
+      // The tree exists from here on, so a build that fails must settle it:
+      // a tree that nothing uses and nothing holds changes in is removed, and
+      // one that holds changes stays for the next attach to adopt.
+      case build_in(machine, tree.path, custody, spec) {
+        Ok(plane) -> Ok(plane)
+        Error(failure) -> {
+          let _closed = worktrees.close(trees, workspace, spec.session)
+          Error(failure)
+        }
+      }
     }
   }
+}
+
+// The checkout a scope's tree belongs to, held by the plane so that its close
+// can settle the tree.
+type Custody {
+  Custody(trees: Worktrees, workspace: Workspace, branch: String)
+}
+
+// The part of a build that is the same for both modes: the blob store, the
+// scope directory and the workspace half, over `directory`, which is `root` for
+// a shared workspace and the session's tree for a worktree one.
+fn build_in(
+  machine: Machine,
+  directory: String,
+  custody: Option(Custody),
+  spec: host.AttachSpec,
+) -> Result(host.Plane(remote_census.RemoteCensus), host.PlaneFailure) {
+  let built = {
+    use blob_root <- result.try(blob_directory(machine.state_root, spec.session))
+    use scope <- result.try(scope_directory(machine.state_root, spec.session))
+    case start(machine, directory, scope, blob_root, custody, spec) {
+      Ok(plane) -> Ok(plane)
+      Error(reason) -> {
+        remove_scope(machine.logger, scope)
+        Error(reason)
+      }
+    }
+  }
+  result.map_error(built, host.NoPlaneBuilt)
 }
 
 // The session's blob store, created if it is not there and private. Unlike
@@ -343,16 +450,52 @@ fn usable_session(session: String) -> Result(Nil, String) {
 }
 
 fn safe_component(name: String) -> Bool {
-  let graphemes = string.to_graphemes(name)
-  name != ""
-  && string.byte_size(name) <= 128
-  && !string.starts_with(name, ".")
-  && list.all(graphemes, fn(each) {
-    string.contains(
-      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.",
-      each,
-    )
-  })
+  worktrees.safe_component(name)
+}
+
+// Masks the other sessions' scopes and trees from a worktree session's jail.
+// Both directories sit under the state root, which the jail reads on the
+// default host-wide read scope, and each holds another session's files: its
+// scratch, or its own checkout of the same repository with whatever it has not
+// committed. A mask over the whole of `worktrees/` is impossible, because it
+// would hide this session's own tree, which is the workspace it works in. So
+// each sibling that exists when this session's policy is built is masked on
+// its own. A sibling that attaches later is not masked from this session. The
+// mask is therefore exact for sessions already attached and absent for those
+// attached afterwards, which is why protocol-change/095 describes worktree
+// mode as protection against accidents and not against a hostile model.
+fn protecting_siblings(
+  base: policy.SandboxPolicy,
+  state_root: String,
+  session: String,
+  custody: Option(Custody),
+) -> policy.SandboxPolicy {
+  case custody {
+    Some(_) -> masking_siblings(base, state_root, session)
+    None -> base
+  }
+}
+
+fn masking_siblings(
+  base: policy.SandboxPolicy,
+  state_root: String,
+  session: String,
+) -> policy.SandboxPolicy {
+  let scopes = directory_children(state_root <> "/scopes")
+  let trees =
+    directory_children(state_root <> "/" <> worktrees.directory_name)
+    |> list.flat_map(directory_children)
+  let others =
+    list.append(scopes, trees)
+    |> list.filter(fn(path) { filepath.base_name(path) != session })
+  policy.SandboxPolicy(..base, protected: list.append(base.protected, others))
+}
+
+// The paths of a directory's entries, or none for one that does not exist.
+fn directory_children(directory: String) -> List(String) {
+  simplifile.read_directory(directory)
+  |> result.unwrap([])
+  |> list.map(fn(entry) { directory <> "/" <> entry })
 }
 
 // Prepares and starts the workspace half, filing every cleanup the start hands
@@ -362,6 +505,7 @@ fn start(
   root: String,
   scope: String,
   blob_root: String,
+  custody: Option(Custody),
   spec: host.AttachSpec,
 ) -> Result(host.Plane(remote_census.RemoteCensus), String) {
   // The store is in the state root but in no directory the state-root masks
@@ -372,6 +516,7 @@ fn start(
     |> workspace_policy.admitting_config_mounts(machine.workspace.mounts)
     |> workspace_policy.protecting_state_root(machine.state_root)
     |> workspace_policy.protecting_blobs(blob_root)
+    |> protecting_siblings(machine.state_root, spec.session, custody)
   use prepared <- result.try(
     workspace_plane.prepare(
       workspace_spec(machine, root, scope, blob_root, base),
@@ -395,7 +540,16 @@ fn start(
       ]
       let code_mode = process.receive(configs, 0) |> option.from_result
       plane_over(
-        Built(machine:, root:, scope:, started:, code_mode:, mcp: mcp.statuses),
+        Built(
+          machine:,
+          root:,
+          scope:,
+          custody:,
+          session: spec.session,
+          started:,
+          code_mode:,
+          mcp: mcp.statuses,
+        ),
         cleanups,
       )
     }
@@ -629,6 +783,8 @@ type Built {
     machine: Machine,
     root: String,
     scope: String,
+    custody: Option(Custody),
+    session: String,
     started: workspace_plane.Started,
     code_mode: Option(codemode_wiring.Config),
     mcp: List(remote_census.McpStatus),
@@ -655,6 +811,8 @@ fn plane_over(
       let broker_actor = plane.broker
       let close_plane = plane.close
       let logger = machine.logger
+      let custody = built.custody
+      let session = built.session
       Ok(
         host.Plane(
           run: plane.run,
@@ -671,6 +829,7 @@ fn plane_over(
             prompt: facts,
             broker: broker.subject(broker_actor),
             mcp: built.mcp,
+            branch: option.map(built.custody, fn(held) { held.branch }),
           ),
           children: fn(builder) {
             builder
@@ -681,6 +840,7 @@ fn plane_over(
           close: fn(retire_children) {
             let outcome = retire(close_plane, retire_children, cleanups)
             settle_scope(logger, scope, outcome)
+            settle_tree(custody, session, outcome)
             outcome
           },
         ),
@@ -766,6 +926,24 @@ fn settle_scope(
       log.warn(logger, "executor.scope_cleanup_unproven", [
         field.count(key: "unproven", value: count),
       ])
+  }
+}
+
+// A scope that proved its cleanup has no process left in its tree, so the tree
+// can be settled: removed when clean, left when it holds changes. A scope that
+// did not prove it leaves the tree and its record alone, as it leaves the scope
+// directory, for the operator's release to handle.
+fn settle_tree(
+  custody: Option(Custody),
+  session: String,
+  outcome: protocol.CloseOutcome,
+) -> Nil {
+  case custody, outcome {
+    Some(held), protocol.AllRetired -> {
+      let _closed = worktrees.close(held.trees, held.workspace, session)
+      Nil
+    }
+    Some(_), protocol.UnknownCleanup(..) | None, _ -> Nil
   }
 }
 

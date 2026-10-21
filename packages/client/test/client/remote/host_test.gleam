@@ -256,7 +256,7 @@ pub fn a_failed_plane_build_leaves_the_scope_open_for_a_retry_test() {
     case list.length(fixtures.builds(probe)) {
       0 -> {
         process.send(probe.subject, fixtures.Built(owner: spec.owner))
-        Error("no space for the workspace")
+        Error(host.NoPlaneBuilt("no space for the workspace"))
       }
       _ -> good(spec)
     }
@@ -648,6 +648,56 @@ pub fn a_version_2_attach_is_refused_and_the_host_stays_up_test() {
   stop(rig)
 }
 
+pub fn a_version_3_attach_is_refused_and_the_host_stays_up_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let path = fixtures.scratch("host") <> "/ledger.db"
+  let text =
+    "remote_test_host_v3_" <> int.to_string(ffi_os.unique_positive_integer())
+  let rig =
+    start_config(
+      path,
+      probe,
+      host.Config(
+        ..fixtures.host_config(
+          path,
+          fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired),
+        ),
+        name: ffi_remote.fixed_name(text),
+      ),
+    )
+  let reply: Subject(Result(protocol.Attached(String), Refusal)) =
+    process.new_subject()
+
+  // The step to version 4 added a refusal and a census member and kept `Attach`'s
+  // shape, so an executor of the previous release is refused by value.
+  //
+  // Version 3's `Attach` as its build sends it, built by hand: the record tag
+  // and its seven fields, a term this build's constructors know nothing about.
+  // Its shape is the one this build's `Attach` keeps, so the host matches it,
+  // reads the version and refuses by value.
+  let version_3 = #(
+    atom.create("attach"),
+    3,
+    "s1",
+    "/work",
+    0,
+    token(1),
+    fixtures.plan_port(),
+    reply,
+  )
+  ffi_remote.send(
+    to: node.self(),
+    name: ffi_remote.fixed_name(text),
+    message: version_3,
+  )
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the host answers a version 3 attach"
+  assert answer == Error(protocol.VersionMismatch(supported: protocol.version))
+  assert process.is_alive(rig.pid)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  stop(rig)
+}
+
 pub fn a_fresh_result_is_answered_as_the_tool_returned_it_test() {
   let rig = rig(fixtures.Open)
   let assert Ok(_attached) = attach(rig, 0, token(1))
@@ -765,7 +815,7 @@ pub fn a_build_that_fails_is_reported_and_retried_by_the_next_attach_test() {
   let rig =
     start_at(path, probe, fn(spec: host.AttachSpec) {
       process.send(attempts, spec.incarnation)
-      Error("no checkout here")
+      Error(host.NoPlaneBuilt("no checkout here"))
     })
   assert attach(rig, 0, token(1)) == Error(protocol.NoPlane("no checkout here"))
 

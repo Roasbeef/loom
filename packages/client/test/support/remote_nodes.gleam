@@ -261,6 +261,8 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       logger: log.discard(),
       mcp_servers: [],
     )
+  let served = [workspaces.shared("proj", checkout)]
+  use trees <- result.try(executor_plane.worktrees_of(machine, served))
   let config =
     host.Config(
       name: address.default(),
@@ -268,7 +270,7 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       limits: exec_ledger.default_limits(),
       max_result_bytes: host.default_max_result_bytes,
       clock: clock.from_function(ffi_os.system_time_ms),
-      factory: executor_plane.factory(machine, [workspaces.shared("proj", checkout)]),
+      factory: executor_plane.factory(machine, served, trees),
       execution_result_bytes: host.default_execution_result_bytes,
     )
   use _started <- result.try(

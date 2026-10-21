@@ -96,6 +96,12 @@ import tools/tool
 /// `Lookup.Executed`) and the MCP plan the executor asks the owner for
 /// (`AskMcpPlan`).
 ///
+/// Version 4 added the refusal `WorktreeFailed` and the branch a worktree
+/// session's census carries (`client/remote/remote_census`), for workspaces in
+/// worktree mode (protocol-change/095). The step from 3 is a wire change of
+/// two shapes, and every executor must upgrade with its orchestrators, because
+/// the host refuses the other version at the first attach.
+///
 /// `Attach` must keep the shape it had in version 2. It is the first
 /// message a peer of any version sends, and the host matches the term it
 /// receives against this module's constructors: an `Attach` of another arity
@@ -104,12 +110,15 @@ import tools/tool
 /// travels in a message sent after the version check has passed, as the MCP
 /// plan does. Every other message may change shape, because a peer of another
 /// version never gets past the attach to send it.
-pub const version = 3
+pub const version = 4
 
 /// The name an execution's ledger row is admitted under, in the column a tool
 /// call's row holds its tool name in. No tool is named this, so a row is known
 /// to be an execution's without reading its step.
 pub const execution_tool = "execution"
+
+/// The most bytes of Git's message a `WorktreeFailed` carries.
+pub const max_worktree_reason = 512
 
 /// The prefix of an execution's step: `async/<id>` is both the record's broker
 /// step and the step of its ledger key.
@@ -217,6 +226,12 @@ pub type Refusal {
   /// The session's workspace plane is still being built. Nothing changed; ask
   /// again shortly.
   PlaneBuilding
+
+  /// The workspace is in worktree mode and the executor could not make or
+  /// reopen the session's Git worktree. `reason` is Git's message, cut to
+  /// `max_worktree_reason` printable bytes. Whatever the attempt began was
+  /// undone, so the next attach starts clean.
+  WorktreeFailed(reason: String)
 
   /// An argument was outside its domain.
   Invalid(reason: String)
@@ -581,6 +596,8 @@ pub fn describe(refusal: Refusal) -> String {
       "the executor has no workspace for this session: " <> reason
     PlaneBuilding ->
       "the executor is still preparing this session's workspace; try again shortly"
+    WorktreeFailed(reason:) ->
+      "the executor could not make this session's Git worktree: " <> reason
     Invalid(reason:) -> "the executor refused the request: " <> reason
     ExecutorFault(reason:) -> "the executor failed: " <> reason
     Unreachable(reason:) -> "the executor could not be reached: " <> reason

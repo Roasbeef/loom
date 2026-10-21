@@ -37,8 +37,8 @@
 //// 1. `from_document` reads the table and requires the distribution table,
 ////    because an executor with no pinned peers has nobody to serve.
 //// 2. `row` validates one entry's name and keys.
-//// 3. `mode_of` reads `mode` and `base` together, so `base` cannot be accepted
-////    without the mode that uses it.
+//// 3. `mode_of` reads the mode and its base together, so a base cannot be
+////    accepted without the mode that uses it.
 //// 4. `find` resolves a name an orchestrator sent to its configured row.
 
 import client/distribution

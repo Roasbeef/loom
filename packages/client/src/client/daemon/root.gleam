@@ -73,6 +73,7 @@ import client/daemon/limits
 import client/daemon/listener
 import client/daemon/manager
 import client/daemon/protocol
+import client/worktrees
 import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
@@ -954,6 +955,19 @@ fn directories(config: Config) {
     root <> "/workspaces",
   ))
   use Nil <- result.try(bootstrap.ensure_private_directory(root <> "/domains"))
+
+  // The executor's Git worktrees, one directory for each session of a
+  // workspace in worktree mode (protocol-change/095). It is made here, mode
+  // 0700 and before any session is admitted, for the reason the socket root
+  // is: a directory that holds another session's files must exist with its
+  // owner and mode fixed before anything can race to create it. It is not
+  // masked as a whole, because a session's own tree sits inside it and a mask
+  // over the parent would hide the session's workspace from itself; each
+  // sibling is masked from the session that is built beside it instead
+  // (`client/executor_plane`).
+  use Nil <- result.try(bootstrap.ensure_private_directory(
+    root <> "/" <> worktrees.directory_name,
+  ))
   use Nil <- result.try(unaliased_file(paths.lock))
   use Nil <- result.try(unaliased_file(paths.catalogue))
   Ok(paths)
