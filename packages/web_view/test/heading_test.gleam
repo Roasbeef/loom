@@ -41,6 +41,7 @@ fn modelled(
     cost:,
     rate: None,
     notice: element.none(),
+    placement: element.none(),
   )
   |> element.to_string
 }
@@ -165,6 +166,7 @@ pub fn a_figure_with_no_value_is_not_drawn_test() {
       cost: "est —",
       rate: None,
       notice: element.none(),
+      placement: element.none(),
     )
     |> element.to_string
 
@@ -188,6 +190,7 @@ pub fn the_output_rate_is_drawn_only_once_timed_test() {
       cost: "",
       rate:,
       notice: element.none(),
+      placement: element.none(),
     )
     |> element.to_string
   }

@@ -135,6 +135,12 @@ pub type Answer {
   /// the terminal (protocol-change/055), one bounded line, or `None` when the
   /// daemon kept none. A page draws it as a text node and nowhere else.
   Unstarted(why: Option(String), remains: Remains)
+
+  /// The session was created and opened, and the daemon minted a ticket for its
+  /// page, but the first message the composer carried was not accepted by the
+  /// session. The session is kept and `path` opens it, as for `Ticketed`; the
+  /// page says the message was not sent and leaves the person to send it there.
+  Unsent(path: String)
 }
 
 /// What an unstarted creation left behind, which says what the owner may do

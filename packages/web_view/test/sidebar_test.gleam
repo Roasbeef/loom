@@ -17,6 +17,7 @@ import lustre/effect
 import lustre/element.{type Element}
 import page_fixture
 import web_view/component
+import web_view/listing as session_listing
 import web_view/operator_page
 import web_view/sessions.{type Entry, Entry, Live, Saved}
 import web_view/view/archiving
@@ -56,6 +57,22 @@ fn listing() -> List(Entry) {
     entry("D", "", "/src/notes", 500, Saved),
     entry("E", "older weft", "/src/weft", 50, Saved),
   ]
+}
+
+// A sidebar page that offers nothing beyond the rows: no new-session button, no
+// admin and no menu entry, on a daemon named `laptop`.
+fn plain_page() -> sidebar.Page(Nil) {
+  sidebar.Page(
+    doors: sidebar.RowsOpen,
+    machine: "laptop",
+    filter: session_listing.Everywhere,
+    narrowing: fn(_) { Nil },
+    widening: Nil,
+    starting: None,
+    administering: None,
+    managing: None,
+    who: "",
+  )
 }
 
 fn names(group: sessions.Group) -> List(String) {
@@ -274,11 +291,20 @@ pub fn a_slow_sessions_read_does_not_hold_the_page_test() {
 fn listed_page(entries: List(Entry)) {
   let #(model, _) =
     component.update(
-      component.new(page_fixture.start())
+      component.new(laptop_start())
         |> component.apply([lane_fixture.captured(10, None)]),
       component.SessionsListed(entries),
     )
   model
+}
+
+// The fixture's page on a daemon named `laptop`, which is the machine every row's
+// tag names as the one that runs its agent.
+fn laptop_start() -> component.Start(process.Subject(String)) {
+  component.Start(
+    ..page_fixture.start(),
+    standing: component.Standing(..component.unplaced, machine: "laptop"),
+  )
 }
 
 // The operator's page, the only one that draws the sidebar.
@@ -286,24 +312,28 @@ fn operator_html(model) -> String {
   element.to_string(operator_page.view(model))
 }
 
-// The sidebar draws each workspace by its last segment, with the whole path
-// as a title, and each session by name; the session on screen is marked, and
-// a session with no name is named by its identity.
-pub fn the_sidebar_lists_workspaces_and_sessions_test() {
+// The sidebar draws each session by name with a tag under it: the machine that
+// runs the agent, an arrow and where the code is, with the whole path as a title.
+// The session on screen is marked, and a session with no name is named by its
+// identity.
+pub fn the_sidebar_lists_sessions_with_a_placement_tag_test() {
   let drawn = operator_html(listed_page(listing()))
   assert string.contains(
     drawn,
     "<aside aria-label=\"Sessions\" class=\"sidebar\" slot=\"left\">",
   )
   assert string.contains(drawn, "title=\"/src/loom\"")
-  assert string.contains(drawn, ">loom<")
+  assert string.contains(drawn, "<span class=\"tag-agent\">laptop</span>")
   assert string.contains(drawn, "vetting lint")
   assert string.contains(drawn, "Session D")
 
-  // Sessions appear in the grouped order: the newer one of the current
-  // workspace before the current session itself.
-  let assert Ok(#(before_web, _)) = string.split_once(drawn, "web ui")
-  assert string.contains(before_web, "vetting lint")
+  // The sessions are grouped by what they are doing. The session on screen is
+  // read from the page's own lane, which says it is working, so it leads the
+  // sidebar; the other running one is idle, below it.
+  let assert Ok(#(before_idle, idle)) =
+    string.split_once(drawn, "class=\"state-group state-idle\"")
+  assert string.contains(before_idle, "web ui")
+  assert string.contains(idle, "vetting lint")
   assert string.contains(drawn, "class=\"session current\"")
 
   // Only the session on screen is current.
@@ -405,7 +435,7 @@ pub fn an_observers_page_draws_no_sidebar_test() {
   let drawn = element.to_string(component.view(listed_page(listing())))
   assert !string.contains(drawn, "<aside aria-label=\"Sessions\"")
   assert !string.contains(drawn, "vetting lint")
-  assert !string.contains(drawn, "/src/loom")
+  assert !string.contains(drawn, "Session D")
 }
 
 // The current row draws no strand bars: its activity word and dot are the one
@@ -416,6 +446,7 @@ pub fn the_current_row_draws_no_strand_bars_test() {
       sessions.grouped(listing()),
       "A",
       dict.new(),
+      plain_page(),
       fn(_) { Nil },
       resume.Never,
       archiving.Never,
@@ -441,15 +472,17 @@ pub fn a_subtitle_is_a_quiet_line_under_the_name_test() {
   let assert Ok(sidebar) = sidebar_of(drawn)
   assert string.contains(
     sidebar,
-    "<span class=\"session-text\"><span class=\"session-name\">vetting lint</span>"
-      <> "<span class=\"session-subtitle\">Fix the flaky retry test</span></span>",
+    "<span class=\"session-name\">vetting lint</span><span class=\"session-tag\">",
+  )
+  assert string.contains(
+    sidebar,
+    "<span class=\"session-subtitle\">Fix the flaky retry test</span></span>",
   )
 
-  // The row without a subtitle has no wrapper, and only one row draws the
-  // quiet line.
+  // The row without a subtitle draws no third line, and only one row draws it.
   assert string.contains(sidebar, "<span class=\"session-name\">web ui</span>")
   assert list.length(string.split(sidebar, "session-subtitle")) == 2
-  assert list.length(string.split(sidebar, "session-text")) == 2
+  assert list.length(string.split(sidebar, "session-text")) == 3
 }
 
 // The subtitle is a person's own prompt: it is a text node and nothing else, so
@@ -560,9 +593,9 @@ pub fn repositories_that_share_a_name_never_merge_test() {
   assert dict.get(titles, "/b/x/api") == Ok("/b/x/api")
 }
 
-// A worktree row names its worktree in a quiet word with the whole path as its
-// title, in the sidebar; the repository's own checkout row says nothing extra,
-// and the heading is the repository's name.
+// A worktree row's tag names the repository and the worktree, with the whole path
+// as its title; the repository's own checkout row names the folder as every other
+// folder is named.
 pub fn a_worktree_row_says_which_worktree_test() {
   let tree = "/src/btcd/.claude/worktrees/hungry-euclid-d93364"
   let rows = [
@@ -570,16 +603,19 @@ pub fn a_worktree_row_says_which_worktree_test() {
     in_project("B", tree, "/src/btcd", 200, Live),
   ]
   let drawn = operator_html(listed_page(rows))
-  assert string.contains(drawn, ">btcd<")
   assert string.contains(
     drawn,
-    "<span class=\"session-text\"><span class=\"session-name\">session B</span>"
-      <> "<span class=\"session-subtitle\"><span class=\"session-tree\" title=\""
+    "<span class=\"tag-code\" title=\""
       <> tree
-      <> "\">hungry-euclid-d93364</span></span></span>",
+      <> "\">btcd · hungry-euclid-d93364</span>",
   )
-  assert list.length(string.split(drawn, "session-tree")) == 2
-  assert list.length(string.split(drawn, "class=\"workspace\"")) == 2
+  assert string.contains(
+    drawn,
+    "<span class=\"tag-code\" title=\"/src/btcd\">/src/btcd</span>",
+  )
+
+  // No project heading is drawn: the groups are by what the session needs.
+  assert list.length(string.split(drawn, "class=\"workspace\"")) == 1
 }
 
 // The sidebar lists the sessions a process runs, and the saved ones sit behind
@@ -670,9 +706,9 @@ pub fn the_toggle_counts_saved_and_blocked_rows_apart_test() {
   assert string.contains(sidebar, ">1 saved · 1 needs attention<")
 }
 
-// A worktree row that also has a subtitle leads the quiet line with the
-// worktree, then the subtitle as its own text after a dot, and the path is only
-// ever in the worktree word's title.
+// A worktree row that also has a subtitle says both: the tag names the worktree,
+// and the subtitle is its own third line as text, and the path is only ever in
+// the tag's title.
 pub fn a_worktree_row_with_a_subtitle_says_both_test() {
   let tree = "/src/btcd/.claude/worktrees/calm-turing"
   let rows = [
@@ -685,9 +721,10 @@ pub fn a_worktree_row_with_a_subtitle_says_both_test() {
   let drawn = operator_html(listed_page(rows))
   assert string.contains(
     drawn,
-    "<span class=\"session-subtitle\"><span class=\"session-tree\" title=\""
+    "<span class=\"tag-code\" title=\""
       <> tree
-      <> "\">calm-turing</span> · Fix the retry</span>",
+      <> "\">btcd · calm-turing</span></span>"
+      <> "<span class=\"session-subtitle\">Fix the retry</span>",
   )
 }
 
@@ -740,12 +777,12 @@ pub fn the_session_pages_sidebar_draws_each_sessions_activity_test() {
   assert asked == Ok(["B", "A"])
   let assert Ok(sidebar) = sidebar_of(operator_html(model))
   assert string.contains(sidebar, "residency live needs-you")
-  assert string.contains(sidebar, "</span>needs you</span>")
+  assert string.contains(sidebar, ">needs you</span></span>")
 
   let #(idle, _) = with_activity(listing(), [#("B", sessions.Idle)])
   let assert Ok(sidebar) = sidebar_of(operator_html(idle))
   assert string.contains(sidebar, "residency live idle")
-  assert string.contains(sidebar, "</span>idle</span>")
+  assert string.contains(sidebar, ">idle</span></span>")
 
   let #(working, _) = with_activity(listing(), [#("B", sessions.Working)])
   let assert Ok(sidebar) = sidebar_of(operator_html(working))
@@ -754,7 +791,7 @@ pub fn the_session_pages_sidebar_draws_each_sessions_activity_test() {
   // A session the read has not named yet says "running" as it always did.
   let #(unnamed, _) = with_activity(listing(), [])
   let assert Ok(sidebar) = sidebar_of(operator_html(unnamed))
-  assert string.contains(sidebar, "</span>running</span>")
+  assert string.contains(sidebar, ">running</span></span>")
 }
 
 // A page with nothing running asks nothing, and the daemon is never asked
@@ -804,7 +841,7 @@ pub fn the_current_row_follows_the_lane_not_the_read_test() {
   // A strand is working: the lane says working though the read says idle.
   let working = row_of(lane_fixture.captured(10, None), [#("A", sessions.Idle)])
   assert string.contains(working, "residency live working")
-  assert string.contains(working, "</span>working</span>")
+  assert string.contains(working, ">working</span></span>")
 
   // Nothing runs: idle, though the read still says working.
   let idle =
@@ -812,7 +849,7 @@ pub fn the_current_row_follows_the_lane_not_the_read_test() {
       #("A", sessions.Working),
     ])
   assert string.contains(idle, "residency live idle")
-  assert string.contains(idle, "</span>idle</span>")
+  assert string.contains(idle, ">idle</span></span>")
 
   // A strand waits on an approval: needs you, at once, though the read says
   // idle.
@@ -832,7 +869,7 @@ pub fn the_current_row_follows_the_lane_not_the_read_test() {
       [#("A", sessions.Idle)],
     )
   assert string.contains(waiting, "residency live needs-you")
-  assert string.contains(waiting, "</span>needs you</span>")
+  assert string.contains(waiting, ">needs you</span></span>")
 }
 
 // F146: a session whose last run failed, with nothing pending and nothing
@@ -850,7 +887,7 @@ pub fn a_failed_run_reads_failed_and_not_needs_you_test() {
     string.split_once(sidebar, "class=\"session current\"")
   let assert Ok(#(row, _)) = string.split_once(from_current, "</li>")
   assert string.contains(row, "residency live failed")
-  assert string.contains(row, "</span>failed</span>")
+  assert string.contains(row, ">failed</span></span>")
   assert !string.contains(row, "needs you")
 }
 
@@ -867,7 +904,7 @@ pub fn a_needs_you_read_with_no_approval_is_a_failed_run_test() {
   let #(model, _) = with_activity(listing(), [#("B", sessions.Failed)])
   let assert Ok(sidebar) = sidebar_of(operator_html(model))
   assert string.contains(sidebar, "residency live failed")
-  assert string.contains(sidebar, "</span>failed</span>")
+  assert string.contains(sidebar, ">failed</span></span>")
 }
 
 // Before the first capture the page knows nothing of its own session, so the

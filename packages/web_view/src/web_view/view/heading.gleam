@@ -37,7 +37,7 @@
 //// The status is a pill whose colour and dot follow a `Tone` the component
 //// chooses from the connection, so the words and the colour cannot disagree.
 ////
-//// The ended page's notice is the bar's last child but one, so a page with no
+//// The ended page's notice is the bar's last child but two, so a page with no
 //// session says why without moving any region after it. The stylesheet
 //// wraps it onto a row of its own beneath the figures. The last child is the
 //// hidden `<loom-title>`, which sets the tab's title from the name drawn here
@@ -120,6 +120,7 @@ pub fn view(
   cost cost: String,
   rate rate: Option(Int),
   notice notice: Element(message),
+  placement placement: Element(message),
 ) -> Element(message) {
   html.header(
     [attribute.class("session-head"), attribute.attribute("slot", "bar")],
@@ -214,6 +215,7 @@ pub fn view(
         ]),
       ),
       notice,
+      placement,
       tab_title(),
     ],
   )

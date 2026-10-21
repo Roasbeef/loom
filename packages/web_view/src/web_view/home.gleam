@@ -253,9 +253,11 @@ import lustre/event
 import lustre/server_component
 import session_view/move_candidates
 import web_view/actions
+import web_view/composer
 import web_view/creations.{type Sharing}
 import web_view/elsewhere
 import web_view/ending.{type Ending}
+import web_view/listing
 import web_view/names
 import web_view/placements
 import web_view/renames
@@ -271,6 +273,7 @@ import web_view/view/folders as folders_view
 import web_view/view/heading
 import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
+import web_view/view/new_session
 import web_view/view/notice
 import web_view/view/resume.{type Resume}
 import web_view/view/shell
@@ -407,6 +410,7 @@ pub type Start {
         String,
         Sharing,
         creations.Roles,
+        String,
         fn(creations.Answer) -> Nil,
       ) -> Nil,
     ),
@@ -700,7 +704,27 @@ pub opaque type Model {
     /// How many times the name has changed on the page, which keys the control's
     /// form so it opens on the new name.
     named: Int,
+    /// Which centre the page shows: the composer or the list.
+    pane: Pane,
+    /// The composer's state. It is idle on a page with no `Start.create`.
+    compose: composer.State,
+    /// The machine the sidebar's list is narrowed to.
+    filter: listing.Filter,
   )
+}
+
+/// Which centre the home shows. The composer is where a session is started and
+/// is the owner's default; the list is the page that held every control before
+/// the sidebar took over listing, and stays reachable for the controls that have
+/// not moved (rename, move, delete, the remembered folders, the other
+/// orchestrators' sessions).
+pub type Pane {
+  /// The new-session composer (`view/new_session`).
+  NewSession
+
+  /// The sessions grouped by project, with the earlier forms
+  /// (`view/home_table`).
+  SessionList
 }
 
 /// Everything the component can be told. None is a browser's: each is sent by
@@ -974,6 +998,28 @@ pub type Msg {
   /// carries it, so a browser cannot put a name in the page that the daemon did
   /// not store.
   NameAnswered(answer: names.Answer)
+
+  /// A press in the new-session composer. The message carries a value the server
+  /// drew or text the composer bounds and judges (`composer.update`); the page
+  /// checks it against the lists it holds, so a forged one changes nothing. A
+  /// page with no `Start.create` ignores it.
+  Composed(message: composer.Msg)
+
+  /// The sidebar's "New session" button: show the composer. A page with no
+  /// `Start.create` ignores it.
+  ShowingNew
+
+  /// The link to the full session list, or a row menu's "Rename, move or
+  /// delete": show the list.
+  ShowingList
+
+  /// A sidebar machine pill: narrow the list to the machine the pill names. The
+  /// name is the one the server drew, and the page honours it only if the list it
+  /// holds still offers a pill by that name (`listing.chosen`).
+  Narrowing(machine: String)
+
+  /// The sidebar's "All" pill: show every session.
+  Widening
 }
 
 /// Which sign-outs the daemon answered, so the page's words say which.
@@ -1033,6 +1079,12 @@ pub fn new(start: Start) -> Model {
     name: start.name,
     naming: names.Ready,
     named: 0,
+    pane: case start.create {
+      Some(_) -> NewSession
+      None -> SessionList
+    },
+    compose: composer.new(),
+    filter: listing.Everywhere,
   )
 }
 
@@ -1116,6 +1168,35 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           effect.none(),
         )
       }
+
+    // The sidebar's own presses. The pills change what the sidebar lists and ask
+    // nothing of the daemon, and a name no pill carries is not a filter.
+    Narrowing(machine:) ->
+      case
+        listing.chosen(
+          listing.entries(model.groups),
+          model.start.machine,
+          machine,
+        )
+      {
+        Ok(filter) -> #(Model(..model, filter:), effect.none())
+        Error(Nil) -> #(model, effect.none())
+      }
+
+    Widening -> #(Model(..model, filter: listing.Everywhere), effect.none())
+
+    ShowingList -> #(Model(..model, pane: SessionList), effect.none())
+
+    ShowingNew ->
+      case model.start.create {
+        Some(_) -> #(
+          Model(..model, pane: NewSession, note: None),
+          effect.none(),
+        )
+        None -> #(model, effect.none())
+      }
+
+    Composed(message:) -> composing(model, message)
 
     // A press asks the daemon in the component's own process. An ended page
     // asks nothing: its principal's access is gone, and the daemon would
@@ -1293,12 +1374,13 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           {
             True -> #(
               Model(..model, creating: create.Dispatching(choice), note: None),
-              creation(
+              creating(
                 ask,
                 registered_place(choice, workspace),
                 name,
                 creations.Shareable,
                 roles,
+                "",
               ),
             )
             False -> #(model, effect.none())
@@ -1315,7 +1397,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           case offered_roles(model, roles) {
             True -> #(
               Model(..model, creating: create.Sending, note: None),
-              creation(ask, creations.Typed(path), name, sharing, roles),
+              creating(ask, creations.Typed(path), name, sharing, roles, ""),
             )
             False -> #(model, effect.none())
           }
@@ -1434,7 +1516,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           case offered_roles(model, roles) {
             True -> #(
               Model(..model, creating: create.Waiting(workspace), note: None),
-              creation(ask, creations.Drawn(workspace), name, sharing, roles),
+              creating(
+                ask,
+                creations.Drawn(workspace),
+                name,
+                sharing,
+                roles,
+                "",
+              ),
             )
             False -> #(model, effect.none())
           }
@@ -1449,7 +1538,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     Created(answer:) ->
       case answer {
         creations.Ticketed(path:) -> #(
-          Model(..model, departure: Some(path), creating: create.Idle),
+          Model(
+            ..model,
+            departure: Some(path),
+            creating: create.Idle,
+            compose: composer.settled(model.compose),
+          ),
           effect.none(),
         )
         creations.Declined(reason:) -> #(
@@ -1460,7 +1554,15 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               creations.reason_words(reason),
             )),
             creating: reopened(model.creating, Correctable),
+            compose: composer.refused(
+              model.compose,
+              creations.reason_words(reason),
+            ),
           ),
+          effect.none(),
+        )
+        creations.Unsent(path:) -> #(
+          Model(..model, compose: composer.unsent(model.compose, path)),
           effect.none(),
         )
         creations.Unstarted(why:, remains:) -> #(
@@ -1474,6 +1576,10 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
               creations.Dropped -> Correctable
               creations.InList -> Kept
             }),
+            compose: composer.refused(
+              model.compose,
+              creations.unstarted_words(why, remains),
+            ),
           ),
           effect.none(),
         )
@@ -2143,6 +2249,68 @@ fn reading_places(model: Model) -> #(Model, Effect(Msg)) {
   )
 }
 
+// A message from the composer. The composer applies it against the lists this
+// page draws from and says what is owed: nothing, a fresh read of the placements
+// (the Code list opened), or a creation, which is asked of the daemon from its own
+// task as the old form's is. A page with no `Start.create`, or one not yet
+// connected, asks nothing.
+fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
+  case model.start.create, model.status {
+    Some(ask), Connected -> {
+      let entries = listing.entries(model.groups)
+      let #(compose, intent) =
+        composer.update(
+          model.compose,
+          message,
+          offers(model, entries),
+          composer.recents(entries, model.start.machine),
+        )
+      let model = Model(..model, compose:)
+
+      case intent {
+        composer.Stay -> #(model, effect.none())
+        composer.ReadPlacements -> reading_cards(model)
+        composer.Create(place:, name:, prompt:, roles:) -> #(
+          Model(..model, note: None),
+          creating(ask, place, name, creations.Private, roles, prompt),
+        )
+        composer.Depart(path:) -> #(
+          Model(..model, departure: Some(path)),
+          effect.none(),
+        )
+      }
+    }
+    Some(_), Connecting | Some(_), Ended(_) | None, _ -> #(model, effect.none())
+  }
+}
+
+// The lists the composer's choices are checked against: the folders the page
+// draws, the executors and pools with what the daemon last reported, and the
+// profiles and models the daemon read when the page opened.
+fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
+  composer.Offers(
+    machine: model.start.machine,
+    folders: composer.folders_offered(entries, model.recent),
+    cards: model.cards,
+    profiles: model.start.profiles,
+    models: model.start.models,
+  )
+}
+
+// Marks the cards as being checked and starts the read of the placements. It
+// does what `reading_places` does for the old form, without opening that form.
+fn reading_cards(model: Model) -> #(Model, Effect(Msg)) {
+  let serial = model.place_reads + 1
+  #(
+    Model(
+      ..model,
+      cards: placements.Cards(..model.cards, readiness: placements.Checking),
+      place_reads: serial,
+    ),
+    placing(model.start.placements, serial),
+  )
+}
+
 // Starts the daemon's read of the placements and returns at once; the answer
 // arrives later as `PlacementsRead`, dispatched from the daemon's own task.
 fn placing(
@@ -2166,22 +2334,28 @@ fn registered_place(
 }
 
 // Starts the daemon's creation task and returns at once; the answer arrives
-// later as `Created`, dispatched from the task's own process.
-fn creation(
+// later as `Created`, dispatched from the task's own process. `prompt` is the
+// session's first message: empty sends none, and anything else is sent to the new
+// session once it is open. The older forms carry none.
+fn creating(
   ask: fn(
     creations.Place,
     String,
     Sharing,
     creations.Roles,
+    String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
   place: creations.Place,
   name: String,
   sharing: Sharing,
   roles: creations.Roles,
+  prompt: String,
 ) -> Effect(Msg) {
   use dispatch <- effect.from
-  ask(place, name, sharing, roles, fn(answer) { dispatch(Created(answer)) })
+  ask(place, name, sharing, roles, prompt, fn(answer) {
+    dispatch(Created(answer))
+  })
 }
 
 // Whether submitted roles are ones the page offered: the default is always
@@ -2447,7 +2621,10 @@ pub fn view(model: Model) -> Element(Msg) {
   shell.view(
     shell.Home,
     home_bar.with(
-      title: "Home",
+      title: case model.pane {
+        NewSession -> "New session"
+        SessionList -> "Sessions"
+      },
       who: home_bar.account(
         model.name,
         ceiling_words(model.start.ceiling),
@@ -2460,23 +2637,14 @@ pub fn view(model: Model) -> Element(Msg) {
     ),
     shell_sidebar(model),
     [
-      // The first child keeps the table at `table_path`. It is the strip that
-      // says the daemon lists a peer orchestrator, or an empty node.
-      elsewhere_view.strip(elsewhere_offer(model)),
-      home_table.view(
-        model.groups,
-        model.activity,
-        model.now,
-        Opening,
-        resume_offer(model),
-        rename_offer(model),
-        manage_offer(model),
-        create_offer(model),
-        folders_offer(model),
-        elsewhere_offer(model),
-        model.opening,
-        model.note,
-      ),
+      // The first child keeps the centre's body at `table_path`. It is the strip
+      // that says the daemon lists a peer orchestrator, or an empty node, and the
+      // composer has no use for it.
+      case model.pane {
+        NewSession -> element.none()
+        SessionList -> elsewhere_view.strip(elsewhere_offer(model))
+      },
+      centre_body(model),
       signins_view.view(
         model.signins,
         model.now,
@@ -2495,6 +2663,60 @@ pub fn view(model: Model) -> Element(Msg) {
     0,
     0,
     "",
+    list.length(listing.waiting(listing.entries(model.groups), model.activity)),
+  )
+}
+
+// The centre's second child, which is the one region the socket admits a click,
+// a submit and a typed search beneath: the composer for the owner while the pane
+// is the new session's, and the list otherwise. Both sit at `table_path`, so the
+// admission is the same for both and no path moves.
+fn centre_body(model: Model) -> Element(Msg) {
+  case model.pane, model.start.create {
+    NewSession, Some(_) -> new_session.view(new_pane(model))
+    NewSession, None | SessionList, _ ->
+      home_table.view(
+        model.groups,
+        model.activity,
+        model.now,
+        Opening,
+        resume_offer(model),
+        rename_offer(model),
+        manage_offer(model),
+        create_offer(model),
+        folders_offer(model),
+        elsewhere_offer(model),
+        model.opening,
+        model.note,
+      )
+  }
+}
+
+// What the composer draws from: its state, the lists the page offers, the
+// target in force, the recent places and the sessions waiting on the person.
+fn new_pane(model: Model) -> new_session.Pane(Msg) {
+  let entries = listing.entries(model.groups)
+  let offered = offers(model, entries)
+  let recent = composer.recents(entries, model.start.machine)
+
+  new_session.Pane(
+    state: model.compose,
+    offers: offered,
+    target: composer.chosen(model.compose, offered, recent),
+    recent:,
+    waiting: listing.waiting(entries, model.activity),
+    presses: new_session.Presses(
+      toggle: fn(chip) { Composed(composer.Toggled(chip)) },
+      dismiss: Composed(composer.Dismissed),
+      choose: fn(target) { Composed(composer.ChoseTarget(target)) },
+      profile: fn(profile) { Composed(composer.ChoseProfile(profile)) },
+      model: fn(model) { Composed(composer.ChoseModel(model)) },
+      search: fn(text) { Composed(composer.Searched(text)) },
+      start: fn(name, typed) { Composed(composer.Started(name, typed)) },
+      open: Opening,
+      depart: Composed(composer.OpenedUnsent),
+      listing: ShowingList,
+    ),
   )
 }
 
@@ -2851,19 +3073,48 @@ fn paging(
   next(group, after, fn(read) { dispatch(MoreRead(group, serial, read)) })
 }
 
-// The sidebar's column, or the frame's word that there is none.
+// The sidebar's column, or the frame's word that there is none. The owner's page
+// always has one, since its "New session" button is where a session starts and a
+// daemon with no session yet is where a person starts the first.
 fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
-  case model.groups {
-    [] -> shell.Unlisted
-    [_, ..] as groups ->
+  case model.groups, model.start.create {
+    [], None -> shell.Unlisted
+    groups, _ ->
       shell.Listed(sidebar.home(
         groups,
         model.activity,
+        sidebar_page(model),
         Opening,
         resume_offer(model),
         archive_offer(model),
       ))
   }
+}
+
+// What the sidebar's top and foot offer: "New session" and the row menus'
+// "Rename, move or delete" on the page that may create and manage, and "Admin"
+// where the daemon handed the page the capability.
+fn sidebar_page(model: Model) -> sidebar.Page(Msg) {
+  sidebar.Page(
+    doors: sidebar.RowsOpen,
+    machine: model.start.machine,
+    filter: model.filter,
+    narrowing: Narrowing,
+    widening: Widening,
+    starting: case model.start.create {
+      Some(_) -> Some(ShowingNew)
+      None -> None
+    },
+    administering: case model.start.admin, model.status {
+      Some(_), Connected -> Some(AdminRequested)
+      Some(_), Connecting | Some(_), Ended(_) | None, _ -> None
+    },
+    managing: case model.start.manage, model.start.rename {
+      None, None -> None
+      Some(_), _ | _, Some(_) -> Some(ShowingList)
+    },
+    who: model.name,
+  )
 }
 
 // What the bar says of the page's ceiling: nothing for an operating page, which

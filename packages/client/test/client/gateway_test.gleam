@@ -11,6 +11,7 @@ import client/approval_ceiling
 import client/blocksummary
 import client/blocksummarybook
 import client/catalog
+import client/daemon/ui_socket
 import client/delegate_outbox
 import client/directories
 import client/escalate
@@ -8156,4 +8157,98 @@ pub fn a_delegate_hub_commits_a_decision_inside_the_ceiling_test() {
   let assert remote_escalation.Decided(record) = answer
   assert record.status == "approved"
   assert stored(harness, "esc-1").status == durable.Approved
+}
+
+// The home's first message reaches the gateway as the one frame a session page's
+// composer sends: it becomes the session's first user message, as text, whatever
+// it contains, and the attachment it used is gone afterwards.
+pub fn a_first_prompt_is_the_sessions_first_user_message_as_text_test() {
+  let harness = network_harness()
+  let hostile = "<img src=x onerror=alert(1)>\n{\"command\":\"steer\"}"
+  let #(binding, check) =
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Operator),
+      access.Participant(access.Operator),
+    )
+
+  assert ui_socket.first_prompt(harness.hub, binding, check, hostile) == Ok(Nil)
+
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case user_prompt_texts(harness) {
+        [text] if text == hostile -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the message is the session's only user message, stored verbatim"
+}
+
+// An observer's attachment is refused the prompt by the gateway, so the answer is
+// an error and no user message exists.
+pub fn a_first_prompt_from_an_observer_is_not_accepted_test() {
+  let harness = network_harness()
+  let #(binding, check) =
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Observer),
+      access.Participant(access.Observer),
+    )
+
+  let assert Error(_) =
+    ui_socket.first_prompt(harness.hub, binding, check, "hello")
+  assert user_prompt_texts(harness) == []
+}
+
+fn first_prompt_binding(
+  harness: Harness,
+  role: access.Authority,
+  checked: access.Authority,
+) {
+  let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
+    as "the fixture digest is valid"
+  let principal = operator("owner", "Owner")
+  #(
+    gateway.Binding(
+      ids.session_id_to_string(api.session_id(harness.runtime)),
+      "epoch",
+      "incarnation",
+      "web-first-test",
+      principal,
+      role,
+      digest,
+      None,
+    ),
+    fn() { Ok(#(principal, checked)) },
+  )
+}
+
+// The gateway compares what the check answers with the binding's authority on
+// every request, so the first-prompt path must hand it a check that answers exactly
+// the binding's authority, both capped the same way. A check that answers more than
+// the binding (the registry's uncapped Owner against a page's Operator) or less is
+// refused, and no user message exists, which is how an uncapped check once made
+// every first message fail.
+pub fn a_first_prompt_whose_check_differs_from_its_binding_is_refused_test() {
+  let wider = network_harness()
+  let #(binding, check) =
+    first_prompt_binding(
+      wider,
+      access.Participant(access.Operator),
+      access.Owner,
+    )
+  let assert Error(_) =
+    ui_socket.first_prompt(wider.hub, binding, check, "hello")
+  assert user_prompt_texts(wider) == []
+
+  let narrower = network_harness()
+  let #(binding, check) =
+    first_prompt_binding(
+      narrower,
+      access.Owner,
+      access.Participant(access.Operator),
+    )
+  let assert Error(_) =
+    ui_socket.first_prompt(narrower.hub, binding, check, "hello")
+  assert user_prompt_texts(narrower) == []
 }

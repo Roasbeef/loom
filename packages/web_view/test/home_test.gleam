@@ -134,9 +134,14 @@ fn settle(model: home.Model, dispatched: Subject(home.Msg)) -> home.Model {
 }
 
 // A page whose timer exists and whose first read has answered.
+// A page whose timer exists and whose first read has answered, showing the list.
+// The owner's page opens on the composer, and these tests read the list and the
+// earlier forms, which stay reachable behind the "Show the full session list"
+// link until the old home form is removed.
 fn opened(start: home.Start) -> #(home.Model, Subject(Nil)) {
   let timer = process.new_subject()
-  #(run(home.new(start), home.TimerReady(timer)), timer)
+  let listed = run(home.new(start), home.ShowingList)
+  #(run(listed, home.TimerReady(timer)), timer)
 }
 
 fn drawn(model: home.Model) -> String {
@@ -761,11 +766,7 @@ pub fn the_frame_is_the_session_pages_without_a_panel_test() {
     html,
     "<aside aria-label=\"Sessions\" class=\"sidebar\"",
   )
-  assert string.contains(
-    html,
-    "<p aria-current=\"page\" class=\"sidebar-home\"><svg",
-  )
-  assert string.contains(html, "</svg>Home</p>")
+  assert string.contains(html, "<p class=\"brand\"><span>Loom</span>")
   assert !string.contains(html, "aria-current=\"true\"")
   assert !string.contains(html, "Strand panel")
 
@@ -778,7 +779,7 @@ pub fn the_frame_is_the_session_pages_without_a_panel_test() {
 pub fn the_bar_names_the_principal_and_the_ceiling_test() {
   let #(operator, _) = opened(start())
   let html = drawn(operator)
-  assert string.contains(html, "<h1>Home</h1>")
+  assert string.contains(html, "<h1>Sessions</h1>")
   assert string.contains(html, ">Alice<")
   assert string.contains(html, ">connected<")
 
@@ -1015,7 +1016,10 @@ pub fn an_owners_home_draws_a_rename_button_after_each_row_test() {
   let with = handlers(home.view(owner))
   let #(member, _) = opened(start())
   let without = handlers(home.view(member))
-  assert list.length(with) == list.length(without) + 4
+
+  // A rename button for each of four rows, and the row menu's "Rename, move or
+  // delete" for each, which shows the list.
+  assert list.length(with) == list.length(without) + 8
   assert list.all(with, beneath_the_two_regions)
 
   // Every handler a member's page has is on the owner's page at the same path.
@@ -1024,7 +1028,11 @@ pub fn an_owners_home_draws_a_rename_button_after_each_row_test() {
   // The row's own handler is the item's, first in the row; the buttons are in
   // one group, the second child, so no existing path moved. Rename is the
   // group's first button.
-  let added = list.filter(with, fn(key) { !list.contains(without, key) })
+  let added =
+    list.filter(with, fn(key) {
+      !list.contains(without, key)
+      && string.starts_with(key, home.table_path <> "\t")
+    })
   assert list.length(added) == 4
   assert list.all(added, fn(key) {
     string.starts_with(key, home.table_path <> "\t")
@@ -1180,6 +1188,7 @@ fn creator(
     String,
     creations.Sharing,
     creations.Roles,
+    String,
     fn(creations.Answer) -> Nil,
   ) -> Nil,
 ) -> home.Start {
@@ -1193,9 +1202,10 @@ fn recording(
   String,
   creations.Sharing,
   creations.Roles,
+  String,
   fn(creations.Answer) -> Nil,
 ) -> Nil {
-  fn(place, name, sharing, _, _) {
+  fn(place, name, sharing, _, _, _) {
     process.send(asked, #(place, name, sharing))
   }
 }
@@ -1236,7 +1246,9 @@ pub fn the_owner_has_a_button_under_each_workspace_test() {
   assert list.length(string.split(html, "class=\"home-new\"")) == 5
   assert !string.contains(html, "<form")
   let keys = handlers(home.view(model))
-  assert list.length(keys) == 12
+
+  // The sidebar's "New session" button is one more.
+  assert list.length(keys) == 13
   assert list.all(keys, beneath_the_two_regions)
 }
 
@@ -1355,7 +1367,9 @@ pub fn the_answer_departs_or_words_the_refusal_test() {
   let ticket = "/ui/sessions/N?ticket=t"
   let #(model, _) =
     opened(
-      creator(fn(_, _, _, _, deliver) { deliver(creations.Ticketed(ticket)) }),
+      creator(fn(_, _, _, _, _prompt, deliver) {
+        deliver(creations.Ticketed(ticket))
+      }),
     )
   let model = run(model, home.Choosing("/src/loom"))
   let model =
@@ -1369,7 +1383,7 @@ pub fn the_answer_departs_or_words_the_refusal_test() {
 
   let answer = fn(answered) {
     let #(model, _) =
-      opened(creator(fn(_, _, _, _, deliver) { deliver(answered) }))
+      opened(creator(fn(_, _, _, _, _prompt, deliver) { deliver(answered) }))
     let model = run(model, home.Choosing("/src/loom"))
     run(
       model,
@@ -1399,7 +1413,7 @@ pub fn an_unstarted_creation_says_why_as_text_test() {
   let why =
     Some("profile <script>fast</script> is not defined in /home/o/loom.toml")
   let answer = fn(remains) {
-    let ask = fn(_, _, _, _, deliver) {
+    let ask = fn(_, _, _, _, _prompt, deliver) {
       deliver(creations.Unstarted(why, remains))
     }
     let #(model, _) = opened(creator(ask))
@@ -1486,7 +1500,7 @@ pub fn the_form_draws_the_workspace_only_as_text_test() {
   let hostile = "/src/<script>alert(1)</script>"
   let #(model, _) =
     opened(
-      home.Start(..creator(fn(_, _, _, _, _) { Nil }), sessions: fn(deliver) {
+      home.Start(..creator(fn(_, _, _, _, _, _) { Nil }), sessions: fn(deliver) {
         deliver(home.Listed([entry("Z", "x", hostile, 1, Live)]))
       }),
     )
@@ -1720,11 +1734,11 @@ pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
   let html = drawn(model)
   assert string.contains(
     html,
-    "<span aria-hidden=\"true\" class=\"glyph\">●</span>working</span>",
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span><span class=\"residency-word\">working</span></span>",
   )
   assert string.contains(
     html,
-    "<span aria-hidden=\"true\" class=\"glyph\">●</span>needs you</span>",
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span><span class=\"residency-word\">needs you</span></span>",
   )
   assert string.contains(html, "residency live needs-you")
 
@@ -1736,10 +1750,13 @@ pub fn the_sidebar_says_the_activity_word_the_list_says_test() {
     ))
   assert string.contains(
     before,
-    "<span aria-hidden=\"true\" class=\"glyph\">●</span></span>",
+    "<span aria-hidden=\"true\" class=\"glyph\">●</span><span class=\"residency-word\"></span></span>",
   )
   assert !string.contains(before, ">●</span>running")
-  assert string.contains(before, ">○</span>saved")
+  assert string.contains(
+    before,
+    ">○</span><span class=\"residency-word\">saved</span>",
+  )
 }
 
 // The owner's fresh home draws the actions that fit each row: Stop on a running
@@ -1761,7 +1778,10 @@ pub fn the_owners_fresh_home_draws_the_actions_that_fit_each_row_test() {
   let #(plain, _) = opened(start())
   let with = handlers(home.view(owner))
   let without = handlers(home.view(plain))
-  assert list.length(with) == list.length(without) + 12
+
+  // Twelve actions, and the row menu's "Rename, move or delete" on each of the
+  // four rows.
+  assert list.length(with) == list.length(without) + 16
   assert list.all(with, beneath_the_two_regions)
   assert list.all(without, fn(key) { list.contains(with, key) })
 
@@ -2455,7 +2475,7 @@ pub fn the_typed_folder_form_asks_once_test() {
 pub fn a_refused_folder_says_why_and_never_the_path_test() {
   let typed = "~/<script>alert(1)</script>/secret-folder"
   let refuse_with = fn(answered) {
-    let ask = fn(_, _, _, _, deliver) { deliver(answered) }
+    let ask = fn(_, _, _, _, _prompt, deliver) { deliver(answered) }
     let #(model, _) = opened(creator(ask))
     let model = run(model, home.OpeningElsewhere)
     run(
@@ -2505,7 +2525,7 @@ pub fn a_refused_folder_says_why_and_never_the_path_test() {
 // has no group to put it beside.
 pub fn a_refused_remembered_folder_is_worded_in_the_section_test() {
   let rows = [recent(7, "/home/o/gone")]
-  let ask = fn(_, _, _, _, deliver) {
+  let ask = fn(_, _, _, _, _prompt, deliver) {
     deliver(creations.Declined(creations.NotAFolder))
   }
   let start =
@@ -2640,7 +2660,9 @@ fn chosen(
   asked: Subject(#(creations.Place, creations.Roles)),
 ) -> home.Start {
   home.Start(
-    ..creator(fn(place, _, _, roles, _) { process.send(asked, #(place, roles)) }),
+    ..creator(fn(place, _, _, roles, _, _) {
+      process.send(asked, #(place, roles))
+    }),
     profiles:,
     models:,
   )
@@ -2895,7 +2917,7 @@ fn elsewhere_reader(
 ) -> home.Start {
   home.Start(
     ..start(),
-    create: Some(fn(_, _, _, _, _) { Nil }),
+    create: Some(fn(_, _, _, _, _, _) { Nil }),
     elsewhere: Some(
       home.Elsewhere(
         groups: fn(deliver) { deliver(first) },
