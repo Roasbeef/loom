@@ -921,6 +921,13 @@ pub fn a_host_with_no_attach_reports_an_empty_ledger_and_no_census_test() {
       unclean: [],
       bytes: 0,
       unacknowledged: 0,
+      trees: exec_ledger.TreeCounts(
+        creating: 0,
+        present: 0,
+        kept: 0,
+        removing: 0,
+        removed: 0,
+      ),
     )
   stop(rig)
 }

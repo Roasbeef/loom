@@ -47,6 +47,7 @@ fn exec2() {
     platform: Some("linux/x86_64"),
     enforcement: Some(executors.Enforced),
     toolchains: ["codemode"],
+    attach_within_s: 30,
   )
 }
 
@@ -57,6 +58,7 @@ fn builders() {
     platform: None,
     enforcement: None,
     toolchains: [],
+    attach_within_s: None,
   )
 }
 
@@ -67,6 +69,7 @@ fn linux_only() {
     platform: Some("linux/x86_64"),
     enforcement: None,
     toolchains: [],
+    attach_within_s: None,
   )
 }
 
@@ -1312,6 +1315,7 @@ fn builders_of_exec2() {
     platform: None,
     enforcement: None,
     toolchains: [],
+    attach_within_s: None,
   )
 }
 
@@ -1849,6 +1853,7 @@ fn fleet() -> deployment.Snapshot {
         platform: Some("linux/x86_64"),
         enforcement: Some(executors.Enforced),
         toolchains: ["codemode", "gleam", "rust-analyzer"],
+        attach_within_s: 30,
       )
     })
   let executor_nodes = list.map(executor_rows, fn(row) { row.node })
@@ -1930,6 +1935,7 @@ fn fleet() -> deployment.Snapshot {
         platform: None,
         enforcement: None,
         toolchains: [],
+        attach_within_s: None,
       )
     })
   deployment.overview(

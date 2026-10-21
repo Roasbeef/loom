@@ -62,6 +62,10 @@ pub type Pool {
     enforcement: Option(Enforcement),
     /// The toolchains every candidate must declare. Empty requires none.
     toolchains: List(String),
+    /// How many seconds an attach to any member keeps retrying while the
+    /// executor is still preparing the workspace, replacing the member's own
+    /// `attach_within_s` (protocol-change/095). `None` leaves each member's.
+    attach_within_s: Option(Int),
   )
 }
 
@@ -241,15 +245,29 @@ fn row(
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
         dict.keys(fields),
-        ["executors", "platform", "enforcement", "toolchains"],
+        [
+          "executors", "platform", "enforcement", "toolchains",
+          "attach_within_s",
+        ],
         "[pools." <> name <> "]",
       ))
       let place = "pools." <> name
       use listed <- result.try(members(fields, place, configured, peers))
       use platform <- result.try(executors.platform_of(fields, place))
       use enforcement <- result.try(executors.enforcement_of(fields, place))
-      use toolchains <- result.map(executors.toolchains_of(fields, place))
-      Pool(name:, executors: listed, platform:, enforcement:, toolchains:)
+      use toolchains <- result.try(executors.toolchains_of(fields, place))
+      use attach_within_s <- result.map(executors.attach_within_of(
+        fields,
+        place,
+      ))
+      Pool(
+        name:,
+        executors: listed,
+        platform:,
+        enforcement:,
+        toolchains:,
+        attach_within_s:,
+      )
     }
     _ -> Error("pools." <> name <> " must be a table")
   }

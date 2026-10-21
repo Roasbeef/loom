@@ -24,7 +24,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
-import client/workspaces.{Workspace}
+import client/workspaces
 import core/clock
 import core/json
 import core/message
@@ -120,7 +120,9 @@ fn rig_over(
     as "the state root resolves"
   establish(state)
   let factory =
-    executor_plane.factory(machine(state, seed), [Workspace("proj", checkout)])
+    executor_plane.factory(machine(state, seed), [
+      workspaces.shared("proj", checkout),
+    ])
   let assert Ok(started) =
     host.start(host.Config(
       name: process.new_name("executor_plane_host"),

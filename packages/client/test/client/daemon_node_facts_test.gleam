@@ -53,6 +53,13 @@ fn executor() -> node_report.ExecutorFacts {
         unclean: [],
         bytes: 0,
         unacknowledged: 0,
+        trees: exec_ledger.TreeCounts(
+          creating: 0,
+          present: 0,
+          kept: 0,
+          removing: 0,
+          removed: 0,
+        ),
       ),
       census: None,
     ),
@@ -144,6 +151,13 @@ fn snapshot(
       unclean:,
       bytes: 4096,
       unacknowledged: 5,
+      trees: exec_ledger.TreeCounts(
+        creating: 0,
+        present: 0,
+        kept: 0,
+        removing: 0,
+        removed: 0,
+      ),
     ),
     census: None,
   )

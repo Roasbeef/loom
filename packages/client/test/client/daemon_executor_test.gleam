@@ -12,7 +12,7 @@ import client/peer_defaults
 import client/remote/address
 import client/remote/protocol
 import client/system_prompt
-import client/workspaces.{Workspace}
+import client/workspaces
 import gleam/dict
 import gleam/erlang/process
 import gleam/option.{None, Some}
@@ -74,7 +74,7 @@ pub fn a_daemon_that_serves_a_workspace_registers_the_host_test() {
     as "the checkout is created"
   let assert Ok(Nil) = bootstrap.ensure_private_directory(scratch <> "/state")
     as "the state root is created"
-  let served = [Workspace("proj", checkout)]
+  let served = [workspaces.shared("proj", checkout)]
   let arguments = [
     "--helper",
     absolute("../sandbox/loom-exec"),
@@ -130,7 +130,7 @@ pub fn a_missing_helper_refuses_the_start_with_a_reason_test() {
     as "the state root is created"
   let assert Error(reason) =
     main.start_executor(
-      config(scratch, [Workspace("proj", scratch)], [
+      config(scratch, [workspaces.shared("proj", scratch)], [
         "--helper",
         scratch <> "/no-such-helper",
       ]),

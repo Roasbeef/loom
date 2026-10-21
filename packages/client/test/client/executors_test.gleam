@@ -6,6 +6,7 @@
 import client/catalog
 import client/executors.{Degraded, Enforced, Executor, Observed}
 import gleam/dict
+import gleam/list
 import gleam/option.{Some}
 import gleam/string
 
@@ -142,6 +143,7 @@ toolchains = [\"codemode\", \"gleam_ls\"]
         platform: Some("linux/x86_64"),
         enforcement: Some(Enforced),
         toolchains: ["codemode", "gleam_ls"],
+        attach_within_s: 30,
       ),
     ])
   assert executors.parse(executor_with("enforcement = \"degraded\"\n"))
@@ -196,7 +198,7 @@ pub fn a_malformed_declaration_is_refused_with_the_key_it_names_test() {
   )
   refused(
     executor_with("capacity = 4\n"),
-    "unknown key `capacity` in [executors.build-box] (allowed: node, platform, enforcement, toolchains)",
+    "unknown key `capacity` in [executors.build-box] (allowed: node, platform, enforcement, toolchains, attach_within_s)",
   )
 }
 
@@ -207,6 +209,7 @@ fn declared() -> executors.Executor {
     platform: Some("linux/x86_64"),
     enforcement: Some(Enforced),
     toolchains: ["codemode"],
+    attach_within_s: 30,
   )
 }
 
@@ -243,4 +246,28 @@ pub fn a_census_that_contradicts_the_declaration_names_both_values_test() {
     == Error(
       "executor build-box declares toolchain codemode but its census reports []",
     )
+}
+
+// --- attach_within_s (protocol-change/095) -------------------------------------
+
+pub fn an_executor_is_retried_for_thirty_seconds_unless_it_says_otherwise_test() {
+  let assert Ok([plain]) = executors.parse(executor_with(""))
+  assert plain.attach_within_s == 30
+  let assert Ok([sized]) =
+    executors.parse(executor_with("attach_within_s = 240\n"))
+  assert sized.attach_within_s == 240
+}
+
+pub fn the_wait_is_a_whole_number_of_seconds_up_to_fifteen_minutes_test() {
+  let assert Ok([longest]) =
+    executors.parse(executor_with("attach_within_s = 900\n"))
+  assert longest.attach_within_s == 900
+  list.each(["0", "901", "-4", "\"60\"", "1.5"], fn(value) {
+    let assert Error(reason) =
+      executors.parse(executor_with("attach_within_s = " <> value <> "\n"))
+    assert string.contains(
+      reason,
+      "executors.build-box.attach_within_s must be a whole number of seconds from 1 to 900",
+    )
+  })
 }

@@ -30,7 +30,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
-import client/workspaces.{Workspace}
+import client/workspaces
 import core/clock
 import core/json
 import core/message
@@ -268,7 +268,7 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       limits: exec_ledger.default_limits(),
       max_result_bytes: host.default_max_result_bytes,
       clock: clock.from_function(ffi_os.system_time_ms),
-      factory: executor_plane.factory(machine, [Workspace("proj", checkout)]),
+      factory: executor_plane.factory(machine, [workspaces.shared("proj", checkout)]),
       execution_result_bytes: host.default_execution_result_bytes,
     )
   use _started <- result.try(

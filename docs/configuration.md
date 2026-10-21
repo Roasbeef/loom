@@ -611,6 +611,7 @@ than it declared is not contradicted.
 | `platform` | string | none declared | `<os>/<architecture>`, such as `linux/x86_64` or `macos/arm64` | The platform the machine reports in the system prompt. |
 | `enforcement` | string | none declared | `enforced` or `degraded` | Whether the machine's sandbox helper confines what it runs. |
 | `toolchains` | array of strings | none declared | distinct lowercase names | What the machine provides: `codemode` for the code-mode toolchain, or the key of an `[lsp.<name>]` server it serves. |
+| `attach_within_s` | integer | `30` | `1` to `900` | How long an attach to this executor keeps retrying while the executor answers that it is still preparing the workspace (protocol-change 095). A first attach to a [`worktree` workspace](#worktree-workspaces) runs a whole checkout; time `git worktree add` once on the executor for the largest such workspace and set this to twice that. |
 
 ### Executors that come from the ledger
 
@@ -674,6 +675,7 @@ is skipped, because the daemon would be guessing.
 | `platform` | string | no requirement | `<os>/<architecture>` | Admit only executors that declared this platform. |
 | `enforcement` | string | no requirement | `enforced` or `degraded` | Admit only executors that declared this enforcement. |
 | `toolchains` | array of strings | no requirement | distinct lowercase names | Admit only executors that declared all of these toolchains. |
+| `attach_within_s` | integer | each member's own | `1` to `900` | Replaces the `attach_within_s` of every member for sessions placed through this pool. |
 
 ## `[workspaces.<name>]`
 
@@ -696,6 +698,37 @@ directory, in `scopes/<session>`, and removed when the session's scope closes.
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
 | `root` | string | required | an absolute path with no `..` segment, naming an existing directory | The checkout served under this name. The daemon refuses to start when it is not a directory. |
+| `mode` | string | `shared` | `shared` or `worktree` | `shared`: every session attached under this name runs in `root`, as before. `worktree` (protocol-change 095): each session gets its own linked Git worktree of `root` and its own branch `loom/<session id>`, created when the session first attaches. With `worktree` the daemon refuses to start unless `root` is the top of a non-bare Git repository whose `.git` is a directory (a primary checkout, not itself a linked worktree). |
+| `base` | string | `HEAD` | a branch, tag or commit name; refused with `shared` | With `worktree`, the commit each new branch starts from, resolved in `root` when the worktree is created. A name that is empty, starts with `-` or holds a space or control character is refused. |
+
+### Worktree workspaces
+
+A workspace in `worktree` mode keeps each session's files apart. The tree is
+`<state directory>/worktrees/<workspace>/<session id>`, outside `root`, so a tool
+that walks `root` never sees another session's tree and `git status` in `root`
+lists none. The executor creates the tree at the session's first attach and keeps
+it across scope closes. A close removes the tree when `git status` finds nothing
+in it except Loom's own `.codemode` directory, and leaves it, never touching its
+files, when it holds changes. A reopen adopts a tree that was kept, and recreates
+a removed one from the session's branch. The branch is never deleted: one
+accumulates per session until you prune them with Git.
+
+Deleting a session on the orchestrator does not reach the executor, so its tree
+stays until you remove it. `loom executor release --worktrees` lists the trees
+the executor made and removes the clean ones; a tree with changes is kept unless
+you name its session with `--force-session`. Stop the daemon first.
+
+A first attach runs `git worktree add`, which checks out the whole tree. The
+orchestrator keeps retrying an attach the executor answers "still preparing" for
+`attach_within_s` seconds ([`[executors.<name>]`](#executorsname)), 30 unless set.
+Time `git worktree add` once on the executor for the largest worktree workspace it
+serves, and set `attach_within_s` to twice that.
+
+The isolation protects against accidents, two agents editing one file or
+switching branches under each other. It does not protect against a hostile model:
+the linked worktree's Git directory and `root`'s `.git` are writable from the
+tree, as `root` and its `.git` are writable in shared mode, so a session could
+rewrite another session's refs or set a hook.
 
 ## `[orchestrators.<name>]`
 
