@@ -3267,6 +3267,11 @@ consume the next flag.
 
 ## Executor launch flag (protocol 078)
 
+`loom executor release --help` carries the daemon's complete executor usage,
+including `release --worktrees`, `--config`, `--helper` and `--force-session`.
+`scripts/cli_help_test.sh` compares both shipped entry points byte for byte,
+so extending the daemon's usage requires updating `tui.executor_usage` too.
+
 `loom --executor <name> --workspace <registered name>` creates new sessions in a
 workspace registered on that `[executors.<name>]` of the daemon's configuration.
 `tui.parse_local_launch` reads the two flags before `parse_local_options` sees

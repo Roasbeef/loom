@@ -1,7 +1,8 @@
 # Current handoff
 
 This is a scoped reconnect handoff, baselined October 21, 2026 against
-`8b97b3b70` on `fix/web-reconnect`. The source baseline was
+`d6b48b9da` on `fix/web-reconnect`, with the startup and CI repairs below.
+The source baseline was
 `bb5587a1727d4c2ebf52563c8b820fdc847e976b`. It records this repair's code and
 validation; it is not a fresh audit of main, releases or hosted CI.
 For publication, the branch integrates main `d9d1df193`, including the relayed
@@ -30,18 +31,22 @@ are merged in the integrated main; their earlier delivery language is historical
 | Review | One independent adversarial pass found no actionable issue in authorization, shutdown or replay. It inspected code and independently ran the transport test, not a browser DOM remount. |
 | Gates | The web-view gate passed all 1,219 tests, including the reconnect component regression. The client gate exited 2: 5,075 tests passed and the existing page startup-memory fixture failed because the component did not start. An isolated run also failed; a traced run passed, followed by all 12 socket-module tests passing. The startup failure is intermittent and its underlying cause is unproven. Package lints pass with warnings; doc-check passes with zero errors and 208 warnings. |
 | Integration | With main `d9d1df193`, all 21 relay tests, the reconnect component regression, 312 browser tests and the pinned transport regression pass. The asset check and doc-check pass. The reconnect implementation itself merged unchanged. |
-| Delivery | The owner requested PR publication. The PR remains a draft while the full client gate has an unresolved failure. No installation, restart or hotpatch was performed by this work. |
+| Startup repair | The memory probe formerly waited for registration even after a retryable close had ended its only connection. It now admits a fresh connection after 4000 within the original setup deadline. Every measurement forces an initial 4000 close, then measures the real authenticated socket, component and gateway attachment with the original bounds. All 12 socket tests and 67 page-socket tests pass. Disabling recovery makes the memory regression fail. A blocked initializer is still reaped under Lustre's original budget and logs the fixed `component_start` timeout category. The cause of the earlier initializer failures remains unproven; future logs distinguish timeout, refusal and exit without application data. |
+| CI repairs | Run `39685179005` found two executor worktree tests expecting success without delegated cgroups and a launcher/daemon executor-help mismatch on both platforms. The ordinary Linux fixture now requires refusal with unchanged tree contents, including forced removal; the delegated jail lane runs the same module and requires success. All 11 CLI tests pass locally on macOS. The TUI's worktree help now matches the daemon, with a failing old-launcher comparison as a negative control. Live Linux verification is pending the follow-up CI run. |
+| Delivery | The owner authorized fixing startup, making [PR #1069](https://github.com/Roasbeef/loom/pull/1069) green and merging when ready. The review and final full-gate verdicts must come from the follow-up PR head; the earlier results are historical. No installation, restart or hotpatch was performed by this work. |
 
 ## What remains
 
-1. Resolve the intermittent component startup failure before claiming the full
-   client gate is green. **Exit:** inspect each
+1. Validate the startup and CI repairs before merging. **Exit:** review the
+   follow-up head independently, pass the full client gate, inspect hosted
+   CI including advisory logs and the delegated worktree fixture, and obtain
+   the required Linux signoff for that same head. Inspect each
    command's own exit status and saved output, including failures and skip
    diagnostics. The failed fixture is
    `session_socket_test.admitted_page_socket_releases_its_startup_runtime_test`;
    the socket reported `start_page: the component did not start`, then the
-   fixture expired waiting for its registered socket. No deadline or assertion
-   was relaxed. Current client fixtures automatically skip
+   fixture expired waiting for its registered socket. The repaired probe
+   retries that 4000 close; no deadline or memory bound was relaxed. Current client fixtures automatically skip
    code-mode cases without `build/codemode-seed` and shipped-release cases
    without `LOOM_BOOTSTRAP_E2E_SERVER`; these are not a live-browser acceptance.
 2. Install and drive the repair only when requested. **Exit:** a fresh release
@@ -101,3 +106,8 @@ The integration reruns are `loom-reconnect-integrated-relay.log`,
 `loom-reconnect-integrated-component.log`,
 `loom-reconnect-integrated-browser.log` and
 `loom-reconnect-integrated-doc-check.log`.
+Startup repair logs are `loom-startup-fixed-socket-module.log`,
+`loom-startup-fixed-ui-module.log` and
+`loom-startup-retry-negative-control.log`. The CLI fixture evidence is
+`loom-ci-executor-cli-macos-fixed.log`; Linux evidence must come from the
+follow-up hosted run or the signoff gate, not that macOS result.
