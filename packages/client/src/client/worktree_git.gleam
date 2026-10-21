@@ -309,11 +309,60 @@ fn take_bytes(graphemes: List(String), left: Int, kept: String) -> String {
   }
 }
 
+/// A sentence for a Git call the sandbox did not let run to an exit, for the
+/// operator who ran the command. A sandbox that ran degraded is the one an
+/// operator meets, outside a delegated cgroup for example, and its report names
+/// the layers it skipped; the sentence says which, and what to run instead of
+/// the raw term the failure is made of. Any other failure is the tool layer's
+/// own account of it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(
+///   worktree_git.failure_words(exec.DegradedHelper(["no cgroup"])),
+///   "no cgroup",
+/// )
+/// ```
+pub fn failure_words(failure: exec.ExecFailure) -> String {
+  case failure {
+    exec.DegradedExecution(result:) ->
+      "the sandbox ran Git without full enforcement"
+      <> skipped_words(result.enforcement)
+      <> ", so Git was not trusted and no worktree was touched. Run this command"
+      <> " under the same delegated cgroup as the executor daemon (a user"
+      <> " service or a systemd scope with Delegate=yes), where the sandbox can"
+      <> " apply every layer."
+    exec.DegradedHelper(features:) ->
+      "the sandbox helper cannot provide full enforcement here (it reported "
+      <> string.join(features, ", ")
+      <> "), so no worktree was touched. Run this command under the same"
+      <> " delegated cgroup as the executor daemon."
+    other -> tool.exec_failure_text(other)
+  }
+}
+
+// The layers the sandbox's report says it skipped, as a parenthesis for the
+// sentence, or nothing when the report names none.
+fn skipped_words(enforcement: List(String)) -> String {
+  let skipped =
+    list.filter_map(enforcement, fn(entry) {
+      case string.starts_with(entry, exec.skip_prefix) {
+        True -> Ok(string.drop_start(entry, string.length(exec.skip_prefix)))
+        False -> Error(Nil)
+      }
+    })
+  case skipped {
+    [] -> ""
+    layers -> " (skipped: " <> string.join(layers, ", ") <> ")"
+  }
+}
+
 // A cleared call's account. A cancellation or timeout is not an exit, so it is
 // an error; everything else carries the exit code the caller will judge.
 fn settled(collected: tool.Collected) -> Result(Output, String) {
   case collected.outcome {
-    broker.CallFailed(failure) -> Error(string.inspect(failure))
+    broker.CallFailed(failure) -> Error(failure_words(failure))
     broker.CallExited(report) ->
       case report.cancelled || report.timed_out {
         True -> Error("Git did not complete before cancellation")
