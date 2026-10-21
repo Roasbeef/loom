@@ -333,6 +333,9 @@ dialled on demand, and the box sends nothing on its own.
   of the 084 S9 tests covering link loss, resend after loss, reconciliation of
   a lost create by `request_id`, and same-build checks; the web socket's
   admission pins for relayed rows.
+- **Status.** The backend of both halves is built (the `top_level` table, the
+  eight port messages, the reserving transaction, the relay client and the view
+  that keeps the last list); the web view pages and composer join it after S1.
 - **Exit.** Live drive: from the laptop's page start "agent on box, code on
   exec" and "agent on box, folder on box", reply, approve, see the state in
   the sidebar; a pending request survives a laptop restart and is decided
