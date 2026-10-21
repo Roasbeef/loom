@@ -253,6 +253,8 @@ FROM catalogue_relayed_sessions AS r
 JOIN catalogue_sessions AS s ON s.session_id = r.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = r.session_id
 WHERE r.spawner = ?
+  AND NOT EXISTS (SELECT 1 FROM catalogue_session_archives AS h
+                  WHERE h.session_id = r.session_id)
 ORDER BY r.session_id DESC
 LIMIT ?;
 
@@ -266,5 +268,7 @@ FROM catalogue_relayed_sessions AS r
 JOIN catalogue_sessions AS s ON s.session_id = r.session_id
 LEFT JOIN catalogue_session_names AS n ON n.session_id = r.session_id
 WHERE r.spawner = ? AND r.session_id < ?
+  AND NOT EXISTS (SELECT 1 FROM catalogue_session_archives AS h
+                  WHERE h.session_id = r.session_id)
 ORDER BY r.session_id DESC
 LIMIT ?;
