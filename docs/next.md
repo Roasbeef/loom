@@ -12,6 +12,36 @@ The claims below were checked against this tree, the saved local gates and the
 live observations identified in the report. This is a scoped resource handoff,
 not a fresh audit of the repository's architecture or hosted CI.
 
+The proposal review's rendering was changed on October 19, 2026 by
+[PR #1017](https://github.com/Roasbeef/loom/pull/1017) (`feat/inline-proposal-cards`),
+merged at `f71ab190e`. It does not re-audit the idle-resource claims either.
+
+**What #1017 changed.** The surfaces that show a proposed edit now draw the
+change instead of two whole texts. `session_view/proposals.edit_lines` keeps
+the lines the old and new texts share at their head and tail as context and
+marks only the lines between them, so a one-line change to `loom.toml` reads
+as one removed row beside one added row rather than as two near-identical
+paragraphs. `diff_lines`, `change_counts`, `target_label`, `reach_words` and
+`diff_text` are the rest of that surface, shared by the terminal's review, the
+transcript's own `propose` row (which no longer prints the transport JSON) and
+both web surfaces. The PR also added the first tests over `dock_cards`,
+including its index-key property.
+
+**Its conformance gate is red for an infrastructure reason, not a code one.**
+`check (linux, conformance)` failed at *"Install gopls for SQL language-server
+conformance"*: `go install` could not download `golang.org/x/sys@v0.46.0`
+(`proxy.golang.org`, `stream error: INTERNAL_ERROR`), so the actual
+`make check (conformance)` step was **skipped** and nothing was tested. Run
+locally on the merged tree, `make check-conformance` passes every test. The
+job cannot be re-run while its workflow run is live, and that run does not
+settle while macOS jobs wait for runners; `main`'s own runs queued behind the
+same shortage. Treat the run for `f71ab190e` as inconclusive rather than as
+evidence either way, and confirm `main` is green from the run for a later
+commit once runners free up.
+
+The merge commit's own run, `39326787387`, was **cancelled** rather than
+completed, because `ca9a21f02` (#1027) was merged on top of it minutes later.
+
 ## Where the tree is
 
 | Work | Verified state |
