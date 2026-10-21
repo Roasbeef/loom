@@ -41,6 +41,7 @@ pub fn every_document_links_the_tab_icon_test() {
       page.home_shell(),
       page.admin_shell(),
       page.login_page(),
+      page.root_page("loom ui"),
       page.claim_page(None),
       page.exchange_confirmation(page.OpensHome, page.StaysSignedIn, "a", "t"),
       page.enter("/ui/p/k/home", "n"),
@@ -100,6 +101,27 @@ pub fn the_resume_page_names_both_ways_back_in_test() {
   assert string.contains(page.login_unknown_notice(), "/ui/claim")
 }
 
+// The root page is a fixed document: a script from this origin, no inline
+// script, no form and no key. The command it shows is the one it is given,
+// escaped, and the script-less notice names the same command.
+pub fn the_root_page_is_fixed_words_a_script_and_a_command_test() {
+  let document = page.root_page("loom ui --device")
+  assert string.contains(
+    document,
+    "<script src=\"/ui/assets/web_view_root.js\"></script>",
+  )
+  assert !string.contains(document, "<script>")
+  assert !string.contains(document, "<form")
+  assert !string.contains(document, "/ui/l/")
+  assert string.contains(
+    document,
+    "<loom-copy subject=\"link\" text=\"loom ui --device\">",
+  )
+  assert string.contains(document, "<noscript>")
+  assert page.root_page("a\"<b") != page.root_page("a")
+  assert !string.contains(page.root_page("a\"<b"), "a\"<b")
+}
+
 pub fn every_owned_asset_is_in_this_packages_priv_test() {
   list.each(
     [
@@ -107,6 +129,7 @@ pub fn every_owned_asset_is_in_this_packages_priv_test() {
       page.enter_asset,
       page.page_asset,
       page.resume_asset,
+      page.root_asset,
       page.client_asset,
       page.favicon_asset,
     ],

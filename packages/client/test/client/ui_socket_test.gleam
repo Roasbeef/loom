@@ -12,6 +12,7 @@ import client/daemon/ui_relay
 import client/daemon/ui_sessions
 import client/daemon/ui_socket
 import gleam/erlang/process
+import gleam/http/request
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -1493,6 +1494,27 @@ pub fn the_browser_claim_address_is_made_from_the_commands_address_test() {
     == "http://127.0.0.1:4000/ui/claim"
   assert ui_socket.browser_claim_address("ws://[::1]:53599/v2/control")
     == "http://[::1]:53599/ui/claim"
+}
+
+// Every admitted loopback name that is not an IP literal is written as
+// 127.0.0.1 with its port, because `loom claim` refuses a `ws` address that is
+// not a literal loopback one. A `.localhost` page therefore gets a usable
+// claim address, and with it invitations.
+pub fn every_admitted_loopback_name_gets_a_literal_claim_address_test() {
+  let at = fn(host) {
+    request.new()
+    |> request.set_header("host", host)
+    |> ui_socket.claim_address
+  }
+  let literal = Ok("ws://127.0.0.1:7440/v2/control")
+  assert at("127.0.0.1:7440") == literal
+  assert at("localhost:7440") == literal
+  assert at("LocalHost:7440") == literal
+  assert at("loom.localhost:7440") == literal
+  assert at("a.b.localhost:7440") == literal
+  assert at("[::1]:7440") == Ok("ws://[::1]:7440/v2/control")
+  assert at("loom.localhost") == Ok("ws://127.0.0.1/v2/control")
+  assert at("evil.example:7440") == Error(Nil)
 }
 
 // The role a row says comes from the daemon's membership rows and from nothing a

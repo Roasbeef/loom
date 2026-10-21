@@ -4,6 +4,7 @@
 //// carries (protocol-change/051).
 
 import client/daemon/ui_http
+import client/daemon/ui_origin
 import client/daemon/ui_sessions
 import gleam/http
 import gleam/http/request
@@ -11,6 +12,7 @@ import gleam/http/response
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import qcheck
 import web_view/page
 
 // The origin every loopback check in this file is made under: a browser on
@@ -475,4 +477,152 @@ pub fn the_posted_claim_is_a_token_and_an_optional_name_test() {
   assert ui_http.posted_claim(<<"token=a&other=1":utf8>>) == Error(Nil)
   assert ui_http.posted_claim(<<"token=a&name=b&other=1":utf8>>) == Error(Nil)
   assert ui_http.posted_claim(<<0xff, 0xfe>>) == Error(Nil)
+}
+
+// A label drawn as numbers: each number picks a letter or digit, so a draw
+// stays valid whatever length it shrinks to.
+const label_alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+fn label_of(draws: List(Int)) -> String {
+  list.map(draws, fn(draw) {
+    string.slice(label_alphabet, draw % string.length(label_alphabet), 1)
+  })
+  |> string.concat
+}
+
+// One to four labels of one to twelve characters, drawn on a fixed seed so
+// the gate is deterministic and a failure arrives shrunk.
+fn labels_generator() -> qcheck.Generator(List(String)) {
+  let label =
+    qcheck.generic_list(
+      elements_from: qcheck.bounded_int(from: 0, to: 35),
+      length_from: qcheck.bounded_int(from: 1, to: 12),
+    )
+    |> qcheck.map(label_of)
+  qcheck.generic_list(
+    elements_from: label,
+    length_from: qcheck.bounded_int(from: 1, to: 4),
+  )
+}
+
+fn names_config() -> qcheck.Config {
+  qcheck.default_config()
+  |> qcheck.with_test_count(300)
+  |> qcheck.with_seed(qcheck.seed(1051))
+}
+
+pub fn any_run_of_dns_labels_under_localhost_is_loopback_test() {
+  qcheck.run(names_config(), labels_generator(), fn(labels) {
+    let name = string.join(labels, ".") <> ".localhost"
+    assert host_of(name) == Ok(name)
+    assert host_of(name <> ":7440") == Ok(name <> ":7440")
+
+    // The comparison is lowercased, and the host is returned as sent.
+    let upper = string.uppercase(name) <> ":1"
+    assert host_of(upper) == Ok(upper)
+  })
+}
+
+pub fn a_malformed_name_under_localhost_is_refused_test() {
+  qcheck.run(names_config(), labels_generator(), fn(labels) {
+    let name = string.join(labels, ".")
+
+    // A trailing dot leaves a name that no longer ends in `.localhost`, and
+    // an empty label in front of it or between two labels is not a label.
+    assert host_of(name <> ".localhost.") == Error(Nil)
+    assert host_of("." <> name <> ".localhost") == Error(Nil)
+    assert host_of(name <> "..localhost") == Error(Nil)
+    assert host_of(name <> ".localhost.:80") == Error(Nil)
+
+    // The name must end in `.localhost`, not merely contain it.
+    assert host_of("localhost." <> name) == Error(Nil)
+    assert host_of(name <> ".localhost." <> name) == Error(Nil)
+    assert host_of(name <> ".localhostx") == Error(Nil)
+    assert host_of(name <> "localhost") == Error(Nil)
+
+    // Characters a DNS label does not hold.
+    assert host_of(name <> "_x.localhost") == Error(Nil)
+    assert host_of(name <> " x.localhost") == Error(Nil)
+    assert host_of(name <> "@evil.example.localhost") == Error(Nil)
+    assert host_of(name <> "\u{e9}.localhost") == Error(Nil)
+
+    // Lowercasing folds U+212A (the Kelvin sign) to `k`, so a name that is
+    // ASCII only after folding must still be refused.
+    assert host_of(name <> ".localhost") == Ok(name <> ".localhost")
+    assert host_of(name <> "\u{212A}.localhost") == Error(Nil)
+    assert host_of("\u{212A}.localhost") == Error(Nil)
+  })
+}
+
+pub fn the_localhost_suffix_shapes_are_accepted_and_refused_test() {
+  assert host_of("loom.localhost:7440") == Ok("loom.localhost:7440")
+  assert host_of("Loom.LOCALHOST") == Ok("Loom.LOCALHOST")
+  assert host_of("a.b.c.localhost:1") == Ok("a.b.c.localhost:1")
+  assert host_of("xn--e1afmkfd.localhost") == Ok("xn--e1afmkfd.localhost")
+  assert host_of("my-app.localhost") == Ok("my-app.localhost")
+
+  // The bare suffix has no label in front of it.
+  assert host_of(".localhost") == Error(Nil)
+  assert host_of(".localhost:80") == Error(Nil)
+  assert host_of("a..localhost") == Error(Nil)
+
+  // The shapes the issue names, and hyphens at a label's ends.
+  assert host_of("localhost.evil.com") == Error(Nil)
+  assert host_of("evil.com.localhost.") == Error(Nil)
+  assert host_of("-a.localhost") == Error(Nil)
+  assert host_of("a-.localhost") == Error(Nil)
+
+  // A port still has to be a port.
+  assert host_of("loom.localhost:") == Error(Nil)
+  assert host_of("loom.localhost:80:81") == Error(Nil)
+  assert host_of("loom.localhost:port") == Error(Nil)
+  assert host_of("loom.localhost:123456") == Error(Nil)
+
+  // A label is at most 63 characters and a name at most 253.
+  let longest = string.repeat("a", 63)
+  assert host_of(longest <> ".localhost") == Ok(longest <> ".localhost")
+  assert host_of(string.repeat("a", 64) <> ".localhost") == Error(Nil)
+  let long_name = string.repeat(string.repeat("a", 60) <> ".", 5) <> "localhost"
+  assert host_of(long_name) == Error(Nil)
+}
+
+pub fn a_localhost_name_is_a_loopback_page_origin_with_its_own_socket_origin_test() {
+  let socket = fn(sent) {
+    get("/ui/p/k/sessions/s/ws", [
+      #("host", "loom.localhost:7440"),
+      #("origin", sent),
+    ])
+  }
+  let request = socket("http://loom.localhost:7440")
+  let assert Ok(origin) = ui_http.page_origin(request, [])
+  assert origin == ui_http.Loopback("loom.localhost:7440")
+  assert ui_http.address(origin) == "http://loom.localhost:7440"
+  assert ui_http.socket_origin(origin) == "ws://loom.localhost:7440"
+  assert ui_http.session_cookie_name(origin) == "loom_ui"
+  assert ui_http.origin_matches(request, origin)
+
+  // The socket accepts the matching origin and nothing else: not the same
+  // name on another port, not another name, not a lookalike.
+  assert !ui_http.origin_matches(socket("http://loom.localhost:7441"), origin)
+  assert !ui_http.origin_matches(socket("http://other.localhost:7440"), origin)
+  assert !ui_http.origin_matches(socket("https://loom.localhost:7440"), origin)
+  assert !ui_http.origin_matches(
+    socket("http://loom.localhost.evil.example:7440"),
+    origin,
+  )
+}
+
+pub fn the_root_is_a_route_of_its_own_and_only_for_a_get_test() {
+  assert ui_http.route(get("/", [])) == ui_http.Root
+  assert ui_http.route(request.set_method(get("/", []), http.Post))
+    == ui_http.Unknown
+  assert ui_http.route(get("/elsewhere", [])) == ui_http.Unknown
+  assert ui_http.route(get("/ui/assets/" <> page.root_asset, []))
+    == ui_http.Asset(ui_http.RootScript)
+}
+
+pub fn the_sign_in_command_follows_the_page_origin_test() {
+  assert ui_http.sign_in_command(loopback) == "loom ui"
+  let assert Ok(listed) = ui_origin.parse("https://loom.test.example:8443")
+  assert ui_http.sign_in_command(ui_http.Remote(listed)) == "loom ui --device"
 }

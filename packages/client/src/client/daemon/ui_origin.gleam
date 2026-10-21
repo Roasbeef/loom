@@ -192,10 +192,14 @@ fn port_of(suffix: String) -> Result(Option(Int), Nil) {
   }
 }
 
-// The three names the view admits as loopback (`ui_http.loopback_host`).
+// The names the view admits as loopback (`ui_http.loopback_host`): three
+// literals and everything under `.localhost`.
 // Listing one would change nothing, so it is refused as a likely mistake.
 fn loopback(host: String) -> Bool {
-  host == "localhost" || host == "127.0.0.1" || host == "[::1]"
+  host == "localhost"
+  || host == "127.0.0.1"
+  || host == "[::1]"
+  || string.ends_with(host, ".localhost")
 }
 
 /// The origin as a browser writes it in `Origin`: `https://`, the host, and

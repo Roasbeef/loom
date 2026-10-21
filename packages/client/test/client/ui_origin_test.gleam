@@ -85,6 +85,7 @@ pub fn a_bad_entry_is_refused_naming_it_test() {
     "https://[]:8443",
     "https://[::1]:8443",
     "https://localhost:8443",
+    "https://loom.localhost:8443",
     "https://127.0.0.1:8443",
     "https://obelisk.ts.net :8443",
   ]

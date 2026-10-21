@@ -25,6 +25,7 @@ pub opaque type Assets {
     enter_script: String,
     page_script: String,
     resume_script: String,
+    root_script: String,
     client: String,
     favicon: String,
     mermaid_frame: String,
@@ -46,6 +47,7 @@ pub fn load() -> Result(Assets, String) {
   use enter_script <- result.try(owned(page.enter_asset))
   use page_script <- result.try(owned(page.page_asset))
   use resume_script <- result.try(owned(page.resume_asset))
+  use root_script <- result.try(owned(page.root_asset))
   use client <- result.try(owned(page.client_asset))
   use mermaid_frame <- result.try(owned(page.mermaid_frame_asset))
   use mermaid_script <- result.try(owned(page.mermaid_script_asset))
@@ -56,6 +58,7 @@ pub fn load() -> Result(Assets, String) {
     enter_script:,
     page_script:,
     resume_script:,
+    root_script:,
     client:,
     favicon:,
     mermaid_frame:,
@@ -97,6 +100,10 @@ pub fn body(assets: Assets, asset: ui_http.Asset) -> #(String, String) {
     ui_http.ResumeScript -> #(
       "text/javascript; charset=utf-8",
       assets.resume_script,
+    )
+    ui_http.RootScript -> #(
+      "text/javascript; charset=utf-8",
+      assets.root_script,
     )
     ui_http.Client -> #("text/javascript; charset=utf-8", assets.client)
     ui_http.MermaidFrame -> #("text/html; charset=utf-8", assets.mermaid_frame)

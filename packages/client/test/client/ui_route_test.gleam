@@ -1697,6 +1697,7 @@ pub fn without_ui_the_routes_do_not_exist_test() {
     let session = "0198c0de-0000-7000-8000-000000000001"
     assert get(port, "/ui/sessions/" <> session, [host(port)]).status == 404
     assert get(port, "/ui/assets/web_client.css", [host(port)]).status == 404
+    assert get(port, "/", [host(port)]).status == 404
 
     // The hello names no view, and a link is refused.
     let #(socket, _) =
@@ -2058,6 +2059,7 @@ pub fn the_assets_are_the_priv_files_under_the_unchanged_policy_test() {
       #(page.stylesheet_asset, "text/css; charset=utf-8", page.static_file),
       #(page.enter_asset, javascript, page.static_file),
       #(page.page_asset, javascript, page.static_file),
+      #(page.root_asset, javascript, page.static_file),
       #(page.client_asset, javascript, page.static_file),
       #(page.favicon_asset, "image/svg+xml", page.static_file),
       #(page.runtime_asset, javascript, fn(_) { page.runtime_file() }),
@@ -2079,6 +2081,111 @@ pub fn the_assets_are_the_priv_files_under_the_unchanged_policy_test() {
       let answer = get(port, page.asset_path(name), [host(port)])
       assert string.contains(answer.body, "\"" <> page.nonce_item <> "\"")
     })
+  })
+}
+
+// The root page (protocol-change/052, the addendum on the root page) goes
+// through the same host admission as every `/ui` request, so it answers a
+// loopback name, a `.localhost` name and a listed origin, and refuses any
+// other `Host`. It carries the view's policy, names its script as an external
+// file, holds no inline script, and sets no cookie.
+pub fn the_root_page_is_admitted_like_every_view_request_test() {
+  fixture(fn(_ready, port, _credential) {
+    let loopback = get(port, "/", [host(port)])
+    assert loopback.status == 200
+    assert list.key_find(loopback.headers, "content-type")
+      == Ok("text/html; charset=utf-8")
+    assert list.key_find(loopback.headers, "content-security-policy")
+      == Ok(policy(port))
+    assert list.key_find(loopback.headers, "set-cookie") == Error(Nil)
+    assert list.key_find(loopback.headers, "cache-control") == Ok("no-store")
+    assert string.contains(
+      loopback.body,
+      "<script src=\"" <> page.asset_path(page.root_asset) <> "\">",
+    )
+    assert !string.contains(loopback.body, "<script>")
+    assert string.contains(loopback.body, "Run this in a terminal")
+    assert string.contains(loopback.body, "text=\"loom ui\"")
+    assert !string.contains(loopback.body, "--device")
+
+    // The page is the same document for every loopback name, and its policy
+    // names the socket origin of the name it was reached by.
+    let named = "loom.localhost:" <> int.to_string(port)
+    let localhost = get(port, "/", [#("host", named)])
+    assert localhost.status == 200
+    assert localhost.body == loopback.body
+    assert list.key_find(localhost.headers, "content-security-policy")
+      == Ok(string.replace(
+        policy(port),
+        "ws://127.0.0.1:",
+        "ws://loom.localhost:",
+      ))
+
+    // A listed origin is told the device command, and gets the wss policy.
+    let remote = get(port, "/", [#("host", remote_host)])
+    assert remote.status == 200
+    assert list.key_find(remote.headers, "set-cookie") == Error(Nil)
+    assert string.contains(remote.body, "text=\"loom ui --device\"")
+    let assert Ok(remote_policy) =
+      list.key_find(remote.headers, "content-security-policy")
+      as "the listed origin's page carries the policy"
+    assert string.contains(
+      remote_policy,
+      "connect-src 'self' wss://" <> remote_host,
+    )
+  })
+}
+
+pub fn the_root_page_refuses_other_hosts_and_methods_test() {
+  fixture(fn(_ready, port, _credential) {
+    list.each(
+      [
+        "evil.example",
+        "localhost.evil.example",
+        "evil.example.localhost.",
+        ".localhost",
+        "loom.test.example:9999",
+      ],
+      fn(name) {
+        let answer = get(port, "/", [#("host", name)])
+        assert answer.status == 403
+        assert answer.body == "forbidden host"
+        assert list.key_find(answer.headers, "set-cookie") == Error(Nil)
+        assert string.contains(
+          result.unwrap(
+            list.key_find(answer.headers, "content-security-policy"),
+            "",
+          ),
+          "default-src 'none'",
+        )
+      },
+    )
+
+    // Only a GET reaches the page; nothing else under the root exists.
+    let posted =
+      send_request(
+        port,
+        "POST",
+        "/",
+        [host(port), #("content-length", "0")],
+        "",
+      )
+    assert posted.status == 404
+    assert get(port, "/elsewhere", [host(port)]).status == 404
+  })
+}
+
+// The root script reads only the entries `web_view_enter.js` writes, under the
+// same item prefix, and only moves to a resume page.
+pub fn the_root_script_reads_the_logins_the_enter_script_keeps_test() {
+  fixture(fn(_ready, port, _credential) {
+    let script = get(port, page.asset_path(page.root_asset), [host(port)])
+    assert script.status == 200
+    assert string.contains(script.body, "loom\\.login\\.")
+    assert string.contains(script.body, "/ui/l/")
+    assert string.contains(script.body, "try {")
+    let enter = get(port, page.asset_path(page.enter_asset), [host(port)])
+    assert string.contains(enter.body, page.login_nonce_item)
   })
 }
 
