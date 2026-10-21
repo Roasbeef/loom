@@ -1584,7 +1584,13 @@ pub fn connection_request(
     frame,
     _,
   ))
-  |> result.unwrap(Error("gateway response unavailable"))
+  |> result.map_error(fn(fault) {
+    case fault {
+      call.NoReply -> "gateway response timed out"
+      call.CalleeGone -> "gateway process unavailable"
+    }
+  })
+  |> result.flatten
 }
 
 /// Detaches from the original process; a replacement never sees the old ID.

@@ -532,6 +532,12 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   (the 409). A socket closed before its first frame writes
   `daemon.socket_closed_early`. Lines carry a route class, a step and a
   fixed reason, never a credential, key, nonce or ticket.
+  `page_request_failed` additionally writes `daemon.page_request_failed` with
+  session/connection identifiers, elapsed request time, request bytes, the
+  gateway reason and diagnosed ending. `page_ended` writes
+  `daemon.page_connection_ended` with the boundary that ended the relay. Neither
+  contains a command frame. Gateway request timeouts and dead processes have
+  distinct reasons (protocol-change/097).
 - `principals.rename` (protocol-change/065, the tenth addendum): `protocol.RenamePrincipal`
   decodes an optional principal, an unjudged name of at most 1024 bytes and the
   epoch; `server.dispatch` answers it through `manager.rename_principal`, one
@@ -802,6 +808,13 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   socket closes. `server`'s refused page requests answer with
   `page.refusal` (`refused_page`) under the status they always had; the
   session identity in it is drawn only if it parses as a canonical one.
+  Under protocol-change/097, `Shut` from a live lane also calls `ended` after
+  reauthorization, with `ConnectionFailed` when access is unchanged. That
+  ending closes the browser socket with 4000, so Lustre opens a fresh page
+  component and snapshot. A failed request or retired relay never replays a
+  command. `ComponentDown` only detaches; credential and page endings remain
+  final. `ui_relay_test` holds an acknowledgement after a real prompt commits
+  and proves a fresh relay does not duplicate it or send the queued prompt.
 
 ## Purpose
 

@@ -63,7 +63,12 @@ pub fn the_relays_reason_strings_are_unchanged_test() {
 pub fn only_an_ending_that_may_clear_by_itself_is_retried_test() {
   let retried =
     list.filter(ending.all(), fn(e) { ending.close(e) == ending.Retry })
-  assert retried == [ending.NotOpen, ending.DaemonNotReady]
+  assert retried
+    == [
+      ending.NotOpen,
+      ending.DaemonNotReady,
+      ending.ConnectionFailed,
+    ]
   assert ending.close(ending.PageEnded) == ending.Final
   assert ending.close(ending.AccessRevoked) == ending.Final
   assert ending.close(ending.SessionStopped) == ending.Final
@@ -80,12 +85,16 @@ pub fn the_advice_names_the_command_for_the_session_test() {
         assert string.contains(advice, "reload this page")
         assert !string.contains(advice, "loom ui")
       }
+      ending.ConnectionFailed -> {
+        assert string.contains(advice, "Reconnecting automatically")
+        assert !string.contains(advice, "loom ui")
+        assert string.contains(advice, "will not be sent again")
+      }
       ending.PageEnded
       | ending.AccessRevoked
       | ending.NotOpen
       | ending.DaemonNotReady
-      | ending.LinkExpired
-      | ending.ConnectionFailed -> {
+      | ending.LinkExpired -> {
         assert string.contains(advice, "loom ui --session 0192ab34cd")
       }
     }

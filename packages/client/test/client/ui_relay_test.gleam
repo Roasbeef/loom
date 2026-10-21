@@ -17,10 +17,12 @@ import client/gateway
 import client/gateway_test
 import client/protocol
 import core/clock
+import core/entry
 import core/ids
+import core/message
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -28,6 +30,7 @@ import gleam/time/timestamp
 import runtime/api
 import session_view/connection_event
 import storage/access
+import storage/storage
 import web_view/ending
 import weft/registry
 
@@ -123,6 +126,13 @@ fn next_text(inbox: Subject(connection_event.Message)) -> String {
 // either may come first. Answers the reply, after checking that the other
 // frame is a roster with no `reply_to` that names this page.
 fn subscribed(inbox: Subject(connection_event.Message)) -> String {
+  subscribed_as(inbox, "page-alice")
+}
+
+fn subscribed_as(
+  inbox: Subject(connection_event.Message),
+  connection_id: String,
+) -> String {
   let first = next_text(inbox)
   let second = next_text(inbox)
   let #(reply, roster) = case is_roster(first) {
@@ -135,7 +145,7 @@ fn subscribed(inbox: Subject(connection_event.Message)) -> String {
     ..,
   )) = protocol.decode_event(roster)
     as "a subscribe pushes the page its own join"
-  assert string.contains(roster, "\"page-alice\"")
+  assert string.contains(roster, "\"" <> connection_id <> "\"")
   reply
 }
 
@@ -711,4 +721,156 @@ pub fn an_attach_refused_for_authorization_is_revoked_access_test() {
     as "the attach is refused"
   assert refusal == ending.reason(ending.AccessRevoked)
   assert process.receive(ended, 1000) == Ok(ending.AccessRevoked)
+}
+
+// Holds the first authorization check after the prompt is durable. Later
+// checks pass, including the relay's reauthorization after its reply timeout.
+type ReplyGate {
+  Take(reply: Subject(Bool))
+}
+
+fn reply_gate() -> Subject(ReplyGate) {
+  let assert Ok(started) =
+    actor.new(True)
+    |> actor.on_message(fn(held, message) {
+      let Take(reply) = message
+      process.send(reply, held)
+      actor.continue(False)
+    })
+    |> actor.start
+    as "the one-shot reply gate starts"
+  started.data
+}
+
+fn user_prompts(harness: gateway_test.Harness) -> List(String) {
+  let assert Ok(rows) =
+    storage.scan_entries(
+      harness.runtime.session.store,
+      storage.entry_scan() |> storage.entry_seq_range(Some(1), None),
+    )
+    as "the fixture reads its durable transcript"
+  list.filter_map(rows, fn(row) {
+    case row {
+      entry.MessageEntry(
+        message: message.UserMessage(content: [message.UserText(text:, ..)], ..),
+        ..,
+      ) -> Ok(text)
+      _ -> Error(Nil)
+    }
+  })
+}
+
+@external(erlang, "client_test_ffi", "log_capture_start")
+fn log_capture_start() -> Nil
+
+@external(erlang, "client_test_ffi", "log_capture_stop")
+fn log_capture_stop() -> List(String)
+
+pub fn a_timed_out_committed_prompt_is_not_replayed_on_reconnect_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5126))
+  let gate = reply_gate()
+  let held = process.new_subject()
+  let marker = "one prompt with a lost acknowledgement"
+  let check = fn() {
+    case list.contains(user_prompts(harness), marker) {
+      False -> operator()
+      True -> {
+        case process.call(gate, 1000, Take) {
+          False -> operator()
+          True -> {
+            let release = process.new_subject()
+            process.send(held, release)
+            let assert Ok(Nil) = process.receive(release, 10_000)
+              as "the test releases the reply after the relay times out"
+            operator()
+          }
+        }
+      }
+    }
+  }
+  let ended = process.new_subject()
+  let inbox = process.new_subject()
+  let assert Ok(relay) =
+    start(attach_under(harness, check, access.Operator), inbox, fn(reason) {
+      process.send(ended, reason)
+    })
+    as "the original page attaches"
+  let original = relay_pid(relay)
+  ui_relay.transmit(relay, subscribe(harness, 1))
+  let _ = subscribed(inbox)
+
+  // The command commits, but delivery cannot answer before the real six-second
+  // deadline. A second command waits in this relay and must be discarded too.
+  log_capture_start()
+  ui_relay.transmit(relay, frame(2, protocol.Prompt("main", marker)))
+  let release = process.receive(held, 3000)
+  ui_relay.transmit(relay, frame(3, protocol.Prompt("main", "never sent")))
+  let outcome = process.receive(ended, 8000)
+  let logs = log_capture_stop()
+  case release {
+    Ok(release) -> process.send(release, Nil)
+    Error(Nil) -> Nil
+  }
+  assert outcome == Ok(ending.ConnectionFailed)
+  assert release != Error(Nil)
+  assert gone(original)
+  assert ending.close(ending.ConnectionFailed) == ending.Retry
+
+  // Attachment is a barrier behind the late reply and old detach. A fresh
+  // browser lane subscribes again; neither old command is supplied to it.
+  let fresh = attach_under(harness, operator, access.Operator)
+  let fresh =
+    ui_relay.Attach(
+      ..fresh,
+      binding: gateway.Binding(..fresh.binding, connection_id: "page-alice-new"),
+    )
+  let fresh_inbox = process.new_subject()
+  let assert Ok(reconnected) = start(fresh, fresh_inbox, fn(_) { Nil })
+    as "reconnection reauthorizes against the same gateway"
+  ui_relay.transmit(reconnected, subscribe(harness, 1))
+  let snapshot = subscribed_as(fresh_inbox, "page-alice-new")
+  assert string.contains(snapshot, "snapshot_begin")
+  assert user_prompts(harness) == [marker]
+  ui_relay.shut(reconnected)
+
+  let logs = string.join(logs, "\n")
+  assert string.contains(logs, "daemon.page_request_failed")
+  assert string.contains(logs, "gateway response timed out")
+  assert string.contains(logs, "\"elapsed_ms\":")
+  assert string.contains(logs, "\"request_bytes\":")
+  assert string.contains(logs, "\"cause\":\"request_failed\"")
+  assert !string.contains(logs, marker)
+  assert !string.contains(logs, "never sent")
+}
+
+pub fn a_lane_that_closes_itself_requests_browser_reconnection_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5127))
+  let ended = process.new_subject()
+  let assert Ok(relay) =
+    start(attach(harness, operator), process.new_subject(), fn(reason) {
+      process.send(ended, reason)
+    })
+    as "the page attaches"
+  let pid = relay_pid(relay)
+  ui_relay.shut(relay)
+  assert process.receive(ended, 1000) == Ok(ending.ConnectionFailed)
+  assert gone(pid)
+}
+
+pub fn a_closed_lane_rechecks_access_before_requesting_reconnection_test() {
+  let harness = gateway_test.reserved_fixture(fixture_id(5128))
+  let ended = process.new_subject()
+  let checks = scripted([operator(), Error("access was revoked")])
+  let assert Ok(relay) =
+    start(
+      attach(harness, fn() { process.call(checks, 1000, Ask) }),
+      process.new_subject(),
+      fn(reason) { process.send(ended, reason) },
+    )
+    as "the page attaches while authorized"
+  let pid = relay_pid(relay)
+  ui_relay.shut(relay)
+  assert process.receive(ended, 1000) == Ok(ending.AccessRevoked)
+  assert ending.close(ending.AccessRevoked) == ending.Final
+  assert gone(pid)
 }

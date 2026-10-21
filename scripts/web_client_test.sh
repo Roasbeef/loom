@@ -61,3 +61,12 @@ fi
 
 python3 ../../scripts/with_timeout.py 600 -- \
 	gleam test --target javascript --runtime "$runtime"
+
+# The transport's queue belongs to Lustre rather than a Gleam decision module.
+# Test the pinned runtime with fake sockets so a retry cannot replay a submit.
+if [ "$package" = web_client ]; then
+	case "$runtime" in
+	node | bun) "$runtime" test/reconnect_transport_test.mjs ;;
+	deno) deno run --allow-read test/reconnect_transport_test.mjs ;;
+	esac
+fi

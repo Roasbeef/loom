@@ -578,6 +578,13 @@ imports an element throws before any test runs. Lint rule R20 walks the
 imports reachable from `test/` and fails the build if one reaches `lustre`
 or `web_client/internal/` (`make lint-web_client`).
 
+`test/reconnect_transport_test.mjs` separately exercises the pinned Lustre
+WebSocket transport with controlled sockets and timers. The browser test
+runner runs it after the Gleam tests: a retry close reconnects without replaying
+either the sent submit or a queued submit, and a final close does not retry.
+It reads the built dependency's transport rather than copying its implementation;
+it performs no DOM or network operation (protocol-change/097).
+
 `test/` holds gleeunit tests for what the components decide: `follow`'s
 scroll rules and the sequences of messages the page sends, `composer`'s
 `matching`, `intent`, `hear`, `taken`, `joined` and `revealed`, and

@@ -41,7 +41,9 @@
 ////
 //// Four ways, each leaving no process and no presence:
 ////
-//// - `shut`: the lane closed its socket. The relay detaches and exits.
+//// - `shut`: the live lane failed. The relay rechecks access, tells the
+////   browser socket to close, detaches and exits. An authorized failure
+////   reconnects through a fresh lane without replaying commands.
 //// - The component exits (the browser went away and the page's socket shut
 ////   it down). The relay monitors it, detaches and exits.
 //// - The gateway exits (the session stopped or the daemon is shutting
@@ -70,6 +72,8 @@ import client/daemon/upgrade_log
 import client/gateway
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/result
+import gleam/string
+import host/bootstrap
 import session_view/connection_event
 import storage/access
 import web_view/ending.{type Ending}
@@ -137,6 +141,8 @@ type State {
   )
   State(
     connection: gateway.ConnectionHandle,
+    session_id: String,
+    connection_id: String,
     inbox: Subject(connection_event.Message),
     ended: fn(Ending) -> Nil,
     check: fn() -> Result(#(access.Principal, access.Authority), String),
@@ -294,6 +300,8 @@ fn attached(state: State) -> actor.Next(State, Message) {
           process.send(opened, Ok(Relay(self)))
           actor.continue(State(
             connection:,
+            session_id: attach.binding.session_id,
+            connection_id: attach.binding.connection_id,
             inbox:,
             ended:,
             check: attach.check,
@@ -362,16 +370,32 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     -> actor.continue(state)
 
     // One request at a time, as a terminal socket admits them. A missing
-    // reply is an unknown outcome, so the relay ends rather than retrying.
-    State(connection:, inbox:, ..), Transmit(frame:) ->
+    // reply is an unknown outcome. Retire this relay without replaying it;
+    // the browser reconnects with a fresh lane and reads a new snapshot.
+    State(connection:, inbox:, session_id:, connection_id:, ..),
+      Transmit(frame:)
+    -> {
+      let started = bootstrap.monotonic_time_ms()
       case gateway.connection_request(connection, frame) {
         Ok(reply) -> {
           process.send(inbox, connection_event.Incoming(reply))
           actor.continue(state)
         }
-        Error(_) ->
-          end(state, diagnosed(state, unchanged: ending.ConnectionFailed))
+        Error(reason) -> {
+          let elapsed = bootstrap.monotonic_time_ms() - started
+          let why = diagnosed(state, unchanged: ending.ConnectionFailed)
+          upgrade_log.page_request_failed(
+            session_id,
+            connection_id,
+            reason,
+            elapsed,
+            string.byte_size(frame),
+            why,
+          )
+          end(state, why, "request_failed")
+        }
       }
+    }
 
     State(inbox:, ..), Push(frame:) -> {
       process.send(inbox, connection_event.Incoming(frame))
@@ -383,19 +407,31 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       actor.continue(state)
     }
 
-    // The two ends that come from the page's side: the lane closed, or the
-    // component is gone. Nothing needs telling; the relay detaches and
-    // exits.
-    State(connection:, ..), Shut | State(connection:, ..), ComponentDown(_) -> {
+    // A live component retires its lane after a protocol or deadline failure.
+    // End the browser socket too, so it can establish a fresh lane. Component
+    // teardown has its own monitor and never asks a departed browser to retry.
+    State(..), Shut ->
+      end(
+        state,
+        diagnosed(state, unchanged: ending.ConnectionFailed),
+        "lane_closed",
+      )
+
+    State(connection:, ..), ComponentDown(_) -> {
       gateway.connection_detach(connection)
       actor.stop()
     }
 
     // The two ends that come from the gateway's side. The page's socket is
     // told, so it closes and shuts the component down.
-    State(..), GatewayDown(_) -> end(state, ending.SessionStopped)
+    State(..), GatewayDown(_) ->
+      end(state, ending.SessionStopped, "gateway_down")
     State(..), Closed ->
-      end(state, diagnosed(state, unchanged: ending.SessionStopped))
+      end(
+        state,
+        diagnosed(state, unchanged: ending.SessionStopped),
+        "gateway_closed",
+      )
   }
 }
 
@@ -428,10 +464,11 @@ fn diagnosed(state: State, unchanged unchanged: Ending) -> Ending {
 
 // The relay's last message to the page, in the reason string the session
 // engine carries and the page's component reads back as the same ending.
-fn end(state: State, why: Ending) -> actor.Next(State, Message) {
+fn end(state: State, why: Ending, cause: String) -> actor.Next(State, Message) {
   case state {
     Waiting(..) -> actor.stop()
-    State(connection:, inbox:, ended:, ..) -> {
+    State(connection:, inbox:, ended:, session_id:, connection_id:, ..) -> {
+      upgrade_log.page_ended(session_id, connection_id, cause, why)
       process.send(inbox, connection_event.Closed(ending.reason(why)))
       ended(why)
       gateway.connection_detach(connection)
