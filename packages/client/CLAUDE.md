@@ -9469,7 +9469,21 @@ and the id round-trips through `ids.parse_session_id`; anything else is `Unknown
   the box's list, finds the request by identity and `seq`, builds `Approve(admitted, action,
   scope)` from the box's own record, and refuses a moved, missing, nothing-admitted or
   non-rememberable request before sending), and `judge`/`create` (a create is checked
-  against a fresh `Placements`). `create` has no caller until the composer's Agent chip.
+  against a fresh `Placements`; a page that chose no profile gets the first the box lists,
+  and a box listing none is `NoProfile`). `offers`/`offers_of` read the box's offers as
+  `web_view/orchestrators.Offers` (an executor's report, a pool's ready count as that many
+  placeholder names), `listing`/`listed_of` read the first page of its sessions for the
+  sidebar (an archived row and a row whose identity is not canonical are dropped), and
+  `found` creates and then delivers the first message (`Founded`, `Unsent` when the
+  message did not arrive, `Refused` in words, and a typed folder is refused here).
+- `ui_socket.orchestrating_for` builds the page's `home.Orchestrators`: the reads need
+  `open()`, a create passes `owner_operating` again, spends the credential's creation
+  allowance (`ui_sessions.reserve_creation`, shared with a local creation) and draws a
+  request id and a message id. `home_orchestrators_capability` hands it to the owner's
+  operating page of a daemon with an orchestrator and to no other. `server.PageGrant`
+  gained `key`, which the relayed address is built under, and `HomeAttachment`
+  `orchestrators` (the names).
 - Tests: `ui_http_test` (routes, grammar, a seeded property), `ui_route_test` (page and
-  socket admission, the visit reaching the upgrade) and `ui_top_test` (real ports on this
-  node).
+  socket admission, the visit reaching the upgrade, the create allowance and the
+  capability) and `ui_top_test` (real ports on this node, including the offers
+  conversion, the listing and `found`).

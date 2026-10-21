@@ -21,10 +21,14 @@ import client/remote_top
 import core/json
 import gleam/erlang/node
 import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/remote_transcript
+import web_view/creations
 import web_view/listing
+import web_view/orchestrators
+import web_view/placements
 import web_view/relayed
 
 const session = "0198c0de-0000-7000-8000-000000000009"
@@ -509,7 +513,7 @@ pub fn a_create_is_judged_against_fresh_offers_and_only_then_made_test() {
       "box",
       request,
       remote_top.Folder("/srv/app"),
-      "alt",
+      Some("alt"),
       None,
     )
     == Ok(session)
@@ -520,7 +524,7 @@ pub fn a_create_is_judged_against_fresh_offers_and_only_then_made_test() {
       "box",
       request,
       remote_top.Folder("/srv/gone"),
-      "alt",
+      Some("alt"),
       None,
     )
     == Error(ui_top.NotOffered(remote_top.OfferedFolder, "/srv/gone"))
@@ -535,8 +539,295 @@ pub fn a_create_on_a_box_that_cannot_be_reached_fails_in_the_relays_words_test()
       "desk",
       "0198c0de-0000-7000-8000-0000000000bb",
       remote_top.Folder("/srv/app"),
-      "alt",
+      Some("alt"),
       None,
     )
     == Error(ui_top.Failed(top_relay.NotConfigured("desk")))
+}
+
+// --- what the composer and the sidebar read -------------------------------------------
+
+// The box's offers become the cards the Code list draws: the folders as paths,
+// each executor with the state and workspaces it reported, and a pool with as
+// many ready machines as the box counted.
+pub fn the_boxs_offers_become_the_composers_cards_test() {
+  let held = ui_top.offers_of(offers())
+
+  assert held.folders == ["/srv/app"]
+  assert held.profiles == ["default", "alt"]
+  assert held.models == ["glm"]
+  assert held.cards.readiness == placements.Checked
+
+  let assert [exec, bare] = held.cards.placements.executors
+  assert exec.name == "exec"
+  let assert Some(report) = exec.report
+  assert report.state == placements.Ready
+  assert report.workspaces == ["loom"]
+  assert bare.name == "bare"
+
+  let assert [pool] = held.cards.placements.pools
+  let assert Some(pooled) = pool.report
+  assert list.length(pooled.eligible) == 1
+  assert pooled.workspaces == ["loom"]
+}
+
+// Every state a box reports for an executor has its own word on the page.
+pub fn every_executor_state_keeps_its_meaning_test() {
+  let state = fn(box_state) {
+    let held =
+      ui_top.offers_of(
+        remote_top.Offers(
+          ..remote_top.no_offers(),
+          executors: [
+            remote_top.ExecutorOffer(
+              name: "e",
+              state: box_state,
+              free_scopes: Some(2),
+              workspaces: [],
+            ),
+          ],
+          pools: [remote_top.PoolOffer(name: "p", ready: 0, workspaces: [])],
+        ),
+      )
+    let assert [executor] = held.cards.placements.executors
+    let assert Some(report) = executor.report
+    let assert [pool] = held.cards.placements.pools
+    let assert Some(pooled) = pool.report
+
+    // A pool with no machine ready is the one the Code list marks as none
+    // answering.
+    assert pooled.eligible == []
+    assert report.free_scopes == Some(2)
+    report.state
+  }
+
+  assert state(remote_top.Ready) == placements.Ready
+  assert state(remote_top.Degraded) == placements.Degraded
+  assert state(remote_top.Full) == placements.Full
+  assert state(remote_top.Down) == placements.Down
+}
+
+// A box that answers is `Offered`. One that is not configured, or refuses this
+// daemon, is `Withheld` in the relay's words, and nothing is invented.
+pub fn a_read_of_the_offers_is_offered_or_withheld_in_words_test() {
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        placements: fn(_node) { Ok(remote_top.encode_offers(offers())) },
+      ),
+    )
+
+  assert ui_top.offers(relay, "box")
+    == orchestrators.Offered(ui_top.offers_of(offers()))
+  assert ui_top.offers(relay, "desk")
+    == orchestrators.Withheld("desk is not one of this daemon's orchestrators")
+
+  let refusing = relay_to(orchestrator_port.refusing_top())
+  let assert orchestrators.Withheld(why:) = ui_top.offers(refusing, "box")
+  assert string.contains(why, "has no [spawners.<name>]")
+}
+
+fn listing_row(
+  id: String,
+  name: String,
+  activity: remote_top.Activity,
+) -> remote_top.Row {
+  remote_top.Row(..row([]), session_id: id, name:, activity:)
+}
+
+// The sidebar's rows are the box's first page, newest first as it listed them. An
+// archived session is not drawn, and neither is a row whose identity is not in
+// canonical text, since the page builds a link from it. Markup in a name is
+// carried as it is, to be drawn as text.
+pub fn the_sidebar_reads_the_first_page_and_drops_what_it_cannot_link_test() {
+  let rows = [
+    listing_row(session, "<b>x</b> & \"q\"", remote_top.Working),
+    listing_row(
+      "0198c0de-0000-7000-8000-00000000000a",
+      "gone",
+      remote_top.Archived,
+    ),
+    listing_row("../../admin", "forged", remote_top.Idle),
+    listing_row(
+      "0198C0DE-0000-7000-8000-00000000000B",
+      "upper",
+      remote_top.Idle,
+    ),
+  ]
+  let relay = relay_to(listing_of(rows))
+
+  let assert orchestrators.Heard(rows: heard) = ui_top.listing(relay, "box")
+  assert heard
+    == [
+      orchestrators.Listed(
+        session:,
+        name: "<b>x</b> & \"q\"",
+        code: listing.Registered("exec", "loom"),
+        activity: relayed.Working,
+        updated_ms: 42,
+      ),
+    ]
+}
+
+// A box that cannot be asked is `Missed`, in the relay's words.
+pub fn a_listing_that_cannot_be_read_is_missed_test() {
+  let relay = relay_to(listing_of([]))
+
+  assert ui_top.listing(relay, "desk")
+    == orchestrators.Missed("desk is not one of this daemon's orchestrators")
+}
+
+fn creating(
+  created: Subject(String),
+  sent: Subject(String),
+  sending: Result(remote_top.Refusal, Nil),
+) -> top_relay.Relay {
+  relay_to(
+    orchestrator_port.TopHost(
+      ..orchestrator_port.refusing_top(),
+      placements: fn(_node) { Ok(remote_top.encode_offers(offers())) },
+      create: fn(_node, request_id, _placement, profile, _model) {
+        process.send(created, request_id <> ":" <> profile)
+        Ok(session)
+      },
+      send: fn(_node, _session, message_id, text) {
+        process.send(sent, message_id <> ":" <> text)
+        case sending {
+          Ok(refusal) -> Error(refusal)
+          Error(Nil) -> Ok(remote_mail_admitted())
+        }
+      },
+    ),
+  )
+}
+
+const request = "web-0198c0de000070008000000000000001"
+
+// A create names a place the box offers, creates there, and then delivers the first
+// message under the page's own message identity. A page that chose no profile gets
+// the first the box lists.
+pub fn found_creates_and_then_delivers_the_first_message_test() {
+  let created = process.new_subject()
+  let sent = process.new_subject()
+  let relay = creating(created, sent, Error(Nil))
+
+  assert ui_top.found(
+      relay,
+      "box",
+      request,
+      "m-1",
+      creations.Drawn("/srv/app"),
+      creations.default_roles,
+      "fix it",
+    )
+    == orchestrators.Founded(session)
+  assert process.receive(created, 100) == Ok(request <> ":default")
+  assert process.receive(sent, 100) == Ok("m-1:fix it")
+
+  // No message, none sent. A chosen profile is the one named.
+  assert ui_top.found(
+      relay,
+      "box",
+      request,
+      "m-2",
+      creations.Registered("exec", "loom"),
+      creations.Roles(Some("alt"), None),
+      "",
+    )
+    == orchestrators.Founded(session)
+  assert process.receive(created, 100) == Ok(request <> ":alt")
+  assert process.receive(sent, 50) == Error(Nil)
+}
+
+// A session that was made and did not take its first message is `Unsent`, so the
+// page offers the session and makes no other.
+pub fn a_message_that_did_not_arrive_leaves_the_session_unsent_test() {
+  let relay =
+    creating(
+      process.new_subject(),
+      process.new_subject(),
+      Ok(remote_top.NotRelayed),
+    )
+
+  assert ui_top.found(
+      relay,
+      "box",
+      request,
+      "m-1",
+      creations.Drawn("/srv/app"),
+      creations.default_roles,
+      "fix it",
+    )
+    == orchestrators.Unsent(session)
+}
+
+// Nothing is created for a place the box does not offer, for a folder the page
+// typed, or on a box that is not configured, and each says why.
+pub fn found_refuses_what_it_cannot_ask_for_test() {
+  let created = process.new_subject()
+  let relay = creating(created, process.new_subject(), Error(Nil))
+
+  assert ui_top.found(
+      relay,
+      "box",
+      request,
+      "m",
+      creations.Drawn("/etc"),
+      creations.default_roles,
+      "x",
+    )
+    == orchestrators.Refused(
+      "this orchestrator does not offer the folder /etc to your orchestrator",
+    )
+  assert ui_top.found(
+      relay,
+      "box",
+      request,
+      "m",
+      creations.Typed("/srv/app"),
+      creations.default_roles,
+      "x",
+    )
+    == orchestrators.Refused(
+      "A folder typed here cannot be used on another machine. Choose one it offers.",
+    )
+  assert ui_top.found(
+      relay,
+      "desk",
+      request,
+      "m",
+      creations.Drawn("/srv/app"),
+      creations.default_roles,
+      "x",
+    )
+    == orchestrators.Refused("desk is not one of this daemon's orchestrators")
+  assert process.receive(created, 50) == Error(Nil)
+}
+
+// A box that lists no profile cannot be started on by a page that chose none.
+pub fn a_box_with_no_profile_cannot_be_started_on_by_default_test() {
+  let relay =
+    relay_to(
+      orchestrator_port.TopHost(
+        ..orchestrator_port.refusing_top(),
+        placements: fn(_node) {
+          Ok(remote_top.encode_offers(
+            remote_top.Offers(..offers(), profiles: []),
+          ))
+        },
+      ),
+    )
+
+  assert ui_top.create(
+      relay,
+      "box",
+      request,
+      remote_top.Folder("/srv/app"),
+      None,
+      None,
+    )
+    == Error(ui_top.NoProfile)
+  assert ui_top.refusal_words(ui_top.NoProfile)
+    == "The orchestrator offers no profile to start a session with."
 }

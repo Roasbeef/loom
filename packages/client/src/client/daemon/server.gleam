@@ -307,6 +307,10 @@ pub type PageGrant {
     /// (`ui_http.address`). It is the validated origin and not anything the
     /// page said.
     address: String,
+    /// The key of the page's own address (`/ui/p/<key>/...`), which the router
+    /// matched and the cookie names. A page that departs for another keyed page
+    /// of its own, a relayed session's, builds the address under it.
+    key: String,
   )
 }
 
@@ -392,6 +396,11 @@ pub type HomeAttachment(instance) {
     /// from its runtime (`ui_socket.read_task`). A key outside the configuration
     /// is `Unread`, and nothing is dialled for it.
     elsewhere: fn(Option(String), Option(String)) -> page_elsewhere.Read,
+    /// The `[orchestrators.<name>]` keys of the daemon's configuration, in order,
+    /// which the owner's page draws in its Agent chip and sidebar and asks
+    /// through the relay (protocol-change/094). The relay dials none the page
+    /// names that is not among them.
+    orchestrators: List(String),
     /// What the owner's home may ask about moving a session: which
     /// orchestrators could take it, and the move itself
     /// (protocol-change/085, the addendum on Move and Abandon). They are the
@@ -663,6 +672,7 @@ fn web_socket(
           grant:,
           login: ui_sessions.login_of(ui.sessions, cookie),
           address: ui_http.address(origin),
+          key:,
         )
       resident_upgrade(
         config,
@@ -734,6 +744,7 @@ fn home_socket(
           grant:,
           login: ui_sessions.login_of(ui.sessions, cookie),
           address: ui_http.address(origin),
+          key:,
         ),
         ui_sessions.open_until(ui.sessions, cookie, grant),
         visit,
@@ -844,6 +855,10 @@ fn home_upgrade(
             elsewhere: fn(orchestrator, after) {
               heard_elsewhere(config, orchestrator, after)
             },
+            orchestrators: list.map(
+              roster.rows(config.movers.orchestrators),
+              fn(orchestrator) { orchestrator.name },
+            ),
             moves: moves_for(config, state.registry, grant.credential),
           ),
           open,
