@@ -365,6 +365,9 @@ pub fn entries(offers: Offers) -> Int {
 pub fn bounded(offers: Offers) -> Offers {
   let folders = list.take(offers.folders, max_offers)
   let room = max_offers - list.length(folders)
+
+  // Each list takes what room is left, and each workspace list is cut to its
+  // own bound whatever room there is.
   let executors =
     list.take(offers.executors, room)
     |> list.map(fn(offer) {
@@ -383,6 +386,8 @@ pub fn bounded(offers: Offers) -> Offers {
       )
     })
   let room = room - list.length(pools)
+
+  // The names that are left are the cheapest to cut, so they come last.
   let profiles = list.take(offers.profiles, room)
   let room = room - list.length(profiles)
   Offers(

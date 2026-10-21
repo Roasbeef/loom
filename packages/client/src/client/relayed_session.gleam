@@ -426,9 +426,9 @@ pub fn history_page(
       }
       use scanned <- result.map(
         storage.scan_branch(runtime.session.store, query)
-        |> result.replace_error(store_failure(
-          "the session's branch could not be read",
-        )),
+        |> result.map_error(fn(_error) {
+          store_failure("the session's branch could not be read")
+        }),
       )
       remote_transcript.encode(remote_transcript.page_of(
         main_strand,

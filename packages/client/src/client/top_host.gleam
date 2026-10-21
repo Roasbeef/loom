@@ -51,7 +51,8 @@
 //// → `archive`
 ////
 //// 1. `host` builds the functions the orchestrator port calls.
-//// 2. `judged` resolves the sender's node to its spawner and `top_level` table.
+//// 2. `judged` resolves the sender's node to its spawner and the table that
+////    lets its page start sessions.
 //// 3. `create` judges a placement and reserves and makes the session.
 //// 4. `offers` states what the table lets the page pick, and `sessions` pages
 ////    the spawner's rows, each built by `row_of`.
@@ -667,10 +668,16 @@ fn row_of(
   let listing = view.listing
   let registration = view.view.registration
   let record = listing.record
+
+  // The first prompt names a session once it has one, and the daemon's label
+  // names it until then.
   let name = case registration.subtitle {
     Some(subtitle) -> subtitle
     None -> listing.name
   }
+
+  // An archived session says so whatever its runtime would say, and one that
+  // is not resident or did not answer is idle, as its page would see it.
   let activity = case listing.visibility, overview {
     catalogue.Archived, _ -> remote_top.Archived
     catalogue.Active, Some(found) -> activity_of(found.doing)
@@ -680,6 +687,8 @@ fn row_of(
     Some(found) -> option.unwrap(found.updated_at, record.created_at)
     None -> record.created_at
   }
+
+  // The row without its requests, which is what the requests are fitted under.
   let bare =
     remote_top.Row(
       session_id: record.session_id,
