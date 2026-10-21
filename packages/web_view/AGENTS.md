@@ -372,6 +372,56 @@ page keys and nonces, and the relay into the session's gateway.
   `page.admin_shell`/`admin_refusal`/`admin_path`/`admin_exchange_path` and
   `sessions.NoAdmin` word and address it. `admin_test`, `home_test`, `page_test`,
   `ending_test` and `grants_test` read all of it.
+- **The placement revamp, slice S1** (`docs/design-notes/placement-revamp.md`,
+  issue #1055). One sidebar and one composer replace the page-by-page lists and
+  the "Runs on" cards, over today's backend: the agent machine is always the
+  serving daemon, and nothing in a frozen interface changed. `web_view/listing` is
+  the pure half of the sidebar: `Bucket` (`NeedsYou`, `Working`, `Idle`, `Saved`)
+  from `Entry.residency` and the activity read, `Place` (`agent`, and `Code`:
+  `Folder(path)` or `Registered(executor, workspace)`), `Filter` (`Everywhere` or
+  `On(machine)`), `pills` (an executor some session uses, with a count, and the
+  daemon's own only when it would not match every row), and `chosen`, the one place
+  a press becomes a filter: it admits only a name that a pill carries, so a forged
+  one is refused. `view/sidebar` takes a `Page` (`machine`, `filter`, the pills'
+  and the "New session" button's messages, `administering`, `managing`, `who`, and
+  `doors`: `RowsOpen` where a row opens its session, `RowsShown` on the admin page,
+  which mints no ticket) beside the groups, and draws the same column on the home, a
+  session page and the admin page: the daemon's name, "New session", the pills, the
+  groups, the folded saved sessions, a native `<details>` for the quiet rows past
+  `listing.idle_shown`, a row menu (`details.row-menu`) that holds the archive
+  control and, on the home, "Rename, move or delete" (which shows the list), and a
+  foot. A row's second line is the tag `agent → code`; the subtitle is a third line.
+  The component carries `Standing.machine` (the serving daemon's name:
+  `server.page_machine`, the node name when distributed and the host name when
+  not), `View.filter`, `component.narrow`, `widen` and `waiting_count`, and
+  `operator_page.Narrowing`/`Widening`. `view/placement` is the header's placement
+  strip (`heading.view`'s `placement`, before the hidden `<loom-title>`): "Agent
+  on" the daemon, "Commands on" the executor and workspace or the folder, drawn
+  only from the sidebar's row for the session on screen. `<loom-shell>` takes a
+  `waiting` attribute (`shell.view`'s last argument, capped at ten), which the
+  stylesheet draws as the count on the sidebar's menu button.
+  The home opens the owner on the composer (`home.Pane`: `NewSession` or
+  `SessionList`; `ShowingNew`, `ShowingList`). `web_view/composer` holds the
+  composer's state and rules: `Chip`, `Target` (`Folder`, `TypedFolder`,
+  `OnExecutor`, `InPool`), `Offers` (the lists the page was drawn from), `update`
+  (a choice is honoured only if `offered`; a start asks only once, only with a
+  target, and only for `place`, which judges typed text with
+  `creations.typed_path` and `registered_name`), `recents`, `folders_offered` and
+  `sentence`. `view/new_session` draws it at `home.table_path`, so the owner's
+  socket admits its clicks and its one submit there as before, and the code
+  picker's search is the one `input` the owner's socket now admits
+  (`ui_socket.home_event`), beneath that region only. Every row is a button whose
+  message carries a value the server built; the form's decoder (`new_session.fields`)
+  takes exactly the name field and the one more field the chosen target needs. The
+  composer creates through `Start.create` with `creations.Private`, so the server
+  re-checks the place, the profile and the model as the old form's did. The old form
+  and list stay reachable through "Show the full session list" until S4. The admin
+  page opens on the Machines tab (`admin.Part`), has the sidebar (`Start.machine`,
+  `Start.activity`; `admin.sidebar_path`, whose clicks `admin_accepts` admits) and a
+  machine's "Show its sessions", which narrows the sidebar in place. The first
+  message of a session is not carried: the daemon's creation takes a name and no
+  prompt, so the composer's text field names the session and the first prompt is
+  typed on the session's own page.
 - **The session sidebar.** `web_view/sessions` holds `Entry`, `Residency`
   (`Live | Saved | Blocked | FailedStart(reason) | Moving(to)`; `Blocked` is a
   saved row no page may resume, `FailedStart` is a blocked row whose creation

@@ -265,12 +265,16 @@ sequenceDiagram
    `Origin`, the nonce, the cookie under the key, the credential and the
    membership, then resolves the resident session exactly as a terminal's
    socket does, with the role capped by the page's ceiling
-   (`web_socket` at `packages/client/src/client/daemon/server.gleam:503`).
+   (`web_socket` at `packages/client/src/client/daemon/server.gleam:513`).
    The parser permit it reserves counts the page against the daemon's
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
+<<<<<<< ours
    (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6125`).
+=======
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6126`).
+>>>>>>> theirs
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.
@@ -806,6 +810,33 @@ nodes under the harness's framing lines and never through the Markdown drawer.
 The peek's back link is the strand view's marker control on `main`'s card, and
 focusing any card closes the peek, so it adds no event class, path, scope or
 policy change. `remote_peek_test` covers it.
+
+**The sidebar and the composer (the placement revamp, slice S1).** The
+sidebar below is the column every page draws, and since S1 it lists sessions by
+what each needs from the person and not by project. `web_view/listing` puts each
+row in a group (`NeedsYou`, `Working`, `Idle`, and the folded `Saved`) from its
+residency and the activity read, tags it with the machine that runs its agent and
+where its code is (the serving daemon, and a folder or an executor's workspace),
+and offers machine pills for the machines that tell rows apart. A press on a pill
+sets a filter that the page checks against the pills it holds (`listing.chosen`),
+so a forged name changes nothing; the filter is each page's own state, so it does
+not carry from one page to the next. The home opens the owner on a composer
+(`web_view/composer`, `view/new_session`) with three chips: Agent, which offers the
+serving daemon and says why no other machine is offered; Code, whose list holds the
+folders the page drew, one section for each executor with what it reported (a
+disabled row with a reason where it is down) and one for each pool, with a search;
+and Model, which merges the profile and the main model. A chip's list is a popover
+on a wide window and a bottom sheet on a phone, from one tree. Every row is a
+button whose message carries a value the server built, `composer.update` honours it
+only if the lists the page was drawn from still hold it, and the daemon judges the
+place, the profile and the model again when `Start.create` runs. The code picker's
+search is an `input` event the owner's socket admits beneath `home.table_path` and
+nowhere else. A session's header carries a placement strip (`view/placement`), and
+the admin page has the same sidebar (its rows are text, since the admin page mints
+no ticket) and two tabs, Machines and People. The old home form and list stay
+reachable behind a link until the removal slice. What S1 leaves for later slices is
+in the design note: another orchestrator as the agent machine, a worktree per
+session, nested remote subagents, and the first prompt of a session.
 
 **The sidebar.** `ui_socket` gives the component `Transport.sessions`, the
 authorized catalogue read the terminal's session picker uses

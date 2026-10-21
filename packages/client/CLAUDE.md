@@ -9162,6 +9162,13 @@ orchestrator the daemon is configured with for a page of its sessions.
   `ui_socket.elsewhere_for` repeats the owner check inside the weft task
   (`read_task`) before the daemon dials. "Where" and "Show more" are clicks beneath
   `home.table_path`, so `home_accepts` admits them and no admission was added.
+  The placement revamp (S1) adds to the web sockets only an `input` event for the
+  owner's home beneath `home.table_path` (the composer's code-picker search;
+  `home_event` admits it for `Submitting` and `Administering`, never `Browsing`) and
+  a click beneath `admin.sidebar_path` for the admin socket (the sidebar's pills).
+  `Attachment` and `AdminAttachment` carry `machine` (`server.page_machine`), and
+  `AdminAttachment` carries `activity`, the home's own read, for the admin sidebar's
+  dots.
 - Tests: `remote/orchestrator_port_test` (paging over a real registry, `moving` and
   `moved` absent, a whole catalogue page of moved sessions skipped, the clamp, an
   unreadable catalogue), `daemon_elsewhere_test` (the owner's read, the key and
