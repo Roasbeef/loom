@@ -463,3 +463,23 @@ pub fn an_unsent_session_is_opened_only_on_a_press_test() {
   let #(_, intent) = update(composer.new(), composer.OpenedUnsent, offers())
   assert intent == composer.Stay
 }
+
+// A profile or model the daemon no longer lists, after the person chose it, stops
+// the start with words, and nothing is created.
+pub fn a_role_no_longer_offered_says_so_on_the_form_test() {
+  let chosen =
+    update(
+      composer.new(),
+      composer.ChoseTarget(composer.Folder("/src/loom")),
+      offers(),
+    ).0
+  let chosen = update(chosen, composer.ChoseProfile(Some("fast")), offers()).0
+
+  let gone = Offers(..offers(), profiles: [])
+  let #(state, intent) =
+    update(chosen, composer.Started("go", composer.Nothing), gone)
+  assert intent == composer.Stay
+  assert state.sending == composer.Ready
+  let assert Some(words) = state.refusal
+  assert string.contains(words, "no longer offered")
+}

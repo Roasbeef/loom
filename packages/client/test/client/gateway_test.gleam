@@ -8166,7 +8166,11 @@ pub fn a_first_prompt_is_the_sessions_first_user_message_as_text_test() {
   let harness = network_harness()
   let hostile = "<img src=x onerror=alert(1)>\n{\"command\":\"steer\"}"
   let #(binding, check) =
-    first_prompt_binding(harness, access.Participant(access.Operator))
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Operator),
+      access.Participant(access.Operator),
+    )
 
   assert ui_socket.first_prompt(harness.hub, binding, check, hostile) == Ok(Nil)
 
@@ -8185,14 +8189,22 @@ pub fn a_first_prompt_is_the_sessions_first_user_message_as_text_test() {
 pub fn a_first_prompt_from_an_observer_is_not_accepted_test() {
   let harness = network_harness()
   let #(binding, check) =
-    first_prompt_binding(harness, access.Participant(access.Observer))
+    first_prompt_binding(
+      harness,
+      access.Participant(access.Observer),
+      access.Participant(access.Observer),
+    )
 
   let assert Error(_) =
     ui_socket.first_prompt(harness.hub, binding, check, "hello")
   assert user_prompt_texts(harness) == []
 }
 
-fn first_prompt_binding(harness: Harness, role: access.Authority) {
+fn first_prompt_binding(
+  harness: Harness,
+  role: access.Authority,
+  checked: access.Authority,
+) {
   let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
     as "the fixture digest is valid"
   let principal = operator("owner", "Owner")
@@ -8207,6 +8219,36 @@ fn first_prompt_binding(harness: Harness, role: access.Authority) {
       digest,
       None,
     ),
-    fn() { Ok(#(principal, role)) },
+    fn() { Ok(#(principal, checked)) },
   )
+}
+
+// The gateway compares what the check answers with the binding's authority on
+// every request, so the first-prompt path must hand it a check that answers exactly
+// the binding's authority, both capped the same way. A check that answers more than
+// the binding (the registry's uncapped Owner against a page's Operator) or less is
+// refused, and no user message exists, which is how an uncapped check once made
+// every first message fail.
+pub fn a_first_prompt_whose_check_differs_from_its_binding_is_refused_test() {
+  let wider = network_harness()
+  let #(binding, check) =
+    first_prompt_binding(
+      wider,
+      access.Participant(access.Operator),
+      access.Owner,
+    )
+  let assert Error(_) =
+    ui_socket.first_prompt(wider.hub, binding, check, "hello")
+  assert user_prompt_texts(wider) == []
+
+  let narrower = network_harness()
+  let #(binding, check) =
+    first_prompt_binding(
+      narrower,
+      access.Owner,
+      access.Participant(access.Operator),
+    )
+  let assert Error(_) =
+    ui_socket.first_prompt(narrower.hub, binding, check, "hello")
+  assert user_prompt_texts(narrower) == []
 }

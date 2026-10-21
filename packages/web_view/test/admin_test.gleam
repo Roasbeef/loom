@@ -879,11 +879,11 @@ pub fn a_principals_sign_ins_are_listed_with_a_two_step_revoke_test() {
 pub fn no_identity_reaches_an_attribute_test() {
   let #(model, _) = opened(start())
   let model = run(model, admin.Choosing(session))
-  let html = drawn(model)
+  let html = body_of(model)
   assert !string.contains(html, "class=\"bob")
   assert !string.contains(html, "id=\"bob")
 
-  // The only keys are the people's catalogue identities, one for each row of the
+  // In the body the only keys are the people's catalogue identities, one for each row of the
   // list, and the invitation's two fixed words (a form numbered by how many
   // invitations were made, and its notice); no name or session is one.
   assert count(html, "key=\"") == 7
@@ -1455,19 +1455,19 @@ pub fn a_second_invitation_builds_a_new_claim_box_test() {
   let model = run(model, admin.Choosing(session))
   let first =
     run(model, admin.Asking(grants.Invite(session, invites.Observer, "A")))
-  assert string.contains(drawn(first), "key=\"claim-1\"")
+  assert string.contains(body_of(first), "key=\"claim-1\"")
 
   // The claim adds one key to the seven the page has, and no name or identity is
   // a key.
-  assert count(drawn(first), "key=\"") == 8
-  assert !string.contains(drawn(first), "key=\"guest")
+  assert count(body_of(first), "key=\"") == 8
+  assert !string.contains(body_of(first), "key=\"guest")
   let second =
     run(first, admin.Asking(grants.Invite(session, invites.Observer, "B")))
-  assert string.contains(drawn(second), "key=\"claim-2\"")
-  assert !string.contains(drawn(second), "key=\"claim-1\"")
+  assert string.contains(body_of(second), "key=\"claim-2\"")
+  assert !string.contains(body_of(second), "key=\"claim-1\"")
 
   // A refresh keeps the box, and so its key, where it was.
-  assert string.contains(drawn(run(second, admin.Ticked)), "key=\"claim-2\"")
+  assert string.contains(body_of(run(second, admin.Ticked)), "key=\"claim-2\"")
 }
 
 // A read of a catalogue whose chosen session is private: the owner's one

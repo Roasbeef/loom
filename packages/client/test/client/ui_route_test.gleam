@@ -66,6 +66,7 @@ import support/extensions
 import support/internal/ffi_daemon_socket
 import support/internal/ffi_ws
 import web_view/actions
+import web_view/admin
 import web_view/creations
 import web_view/elsewhere as page_elsewhere
 import web_view/ending
@@ -2437,6 +2438,24 @@ fn connect_socket(port: Int, entered: Entered, more: List(#(String, String))) {
   let head = read_head(socket, "")
   assert string.starts_with(head, "HTTP/1.1 101")
   socket
+}
+
+// One masked client text frame carrying a Lustre `click` at `path`, as a browser
+// sends it. The mask key is zero, so the payload goes out as written.
+fn client_click(path: String) -> BitArray {
+  let escaped = string.replace(path, "\t", "\\t")
+  let payload =
+    bit_array.from_string(
+      "{\"kind\":1,\"path\":\""
+      <> escaped
+      <> "\",\"name\":\"click\",\"event\":{}}",
+    )
+  let size = bit_array.byte_size(payload)
+  let head = case size < 126 {
+    True -> <<0x81, 1:1, size:7>>
+    False -> <<0x81, 1:1, 126:7, size:16>>
+  }
+  bit_array.concat([head, <<0, 0, 0, 0>>, payload])
 }
 
 // Reads server frames, which are never masked, until a close frame or the
@@ -7896,18 +7915,21 @@ pub fn the_real_admin_socket_carries_no_claim_test() {
     let page = enter(port, pressed.body)
     let socket = connect_socket(port, page, [])
 
+    // The page opens on its Machines tab. One admitted click on the People tab,
+    // which is the body's second child (the tabs) and that row's second button,
+    // sends the people, the pending invitation and the sessions through the same
+    // socket, so the negative asserts below are about frames that carry them.
+    let people_tab = admin.body_path <> "\t1\t1"
+    assert ffi_daemon_socket.send(socket, client_click(people_tab)) == Ok(Nil)
+
     // The page stays open, so "closed" here means no frame for five seconds.
     let closed = read_until_closed(socket, [])
     let _ = ffi_ws.tcp_close(socket)
     let drawn = string.join(closed.texts, "\n")
 
-    // The page opens on its Machines tab, so it drew the tabs and the owner's
-    // session in the sidebar. The People tab, which holds the pending invitation,
-    // is drawn on a press the real socket's raw frames do not send here;
-    // `admin_test` reads that tab, and the snapshot it draws from never holds a
-    // claim, because the catalogue keeps only its digest.
-    assert string.contains(drawn, "Machines")
-    assert string.contains(drawn, "People")
+    // The page drew its people, the pending invitation, and the owner's session.
+    assert string.contains(drawn, "pending-one")
+    assert string.contains(drawn, "claim open")
     assert string.contains(drawn, "Admin")
     assert string.contains(drawn, "admin-real")
 

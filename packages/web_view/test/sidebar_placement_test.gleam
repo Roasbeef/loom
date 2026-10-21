@@ -176,3 +176,15 @@ pub fn every_row_is_tagged_with_its_placement_test() {
     == 5
   assert string.contains(html, "<span class=\"tag-code\">exec · repo</span>")
 }
+
+// Every row of the sidebar is keyed by the session's catalogue identity, since a
+// row carries a handler, a handler is named by its path, and the groups regroup as
+// sessions change what they are doing. Nothing but an identity is a key.
+pub fn every_sidebar_row_is_keyed_by_its_identity_test() {
+  let html = drawn(page(rows()))
+  assert string.contains(html, "key=\"R\"")
+  assert string.contains(html, "key=\"B\"")
+  assert string.contains(html, "key=\"A\"")
+  assert string.contains(html, "key=\"C\"")
+  assert !string.contains(html, "key=\"remote work\"")
+}

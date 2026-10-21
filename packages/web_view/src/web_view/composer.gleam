@@ -669,6 +669,10 @@ fn in_workspace(workspace: Option(String)) -> List(Piece) {
   }
 }
 
+// The words for a profile or model the page no longer offers.
+const roles_gone =
+  "That profile or model is no longer offered. Choose the Model chip again."
+
 // The words for a message past the bound.
 const too_long =
   "That message is too long to send. Shorten it, or send the rest from the session's page."
@@ -771,7 +775,7 @@ fn started(
         string.byte_size(prompt) > prompt_limit,
         place(target, typed)
       {
-        False, _, _ -> #(state, Stay)
+        False, _, _ -> #(State(..state, refusal: Some(roles_gone)), Stay)
         True, True, _ -> #(State(..state, refusal: Some(too_long)), Stay)
         True, False, Error(words) -> #(
           State(..state, refusal: Some(words)),

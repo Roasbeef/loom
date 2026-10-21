@@ -1374,12 +1374,13 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           {
             True -> #(
               Model(..model, creating: create.Dispatching(choice), note: None),
-              creation(
+              creating(
                 ask,
                 registered_place(choice, workspace),
                 name,
                 creations.Shareable,
                 roles,
+                "",
               ),
             )
             False -> #(model, effect.none())
@@ -1396,7 +1397,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           case offered_roles(model, roles) {
             True -> #(
               Model(..model, creating: create.Sending, note: None),
-              creation(ask, creations.Typed(path), name, sharing, roles),
+              creating(ask, creations.Typed(path), name, sharing, roles, ""),
             )
             False -> #(model, effect.none())
           }
@@ -1515,7 +1516,14 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           case offered_roles(model, roles) {
             True -> #(
               Model(..model, creating: create.Waiting(workspace), note: None),
-              creation(ask, creations.Drawn(workspace), name, sharing, roles),
+              creating(
+                ask,
+                creations.Drawn(workspace),
+                name,
+                sharing,
+                roles,
+                "",
+              ),
             )
             False -> #(model, effect.none())
           }
@@ -2326,26 +2334,9 @@ fn registered_place(
 }
 
 // Starts the daemon's creation task and returns at once; the answer arrives
-// later as `Created`, dispatched from the task's own process.
-fn creation(
-  ask: fn(
-    creations.Place,
-    String,
-    Sharing,
-    creations.Roles,
-    String,
-    fn(creations.Answer) -> Nil,
-  ) -> Nil,
-  place: creations.Place,
-  name: String,
-  sharing: Sharing,
-  roles: creations.Roles,
-) -> Effect(Msg) {
-  creating(ask, place, name, sharing, roles, "")
-}
-
-// The same, for the composer, which also carries the session's first message:
-// empty sends none, and anything else is sent to the new session once it is open.
+// later as `Created`, dispatched from the task's own process. `prompt` is the
+// session's first message: empty sends none, and anything else is sent to the new
+// session once it is open. The older forms carry none.
 fn creating(
   ask: fn(
     creations.Place,

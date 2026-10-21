@@ -935,7 +935,7 @@ fn unsent(pane: Pane(message)) -> Element(message) {
     Some(_) ->
       html.p([attribute.class("new-refusal"), attribute.role("alert")], [
         html.text(
-          "The session was created, but its first message was not sent. Open it and send the message there. ",
+          "The session was created, but its first message was not sent. Open it and check the session before sending the message again, since it may have arrived. ",
         ),
         html.button(
           [

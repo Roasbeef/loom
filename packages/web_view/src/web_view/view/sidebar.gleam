@@ -81,6 +81,7 @@ import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import web_view/listing.{type Filter, type Row, type Rows}
 import web_view/sessions.{
@@ -434,7 +435,7 @@ fn state(
     [_, ..] ->
       html.section([attribute.class("state-group"), attribute.class(class)], [
         heading(title, rows),
-        html.ul([attribute.class("sessions")], list.map(rows, draw)),
+        keyed_rows(rows, draw),
       ])
   }
 }
@@ -450,7 +451,7 @@ fn idle(rows: Rows, draw: fn(Row) -> Element(message)) -> Element(message) {
         [attribute.class("state-group"), attribute.class("state-idle")],
         [
           heading("Idle", rows.idle),
-          html.ul([attribute.class("sessions")], list.map(shown, draw)),
+          keyed_rows(shown, draw),
         ],
       )
     #(shown, more) ->
@@ -458,12 +459,12 @@ fn idle(rows: Rows, draw: fn(Row) -> Element(message)) -> Element(message) {
         [attribute.class("state-group"), attribute.class("state-idle")],
         [
           heading("Idle", rows.idle),
-          html.ul([attribute.class("sessions")], list.map(shown, draw)),
+          keyed_rows(shown, draw),
           html.details([attribute.class("idle-more")], [
             html.summary([], [
               html.text("Show " <> int.to_string(list.length(more)) <> " more"),
             ]),
-            html.ul([attribute.class("sessions")], list.map(more, draw)),
+            keyed_rows(more, draw),
           ]),
         ],
       )
@@ -508,7 +509,7 @@ fn saved_region(
           ),
         ]),
         html.div([attribute.class("saved-panel")], [
-          html.ul([attribute.class("sessions")], list.map(rows, draw)),
+          keyed_rows(rows, draw),
         ]),
       ])
   }
@@ -820,4 +821,20 @@ fn activity_class(doing: Activity) -> String {
     Working -> "working"
     Idle -> "idle"
   }
+}
+
+// A group's rows, keyed by the session's identity. Each row carries handlers, and a
+// handler is named by its path, which is its key when it has one and its index
+// when it has not. The groups regroup as sessions change what they are doing, so an
+// unkeyed list would send a press that was in flight to whichever row had moved into
+// its place; keyed, it reaches the same session or nothing (`docs/lustre.md`).
+// An identity is the catalogue's canonical one and holds no separator.
+fn keyed_rows(
+  rows: List(Row),
+  draw: fn(Row) -> Element(message),
+) -> Element(message) {
+  keyed.ul(
+    [attribute.class("sessions")],
+    list.map(rows, fn(row) { #(row.entry.id, draw(row)) }),
+  )
 }
