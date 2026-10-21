@@ -706,7 +706,7 @@ fn id_decoder() -> decode.Decoder(EntryId) {
 
 fn role_decoder() -> decode.Decoder(Role) {
   use word <- decode.then(decode.string)
-  case distribution_plan.role_from_word(word) {
+  case distribution_plan.member_role_from_word(word) {
     Ok(role) -> decode.success(role)
     Error(_) -> decode.failure(distribution_plan.Orchestrator, "role")
   }
