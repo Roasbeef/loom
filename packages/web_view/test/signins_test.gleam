@@ -88,6 +88,7 @@ fn start(read: fn() -> signins.Listing) -> home.Start {
     who: fn(deliver) { deliver(None) },
     rename_self: None,
     visiting: None,
+    orchestrators: None,
     executors: [],
     pools: [],
     machine: "box",

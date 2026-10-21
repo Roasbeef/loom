@@ -146,6 +146,7 @@ fn start(visiting: option.Option(home.Visit)) -> home.Start {
     who: fn(deliver) { deliver(None) },
     rename_self: None,
     visiting:,
+    orchestrators: None,
     executors: [],
     pools: [],
     machine: "laptop",

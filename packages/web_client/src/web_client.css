@@ -1797,6 +1797,12 @@
   .relayed-more{margin:6px 0 0 0;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
   .relayed-transcript{display:flex;flex-direction:column;gap:6px;min-width:0;}
   .relayed-reply{margin:0;}
+  /* The sidebar's sections of other orchestrators' sessions (web_view/view/sidebar):
+     the quiet line under a heading that says a box is not answering, and the dimmed
+     rows of a box whose last list is what is drawn. The `relayed-side-` prefix keeps
+     them apart from the relayed session page's own classes above. */
+  .relayed-side-note{margin:0;padding:0 10px 4px;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);}
+  .relayed-side-quiet ul.sessions{opacity:.65;}
   /* A chip's list. The scrim sits under it and closes it when pressed. */
   .pop-scrim{position:fixed;z-index:4;inset:0;margin:0;padding:0;border:0;background:transparent;cursor:default;}
   .pop{position:absolute;z-index:5;top:calc(100% + 6px);left:0;box-sizing:border-box;min-width:320px;max-width:min(560px,calc(100vw - 48px));padding:6px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-bg-raised);}
@@ -1821,6 +1827,8 @@
   .opt[aria-disabled="true"]{cursor:not-allowed;}
   .opt[aria-disabled="true"]:hover{background:transparent;}
   .opt[aria-disabled="true"] .opt-text > span,.opt[aria-disabled="true"] svg.i{color:var(--color-fg-quiet);opacity:.7;}
+  /* A row that cannot be chosen gives its reason in full, since the reason is what the row is for. */
+  .opt[aria-disabled="true"] .opt-text small{overflow:visible;white-space:normal;}
   /* The phone's banner: the session that most needs the person. It is drawn on a
      narrow window only, where the sidebar is shut most of the time. */
   .banner{display:none;align-items:center;gap:10px;width:100%;min-height:48px;box-sizing:border-box;margin:0 0 4px 0;padding:10px 12px;border:1px solid var(--color-divider);border-radius:12px;background:var(--color-pill-wait-bg);color:var(--color-fg);font:13px/1.4 var(--font-sans);text-align:left;cursor:pointer;}

@@ -186,6 +186,22 @@
 //// followed by a read of the orchestrator. Every string of the session is text
 //// from another machine and is drawn as a text node.
 ////
+//// The same page can start a session on another orchestrator and list the ones it
+//// started there (protocol-change/094). `Start.orchestrators` is `Some` exactly
+//// where `create` is and the daemon is configured with an orchestrator. The page
+//// then holds one `orchestrators.Machine` for each. The composer's Agent chip
+//// draws them (`offers` builds the lists the composer judges a choice against,
+//// from this daemon's or from the chosen orchestrator's offers), and opening the
+//// Agent chip, or the Code chip on an orchestrator, asks the daemon to read the
+//// offers again (`reading_offers`). A start on an orchestrator asks the daemon to
+//// create there (`founding`), and the answer departs for the relayed page, whose
+//// address is built here from the page's key and a session the daemon named
+//// (`Founded`). The sidebar lists each orchestrator's sessions, read on a timer of
+//// their own (`side_reading`): a machine with a read out is not asked again, so a
+//// silent box costs one call at a time, and its last rows stay, marked, until it
+//// answers. A press on one of its rows (`OpeningRelayed`) is honoured only for a
+//// row the page holds.
+////
 //// ## Flow
 ////
 //// `app` → `init` → `update` → `refreshing` → `answered` → `view`
@@ -207,7 +223,9 @@
 //// 5. On a relayed session's page, `relay_reading` starts each read of the
 ////    orchestrator, `relay_heard` applies it, and `relaying` and `relay_asking`
 ////    turn a press into the daemon's call.
-//// 6. `view` draws the groups through `shell_sidebar`, the offers
+//// 6. On a page with orchestrators, `side_reading` starts the sidebar's reads and
+////    `reading_offers` the composer's, and `founding` creates a session.
+//// 7. `view` draws the groups through `shell_sidebar`, the offers
 ////    (`resume_offer`, `rename_offer`, `manage_offer`, `create_offer`,
 ////    `admin_offer`), the
 ////    sign-ins; the last press's note is drawn by the table, beside the row it
@@ -277,6 +295,8 @@ import web_view/elsewhere
 import web_view/ending.{type Ending}
 import web_view/listing
 import web_view/names
+import web_view/orchestrators
+import web_view/page
 import web_view/placements
 import web_view/relayed
 import web_view/relayed_session
@@ -564,6 +584,48 @@ pub type Start {
     /// component, and then the centre is that session (`Relayed`). Every other
     /// page has `None`, draws no relayed centre and ignores its messages.
     visiting: Option(Visit),
+    /// The orchestrators this daemon relays for (protocol-change/094). It is
+    /// `Some` only on the owner's operating page of a daemon configured with at
+    /// least one, and then the Agent chip lists them and the sidebar lists their
+    /// sessions. Every other page has `None`, draws neither and ignores their
+    /// messages.
+    orchestrators: Option(Orchestrators),
+  )
+}
+
+/// What the daemon lets the owner's page ask of the orchestrators it relays for
+/// (protocol-change/094). Each function returns at once and answers from the
+/// daemon's own task, which is a weft run that dies with the page, and each
+/// answer is bounded by the relay's own call timeouts, so a box that does not
+/// answer costs its own reads and no other orchestrator's. The daemon judges every
+/// call again from a fresh read of the orchestrator, whatever this page said.
+pub type Orchestrators {
+  Orchestrators(
+    /// The page's own key, which the relayed pages' addresses are built under.
+    /// The daemon checked it when it opened the socket.
+    key: String,
+    /// The `[orchestrators.<name>]` keys, in configuration order.
+    names: List(String),
+    /// The interval between reads of the orchestrators' session lists, in
+    /// milliseconds. Production passes `relay_refresh_ms`; a test passes a short
+    /// one.
+    refresh_ms: Int,
+    /// Starts the read of what the named orchestrator offers a new session and
+    /// hands the function it is given what it found, once.
+    offers: fn(String, fn(orchestrators.OffersRead) -> Nil) -> Nil,
+    /// Starts the read of the sessions the named orchestrator lists for this page
+    /// and hands the function it is given what it found, once.
+    sessions: fn(String, fn(orchestrators.ListRead) -> Nil) -> Nil,
+    /// Asks the named orchestrator to create a session in a place with a profile
+    /// and model, and then sends it the first message when there is one. The place
+    /// is one the composer drew from the orchestrator's offers.
+    create: fn(
+      String,
+      creations.Place,
+      creations.Roles,
+      String,
+      fn(orchestrators.Founding) -> Nil,
+    ) -> Nil,
   )
 }
 
@@ -777,6 +839,13 @@ pub opaque type Model {
     /// How many reads of the orchestrator have been started, which numbers the
     /// next as `reads` does for the list.
     relay_reads: Int,
+    /// What the page holds of each orchestrator the daemon relays for: what it
+    /// offers and the sessions it lists. Empty on a page with no
+    /// `Start.orchestrators`.
+    machines: List(orchestrators.Machine),
+    /// The sidebar's refresh timer for the orchestrators' lists, known once the
+    /// runtime has made it.
+    side_timer: Option(Subject(Nil)),
   )
 }
 
@@ -1130,6 +1199,34 @@ pub type Msg {
 
   /// The daemon answered a decision, as `RelaySent` is.
   RelayDecided(outcome: relayed.Outcome)
+
+  /// The runtime made the timer of the sidebar's orchestrator reads. The first
+  /// read follows.
+  SideTimerReady(timer: Subject(Nil))
+
+  /// The interval of the sidebar's orchestrator reads passed.
+  SideTicked
+
+  /// An orchestrator's list answered. It is the effect's own message, dispatched
+  /// from the daemon's task, and no handler carries it.
+  SideListed(orchestrator: String, read: orchestrators.ListRead)
+
+  /// An orchestrator's offers answered the read numbered `serial`. An answer a
+  /// newer read overtook is dropped. It is the effect's own message.
+  OffersAnswered(
+    orchestrator: String,
+    serial: Int,
+    read: orchestrators.OffersRead,
+  )
+
+  /// An orchestrator answered a create. It is the effect's own message,
+  /// dispatched from the daemon's task, and no handler carries it.
+  Founded(orchestrator: String, founding: orchestrators.Founding)
+
+  /// A row of an orchestrator's sessions in the sidebar was pressed. The message
+  /// names the orchestrator and the session the server drew into the tree, and the
+  /// page honours it only for a row it holds.
+  OpeningRelayed(orchestrator: String, session: String)
 }
 
 /// Which sign-outs the daemon answered, so the page's words say which.
@@ -1199,6 +1296,11 @@ pub fn new(start: Start) -> Model {
     filter: listing.Everywhere,
     relay_timer: None,
     relay_reads: 0,
+    machines: case start.orchestrators {
+      Some(held) -> orchestrators.new(held.names)
+      None -> []
+    },
+    side_timer: None,
   )
 }
 
@@ -1219,15 +1321,19 @@ pub fn init(start: Start) -> #(Model, Effect(Msg)) {
 //
 // The relay's timer is a second subject of the same process. A page that shows
 // no relayed session never arms it, so for the home it is two messages at start
-// and nothing after.
+// and nothing after. The sidebar's orchestrator reads have a third, which a page
+// with no orchestrator never arms either.
 fn wire() -> Effect(Msg) {
   use dispatch, timer <- server_component.select
   let relay_timer = process.new_subject()
+  let side_timer = process.new_subject()
   dispatch(TimerReady(timer))
   dispatch(RelayTimerReady(relay_timer))
+  dispatch(SideTimerReady(side_timer))
   process.new_selector()
   |> process.select_map(timer, fn(_) { Ticked })
   |> process.select_map(relay_timer, fn(_) { RelayTicked })
+  |> process.select_map(side_timer, fn(_) { SideTicked })
 }
 
 /// Applies one message.
@@ -1350,6 +1456,69 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 
     RelayDecided(outcome:) ->
       relay_after(model, fn(state) { relayed_session.decided(state, outcome) })
+
+    // The sidebar lists each orchestrator's sessions. The first read follows the
+    // timer's creation and one follows each interval, for as long as the page is
+    // served. A page with no orchestrator has nothing to read.
+    SideTimerReady(timer:) ->
+      side_reading(Model(..model, side_timer: Some(timer)))
+
+    SideTicked ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> side_reading(model)
+      }
+
+    // One orchestrator's list answered, whatever the answer was: the rows are
+    // replaced, or kept and marked silent. Only that machine changes.
+    SideListed(orchestrator:, read:) -> #(
+      Model(
+        ..model,
+        machines: orchestrators.listing_heard(
+          model.machines,
+          orchestrator,
+          read,
+          model.start.now(),
+        ),
+      ),
+      effect.none(),
+    )
+
+    OffersAnswered(orchestrator:, serial:, read:) -> #(
+      Model(
+        ..model,
+        machines: orchestrators.offers_heard(
+          model.machines,
+          orchestrator,
+          serial,
+          read,
+        ),
+      ),
+      effect.none(),
+    )
+
+    // A row's press departs for its relayed page, whose address is built here from
+    // the page's key and a row the page holds: nothing the browser sent is in it.
+    OpeningRelayed(orchestrator:, session:) ->
+      case
+        model.start.orchestrators,
+        orchestrators.held_row(model.machines, orchestrator, session),
+        model.status
+      {
+        Some(held), Ok(_), Connected | Some(held), Ok(_), Connecting -> #(
+          Model(
+            ..model,
+            departure: Some(page.relayed_path(held.key, orchestrator, session)),
+          ),
+          effect.none(),
+        )
+        _, _, _ -> #(model, effect.none())
+      }
+
+    // An orchestrator answered a create. A session that was made departs for its
+    // relayed page, or, when its first message did not arrive, is offered with the
+    // words saying so. A refusal puts the form back.
+    Founded(orchestrator:, founding:) -> founded(model, orchestrator, founding)
 
     ShowingList -> #(Model(..model, pane: SessionList), effect.none())
 
@@ -2429,13 +2598,17 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
           model.compose,
           message,
           offers(model, entries),
-          composer.recents(entries, model.start.machine),
+          recents(model, entries),
         )
-      let model = Model(..model, compose:)
+      let model = Model(..model, compose:) |> after_agent(model.compose.agent)
 
       case intent {
         composer.Stay -> #(model, effect.none())
         composer.ReadPlacements -> reading_cards(model)
+        composer.ReadAgents -> reading_offers(model, names_of(model))
+        composer.ReadOn(orchestrator:) -> reading_offers(model, [orchestrator])
+        composer.CreateOn(orchestrator:, place:, prompt:, roles:) ->
+          founding(model, orchestrator, place, roles, prompt)
         composer.Create(place:, name:, prompt:, roles:) -> #(
           Model(..model, note: None),
           creating(ask, place, name, creations.Private, roles, prompt),
@@ -2450,17 +2623,244 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-// The lists the composer's choices are checked against: the folders the page
-// draws, the executors and pools with what the daemon last reported, and the
-// profiles and models the daemon read when the page opened.
+// The lists the composer's choices are checked against. With this daemon as the
+// agent they are the folders the page draws, the executors and pools with what
+// the daemon last reported, and the profiles and models the daemon read when the
+// page opened. With another orchestrator as the agent they are what that
+// orchestrator last offered, and nothing until it has: a choice is then offered
+// by no list, so a start asks nothing.
 fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
-  composer.Offers(
-    machine: model.start.machine,
-    folders: composer.folders_offered(entries, model.recent),
-    cards: model.cards,
-    profiles: model.start.profiles,
-    models: model.start.models,
-  )
+  let agents = agent_rows(model)
+  let here = model.start.machine
+
+  case model.compose.agent {
+    composer.Here ->
+      composer.Offers(
+        machine: here,
+        folders: composer.folders_offered(entries, model.recent),
+        cards: model.cards,
+        profiles: model.start.profiles,
+        models: model.start.models,
+        agent: composer.Here,
+        here:,
+        agents:,
+        typing: composer.MayType,
+      )
+    composer.Orchestrator(name:) as agent ->
+      case orchestrators.standing(model.machines, name) {
+        orchestrators.Offering(offers: held) ->
+          composer.Offers(
+            machine: name,
+            folders: held.folders,
+            cards: held.cards,
+            profiles: held.profiles,
+            models: held.models,
+            agent:,
+            here:,
+            agents:,
+            typing: composer.MayNotType,
+          )
+        orchestrators.Asking | orchestrators.Refusing(_) ->
+          composer.Offers(
+            machine: name,
+            folders: [],
+            cards: placements.listed([], []),
+            profiles: [],
+            models: [],
+            agent:,
+            here:,
+            agents:,
+            typing: composer.MayNotType,
+          )
+      }
+  }
+}
+
+// The Agent chip's rows: this daemon, then each orchestrator in configuration
+// order with what the page holds of it. A page with no orchestrator has the one
+// row.
+fn agent_rows(model: Model) -> List(composer.Candidate) {
+  let here =
+    composer.Candidate(
+      agent: composer.Here,
+      name: model.start.machine,
+      standing: composer.Choosable("The daemon serving this page"),
+    )
+
+  [
+    here,
+    ..list.map(model.machines, fn(machine) {
+      composer.Candidate(
+        agent: composer.Orchestrator(machine.orchestrator),
+        name: machine.orchestrator,
+        standing: case machine.offer {
+          orchestrators.Offering(_) ->
+            composer.Choosable(orchestrators.busy_words(machine.rows))
+          orchestrators.Asking -> composer.Checking
+          orchestrators.Refusing(why:) -> composer.Unavailable(why)
+        },
+      )
+    })
+  ]
+}
+
+// The places "Start again where you worked" lists: this daemon's recent places
+// while it is the agent, and none for another orchestrator, whose places the page
+// does not keep.
+fn recents(model: Model, entries: List(Entry)) -> List(composer.Recent) {
+  case model.compose.agent {
+    composer.Here -> composer.recents(entries, model.start.machine)
+    composer.Orchestrator(_) -> []
+  }
+}
+
+// After the agent changed, the code, profile and model choices are judged
+// against the new machine's offers and kept only where it offers them
+// (`composer.kept`). A message that left the agent as it was changes nothing.
+fn after_agent(model: Model, before: composer.Agent) -> Model {
+  case model.compose.agent == before {
+    True -> model
+    False ->
+      Model(
+        ..model,
+        compose: composer.kept(
+          model.compose,
+          offers(model, listing.entries(model.groups)),
+        ),
+      )
+  }
+}
+
+// The keys of the orchestrators the page holds.
+fn names_of(model: Model) -> List(String) {
+  list.map(model.machines, fn(machine) { machine.orchestrator })
+}
+
+// Starts a read of each named orchestrator's offers and returns at once; each
+// answer arrives as `OffersAnswered`, numbered by the read it answers. A name
+// the page does not hold is not asked, and a page with no orchestrators asks
+// nobody.
+fn reading_offers(model: Model, names: List(String)) -> #(Model, Effect(Msg)) {
+  case model.start.orchestrators {
+    None -> #(model, effect.none())
+    Some(held) -> {
+      let #(machines, asked) =
+        list.fold(names, #(model.machines, []), fn(so_far, name) {
+          let #(machines, asked) = so_far
+          case orchestrators.ask_offers(machines, name) {
+            #(machines, Ok(serial)) -> #(machines, [#(name, serial), ..asked])
+            #(machines, Error(Nil)) -> #(machines, asked)
+          }
+        })
+      let reads =
+        list.map(asked, fn(each) {
+          use dispatch <- effect.from
+          held.offers(each.0, fn(read) {
+            dispatch(OffersAnswered(each.0, each.1, read))
+          })
+        })
+
+      #(Model(..model, machines:), effect.batch(reads))
+    }
+  }
+}
+
+// Starts the daemon's create on an orchestrator and returns at once; the answer
+// arrives as `Founded`. The composer judged the place and the roles against the
+// orchestrator's offers, and the daemon judges them again against a fresh read.
+// A page that has no orchestrators puts the words back on the form.
+fn founding(
+  model: Model,
+  orchestrator: String,
+  place: creations.Place,
+  roles: creations.Roles,
+  prompt: String,
+) -> #(Model, Effect(Msg)) {
+  case model.start.orchestrators {
+    Some(held) -> #(Model(..model, note: None), {
+      use dispatch <- effect.from
+      held.create(orchestrator, place, roles, prompt, fn(founding) {
+        dispatch(Founded(orchestrator, founding))
+      })
+    })
+    None -> #(
+      Model(
+        ..model,
+        compose: composer.refused(
+          model.compose,
+          "This page cannot start a session on another machine.",
+        ),
+      ),
+      effect.none(),
+    )
+  }
+}
+
+// What an orchestrator's answer to a create does to the page.
+fn founded(
+  model: Model,
+  orchestrator: String,
+  founding: orchestrators.Founding,
+) -> #(Model, Effect(Msg)) {
+  case model.start.orchestrators, founding {
+    Some(held), orchestrators.Founded(session:) -> #(
+      Model(
+        ..model,
+        departure: Some(page.relayed_path(held.key, orchestrator, session)),
+        compose: composer.settled(model.compose),
+      ),
+      effect.none(),
+    )
+    Some(held), orchestrators.Unsent(session:) -> #(
+      Model(
+        ..model,
+        compose: composer.unsent(
+          model.compose,
+          page.relayed_path(held.key, orchestrator, session),
+        ),
+      ),
+      effect.none(),
+    )
+    _, orchestrators.Refused(why:) -> #(
+      Model(..model, compose: composer.refused(model.compose, why)),
+      effect.none(),
+    )
+    None, orchestrators.Founded(_) | None, orchestrators.Unsent(_) -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
+// Starts a read of the list of each orchestrator that has none out and arms the
+// timer for the next interval, on a page that holds orchestrators and has not
+// ended. The interval is fixed and does not wait for the answers: a machine whose
+// read is still out is skipped (`orchestrators.begin_listing`), so a slow box is
+// asked one call at a time and a fast one is not held up by it.
+fn side_reading(model: Model) -> #(Model, Effect(Msg)) {
+  case model.start.orchestrators, model.status {
+    Some(held), Connecting | Some(held), Connected -> {
+      let #(machines, owed) = orchestrators.begin_listing(model.machines)
+      let reads =
+        list.map(owed, fn(name) {
+          use dispatch <- effect.from
+          held.sessions(name, fn(read) { dispatch(SideListed(name, read)) })
+        })
+      let arming = case model.side_timer {
+        Some(timer) -> [
+          {
+            use _ <- effect.from
+            let _ = process.send_after(timer, held.refresh_ms, Nil)
+            Nil
+          },
+        ]
+        None -> []
+      }
+
+      #(Model(..model, machines:), effect.batch(list.append(reads, arming)))
+    }
+    _, _ -> #(model, effect.none())
+  }
 }
 
 // Marks the cards as being checked and starts the read of the placements. It
@@ -2886,6 +3286,29 @@ pub fn pane(model: Model) -> Pane {
   model.pane
 }
 
+/// The composer's state: which agent and which code the person chose.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert home.composer_state(home.new(start)).agent == composer.Here
+/// ```
+pub fn composer_state(model: Model) -> composer.State {
+  model.compose
+}
+
+/// What the page holds of each orchestrator the daemon relays for, in
+/// configuration order. A page with no orchestrators holds none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert home.machines(home.new(start)) == []
+/// ```
+pub fn machines(model: Model) -> List(orchestrators.Machine) {
+  model.machines
+}
+
 /// Where the page stands.
 ///
 /// ## Examples
@@ -3012,7 +3435,7 @@ fn relayed_presses() -> relayed_view.Presses(Msg) {
 fn new_pane(model: Model) -> new_session.Pane(Msg) {
   let entries = listing.entries(model.groups)
   let offered = offers(model, entries)
-  let recent = composer.recents(entries, model.start.machine)
+  let recent = recents(model, entries)
 
   new_session.Pane(
     state: model.compose,
@@ -3022,6 +3445,7 @@ fn new_pane(model: Model) -> new_session.Pane(Msg) {
     waiting: listing.waiting(entries, model.activity),
     presses: new_session.Presses(
       toggle: fn(chip) { Composed(composer.Toggled(chip)) },
+      agent: fn(agent) { Composed(composer.ChoseAgent(agent)) },
       dismiss: Composed(composer.Dismissed),
       choose: fn(target) { Composed(composer.ChoseTarget(target)) },
       profile: fn(profile) { Composed(composer.ChoseProfile(profile)) },
@@ -3402,8 +3826,35 @@ fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
         Opening,
         resume_offer(model),
         archive_offer(model),
+        relayed_rows(model),
       ))
   }
+}
+
+// The sessions of the orchestrators in the sidebar: one section for each machine
+// that has rows or has been found silent, with the words saying so when its list
+// is not current. A machine nothing was heard from, or that lists none, draws
+// nothing.
+fn relayed_rows(model: Model) -> sidebar.Relayed(Msg) {
+  let now = model.now
+
+  sidebar.Relayed(
+    sections: list.filter_map(model.machines, fn(machine) {
+      let note =
+        orchestrators.reach_words(machine.orchestrator, machine.reach, now)
+
+      case machine.rows, note {
+        [], "" -> Error(Nil)
+        rows, _ ->
+          Ok(sidebar.Section(
+            orchestrator: machine.orchestrator,
+            rows: orchestrators.ordered(rows),
+            note:,
+          ))
+      }
+    }),
+    open: OpeningRelayed,
+  )
 }
 
 // What the sidebar's top and foot offer: "New session" and the row menus'
