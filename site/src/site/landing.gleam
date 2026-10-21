@@ -15,7 +15,8 @@
 //// ## Flow
 ////
 //// - `sections` is the list the sidebar and the scroll spy share.
-//// - `view` is the page: header, hero, then the sidebar beside the sections.
+//// - `view` is the page: header, hero, at-a-glance facts, then the sidebar
+////   beside the sections.
 //// - `story` is one figure's section; `multiplayer`, `clients`, `more`,
 ////   `status` and `install` are the rest.
 
@@ -75,6 +76,7 @@ pub fn view(model: Model) -> Element(Msg) {
     ui.header(""),
     html.main([attribute.id("main"), attribute.tabindex(-1)], [
       hero(),
+      facts(),
       html.div([attribute.class("landing")], [
         toc(model),
         html.div([attribute.class("landing-body")], [
@@ -179,6 +181,45 @@ fn hero() -> Element(Msg) {
       ),
     ]),
   ])
+}
+
+fn facts() -> Element(Msg) {
+  html.section(
+    [attribute.class("facts"), attribute("aria-label", "At a glance")],
+    [
+      html.dl(
+        [],
+        list.flat_map(
+          [
+            #(
+              "Language",
+              "Gleam, on Erlang/OTP 29 or later. A release bundles the BEAM runtime.",
+            ),
+            #(
+              "Interfaces",
+              "A terminal client, `loom`, and an opt-in web view. Both attach to one local daemon, `loomd`.",
+            ),
+            #(
+              "Sandbox",
+              "bubblewrap, Landlock and seccomp on Linux. Seatbelt on macOS.",
+            ),
+            #(
+              "State",
+              "A SQLite file per session, with a write-once conversation tree.",
+            ),
+          ],
+          fn(fact) {
+            [
+              html.div([], [
+                html.dt([], [element.text(fact.0)]),
+                html.dd([], inline.render(fact.1)),
+              ]),
+            ]
+          },
+        ),
+      ),
+    ],
+  )
 }
 
 // THE SIDEBAR ------------------------------------------------------------------
