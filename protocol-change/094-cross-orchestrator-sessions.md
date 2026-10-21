@@ -224,16 +224,20 @@ row are inserted together, a crash leaves either both or neither. The
 session's store is created after the transaction, by the same path that turns
 a `reserved` registration into a session today; a crash there leaves a
 reserved session that a resent `TopCreate` finds by `request_id` and finishes.
-When boot reconciliation drops an abandoned `reserved` registration (the
-`Reserved` status of `client/daemon/manager`), its relayed row is deleted in
-the same transaction, and a later resend of that `request_id` creates
-afresh.
+No boot sweep drops a `reserved` registration today: one that is never
+finished stays listed with the `Reserved` status of `client/daemon/manager`.
+A relayed one is finished by the laptop's resend of its `request_id`, which
+the laptop keeps for the 30 s retry window. One the laptop never resends stays
+`Reserved` on the box's page and in the laptop's listing, and still counts
+against `max_sessions`; deleting it on the box's page removes the
+registration and its relayed row together. Adding a sweep is left to #1056,
+which tracks the same shape in the 084 path.
 
 The same shape is wrong in today's 084 path: a delegate session is registered
 (`reserve`) before `claim_delegate` (`catalogue.gleam:1719`) inserts its
 delegate row in a second transaction, so a box crash between the two leaves a
 registered session with no delegate row, and a resent `Spawn` creates a second
-one. This change does not fix it; it will be tracked separately.
+one. This change does not fix it; it is tracked as #1056.
 
 Archiving changes only the session's own state and keeps the row; deleting the session on the box's
 page removes the row with the session.
