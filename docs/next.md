@@ -207,13 +207,37 @@ live checks but no full signoff.
 4. Attribute remaining storage and JSON work before another repair. **Exit:** a
    bounded workload identifies removable work. SQLite sample widths alone do
    not justify statement caching, new synchronization or allocator tuning.
-5. Build the web placement revamp in the slices of
-   [docs/design-notes/placement-revamp.md](design-notes/placement-revamp.md)
-   section 7: S1 the sidebar and composer over today's backend, S2 top-level
-   sessions on another orchestrator (protocol-change/094), S3 a worktree per
-   session on executor workspaces (protocol-change/095), S4 removal of the old
-   home form and docs. **Exit:** each slice's own exit criteria in that
-   section. Issues #1050, #1051 and #1052.
+5. Finish the web placement revamp of
+   [docs/design-notes/placement-revamp.md](design-notes/placement-revamp.md).
+   As of 2026-10-21, S1 (sidebar and composer), the S2 relay backend
+   (protocol-change/094) and S3 (a worktree per session, protocol-change/095)
+   are on main through the queue merge #1062. S3 was driven live on the exe.dev
+   executor, on Linux with bubblewrap: separate trees and `loom/<session>`
+   branches, a reopened session recreated from its branch, clean trees removed
+   with branches kept, and a dirty tree kept.
+
+   **S2b is next.** It is the web side of 094: the composer's Agent chip
+   offering other orchestrators, a relayed session page at
+   `/ui/p/<key>/orchestrators/<name>/sessions/<id>`, and relayed rows in the
+   sidebar. A first attempt stopped partway, because a tool classifier refused
+   one file write. Its unfinished, uncompiled work is on the branch
+   `wip/relayed-sessions-web`. That branch also records the design calls made:
+   the relayed page is the home component with a different centre; a
+   `client/daemon/ui_top` module re-judges every create against a fresh
+   `Placements`; and the relay is wired through `server.Ui`. Whether to take
+   the branch or start S2b again is open. A second orchestrator for the live
+   drive is already enrolled: `mac2` is ledger entry 4, with its home at
+   `~/loom-drives/e2e/mac2` and a `[spawners.mac2.top_level]` table on the box.
+   **Exit:** S2b's exit criteria in section 7, driven from mac2 against the box.
+   Then S4, which removes the old home form and the "Where" box.
+
+   Open issues from the drive: #1061, where a remote session commits without a
+   git identity and an agent's repo-local fix lands in the shared `.git/config`;
+   #1059, where a saved session hides its pending approvals; #1056, a possible
+   orphan delegate on a crash during spawn; and #1050, so pickglass can attach
+   over TLS distribution, letting `[daemon] profile` and `[distribution]` live
+   together. The executor now speaks node protocol 4, so an orchestrator on an
+   older build is refused at attach until it updates.
 
 ## Rulings already made
 

@@ -660,11 +660,45 @@ pub fn the_scrim_is_drawn_only_behind_an_open_drawer_test() {
 // A press on a row closes the drawer wherever in the row it lands, since the
 // click's path holds the row's button; a click on a heading or the padding
 // does not.
-pub fn a_press_on_a_button_in_the_sidebar_closes_the_drawer_test() {
-  assert shell_rule.presses_button(["span", "button", "li", "ul", "aside"])
-  assert shell_rule.presses_button(["button"])
-  assert !shell_rule.presses_button(["h2", "section", "aside"])
-  assert !shell_rule.presses_button([])
+pub fn a_press_on_a_door_button_in_the_sidebar_closes_the_drawer_test() {
+  assert shell_rule.presses_door([
+    shell_rule.Pressed("span", "residency-word"),
+    shell_rule.Pressed("span", "session-text"),
+    shell_rule.Pressed("button", "session-open"),
+    shell_rule.Pressed("li", "session"),
+    shell_rule.Pressed("aside", "sidebar"),
+  ])
+  assert shell_rule.presses_door([shell_rule.Pressed("button", "new-session")])
+  assert shell_rule.presses_door([shell_rule.Pressed("button", "foot-admin")])
+  assert shell_rule.presses_door([shell_rule.Pressed("button", "row-manage")])
+  assert !shell_rule.presses_door([
+    shell_rule.Pressed("h2", "sidebar-title"),
+    shell_rule.Pressed("section", "state-group"),
+  ])
+  assert !shell_rule.presses_door([])
+}
+
+// The saved group's toggle, a pill and an idle group's "Show more" work in
+// place: a press on one is the person still using the drawer, so it stays open.
+// The saved toggle is where the bug was found, on a phone at 390 by 844.
+pub fn a_press_on_a_button_that_works_in_place_leaves_the_drawer_open_test() {
+  assert !shell_rule.presses_door([
+    shell_rule.Pressed("button", "saved-toggle"),
+    shell_rule.Pressed("loom-saved", ""),
+    shell_rule.Pressed("div", "saved-region"),
+  ])
+  assert !shell_rule.presses_door([shell_rule.Pressed("button", "fp")])
+  assert !shell_rule.presses_door([
+    shell_rule.Pressed("summary", ""),
+    shell_rule.Pressed("details", "idle-more"),
+  ])
+
+  // A door class on a node that is not a button is no press of one, and a
+  // class that merely contains a door word is not that class.
+  assert !shell_rule.presses_door([shell_rule.Pressed("div", "session-open")])
+  assert !shell_rule.presses_door([
+    shell_rule.Pressed("button", "session-opener"),
+  ])
 }
 
 // The listener's query and the stylesheet's breakpoint are the same number:
