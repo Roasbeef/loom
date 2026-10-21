@@ -1871,13 +1871,41 @@ refuses, because the upgrade's `Origin` is the `https` origin and not
 
 `ui_http.page_origin` is the first check on every `/ui` request, as the
 loopback check was. It answers `Loopback(host)` for a `Host` that is
-`127.0.0.1`, `[::1]` or `localhost` with any port, exactly as before;
-`Remote(origin)` for a `Host` that names a listed origin, compared lowercased
+`127.0.0.1`, `[::1]`, `localhost` or one or more DNS labels and then
+`.localhost` (`loom.localhost:7440`), with any port; `Remote(origin)` for a `Host` that names a listed origin, compared lowercased
 and with the port required to match; and `403` for anything else. The
 daemon never reads `X-Forwarded-Host`, `Forwarded` or any other forwarded
 header: they arrive on the same loopback listener as a header any local
 process could write. A DNS rebinding page still presents its own name, which
 is neither loopback nor listed, so the list keeps that defence whole.
+
+A `.localhost` name is admitted because a browser resolves every such name to
+loopback itself (RFC 6761 section 6.3) and never asks DNS, so a page cannot
+rebind one to a remote address. A label is one to 63 characters of `a-z`,
+`0-9` and `-`, without a hyphen at either end, and the name is at most 253
+characters. `localhost.evil.com`, `evil.com.localhost.` with a trailing dot,
+an empty label and a label with any other character are refused. The request
+is `Loopback(host)` with the `Host` as sent, so the socket accepts the
+`Origin` `http://<that host>` and no other. The 052 addendum on `.localhost`
+names has the argument.
+
+### The page at `/`
+
+`GET /` serves `page.root_page`, a fixed document with no credential and no
+side effect, so that the daemon's bare address, whether the fixed `[daemon]
+bind` port or a listed origin, leads somewhere. It goes through the same
+`page_origin` check as every `/ui` request (`403 forbidden host` otherwise),
+is secured by `ui_http.secured` with the same policy and no inline script, sets
+no cookie, and is `404` when the view is off. Its script,
+`/ui/assets/web_view_root.js`, reads the `loom.login.<key>` entries
+`web_view_enter.js` keeps in `localStorage` and accepts only a 32-digit key
+with a 64-digit nonce. One entry replaces the location with that login's
+resume page, `/ui/l/<key>/home`. Several are listed as links in key order and
+none is followed, because the page cannot tell which the daemon still
+honours. None, or unreadable storage, shows `loom ui` (`loom ui --device` on a
+listed origin, `ui_http.sign_in_command`). The page names no key, reads the
+nonce nowhere but in the browser, and moves the tab only to the resume page,
+which the daemon verifies as it does for a bookmark, so it adds no authority.
 
 Every rule after the host check is a function of that one answer, handed to
 each handler by `server.web_view`:
@@ -1921,7 +1949,7 @@ keeps a page from acting.
 | Layer | What it stops | Where |
 |---|---|---|
 | `--ui` flag | Any `/ui` surface on a daemon that did not ask for one. | `client/daemon/main`, `server.handle` |
-| Loopback or listed `Host` | DNS rebinding: an attacker's page reaches the listener under its own host name and gets `403`. A `Host` that names an origin in `[daemon] ui_origins` is admitted as that origin, and forwarded headers are never read (protocol-change/052). | `ui_http.page_origin`, `ui_http.loopback_host` |
+| Loopback or listed `Host` | DNS rebinding: an attacker's page reaches the listener under its own host name and gets `403`. Loopback names include `*.localhost`, which browsers pin to loopback. A `Host` that names an origin in `[daemon] ui_origins` is admitted as that origin, and forwarded headers are never read (protocol-change/052). | `ui_http.page_origin`, `ui_http.loopback_host` |
 | Single-use ticket | A replayed or forwarded link. 60 s, redeemed once inside one actor, digest stored, minted only for a member. | `ui_sessions.mint`, `ui_sessions.redeem` |
 | `Sec-Fetch-Site` | Another site, or another loopback port, driving the exchange or navigating to the keyed page. Only `none` and `same-origin` pass. An exchange link that fails it gets a confirmation that spends nothing, and only that confirmation's `same-origin` form post redeems. | `ui_http.navigation_allowed`, `ui_http.same_origin_post`, `server.offered_exchange` |
 | Cookie attributes | Script reading the cookie (`HttpOnly`) and cross-site requests sending it (`SameSite=Strict`). No `Max-Age`; the UI session lives 8 hours. The login cookie has the same attributes and a `Max-Age` to its token's expiry. On a listed origin both are `__Secure-` and `Secure`, so neither travels over `http`. | `ui_http.set_cookie`, `ui_http.set_login_cookie` |

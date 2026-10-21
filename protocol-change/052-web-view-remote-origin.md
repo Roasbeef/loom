@@ -593,3 +593,114 @@ post is admitted under the same `PageOrigin` as the `GET`, so the press on a
 listed origin sets `__Secure-loom_ui` and `__Secure-loom_login` with `Secure`,
 and the confirmation names the listed origin it signs in to. A sibling
 subdomain, `same-site`, can show the confirmation and cannot post it.
+
+## Addendum: `.localhost` names and a page at `/` (2026-10-21)
+
+This addendum changes two things the proposal froze: the set of `Host` values
+admitted as `Loopback`, and the set of routes. It is made for issues #1051
+and #1052. The origin rules, cookies, tickets and policy are unchanged.
+
+### Problem
+
+The loopback host rule admits `127.0.0.1`, `[::1]` and `localhost` and nothing
+else. An owner who pins `[daemon] bind` to a fixed port wants a stable name
+that says what it is, such as `http://loom.localhost:7440`, and there is none
+the daemon will admit. Separately, `GET /` answers `unknown endpoint`. Every
+web view page needs a credential, so the daemon's bare address, which includes
+the fixed bind port and a listed origin's hostname, never reaches the view.
+
+### `.localhost` names are loopback
+
+`ui_http.loopback_host` also admits a `Host` of one or more DNS labels
+followed by `.localhost`, with any port, compared lowercased. The admitted
+request is `Loopback(host)` with `host` as the header was sent, so every rule
+that follows from `Loopback` applies unchanged: the cookie names, the lack of
+`Secure`, the `ws://` policy, and a socket `Origin` of `http://` and the
+`Host`. The socket accepts `http://loom.localhost:7440` for a page served at
+that `Host`, and not the same name on another port, another name, or `https`.
+
+A label is one to 63 characters from `a-z`, `0-9` and `-`, with no hyphen at
+either end (RFC 1123). The whole name is at most 253 characters. These are
+refused:
+
+- `localhost.evil.com`, because the name must end in `.localhost`, not contain
+  it.
+- `evil.com.localhost.`, because a trailing dot leaves a name that does not
+  end in `.localhost`.
+- `.localhost`, `a..localhost` and `.a.localhost`, because a label is empty.
+- Any label with an underscore, a space, `@`, a non-ASCII character or a
+  leading or trailing hyphen.
+- Anything with a bad port, as for the existing names.
+
+`evil.example.localhost` is admitted. That is intended: the rule is the
+suffix, not who chose the labels.
+
+The DNS rebinding argument is the one that protects the existing names. 051
+and this proposal refuse a `Host` the attacker's page can reach the daemon
+under, because rebinding makes the browser send the attacker's own name to a
+loopback address. RFC 6761 section 6.3 has a resolver treat every name under
+`.localhost` as loopback and not consult DNS, and Chrome and Firefox do so,
+so no DNS answer an attacker controls can point such a name at a remote
+host. A page cannot rebind one of these names the way it rebinds its own.
+Safari and some other resolvers do not pin the suffix. There the name reaches
+this daemon only if the operator adds an `/etc/hosts` line, which is the
+operator's choice. A resolver that sent the name to DNS would let an attacker
+answer it with a loopback address, which any page can already do to
+`localhost`, and not with a remote one that the daemon would then see.
+
+`ui_origins` refuses an entry that names a `.localhost` host, as it refuses
+`localhost`: the loopback check comes first, so a listed name would never be
+reached.
+
+### A page at `/`
+
+`GET /` is a route. It serves a fixed document that carries no credential and
+has no side effect, and a script, `/ui/assets/web_view_root.js`, listed with
+the other assets. It is the only route outside `/ui`. A method other than
+`GET` is `404`, as is every other path outside `/ui` and `/v2`.
+
+It is admitted by `page_origin` as every `/ui` request is: a loopback `Host`,
+including a `.localhost` name, or a listed origin, and `403 forbidden host`
+otherwise. It is secured by `ui_http.secured`, so it carries the same content
+security policy, with no inline script, and sets no cookie. With the view off
+it is `404`, as `/ui` is. It does not require `Sec-Fetch-Site`: there is no
+credential for another site to use and no state to change.
+
+The script looks in this origin's `localStorage` for the entries
+`web_view_enter.js` writes: an item named `loom.login.` and a 32-digit key
+whose value is a 64-digit nonce (065). `localStorage` is scoped to scheme,
+host and port, so every entry belongs to the origin that served the page. If
+exactly one entry matches both shapes, the script replaces the location with
+`/ui/l/<key>/home`, the login's resume page. If several match, it lists them
+as links to their resume pages in key order and navigates to none, because the
+page cannot tell which the daemon still honours and a person can. If none
+matches, or `localStorage` cannot be read, the document says to run `loom ui`,
+and `loom ui --device` on a listed origin. Every storage access is inside
+`try`.
+
+The page adds no authority. It holds no key and no nonce: the nonce stays in
+`localStorage` and is read only by script on the same origin, as the resume
+page already reads it. The page carries no cookie and sets none. What it
+navigates to is the resume page, which posts the nonce and is verified by the
+daemon under the login cookie, as when the person opens the bookmark. A
+request that reaches `/` from another site cannot read the storage, and
+cannot make the page do anything but show its fixed words or move the tab to a
+page the browser could be sent to by any link.
+
+### Cost
+
+One route and one asset are added to a frozen set, and the host rule admits a
+class of names instead of three. Both rest on the browser's own resolution of
+`.localhost`, which this daemon cannot check. The root page is a convenience
+and nothing depends on it; removing it restores `unknown endpoint`.
+
+### Verification
+
+`client/ui_http_test` checks the label grammar with a fixed-seed property over
+generated names, the accepted and refused shapes above, the socket `Origin`
+rule for a `.localhost` page, and the route. `client/ui_origin_test` checks
+that a listed `.localhost` entry is refused. `client/ui_route_test` drives a
+real listener: `/` on loopback, on a `.localhost` name and on a listed
+origin, the `403` for other hosts, `404` for a `POST`, no `Set-Cookie`, the
+policy, and the script served byte for byte. `web_view/page_test` checks the
+document. The script's navigation has not been run in a browser by a test.
