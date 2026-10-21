@@ -87,6 +87,7 @@ fn page(
     admin: None,
     who: fn(deliver) { deliver(None) },
     rename_self: None,
+    visiting: None,
     executors:,
     pools:,
     machine: "alpha",

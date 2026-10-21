@@ -171,6 +171,21 @@
 //// out (`elsewhere_reads` numbers the reads).
 //// `elsewhere_offer` is what the view is given.
 ////
+//// The owner's operating page can also be opened on one session of another
+//// orchestrator (protocol-change/094). The daemon then hands the component
+//// `Start.visiting`, and the centre is that session (`Pane`'s `Relayed`,
+//// `view/relayed_session`) while the sidebar, the account panel and every ticket
+//// stay the home's. The session lives on the other orchestrator, so the page
+//// keeps nothing of it: `relay_reading` asks the daemon, from its own task, for
+//// the session's row and newest transcript page when the page opens and every
+//// `Visit.refresh_ms` after, and `relayed_session.heard` replaces what the page
+//// holds. A reply, a stop, an archive and a decision are presses the state judges
+//// against the row it holds (`relayed_session.update`), after which `relaying`
+//// asks the daemon through the matching `Visit` function and the answer lands as
+//// `RelaySent`, `RelayStopped`, `RelayArchived` or `RelayDecided`. Each answer is
+//// followed by a read of the orchestrator. Every string of the session is text
+//// from another machine and is drawn as a text node.
+////
 //// ## Flow
 ////
 //// `app` → `init` → `update` → `refreshing` → `answered` → `view`
@@ -189,7 +204,10 @@
 ////    `MoveConfirmed`, `AdminRequested`, `SigningOut`, `SigningOutAll`,
 ////    `AddingDevice` or `NameSubmitted`, each of which asks the daemon through
 ////    its own `Start` field and leaves the answer to the effect's message.
-//// 5. `view` draws the groups through `shell_sidebar`, the offers
+//// 5. On a relayed session's page, `relay_reading` starts each read of the
+////    orchestrator, `relay_heard` applies it, and `relaying` and `relay_asking`
+////    turn a press into the daemon's call.
+//// 6. `view` draws the groups through `shell_sidebar`, the offers
 ////    (`resume_offer`, `rename_offer`, `manage_offer`, `create_offer`,
 ////    `admin_offer`), the
 ////    sign-ins; the last press's note is drawn by the table, beside the row it
@@ -260,6 +278,8 @@ import web_view/ending.{type Ending}
 import web_view/listing
 import web_view/names
 import web_view/placements
+import web_view/relayed
+import web_view/relayed_session
 import web_view/renames
 import web_view/sessions.{
   type Activity, type Entry, type Group, Live, NeedsYou, Working,
@@ -275,6 +295,7 @@ import web_view/view/home_bar
 import web_view/view/home_table.{type Note}
 import web_view/view/new_session
 import web_view/view/notice
+import web_view/view/relayed_session as relayed_view
 import web_view/view/resume.{type Resume}
 import web_view/view/shell
 import web_view/view/sidebar
@@ -537,8 +558,49 @@ pub type Start {
     /// function it is given, from the daemon's own task, as `NameAnswered`'s
     /// message.
     rename_self: Option(fn(String, fn(names.Answer) -> Nil) -> Nil),
+    /// The session of another orchestrator this page was opened to show
+    /// (protocol-change/094). It is `Some` only on the relayed session page of
+    /// the owner's operating page, which the daemon decides before it starts the
+    /// component, and then the centre is that session (`Relayed`). Every other
+    /// page has `None`, draws no relayed centre and ignores its messages.
+    visiting: Option(Visit),
   )
 }
+
+/// What the daemon lets the relayed session page do (protocol-change/094). Each
+/// function returns at once and answers from the daemon's own task, which is a
+/// weft run that dies with the page, and the answer arrives as the message the
+/// page named. The daemon asks the orchestrator through the relay, which dials it
+/// on demand, and judges every call again from a fresh read of the orchestrator,
+/// whatever this page said.
+pub type Visit {
+  Visit(
+    /// The orchestrator's `[orchestrators.<name>]` key, which the router checked.
+    orchestrator: String,
+    /// The session's identity there, which the router checked.
+    session: String,
+    /// The interval between reads of the orchestrator, in milliseconds.
+    /// Production passes `relay_refresh_ms`; a test passes a short one.
+    refresh_ms: Int,
+    /// Starts the read of the session's row and its newest transcript page and
+    /// hands the function it is given what it found, once.
+    read: fn(fn(relayed.Read) -> Nil) -> Nil,
+    /// Delivers a reply to the session's main strand.
+    send: fn(String, fn(relayed.Outcome) -> Nil) -> Nil,
+    /// Stops the session's current run.
+    stop: fn(fn(relayed.Outcome) -> Nil) -> Nil,
+    /// Archives the session.
+    archive: fn(fn(relayed.Outcome) -> Nil) -> Nil,
+    /// Decides a request, named by the identity and the revision the card was
+    /// drawn with.
+    decide: fn(String, Int, relayed.Choice, fn(relayed.Outcome) -> Nil) -> Nil,
+  )
+}
+
+/// How long the relayed session page stands before it reads the orchestrator
+/// again, in milliseconds. A request the session raises reaches the page this
+/// much later at most (protocol-change/094, "When the link drops").
+pub const relay_refresh_ms = 5000
 
 /// What the daemon lets the owner's page do with its recent folders
 /// (protocol-change/074). Each function returns at once and answers from the
@@ -710,6 +772,11 @@ pub opaque type Model {
     compose: composer.State,
     /// The machine the sidebar's list is narrowed to.
     filter: listing.Filter,
+    /// The relay's refresh timer, known once the runtime has made it.
+    relay_timer: Option(Subject(Nil)),
+    /// How many reads of the orchestrator have been started, which numbers the
+    /// next as `reads` does for the list.
+    relay_reads: Int,
   )
 }
 
@@ -725,6 +792,12 @@ pub type Pane {
   /// The sessions grouped by project, with the earlier forms
   /// (`view/home_table`).
   SessionList
+
+  /// One session of another orchestrator (`view/relayed_session`), on the page
+  /// the daemon opened for it. Only a page with `Start.visiting` is in it, and
+  /// the pane holds the session's state: leaving the pane drops it, and the
+  /// page then reads the orchestrator no more.
+  Relayed(state: relayed_session.State)
 }
 
 /// Everything the component can be told. None is a browser's: each is sent by
@@ -1020,6 +1093,43 @@ pub type Msg {
 
   /// The sidebar's "All" pill: show every session.
   Widening
+
+  /// The runtime made the relay's refresh timer. The first read of the
+  /// orchestrator follows, on a page that has `Start.visiting`.
+  RelayTimerReady(timer: Subject(Nil))
+
+  /// The relay's refresh interval passed.
+  RelayTicked
+
+  /// The answer to the timer's read of the orchestrator, numbered by the read it
+  /// answers. The timer is armed from it, so the next interval starts after the
+  /// read. An answer a newer read overtook is dropped and arms the timer alone.
+  /// It is the effect's own message, dispatched from the daemon's task.
+  RelayRefreshed(serial: Int, read: relayed.Read)
+
+  /// The answer to a read made after a press, numbered as `RelayRefreshed` is. It
+  /// arms no timer: the interval already running fires on its own.
+  RelayAnswered(serial: Int, read: relayed.Read)
+
+  /// A press on the relayed session's centre. The message carries a value the
+  /// server drew into the tree or the reply text the person typed, and the page
+  /// judges it against the row it holds (`relayed_session.update`), so a forged
+  /// one changes nothing. A page with no `Start.visiting` ignores it.
+  Relaying(press: relayed_session.Msg)
+
+  /// The daemon answered a reply. It is the effect's own message, dispatched from
+  /// the daemon's task, and no handler carries it, so a browser cannot put an
+  /// outcome on the page that the daemon did not reach.
+  RelaySent(outcome: relayed.Outcome)
+
+  /// The daemon answered a stop, as `RelaySent` is.
+  RelayStopped(outcome: relayed.Outcome)
+
+  /// The daemon answered an archive, as `RelaySent` is.
+  RelayArchived(outcome: relayed.Outcome)
+
+  /// The daemon answered a decision, as `RelaySent` is.
+  RelayDecided(outcome: relayed.Outcome)
 }
 
 /// Which sign-outs the daemon answered, so the page's words say which.
@@ -1079,12 +1189,16 @@ pub fn new(start: Start) -> Model {
     name: start.name,
     naming: names.Ready,
     named: 0,
-    pane: case start.create {
-      Some(_) -> NewSession
-      None -> SessionList
+    pane: case start.visiting, start.create {
+      Some(visit), _ ->
+        Relayed(relayed_session.open(visit.orchestrator, visit.session))
+      None, Some(_) -> NewSession
+      None, None -> SessionList
     },
     compose: composer.new(),
     filter: listing.Everywhere,
+    relay_timer: None,
+    relay_reads: 0,
   )
 }
 
@@ -1102,11 +1216,18 @@ pub fn init(start: Start) -> #(Model, Effect(Msg)) {
 
 // Creates the timer's subject and selects it, in the component's own process,
 // which owns both. The subject is handed to `update` so it can arm it.
+//
+// The relay's timer is a second subject of the same process. A page that shows
+// no relayed session never arms it, so for the home it is two messages at start
+// and nothing after.
 fn wire() -> Effect(Msg) {
   use dispatch, timer <- server_component.select
+  let relay_timer = process.new_subject()
   dispatch(TimerReady(timer))
+  dispatch(RelayTimerReady(relay_timer))
   process.new_selector()
   |> process.select_map(timer, fn(_) { Ticked })
+  |> process.select_map(relay_timer, fn(_) { RelayTicked })
 }
 
 /// Applies one message.
@@ -1184,6 +1305,51 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       }
 
     Widening -> #(Model(..model, filter: listing.Everywhere), effect.none())
+
+    // The relayed session page reads the orchestrator when its timer exists and
+    // on every interval after, for as long as the page is served. A page with no
+    // relayed session has nothing to read.
+    RelayTimerReady(timer:) ->
+      relay_reading(Model(..model, relay_timer: Some(timer)), RelayRefreshed)
+
+    RelayTicked ->
+      case model.status {
+        Ended(_) -> #(model, effect.none())
+        Connecting | Connected -> relay_reading(model, RelayRefreshed)
+      }
+
+    // The timer's read answered: the row and the transcript are replaced, and
+    // the timer is armed for the next read. An answer a newer read overtook is
+    // dropped and still arms the timer, as the list's does.
+    RelayRefreshed(serial:, read:) ->
+      case serial == model.relay_reads {
+        True -> #(relay_heard(model, read), relay_arming(model))
+        False -> #(model, relay_arming(model))
+      }
+
+    RelayAnswered(serial:, read:) ->
+      case serial == model.relay_reads {
+        True -> #(relay_heard(model, read), effect.none())
+        False -> #(model, effect.none())
+      }
+
+    Relaying(press:) -> relaying(model, press)
+
+    // Each answer is applied to the page's state and followed by a read of the
+    // orchestrator, so the transcript shows the message that landed, the run
+    // that stopped, or the request that was decided without waiting for the
+    // interval, and an outcome that is not known is settled by what the box says.
+    RelaySent(outcome:) ->
+      relay_after(model, fn(state) { relayed_session.replied(state, outcome) })
+
+    RelayStopped(outcome:) ->
+      relay_after(model, fn(state) { relayed_session.stopped(state, outcome) })
+
+    RelayArchived(outcome:) ->
+      relay_after(model, fn(state) { relayed_session.archived(state, outcome) })
+
+    RelayDecided(outcome:) ->
+      relay_after(model, fn(state) { relayed_session.decided(state, outcome) })
 
     ShowingList -> #(Model(..model, pane: SessionList), effect.none())
 
@@ -2476,6 +2642,115 @@ fn asking(open: fn(String) -> sessions.Answer, session: String) -> Effect(Msg) {
   dispatch(Linked(open(session)))
 }
 
+// Starts a numbered read of the orchestrator for the relayed session and
+// returns at once; the daemon's task delivers what it found as the message
+// `answer` builds. A page with no relayed session asks nothing.
+fn relay_reading(
+  model: Model,
+  answer: fn(Int, relayed.Read) -> Msg,
+) -> #(Model, Effect(Msg)) {
+  case model.start.visiting, model.pane {
+    Some(visit), Relayed(_) -> {
+      let serial = model.relay_reads + 1
+      let model = Model(..model, relay_reads: serial)
+      let reading = {
+        use dispatch <- effect.from
+        visit.read(fn(read) { dispatch(answer(serial, read)) })
+      }
+
+      #(model, reading)
+    }
+    Some(_), NewSession | Some(_), SessionList | None, _ -> #(
+      model,
+      effect.none(),
+    )
+  }
+}
+
+// Arms the relay's timer for the next read, when the runtime has made it and
+// the page can still be served.
+fn relay_arming(model: Model) -> Effect(Msg) {
+  case model.relay_timer, model.start.visiting, model.pane, model.status {
+    Some(timer), Some(visit), Relayed(_), Connecting
+    | Some(timer), Some(visit), Relayed(_), Connected
+    -> {
+      use _ <- effect.from
+      let _ = process.send_after(timer, visit.refresh_ms, Nil)
+      Nil
+    }
+    _, _, _, _ -> effect.none()
+  }
+}
+
+// What a read of the orchestrator changes: the relayed session's state takes it,
+// stamped with this daemon's clock.
+fn relay_heard(model: Model, read: relayed.Read) -> Model {
+  case model.pane {
+    Relayed(state) ->
+      Model(
+        ..model,
+        pane: Relayed(relayed_session.heard(state, read, model.start.now())),
+      )
+    NewSession | SessionList -> model
+  }
+}
+
+// A press on the relayed session's centre. An ended page asks nothing: its
+// principal's access is gone and the daemon would refuse. Otherwise the state
+// judges the press against the row it holds and says what the page owes the
+// daemon, which is asked from the daemon's own task.
+fn relaying(model: Model, press: relayed_session.Msg) -> #(Model, Effect(Msg)) {
+  case model.start.visiting, model.pane, model.status {
+    Some(visit), Relayed(state), Connecting
+    | Some(visit), Relayed(state), Connected
+    -> {
+      let #(state, intent) = relayed_session.update(state, press)
+
+      #(Model(..model, pane: Relayed(state)), relay_asking(visit, intent))
+    }
+    _, _, _ -> #(model, effect.none())
+  }
+}
+
+// The daemon's call for what the page owes. Each answer comes back as the
+// message of its own kind.
+fn relay_asking(visit: Visit, intent: relayed_session.Intent) -> Effect(Msg) {
+  case intent {
+    relayed_session.Stay -> effect.none()
+    relayed_session.SendReply(text:) -> {
+      use dispatch <- effect.from
+      visit.send(text, fn(outcome) { dispatch(RelaySent(outcome)) })
+    }
+    relayed_session.StopRun -> {
+      use dispatch <- effect.from
+      visit.stop(fn(outcome) { dispatch(RelayStopped(outcome)) })
+    }
+    relayed_session.ArchiveSession -> {
+      use dispatch <- effect.from
+      visit.archive(fn(outcome) { dispatch(RelayArchived(outcome)) })
+    }
+    relayed_session.Decide(escalation:, seq:, choice:) -> {
+      use dispatch <- effect.from
+      visit.decide(escalation, seq, choice, fn(outcome) {
+        dispatch(RelayDecided(outcome))
+      })
+    }
+  }
+}
+
+// Applies an answer to the relayed session's state and reads the orchestrator
+// again.
+fn relay_after(
+  model: Model,
+  apply: fn(relayed_session.State) -> relayed_session.State,
+) -> #(Model, Effect(Msg)) {
+  case model.pane {
+    Relayed(state) ->
+      relay_reading(Model(..model, pane: Relayed(apply(state))), RelayAnswered)
+    NewSession | SessionList -> #(model, effect.none())
+  }
+}
+
 // Starts the timer's read, numbered. The daemon's task delivers the list,
 // which lands as `Refreshed`; the reads that follow it and the arming of the
 // timer wait for that answer, so the interval starts after the read, as it
@@ -2588,6 +2863,29 @@ pub fn groups(model: Model) -> List(Group) {
   model.groups
 }
 
+/// How many reads of the orchestrator the relayed session page has started. An
+/// answer carries the number of the read it answers.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert home.relay_reads(home.new(start)) == 0
+/// ```
+pub fn relay_reads(model: Model) -> Int {
+  model.relay_reads
+}
+
+/// Which centre the page shows.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert home.pane(home.new(start)) == home.SessionList
+/// ```
+pub fn pane(model: Model) -> Pane {
+  model.pane
+}
+
 /// Where the page stands.
 ///
 /// ## Examples
@@ -2624,6 +2922,7 @@ pub fn view(model: Model) -> Element(Msg) {
       title: case model.pane {
         NewSession -> "New session"
         SessionList -> "Sessions"
+        Relayed(_) -> "Session"
       },
       who: home_bar.account(
         model.name,
@@ -2641,7 +2940,7 @@ pub fn view(model: Model) -> Element(Msg) {
       // that says the daemon lists a peer orchestrator, or an empty node, and the
       // composer has no use for it.
       case model.pane {
-        NewSession -> element.none()
+        NewSession | Relayed(_) -> element.none()
         SessionList -> elsewhere_view.strip(elsewhere_offer(model))
       },
       centre_body(model),
@@ -2674,6 +2973,7 @@ pub fn view(model: Model) -> Element(Msg) {
 fn centre_body(model: Model) -> Element(Msg) {
   case model.pane, model.start.create {
     NewSession, Some(_) -> new_session.view(new_pane(model))
+    Relayed(state), _ -> relayed_view.view(state, relayed_presses())
     NewSession, None | SessionList, _ ->
       home_table.view(
         model.groups,
@@ -2690,6 +2990,21 @@ fn centre_body(model: Model) -> Element(Msg) {
         model.note,
       )
   }
+}
+
+// What the relayed session's buttons send: the messages the page judges against
+// the row it holds before it asks the daemon for anything.
+fn relayed_presses() -> relayed_view.Presses(Msg) {
+  relayed_view.Presses(
+    replied: fn(text) { Relaying(relayed_session.Replied(text)) },
+    stopped: Relaying(relayed_session.Stopped),
+    archive_asked: Relaying(relayed_session.ArchiveAsked),
+    archive_confirmed: Relaying(relayed_session.ArchiveConfirmed),
+    archive_cancelled: Relaying(relayed_session.ArchiveCancelled),
+    decided: fn(escalation, seq, choice) {
+      Relaying(relayed_session.Decided(escalation, seq, choice))
+    },
+  )
 }
 
 // What the composer draws from: its state, the lists the page offers, the

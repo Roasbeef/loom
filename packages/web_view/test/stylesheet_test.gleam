@@ -239,3 +239,11 @@ pub fn the_new_session_composer_does_not_use_the_names_other_views_use_test() {
   assert !string.contains(css, ".send{display:inline-flex")
   assert !string.contains(css, "form.composer{display:flex")
 }
+
+// The relayed session page scrolls as a whole, so none of its children may
+// shrink: the approvals section sets overflow, which gives it a minimum size of
+// zero as a flex item, and a long transcript once squeezed it to no height.
+pub fn the_relayed_pane_does_not_shrink_its_children_test() {
+  let css = stylesheet()
+  assert string.contains(css, ".relayed-pane>*{flex-shrink:0}")
+}

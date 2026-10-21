@@ -273,6 +273,58 @@ pub fn admin_shell() -> String {
   component_document("Admin — Loom", admin_waiting_notice())
 }
 
+/// The keyed address of a session on another orchestrator
+/// (protocol-change/094). Its socket is this address and `/ws`, which is what
+/// the page's script derives from `location.pathname`. Both parts must already
+/// be checked by the router: the orchestrator is a configured key and the
+/// session a canonical identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert page.relayed_path("abc", "box", "S")
+///   == "/ui/p/abc/orchestrators/box/sessions/S"
+/// ```
+pub fn relayed_path(
+  key: String,
+  orchestrator: String,
+  session: String,
+) -> String {
+  keyed_prefix(key)
+  <> "/orchestrators/"
+  <> orchestrator
+  <> "/sessions/"
+  <> session
+}
+
+/// The page for a session on another orchestrator: the same shell and scripts as
+/// the home's, with its own title and waiting paragraph. The title is fixed words
+/// and names neither the orchestrator nor the session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.relayed_shell(), "Session — Loom")
+/// ```
+pub fn relayed_shell() -> String {
+  component_document("Session — Loom", relayed_waiting_notice())
+}
+
+/// What a relayed session's page says while it has no socket: the daemon may
+/// still be starting, the page may have ended, or the tab may have lost its key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert string.contains(page.relayed_waiting_notice(), "run loom ui")
+/// ```
+pub fn relayed_waiting_notice() -> String {
+  "This page is not connected to the daemon. The daemon may still be "
+  <> "starting, this page may have ended, this tab may have lost its key "
+  <> "for the page, or this daemon may not offer that session. Reload it. "
+  <> "If it stays like this, run loom ui for a fresh link."
+}
+
 // A shell holding one server component, titled `title` (escaped here) and
 // with `waiting` as the paragraph shown while the component has no socket.
 // The title is fixed words and never a session's identity or name: the home
