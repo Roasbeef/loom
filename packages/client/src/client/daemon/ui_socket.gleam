@@ -1318,6 +1318,13 @@ fn home_event(rights: HomeRights) -> decode.Decoder(Bool) {
         "submit", Submitting | "submit", Administering ->
           string.starts_with(path, home.table_path <> "\t") || named_path(path)
         "submit", Browsing -> named_path(path)
+
+        // The composer's code picker narrows its rows as the owner types
+        // (`view/new_session`). The text only filters rows the page drew, and the
+        // handler exists only on the owner's page, so the other homes admit none.
+        "input", Submitting | "input", Administering ->
+          string.starts_with(path, home.table_path <> "\t")
+        "input", Browsing -> False
         _, _ -> False
       })
     }
@@ -1801,7 +1808,7 @@ fn standing_of(
     Owning, Error(Nil) -> component.FromBookmark
     Owning, Ok(Nil) | Observing, _ | Operating, _ -> component.FromLink
   }
-  component.Standing(reader:, sharing:, opening:)
+  component.Standing(reader:, sharing:, opening:, machine: attachment.machine)
 }
 
 /// Whether a page's origin may mint access: an invitation, or a session made
@@ -4805,7 +4812,9 @@ fn admin_event() -> decode.Decoder(Bool) {
       use path <- decode.field("path", decode.string)
       decode.success(
         { name == "click" || name == "submit" }
-        && string.starts_with(path, admin.body_path <> "\t"),
+        && string.starts_with(path, admin.body_path <> "\t")
+        || name == "click"
+        && string.starts_with(path, admin.sidebar_path <> "\t"),
       )
     }
     3 -> {
@@ -4906,6 +4915,8 @@ fn admit_admin(
       now: bootstrap.system_time_ms,
       login: option.map(attachment.login, fn(issuer) { issuer.fingerprint }),
       ends_at:,
+      machine: attachment.machine,
+      activity: home_activity(attachment.activity),
       deployment: fn(node, deliver) {
         admin_deployment_task(standing, open, read_deployment, node, deliver)
       },

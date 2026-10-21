@@ -152,6 +152,8 @@ fn start_with(
     ends_at: 7_400_000 + 14 * 60 * 1000,
     deployment: fn(_, deliver) { deliver(machines.Unread) },
     elsewhere: fn(deliver) { deliver(peers.Heard([])) },
+    machine: "laptop",
+    activity: fn(_, _) { Nil },
   )
 }
 
@@ -193,13 +195,39 @@ fn waiting(dispatched: Subject(admin.Msg)) -> List(admin.Msg) {
 }
 
 // A page whose timer exists and whose first read has answered.
-fn opened(start: admin.Start) -> #(admin.Model, Subject(Nil)) {
+// A page on its People tab, which is where the people, their sign-ins and the
+// sessions to invite them to are drawn. The page opens on Machines, so the tests
+// that read the people press the tab first, as the owner does.
+fn on_people(start: admin.Start) -> admin.Model {
+  let #(model, _) =
+    admin.update(admin.new(start), admin.PartChosen(admin.PeoplePart))
+  model
+}
+
+// A page on its Machines tab, which is where it opens: the deployment, its
+// machines and a chosen machine's page.
+fn opened_machines(start: admin.Start) -> #(admin.Model, Subject(Nil)) {
   let timer = process.new_subject()
   #(run(admin.new(start), admin.TimerReady(timer)), timer)
 }
 
+fn opened(start: admin.Start) -> #(admin.Model, Subject(Nil)) {
+  let timer = process.new_subject()
+  #(run(on_people(start), admin.TimerReady(timer)), timer)
+}
+
 fn drawn(model: admin.Model) -> String {
   element.to_string(admin.view(model))
+}
+
+// The page's body, after the sidebar. The sidebar's own title, "Sessions", is a
+// word the body's headings share, so a test that splits the body on a heading
+// reads this and not the whole page.
+fn body_of(model: admin.Model) -> String {
+  case string.split_once(drawn(model), "</aside>") {
+    Ok(#(_, body)) -> body
+    Error(Nil) -> drawn(model)
+  }
 }
 
 fn count(html: String, needle: String) -> Int {
@@ -215,8 +243,13 @@ pub fn a_page_that_has_read_nothing_draws_only_its_words_test() {
   assert string.contains(html, "Reading the catalogue.")
   assert string.contains(html, "connecting")
   assert string.contains(html, ">Admin<")
-  assert !string.contains(html, "People")
-  assert handlers(admin.view(model)) == [] as "no handler before a read"
+
+  // The tabs are the page's own words, and the people are not listed before the
+  // first read.
+  assert string.contains(html, "Machines")
+  assert !string.contains(html, "Who can use")
+  assert list.length(handlers(admin.view(model))) == 2
+    as "only the two tabs carry a press before a read"
 }
 
 // The page is the home's frame under its own title, with no sidebar and no
@@ -227,12 +260,14 @@ pub fn the_page_draws_in_the_homes_frame_test() {
   assert admin.status(model) == admin.Connected
   assert string.contains(html, "<loom-shell")
   assert string.contains(html, "loom-home")
-  assert string.contains(html, "sidebar=\"none\"")
+  assert string.contains(html, "sidebar=\"listed\"")
   assert string.contains(html, ">Admin<")
   assert string.contains(html, "Olive")
   assert !string.contains(html, ">operator<")
   assert string.contains(html, "connected")
-  assert !string.contains(html, "<aside")
+
+  // The sidebar is the owner's sessions, and no panel is drawn.
+  assert string.contains(html, "<aside aria-label=\"Sessions\"")
 }
 
 // The two sections, in order, with each person's credential in words: the
@@ -242,10 +277,12 @@ pub fn the_page_draws_in_the_homes_frame_test() {
 // second list of them (round 4, F84).
 pub fn the_people_are_listed_once_with_their_invitations_in_their_rows_test() {
   let #(model, _) = opened(start())
-  let html = drawn(model)
+  let html = body_of(model)
   assert !string.contains(html, "Pending invitations")
   assert !string.contains(html, "No invitation is waiting")
-  let assert [_, people_and_after] = string.split(html, ">People<")
+
+  // The tab and the section's heading both say "People".
+  let assert [_, _, people_and_after] = string.split(html, ">People<")
   let assert [people_section, sessions_section] =
     string.split(people_and_after, ">Sessions<")
 
@@ -431,7 +468,8 @@ pub fn an_ask_is_made_once_and_its_buttons_wait_for_it_test() {
   assert string.contains(html, "disabled")
   let clicks =
     list.filter(handlers(admin.view(model)), string.ends_with(_, "\nclick"))
-  assert list.length(clicks) == 2 as "only the two session rows carry a press"
+  assert list.length(clicks) == 4
+    as "two tabs and the two session rows carry a press"
 
   // The answer arrives from the daemon's task: it clears the ask, words the
   // change and reads again.
@@ -617,7 +655,7 @@ pub fn only_one_read_runs_at_a_time_test() {
   let start =
     admin.Start(..start(), read: fn(chosen, _) { process.send(reads, chosen) })
   let timer = process.new_subject()
-  let model = run(admin.new(start), admin.TimerReady(timer))
+  let model = run(on_people(start), admin.TimerReady(timer))
   assert process.receive(reads, 0) == Ok(None)
 
   // Ticks and presses while the first read is out start nothing.
@@ -651,7 +689,7 @@ pub fn only_one_read_runs_at_a_time_test() {
 pub fn an_overtaken_read_is_dropped_test() {
   let start = admin.Start(..start(), read: fn(_, _) { Nil })
   let timer = process.new_subject()
-  let model = run(admin.new(start), admin.TimerReady(timer))
+  let model = run(on_people(start), admin.TimerReady(timer))
   let model = run(model, admin.Answered(1, grants.Read(snapshot(None))))
   let model = run(model, admin.Ticked)
 
@@ -903,7 +941,7 @@ pub fn the_two_pages_pin_their_paths_apart_test() {
 // The bar's trailing child is Back, a `<loom-back>` that mints nothing: the
 // page draws no handler for it, so the daemon is never asked for a ticket.
 pub fn the_bar_ends_with_a_back_control_that_sends_nothing_test() {
-  let html = drawn(admin.new(start()))
+  let html = drawn(on_people(start()))
   assert string.contains(html, "<loom-back>Home</loom-back>")
 }
 
@@ -929,7 +967,7 @@ pub fn a_claim_is_drawn_beside_the_action_that_made_it_test() {
   let model = run(model, admin.Choosing(session))
   let model =
     run(model, admin.Asking(grants.Invite(session, invites.Observer, "")))
-  let html = drawn(model)
+  let html = body_of(model)
   let assert [people, sessions] = string.split(html, ">Sessions<")
   assert !string.contains(people, token)
   let assert [before_form, after_form] =
@@ -1175,7 +1213,7 @@ pub fn a_rotation_claim_is_not_resent_when_a_row_is_inserted_ahead_test() {
 pub fn the_bar_says_when_the_page_ends_in_a_counted_pill_test() {
   let reads = process.new_subject()
   let acts = process.new_subject()
-  let model = admin.new(start_with(reads, acts, grants.Changed))
+  let model = on_people(start_with(reads, acts, grants.Changed))
   let html = drawn(model)
   assert !string.contains(html, "ends in")
   assert !string.contains(html, "loom-elapsed")
@@ -1660,7 +1698,9 @@ fn fleet_start(
 fn fleet_page() -> #(admin.Model, Subject(Option(String))) {
   let asks = process.new_subject()
   let #(model, _) =
-    opened(fleet_start(asks, process.new_subject(), [], [entry_on("box")]))
+    opened_machines(
+      fleet_start(asks, process.new_subject(), [], [entry_on("box")]),
+    )
   #(model, asks)
 }
 
@@ -1746,7 +1786,7 @@ pub fn a_standalone_daemon_is_one_card_without_its_node_name_test() {
     admin.Start(..start(), deployment: fn(_, deliver) {
       deliver(machines.Heard(fleet.standalone()))
     })
-  let #(model, _) = opened(start)
+  let #(model, _) = opened_machines(start)
   let html = drawn(model)
   assert string.contains(html, ">This machine<")
   assert string.contains(html, "this daemon")
@@ -1774,7 +1814,7 @@ pub fn a_standalone_daemon_is_titled_by_its_host_name_test() {
     admin.Start(..start(), deployment: fn(_, deliver) {
       deliver(machines.Heard(fleet.hosted(host)))
     })
-  let #(model, _) = opened(start)
+  let #(model, _) = opened_machines(start)
   let html = drawn(model)
   assert string.contains(html, ">studio&lt;b&gt;.local<")
   assert string.contains(html, ">This machine<")
@@ -1923,7 +1963,7 @@ pub fn the_sessions_tab_groups_the_other_orchestrators_rows_by_node_test() {
   let asks = process.new_subject()
   let peers_asked = process.new_subject()
   let #(model, _) =
-    opened(fleet_start(asks, peers_asked, groups, [entry_on("box")]))
+    opened_machines(fleet_start(asks, peers_asked, groups, [entry_on("box")]))
   let model = choose(model, fleet.box_node)
   assert process.receive(peers_asked, 0) == Error(Nil)
   let model = run(model, admin.TabChosen(machines.SessionsTab))
@@ -1984,7 +2024,7 @@ pub fn an_overtaken_deployment_read_is_dropped_test() {
         }
       },
     )
-  let #(model, _) = opened(start)
+  let #(model, _) = opened_machines(start)
   let inbox = process.new_subject()
 
   // Two presses on the same machine: the first read is overtaken by the second.
@@ -2025,7 +2065,7 @@ pub fn the_sessions_tab_does_not_drop_the_machines_read_test() {
         }
       },
     )
-  let #(model, _) = opened(start)
+  let #(model, _) = opened_machines(start)
   let inbox = process.new_subject()
   let model = start_into(model, admin.MachineChosen(fleet.box_node), inbox)
   let assert Ok(answer) = process.receive(held, 0)
@@ -2049,7 +2089,7 @@ pub fn a_machine_named_with_markup_is_drawn_as_text_test() {
         Some(_) -> deliver(machines.Unread)
       }
     })
-  let #(model, _) = opened(start)
+  let #(model, _) = opened_machines(start)
   let model = choose(model, fleet.box_node)
   let model = run(model, admin.TabChosen(machines.AccessTab))
   let html = drawn(model)
@@ -2082,7 +2122,7 @@ pub fn a_failed_deployment_read_keeps_the_earlier_one_test() {
   let #(model, _) = fleet_page()
   let model = run(model, admin.Ticked)
   assert string.contains(drawn(model), "5 machines · 2 orchestrators")
-  let #(never, _) = opened(start())
+  let #(never, _) = opened_machines(start())
   assert string.contains(drawn(never), "could not be read just now")
 }
 
@@ -2114,7 +2154,7 @@ fn abandoning_page(
         }
       },
     )
-  let #(model, _) = opened(start)
+  let #(model, _) = opened_machines(start)
   let model = choose(model, "alpha@10.0.0.1")
   run(model, admin.TabChosen(machines.ActivityTab))
 }
@@ -2169,4 +2209,112 @@ pub fn a_refused_abandon_says_the_fixed_words_test() {
     drawn(model),
     "Only a directory member can give a move up.",
   )
+}
+
+// A page whose catalogue lists one session on a machine named `box` beside the two
+// of the snapshot, and whose activity read says the first needs the owner.
+fn with_a_remote_session() -> admin.Start {
+  let base = start()
+  admin.Start(
+    ..base,
+    read: fn(chosen, deliver) {
+      let snap = snapshot(chosen)
+      deliver(grants.Read(
+        grants.Snapshot(..snap, sessions: [
+          Entry(
+            ..entry("0198a2f4-7c3b-7e10-8d5a-3f9b2c4e6a73", "box work", Live),
+            workspace: "app",
+            executor: Some("box"),
+          ),
+          ..snap.sessions
+        ]),
+      ))
+    },
+    activity: fn(_, deliver) { deliver([#(session, sessions.NeedsYou)]) },
+  )
+}
+
+// The admin page has the sidebar too: the owner's sessions by what each needs,
+// tagged with the machine, as text, since the admin page draws no way to another
+// page and mints no ticket. The pills are the only handlers beneath it.
+pub fn the_admin_sidebar_lists_sessions_as_text_test() {
+  let #(model, _) = opened_machines(with_a_remote_session())
+  let html = drawn(model)
+
+  assert string.contains(html, "class=\"state-group state-needs-you\"")
+  assert string.contains(html, "review auth")
+  assert string.contains(html, "<span class=\"tag-agent\">laptop</span>")
+  assert string.contains(html, "<span class=\"tag-code\">box · app</span>")
+  assert string.contains(html, "waiting=\"1\"")
+
+  // No row is a button: the admin page opens no session.
+  assert !string.contains(html, "class=\"session-open\"")
+
+  // The handlers beneath the sidebar are the pills, and they are clicks.
+  let side =
+    list.filter(handlers(admin.view(model)), fn(key) {
+      string.starts_with(key, admin.sidebar_path <> "\t")
+    })
+  assert side != []
+  assert list.all(side, string.ends_with(_, "\nclick"))
+}
+
+// A pill narrows the sidebar in place, and a name that no pill carries is not a
+// filter.
+pub fn an_admin_pill_narrows_the_sidebar_in_place_test() {
+  let #(model, _) = opened_machines(with_a_remote_session())
+  let before = drawn(model)
+  assert string.contains(before, ">box<span class=\"fp-count\">1</span>")
+
+  let narrowed = run(model, admin.Narrowing("box"))
+  let html = drawn(narrowed)
+  assert string.contains(html, "box work")
+  assert !string.contains(html, "review auth")
+
+  assert drawn(run(model, admin.Narrowing("gpu"))) == before
+  assert drawn(run(narrowed, admin.Widening)) == before
+}
+
+// The page's two tabs change only what the body draws: the machines first, then
+// the people.
+pub fn the_tabs_choose_the_machines_or_the_people_test() {
+  let #(model, _) = opened_machines(start())
+  let machines_html = body_of(model)
+  assert string.contains(machines_html, "Deployment")
+  assert !string.contains(machines_html, "Olive Owner")
+
+  let people_html = body_of(run(model, admin.PartChosen(admin.PeoplePart)))
+  assert string.contains(people_html, "Olive Owner")
+  assert !string.contains(people_html, "Deployment")
+}
+
+// A machine some session uses has a "Show its sessions" button on its page, which
+// narrows the sidebar to it, so the admin page points at the sessions without
+// listing them. A machine no session uses has none, so the button never does
+// nothing quietly.
+pub fn a_machine_page_shows_its_sessions_through_the_sidebar_test() {
+  // One session on `box` and one on the daemon's own host, so the pill for `box`
+  // tells them apart.
+  let mixed = fn() {
+    let #(model, _) =
+      opened_machines(
+        fleet_start(process.new_subject(), process.new_subject(), [], [
+          entry_on("box"),
+          entry(other_session, "notes", Live),
+        ]),
+      )
+    model
+  }
+
+  let model = choose(mixed(), fleet.box_node)
+  assert string.contains(drawn(model), "Show its sessions")
+
+  let narrowed = run(model, admin.Narrowing("box"))
+  assert string.contains(
+    drawn(narrowed),
+    "aria-pressed=\"true\" class=\"fp\" type=\"button\">box",
+  )
+
+  let unlinked = choose(mixed(), unlinked_node())
+  assert !string.contains(drawn(unlinked), "Show its sessions")
 }

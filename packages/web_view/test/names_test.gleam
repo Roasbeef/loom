@@ -101,7 +101,8 @@ fn settle(model: home.Model, dispatched: Subject(home.Msg)) -> home.Model {
 }
 
 fn opened(start: home.Start) -> home.Model {
-  run(home.new(start), home.TimerReady(process.new_subject()))
+  let listed = run(home.new(start), home.ShowingList)
+  run(listed, home.TimerReady(process.new_subject()))
 }
 
 fn drawn(model: home.Model) -> String {
@@ -186,7 +187,9 @@ pub fn a_submit_asks_once_and_the_answer_names_the_page_test() {
   assert process.receive(asked, 0) == Ok("  Alicia ")
   assert process.receive(asked, 0) == Error(Nil)
   let html = drawn(model)
-  assert count(html, "Alicia") == 2
+
+  // The bar, the control's lead and the sidebar's foot say the name.
+  assert count(html, "Alicia") == 3
   assert !string.contains(html, "Alice<")
   assert string.contains(html, "Renamed.")
   assert string.contains(html, "name-1")

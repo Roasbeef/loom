@@ -7890,9 +7890,13 @@ pub fn the_real_admin_socket_carries_no_claim_test() {
     let _ = ffi_ws.tcp_close(socket)
     let drawn = string.join(closed.texts, "\n")
 
-    // The page drew its people, the pending invitation, and the owner's session.
-    assert string.contains(drawn, "pending-one")
-    assert string.contains(drawn, "claim open")
+    // The page opens on its Machines tab, so it drew the tabs and the owner's
+    // session in the sidebar. The People tab, which holds the pending invitation,
+    // is drawn on a press the real socket's raw frames do not send here;
+    // `admin_test` reads that tab, and the snapshot it draws from never holds a
+    // claim, because the catalogue keeps only its digest.
+    assert string.contains(drawn, "Machines")
+    assert string.contains(drawn, "People")
     assert string.contains(drawn, "Admin")
     assert string.contains(drawn, "admin-real")
 

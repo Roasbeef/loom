@@ -56,6 +56,7 @@
 //// `web_view/component`, which imports it.
 
 import gleam/int
+import gleam/list
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -100,7 +101,7 @@ pub type Sidebar(message) {
 /// ## Examples
 ///
 /// ```gleam
-/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0, 0, "")
+/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0, 0, "", 0)
 /// ```
 pub fn view(
   audience: Audience,
@@ -111,10 +112,11 @@ pub fn view(
   needing: Int,
   proposals: Int,
   workspace: String,
+  waiting: Int,
 ) -> Element(message) {
   element.element(
     "loom-shell",
-    frame_attributes(audience, sidebar, needing, proposals, workspace),
+    frame_attributes(audience, sidebar, needing, proposals, workspace, waiting),
     [
       bar,
       sidebar_element(sidebar),
@@ -134,6 +136,7 @@ fn frame_attributes(
   needing: Int,
   proposals: Int,
   workspace: String,
+  waiting: Int,
 ) -> List(attribute.Attribute(message)) {
   let word = case sidebar {
     Listed(_) -> "listed"
@@ -142,7 +145,10 @@ fn frame_attributes(
   let facts = [
     attribute.attribute("sidebar", word),
     attribute.attribute("needing", int.to_string(needing)),
-    ..proposals_fact(proposals, digest(workspace))
+    ..proposals_fact(
+      proposals,
+      list.append(waiting_fact(waiting), digest(workspace)),
+    )
   ]
   case audience {
     Operator -> [
@@ -156,6 +162,20 @@ fn frame_attributes(
       attribute.class("loom-home"),
       ..facts
     ]
+  }
+}
+
+// The `waiting` attribute, written only while a session on the list waits on
+// the person. The stylesheet draws it as the count on the sidebar's menu button,
+// so the phone shows that something needs the person while the sidebar is shut.
+// It is a number the component counted and is capped at ten, the largest the
+// stylesheet has a word for.
+fn waiting_fact(waiting: Int) -> List(attribute.Attribute(message)) {
+  case waiting > 0 {
+    True -> [
+      attribute.attribute("waiting", int.to_string(int.min(waiting, 10))),
+    ]
+    False -> []
   }
 }
 

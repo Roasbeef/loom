@@ -249,6 +249,7 @@ fn bar(compact: option.Option(Nil)) -> Element(Nil) {
       cost: "est $0.04",
       rate: None,
       notice: element.none(),
+      placement: element.none(),
     ),
   ])
 }

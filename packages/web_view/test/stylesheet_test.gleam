@@ -51,27 +51,40 @@ pub fn a_rows_buttons_keep_clear_of_its_chevron_test() {
   assert string.contains(css, "position:absolute;top:50%;right:46px")
 }
 
-// F140: a sidebar row reserves a column for the archive button and the button
-// is a 24px square in it, so it never lies over the row's dot or activity word.
-pub fn the_archive_button_has_a_column_of_its_own_test() {
+// A sidebar row's menu toggle is a 32px square at the row's right edge, drawn
+// on hover and on keyboard focus, and a 44px target that is always drawn on a
+// touch screen, which has no hover. It is a native disclosure, so it needs no
+// handler and the row's own button keeps every click on the row's body.
+pub fn the_row_menu_toggle_is_a_small_target_and_a_large_one_on_touch_test() {
   let css = stylesheet()
-  assert string.contains(css, "padding-right:30px")
-  assert string.contains(css, "width:24px;height:24px")
-}
-
-// F147: the column is reserved on every row, with a button or without, so the
-// activity word is in one place down the list: no rule keys the padding to a
-// row that holds the button, and the rows that are one button have it too.
-pub fn every_row_reserves_the_archive_column_test() {
-  let css = stylesheet()
-  assert !string.contains(css, "li.session:has(>.session-archive)")
+  assert string.contains(css, ".row-menu-toggle{width:32px;height:32px")
+  assert string.contains(css, "opacity:0")
   assert string.contains(
     css,
-    "li.session{padding-right:30px;position:relative}",
+    ".row-menu-toggle{opacity:1;width:44px;height:44px",
+  )
+  assert string.contains(css, "@media (hover:none)")
+}
+
+// The archive control keeps its class and is drawn as a labelled item of the
+// row's menu, whose text is the control's own `aria-label`.
+pub fn the_archive_control_is_a_labelled_menu_item_test() {
+  let css = stylesheet()
+  assert string.contains(css, ".session-archive:after{content:attr(aria-label)")
+  assert !string.contains(css, "li.session:hover>.session-archive")
+}
+
+// The phone's menu button carries a count of the sessions waiting on the person,
+// as a word for each number the page can send, capped at ten.
+pub fn the_menu_button_counts_the_sessions_that_need_the_person_test() {
+  let css = stylesheet()
+  assert string.contains(
+    css,
+    ":host([waiting=\"1\"]) .toggle-sidebar:after{content:\"1\"}",
   )
   assert string.contains(
     css,
-    "li.session:has(>.session-open){padding:0 30px 0 0}",
+    ":host([waiting=\"10\"]) .toggle-sidebar:after{content:\"9+\"}",
   )
 }
 
@@ -93,18 +106,6 @@ pub fn the_abandon_controls_are_quiet_buttons_test() {
   assert string.contains(
     css,
     "button.admin-abandon{border:1px solid var(--color-divider);",
-  )
-}
-
-// F155: a row that is not a button (the page's own, a saved row while another
-// resume is out) reserves the 7px a button's own padding gives the rows that are
-// buttons, so its activity word ends where theirs do: 30px of the column and 7px
-// of the button's padding.
-pub fn a_row_that_is_not_a_button_ends_where_the_others_do_test() {
-  let css = stylesheet()
-  assert string.contains(
-    css,
-    "li.session:not(:has(>.session-open)){padding-right:37px}",
   )
 }
 
