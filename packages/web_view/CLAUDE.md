@@ -1979,10 +1979,10 @@ ticket stay the home's.
   (`Done | Refusal | Unknown`) and `Choice`. Everything in it is text from the box.
   `listing.Code` gained `Pooled(pool, workspace)` for a pool placement.
 - `web_view/relayed_session` is the state machine: `State` (presence, row, history,
-  `Reach`, `Sending`, `Acting`, `deciding`, `notice`, `sent`), `heard`, `update` and the
+  `Reach`, `Sending`, `Acting`, `deciding`, `decided`, `notice`, `sent`), `heard`, `update` and the
   `replied`, `stopped`, `archived`, `decided` answers. A press is judged against the row
   the page last read: a reply once, a stop when calm, an archive after its question,
-  a decision only for a request the row lists at the revision the card showed that the
+  a decision (whose "sent" line a later read clears once the request is no longer listed) only for a request the row lists at the revision the card showed that the
   ceiling lets the page decide (and for the session only when `Rememberable`).
 - `view/relayed_session` draws the centre with the existing approval-card,
   placement-strip and composer markup. The reply form accepts exactly one `message`

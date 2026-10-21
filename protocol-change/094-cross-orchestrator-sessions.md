@@ -157,7 +157,9 @@ deadline (30 s for `TopCreate`, 7 s otherwise).
   UUIDv7 the laptop mints per submit. `placement` is `Folder(path)`,
   `Workspace(executor, name)` or `Pooled(pool, name)`. The box checks the
   placement against the table and its own configuration, the profile against
-  `profiles`, and for a folder the 074 checks; then it reserves the session as
+  `profiles` (the laptop's page names the first profile `Placements` lists when
+  none is chosen, since the box has no default profile name), and for a folder
+  the 074 checks; then it reserves the session as
   described under Records and answers `Created(session_id)`. A repeat of
   `request_id` answers the same session. The create carries no prompt: the
   page sends the first message with `TopSend`, under its own `message_id`, as
