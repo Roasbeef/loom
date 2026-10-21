@@ -12,7 +12,7 @@ import client/peer_defaults
 import client/remote/address
 import client/remote/protocol
 import client/system_prompt
-import client/workspaces.{Workspace}
+import client/workspaces
 import gleam/dict
 import gleam/erlang/process
 import gleam/option.{None, Some}
@@ -20,6 +20,7 @@ import gleam/string
 import host/bootstrap
 import simplifile
 import support/remote_fixtures as fixtures
+import support/worktree_rig
 import telemetry/log
 
 fn absolute(path: String) -> String {
@@ -74,7 +75,7 @@ pub fn a_daemon_that_serves_a_workspace_registers_the_host_test() {
     as "the checkout is created"
   let assert Ok(Nil) = bootstrap.ensure_private_directory(scratch <> "/state")
     as "the state root is created"
-  let served = [Workspace("proj", checkout)]
+  let served = [workspaces.shared("proj", checkout)]
   let arguments = [
     "--helper",
     absolute("../sandbox/loom-exec"),
@@ -93,25 +94,24 @@ pub fn a_daemon_that_serves_a_workspace_registers_the_host_test() {
   // scope, no census, and the workspace named without its root.
   let limits = executor_plane.scope_limits()
   assert hosted.facts()
-    == Some(
-      ExecutorFacts(
-        protocol: protocol.version,
-        scopes: ScopeCounts(
-          open: 0,
-          closing: 0,
-          closed_clean: 0,
-          closed_unknown: 0,
-        ),
-        scope_limit: limits.max_unclean_scopes,
-        unclean: [],
-        ledger_bytes: 0,
-        ledger_limit: limits.max_ledger_bytes,
-        unacknowledged: 0,
-        platform: system_prompt.platform(ffi_os.platform()),
-        observed: None,
-        workspaces: ["proj"],
+    == Some(ExecutorFacts(
+      protocol: protocol.version,
+      scopes: ScopeCounts(
+        open: 0,
+        closing: 0,
+        closed_clean: 0,
+        closed_unknown: 0,
       ),
-    )
+      scope_limit: limits.max_unclean_scopes,
+      unclean: [],
+      ledger_bytes: 0,
+      ledger_limit: limits.max_ledger_bytes,
+      unacknowledged: 0,
+      platform: system_prompt.platform(ffi_os.platform()),
+      observed: None,
+      workspaces: ["proj"],
+      worktrees: option.None,
+    ))
 
   // The host is not linked to this process, so it ends only when told to.
   process.demonitor_process(hosted.monitor)
@@ -130,12 +130,83 @@ pub fn a_missing_helper_refuses_the_start_with_a_reason_test() {
     as "the state root is created"
   let assert Error(reason) =
     main.start_executor(
-      config(scratch, [Workspace("proj", scratch)], [
+      config(scratch, [workspaces.shared("proj", scratch)], [
         "--helper",
         scratch <> "/no-such-helper",
       ]),
       log.discard(),
     )
   assert string.contains(reason, "the helper binary does not exist")
+  assert process.named(address.default()) == Error(Nil)
+}
+
+// --- worktree workspaces (protocol-change/095) ----------------------------------
+
+fn tree_scratch(name: String) -> #(String, String) {
+  let scratch = absolute(fixtures.scratch(name))
+  let state = scratch <> "/state"
+  let assert Ok(Nil) = bootstrap.ensure_private_directory(state)
+    as "the state root is created"
+  let assert Ok(state) = bootstrap.canonical_directory(state)
+    as "the state root resolves"
+  worktree_rig.establish(state)
+  #(scratch, state)
+}
+
+pub fn a_daemon_that_serves_a_worktree_workspace_reports_it_in_its_census_test() {
+  let #(scratch, state) = tree_scratch("daemon-executor-trees")
+  let repository = worktree_rig.repository(scratch <> "/repo")
+  let served = [
+    workspaces.Workspace("proj", repository, workspaces.Worktree("main")),
+  ]
+  let arguments = [
+    "--helper",
+    absolute("../sandbox/loom-exec"),
+    "--best-effort",
+  ]
+
+  let assert Ok(Some(hosted)) =
+    main.start_executor(config(state, served, arguments), log.discard())
+  let assert Ok(host) = process.named(address.default())
+    as "the host registers under the fixed name"
+
+  // Nothing attached yet, so no tree, and the stray directory is counted.
+  worktree_rig.write(state <> "/worktrees/proj/stranger/note.txt", "x\n")
+  let assert Some(facts) = hosted.facts()
+  assert facts.workspaces == ["proj"]
+  assert facts.worktrees
+    == Some(node_report.WorktreeFacts(
+      workspaces: ["proj"],
+      present: 0,
+      kept: 0,
+      branches_left: 0,
+      unrecorded: 1,
+    ))
+
+  process.demonitor_process(hosted.monitor)
+  process.kill(host)
+  assert fixtures.eventually(fn() {
+    process.named(address.default()) == Error(Nil)
+  })
+}
+
+pub fn a_worktree_root_that_is_not_a_primary_checkout_refuses_the_start_test() {
+  let #(scratch, state) = tree_scratch("daemon-executor-notrepo")
+  let plain = scratch <> "/plain"
+  let assert Ok(Nil) = simplifile.create_directory_all(plain)
+    as "a plain directory is created"
+  let served = [
+    workspaces.Workspace("proj", plain, workspaces.Worktree("main")),
+  ]
+  let arguments = [
+    "--helper",
+    absolute("../sandbox/loom-exec"),
+    "--best-effort",
+  ]
+
+  let assert Error(reason) =
+    main.start_executor(config(state, served, arguments), log.discard())
+
+  assert string.contains(reason, "primary checkout")
   assert process.named(address.default()) == Error(Nil)
 }

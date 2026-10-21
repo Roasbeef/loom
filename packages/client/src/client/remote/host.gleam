@@ -205,9 +205,19 @@ pub type Plane(census) {
   )
 }
 
+/// Why a plane could not be built, which decides the refusal the sender reads.
+pub type PlaneFailure {
+  /// The plane could not be built, for the reason given (`NoPlane`).
+  NoPlaneBuilt(reason: String)
+
+  /// The workspace is in worktree mode and the session's worktree could not be
+  /// made or reopened (`WorktreeFailed`, protocol-change/095).
+  WorktreeNotMade(reason: String)
+}
+
 /// Builds the workspace plane for a scope that has none, or says why it cannot.
 pub type PlaneFactory(census) =
-  fn(AttachSpec) -> Result(Plane(census), String)
+  fn(AttachSpec) -> Result(Plane(census), PlaneFailure)
 
 /// How the host is configured.
 pub type Config(census) {
@@ -290,7 +300,7 @@ type JobResult(census) {
   ToolRan(outcome: ToolOutcome)
   ProgramRan(value: JsonValue)
   ScopeClosed(outcome: CloseOutcome)
-  PlaneBuilt(built: Result(Plane(census), String))
+  PlaneBuilt(built: Result(Plane(census), PlaneFailure))
 }
 
 // What one attach binds: the scope's identity and where its workspace calls
@@ -779,7 +789,9 @@ fn build_plane(
       let #(state, id, sink, cancel) =
         start_job(state, fn() {
           let built = {
-            use mcp <- result.try(owner_link.mcp_plan(link))
+            use mcp <- result.try(
+              owner_link.mcp_plan(link) |> result.map_error(NoPlaneBuilt),
+            )
             factory(AttachSpec(
               session:,
               workspace:,
@@ -815,10 +827,10 @@ fn plane_built(
   link: owner_link.Link,
   unacked: protocol.Unacked,
   reply: Subject(Result(protocol.Attached(census), Refusal)),
-  built: Result(Plane(census), String),
+  built: Result(Plane(census), PlaneFailure),
 ) -> State(census) {
   case built {
-    Error(reason) -> build_failed(state, session, link, reply, reason)
+    Error(failure) -> build_failed(state, session, link, reply, failure)
     Ok(plane) ->
       case start_children(plane) {
         Ok(children) -> {
@@ -837,7 +849,7 @@ fn plane_built(
         // leaking a pool.
         Error(reason) -> {
           let _outcome = plane.close(fn() { Ok(Nil) })
-          build_failed(state, session, link, reply, reason)
+          build_failed(state, session, link, reply, NoPlaneBuilt(reason))
         }
       }
   }
@@ -859,15 +871,25 @@ fn attached_reply(
   )
 }
 
+// The refusal a failed build is answered with. A worktree that could not be
+// made is its own refusal, so the orchestrator can tell the operator which
+// Git message to read and does not mistake it for a missing workspace.
+fn refusal_of_failure(failure: PlaneFailure) -> Refusal {
+  case failure {
+    NoPlaneBuilt(reason:) -> protocol.NoPlane(reason)
+    WorktreeNotMade(reason:) -> protocol.WorktreeFailed(reason)
+  }
+}
+
 fn build_failed(
   state: State(census),
   session: String,
   link: owner_link.Link,
   reply: Subject(Result(protocol.Attached(census), Refusal)),
-  reason: String,
+  failure: PlaneFailure,
 ) -> State(census) {
   owner_link.stop(link)
-  process.send(reply, Error(protocol.NoPlane(reason)))
+  process.send(reply, Error(refusal_of_failure(failure)))
   State(..state, placements: dict.delete(state.placements, session))
 }
 
@@ -1425,7 +1447,7 @@ fn job_lost(
         session,
         link,
         reply,
-        "the workspace build ended without a result",
+        NoPlaneBuilt("the workspace build ended without a result"),
       )
   }
 }

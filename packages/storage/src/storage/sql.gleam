@@ -2205,6 +2205,137 @@ pub fn ledger_unacked_count_decoder() -> decode.Decoder(LedgerUnackedCount) {
   decode.success(LedgerUnackedCount(calls:))
 }
 
+pub type LedgerWorktree {
+  LedgerWorktree(
+    session: String,
+    workspace: String,
+    path: String,
+    branch: String,
+    state: String,
+  )
+}
+
+pub fn ledger_worktree(session session: String) {
+  let sql =
+    "SELECT session, workspace, path, branch, state
+FROM scope_worktree WHERE session = ?"
+  #(sql, [dev.ParamString(session)], ledger_worktree_decoder())
+}
+
+pub fn ledger_worktree_decoder() -> decode.Decoder(LedgerWorktree) {
+  use session <- decode.field(0, decode.string)
+  use workspace <- decode.field(1, decode.string)
+  use path <- decode.field(2, decode.string)
+  use branch <- decode.field(3, decode.string)
+  use state <- decode.field(4, decode.string)
+  decode.success(LedgerWorktree(session:, workspace:, path:, branch:, state:))
+}
+
+pub type LedgerWorkspaceWorktrees {
+  LedgerWorkspaceWorktrees(
+    session: String,
+    workspace: String,
+    path: String,
+    branch: String,
+    state: String,
+  )
+}
+
+pub fn ledger_workspace_worktrees(workspace workspace: String) {
+  let sql =
+    "SELECT session, workspace, path, branch, state
+FROM scope_worktree WHERE workspace = ? ORDER BY session"
+  #(sql, [dev.ParamString(workspace)], ledger_workspace_worktrees_decoder())
+}
+
+pub fn ledger_workspace_worktrees_decoder() -> decode.Decoder(
+  LedgerWorkspaceWorktrees,
+) {
+  use session <- decode.field(0, decode.string)
+  use workspace <- decode.field(1, decode.string)
+  use path <- decode.field(2, decode.string)
+  use branch <- decode.field(3, decode.string)
+  use state <- decode.field(4, decode.string)
+  decode.success(LedgerWorkspaceWorktrees(
+    session:,
+    workspace:,
+    path:,
+    branch:,
+    state:,
+  ))
+}
+
+pub type LedgerAllWorktrees {
+  LedgerAllWorktrees(
+    session: String,
+    workspace: String,
+    path: String,
+    branch: String,
+    state: String,
+  )
+}
+
+pub fn ledger_all_worktrees() {
+  let sql =
+    "SELECT session, workspace, path, branch, state
+FROM scope_worktree ORDER BY workspace, session"
+  #(sql, [], ledger_all_worktrees_decoder())
+}
+
+pub fn ledger_all_worktrees_decoder() -> decode.Decoder(LedgerAllWorktrees) {
+  use session <- decode.field(0, decode.string)
+  use workspace <- decode.field(1, decode.string)
+  use path <- decode.field(2, decode.string)
+  use branch <- decode.field(3, decode.string)
+  use state <- decode.field(4, decode.string)
+  decode.success(LedgerAllWorktrees(
+    session:,
+    workspace:,
+    path:,
+    branch:,
+    state:,
+  ))
+}
+
+pub fn put_ledger_worktree(
+  session session: String,
+  workspace workspace: String,
+  path path: String,
+  branch branch: String,
+  state state: String,
+) {
+  let sql =
+    "INSERT INTO scope_worktree(session, workspace, path, branch, state)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(session) DO UPDATE SET
+  workspace = excluded.workspace,
+  path = excluded.path,
+  branch = excluded.branch,
+  state = excluded.state"
+  #(sql, [
+    dev.ParamString(session),
+    dev.ParamString(workspace),
+    dev.ParamString(path),
+    dev.ParamString(branch),
+    dev.ParamString(state),
+  ])
+}
+
+pub type LedgerWorktreeStates {
+  LedgerWorktreeStates(state: String, trees: Int)
+}
+
+pub fn ledger_worktree_states() {
+  let sql = "SELECT state, COUNT(*) AS trees FROM scope_worktree GROUP BY state"
+  #(sql, [], ledger_worktree_states_decoder())
+}
+
+pub fn ledger_worktree_states_decoder() -> decode.Decoder(LedgerWorktreeStates) {
+  use state <- decode.field(0, decode.string)
+  use trees <- decode.field(1, decode.int)
+  decode.success(LedgerWorktreeStates(state:, trees:))
+}
+
 pub type HistorySourceHeader {
   HistorySourceHeader(metadata_bytes: Int, next_seq: Option(Int))
 }

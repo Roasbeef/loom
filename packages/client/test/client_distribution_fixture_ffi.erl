@@ -504,6 +504,24 @@ run(<<"remote_workspace">>, Root) ->
     exchange(A, ConfigA, remote_workspace_orchestrator,
              #{peer => name_of(B)},
              B, ConfigB, remote_workspace_host,
+             #{directory => bin(Work)});
+
+%% The executor serves a worktree workspace and two sessions on the orchestrator
+%% attach to it over TLS distribution: each gets a tree and a branch of its own,
+%% they edit the same file without seeing each other, and on close the clean
+%% tree is removed and the one with an unsaved file is kept.
+run(<<"remote_worktrees">>, Root) ->
+    Ca = root_cert("fixture ca"),
+    Cookie = cookie("shared"),
+    A = provision(Root, "owner", Ca, name("owner"), same, Cookie),
+    B = provision(Root, "executor", Ca, name("executor"), same, Cookie),
+    Work = filename:join(Root, "executor-work"),
+    ok = file:make_dir(Work),
+    ConfigA = config(A, B, cert_of(B), none),
+    ConfigB = config(B, A, cert_of(A), none),
+    exchange(A, ConfigA, remote_worktrees_orchestrator,
+             #{peer => name_of(B)},
+             B, ConfigB, remote_worktrees_host,
              #{directory => bin(Work)}).
 
 remote(Root, Scenario, Asks, Hold) ->
@@ -998,6 +1016,19 @@ role(remote_workspace_orchestrator, Config, #{peer := PeerName}) ->
     {ok, Peer} = ?DIST:peer(Membership, PeerName),
     {ok, nil} = ?DIST:connect(Peer, 15000),
     {ok, nil} = support@remote_nodes:orchestrate_workspace(Peer);
+%% The executor of a worktree workspace: a real repository and the production
+%% factory with the workspace in worktree mode.
+role(remote_worktrees_host, Config, #{directory := Directory}) ->
+    {ok, _} = ?DIST:start(Config, not_member),
+    {ok, Handle} = support@remote_nodes:worktree_host(Directory),
+    ready_and_stop(),
+    {ok, nil} = support@remote_nodes:verify_worktrees(Handle);
+%% The orchestrator of a worktree workspace: two sessions, one tree each.
+role(remote_worktrees_orchestrator, Config, #{peer := PeerName}) ->
+    {ok, Membership} = ?DIST:start(Config, not_member),
+    {ok, Peer} = ?DIST:peer(Membership, PeerName),
+    {ok, nil} = ?DIST:connect(Peer, 15000),
+    {ok, nil} = support@remote_nodes:orchestrate_worktrees(Peer);
 %% The orchestrator of a remote tool call: a real surface running one call.
 role(remote_orchestrator, Config, #{peer := PeerName, scenario := Scenario}) ->
     {ok, Membership} = ?DIST:start(Config, not_member),

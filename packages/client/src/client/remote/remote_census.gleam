@@ -18,6 +18,7 @@ import client/system_prompt
 import client/workspace_plane
 import gleam/erlang/process.{type Subject}
 import gleam/list
+import gleam/option.{type Option}
 import tools/tool
 
 /// The census an attach reply carries for a real workspace.
@@ -42,6 +43,10 @@ pub type RemoteCensus {
     /// orchestrator logs the refusals, which is where an operator learns that
     /// the executor's own `[mcp.<name>]` table is missing or its key unset.
     mcp: List(McpStatus),
+    /// The branch the session's Git worktree has, `loom/<session id>`, for a
+    /// session on a workspace in worktree mode and `None` otherwise
+    /// (protocol-change/095). The session header shows it.
+    branch: Option(String),
   )
 }
 

@@ -89,6 +89,7 @@ toolchains = [\"codemode\"]
         platform: Some("macos/arm64"),
         enforcement: Some(executors.Enforced),
         toolchains: ["codemode"],
+        attach_within_s: None,
       ),
       Pool(
         name: "zulu",
@@ -96,6 +97,7 @@ toolchains = [\"codemode\"]
         platform: None,
         enforcement: None,
         toolchains: [],
+        attach_within_s: None,
       ),
     ])
   let assert Ok(all) = pools.parse(distribution <> text)
@@ -136,7 +138,7 @@ pub fn a_malformed_pool_is_refused_with_the_key_it_names_test() {
   )
   refused(
     "\n[pools.fast]\nexecutors = [\"alpha\"]\nweight = 2\n",
-    "unknown key `weight` in [pools.fast] (allowed: executors, platform, enforcement, toolchains)",
+    "unknown key `weight` in [pools.fast] (allowed: executors, platform, enforcement, toolchains, attach_within_s)",
   )
   refused(
     "\n[pools.fast]\nexecutors = [\"alpha\"]\nplatform = \"linux\"\n",
@@ -233,4 +235,22 @@ pub fn the_catalogue_parser_refuses_what_the_pool_parser_refuses_test() {
 
 fn names(found: List(executors.Executor)) -> List(String) {
   list.map(found, fn(executor) { executor.name })
+}
+
+// --- attach_within_s (protocol-change/095) -------------------------------------
+
+pub fn a_pool_may_replace_its_members_wait_test() {
+  let text = "\n[pools.big]\nexecutors = [\"alpha\"]\nattach_within_s = 300\n"
+  let assert Ok([pool]) = pools.parse(distribution <> text)
+  assert pool.attach_within_s == Some(300)
+  let plain = "\n[pools.big]\nexecutors = [\"alpha\"]\n"
+  let assert Ok([unsized]) = pools.parse(distribution <> plain)
+  assert unsized.attach_within_s == None
+}
+
+pub fn a_pools_wait_is_bounded_like_an_executors_test() {
+  refused(
+    "\n[pools.big]\nexecutors = [\"alpha\"]\nattach_within_s = 901\n",
+    "pools.big.attach_within_s must be a whole number of seconds from 1 to 900",
+  )
 }

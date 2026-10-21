@@ -13,6 +13,7 @@ import core/clock
 import core/ids
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
 import gleam/option
 import gleam/string
@@ -178,6 +179,26 @@ pub fn a_fresh_state_root_masks_both_domain_directories_test() {
     )
   assert list.contains(masked.protected, path <> "/domains")
   assert list.contains(masked.protected, path <> "/workspaces")
+  assert root.shutdown(daemon, within: 5000) == Ok(Nil)
+  released_lock(path)
+}
+
+// The executor's trees (protocol-change/095) are made before any session is
+// admitted, private to the user, so no one can race to create the directory
+// that holds another session's checkout. It is not one of the masked
+// entries: a session's own tree is inside it.
+pub fn a_fresh_state_root_has_a_private_worktrees_directory_test() {
+  let path = directory("worktrees")
+  let #(daemon, _ready) = start(path, inert())
+  let assert Ok(info) = simplifile.file_info(path <> "/worktrees")
+    as "the worktrees directory exists"
+  assert int.bitwise_and(info.mode, 0o777) == 0o700
+  let masked =
+    workspace_policy.protecting_state_root(
+      workspace_policy.base_policy(path <> "-work"),
+      path,
+    )
+  assert !list.contains(masked.protected, path <> "/worktrees")
   assert root.shutdown(daemon, within: 5000) == Ok(Nil)
   released_lock(path)
 }

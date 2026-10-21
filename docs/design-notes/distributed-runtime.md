@@ -456,7 +456,7 @@ host creates no scope and changes no state
 (`client/remote/host.gleam:580`). The orchestrator's open then stops the
 session's owner port and fails with `executor_unavailable: the executor speaks
 protocol version N and this orchestrator does not`
-(`refused`, `client/remote/workspace.gleam:716`; the wording is
+(`refused`, `client/remote/workspace.gleam:736`; the wording is
 `client/remote/protocol.gleam:573`). There is no negotiation and no accepted
 range. `Run`, `Query` and the other messages carry no version of their own,
 because each session open begins with an `Attach`. The constant's doc comment
@@ -476,10 +476,10 @@ call that was `admitted` into `unknown`, as for any executor restart.
 
 **The 16 MiB per-call reservation inside the 512 MiB budget.** Admission
 reserves `default_max_result_bytes` for every call, 16 MiB, twice the largest
-file `fs_read` returns (`client/remote/host.gleam:264`). The daemon passes it as
+file `fs_read` returns (`client/remote/host.gleam:274`). The daemon passes it as
 `max_result_bytes` (`client/daemon/main.gleam:903`) and the host hands it to
-`exec_ledger.admit` (`client/remote/host.gleam:965`). The ledger's byte budget
-is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:489`), and
+`exec_ledger.admit` (`client/remote/host.gleam:987`). The ledger's byte budget
+is `default_max_ledger_bytes`, 512 MiB (`storage/exec_ledger.gleam:559`), and
 `require_budget` refuses a call when the bytes held by `admitted` and
 `terminal` rows plus the new reservation would pass it
 (`storage/exec_ledger.gleam:978`). The refusal is `BudgetExhausted`, and its

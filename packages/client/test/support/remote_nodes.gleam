@@ -30,7 +30,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
-import client/workspaces.{Workspace}
+import client/workspaces
 import core/clock
 import core/json
 import core/message
@@ -46,6 +46,7 @@ import runtime/effects
 import simplifile
 import storage/exec_ledger
 import support/remote_fixtures as fixtures
+import support/worktree_rig
 import telemetry/log
 
 /// What the executor role keeps until it is asked to verify.
@@ -261,6 +262,8 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       logger: log.discard(),
       mcp_servers: [],
     )
+  let served = [workspaces.shared("proj", checkout)]
+  use trees <- result.try(executor_plane.worktrees_of(machine, served))
   let config =
     host.Config(
       name: address.default(),
@@ -268,13 +271,216 @@ pub fn workspace_host(directory: String) -> Result(WorkspaceHandle, String) {
       limits: exec_ledger.default_limits(),
       max_result_bytes: host.default_max_result_bytes,
       clock: clock.from_function(ffi_os.system_time_ms),
-      factory: executor_plane.factory(machine, [Workspace("proj", checkout)]),
+      factory: executor_plane.factory(machine, served, trees),
       execution_result_bytes: host.default_execution_result_bytes,
     )
   use _started <- result.try(
     host.start(config) |> result.map_error(string.inspect),
   )
   Ok(WorkspaceHandle(checkout:))
+}
+
+/// What the executor role of worktree workspaces keeps until it verifies.
+pub type TreesHandle {
+  TreesHandle(repository: String, state: String)
+}
+
+/// The executor role of a worktree workspace: a real repository under
+/// `directory`, the production factory with `proj` in worktree mode, and the
+/// real host under its fixed name.
+pub fn worktree_host(directory: String) -> Result(TreesHandle, String) {
+  let state = directory <> "/state"
+  use Nil <- result.try(bootstrap.ensure_private_directory(state))
+  use state <- result.try(bootstrap.canonical_directory(state))
+  worktree_rig.establish(state)
+  let repository = worktree_rig.repository(directory <> "/repo")
+  use helper <- result.try(helper_path())
+  let machine =
+    executor_plane.Machine(
+      state_root: state,
+      helper_path: helper,
+      helper_pool_size: 4,
+      demand: exec.BestEffort,
+      workspace: catalog.default_workspace(),
+      tools: catalog.default_tools(),
+      deactivated_tools: [],
+      lsp_servers: [],
+      jobs_policy: jobs.default_policy,
+      codemode_seed: Some(state <> "/no-such-seed"),
+      secrets: secret.env(),
+      home: None,
+      logger: log.discard(),
+      mcp_servers: [],
+    )
+  let served = [
+    workspaces.Workspace("proj", repository, workspaces.Worktree("main")),
+  ]
+  use trees <- result.try(executor_plane.worktrees_of(machine, served))
+  let config =
+    host.Config(
+      name: address.default(),
+      ledger_path: state <> "/exec-ledger.db",
+      limits: exec_ledger.default_limits(),
+      max_result_bytes: host.default_max_result_bytes,
+      clock: clock.from_function(ffi_os.system_time_ms),
+      factory: executor_plane.factory(machine, served, trees),
+      execution_result_bytes: host.default_execution_result_bytes,
+    )
+  use _started <- result.try(
+    host.start(config) |> result.map_error(string.inspect),
+  )
+  Ok(TreesHandle(repository:, state:))
+}
+
+/// The executor role's last word: the clean session's tree is gone and the one
+/// with changes is still there with them, and both branches remain.
+pub fn verify_worktrees(handle: TreesHandle) -> Result(Nil, String) {
+  let clean = handle.state <> "/worktrees/proj/" <> clean_session
+  let dirty = handle.state <> "/worktrees/proj/" <> dirty_session
+  use Nil <- result.try(case worktree_rig.exists(clean) {
+    True -> Error("the clean session's tree was not removed")
+    False -> Ok(Nil)
+  })
+  use Nil <- result.try(case simplifile.read(dirty <> "/wip.txt") {
+    Ok("unsaved\n") -> Ok(Nil)
+    other -> Error("the changed tree holds " <> string.inspect(other))
+  })
+  let branches =
+    worktree_rig.git(handle.repository, ["branch", "--list", "loom/*"])
+  case
+    string.contains(branches, "loom/" <> clean_session)
+    && string.contains(branches, "loom/" <> dirty_session)
+  {
+    True -> Ok(Nil)
+    False -> Error("a branch is missing: " <> branches)
+  }
+}
+
+const clean_session = "0198c0de-0000-7000-8000-0000000000a1"
+
+const dirty_session = "0198c0de-0000-7000-8000-0000000000a2"
+
+/// The orchestrator role of a worktree workspace: two sessions attach to `proj`
+/// over TLS distribution, each gets a tree and a branch of its own and edits
+/// the same file without seeing the other, then one closes clean and the other
+/// with an unsaved file.
+pub fn orchestrate_worktrees(peer: distribution.Peer) -> Result(Nil, String) {
+  let target = distribution.node(peer)
+  use port <- result.try(
+    owner_port.start(owner_port.Config(
+      services: fixtures.quiet_services(),
+      clock: clock.fixed(at: 1000),
+      settled: fn(_key) { False },
+      reconcile_every_ms: 60_000,
+      executions: owner_port.no_executions(),
+      mcp: protocol.McpPlan(served: [], expected: []),
+    )),
+  )
+  let attach = fn(session) {
+    surface.attach(surface.Config(
+      address: address.Address(node: target, name: address.default()),
+      session:,
+      workspace: "proj",
+      incarnation: 0,
+      port:,
+      read_authority: fn(_run) { Ok(fixtures.authority()) },
+      reconnect: fn() { reconnect_to(peer) },
+      remote_tools: ["fs_write", "fs_read"],
+      attach_within_ms: 120_000,
+      mint_token: surface.strong_token,
+    ))
+    |> result.map_error(protocol.describe)
+  }
+  use first <- result.try(attach(clean_session))
+  use second <- result.try(attach(dirty_session))
+  let one: RemoteCensus = first.attached.census
+  let two: RemoteCensus = second.attached.census
+  use Nil <- result.try(
+    case
+      one.census.workspace != two.census.workspace
+      && one.branch == Some("loom/" <> clean_session)
+      && two.branch == Some("loom/" <> dirty_session)
+    {
+      True -> Ok(Nil)
+      False -> Error("the two sessions did not get a tree and a branch each")
+    },
+  )
+
+  // Both write the same relative file in their own trees.
+  use Nil <- result.try(write_readme(first, one, "from one\n", 0))
+  use Nil <- result.try(write_readme(second, two, "from two\n", 1))
+  use Nil <- result.try(read_readme(first, one, "from one", 2))
+  use Nil <- result.try(read_readme(second, two, "from two", 3))
+
+  // The first session puts the file back as the repository has it, so its tree
+  // is clean again, and the second leaves an unsaved file; then both scopes
+  // close.
+  use Nil <- result.try(write_readme(first, one, "one\n", 5))
+  let wip = two.census.workspace <> "/wip.txt"
+  use Nil <- result.try(
+    completed(surface.run(
+      second.surface,
+      call(
+        "fs_write",
+        [#("path", json.String(wip)), #("content", json.String("unsaved\n"))],
+        4,
+      ),
+    )),
+  )
+  use Nil <- result.try(close_scope(target, clean_session))
+  close_scope(target, dirty_session)
+}
+
+fn write_readme(
+  attachment: surface.Attachment(RemoteCensus),
+  census: RemoteCensus,
+  text: String,
+  n: Int,
+) -> Result(Nil, String) {
+  completed(surface.run(
+    attachment.surface,
+    call(
+      "fs_write",
+      [
+        #("path", json.String(census.census.workspace <> "/README")),
+        #("content", json.String(text)),
+      ],
+      n,
+    ),
+  ))
+}
+
+fn read_readme(
+  attachment: surface.Attachment(RemoteCensus),
+  census: RemoteCensus,
+  expected: String,
+  n: Int,
+) -> Result(Nil, String) {
+  let read =
+    surface.run(
+      attachment.surface,
+      call(
+        "fs_read",
+        [#("path", json.String(census.census.workspace <> "/README"))],
+        n,
+      ),
+    )
+  contains(text_of(read), expected)
+}
+
+fn close_scope(target: Node, session: String) -> Result(Nil, String) {
+  let reply = process.new_subject()
+  address.deliver(
+    address.Address(node: target, name: address.default()),
+    protocol.Close(session:, workspace: "proj", incarnation: 0, reply:),
+  )
+  case process.receive(reply, 120_000) {
+    Ok(Ok(protocol.AllRetired)) -> Ok(Nil)
+    Ok(Ok(protocol.UnknownCleanup(..))) ->
+      Error("the close of " <> session <> " could not prove cleanup")
+    Ok(Error(refusal)) -> Error(protocol.describe(refusal))
+    Error(Nil) -> Error("the close of " <> session <> " was not answered")
+  }
 }
 
 // The shipped helper beside the packages, by the path the test runner's

@@ -24,7 +24,7 @@ import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census.{type RemoteCensus}
 import client/remote/surface
-import client/workspaces.{Workspace}
+import client/workspaces
 import core/clock
 import core/json
 import core/message
@@ -119,8 +119,11 @@ fn rig_over(
   let assert Ok(state) = bootstrap.canonical_directory(state)
     as "the state root resolves"
   establish(state)
-  let factory =
-    executor_plane.factory(machine(state, seed), [Workspace("proj", checkout)])
+  let served = [workspaces.shared("proj", checkout)]
+  let assert Ok(trees) =
+    executor_plane.worktrees_of(machine(state, seed), served)
+    as "the worktrees start"
+  let factory = executor_plane.factory(machine(state, seed), served, trees)
   let assert Ok(started) =
     host.start(host.Config(
       name: process.new_name("executor_plane_host"),
@@ -399,6 +402,9 @@ pub fn the_census_is_plain_data_with_no_function_values_test() {
   // A closure in the census would serialize here and fail to decode on the
   // orchestrator, so the walk looks for any function value in the whole term.
   assert function_values(census) == 0
+
+  // A shared workspace has no branch to report.
+  assert census.branch == None
 
   // And the term survives the trip a distribution connection gives it.
   assert wire_round_trip(census) == census

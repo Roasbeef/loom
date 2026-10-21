@@ -6842,13 +6842,16 @@ below.
   `CloseOutcome`. The census is a type parameter the host never reads.
   `unknown_outcome_text` is the model's wording for a lost call and
   `did_not_run_text` the wording of a fenced one. `Attach` carries
-  `protocol.version` (3); the host refuses any other value with `VersionMismatch`.
+  `protocol.version` (4); the host refuses any other value with `VersionMismatch`.
   Change the version whenever a constructor or field changes. Version 2 moved
   the executor's clock reading out of the census and into `Attached`, so each
   reply carries the time it was sent. Version 3 added background executions
   (`StartExecution`, `StopExecution`, `LaunchExecution`, `InteractExecution`,
   `Unacked.executions`, `Lookup.Executed`) and `AskMcpPlan`, the MCP plan the
-  executor asks the owner port for while it builds a plane. `Attach` keeps the
+  executor asks the owner port for while it builds a plane. Version 4 added the
+  `WorktreeFailed` refusal and `RemoteCensus.branch` for worktree workspaces
+  (protocol-change/095), and `host.PlaneFailure` is how a factory says which
+  refusal a failed build is. `Attach` keeps the
   shape it had in version 2, so a peer of either version reaches the version
   check and is refused by value; never add a field to it, or the refusal
   becomes a crash of the host and the executor daemon. Every other message
@@ -7183,8 +7186,10 @@ path with mutants M8 to M12.
 A `loomd` whose `--config` file has `[distribution]` and at least one
 `[workspaces.<name>]` row serves those checkouts to the peers it pins.
 
-- `client/workspaces` decodes `[workspaces.<name>]` (`root` only: absolute, no
-  `..` segment) the way `client/executors` decodes executors, and requires
+- `client/workspaces` decodes `[workspaces.<name>]` (`root`: absolute, no
+  `..` segment; `mode`, `shared` or `worktree`; and `base`, only with `worktree`,
+  which parses into `Mode = Shared | Worktree(base)` so a base on a shared
+  workspace cannot exist) the way `client/executors` decodes executors, and requires
   `[distribution]`. `catalog.parse` validates it; `catalog.parse_lsp` reads only
   the `[lsp.<name>]` tables because an executor has no model catalogue. A new key
   means `workspaces.row`, `scripts/config_keys.sh` and `docs/configuration.md`
@@ -7225,6 +7230,27 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   the `Helpers` cleanup (`executor.close`, which ends in `exec.close_pool`)
   succeeded. No helper cleanup means `UnknownCleanup`. The scope directory is
   removed only on `AllRetired`.
+- **Worktree workspaces** (protocol-change/095). `executor_plane.worktrees_of`
+  starts `client/worktrees` (the sandboxed Git of `client/worktree_git` and one
+  gate for each worktree workspace) and `factory` takes the result. For a
+  worktree workspace `build` calls `worktrees.open`, which creates, adopts or
+  recreates the session's tree at `<state>/worktrees/<workspace>/<session>` on
+  `loom/<session>`, and builds the plane over the tree's path, so `Built.root`,
+  the policy's writable root, `seed_of` and `gocache_of` all see the tree. A
+  failed open is `host.WorktreeNotMade`, answered as `WorktreeFailed`; a build
+  that fails after the tree exists settles it. `plane_over`'s `close` calls
+  `settle_tree` only after `AllRetired`: a clean tree (`git status` with
+  `.codemode` excluded, and a symbolic HEAD) is removed, anything else kept.
+  `protecting_siblings` masks `<state>/scopes` for a worktree session (sibling
+  trees are not masked: a per-sibling mask goes stale when a sibling closes and
+  the Linux helper then refuses every call). The ledger rows are `exec_ledger.Tree`, written from
+  `exec_ledger.connect`ed connections of the gates' own, never the host's.
+  Reconciliation is the gate's first job. Nothing deletes a branch or a directory
+  the ledger does not name; `forget_directory` deletes only the layout's path for
+  the session. `daemon/executor_cli` has `release --worktrees` (`worktrees.sweep`).
+  Tests: `worktrees_test` (the lifecycle against a real repository, the
+  reconciliation matrix, the operator sweep), `executor_worktree_test` (the plane,
+  the jail and the close through the host), `daemon_executor_cli_test`.
 - `daemon/main.start_executor` starts `remote/host` under `address.default()`
   with the ledger at `<state>/exec-ledger.db`; a daemon with no rows starts
   nothing. The host is unlinked and monitored; its death halts the daemon.

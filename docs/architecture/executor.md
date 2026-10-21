@@ -1408,6 +1408,17 @@ in field order, never refusing on features. It has no caller until #697 pairs
 two sides: S4 defines the refusal and does not wire it. The census, the
 pairing and the refusal are the pieces #697 consumes.
 
+## A second instance: Git for worktree workspaces
+
+The distributed executor boots one more pool, service and broker of this kind,
+beside the ones its sessions' planes run on. `client/worktree_git` starts them
+the way the standalone entrypoint does, with a lazy single-helper pool, and
+clears each Git call through the broker with a policy built for that call
+(protocol-change/095). It exists because making a session's tree has to run
+`git worktree add` in a repository the session's model may have configured,
+before the session has a plane, and Rule Zero forbids running that in the
+harness VM. A daemon with no worktree workspace never starts it.
+
 ## Protocol changes
 
 None is needed in any phase. The witnessed kill is a signal sent from the BEAM

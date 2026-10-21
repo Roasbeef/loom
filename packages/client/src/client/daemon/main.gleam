@@ -121,6 +121,7 @@ import client/session_movers
 import client/spawners
 import client/system_prompt
 import client/workspaces
+import client/worktrees
 import core/clock
 import core/glance
 import core/ids
@@ -895,6 +896,7 @@ pub fn start_executor(
         logger,
       ))
       let limits = executor_plane.scope_limits()
+      use trees <- result.try(executor_plane.worktrees_of(machine, configured))
       use started <- result.try(
         executor_host.start_reporting(executor_host.Config(
           name: address.default(),
@@ -903,7 +905,7 @@ pub fn start_executor(
           max_result_bytes: executor_host.default_max_result_bytes,
           execution_result_bytes: executor_host.default_execution_result_bytes,
           clock: clock.from_function(ffi_os.system_time_ms),
-          factory: executor_plane.factory(machine, configured),
+          factory: executor_plane.factory(machine, configured, trees),
         ))
         |> result.map_error(fn(error) {
           "the executor host did not start: " <> string.inspect(error)
@@ -915,12 +917,22 @@ pub fn start_executor(
       ])
       let platform = system_prompt.platform(ffi_os.platform())
       let names = list.map(configured, fn(workspace) { workspace.name })
+      let in_trees =
+        list.filter(configured, worktrees.is_worktree)
+        |> list.map(fn(workspace) { workspace.name })
       let summarize = started.data.summarize
       Ok(
         Some(
           ExecutorHost(monitor: process.monitor(started.pid), facts: fn() {
             summarize(executor_summary_ms)
-            |> result.map(node_facts.executor_facts(_, limits, platform, names))
+            |> result.map(fn(snapshot) {
+              node_facts.executor_facts(snapshot, limits, platform, names)
+              |> node_facts.with_worktrees(
+                snapshot.ledger.trees,
+                in_trees,
+                unrecorded: worktrees.unrecorded(trees, configured),
+              )
+            })
             |> option.from_result
           }),
         ),

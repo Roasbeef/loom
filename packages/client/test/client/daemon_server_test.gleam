@@ -241,6 +241,7 @@ pub fn fixture_with_ledger(
           platform: None,
           enforcement: None,
           toolchains: [],
+          attach_within_s: None,
         ),
       ],
       directory: asked,

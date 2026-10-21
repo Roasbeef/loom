@@ -19,14 +19,27 @@
 //// Absence is the safe answer. With no `[workspaces]` table the daemon starts
 //// no executor host, and every attach to it is refused for want of one.
 ////
+//// ## Shared and worktree
+////
+//// A workspace is `Shared` by default: every session that attaches under the
+//// name runs its tools in `root`, as before. With `mode = "worktree"` each
+//// session instead gets its own linked Git worktree of `root` and its own
+//// branch (protocol-change/095). The mode carries the one setting only it
+//// uses, `base`, the commit-ish each new branch starts from. Keeping `base`
+//// inside the `Worktree` variant, rather than beside the mode, makes the
+//// refused combination (a base on a shared workspace) unrepresentable once a
+//// row has parsed.
+////
 //// ## Flow
 ////
-//// `from_document` → `row` → `known_keys`
+//// `from_document` → `row` → `mode_of` → `known_keys`
 ////
 //// 1. `from_document` reads the table and requires the distribution table,
 ////    because an executor with no pinned peers has nobody to serve.
-//// 2. `row` validates one entry's name and its single key.
-//// 3. `find` resolves a name an orchestrator sent to its configured row.
+//// 2. `row` validates one entry's name and keys.
+//// 3. `mode_of` reads the mode and its base together, so a base cannot be
+////    accepted without the mode that uses it.
+//// 4. `find` resolves a name an orchestrator sent to its configured row.
 
 import client/distribution
 import gleam/dict.{type Dict}
@@ -47,7 +60,52 @@ pub type Workspace {
     /// The absolute directory on this machine. Existence is checked when the
     /// daemon starts and again at each attach, not when the file is parsed.
     root: String,
+    /// Whether sessions share `root` or each get a worktree of it.
+    mode: Mode,
   )
+}
+
+/// How the sessions of one workspace relate to its checkout.
+pub type Mode {
+  /// Every session runs its tools in `root`.
+  Shared
+
+  /// Every session runs in a linked Git worktree of `root`, on a branch of its
+  /// own, created when it first attaches (protocol-change/095).
+  Worktree(
+    /// The commit-ish each new branch starts from, resolved in `root` when the
+    /// worktree is created. `HEAD` unless the table names another.
+    base: String,
+  )
+}
+
+/// The start point a worktree workspace uses when its table names none.
+pub const default_base = "HEAD"
+
+/// A workspace whose sessions share its checkout.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspaces.shared("loom", "/srv/loom").mode == workspaces.Shared
+/// ```
+pub fn shared(name: String, root: String) -> Workspace {
+  Workspace(name:, root:, mode: Shared)
+}
+
+/// The word `mode` takes in the configuration file, and the word the census
+/// carries.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert workspaces.mode_word(workspaces.Worktree("HEAD")) == "worktree"
+/// ```
+pub fn mode_word(mode: Mode) -> String {
+  case mode {
+    Shared -> "shared"
+    Worktree(..) -> "worktree"
+  }
 }
 
 /// Reads the workspaces from configuration text, for callers that hold no
@@ -71,8 +129,9 @@ pub fn parse(text: String) -> Result(List(Workspace), String) {
 /// Validates the `[workspaces.<name>]` tables of a parsed configuration
 /// document and returns the workspaces sorted by name.
 ///
-/// Omission is an empty list. Each table names exactly one key, `root`, an
-/// absolute path with no `..` segment. A name outside the
+/// Omission is an empty list. Each table names `root`, an absolute path with no
+/// `..` segment, and may name `mode` (`shared`, the default, or `worktree`) and,
+/// with `worktree` only, `base`. A name outside the
 /// registered-workspace grammar, a key the table does not know and a value of
 /// the wrong type are each refused with the key's full name, so the operator
 /// can find the line. A document with workspaces and no `[distribution]` table
@@ -135,7 +194,7 @@ fn row(name: String, value: tom.Toml) -> Result(Workspace, String) {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
         dict.keys(fields),
-        ["root"],
+        ["root", "mode", "base"],
         "[workspaces." <> name <> "]",
       ))
       case dict.get(fields, "root") {
@@ -146,13 +205,57 @@ fn row(name: String, value: tom.Toml) -> Result(Workspace, String) {
               "workspaces." <> name <> ".root " <> reason
             }),
           )
-          Ok(Workspace(name:, root:))
+          use mode <- result.map(mode_of(fields, "workspaces." <> name))
+          Workspace(name:, root:, mode:)
         }
         Ok(_) -> Error("workspaces." <> name <> ".root must be a string")
         Error(Nil) -> Error("workspaces." <> name <> ".root is required")
       }
     }
     _ -> Error("workspaces." <> name <> " must be a table")
+  }
+}
+
+// Reads `mode` and `base` together. `base` is accepted only with `worktree`,
+// and must be a commit-ish Git can resolve from a command line: not empty, not
+// starting with `-` (which Git would read as an option), and free of control
+// characters and spaces. Whether the name resolves in `root` is Git's to say
+// when the first worktree is made.
+fn mode_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Mode, String) {
+  let base = dict.get(fields, "base")
+  case dict.get(fields, "mode"), base {
+    Error(Nil), Error(Nil) | Ok(tom.String("shared")), Error(Nil) -> Ok(Shared)
+    Ok(tom.String("worktree")), Error(Nil) -> Ok(Worktree(base: default_base))
+    Ok(tom.String("worktree")), Ok(tom.String(text)) ->
+      usable_base(text)
+      |> result.map(Worktree)
+      |> result.map_error(fn(reason) { place <> ".base " <> reason })
+    Ok(tom.String("worktree")), Ok(_) ->
+      Error(place <> ".base must be a string")
+    Ok(tom.String("shared")), Ok(_) | Error(Nil), Ok(_) ->
+      Error(place <> ".base needs mode = \"worktree\"")
+    Ok(tom.String(_)), _ ->
+      Error(place <> ".mode must be \"shared\" or \"worktree\"")
+    Ok(_), _ -> Error(place <> ".mode must be a string")
+  }
+}
+
+fn usable_base(text: String) -> Result(String, String) {
+  let printable =
+    list.all(string.to_utf_codepoints(text), fn(point) {
+      let code = string.utf_codepoint_to_int(point)
+      code > 32 && code != 127
+    })
+  case text != "" && !string.starts_with(text, "-") && printable {
+    True -> Ok(text)
+    False ->
+      Error(
+        "must be a branch, tag or commit name: not empty, not starting with -, "
+        <> "and with no space or control character",
+      )
   }
 }
 
