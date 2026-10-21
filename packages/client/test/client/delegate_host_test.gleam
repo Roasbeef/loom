@@ -784,10 +784,13 @@ pub fn a_release_stops_the_resident_session_and_deletes_it_and_its_row_test() {
   assert delegate_host.releaser(here)(laptop, remote) == Ok(tag_of(first))
 
   // The slot drains, and the session and its row go together. A repeat finds no
-  // row and answers zero, without making a session.
+  // row and answers zero, without making a session. Observe through the owner
+  // first: reading its connection directly could see the dependent row leave
+  // inside a deletion transaction whose registration row has not left yet.
   assert eventually(fn() {
-    catalogue.delegate_of(store, recorded.session_id) == Ok(None)
+    manager.delegate_of(registry, recorded.session_id) == Ok(None)
   })
+  assert catalogue.delegate_of(store, recorded.session_id) == Ok(None)
   assert catalogue.get(store, recorded.session_id) == Error(catalogue.Missing)
   assert catalogue.delegates_held(store, "laptop") == Ok(0)
   assert delegate_host.releaser(here)(laptop, remote) == Ok(0)
