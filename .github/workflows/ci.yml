@@ -1353,6 +1353,22 @@ jobs:
           LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
             "jail (linux, git worktree approval)" git-worktree-approval.log
 
+      # The ordinary client lane checks refusal without a delegated cgroup.
+      # With this lane's grant, the same CLI fixtures must remove clean trees,
+      # preserve changes and honor an explicitly forced session instead.
+      - name: Executor worktree release with delegated enforcement
+        env:
+          LOOM_TEST_TIMEOUT_SECONDS: 180
+        run: |
+          set -euo pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          test -n "$LOOM_CGROUP_BASE"
+          .github/scripts/hex_retry.sh bash scripts/test.sh client \
+            --match client@daemon_executor_cli_test: \
+            2>&1 | tee executor-worktree-release.log
+          LOOM_DECLARED_SKIPS=/dev/null .github/scripts/skip_census.sh \
+            "jail (linux, executor worktree release)" executor-worktree-release.log
+
       - name: Prepare the code-mode build seed
         run: .github/scripts/hex_retry.sh make codemode-seed
 
@@ -1504,6 +1520,7 @@ jobs:
           path: |
             selftest.log
             go-jail.log
+            executor-worktree-release.log
             e2e.log
             e2e-codemode.log
             shipped-multiplayer.log
