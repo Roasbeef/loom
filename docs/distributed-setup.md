@@ -282,6 +282,12 @@ sha256 = "<the orchestrator certificate's pin>"
 root = "/home/me/src/myproj"
 ```
 
+Add `mode = "worktree"` to a workspace to give each session its own Git worktree
+and branch (`loom/<session id>`) instead of sharing `root`; see
+[worktree workspaces](configuration.md#worktree-workspaces). `root` must then be the
+top of a Git checkout, and the first attach of a session runs a checkout, so size
+`attach_within_s` on the orchestrator's `[executors.<name>]` to a large repository.
+
 Every key is in [the configuration reference](configuration.md). Three rules
 trip people up:
 
@@ -1628,6 +1634,15 @@ the daemon is still starting until you start it again. Start the daemon again an
 scope that is open is refused by the command, because its session may be running:
 close the session first. See "Releasing an executor's stuck scope" in
 [configuration](configuration.md).
+
+A worktree workspace leaves one more thing behind. Deleting a session on the
+orchestrator never reaches the executor, so the session's tree stays in
+`<state dir>/worktrees/<workspace>/<session id>`. With the daemon stopped,
+`loom executor release --worktrees --config /path/to/loom.toml` removes the trees
+that hold no changes, keeps the ones that do, and never deletes a branch; name a
+session with `--force-session` to remove its tree whatever it holds. The branches
+`loom/<session id>` accumulate, one for each session, until you prune them with
+Git.
 
 **A remote session fails to open with `executor_unavailable:`.** The reason after
 the colon says what to check. It is in `operations.get` and in the daemon's

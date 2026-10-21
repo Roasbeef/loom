@@ -714,9 +714,12 @@ a removed one from the session's branch. The branch is never deleted: one
 accumulates per session until you prune them with Git.
 
 Deleting a session on the orchestrator does not reach the executor, so its tree
-stays until you remove it. `loom executor release --worktrees` lists the trees
-the executor made and removes the clean ones; a tree with changes is kept unless
-you name its session with `--force-session`. Stop the daemon first.
+stays until you remove it. `loom executor release --worktrees --config PATH
+[--state-dir PATH] [--helper PATH] [--force-session SESSION]...` settles the trees
+the executor made under the rule of a close: a clean tree is removed, and a tree
+with changes, or on a detached HEAD, is kept unless you name its session with
+`--force-session`. `--config` is this executor's `loom.toml`. Stop the daemon
+first, as for a scope release. The command never deletes a branch.
 
 A first attach runs `git worktree add`, which checks out the whole tree. The
 orchestrator keeps retrying an attach the executor answers "still preparing" for
@@ -1051,6 +1054,9 @@ closes, because the new daemon has no workspace for the scope to retire. A daemo
 that ends in the middle of a close leaves the scope closing, which is refused in
 the same way. Each such scope holds one of the executor's sixteen slots for scopes
 that are not cleanly closed.
+
+`loom executor release --worktrees` is the other form of the command, for the Git
+worktrees of a [worktree workspace](#worktree-workspaces); it is described there.
 
 `loom executor release SESSION [--state-dir PATH]` is the operator's override. It
 is also `loomd executor release`. Run it on the executor, with the executor daemon
