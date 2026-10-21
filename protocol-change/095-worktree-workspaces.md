@@ -3,7 +3,10 @@
 **Status**: ACCEPTED 2026-10-21. The owner authorised the placement revamp end
 to end, including the protocol changes it needs
 ([docs/design-notes/placement-revamp.md](../docs/design-notes/placement-revamp.md)).
-Built in slice S3 of that note.
+Revised the same day after an independent review: the close ignores
+`.codemode`, a deletion leaves an orphan for `loomd executor release`, a
+failed or interrupted create removes its directory, and the isolation claim is
+narrowed. Built in slice S3 of that note.
 **Affects**: no Part 1 interface. The executor's node vocabulary
 (`client/remote/protocol`, not Part 1 by [078](078-distributed-runtime.md))
 gains one refusal and one census member and moves to version 4 with `Attach`
@@ -105,28 +108,43 @@ repository.
 
 1. **First attach** (no record). Write `creating` with the path and branch,
    then run `git worktree add <path> -b <branch> <base>`, then write
-   `present`. If the command fails, write `removed`, run `git worktree prune`,
-   and refuse the attach with `WorktreeFailed(reason)`, where `reason` is
-   Git's message cut to 512 printable bytes. The session sees the refusal as
-   it sees `CapacityExhausted` today.
+   `present`. If the command fails, delete the directory at the recorded path
+   if it exists (the `creating` record proves Loom made it), run `git worktree
+   prune`, write `removed`, and refuse the attach with
+   `WorktreeFailed(reason)`, where `reason` is Git's message cut to 512
+   printable bytes. Without the delete, a half-made directory would make every
+   later attach fail the same way. The session sees the refusal as it sees
+   `CapacityExhausted` today.
 2. **Reopen** (a record exists). `present` or `kept` with the path on disk:
    adopt it after `git worktree repair <path>`. `removed`, or the path missing:
    run `git worktree add <path> <branch>`, which checks out the existing branch
    with its commits, and write `present`. A branch that no longer exists is
    recreated from `base`, and the census reports it.
 3. **Close.** After the scope's own cleanup (`settle_scope`,
-   `executor_plane.gleam:758`) proves `AllRetired`, read `git -C <path> status
-   --porcelain=v1 --untracked-files=normal`.
-   - Empty: write `removing`, run `git worktree remove <path>` without
-     `--force`, then write `removed`. The branch stays.
-   - Not empty: write `kept` and leave the tree. Uncommitted work is never
-     discarded, stashed or committed by Loom.
+   `executor_plane.gleam:758`) proves `AllRetired`, read
+   `git -C <path> status --porcelain=v1 --untracked-files=normal -- .
+   ':(exclude).codemode'`. The exclusion is Loom's own directory: code mode's
+   exec root (`work_directory`, `codemode.gleam:913`) and the tool Git
+   identity (`.codemode/home/gitconfig`, `git_identity.gleam:70`) live in
+   `.codemode` inside the workspace, so an unfiltered status is never empty
+   for a session that used code mode.
+   - Empty: write `removing`, run `git worktree remove --force <path>`, then
+     write `removed`. `--force` is needed only to remove `.codemode`, which
+     the filtered status has shown is the only thing that is not clean. The
+     branch stays.
+   - Not empty: write `kept` and leave the tree. Loom never force-removes a
+     tree that holds user changes, and never discards, stashes or commits
+     them.
    - `UnknownCleanup`: leave the tree and the record as they are, as the scope
      directory is left today; `loomd executor release` handles both.
-4. **Session deleted** on its orchestrator. The executor learns of it through
-   the existing close that a deletion sends. A deletion removes the tree with
-   `git worktree remove --force` after the close settles, because the owner
-   asked for the session to go. The branch stays.
+
+Deleting a session does not reach the executor: today's `Close` carries no
+deletion marker, and `manager.delete_session` refuses a session that holds a
+slot. A deleted session's tree is therefore an orphan once its last close
+settles. The census reports orphaned trees (a record whose session the
+orchestrator no longer lists), and `loomd executor release` removes them under
+the same rule as a close: a tree with user changes is kept unless the owner
+names it.
 
 Loom never deletes a branch. Branches accumulate one per session; the owner
 prunes them with Git. The census reports how many `loom/` branches have no
@@ -137,16 +155,35 @@ session, so Admin can show it.
 At start, before the host admits attaches, for each worktree record:
 
 - `creating`: if the path exists and `git worktree list --porcelain` lists it,
-  write `present`; otherwise `git worktree prune` and write `removed`. This
-  covers a crash on either side of `git worktree add`.
-- `removing`: run `git worktree remove` again if the path exists, then write
-  `removed`. This covers a crash during removal.
+  write `present`. Otherwise delete the recorded path if it exists, run `git
+  worktree prune`, and write `removed`. This covers a crash on either side of
+  `git worktree add`.
+- `removing`: run the close's filtered status and removal again if the path
+  exists, then write `removed`. This covers a crash during removal.
+- `removed` with the path still present: the record proves Loom created it and
+  had decided to remove it, so delete it and prune.
 - `present` or `kept` with the path missing: write `removed`.
 
 Then `git worktree prune` once per workspace, which drops Git's records of
 trees deleted outside Loom. A directory under `worktrees/<workspace>/` with no
 record is left in place and reported in the census, never deleted: Loom
 removes only what its ledger says it created.
+
+Reconciliation runs in a weft task before the host admits attaches. It logs
+`executor.worktree_reconcile` with the count done and the count left every
+100 records, and gives up after 60 s with the rest left for the next start; a
+workspace whose records were not all reconciled refuses attaches with
+`PlaneBuilding` until they are.
+
+### The sandbox
+
+`root.directories` (`daemon/root.gleam:920`), which creates the state root's
+directories, gains `worktrees/`. A worktree session's writable roots are its
+own tree and the two linked Git directories below; the rest of the state root
+stays masked as it is for `scopes/` and `blobs/` today, so `worktrees/` is not
+covered by any mask over the whole root that would hide a session's own tree.
+S3's tests include "a worktree session cannot read `<state
+root>/scopes/<other>`" and "cannot read `<state root>/worktrees/<workspace>/<other>`".
 
 ### Pools and stickiness
 
@@ -167,8 +204,15 @@ commit` works. In worktree mode this applies to every session. The session can
 therefore write the shared object store, refs and hooks of `root`'s
 repository. That is the same reach a session has in shared mode, where `root`
 and its `.git` are writable outright; worktree mode takes away write access to
-`root`'s own files and adds nothing. A session can still affect another
-session through the repository (a hook, a forced ref update), as it can today.
+`root`'s own files and adds nothing.
+
+The isolation worktree mode gives is protection against accidents (two agents
+editing one file, checking out branches under each other), not against a
+hostile model. Because the shared `.git` is writable, a session can rewrite
+another session's `.git/worktrees/<other>/HEAD` and index, move its branch, or
+set `core.hooksPath` or `core.fsmonitor` in `.git/config` so that a command in
+another session runs code it chose. None of this is new: in shared mode a
+session can do all of it to every other session directly.
 
 ### Wire
 
@@ -194,3 +238,10 @@ session through the repository (a hook, a forced ref update), as it can today.
   answered `PlaneBuilding` while a build is in flight.
 - Every worktree session can still write the shared `.git`, as every session
   could before.
+- The version step from 3 to 4 means every executor must upgrade, including
+  one that serves no worktree workspace, because orchestrators and executors
+  must agree on the version. A session that a pool placed on an executor that
+  has not upgraded is refused at attach until that executor upgrades; it is
+  never moved to another executor.
+- Start-up reconciliation adds time before an executor admits attaches,
+  bounded at 60 s and logged as it goes.
