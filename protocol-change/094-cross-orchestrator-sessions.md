@@ -117,7 +117,7 @@ max_per_hour = 10                     # creations, counted on the box
 
 [spawners.laptop.top_level.approval_ceiling]
 writable_roots = ["/home/exedev"]
-network = "allow"
+network = "any"
 ```
 
 | Key | Meaning |
@@ -355,3 +355,43 @@ Admission on the laptop:
   to 5 s late.
 - The terminal client gets none of this; it is a web-only path until a
   control command is proposed.
+
+## As built (slices S2a and S2b, backend)
+
+The backend of this change is built as written, with the following details that
+the text above leaves open or states a little differently. None changes who may
+do what.
+
+- The example ceiling writes `network = "any"`, the word
+  [089](089-remote-approvals.md)'s decoder takes, and not `"allow"`.
+- A relayed session is created `SessionOnly`, as a delegate session is: it keeps
+  its notes and history apart from its folder's.
+- A session's `name` on a row is the first prompt's subtitle once the page has
+  sent one, and `<spawner> session` before. `updated_at` is the timestamp of the
+  leaf of the main strand's branch when the session is resident, and its creation
+  time when it is not. `children` are the session's stubs for children on other
+  orchestrators, as [090](090-remote-observation.md) projects them.
+- A saved session is listed `Idle` with no `requests`. Reading its pending records
+  would mean opening it, and a listing opens nothing. They appear on the first
+  page after the page opens it, which `TopSend`, `TopHistory` and `TopResolve` do.
+  `TopStop` does not open a session, because a saved one has no run.
+- `more` on a page is `Further` when the page is full or was cut at a bound, so
+  a page may be followed by an empty one.
+- A row is cut to `max_row_bytes` (24 KiB) before it is placed on a page: its
+  oldest requests by seq are kept while they fit, and the rest are counted in
+  `more`. Without that bound a session with large pending requests could be a row
+  that no page could carry.
+- `TopSessions` lists only relayed sessions that are not archived, so the listing
+  is bounded by `max_sessions` and an old active session cannot be pushed off by
+  newer archived ones. The laptop never shows archived relayed sessions; the
+  `Archived` activity word stays in the vocabulary and is not sent.
+- `TopArchive` stops the session and archives it once its slot has drained, within
+  five seconds, answering `NotYetOpen` if it has not.
+- A connected node whose port is gone answers the laptop's ask as `PortGone`, which
+  the laptop reports as `OlderBuild`. A port that does not know these constructors
+  stops on them, so mixed builds are not supported, as 078 says.
+- Resending is the laptop relay's (`client/remote/top_relay`), not the box's: a
+  create or a message that connected and lost its answer is sent again with the
+  same ids for 30 seconds, and the call ends `Silent` if the window passes. A
+  first try that cannot connect fails at once.
+

@@ -119,6 +119,7 @@ import client/peers
 import client/permissions
 import client/profile_switch
 import client/proposals
+import client/relayed_session
 import client/remote/owner_port
 import client/remote/protocol
 import client/remote/remote_census
@@ -126,6 +127,7 @@ import client/remote/workspace as remote_workspace
 import client/remote_child
 import client/remote_drain
 import client/remote_reach
+import client/remote_top
 import client/retryconf
 import client/rules
 import client/rulescan
@@ -614,6 +616,10 @@ pub type Instance {
     /// Agency about the mail and progress they send their parent
     /// (protocol-change/084, phase 2), projected the same way.
     inbox: agency.ChildInbox,
+    /// The questions the page of a spawner that started this session puts to
+    /// it (protocol-change/094), projected into the daemon registry the same
+    /// way. A session no spawner started answers each as not relayed.
+    relay: relayed_session.Endpoint,
     /// The sole conversation writer and its supervised strands.
     runtime: api.Runtime,
     /// The original storage actor, monitored before another writer call.
@@ -2238,6 +2244,10 @@ pub type Resident {
     /// Address-only questions about what this session's children on other
     /// orchestrators send it: closures over the Agency holder's name.
     inbox: agency.ChildInbox,
+    /// The questions the page of a spawner that started this session puts to
+    /// it (protocol-change/094), closures over the Agency holder's name and the
+    /// hub's address.
+    relay: relayed_session.Endpoint,
     /// The hub's stable address, which is all an attaching socket reads.
     gateway: hub.Gateway,
     /// The session's worktree observation (`Instance.worktree`), for the web
@@ -2267,6 +2277,7 @@ pub fn resident(instance: Instance) -> Resident {
     peer: instance.peer,
     spawns: instance.spawns,
     inbox: instance.inbox,
+    relay: instance.relay,
     gateway: instance.gateway,
     worktree: instance.worktree,
     children: instance_children(instance),
@@ -4762,6 +4773,26 @@ fn assemble_in(
       },
     ),
     inbox: agency.child_inbox(agency_config),
+    relay: relayed_session.endpoint(
+      agency.runtime_supplier(agency_config),
+      fn() {
+        hub.stop_relayed(hub.Gateway(name:))
+        |> result.replace_error(remote_top.StoreFailure(
+          reason: "the session's hub did not answer",
+        ))
+      },
+      fn(terms, escalation_id, decision, expected_seq, decider) {
+        Ok(hub.decide_relayed(
+          hub.Gateway(name:),
+          terms.spawner,
+          terms.ceiling,
+          escalation_id,
+          decision,
+          expected_seq,
+          decider,
+        ))
+      },
+    ),
     runtime:,
     storage_owner:,
     broker: broker_actor,

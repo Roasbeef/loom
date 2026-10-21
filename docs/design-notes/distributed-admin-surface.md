@@ -68,7 +68,7 @@ connection with `epmd -names`, `lsof` or `ss`.
 
 **The session list.** `sessions.list` reads this daemon's catalogue
 (`ListSessions`, `client/daemon/server.gleam:3607`). The orchestrator port answers
-`Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:200`).
+`Owns` and the move messages (`Message`, `client/remote/orchestrator_port.gleam:218`).
 Nothing answers "what sessions do you hold".
 
 **Health.** The pieces exist and none is readable from a client. The executor's
@@ -173,15 +173,15 @@ vocabulary can halt a node ("What the closed vocabularies limit",
 that rule and add no second mechanism. Mixed builds stay unsupported, as for every
 other constructor.
 
-`Message` (`client/remote/orchestrator_port.gleam:200`) gains `Report(reply)` and
-`Sessions(after, limit, reply)`. `answer` (`client/remote/orchestrator_port.gleam:713`)
-serves both through `detached` (`client/remote/orchestrator_port.gleam:703`), the
+`Message` (`client/remote/orchestrator_port.gleam:218`) gains `Report(reply)` and
+`Sessions(after, limit, reply)`. `answer` (`client/remote/orchestrator_port.gleam:748`)
+serves both through `detached` (`client/remote/orchestrator_port.gleam:655`), the
 path `Activate` uses: the computation runs in a run that dies with the requester and
 with the port, so a read never keeps an `Owns` question waiting. The port does not
 know the catalogue, the ledger or the movers. `start_with` takes one more closure
 record, and `start_orchestrator_port` (`client/daemon/main.gleam:1024`) builds it
 from the registry, the movers and the executor host, the way it builds
-`catalogue_holds` (`client/daemon/main.gleam:1073`) and `peer_command`
+`catalogue_holds` (`client/daemon/main.gleam:1119`) and `peer_command`
 (`client/daemon/main.gleam:651`). The function runs on every daemon that has a
 `[distribution]` table, executors included, so a pure executor answers `Report`
 too. It answers with no orchestrator facts when it has no catalogue to describe.

@@ -121,6 +121,7 @@ transcript = \"visible\"
         approval_ceiling: None,
         transcript: spawners.Visible,
         spawn_on: [],
+        top_level: None,
       ),
     ])
 }
@@ -528,7 +529,7 @@ pub fn a_malformed_table_is_refused_with_the_key_it_names_test() {
   )
   refused(
     minimal_with("host = \"x\""),
-    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day, approval_ceiling, transcript, spawn_on)",
+    "unknown key `host` in [spawners.laptop] (allowed: node, executor, pool, directory, workspace, profile, tools, max_depth, max_sessions, max_within_s, default_within_s, retain_s, idle_close_s, token_budget_per_day, child_token_budget, max_per_day, approval_ceiling, transcript, spawn_on, top_level)",
   )
   refused(
     with("[spawners]\nlaptop = \"laptop@100.64.0.5\"\n"),
@@ -742,4 +743,105 @@ pub fn the_catalogue_parser_refuses_a_malformed_ceiling_too_test() {
     reason,
     "spawners.laptop.approval_ceiling.network must be",
   )
+}
+
+// --- top_level (protocol-change/094) -----------------------------------------
+
+// The `minimal` table followed by a `top_level` table of the given lines.
+fn top_level(lines: String) -> String {
+  with(minimal <> "\n[spawners.laptop.top_level]\n" <> lines <> "\n")
+}
+
+pub fn a_spawner_has_no_top_level_table_by_default_test() {
+  let assert Ok([spawner]) = spawners.parse(with(minimal))
+  assert spawner.top_level == None
+}
+
+pub fn an_empty_top_level_table_offers_nothing_and_takes_the_defaults_test() {
+  let assert Ok([spawner]) = spawners.parse(top_level(""))
+  assert spawner.top_level
+    == Some(spawners.TopLevel(
+      executors: [],
+      pools: [],
+      folders: spawners.RecentFolders,
+      profiles: None,
+      max_sessions: 8,
+      max_per_hour: 10,
+      approval_ceiling: None,
+    ))
+}
+
+pub fn a_top_level_table_may_state_every_key_test() {
+  let text =
+    top_level(
+      "executors = [\"runner\"]
+pools = [\"linux\"]
+folders = \"none\"
+profiles = [\"cheap-review\"]
+max_sessions = 64
+max_per_hour = 3
+
+[spawners.laptop.top_level.approval_ceiling]
+writable_roots = [\"/home/exedev\"]
+network = \"any\"",
+    )
+  let assert Ok([spawner]) = spawners.parse(text)
+  let assert Some(table) = spawner.top_level
+  assert table.executors == ["runner"]
+  assert table.pools == ["linux"]
+  assert table.folders == spawners.NoFolders
+  assert table.profiles == Some(["cheap-review"])
+  assert table.max_sessions == 64
+  assert table.max_per_hour == 3
+  assert table.approval_ceiling
+    == Some(
+      approval_ceiling.Ceiling(
+        ..approval_ceiling.nothing(),
+        writable_roots: ["/home/exedev"],
+        network: approval_ceiling.AnyNetwork,
+      ),
+    )
+}
+
+pub fn an_empty_ceiling_table_is_present_and_admits_nothing_test() {
+  let text = top_level("[spawners.laptop.top_level.approval_ceiling]")
+  let assert Ok([spawner]) = spawners.parse(text)
+  let assert Some(table) = spawner.top_level
+  assert table.approval_ceiling == Some(approval_ceiling.nothing())
+}
+
+pub fn a_top_level_table_refuses_what_it_does_not_understand_test() {
+  refused(top_level("owner = true"), "unknown key `owner`")
+  refused(top_level("list = \"owner\""), "unknown key `list`")
+  refused(
+    top_level("executors = [\"nowhere\"]"),
+    "spawners.laptop.top_level.executors nowhere",
+  )
+  refused(
+    top_level("executors = [\"runner\", \"runner\"]"),
+    "lists runner more than once",
+  )
+  refused(top_level("executors = \"runner\""), "must be an array of names")
+  refused(top_level("pools = [\"nowhere\"]"), "top_level.pools nowhere")
+  refused(top_level("profiles = [\"nowhere\"]"), "top_level.profiles nowhere")
+  refused(top_level("folders = \"typed\""), "must be \"none\" or \"recent\"")
+  refused(top_level("folders = 1"), "folders must be a string")
+  refused(top_level("max_sessions = 0"), "max_sessions must be positive")
+  refused(top_level("max_sessions = 65"), "max_sessions 65 is above 64")
+  refused(top_level("max_sessions = \"8\""), "max_sessions must be an integer")
+  refused(top_level("max_per_hour = 0"), "max_per_hour must be positive")
+  refused(
+    top_level("[spawners.laptop.top_level.approval_ceiling]\nroots = []"),
+    "unknown key `roots`",
+  )
+  refused(
+    with(minimal <> "top_level = 1\n"),
+    "spawners.laptop.top_level must be a table",
+  )
+}
+
+pub fn the_top_level_table_is_checked_wherever_the_file_is_read_test() {
+  let assert Error(reason) =
+    catalog.parse(top_level("executors = [\"nowhere\"]"))
+  assert string.contains(reason, "top_level.executors nowhere")
 }

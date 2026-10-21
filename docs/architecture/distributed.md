@@ -1515,6 +1515,91 @@ orchestrator below the policy's depth cap. The sections of the design note
 [remote-subagents.md](../design-notes/remote-subagents.md) are the reasoning; the
 addenda of protocol-change/084 are the spellings.
 
+## A spawner's page on this orchestrator
+
+(Protocol-change/094.) Subagents are children of a session the laptop runs. This
+adds sessions with no parent: the laptop's page starts one whose agent runs on the
+box, lists the ones it started, reads one, messages it, stops its run, archives it
+and decides its requests. The owner of the box opts in per spawner with a
+`[spawners.<name>.top_level]` table, which lists the executors, pools, folders and
+profiles the page may pick, caps the sessions it may hold and start per hour, and
+sets the `approval_ceiling` a decision from the page may grant.
+
+The protocol is pull-only. Eight messages go from the laptop to the box over the
+pinned link, dialled on demand: `Placements`, `TopCreate`, `TopSessions`,
+`TopHistory`, `TopSend`, `TopStop`, `TopArchive` and `TopResolve`. The box sends
+nothing on its own, so there is no outbox, no drainer and no link from the box to
+the laptop. A page that is open asks again every five seconds, and a pending
+request is read from the box each time, so a laptop restart loses nothing. The
+browser talks only to the laptop.
+
+### Judging on the box
+
+The node a message came from resolves to a spawner (`UnknownSpawner` otherwise),
+and the spawner must have the table (`TopLevelOff`). A create is refused before it
+reserves anything if the placement, folder, profile or model is outside the table,
+so a refusal charges no cap. The registry reserves the session in one catalogue
+transaction: the request id's existing row, or `max_sessions` counted by a join
+against the archive table and `max_per_hour` over the rolling hour, then the
+registration in `reserved` state, its mapping and the `catalogue_relayed_sessions`
+row together. Two creates at the cap cannot both pass, and a crash leaves all
+three writes or none. The session's store is made afterwards by the path that
+turns any reservation into a session. A create resent after a crash or a lost
+answer finds the row by its request id and finishes the session. Nothing sweeps an
+unfinished reservation: it stays listed, counts against `max_sessions`, and is
+deleted on the box's own page, which removes it with its row (#1056 tracks the
+same shape for delegate sessions).
+
+Every other message names a session, which must have a row for this spawner
+(`NotRelayed`). A session the owner started, or another spawner did, is
+unreachable by this door. A message about a saved session opens it first, within a
+budget inside the laptop's seven seconds. A listing opens nothing: a saved session
+is listed idle with no requests, and its requests are read when the page opens it.
+
+### A row and a page
+
+`TopSessions` pages the spawner's sessions newest first, 64 rows and 64 KiB at
+most, with the request id the create carried so the laptop can reconcile a create
+whose answer it never received. A row is whole or absent. Its requests are the
+oldest eight by seq in the protocol's own record shape, with `admitted` set from
+the ceiling, and `more` counts the rest; a row too large for the row bound sheds
+its newest requests first, so it is always small enough to be a page by itself.
+The laptop decodes the page with a total decoder and refuses it whole if any bound
+or word is wrong.
+
+### A decision
+
+`TopResolve` is judged in the session hub's turn by the same function that judges
+a child's request (`remote_decision`), without the descent test: against the
+ceiling, the echoed action, the wanted list and the canonical paths, with the
+seq compare-and-set. The first of two decisions at one seq wins, whether it came
+from the laptop's page or the box's own. A table with no ceiling lets the page see
+the request and decide nothing.
+
+### When the link drops
+
+The session keeps running on the box. The laptop refuses a create at once when it
+cannot connect, and resends one that was sent and lost its answer, with the same
+request id, for 30 seconds, pausing 500 ms and doubling to 4 s; if the window ends
+the outcome is unknown and the next page names the session if it was made. A
+message is resent the same way with its message id. A decision is asked once. The
+last list is kept, marked stale with the time the failures began
+(`remote/top_view`). A port that does not know these messages stops on them, which
+a connected laptop reports as an older build; both ends run the same build.
+
+### Where the code lives
+
+| Module | What it holds |
+| --- | --- |
+| `client/spawners` | The `top_level` table |
+| `client/remote_top` | Placements, refusals, offers, rows and pages, and their total decoders |
+| `client/remote/orchestrator_port` | The eight messages, `TopHost`, the `ask_top_*` sending ends |
+| `client/top_host`; `daemon/main.start_orchestrator_port` | The judging and serving on the box |
+| `daemon/manager.reserve_relayed`, `relayed_sessions`, `archive_relayed`; `storage/catalogue.claim_relayed`; `storage/domain.reserve_relayed` | The reservation and the listing |
+| `client/relayed_session`; `Resident.relay` | What a resident session answers |
+| `client/remote_decision.admit_relayed`; `gateway.decide_relayed`, `stop_relayed` | The hub's two doors |
+| `client/remote/top_relay`, `client/remote/top_view` | The laptop's sending end and the last list |
+
 ## Failures
 
 This table lists each failure, what the system does, and what an operator or

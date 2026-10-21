@@ -125,6 +125,22 @@
 //// a hidden transcript is refused with `TranscriptHidden`. `ask_history` is the
 //// sending end.
 ////
+//// Protocol-change/094 adds the eight messages by which a spawning orchestrator's
+//// page starts and drives top-level sessions here: `Placements`, `TopCreate`,
+//// `TopSessions`, `TopHistory`, `TopSend`, `TopStop`, `TopArchive` and
+//// `TopResolve`. They all go from the laptop to the box and the box sends nothing
+//// on its own. Each is judged by the node it came from against the
+//// `[spawners.<name>.top_level]` table, and a daemon that serves none starts the
+//// port with `refusing_top`, which answers every one with `UnknownSpawner`. The
+//// vocabulary is `client/remote_top`, the sending ends are `ask_placements`,
+//// `ask_top_create`, `ask_top_sessions`, `ask_top_history`, `ask_top_send`,
+//// `ask_top_stop`, `ask_top_archive` and `ask_top_resolve`, and the laptop's
+//// relay (`client/remote/top_relay`) is the only caller. All run apart from the
+//// port, because a create writes the catalogue and opens a session and a read
+//// walks a store. All are idempotent by the identities they carry: a resent
+//// create names the same `request_id` and a resent message the same
+//// `message_id`.
+////
 //// The port reveals whether an identity is in this daemon's catalogue, and for
 //// `Holds` two counts of sessions, to a peer the operator pinned as a trusted
 //// Erlang node. It carries no credential, and a client is never redirected by
@@ -144,8 +160,8 @@
 //// ## Flow
 ////
 //// `start_with` → `answer` → `detached` → `ask_release` → `ask_send` →
-//// `ask_history` → `ask_mail` → `ask_escalation` → `ask_resolve` → `exchange` →
-//// `exchange_why`
+//// `ask_history` → `ask_mail` → `ask_escalation` → `ask_resolve` →
+//// `ask_top_create` → `exchange` → `exchange_why`
 ////
 //// 1. `start_with` registers the port under its name, with the closures the
 ////    daemon supplies for the questions it cannot answer from its own state.
@@ -177,6 +193,7 @@ import client/remote_spawn.{
   type CallSite, type Joined, type Origin, type Parent, type Request,
   type SpawnRefusal, type Spawned,
 }
+import client/remote_top.{type Placement, type Refusal}
 import client/session_move.{
   type Activation, type Chunk, type Stage, type Verdict,
 }
@@ -186,6 +203,7 @@ import core/json.{type JsonValue}
 import gleam/erlang/atom
 import gleam/erlang/node
 import gleam/erlang/process.{type Name, type Subject}
+import gleam/option.{type Option}
 import gleam/result
 import host/build_identity
 import runtime/residency
@@ -508,6 +526,124 @@ pub type Message {
     /// Where the page goes.
     reply: Subject(Result(Page, Nil)),
   )
+
+  /// What this orchestrator offers the sending orchestrator's page when it
+  /// opens a composer (protocol-change/094): folders, the table's executors and
+  /// pools with their health and workspaces, profiles and models, as this
+  /// orchestrator's own page draws them, filtered by the sender's `top_level`
+  /// table and cut to `remote_top.max_offers` entries. The answer is the
+  /// encoded offers (`remote_top.encode_offers`), read afresh each time.
+  Placements(
+    /// Where the answer goes.
+    reply: Subject(Result(JsonValue, Refusal)),
+  )
+
+  /// Starts a top-level session for the sending orchestrator's page
+  /// (protocol-change/094). The answer is the session's identity here. The
+  /// request is judged against the table, then reserved in one catalogue
+  /// transaction that counts the two caps, and the session's store is made after
+  /// it. A repeat of `request_id` answers the same session, including a repeat
+  /// that arrives after the reservation and before the store exists, which
+  /// finishes the session. The create carries no prompt: the page sends the
+  /// first message with `TopSend`.
+  TopCreate(
+    /// The UUIDv7 the sender minted for the submit.
+    request_id: String,
+    /// Where the session's tools run.
+    placement: Placement,
+    /// The profile it starts with, one the table offers.
+    profile: String,
+    /// The `[models.<key>]` entry its main role is pinned to, or `None` for the
+    /// profile's chain.
+    model: Option(String),
+    /// Where the session's identity goes.
+    reply: Subject(Result(String, Refusal)),
+  )
+
+  /// One page of the sessions this sender started, newest first, each with its
+  /// activity, its pending requests (the oldest eight by `seq`, with the rest
+  /// counted) and its children (protocol-change/094). A page is at most 64 rows
+  /// and 64 KiB, and a row is whole or absent. The answer is the encoded page
+  /// (`remote_top.encode_page`).
+  TopSessions(
+    /// The session identity the page follows, or the empty text for the first
+    /// page.
+    after: String,
+    /// The most rows wanted. It is clamped to `remote_top.max_rows`.
+    limit: Int,
+    /// Where the page goes.
+    reply: Subject(Result(JsonValue, Refusal)),
+  )
+
+  /// One bounded page of the transcript of a session this sender started, as
+  /// `ChildHistory` reads a child's (protocol-change/090). It is a read, and
+  /// the answer is the encoded page (`session_view/remote_transcript.encode`).
+  TopHistory(
+    /// The session, as `TopCreate` answered it.
+    session: String,
+    /// The sequence the page reads below, zero for the newest page.
+    cursor: Int,
+    /// The most entries the page holds.
+    limit: Int,
+    /// Where the page goes.
+    reply: Subject(Result(JsonValue, Refusal)),
+  )
+
+  /// Delivers a message to the main strand of a session this sender started,
+  /// with a receipt stored under `message_id` so that a repeat is answered from
+  /// the receipt (protocol-change/094). Admitting the first message opens the
+  /// session if it is saved. The answer is how the message landed
+  /// (`remote_mail.encode_landing`).
+  TopSend(
+    /// The session.
+    session: String,
+    /// The message's identity, which keys the receipt.
+    message_id: String,
+    /// What the page says.
+    text: String,
+    /// Where the landing goes.
+    reply: Subject(Result(JsonValue, Refusal)),
+  )
+
+  /// Stops the current run of the main strand of a session this sender started.
+  /// Stopping an idle session is not an error (protocol-change/094).
+  TopStop(
+    /// The session.
+    session: String,
+    /// Where the answer goes.
+    reply: Subject(Result(Nil, Refusal)),
+  )
+
+  /// Archives a session this sender started. Archiving an archived session is
+  /// not an error, and there is no delete: deleting is done on this
+  /// orchestrator's own page (protocol-change/094).
+  TopArchive(
+    /// The session.
+    session: String,
+    /// Where the answer goes.
+    reply: Subject(Result(Nil, Refusal)),
+  )
+
+  /// The sending orchestrator's operator answering a request of a session it
+  /// started here (protocol-change/094). It is judged in the session hub's turn
+  /// as `Resolve` is for a child (protocol-change/089): against the table's
+  /// approval ceiling, against the stored `wanted` list, and with the same
+  /// compare-and-set on `expected_seq`. The descendant check is replaced by
+  /// "the session is relayed for this spawner". A saved session is opened first.
+  TopResolve(
+    /// The session.
+    session: String,
+    /// The record's identity on this orchestrator.
+    escalation_id: String,
+    /// What the operator decided.
+    decision: Decision,
+    /// The `seq` of the question the operator was shown.
+    expected_seq: Int,
+    /// Who decided, as text, for provenance.
+    decided_by: Decider,
+    /// Where the answer goes.
+    reply: Subject(Result(Answer, Refusal)),
+  )
 }
 
 /// What the daemon supplies for the questions the port cannot answer from its
@@ -738,6 +874,79 @@ pub fn refusing_children() -> ChildHost {
   )
 }
 
+/// What a daemon does when another orchestrator's page starts and drives
+/// top-level sessions here (protocol-change/094): judge the sender's node
+/// against its `[spawners.<name>.top_level]` table and serve the eight messages.
+/// The daemon supplies the functions, so the port neither reads the table nor
+/// opens a session. Each is handed the node the message came from and answers
+/// `Error` with the refusal when it declines.
+///
+/// Each function runs in a task of its own, linked to the port and cancelled
+/// with the requester (`detached`), so one may take as long as it needs, and a
+/// function that crashes sends nothing, which the asker's deadline turns into
+/// silence.
+pub type TopHost {
+  TopHost(
+    /// The offers for the node's page.
+    placements: fn(String) -> Result(JsonValue, Refusal),
+    /// Creates a session, given the node, the request id, the placement, the
+    /// profile and the model, and answers its identity.
+    create: fn(String, String, Placement, String, Option(String)) ->
+      Result(String, Refusal),
+    /// One page of the node's sessions, given the node, the identity it
+    /// follows and the most rows wanted.
+    sessions: fn(String, String, Int) -> Result(JsonValue, Refusal),
+    /// One page of a session's transcript, given the node, the session, the
+    /// cursor and the limit.
+    history: fn(String, String, Int, Int) -> Result(JsonValue, Refusal),
+    /// Delivers a message, given the node, the session, the message's identity
+    /// and its text, and answers how it landed.
+    send: fn(String, String, String, String) -> Result(JsonValue, Refusal),
+    /// Stops a session's run, given the node and the session.
+    stop: fn(String, String) -> Result(Nil, Refusal),
+    /// Archives a session, given the node and the session.
+    archive: fn(String, String) -> Result(Nil, Refusal),
+    /// Applies the operator's decision, given the node, the session, the
+    /// record's identity here, the decision, the `seq` the operator was shown
+    /// and who decided.
+    resolve: fn(String, String, String, Decision, Int, Decider) ->
+      Result(Answer, Refusal),
+  )
+}
+
+/// The host of a daemon that serves no top-level session: every message is
+/// refused with `UnknownSpawner`, naming the node it came from, because no
+/// spawner there has a `top_level` table.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.refusing_top().stop("laptop@10.0.0.1", "s")
+/// // -> Error(remote_top.UnknownSpawner("laptop@10.0.0.1"))
+/// ```
+pub fn refusing_top() -> TopHost {
+  TopHost(
+    placements: fn(node) { Error(remote_top.UnknownSpawner(node:)) },
+    create: fn(node, _request_id, _placement, _profile, _model) {
+      Error(remote_top.UnknownSpawner(node:))
+    },
+    sessions: fn(node, _after, _limit) {
+      Error(remote_top.UnknownSpawner(node:))
+    },
+    history: fn(node, _session, _cursor, _limit) {
+      Error(remote_top.UnknownSpawner(node:))
+    },
+    send: fn(node, _session, _message_id, _text) {
+      Error(remote_top.UnknownSpawner(node:))
+    },
+    stop: fn(node, _session) { Error(remote_top.UnknownSpawner(node:)) },
+    archive: fn(node, _session) { Error(remote_top.UnknownSpawner(node:)) },
+    resolve: fn(node, _session, _id, _decision, _seq, _decider) {
+      Error(remote_top.UnknownSpawner(node:))
+    },
+  )
+}
+
 /// What a daemon does when another orchestrator moves a session to it: take the
 /// pieces of a copy, say how far a move has got, and activate the session. The
 /// daemon supplies the functions, so the port neither knows the catalogue nor
@@ -914,6 +1123,41 @@ pub fn start_with(
   holds: Holder,
   reads: Reads,
 ) -> actor.StartResult(Subject(Message)) {
+  start_with_top(
+    name,
+    held,
+    peer,
+    describe,
+    importer,
+    spawns,
+    children,
+    holds,
+    reads,
+    refusing_top(),
+  )
+}
+
+/// Starts the port as `start_with` does, and serves the top-level sessions of
+/// other orchestrators' pages with `top` (protocol-change/094). `start_with` is
+/// this with `refusing_top`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(_) = orchestrator_port.start_with_top(orchestrator_port.default(), held, forward, describe, importer, spawns, children, holds, reads, top)
+/// ```
+pub fn start_with_top(
+  name: Name(Message),
+  held: fn(String) -> Result(Ownership, Nil),
+  peer: PeerHandler,
+  describe: Describer,
+  importer: Importer,
+  spawns: SpawnHost,
+  children: ChildHost,
+  holds: Holder,
+  reads: Reads,
+  top: TopHost,
+) -> actor.StartResult(Subject(Message)) {
   actor.new(Nil)
   |> actor.on_message(fn(state, message) {
     answer(
@@ -925,6 +1169,7 @@ pub fn start_with(
       children,
       holds,
       reads,
+      top,
       state,
       message,
     )
@@ -956,6 +1201,7 @@ fn answer(
   children: ChildHost,
   holds: Holder,
   reads: Reads,
+  top: TopHost,
   state: Nil,
   message: Message,
 ) -> actor.Next(Nil, Message) {
@@ -1105,6 +1351,46 @@ fn answer(
           decided_by,
         )
       })
+
+    // The eight messages of a spawner's page run apart from the port. A create
+    // writes the catalogue and opens a session, a send may open one, a page
+    // walks a store, and a decision reaches the session's hub, so none of them
+    // may keep a question about ownership waiting. The sender's node is the
+    // receiver's account of who is asking, and the host judges it against the
+    // `top_level` table.
+    Placements(reply:) -> detached(reply, fn(node) { top.placements(node) })
+    TopCreate(request_id:, placement:, profile:, model:, reply:) ->
+      detached(reply, fn(node) {
+        top.create(node, request_id, placement, profile, model)
+      })
+    TopSessions(after:, limit:, reply:) ->
+      detached(reply, fn(node) { top.sessions(node, after, limit) })
+    TopHistory(session:, cursor:, limit:, reply:) ->
+      detached(reply, fn(node) { top.history(node, session, cursor, limit) })
+    TopSend(session:, message_id:, text:, reply:) ->
+      detached(reply, fn(node) { top.send(node, session, message_id, text) })
+    TopStop(session:, reply:) ->
+      detached(reply, fn(node) { top.stop(node, session) })
+    TopArchive(session:, reply:) ->
+      detached(reply, fn(node) { top.archive(node, session) })
+    TopResolve(
+      session:,
+      escalation_id:,
+      decision:,
+      expected_seq:,
+      decided_by:,
+      reply:,
+    ) ->
+      detached(reply, fn(node) {
+        top.resolve(
+          node,
+          session,
+          escalation_id,
+          decision,
+          expected_seq,
+          decided_by,
+        )
+      })
   }
   actor.continue(state)
 }
@@ -1147,8 +1433,9 @@ fn served(command: peer_mail.Command) -> Bool {
 // The requester is on another node, so its death or disconnection arrives as a
 // monitor `DOWN` and cancels the run, as it does for the executor's owner port.
 // A run that crashes sends nothing, and the asker's deadline turns that into
-// silence. `compute` is handed the requester's node name, which only the
-// subagent messages read.
+// silence. `compute` is handed the requester's node name, which the
+// subagent messages and the messages of a spawner's page read to judge the
+// sender.
 fn detached(reply: Subject(reply), compute: fn(String) -> reply) -> Nil {
   case process.subject_owner(reply) {
     Ok(requester) -> {
@@ -1555,6 +1842,183 @@ pub fn ask_resolve(
       Resolve(
         parent:,
         child:,
+        escalation_id:,
+        decision:,
+        expected_seq:,
+        decided_by:,
+        reply:,
+      )
+    },
+    within_ms,
+  )
+}
+
+/// Asks the port at `at` what it offers this node's page, and waits at most
+/// `within_ms`. Silence is `Error(Silence)`: the port was gone or the answer
+/// was late; the same question can be asked again, because the read changes
+/// nothing on the receiver.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_placements(Address(node: box, name: orchestrator_port.default()), 7000)
+/// ```
+pub fn ask_placements(
+  at: Address(Message),
+  within_ms: Int,
+) -> Result(Result(JsonValue, Refusal), Silence) {
+  exchange_why(at, fn(reply) { Placements(reply:) }, within_ms)
+}
+
+/// Asks the port at `at` to start a top-level session, and waits at most
+/// `within_ms`. Silence is `Error(Silence)`: the port was gone or the answer
+/// was late: the session may or may not exist, and the same create can be sent
+/// again with the same `request_id`, which answers the same session.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_top_create(Address(node: box, name: orchestrator_port.default()), id, placement, "default", None, 30_000)
+/// ```
+pub fn ask_top_create(
+  at: Address(Message),
+  request_id: String,
+  placement: Placement,
+  profile: String,
+  model: Option(String),
+  within_ms: Int,
+) -> Result(Result(String, Refusal), Silence) {
+  exchange_why(
+    at,
+    fn(reply) { TopCreate(request_id:, placement:, profile:, model:, reply:) },
+    within_ms,
+  )
+}
+
+/// Asks the port at `at` for one page of the sessions this node started, and
+/// waits at most `within_ms`. Silence is `Error(Silence)`: the port was gone or
+/// the answer was late, and the same page can be asked for again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_top_sessions(Address(node: box, name: orchestrator_port.default()), "", 64, 7000)
+/// ```
+pub fn ask_top_sessions(
+  at: Address(Message),
+  after: String,
+  limit: Int,
+  within_ms: Int,
+) -> Result(Result(JsonValue, Refusal), Silence) {
+  exchange_why(at, fn(reply) { TopSessions(after:, limit:, reply:) }, within_ms)
+}
+
+/// Asks the port at `at` for one page of a session's transcript, and waits at
+/// most `within_ms`. Silence is `Error(Silence)`: the port was gone or the
+/// answer was late, and the same page can be asked for again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_top_history(Address(node: box, name: orchestrator_port.default()), session, 0, 50, 7000)
+/// ```
+pub fn ask_top_history(
+  at: Address(Message),
+  session: String,
+  cursor: Int,
+  limit: Int,
+  within_ms: Int,
+) -> Result(Result(JsonValue, Refusal), Silence) {
+  exchange_why(
+    at,
+    fn(reply) { TopHistory(session:, cursor:, limit:, reply:) },
+    within_ms,
+  )
+}
+
+/// Delivers a message to a session's main strand on the port at `at`, and waits
+/// at most `within_ms` for how it landed. Silence is `Error(Silence)`: the port
+/// was gone or the answer was late, and the same message can be sent again: the
+/// receiver stores a receipt under the message id.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_top_send(Address(node: box, name: orchestrator_port.default()), session, id, "hello", 7000)
+/// ```
+pub fn ask_top_send(
+  at: Address(Message),
+  session: String,
+  message_id: String,
+  text: String,
+  within_ms: Int,
+) -> Result(Result(JsonValue, Refusal), Silence) {
+  exchange_why(
+    at,
+    fn(reply) { TopSend(session:, message_id:, text:, reply:) },
+    within_ms,
+  )
+}
+
+/// Stops a session's run on the port at `at`, and waits at most `within_ms`.
+/// Silence is `Error(Silence)`: the port was gone or the answer was late, and
+/// the same stop can be sent again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_top_stop(Address(node: box, name: orchestrator_port.default()), session, 7000)
+/// ```
+pub fn ask_top_stop(
+  at: Address(Message),
+  session: String,
+  within_ms: Int,
+) -> Result(Result(Nil, Refusal), Silence) {
+  exchange_why(at, fn(reply) { TopStop(session:, reply:) }, within_ms)
+}
+
+/// Archives a session on the port at `at`, and waits at most `within_ms`.
+/// Silence is `Error(Silence)`: the port was gone or the answer was late, and
+/// the same archive can be sent again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_top_archive(Address(node: box, name: orchestrator_port.default()), session, 7000)
+/// ```
+pub fn ask_top_archive(
+  at: Address(Message),
+  session: String,
+  within_ms: Int,
+) -> Result(Result(Nil, Refusal), Silence) {
+  exchange_why(at, fn(reply) { TopArchive(session:, reply:) }, within_ms)
+}
+
+/// Sends the operator's decision about a session's request to the port at `at`,
+/// and waits at most `within_ms`. Silence is `Error(Silence)`: the port was
+/// gone or the answer was late; the decision may or may not have committed, and
+/// asking again is safe because the receiver judges the `seq` the operator was
+/// shown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // orchestrator_port.ask_top_resolve(Address(node: box, name: orchestrator_port.default()), session, id, decision, 3, decider, 7000)
+/// ```
+pub fn ask_top_resolve(
+  at: Address(Message),
+  session: String,
+  escalation_id: String,
+  decision: Decision,
+  expected_seq: Int,
+  decided_by: Decider,
+  within_ms: Int,
+) -> Result(Result(Answer, Refusal), Silence) {
+  exchange_why(
+    at,
+    fn(reply) {
+      TopResolve(
+        session:,
         escalation_id:,
         decision:,
         expected_seq:,

@@ -511,3 +511,135 @@ pub fn a_symlink_under_the_ceiling_that_leads_outside_it_is_refused_test() {
     )
   let assert Ok(Nil) = api.close(runtime)
 }
+
+// --- a session the spawner's page started (protocol-change/094) ---------------
+
+fn admit_relayed(
+  runtime: api.Runtime,
+  ceiling: option.Option(approval_ceiling.Ceiling),
+  id: String,
+  decision: remote_escalation.Decision,
+  seq: Int,
+) -> remote_escalation.Answer {
+  remote_decision.admit_relayed(
+    runtime,
+    spawner_name,
+    ceiling,
+    id,
+    decision,
+    seq,
+    decider(),
+    1000,
+  )
+}
+
+pub fn a_page_decides_a_request_of_its_session_with_no_parent_in_sight_test() {
+  // No lineage cell exists, so the request descends from nothing, and the
+  // delegate door would refuse it. The relayed door has no descent test: every
+  // request of the session is the spawner's to answer.
+  let root = workspace("relayed-once")
+  let runtime = session(root)
+  let wanted = [policy.GrantWritableRoot(root <> "/work/out")]
+  let seq = raise(runtime, "policy-1", wanted)
+  let assert Refused(..) =
+    admit(runtime, Some(ceiling_over(root)), "policy-1", Deny, seq)
+  let assert Decided(record) =
+    admit_relayed(
+      runtime,
+      Some(ceiling_over(root)),
+      "policy-1",
+      Approve(grants: wanted, action:, scope: Once),
+      seq,
+    )
+  assert record.status == "approved"
+  assert status_of(runtime, "policy-1") == durable.Approved
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_page_outside_the_ceiling_is_refused_and_the_request_stays_pending_test() {
+  let root = workspace("relayed-outside")
+  let runtime = session(root)
+  let wanted = [policy.GrantWritableRoot("/etc")]
+  let seq = raise(runtime, "policy-1", wanted)
+  assert admit_relayed(
+      runtime,
+      Some(ceiling_over(root)),
+      "policy-1",
+      Approve(grants: wanted, action:, scope: Once),
+      seq,
+    )
+    == Refused(reason: remote_escalation.outside_the_ceiling)
+  assert status_of(runtime, "policy-1") == durable.Pending
+  assert seq_of(runtime, "policy-1") == seq
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_page_with_no_ceiling_can_decide_nothing_test() {
+  let root = workspace("relayed-none")
+  let runtime = session(root)
+  let seq =
+    raise(runtime, "policy-1", [policy.GrantWritableRoot(root <> "/work")])
+  assert admit_relayed(runtime, None, "policy-1", Deny, seq)
+    == Refused(reason: remote_escalation.outside_the_ceiling)
+  assert status_of(runtime, "policy-1") == durable.Pending
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn the_first_of_two_decisions_at_one_seq_wins_and_the_second_is_stale_test() {
+  let root = workspace("relayed-twice")
+  let runtime = session(root)
+  let wanted = [policy.GrantWritableRoot(root <> "/work")]
+  let seq = raise(runtime, "policy-1", wanted)
+  let ceiling = Some(ceiling_over(root))
+  let assert Decided(first) =
+    admit_relayed(runtime, ceiling, "policy-1", Deny, seq)
+  assert first.status == "rejected"
+
+  // The same question answered again, as a person on the box's own page and a
+  // person on the laptop's page might both do, is told it has been answered.
+  let assert Stale(record: closed, ..) =
+    admit_relayed(
+      runtime,
+      ceiling,
+      "policy-1",
+      Approve(grants: wanted, action:, scope: Once),
+      seq,
+    )
+  assert closed.status == "rejected"
+  assert status_of(runtime, "policy-1") == durable.Rejected
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn a_page_session_approval_carries_the_spawners_provenance_test() {
+  let root = workspace("relayed-session")
+  let runtime = session(root)
+  let granted = policy.GrantWritableRoot(root <> "/work")
+  let seq = raise(runtime, "policy-1", [granted])
+  let assert Decided(_) =
+    admit_relayed(
+      runtime,
+      Some(ceiling_over(root)),
+      "policy-1",
+      Approve(grants: [granted], action:, scope: Session),
+      seq,
+    )
+  let assert Ok(listing) = permissions.listing(runtime)
+  assert list.map(listing.grants, fn(row) { row.provenance })
+    == [
+      permissions.Spawner(
+        spawner: spawner_name,
+        principal: remote_escalation.origin_of(decider()),
+        at_ms: 1000,
+      ),
+    ]
+  let assert Ok(Nil) = api.close(runtime)
+}
+
+pub fn an_unknown_request_of_a_relayed_session_is_refused_test() {
+  let root = workspace("relayed-unknown")
+  let runtime = session(root)
+  let assert Refused(reason:) =
+    admit_relayed(runtime, Some(ceiling_over(root)), "policy-9", Deny, 1)
+  assert reason == "unknown escalation: policy-9"
+  let assert Ok(Nil) = api.close(runtime)
+}

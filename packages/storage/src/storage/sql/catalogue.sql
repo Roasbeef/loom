@@ -218,3 +218,57 @@ ON CONFLICT(session_id) DO UPDATE SET reason = excluded.reason, failed_at = excl
 
 -- name: DeleteStartFailure :exec
 DELETE FROM catalogue_start_failures WHERE session_id = ?;
+
+-- name: RelayedByRequest :many
+SELECT spawner, session_id, created_at FROM catalogue_relayed_sessions
+WHERE request_id = ?;
+
+-- name: RelayedOfSession :many
+SELECT spawner, request_id, created_at FROM catalogue_relayed_sessions
+WHERE session_id = ?;
+
+-- name: CountRelayedHeld :one
+SELECT COUNT(*) FROM catalogue_relayed_sessions AS r
+LEFT JOIN catalogue_session_archives AS a ON a.session_id = r.session_id
+WHERE r.spawner = ? AND a.session_id IS NULL;
+
+-- name: CountRelayedSince :one
+SELECT COUNT(*) FROM catalogue_relayed_sessions
+WHERE spawner = ? AND created_at > ?;
+
+-- name: InsertRelayedSession :exec
+INSERT INTO catalogue_relayed_sessions (request_id, spawner, session_id, created_at)
+VALUES (?, ?, ?, ?);
+
+-- name: DeleteRelayedSession :exec
+DELETE FROM catalogue_relayed_sessions WHERE session_id = ?;
+
+-- name: RelayedFirstPage :many
+SELECT r.request_id, r.session_id, r.created_at,
+       CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
+       s.workspace, s.executor, s.pool,
+       CAST(EXISTS (SELECT 1 FROM catalogue_session_archives AS a
+                    WHERE a.session_id = r.session_id) AS INTEGER) AS archived
+FROM catalogue_relayed_sessions AS r
+JOIN catalogue_sessions AS s ON s.session_id = r.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = r.session_id
+WHERE r.spawner = ?
+  AND NOT EXISTS (SELECT 1 FROM catalogue_session_archives AS h
+                  WHERE h.session_id = r.session_id)
+ORDER BY r.session_id DESC
+LIMIT ?;
+
+-- name: RelayedPageAfter :many
+SELECT r.request_id, r.session_id, r.created_at,
+       CAST(COALESCE(n.name, s.name) AS TEXT) AS name,
+       s.workspace, s.executor, s.pool,
+       CAST(EXISTS (SELECT 1 FROM catalogue_session_archives AS a
+                    WHERE a.session_id = r.session_id) AS INTEGER) AS archived
+FROM catalogue_relayed_sessions AS r
+JOIN catalogue_sessions AS s ON s.session_id = r.session_id
+LEFT JOIN catalogue_session_names AS n ON n.session_id = r.session_id
+WHERE r.spawner = ? AND r.session_id < ?
+  AND NOT EXISTS (SELECT 1 FROM catalogue_session_archives AS h
+                  WHERE h.session_id = r.session_id)
+ORDER BY r.session_id DESC
+LIMIT ?;

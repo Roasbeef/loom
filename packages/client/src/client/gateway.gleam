@@ -196,6 +196,7 @@ import broker/internal/call
 import broker/policy.{type Grant}
 import client/advisor
 import client/advisor_pending
+import client/approval_ceiling
 import client/blocksummary
 import client/btw
 import client/catalog
@@ -495,6 +496,25 @@ pub opaque type Message {
     decided_by: remote_escalation.Decider,
     reply: Subject(remote_escalation.Answer),
   )
+
+  /// The decision of the page of the spawner that started this session, about
+  /// one of its requests (protocol-change/094). It is judged and committed on the
+  /// hub's turn, as a delegate session's is, against the same record a local
+  /// operator would answer. The caller has already checked that the registry
+  /// names this session as relayed for the spawner.
+  DecideForRelayed(
+    spawner: String,
+    ceiling: Option(approval_ceiling.Ceiling),
+    escalation_id: String,
+    decision: remote_escalation.Decision,
+    expected_seq: Int,
+    decided_by: remote_escalation.Decider,
+    reply: Subject(remote_escalation.Answer),
+  )
+
+  /// A stop of the main strand's run from the page of the spawner that started
+  /// this session (protocol-change/094). The reply says it was taken.
+  StopForRelayed(reply: Subject(Nil))
 
   /// What a decision this hub sent to another orchestrator came to, or that its
   /// run ended without saying.
@@ -1670,6 +1690,62 @@ pub fn decide(
   }
 }
 
+/// Asks a relayed session's hub to judge and commit the decision of the
+/// spawner's page about one of its requests (protocol-change/094). The answer is
+/// the box's own, as `decide` answers a delegate session's. A hub that does not
+/// answer in four seconds is a refusal the page may try again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.decide_relayed(gateway, "laptop", Some(ceiling), "policy-ab", remote_escalation.Deny, 3, decider)
+/// ```
+pub fn decide_relayed(
+  gateway: Gateway,
+  spawner: String,
+  ceiling: Option(approval_ceiling.Ceiling),
+  escalation_id: String,
+  decision: remote_escalation.Decision,
+  expected_seq: Int,
+  decided_by: remote_escalation.Decider,
+) -> remote_escalation.Answer {
+  let asked = {
+    use subject <- result.try(address.lookup(gateway.name))
+    call.try_call(subject, waiting: 4000, sending: fn(reply) {
+      DecideForRelayed(
+        spawner:,
+        ceiling:,
+        escalation_id:,
+        decision:,
+        expected_seq:,
+        decided_by:,
+        reply:,
+      )
+    })
+    |> result.replace_error(Nil)
+  }
+  case asked {
+    Ok(answer) -> answer
+    Error(Nil) ->
+      remote_escalation.Refused(reason: "the session's hub did not answer")
+  }
+}
+
+/// Asks a relayed session's hub to stop the main strand's run, and says whether
+/// the hub took it (protocol-change/094). A session with no run is a stop that
+/// succeeded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.stop_relayed(gateway) == Ok(Nil)
+/// ```
+pub fn stop_relayed(gateway: Gateway) -> Result(Nil, Nil) {
+  use subject <- result.try(address.lookup(gateway.name))
+  call.try_call(subject, waiting: 4000, sending: StopForRelayed)
+  |> result.replace_error(Nil)
+}
+
 /// Removes a connection; a no-op for unknown ids.
 ///
 /// ## Examples
@@ -2155,6 +2231,36 @@ fn dispatch_message(state: State, message: Message) -> State {
           decided_by,
         ),
       )
+      state
+    }
+    DecideForRelayed(
+      spawner:,
+      ceiling:,
+      escalation_id:,
+      decision:,
+      expected_seq:,
+      decided_by:,
+      reply:,
+    ) -> {
+      let #(now, _clock) = clock.read(state.runtime.effects.clock)
+      process.send(
+        reply,
+        remote_decision.admit_relayed(
+          state.runtime,
+          spawner,
+          ceiling,
+          escalation_id,
+          decision,
+          expected_seq,
+          decided_by,
+          now,
+        ),
+      )
+      state
+    }
+    StopForRelayed(reply:) -> {
+      let state = stop_for_relayed(state)
+      process.send(reply, Nil)
       state
     }
     LeasePreview(pid, expires, reply) ->
@@ -6991,44 +7097,7 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
       value: machine_strand.StrandState(current_operation: Some(op), ..),
       ..,
     ))) -> {
-      // Halt existing custody before requesting cancellation. The queue
-      // keeps every message it holds and starts nothing on the idle
-      // transition that follows; a later client submission on this strand
-      // joins it and releases the whole batch together (`release_halt`).
-      let held =
-        dict.get(state.held, strand)
-        |> result.map(fn(queue) {
-          dict.insert(state.held, strand, HeldQueue(..queue, drain: Halted))
-        })
-        |> result.unwrap(state.held)
-      let state = State(..state, held:)
-      api.abort_operation(api.on_strand(state.runtime, strand), op)
-
-      // And the effect plane, which the runtime cannot address. Its
-      // abort stops the strand's live effects — every effect the
-      // operation is *waiting* on — while an execution the operation
-      // merely started and detached from, a background job, runs under
-      // a sibling step of the same operation and is nobody's live
-      // effect. The broker keys its ledger on the operation for exactly
-      // this, so the sweep here is what makes an operator's abort mean
-      // what an operator means by it.
-      sweep_effects(state, op)
-
-      // And the advisor's goal loop, for the primary only: an aborted
-      // run never reaches the run-end hook the advisor listens on, so
-      // this cast is the one channel that tells it the operator stopped
-      // a run it may have woken (protocol 044 §4). The actor gates the
-      // notice on the runs it itself opened, so an abort of the
-      // operator's own run is never read as a goal event.
-      case strand == advisor.primary {
-        True ->
-          case state.goal_abort {
-            None -> Nil
-            Some(notice) -> notice(op)
-          }
-
-        False -> Nil
-      }
+      let state = abort_run(state, strand, op)
 
       // The durable cancel_requested transition broadcasts when its
       // commit lands; the ack is connection-scoped.
@@ -7054,6 +7123,64 @@ fn abort(state: State, connection: Int, id: Int, strand: String) -> State {
       )
       state
     }
+  }
+}
+
+// Asks the strand's run `op` to stop, as the operator's abort does and as a
+// spawner's page does for a session it started (protocol-change/094): the one
+// body, so the two cannot mean different things by stop.
+fn abort_run(state: State, strand: String, op: OpId) -> State {
+  // Halt existing custody before requesting cancellation. The queue
+  // keeps every message it holds and starts nothing on the idle
+  // transition that follows; a later client submission on this strand
+  // joins it and releases the whole batch together (`release_halt`).
+  let held =
+    dict.get(state.held, strand)
+    |> result.map(fn(queue) {
+      dict.insert(state.held, strand, HeldQueue(..queue, drain: Halted))
+    })
+    |> result.unwrap(state.held)
+  let state = State(..state, held:)
+  api.abort_operation(api.on_strand(state.runtime, strand), op)
+
+  // And the effect plane, which the runtime cannot address. Its
+  // abort stops the strand's live effects — every effect the
+  // operation is *waiting* on — while an execution the operation
+  // merely started and detached from, a background job, runs under
+  // a sibling step of the same operation and is nobody's live
+  // effect. The broker keys its ledger on the operation for exactly
+  // this, so the sweep here is what makes an operator's abort mean
+  // what an operator means by it.
+  sweep_effects(state, op)
+
+  // And the advisor's goal loop, for the primary only: an aborted
+  // run never reaches the run-end hook the advisor listens on, so
+  // this cast is the one channel that tells it the operator stopped
+  // a run it may have woken (protocol 044 §4). The actor gates the
+  // notice on the runs it itself opened, so an abort of the
+  // operator's own run is never read as a goal event.
+  case strand == advisor.primary {
+    True ->
+      case state.goal_abort {
+        None -> Nil
+        Some(notice) -> notice(op)
+      }
+
+    False -> Nil
+  }
+  state
+}
+
+// Stops the main strand's run for a spawner's page, if it has one. A strand
+// with no run is a stop that has nothing to do, not a conflict, because the
+// page cannot know that the run ended a moment ago.
+fn stop_for_relayed(state: State) -> State {
+  case session.strand_state(state.runtime.session, advisor.primary) {
+    Ok(Some(session.Cell(
+      value: machine_strand.StrandState(current_operation: Some(op), ..),
+      ..,
+    ))) -> abort_run(state, advisor.primary, op)
+    _ -> state
   }
 }
 

@@ -8252,3 +8252,154 @@ pub fn a_first_prompt_whose_check_differs_from_its_binding_is_refused_test() {
     ui_socket.first_prompt(narrower.hub, binding, check, "hello")
   assert user_prompt_texts(narrower) == []
 }
+
+// --- the page of a spawner that started this session (protocol-change/094) ---
+
+pub fn a_relayed_hub_commits_a_decision_inside_the_ceiling_and_once_test() {
+  let harness = start_harness()
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(5)),
+    durable.Action(tool: "bash", digest: "d1", preview: "{}"),
+    [policy.GrantEnv("TOKEN")],
+  )
+  let seq = current_question_seq(harness, "esc-1")
+  let ceiling =
+    Some(approval_ceiling.Ceiling(..approval_ceiling.nothing(), env: ["TOKEN"]))
+
+  // The ceiling admits the variable and not a root, and a refusal leaves the
+  // request pending for the box's own owner.
+  let beyond =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      ceiling,
+      "esc-1",
+      remote_escalation.Approve(
+        grants: [policy.GrantWritableRoot("/etc")],
+        action: "d1",
+        scope: remote_escalation.Once,
+      ),
+      seq,
+      the_decider(),
+    )
+  let assert remote_escalation.Stale(..) = beyond
+  assert stored(harness, "esc-1").status == durable.Pending
+
+  let inside = [policy.GrantEnv("TOKEN")]
+  let answer =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      ceiling,
+      "esc-1",
+      remote_escalation.Approve(
+        grants: inside,
+        action: "d1",
+        scope: remote_escalation.Once,
+      ),
+      seq,
+      the_decider(),
+    )
+  let assert remote_escalation.Decided(record) = answer
+  assert record.status == "approved"
+  assert stored(harness, "esc-1").status == durable.Approved
+
+  // A second decision at the same seq, from the box's own page or from the
+  // laptop again, is told the question was answered.
+  let again =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      ceiling,
+      "esc-1",
+      remote_escalation.Deny,
+      seq,
+      the_decider(),
+    )
+  let assert remote_escalation.Stale(record: closed, ..) = again
+  assert closed.status == "approved"
+}
+
+pub fn a_relayed_hub_with_no_ceiling_decides_nothing_test() {
+  let harness = start_harness()
+  claim(
+    harness,
+    "esc-1",
+    scope_on("main", op_id(5)),
+    durable.Action(tool: "bash", digest: "d1", preview: "{}"),
+    [policy.GrantEnv("TOKEN")],
+  )
+  let seq = current_question_seq(harness, "esc-1")
+  let answer =
+    gateway.decide_relayed(
+      harness.hub,
+      "laptop",
+      None,
+      "esc-1",
+      remote_escalation.Deny,
+      seq,
+      the_decider(),
+    )
+  assert answer
+    == remote_escalation.Refused(reason: remote_escalation.outside_the_ceiling)
+  assert stored(harness, "esc-1").status == durable.Pending
+}
+
+pub fn a_hub_that_is_gone_refuses_a_relayed_decision_and_a_stop_test() {
+  let gone = gateway.Gateway(name: addresses.new())
+  let answer =
+    gateway.decide_relayed(
+      gone,
+      "laptop",
+      None,
+      "esc-1",
+      remote_escalation.Deny,
+      1,
+      the_decider(),
+    )
+  assert answer
+    == remote_escalation.Refused(reason: "the session's hub did not answer")
+  assert gateway.stop_relayed(gone) == Error(Nil)
+}
+
+pub fn a_relayed_stop_ends_the_mains_run_and_an_idle_stop_is_not_an_error_test() {
+  let gate = start_gate()
+  let harness = parked_network_harness(gate)
+  let #(socket, _, _) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      process.new_subject(),
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  let assert Ok(_) =
+    gateway.connection_request(socket, prompt_frame(900, "main", "open"))
+    as "the prompt is accepted and starts a run"
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation != None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the run is open"
+
+  assert gateway.stop_relayed(harness.hub) == Ok(Nil)
+  let assert poll.Answered(_) =
+    poll.until(within: 5000, every: 10, attempt: fn() {
+      case session.strand_state(harness.runtime.session, "main") {
+        Ok(Some(session.Cell(value:, ..))) if value.current_operation == None ->
+          poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+    as "the stopped run retires and leaves the strand idle"
+
+  // Nothing is running now, and a stop with nothing to stop is taken.
+  assert gateway.stop_relayed(harness.hub) == Ok(Nil)
+  release_gate(gate)
+}

@@ -35,11 +35,23 @@
 //// The deciding principal arrives as plain text and is kept as provenance. It is
 //// not a principal of this machine and nothing here resolves it to one.
 ////
+//// ## A session the spawner's page started
+////
+//// A relayed session (protocol-change/094) is not a delegate session, and no
+//// parent's descendants raise its requests: the person who decides is the
+//// spawner's, and the session is theirs because the registry's relayed row says
+//// so, which the box's host has already checked. `admit_relayed` is the same
+//// judgement with the descent test taken out. Every other check, the ceiling,
+//// the echoed action, the subset of the wanted list, the canonical paths and the
+//// compare-and-set, is the one function, so a decision from a page and a
+//// decision about a child cannot drift apart.
+////
 //// ## Flow
 ////
-//// `admit` → `forget` → `decide` → `approve` → `answered`
+//// `admit` → `admit_relayed` → `forget` → `decide` → `approve` → `answered`
 ////
-//// 1. `admit` applies the ceiling check and routes by decision.
+//// 1. `admit` applies the ceiling check and routes by decision, and
+////    `admit_relayed` does the same for a session the spawner's page started.
 //// 2. `forget` withdraws a remembered grant this spawner approved.
 //// 3. `decide` reads the record and applies steps 2 and 3 above, and `canonical`
 ////    is the path test of step 4.
@@ -71,7 +83,7 @@ import client/remote_escalation.{
 import client/remote_spawn.{type Parent}
 import gleam/bool
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import runtime/api
 import runtime/escalation as durable
@@ -102,29 +114,104 @@ pub fn admit(
   decider: Decider,
   now_ms: Int,
 ) -> Answer {
-  case link.ceiling {
+  judge(
+    runtime,
+    link.spawner,
+    link.ceiling,
+    fn(record) { raised_under(runtime, record, parent) },
+    "that request is not from a child of this parent",
+    escalation_id,
+    decision,
+    expected_seq,
+    decider,
+    now_ms,
+  )
+}
+
+/// Judges and commits a decision from the page of the spawner that started the
+/// session (protocol-change/094). It is `admit` with the descendant test taken
+/// out: the caller has already checked that the registry's relayed row names
+/// this session for `spawner`, and the record needs no ancestry because every
+/// request of the session is the spawner's to answer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // remote_decision.admit_relayed(runtime, "laptop", Some(ceiling), "policy-ab", escalation.Deny, 3, decider, now)
+/// ```
+pub fn admit_relayed(
+  runtime: api.Runtime,
+  spawner: String,
+  ceiling: Option(Ceiling),
+  escalation_id: String,
+  decision: Decision,
+  expected_seq: Int,
+  decider: Decider,
+  now_ms: Int,
+) -> Answer {
+  judge(
+    runtime,
+    spawner,
+    ceiling,
+    fn(_record) { True },
+    "that request is not this session's",
+    escalation_id,
+    decision,
+    expected_seq,
+    decider,
+    now_ms,
+  )
+}
+
+// The judgement both doors share. `within` says whether the record is one the
+// decider may answer, and `outside` is the refusal when it is not.
+fn judge(
+  runtime: api.Runtime,
+  spawner: String,
+  ceiling: Option(Ceiling),
+  within: fn(durable.Escalation) -> Bool,
+  outside: String,
+  escalation_id: String,
+  decision: Decision,
+  expected_seq: Int,
+  decider: Decider,
+  now_ms: Int,
+) -> Answer {
+  case ceiling {
     None -> Refused(reason: remote_escalation.outside_the_ceiling)
     Some(ceiling) ->
       case decision {
-        Forget(grant:) -> forget(runtime, link, grant)
+        Forget(grant:) -> forget(runtime, spawner, grant)
         Deny ->
-          decide(runtime, parent, escalation_id, expected_seq, fn(cell) {
-            deny(runtime, cell, decider)
-          })
+          decide(
+            runtime,
+            within,
+            outside,
+            escalation_id,
+            expected_seq,
+            fn(cell) { deny(runtime, cell, decider) },
+          )
         Approve(grants: approved, action:, scope:) ->
-          decide(runtime, parent, escalation_id, expected_seq, fn(cell) {
-            approve(
-              runtime,
-              link,
-              ceiling,
-              cell,
-              approved,
-              action,
-              scope,
-              decider,
-              now_ms,
-            )
-          })
+          decide(
+            runtime,
+            within,
+            outside,
+            escalation_id,
+            expected_seq,
+            fn(cell) {
+              approve(
+                runtime,
+                spawner,
+                ceiling,
+                cell,
+                approved,
+                action,
+                scope,
+                decider,
+                now_ms,
+              )
+            },
+          )
       }
   }
 }
@@ -132,8 +219,8 @@ pub fn admit(
 // Withdraws a grant this spawner's operator approved for the session. A grant
 // that is not remembered, or that was approved by anyone else, is not theirs to
 // withdraw.
-fn forget(runtime: api.Runtime, link: SpawnerLink, grant: Grant) -> Answer {
-  case permissions.forgetting_for_spawner(runtime, link.spawner, grant) {
+fn forget(runtime: api.Runtime, spawner: String, grant: Grant) -> Answer {
+  case permissions.forgetting_for_spawner(runtime, spawner, grant) {
     Error(permissions.Stale) ->
       Refused(reason: "that permission is no longer remembered")
     Error(permissions.Failed(reason:)) -> Refused(reason:)
@@ -153,7 +240,8 @@ fn forget(runtime: api.Runtime, link: SpawnerLink, grant: Grant) -> Answer {
 // the new question.
 fn decide(
   runtime: api.Runtime,
-  parent: Parent,
+  within: fn(durable.Escalation) -> Bool,
+  outside: String,
   escalation_id: String,
   expected_seq: Int,
   commit: fn(api.EscalationCell) -> Answer,
@@ -161,12 +249,9 @@ fn decide(
   case api.escalation_cell(runtime, escalation_id) {
     Error(_) -> Refused(reason: "unknown escalation: " <> escalation_id)
     Ok(cell) -> {
-      use <- bool.lazy_guard(
-        when: !raised_under(runtime, cell.record, parent),
-        return: fn() {
-          Refused(reason: "that request is not from a child of this parent")
-        },
-      )
+      use <- bool.lazy_guard(when: !within(cell.record), return: fn() {
+        Refused(reason: outside)
+      })
       use <- bool.lazy_guard(when: cell.seq != expected_seq, return: fn() {
         stale(cell, "the displayed question has changed")
       })
@@ -231,7 +316,7 @@ fn deny(
 // ceiling is ever written.
 fn approve(
   runtime: api.Runtime,
-  link: SpawnerLink,
+  spawner: String,
   ceiling: Ceiling,
   cell: api.EscalationCell,
   approved: List(Grant),
@@ -275,7 +360,7 @@ fn approve(
           record,
           approved,
           permissions.Spawner(
-            spawner: link.spawner,
+            spawner:,
             principal: remote_escalation.origin_of(decider),
             at_ms: now_ms,
           ),

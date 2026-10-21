@@ -28,7 +28,7 @@ or close; there is no transaction, lease or authorization cache.
 
 ## Key Types
 
-- The catalogue is at `user_version` 18. Each later version has its own embedded
+- The catalogue is at `user_version` 19. Each later version has its own embedded
   migration schema (`catalogue_names_schema`, `catalogue_archives_schema`,
   `catalogue_claims_schema`, `catalogue_subtitles_schema`,
   `catalogue_credential_kinds_schema`, `catalogue_logins_schema`,
@@ -37,7 +37,8 @@ or close; there is no transaction, lease or authorization cache.
   `catalogue_pools_schema`, `catalogue_moves_schema`,
   `catalogue_deletions_schema`,
   `catalogue_delegates_schema`, `catalogue_releases_schema`,
-  `catalogue_spend_schema`, `catalogue_start_failures_schema`), and
+  `catalogue_spend_schema`, `catalogue_start_failures_schema`,
+  `catalogue_relayed_schema`), and
   `initialize_schema` applies every
   schema an
   older catalogue lacks, then moves the version, in one transaction; a fresh
@@ -190,6 +191,23 @@ or close; there is no transaction, lease or authorization cache.
   read with `Invalid` and is never read as "not a delegate". `delete` removes the
   row first, which frees the slot. Claims do not move the catalogue revision,
   because no listing shows them.
+- `catalogue.Relayed` is a top-level session another orchestrator's page started
+  here (protocol-change/094, catalogue version 19).
+  `catalogue_relayed_sessions(request_id, spawner, session_id, created_at)` has the
+  request id as its primary key and a unique `session_id` that references
+  `catalogue_sessions`. `claim_relayed` runs inside the caller's immediate
+  transaction (`domain.reserve_relayed` is the caller): a request id that has a
+  row answers `RelayedFound` and writes nothing; otherwise the spawner's sessions
+  that are not archived (a join against the archive table) and its rows created in
+  the rolling hour are counted against `RelayedLimits`, a reached cap answers
+  `RelayedCapped(cap, limit)` and writes nothing, and a new request reserves the
+  registration (key `relayed_key`), binds its session-only domain mapping and
+  inserts the row, all or none. A request id that belongs to another spawner is
+  `Conflict`. `relayed_for`, `relayed_of`, `relayed_held` and `relayed_since` are
+  the reads, `relayed_page` lists a spawner's rows newest first in pages of at most
+  `relayed_page_limit` (64) with the name and placement, skipping archived sessions so the listing is bounded by the cap, and `delete`
+  removes the row before the registration, which frees the place. The table is
+  defined in `sql/catalogue_relayed.sql`.
 - `catalogue.StartFailure(reason, at)` is why a reservation's start failed
   (protocol-change/093, catalogue version 18). `catalogue_start_failures(session_id,
   reason, failed_at)` holds at most one row per registration, separate from the

@@ -80,10 +80,23 @@
 //// and a nonempty `spawn_on` under a depth of 1 is refused because no child
 //// could ever use it.
 ////
+//// ## Top-level sessions
+////
+//// A `[spawners.<name>.top_level]` table (protocol-change/094) lets the
+//// spawning orchestrator's page start sessions of its own here, not only
+//// children of a session it runs. The table says which executors, pools and
+//// folders the page may pick, which profiles a session may start with, how many
+//// such sessions the spawner may hold and start per hour, and the
+//// `approval_ceiling` that bounds what a decision from that page may grant.
+//// Absent means the spawner may create none, and every message of the relay is
+//// refused. `top_level_of` reads it and refuses a name that is not configured
+//// here, so an executor or profile that was renamed fails the file and not the
+//// first create.
+////
 //// ## Flow
 ////
 //// `from_document` → `row` → `placement_of` → `tools_of` → `windows` →
-//// `transcript_of`
+//// `transcript_of` → `top_level_of`
 ////
 //// 1. `from_document` reads the table and requires the distribution table.
 //// 2. `row` validates one entry: its name, its keys, its node and its profile.
@@ -94,7 +107,8 @@
 //// 5. `windows` checks the three durations against each other, and
 ////    `budget_of` reads one of the three optional metering keys.
 //// 6. `transcript_of` reads whether children's transcripts may be read from
-////    the spawning orchestrator.
+////    the spawning orchestrator, and `top_level_of` reads the table that lets
+////    its page start sessions here.
 //// 7. `standing` tells the sweep what a session's spawner allows, or that it
 ////    was removed. `find` and `by_node` resolve a configured spawner by name or by the node
 ////    a message came from.
@@ -147,6 +161,50 @@ pub type Transcript {
   /// It may read one bounded page of a child's branch at a time.
   Visible
 }
+
+/// Which folders on this machine a spawner's page may start a session in.
+pub type Folders {
+  /// None. The page may pick an executor or a pool and no folder.
+  NoFolders
+
+  /// Only the folders this daemon remembers (`catalogue_recent_folders`), each
+  /// judged again by the folder checks of protocol-change/074 at the create.
+  RecentFolders
+}
+
+/// The `[spawners.<name>.top_level]` table: what the spawning orchestrator's
+/// page may start here (protocol-change/094).
+pub type TopLevel {
+  TopLevel(
+    /// The `[executors.<name>]` keys whose registered workspaces the page may
+    /// pick. Empty, the default, offers none.
+    executors: List(String),
+    /// The `[pools.<name>]` keys whose workspaces the page may pick.
+    pools: List(String),
+    /// Which folders the page may pick.
+    folders: Folders,
+    /// The `[profiles.<name>]` keys a session may start with, or `None` for
+    /// every profile this daemon configures.
+    profiles: Option(List(String)),
+    /// The most sessions of this spawner that are not archived, 1 to
+    /// `top_level_sessions_limit`.
+    max_sessions: Int,
+    /// The most creations over a rolling hour.
+    max_per_hour: Int,
+    /// What a decision from the page may grant (protocol-change/089's shape).
+    /// `None` shows the page a session's requests and lets it decide none.
+    approval_ceiling: Option(Ceiling),
+  )
+}
+
+/// The most relayed sessions a spawner may hold.
+pub const top_level_sessions_limit = 64
+
+/// `top_level.max_sessions` when the table names none.
+pub const default_top_level_sessions = 8
+
+/// `top_level.max_per_hour` when the table names none: the web page's own rate.
+pub const default_top_level_per_hour = 10
 
 /// Where every delegate session of one spawner is put.
 pub type Placement {
@@ -236,6 +294,9 @@ pub type Spawner {
     /// the delegate session when `max_depth` allows it. A nonempty list needs a
     /// `max_depth` above one.
     spawn_on: List(String),
+    /// What the spawning orchestrator's page may start here on its own
+    /// (protocol-change/094), or `None` when the spawner may start none.
+    top_level: Option(TopLevel),
   )
 }
 
@@ -485,7 +546,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
           "tools", "max_depth", "max_sessions", "max_within_s",
           "default_within_s", "retain_s", "idle_close_s", "token_budget_per_day",
           "child_token_budget", "max_per_day", "approval_ceiling", "transcript",
-          "spawn_on",
+          "spawn_on", "top_level",
         ],
         "[spawners." <> name <> "]",
       ))
@@ -545,6 +606,7 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
       use max_per_day <- result.try(budget_of(fields, place, "max_per_day"))
       use approval_ceiling <- result.try(ceiling_of(fields, place))
       use transcript <- result.try(transcript_of(fields, place))
+      use top_level <- result.try(top_level_of(fields, place, known))
       use Nil <- result.map(windows(
         place,
         max_within_s,
@@ -569,9 +631,200 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         approval_ceiling:,
         transcript:,
         spawn_on:,
+        top_level:,
       )
     }
     _ -> Error(place <> " must be a table")
+  }
+}
+
+// The optional `top_level` table. Absent is no relay, which is different from a
+// table that is present and offers nothing: the second answers `Placements`
+// with an empty list and refuses every create for want of a placement. A
+// reference is checked against this file as `placement_of` checks its own, so a
+// renamed executor fails the file and not the first create. The ceiling is the
+// shape of 089's, read by the same decoder.
+fn top_level_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  known: Known,
+) -> Result(Option(TopLevel), String) {
+  let key = place <> ".top_level"
+  case dict.get(fields, "top_level") {
+    Error(Nil) -> Ok(None)
+    Ok(tom.Table(table)) | Ok(tom.InlineTable(table)) -> {
+      use Nil <- result.try(known_keys(
+        dict.keys(table),
+        [
+          "executors", "pools", "folders", "profiles", "max_sessions",
+          "max_per_hour", "approval_ceiling",
+        ],
+        "[" <> key <> "]",
+      ))
+      use executors <- result.try(
+        names_of(table, key, "executors")
+        |> result.try(fn(names) {
+          list.try_each(names, fn(name) { known_executor(known, key, name) })
+          |> result.replace(names)
+        }),
+      )
+      use pools <- result.try(
+        names_of(table, key, "pools")
+        |> result.try(fn(names) {
+          list.try_each(names, fn(name) {
+            case pools.find(known.pools, name) {
+              Ok(_) -> Ok(Nil)
+              Error(Nil) ->
+                Error(
+                  key
+                  <> ".pools "
+                  <> name
+                  <> " is not a configured [pools.<name>]",
+                )
+            }
+          })
+          |> result.replace(names)
+        }),
+      )
+      use folders <- result.try(folders_of(table, key))
+      use profiles <- result.try(top_level_profiles_of(table, key, known))
+      use max_sessions <- result.try(top_level_sessions_of(table, key))
+      use max_per_hour <- result.try(count_of(
+        table,
+        key,
+        "max_per_hour",
+        default_top_level_per_hour,
+      ))
+      use approval_ceiling <- result.map(ceiling_of(table, key))
+      Some(TopLevel(
+        executors:,
+        pools:,
+        folders:,
+        profiles:,
+        max_sessions:,
+        max_per_hour:,
+        approval_ceiling:,
+      ))
+    }
+    Ok(_) -> Error(key <> " must be a table")
+  }
+}
+
+// An executor a page may pick must be one this file configures, or, in ledger
+// mode, a name the ledger may give it (the daemon compares it at start).
+fn known_executor(
+  known: Known,
+  place: String,
+  name: String,
+) -> Result(Nil, String) {
+  case executors.find(known.executors, name), known.peers {
+    Ok(_), _ -> Ok(Nil)
+    Error(Nil), ledger_reference.Ledgered ->
+      case catalogue.is_executor_name(name) {
+        True -> Ok(Nil)
+        False ->
+          Error(place <> ".executors " <> name <> " is not an executor name")
+      }
+    Error(Nil), ledger_reference.Pinned(_) ->
+      Error(
+        place
+        <> ".executors "
+        <> name
+        <> " is not a configured [executors.<name>]",
+      )
+  }
+}
+
+// An optional array of distinct names, empty when absent.
+fn names_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  key: String,
+) -> Result(List(String), String) {
+  let words = place <> "." <> key <> " must be an array of names"
+  use names <- result.try(case dict.get(fields, key) {
+    Error(Nil) -> Ok([])
+    Ok(tom.Array(items)) ->
+      list.try_map(items, fn(item) {
+        case item {
+          tom.String(name) if name != "" -> Ok(name)
+          _ -> Error(words)
+        }
+      })
+    Ok(_) -> Error(words)
+  })
+  case first_repeat(names) {
+    Ok(repeated) ->
+      Error(place <> "." <> key <> " lists " <> repeated <> " more than once")
+    Error(Nil) -> Ok(names)
+  }
+}
+
+fn folders_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Folders, String) {
+  use word <- result.try(optional_string(fields, place, "folders"))
+  case word {
+    None | Some("recent") -> Ok(RecentFolders)
+    Some("none") -> Ok(NoFolders)
+    Some(_) -> Error(place <> ".folders must be \"none\" or \"recent\"")
+  }
+}
+
+// The profiles a relayed session may start with. Absent is every profile, which
+// is left as `None` so that a profile added later is offered without an edit
+// here; a list names profiles that must exist now.
+fn top_level_profiles_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  known: Known,
+) -> Result(Option(List(String)), String) {
+  case dict.has_key(fields, "profiles") {
+    False -> Ok(None)
+    True -> {
+      use names <- result.try(names_of(fields, place, "profiles"))
+      use Nil <- result.map(
+        list.try_each(names, fn(name) {
+          case list.contains(known.profiles, name) {
+            True -> Ok(Nil)
+            False ->
+              Error(
+                place
+                <> ".profiles "
+                <> name
+                <> " is not a configured [profiles.<name>]",
+              )
+          }
+        }),
+      )
+      Some(names)
+    }
+  }
+}
+
+// `top_level.max_sessions` is a count with its own ceiling, which is the most
+// the catalogue's listing page and the laptop's sidebar are built for.
+fn top_level_sessions_of(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Int, String) {
+  use sessions <- result.try(count_of(
+    fields,
+    place,
+    "max_sessions",
+    default_top_level_sessions,
+  ))
+  case sessions > top_level_sessions_limit {
+    False -> Ok(sessions)
+    True ->
+      Error(
+        place
+        <> ".max_sessions "
+        <> int.to_string(sessions)
+        <> " is above "
+        <> int.to_string(top_level_sessions_limit),
+      )
   }
 }
 
