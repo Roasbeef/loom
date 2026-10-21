@@ -144,6 +144,29 @@ pub type ExecutorFacts {
     /// The names, never the roots, of the registered workspaces, at most
     /// `max_workspaces`.
     workspaces: List(String),
+    /// What it says about its worktree workspaces (protocol-change/095), or
+    /// `None` when it serves none. A registered workspace not named here is in
+    /// shared mode.
+    worktrees: Option(WorktreeFacts),
+  )
+}
+
+/// What an executor says about the Git worktrees it made.
+pub type WorktreeFacts {
+  WorktreeFacts(
+    /// The registered workspaces in worktree mode, at most `max_workspaces`.
+    workspaces: List(String),
+    /// Trees on disk that a session is using or has just left.
+    present: Int,
+    /// Trees a close left because they held changes or could not be checked.
+    kept: Int,
+    /// Sessions whose tree is gone and whose `loom/<session>` branch remains in
+    /// the repository. Loom never deletes a branch, so this is also how many
+    /// branches the operator may prune.
+    branches_left: Int,
+    /// Directories under the trees' directory that no ledger record names.
+    /// Nothing removes them.
+    unrecorded: Int,
   )
 }
 
@@ -408,8 +431,19 @@ pub fn executor_json(facts: ExecutorFacts) -> JsonValue {
         #("workspaces", strings_json(facts.workspaces)),
       ],
       present("observed", facts.observed, observed_json),
+      present("worktrees", facts.worktrees, worktrees_json),
     ]),
   )
+}
+
+fn worktrees_json(facts: WorktreeFacts) -> JsonValue {
+  json.Object([
+    #("workspaces", strings_json(facts.workspaces)),
+    #("present", json.Int(facts.present)),
+    #("kept", json.Int(facts.kept)),
+    #("branches_left", json.Int(facts.branches_left)),
+    #("unrecorded", json.Int(facts.unrecorded)),
+  ])
 }
 
 fn scopes_json(counts: ScopeCounts) -> JsonValue {
@@ -648,7 +682,8 @@ pub fn decode_executor(value: JsonValue) -> Result(ExecutorFacts, String) {
   use unacknowledged <- result.try(count_of(fields, "unacknowledged"))
   use platform <- result.try(text_of(fields, "platform"))
   use observed <- result.try(optional_of(fields, "observed", decode_observed))
-  use workspaces <- result.map(texts_of(fields, "workspaces", max_workspaces))
+  use workspaces <- result.try(texts_of(fields, "workspaces", max_workspaces))
+  use worktrees <- result.map(optional_of(fields, "worktrees", decode_worktrees))
   ExecutorFacts(
     protocol:,
     scopes:,
@@ -660,7 +695,18 @@ pub fn decode_executor(value: JsonValue) -> Result(ExecutorFacts, String) {
     platform:,
     observed:,
     workspaces:,
+    worktrees:,
   )
+}
+
+fn decode_worktrees(value: JsonValue) -> Result(WorktreeFacts, String) {
+  use fields <- result.try(object(Ok(value), "worktrees"))
+  use workspaces <- result.try(texts_of(fields, "workspaces", max_workspaces))
+  use present <- result.try(count_of(fields, "present"))
+  use kept <- result.try(count_of(fields, "kept"))
+  use branches_left <- result.try(count_of(fields, "branches_left"))
+  use unrecorded <- result.map(count_of(fields, "unrecorded"))
+  WorktreeFacts(workspaces:, present:, kept:, branches_left:, unrecorded:)
 }
 
 fn decode_scopes(value: JsonValue) -> Result(ScopeCounts, String) {

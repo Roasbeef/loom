@@ -121,6 +121,7 @@ import client/session_movers
 import client/spawners
 import client/system_prompt
 import client/workspaces
+import client/worktrees
 import core/clock
 import core/glance
 import core/ids
@@ -916,12 +917,22 @@ pub fn start_executor(
       ])
       let platform = system_prompt.platform(ffi_os.platform())
       let names = list.map(configured, fn(workspace) { workspace.name })
+      let in_trees =
+        list.filter(configured, worktrees.is_worktree)
+        |> list.map(fn(workspace) { workspace.name })
       let summarize = started.data.summarize
       Ok(
         Some(
           ExecutorHost(monitor: process.monitor(started.pid), facts: fn() {
             summarize(executor_summary_ms)
-            |> result.map(node_facts.executor_facts(_, limits, platform, names))
+            |> result.map(fn(snapshot) {
+              node_facts.executor_facts(snapshot, limits, platform, names)
+              |> node_facts.with_worktrees(
+                snapshot.ledger.trees,
+                in_trees,
+                unrecorded: worktrees.unrecorded(trees, configured),
+              )
+            })
             |> option.from_result
           }),
         ),

@@ -38,6 +38,7 @@ fn executor() -> node_report.ExecutorFacts {
       ),
     ),
     workspaces: ["proj", "docs"],
+    worktrees: option.None,
   )
 }
 
@@ -126,6 +127,46 @@ fn through_text(report: NodeReport) -> Result(NodeReport, String) {
 
 pub fn a_full_report_survives_its_rendering_test() {
   assert through_text(full()) == Ok(full())
+}
+
+pub fn a_worktree_census_survives_its_rendering_and_an_absent_one_reads_as_none_test() {
+  let facts =
+    node_report.ExecutorFacts(
+      ..executor(),
+      worktrees: Some(node_report.WorktreeFacts(
+        workspaces: ["proj"],
+        present: 2,
+        kept: 1,
+        branches_left: 7,
+        unrecorded: 3,
+      )),
+    )
+  let report = NodeReport(..full(), executor: Some(facts))
+  assert through_text(report) == Ok(report)
+
+  // An executor with no worktree workspace omits the member, and a reader
+  // takes that as none.
+  let assert json.Object(fields) = node_report.executor_json(executor())
+  assert list.key_find(fields, "worktrees") == Error(Nil)
+  assert node_report.decode_executor(node_report.executor_json(executor()))
+    == Ok(executor())
+}
+
+pub fn a_worktree_count_that_is_negative_is_refused_test() {
+  let facts =
+    node_report.ExecutorFacts(
+      ..executor(),
+      worktrees: Some(node_report.WorktreeFacts(
+        workspaces: [],
+        present: -1,
+        kept: 0,
+        branches_left: 0,
+        unrecorded: 0,
+      )),
+    )
+  let assert Error(reason) =
+    node_report.decode_executor(node_report.executor_json(facts))
+  assert string.contains(reason, "present")
 }
 
 pub fn an_executor_only_node_has_no_orchestrator_facts_test() {

@@ -99,30 +99,29 @@ fn bare(node: String) -> NodeReport {
 fn unclean_executor(node: String, session: String) -> NodeReport {
   node_report.NodeReport(
     ..bare(node),
-    executor: Some(
-      node_report.ExecutorFacts(
-        protocol: remote_protocol.version,
-        scopes: node_report.ScopeCounts(
-          open: 2,
-          closing: 0,
-          closed_clean: 1,
-          closed_unknown: 1,
-        ),
-        scope_limit: 16,
-        unclean: [
-          node_report.UncleanScope(
-            session:,
-            state: node_report.UnknownCleanup(count: 2),
-          ),
-        ],
-        ledger_bytes: 4096,
-        ledger_limit: 536_870_912,
-        unacknowledged: 0,
-        platform: "linux/x86_64",
-        observed: None,
-        workspaces: ["proj", "docs"],
+    executor: Some(node_report.ExecutorFacts(
+      protocol: remote_protocol.version,
+      scopes: node_report.ScopeCounts(
+        open: 2,
+        closing: 0,
+        closed_clean: 1,
+        closed_unknown: 1,
       ),
-    ),
+      scope_limit: 16,
+      unclean: [
+        node_report.UncleanScope(
+          session:,
+          state: node_report.UnknownCleanup(count: 2),
+        ),
+      ],
+      ledger_bytes: 4096,
+      ledger_limit: 536_870_912,
+      unacknowledged: 0,
+      platform: "linux/x86_64",
+      observed: None,
+      workspaces: ["proj", "docs"],
+      worktrees: option.None,
+    )),
   )
 }
 

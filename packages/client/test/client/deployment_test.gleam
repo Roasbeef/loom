@@ -121,6 +121,7 @@ fn executor_facts(
     platform: "linux/x86_64",
     observed: None,
     workspaces: ["proj"],
+    worktrees: option.None,
   )
 }
 

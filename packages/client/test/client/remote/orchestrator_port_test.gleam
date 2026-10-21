@@ -1069,6 +1069,7 @@ pub fn a_report_is_what_the_daemon_supplies_test() {
       platform: "linux/x86_64",
       observed: None,
       workspaces: ["proj"],
+      worktrees: option.None,
     )
   let supplied = node_report.NodeReport(..identity(), executor: Some(executor))
   let port =

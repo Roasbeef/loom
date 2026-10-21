@@ -93,25 +93,24 @@ pub fn a_daemon_that_serves_a_workspace_registers_the_host_test() {
   // scope, no census, and the workspace named without its root.
   let limits = executor_plane.scope_limits()
   assert hosted.facts()
-    == Some(
-      ExecutorFacts(
-        protocol: protocol.version,
-        scopes: ScopeCounts(
-          open: 0,
-          closing: 0,
-          closed_clean: 0,
-          closed_unknown: 0,
-        ),
-        scope_limit: limits.max_unclean_scopes,
-        unclean: [],
-        ledger_bytes: 0,
-        ledger_limit: limits.max_ledger_bytes,
-        unacknowledged: 0,
-        platform: system_prompt.platform(ffi_os.platform()),
-        observed: None,
-        workspaces: ["proj"],
+    == Some(ExecutorFacts(
+      protocol: protocol.version,
+      scopes: ScopeCounts(
+        open: 0,
+        closing: 0,
+        closed_clean: 0,
+        closed_unknown: 0,
       ),
-    )
+      scope_limit: limits.max_unclean_scopes,
+      unclean: [],
+      ledger_bytes: 0,
+      ledger_limit: limits.max_ledger_bytes,
+      unacknowledged: 0,
+      platform: system_prompt.platform(ffi_os.platform()),
+      observed: None,
+      workspaces: ["proj"],
+      worktrees: option.None,
+    ))
 
   // The host is not linked to this process, so it ends only when told to.
   process.demonitor_process(hosted.monitor)
