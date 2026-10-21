@@ -1738,9 +1738,13 @@
   .recent-row{display:flex;align-items:center;gap:10px;width:100%;min-height:40px;margin:0;padding:0 14px;border:0;background:transparent;color:var(--color-fg);font:13.5px/1.4 var(--font-sans);text-align:left;cursor:pointer;}
   .recent-row:hover{background:color-mix(in srgb,var(--color-fg) 6%,transparent);}
   .recent-row:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
-  .recent-place{display:flex;align-items:center;gap:8px;min-width:0;}
+  /* The place (agent, arrow, code) is one unbreakable cell that never shrinks, and
+     the names of the sessions that used it take what room is left and end in an
+     ellipsis. A row with many names once squeezed the place until it wrapped one
+     word to a line. */
+  .recent-place{display:flex;flex:0 0 auto;align-items:center;gap:8px;white-space:nowrap;}
   .recent-agent{font-weight:500;}
-  .recent-hint{margin-left:auto;padding-left:12px;overflow:hidden;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);text-overflow:ellipsis;white-space:nowrap;}
+  .recent-hint{flex:1 1 0;min-width:0;padding-left:12px;overflow:hidden;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);text-align:right;text-overflow:ellipsis;white-space:nowrap;}
   .arrow{color:var(--color-fg-quiet);}
   svg.i{flex:0 0 auto;width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;}
   form.composer{display:flex;flex-direction:column;gap:8px;padding:12px 14px 10px;border:1px solid var(--color-divider);border-radius:16px;background:var(--color-bg-raised);}
