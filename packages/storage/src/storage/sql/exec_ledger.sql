@@ -114,3 +114,27 @@ ORDER BY session;
 
 -- name: LedgerUnackedCount :one
 SELECT COUNT(*) AS calls FROM call WHERE state IN ('terminal', 'unknown');
+
+-- name: LedgerWorktree :many
+SELECT session, workspace, path, branch, state
+FROM scope_worktree WHERE session = ?;
+
+-- name: LedgerWorkspaceWorktrees :many
+SELECT session, workspace, path, branch, state
+FROM scope_worktree WHERE workspace = ? ORDER BY session;
+
+-- name: LedgerAllWorktrees :many
+SELECT session, workspace, path, branch, state
+FROM scope_worktree ORDER BY workspace, session;
+
+-- name: PutLedgerWorktree :exec
+INSERT INTO scope_worktree(session, workspace, path, branch, state)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(session) DO UPDATE SET
+  workspace = excluded.workspace,
+  path = excluded.path,
+  branch = excluded.branch,
+  state = excluded.state;
+
+-- name: LedgerWorktreeStates :many
+SELECT state, COUNT(*) AS trees FROM scope_worktree GROUP BY state;
