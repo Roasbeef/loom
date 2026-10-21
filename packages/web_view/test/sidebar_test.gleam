@@ -72,6 +72,7 @@ fn plain_page() -> sidebar.Page(Nil) {
     administering: None,
     managing: None,
     who: "",
+    remote: sidebar.NoRemotes,
   )
 }
 

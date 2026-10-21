@@ -12,11 +12,14 @@
 //// to do for it but resume it.
 ////
 //// Each row also carries a `Place`: the machine that runs the agent and the
-//// code it works on. In this slice the agent is always the daemon serving the
-//// page, because a page can only create and open sessions on its own daemon,
-//// so a row's tag reads `laptop → exec · repo` or `laptop → …/roasbeef/weft`.
-//// The agent field is kept anyway, so the day a page can list another
-//// orchestrator's sessions only this module's `place` learns it.
+//// code it works on. For a session in the daemon's own catalogue the agent is
+//// the daemon serving the page, so the tag reads `laptop → exec · repo` or
+//// `laptop → …/roasbeef/weft`. A session on another orchestrator is a `Remote`
+//// (protocol-change/094): the page reads the orchestrator's list and hands the
+//// sidebar rows whose agent is that orchestrator, `box → exec · repo`, and whose
+//// `Door` says that pressing one navigates to its relayed page and not to a
+//// ticket. `sorted_among`, `pills_among` and `chosen_among` merge the two kinds
+//// into the same groups, pills and filter.
 ////
 //// A filter names one machine. A row matches it when its agent or its code is on
 //// that machine, so a pill never hides a session that touches the machine. The
@@ -80,6 +83,17 @@ pub type Code {
     /// The workspace's registered name.
     workspace: String,
   )
+
+  /// A workspace on any machine of a pool, which an orchestrator picks when the
+  /// session first opens. Only a session on another orchestrator is listed this
+  /// way, since its box has not told this page which machine took it.
+  Pooled(
+    /// The pool's `[pools.<name>]` key on the orchestrator that holds the
+    /// session.
+    pool: String,
+    /// The workspace's registered name.
+    workspace: String,
+  )
 }
 
 /// Where a session's agent runs and where its code lives.
@@ -108,6 +122,55 @@ pub type Bucket {
   Saved
 }
 
+/// How long ago the page last read a relayed row, as the sidebar says it.
+pub type Seen {
+  /// The latest read of the orchestrator succeeded.
+  Fresh
+
+  /// The latest read failed. The row is the last one that was read and is drawn
+  /// greyed, with how many milliseconds ago that was.
+  Stale(
+    /// The age of the row's data.
+    age_ms: Int,
+  )
+}
+
+/// Whose session a row is, which decides what pressing it does.
+pub type Door {
+  /// A session of the daemon serving the page, listed in its catalogue. A press
+  /// asks the daemon for a ticket to its page.
+  Local
+
+  /// A session an orchestrator this daemon relays for holds
+  /// (protocol-change/094). A press navigates to the relayed page of that
+  /// orchestrator's session, under the same page key.
+  Relayed(
+    /// The orchestrator's `[orchestrators.<name>]` key.
+    orchestrator: String,
+    /// Whether the row is current.
+    seen: Seen,
+  )
+}
+
+/// A session on another orchestrator as a sidebar row: the synthetic entry the
+/// sidebar draws, the place it is tagged with, what it needs and whose it is. It
+/// is made by the page (`web_view/relayed.remote_rows`) from the last read of the
+/// orchestrator, and every string in it is text from the box, drawn as text.
+pub type Remote {
+  Remote(
+    /// The entry the sidebar draws: the session's identity, its name, where its
+    /// code is written as the sidebar writes it, and the first request's words as
+    /// its subtitle.
+    entry: Entry,
+    /// The orchestrator's name and where the code is.
+    place: Place,
+    /// What the session needs from the person.
+    bucket: Bucket,
+    /// The orchestrator's key and how current the row is.
+    door: Door,
+  )
+}
+
 /// One row of the list: the catalogue's entry, what it needs and where it is.
 pub type Row {
   Row(
@@ -117,6 +180,8 @@ pub type Row {
     bucket: Bucket,
     /// The tag's two halves.
     place: Place,
+    /// Whose session the row is.
+    door: Door,
   )
 }
 
@@ -183,11 +248,13 @@ pub fn place(entry: Entry, machine: String) -> Place {
 /// ```gleam
 /// assert listing.code_words(listing.Folder("/Users/a/src/loom")) == "…/src/loom"
 /// assert listing.code_words(listing.Registered("exec", "repo")) == "exec · repo"
+/// assert listing.code_words(listing.Pooled("linux", "repo")) == "linux pool · repo"
 /// ```
 pub fn code_words(code: Code) -> String {
   case code {
     Folder(path:) -> short_path(path)
     Registered(executor:, workspace:) -> executor <> " · " <> workspace
+    Pooled(pool:, workspace:) -> pool <> " pool · " <> workspace
   }
 }
 
@@ -206,7 +273,8 @@ pub fn entry_words(entry: Entry, place: Place) -> String {
   case place.code, sessions.worktree(entry) {
     Folder(_), Some(directory) ->
       sessions.base_name(sessions.project_of(entry)) <> " · " <> directory
-    Folder(_), None | Registered(..), _ -> code_words(place.code)
+    Folder(_), None | Registered(..), _ | Pooled(..), _ ->
+      code_words(place.code)
   }
 }
 
@@ -243,6 +311,7 @@ pub fn code_machine(place: Place) -> String {
   case place.code {
     Folder(_) -> place.agent
     Registered(executor:, ..) -> executor
+    Pooled(pool:, ..) -> pool
   }
 }
 
@@ -320,15 +389,59 @@ pub fn sorted(
   filter: Filter,
   current: String,
 ) -> Rows {
-  let rows =
+  sorted_among(all, [], activity, machine, filter, current)
+}
+
+/// The rows the list shows when some sessions are another orchestrator's
+/// (protocol-change/094): `sorted`, with the relayed rows merged into the same
+/// groups. A relayed row is filtered by the same rule and is placed by its own
+/// bucket, which the orchestrator's read set, and the session on screen is kept
+/// whatever the filter says. The groups keep each row's order: the daemon's
+/// entries newest first, then the relayed rows newest first, so a relayed
+/// session never moves a local one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let rows = listing.sorted_among([], [], dict.new(), "laptop", listing.Everywhere, "")
+/// assert rows.needs == []
+/// ```
+pub fn sorted_among(
+  all: List(Entry),
+  remote: List(Remote),
+  activity: Dict(String, Activity),
+  machine: String,
+  filter: Filter,
+  current: String,
+) -> Rows {
+  let local =
     list.filter_map(all, fn(entry) {
       let place = place(entry, machine)
       case matches(place, filter) || entry.id == current {
         True ->
-          Ok(Row(entry:, bucket: placed(entry, activity, current), place:))
+          Ok(Row(
+            entry:,
+            bucket: placed(entry, activity, current),
+            place:,
+            door: Local,
+          ))
         False -> Error(Nil)
       }
     })
+  let relayed =
+    list.filter_map(remote, fn(each) {
+      case matches(each.place, filter) || each.entry.id == current {
+        True ->
+          Ok(Row(
+            entry: each.entry,
+            bucket: each.bucket,
+            place: each.place,
+            door: each.door,
+          ))
+        False -> Error(Nil)
+      }
+    })
+  let rows = list.append(local, relayed)
 
   Rows(
     needs: in_bucket(rows, NeedsYou),
@@ -348,7 +461,29 @@ pub fn sorted(
 /// assert listing.pills([], "laptop") == []
 /// ```
 pub fn pills(all: List(Entry), machine: String) -> List(Pill) {
-  let places = list.map(all, place(_, machine))
+  pills_among(all, [], machine)
+}
+
+/// `pills`, over the daemon's entries and the relayed rows together: the
+/// orchestrators a relayed session runs its agent on, and the executors and pools
+/// its code is on, are machines too. A pill for the orchestrator that holds a
+/// relayed session is what lets "box" narrow the list to the box's sessions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert listing.pills_among([], [], "laptop") == []
+/// ```
+pub fn pills_among(
+  all: List(Entry),
+  remote: List(Remote),
+  machine: String,
+) -> List(Pill) {
+  let places =
+    list.append(
+      list.map(all, place(_, machine)),
+      list.map(remote, fn(each) { each.place }),
+    )
   let machines =
     places
     |> list.flat_map(fn(place) { [place.agent, code_machine(place)] })
@@ -363,7 +498,7 @@ pub fn pills(all: List(Entry), machine: String) -> List(Pill) {
     })
 
   // A pill that matches every row says what "All" says.
-  list.filter(counted, fn(pill) { pill.count < list.length(all) })
+  list.filter(counted, fn(pill) { pill.count < list.length(places) })
 }
 
 /// A filter from the name a pill was drawn with, or none when no such pill is
@@ -380,7 +515,25 @@ pub fn chosen(
   machine: String,
   name: String,
 ) -> Result(Filter, Nil) {
-  pills(all, machine)
+  chosen_among(all, [], machine, name)
+}
+
+/// `chosen`, over the daemon's entries and the relayed rows together, so a pill
+/// for an orchestrator or a machine only a relayed session uses can be pressed
+/// and a forged name still cannot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert listing.chosen_among([], [], "laptop", "box") == Error(Nil)
+/// ```
+pub fn chosen_among(
+  all: List(Entry),
+  remote: List(Remote),
+  machine: String,
+  name: String,
+) -> Result(Filter, Nil) {
+  pills_among(all, remote, machine)
   |> list.find(fn(pill) { pill.machine == name })
   |> result.map(fn(pill) { On(pill.machine) })
 }
@@ -398,6 +551,39 @@ pub fn waiting(
   activity: Dict(String, Activity),
 ) -> List(Entry) {
   list.filter(all, fn(entry) { bucket(entry, activity) == NeedsYou })
+}
+
+/// The relayed sessions waiting on an approval, in the order they were read.
+/// They are added to the phone's count and its banner, so a request on the box
+/// reaches a person who has the sidebar closed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert listing.waiting_remote([]) == []
+/// ```
+pub fn waiting_remote(remote: List(Remote)) -> List(Remote) {
+  list.filter(remote, fn(each) { each.bucket == NeedsYou })
+}
+
+/// How long ago a relayed row was read, as the sidebar says it: whole seconds
+/// under a minute, then minutes, hours and days, each the figure rounded down.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert listing.seen_words(125_000) == "seen 2m ago"
+/// assert listing.seen_words(4000) == "seen 4s ago"
+/// ```
+pub fn seen_words(age_ms: Int) -> String {
+  let seconds = int.max(age_ms, 0) / 1000
+
+  case seconds {
+    _ if seconds < 60 -> "seen " <> int.to_string(seconds) <> "s ago"
+    _ if seconds < 3600 -> "seen " <> int.to_string(seconds / 60) <> "m ago"
+    _ if seconds < 86_400 -> "seen " <> int.to_string(seconds / 3600) <> "h ago"
+    _ -> "seen " <> int.to_string(seconds / 86_400) <> "d ago"
+  }
 }
 
 /// The count of rows in the group, as text.

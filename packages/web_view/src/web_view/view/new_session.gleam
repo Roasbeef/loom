@@ -84,8 +84,8 @@ import lustre/element/html
 import lustre/element/svg
 import lustre/event
 import web_view/composer.{
-  type Chip, type Offers, type Piece, type Recent, type State, type Target,
-  type Typed,
+  type Candidate, type Chip, type Offers, type Piece, type Recent, type State,
+  type Target, type Typed,
 }
 import web_view/listing
 import web_view/placements
@@ -114,6 +114,11 @@ pub type Presses(message) {
     depart: message,
     /// A session's row, in the banner, was pressed.
     open: fn(String) -> message,
+    /// A relayed session's row, in the banner, was pressed: the orchestrator's key
+    /// and the session's identity.
+    open_remote: fn(String, String) -> message,
+    /// A row of the Agent list was pressed.
+    agent: fn(composer.Agent) -> message,
     /// The link to the full session list was pressed.
     listing: message,
   )
@@ -130,9 +135,10 @@ pub type Pane(message) {
     target: Option(Target),
     /// The places sessions worked in recently.
     recent: List(Recent),
-    /// The sessions waiting on an approval, newest first. The phone's banner
-    /// names the first.
-    waiting: List(Entry),
+    /// The sessions waiting on an approval, this daemon's and another
+    /// orchestrator's, in the order the sidebar's "Needs you" group lists them.
+    /// The phone's banner names the first.
+    waiting: List(listing.Row),
     /// What the page's buttons send.
     presses: Presses(message),
   )
@@ -259,7 +265,11 @@ fn banner(pane: Pane(message)) -> Element(message) {
         [
           attribute.type_("button"),
           attribute.class("banner"),
-          event.on_click(pane.presses.open(first.id)),
+          event.on_click(case first.door {
+            listing.Local -> pane.presses.open(first.entry.id)
+            listing.Relayed(orchestrator:, ..) ->
+              pane.presses.open_remote(orchestrator, first.entry.id)
+          }),
         ],
         [
           html.span(
@@ -268,16 +278,13 @@ fn banner(pane: Pane(message)) -> Element(message) {
           ),
           html.span([attribute.class("banner-text")], [
             html.span([attribute.class("banner-title")], [
-              html.text(sessions.label(first) <> " needs you"),
+              html.text(sessions.label(first.entry) <> " needs you"),
             ]),
             html.span([attribute.class("banner-sub")], [
               html.text(
-                pane.offers.machine
+                first.place.agent
                 <> " → "
-                <> listing.entry_words(
-                  first,
-                  listing.place(first, pane.offers.machine),
-                )
+                <> listing.entry_words(first.entry, first.place)
                 <> others,
               ),
             ]),
@@ -322,7 +329,10 @@ fn recent(pane: Pane(message)) -> Element(message) {
                   ],
                   [
                     html.span([attribute.class("recent-place")], [
-                      icon(Laptop),
+                      icon(case row.place.agent == pane.offers.here {
+                        True -> Laptop
+                        False -> Pool
+                      }),
                       html.span([attribute.class("recent-agent")], [
                         html.text(row.place.agent),
                       ]),
@@ -469,7 +479,7 @@ fn chips(pane: Pane(message)) -> Element(message) {
       chip(
         pane,
         composer.AgentChip,
-        Laptop,
+        agent_icon(pane.offers.agent),
         "Agent",
         pane.offers.machine,
         agent_list(pane),
@@ -539,8 +549,10 @@ fn expanded(open: composer.Open, which: Chip) -> String {
   }
 }
 
-// The Agent chip's list. Only the serving daemon is offered, and a line says why
-// no other machine is.
+// The Agent chip's list: this daemon, then each orchestrator it relays for
+// (protocol-change/094). A machine that answered is a button. One that did not is
+// a disabled row that says so in plain words, since a choice that will fail should
+// look different and say why. The note at the foot states the switching rule.
 fn agent_list(pane: Pane(message)) -> Element(message) {
   html.div(
     [
@@ -548,22 +560,74 @@ fn agent_list(pane: Pane(message)) -> Element(message) {
       attribute.role("listbox"),
       attribute.aria_label("Where the agent runs"),
     ],
-    [
-      html.div([attribute.class("opt"), attribute.class("on")], [
-        icon(Laptop),
-        html.span([attribute.class("opt-text")], [
-          html.span([], [html.text(pane.offers.machine)]),
-          html.small([], [html.text("The daemon serving this page")]),
-        ]),
-        icon(Check),
-      ]),
+    list.append(list.map(pane.offers.agents, agent_row(pane, _)), [
       html.p([attribute.class("pop-foot")], [
         html.text(
-          "A session on another machine is started from that machine's page.",
+          "Switching keeps the code choice when the new machine can use it, and clears it otherwise.",
         ),
       ]),
-    ],
+    ]),
   )
+}
+
+// One row of the Agent list: the machine's name with what it says under it, and
+// the check on the machine in force. A row that cannot be chosen is not a button.
+fn agent_row(pane: Pane(message), candidate: Candidate) -> Element(message) {
+  let current = pick(pane.offers.agent, candidate.agent)
+
+  case candidate.standing {
+    composer.Ready(detail:) ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.class("opt"),
+          attribute.role("option"),
+          attribute.aria_selected(selected(current)),
+          event.on_click(pane.presses.agent(candidate.agent)),
+        ],
+        list.append(
+          [
+            icon(agent_icon(candidate.agent)),
+            html.span([attribute.class("opt-text")], [
+              html.span([], [html.text(candidate.name)]),
+              ..detail_line(detail)
+            ]),
+          ],
+          check_if(current),
+        ),
+      )
+    composer.Unavailable(reason:) ->
+      html.div(
+        [
+          attribute.class("opt"),
+          attribute.role("option"),
+          attribute.aria_disabled(True),
+        ],
+        [
+          icon(agent_icon(candidate.agent)),
+          html.span([attribute.class("opt-text")], [
+            html.span([], [html.text(candidate.name)]),
+            html.small([], [html.text(reason)]),
+          ]),
+        ],
+      )
+  }
+}
+
+// The glyph of a machine: a laptop for this daemon, a server for another.
+fn agent_icon(agent: composer.Agent) -> Icon {
+  case agent {
+    composer.Here -> Laptop
+    composer.Orchestrator(_) -> Pool
+  }
+}
+
+// A quiet line under a name, when there is something to say.
+fn detail_line(words: String) -> List(Element(message)) {
+  case words {
+    "" -> []
+    _ -> [html.small([], [html.text(words)])]
+  }
 }
 
 // The Model chip's list: the profiles, then the main models, each with the
@@ -712,15 +776,76 @@ fn folder_section(
         standing: Pressable(composer.Folder(path)),
       )
     })
-  let typed =
+
+  case pane.offers.agent, pane.offers.typing {
+    composer.Here, composer.MayType -> {
+      let typed =
+        Row(
+          label: "Choose a folder…",
+          detail: "Type a path in the form",
+          glyph: Folder,
+          standing: Pressable(composer.TypedFolder),
+        )
+
+      section(pane, needle, "On " <> machine, "", list.append(folders, [typed]))
+    }
+
+    // Another orchestrator offers the folders it remembers and nothing typed, so
+    // its section says so when it has none. The serving daemon's own folders are
+    // a disabled row with the reason: the orchestrator cannot read this
+    // machine's files, and setting the Agent chip back is what makes them usable.
+    composer.Orchestrator(_), _ | composer.Here, composer.MayNotType ->
+      list.append(
+        section(
+          pane,
+          needle,
+          "Folders on " <> machine,
+          "recent",
+          case folders {
+            [] -> [
+              Row(
+                label: "No folders",
+                detail: machine <> " offers no folder to this page.",
+                glyph: Folder,
+                standing: Unavailable("None offered"),
+              ),
+            ]
+            some -> some
+          },
+        ),
+        unreadable_folders(pane, needle),
+      )
+  }
+}
+
+// The serving daemon's folders, drawn as one disabled row under another
+// orchestrator's: that orchestrator cannot read this machine's files. It is
+// kept apart from the sections because it has no heading of its own, and it
+// follows the search as every row does.
+fn unreadable_folders(
+  pane: Pane(message),
+  needle: String,
+) -> List(Element(message)) {
+  let here = pane.offers.here
+  let shown =
     Row(
-      label: "Choose a folder…",
-      detail: "Type a path in the form",
+      label: "Folders on " <> here,
+      detail: pane.offers.machine
+        <> " cannot read "
+        <> here
+        <> "'s files. Set Agent to "
+        <> here
+        <> " to use them.",
       glyph: Folder,
-      standing: Pressable(composer.TypedFolder),
+      standing: Unavailable("Not offered"),
     )
 
-  section(pane, needle, "On " <> machine, "", list.append(folders, [typed]))
+  case
+    needle == "" || string.contains(string.lowercase(shown.label), needle)
+  {
+    True -> [row(pane, shown)]
+    False -> []
+  }
 }
 
 // An executor's section: the workspaces it reported, or a row that asks for a
@@ -916,7 +1041,14 @@ fn selected(pick: Pick) -> Bool {
 fn summary(pane: Pane(message)) -> Element(message) {
   html.p(
     [attribute.class("sum")],
-    list.map(composer.sentence(pane.offers.machine, pane.target), piece),
+    list.map(
+      composer.sentence_for(
+        pane.offers.agent,
+        pane.offers.machine,
+        pane.target,
+      ),
+      piece,
+    ),
   )
 }
 
@@ -966,7 +1098,7 @@ fn refusal(state: State) -> Element(message) {
 fn code_title(code: listing.Code) -> String {
   case code {
     listing.Folder(path:) -> path
-    listing.Registered(..) -> ""
+    listing.Registered(..) | listing.Pooled(..) -> ""
   }
 }
 

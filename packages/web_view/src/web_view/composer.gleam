@@ -56,6 +56,7 @@ import session_view/text_hygiene
 import web_view/creations
 import web_view/listing
 import web_view/placements
+import web_view/relayed
 import web_view/sessions.{type Entry}
 
 /// The most bytes of a first message the composer sends. A longer one is refused
@@ -73,6 +74,61 @@ pub const search_limit = 64
 
 /// How many places "Start again where you worked" lists.
 pub const recent_limit = 3
+
+/// Where the agent runs, as a person chose it from the Agent chip's list.
+pub type Agent {
+  /// The daemon serving the page.
+  Here
+
+  /// Another orchestrator this daemon relays for (protocol-change/094). The name
+  /// is a `[orchestrators.<name>]` key the page drew a row for.
+  Orchestrator(
+    /// The orchestrator's key.
+    name: String,
+  )
+}
+
+/// Whether a person may type a folder's path into the form. The daemon serving
+/// the page judges a typed path against its own filesystem, so only the Agent
+/// chip's own daemon may be given one: another orchestrator offers the folders it
+/// remembers and nothing the page types.
+pub type Typing {
+  /// The form may ask for a typed path.
+  MayType
+
+  /// The form never asks for one.
+  MayNotType
+}
+
+/// One row of the Agent chip's list: a machine the agent may run on, and whether
+/// it can be chosen now.
+pub type Candidate {
+  Candidate(
+    /// The machine.
+    agent: Agent,
+    /// Its name, as the row and the chip say it.
+    name: String,
+    /// Whether it can be chosen.
+    standing: Standing,
+  )
+}
+
+/// Whether an Agent chip's row can be chosen.
+pub type Standing {
+  /// The machine can be chosen. The detail is a short count of what runs on it, or
+  /// words saying what it is.
+  Ready(
+    /// The words under the name.
+    detail: String,
+  )
+
+  /// The machine cannot be chosen now, and the row says why in plain words, such
+  /// as "Not answering since 09:12".
+  Unavailable(
+    /// The reason.
+    reason: String,
+  )
+}
 
 /// A chip that opens a list of choices.
 pub type Chip {
@@ -162,6 +218,9 @@ pub type State {
   State(
     /// Which chip's list is open.
     open: Open,
+    /// Where the agent runs, as the person chose it. The daemon serving the page
+    /// until another is chosen from the Agent chip.
+    agent: Agent,
     /// The code target the person chose, or `None` for the default.
     target: Option(Target),
     /// The profile and model the person chose.
@@ -184,6 +243,11 @@ pub type State {
 pub type Msg {
   /// A chip was pressed: open its list, or close it if it is open.
   Toggled(chip: Chip)
+
+  /// A row of the Agent chip's list was pressed. It is honoured only for a row the
+  /// page drew that can be chosen, so a machine the page did not offer, or one
+  /// that was not answering, changes nothing.
+  ChoseAgent(agent: Agent)
 
   /// The scrim behind an open list was pressed: close it.
   Dismissed
@@ -216,9 +280,14 @@ pub type Intent {
   /// Nothing.
   Stay
 
-  /// The Code chip opened: read the executors and pools again, so their states
-  /// are current.
+  /// The Code chip opened on this daemon: read the executors and pools again, so
+  /// their states are current.
   ReadPlacements
+
+  /// The Agent chip opened, or the Code chip opened on another orchestrator: read
+  /// what each orchestrator offers again (protocol-change/094), so a machine that
+  /// came back or went away is drawn as it is now.
+  ReadAgents
 
   /// Ask the daemon to create a session and send it its first message.
   Create(
@@ -233,6 +302,20 @@ pub type Intent {
     roles: creations.Roles,
   )
 
+  /// Ask the daemon to start a session on another orchestrator and send it its
+  /// first message (protocol-change/094). The place is one the orchestrator
+  /// offered, never a typed path.
+  CreateOn(
+    /// The orchestrator's key, a row the page drew.
+    orchestrator: String,
+    /// Where its tools run, as the orchestrator is asked.
+    place: creations.Place,
+    /// The first message, or empty to send none.
+    prompt: String,
+    /// The profile and model, each one the orchestrator offered or the default.
+    roles: creations.Roles,
+  )
+
   /// Depart for a session whose ticket the daemon minted.
   Depart(
     /// The ticket's exchange path, which the daemon wrote.
@@ -244,16 +327,28 @@ pub type Intent {
 /// something in them.
 pub type Offers {
   Offers(
-    /// The daemon's own name, the machine every session here runs its agent on.
+    /// The name of the machine the agent runs on: the daemon serving the page
+    /// until another orchestrator is chosen, then that orchestrator's key.
     machine: String,
     /// The folders on the agent's machine the page drew, newest first.
     folders: List(String),
     /// The executors and pools, with the daemon's report once it answered.
     cards: placements.Cards,
-    /// The profile names the daemon read from its configuration.
+    /// The profile names the agent's machine's configuration offers.
     profiles: List(String),
-    /// The model keys the daemon read from its configuration.
+    /// The model keys the agent's machine's configuration offers.
     models: List(String),
+    /// The machine these offers are for, which is the agent in force.
+    agent: Agent,
+    /// The name of the daemon serving the page, which is what "its folders" means
+    /// when another orchestrator is the agent.
+    here: String,
+    /// The Agent chip's rows: this daemon, then each orchestrator it relays for,
+    /// each with whether it can be chosen. A daemon with no orchestrator has the
+    /// one row.
+    agents: List(Candidate),
+    /// Whether the form may ask for a typed folder.
+    typing: Typing,
   )
 }
 
@@ -289,6 +384,7 @@ pub type Piece {
 pub fn new() -> State {
   State(
     open: Shut,
+    agent: Here,
     target: None,
     roles: creations.default_roles,
     search: "",
@@ -320,6 +416,7 @@ pub fn update(
 ) -> #(State, Intent) {
   case message {
     Toggled(chip:) -> toggled(state, chip)
+    ChoseAgent(agent:) -> #(chose_agent(state, offers, agent), Stay)
     Dismissed -> #(State(..state, open: Shut, search: ""), Stay)
     ChoseTarget(target:) -> #(chose_target(state, offers, target), Stay)
     ChoseProfile(profile:) -> #(chose_profile(state, offers, profile), Stay)
@@ -454,7 +551,7 @@ pub fn default_target(offers: Offers, recent: List(Recent)) -> Option(Target) {
 pub fn offered(offers: Offers, target: Target) -> Bool {
   case target {
     Folder(workspace:) -> list.contains(offers.folders, workspace)
-    TypedFolder -> True
+    TypedFolder -> offers.typing == MayType
     OnExecutor(executor:, workspace:) ->
       placements.offers(offers.cards, placements.OnExecutor(executor))
       && workspace_offered(offers, placements.OnExecutor(executor), workspace)
@@ -660,6 +757,30 @@ pub fn sentence(machine: String, target: Option(Target)) -> List(Piece) {
   }
 }
 
+/// The sentence under the chips for the agent in force. For this daemon it is
+/// `sentence`. For another orchestrator it adds the one fact that differs: this
+/// page relays the session, so approvals come here.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.sentence_for(composer.Here, "laptop", None)
+///   == composer.sentence("laptop", None)
+/// ```
+pub fn sentence_for(
+  agent: Agent,
+  machine: String,
+  target: Option(Target),
+) -> List(Piece) {
+  case agent {
+    Here -> sentence(machine, target)
+    Orchestrator(_) ->
+      list.append(sentence(machine, target), [
+        Plain(" This page relays it: approvals come here."),
+      ])
+  }
+}
+
 // The words that finish a sentence about a registered workspace: its name, or the
 // request to type one.
 fn in_workspace(workspace: Option(String)) -> List(Piece) {
@@ -673,6 +794,10 @@ fn in_workspace(workspace: Option(String)) -> List(Piece) {
 const roles_gone =
   "That profile or model is no longer offered. Choose the Model chip again."
 
+// The words for an agent the page no longer offers or that stopped answering.
+const agent_gone =
+  "That machine is not answering now. Choose the Agent chip again."
+
 // The words for a message past the bound.
 const too_long =
   "That message is too long to send. Shorten it, or send the rest from the session's page."
@@ -682,7 +807,9 @@ const unnamed = "Name the workspace, or choose another."
 
 // A chip's press opens its list, or closes it when it is the one open. The Code
 // chip's opening also owes a read of the placements, so what the list says of
-// each executor is current.
+// each executor is current: this daemon's own when it is the agent, and every
+// orchestrator's when another one is. The Agent chip's opening owes the second
+// read as well, so a machine that came back or went away is drawn as it now is.
 fn toggled(state: State, chip: Chip) -> #(State, Intent) {
   case state.open {
     Showing(chip: open) if open == chip -> #(
@@ -691,11 +818,107 @@ fn toggled(state: State, chip: Chip) -> #(State, Intent) {
     )
     Showing(_) | Shut -> #(
       State(..state, open: Showing(chip), search: ""),
-      case chip {
-        CodeChip -> ReadPlacements
-        AgentChip | ModelChip -> Stay
+      case chip, state.agent {
+        CodeChip, Here -> ReadPlacements
+        CodeChip, Orchestrator(_) | AgentChip, _ -> ReadAgents
+        ModelChip, _ -> Stay
       },
     )
+  }
+}
+
+// A row of the Agent chip's list, honoured only for a machine the page drew that
+// can be chosen. It closes the list. The code choice is not judged here, because
+// the lists it is judged against are the new machine's, which the caller builds
+// once the agent changed (`kept`).
+fn chose_agent(state: State, offers: Offers, agent: Agent) -> State {
+  case choosable(offers, agent) {
+    True ->
+      State(..state, agent:, open: Shut, search: "", refusal: None)
+    False -> state
+  }
+}
+
+/// Whether the Agent chip's list has a row for this machine that can be chosen.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert !composer.choosable(offers, composer.Orchestrator("nowhere"))
+/// ```
+pub fn choosable(offers: Offers, agent: Agent) -> Bool {
+  list.any(offers.agents, fn(candidate) {
+    candidate.agent == agent
+    && case candidate.standing {
+      Ready(_) -> True
+      Unavailable(_) -> False
+    }
+  })
+}
+
+/// The state after the agent changed, given the new machine's offers: the code
+/// choice stays when the new machine can use it and is cleared otherwise, which
+/// is the design's rule that switching keeps the code choice when it can.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.kept(composer.new(), offers).target == None
+/// ```
+pub fn kept(state: State, offers: Offers) -> State {
+  case state.target {
+    Some(target) ->
+      case offered(offers, target) {
+        True -> state
+        False -> State(..state, target: None)
+      }
+    None -> state
+  }
+}
+
+/// The recent places of an orchestrator: the places its relayed sessions work in,
+/// newest first and at most `recent_limit`, each with the names of the sessions
+/// that used it. The list is drawn only while that orchestrator is the agent, so
+/// a press never names a machine other than the one in force.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert composer.recents_on([]) == []
+/// ```
+pub fn recents_on(rows: List(relayed.Row)) -> List(Recent) {
+  let tagged =
+    list.map(rows, fn(row) {
+      #(
+        listing.Place(agent: row.orchestrator, code: row.code),
+        target_on(row.code),
+        case row.name {
+          "" -> "Session " <> string.slice(row.session, 0, 8)
+          named -> named
+        },
+      )
+    })
+
+  list.map(tagged, fn(row) { row.0 })
+  |> list.unique
+  |> list.take(recent_limit)
+  |> list.filter_map(fn(place) {
+    let used = list.filter(tagged, fn(row) { row.0 == place })
+    case used {
+      [#(_, target, _), ..] ->
+        Ok(Recent(target:, place:, names: list.map(used, fn(row) { row.2 })))
+      [] -> Error(Nil)
+    }
+  })
+}
+
+// The target a relayed row's code stands for.
+fn target_on(code: listing.Code) -> Target {
+  case code {
+    listing.Folder(path:) -> Folder(path)
+    listing.Registered(executor:, workspace:) ->
+      OnExecutor(executor, Some(workspace))
+    listing.Pooled(pool:, workspace:) -> InPool(pool, Some(workspace))
   }
 }
 
@@ -766,9 +989,10 @@ fn started(
   prompt: String,
   typed: Typed,
 ) -> #(State, Intent) {
-  case state.sending, chosen(state, offers, recent) {
-    Out, _ | Ready, None -> #(state, Stay)
-    Ready, Some(target) ->
+  case state.sending, chosen(state, offers, recent), choosable(offers, state.agent) {
+    Out, _, _ | Ready, None, _ -> #(state, Stay)
+    Ready, Some(_), False -> #(State(..state, refusal: Some(agent_gone)), Stay)
+    Ready, Some(target), True ->
       case
         in_list(offers.profiles, state.roles.profile)
         && in_list(offers.models, state.roles.model),
@@ -783,14 +1007,35 @@ fn started(
         )
         True, False, Ok(place) -> #(
           State(..state, sending: Out, refusal: None, unsent: None),
-          Create(
-            place:,
-            name: session_name(prompt),
-            prompt: string.trim(prompt),
-            roles: state.roles,
-          ),
+          intent_to_create(state.agent, place, prompt, state.roles),
         )
       }
+  }
+}
+
+// What a start asks for: a session in this daemon's own catalogue, named from the
+// message's first line, or a session another orchestrator names itself.
+fn intent_to_create(
+  agent: Agent,
+  place: creations.Place,
+  prompt: String,
+  roles: creations.Roles,
+) -> Intent {
+  case agent {
+    Here ->
+      Create(
+        place:,
+        name: session_name(prompt),
+        prompt: string.trim(prompt),
+        roles:,
+      )
+    Orchestrator(name:) ->
+      CreateOn(
+        orchestrator: name,
+        place:,
+        prompt: string.trim(prompt),
+        roles:,
+      )
   }
 }
 

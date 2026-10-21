@@ -538,6 +538,7 @@ fn sidebar_page(model: component.Model(socket)) -> sidebar.Page(Msg(socket)) {
     administering: None,
     managing: None,
     who: "",
+    remote: sidebar.NoRemotes,
   )
 }
 

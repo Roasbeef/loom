@@ -152,7 +152,36 @@ pub type Page(message) {
     managing: Option(message),
     /// The principal's display name for the foot, or an empty string.
     who: String,
+    /// The sessions of other orchestrators this page relays
+    /// (protocol-change/094), or none on a page that draws none.
+    remote: Remotes(message),
   )
+}
+
+/// The relayed rows a page's sidebar merges into its groups.
+pub type Remotes(message) {
+  /// The page draws no relayed row: a member's or an observer's page, a page of
+  /// a daemon with no orchestrator to relay for, and the admin page.
+  NoRemotes
+
+  /// The rows the page last read, with their orchestrator's name as the tag's
+  /// agent, and what pressing one sends.
+  Remotes(
+    /// The rows, in the order the page's groups keep.
+    rows: List(listing.Remote),
+    /// A row's press, given the orchestrator's key and the session's identity,
+    /// both of which the page drew into the tree from a read it holds. It
+    /// navigates to the relayed page.
+    open: fn(String, String) -> message,
+  )
+}
+
+// The rows a page's remotes hold, none for a page that has none.
+fn remote_rows(page: Page(message)) -> List(listing.Remote) {
+  case page.remote {
+    NoRemotes -> []
+    Remotes(rows:, ..) -> rows
+  }
 }
 
 /// The sidebar a session page draws for `groups`, with the session named
@@ -250,6 +279,7 @@ fn memoed(
   Option(message),
   Option(message),
   String,
+  List(listing.Remote),
 ) {
   #(
     page.doors,
@@ -259,6 +289,7 @@ fn memoed(
     page.administering,
     page.managing,
     page.who,
+    remote_rows(page),
   )
 }
 
@@ -277,7 +308,14 @@ fn column(
 ) -> Element(message) {
   let all = listing.entries(groups)
   let rows =
-    listing.sorted(all, activity_of(suffix), page.machine, page.filter, current)
+    listing.sorted_among(
+      all,
+      remote_rows(page),
+      activity_of(suffix),
+      page.machine,
+      page.filter,
+      current,
+    )
   let draw = entry(_, current, suffix, page, open, resume, archiving)
 
   html.aside(
@@ -354,7 +392,7 @@ fn top(page: Page(message)) -> Element(message) {
 // The machine pills, in a group named for what they do. With no pill to offer
 // there is nothing to draw, and a row of one choice would only be noise.
 fn pills(all: List(Entry), page: Page(message)) -> Element(message) {
-  case listing.pills(all, page.machine) {
+  case listing.pills_among(all, remote_rows(page), page.machine) {
     [] -> element.none()
     offered ->
       html.div(
@@ -366,7 +404,7 @@ fn pills(all: List(Entry), page: Page(message)) -> Element(message) {
         [
           pill(
             "All",
-            list.length(all),
+            list.length(all) + list.length(remote_rows(page)),
             mark(page.filter, listing.Everywhere),
             page.widening,
           ),
@@ -585,6 +623,84 @@ fn entry(
   resume: Resume(message),
   archiving: Archiving(message),
 ) -> Element(message) {
+  case row.door {
+    listing.Local -> local(row, current, suffix, page, open, resume, archiving)
+    listing.Relayed(orchestrator:, ..) -> relayed(row, orchestrator, current, page)
+  }
+}
+
+// A session of another orchestrator (protocol-change/094). It is listed in the
+// state group its orchestrator's last read put it in, tagged with the
+// orchestrator's name, and pressing it navigates to its relayed page. The row has
+// no menu: a local archive control would name a session this daemon does not
+// hold, and the relayed page has its own Archive, which the orchestrator judges.
+// A row whose orchestrator did not answer the latest read is the last one that was
+// read, greyed, with its age in the tag (`lead`). The session on screen is text.
+fn relayed(
+  row: Row,
+  orchestrator: String,
+  current: String,
+  page: Page(message),
+) -> Element(message) {
+  let entry = row.entry
+  let parts = [residency(doing_row(bucket_activity(row.bucket))), lead(row)]
+  let grey = case row.door {
+    listing.Relayed(seen: listing.Stale(_), ..) -> [attribute.class("stale")]
+    listing.Relayed(seen: listing.Fresh, ..) | listing.Local -> []
+  }
+
+  case entry.id == current {
+    True ->
+      html.li(
+        [
+          attribute.class("session"),
+          attribute.class("current"),
+          attribute.attribute("aria-current", "true"),
+          ..grey
+        ],
+        parts,
+      )
+    False ->
+      case page.remote {
+        // A page that draws no relayed row has none to press, so a row that
+        // somehow reaches here is shown as text.
+        NoRemotes -> html.li([attribute.class("session"), ..grey], parts)
+        Remotes(open:, ..) ->
+          html.li([attribute.class("session"), ..grey], [
+            html.button(
+              [
+                attribute.type_("button"),
+                attribute.class("session-open"),
+                attribute.title("Open this session"),
+                event.on_click(open(orchestrator, entry.id)),
+              ],
+              parts,
+            ),
+          ])
+      }
+  }
+}
+
+// The activity a relayed row's group says. A relayed row is never in the saved
+// group, so that bucket has no word of its own.
+fn bucket_activity(bucket: listing.Bucket) -> Activity {
+  case bucket {
+    listing.NeedsYou -> NeedsYou
+    listing.Working -> Working
+    listing.Idle | listing.Saved -> Idle
+  }
+}
+
+// One row of the daemon's own catalogue, as the sidebar always drew it.
+fn local(
+  row: Row,
+  current: String,
+  suffix: Suffix,
+  page: Page(message),
+  open: fn(String) -> message,
+  resume: Resume(message),
+  archiving: Archiving(message),
+) -> Element(message) {
   let entry = row.entry
   let kind = resume.kind(resume, entry)
   let words = row_words(entry, kind, suffix)
@@ -670,22 +786,39 @@ fn lead(row: Row) -> Element(message) {
   let entry = row.entry
   let code = case row.place.code {
     listing.Folder(path:) -> [attribute.title(path)]
-    listing.Registered(..) -> []
+    listing.Registered(..) | listing.Pooled(..) -> []
+  }
+  let age = case row.door {
+    listing.Relayed(seen: listing.Stale(age_ms:), ..) -> [
+      html.span([attribute.class("tag-seen")], [
+        html.text(" · " <> listing.seen_words(age_ms)),
+      ]),
+    ]
+    listing.Relayed(seen: listing.Fresh, ..) | listing.Local -> []
   }
 
   html.span([attribute.class("session-text")], [
     html.span([attribute.class("session-name")], [
       html.text(sessions.label(entry)),
     ]),
-    html.span([attribute.class("session-tag")], [
-      html.span([attribute.class("tag-agent")], [html.text(row.place.agent)]),
-      html.span([attribute.class("tag-arrow"), attribute.aria_hidden(True)], [
-        html.text(" → "),
-      ]),
-      html.span([attribute.class("tag-code"), ..code], [
-        html.text(listing.entry_words(entry, row.place)),
-      ]),
-    ]),
+    html.span(
+      [attribute.class("session-tag")],
+      list.append(
+        [
+          html.span([attribute.class("tag-agent")], [
+            html.text(row.place.agent),
+          ]),
+          html.span(
+            [attribute.class("tag-arrow"), attribute.aria_hidden(True)],
+            [html.text(" → ")],
+          ),
+          html.span([attribute.class("tag-code"), ..code], [
+            html.text(listing.entry_words(entry, row.place)),
+          ]),
+        ],
+        age,
+      ),
+    ),
     ..subtitle(entry)
   ])
 }

@@ -1233,6 +1233,7 @@ fn sidebar_place(model: Model) -> shell.Sidebar(Msg) {
               administering: None,
               managing: None,
               who: model.start.name,
+              remote: sidebar.NoRemotes,
             ),
             fn(_) { Widening },
             resume.Never,

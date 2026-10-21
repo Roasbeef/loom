@@ -209,3 +209,16 @@ pub fn the_bar_does_not_repeat_what_the_sidebar_says_test() {
     "loom-shell[sidebar=listed] .session-head .brand{display:none}",
   )
 }
+
+// A recent place's cell does not shrink or wrap, and the names of its sessions
+// take the room that is left and end in an ellipsis. With a long list of names the
+// place used to wrap one word to a line ("exec · repo-wt" broken vertically).
+pub fn a_recent_place_never_wraps_and_its_names_are_ellipsised_test() {
+  let css = stylesheet()
+  assert string.contains(css, ".recent-place{white-space:nowrap;flex:none;")
+  assert string.contains(
+    css,
+    "text-overflow:ellipsis;white-space:nowrap;flex:1 1 0;",
+  )
+  assert string.contains(css, ".recent-hint{min-width:0;")
+}
