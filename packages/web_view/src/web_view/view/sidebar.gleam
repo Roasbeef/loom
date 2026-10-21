@@ -670,7 +670,7 @@ fn lead(row: Row) -> Element(message) {
   let entry = row.entry
   let code = case row.place.code {
     listing.Folder(path:) -> [attribute.title(path)]
-    listing.Registered(..) -> []
+    listing.Registered(..) | listing.Pooled(..) -> []
   }
 
   html.span([attribute.class("session-text")], [

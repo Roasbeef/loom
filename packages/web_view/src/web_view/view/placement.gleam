@@ -60,7 +60,7 @@ fn commands(agent: String, code: Option(Code)) -> List(Element(message)) {
         attribute.title(path),
       ]),
     ]
-    Some(listing.Registered(..) as code) -> [
+    Some(listing.Registered(..) as code) | Some(listing.Pooled(..) as code) -> [
       tag("Commands on", listing.code_words(code), []),
     ]
   }

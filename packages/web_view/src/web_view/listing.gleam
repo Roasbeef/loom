@@ -80,6 +80,17 @@ pub type Code {
     /// The workspace's registered name.
     workspace: String,
   )
+
+  /// A workspace on any machine of a pool, which an orchestrator picks when the
+  /// session first opens. Only a session on another orchestrator is placed this
+  /// way, since its orchestrator has not told this page which machine took it.
+  Pooled(
+    /// The pool's `[pools.<name>]` key on the orchestrator that holds the
+    /// session.
+    pool: String,
+    /// The workspace's registered name.
+    workspace: String,
+  )
 }
 
 /// Where a session's agent runs and where its code lives.
@@ -183,11 +194,13 @@ pub fn place(entry: Entry, machine: String) -> Place {
 /// ```gleam
 /// assert listing.code_words(listing.Folder("/Users/a/src/loom")) == "…/src/loom"
 /// assert listing.code_words(listing.Registered("exec", "repo")) == "exec · repo"
+/// assert listing.code_words(listing.Pooled("linux", "repo")) == "linux pool · repo"
 /// ```
 pub fn code_words(code: Code) -> String {
   case code {
     Folder(path:) -> short_path(path)
     Registered(executor:, workspace:) -> executor <> " · " <> workspace
+    Pooled(pool:, workspace:) -> pool <> " pool · " <> workspace
   }
 }
 
@@ -206,7 +219,8 @@ pub fn entry_words(entry: Entry, place: Place) -> String {
   case place.code, sessions.worktree(entry) {
     Folder(_), Some(directory) ->
       sessions.base_name(sessions.project_of(entry)) <> " · " <> directory
-    Folder(_), None | Registered(..), _ -> code_words(place.code)
+    Folder(_), None | Registered(..), _ | Pooled(..), _ ->
+      code_words(place.code)
   }
 }
 
@@ -243,6 +257,7 @@ pub fn code_machine(place: Place) -> String {
   case place.code {
     Folder(_) -> place.agent
     Registered(executor:, ..) -> executor
+    Pooled(pool:, ..) -> pool
   }
 }
 
