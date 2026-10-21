@@ -6711,7 +6711,7 @@ each own one step:
   Erlang reads one cookie for every node the user starts. Rerunning with the
   same bundle changes nothing.
 - `daemon/distribution_cli` dispatches `init`, `provision`, `show`, `install`,
-  `options` and the five ledger commands (`daemon/ledger_cli`, below). `run`
+  `options` and the six ledger commands (`daemon/ledger_cli`, below). `run`
   returns the text to print; `main` prints and halts. No command prints a key,
   cookie, passphrase or certificate. `provision` writes a ledger unless given
   `--static`, and takes `--drop-authority`, `--passphrase-file` and `--home`
@@ -8641,6 +8641,18 @@ through an observer.
   refuses `provision` with none of `--passphrase-file`, `--drop-authority` and
   `--static`, and `enroll`, `revoke` and `renew` without `--passphrase-file`,
   before it spawns, and the usage text says so.
+
+- `Role` has a third variant, `Tool` (protocol-change/096): an inspection tool
+  (pickglass, Observer, `erl -remsh`) enrolled as a ledger member. `role_from_word`
+  (plans, bundles) refuses `tool`; `member_role_from_word` (the entry decoder)
+  accepts it, so only a ledger can hold one. `ledger_operator.check_enrollment`
+  requires a tool to list at least one daemon and stay out of the directory,
+  `enroll` refuses a link that names a tool, `renew` refuses a tool (no bundle
+  holds its key), and `strandings` is empty for it. `ledger_cli.attach_file`
+  enrolls one and writes five files (`ca.pem`, `tool.pem`, `tool.key`,
+  `.erlang.cookie`, `ssl_dist.conf`) with `client/distribution_attach`, which
+  renders the plain `ssl_dist_optfile` (no Loom `verify_fun`: the tool's VM has
+  none) and the recipe. The verify callback is unchanged.
 
 - The kept directory has a fourth file, `cookie` (`Kept.cookie`,
   `authority_key.cookie`, 0600, unsealed): `enroll` and `renew` write bundles and

@@ -177,6 +177,7 @@ loom_profile_consume() {
   LOOM_PROFILE_ARGS=()
   LOOM_PROFILE_ENABLED=0
   LOOM_PROFILE_NODE=""
+  LOOM_PROFILE_DISTRIBUTED=0
   LOOM_PROFILE_COOKIE_HOME=""
   LOOM_PROFILE_ORIGINAL_HOME="${HOME:-}"
 
@@ -266,6 +267,21 @@ loom_profile_consume() {
 
   if [[ -z "$state_root" ]]; then
     state_root="$HOME/.loom"
+  fi
+
+  # A daemon with a [distribution] table is already a TLS node: it boots
+  # unnamed with its own cookie, then names itself after its ledger entry. Naming
+  # the VM here as well, or pointing HOME at a throwaway cookie, would make that
+  # start fail. The profile adds nothing but the allocator tags, and a tool joins
+  # through the deployment's own TLS distribution, with a credential the operator
+  # mints from the ledger (`loom distribution attach-file`).
+  if [[ "$role" == daemon && -n "${LOOM_DISTRIBUTION_OPTFILE:-}" ]]; then
+    LOOM_PROFILE_DISTRIBUTED=1
+    printf 'Loom profiling enabled for daemon on the deployment'"'"'s TLS distribution.\n' >&2
+    printf '  node: the daemon'"'"'s ledger node (`loom distribution show`)\n' >&2
+    printf '  attach: mint a credential with `loom distribution attach-file`, then start\n' >&2
+    printf '  the tool with `-proto_dist inet_tls -ssl_dist_optfile <file>` (docs/distribution.md).\n' >&2
+    return 0
   fi
 
   local tokens="$state_root/tokens"

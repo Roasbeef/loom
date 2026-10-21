@@ -1897,7 +1897,9 @@ pub fn ownership_of(
     Some(handle) ->
       case ledger_role(handle.service, local) {
         Ok(distribution_plan.Orchestrator) -> Some(ownership.over_store(local))
-        Ok(distribution_plan.Executor) | Error(Nil) -> None
+        Ok(distribution_plan.Executor)
+        | Ok(distribution_plan.Tool)
+        | Error(Nil) -> None
       }
     None ->
       case

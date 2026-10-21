@@ -32,6 +32,25 @@ loom_profile_consume daemon --bind 127.0.0.1:0 --profile --state-dir "$state/dae
 [[ "$LOOM_PROFILE_ENABLED" == 1 ]]
 [[ "${LOOM_PROFILE_ARGS[*]}" == "--bind 127.0.0.1:0 --state-dir $state/daemon" ]]
 
+# A daemon that boots as a TLS distribution node is not named or given a
+# throwaway cookie by the launcher: it keeps the deployment's own, and the
+# launcher creates no credential directory. A client is unaffected.
+LOOM_DISTRIBUTION_OPTFILE="$state/dist.options" \
+  loom_profile_consume daemon --profile --state-dir "$state/distributed"
+[[ "$LOOM_PROFILE_ENABLED" == 1 ]]
+[[ "$LOOM_PROFILE_DISTRIBUTED" == 1 ]]
+[[ -z "$LOOM_PROFILE_NODE" ]]
+[[ -z "$LOOM_PROFILE_COOKIE_HOME" ]]
+[[ ! -e "$state/distributed/tokens" ]]
+[[ "${LOOM_PROFILE_ARGS[*]}" == "--state-dir $state/distributed" ]]
+LOOM_DISTRIBUTION_OPTFILE="$state/dist.options" \
+  loom_profile_consume client --profile --state-dir "$state/distributed-client"
+[[ "$LOOM_PROFILE_DISTRIBUTED" == 0 ]]
+[[ "$LOOM_PROFILE_NODE" == loom_client_profile_*@127.0.0.1 ]]
+loom_profile_consume daemon --profile --state-dir "$state/plain-daemon"
+[[ "$LOOM_PROFILE_DISTRIBUTED" == 0 ]]
+[[ "$LOOM_PROFILE_NODE" == loom_daemon_profile_*@127.0.0.1 ]]
+
 profile_config="$state/daemon-profile.toml"
 reader="$state/profile-reader"
 cat > "$reader" <<'EOF'
