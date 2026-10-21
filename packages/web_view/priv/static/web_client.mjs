@@ -41,7 +41,7 @@
    input dbff0475e6ac6447d0d5cf817790380b739de20f1ece519fb1618dcc9472e353  packages/web_client/src/web_client/saved.gleam
    input 1cd181010669e2dfe37b7c51c9df331cbacfd889f5484766bb3fadcde4853344  packages/web_client/src/web_client/saved_rule.gleam
    input 69fe02a30cc51ed54148aaecb7dc80e1427243a16a71e750afc8c2522cbe262b  packages/web_client/src/web_client/shell.gleam
-   input 2bfacd28b75523637dce9cf7cab5951fce5f5135fad83e559e66f07940c8f4a7  packages/web_client/src/web_client/shell_rule.gleam
+   input b27579867ad49233948115485270a9e8927e589b99fb8ba3cdfc75738a4c624f  packages/web_client/src/web_client/shell_rule.gleam
    input b2e3b58f4885a4ab8b0ccf6474b5a29fc714eaab7eb85b0de39eb62746cc349b  packages/web_client/src/web_client/switch.gleam
    input 94ebc75eac30dd4a52f54b57551336cf2487ada65daed403def26470a8fd7c81  packages/web_client/src/web_client/switch_rule.gleam
    input c3ccd4961a5395e7080651fa238f4ce39764ffda8ed4b80d5ec33a758b958630  packages/web_client/src/web_client/switcher.gleam
