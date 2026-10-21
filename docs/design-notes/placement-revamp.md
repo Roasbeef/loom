@@ -306,40 +306,57 @@ Each slice is one branch and one PR, merged when its exit criteria pass.
 
 Split in two so the read path lands first.
 
-- **S2a, placements, create and list.** Box answers `Placements` and
-  `TopCreate` and pages `TopSessions` with activity; laptop's Agent chip lists
-  box, the Code chip lists box's options, the composer creates on box, and box's
-  sessions appear in laptop's sidebar with their state.
-- **S2b, open and drive.** `TopHistory`, `TopSend` and approvals over the 089
-  path with a top-level holder; the session page for a relayed session.
+The protocol is pull-only: every message goes from the laptop to the box,
+dialled on demand, and the box sends nothing on its own.
+
+- **S2a, placements, create and list.** Box answers `Placements` (read at each
+  composer open) and `TopCreate` (reserving the registration and the relayed
+  row in one catalogue transaction that judges the caps), and pages
+  `TopSessions` with activity, pending requests and `request_id`. Laptop's
+  Agent chip lists box, the Code chip lists box's options, the composer
+  creates on box and sends the first message with `TopSend`, and box's
+  sessions appear in laptop's sidebar with their state, re-read every 5 s
+  while a page is open.
+- **S2b, open and drive.** `TopHistory`, `TopSend`, `TopStop`, `TopArchive`
+  and `TopResolve` (judged on the box in the session hub's turn, as
+  `remote_decision` does for 089); request cards drawn from the pending
+  records on each `TopSessions` row; the relayed session page at
+  `/ui/p/<key>/orchestrators/<name>/sessions/<id>`.
 - **Packages.** `client` (`remote/orchestrator_port`, a relay worker under
-  `daemon/`, `ui_socket`), `storage` (a `catalogue_relayed_sessions` table and
-  its schema module), `web_view`.
+  `daemon/`, `ui_socket`), `storage` (a `catalogue_relayed_sessions` table, its
+  schema module and the reserving transaction), `web_view`.
 - **Tests.** Port tests for each constructor's refusals (unknown spawner,
   `top_level` off, cap reached, placement not offered, session not relayed,
-  ceiling exceeded); a two-daemon test in the shape of the 084 S9 tests
-  covering link loss, resend after loss and same-build checks; the web
-  socket's admission pins for relayed rows.
+  ceiling exceeded); a catalogue test that two concurrent creates at the cap
+  do not both pass, and that a crash between registration and row is
+  impossible because they share a transaction; a two-daemon test in the shape
+  of the 084 S9 tests covering link loss, resend after loss, reconciliation of
+  a lost create by `request_id`, and same-build checks; the web socket's
+  admission pins for relayed rows.
 - **Exit.** Live drive: from the laptop's page start "agent on box, code on
   exec" and "agent on box, folder on box", reply, approve, see the state in
-  the sidebar, then repeat from the box's page toward the laptop if the
-  laptop's daemon is configured to allow it; the same from a phone.
+  the sidebar; a pending request survives a laptop restart and is decided
+  after it; the same from a phone.
 
 ### S3: worktree per session (protocol-change/095)
 
 - **Scope.** `mode = "worktree"` on `[workspaces.<name>]`; creation at attach,
-  removal at a clean close, kept when dirty, recreation on reopen; the census
+  removal at a clean close (ignoring Loom's `.codemode`), kept when it holds
+  user changes, recreation on reopen; orphaned trees of deleted sessions
+  reported in the census and removed by `loomd executor release`; the census
   reports the mode; the branch is shown in the session header.
 - **Packages.** `client` (`executor_plane`, `remote/host`, `workspaces`,
   `remote/protocol`), `storage` (`exec_ledger`), docs.
 - **Tests.** Executor-plane tests against a real temporary repository:
   create, two sessions on one workspace getting two trees, clean close
   removing the tree and keeping the branch, dirty close keeping the tree,
-  reopen recreating from the branch, crash between intent and `git worktree
-  add` reconciled at start, the linked-worktree widening applied to the new
-  tree.
+  reopen recreating from the branch, a failed `git worktree add` leaving no
+  directory behind, crash between intent and `git worktree add` reconciled at
+  start, the linked-worktree widening applied to the new tree, and a worktree
+  session unable to read `<state root>/scopes/<other>`.
 - **Exit.** `make check`, `make e2e` and a live drive with two sessions on
-  `exec:repo` editing the same file without interfering.
+  `exec:repo` editing the same file without interfering; a tree whose only
+  untracked content is `.codemode` is removed at close.
 
 ### S4: removal and docs
 
