@@ -708,3 +708,30 @@ pub fn a_switch_to_a_box_names_its_first_profile_test() {
   let back = composer.kept(composer.kept(fresh, box_offers()), offers())
   assert back.roles.profile == None
 }
+
+// An empty first message is allowed for a box exactly as it is for this daemon: the
+// start is a create that sends no message, and the box names the session itself.
+pub fn an_empty_message_starts_a_box_session_without_a_message_test() {
+  let state =
+    composer.State(
+      ..composer.new(),
+      agent: composer.Orchestrator("box"),
+      target: Some(composer.Folder("/srv/app")),
+    )
+  let #(_, intent) =
+    update(state, composer.Started("   ", composer.Nothing), box_offers())
+
+  assert intent
+    == composer.CreateOn(
+      "box",
+      creations.Drawn("/srv/app"),
+      "",
+      creations.default_roles,
+    )
+
+  // The local composer does the same: `Create` with an empty prompt.
+  let here = composer.State(..state, agent: composer.Here)
+  let #(_, local) =
+    update(here, composer.Started("   ", composer.Nothing), box_offers())
+  let assert composer.Create(prompt: "", ..) = local
+}
