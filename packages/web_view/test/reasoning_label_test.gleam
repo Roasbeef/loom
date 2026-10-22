@@ -84,6 +84,11 @@ fn preview(label: String) -> String {
   "<span class=\"subject preview\">" <> label <> "</span>"
 }
 
+// A summarized row's collapsed preview: the whole summary in the wrapped span.
+fn summary(label: String) -> String {
+  "<span class=\"subject preview summary\">" <> label <> "</span>"
+}
+
 fn count(haystack: String, needle: String) -> Int {
   list.length(string.split(haystack, needle)) - 1
 }
@@ -117,7 +122,7 @@ pub fn a_block_that_settles_keeps_the_label_it_streamed_with_test() {
   list.each(drawn(settled), fn(html) {
     assert string.contains(html, summarized)
     assert string.contains(html, "· 2 lines")
-    assert string.contains(html, preview("Found a lock-order mismatch"))
+    assert string.contains(html, summary("Found a lock-order mismatch"))
     assert !string.contains(html, raw)
     assert !string.contains(
       html,
@@ -136,7 +141,7 @@ pub fn the_stored_label_replaces_the_carried_one_test() {
     ])
   let stored = component.apply(settled, [stored(2, "The stored summary")])
   list.each(drawn(stored), fn(html) {
-    assert string.contains(html, preview("The stored summary"))
+    assert string.contains(html, summary("The stored summary"))
     assert !string.contains(html, "Found a lock-order mismatch")
     assert count(html, summarized) == 1
   })
@@ -147,7 +152,7 @@ pub fn a_label_that_arrives_after_the_block_settled_shows_test() {
   let labelled = component.apply(settled, [stored(2, "Arrived late")])
   list.each(drawn(labelled), fn(html) {
     assert string.contains(html, summarized)
-    assert string.contains(html, preview("Arrived late"))
+    assert string.contains(html, summary("Arrived late"))
   })
 }
 
@@ -176,7 +181,7 @@ pub fn a_label_that_arrives_after_the_turn_was_sealed_shows_test() {
   // steps were read. Nothing was sealed again: the row is drawn from the label.
   let labelled = component.apply(folded, [stored(2, "Sealed, then labelled")])
   list.each(drawn(labelled), fn(html) {
-    assert string.contains(html, preview("Sealed, then labelled"))
+    assert string.contains(html, summary("Sealed, then labelled"))
     assert count(html, summarized) == 1
     assert count(html, raw) == 1
   })
@@ -186,7 +191,7 @@ pub fn a_label_that_arrives_after_the_turn_was_sealed_shows_test() {
     page([lane_fixture.reasoned(2, 1, None), stored(6, "Before opening")])
     |> lane_fixture.opened
   list.each(drawn(early), fn(html) {
-    assert string.contains(html, preview("Before opening"))
+    assert string.contains(html, summary("Before opening"))
     assert count(html, summarized) == 1
   })
 }
@@ -287,7 +292,7 @@ pub fn a_reloaded_page_reads_the_labels_it_lacks_and_draws_them_test() {
   let model =
     answered(model, read, [#(lane_fixture.entry_text(2), 0, "Read from store")])
   list.each(drawn(model), fn(html) {
-    assert string.contains(html, preview("Read from store"))
+    assert string.contains(html, summary("Read from store"))
     assert string.contains(html, summarized)
   })
 
@@ -376,9 +381,9 @@ pub fn blocks_loaded_through_history_and_an_opened_fold_are_read_test() {
     |> serve
 
   list.each(drawn(model), fn(html) {
-    assert string.contains(html, preview("First step weighed"))
-    assert string.contains(html, preview("Second step weighed"))
-    assert string.contains(html, preview("Third step weighed"))
+    assert string.contains(html, summary("First step weighed"))
+    assert string.contains(html, summary("Second step weighed"))
+    assert string.contains(html, summary("Third step weighed"))
   })
 
   // Each of the three was asked about once, in reads of at most the bound.

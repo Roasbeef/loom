@@ -921,10 +921,14 @@ page keys and nonces, and the relay into the session's gateway.
   every speaker shape (`ReasoningDigest` with or without `thoughts`,
   `Reasoning`, `SummarizedReasoning`) is drawn by `lane.reasoning_row`:
   `step_words.reasoning_of` heading (`Reasoning (summarized)`, the line count
-  when there is more to open, the time), a one-line preview, and the text as
-  Markdown behind the chevron. A summarized block whose label is longer than
-  that one line (`lane.summary_row`) opens with the whole label first, then
-  the block's own text; the heading still counts the block's lines.
+  when there is more to open, the time), a preview, and the text as
+  Markdown behind the chevron. A summarized block (`lane.summary_row`) previews
+  its whole summary, wrapped and clamped to five lines
+  (`fold_row.summary_span`, `.preview.summary`), not one cut line. When the
+  page holds the block's own text, the body is the summary under a "Summary"
+  label, a hairline (`fold_row.part_divider`), and the block's text under a
+  "Full reasoning" label; a lone summary has no labels or divider. Labels are
+  fixed strings; the heading still counts the block's lines.
   `live.Opened(elapsed_ms)` is the
   row before anything streams: while the followed strand's phase is `assistant`
   or `streaming` and no stream is held, `component.live` returns it alone,

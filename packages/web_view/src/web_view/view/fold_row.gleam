@@ -225,6 +225,51 @@ pub fn preview_span(children: List(Element(message))) -> Element(message) {
   html.span([attribute.class("subject"), attribute.class("preview")], children)
 }
 
+/// The span a summarized reasoning row's preview is drawn in. It is the same
+/// span as `preview_span` with a `summary` class, which lets the stylesheet
+/// wrap it and clamp it to a few lines instead of cutting it to one. The
+/// children are phrasing content (text and line breaks), since the span sits
+/// inside the row's button.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.summary_span([html.text("Found it."), html.br([]), html.text("Next.")])
+/// ```
+pub fn summary_span(children: List(Element(message))) -> Element(message) {
+  html.span(
+    [
+      attribute.class("subject"),
+      attribute.class("preview"),
+      attribute.class("summary"),
+    ],
+    children,
+  )
+}
+
+/// The small quiet label above one part of a two-part reasoning body. The
+/// words are a fixed string chosen by the caller, never model text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.part_label("Summary")
+/// ```
+pub fn part_label(words: String) -> Element(message) {
+  html.p([attribute.class("part-label")], [html.text(words)])
+}
+
+/// The hairline between the two parts of a reasoning body.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // fold_row.part_divider()
+/// ```
+pub fn part_divider() -> Element(message) {
+  html.hr([attribute.class("part-divider")])
+}
+
 /// A row whose line is the report's first line and whose body is the rest, for
 /// a result that runs longer than its first line: the line is what a reader
 /// scans and the body is what they open. The line is given as elements (a

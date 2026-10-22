@@ -1125,6 +1125,16 @@
   /* An open reasoning row shows the whole text beneath its line, which begins
      with the same sentence, so the line drops its preview. */
   loom-expand.thought:state(open) .row-head .preview{display:none;}
+  /* A summarized row shows its whole summary wrapped, clamped to a few lines,
+     and the open body separates the summary from the raw reasoning with a
+     small label on each part and a hairline between them. */
+  .thought .row-head .preview.summary{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:5;white-space:normal;overflow-wrap:anywhere;}
+  @media (max-width:640px){
+    .thought .row-head:has(.preview.summary){flex-wrap:wrap;}
+    .thought .row-head .preview.summary{flex:1 1 100%;}
+  }
+  .part-label{margin:0 0 2px;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);letter-spacing:.04em;text-transform:uppercase;opacity:.8;}
+  .part-divider{margin:8px 0;border:0;border-top:1px solid var(--color-divider);}
   .row-head .change{display:inline-flex;flex:0 0 auto;gap:6px;font:12px/1.5 var(--font-mono);}
   .change .added{color:var(--color-added-text);}
   .change .removed{color:var(--color-danger-text);}

@@ -1184,23 +1184,21 @@ fn block_element(
               reasoning_row(
                 step_words.Raw,
                 first.text,
-                first.text,
-                held,
+                preview(first.text),
+                list.map(held, fold_row.line_row(_, draw)),
                 known,
                 took,
                 heir,
-                draw,
               )
             [] ->
               reasoning_row(
                 step_words.Raw,
                 row.1.text,
-                row.1.text,
+                preview(row.1.text),
                 [],
                 known,
                 took,
                 heir,
-                draw,
               )
           }
         }
@@ -1208,12 +1206,11 @@ fn block_element(
           reasoning_row(
             step_words.Raw,
             row.1.text,
-            row.1.text,
-            more_of(row.1.text),
+            preview(row.1.text),
+            list.map(more_of(row.1.text), fold_row.line_row(_, draw)),
             known,
             took,
             heir,
-            draw,
           )
         transcript_line.SummarizedReasoning ->
           summary_row(
@@ -1300,26 +1297,24 @@ fn message_row(
 // speaker its row has: the digest the transcript keeps for a block (with the
 // whole text beside it when the page holds it), the whole text itself, or a
 // provider's summary. The row is the terminal's heading (`step_words`: the
-// verb, the line count when there is more to open, the time), then a one-line
-// Markdown preview, and behind the chevron the whole text as Markdown. `text`
-// is the block's own text, which the line count is read from, and `shown` is
-// what the preview is a line of: the same text for a raw block, the summary
-// for a summarized one. `body` is what opens: empty when the preview already
-// says everything, in which case the row has no chevron and no count of its own.
-// A sealed turn keeps no full text, so its rows have an empty body however long
-// the block was; `known` is the block's line count read from the response it was
-// drawn from (`turns.reasoning_lines`), and a block of more than one line says
-// it, so a row beside an answer counts as a step in a fold does. The text
-// is the model's or the provider's and is drawn only as text nodes.
+// verb, the line count when there is more to open, the time), then a preview
+// drawn by the caller, and behind the chevron the `body`. `text` is the
+// block's own text, which the line count is read from. An empty `body` means
+// the preview already says everything, so the row has no chevron and no count
+// of its own. A sealed turn keeps no full text, so its rows have an empty body
+// however long the block was; `known` is the block's line count read from the
+// response it was drawn from (`turns.reasoning_lines`), and a block of more
+// than one line says it, so a row beside an answer counts as a step in a fold
+// does. The text is the model's or the provider's and is drawn only as text
+// nodes.
 fn reasoning_row(
   provenance: step_words.Provenance,
   text: String,
-  shown: String,
-  body: List(Line),
+  shown: List(Element(message)),
+  body: List(Element(message)),
   known: Option(Int),
   took: Option(Int),
   heir: fold_row.Handoff,
-  draw: fn(Line) -> Element(message),
 ) -> Element(message) {
   let count = case body, known {
     [_, ..], _ -> Some(list.length(string.split(text, "\n")))
@@ -1328,8 +1323,8 @@ fn reasoning_row(
   }
   fold_row.reasoning(
     step_words.reasoning_of(provenance, count, took),
-    preview(shown),
-    list.map(body, fold_row.line_row(_, draw)),
+    shown,
+    body,
     heir,
   )
 }
@@ -1356,19 +1351,45 @@ fn preview(text: String) -> List(Element(message)) {
   ]
 }
 
+// The preview of a provider's summary: every non-blank line of it, uncut and
+// separated by line breaks, in a span the stylesheet wraps and clamps to a few
+// lines (`.preview.summary`). The terminal prints the whole summary above the
+// detail, and a reader should not have to open the row to read it. Each line
+// is provider text drawn as text nodes through `markdown_view.line`, and the
+// memo is keyed by the summary like `preview`.
+fn summary_preview(summary: String) -> List(Element(message)) {
+  [
+    element.memo([element.ref(summary)], fn() {
+      case string.trim(summary) {
+        "" -> element.none()
+        _ ->
+          fold_row.summary_span(
+            summary
+            |> string.split("\n")
+            |> list.filter(fn(line) { string.trim(line) != "" })
+            |> list.map(fn(line) {
+              markdown_view.line(line, string.length(line))
+            })
+            |> list.intersperse([html.br([])])
+            |> list.flatten,
+          )
+      }
+    }),
+  ]
+}
+
 // A summarized block's row text is the terminal's header line and the summary
 // beneath it; the summary is the text, and the header's words are the
-// heading's. When the page holds the block's own text (`held`, the full form
-// `turns` keeps by the row's key), the row is the terminal's: the heading
-// counts the lines of the block the summary stands for and the time it took,
-// the summary is the preview, and the chevron opens the block's own text. A
-// summary alone, with no text behind it, counts and opens its own lines.
-//
-// The preview is one line, so a summary longer than that would never be read
-// whole on this page. When it is longer, the body opens with the summary in
-// full (`more_of`, the same test the lone-summary branch uses) and the block's
-// own text follows it. The heading still counts the block's own lines, because
-// the count is read from `first.text` and not from the body.
+// heading's. The collapsed row shows the whole summary, wrapped and clamped
+// (`summary_preview`). When the page holds the block's own text (`held`, the
+// full form `turns` keeps by the row's key), the heading counts the lines of
+// the block the summary stands for and the time it took, and the chevron opens
+// two parts: the summary under a "Summary" label, a hairline, and the block's
+// own text under a "Full reasoning" label. The preview is hidden while the row
+// is open, so the summary is repeated in the body whenever there is a second
+// part to separate it from. A summary alone, with no text behind it, counts
+// and opens its own lines with no labels and no divider, since there is only
+// one part to read.
 fn summary_row(
   text: String,
   held: List(Line),
@@ -1381,28 +1402,43 @@ fn summary_row(
     Ok(#(_, summary)) -> summary
     Error(Nil) -> text
   }
-  case held {
-    [first, ..] ->
+  let summary_lines = [transcript_line.Line(transcript_line.Reasoning, summary)]
+  let drawn = fn(lines) { list.map(lines, fold_row.line_row(_, draw)) }
+  case held, string.trim(summary) {
+    [first, ..], "" ->
       reasoning_row(
         step_words.Summarized,
         first.text,
-        summary,
-        list.append(more_of(summary), held),
+        summary_preview(summary),
+        drawn(held),
         known,
         took,
         heir,
-        draw,
       )
-    [] ->
+    [first, ..], _ ->
+      reasoning_row(
+        step_words.Summarized,
+        first.text,
+        summary_preview(summary),
+        list.flatten([
+          [fold_row.part_label("Summary")],
+          drawn(summary_lines),
+          [fold_row.part_divider(), fold_row.part_label("Full reasoning")],
+          drawn(held),
+        ]),
+        known,
+        took,
+        heir,
+      )
+    [], _ ->
       reasoning_row(
         step_words.Summarized,
         summary,
-        summary,
-        more_of(summary),
+        summary_preview(summary),
+        drawn(more_of(summary)),
         known,
         took,
         heir,
-        draw,
       )
   }
 }
