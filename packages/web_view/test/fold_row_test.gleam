@@ -391,10 +391,8 @@ pub fn every_speaker_shape_of_a_reasoning_block_closes_to_a_heading_and_a_previe
     "<span class=\"verb\">Reasoning (summarized)</span>",
   )
   assert string.contains(summary, "· 2 lines · 1m 9s</span>")
-  assert string.contains(
-    summary,
-    "<span class=\"subject preview\">Found it.</span>",
-  )
+  assert string.contains(summary, "<span class=\"subject preview summary\">")
+  assert string.contains(summary, "Found it.<br>Second line")
   assert !string.contains(summary, "Ctrl+G")
   assert count(summary, "<loom-expand") == 1
 
@@ -438,43 +436,51 @@ fn summarized(label: String, held: List(transcript_line.Line)) -> String {
   ])
 }
 
-pub fn a_long_summary_opens_whole_before_the_raw_text_test() {
+pub fn a_summary_previews_whole_and_opens_in_two_labelled_parts_test() {
   let html =
     summarized("Found the <b>x</b> bug.\nIt lives in parse.", [
       Line(transcript_line.Reasoning, "raw one\nraw two\nraw three"),
     ])
 
-  // The heading still counts the raw block's lines, and the preview is the
-  // summary's first line.
+  // The heading still counts the raw block's lines, and the collapsed preview
+  // carries the whole summary, not its first line.
   assert string.contains(html, "· 3 lines · 1m 30s</span>")
-  assert string.contains(html, "<span class=\"subject preview\">Found the")
-
-  // The body opens with the whole summary and then the raw text, all as text.
-  let assert Ok(#(_, body)) = string.split_once(html, "slot=\"body\"")
+  assert string.contains(html, "class=\"subject preview summary\"")
+  let assert Ok(#(head, body)) = string.split_once(html, "slot=\"body\"")
     as "the row has a body"
+  assert string.contains(head, "It lives in parse.")
+
+  // The body is the summary, a hairline, then the raw text, each part labelled.
   let assert Ok(#(summary_part, raw_part)) = string.split_once(body, "raw one")
     as "the raw text follows"
+  assert string.contains(summary_part, ">Summary</p>")
   assert string.contains(summary_part, "It lives in parse.")
+  assert string.contains(summary_part, "<hr class=\"part-divider\">")
+  assert string.contains(summary_part, ">Full reasoning</p>")
   assert string.contains(raw_part, "raw three")
   assert !string.contains(html, "<b>x</b>")
   assert string.contains(html, "&lt;b&gt;x&lt;/b&gt;")
 }
 
-pub fn a_short_summary_the_preview_shows_whole_is_not_repeated_test() {
+pub fn a_short_summary_with_held_text_is_still_separated_test() {
   let html =
     summarized("Found it.", [
       Line(transcript_line.Reasoning, "raw one\nraw two"),
     ])
   assert string.contains(html, "· 2 lines · 1m 30s</span>")
-  assert count(html, "Found it.") == 1
+
+  // Once in the preview, which the open row hides, and once under its label.
+  assert count(html, "Found it.") == 2
+  assert count(html, "part-divider") == 1
   assert count(html, "raw one") == 1
 }
 
-pub fn a_summary_with_no_held_text_still_opens_its_own_lines_test() {
+pub fn a_summary_with_no_held_text_has_no_labels_or_divider_test() {
   let html = summarized("Found it.\nSecond line", [])
   assert string.contains(html, "· 2 lines · 1m 30s</span>")
   assert string.contains(html, "slot=\"body\"")
-  assert count(html, "Second line") == 1
+  assert !string.contains(html, "part-divider")
+  assert !string.contains(html, "part-label")
 }
 
 pub fn a_fold_is_one_collapsed_line_and_no_rule_test() {
