@@ -602,10 +602,10 @@ loom distribution attach-file inspector --node inspector@127.0.0.1 \
 lists it). `--node` is the name the tool must start under: the certificate is issued for it,
 and the daemon drops a connected node whose name is not a linked member's.
 The command signs a `member` entry with
-the role `tool`, hands it to the daemon on this host, and writes five files in
-the directory (mode 0700): `ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie`
-and `ssl_dist.conf`. The last is a standard `ssl_dist_optfile` that names the
-other three. It has no Loom option in it, so every tool that starts an Erlang
+the role `tool`, hands it to the daemon on this host, and writes six files in
+the directory (mode 0700): `ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie`,
+`node` (the tool's own node name, one line) and `ssl_dist.conf`. The last is a standard `ssl_dist_optfile` that names the
+credential files. It has no Loom option in it, so every tool that starts an Erlang
 VM can use it, with standard flags and the cookie. Keep `-hidden -dist_listen
 false` on every tool: the file trusts the authority and not the ledger, so it
 has no server side, and a listening tool would accept a revoked member:

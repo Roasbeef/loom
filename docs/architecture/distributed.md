@@ -402,8 +402,9 @@ has the variant, `role_from_word` (plans and bundles) refuses the word and
 `member_role_from_word` (the entry decoder) accepts it.
 
 `loom distribution attach-file` (`daemon/ledger_cli.attach_file`) enrolls one and
-writes `ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie` and `ssl_dist.conf`
-into a private directory. `client/distribution_attach` renders the options file
+writes `ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie`, `node` (the tool's node
+name and a newline) and `ssl_dist.conf` into a private directory, the shape
+`pickglass attach --attach-dir` reads. `client/distribution_attach` renders the options file
 and the recipe. The file names only stock `ssl` options (the three credential
 files, `verify_peer`, the TLS versions) in a `client` section alone: a tool must never listen, since a listener would trust the authority and not the ledger, so the recipes add `-hidden -dist_listen false`, because the tool's VM does not have
 Loom's verify function and does not need it: the daemon is the side that pins.

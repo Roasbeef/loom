@@ -6,7 +6,7 @@
 //// ledger. An inspection tool (pickglass, Observer, `erl -remsh`) is such a
 //// node, so the operator enrolls it as a `tool` member and gives it a
 //// certificate, a key, the authority certificate and the deployment's cookie.
-//// This module is the part of that which is pure: where the five files sit in
+//// This module is the part of that which is pure: where the files sit in
 //// the directory the operator names, the standard `ssl_dist_optfile` that
 //// points at them, and the sentences that say how to start a tool with them.
 //// The command that mints and writes them is `client/daemon/ledger_cli`.
@@ -37,7 +37,12 @@ pub const cookie_file = ".erlang.cookie"
 /// The options file name.
 pub const options_file = "ssl_dist.conf"
 
-/// The five absolute paths of an attachment. Each sits directly in the
+/// The file naming the tool's own node, one line. Together with the options
+/// file and the cookie it makes the directory a self-contained
+/// `pickglass attach --attach-dir`.
+pub const node_file = "node"
+
+/// The six absolute paths of an attachment. Each sits directly in the
 /// directory the operator named, which is created with mode 0700, and the key
 /// and the cookie are written mode 0600.
 pub type Files {
@@ -54,10 +59,13 @@ pub type Files {
     cookie: String,
     /// The `ssl_dist_optfile` that names the other four.
     options: String,
+    /// The tool's node name and a newline, which a viewer reads to know what to
+    /// start as.
+    node: String,
   )
 }
 
-/// The five paths under `directory`, which is absolute and has no trailing
+/// The six paths under `directory`, which is absolute and has no trailing
 /// slash.
 ///
 /// ## Examples
@@ -74,6 +82,7 @@ pub fn files_in(directory: String) -> Files {
     key: directory <> "/tool.key",
     cookie: directory <> "/" <> cookie_file,
     options: directory <> "/" <> options_file,
+    node: directory <> "/" <> node_file,
   )
 }
 
@@ -156,8 +165,14 @@ pub fn instructions(
     [only] -> only
     _ -> "<daemon node>"
   }
+  let directory = shell_quote(files.directory)
   string.join(
     [
+      "Pickglass:     pickglass attach --node "
+        <> daemon
+        <> " --attach-dir "
+        <> directory,
+      "",
       "Any Erlang node started with these flags can join the daemon. The node "
         <> "must be named "
         <> tool_node

@@ -86,6 +86,8 @@ pub fn attach_file_enrolls_a_tool_and_writes_the_five_files_test() {
   assert string.contains(key, "PRIVATE KEY")
   let assert Ok(cookie) = simplifile.read(files.cookie)
   assert !string.ends_with(cookie, "\n")
+  assert simplifile.read(files.node) == Ok("inspector@127.0.0.1\n")
+  assert string.contains(report, "pickglass attach --node loom@hub.example")
 
   // The directory is private, and the key and cookie are readable by the
   // owner alone.

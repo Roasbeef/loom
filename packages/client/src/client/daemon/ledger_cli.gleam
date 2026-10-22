@@ -769,7 +769,14 @@ fn attach_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
         Decision(entry:, extra: #(certificate, key))
       },
       fn(signed, issued) {
-        write_attachment(files, options, authority, issued.0, issued.1)
+        write_attachment(
+          files,
+          options,
+          request.node,
+          authority,
+          issued.0,
+          issued.1,
+        )
         |> result.map_error(fn(reason) {
           name
           <> " is enrolled as entry "
@@ -811,7 +818,7 @@ fn attach_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
   ))
 }
 
-// The directory is made private, and five files are written into it, so a
+// The directory is made private, and six files are written into it, so a
 // directory that already holds anything is refused without `--force`. That
 // keeps `--out ~` from replacing `~/.erlang.cookie` or changing the mode of a
 // home directory, and a directory that does not exist yet is fine.
@@ -821,7 +828,7 @@ fn refuse_occupied(out: String, overwrite: Overwrite) -> Result(Nil, String) {
       Error(
         out
         <> " is not empty. attach-file writes ca.pem, tool.pem, tool.key, "
-        <> ".erlang.cookie and ssl_dist.conf there and makes the directory "
+        <> ".erlang.cookie, node and ssl_dist.conf there and makes the directory "
         <> "private, so name an empty or new directory, or pass --force to "
         <> "use this one",
       )
@@ -862,6 +869,7 @@ fn tool_enrollment_of(
 fn write_attachment(
   files: distribution_attach.Files,
   options: String,
+  node: String,
   authority: Authority,
   certificate: String,
   key: String,
@@ -871,6 +879,7 @@ fn write_attachment(
     #(files.certificate, certificate),
     #(files.key, key),
     #(files.cookie, authority.cookie),
+    #(files.node, node <> "\n"),
     #(files.options, options),
   ]
   |> list.try_each(fn(file) {

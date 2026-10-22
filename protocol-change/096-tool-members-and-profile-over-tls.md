@@ -83,8 +83,8 @@ attach-file NAME --node N --links DAEMON --out DIR [--host H] [--force]
 
 It does what `enroll` does for a `tool` (mint under the kept authority, sign,
 append, hand to a daemon, report confirmations) and writes, instead of a
-bundle, `DIR/ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie` and
-`ssl_dist.conf` (the directory is mode 0700, the key and cookie 0600). The
+bundle, `DIR/ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie`, `node` (the
+`--node` value and a newline) and `ssl_dist.conf` (the directory is mode 0700, the key and cookie 0600). The
 options file is plain Erlang: a `client` section with the three credential
 files, `verify_peer` against the authority and the TLS versions, and no Loom
 function in it. It has no `server` section, because a tool must never be
