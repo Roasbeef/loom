@@ -195,23 +195,12 @@ pub fn view(
           },
 
           // The last settled generation's output speed, in the terminal's
-          // own words. Empty until a generation long enough to time has
-          // settled, and then nothing is drawn rather than a dash.
-          case rate {
-            None -> []
-            Some(tokens) -> [
-              html.span(
-                [
-                  attribute.class("figure"),
-                  attribute.class("rate"),
-                  attribute.title(
-                    "Output tokens per second of the last timed generation on the strand shown",
-                  ),
-                ],
-                [number_element(int.to_string(tokens)), html.text(" tok/s")],
-              ),
-            ]
-          },
+          // own words. Until a generation long enough to time has settled
+          // on the strand shown (a page just opened or reconnected, a strand
+          // not yet measured: the figure lives in the page's memory only),
+          // the slot is kept with a dimmed dash so the bar neither jumps
+          // when the first sample lands nor looks as if it lost the item.
+          [rate_figure(rate)],
         ]),
       ),
       notice,
@@ -219,6 +208,37 @@ pub fn view(
       tab_title(),
     ],
   )
+}
+
+// The output-speed figure. A measured rate is drawn like the other figures; no
+// rate is a dash in the quiet colour (`idle`), in the same slot, which the
+// stylesheet gives a fixed width so the figures beside it keep their places.
+fn rate_figure(rate: Option(Int)) -> Element(message) {
+  case rate {
+    Some(tokens) ->
+      html.span(
+        [
+          attribute.class("figure"),
+          attribute.class("rate"),
+          attribute.title(
+            "Output tokens per second of the last timed generation on the strand shown",
+          ),
+        ],
+        [number_element(int.to_string(tokens)), html.text(" tok/s")],
+      )
+    None ->
+      html.span(
+        [
+          attribute.class("figure"),
+          attribute.class("rate"),
+          attribute.class("idle"),
+          attribute.title(
+            "No timed generation yet on the strand shown; the speed appears once one has finished",
+          ),
+        ],
+        [number_element("—"), html.text(" tok/s")],
+      )
+  }
 }
 
 // The main strand's model as quiet text beside the name, or nothing while it

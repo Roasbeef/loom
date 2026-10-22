@@ -98,7 +98,8 @@ pub fn switching_restores_each_strands_rate_and_never_borrows_parent_tps_test() 
 
   // An unmeasured child has no rate, rather than the parent's last reading.
   let child = component.focus(model, lane_fixture.child).0
-  assert !string.contains(header(child), "tok/s")
+  assert string.contains(header(child), "<span class=\"num\">—</span> tok/s")
+  assert !string.contains(header(child), ">100</span> tok/s")
   let model =
     component.focus(child, "main").0 |> settled(lane_fixture.child, 900)
   assert string.contains(header(model), ">100</span> tok/s")
@@ -145,7 +146,8 @@ pub fn attaching_after_a_generation_started_does_not_invent_its_tps_test() {
     component.focus(model, lane_fixture.child).0
     |> at(clock, 5000)
     |> settled(lane_fixture.child, 800)
-  assert !string.contains(header(child), "tok/s")
+  assert string.contains(header(child), "<span class=\"num\">—</span> tok/s")
+  assert !string.contains(header(child), ">100</span> tok/s")
 }
 
 fn answered_phase(phase) {
@@ -220,5 +222,6 @@ pub fn a_lagging_capture_never_upgrades_a_background_partial_window_test() {
     component.focus(model, lane_fixture.child).0
     |> at(clock, 5000)
     |> settled(lane_fixture.child, 800)
-  assert !string.contains(header(child), "tok/s")
+  assert string.contains(header(child), "<span class=\"num\">—</span> tok/s")
+  assert !string.contains(header(child), ">100</span> tok/s")
 }
