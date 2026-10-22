@@ -83,6 +83,7 @@
 //// ```
 
 import gleam/dynamic/decode
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
@@ -873,7 +874,14 @@ fn executor_section(
   section(pane, needle, name, state_gloss(each.report), rows)
 }
 
-// A pool's section, as an executor's is: "Any machine in" the pool.
+// A pool's section, as an executor's is, headed by what the pool picks from.
+//
+// The header promises only what the report carries. When the report names the
+// pool's executors, the header lists them. The remote box reports how many
+// machines can take a session and not which, so then the header counts them.
+// Before any report the header says only that the pool is a group. A pool whose
+// one executor is already drawn with the same workspaces adds no choice, so it
+// is not drawn at all.
 fn pool_section(
   pane: Pane(message),
   needle: String,
@@ -894,7 +902,48 @@ fn pool_section(
     Some(_) | None -> workspace_rows(reported, name, composer.InPool)
   }
 
-  section(pane, needle, "Any machine in " <> name, "", rows)
+  case repeats_executor(pane.offers.cards, each) {
+    True -> []
+    False -> section(pane, needle, pool_heading(each), "", rows)
+  }
+}
+
+// Whether a pool is the single executor it names: the report lists one executor,
+// that executor answered, and the executor's own section offers the same
+// workspaces. Only then do the two sections offer the same rows.
+fn repeats_executor(cards: placements.Cards, pool: placements.Pool) -> Bool {
+  case pool.report {
+    Some(placements.PoolReport(
+      executors: [only],
+      eligible: [reached],
+      workspaces:,
+    ))
+      if only == reached && workspaces != []
+    -> workspaces == placements.workspaces(cards, placements.OnExecutor(only))
+
+    _ -> False
+  }
+}
+
+// The pool section's heading, from what the report holds.
+fn pool_heading(pool: placements.Pool) -> String {
+  case pool.report {
+    Some(placements.PoolReport(executors: [_, ..] as names, ..)) ->
+      "Any of " <> pool.name <> ": " <> string.join(names, ", ")
+
+    // The remote box counts the machines that can take a session and does not
+    // name them, so the heading counts and names nothing.
+    Some(placements.PoolReport(executors: [], eligible: [_], ..)) ->
+      pool.name <> " pool, 1 machine"
+
+    Some(placements.PoolReport(executors: [], eligible: [_, _, ..] as some, ..)) ->
+      "Any of "
+      <> int.to_string(list.length(some))
+      <> " machines in "
+      <> pool.name
+
+    Some(_) | None -> "Any machine in " <> pool.name
+  }
 }
 
 // The rows for a place's workspaces: one for each the daemon listed, or the one

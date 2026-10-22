@@ -829,8 +829,15 @@ not carry from one page to the next. The home opens the owner on a composer
 (`web_view/composer`, `view/new_session`) with three chips: Agent, which offers the
 serving daemon and says why no other machine is offered; Code, whose list holds the
 folders the page drew, one section for each executor with what it reported (a
-disabled row with a reason where it is down) and one for each pool, with a search;
-and Model, which merges the profile and the main model. A chip's list is a popover
+disabled row with a reason where it is down) and one for each pool, with a search.
+A pool's heading says only what its report carries: "Any of linux: exec, other"
+when the report names its executors, "Any of 2 machines in linux" or "linux pool,
+1 machine" when the remote box only counts them, and "Any machine in linux" before
+a report. A pool whose one answering executor is already drawn with the same
+workspaces is left out, since it offers the same rows. Naming members for a remote
+box would need the offers wire to carry names, which it does not. The offered set
+the submit re-checks is unchanged.
+The third chip is Model, which merges the profile and the main model. A chip's list is a popover
 on a wide window and a bottom sheet on a phone, from one tree. Every row is a
 button whose message carries a value the server built, `composer.update` honours it
 only if the lists the page was drawn from still hold it, and the daemon judges the
