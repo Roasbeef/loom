@@ -321,11 +321,94 @@ pub fn the_code_list_has_folders_executors_and_pools_test() {
   assert string.contains(html, "Not answering")
 
   // The pool has no machine answering, and says so.
-  assert string.contains(html, "Any machine in linux")
+  assert string.contains(html, "Any of linux: exec")
   assert string.contains(html, "None answering")
 
   // The disabled rows are not buttons: only the rows that can work carry a press.
   assert count(html, "aria-disabled=\"true\"") == 2
+}
+
+// The owner's page with one executor, `exec`, and a pool `linux` whose report
+// is the one given.
+fn with_pool(pool: placements.PoolReport) -> home.Model {
+  let start = owner(process.new_subject())
+  let start =
+    home.Start(..start, executors: ["exec"], placements: fn(deliver) {
+      deliver(
+        placements.Reported(
+          placements.Placements(
+            executors: [
+              placements.Executor(
+                "exec",
+                Some(report(placements.Ready, ["repo", "repo-wt"])),
+              ),
+            ],
+            pools: [placements.Pool("linux", Some(pool))],
+          ),
+        ),
+      )
+    })
+  run(opened(start), compose(composer.Toggled(composer.CodeChip)))
+}
+
+// A pool whose only machine is an executor already drawn with the same
+// workspaces adds no choice, so its section is not drawn.
+pub fn a_pool_that_repeats_its_executor_is_not_drawn_test() {
+  let html =
+    drawn(
+      with_pool(
+        placements.PoolReport(
+          executors: ["exec"],
+          eligible: ["exec"],
+          workspaces: ["repo", "repo-wt"],
+        ),
+      ),
+    )
+
+  assert string.contains(html, "exec · repo-wt")
+  assert !string.contains(html, "linux ·")
+  assert !string.contains(html, "linux pool")
+  assert !string.contains(html, "Any of linux")
+}
+
+// A pool whose members are named says which, and one that the report only
+// counts says how many and names none.
+pub fn a_pool_heading_says_only_what_the_report_carries_test() {
+  let named =
+    drawn(
+      with_pool(
+        placements.PoolReport(
+          executors: ["exec", "other"],
+          eligible: ["exec", "other"],
+          workspaces: ["repo"],
+        ),
+      ),
+    )
+  assert string.contains(named, "Any of linux: exec, other")
+
+  let counted =
+    drawn(
+      with_pool(
+        placements.PoolReport(
+          executors: [],
+          eligible: ["ready", "ready"],
+          workspaces: ["repo", "repo-wt"],
+        ),
+      ),
+    )
+  assert string.contains(counted, "Any of 2 machines in linux")
+  assert string.contains(counted, "linux · repo")
+
+  let single =
+    drawn(
+      with_pool(
+        placements.PoolReport(executors: [], eligible: ["ready"], workspaces: [
+          "repo",
+          "repo-wt",
+        ]),
+      ),
+    )
+  assert string.contains(single, "linux pool, 1 machine")
 }
 
 // The search narrows every section at once, and says when it matches nothing.
