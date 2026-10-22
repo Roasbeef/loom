@@ -413,8 +413,9 @@ loom distribution attach-file inspector --node inspector@127.0.0.1 --links hub \
 
 `--links` is the daemon it may reach; `--node` is the name the tool must start
 under. The directory then holds `ca.pem`, `tool.pem`, `tool.key`,
-`.erlang.cookie` and a standard `ssl_dist.conf`, and the command prints the
-`erl` flags that use them. [Profiling a distributed
+`.erlang.cookie`, `node` (the tool's own node name) and a standard
+`ssl_dist.conf`, and the command prints `pickglass attach --node <daemon>
+--attach-dir <dir>` first, then the `erl` flags that use the same files. [Profiling a distributed
 daemon](distribution.md#profiling-a-distributed-daemon) has the commands for a
 remote shell, Observer and pickglass. `revoke` the tool when you are done; to
 replace its certificate, revoke it and attach again.

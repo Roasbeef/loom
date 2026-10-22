@@ -15,6 +15,15 @@ pub fn the_files_sit_directly_in_the_directory_test() {
   assert files.key == "/home/me/attach/tool.key"
   assert files.cookie == "/home/me/attach/.erlang.cookie"
   assert files.options == "/home/me/attach/ssl_dist.conf"
+  assert files.node == "/home/me/attach/node"
+}
+
+pub fn the_primary_recipe_is_the_pickglass_attach_dir_form_test() {
+  let files = distribution_attach.files_in("/a")
+  let one = distribution_attach.instructions(files, "me@h", ["x@h"])
+  assert string.contains(one, "pickglass attach --node x@h --attach-dir '/a'")
+  let none = distribution_attach.instructions(files, "me@h", [])
+  assert string.contains(none, "pickglass attach --node <daemon node>")
 }
 
 pub fn the_options_file_is_client_only_standard_erlang_test() {
