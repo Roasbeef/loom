@@ -30,6 +30,7 @@
 # spend the parallel speedup on nothing.
 
 # --- the VM-global atom counter --------------------------------------------
+client|client@ui_relay_test|captures Erlang logger records through the VM-global loom_log_capture handler and ETS table
 # `erlang:system_info(atom_count)` counts atoms for the whole node. These
 # modules assert the count does not move across a measured window, which any
 # concurrent test loading a module for the first time falsifies.

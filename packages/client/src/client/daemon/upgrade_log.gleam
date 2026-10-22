@@ -30,6 +30,7 @@ import host/bootstrap
 import telemetry/field
 import telemetry/level
 import telemetry/log
+import web_view/ending
 
 /// Which upgrade a line is about.
 pub type Route {
@@ -107,6 +108,55 @@ pub fn closed_early(route: Route, step: String, reason: String) -> Nil {
     field.ident("route", route_name(route)),
     field.ident("step", step),
     field.text("reason", reason),
+  ])
+}
+
+/// Records a failed page-to-gateway exchange without its command payload.
+/// The reason distinguishes a reply timeout, a dead gateway and a returned
+/// refusal; the ending records whether reauthorization permits recovery.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // upgrade_log.page_request_failed(session, connection, reason, 6000, 120, ending.ConnectionFailed)
+/// ```
+pub fn page_request_failed(
+  session_id: String,
+  connection_id: String,
+  reason: String,
+  elapsed_ms: Int,
+  request_bytes: Int,
+  ended: ending.Ending,
+) -> Nil {
+  log.warn(logger(), "daemon.page_request_failed", [
+    field.ident("session", session_id),
+    field.ident("connection", connection_id),
+    field.text("reason", reason),
+    field.count("elapsed_ms", elapsed_ms),
+    field.count("request_bytes", request_bytes),
+    field.text("ending", ending.reason(ended)),
+  ])
+}
+
+/// Records which boundary ended a page's lane, using fixed cause names.
+/// Neither a frame nor the page's cookie, key or nonce reaches this record.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // upgrade_log.page_ended(session, connection, "lane_closed", ending.ConnectionFailed)
+/// ```
+pub fn page_ended(
+  session_id: String,
+  connection_id: String,
+  cause: String,
+  ended: ending.Ending,
+) -> Nil {
+  log.warn(logger(), "daemon.page_connection_ended", [
+    field.ident("session", session_id),
+    field.ident("connection", connection_id),
+    field.ident("cause", cause),
+    field.text("ending", ending.reason(ended)),
   ])
 }
 

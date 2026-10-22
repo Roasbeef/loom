@@ -1293,7 +1293,13 @@ page keys and nonces, and the relay into the session's gateway.
   fallback, which the component sets to `ConnectionFailed`, or `NotOpen` for
   a refused open). `close(ending)` is `Final` (close 1000, which Lustre's
   client runtime does not retry) or `Retry` (4000, which it does), read by
-  `client/daemon/ui_socket`. `view/ended.view(option(ending), session_id)` draws
+  `client/daemon/ui_socket`. `ConnectionFailed`, `NotOpen` and `DaemonNotReady`
+  retry; access revocation, an ended page and a stopped session stay final.
+  Protocol-change/097 makes a failed page reconnect with a fresh lane and
+  snapshot without replaying a command of unknown outcome. Its advice states
+  automatic recovery rather than asking for a new link. `operator_page_test`
+  verifies that a new component subscribes without reissuing the old prompt.
+  `view/ended.view(option(ending), session_id)` draws
   the notice, a `section` with two paragraphs, or `element.none()`.
 - `page`: the shell, whose `<lustre-server-component>` holds a fixed
   paragraph (`waiting_notice(session_id)`) as light-DOM content, which the

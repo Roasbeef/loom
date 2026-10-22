@@ -1378,7 +1378,15 @@ pub fn deleting_a_session_removes_its_row_and_frees_the_place_test() {
   let _ = made(rig, 2)
   let _ = made(rig, 3)
   stopped(rig, first)
-  let assert Ok(_) = catalogue.delete(rig.store, first)
+
+  // An external deletion owns a connection of its own. The registry may still
+  // be confirming the other creations on its connection after this one stops.
+  let assert Ok(external) = catalogue.open(rig.directory <> "/catalogue.db")
+    as "the external deleter opens its own catalogue connection"
+  let deleted = catalogue.delete(external, first)
+  assert catalogue.close(external) == Ok(Nil)
+    as "the external connection closes before the deletion result is asserted"
+  let assert Ok(_) = deleted
   assert manager.relayed_of(rig.registry, first) == Ok(None)
   let _fourth = made(rig, 4)
 }

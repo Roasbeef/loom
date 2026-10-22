@@ -155,12 +155,8 @@ pub fn from_reason(given: String, otherwise otherwise: Ending) -> Ending {
 /// ```
 pub fn close(ending: Ending) -> Close {
   case ending {
-    NotOpen | DaemonNotReady -> Retry
-    PageEnded
-    | AccessRevoked
-    | SessionStopped
-    | LinkExpired
-    | ConnectionFailed -> Final
+    NotOpen | DaemonNotReady | ConnectionFailed -> Retry
+    PageEnded | AccessRevoked | SessionStopped | LinkExpired -> Final
   }
 }
 
@@ -245,8 +241,9 @@ pub fn advised(ending: Ending, session_id: String) -> Advice {
     LinkExpired -> Advice("A link works once, within 60 seconds.", command)
     ConnectionFailed ->
       Advice(
-        "Reload this page. If it fails again, it needs a new link.",
-        command,
+        "Reconnecting automatically. Commands whose outcome is unknown "
+          <> "will not be sent again.",
+        None,
       )
   }
 }

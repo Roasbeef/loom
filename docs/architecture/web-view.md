@@ -138,6 +138,15 @@ runtime does not reconnect) when the person has to act, 4000 (retried) when
 the daemon may clear it. [lustre.md](../lustre.md#lifecycle-and-cleanup)
 walks that chain one link at a time.
 
+[Protocol 097](../../protocol-change/097-reconnect-failed-pages.md) makes
+`ConnectionFailed` a retry. A live lane's explicit close also tells the browser
+socket to close, so it cannot remain attached to an ended component. The next
+socket repeats page admission and starts a fresh snapshot; it carries no
+commands from the retired relay. Gateway reply timeouts, dead gateways and
+returned errors are distinguished in `daemon.page_request_failed`, while
+`daemon.page_connection_ended` records which boundary ended the relay. Those
+records carry identifiers and sizes, never command frames or page secrets.
+
 ## From `loom ui` to a live socket
 
 A page is reached in four requests: one control command from the person's
@@ -270,7 +279,7 @@ sequenceDiagram
    connection limits.
 4. **The component.** In its first handler turn the socket takes the
    permit's custody and starts the component for the admitted role
-   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6442`).
+   (`start_page` at `packages/client/src/client/daemon/ui_socket.gleam:6449`).
    The component's `init` selects two sources: the transport, whose
    `connect` starts the relay and returns at once, and a deadline timer,
    which it arms for the lane's next due reading once the lane exists.

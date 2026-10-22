@@ -7,6 +7,7 @@
 //// storage layer's business and is tested there.
 
 import client/daemon/executor_cli
+import client/workspace_policy
 import client/worktrees
 import gleam/bit_array
 import gleam/int
@@ -279,13 +280,24 @@ pub fn the_worktree_sweep_removes_clean_trees_and_keeps_changed_ones_test() {
   let changed = opened(rig, 2)
   worktree_rig.write(changed.path <> "/wip.txt", "mine\n")
 
-  let assert Ok(told) = executor_cli.run(sweep_arguments(rig, []))
+  case executor_cli.run(sweep_arguments(rig, [])) {
+    Ok(told) -> {
+      assert string.contains(told, "removed  " <> worktree_rig.session(1))
+      assert string.contains(told, "kept     " <> worktree_rig.session(2))
+      assert string.contains(told, "1 removed, 1 kept")
+      assert !worktree_rig.exists(clean.path)
+      assert worktree_rig.exists(changed.path <> "/wip.txt")
+    }
 
-  assert string.contains(told, "removed  " <> worktree_rig.session(1))
-  assert string.contains(told, "kept     " <> worktree_rig.session(2))
-  assert string.contains(told, "1 removed, 1 kept")
-  assert !worktree_rig.exists(clean.path)
-  assert worktree_rig.exists(changed.path <> "/wip.txt")
+    // The ordinary Linux runner has no delegated cgroup. Refusing that
+    // posture must leave the clean tree as well as the changed one intact.
+    Error(reason) -> {
+      assert_undelegated_refusal(reason)
+      assert simplifile.read(clean.path <> "/README") == Ok("one\n")
+      assert simplifile.read(changed.path <> "/README") == Ok("one\n")
+      assert simplifile.read(changed.path <> "/wip.txt") == Ok("mine\n")
+    }
+  }
 
   // The branches are still there: the command never deletes one.
   assert string.contains(
@@ -299,15 +311,45 @@ pub fn a_named_session_is_removed_whatever_it_holds_test() {
   let changed = opened(rig, 1)
   worktree_rig.write(changed.path <> "/wip.txt", "mine\n")
 
-  let assert Ok(kept) = executor_cli.run(sweep_arguments(rig, []))
-  assert string.contains(kept, "kept     " <> worktree_rig.session(1))
+  case executor_cli.run(sweep_arguments(rig, [])) {
+    Ok(kept) -> {
+      assert string.contains(kept, "kept     " <> worktree_rig.session(1))
 
-  let assert Ok(forced) =
-    executor_cli.run(
-      sweep_arguments(rig, ["--force-session", worktree_rig.session(1)]),
-    )
-  assert string.contains(forced, "removed  " <> worktree_rig.session(1))
-  assert !worktree_rig.exists(changed.path)
+      let assert Ok(forced) =
+        executor_cli.run(
+          sweep_arguments(rig, ["--force-session", worktree_rig.session(1)]),
+        )
+      assert string.contains(forced, "removed  " <> worktree_rig.session(1))
+      assert !worktree_rig.exists(changed.path)
+    }
+
+    // Naming the session authorizes removal, but never weaker enforcement.
+    // Check both requests against the same surviving tree and its contents.
+    Error(reason) -> {
+      assert_undelegated_refusal(reason)
+      assert simplifile.read(changed.path <> "/README") == Ok("one\n")
+      assert simplifile.read(changed.path <> "/wip.txt") == Ok("mine\n")
+
+      let assert Error(forced_reason) =
+        executor_cli.run(
+          sweep_arguments(rig, ["--force-session", worktree_rig.session(1)]),
+        )
+      assert_undelegated_refusal(forced_reason)
+      assert simplifile.read(changed.path <> "/README") == Ok("one\n")
+      assert simplifile.read(changed.path <> "/wip.txt") == Ok("mine\n")
+    }
+  }
+}
+
+// The delegated jail lane supplies this variable, so any refusal there is a
+// failed success-path regression. Elsewhere only the known missing-cgroup
+// diagnostic is an expected refusal; a different failure still fails the test.
+fn assert_undelegated_refusal(reason: String) -> Nil {
+  assert workspace_policy.env_text("LOOM_CGROUP_BASE") == Error(Nil)
+  assert string.starts_with(
+    reason,
+    "the sandbox ran Git without full enforcement (skipped: cgroup-v2:",
+  )
 }
 
 fn opened(rig: worktree_rig.Rig, n: Int) -> worktrees.Tree {

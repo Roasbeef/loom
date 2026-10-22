@@ -206,6 +206,7 @@ import gleam/http/response.{type Response}
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/otp/actor as otp_actor
 import gleam/result
 import gleam/string
 import host/bootstrap
@@ -6504,7 +6505,26 @@ fn launch(
   admits: fn(String) -> Bool,
 ) -> Result(#(lustre.Runtime(message), Page), Nil) {
   use runtime <- result.map(
-    lustre.start_server_component(app, start) |> result.replace_error(Nil),
+    lustre.start_server_component(app, start)
+    |> result.map_error(fn(error) {
+      // Keep the startup category before callers reduce it to a page ending.
+      // Initializer failures and exits may contain application data, so their
+      // free-form reasons never enter the upgrade log.
+      let reason = case error {
+        lustre.ActorError(otp_actor.InitTimeout) ->
+          "the component initializer timed out"
+        lustre.ActorError(otp_actor.InitFailed(_)) ->
+          "the component initializer refused startup"
+        lustre.ActorError(otp_actor.InitExited(_)) ->
+          "the component initializer exited"
+        lustre.BadComponentName(_) -> "the component name is invalid"
+        lustre.ComponentAlreadyRegistered(_) ->
+          "the component is already registered"
+        lustre.ElementNotFound(_) -> "the component mount is missing"
+        lustre.NotABrowser -> "the component requires a browser"
+      }
+      upgrade_log.closed_early(upgrade_log.Page, "component_start", reason)
+    }),
   )
 
   // The component's messages for the browser arrive on a subject this socket

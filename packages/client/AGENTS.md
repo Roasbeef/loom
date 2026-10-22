@@ -532,6 +532,15 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   (the 409). A socket closed before its first frame writes
   `daemon.socket_closed_early`. Lines carry a route class, a step and a
   fixed reason, never a credential, key, nonce or ticket.
+  The `component_start` step distinguishes an initializer timeout, refusal or
+  exit before callers reduce it to a retryable page ending. Free-form startup
+  errors are omitted because they may contain application data.
+  `page_request_failed` additionally writes `daemon.page_request_failed` with
+  session/connection identifiers, elapsed request time, request bytes, the
+  gateway reason and diagnosed ending. `page_ended` writes
+  `daemon.page_connection_ended` with the boundary that ended the relay. Neither
+  contains a command frame. Gateway request timeouts and dead processes have
+  distinct reasons (protocol-change/097).
 - `principals.rename` (protocol-change/065, the tenth addendum): `protocol.RenamePrincipal`
   decodes an optional principal, an unjudged name of at most 1024 bytes and the
   epoch; `server.dispatch` answers it through `manager.rename_principal`, one
@@ -551,7 +560,12 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   state growth and the observer component model's transport-callback growth,
   and witnesses relay admission and close cleanup. The pinned Lustre model
   excludes renderer caches whose startup sizes vary independently. The
-  component's session-list and sign-in
+  memory probe honors a retryable startup close through a bounded fresh
+  connection, with a forced initial 4000 close on every measurement; final
+  closes and malformed frames fail. Its memory bounds and deadlines are
+  unchanged. A blocked-initializer test proves Lustre still reaps a timed-out
+  component under its original start budget. The component's session-list and
+  sign-in
   callbacks project registry and identity fields before construction, so they
   retain no attachment runtime. Each read still authenticates with the original
   credential. It transfers
@@ -802,6 +816,13 @@ names (`loom_ui`/`loom_login` or `__Secure-loom_ui`/`__Secure-loom_login`,
   socket closes. `server`'s refused page requests answer with
   `page.refusal` (`refused_page`) under the status they always had; the
   session identity in it is drawn only if it parses as a canonical one.
+  Under protocol-change/097, `Shut` from a live lane also calls `ended` after
+  reauthorization, with `ConnectionFailed` when access is unchanged. That
+  ending closes the browser socket with 4000, so Lustre opens a fresh page
+  component and snapshot. A failed request or retired relay never replays a
+  command. `ComponentDown` only detaches; credential and page endings remain
+  final. `ui_relay_test` holds an acknowledgement after a real prompt commits
+  and proves a fresh relay does not duplicate it or send the queued prompt.
 
 ## Purpose
 
@@ -7251,6 +7272,9 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   Tests: `worktrees_test` (the lifecycle against a real repository, the
   reconciliation matrix, the operator sweep), `executor_worktree_test` (the plane,
   the jail and the close through the host), `daemon_executor_cli_test`.
+  The CLI fixtures check both enforcement postures: a missing delegated cgroup
+  must refuse without changing either tree, even for a forced removal; the
+  delegated Linux jail lane runs the same module and requires success.
 - `daemon/main.start_executor` starts `remote/host` under `address.default()`
   with the ledger at `<state>/exec-ledger.db`; a daemon with no rows starts
   nothing. The host is unlinked and monitored; its death halts the daemon.

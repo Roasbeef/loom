@@ -54,6 +54,51 @@ fn page(role: String, cells) {
   #(model, wire)
 }
 
+// A missing acknowledgement leaves the command's outcome unknown. Reconnecting
+// creates a new component, as ui_socket does, and only reads the current state.
+pub fn reconnecting_after_a_lost_reply_never_reissues_the_prompt_test() {
+  let #(model, wire) = page("operator", [])
+  let model =
+    send(model, [
+      operator_page.Submitted("a command sent once", operator.Prompt, []),
+    ])
+  let assert [frame] = page_fixture.commands(page_fixture.sent(wire))
+    as "the original lane transmits one command"
+  assert string.contains(frame, "a command sent once")
+
+  let closed =
+    send(model, [
+      operator_page.Observed(
+        component.Arrived([
+          connection_event.Closed(ending.reason(ending.ConnectionFailed)),
+        ]),
+      ),
+      operator_page.Observed(component.Ticked),
+    ])
+  assert component.status(closed) == component.Ended(ending.ConnectionFailed)
+  assert page_fixture.sent(wire) == []
+
+  let fresh_wire = process.new_subject()
+  let fresh =
+    send(component.new(page_fixture.start()), [
+      operator_page.Observed(component.Opened(fresh_wire)),
+    ])
+  let assert [subscribe] = page_fixture.sent(fresh_wire)
+    as "the fresh lane starts with a subscription, not the previous command"
+  assert string.contains(subscribe, "\"cmd\":\"subscribe\"")
+  assert !string.contains(subscribe, "a command sent once")
+  let _ =
+    send(fresh, [
+      operator_page.Observed(
+        component.Arrived(page_fixture.transfer("operator", [])),
+      ),
+    ])
+  assert list.all(page_fixture.sent(fresh_wire), fn(frame) {
+    !string.contains(frame, "\"cmd\":\"prompt\"")
+    && !string.contains(frame, "a command sent once")
+  })
+}
+
 // A page whose strand is running an operation, as the last capture says.
 fn running(role: String) {
   let #(model, wire) = page(role, [])
