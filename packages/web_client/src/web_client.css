@@ -243,17 +243,43 @@
   /* The top bar. It is 44px tall, and taller only when the ended page's
      notice wraps onto a row of its own. The shell draws the bar's border and
      background around it, with a button at each end. */
-  .session-head{display:flex;flex-wrap:wrap;align-items:center;flex:1 1 auto;gap:4px 12px;box-sizing:border-box;min-height:44px;min-width:0;padding:6px 12px;}
-  .session-head .brand{font:600 14px/1.4 var(--font-sans);letter-spacing:.02em;}
-  .session-head h1{font:600 13px/1.4 var(--font-sans);margin:0;min-width:0;overflow-wrap:anywhere;}
-  .session-head .session-title{display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:0 8px;min-width:0;}
-  .session-head .session-model{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow-wrap:anywhere;}
-  .session-head .status{margin:0;}
-  .session-head .workspace{color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);min-width:0;overflow-wrap:anywhere;}
+  /* The bar is two groups on one 26px-chip row, with the placement strip and the
+     ended notice on rows beneath. The left group is the brand, the Home chip, the
+     workspace and the title, which takes the slack and truncates with an
+     ellipsis; the right group is the status pill and the figures. The shell
+     draws a toggle at each end and the Search and Theme buttons, all pinned to
+     the first row (see .shell-bar). Every chip is 26px tall with a 6px radius.
+     Below 1100px the figures take a row of their own; below 640px the title
+     does too, because the header column is then about 170px wide. */
+  .session-head{display:flex;flex-wrap:wrap;align-items:center;flex:1 1 auto;gap:6px 12px;box-sizing:border-box;min-height:48px;min-width:0;padding:11px 12px;}
+  .session-head .brand{flex:0 0 auto;font:600 14px/26px var(--font-sans);letter-spacing:.02em;}
+  .session-head h1{flex:0 1 auto;font:600 13px/1.4 var(--font-sans);margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .session-head .session-title{display:flex;align-items:baseline;flex:1 1 0;gap:8px;min-width:0;}
+  .session-head .session-model{flex:0 4 auto;min-width:0;max-width:24ch;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .session-head .status{box-sizing:border-box;flex:0 0 auto;height:26px;margin:0;padding:0 10px;border:1px solid transparent;border-radius:6px;line-height:1;}
+  .session-head .workspace{flex:0 1 auto;min-width:0;max-width:34ch;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .session-head .workspace::after{content:" /";content:" /" / "";}
-  .session-head .figures{display:flex;flex-wrap:wrap;gap:0 12px;margin-left:auto;color:var(--color-fg-quiet);font:12px/1.4 var(--font-sans);font-variant-numeric:tabular-nums;}
+  .session-head .figures{display:flex;flex-wrap:wrap;align-items:center;flex:0 0 auto;gap:0 14px;margin-left:auto;color:var(--color-fg-quiet);font:12px/26px var(--font-sans);font-variant-numeric:tabular-nums;}
   .session-head .figure{white-space:nowrap;}
   .session-head .figure .num{color:var(--color-fg);font:500 12px/1.4 var(--font-mono);}
+  /* The speed's slot keeps its width whether or not a generation has been
+     timed, so the figures beside it do not move when the first sample lands.
+     With no sample it shows a dash in the quiet colour. */
+  .session-head .figure.rate{display:inline-block;min-width:10ch;text-align:right;}
+  .session-head .figure.rate.idle .num{color:inherit;}
+  @media (max-width:1099px){
+    .session-head .figures{flex:1 0 100%;margin-left:0;}
+  }
+  @media (max-width:899px){
+    .session-head .workspace{display:none;}
+  }
+  @media (max-width:639px){
+    .session-head .brand{display:none;}
+    .session-head .session-title{flex:1 0 100%;order:2;}
+    .session-head .figures{order:3;gap:0 12px;}
+    .session-head .ended-notice,.session-head .placement-strip{order:4;}
+    .session-head .figure.rate{min-width:0;}
+  }
   /* The context figure is a native details element: its summary is the
      `ctx ~41%` words and its body is the breakdown (web_view/view/context_breakdown).
      The panel is fixed under the bar at the right edge, so the bar's own
@@ -303,7 +329,7 @@
      above the wrapper of the sidebar is not drawn unless the reader opened
      the drawer, and the panel's wrapper goes above the centre. */
   .shell{display:flex;flex-direction:column;height:100%;min-width:0;}
-  .shell-bar{flex:0 0 auto;display:flex;align-items:stretch;min-width:0;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
+  .shell-bar{flex:0 0 auto;display:flex;align-items:flex-start;min-width:0;background:var(--color-bg-raised);border-bottom:1px solid var(--color-divider);}
   .shell-body{position:relative;flex:1 1 0;display:flex;min-height:0;min-width:0;}
   .shell-centre{flex:1 1 0;display:flex;min-width:0;min-height:0;}
   /* Where the panel is a column the transcript keeps 360px (grip_rule.centre_floor), and the panel, which may shrink, gives way when a window cannot hold its width and that floor. */
@@ -339,13 +365,18 @@
      window with its side column filled while the column is open. */
   .toggle-hint{margin:0;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
   @media (max-width:979px){.toggle-hint{display:none;}}
-  .shell-toggle{flex:0 0 auto;display:flex;align-items:center;justify-content:center;gap:8px;min-width:44px;padding:0 12px;box-sizing:border-box;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
+  .shell-toggle{flex:0 0 auto;display:flex;align-items:center;justify-content:center;align-self:flex-start;gap:8px;width:44px;height:48px;padding:0 12px;box-sizing:border-box;border:0;border-radius:0;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
+  /* The two toggles are mirrors: the same width, the icon on the outer edge and
+     the hint on the inner one, wide enough for the longer hint. */
+  @media (min-width:980px){.shell-toggle{width:80px;}}
+  .toggle-sidebar{justify-content:flex-start;}
+  .toggle-panel{justify-content:flex-end;}
   .shell-toggle:hover{background:var(--color-bg-sunk);color:var(--color-fg);}
   .shell-toggle:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
   /* The Theme button sits beside the panel's toggle: a 28px icon button
      whose icon (sun, moon or half disc, drawn by web_client/shell from fixed
      shapes) names the theme the page shows. */
-  .shell-theme{flex:0 0 auto;display:flex;align-items:center;justify-content:center;align-self:center;width:28px;height:28px;margin:0 6px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
+  .shell-theme{flex:0 0 auto;display:flex;align-items:center;justify-content:center;align-self:flex-start;width:26px;height:26px;margin:11px 0 0 0;padding:0;border:0;border-radius:6px;background:transparent;color:var(--color-fg-quiet);cursor:pointer;}
   .shell-theme svg{width:16px;height:16px;}
   .shell-theme:hover{background:var(--color-bg-sunk);color:var(--color-fg);}
   .shell-theme:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
@@ -709,7 +740,7 @@
      <loom-switcher>): a quiet bordered button with the shortcut's hint, to the
      left of the Theme button. The hint hides on a narrow bar, as the toggles'
      do, and the chip stays for a touch screen. */
-  .bar-search{flex:0 0 auto;align-self:center;display:inline-flex;align-items:center;gap:8px;margin:0 6px 0 0;padding:3px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
+  .bar-search{box-sizing:border-box;flex:0 0 auto;align-self:flex-start;display:inline-flex;align-items:center;gap:8px;height:26px;margin:11px 6px 0 0;padding:0 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:var(--color-fg-quiet);font:12px/1 var(--font-sans);cursor:pointer;}
   .bar-search:hover{background:var(--color-bg-sunk);color:var(--color-fg);}
   .bar-search:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   .bar-search-hint{margin:0;color:var(--color-fg-quiet);font:11px/1.4 var(--font-sans);}
@@ -894,7 +925,7 @@
   .admin-row > .notice-line,.admin-row > .notice-refusal{flex:1 1 100%;min-width:0;box-sizing:border-box;margin:2px 0 4px 0;}
   /* The way back to the home, on a session page opened from one: a quiet
      button after the brand, tinted on hover like a list row. */
-  .session-head .home-link{margin:0;padding:2px 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1.4 var(--font-sans);cursor:pointer;}
+  .session-head .home-link{display:inline-flex;align-items:center;box-sizing:border-box;flex:0 0 auto;height:26px;margin:0;padding:0 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;color:inherit;font:12px/1 var(--font-sans);cursor:pointer;}
   .session-head .home-link:hover{background:var(--color-bg-raised);}
   .session-head .home-link:focus-visible{outline:2px solid var(--color-current);outline-offset:1px;}
   .ring{display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;flex:0 0 auto; border:2px solid var(--color-divider);}
@@ -1849,10 +1880,14 @@
   .banner-go{flex:0 0 auto;color:var(--color-signal-text);font-size:12px;}
   .banner:focus-visible{outline:2px solid var(--color-current);outline-offset:2px;}
   /* The placement strip of a session's header: where the agent runs and where
-     its commands run, on a row of its own beneath the title. */
+     its commands run, on a row of its own beneath the title, from the same left
+     edge as the Home chip. The tags are the bar's chips: 26px tall, 6px radius,
+     a hairline and no fill. */
   .placement-strip{display:flex;flex-wrap:wrap;gap:6px;flex:1 0 100%;margin:0;}
-  .placement-tag{display:inline-flex;align-items:center;gap:7px;min-height:26px;padding:0 10px;border:1px solid var(--color-divider);border-radius:8px;background:var(--color-bg);font:12.5px/1.4 var(--font-sans);}
-  .placement-label{color:var(--color-fg-quiet);}
+  .placement-tag{display:inline-flex;align-items:center;gap:7px;box-sizing:border-box;height:26px;padding:0 10px;border:1px solid var(--color-divider);border-radius:6px;background:transparent;font:12px/1 var(--font-sans);}
+  .placement-tag{max-width:100%;min-width:0;}
+  .placement-label{flex:0 0 auto;color:var(--color-fg-quiet);white-space:nowrap;}
+  .placement-where{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   /* The count of sessions waiting on the person, on the sidebar's menu button,
      for the window where the sidebar is a drawer. <loom-shell> carries it as
      `waiting`, a number the component counted, capped at ten. */

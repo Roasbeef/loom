@@ -755,9 +755,15 @@ page keys and nonces, and the relay into the session's gateway.
   (`online | pending | ended`), the `ctx ~41%` estimate and the cost
   `transcript_lines.cost_words` words as `est $0.04` or `est —` when tokens
   were spent and none priced, and the last timed generation's `87 tok/s`
-  (`session_view/model.output_rate_tps`, `rate`, drawn only once the selected strand has a complete timed settlement), each as a word and a `span.num`; a figure with no
+  (`session_view/model.output_rate_tps`, `rate`; `heading.rate_figure` always draws the slot, as `— tok/s` with the `idle` class until the selected strand has a complete timed settlement, because the reading lives in the page's memory only and a fresh page, a reconnect or a strand with no sample has none, and the stylesheet gives the slot a fixed width so the bar does not jump), each as a word and a `span.num`; any other figure with no
   value is not drawn, so no `est` for an unpriced model and no `ctx` on the
-  primary strand before its first turn), with the ended
+  primary strand before its first turn). The stylesheet lays the bar out as a
+  left group (brand, Home chip, workspace, title) and a right group (status,
+  figures), every chip 26px tall with a 6px radius, the title truncating with
+  an ellipsis; the shell's toggles, Search and Theme buttons are pinned to the
+  first row, the two toggles are equal-width mirrors, and the placement strip
+  sits beneath from the same left edge. Below 1100px the figures take a row,
+  below 900px the workspace is hidden, below 640px the title takes its own row, with the ended
   page's notice as its last child; `component.heading(model, going_home, context_actions)` reads those
   values from the model, draws `heading.home_link(going_home)` as `home`
   when the transport has the capability, and stays the entry point both pages

@@ -150,7 +150,8 @@ pub fn an_unpriced_session_draws_no_estimate_test() {
 }
 
 // A figure with no value is not drawn, so a first turn that has not
-// committed shows an empty figures area and not two dashes.
+// committed shows no `ctx` and no `est` and not two dashes. Only the speed
+// keeps its slot, which is why the figures area holds just that one.
 pub fn a_figure_with_no_value_is_not_drawn_test() {
   let bar =
     heading.view(
@@ -170,12 +171,16 @@ pub fn a_figure_with_no_value_is_not_drawn_test() {
     )
     |> element.to_string
 
-  assert string.contains(bar, "<span class=\"figures\"></span>")
+  assert !string.contains(bar, "ctx")
+  assert !string.contains(bar, "est")
+  assert string.contains(bar, "class=\"figure rate idle\"")
 }
 
-// The output speed is drawn once a generation has been timed, as the number
-// and the unit, and not at all before that.
-pub fn the_output_rate_is_drawn_only_once_timed_test() {
+// The output speed is drawn as the number and the unit once a generation has
+// been timed. Before that the slot is kept with a dimmed dash, so the bar
+// does not lose the item when a page opens, reconnects or focuses a strand
+// with no sample (the cause of the owner's "tok/s disappears" report).
+pub fn the_output_rate_slot_is_kept_before_a_generation_is_timed_test() {
   let bar = fn(rate) {
     heading.view(
       session_id: "0192ab34cd",
@@ -196,7 +201,11 @@ pub fn the_output_rate_is_drawn_only_once_timed_test() {
   }
 
   assert string.contains(bar(Some(87)), "<span class=\"num\">87</span> tok/s")
-  assert !string.contains(bar(None), "tok/s")
+  assert !string.contains(bar(Some(87)), "idle")
+
+  let idle = bar(None)
+  assert string.contains(idle, "<span class=\"num\">—</span> tok/s")
+  assert string.contains(idle, "class=\"figure rate idle\"")
 }
 
 // The tab's title is set by `<loom-title>` from the name the bar draws. The
