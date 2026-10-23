@@ -37,7 +37,7 @@
 ////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
 ////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
 ////   f85773eec68e467d8d8aa0cd389d68a759a2ffae04e4fa13a7f68b573611c73a  packages/cap/src/cap/proc.gleam
-////   102f12585b03c0a8f50790e891d3420d3b04decb444aaf5bef82ccf802de7e1e  packages/cap/src/cap/report.gleam
+////   b4932c98e2a4096b15cb6556d06c86798ea8b5a61b2d8c412f0fd127cddc3d58  packages/cap/src/cap/report.gleam
 ////   9b920b09da008701c1154df880341c7b3cb9c642f682c54b399698db9a63667c  packages/cap/src/cap/runtime.gleam
 ////   e03e6acc80a63ff3666e4450a566fa071730f8cf3ca5afa414b752a3671b3dd1  packages/cap/src/cap/schedule.gleam
 ////   508521d05b5a63799e90cee1a2f0e4bd9f24ed8b89aa497a75f7171fc3ba402b  packages/cap/src/cap/search.gleam
@@ -48,7 +48,7 @@
 ////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam
 ////   eefe3ffc20ce42f1645ccb4058927df05445301f4fb31aee2831c679c0385d37  packages/tools/dev/gen_prelude/wrap.gleam
 ////
-//// Body digest (every line after the marker): a5dab733be392b78781c53ded3b94b4c8df169f9a727a767536825a8c80fab4c
+//// Body digest (every line after the marker): 20a677ab6c5e1ff9269151fb7cd66c2096e81d0c86da7f636d1339359b56f341
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -2237,6 +2237,16 @@ pub type ReportError {
 ///
 ///
 pub fn as_bool(Value) -> Result(Bool, Nil)
+/// Reads a binary payload without casting an untrusted wire term.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_bytes(report.string(\"x\")) == Error(Nil)
+///  ```
+///
+///
+pub fn as_bytes(Value) -> Result(BitArray, Nil)
 /// A value's floating-point number, or `Error(Nil)` when it is not one.
 /// An int is *not* accepted, the mirror of `as_int`'s refusal of a float:
 /// the two tags are distinct on the wire, and a reader that widened one
@@ -2294,6 +2304,16 @@ pub fn as_string(Value) -> Result(String, Nil)
 ///
 ///
 pub fn bool(Bool) -> Value
+/// Wraps compiled artifact bytes for trusted satellite control transport.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert report.as_bytes(report.bytes(<<1, 2>>)) == Ok(<<1, 2>>)
+///  ```
+///
+///
+pub fn bytes(BitArray) -> Value
 /// Parses JSON into the same structured value used by notes and child
 /// results. Rejects duplicate object keys, excessive nesting, and
 /// trailing input.
