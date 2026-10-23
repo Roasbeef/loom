@@ -135,30 +135,47 @@ pub fn prepare_slot(
   ))
 }
 
-/// Runs the candidate-owned tests and records their exact host observation.
+/// What a check concluded, before anything is written down.
+///
+/// A check answers plain data so that the writer of evidence can sit on the
+/// orchestrator's side of the machine seam, next to the catalogue, while the
+/// check itself runs wherever the machine runs. `record` is the only function
+/// that turns a report into a durable row.
+pub type Report {
+  Report(
+    /// The verdict the check reached.
+    verdict: record.Verdict,
+    /// The bounded JSON observation stored beside the verdict.
+    observation: String,
+  )
+}
+
+/// Runs the candidate-owned tests and answers their report.
 ///
 /// The injected production runner owns a dedicated native executor and returns
-/// only after its retirement witness. A report of satellite shutdown alone
-/// cannot satisfy that contract and must return CleanupUnconfirmed instead.
+/// only after its retirement witness. The caller records the report with
+/// `record`; this function writes nothing.
 ///
 /// ## Examples
 ///
-/// `extension(store,id,directory,build,run)` writes durable author-test evidence.
+/// `extension(store,id,directory,build,run)` answers the author-test report.
 pub fn extension(
   catalogue: store.Store,
   id: record.CandidateId,
   directory: String,
   build: install.Build,
   run: fn(compile.Artifact) -> Result(Observation, store.Refusal),
-) -> Result(record.Evidence, store.Refusal) {
+) -> Result(Report, store.Refusal) {
   extension_owned(catalogue, id, directory, build, run, retirement.done())
 }
 
-/// Retires the native evaluation executor on every path before writing evidence.
+/// Retires the native evaluation executor on every path before answering.
 ///
 /// The runner borrows this executor and never closes it itself. Compilation,
 /// vetting and execution failures therefore share exactly one retirement call,
-/// and an unconfirmed cleanup returns its retry witness instead of evidence.
+/// and an unconfirmed cleanup returns its retry witness instead of a report.
+/// Retirement happens before the report exists, so a caller that records the
+/// report writes evidence only for a check whose executor is gone.
 ///
 /// ## Examples
 ///
@@ -170,7 +187,7 @@ pub fn extension_owned(
   build: install.Build,
   run: fn(compile.Artifact) -> Result(Observation, store.Refusal),
   retire: retirement.Task,
-) -> Result(record.Evidence, store.Refusal) {
+) -> Result(Report, store.Refusal) {
   let outcome = tested(catalogue, id, directory, build, run)
   use Nil <- result.try(
     retirement.perform(retire)
@@ -178,33 +195,63 @@ pub fn extension_owned(
       store.CleanupUnconfirmed(failure.reason, failure.retry)
     }),
   )
+  report_of(outcome)
+}
+
+/// Maps a check's outcome to the report that is recorded for it.
+///
+/// This is the one place a result becomes a verdict. A completed check keeps
+/// the verdict it reached. A refusal that says the candidate failed its test is
+/// `Failed`, and one that says the check could not run is `Inconclusive`;
+/// both carry the reason as the observation. Any other refusal is no evidence
+/// at all and stays a refusal.
+///
+/// ## Examples
+///
+/// `report_of(Error(store.TestFailed("no entry")))` is a `Failed` report.
+pub fn report_of(
+  outcome: Result(#(record.Verdict, String), store.Refusal),
+) -> Result(Report, store.Refusal) {
   case outcome {
-    Ok(#(verdict, observation)) ->
-      store.record_evidence(
-        catalogue,
-        id,
-        record.AuthorTests,
-        verdict,
-        observation,
-      )
+    Ok(#(verdict, observation)) -> Ok(Report(verdict:, observation:))
+
     Error(store.TestFailed(reason)) ->
-      store.record_evidence(
-        catalogue,
-        id,
-        record.AuthorTests,
-        record.Failed,
-        json.to_string(json.object([#("refusal", json.string(reason))])),
-      )
+      Ok(Report(verdict: record.Failed, observation: refusal_json(reason)))
+
     Error(store.Unavailable(reason)) ->
-      store.record_evidence(
-        catalogue,
-        id,
-        record.AuthorTests,
-        record.Inconclusive(reason),
-        json.to_string(json.object([#("refusal", json.string(reason))])),
-      )
+      Ok(Report(
+        verdict: record.Inconclusive(reason),
+        observation: refusal_json(reason),
+      ))
+
     Error(refusal) -> Error(refusal)
   }
+}
+
+fn refusal_json(reason: String) -> String {
+  json.to_string(json.object([#("refusal", json.string(reason))]))
+}
+
+/// Writes a report as the candidate's author-test evidence.
+///
+/// This is the single evidence write for author tests. It belongs on the side
+/// of the seam that holds the catalogue, after the machine has answered.
+///
+/// ## Examples
+///
+/// `record(store,id,report)` answers the stored `record.Evidence`.
+pub fn record(
+  catalogue: store.Store,
+  id: record.CandidateId,
+  report: Report,
+) -> Result(record.Evidence, store.Refusal) {
+  store.record_evidence(
+    catalogue,
+    id,
+    record.AuthorTests,
+    report.verdict,
+    report.observation,
+  )
 }
 
 fn tested(

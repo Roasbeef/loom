@@ -25,11 +25,18 @@
 ////   one machine does not authorize a build on another.
 //// - `snapshot` captures a candidate's source from a directory of the
 ////   workspace.
-//// - `evaluate` runs a candidate's author tests, records the evidence under the
-////   catalogue it is given, and answers that evidence.
+//// - `evaluate` runs a candidate's author tests and answers an
+////   `evaluate.Report`, a verdict and its observation. It writes nothing: the
+////   caller records the report with `evaluate.record` under its own catalogue.
 //// - `stage` builds one approved selection into a `live.Generation` and
 ////   starts it.
-//// - `run_program` runs a selected program once.
+//// - `run_program` runs a selected program once and answers the
+////   `tool.ToolOutcome` its caller returns to the model.
+////
+//// Every answer is plain data. A report and a tool outcome hold no closure, no
+//// process and no catalogue handle, so the evidence write and the choice of a
+//// program's verdict happen on the orchestrator's side of the seam whichever
+//// machine did the work.
 ////
 //// ## What a generation already carries
 ////
@@ -75,12 +82,12 @@
 //// vocabulary, and a field only the remote side would use does not belong
 //// here yet.
 
+import client/evolution/evaluate
 import client/evolution/live
 import client/evolution/record
 import client/evolution/store
 import client/extension/archive
 import core/json
-import tools/codemode as codemode_tool
 import tools/tool
 
 /// The operations evolution needs from the machine that holds a workspace.
@@ -96,13 +103,13 @@ pub type Machine {
     /// caller's current masks. The directory is named in the workspace's own
     /// terms and is resolved by the machine, not by the orchestrator.
     snapshot: fn(tool.Ctx, String) -> Result(archive.Tree, store.Refusal),
-    /// Runs one candidate's author tests behind the machine's jail, records
-    /// the evidence under the catalogue it is given, and answers that
-    /// evidence. The local machine records it through `store.record_evidence`.
-    /// An extension or program candidate only; a prompt candidate is compared
-    /// by rollout instead.
+    /// Runs one candidate's author tests behind the machine's jail and
+    /// answers the report. The machine's executor is retired before the
+    /// report is answered, and nothing is recorded: the caller writes the
+    /// evidence with `evaluate.record`. An extension or program candidate
+    /// only; a prompt candidate is compared by rollout instead.
     evaluate: fn(store.Store, tool.Ctx, record.CandidateId) ->
-      Result(record.Evidence, store.Refusal),
+      Result(evaluate.Report, store.Refusal),
     /// Builds and starts an approved selection. The caller owns the returned
     /// generation's `retire` from the moment this returns `Ok`. On `Error` the
     /// machine has already retired whatever it started, or the refusal is
@@ -110,8 +117,9 @@ pub type Machine {
     stage: fn(store.Store, record.Selection) ->
       Result(live.Generation, store.Refusal),
     /// Runs the exact program the selection names, once, with the caller's
-    /// input. The program's plane retires before this returns.
+    /// input, and answers the outcome the caller returns to the model
+    /// (`program.outcome`). The program's plane retires before this returns.
     run_program: fn(store.Store, record.Selection, tool.Ctx, json.JsonValue) ->
-      Result(codemode_tool.Execution, store.Refusal),
+      Result(tool.ToolOutcome, store.Refusal),
   )
 }

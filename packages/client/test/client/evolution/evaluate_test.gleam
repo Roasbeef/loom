@@ -49,7 +49,7 @@ pub fn compiler_failure_is_durable_author_evidence_after_retirement_test() {
     )
   }
   let run = fn(_) { Error(store.Unavailable("runner must not run")) }
-  let assert Ok(evidence) =
+  let assert Ok(report) =
     evaluate.extension_owned(
       catalogue,
       candidate.id,
@@ -58,7 +58,29 @@ pub fn compiler_failure_is_durable_author_evidence_after_retirement_test() {
       run,
       retirement.repeat(fn() { Ok(Nil) }),
     )
-    as "failed compilation creates durable evidence"
+    as "failed compilation is answered as a report"
+  report.verdict |> should.equal(record.Failed)
+
+  // The check writes nothing; evidence exists only once the report is recorded.
+  // Evidence is stored under its content digest, so the expected id is the one
+  // the recorded observation will receive.
+  let expected =
+    record.observed(record.Evidence(
+      id: record.evidence_placeholder(),
+      candidate_id: candidate.id,
+      identity: candidate.identity,
+      at_ms: 1_700_000_000_000,
+      purpose: record.AuthorTests,
+      verdict: report.verdict,
+      observation: report.observation,
+    ))
+  store.read_evidence(catalogue, expected.id)
+  |> should.equal(Error(store.Unknown))
+  let assert Ok(evidence) = evaluate.record(catalogue, candidate.id, report)
+    as "the report is recorded as durable evidence"
+  evidence.id |> should.equal(expected.id)
+  store.read_evidence(catalogue, expected.id) |> should.be_ok
+  evidence.observation |> should.equal(report.observation)
   evidence.verdict |> should.equal(record.Failed)
   string.contains(evidence.observation, "author check has a type error")
   |> should.be_true
@@ -112,7 +134,7 @@ pub fn partial_trial_is_inconclusive_and_cannot_be_approved_test() {
       enforcement: enforcement.Unreported("fake compiler"),
     )
   }
-  let assert Ok(evidence) =
+  let assert Ok(report) =
     evaluate.extension_owned(
       catalogue,
       candidate.id,
@@ -121,7 +143,9 @@ pub fn partial_trial_is_inconclusive_and_cannot_be_approved_test() {
       fn(_) { Error(store.Unavailable("evaluation cancelled")) },
       retirement.repeat(fn() { Ok(Nil) }),
     )
-    as "partial result is recorded after retirement"
+    as "partial result is answered after retirement"
+  let assert Ok(evidence) = evaluate.record(catalogue, candidate.id, report)
+    as "the partial report is recorded"
   let assert record.Inconclusive(reason) = evidence.verdict
     as evidence.observation
   reason |> should.equal("evaluation cancelled")
@@ -133,4 +157,37 @@ pub fn partial_trial_is_inconclusive_and_cannot_be_approved_test() {
     "operator",
   )
   |> should.be_error
+}
+
+pub fn report_of_maps_each_outcome_shape_test() {
+  evaluate.report_of(Ok(#(record.Passed, "{}")))
+  |> should.equal(Ok(evaluate.Report(record.Passed, "{}")))
+
+  evaluate.report_of(Error(store.TestFailed("no entry")))
+  |> should.equal(
+    Ok(evaluate.Report(record.Failed, "{\"refusal\":\"no entry\"}")),
+  )
+
+  evaluate.report_of(Error(store.Unavailable("cancelled")))
+  |> should.equal(
+    Ok(evaluate.Report(
+      record.Inconclusive("cancelled"),
+      "{\"refusal\":\"cancelled\"}",
+    )),
+  )
+
+  // Any other refusal is no evidence at all.
+  evaluate.report_of(Error(store.Unknown))
+  |> should.equal(Error(store.Unknown))
+}
+
+pub fn record_writes_exactly_the_report_as_author_evidence_test() {
+  let #(catalogue, candidate, _) = proposed()
+  let report = evaluate.Report(record.Passed, "{\"ran\":true}")
+  let assert Ok(evidence) = evaluate.record(catalogue, candidate.id, report)
+    as "recording a report stores one evidence row"
+  evidence.verdict |> should.equal(record.Passed)
+  evidence.observation |> should.equal("{\"ran\":true}")
+  evidence.purpose |> should.equal(record.AuthorTests)
+  store.read_evidence(catalogue, evidence.id) |> should.equal(Ok(evidence))
 }

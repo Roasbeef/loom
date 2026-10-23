@@ -86,6 +86,7 @@ import client/effect_abort
 import client/escalate
 import client/evolution
 import client/evolution/control as evolution_control
+import client/evolution/evaluate as evolution_evaluate
 import client/evolution/fixture as evolution_fixture
 import client/evolution/hook as evolution_hook
 import client/evolution/live as evolution_live
@@ -6724,6 +6725,7 @@ fn open_evolution(
           case candidate.kind {
             evolution_record.Extension | evolution_record.Program ->
               machine.evaluate(catalogue, ctx, id)
+              |> result.try(evolution_evaluate.record(catalogue, id, _))
             evolution_record.Prompt ->
               evolution_compare(
                 settings,
@@ -7039,7 +7041,6 @@ fn evolution_invoked(
             ->
               evolution_live.execute(live, name, ctx, arguments, fn() {
                 machine.run_program(catalogue, selected, ctx, arguments)
-                |> result.map(evolution_program_outcome)
               })
             Ok(None) | Ok(Some(_)) -> failed(evolution_store.Stale)
             Error(error) -> failed(error)
@@ -7129,21 +7130,6 @@ fn with_evolution_control(
       }
     }),
   )
-}
-
-fn evolution_program_outcome(
-  execution: codemode_tool.Execution,
-) -> tool.ToolOutcome {
-  let value = codemode_tool.execution_value(execution)
-  let outcome = case execution.result {
-    codemode_tool.Ran(codemode_tool.Completed(_), _) ->
-      tool.success(json.to_string(value))
-    codemode_tool.Ran(codemode_tool.Errored(_, _), _)
-    | codemode_tool.VetRejected(_)
-    | codemode_tool.CompileFailed(_)
-    | codemode_tool.RunFailed(_) -> tool.failure(json.to_string(value))
-  }
-  tool.with_details(outcome, value)
 }
 
 // The prompt profiles a session chose, in precedence order: a trial's
