@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -56,9 +57,13 @@ class StagingTest(unittest.TestCase):
 
     def test_commit_release_uses_package_version_and_binds_sha(self):
         tag = 'commit-' + COMMIT
+        # A commit release takes its version from the client package, which moves with every release bump.
+        with (Path(__file__).resolve().parent.parent / 'packages/client/gleam.toml').open('rb') as stream:
+            version = tomllib.load(stream)['version']
         for path in self.root.glob('release*/manifest-*.json'):
             document = json.loads(path.read_text())
             document['tag'] = tag
+            document['version'] = version
             path.write_text(json.dumps(document))
         staging.stage(self.root, self.root / 'upload', tag, COMMIT)
         self.assertTrue((self.root / 'upload/SHA256SUMS').is_file())
