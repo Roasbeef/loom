@@ -16,7 +16,9 @@
 //// `tool_result` → `close`
 ////
 //// 1. `prepare` builds one parked client per configured server through
-////    `prepare_one`, reading the key with `server_env`; a refusal is recorded
+////    `prepare_one` and `prepare_transport`, reading stdio keys with
+////    `server_env` and HTTP credentials with `prepare_http_auth`,
+////    `lookup_http_secret` and `prepare_oauth_auth`; a refusal is recorded
 ////    per server.
 //// 2. `start_prepared` runs `start_one` for every entry as concurrent weft
 ////    jobs, handshaking and listing tools, and `resolve_outcome` folds each
@@ -86,6 +88,9 @@
 
 import broker/framing.{type CapOutcome}
 import client/catalog
+import client/mcp/credentials as mcp_credentials
+import client/mcp/http as mcp_http
+import client/mcp/oauth as mcp_oauth
 import codemode/satellite.{
   type CapDenial, type CapPlan, type CapRequest, type CapRouter, CapDenial,
   ServedHere,
@@ -99,11 +104,13 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam_mcp/client as mcp_client
+import gleam_mcp/http_headers
 import gleam_mcp/json.{type JsonValue}
 import gleam_mcp/protocol
 import gleam_mcp/transport
 import mcp/codegen
 import mcp/interchange
+import provider/http as provider_http
 import provider/secret.{type SecretStore}
 import tools/blob
 import weft
@@ -248,6 +255,9 @@ pub type Options {
     call_timeout_ms: Int,
     secrets: SecretStore,
     digest: fn(String) -> String,
+    http_transport: provider_http.Transport,
+    oauth_directory: Option(String),
+    oauth_services: Option(mcp_oauth.Services),
   )
 }
 
@@ -274,6 +284,9 @@ pub fn default_options() -> Options {
     call_timeout_ms: default_call_timeout_ms,
     secrets: secret.env(),
     digest: sha256_hex,
+    http_transport: provider_http.httpc_transport(),
+    oauth_directory: None,
+    oauth_services: None,
   )
 }
 
@@ -447,14 +460,137 @@ fn prepare_one(
   custodian: process.Pid,
 ) -> Result(mcp_client.Client, Refusal) {
   let refuse = fn(reason) { Refusal(server: configured.name, reason:) }
-  use env <- result.try(
-    server_env(configured, options.secrets) |> result.map_error(refuse),
+  use spec <- result.try(
+    prepare_transport(configured, options) |> result.map_error(refuse),
   )
-  mcp_client.prepare_owned(
-    transport.PortTransport(spawn_of(configured.command, env)),
-    custodian,
-  )
+  mcp_client.prepare_owned(spec, custodian)
   |> result.map_error(fn(error) { refuse(describe_start_error(error)) })
+}
+
+fn prepare_transport(
+  configured: catalog.McpServer,
+  options: Options,
+) -> Result(transport.Transport, String) {
+  case configured.target {
+    catalog.McpStdio(command:, api_key_env:) -> {
+      use env <- result.try(server_env(api_key_env, options.secrets))
+      Ok(transport.PortTransport(spawn_of(command, env)))
+    }
+    catalog.McpHttp(url:, auth:) -> {
+      use http_auth <- result.try(prepare_http_auth(
+        configured.name,
+        url,
+        auth,
+        options,
+      ))
+      let request_timeout_ms =
+        int.max(
+          options.handshake_timeout_ms,
+          int.max(options.list_timeout_ms, options.call_timeout_ms),
+        )
+      Ok(
+        mcp_http.seam(mcp_http.Config(
+          server: configured.name,
+          url:,
+          auth: http_auth,
+          http_transport: options.http_transport,
+          client_version: options.client_version,
+          request_timeout_ms:,
+        )),
+      )
+    }
+  }
+}
+
+fn prepare_http_auth(
+  server: String,
+  url: String,
+  auth: catalog.McpHttpAuth,
+  options: Options,
+) -> Result(mcp_http.Auth, String) {
+  case auth {
+    catalog.McpNoAuth -> Ok(mcp_http.NoAuth)
+    catalog.McpBearerAuth(api_key_env:) -> {
+      use token <- result.try(lookup_http_secret(api_key_env, options.secrets))
+      Ok(mcp_http.Bearer(token:))
+    }
+    catalog.McpMacaroonAuth(api_key_env:) -> {
+      use token <- result.try(lookup_http_secret(api_key_env, options.secrets))
+      Ok(mcp_http.Macaroon(token:))
+    }
+    catalog.McpOAuth(client_id:) ->
+      prepare_oauth_auth(server, url, client_id, options)
+  }
+}
+
+fn lookup_http_secret(
+  api_key_env: String,
+  secrets: SecretStore,
+) -> Result(String, String) {
+  case secret.lookup(secrets, api_key_env) {
+    Error(Nil) ->
+      Error(
+        "its api_key_env names "
+        <> api_key_env
+        <> ", which is not set in this server's environment",
+      )
+    Ok(value) -> {
+      use _ <- result.try(
+        http_headers.decode_value(value)
+        |> result.map_error(fn(_) {
+          "its api_key_env "
+          <> api_key_env
+          <> " contains characters that are not valid in an HTTP header"
+        }),
+      )
+      Ok(value)
+    }
+  }
+}
+
+fn prepare_oauth_auth(
+  server: String,
+  url: String,
+  client_id: Option(String),
+  options: Options,
+) -> Result(mcp_http.Auth, String) {
+  use directory <- result.try(case options.oauth_directory {
+    Some(dir) -> Ok(dir)
+    None ->
+      mcp_credentials.directory()
+      |> result.map_error(mcp_oauth.describe_auth_error(server, _))
+  })
+  let injected = options.oauth_services
+  let authorize = fn(ledger: weft.Ledger) {
+    let services =
+      option.lazy_unwrap(injected, fn() { mcp_oauth.services_on(ledger) })
+    mcp_oauth.authorize_at(directory, server, url, client_id, services)
+    |> result.map_error(mcp_oauth.describe_auth_error(server, _))
+  }
+  let refresh_unauthorized = fn(rejected: String, ledger: weft.Ledger) {
+    let services =
+      option.lazy_unwrap(injected, fn() { mcp_oauth.services_on(ledger) })
+    mcp_oauth.refresh_unauthorized_at(
+      directory,
+      server,
+      url,
+      client_id,
+      rejected,
+      services,
+    )
+    |> result.map_error(mcp_oauth.describe_auth_error(server, _))
+  }
+  let initial =
+    weft.new_prepared([weft.managed(authorize)])
+    |> weft.deadline(int.max(options.handshake_timeout_ms, 5000))
+    |> weft.start
+  case initial {
+    [weft.Completed(..)] ->
+      Ok(mcp_http.OAuth(authorize:, refresh_unauthorized:))
+    [weft.Failed(error:, ..)] -> Error(error)
+    _ ->
+      Error(mcp_oauth.describe_auth_error(server, "token_endpoint_unavailable"))
+  }
 }
 
 /// Starts the previously published clients concurrently, preserving catalogue
@@ -684,10 +820,10 @@ fn start_one(
 // refusal *before* anything spawns, and neither the value nor its
 // absence is ever quoted with the value beside it.
 fn server_env(
-  configured: catalog.McpServer,
+  api_key_env: Option(String),
   secrets: SecretStore,
 ) -> Result(List(#(String, String)), String) {
-  case configured.api_key_env {
+  case api_key_env {
     None -> Ok([])
     Some(name) ->
       case secret.lookup(secrets, name) {
@@ -1084,7 +1220,17 @@ fn call_failure(error: mcp_client.ClientError) -> CapOutcome {
           <> "ms",
       )
     mcp_client.ServerError(code:, message:) ->
-      framing.CapErr(code: server_error_prefix <> int.to_string(code), message:)
+      case mcp_http.classify_fault(message) {
+        Some(mcp_http.MalformedFault(reason:)) ->
+          framing.CapErr(code: malformed_code, message: reason)
+        Some(mcp_http.UnavailableFault(reason:)) ->
+          framing.CapErr(code: unavailable_code, message: reason)
+        None ->
+          framing.CapErr(
+            code: server_error_prefix <> int.to_string(code),
+            message:,
+          )
+      }
     mcp_client.ResultMalformed(reason:) ->
       framing.CapErr(code: malformed_code, message: reason)
 
@@ -1140,7 +1286,12 @@ pub fn describe_call_error(error: mcp_client.ClientError) -> String {
     mcp_client.CallTimedOut(after_ms:) ->
       "it timed out after " <> int.to_string(after_ms) <> "ms"
     mcp_client.ServerError(code:, message:) ->
-      "the server answered error " <> int.to_string(code) <> ": " <> message
+      case mcp_http.classify_fault(message) {
+        Some(mcp_http.MalformedFault(reason:)) -> reason
+        Some(mcp_http.UnavailableFault(reason:)) -> reason
+        None ->
+          "the server answered error " <> int.to_string(code) <> ": " <> message
+      }
     mcp_client.ResultMalformed(reason:) -> reason
     mcp_client.TooManyPages(cap:) ->
       "it paginated past " <> int.to_string(cap) <> " pages"
