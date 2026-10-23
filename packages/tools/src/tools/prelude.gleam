@@ -30,7 +30,7 @@
 ////   862cacde4152ef13b16e817de8ff0d3d73d4e5f53b751b2346e5e47cf89f2c54  packages/cap/src/cap/git.gleam
 ////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
 ////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
-////   e96e89bf306534e8ed6b6532f234b92576594e322d7424162f478be1d60301e8  packages/cap/src/cap/lsp.gleam
+////   de8bc6923124ca3278d712b4b79c3750f29ae66279c203e670e0ce549dfde1ae  packages/cap/src/cap/lsp.gleam
 ////   f5b100cebb72c327fb76fe9006cd2627fda68aaccbcda9aaf914c43c236b0697  packages/cap/src/cap/lsp_sql.gleam
 ////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
 ////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
@@ -48,7 +48,7 @@
 ////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam
 ////   eefe3ffc20ce42f1645ccb4058927df05445301f4fb31aee2831c679c0385d37  packages/tools/dev/gen_prelude/wrap.gleam
 ////
-//// Body digest (every line after the marker): f4125810a5a91ee2f09c246b5258e4aac7feda69f7e5040bedd2aec22bcf3046
+//// Body digest (every line after the marker): a5dab733be392b78781c53ded3b94b4c8df169f9a727a767536825a8c80fab4c
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -852,7 +852,8 @@ pub fn set(String, BitArray) -> Result(Nil, KvError)
     "cap/lsp",
     "### cap/lsp
 `cap/lsp` — live language-server queries; use it for one symbol's callers,
-hover or definition, and `cap/lsp_sql` for joins across several symbols.
+hover or definition, `diagnostics(Some(path))` after `fs.edit`, and
+`cap/lsp_sql` for joins across several symbols.
 
 /// One edge of a call hierarchy.
 pub type Call {
@@ -4138,7 +4139,8 @@ pub type KvError {
     "cap/lsp",
     "### cap/lsp
 `cap/lsp` — live language-server queries; use it for one symbol's callers,
-hover or definition, and `cap/lsp_sql` for joins across several symbols.
+hover or definition, `diagnostics(Some(path))` after `fs.edit`, and
+`cap/lsp_sql` for joins across several symbols.
 
 /// One edge of a call hierarchy.
 pub type Call {
