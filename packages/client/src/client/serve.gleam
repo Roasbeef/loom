@@ -88,10 +88,10 @@ import client/evolution
 import client/evolution/control as evolution_control
 import client/evolution/fixture as evolution_fixture
 import client/evolution/hook as evolution_hook
-import client/evolution/identity as evolution_identity
 import client/evolution/live as evolution_live
+import client/evolution/machine as evolution_machine
+import client/evolution/machine/local as evolution_machine_local
 import client/evolution/model_door as evolution_model_door
-import client/evolution/native as evolution_native
 import client/evolution/prompt as evolution_prompt
 import client/evolution/queue as evolution_queue
 import client/evolution/record as evolution_record
@@ -6604,22 +6604,15 @@ fn open_evolution(
   owner: Option(custody.Owner),
 ) -> Result(EvolutionWiring, String) {
   let root = evolution_root(settings)
-  use identity <- result.try(evolution_identity.current(host))
-  let opener = fn(authority) {
-    evolution_store.open(root, authority, identity, clock)
-  }
-  use catalogue <- result.try(
-    opener(evolution_store.Owner) |> result.map_error(evolution_store.describe),
-  )
   let scratch = evolution_scratch(settings)
-  use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
 
-  // The native configuration is everything staging and evaluation need that
-  // does not change per call. Its `open` starts a fresh effect plane for each
-  // check, under the policy that check was granted.
+  // The machine is everything staging and evaluation need that does not change
+  // per call. Its `open` starts a fresh effect plane for each check, under the
+  // policy that check was granted. It holds no catalogue, so it exists before
+  // the catalogue is opened with the identity it reports, and every call that
+  // needs the catalogue is handed it.
   let config =
-    evolution_native.Config(
-      catalogue:,
+    evolution_machine_local.Config(
       host:,
       base:,
       at: hook_coordinates(
@@ -6638,14 +6631,25 @@ fn open_evolution(
         evolution_plane(settings.helper_path, policy, scratch, clock)
       },
     )
+  let machine = evolution_machine_local.new(config)
+  use identity <- result.try(machine.identity())
+  let opener = fn(authority) {
+    evolution_store.open(root, authority, identity, clock)
+  }
+  use catalogue <- result.try(
+    opener(evolution_store.Owner) |> result.map_error(evolution_store.describe),
+  )
+  use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
   let adopt = fn(selection) { evolution_adopt(agency_config, selection) }
   use live <- result.try(
     evolution_live.start(
       evolution_live.Config(
         clock:,
-        stage: fn(selection) { evolution_native.stage(config, selection) },
+        stage: fn(selection) { machine.stage(catalogue, selection) },
         adopt:,
-        recover: fn() { evolution_recover(config, settings.session_id, adopt) },
+        recover: fn() {
+          evolution_recover(machine, catalogue, settings.session_id, adopt)
+        },
       ),
     )
     |> result.map_error(string.inspect),
@@ -6701,9 +6705,7 @@ fn open_evolution(
       },
       fn(ctx) { actual(ctx) |> result.map_error(evolution_store.Unavailable) },
       fn(ctx, directory) {
-        evolution_live.snapshot(live, fn() {
-          evolution_native.snapshot(config, ctx, directory)
-        })
+        evolution_live.snapshot(live, fn() { machine.snapshot(ctx, directory) })
         |> result.map_error(evolution_owned_refusal)
       },
       fn(ctx, catalogue, id, args) {
@@ -6714,7 +6716,7 @@ fn open_evolution(
           ))
           case candidate.kind {
             evolution_record.Extension | evolution_record.Program ->
-              evolution_native.evaluate_candidate(config, ctx, catalogue, id)
+              machine.evaluate(catalogue, ctx, id)
             evolution_record.Prompt ->
               evolution_compare(
                 settings,
@@ -6732,7 +6734,7 @@ fn open_evolution(
         case lookup(ctx) {
           Error(error) -> failed(error)
           Ok(visible) ->
-            evolution_invoked(live, visible, config, ctx, args, failed)
+            evolution_invoked(live, visible, machine, ctx, args, failed)
         }
       },
       failed,
@@ -6768,19 +6770,19 @@ fn open_evolution(
 // A native check runs on its own effect plane: a private broker over two
 // helpers (the persistent node and its nested `proc.run`), so a candidate's
 // processes never share a pool with the session's tools. The close task it
-// returns is the only way to retire that plane, and `native.stage` keeps it
-// through every failed step.
+// returns is the only way to retire that plane, and `machine/local.stage`
+// keeps it through every failed step.
 fn evolution_plane(
   helper: String,
   base: policy.SandboxPolicy,
   scratch: String,
   clock: Clock,
-) -> Result(evolution_native.Plane, evolution_store.Refusal) {
+) -> Result(evolution_machine_local.Plane, evolution_store.Refusal) {
   use #(pool, broker_actor, service) <- result.try(
     start_effect_plane(helper, base, scratch, 2, clock)
     |> result.map_error(evolution_store.Unavailable),
   )
-  Ok(evolution_native.Plane(
+  Ok(evolution_machine_local.Plane(
     broker: broker_actor,
     inventory: fn() {
       use snapshot <- result.try(
@@ -6913,11 +6915,12 @@ fn evolution_adopt(
 // bounds refusal and not a choice. If the adoption audit fails after staging,
 // the staged generation retires before the refusal is returned.
 fn evolution_recover(
-  config: evolution_native.Config,
+  machine: evolution_machine.Machine,
+  catalogue: evolution_store.Store,
   session_id: String,
   adopt: fn(evolution_record.Selection) -> Result(Nil, evolution_store.Refusal),
 ) -> Result(Option(evolution_live.Generation), evolution_store.Refusal) {
-  use candidates <- result.try(evolution_store.catalogue(config.catalogue))
+  use candidates <- result.try(evolution_store.catalogue(catalogue))
   let extensions =
     list.filter(candidates, fn(candidate) {
       candidate.kind == evolution_record.Extension
@@ -6925,11 +6928,7 @@ fn evolution_recover(
     })
   use selections <- result.try(
     list.try_map(extensions, fn(candidate) {
-      evolution_store.selected(
-        config.catalogue,
-        candidate.scope,
-        candidate.name,
-      )
+      evolution_store.selected(catalogue, candidate.scope, candidate.name)
     }),
   )
   let selections =
@@ -6941,7 +6940,7 @@ fn evolution_recover(
   case selections {
     [] -> Ok(None)
     [selection] -> {
-      use active <- result.try(evolution_native.stage(config, selection))
+      use active <- result.try(machine.stage(catalogue, selection))
       case adopt(selection) {
         Ok(Nil) -> Ok(Some(active))
         Error(error) -> {
@@ -6968,7 +6967,7 @@ fn evolution_recover(
 fn evolution_invoked(
   live: evolution_live.Live,
   catalogue: evolution_store.Store,
-  config: evolution_native.Config,
+  machine: evolution_machine.Machine,
   ctx: tool.Ctx,
   args: json.JsonValue,
   failed: fn(evolution_store.Refusal) -> tool.ToolOutcome,
@@ -7032,13 +7031,7 @@ fn evolution_invoked(
               && name == candidate.name
             ->
               evolution_live.execute(live, name, ctx, arguments, fn() {
-                evolution_native.invoke_program(
-                  config,
-                  catalogue,
-                  selected,
-                  ctx,
-                  arguments,
-                )
+                machine.run_program(catalogue, selected, ctx, arguments)
                 |> result.map(evolution_program_outcome)
               })
             Ok(None) | Ok(Some(_)) -> failed(evolution_store.Stale)

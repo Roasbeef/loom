@@ -4,7 +4,7 @@
 import broker/budget
 import broker/exec
 import broker/policy
-import client/evolution/native
+import client/evolution/machine/local
 import codemode/identity
 import codemode/satellite
 import core/clock
@@ -28,9 +28,9 @@ pub fn broad_session_state_roots_do_not_enter_native_artifact_jail_test() {
     policy.Mount("/opt/loom", policy.MountReadOnly, policy.MountRequired),
   ]
   let directory = "/state/evolution/run/session/candidate"
-  let owned = native.owned_policy(base, "/state/evolution", directory, mounts)
+  let owned = local.owned_policy(base, "/state/evolution", directory, mounts)
   owned.writable_roots |> should.equal([directory])
-  native.readonly_node(owned).writable_roots |> should.equal([])
+  local.readonly_node(owned).writable_roots |> should.equal([])
   owned.mounts |> should.equal(mounts)
   list.any(owned.readable_roots, fn(root) {
     policy.covers(root, "/state/evolution/run/other-session/source.gleam")
@@ -50,7 +50,7 @@ pub fn capability_router_restores_original_policy_cwd_and_granted_identity_test(
     identity.for_execution(op, "program", budget.Budget(2, 60_000))
     |> identity.widened_by([policy.GrantReadableRoot("/approved")])
   let caller_phase = identity.run_phase(execution)
-  let launch_phase = identity.run_phase(native.node_identity(execution))
+  let launch_phase = identity.run_phase(local.node_identity(execution))
   identity.grants(launch_phase) |> should.equal([])
   identity.ledger_key(launch_phase)
   |> should.equal(identity.ledger_key(caller_phase))
@@ -59,7 +59,7 @@ pub fn capability_router_restores_original_policy_cwd_and_granted_identity_test(
       "/state/evolution",
     ])
   let router =
-    native.caller_router(
+    local.caller_router(
       fn(request) {
         request.base_policy |> should.equal(base)
         request.cwd |> should.equal("/work")
