@@ -13,6 +13,7 @@ import client/extension/seam as extension_seam
 import client/mcp as mcp_wiring
 import client/peers
 import client/workflows
+import codemode/evolution
 import codemode/lsp as codemode_lsp
 import codemode/notes
 import codemode/observation as codemode_observation
@@ -28,6 +29,7 @@ fn every_serviced_cap() -> List(String) {
     codemode.serviced_caps,
     orchestration.serviced_caps,
     notes.serviced_caps,
+    evolution.serviced_caps,
     workspace.serviced_caps,
     search_router.serviced_caps,
     codemode_lsp.serviced_caps,
@@ -78,6 +80,7 @@ pub fn the_state_a_capability_needs_decides_its_side_test() {
       "strand.spawn", "strand.roster", "notes.put", "schedule.create",
       "schedule.list", "schedule.cancel", "peer.send", "mcp.github",
       "ext.remember", "ext.recall", "execution.receive", "workflow.step",
+      "evolution.propose", "evolution.invoke",
     ],
     fn(cap) {
       assert cap_placement.placement(cap) == Ok(cap_placement.OwnerBound)

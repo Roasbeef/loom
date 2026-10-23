@@ -83,6 +83,18 @@ import tools/agent.{type Caller, type Refusal}
 /// - `workflow.step` mints a child strand, which is what `agent_spawn`
 ///   does.
 /// - `peer.send` is `peer_send`.
+/// - `evolution.*` is `code_mode`. Evolution has no direct tools: a program is
+///   its only route, so the tool that authorizes it is the one that runs the
+///   program. The row is not redundant with the program having started,
+///   because `holds` is asked on every call and a `set_config` can withdraw
+///   `code_mode` while a program is blocked. A strand that keeps `code_mode`
+///   but must not evolve is not expressible here, since no tool name stands
+///   for evolution alone. Two session-level rules stand in for it: only a
+///   source session, never a trial, is offered the module, and an operator
+///   who lists the reserved name `evolution` in `LOOM_DISABLE_TOOLS` withholds
+///   it from every strand (`serve.evolution_switch`). What a strand holding
+///   `code_mode` gains is `propose`, `compare` and `trace`; it still cannot
+///   run a candidate, because `invoke` needs the operator's exact selection.
 ///
 /// The match is on string literals because Gleam patterns cannot name a
 /// constant; `tool_gate_test` walks the owning modules' `serviced_caps` to
@@ -121,6 +133,12 @@ pub fn required_tool(cap: String) -> Option(String) {
     "lsp.rename" -> Some("fs_edit")
     "workflow.step" -> Some("agent_spawn")
     "peer.send" -> Some("peer_send")
+    "evolution.propose" -> Some("code_mode")
+    "evolution.test" -> Some("code_mode")
+    "evolution.inspect" -> Some("code_mode")
+    "evolution.catalogue" -> Some("code_mode")
+    "evolution.invoke" -> Some("code_mode")
+    "evolution.trace" -> Some("code_mode")
     _ -> None
   }
 }

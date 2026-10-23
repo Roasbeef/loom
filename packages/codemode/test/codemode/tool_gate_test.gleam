@@ -12,6 +12,7 @@
 import broker/budget
 import broker/exec
 import broker/policy
+import codemode/evolution
 import codemode/identity
 import codemode/lsp
 import codemode/notes
@@ -79,6 +80,12 @@ fn gated() -> List(#(String, String)) {
     #("lsp.rename", "fs_edit"),
     #("workflow.step", "agent_spawn"),
     #("peer.send", "peer_send"),
+    #("evolution.propose", "code_mode"),
+    #("evolution.test", "code_mode"),
+    #("evolution.inspect", "code_mode"),
+    #("evolution.catalogue", "code_mode"),
+    #("evolution.invoke", "code_mode"),
+    #("evolution.trace", "code_mode"),
   ]
 }
 
@@ -134,6 +141,7 @@ pub fn every_serviced_capability_is_decided_test() {
       workspace.serviced_caps,
       search.serviced_caps,
       lsp.serviced_caps,
+      evolution.serviced_caps,
       [observation.snapshot_cap],
     ])
   let undecided = list.filter(serviced, fn(cap) { !tool_gate.decided(cap) })
