@@ -81,9 +81,18 @@ and a short native busy timeout. It never replays admitted work or retirement.
 Native selection admission rechecks expiry before CAS and recovers an existing
 exact receipt before applying that check.
 
+`machine` is the one seam between evolution's authority (catalogue, selection,
+`live`, `hook`, the doors) and the machine that holds the workspace: a record of
+`identity`, `snapshot`, `evaluate`, `stage` and `run_program`. It holds no
+catalogue; each call that needs one is handed it. `machine/local` is the former
+`native` module and builds the record for a workspace in this VM; `serve` builds
+one per session. Generations keep their own `tools`, `hooks`, `inventory`,
+`mode` and `retire`, so the seam has no invoke or retire function. Prompt trials
+and the core upgrade (`control.Seam`) stay outside it.
+
 `live` serializes the complete promoted hook/tool fold with activation. `hook`
 stages a privately compiled jailed generation and publishes it after native
-retirement of the predecessor. `native` retains failed cleanup capabilities;
+retirement of the predecessor. `machine/local` retains failed cleanup capabilities;
 `retirement.Task` carries only the remaining native obligation, so successful
 pool close is not replayed when directory deletion needs another attempt.
 A report, actor exit or deadline is not a worker-exit witness. `control` admits
@@ -108,7 +117,11 @@ discovery and the resident session websocket; they never open a session.
 evidence bytes within the existing control frame.
 
 `prompt` captures exact provider/model/API overlays and `system_prompt` pins
-selected bytes at session assembly. `tasks` retains independently admitted
+selected bytes at session assembly. A session pins a profile map only when it
+made a choice: a trial (`evolution_role: Trial(profiles)`) always chooses, and a
+`Source` session with no pin and no evolution wiring pins nothing, so a later boot
+with wiring can still choose, while `Some([])` (wiring and nothing selected)
+is a durable choice of none. `tasks` retains independently admitted
 fixture and expected-file bytes. `rollout` and `rollout_host` run fresh ordinary
 coding runtimes with native aggregate guards and actual composition digests;
 unknown billing reservations remain debited across both comparison arms.

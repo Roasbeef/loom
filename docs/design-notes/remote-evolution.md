@@ -33,11 +33,11 @@ mapped on the port:
 
 | Call | Needs | Why it cannot run on the orchestrator |
 | --- | --- | --- |
-| `candidate.capture_with` → `native.snapshot` | jailed `tar` with `cwd: ctx.workspace` on a plane broker | the workspace path names the executor's disk |
+| `candidate.capture_with` → `machine/local.snapshot` | jailed `tar` with `cwd: ctx.workspace` on a plane broker | the workspace path names the executor's disk |
 | `evolution_identity.current(host)` | `gleam --version`, the seed manifest and vendored sources | the identity must be the compiling machine's |
-| `native.stage` | offline compile with the seed, persistent satellite, hook bus, `stateful.attach` | satellites run beside the workspace |
-| `native.evaluate_candidate` | extension tests in a satellite, program test through `pipeline.execute` | same |
-| `native.invoke_program`, `live.invoke` | code mode / satellite | same |
+| `machine/local.stage` | offline compile with the seed, persistent satellite, hook bus, `stateful.attach` | satellites run beside the workspace |
+| `machine/local.evaluate_candidate` | extension tests in a satellite, program test through `pipeline.execute` | same |
+| `machine/local.invoke_program`, `live.invoke` | code mode / satellite | same |
 | `evolution_trial` (`open_instance` over a fresh fixture) | a local jail and toolchain, not the session's workspace | the orchestrator may have no helper or toolchain |
 | `upgrade/controller` | the scratch actor's pid, `sys` code change | the scratch actor is the executor's |
 | `evolution_plane` (`start_effect_plane`) | `settings.helper_path` on this machine | same |
@@ -45,14 +45,18 @@ mapped on the port:
 A latent bug the remote case exposes: `system_prompt.pin_profiles` runs for
 every session and pins `[]` when there is no wiring, and `pinned_profiles_in`
 reads `Some([])` as a durable choice. A session created without evolution can
-therefore never adopt a profile later. The fix is part of slice 2.
+therefore never adopt a profile later. The fix is part of slice 2:
+`serve.evolution_profiles` reads `Settings.evolution_role`. A `Trial(profiles)`
+role is always a choice, a wired `Source` session uses its pin and then the
+catalogue's selections (possibly `Some([])`), and an unwired `Source` session
+returns `None` and pins nothing.
 
 ## Design
 
 ### One seam: `evolution/machine`
 
 A record of functions the orchestrator-side code calls for everything in the
-second column, replacing the closures `native.Config` builds today:
+second column, replacing the closures `machine/local.Config` builds today:
 
 - `identity() -> Identity`
 - `snapshot(directory, ctx facts) -> archive.Tree`
@@ -64,9 +68,29 @@ second column, replacing the closures `native.Config` builds today:
 - `trial(request) -> Running` (opens and retires a trial session)
 - `core(command) -> Receipt` (status, upgrade, downgrade)
 
-`machine.local(...)` is today's `native` code over `evolution_plane`, moved, not
+`machine/local.new(...)` is today's `native` code over `evolution_plane`, moved, not
 rewritten. `machine.remote(hands)` sends the calls to the executor. The live
 owner, the store and the fold never learn which one they hold.
+
+### The seam as built (slice 2)
+
+The record has five functions, not the eight listed above. `identity`,
+`snapshot`, `evaluate`, `stage` and `run_program` are machine operations.
+`invoke`, the hook calls and `retire` are fields of the `live.Generation` that
+`stage` returns (`tools`, `hooks`, `retire`, with `inventory` and a stateful
+`mode`), so they never needed to be machine functions: a remote `stage` returns
+a generation built over messages and the live owner and the fold are unchanged.
+`trial` and `core` stay outside. A trial opens a fresh session from `serve`'s
+assembly, which a record over the catalogue cannot stand in for, and the core
+upgrade already has its own seam, `evolution/control.Seam`. Slice 4 and slice 5
+decide whether they join the record.
+
+No function holds the catalogue. Each takes it as its first argument (except
+`identity` and `snapshot`, which do not read it), because the catalogue is the approval
+authority and stays on the orchestrator, and because the catalogue is opened with
+the identity the machine reports, so the machine must exist first. `snapshot`,
+`evaluate` and `run_program` still take a `tool.Ctx`; the remote machine narrows
+that to the coordinates the wire carries.
 
 ### The executor side
 
@@ -136,8 +160,8 @@ is not in this plan.
    executor restart, open and runtime restarts, with mutants for each rule). Fable
    review of the design, whose findings are folded into 098 and the model.
 2. **The seam, locally.** Introduce `evolution/machine`, move `native` behind
-   `machine.local`, fix the empty-pin bug, no behaviour change otherwise. Gate:
-   the existing evolution suites unchanged.
+   `machine/local`, fix the empty-pin bug, no behaviour change otherwise. Gate:
+   the existing evolution suites unchanged. Done; see "The seam as built".
 3. **Executor machine.** `executor_plane` builds `machine.local`; `remote/host`
    serves the new messages; `machine.remote` on the orchestrator; census identity;
    custody. Programs, extensions and author tests work on executor sessions. Also
@@ -145,6 +169,11 @@ is not in this plan.
    selection, or carry its catalogue rows (see "The executor side"); admit
    `EvolutionEvaluate` by call key and recover both evolution doors from the
    ledger in `Hands.recover`; resolve a snapshot's directory on the executor.
+   The first step is to move the evidence write above the seam. Today the local
+   machine records evidence itself (`store.record_evidence`, reached through
+   `evaluate.extension_owned` and `program.test_with`), so `machine.evaluate`
+   would otherwise have to do it remotely too. Moving it first means the
+   verdict mapping exists in one place before `remote.evaluate` is written.
 4. **Trials and profiles remotely.** Trials on the executor through the
    orchestrator's guarded gateway; prompt-profile evaluation and selection for
    executor sessions.

@@ -78,13 +78,18 @@ of the general one where every message is a function call.
 A new orchestrator-side module, `evolution/machine`, is a record of functions
 standing for everything that needs the workspace's machine:
 
+The table is the plan. The record as built in slice 2 is described in the
+design note's "The seam as built": five functions, each taking the catalogue
+as its first argument except `identity` and `snapshot`, with trials and `core`
+outside the record for now.
+
 | Function | Local implementation (today's code) | Remote implementation |
 | --- | --- | --- |
 | `identity()` | `evolution_identity.current(host)` | read from the census |
-| `snapshot(directory, coordinates)` | `native.snapshot` | `EvolutionSnapshot` |
-| `evaluate(candidate, coordinates)` | `native.evaluate_candidate` | `EvolutionEvaluate` |
-| `stage(selection)` | `native.stage` | `EvolutionStage` |
-| `run_program(selection, args, coordinates)` | `native.invoke_program` | `EvolutionRun` |
+| `snapshot(directory, coordinates)` | `machine/local.snapshot` | `EvolutionSnapshot` |
+| `evaluate(candidate, coordinates)` | `machine/local.evaluate_candidate` | `EvolutionEvaluate` |
+| `stage(selection)` | `machine/local.stage` | `EvolutionStage` |
+| `run_program(selection, args, coordinates)` | `machine/local.invoke_program` | `EvolutionRun` |
 | `trial_workspace(fixture)`, `trial_files(paths)`, `trial_remove()` | a directory under `evolution_trials` | `EvolutionTrial` |
 | `core(command)` | `upgrade/control` over the local scratch actor | `EvolutionCore` |
 
@@ -223,6 +228,19 @@ session that already holds an empty pin and now has evolution is re-pinned from
 the catalogue once at its next open. A non-empty pin is never rewritten, so an
 existing session keeps the profiles it pinned.
 
+As implemented in slice 2: an empty pin written with wiring is a durable choice
+of no profiles (the acceptance suite asserts it), so the pin cannot simply stop
+being empty. `evolution_profiles` answers `Some` for a trial (its
+`evolution_role` is `Trial(profiles)`, which always counts as a choice, and a
+trial has no evolution wiring), `Some` for a `Source` session with a pin or
+wiring, and `None` for a `Source` session with no pin and no wiring. `serve`
+pins only on `Some`. The pin encoding is
+unchanged. No release ever wrote an empty pin for an unwired session, because
+this feature is unreleased, so there is no legacy reading. Sessions booted
+unwired from the unmerged evolution branch already hold a `Some([])` pin and
+will not adopt a profile. Open a fresh session or delete the
+`prompt/evolution-profiles` register; there is no migration code.
+
 ## Impact
 
 - `remote/protocol`: version 5; ten `HostMessage` constructors, two of which
@@ -235,7 +253,7 @@ existing session keeps the profiles it pinned.
   unchanged.
 - `executor_plane`: builds the executor's `machine.local`, files its parts under
   custody, mints trial workspaces.
-- `evolution/machine` (new), `evolution/native` (moved behind it), `serve`
+- `evolution/machine` (new), `evolution/native` (moved behind it as `evolution/machine/local`), `serve`
   (wiring for every placement), `system_prompt` (the pin), `owner_services` (the
   fact fence), `evolution/store` (the scope key).
 - The P model in `protocol/models/remote-execution` gains the evolution path.
