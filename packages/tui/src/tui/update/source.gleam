@@ -1,10 +1,13 @@
 //// Release resolution binds GitHub metadata to the manifest's repository,
 //// tag, native platform and full source commit. A commit without a published
 //// build is an error; resolution never compiles downloaded source implicitly.
+//// Nightly selection resolves the newest commit in GitHub's main history that
+//// has a published `commit-<full-sha>` release, within a bounded window.
 
 import core/json
 import gleam/bit_array
 import gleam/bool
+import gleam/int
 import gleam/list
 import gleam/result
 import gleam/string
@@ -82,6 +85,13 @@ pub fn resolve(
 }
 
 fn resolve_base(choices: options.Options, platform, stage, fetch) {
+  use <- bool.guard(
+    choices.selection == options.Nightly
+      && { choices.from != "" || choices.mirror != "" },
+    Error(
+      "--nightly selects GitHub main; it cannot use --from or --manifest-url",
+    ),
+  )
   case choices.from, choices.mirror {
     "", "" -> github_base(choices, stage, fetch)
     "", mirror -> {
@@ -124,6 +134,7 @@ fn github_base(choices: options.Options, stage, fetch) {
 
 fn resolve_selection(selection, stage, fetch) {
   case selection {
+    options.Nightly -> nightly(stage, fetch)
     options.Tag(tag) -> Ok(#(tag, ""))
     options.Latest -> {
       use document <- result.try(api("releases/latest", stage, fetch))
@@ -142,8 +153,141 @@ fn resolve_selection(selection, stage, fetch) {
           || !string.starts_with(commit, requested),
         Error("GitHub resolved a different source commit"),
       )
-      Ok(#("commit-" <> commit, commit))
+      Ok(#(commit_tag_prefix <> commit, commit))
     }
+  }
+}
+
+// GitHub paginates both inventories in pages of this size, and a short page
+// is the last one.
+const page_size = 30
+
+// Each inventory is read for at most this many pages, which bounds the search
+// to max_pages * page_size entries however many daily builds have accumulated.
+// Running out of release pages ends the window with whatever was found;
+// running out of history pages is an error. Neither widens the search or
+// selects a stable release.
+const max_pages = 10
+
+/// Prefix of the tag naming a build of one full source commit.
+const commit_tag_prefix = "commit-"
+
+// Release publication can lag main. Capture its head once and intersect its
+// ordered history with published immutable builds, so a branch advance cannot
+// change the history between pages. Neither draft releases nor side branches
+// can authorize an update.
+fn nightly(stage, fetch) {
+  use document <- result.try(api("commits/main", stage, fetch))
+  use head <- result.try(json_string(document, "sha"))
+  use <- bool.guard(
+    !manifest.hexadecimal(head, 40),
+    Error("GitHub main lacks a full source commit"),
+  )
+  use published <- result.try(published_commits(1, [], stage, fetch))
+  use <- bool.guard(
+    list.is_empty(published),
+    Error("no published nightly commit builds found"),
+  )
+  nightly_history(head, published, 1, stage, fetch)
+}
+
+// Collects the full SHA of every published commit release in the recent
+// release window. Order does not matter here: selection follows main's
+// history, not the release listing.
+fn published_commits(page, accumulated, stage, fetch) {
+  use <- bool.guard(page > max_pages, Ok(accumulated))
+  use document <- result.try(api(
+    "releases?per_page="
+      <> int.to_string(page_size)
+      <> "&page="
+      <> int.to_string(page),
+    stage,
+    fetch,
+  ))
+  use releases <- result.try(json_array(document))
+  let commits =
+    list.append(accumulated, list.filter_map(releases, published_commit))
+
+  use <- bool.guard(is_last_page(releases), Ok(commits))
+  published_commits(page + 1, commits, stage, fetch)
+}
+
+// A release counts only when it is published and tagged `commit-<full-sha>`.
+// A draft, or one without a publication time, may be an interrupted upload
+// whose assets are incomplete.
+fn published_commit(document) {
+  use fields <- result.try(case document {
+    json.Object(fields) -> Ok(fields)
+    _ -> Error(Nil)
+  })
+  use Nil <- result.try(
+    case list.key_find(fields, "draft"), list.key_find(fields, "published_at") {
+      Ok(json.Bool(False)), Ok(json.String(published)) if published != "" ->
+        Ok(Nil)
+      _, _ -> Error(Nil)
+    },
+  )
+  use tag <- result.try(
+    json_string(document, "tag_name") |> result.replace_error(Nil),
+  )
+  use <- bool.guard(!string.starts_with(tag, commit_tag_prefix), Error(Nil))
+  let commit = string.drop_start(tag, string.length(commit_tag_prefix))
+  use <- bool.guard(!manifest.hexadecimal(commit, 40), Error(Nil))
+  Ok(commit)
+}
+
+// Walks main's history from the captured head, newest first, and stops at the
+// first commit with a published build.
+fn nightly_history(head, published, page, stage, fetch) {
+  use <- bool.guard(
+    page > max_pages,
+    Error("nightly search exceeded 300 main commits"),
+  )
+  use document <- result.try(api(
+    "commits?sha="
+      <> head
+      <> "&per_page="
+      <> int.to_string(page_size)
+      <> "&page="
+      <> int.to_string(page),
+    stage,
+    fetch,
+  ))
+  use history <- result.try(json_array(document))
+  use commits <- result.try(
+    list.try_map(history, fn(commit) {
+      use sha <- result.try(json_string(commit, "sha"))
+      use <- bool.guard(
+        !manifest.hexadecimal(sha, 40),
+        Error("invalid main history SHA"),
+      )
+      Ok(sha)
+    }),
+  )
+
+  case list.find(commits, list.contains(published, _)) {
+    Ok(commit) -> Ok(#(commit_tag_prefix <> commit, commit))
+    Error(Nil) -> {
+      use <- bool.guard(
+        is_last_page(history),
+        Error("no published nightly build in recent main history"),
+      )
+      nightly_history(head, published, page + 1, stage, fetch)
+    }
+  }
+}
+
+// A page shorter than the page size is the last one. The test is phrased as
+// dropping page_size - 1 elements (lint R5) so that an oversized response costs
+// page_size steps rather than its full length.
+fn is_last_page(items) {
+  list.drop(items, page_size - 1) == []
+}
+
+fn json_array(document) {
+  case document {
+    json.Array(items) -> Ok(items)
+    _ -> Error("GitHub metadata is not an array")
   }
 }
 
@@ -194,7 +338,7 @@ fn bind(document: manifest.Manifest, platform, tag, commit, selection) {
     Error("release tag or commit differs from resolved selection"),
   )
   case selection {
-    options.Latest -> Ok(Nil)
+    options.Latest | options.Nightly -> Ok(Nil)
     options.Tag(tag) ->
       case document.tag == tag {
         True -> Ok(Nil)
