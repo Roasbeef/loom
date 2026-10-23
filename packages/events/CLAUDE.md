@@ -237,6 +237,11 @@ Its publisher is the advisor after a successful durable goal write or deletion;
 the gateway relays it to subscribed peers, whose session lane re-reads the
 reserved cell with `goal_get`. It carries neither durable state nor a transcript
 frontier and does not wake projection subscribers on the six hint topics.
+`EvolutionChanged` is the same data-free invalidation on `Outputs`
+(protocol-change/099), published under one session's key by the evolution
+door's wrapper after a committed mutation and by the transition queue when a
+staged request ends; the gateway pushes it as `evolution_changed` and a
+subscriber reads the `board` again.
 `ProposalsChanged` is a data-free invalidation on `Outputs`, like `GoalChanged`
 (protocol-change/086). Unlike it, it is published under an unidentified key
 derived from the domain's memory store path, which every gateway of the domain
