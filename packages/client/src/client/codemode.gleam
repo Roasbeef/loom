@@ -59,6 +59,14 @@
 //// cap/notes imports, prompt guidance, routing, and lifetime quotas, and
 //// extension and resident surfaces never inherit it.
 ////
+//// `over_evolution` is the same arrangement for the session's governed
+//// evolution plane, and the only route evolution has: there are no direct
+//// evolution tools. `cap/evolution` is on no static allowlist, so the import,
+//// the rendered surface, the six `evolution.*` names and their router arm
+//// appear together on a session that owns the plane and nowhere else.
+//// Candidates are vetted under `without_evolution`, so a selected program can
+//// never import the module and call back into the plane that is running it.
+////
 //// `over_lsp` is the same arrangement for the session's language-server
 //// door (ADR-015 §6), and for a reason with a price on it. `cap/lsp` is
 //// on no static allowlist (`codemode/vet/policy.default_cap_modules`), so
@@ -225,6 +233,7 @@ import codemode/build
 import codemode/codemode as pipeline
 import codemode/compile
 import codemode/enforcement
+import codemode/evolution as codemode_evolution
 import codemode/identity
 import codemode/launch
 import codemode/lsp as codemode_lsp
@@ -403,6 +412,18 @@ pub type Config {
     lsp: Option(query.Door),
     /// The finite observation door, admitted only beside the native LSP door.
     observation: Option(observation.Door),
+    /// Builds the six governed-evolution operations for one execution, or
+    /// `None` on a session that owns no evolution plane.
+    ///
+    /// One field for the reason `lsp` is one: it admits `cap/evolution`,
+    /// advertises the six `evolution.*` names and installs their router arm,
+    /// and a host that could set those apart would eventually advertise a
+    /// module it cannot serve. The field holds a builder over the dispatching
+    /// `tool.Ctx` and not a door, because the plane is opened after this
+    /// configuration is assembled (it needs the finished configuration as its
+    /// own host) and every operation must be bound to one execution's
+    /// coordinates. The workspace seam alone sees it.
+    evolution: Option(fn(tool.Ctx) -> codemode_evolution.Door),
     /// The pooled outstanding-effect cap for a whole execution.
     max_outstanding: Int,
     /// How long the hermetic build itself may take.
@@ -486,6 +507,47 @@ pub fn over_schedules(
   door: Option(scheduleseam.Door),
 ) -> Config {
   Config(..config, schedules: door)
+}
+
+/// The same host configuration, serving `evolution.*` over a builder of the
+/// six operations for one execution.
+///
+/// A host that never calls this leaves `cap/evolution` unimportable and its
+/// names unrouted, so a trial session, an executor-placed workspace and an
+/// embedder with no catalogue pay no cached bytes for it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.over_evolution(config, Some(fn(ctx) { door_for(ctx) }))
+/// ```
+///
+pub fn over_evolution(
+  config: Config,
+  builder: Option(fn(tool.Ctx) -> codemode_evolution.Door),
+) -> Config {
+  Config(..config, evolution: builder)
+}
+
+/// The configuration evolution itself vets and runs candidates under: this
+/// one, with the evolution door withdrawn.
+///
+/// A candidate program is selected by an operator and then runs inside a
+/// session that owns the plane. If it could import `cap/evolution` it could
+/// propose, test or invoke another candidate from inside its own run, which
+/// today is stopped only by the owner being busy. Withdrawing the door here
+/// makes the allowlist, and therefore the identity hash that covers it, say
+/// so (`evolution/identity`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // codemode.seam_allowlist(codemode.without_evolution(config), seam)
+/// //   does not admit `cap/evolution`
+/// ```
+///
+pub fn without_evolution(config: Config) -> Config {
+  Config(..config, evolution: None)
 }
 
 /// The same host configuration, serving `job.*` over one background-jobs
@@ -713,6 +775,10 @@ pub fn seam_allowlist(
     None -> allowed
     Some(_) -> vet_policy.allow(allowed, "cap/notes")
   }
+  let noted = case evolution_on(config, seam) {
+    None -> noted
+    Some(_) -> vet_policy.allow(noted, "cap/evolution")
+  }
   case lsp_on(config, seam) {
     None -> noted
     Some(_) -> {
@@ -858,6 +924,10 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
   let noted = case notes_on(config, seam) {
     None -> caps
     Some(_) -> list.append(caps, notes.serviced_caps)
+  }
+  let noted = case evolution_on(config, seam) {
+    None -> noted
+    Some(_) -> list.append(noted, codemode_evolution.serviced_caps)
   }
   case lsp_on(config, seam) {
     None -> noted
@@ -1016,6 +1086,9 @@ pub fn default_config(
     // `cap/lsp` stays off every allowlist until a host wires a door.
     lsp: None,
     observation: None,
+    // No evolution plane by default: it is opened after this configuration
+    // exists, so `client/serve` installs the builder once the plane is up.
+    evolution: None,
     max_outstanding: default_outstanding,
     build_timeout_ms: default_build_timeout_ms,
     accept_timeout_ms: default_accept_timeout_ms,
@@ -2581,14 +2654,62 @@ fn surface_router(
   config: Config,
   request: codemode_tool.Request,
 ) -> satellite.CapRouter {
-  owner_calls(
-    owner_arms(config, vetting_seam(request.seam)),
-    emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
+  let owned =
+    owner_calls(
+      owner_arms(config, vetting_seam(request.seam)),
+      emit: emitting(fs.real_filesystem(), config.blob_root, config.entropy),
+      strand: request.strand,
+      source_index: request.source_index,
+      over: workspace_router(config, request),
+    )
+  case evolution_on(config, vetting_seam(request.seam)) {
+    None -> owned
+    Some(build) ->
+      codemode_evolution.routing(
+        build(evolution_context(config, request)),
+        over: owned,
+      )
+  }
+}
+
+// The dispatching `tool.Ctx` an evolution operation runs under, rebuilt from
+// the request and this host. Every coordinate comes from the request the
+// `code_mode` tool filled from its own `Ctx`, never from the program. The
+// clearance runner is the session's broker, so a candidate snapshot is jailed
+// exactly as the direct tool's was. The raise seam refuses where the direct
+// tool would have asked: an approval inside a running program costs a whole
+// re-execution (the code-mode approval model), so the program reads the
+// refusal and the model re-submits with the approval consumed.
+fn evolution_context(
+  config: Config,
+  request: codemode_tool.Request,
+) -> tool.Ctx {
+  tool.Ctx(
+    workspace: request.workspace,
     strand: request.strand,
+    op_id: request.op_id,
+    step_id: request.step_id,
     source_index: request.source_index,
-    over: workspace_router(config, request),
+    base_policy: request.base_policy,
+    directory_access: request.directory_access,
+    grants: request.grants,
+    demand: request.demand,
+    env: request.env,
+    clock: config.clock,
+    filesystem: fs.real_filesystem(),
+    blob_root: config.blob_root,
+    clear_call: tool.broker_runner(
+      broker: config.broker,
+      waiting: evolution_clearance_ms,
+    ),
+    raise_refusal: tool.no_raise(),
+    observe_output: request.observe_output,
   )
 }
+
+// How long a snapshot's jailed clearance may wait on the broker, the bound
+// the session's own tool context uses.
+const evolution_clearance_ms = 30_000
 
 /// The capability arms whose state lives with the session's owner rather
 /// than beside the checkout: the Agency behind `strand.*`, the blackboard
@@ -3945,6 +4066,10 @@ fn surface_ceilings(
     None -> ceilings
     Some(_) -> list.append(ceilings, notes.ceilings())
   }
+  let ceilings = case evolution_on(config, vetting_seam(request.seam)) {
+    None -> ceilings
+    Some(_) -> list.append(ceilings, codemode_evolution.ceilings())
+  }
   case observation_on(config, vetting_seam(request.seam)) {
     None -> ceilings
     Some(_) -> list.append(ceilings, codemode_observation.ceilings())
@@ -4180,6 +4305,23 @@ fn lsp_on(config: Config, seam: vet_policy.Seam) -> Option(query.Door) {
   case seam {
     vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> config.lsp
     vet_policy.ExtensionSeam | vet_policy.ResidentSeam -> None
+  }
+}
+
+// The evolution plane is the workspace seam's alone. `propose` names a
+// workspace directory and every operation is bound to a workspace execution,
+// and an orchestration program reaches the plane by spawning one that does.
+// Extensions and resident hooks never see it. This one choice gates the
+// import, the advertised calls, the quotas and the router arm together.
+fn evolution_on(
+  config: Config,
+  seam: vet_policy.Seam,
+) -> Option(fn(tool.Ctx) -> codemode_evolution.Door) {
+  case seam {
+    vet_policy.WorkspaceSeam -> config.evolution
+    vet_policy.OrchestrationSeam
+    | vet_policy.ExtensionSeam
+    | vet_policy.ResidentSeam -> None
   }
 }
 

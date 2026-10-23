@@ -85,6 +85,7 @@ import client/directories
 import client/effect_abort
 import client/escalate
 import client/evolution
+import client/evolution/capability as evolution_capability
 import client/evolution/control as evolution_control
 import client/evolution/evaluate as evolution_evaluate
 import client/evolution/fixture as evolution_fixture
@@ -2517,6 +2518,7 @@ fn code_mode_arms(
   schedule_door: Option(scheduleseam.Door),
   layer: mcp_wiring.Layer,
   peer_wiring: peers.Wiring,
+  evolution_name: address.Address(evolution_capability.Message),
 ) -> fn(codemode_wiring.Config) -> codemode_wiring.Config {
   let seams = settings.codemode_seams
   fn(config) {
@@ -2534,6 +2536,16 @@ fn code_mode_arms(
     // description and its router together; an empty layer widens nothing,
     // so this is unconditional.
     |> codemode_wiring.over_mcp(layer)
+    // `cap/evolution` is the one route to governed evolution, offered to a
+    // source session only: a trial is judged by its source and is handed no
+    // door over the source's catalogue. The plane is opened after this
+    // configuration exists (it takes the configuration as its candidates'
+    // host), so the builder holds the cell's name and the cell is registered
+    // under it by `open_evolution`.
+    |> codemode_wiring.over_evolution(case settings.evolution_role {
+      Source -> Some(evolution_capability.door_over(evolution_name))
+      Trial(_) -> None
+    })
     |> with_code_mode_peers(peer_wiring)
   }
 }
@@ -3805,6 +3817,10 @@ fn assemble_in(
   // on an executor sends every owner-bound call here instead, and the
   // answer is composed from this session's own doors: the Agency, the
   // scheduling door and the peer mailbox it would have been given locally.
+
+  // The name the evolution cell is registered under once the plane is open.
+  // The code-mode configuration below is built first and holds only the name.
+  let evolution_name = address.new_address(namespace)
   let owner_api =
     owner_services.local(
       handle: agency.fact_supplier(agency_config),
@@ -3868,6 +3884,7 @@ fn assemble_in(
               schedule_door,
               mcp_layer,
               peer_wiring,
+              evolution_name,
             ),
             tool: code_mode_tool(_, async_name, agency_config),
           ),
@@ -4114,6 +4131,7 @@ fn assemble_in(
           clock,
           logger,
           owner,
+          evolution_name,
         )
         |> result.map(Some)
     },
@@ -6610,6 +6628,7 @@ fn open_evolution(
   clock: Clock,
   logger: Logger,
   owner: Option(custody.Owner),
+  name: address.Address(evolution_capability.Message),
 ) -> Result(EvolutionWiring, String) {
   let root = evolution_root(settings)
   let scratch = evolution_scratch(settings)
@@ -6619,9 +6638,11 @@ fn open_evolution(
   // policy that check was granted. It holds no catalogue, so it exists before
   // the catalogue is opened with the identity it reports, and every call that
   // needs the catalogue is handed it.
+  // Candidates are vetted and run under the host with the evolution door
+  // withdrawn, so no selected program can import `cap/evolution`.
   let config =
     evolution_machine_local.Config(
-      host:,
+      host: codemode_wiring.without_evolution(host),
       base:,
       at: hook_coordinates(
         settings,
@@ -6697,8 +6718,11 @@ fn open_evolution(
       custody.Evolution,
       fn() {
         use Nil <- result.try(evolution_queue.close(transitions))
-        evolution_live.close(live, 120_000)
-        |> result.map_error(evolution_store.describe)
+        use Nil <- result.try(
+          evolution_live.close(live, 120_000)
+          |> result.map_error(evolution_store.describe),
+        )
+        Ok(evolution_capability.stop(name))
       },
       fn() {
         evolution_live.detach(live)
@@ -6783,6 +6807,13 @@ fn open_evolution(
       },
       trace: evolution_model_door.trace_door(source, actual),
     )
+
+  // The doors become reachable from programs here, after custody holds the
+  // cell's stop. Unlinking at once is the same hand-over `detach` makes for
+  // the live owner and the queue: a session request builder may exit normally
+  // without taking the cell with it.
+  use cell <- result.try(evolution_capability.start(name, door))
+  evolution_capability.detach(cell)
 
   Ok(EvolutionWiring(
     live:,
