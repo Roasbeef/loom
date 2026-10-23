@@ -811,17 +811,21 @@ pub fn composer_status_lines(model: Model) -> List(String) {
 
   // What the strand is doing is on the input frame's top rule, unless the
   // frame is too narrow to carry it beside the keys.
-  let active = case
-    active_status_label(model),
-    column_width(model) < input_frame.carries_activity
-  {
-    Some(status), True -> [
-      activity_glyph(model.view.activity_frame)
-      <> " "
-      <> text_hygiene.single_line(status)
-      <> elapsed_label(model.shared.activity_elapsed_s),
-    ]
-    Some(_), False | None, _ -> []
+  // Geometry asks for this band's height repeatedly. A wide frame carries
+  // activity on its rule, so it never needs to decode the running batch or
+  // format its arguments just to discover that this band has no activity row.
+  let active = case column_width(model) < input_frame.carries_activity {
+    False -> []
+    True ->
+      case active_status_label(model) {
+        None -> []
+        Some(status) -> [
+          activity_glyph(model.view.activity_frame)
+          <> " "
+          <> text_hygiene.single_line(status)
+          <> elapsed_label(model.shared.activity_elapsed_s),
+        ]
+      }
   }
 
   // A notice and the reason behind an unusual key are news, so they sit
@@ -955,9 +959,13 @@ pub fn input_keys(model: Model) -> #(String, Option(String)) {
     Some("Stopped · your next message is sent with the held input"),
   )
   use <- bool.guard(tui_model.active_queue_halted(model), held)
+
+  // Key guidance depends on liveness alone. Building the display label here
+  // used to decode the current batch and summarize its arguments on every
+  // geometry query, even though none of that text reaches these keys.
   case
     session_model.active_interrupt(model.shared),
-    active_status_label(model),
+    session_model.active_strand_phase(model.shared),
     model.view.submission_mode
   {
     Some(_), _, _ -> held

@@ -49,6 +49,7 @@ import etui/span
 import etui/style
 import etui/text
 import gleam/bit_array
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -521,12 +522,26 @@ fn marker_of(spans: List(span.Span), column: Int) -> Option(Marker) {
     [first, ..rest] ->
       case cells_of(first) {
         Some(#(id, cells)) -> Some(Marker(id:, cells:, column:))
-        None -> marker_of(rest, column + span.span_width(first))
+        None ->
+          marker_of(rest, column)
+          |> option.map(fn(marker) {
+            // Ordinary text rows contain no image marker. Measure the
+            // preceding spans only after a marker establishes that its
+            // column will actually be used.
+            Marker(..marker, column: marker.column + span.span_width(first))
+          })
       }
   }
 }
 
 fn cells_of(sp: span.Span) -> Option(#(kitty.ImageId, Cells)) {
+  // Theme colours are RGB too. A marked span must start with one of the
+  // two cell symbols, so ordinary text needs no grapheme list at all.
+  use <- bool.guard(
+    !string.starts_with(sp.content, kitty.placeholder)
+      && !string.starts_with(sp.content, blank),
+    None,
+  )
   case sp.style.fg {
     style.Rgb(red, green, blue) -> {
       let marks = string.to_graphemes(sp.content)
