@@ -140,7 +140,7 @@ fn begin(
     ffi_dom.render(
       vendor,
       "loom-diagram-" <> int.to_string(revision),
-      request.source,
+      controller.normalize_source(request.source),
       host,
       fn(outcome) { dispatch(controller.Rendered(revision, outcome)) },
     )

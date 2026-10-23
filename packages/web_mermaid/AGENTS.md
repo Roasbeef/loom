@@ -81,9 +81,8 @@ owns the application, message listener and observer; teardown removes them all.
   executes controller tests under Node/Bun/Deno, and the FFI checks in
   `bundle/renderer_test.mjs` test exception and promise normalization. Neither
   runs the real vendor; `scripts/web_mermaid_check.sh` is the browser drive.
-- The configuration pins `layout: "dagre"`. ELK, Mermaid 12's flowchart
-  default, fails inside the IIFE bundle (`__require is not defined`); a
-  `flowchart-elk` header still reaches it and falls back to source.
+- The configuration pins `layout: "dagre"` with explicit flowchart `wrappingWidth` (320), `nodeSpacing` (50), `rankSpacing` (80), `padding` (16), and `subGraphTitleMargin` (`{top: 10, bottom: 10}`). ELK, Mermaid 12's flowchart default, fails inside the IIFE bundle (`__require is not defined`); a `flowchart-elk` header still reaches it and falls back to source.
+- `controller.normalize_source` escapes non-`<br>` angle brackets inside double-quoted node labels to `&lt;` and `&gt;` before rendering so Mermaid's DOMPurify pass does not strip `<name>` or `<state_root>` as HTML tags while SVG `<tspan>` entity decoding restores `<` and `>`.
 - The frame root's `color-scheme` follows the request's theme. A frame whose
   scheme differs from its iframe element's is painted on an opaque backdrop.
 
