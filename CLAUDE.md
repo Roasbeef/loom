@@ -232,19 +232,17 @@ package-information` is the same treatment for `gleam.toml`.) Reach for
 these to read an API as the compiler sees it rather than as a stale
 comment claims it.
 
-`gleam lsp` is the third one and it is **not** wired up here. It is a
-language server meant to be driven by an editor over stdio, so it answers
-nothing from a shell, and Claude Code's own LSP tool has no Gleam server
-configured — asking it for a hover returns "No LSP server available for
-file type: .gleam". Do not plan a task around go-to-definition or
-find-references. That is about the tooling a developer drives this repo
-with, not about Loom: Loom's own agent has language-server tools, run
-jailed per session (ADR-015, `docs/architecture/lsp.md`). `ast-grep`
-does not know Gleam either (`gleam is not supported!`), so structural
-search over these sources is grep, or a throwaway `glance` walk in
-`packages/lint` when the question is really about the AST. For the
-public API surface, `gleam export package-interface` is the answer and
-is exact.
+`gleam lsp` is the third one, and inside Loom it runs jailed per session
+behind `cap/lsp` and `cap/lsp_sql` in `code_mode` (ADR-015,
+`docs/architecture/lsp.md`, `docs/architecture/lsp-sql.md`). Prefer `cap/lsp`
+(`definition`, `references`, `hover`, `outline`, `diagnostics`, `rename`) and
+`cap/lsp_sql` (`collect_seeds`, `references`, `query_text`) over `grep` for
+symbol navigation, caller attribution, and sub-second post-edit diagnostics
+(`lsp.diagnostics(Some(path))`), and note that `fs_write` and `fs_edit` report
+settled diagnostics automatically. (From a bare shell or an external harness
+without a Gleam LSP configured, `gleam lsp` speaks stdio only and `ast-grep`
+does not support Gleam; use a `glance` walk in `packages/lint` for AST checks
+and `gleam export package-interface` for the exact public API surface.)
 
 `main` is the primary branch. Work happens on short-lived topic branches
 named for the work itself — `storage/branch-index-repair`,
