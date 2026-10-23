@@ -90,7 +90,12 @@ one per session. Generations keep their own `tools`, `hooks`, `inventory`,
 `mode` and `retire`, so the seam has no invoke or retire function. Prompt trials
 and the core upgrade (`control.Seam`) stay outside it.
 
-`live` serializes the complete promoted hook/tool fold with activation. `hook`
+`live` leases the active generation to each complete promoted hook/tool fold,
+which runs on the caller's own process, and holds activation and close until
+every lease is returned or its holder has died (a `weft/state_machine`:
+`Open` admits leases, `Draining` postpones them behind a waiting replacement).
+Calls overlap, and the `waiting` argument bounds only admission. `hook` derives
+its door bypass list from `evolution_tool.names` and `model_door.names`. `hook`
 stages a privately compiled jailed generation and publishes it after native
 retirement of the predecessor. `machine/local` retains failed cleanup capabilities;
 `retirement.Task` carries only the remaining native obligation, so successful
@@ -136,7 +141,7 @@ scrubbed native branch observations and operator outcomes. Read
 `evolution/live.Generation.mode` distinguishes `ReplacementOnly` from
 `Stateful(prepare)`. A `PreparedUpgrade` carries the successor generation,
 publication callback and unpublished compensation callback. The live owner
-serializes the selection transaction with complete invocation folds.
+holds the selection transaction until every outstanding invocation lease is returned.
 `evolution/stateful` retains the existing jailed hosting and retirement
 capabilities while compiling the approved successor into an inactive fixed
 namespace. Its reserved control calls prepare, publish or abort the exact
