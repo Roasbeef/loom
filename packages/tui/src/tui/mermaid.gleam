@@ -26,8 +26,8 @@
 ////
 //// 1. `render` parses the source into a `Diagram`.
 //// 2. `fit` draws a flowchart in its declared direction and, when that is wider
-////    than the room, in the transposed direction; a sequence diagram has one
-////    layout and is drawn once.
+////    than the room, in the transposed direction; a sequence diagram is drawn
+////    with `sequence.draw_within` against the available width.
 //// 3. `lines` turns the canvas into styled lines, one span per run of cells
 ////    that share a role.
 
@@ -57,7 +57,8 @@ pub fn render(source: String, width: Int) -> Result(List(span.Line), Refusal) {
   use diagram <- result.try(parse.parse(source))
   use picture <- result.try(case diagram {
     model.Flow(chart) -> fit(chart, width)
-    model.Sequenced(sequence) -> sequence.draw(sequence) |> result.map(read_out)
+    model.Sequenced(diagram) ->
+      sequence.draw_within(diagram, width) |> result.map(read_out)
   })
   case picture.width <= width {
     True -> Ok(lines(picture.rows))

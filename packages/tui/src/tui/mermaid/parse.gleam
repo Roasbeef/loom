@@ -585,8 +585,9 @@ fn take_id_loop(rest: String, taken: String) -> #(String, String) {
 // Labels
 // ---------------------------------------------------------------------------
 
-// A node label: `<br>` breaks a line, every line is measured, and an empty
-// label falls back to the identifier so the box is never blank.
+// A node label: `<br>` breaks a line, multi-word lines longer than
+// `max_label_cells` wrap at spaces, every resulting line is measured, and an
+// empty label falls back to the identifier so the box is never blank.
 fn node_lines(label: String, id: String) -> Result(List(String), Refusal) {
   let lines =
     label
@@ -594,6 +595,7 @@ fn node_lines(label: String, id: String) -> Result(List(String), Refusal) {
     |> string.split("\n")
     |> list.map(string.trim)
     |> list.filter(fn(line) { line != "" })
+    |> list.flat_map(wrap_words(_, model.max_label_cells))
   use _ <- result.try(list.try_each(lines, check_label))
   case lines {
     [] -> Ok([id])
@@ -603,16 +605,67 @@ fn node_lines(label: String, id: String) -> Result(List(String), Refusal) {
 
 // An edge label is one line: a `<br>` in it reads as a space.
 fn edge_label(text: String) -> Result(String, Refusal) {
-  let label =
-    text
-    |> string.trim
-    |> unquote
-    |> string.replace("<br/>", " ")
-    |> string.replace("<br />", " ")
-    |> string.replace("<br>", " ")
-    |> string.trim
+  let label = clean_inline_label(text)
   use _ <- result.try(check_label(label))
   Ok(label)
+}
+
+// A sequence participant, message or note label: multi-word text longer than
+// `max_label_cells` wraps at spaces across at most `max_sequence_label_lines`
+// lines, while a single unbreakable token past `max_label_cells` is still
+// refused.
+const max_sequence_label_lines = 4
+
+fn sequence_label(text: String) -> Result(String, Refusal) {
+  let label = clean_inline_label(text)
+  let lines = wrap_words(label, model.max_label_cells)
+  use _ <- result.try(list.try_each(lines, check_label))
+  case list.drop(lines, max_sequence_label_lines) {
+    [] -> Ok(label)
+    [_, ..] -> Error(model.TooLarge(model.LabelCells))
+  }
+}
+
+fn clean_inline_label(text: String) -> String {
+  text
+  |> string.trim
+  |> unquote
+  |> string.replace("<br/>", " ")
+  |> string.replace("<br />", " ")
+  |> string.replace("<br>", " ")
+  |> string.trim
+}
+
+/// Wraps a single line at spaces so multi-word labels fit within `limit` cells
+/// per line. A single word wider than `limit` is kept intact on its own line
+/// so `check_label` can refuse an unbreakable oversized token.
+pub fn wrap_words(line: String, limit: Int) -> List(String) {
+  case text.cell_width(line) <= limit {
+    True -> [line]
+    False ->
+      case words(line) {
+        [] -> [line]
+        [first, ..rest] -> wrap_words_loop(rest, first, [], limit)
+      }
+  }
+}
+
+fn wrap_words_loop(
+  rest: List(String),
+  current: String,
+  done: List(String),
+  limit: Int,
+) -> List(String) {
+  case rest {
+    [] -> list.reverse([current, ..done])
+    [word, ..more] -> {
+      let candidate = current <> " " <> word
+      case text.cell_width(candidate) <= limit {
+        True -> wrap_words_loop(more, candidate, done, limit)
+        False -> wrap_words_loop(more, word, [current, ..done], limit)
+      }
+    }
+  }
 }
 
 fn unquote(text: String) -> String {
@@ -750,7 +803,7 @@ fn parse_participant(
     True -> Error(model.Malformed(line, "a participant name without spaces"))
     False -> {
       use label <- result.try(case label {
-        Some(value) -> edge_label(value) |> result.map(Some)
+        Some(value) -> sequence_label(value) |> result.map(Some)
         None -> Ok(None)
       })
       use #(builder, _) <- result.map(participant(builder, id, label))
@@ -810,7 +863,7 @@ fn parse_note(
     Ok(#(place, body)) -> #(string.trim(place), string.trim(body))
     Error(_) -> #(string.trim(text), "")
   }
-  use label <- result.try(edge_label(body))
+  use label <- result.try(sequence_label(body))
   case place_text {
     "over " <> names -> {
       use #(builder, found) <- result.try(
@@ -917,7 +970,7 @@ fn message_between(
     _, _, "+" <> _ | _, _, "-" <> _ ->
       Error(model.Unsupported("message activation"))
     _, _, _ -> {
-      use text <- result.try(edge_label(body))
+      use text <- result.try(sequence_label(body))
       use #(builder, from) <- result.try(participant(builder, source, None))
       use #(builder, to) <- result.try(participant(builder, target, None))
       add_event(
