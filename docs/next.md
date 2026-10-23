@@ -4,6 +4,8 @@ This is a scoped profiling handoff, checked October 22, 2026 against
 `3cf6bdc09c281e39dd126d5b7daa6c9d7eb4308d` plus the local terminal optimization
 commits `4e8417fbf` and `0e7b74a2f`. It records this task's measurements and validation, not a fresh
 whole-repository or hosted-CI audit. Rewrite it after the next body of work.
+Publication integrates main `c8417d49a`, including the Mermaid label changes;
+the earlier fixture numbers below precede that integration.
 
 The [previous reconnect handoff](next-2026-10-22-before-live-profile.md) is
 preserved. Its pending-merge instructions are outdated: GitHub now confirms
@@ -22,7 +24,7 @@ and was not repeated here.
 | Validation | Full TUI gate exited zero with 1,563 tests. Independent source review found no actionable issue. No hosted CI was run for this patch. |
 | Live daemon | Native observation averaged 5.71% of one core over 30.138 seconds; RSS ranged 542–579 MiB. No function-level attribution was obtained. |
 | Daemon Pickglass access | Updated Pickglass supports TLS. The observed local ledger has no tool grant; local authority and attach files were absent. Known-peer checks found no usable verified authority access. |
-| Delivery | Local commits only. Both installed processes remain on their original code; live savings are unmeasured. |
+| Delivery | The owner authorized publication, review and merge after all gates pass. Exact-head hosted CI and Linux signoff are pending. Both installed processes remain on their original code; live savings are unmeasured. |
 
 The [resource report](review/loom-resource-profile-2026-10-22.md) records
 provenance, ownership paths, repeated measurements, limitations and local
@@ -36,8 +38,10 @@ combining text and a marker prefix followed by ordinary text.
    if needed, then obtain a Pickglass census and CPU sample before choosing
    daemon code to change. Updating Pickglass supplies transport support, not
    a new deployment grant. Do not infer a memory leak from the native cuts.
-2. Publish or install the terminal patch when requested. **Exit:** validate
-   hosted CI for the exact published head, and compare the same live Ctrl+G
+2. Publish, review and merge the terminal patch. **Exit:** pass hosted CI,
+   inspect advisory artifacts and strict skip censuses, obtain Linux signoff
+   and confirm review for the exact published head before a guarded merge.
+   Installation remains a separate request; compare the same live Ctrl+G
    workload after an authorized client update. Local fixture improvements
    alone are not installed CPU or RSS savings.
 3. Revisit remaining transition work only with a matched measurement.
