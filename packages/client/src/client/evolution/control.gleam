@@ -5,7 +5,8 @@
 //// workspace skills and exact model profiles require the daemon owner.
 ////
 //// The read actions (`catalogue`, `evidence`, `inspect`, `status`) return
-//// bounded pages. The mutating actions (`approve`, `revoke`, `select`,
+//// bounded pages, and `board` returns the whole panel in one bounded answer
+//// (`board`, protocol-change/099). The mutating actions (`approve`, `revoke`, `select`,
 //// `rollback`) each name a candidate. A selection of this session's own
 //// extension is checked against its durable receipt and then runs through the
 //// live owner's transition queue. An extension selection scoped to another
@@ -13,6 +14,7 @@
 //// committed. Any other selection commits directly, because it changes
 //// discovery for new sessions and not a running one.
 
+import client/evolution/board
 import client/evolution/live
 import client/evolution/page
 import client/evolution/queue
@@ -29,10 +31,51 @@ import tools/tool
 /// The operator door the authenticated gateway fills with its binding.
 pub type Seam {
   Seam(
-    /// Native authority and identity precede untrusted action arguments.
-    command: fn(access.Authority, String, String, json.JsonValue) ->
+    /// Native authority, identity and surface precede untrusted action
+    /// arguments. The surface is recorded in the audit entry and decides
+    /// nothing.
+    command: fn(access.Authority, String, store.Via, String, json.JsonValue) ->
       Result(json.JsonValue, String),
   )
+}
+
+/// The authority an authenticated connection exercises on this door.
+///
+/// A page never attaches as `Owner` (051), so the owner's own page arrives as
+/// an operator, and the store would refuse it the workspace and exact-model
+/// rows the owner can see and approve from a terminal. The door therefore
+/// derives authority from the principal's kind, as the gateway does for the
+/// commands only the owner may send (073). Three limits keep it narrow:
+///
+/// - Only an operator is raised. An observer, which is a cap the owner chose
+///   or a role the membership holds, keeps reading as a caller.
+/// - Only the owner's principal is raised. A member stays an operator, so the
+///   store still confines it to this session's own scope.
+/// - The reviewed harness upgrade is never raised. It stays with an
+///   attachment that is the owner by role, which is a terminal and not a page.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // for_principal(access.Participant(access.Operator), access.OwnerPrincipal, "approve")
+/// // == access.Owner
+/// ```
+pub fn for_principal(
+  authority: access.Authority,
+  kind: access.PrincipalKind,
+  action: String,
+) -> access.Authority {
+  case authority, kind {
+    access.Participant(access.Operator), access.OwnerPrincipal ->
+      case action {
+        "core_upgrade" | "core_downgrade" -> authority
+        _other -> access.Owner
+      }
+    access.Participant(access.Operator), access.MemberPrincipal
+    | access.Participant(access.Observer), _
+    | access.Owner, _
+    -> authority
+  }
 }
 
 /// Creates the session-bound authenticated door.
@@ -51,10 +94,11 @@ pub fn new(
   transitions: queue.Queue,
   clock: Clock,
 ) -> Seam {
-  Seam(command: fn(authority, principal, action, args) {
+  Seam(command: fn(authority, principal, via, action, args) {
     use native <- result.try(authority_for(authority, session_id, workspace))
     use catalogue <- result.try(
       open(native)
+      |> result.map(store.with_via(_, via))
       |> result.map_error(retained(owner)),
     )
     dispatch(
@@ -88,6 +132,36 @@ fn retained(owner: live.Live) -> fn(store.Refusal) -> String {
     live.retain(owner, error)
     store.describe(error)
   }
+}
+
+/// Wraps a door so that a committed mutation tells subscribers.
+///
+/// A mutation answers `Ok` only once its commit is durable, so the hint cannot
+/// overtake the write it announces and a reader woken by it finds the new state.
+/// A selection staged through the queue answers `queued` before it commits. The
+/// queue announces that commit itself when the request ends, so a board is told
+/// twice for one staged selection and draws the pending request first and its
+/// outcome second. A refused mutation and every read announce nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // control.announcing(seam, fn() { bus.publish(bus.start(), key, bus.EvolutionChanged) })
+/// ```
+pub fn announcing(seam: Seam, announce: fn() -> Nil) -> Seam {
+  let command = seam.command
+  Seam(command: fn(authority, principal, via, action, args) {
+    let outcome = command(authority, principal, via, action, args)
+    case action, outcome {
+      "approve", Ok(_)
+      | "revoke", Ok(_)
+      | "select", Ok(_)
+      | "rollback", Ok(_)
+      -> announce()
+      _, _ -> Nil
+    }
+    outcome
+  })
 }
 
 fn authority_for(
@@ -140,6 +214,7 @@ fn dispatch(
       )
     }
     "status" -> status(catalogue, owner, transitions, args)
+    "board" -> board(bound)
     "inspect" -> {
       use id <- result.try(candidate_arg(args))
       use candidate <- result.try(
@@ -155,6 +230,39 @@ fn dispatch(
     "approve" | "revoke" | "select" | "rollback" -> mutate(bound, action, args)
     _unknown -> Error("Unknown: unsupported evolution operator action")
   }
+}
+
+// The whole panel in one reply. The catalogue read is one lease, so the rows,
+// selections and journal agree with each other. The live generation and the
+// queue are read afterwards and can be a moment newer, which a page repairs on
+// the next push.
+fn board(bound: Bound) -> Result(json.JsonValue, String) {
+  let Bound(catalogue:, owner:, transitions:, session_id:, ..) = bound
+  use read <- result.try(
+    store.read_board(catalogue)
+    |> result.map_error(retained(owner)),
+  )
+  use waiting <- result.try(queue.pending(transitions))
+
+  // A refused catalogue read already left its cleanup witness with `live`, so
+  // it is drawn as nothing running and is not registered a second time.
+  let published = case live.catalogue(owner) {
+    Ok(Some(generation)) ->
+      Some(board.Published(
+        selection: generation.selection,
+        inventory: result.unwrap(generation.inventory(), json.Null),
+      ))
+    Ok(None) | Error(_) -> None
+  }
+  Ok(
+    board.value(board.Input(
+      session_id:,
+      identity: store.identity(catalogue),
+      board: read,
+      published:,
+      waiting:,
+    )),
+  )
 }
 
 fn mutate(

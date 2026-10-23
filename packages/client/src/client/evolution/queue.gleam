@@ -36,6 +36,24 @@ pub type Status {
   Failed(reason: String)
 }
 
+/// One transition the queue has accepted and not yet finished.
+///
+/// The queue runs one job at a time, so a listing holds at most one of these.
+/// It is a list so that a queue which one day runs two does not change the
+/// shape a reader depends on.
+pub type Waiting {
+  Waiting(
+    /// The operator's request identity.
+    request_id: String,
+    /// `Queued` or `Running`; a finished job is not waiting.
+    status: Status,
+    /// The candidate the transition would select.
+    candidate_id: record.CandidateId,
+    /// The absolute clock deadline after which publication is forbidden.
+    expires_at: Int,
+  )
+}
+
 /// The queue's narrow native address and original retirement identity.
 pub opaque type Queue {
   Queue(pid: Pid, requests: Subject(Message))
@@ -48,7 +66,12 @@ type Receipt {
 
 /// One job remains occupied until weft acknowledges that its relay is drained.
 type Job {
-  Job(receipt: Receipt, cancel: weft.Cancel)
+  Job(
+    receipt: Receipt,
+    cancel: weft.Cancel,
+    candidate_id: record.CandidateId,
+    expires_at: Int,
+  )
 }
 
 /// Queue state and messages sit above all handlers so their custody is visible.
@@ -57,6 +80,10 @@ type State {
     owner: live.Live,
     clock: Clock,
     outcomes: Subject(weft.Pulled(record.Selection, String)),
+    // Tells the host that a request reached a terminal state. It runs inside
+    // the queue's own turn, after the receipt has changed, so a reader the
+    // notification wakes finds the terminal status.
+    changed: fn() -> Nil,
     active: Option(Job),
     receipts: List(Receipt),
     closing: Option(Subject(Result(Nil, String))),
@@ -66,6 +93,7 @@ type State {
 type Message {
   Enqueue(live.Transition, String, Subject(Result(Status, String)))
   Poll(String, Subject(Result(Option(Status), String)))
+  Listing(Subject(List(Waiting)))
   Delivered(weft.Pulled(record.Selection, String))
   Closing(Subject(Result(Nil, String)))
 }
@@ -78,6 +106,25 @@ type Message {
 /// // queue.start(live_owner, clock)
 /// ```
 pub fn start(owner: live.Live, clock: Clock) -> Result(Queue, String) {
+  start_notifying(owner, clock, fn() { Nil })
+}
+
+/// Starts an idle queue that calls `changed` each time a request ends.
+///
+/// The commit that makes a selection durable runs inside the managed job, so
+/// the call comes after the commit. It also comes after the receipt moved to
+/// its terminal status, which is what a reader woken by it will look for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // queue.start_notifying(live_owner, clock, fn() { publish_hint() })
+/// ```
+pub fn start_notifying(
+  owner: live.Live,
+  clock: Clock,
+  changed: fn() -> Nil,
+) -> Result(Queue, String) {
   actor.new_with_initialiser(5000, fn(subject) {
     let outcomes = process.new_subject()
     let selector =
@@ -88,6 +135,7 @@ pub fn start(owner: live.Live, clock: Clock) -> Result(Queue, String) {
       owner:,
       clock:,
       outcomes:,
+      changed:,
       active: None,
       receipts: [],
       closing: None,
@@ -146,6 +194,18 @@ pub fn poll(
   |> result.flatten
 }
 
+/// Lists the transitions that are accepted and not finished.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // queue.pending(queue)
+/// ```
+pub fn pending(queue: Queue) -> Result(List(Waiting), String) {
+  call.try_call(queue.requests, waiting: 5000, sending: Listing)
+  |> result.map_error(fn(_) { "the live transition queue is unavailable" })
+}
+
 /// Drains the pending managed job and waits for its acknowledgement before exit.
 /// Live generation custody is closed separately, after this queue has drained.
 ///
@@ -185,6 +245,10 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
         reply,
         Ok(option.map(receipt(state, id), fn(receipt) { receipt.status })),
       )
+      actor.continue(state)
+    }
+    Listing(reply) -> {
+      process.send(reply, waiting(state))
       actor.continue(state)
     }
     Delivered(event) -> delivered(state, event)
@@ -276,7 +340,15 @@ fn start_job(
         )
       #(
         Ok(Queued(transition.request_id)),
-        State(..state, active: Some(Job(receipt:, cancel:))),
+        State(
+          ..state,
+          active: Some(Job(
+            receipt:,
+            cancel:,
+            candidate_id: transition.selection.candidate_id,
+            expires_at: transition.expires_at,
+          )),
+        ),
       )
     }
     Some(_), _, _ -> #(
@@ -288,6 +360,26 @@ fn start_job(
       Error("Bounds: invalid request identity, signature or absolute deadline"),
       state,
     )
+  }
+}
+
+// The active job, unless it already has a terminal status and is only waiting
+// for weft to say its relay is drained.
+fn waiting(state: State) -> List(Waiting) {
+  case state.active {
+    Some(job) ->
+      case job.receipt.status {
+        Queued(_) | Running(_) -> [
+          Waiting(
+            request_id: job.receipt.request_id,
+            status: job.receipt.status,
+            candidate_id: job.candidate_id,
+            expires_at: job.expires_at,
+          ),
+        ]
+        Completed(_) | Failed(_) -> []
+      }
+    None -> []
   }
 }
 
@@ -317,13 +409,15 @@ fn delivered(
       }
       case state.active {
         None -> actor.continue(state)
-        Some(job) ->
-          actor.continue(
+        Some(job) -> {
+          let next =
             State(
               ..state,
               active: Some(Job(..job, receipt: Receipt(..job.receipt, status:))),
-            ),
-          )
+            )
+          state.changed()
+          actor.continue(next)
+        }
       }
     }
     weft.AllDelivered -> finished(state)
@@ -346,6 +440,9 @@ fn delivered(
             ),
           )
       }
+
+      // A lost drain witness ends the request as surely as an outcome does.
+      state.changed()
       finished(state)
     }
     weft.NotYet -> actor.continue(state)

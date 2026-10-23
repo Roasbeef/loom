@@ -10,6 +10,7 @@ import gleam/option.{None, Some}
 pub fn evolution_known_actions_and_receipts_round_trip_test() {
   list.each(
     [
+      "board",
       "catalogue",
       "inspect",
       "evidence",
@@ -70,4 +71,11 @@ pub fn evolution_unknown_actions_and_nonobjects_are_refused_test() {
         as "a malformed operator action is refused before authority dispatch"
     },
   )
+}
+
+pub fn evolution_changed_is_a_data_free_push_test() {
+  let event = protocol.EventEnvelope(None, None, protocol.EvolutionChanged)
+  let encoded = protocol.encode_event(event)
+  assert encoded == "{\"v\":2,\"event\":\"evolution_changed\",\"body\":{}}"
+  assert protocol.decode_event(encoded) == Ok(event)
 }

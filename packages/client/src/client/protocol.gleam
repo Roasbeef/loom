@@ -819,6 +819,11 @@ pub type Event {
   /// Carries no data, as `GoalChanged` carries none (protocol-change/086).
   ProposalsChanged
 
+  /// The evolution catalogue, its selections or the session's transition queue
+  /// changed; subscribed peers read the `board` again. Carries no data, as
+  /// `ProposalsChanged` carries none (protocol-change/099).
+  EvolutionChanged
+
   /// One usage-ledger append.
   UsageEvent(
     /// The strand whose request produced this row.
@@ -1381,6 +1386,7 @@ fn decode_command_body(
         | "inspect"
         | "evidence"
         | "status"
+        | "board"
         | "approve"
         | "revoke"
         | "select"
@@ -1853,6 +1859,7 @@ fn event_body(event: Event) -> #(String, JsonValue) {
     )
     GoalChanged -> #("goal_changed", json.Object([]))
     ProposalsChanged -> #("proposals_changed", json.Object([]))
+    EvolutionChanged -> #("evolution_changed", json.Object([]))
     BlockSummaryEvent(subject:, text:) -> #(
       "block_summary",
       json.Object(
@@ -2374,6 +2381,10 @@ fn decode_event_body(name: String, body: JsonValue) -> Result(Event, String) {
     "proposals_changed" -> {
       use _ <- result.try(body_fields(body))
       Ok(ProposalsChanged)
+    }
+    "evolution_changed" -> {
+      use _ <- result.try(body_fields(body))
+      Ok(EvolutionChanged)
     }
     "usage" -> {
       use #(strand, op, usage, last_usage) <- result.try(decode_usage_body(body))

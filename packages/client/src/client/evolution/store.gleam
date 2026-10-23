@@ -87,6 +87,21 @@ pub type Refusal {
   Unavailable(reason: String)
 }
 
+/// The surface an operator acted through, recorded in each audit entry.
+///
+/// The gateway derives it from the authenticated connection, never from the
+/// author's JSON, so a history row can say where a decision came from.
+pub type Via {
+  /// The `loom evolution` command, or any native caller with no better name.
+  Cli
+
+  /// A browser page.
+  Web
+
+  /// The terminal client.
+  Terminal
+}
+
 /// An address and native authority, with no retained database connection.
 pub opaque type Store {
   Store(
@@ -94,6 +109,7 @@ pub opaque type Store {
     authority: Authority,
     identity: record.Identity,
     clock: Clock,
+    via: Via,
   )
 }
 
@@ -139,7 +155,7 @@ pub fn open(
     fs.resolve_real(fs.real_filesystem(), "/", absolute)
     |> result.map_error(fn(error) { Authority(string.inspect(error)) }),
   )
-  Ok(Store(root:, authority:, identity:, clock:))
+  Ok(Store(root:, authority:, identity:, clock:, via: Cli))
 }
 
 /// Narrows model proposal authority to a native resolved target.
@@ -161,6 +177,32 @@ pub fn model_author(
       Ok(Store(..store, authority: ModelAuthor(session_id, workspace, target)))
     Owner ->
       Error(Authority("model tools require origin-bound author capability"))
+  }
+}
+
+/// Names the surface the next mutations are recorded under.
+///
+/// The surface goes into the audit text only. It is not part of a selection's
+/// request signature, so retrying a request from another surface still finds
+/// its receipt.
+///
+/// ## Examples
+///
+/// `with_via(store, Web)` makes a later `approve` record `"via":"web"`.
+pub fn with_via(store: Store, via: Via) -> Store {
+  Store(..store, via:)
+}
+
+/// The audit word for a surface.
+///
+/// ## Examples
+///
+/// `via_text(Terminal) == "terminal"`.
+pub fn via_text(via: Via) -> String {
+  case via {
+    Cli -> "cli"
+    Web -> "web"
+    Terminal -> "terminal"
   }
 }
 
@@ -233,20 +275,461 @@ pub fn read_candidate(
 ///
 /// `catalogue(store)` never performs an unbounded source scan.
 pub fn catalogue(store: Store) -> Result(List(record.Candidate), Refusal) {
+  with_session(store, fn(opened) { catalogue_in(store, opened) })
+}
+
+/// One approval as the catalogue recorded it.
+pub type Approval {
+  Approval(
+    /// The evidence the approval named.
+    evidence_id: record.EvidenceId,
+    /// The authenticated principal that approved.
+    principal: String,
+    /// The surface recorded with it, or `""` for an approval written before
+    /// surfaces were recorded.
+    via: String,
+  )
+}
+
+/// One candidate with what the board draws beside it.
+pub type Row {
+  Row(
+    /// The immutable proposal.
+    candidate: record.Candidate,
+    /// Its current approval, if any.
+    approval: Option(Approval),
+    /// Every retained observation of it, newest first, with `observation`
+    /// emptied because a single one can be 64 KiB.
+    evidence: List(record.Evidence),
+    /// Its selection, when this candidate is the one currently selected for
+    /// its scope and name.
+    selected: Option(record.Selection),
+  )
+}
+
+/// One audit entry of the catalogue, read back.
+///
+/// The decoder is total. An entry whose text does not parse keeps its sequence,
+/// time and kind and loses the rest, and only the owner sees it, because its
+/// scope is unknown.
+pub type Event {
+  Event(
+    /// The audit entry's sequence number, which orders the journal.
+    seq: Int,
+    /// The commit time in Unix milliseconds.
+    at_ms: Int,
+    /// `approved`, `revoked` or `selected`.
+    kind: String,
+    /// The scope the event concerned, when the entry named one.
+    scope: Option(record.Scope),
+    /// The candidate's digest, or `""` when the entry named none.
+    candidate_id: String,
+    /// The candidate's name, from the entry or from the catalogue, or `""`.
+    name: String,
+    /// The generation a selection created; `None` for the other kinds.
+    generation: Option(Int),
+    /// The authenticated principal, or `""` when unknown.
+    principal: String,
+    /// The surface recorded, or `""` when the entry predates surfaces.
+    via: String,
+    /// The operator's reason, or `""`.
+    reason: String,
+    /// The selection's request identity, or `""`.
+    request_id: String,
+  )
+}
+
+/// A consistent read of what the operator board draws.
+pub type Board {
+  Board(
+    /// Every candidate this capability may see, newest first.
+    rows: List(Row),
+    /// The current selection of each scope and name those candidates share.
+    selections: List(record.Selection),
+    /// The newest audit entries this capability may see, newest first.
+    history: List(Event),
+    /// How many visible audit entries are older than `history`.
+    history_omitted: Int,
+  )
+}
+
+/// How many audit entries `read_board` returns.
+pub const board_history = 64
+
+/// Reads the candidates, evidence, approvals, selections and audit journal this
+/// capability may see, under one lease.
+///
+/// Every list is bounded by a catalogue count (128 candidates, 256 evidence
+/// rows, 4096 audit entries), so the read never scans an unbounded source.
+///
+/// ## Examples
+///
+/// `read_board(store)` lets an operator page draw the whole catalogue from one
+/// call.
+pub fn read_board(store: Store) -> Result(Board, Refusal) {
   with_session(store, fn(opened) {
-    use ids <- result.try(index(opened, "candidates"))
-    use records <- result.try(
-      list.try_map(ids, fn(key) {
-        use text <- result.try(required(opened, key))
-        record.decode_candidate(text) |> result.map_error(Corrupt)
+    use candidates <- result.try(catalogue_in(store, opened))
+    use observed <- result.try(observed_evidence(opened))
+    use selections <- result.try(current_selections(store, opened, candidates))
+    use rows <- result.try(
+      list.try_map(candidates, fn(candidate) {
+        use approval <- result.try(approval_in(opened, candidate))
+        let selected =
+          list.key_find(selections, selection_key_of(candidate))
+          |> result.try(fn(selection) {
+            case selection.candidate_id == candidate.id {
+              True -> Ok(selection)
+              False -> Error(Nil)
+            }
+          })
+        Ok(Row(
+          candidate:,
+          approval:,
+          evidence: list.filter(observed, fn(evidence) {
+            evidence.candidate_id == candidate.id
+          }),
+          selected: option.from_result(selected),
+        ))
       }),
     )
-    Ok(
-      list.filter(records, fn(candidate) {
-        result.is_ok(visible(store, candidate))
-      }),
-    )
+    use #(history, omitted) <- result.try(history_in(store, opened, candidates))
+    Ok(Board(
+      rows:,
+      selections: list.map(selections, fn(pair) { pair.1 }),
+      history:,
+      history_omitted: omitted,
+    ))
   })
+}
+
+// The visible candidates, in index order. `catalogue` and `read_board` share it
+// so the two reads can never disagree about who sees what.
+fn catalogue_in(
+  store: Store,
+  opened: session.Session,
+) -> Result(List(record.Candidate), Refusal) {
+  use ids <- result.try(index(opened, "candidates"))
+  use records <- result.try(
+    list.try_map(ids, fn(key) {
+      use text <- result.try(required(opened, key))
+      record.decode_candidate(text) |> result.map_error(Corrupt)
+    }),
+  )
+  Ok(
+    list.filter(records, fn(candidate) {
+      result.is_ok(visible(store, candidate))
+    }),
+  )
+}
+
+// Every retained observation, newest first, without its observation text. The
+// caller keeps only the rows of candidates it may see.
+fn observed_evidence(
+  opened: session.Session,
+) -> Result(List(record.Evidence), Refusal) {
+  use keys <- result.try(index(opened, "evidence"))
+  list.try_map(keys, fn(key) {
+    use text <- result.try(required(opened, key))
+    use evidence <- result.try(
+      record.decode_evidence(text) |> result.map_error(Corrupt),
+    )
+    Ok(record.Evidence(..evidence, observation: ""))
+  })
+}
+
+fn selection_key_of(candidate: record.Candidate) -> String {
+  selection_key(candidate.scope, candidate.name)
+}
+
+// One selection register per scope and name the visible candidates share. A
+// scope the capability may not select in is skipped rather than refused,
+// because the board shows what is visible and the selection of a hidden scope
+// is not.
+fn current_selections(
+  store: Store,
+  opened: session.Session,
+  candidates: List(record.Candidate),
+) -> Result(List(#(String, record.Selection)), Refusal) {
+  list.try_fold(candidates, [], fn(found, candidate) {
+    let key = selection_key_of(candidate)
+    case
+      list.key_find(found, key),
+      result.is_ok(scope_visible(store, candidate.scope))
+    {
+      Ok(_), _ -> Ok(found)
+      Error(Nil), False -> Ok(found)
+      Error(Nil), True -> {
+        use selected <- result.try(selection_in(
+          opened,
+          candidate.scope,
+          candidate.name,
+        ))
+        Ok(case selected {
+          None -> found
+          Some(selection) -> list.append(found, [#(key, selection)])
+        })
+      }
+    }
+  })
+}
+
+fn approval_in(
+  opened: session.Session,
+  candidate: record.Candidate,
+) -> Result(Option(Approval), Refusal) {
+  use found <- result.try(cell(
+    opened,
+    approval_key(candidate.id, candidate.scope),
+  ))
+  case found {
+    None -> Ok(None)
+    Some(register) -> {
+      use text <- result.try(text_of(register))
+      let decoder = {
+        use evidence <- decode.field("evidence", decode.string)
+        use principal <- decode.field("principal", decode.string)
+        use via <- decode.optional_field("via", "", decode.string)
+        decode.success(#(evidence, principal, via))
+      }
+      use #(evidence, principal, via) <- result.try(
+        json.parse(text, decoder)
+        |> result.replace_error(Corrupt("invalid approval")),
+      )
+      use evidence_id <- result.try(
+        record.evidence_id(evidence) |> result.map_error(Corrupt),
+      )
+      Ok(Some(Approval(evidence_id:, principal:, via:)))
+    }
+  }
+}
+
+// The newest audit entries the capability may see, and how many older ones it
+// may see and is not shown. Filtering happens before counting, so the count
+// never discloses an event of a scope the capability cannot read.
+fn history_in(
+  store: Store,
+  opened: session.Session,
+  candidates: List(record.Candidate),
+) -> Result(#(List(Event), Int), Refusal) {
+  use entries <- result.try(
+    storage.scan_entries(
+      opened.store,
+      storage.EntryScan(
+        ..storage.entry_scan(),
+        kind: Some(storage.Custom),
+        order: storage.NewestFirst,
+      ),
+    )
+    |> result.replace_error(Unavailable("catalogue audit read failed")),
+  )
+  let events =
+    list.filter_map(entries, fn(audited) { audit_event(audited, candidates) })
+    |> list.filter(fn(event) { event_visible(store, event) })
+  Ok(#(
+    list.take(events, board_history),
+    list.length(list.drop(events, board_history)),
+  ))
+}
+
+// An owner sees every entry. Anyone else sees the entries whose scope names
+// something they may see, so an entry with no readable scope is the owner's.
+fn event_visible(store: Store, event: Event) -> Bool {
+  case store.authority, event.scope {
+    Owner, _ -> True
+    _, None -> False
+    _, Some(scope) -> result.is_ok(scope_visible(store, scope))
+  }
+}
+
+// One audit entry as an event, or `Error(Nil)` for an entry that is not an
+// approval, revocation or selection (the catalogue also journals retentions).
+fn audit_event(
+  audited: entry.Entry,
+  candidates: List(record.Candidate),
+) -> Result(Event, Nil) {
+  case audited {
+    entry.CustomEntry(
+      seq:,
+      ts:,
+      custom_type:,
+      data: Some(value.String(text)),
+      ..,
+    ) -> event_from(custom_type, seq, ts, text, candidates)
+    _ -> Error(Nil)
+  }
+}
+
+/// Reads one audit entry's text as an event, totally.
+///
+/// An entry whose text does not parse still yields an event, with only its
+/// sequence, time and kind. The text of a selection entry may be in the shape
+/// the catalogue wrote before it recorded who selected and from where.
+///
+/// ## Examples
+///
+/// `event_from("evolution/revoked", 7, 0, text, [])` is `Ok(event)` with kind
+/// `revoked`, and `event_from("evolution/retained", 7, 0, text, [])` is
+/// `Error(Nil)`.
+@internal
+pub fn event_from(
+  custom_type: String,
+  seq: Int,
+  ts: Int,
+  text: String,
+  candidates: List(record.Candidate),
+) -> Result(Event, Nil) {
+  case custom_type {
+    "evolution/approved" -> Ok(approved_event(seq, ts, text, candidates))
+    "evolution/revoked" -> Ok(revoked_event(seq, ts, text, candidates))
+    "evolution/selected" -> Ok(selected_event(seq, ts, text))
+    _ -> Error(Nil)
+  }
+}
+
+fn unreadable(kind: String, seq: Int, ts: Int) -> Event {
+  Event(
+    seq:,
+    at_ms: ts,
+    kind:,
+    scope: None,
+    candidate_id: "",
+    name: "",
+    generation: None,
+    principal: "",
+    via: "",
+    reason: "",
+    request_id: "",
+  )
+}
+
+fn named(candidates: List(record.Candidate), candidate_id: String) -> String {
+  case
+    list.find(candidates, fn(candidate) {
+      record.id_string(candidate.id) == candidate_id
+    })
+  {
+    Ok(candidate) -> candidate.name
+    Error(Nil) -> ""
+  }
+}
+
+fn approved_event(
+  seq: Int,
+  ts: Int,
+  text: String,
+  candidates: List(record.Candidate),
+) -> Event {
+  let decoder = {
+    use candidate <- decode.field("candidate", decode.string)
+    use scope <- decode.field("scope", record.scope_decoder())
+    use principal <- decode.field("principal", decode.string)
+    use via <- decode.optional_field("via", "", decode.string)
+    decode.success(Event(
+      seq:,
+      at_ms: ts,
+      kind: "approved",
+      scope: Some(scope),
+      candidate_id: candidate,
+      name: named(candidates, candidate),
+      generation: None,
+      principal:,
+      via:,
+      reason: "",
+      request_id: "",
+    ))
+  }
+  result.lazy_unwrap(json.parse(text, decoder), fn() {
+    unreadable("approved", seq, ts)
+  })
+}
+
+fn revoked_event(
+  seq: Int,
+  ts: Int,
+  text: String,
+  candidates: List(record.Candidate),
+) -> Event {
+  let decoder = {
+    use candidate <- decode.field("candidate", decode.string)
+    use scope <- decode.field("scope", record.scope_decoder())
+    use principal <- decode.field("principal", decode.string)
+    use via <- decode.optional_field("via", "", decode.string)
+    use reason <- decode.field("reason", decode.string)
+    decode.success(Event(
+      seq:,
+      at_ms: ts,
+      kind: "revoked",
+      scope: Some(scope),
+      candidate_id: candidate,
+      name: named(candidates, candidate),
+      generation: None,
+      principal:,
+      via:,
+      reason:,
+      request_id: "",
+    ))
+  }
+  result.lazy_unwrap(json.parse(text, decoder), fn() {
+    unreadable("revoked", seq, ts)
+  })
+}
+
+// A selection entry is an object in the current format and `reason: selection`
+// in the one before it. The old text carries no principal, surface or request
+// identity, and its reason is whatever precedes the last `: {"candidate":`.
+fn selected_event(seq: Int, ts: Int, text: String) -> Event {
+  let current = {
+    use selection_text <- decode.field("selection", decode.string)
+    use principal <- decode.field("principal", decode.string)
+    use via <- decode.optional_field("via", "", decode.string)
+    use reason <- decode.field("reason", decode.string)
+    use request_id <- decode.optional_field("request_id", "", decode.string)
+    decode.success(#(selection_text, principal, via, reason, request_id))
+  }
+  let parsed =
+    json.parse(text, current)
+    |> result.lazy_or(fn() { legacy_selected(text) })
+  case parsed {
+    Error(_) -> unreadable("selected", seq, ts)
+    Ok(#(selection_text, principal, via, reason, request_id)) ->
+      case json.parse(selection_text, selection_decoder()) {
+        Error(_) -> unreadable("selected", seq, ts)
+        Ok(selection) ->
+          Event(
+            seq:,
+            at_ms: ts,
+            kind: "selected",
+            scope: Some(selection.scope),
+            candidate_id: record.id_string(selection.candidate_id),
+            name: selection.name,
+            generation: Some(selection.generation),
+            principal:,
+            via:,
+            reason:,
+            request_id:,
+          )
+      }
+  }
+}
+
+// Reads the text a selection audit entry had before it became an object. The
+// reason may itself contain a colon, so the split is at the last occurrence of
+// the marker that begins the selection object.
+fn legacy_selected(
+  text: String,
+) -> Result(#(String, String, String, String, String), json.DecodeError) {
+  let marker = ": {\"candidate\":"
+  case list.reverse(string.split(text, marker)) {
+    [last, next, ..earlier] ->
+      Ok(#(
+        "{\"candidate\":" <> last,
+        "",
+        "",
+        string.join(list.reverse([next, ..earlier]), marker),
+        "",
+      ))
+    _ -> Error(json.UnexpectedEndOfInput)
+  }
 }
 
 /// Retains a host observation after the actual evaluator has finished.
@@ -335,10 +818,10 @@ pub fn approve(
     use prior <- result.try(cell(opened, key))
     commit(
       opened,
-      [set(key, approval_text(id, evidence_id, scope, principal))],
+      [set(key, approval_text(id, evidence_id, scope, principal, store.via))],
       [expect(key, prior)],
       "approved",
-      approval_text(id, evidence_id, scope, principal),
+      approval_text(id, evidence_id, scope, principal, store.via),
       store.clock,
     )
   })
@@ -370,6 +853,7 @@ pub fn revoke(
           #("candidate", json.string(record.id_string(id))),
           #("scope", record.encode_scope(scope)),
           #("principal", json.string(principal)),
+          #("via", json.string(via_text(store.via))),
           #("reason", json.string(reason)),
         ]),
       ),
@@ -509,6 +993,7 @@ pub fn select_request_admitted(
           scope,
           name,
           expected,
+          principal,
           reason,
           request_id,
           signature,
@@ -645,6 +1130,7 @@ fn select_new(
   scope: record.Scope,
   name: String,
   expected: Option(record.Selection),
+  principal: String,
   reason: String,
   request_id: String,
   signature: String,
@@ -688,7 +1174,8 @@ fn select_new(
     expect(approved_key, approved),
     ..receipt_expected
   ]
-  let text = reason <> ": " <> encode_selection(selection)
+  let text =
+    selection_audit(selection, principal, store.via, reason, request_id)
   use Nil <- result.try(commit_admitted(
     opened,
     writes,
@@ -1476,6 +1963,7 @@ fn approval_text(
   evidence: record.EvidenceId,
   scope: record.Scope,
   principal: String,
+  via: Via,
 ) -> String {
   json.to_string(
     json.object([
@@ -1483,6 +1971,29 @@ fn approval_text(
       #("evidence", json.string(record.evidence_string(evidence))),
       #("scope", record.encode_scope(scope)),
       #("principal", json.string(principal)),
+      #("via", json.string(via_text(via))),
+    ]),
+  )
+}
+
+// The audit text of a selection. It was once `reason <> ": " <> selection`,
+// which named no principal and could not be split back apart when the reason
+// itself held a colon, so a history reader had to guess. It is an object now,
+// and `legacy_selected` still reads the old shape.
+fn selection_audit(
+  selection: record.Selection,
+  principal: String,
+  via: Via,
+  reason: String,
+  request_id: String,
+) -> String {
+  json.to_string(
+    json.object([
+      #("selection", json.string(encode_selection(selection))),
+      #("principal", json.string(principal)),
+      #("via", json.string(via_text(via))),
+      #("reason", json.string(reason)),
+      #("request_id", json.string(request_id)),
     ]),
   )
 }

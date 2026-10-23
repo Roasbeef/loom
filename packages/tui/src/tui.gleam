@@ -2850,7 +2850,7 @@ fn extension_usage() -> String {
 fn evolution_usage() -> String {
   "usage: loom evolution [--state-dir PATH] ACTION SESSION [--args FILE]\n"
   <> "       [--candidate-id ID] [--evidence-id ID] [--request-id ID]\n\n"
-  <> "Actions: catalogue, inspect, evidence, status, approve, revoke, select, "
+  <> "Actions: board, catalogue, inspect, evidence, status, approve, revoke, select, "
   <> "rollback, admit_tasks, mark_outcome, core_status, core_upgrade, core_downgrade.\n"
   <> "SESSION must already be resident. The private daemon owner credential "
   <> "authenticates the command. Output is JSON; status=queued means accepted, "

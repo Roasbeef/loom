@@ -252,6 +252,7 @@ pub fn topic_of_covers_every_event_test() {
   assert bus.topic_of(Committed(seqs: [], ts: 0)) == bus.Commits
   assert bus.topic_of(bus.GoalChanged) == bus.Outputs
   assert bus.topic_of(bus.ProposalsChanged) == bus.Outputs
+  assert bus.topic_of(bus.EvolutionChanged) == bus.Outputs
   assert bus.topic_of(bus.ToolOutput(
       strand: "main",
       op:,

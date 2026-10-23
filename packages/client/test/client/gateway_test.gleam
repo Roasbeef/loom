@@ -16,6 +16,7 @@ import client/delegate_outbox
 import client/directories
 import client/escalate
 import client/evolution/control as evolution_control
+import client/evolution/store as evolution_store
 import client/gateway
 import client/goalcommand
 import client/grants
@@ -688,7 +689,7 @@ type AuthMessage {
 pub fn evolution_dispatch_preserves_native_identity_test() {
   let calls = process.new_subject()
   let seam =
-    evolution_control.Seam(command: fn(authority, principal, action, _) {
+    evolution_control.Seam(command: fn(authority, principal, _via, action, _) {
       process.send(calls, #(authority, principal, action))
       Ok(json.Object([#("generation", json.Int(3))]))
     })
@@ -728,7 +729,7 @@ pub fn evolution_dispatch_preserves_native_identity_test() {
 pub fn evolution_observer_reads_but_never_mutates_test() {
   let calls = process.new_subject()
   let seam =
-    evolution_control.Seam(command: fn(authority, principal, action, _) {
+    evolution_control.Seam(command: fn(authority, principal, _via, action, _) {
       process.send(calls, #(authority, principal, action))
       Ok(json.Object([]))
     })
@@ -8494,4 +8495,261 @@ pub fn a_relayed_stop_ends_the_mains_run_and_an_idle_stop_is_not_an_error_test()
   // Nothing is running now, and a stop with nothing to stop is taken.
   assert gateway.stop_relayed(harness.hub) == Ok(Nil)
   release_gate(gate)
+}
+
+// --- the evolution board and the authority a page reaches it with ------------
+//
+// protocol-change/099. The seam records what the gateway handed it, so these
+// tests state the derivation by its inputs (the principal's kind, the role the
+// relay capped it to, the credential that admitted it) and its outputs.
+
+// A recording evolution seam: each call is sent to `calls` as the authority,
+// the principal id, the surface and the action the gateway chose.
+fn recording_evolution(calls) {
+  evolution_control.Seam(command: fn(authority, principal, via, action, _) {
+    process.send(calls, #(authority, principal, via, action))
+    Ok(json.Object([]))
+  })
+}
+
+// One authenticated attachment that has subscribed, with the principal, role
+// and browser sign-in the caller names.
+fn attached(
+  harness: Harness,
+  principal: access.Principal,
+  role: access.Authority,
+  signin: Option(String),
+) {
+  let #(handle, _auth, _closed) =
+    attach_socket_from(
+      harness.hub,
+      harness.runtime,
+      harness.inbox,
+      principal,
+      role,
+      process.self(),
+      signin,
+    )
+  gateway.connection_text(handle, subscribe_frame(harness.runtime, 700))
+  let _snapshot = next_reply(harness, 700, 8)
+  handle
+}
+
+fn evolve(
+  harness: Harness,
+  handle,
+  id: Int,
+  action: String,
+  fields: List(#(String, json.JsonValue)),
+) {
+  gateway.connection_text(
+    handle,
+    protocol.encode_command(protocol.CommandEnvelope(
+      id,
+      protocol.Evolution(action, json.Object(fields)),
+    )),
+  )
+  next_reply(harness, id, 8).event
+}
+
+pub fn the_owners_page_reaches_the_evolution_seam_as_owner_test() {
+  let calls = process.new_subject()
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_evolution(_, recording_evolution(calls)),
+    )
+
+  // The owner's own page: capped to operator by the relay, an owner by kind,
+  // and admitted under a browser sign-in.
+  let page =
+    attached(
+      harness,
+      access.Principal("owner", "Owner", access.OwnerPrincipal),
+      access.Participant(access.Operator),
+      Some("0123456789abcdef"),
+    )
+  list.each(
+    [
+      #(801, "board"),
+      #(802, "approve"),
+      #(803, "select"),
+      #(804, "core_status"),
+      #(805, "core_upgrade"),
+      #(806, "core_downgrade"),
+    ],
+    fn(asked) {
+      let assert protocol.SnapshotEvent(protocol.EvolutionSnapshot(_)) =
+        evolve(harness, page, asked.0, asked.1, [])
+        as "the seam answers"
+    },
+  )
+  let record = fn() {
+    let assert Ok(call) = process.receive(calls, within: 1000)
+      as "the gateway called the seam"
+    call
+  }
+  let operator = access.Participant(access.Operator)
+  assert record() == #(access.Owner, "owner", evolution_store.Web, "board")
+  assert record() == #(access.Owner, "owner", evolution_store.Web, "approve")
+  assert record() == #(access.Owner, "owner", evolution_store.Web, "select")
+  assert record()
+    == #(access.Owner, "owner", evolution_store.Web, "core_status")
+
+  // A reviewed upgrade is never raised, so the core door refuses the page and
+  // the terminal remains the way to start one.
+  assert record() == #(operator, "owner", evolution_store.Web, "core_upgrade")
+  assert record() == #(operator, "owner", evolution_store.Web, "core_downgrade")
+}
+
+pub fn a_members_page_and_an_observer_are_not_raised_test() {
+  let calls = process.new_subject()
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_evolution(_, recording_evolution(calls)),
+    )
+  let member =
+    attached(
+      harness,
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      access.Participant(access.Operator),
+      Some("fedcba9876543210"),
+    )
+  let assert protocol.SnapshotEvent(protocol.EvolutionSnapshot(_)) =
+    evolve(harness, member, 811, "approve", [])
+    as "a member's page reaches the seam"
+  assert process.receive(calls, within: 1000)
+    == Ok(#(
+      access.Participant(access.Operator),
+      "alice",
+      evolution_store.Web,
+      "approve",
+    ))
+
+  // An observer reads the board and is refused a mutation before the seam. The
+  // principal being the owner's does not lift a cap the owner chose.
+  let observer =
+    attached(
+      harness,
+      access.Principal("owner", "Owner", access.OwnerPrincipal),
+      access.Participant(access.Observer),
+      Some("0123456789abcdef"),
+    )
+  let assert protocol.SnapshotEvent(protocol.EvolutionSnapshot(_)) =
+    evolve(harness, observer, 812, "board", [])
+    as "the board is a read an observer may make"
+  assert process.receive(calls, within: 1000)
+    == Ok(#(
+      access.Participant(access.Observer),
+      "owner",
+      evolution_store.Web,
+      "board",
+    ))
+  let assert protocol.ErrorEvent(code: "forbidden", ..) =
+    evolve(harness, observer, 813, "approve", [])
+    as "an observer cannot approve"
+  assert process.receive(calls, within: 1) == Error(Nil)
+}
+
+pub fn the_surface_is_read_from_the_credential_and_not_from_the_page_test() {
+  let calls = process.new_subject()
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_evolution(_, recording_evolution(calls)),
+    )
+
+  // A bearer with no sign-in is a terminal or the command line. It may say it
+  // is the terminal and may not say anything else.
+  let bearer =
+    attached(
+      harness,
+      access.Principal("owner", "Owner", access.OwnerPrincipal),
+      access.Owner,
+      None,
+    )
+  list.each(
+    [
+      #(821, [], evolution_store.Cli),
+      #(822, [#("via", json.String("terminal"))], evolution_store.Terminal),
+      #(823, [#("via", json.String("web"))], evolution_store.Cli),
+    ],
+    fn(asked) {
+      let assert protocol.SnapshotEvent(protocol.EvolutionSnapshot(_)) =
+        evolve(harness, bearer, asked.0, "revoke", asked.1)
+        as "the bearer reaches the seam"
+      let assert Ok(#(_, _, via, _)) = process.receive(calls, within: 1000)
+        as "the gateway called the seam"
+      assert via == asked.2
+    },
+  )
+
+  // A page with a sign-in is the web whatever it claims.
+  let page =
+    attached(
+      harness,
+      access.Principal("alice", "Alice", access.MemberPrincipal),
+      access.Participant(access.Operator),
+      Some("0123456789abcdef"),
+    )
+  let assert protocol.SnapshotEvent(protocol.EvolutionSnapshot(_)) =
+    evolve(harness, page, 824, "revoke", [#("via", json.String("terminal"))])
+    as "the page reaches the seam"
+  let assert Ok(#(_, _, via, _)) = process.receive(calls, within: 1000)
+    as "the gateway called the seam"
+  assert via == evolution_store.Web
+}
+
+/// A change to the evolution catalogue published on the session's `Outputs`
+/// topic reaches a subscribed network peer as a pushed `evolution_changed`
+/// frame with an empty body, no `reply_to` and no `seq`.
+pub fn a_network_hub_pushes_evolution_changed_from_the_bus_test() {
+  let events_bus = bus.start()
+  let harness =
+    start_harness_reserved(
+      None,
+      None,
+      None,
+      Some(proposals_fixture_id()),
+      SettlingProvider,
+      Some(events_bus),
+    )
+  let inbox = process.new_subject()
+  let #(_handle, _auth, _closed) =
+    network_socket(
+      harness.hub,
+      harness.runtime,
+      inbox,
+      operator("alice", "Alice"),
+      access.Participant(access.Operator),
+    )
+  bus.publish(
+    events_bus,
+    session: bus.key(of: api.session_id(harness.runtime)),
+    event: bus.EvolutionChanged,
+  )
+  let envelope = next_on(inbox)
+  assert envelope.reply_to == None
+  assert envelope.seq == None
+  assert envelope.event == protocol.EvolutionChanged
+  assert process.receive(inbox, within: 100) == Error(Nil)
 }

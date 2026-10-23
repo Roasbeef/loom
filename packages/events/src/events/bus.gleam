@@ -53,7 +53,7 @@
 //// `start` obtains the shared process-group scope.
 //// `publish` pairs the session with `topic_of` and sends a `Published` value.
 //// `subscribe` joins that exact group; `select_published` unwraps its messages.
-//// `GoalChanged` and `ProposalsChanged` belong to `Outputs`, independently of
+//// `GoalChanged`, `ProposalsChanged` and `EvolutionChanged` belong to `Outputs`, independently of
 //// `hint_topics`.
 //// The publisher owns commit ordering; this bus owns only best-effort delivery.
 
@@ -99,7 +99,7 @@ pub type Topic {
 
   /// Display feeds: rolling output tails of running tool calls
   /// (`ToolOutput`), summarizer labels (`BlockSummary`) and data-free goal
-  /// invalidation (`GoalChanged`, `ProposalsChanged`, `RemoteChildrenChanged`). This is not the
+  /// invalidation (`GoalChanged`, `ProposalsChanged`, `EvolutionChanged`, `RemoteChildrenChanged`). This is not the
   /// commit-hint topic.
   Outputs
 }
@@ -205,6 +205,14 @@ pub type Event {
   /// the domain, not under one session's id (protocol-change/086).
   ProposalsChanged
 
+  /// The evolution catalogue gained or lost an approval, a selection moved, or a
+  /// queued transition finished. Like `GoalChanged` it carries no data: the
+  /// catalogue stays authoritative and a subscriber reads the board again. It is
+  /// published under one session's id, because the live generation and the
+  /// transition queue are per session even though the catalogue is not
+  /// (protocol-change/099).
+  EvolutionChanged
+
   /// A stub of a child that runs on another orchestrator changed: a glance
   /// arrived, or the spawn moved on (protocol-change/090). It carries no data;
   /// the stubs in the session's store are the truth, and a subscriber reads
@@ -298,8 +306,11 @@ pub fn topic_of(event: Event) -> Topic {
     Escalation(..) -> Escalations
     Committed(..) -> Commits
     ToolOutput(..) -> Outputs
-    BlockSummary(..) | GoalChanged | ProposalsChanged | RemoteChildrenChanged ->
-      Outputs
+    BlockSummary(..)
+    | GoalChanged
+    | ProposalsChanged
+    | EvolutionChanged
+    | RemoteChildrenChanged -> Outputs
   }
 }
 
