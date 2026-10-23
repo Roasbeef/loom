@@ -16,6 +16,15 @@
 //// The configuration holds no catalogue. Staging, evaluation and program runs
 //// receive it per call from the authority half, so this machine can be built
 //// before the catalogue is opened with the identity it reports.
+////
+//// The checks themselves hold no catalogue either. `evaluate_candidate` and
+//// `invoke_program` are wrappers that read the candidate, confirm its identity
+//// (`evaluate.current`), or its approval (`store.approved`, which includes the
+//// identity check) and kind, and then call
+//// `evaluate_candidate_of` and `invoke_program_of`, which take the
+//// `record.Candidate` and nothing else. The wrappers are the orchestrator's
+//// half and the `_of` functions are what an executor can run over a candidate
+//// it was handed.
 
 import broker/broker.{type Broker}
 import broker/egress
@@ -102,7 +111,8 @@ pub type Config {
 /// record adds no behaviour of its own: `identity` is
 /// `evolution/identity.current` over `config.host`, `snapshot` is `snapshot`,
 /// `evaluate` is `evaluate_candidate`, `stage` is `stage`, and `run_program`
-/// is `invoke_program`.
+/// is `invoke_program`, the wrappers that read the catalogue before the
+/// catalogue-free `evaluate_candidate_of` and `invoke_program_of` run.
 ///
 /// ## Examples
 ///
@@ -147,7 +157,7 @@ pub fn stage(
   catalogue: store.Store,
   selection: record.Selection,
 ) -> Result(live.Generation, store.Refusal) {
-  use _ <- result.try(store.approved(catalogue, selection))
+  use approved <- result.try(store.approved(catalogue, selection))
   let directory =
     config.scratch
     <> "/"
@@ -161,12 +171,7 @@ pub fn stage(
     codemode.Config(..config.host, broker: plane.broker, work_root: directory)
 
   use prepared <- result.try(
-    evaluate.prepare(
-      catalogue,
-      selection.candidate_id,
-      directory,
-      compiler(config, host, base),
-    )
+    evaluate.prepare(approved, directory, compiler(config, host, base))
     |> retiring(plane),
   )
   assemble(config, catalogue, host, plane, selection, directory, prepared)
@@ -280,11 +285,18 @@ fn assemble(
   let demand = config.at.demand
   let compile = fn(candidate, directory, slot) {
     let build = compiler_for(host, base, demand)
-    evaluate.prepare_slot(catalogue, candidate, directory, build, slot)
+    evaluate.prepare_slot(candidate, directory, build, slot)
   }
+  let authority =
+    stateful.Authority(
+      approved: fn(next) { store.approved(catalogue, next) },
+      authorized: fn(next) {
+        store.authorized(catalogue, next) |> result.replace(Nil)
+      },
+    )
   stateful.attach(
     generation,
-    catalogue,
+    authority,
     dispatch,
     hosting,
     prepared,
@@ -450,7 +462,12 @@ fn failed(plane: Plane, reason: store.Refusal) -> Result(a, store.Refusal) {
   }
 }
 
-/// Runs candidate-owned tests behind the real jail and retirement witness.
+/// Reads a candidate from the catalogue and runs its tests behind the jail.
+///
+/// This is the orchestrator's half of an evaluation. It refuses an unreadable
+/// candidate with the store's own refusal, and one admitted under another
+/// identity with `Changed`, before any plane is opened. Otherwise it hands the candidate to
+/// hands the candidate to `evaluate_candidate_of`.
 ///
 /// ## Examples
 ///
@@ -464,10 +481,32 @@ pub fn evaluate_candidate(
   catalogue: store.Store,
   id: record.CandidateId,
 ) -> Result(evaluate.Report, store.Refusal) {
+  use candidate <- result.try(store.read_candidate(catalogue, id))
+  use Nil <- result.try(evaluate.current(catalogue, candidate))
+  evaluate_candidate_of(config, ctx, candidate)
+}
+
+/// Runs candidate-owned tests behind the real jail and retirement witness.
+///
+/// The candidate is the whole input, and the function reads no catalogue. The
+/// plane opens first and its close task retires on every path, including the
+/// refusal for a prompt candidate, so the caller needs no cleanup of its own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // local.evaluate_candidate_of(config, ctx, candidate)
+/// ```
+///
+pub fn evaluate_candidate_of(
+  config: Config,
+  ctx: tool.Ctx,
+  candidate: record.Candidate,
+) -> Result(evaluate.Report, store.Refusal) {
   let directory =
     config.scratch
     <> "/tests-"
-    <> record.id_string(id)
+    <> record.id_string(candidate.id)
     <> "-"
     <> ids.op_id_to_string(ctx.op_id)
     <> "-"
@@ -477,59 +516,30 @@ pub fn evaluate_candidate(
   let plane = cleaning(opened, directory)
   let host =
     codemode.Config(..config.host, broker: plane.broker, work_root: directory)
-  let candidate = store.read_candidate(catalogue, id)
-  evaluate_kind(
-    config,
-    host,
-    ctx,
-    catalogue,
-    id,
-    directory,
-    base,
-    plane,
-    candidate,
-  )
-}
+  case candidate.kind {
+    record.Program ->
+      program.test_with(
+        candidate,
+        fn(source) {
+          private_program(config, host, ctx, directory, base, source)
+        },
+        plane.close,
+      )
 
-fn evaluate_kind(
-  config: Config,
-  host: codemode.Config,
-  ctx: tool.Ctx,
-  catalogue: store.Store,
-  id: record.CandidateId,
-  directory: String,
-  base: policy.SandboxPolicy,
-  plane: Plane,
-  candidate: Result(record.Candidate, store.Refusal),
-) -> Result(evaluate.Report, store.Refusal) {
-  case candidate {
-    Error(error) -> failed(plane, error)
-    Ok(candidate) ->
-      case candidate.kind {
-        record.Program ->
-          program.test_with(
-            catalogue,
-            id,
-            fn(source) {
-              private_program(config, host, ctx, directory, base, source)
-            },
-            plane.close,
-          )
-        record.Prompt ->
-          failed(
-            plane,
-            store.Authority("prompt candidates need independent native rollout"),
-          )
-        record.Extension ->
-          evaluate.extension_owned(
-            catalogue,
-            id,
-            directory,
-            compiler(config, host, base),
-            fn(artifact) { run_tests(config, host, ctx, directory, artifact) },
-            plane.close,
-          )
-      }
+    record.Prompt ->
+      failed(
+        plane,
+        store.Authority("prompt candidates need independent native rollout"),
+      )
+
+    record.Extension ->
+      evaluate.extension_owned(
+        candidate,
+        directory,
+        compiler(config, host, base),
+        fn(artifact) { run_tests(config, host, ctx, directory, artifact) },
+        plane.close,
+      )
   }
 }
 
@@ -650,6 +660,25 @@ pub fn invoke_program(
     record.Program -> Ok(Nil)
     record.Extension | record.Prompt -> Error(store.Authority("not a program"))
   })
+  invoke_program_of(config, candidate, ctx, input)
+}
+
+/// Runs an authorized program candidate without reading a catalogue.
+///
+/// The orchestrator has already checked the selection and that the candidate
+/// is a program (`invoke_program`); this function only recompiles the retained
+/// source in a fresh pool and answers the outcome.
+///
+/// ## Examples
+///
+/// `local.invoke_program_of(config, candidate, ctx, input)` closes its pool
+/// and answers the outcome the model sees.
+pub fn invoke_program_of(
+  config: Config,
+  candidate: record.Candidate,
+  ctx: tool.Ctx,
+  input: json.JsonValue,
+) -> Result(tool.ToolOutcome, store.Refusal) {
   use source <- result.try(
     list.key_find(candidate.files, "program.gleam")
     |> result.replace_error(store.Corrupt("program.gleam is absent")),
