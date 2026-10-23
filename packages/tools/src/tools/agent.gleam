@@ -153,6 +153,10 @@ import gleam/string
 import tools/todos
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
+/// The name of the tool that blocks on subagents, which a generation lease
+/// must not be held across.
+pub const wait_tool_name = "agent_wait"
+
 /// The tool names this family registers, in registry order.
 pub const tool_names = [
   "agent_note", "agent_notes", "agent_roster", "agent_send", "agent_spawn",
@@ -1849,7 +1853,7 @@ pub fn wait_tool(
   max_wait_ms: Int,
 ) -> Tool {
   tool.Tool(
-    name: "agent_wait",
+    name: wait_tool_name,
     description: "Wait for subagents to finish. Give it every handle you "
       <> "want to join in one call: they are waited together against one "
       <> "deadline, not one after another. A handle that has not settled "

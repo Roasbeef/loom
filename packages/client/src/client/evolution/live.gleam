@@ -1,10 +1,80 @@
-//// A session's serialized custody of promoted executable generations.
+//// A session's custody of promoted executable generations.
 ////
-//// The mailbox is the activation boundary: one complete invocation or hook
-//// fold finishes before replacement begins. Each generation keeps callable
-//// schema, implementation, policy and hook bus in one immutable value.
+//// The owner decides which generation a call may use and when a replacement
+//// may begin. It never runs a tool. A caller asks for a lease, runs its whole
+//// before-tool, tool and after-tool fold on its own process against the
+//// generation the lease names, and returns the lease when it finishes. A
+//// replacement, a publication or a retirement waits until every outstanding
+//// lease has been returned, so no call runs against a generation that is
+//// being replaced or torn down, and calls do not wait for one another.
+////
+//// Each generation keeps callable schema, implementation, policy and hook
+//// bus in one immutable value, and a lease carries that value to the caller.
 //// Native retirement must succeed before a central selection is committed.
 //// A failed witness retains custody and forbids additional staging.
+////
+//// ## Flow
+////
+//// `run` → `leased` → `lease` → `leasing` → `released` → `replacing`
+////
+//// 1. `run`, `fold`, `invoke` and `execute` each wrap their work in `leased`,
+////    which asks the owner for a lease, runs the work on the caller and then
+////    returns the lease.
+//// 2. `lease` sends one request to the owner and treats silence as a refusal,
+////    returning the request's identity so a late grant cannot strand custody.
+//// 3. `leasing` admits the request on the owner when no replacement is
+////    waiting, revalidates the active generation, and monitors the caller.
+//// 4. `released` runs when the caller returns the lease or dies, and opens
+////    the owner again once the last lease is gone.
+//// 5. `replacing` holds an activation or a close until that moment, by
+////    postponing it and refusing new leases meanwhile.
+//// 6. `notice` queues a notify-only hook for `notify`, a runner that takes
+////    one lease per notice, in arrival order.
+////
+//// ## Admission, not execution, is bounded
+////
+//// The `waiting` argument of `run`, `fold`, `invoke` and `execute` bounds
+//// only how long a caller waits to be admitted. A lease is granted before the
+//// deadline or refused, and a call that runs longer than the deadline still
+//// returns its own result. While a replacement waits for a long call, new
+//// calls queue behind the replacement until their own deadlines pass.
+////
+//// A holder must not ask for a second lease while it holds one: when a
+//// replacement is waiting, the second request queues behind it while the
+//// replacement waits for the first, and only the deadline ends the stalemate.
+//// The same holds across processes. A holder must not block on a process that
+//// will need a lease, because the replacement waits for the holder and the
+//// process waits for the replacement. A subagent wait is therefore not leased,
+//// and `strand.wait` inside `code_mode` is bounded only by its own 300 second
+//// deadline. A future capability that reaches an evolution operation from
+//// inside a running call has to take its generation from the enclosing lease.
+////
+//// The admission deadline is read from the session clock. A frozen clock
+//// never expires a request, so a request queued behind a replacement is
+//// granted even after its caller gave up and holds the lease until that
+//// caller exits; tests that queue requests use a ticking clock.
+////
+//// After this change the owner runs no work at all: tools, hook folds,
+//// invocations, programs, author tests and snapshots are all leased, and the
+//// owner answers only admission, release, catalogue, retention, recovery,
+//// activation and close.
+////
+//// ## Weft
+////
+//// The owner is a `weft/state_machine`. `Open` admits leases. `Draining` is
+//// entered when an activation or close arrives while leases are outstanding;
+//// it postpones both that message and every later lease request, and the
+//// release of the last lease moves the machine back to `Open`, which replays
+//// them in arrival order. The ledger of monitored holders is a plain list
+//// because weft has no primitive that monitors a pre-existing pid from inside
+//// a machine; `docs/weft.md` records the gap.
+////
+//// <!-- transitions: live.Phase -->
+////
+//// | state | lease | release or holder death | activate or close |
+//// | --- | --- | --- | --- |
+//// | `Open` | granted, or refused when expired or custody is retained | the last release stays `Open` | runs at once when no lease is held, else `Draining` with the message postponed |
+//// | `Draining` | postponed | the last release returns to `Open` and replays the postponed messages | postponed again |
 
 import broker/internal/call
 import client/evolution/record
@@ -15,13 +85,15 @@ import client/extension/hooks
 import core/clock.{type Clock}
 import core/json.{type JsonValue}
 import core/message
-import gleam/erlang/process.{type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
+import gleam/erlang/reference.{type Reference}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import runtime/effects
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 import weft/actor
+import weft/state_machine as sm
 
 /// One complete prepared version and its native cleanup witness.
 pub type Generation {
@@ -96,42 +168,73 @@ pub type Transition {
   )
 }
 
-/// The generation actor's sealed message vocabulary.
+/// The owner's two phases; the table in the module doc says what each does.
+type Phase {
+  /// Leases are admitted, and a replacement runs once none are held.
+  Open
+
+  /// A replacement is waiting for the last lease, so new requests queue.
+  Draining
+}
+
+/// Why a caller did not receive a lease.
+type Denial {
+  /// The request's admission deadline passed before the owner reached it.
+  Expired
+
+  /// Native custody is retained, so no generation is callable.
+  Retained
+
+  /// The owner did not answer within the caller's admission deadline.
+  Silent
+
+  /// The owner has stopped.
+  Gone
+}
+
+/// A granted lease: the generation the caller may use until it returns it.
+type Granted {
+  Granted(
+    /// The identity the caller returns the lease under.
+    id: Reference,
+    /// The published generation, whether or not it still validates.
+    active: Option(Generation),
+    /// Revalidation of that generation at the moment of admission.
+    validation: Result(Nil, store.Refusal),
+  )
+}
+
+/// One outstanding lease on the owner's ledger.
+type Held {
+  Held(
+    /// The caller-chosen identity of this lease.
+    id: Reference,
+    /// Fires when the holder dies without returning the lease.
+    monitor: process.Monitor,
+  )
+}
+
+/// The generation owner's sealed message vocabulary.
 pub opaque type Message {
   Activate(Transition, Subject(Result(record.Selection, store.Refusal)))
-  Invoke(String, Int, String, Ctx, JsonValue, Int, Subject(ToolOutcome))
-  Execute(
-    String,
-    Ctx,
-    JsonValue,
-    fn() -> Result(ToolOutcome, store.Refusal),
-    Int,
-    Subject(ToolOutcome),
-  )
-  Fold(fn(Option(Generation)) -> JsonValue, Int, Subject(JsonValue))
+  Lease(Reference, Pid, Int, Subject(Result(Granted, Denial)))
+  Release(Reference)
+  Abandoned(process.Down)
   Catalogue(Subject(Result(Option(Generation), store.Refusal)))
-  Snapshot(
-    fn() -> Result(archive.Tree, store.Refusal),
-    Subject(Result(archive.Tree, store.Refusal)),
-  )
-  Evaluate(
-    fn() -> Result(record.Evidence, store.Refusal),
-    Subject(Result(record.Evidence, store.Refusal)),
-  )
-  Run(
-    fn(Option(Generation)) -> effects.ToolOutcome,
-    Int,
-    Subject(effects.ToolOutcome),
-  )
-  Notice(fn(Option(Generation)) -> Nil)
   Retain(retirement.Task, Subject(Nil))
   Recover(Subject(Result(Nil, store.Refusal)))
   Close(Subject(Result(Nil, store.Refusal)))
 }
 
+/// The notice runner's sealed message vocabulary.
+pub opaque type Notification {
+  Notify(fn(Option(Generation)) -> Nil)
+  Stop
+}
+
 /// An opaque subject; callers cannot bypass version or expiry checks.
 pub opaque type Live {
-  Live(subject: Subject(Message), clock: Clock)
+  Live(subject: Subject(Message), clock: Clock, notices: Subject(Notification))
 }
 
 type State {
@@ -140,8 +243,12 @@ type State {
     active: Option(Generation),
     held: List(Generation),
     pending: List(retirement.Task),
+    leases: List(Held),
   )
 }
+
+/// The longest a queued notice waits for admission before it is dropped.
+const notice_admission_ms = 60_000
 
 /// Starts with no executable generation and no helper allocation.
 ///
@@ -152,15 +259,42 @@ type State {
 /// ```
 ///
 pub fn start(config: Config) -> Result(Live, actor.StartError) {
-  use started <- result.map(
-    actor.new(State(config:, active: None, held: [], pending: []))
-    |> actor.on_message(handle)
+  use owner <- result.try(
+    sm.new_with_initialiser(1000, fn(subject) {
+      let selector =
+        process.new_selector()
+        |> process.select(subject)
+        |> process.select_monitors(Abandoned)
+      sm.initialised(
+        Open,
+        State(config:, active: None, held: [], pending: [], leases: []),
+      )
+      |> sm.selecting(selector)
+      |> sm.returning(subject)
+      |> Ok
+    })
+    |> sm.on_event(handle)
+    |> sm.start,
+  )
+
+  // The runner is a peer of the owner rather than part of it, so a slow
+  // tracer never occupies the owner's mailbox. It holds a handle on the owner
+  // only to ask for leases.
+  use runner <- result.map(
+    actor.new_with_initialiser(1000, fn(self) {
+      actor.initialised(Live(owner.data, config.clock, self))
+      |> actor.returning(self)
+      |> Ok
+    })
+    |> actor.on_message(notify)
     |> actor.start,
   )
-  Live(subject: started.data, clock: config.clock)
+  Live(subject: owner.data, clock: config.clock, notices: runner.data)
 }
 
 /// Stages, retires the predecessor, commits selection, audits and publishes.
+///
+/// The activation waits until every outstanding lease has been returned.
 ///
 /// ## Examples
 ///
@@ -196,6 +330,9 @@ pub fn catalogue(owner: Live) -> Result(Option(Generation), store.Refusal) {
 
 /// Invokes precisely the advertised immutable candidate and generation.
 ///
+/// The invocation runs on the caller under a lease. `waiting` bounds only
+/// admission to that lease, not the invocation.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -211,19 +348,32 @@ pub fn invoke(
   args: JsonValue,
   waiting: Int,
 ) -> ToolOutcome {
-  let #(now, _) = clock.read(owner.clock)
-  call.try_call(owner.subject, waiting:, sending: fn(reply) {
-    Invoke(id, generation, name, ctx, args, now + waiting, reply)
-  })
-  |> result.lazy_unwrap(fn() {
-    tool.failure("Busy: the generation owner did not answer")
-  })
+  leased(
+    owner,
+    waiting,
+    fn(denial) {
+      case denial {
+        Expired -> tool.failure("Busy: invocation expired before admission")
+        Retained ->
+          tool.failure("CleanupUnconfirmed: generation custody is retained")
+        Silent | Gone ->
+          tool.failure("Busy: the generation owner did not answer")
+      }
+    },
+    fn(granted) {
+      case granted.validation {
+        Error(error) -> tool.failure(store.describe(error))
+        Ok(Nil) -> invoked(granted.active, id, generation, name, ctx, args)
+      }
+    },
+  )
 }
 
-/// Executes an entire hook fold on the owner's serialized timeline.
+/// Executes a whole hook fold on the caller, under a lease.
 ///
 /// The fold captures only its predecessor slot and inputs, never an Effects
-/// sibling record. Expired folds yield the caller's supplied fallback.
+/// sibling record. A fold that is not admitted in time yields the caller's
+/// supplied fallback. `waiting` bounds only admission, not the fold.
 ///
 /// ## Examples
 ///
@@ -237,14 +387,16 @@ pub fn fold(
   fallback: JsonValue,
   waiting: Int,
 ) -> JsonValue {
-  let #(now, _) = clock.read(owner.clock)
-  call.try_call(owner.subject, waiting:, sending: fn(reply) {
-    Fold(work, now + waiting, reply)
+  leased(owner, waiting, fn(_denial) { fallback }, fn(granted) {
+    work(usable(granted))
   })
-  |> result.unwrap(fallback)
 }
 
-/// Runs a complete before-tool, invocation and after-tool fold under one owner.
+/// Runs a complete before-tool, invocation and after-tool fold on the caller.
+///
+/// The caller holds a lease for the whole fold, so a replacement cannot begin
+/// under it, yet other calls run beside it. `waiting` bounds only admission:
+/// a tool that runs longer returns its own result.
 ///
 /// ## Examples
 ///
@@ -257,11 +409,20 @@ pub fn run(
   work: fn(Option(Generation)) -> effects.ToolOutcome,
   waiting: Int,
 ) -> effects.ToolOutcome {
-  let #(now, _) = clock.read(owner.clock)
-  call.try_call(owner.subject, waiting:, sending: fn(reply) {
-    Run(work, now + waiting, reply)
-  })
-  |> result.unwrap(effects.ToolFailed("Busy: generation owner did not answer"))
+  leased(
+    owner,
+    waiting,
+    fn(denial) {
+      case denial {
+        Expired -> effects.ToolFailed("Busy: queued fold expired")
+        Retained ->
+          effects.ToolFailed("CleanupUnconfirmed: retained native custody")
+        Silent | Gone ->
+          effects.ToolFailed("Busy: generation owner did not answer")
+      }
+    },
+    fn(granted) { work(usable(granted)) },
+  )
 }
 
 /// Proves cleanup, retaining every unconfirmed generation for a later retry.
@@ -276,6 +437,10 @@ pub fn close(owner: Live, waiting: Int) -> Result(Nil, store.Refusal) {
   call.try_call(owner.subject, waiting:, sending: Close)
   |> result.replace_error(store.Busy)
   |> result.flatten
+  |> result.map(fn(closed) {
+    process.send(owner.notices, Stop)
+    closed
+  })
   |> result.map_error(fn(error) {
     // The actor owns its replacement tasks. A caller retries through that
     // owner, rather than independently performing a copy of its obligations.
@@ -288,101 +453,113 @@ pub fn close(owner: Live, waiting: Int) -> Result(Nil, store.Refusal) {
   })
 }
 
-fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+// Every tool-shaped call goes through here. The lease is returned after the
+// work, and a holder that dies instead is found by the owner's monitor, so
+// the work itself needs no cleanup path.
+fn leased(
+  owner: Live,
+  waiting: Int,
+  refused: fn(Denial) -> a,
+  work: fn(Granted) -> a,
+) -> a {
+  case lease(owner, waiting) {
+    Error(denial) -> refused(denial)
+    Ok(granted) -> {
+      let answer = work(granted)
+      process.send(owner.subject, Release(granted.id))
+      answer
+    }
+  }
+}
+
+// The request names itself so that a caller which gave up can still return
+// it. A grant that crosses the caller's timeout is returned here rather than
+// held until the caller exits, and a request still queued behind a
+// replacement is refused as expired when its turn comes.
+fn lease(owner: Live, waiting: Int) -> Result(Granted, Denial) {
+  let id = reference.new()
+  let #(now, _) = clock.read(owner.clock)
+  case
+    call.try_call(owner.subject, waiting:, sending: fn(reply) {
+      Lease(id, process.self(), now + waiting, reply)
+    })
+  {
+    Ok(answer) -> answer
+    Error(call.NoReply) -> {
+      process.send(owner.subject, Release(id))
+      Error(Silent)
+    }
+    Error(call.CalleeGone) -> Error(Gone)
+  }
+}
+
+// A generation that no longer validates is not served, but the call still
+// runs, without promoted hooks, exactly as it did before the generation was
+// published.
+fn usable(granted: Granted) -> Option(Generation) {
+  case granted.validation {
+    Ok(Nil) -> granted.active
+    Error(_) -> None
+  }
+}
+
+// One notice at a time, in arrival order, each under its own lease. A notice
+// that cannot be admitted, or whose generation no longer validates, is
+// dropped, as it was when the owner ran notices inline.
+fn notify(
+  runner: Live,
+  message: Notification,
+) -> actor.Next(Live, Notification) {
   case message {
-    Activate(transition, reply) -> {
-      let #(next, answer) = changing(state, transition)
-      process.send(reply, answer)
-      actor.continue(next)
+    Stop -> actor.stop()
+    Notify(work) ->
+      case lease(runner, notice_admission_ms) {
+        Error(Gone) -> actor.stop()
+        Error(Expired) | Error(Retained) | Error(Silent) ->
+          actor.continue(runner)
+        Ok(granted) -> {
+          case granted.validation {
+            Ok(Nil) -> work(granted.active)
+            Error(_) -> Nil
+          }
+          process.send(runner.subject, Release(granted.id))
+          actor.continue(runner)
+        }
+      }
+  }
+}
+
+fn handle(
+  phase: Phase,
+  state: State,
+  message: Message,
+) -> sm.Next(Phase, State, Message) {
+  case message {
+    Lease(id, holder, expires, reply) ->
+      leasing(phase, state, id, holder, expires, reply)
+    Release(id) -> {
+      let #(returned, remaining) =
+        list.partition(state.leases, fn(held) { held.id == id })
+      list.each(returned, fn(held) { process.demonitor_process(held.monitor) })
+      released(state, remaining)
     }
-    Snapshot(work, reply) -> {
-      let answer = case state.held, state.pending {
-        [], [] -> work()
-        _, _ -> Error(store.Busy)
+    Abandoned(down) -> {
+      let monitor = case down {
+        process.ProcessDown(monitor:, ..) | process.PortDown(monitor:, ..) ->
+          monitor
       }
-      let next = case answer {
-        Error(error) -> retained_refusal(state, error)
-        Ok(_) -> state
-      }
-      process.send(reply, answer)
-      actor.continue(next)
+      released(
+        state,
+        list.filter(state.leases, fn(held) { held.monitor != monitor }),
+      )
     }
-    Evaluate(work, reply) -> {
-      let answer = case state.held, state.pending {
-        [], [] -> work()
-        _, _ -> Error(store.Busy)
-      }
-      let next = case answer {
-        Error(error) -> retained_refusal(state, error)
-        Ok(_) -> state
-      }
-      process.send(reply, answer)
-      actor.continue(next)
-    }
-    Execute(name, ctx, args, work, expires, reply) -> {
-      let #(next, validation) = validate_active(state)
-      let performed = case
-        expired(next.config.clock, expires),
-        next.held,
-        next.pending
-      {
-        True, _, _ -> Error(store.Busy)
-        False, [], [] ->
-          execute_with(
-            case validation {
-              Ok(_) -> next.active
-              Error(_) -> None
-            },
-            name,
-            ctx,
-            args,
-            work,
-          )
-        False, _, _ -> Error(store.Busy)
-      }
-      let #(next, answer) = case performed {
-        Ok(answer) -> #(next, answer)
-        Error(error) -> #(
-          retained_refusal(next, error),
-          tool.failure(store.describe(error)),
-        )
-      }
-      process.send(reply, answer)
-      actor.continue(next)
-    }
-    Invoke(id, generation, name, ctx, args, expires, reply) -> {
-      let #(next, validation) = validate_active(state)
-      let answer = case
-        expired(state.config.clock, expires),
-        next.held,
-        next.pending,
-        validation
-      {
-        _, _, _, Error(error) -> tool.failure(store.describe(error))
-        True, _, _, Ok(_) ->
-          tool.failure("Busy: invocation expired before admission")
-        False, [], [], Ok(_) ->
-          invoked(next.active, id, generation, name, ctx, args)
-        False, _, _, Ok(_) ->
-          tool.failure("CleanupUnconfirmed: generation custody is retained")
-      }
-      process.send(reply, answer)
-      actor.continue(next)
-    }
-    Fold(work, expires, reply) -> {
-      let #(next, validation) = validate_active(state)
-      case
-        expired(next.config.clock, expires),
-        next.held,
-        next.pending,
-        validation
-      {
-        False, [], [], Ok(_) -> process.send(reply, work(next.active))
-        False, [], [], Error(_) -> process.send(reply, work(None))
-        _, _, _, _ -> Nil
-      }
-      actor.continue(next)
-    }
+    Activate(transition, reply) ->
+      replacing(state, fn(state) {
+        let #(next, answer) = changing(state, transition)
+        process.send(reply, answer)
+        sm.keep(next)
+      })
+    Close(reply) -> replacing(state, fn(state) { closing(state, reply) })
     Catalogue(reply) -> {
       let answer = case state.held, state.pending {
         [], [] -> Ok(state.active)
@@ -390,75 +567,118 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           Error(cleanup_refusal("generation custody remains", state.held))
       }
       process.send(reply, answer)
-      actor.continue(state)
-    }
-    Run(work, expires, reply) -> {
-      let #(next, validation) = validate_active(state)
-      let answer = case
-        expired(next.config.clock, expires),
-        next.held,
-        next.pending,
-        validation
-      {
-        False, [], [], Ok(_) -> work(next.active)
-        False, [], [], Error(_) -> work(None)
-        True, _, _, _ -> effects.ToolFailed("Busy: queued fold expired")
-        False, _, _, _ ->
-          effects.ToolFailed("CleanupUnconfirmed: retained native custody")
-      }
-      process.send(reply, answer)
-      actor.continue(next)
-    }
-    Notice(work) -> {
-      let #(next, validation) = validate_active(state)
-      case next.held, next.pending, validation {
-        [], [], Ok(_) -> work(next.active)
-        _, _, _ -> Nil
-      }
-      actor.continue(next)
+      sm.keep(state)
     }
     Retain(retire, reply) -> {
       process.send(reply, Nil)
-      actor.continue(State(..state, pending: [retire, ..state.pending]))
+      sm.keep(State(..state, pending: [retire, ..state.pending]))
     }
     Recover(reply) -> {
       let #(next, answer) = recovered(state)
       process.send(reply, answer)
-      actor.continue(next)
+      sm.keep(next)
     }
-    Close(reply) -> {
-      let held = list.append(state.held, active_list(state.active))
-      let unconfirmed =
-        list.filter_map(held, fn(generation) {
-          case retirement.perform(generation.retire) {
-            Ok(Nil) -> Error(Nil)
-            Error(failed) -> Ok(Generation(..generation, retire: failed.retry))
-          }
-        })
-      let pending =
-        list.filter_map(state.pending, fn(retire) {
-          case retirement.perform(retire) {
-            Ok(Nil) -> Error(Nil)
-            Error(failed) -> Ok(failed.retry)
-          }
-        })
-      let answer = case unconfirmed, pending {
-        [], [] -> Ok(Nil)
-        _, [_, ..] | [_, ..], [] ->
-          Error(cleanup_refusal(
-            "native retirement did not confirm",
-            unconfirmed,
-          ))
+  }
+}
+
+// A lease request is admitted only while the machine is `Open`. While
+// `Draining` it is postponed, which is what keeps a steady stream of calls
+// from starving the replacement that is waiting for them. Admission
+// revalidates the active generation, because the lease promises the caller a
+// generation that is still approved, and it monitors the holder so that a
+// caller which dies mid-call cannot keep a replacement waiting forever.
+fn leasing(
+  phase: Phase,
+  state: State,
+  id: Reference,
+  holder: Pid,
+  expires: Int,
+  reply: Subject(Result(Granted, Denial)),
+) -> sm.Next(Phase, State, Message) {
+  case phase {
+    Draining -> sm.keep(state) |> sm.postpone
+    Open -> {
+      let #(next, validation) = validate_active(state)
+      let admission = case
+        expired(next.config.clock, expires),
+        next.held,
+        next.pending
+      {
+        True, _, _ -> Error(Expired)
+        False, [], [] -> Ok(Granted(id:, active: next.active, validation:))
+        False, _, _ -> Error(Retained)
       }
-      process.send(reply, answer)
-      case answer {
-        Ok(Nil) -> actor.stop()
-        Error(_) ->
-          actor.continue(
-            State(..state, active: None, held: unconfirmed, pending:),
-          )
+      let admitted = case admission {
+        Ok(_) ->
+          State(..next, leases: [
+            Held(id:, monitor: process.monitor(holder)),
+            ..next.leases
+          ])
+        Error(_) -> next
       }
+      process.send(reply, admission)
+      sm.keep(admitted)
     }
+  }
+}
+
+// Returning a lease, or the holder dying, shrinks the ledger. Moving to
+// `Open` when the ledger empties is the moment postponed activations and
+// leases replay, in the order they arrived; from `Open` it is not a state
+// change, so it replays nothing.
+fn released(
+  state: State,
+  leases: List(Held),
+) -> sm.Next(Phase, State, Message) {
+  let next = State(..state, leases:)
+  case leases {
+    [] -> sm.transition(to: Open, data: next)
+    [_, ..] -> sm.keep(next)
+  }
+}
+
+// A replacement or retirement must not overlap a call that holds a
+// generation. With leases outstanding the message is postponed and the
+// machine starts to drain; otherwise it runs at once.
+fn replacing(
+  state: State,
+  replace: fn(State) -> sm.Next(Phase, State, Message),
+) -> sm.Next(Phase, State, Message) {
+  case state.leases {
+    [_, ..] -> sm.transition(to: Draining, data: state) |> sm.postpone
+    [] -> replace(state)
+  }
+}
+
+fn closing(
+  state: State,
+  reply: Subject(Result(Nil, store.Refusal)),
+) -> sm.Next(Phase, State, Message) {
+  let held = list.append(state.held, active_list(state.active))
+  let unconfirmed =
+    list.filter_map(held, fn(generation) {
+      case retirement.perform(generation.retire) {
+        Ok(Nil) -> Error(Nil)
+        Error(failed) -> Ok(Generation(..generation, retire: failed.retry))
+      }
+    })
+  let pending =
+    list.filter_map(state.pending, fn(retire) {
+      case retirement.perform(retire) {
+        Ok(Nil) -> Error(Nil)
+        Error(failed) -> Ok(failed.retry)
+      }
+    })
+  let answer = case unconfirmed, pending {
+    [], [] -> Ok(Nil)
+    _, [_, ..] | [_, ..], [] ->
+      Error(cleanup_refusal("native retirement did not confirm", unconfirmed))
+  }
+  process.send(reply, answer)
+  case answer {
+    Ok(Nil) -> sm.stop()
+    Error(_) ->
+      sm.keep(State(..state, active: None, held: unconfirmed, pending:))
   }
 }
 
@@ -781,7 +1001,13 @@ fn recover_previous(
   #(next, answer)
 }
 
-/// Evaluates immutable author tests under the same bounded native custody.
+/// Evaluates immutable author tests on the caller, under a lease.
+///
+/// Author tests do not touch the serving generation, but they allocate native
+/// helpers, so they are admitted only while custody is clean. A refusal that
+/// carries cleanup authority is retained by the owner before it is returned.
+/// The test runs for as long as it needs; the 120 second wait bounds
+/// admission only, and other calls proceed beside it.
 ///
 /// ## Examples
 ///
@@ -790,9 +1016,25 @@ pub fn evaluate(
   owner: Live,
   work: fn() -> Result(record.Evidence, store.Refusal),
 ) -> Result(record.Evidence, store.Refusal) {
-  call.try_call(owner.subject, waiting: 120_000, sending: Evaluate(work, _))
-  |> result.replace_error(store.Busy)
-  |> result.flatten
+  leased(owner, 120_000, fn(_denial) { Error(store.Busy) }, fn(_granted) {
+    retained(owner, work())
+  })
+}
+
+// A failed piece of leased work may carry a cleanup witness. The owner keeps
+// it before the caller learns of the failure, so that no later allocation is
+// admitted on the strength of a reply that has not yet been read.
+fn retained(
+  owner: Live,
+  outcome: Result(a, store.Refusal),
+) -> Result(a, store.Refusal) {
+  case outcome {
+    Ok(_) -> outcome
+    Error(error) -> {
+      retain(owner, error)
+      outcome
+    }
+  }
 }
 
 fn validate_active(state: State) -> #(State, Result(Nil, store.Refusal)) {
@@ -809,13 +1051,16 @@ fn validate_active(state: State) -> #(State, Result(Nil, store.Refusal)) {
 }
 
 /// Queues a notify-only hook without blocking its strand driver.
-/// The owner drains it synchronously before processing a later activation.
+///
+/// A runner takes one lease per notice, in arrival order, so a slow tracer
+/// delays only later notices and a replacement still waits for the notice
+/// that is running.
 ///
 /// ## Examples
 ///
 /// `live.notice(owner, notified)` preserves generation ordering.
 pub fn notice(owner: Live, work: fn(Option(Generation)) -> Nil) -> Nil {
-  process.send(owner.subject, Notice(work))
+  process.send(owner.notices, Notify(work))
 }
 
 /// Detaches the generation owner after its cleanup capability is published.
@@ -824,13 +1069,19 @@ pub fn notice(owner: Live, work: fn(Option(Generation)) -> Nil) -> Nil {
 ///
 /// `live.detach(owner)` transfers lifetime custody to the instance owner.
 pub fn detach(owner: Live) -> Nil {
-  case process.subject_owner(owner.subject) {
-    Ok(pid) -> process.unlink(pid)
-    Error(_) -> Nil
-  }
+  [process.subject_owner(owner.subject), process.subject_owner(owner.notices)]
+  |> list.each(fn(owned) {
+    case owned {
+      Ok(pid) -> process.unlink(pid)
+      Error(_) -> Nil
+    }
+  })
 }
 
-/// Captures model-authored source under serialized native cleanup custody.
+/// Captures model-authored source on the caller, under a lease.
+///
+/// Like `evaluate`, it is admitted only while custody is clean and retains a
+/// refusal's cleanup authority before returning it.
 ///
 /// ## Examples
 ///
@@ -839,12 +1090,15 @@ pub fn snapshot(
   owner: Live,
   work: fn() -> Result(archive.Tree, store.Refusal),
 ) -> Result(archive.Tree, store.Refusal) {
-  call.try_call(owner.subject, waiting: 120_000, sending: Snapshot(work, _))
-  |> result.replace_error(store.Busy)
-  |> result.flatten
+  leased(owner, 120_000, fn(_denial) { Error(store.Busy) }, fn(_granted) {
+    retained(owner, work())
+  })
 }
 
 /// Executes a selected reusable program and its hooks in one generation fold.
+///
+/// The program runs on the caller under a lease. The 120 second wait bounds
+/// admission to the lease, not the program.
 ///
 /// ## Examples
 ///
@@ -856,18 +1110,26 @@ pub fn execute(
   args: JsonValue,
   work: fn() -> Result(ToolOutcome, store.Refusal),
 ) -> ToolOutcome {
-  let #(now, _) = clock.read(owner.clock)
-  call.try_call(owner.subject, waiting: 120_000, sending: Execute(
-    name,
-    ctx,
-    args,
-    work,
-    now + 120_000,
-    _,
-  ))
-  |> result.lazy_unwrap(fn() {
-    tool.failure("Busy: selected program did not settle")
-  })
+  leased(
+    owner,
+    120_000,
+    fn(denial) {
+      case denial {
+        Expired | Retained -> tool.failure(store.describe(store.Busy))
+        Silent | Gone -> tool.failure("Busy: selected program did not settle")
+      }
+    },
+    fn(granted) {
+      case execute_with(usable(granted), name, ctx, args, work) {
+        Ok(outcome) -> outcome
+        Error(error) -> {
+          // A refusal may carry cleanup authority, which the owner keeps.
+          retain(owner, error)
+          tool.failure(store.describe(error))
+        }
+      }
+    },
+  )
 }
 
 fn execute_with(

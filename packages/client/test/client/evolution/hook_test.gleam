@@ -3,6 +3,7 @@
 
 import client/evolution/hook
 import client/evolution/live
+import client/evolution/model_door
 import client/evolution/queue
 import client/evolution/record
 import client/evolution/record_test
@@ -17,11 +18,14 @@ import core/message
 import core/msgpack
 import gleam/erlang/process.{type Subject}
 import gleam/int
+import gleam/list
 import gleam/option.{None, Some}
 import gleeunit/should
 import machine/operation
 import runtime/effects
 import telemetry/log
+import tools/agent
+import tools/evolution as evolution_tool
 import weft
 import weft/poll
 
@@ -206,5 +210,63 @@ fn reply(text: String, failed: Settlement) -> message.AgentMessage {
     added_tool_names: None,
     is_error: failed == Failed,
     timestamp: 0,
+  )
+}
+
+pub fn every_registered_door_bypasses_the_generation_lease_test() {
+  let events = process.new_subject()
+  let gates = process.new_subject()
+  let assert Ok(owner) =
+    live.start(
+      live.Config(
+        clock: clock.fixed(0),
+        stage: fn(selected) { stage(selected, events) },
+        adopt: fn(_) { Ok(Nil) },
+        recover: fn() { Ok(None) },
+      ),
+    )
+    as "native live owner starts"
+
+  // A closed owner refuses every lease, so a tool that still answers has not
+  // asked for one. The native tool is the control: it must be refused.
+  live.close(owner, 1000) |> should.equal(Ok(Nil))
+  let base = native_effects(events, gates)
+  let wired =
+    hook.wire(
+      effects.Effects(
+        ..base,
+        tools: effects.ToolSurface(..base.tools, run: fn(_request) {
+          effects.ToolCompleted(
+            result: reply("bypassed", Succeeded),
+            terminate: False,
+          )
+        }),
+      ),
+      owner,
+    )
+  let doors = list.append(evolution_tool.names(), model_door.names())
+  list.contains(doors, "evolution_trace") |> should.be_true
+  list.length(doors) |> should.equal(6)
+  list.each(doors, fn(door) {
+    wired.tools.run(request_named(door))
+    |> should.equal(effects.ToolCompleted(
+      result: reply("bypassed", Succeeded),
+      terminate: False,
+    ))
+  })
+  wired.tools.run(request_named(agent.wait_tool_name))
+  |> should.equal(effects.ToolCompleted(
+    result: reply("bypassed", Succeeded),
+    terminate: False,
+  ))
+  wired.tools.run(request_named("bash"))
+  |> should.equal(effects.ToolFailed("Busy: generation owner did not answer"))
+}
+
+fn request_named(name: String) -> effects.ToolRun {
+  let base = request()
+  effects.ToolRun(
+    ..base,
+    call: message.ToolCall("call", name, json.Object([]), None, None),
   )
 }
