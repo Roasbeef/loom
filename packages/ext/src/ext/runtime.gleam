@@ -408,3 +408,15 @@ fn string_field(value: Value, key: String) -> Result(String, String) {
       })
   }
 }
+
+/// Renders an outcome for the stable stateful extension callback boundary.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // runtime.outcome_answer(outcome)
+/// ```
+///
+pub fn outcome_answer(outcome: Outcome) -> runtime.Answer {
+  runtime.Answered(value: body(outcome))
+}
