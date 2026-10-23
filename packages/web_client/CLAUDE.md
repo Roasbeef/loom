@@ -795,7 +795,8 @@ advances the revision, invalidating callbacks from the old connection. Bounded
 callbacks retain only a revision and dispatch, not the source. The parent
 checks frame-window identity before `mermaid_rule.reply` decodes a JSON string;
 no SVG or vendor diagnostic is accepted. Copy source is an explicit user action
-and reports clipboard refusal without hiding the selectable source.
+and reports clipboard refusal without hiding the selectable source. While a
+diagram is `Shown`, the toolbar also offers an Expand/Collapse toggle (`ViewMode`: `Inline` or `Expanded`) that promotes `.mermaid-box` to `.mermaid-box-expanded` so the isolated frame fills the viewport and triggers its resize observer without reloading the iframe.
 
 The frame controller is the separate internal Gleam program `web_mermaid`,
 not an exception to the session bundle's no-markup binding. Its pure state

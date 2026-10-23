@@ -239,9 +239,67 @@ pub fn configuration(theme: Theme) -> String {
     #("htmlLabels", json.bool(False)),
     #("theme", json.string(theme_name)),
     #("layout", json.string("dagre")),
-    #("flowchart", json.object([#("htmlLabels", json.bool(False))])),
+    #(
+      "flowchart",
+      json.object([
+        #("htmlLabels", json.bool(False)),
+        #("wrappingWidth", json.int(320)),
+        #("nodeSpacing", json.int(50)),
+        #("rankSpacing", json.int(80)),
+        #("padding", json.int(16)),
+        #(
+          "subGraphTitleMargin",
+          json.object([#("top", json.int(10)), #("bottom", json.int(10))]),
+        ),
+      ]),
+    ),
   ])
   |> json.to_string
+}
+
+/// Escapes non-`<br>` angle brackets inside double-quoted Mermaid labels so
+/// Mermaid's DOMPurify pass does not strip `<name>` or `<state_root>` as HTML
+/// tags, while Mermaid's SVG `<tspan>` decoder (`decodeHTMLEntities`) restores
+/// `&lt;` and `&gt;` back to `<` and `>`.
+///
+/// ## Examples
+/// ```gleam
+/// assert normalize_source("A[\"[mcp.<name>]\\n<br/>ok\"]") == "A[\"[mcp.&lt;name&gt;]\\n<br/>ok\"]"
+/// ```
+pub fn normalize_source(source: String) -> String {
+  escape_quoted_angles(string.to_graphemes(source), OutsideQuotes, "")
+}
+
+type QuoteState {
+  OutsideQuotes
+  InsideQuotes
+}
+
+fn escape_quoted_angles(
+  chars: List(String),
+  quotes: QuoteState,
+  acc: String,
+) -> String {
+  case chars, quotes {
+    [], _ -> acc
+    ["\\", next, ..rest], _ ->
+      escape_quoted_angles(rest, quotes, acc <> "\\" <> next)
+    ["\"", ..rest], OutsideQuotes ->
+      escape_quoted_angles(rest, InsideQuotes, acc <> "\"")
+    ["\"", ..rest], InsideQuotes ->
+      escape_quoted_angles(rest, OutsideQuotes, acc <> "\"")
+    ["<", "b", "r", ">", ..rest], InsideQuotes ->
+      escape_quoted_angles(rest, quotes, acc <> "<br/>")
+    ["<", "b", "r", "/", ">", ..rest], InsideQuotes ->
+      escape_quoted_angles(rest, quotes, acc <> "<br/>")
+    ["<", "b", "r", " ", "/", ">", ..rest], InsideQuotes ->
+      escape_quoted_angles(rest, quotes, acc <> "<br/>")
+    ["<", ..rest], InsideQuotes ->
+      escape_quoted_angles(rest, quotes, acc <> "&lt;")
+    [">", ..rest], InsideQuotes ->
+      escape_quoted_angles(rest, quotes, acc <> "&gt;")
+    [first, ..rest], _ -> escape_quoted_angles(rest, quotes, acc <> first)
+  }
 }
 
 /// The CSS colour scheme matching a theme, so the frame's canvas agrees
