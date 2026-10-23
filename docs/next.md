@@ -4,8 +4,8 @@ This is a scoped profiling handoff, checked October 23, 2026 against
 `3cf6bdc09c281e39dd126d5b7daa6c9d7eb4308d` plus the local terminal optimization
 commits `4e8417fbf` and `0e7b74a2f`. It records this task's measurements and validation, not a fresh
 whole-repository or hosted-CI audit. Rewrite it after the next body of work.
-Publication integrates main `a08903708`, including the LSP ergonomics and
-Mermaid changes. The earlier fixture numbers below precede that integration.
+Publication integrates main `cc6d7be5e`, including LSP ergonomics, Mermaid and
+nightly-update changes. The earlier fixture numbers precede that integration.
 The [publication PR](https://github.com/Roasbeef/loom/pull/1080) records the
 final reviewed head, hosted checks and merge state.
 
