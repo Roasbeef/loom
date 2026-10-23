@@ -1338,8 +1338,10 @@ fn run_mcp_process(fixture: Fixture) -> Nil {
   let configured =
     catalog.McpServer(
       name: fixture_server,
-      command: [fixture.escript, fixture.script, pid_file],
-      api_key_env: option.None,
+      target: catalog.McpStdio(
+        command: [fixture.escript, fixture.script, pid_file],
+        api_key_env: option.None,
+      ),
       runs_on: catalog.RunsOnOrchestrator,
     )
   // The production boot: a real spawn, a real handshake, a real

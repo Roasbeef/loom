@@ -875,8 +875,10 @@ pub fn example_mcp_server_parses_test() {
     == [
       catalog.McpServer(
         name: "github",
-        command: ["mcp-server-github", "--stdio"],
-        api_key_env: Some("GITHUB_TOKEN"),
+        target: catalog.McpStdio(
+          command: ["mcp-server-github", "--stdio"],
+          api_key_env: Some("GITHUB_TOKEN"),
+        ),
         runs_on: catalog.RunsOnOrchestrator,
       ),
     ]
@@ -898,14 +900,15 @@ api_key_env = \"ALPHA_KEY\"
     == [
       catalog.McpServer(
         name: "alpha",
-        command: ["alpha-server", "--stdio"],
-        api_key_env: Some("ALPHA_KEY"),
+        target: catalog.McpStdio(
+          command: ["alpha-server", "--stdio"],
+          api_key_env: Some("ALPHA_KEY"),
+        ),
         runs_on: catalog.RunsOnOrchestrator,
       ),
       catalog.McpServer(
         name: "zeta",
-        command: ["zeta-server"],
-        api_key_env: None,
+        target: catalog.McpStdio(command: ["zeta-server"], api_key_env: None),
         runs_on: catalog.RunsOnOrchestrator,
       ),
     ]
@@ -990,8 +993,7 @@ pub fn ordinary_mcp_name_parses_test() {
     == [
       catalog.McpServer(
         name: "github",
-        command: ["x"],
-        api_key_env: None,
+        target: catalog.McpStdio(command: ["x"], api_key_env: None),
         runs_on: catalog.RunsOnOrchestrator,
       ),
     ]
@@ -1102,8 +1104,141 @@ pub fn non_array_mcp_command_refused_test() {
 pub fn unknown_mcp_key_refused_test() {
   let text = with_mcp_server("one", "command = [\"x\"]\napi_key = \"KEY\"")
   let assert Error(
-    "unknown key `api_key` in mcp.one (allowed: command, api_key_env, runs_on)" <> _rest,
+    "unknown key `api_key` in mcp.one (allowed: command, url, auth, api_key_env, client_id, runs_on)" <> _rest,
   ) = catalog.parse(text)
+}
+
+pub fn remote_http_mcp_servers_parse_test() {
+  let text = minimal <> "
+[mcp.local_http]
+url = \"http://127.0.0.1:8790/mcp\"
+
+[mcp.magi]
+url = \"http://127.0.0.1:8790/mcp\"
+auth = \"macaroon\"
+api_key_env = \"MAGI_MACAROON\"
+
+[mcp.bearer_default]
+url = \"https://mcp.example.com/v1/mcp\"
+api_key_env = \"MCP_TOKEN\"
+
+[mcp.oauth_dynamic]
+url = \"https://mcp.linear.app/mcp\"
+auth = \"oauth\"
+
+[mcp.oauth_client]
+url = \"https://mcp.linear.app/mcp\"
+auth = \"oauth\"
+client_id = \"linear-client-1\"
+"
+  let assert Ok(parsed) = catalog.parse(text)
+  assert parsed.mcp_servers
+    == [
+      catalog.McpServer(
+        name: "bearer_default",
+        target: catalog.McpHttp(
+          url: "https://mcp.example.com/v1/mcp",
+          auth: catalog.McpBearerAuth(api_key_env: "MCP_TOKEN"),
+        ),
+        runs_on: catalog.RunsOnOrchestrator,
+      ),
+      catalog.McpServer(
+        name: "local_http",
+        target: catalog.McpHttp(
+          url: "http://127.0.0.1:8790/mcp",
+          auth: catalog.McpNoAuth,
+        ),
+        runs_on: catalog.RunsOnOrchestrator,
+      ),
+      catalog.McpServer(
+        name: "magi",
+        target: catalog.McpHttp(
+          url: "http://127.0.0.1:8790/mcp",
+          auth: catalog.McpMacaroonAuth(api_key_env: "MAGI_MACAROON"),
+        ),
+        runs_on: catalog.RunsOnOrchestrator,
+      ),
+      catalog.McpServer(
+        name: "oauth_client",
+        target: catalog.McpHttp(
+          url: "https://mcp.linear.app/mcp",
+          auth: catalog.McpOAuth(client_id: Some("linear-client-1")),
+        ),
+        runs_on: catalog.RunsOnOrchestrator,
+      ),
+      catalog.McpServer(
+        name: "oauth_dynamic",
+        target: catalog.McpHttp(
+          url: "https://mcp.linear.app/mcp",
+          auth: catalog.McpOAuth(client_id: None),
+        ),
+        runs_on: catalog.RunsOnOrchestrator,
+      ),
+    ]
+}
+
+pub fn invalid_http_mcp_configurations_are_refused_test() {
+  list.each(
+    [
+      #(
+        "command = [\"x\"]\nurl = \"https://mcp.example.com/mcp\"",
+        "mcp.one cannot set both command and url",
+      ),
+      #(
+        "command = [\"x\"]\nauth = \"bearer\"",
+        "mcp.one.auth is only supported for remote HTTP servers (mcp.one.url)",
+      ),
+      #(
+        "command = [\"x\"]\nclient_id = \"cid\"",
+        "mcp.one.client_id is only supported when mcp.one.auth is \"oauth\"",
+      ),
+      #("url = \"\"", "mcp.one.url must be non-empty"),
+      #(
+        "url = \"ftp://mcp.example.com/mcp\"",
+        "mcp.one.url must be an absolute http:// or https:// URL without userinfo or fragment",
+      ),
+      #(
+        "url = \"https://user:pass@mcp.example.com/mcp\"",
+        "mcp.one.url must be an absolute http:// or https:// URL without userinfo or fragment",
+      ),
+      #(
+        "url = \"https://mcp.example.com/mcp#frag\"",
+        "mcp.one.url must be an absolute http:// or https:// URL without userinfo or fragment",
+      ),
+      #(
+        "url = \"https://mcp.example.com/mcp\"\nauth = \"bearer\"",
+        "mcp.one.api_key_env is required when mcp.one.auth is \"bearer\"",
+      ),
+      #(
+        "url = \"https://mcp.example.com/mcp\"\nauth = \"macaroon\"",
+        "mcp.one.api_key_env is required when mcp.one.auth is \"macaroon\"",
+      ),
+      #(
+        "url = \"https://mcp.example.com/mcp\"\nauth = \"none\"\napi_key_env = \"KEY\"",
+        "mcp.one.api_key_env is not supported when mcp.one.auth is \"none\"",
+      ),
+      #(
+        "url = \"https://mcp.example.com/mcp\"\nauth = \"oauth\"\napi_key_env = \"KEY\"",
+        "mcp.one.api_key_env is not supported when mcp.one.auth is \"oauth\"",
+      ),
+      #(
+        "url = \"http://mcp.example.com/mcp\"\nauth = \"oauth\"",
+        "mcp.one.url must use https:// (or loopback http://) when mcp.one.auth is \"oauth\"",
+      ),
+      #(
+        "url = \"https://mcp.example.com/mcp\"\nauth = \"bearer\"\napi_key_env = \"KEY\"\nclient_id = \"cid\"",
+        "mcp.one.client_id is only supported when mcp.one.auth is \"oauth\"",
+      ),
+      #(
+        "url = \"https://mcp.example.com/mcp\"\nauth = \"basic\"",
+        "mcp.one.auth must be \"none\", \"bearer\", \"macaroon\" or \"oauth\"",
+      ),
+    ],
+    fn(case_pair) {
+      assert catalog.parse(with_mcp_server("one", case_pair.0))
+        == Error(case_pair.1)
+    },
+  )
 }
 
 pub fn empty_mcp_api_key_env_refused_test() {
@@ -2237,8 +2372,10 @@ pub fn an_executor_reads_its_own_mcp_tables_alone_test() {
     == Ok([
       catalog.McpServer(
         name: "files",
-        command: ["/usr/local/bin/files-mcp"],
-        api_key_env: Some("FILES_KEY"),
+        target: catalog.McpStdio(
+          command: ["/usr/local/bin/files-mcp"],
+          api_key_env: Some("FILES_KEY"),
+        ),
         runs_on: catalog.RunsOnExecutor,
       ),
     ])
