@@ -17,6 +17,7 @@ package llock
 
 import (
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/landlock-lsm/go-landlock/landlock"
@@ -27,9 +28,9 @@ import (
 type Access string
 
 const (
-	// ReadOnly grants read/execute on a directory tree.
+	// ReadOnly grants read/execute on the named file or directory tree.
 	ReadOnly Access = "ro"
-	// ReadWrite grants full file access on a directory tree.
+	// ReadWrite grants full file access on the named file or directory tree.
 	ReadWrite Access = "rw"
 )
 
@@ -38,7 +39,8 @@ const (
 type Rule struct {
 	Path   string
 	Access Access
-	// File selects a file rule instead of a recursive directory rule.
+	// File explicitly selects a file rule. Otherwise Apply inspects the
+	// path in the current jail view to distinguish files from directories.
 	File bool
 	// Optional marks paths whose absence is tolerated (a writable root
 	// that does not exist yet is the broker's business, not a reason to
@@ -106,21 +108,9 @@ func ABIVersion() (int, string) {
 func Apply(rules []Rule) error {
 	var opts []landlock.Rule
 	for _, r := range rules {
-		var fr landlock.FSRule
-		switch r.Access {
-		case ReadOnly:
-			fr = landlock.RODirs(r.Path)
-		case ReadWrite:
-			if r.File {
-				fr = landlock.RWFiles(r.Path)
-			} else {
-				fr = landlock.RWDirs(r.Path)
-			}
-		default:
-			return fmt.Errorf("llock: unknown access %q", r.Access)
-		}
-		if r.Optional {
-			fr = fr.IgnoreIfMissing()
+		fr, err := filesystemRule(r)
+		if err != nil {
+			return err
 		}
 		opts = append(opts, fr)
 	}
@@ -128,6 +118,51 @@ func Apply(rules []Rule) error {
 		return fmt.Errorf("llock: restrict: %w", err)
 	}
 	return nil
+}
+
+// filesystemRule translates the policy's path regions in the namespace
+// stage 2 actually sees. A root may name a file, and directory-only
+// rights on that file make Landlock refuse the whole execution. Stat
+// follows symlinks just like go-landlock's O_PATH open, preserving the
+// existing resolved-path semantics rather than granting the parent.
+// If the object changes between stat and open, directory rights on a
+// file refuse, while file rights on a directory can only narrow access.
+func filesystemRule(r Rule) (landlock.FSRule, error) {
+	file := r.File
+	if !file {
+		info, err := os.Stat(r.Path)
+		switch {
+		case err == nil:
+			file = !info.IsDir()
+		case r.Optional && os.IsNotExist(err):
+			// Keep IgnoreIfMissing responsible for the final open. A path
+			// still absent there remains optional, as before classification.
+		case err != nil:
+			return landlock.FSRule{}, fmt.Errorf("llock: stat %q: %w", r.Path, err)
+		}
+	}
+
+	var fr landlock.FSRule
+	switch r.Access {
+	case ReadOnly:
+		if file {
+			fr = landlock.ROFiles(r.Path)
+		} else {
+			fr = landlock.RODirs(r.Path)
+		}
+	case ReadWrite:
+		if file {
+			fr = landlock.RWFiles(r.Path)
+		} else {
+			fr = landlock.RWDirs(r.Path)
+		}
+	default:
+		return landlock.FSRule{}, fmt.Errorf("llock: unknown access %q", r.Access)
+	}
+	if r.Optional {
+		fr = fr.IgnoreIfMissing()
+	}
+	return fr, nil
 }
 
 func sorted(in []string) []string {
