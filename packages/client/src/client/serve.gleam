@@ -4260,21 +4260,22 @@ fn assemble_in(
       }),
     )
 
-  use evolution_profiles <- result.try(evolution_profiles(
+  use chosen_profiles <- result.try(evolution_profiles(
     settings,
     opened,
     evolution_wiring,
   ))
+  let running_profiles = option.unwrap(chosen_profiles, [])
 
   // A session that pinned no profile has nothing to attribute. Attaching the
   // observer anyway would make every provider request pay a durable write,
   // and a failed write would refuse inference that no profile touched.
-  use gateway <- result.try(case evolution_profiles {
+  use gateway <- result.try(case running_profiles {
     [] -> Ok(settings.gateway)
     [_, ..] ->
       provider_gateway.with_profiles(
         settings.gateway,
-        evolution_profiles,
+        running_profiles,
         evolution_prompt.fingerprint,
         fn(attempt) { evolution_attempt(agency_config, attempt) },
       )
@@ -4556,7 +4557,13 @@ fn assemble_in(
     settings.demand,
   ))
 
-  use Nil <- result.try(system_prompt.pin_profiles(runtime, evolution_profiles))
+  // Only a session that made a choice pins one. A session with no evolution
+  // wiring chose nothing, and pinning its empty list would stop it adopting a
+  // profile at any later boot that has wiring.
+  use Nil <- result.try(case chosen_profiles {
+    Some(profiles) -> system_prompt.pin_profiles(runtime, profiles)
+    None -> Ok(Nil)
+  })
   use Nil <- result.try(case evolution_wiring {
     None -> Ok(Nil)
     Some(wiring) ->
@@ -7139,31 +7146,35 @@ fn evolution_program_outcome(
   tool.with_details(outcome, value)
 }
 
-// The prompt profiles a session runs with, in precedence order: an explicit
-// setting (a trial), the set pinned in the session file at an earlier boot,
+// The prompt profiles a session chose, in precedence order: a trial's
+// `Trial(profiles)` role, the set pinned in the session file at an earlier boot,
 // and otherwise the catalogue's current selections. Pinning means a reopened
 // session keeps the profile it started with even after a later selection.
+//
+// `None` means the session has nothing to choose from: a Source role with no pin
+// and no evolution wiring. It runs with no profile but chooses none, so the caller
+// pins nothing and a later boot that has wiring chooses then. `Some([])` is a
+// choice of no profiles: the session has wiring and nothing was selected when
+// it started, and it keeps running without one after a later selection.
 fn evolution_profiles(
   settings: Settings,
   opened: session.Session,
   wiring: Option(EvolutionWiring),
-) -> Result(List(evolution_profile.Profile), String) {
+) -> Result(Option(List(evolution_profile.Profile)), String) {
   case settings.evolution_role {
-    Trial(profiles) -> Ok(profiles)
+    Trial(profiles) -> Ok(Some(profiles))
     Source -> {
       use pinned <- result.try(system_prompt.pinned_profiles_in(opened))
-      case pinned {
-        Some(profiles) -> Ok(profiles)
-        None ->
-          case wiring {
-            None -> Ok([])
-            Some(wiring) ->
-              evolution_selected_profiles(wiring)
-              |> result.map_error(fn(error) {
-                evolution_live.retain(wiring.live, error)
-                evolution_store.describe(error)
-              })
-          }
+      case pinned, wiring {
+        Some(profiles), _ -> Ok(Some(profiles))
+        None, None -> Ok(None)
+        None, Some(wiring) ->
+          evolution_selected_profiles(wiring)
+          |> result.map(Some)
+          |> result.map_error(fn(error) {
+            evolution_live.retain(wiring.live, error)
+            evolution_store.describe(error)
+          })
       }
     }
   }

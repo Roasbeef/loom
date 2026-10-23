@@ -1117,6 +1117,32 @@ pub fn boot_pins_the_system_prompt_and_reuses_it_test() {
   serve.shutdown(second)
 }
 
+const profile_pin_root = "build/serve-test-profile-pin"
+
+/// A session with no evolution wiring has no profile to choose from, so it
+/// must leave the profile pin unset. Pinning its empty list would read back as
+/// a durable choice of no profiles and stop the session adopting a selection
+/// at any later boot that has wiring. This boot has no code-mode host, which
+/// is the shape of every executor session.
+pub fn an_unwired_boot_makes_no_profile_choice_test() {
+  let _stale = simplifile.delete(profile_pin_root)
+  let assert Ok(Nil) =
+    simplifile.create_directory_all(profile_pin_root <> "/work")
+    as "the workspace must exist"
+
+  let assert Ok(first) = serve.boot(settings_under(profile_pin_root))
+    as "an unwired boot must succeed"
+  assert system_prompt.pinned_profiles_in(first.instance.runtime.session)
+    == Ok(None)
+  serve.shutdown(first)
+
+  let assert Ok(second) = serve.boot(settings_under(profile_pin_root))
+    as "a reopened unwired session must boot"
+  assert system_prompt.pinned_profiles_in(second.instance.runtime.session)
+    == Ok(None)
+  serve.shutdown(second)
+}
+
 /// The enforcement demand is part of the prompt's durable identity. A
 /// changed demand re-renders once so the prompt cannot claim a stronger
 /// sandbox than the broker requires; the next boot at that demand reuses
