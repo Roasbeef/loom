@@ -33,9 +33,10 @@
 //// - `run_program` runs a selected program once and answers the
 ////   `tool.ToolOutcome` its caller returns to the model.
 ////
-//// Every answer is plain data. A report and a tool outcome hold no closure, no
-//// process and no catalogue handle, so the evidence write and the choice of a
-//// program's verdict happen on the orchestrator's side of the seam whichever
+//// `evaluate` and `run_program` answer plain data: a report and a tool outcome
+//// hold no closure, no process and no catalogue handle. The verdict and outcome
+//// mappings run beside the check, wherever the machine runs, and cross the seam
+//// as values; the evidence write happens on the orchestrator's side whichever
 //// machine did the work.
 ////
 //// ## What a generation already carries

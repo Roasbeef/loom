@@ -92,6 +92,16 @@ the identity the machine reports, so the machine must exist first. `snapshot`,
 `evaluate` and `run_program` still take a `tool.Ctx`; the remote machine narrows
 that to the coordinates the wire carries.
 
+Both answers are plain data (slice 3, step 1). `evaluate` answers an
+`evaluate.Report`, a verdict and its observation, and writes nothing; `serve`'s
+`evaluate` closure records it with `evaluate.record`, the one author-test
+evidence write, after the machine has retired its executor. `run_program`
+answers the `tool.ToolOutcome` the door returns, so the mapping from an
+execution to a success or failure (`program.outcome`) also sits below the seam
+and a remote machine copies neither it nor the evidence write. The mapping from
+a check's result to its verdict is `evaluate.report_of`, shared by extension
+and program checks.
+
 ### The executor side
 
 `executor_plane` builds the same `machine.local` beside the workspace it serves,
@@ -169,11 +179,10 @@ is not in this plan.
    selection, or carry its catalogue rows (see "The executor side"); admit
    `EvolutionEvaluate` by call key and recover both evolution doors from the
    ledger in `Hands.recover`; resolve a snapshot's directory on the executor.
-   The first step is to move the evidence write above the seam. Today the local
-   machine records evidence itself (`store.record_evidence`, reached through
-   `evaluate.extension_owned` and `program.test_with`), so `machine.evaluate`
-   would otherwise have to do it remotely too. Moving it first means the
-   verdict mapping exists in one place before `remote.evaluate` is written.
+   The first step moved the evidence write above the seam (done; see "The seam
+   as built"). `machine.evaluate` answers an `evaluate.Report` and `serve`
+   records it, so the verdict mapping exists in one place before
+   `remote.evaluate` is written.
 4. **Trials and profiles remotely.** Trials on the executor through the
    orchestrator's guarded gateway; prompt-profile evaluation and selection for
    executor sessions.

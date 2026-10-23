@@ -2,6 +2,8 @@
 //// Author-owned test modules are compiled beside the exact retained sources,
 //// and their entry returns report.Outcome through the ordinary cap runtime.
 //// Durable evidence is written only after the native runner proves cleanup.
+//// The check answers a `Report` and writes nothing; the durable write is the
+//// caller's `record`, after cleanup.
 
 import client/evolution/record
 import client/evolution/retirement
