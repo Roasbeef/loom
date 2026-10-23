@@ -144,7 +144,9 @@ fn hero() -> Element(Msg) {
     html.div([attribute.class("hero-inner")], [
       html.div([attribute.class("hero-text")], [
         html.p([attribute.class("kicker")], [element.text("Loom")]),
-        html.h1([], [element.text("A durable, distributed coding harness.")]),
+        html.h1([], [
+          element.text("A durable, distributed, self-evolving coding harness."),
+        ]),
         html.p([attribute.class("lede")], [
           element.text(
             "Loom runs coding agents without losing work when something dies. A session keeps its history on disk, the tools can run on your dev box while the model runs somewhere else, and a few people can share one session. It's written in Gleam and runs on the BEAM.",
