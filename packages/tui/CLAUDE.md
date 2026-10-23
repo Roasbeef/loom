@@ -9,6 +9,18 @@ loopback node and an owner-only, exit-cleaned cookie. This reads only the typed
 profiling setting, while the daemon keeps whole-catalogue validation. No profiler
 sampling or call tracing starts merely because a client is named.
 
+## Activity and image-discovery cost
+
+Geometry reads the active phase when it only needs liveness; it formats the
+activity label only where the label is displayed. Wide composer status bands
+leave activity to the frame rule. Image discovery rejects impossible cell
+prefixes before splitting RGB text into graphemes, and measures preceding
+span widths only after finding an image marker. Both protocols still validate
+the entire span. The image regression pins columns after wide and combining
+text and a no-break-space prefix followed by text. The
+[October 22 resource report](../../docs/review/loom-resource-profile-2026-10-22.md)
+separates live attribution, fixture savings and unmeasured installed RSS.
+
 ## Sparse frame canvas
 
 `render.repaint_canvas` starts every frame with the buffer's sparse empty-cell
