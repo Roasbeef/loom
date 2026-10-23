@@ -17,6 +17,7 @@ import etui/buffer
 import etui/geometry
 import etui/graphics
 import etui/graphics/kitty
+import etui/span
 import etui/style
 import frame_scene
 import gleam/int
@@ -690,6 +691,39 @@ pub fn found_tells_a_whole_box_from_a_clipped_one_test() {
   let assert [clipped] = image_box.found(cut)
   assert clipped.extent == image_box.Clipped
   assert clipped.rows == 9
+}
+
+pub fn markers_keep_cell_columns_after_ordinary_and_marker_prefixed_text_test() {
+  let assert Ok(id) = kitty.image_id(0x123456)
+    as "The fixture uses a nonzero image id."
+  let colour = kitty.id_style(id)
+  let prefix = [
+    span.span_styled("界", colour),
+    span.span_styled("e\u{0301} ", colour),
+    span.span_styled(image_box.blank <> "x", colour),
+  ]
+  assert image_box.found([span.line_new(prefix)]) == []
+    as "A marker prefix followed by ordinary text is still text."
+
+  list.each(
+    [
+      #(kitty.cell_symbol(id, 0, 0), image_box.Placeholders),
+      #(image_box.blank, image_box.Blanks),
+    ],
+    fn(pair) {
+      let line =
+        span.line_new(list.append(prefix, [span.span_styled(pair.0, colour)]))
+      let assert [found] = image_box.found([line])
+        as "Both image protocols retain their marker after styled text."
+      assert found.id == id
+      assert found.cells == pair.1
+      assert found.column == 6
+        as "Columns count wide and combining characters in terminal cells."
+      assert found.row == 0
+      assert found.rows == 1
+      assert found.extent == image_box.Clipped
+    },
+  )
 }
 
 pub fn commands_become_the_protocols_bytes_test() {
