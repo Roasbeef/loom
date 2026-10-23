@@ -667,6 +667,37 @@ fn diff_arguments() -> List(String) {
   ]
 }
 
+/// The ceilings of one worktree observation call.
+///
+/// The `pids` ceiling is a cgroup cap on every task in the jail, threads
+/// included, and the jail contains the helper's own restrict-and-exec stage
+/// before the observed command starts. That stage is a Go process, and its
+/// runtime spawns threads while it installs Landlock. A cap of 8 left it so
+/// little room that about one run in ten died with `failed to create new OS
+/// thread`, which is exit 2 with no enforcement report. 16 never failed in a
+/// measured run but left little margin, and the command may fork helpers of
+/// its own. 64 matches the other short jailed tools and still bounds a fork
+/// burst, which is all the cap is for.
+///
+/// ## Examples
+///
+/// `observation_limits(wall_s: 5, output_bytes: 1024).pids >= 32` holds, so
+/// the stage cannot starve itself.
+@internal
+pub fn observation_limits(
+  wall_s wall_s: Int,
+  output_bytes output_bytes: Int,
+) -> policy.Limits {
+  policy.Limits(
+    cpu_s: 8,
+    wall_s:,
+    mem_bytes: 268_435_456,
+    pids: 64,
+    fsize_bytes: 1_048_576,
+    output_bytes:,
+  )
+}
+
 fn run_git(
   capture: Capture,
   arguments: List(String),
@@ -683,12 +714,8 @@ fn run_git(
     policy.SandboxPolicy(
       ..base,
       env_allow: list.map(environment, fn(pair) { pair.0 }),
-      limits: policy.Limits(
-        cpu_s: 8,
+      limits: observation_limits(
         wall_s: { remaining + 999 } / 1000,
-        mem_bytes: 268_435_456,
-        pids: 16,
-        fsize_bytes: 1_048_576,
         output_bytes: int.min(output_limit, capture.bytes_left / 2),
       ),
     )
