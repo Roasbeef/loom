@@ -326,6 +326,7 @@ fn settings(
   let assert Ok(here) = simplifile.current_directory()
     as "the fixture locates its protocol-speaking helper"
   serve.Settings(
+    evolution_role: serve.Source,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,

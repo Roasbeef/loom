@@ -332,6 +332,46 @@ pub fn with_watched_server(
   run: fn(String, Watch) -> a,
 ) -> #(a, Result(List(ObservedRequest), String)) {
   assert list.length(script) <= 64 as "the provider script is finite and small"
+  watched(script, admission, within_ms, run)
+}
+
+/// Runs a finite lifecycle script that includes several real jailed builds.
+/// The longer budget is fixed and only this explicit entry permits 32 steps.
+///
+/// ## Examples
+///
+/// `with_extended_script(steps, exercise)` owns the same loopback peer through
+/// the complete author, evaluate, activate and rollback acceptance sequence.
+pub fn with_extended_script(
+  script: List(Exchange),
+  run: fn(String) -> a,
+) -> #(a, Result(List(ObservedRequest), String)) {
+  assert list.length(script) <= 32
+    as "the lifecycle script has at most 32 steps"
+  with_server_for(script, OnlySuccessful, 600_000, run)
+}
+
+/// Runs the bounded live-upgrade matrix with separately compiled refusals.
+///
+/// ## Examples
+///
+/// `with_upgrade_script(steps, exercise)` permits at most 96 exchanges.
+pub fn with_upgrade_script(
+  script: List(Exchange),
+  run: fn(String) -> a,
+) -> #(a, Result(List(ObservedRequest), String)) {
+  assert list.length(script) <= 96 as "the upgrade script has at most 96 steps"
+  watched(script, OnlySuccessful, 600_000, fn(url, _watch) { run(url) })
+}
+
+// The step bound belongs to each public entry, because the upgrade matrix is
+// the one script allowed past the ordinary limit. Everything below is shared.
+fn watched(
+  script: List(Exchange),
+  admission: Admission,
+  within_ms: Int,
+  run: fn(String, Watch) -> a,
+) -> #(a, Result(List(ObservedRequest), String)) {
   assert within_ms > 0 as "the callback budget is a positive duration"
   assert list.all(script, fn(step) {
     case step {
@@ -738,6 +778,17 @@ fn bounded(value: String) -> Bool {
   string.byte_size(value) <= 4096
 }
 
+// A tool result is what the product produced, not what the script wrote, so it
+// gets room for a bounded model-visible document. The evolution trace brief is
+// one: eight excerpts, each carrying its usage and cost evidence, are about
+// 4.3 KiB. The 8192 below is a budget sized to the acceptance script's trace
+// brief, not the product ceiling: the product retains up to 32 KiB of text in
+// one brief (`model_door.gleam` and `trace.gleam` bound it). The fixture's
+// ceiling stays finite so a runaway result still fails the run.
+fn bounded_result(value: String) -> Bool {
+  string.byte_size(value) <= 8192
+}
+
 fn is_object(value: json.JsonValue) -> Bool {
   case value {
     json.Object(_) -> True
@@ -814,7 +865,7 @@ fn tool_result(
       case field(content, "type"), field(content, "text") {
         json.String("text"), json.String(text) -> {
           use <- bool.guard(
-            when: !bounded(id) || !bounded(text),
+            when: !bounded(id) || !bounded_result(text),
             return: Error("tool result exceeds fixture limit"),
           )
           case failed {
@@ -823,6 +874,21 @@ fn tool_result(
           }
         }
         _, _ -> Error("tool result requires one exact text block")
+      }
+    json.String(id), json.Bool(True), json.Array([content]) if id != "" ->
+      case field(content, "type"), field(content, "text") {
+        json.String("text"), json.String(text) -> {
+          use <- bool.guard(
+            when: !bounded(id) || !bounded_result(text),
+            return: Error("tool result exceeds fixture limit"),
+          )
+
+          // The script still refuses this result and never advances. Exact
+          // bounded fixture text exposes the native error behind HTTP 400.
+          Error("tool result failed: " <> id <> "\n" <> text)
+        }
+        _, _ ->
+          Error("tool result requires an ID and one successful content block")
       }
     _, _, _ ->
       Error("tool result requires an ID and one successful content block")

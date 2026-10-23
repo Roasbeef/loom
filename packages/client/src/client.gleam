@@ -27,6 +27,7 @@ import client/daemon/distribution_cli
 import client/daemon/executor_cli
 import client/daemon/main as daemon
 import client/daemon/peer_cli
+import client/evolution/cli as evolution_cli
 import client/extension/cli
 import gleam/io
 import gleam/list
@@ -62,6 +63,7 @@ pub fn main() -> Nil {
           distribution_cli.main(rest)
         ["executor", ..rest] -> executor_cli.main(rest)
         ["directory", ..rest] -> directory_cli.main(rest)
+        ["evolution", ..rest] -> evolution_cli.main(rest)
         _other -> daemon.main()
       }
   }
@@ -101,6 +103,7 @@ pub fn help_for(arguments: List(String)) -> Option(String) {
         Ok("distribution") | Ok("dist") -> Some(distribution_cli.usage)
         Ok("executor") -> Some(executor_cli.usage)
         Ok("directory") -> Some(directory_cli.usage)
+        Ok("evolution") -> Some(evolution_cli.usage)
         Ok(_other) | Error(Nil) -> Some(usage)
       }
   }
@@ -112,6 +115,7 @@ fn is_topic(word: String) -> Bool {
     | "peer"
     | "codex"
     | "ext"
+    | "evolution"
     | "distribution"
     | "dist"
     | "executor"
@@ -121,4 +125,4 @@ fn is_topic(word: String) -> Bool {
 }
 
 const usage =
-  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  codex <command>     Manage Codex subscription profiles.\n  ext <command>       Manage extensions.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n  executor <command>  Release a scope an executor will not reopen itself.\n  directory bootstrap\n                      Create the session directory's cluster, once.\n\nRun `loomd help <command>` for command usage."
+  "usage: loomd [--state-dir PATH] [--bind ADDRESS] [--capacity N]\n       [--owner-name NAME] [--read-scope SCOPE] [--network NETWORK]\n       [--helper PATH] [--config PATH] [--codemode-seed PATH]\n       [--codemode-seams PATH] [--best-effort | --full-enforcement]\n       loomd <command> [options]\n\ncommands:\n  access <command>    Manage session access.\n  peer <command>      Inspect links, grant, revoke, or send.\n  codex <command>     Manage Codex subscription profiles.\n  ext <command>       Manage extensions.\n  evolution <action>  Govern resident-session candidates.\n  distribution <command>\n                      Provision trusted distribution: init, provision,\n                      install, show, options. `dist` is short for it.\n  executor <command>  Release a scope an executor will not reopen itself.\n  directory bootstrap\n                      Create the session directory's cluster, once.\n\nRun `loomd help <command>` for command usage."

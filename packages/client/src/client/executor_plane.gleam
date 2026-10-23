@@ -996,13 +996,14 @@ fn rank(part: custody.Part) -> Int {
   case part {
     custody.Runtime -> 0
     custody.ToolConfig -> 1
-    custody.Services -> 2
-    custody.Broker -> 3
-    custody.Helpers -> 4
-    custody.Workspace -> 5
-    custody.Mcp -> 6
-    custody.Storage -> 7
-    custody.Namespace -> 8
+    custody.Evolution -> 2
+    custody.Services -> 3
+    custody.Broker -> 4
+    custody.Helpers -> 5
+    custody.Workspace -> 6
+    custody.Mcp -> 7
+    custody.Storage -> 8
+    custody.Namespace -> 9
   }
 }
 

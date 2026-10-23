@@ -405,6 +405,10 @@ pub type Local {
     lsp: Option(LspPlane),
     /// The code-mode configuration, when a toolchain was found.
     code_mode_host: Option(codemode_wiring.Config),
+    /// The scratch store's address. The owner's live-upgrade controller is
+    /// the one other caller, because a reviewed component upgrade migrates
+    /// the store's populated state in place.
+    scratch_name: address.Address(scratch.Message),
   )
 }
 
@@ -803,6 +807,7 @@ fn finish_local(
     executor: effect.executor,
     lsp: option.map(wired.lsp, fn(wiring) { wiring.plane }),
     code_mode_host: wired.host,
+    scratch_name: wired.scratch_name,
   ))
 }
 
