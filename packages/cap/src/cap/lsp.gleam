@@ -1,5 +1,6 @@
 //// `cap/lsp` — live language-server queries; use it for one symbol's callers,
-//// hover or definition, and `cap/lsp_sql` for joins across several symbols.
+//// hover or definition, `diagnostics(Some(path))` after `fs.edit`, and
+//// `cap/lsp_sql` for joins across several symbols.
 ////
 //// Semantic questions about the workspace's code, answered by the language
 //// server the session runs for it (ADR-015).

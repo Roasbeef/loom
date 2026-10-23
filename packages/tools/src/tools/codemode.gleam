@@ -2291,7 +2291,10 @@ fn recipes_text(seams: Seams) -> String {
     })
 
   // One copy however many seams admit the modules it imports.
-  seam_recipes <> shell_probe_recipe(offers) <> lsp_sql_recipe(offers)
+  seam_recipes
+  <> shell_probe_recipe(offers)
+  <> lsp_edit_recipe(offers)
+  <> lsp_sql_recipe(offers)
 }
 
 // The shell-probe program, when any offer admits every module it imports. It
@@ -2310,6 +2313,27 @@ fn shell_probe_recipe(offers: List(SeamOffer)) -> String {
     True ->
       "\nShell probe recipe: independent probes keep their own errors; decode `--json` output into typed rows.\n```gleam\n"
       <> codemode_recipes.shell_probes()
+      <> "```\n"
+  }
+}
+
+// The `fs.edit` + `lsp.diagnostics(Some(path))` program, when any offer admits
+// its modules and services `lsp.diagnostics`. Pairing a code-mode edit with settled
+// diagnostics catches type errors in <1s without spawning a full build.
+fn lsp_edit_recipe(offers: List(SeamOffer)) -> String {
+  let needed = [
+    "cap/fs", "cap/lsp", "cap/report", "gleam/int", "gleam/list", "gleam/option",
+    "gleam/string",
+  ]
+  let admits = fn(offer: SeamOffer) {
+    list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
+    && list.contains(offer.serviced_caps, "lsp.diagnostics")
+  }
+  case list.any(offers, admits) {
+    False -> ""
+    True ->
+      "\nLSP edit recipe: apply an exact replacement and check settled diagnostics in one call.\n```gleam\n"
+      <> codemode_recipes.lsp_edit()
       <> "```\n"
   }
 }

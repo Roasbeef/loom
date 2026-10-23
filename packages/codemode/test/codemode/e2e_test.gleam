@@ -699,6 +699,32 @@ fn run_lsp_sql_recipe(prerequisites: Prerequisites) -> Nil {
   rig.stop(live)
 }
 
+pub fn the_lsp_edit_recipe_compiles_test_() -> EunitTest {
+  jailed(fn() {
+    case rig.prerequisites() {
+      Error(reason) ->
+        io.println_error("SKIP the_lsp_edit_recipe_compiles: " <> reason)
+      Ok(prerequisites) -> run_lsp_edit_recipe(prerequisites)
+    }
+  })
+}
+
+fn run_lsp_edit_recipe(prerequisites: Prerequisites) -> Nil {
+  let live = rig.start(name: "lsp-edit-recipe", prerequisites:, pool_size: 2)
+  let execution =
+    codemode.execute(
+      codemode_recipes.lsp_edit(),
+      codemode.ExecConfig(
+        ..exec_config(live, prerequisites, "lsp-edit-recipe"),
+        vet_policy: vet_policy.default() |> vet_policy.allow("cap/lsp"),
+      ),
+    )
+  let assert codemode.Ran(..) = execution.outcome
+    as "the documented lsp_edit recipe must vet, compile and run"
+  assert execution.edits == []
+  rig.stop(live)
+}
+
 // Execute the documented example verbatim, so the JSON API shown to a
 // reader is checked against the pinned compiler seed and satellite runtime.
 fn run_json(prerequisites: Prerequisites) -> Nil {
