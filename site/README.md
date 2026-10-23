@@ -65,7 +65,7 @@ Routes live in the URL fragment, so a deep link loads the single file that GitHu
 | `test/` | The gleeunit tests. |
 | `scripts/copy-check.sh` | Fails on banned words, the em dash and source links to any branch but `main`. |
 
-To add a documentation page, write `public/content/<slug>.md` and add a `Page` to `pages()` in `src/site/docs.gleam`. A line `::figure crash` embeds a figure (`crash`, `approval`, `code-mode` or `migration`). Pages may use `{{tag}}` and `{{version}}`.
+To add a documentation page, write `public/content/<slug>.md` and add a `Page` to `pages()` in `src/site/docs.gleam`. A line `::figure crash` embeds a figure (`crash`, `approval`, `code-mode`, `migration` or `evolution`). Pages may use `{{tag}}` and `{{version}}`.
 
 ## How the figures work
 
