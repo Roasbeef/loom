@@ -19,6 +19,22 @@ import gleam/result
 import session/session
 import tools/tool
 
+/// The names of the doors `tools` declares, for the wrapper that skips them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // model_door.names() == ["evolution_trace"]
+/// ```
+///
+pub fn names() -> List(String) {
+  tools(
+    fn(_ctx) { Error("names declares doors and never runs them") },
+    fn(_ctx) { Error("names declares doors and never runs them") },
+  )
+  |> list.map(fn(declared) { declared.name })
+}
+
 /// Declares the trace tool using native session and exact-model grants.
 ///
 /// ## Examples

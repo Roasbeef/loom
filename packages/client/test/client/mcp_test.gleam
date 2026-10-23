@@ -525,8 +525,10 @@ const unset_key_env = "LOOM_TEST_MCP_MISSING_KEY"
 fn unspawnable_server(name: String) -> catalog.McpServer {
   catalog.McpServer(
     name:,
-    command: [unspawnable_command],
-    api_key_env: option.None,
+    target: catalog.McpStdio(
+      command: [unspawnable_command],
+      api_key_env: option.None,
+    ),
     runs_on: catalog.RunsOnOrchestrator,
   )
 }
@@ -534,8 +536,10 @@ fn unspawnable_server(name: String) -> catalog.McpServer {
 fn unkeyed_server(name: String) -> catalog.McpServer {
   catalog.McpServer(
     name:,
-    command: [unspawnable_command],
-    api_key_env: option.Some(unset_key_env),
+    target: catalog.McpStdio(
+      command: [unspawnable_command],
+      api_key_env: option.Some(unset_key_env),
+    ),
     runs_on: catalog.RunsOnOrchestrator,
   )
 }

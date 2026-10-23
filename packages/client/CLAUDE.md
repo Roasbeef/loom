@@ -84,13 +84,21 @@ exact receipt before applying that check.
 `machine` is the one seam between evolution's authority (catalogue, selection,
 `live`, `hook`, the doors) and the machine that holds the workspace: a record of
 `identity`, `snapshot`, `evaluate`, `stage` and `run_program`. It holds no
-catalogue; each call that needs one is handed it. `machine/local` is the former
+catalogue; each call that needs one is handed it. Its answers are plain data:
+`evaluate` returns an `evaluate.Report` that `serve` writes with
+`evaluate.record`, and `run_program` returns the `tool.ToolOutcome`
+(`program.outcome`). `machine/local` is the former
 `native` module and builds the record for a workspace in this VM; `serve` builds
 one per session. Generations keep their own `tools`, `hooks`, `inventory`,
 `mode` and `retire`, so the seam has no invoke or retire function. Prompt trials
 and the core upgrade (`control.Seam`) stay outside it.
 
-`live` serializes the complete promoted hook/tool fold with activation. `hook`
+`live` leases the active generation to each complete promoted hook/tool fold,
+which runs on the caller's own process, and holds activation and close until
+every lease is returned or its holder has died (a `weft/state_machine`:
+`Open` admits leases, `Draining` postpones them behind a waiting replacement).
+Calls overlap, and the `waiting` argument bounds only admission. `hook` derives
+its door bypass list from `evolution_tool.names` and `model_door.names`. `hook`
 stages a privately compiled jailed generation and publishes it after native
 retirement of the predecessor. `machine/local` retains failed cleanup capabilities;
 `retirement.Task` carries only the remaining native obligation, so successful
@@ -153,7 +161,7 @@ scrubbed native branch observations and operator outcomes. Read
 `evolution/live.Generation.mode` distinguishes `ReplacementOnly` from
 `Stateful(prepare)`. A `PreparedUpgrade` carries the successor generation,
 publication callback and unpublished compensation callback. The live owner
-serializes the selection transaction with complete invocation folds.
+holds the selection transaction until every outstanding invocation lease is returned.
 `evolution/stateful` retains the existing jailed hosting and retirement
 capabilities while compiling the approved successor into an inactive fixed
 namespace. Its reserved control calls prepare, publish or abort the exact
@@ -3064,7 +3072,7 @@ catalogue without opening runtimes. Explicit admission invokes
   than N consecutive ones; `weft.start` hands outcomes back sorted by
   input position, so zipping them against the unchanged `servers` list is
   what restores catalogue order regardless of which server answers first.
-  Each task still spawns its server over `gleam_mcp/transport.PortTransport`,
+  Each task connects its server over `gleam_mcp/transport.PortTransport` (for `McpStdio`) or `client/mcp/http.seam` (`ChannelTransport` over `provider/http.Transport`, for `McpHttp` with `none`, `bearer`, `macaroon`, or `oauth` credentials from `client/mcp/oauth` and `client/mcp/credentials`),
   hand-shakes, lists its tools and generates its `cap/mcp/<server>`
   façade, keeping the client **running** for the session because dispatch
   is the same client; each failing step refuses *that* server with a

@@ -266,7 +266,9 @@ transitively. Both are hand-edited, and a missing one presents as
 One gap weft has been asked for and does not yet have, so a consumer
 should say so rather than force a fit: a monitored, non-panicking call
 against a pre-existing pid (`broker/internal/call.try_call` and its
-siblings). Every other gap the census named is closed — weft 0.4.1
+siblings), and a monitor on a pre-existing pid from inside a machine
+without widening its selector by hand (`client/evolution/live` keeps its
+lease holders on a plain list for that reason). Every other gap the census named is closed — weft 0.4.1
 carries the periodic timeout kind and the injected clock for `weft/poll`,
 and 0.4.2 carries the injectable timer source that let the last
 hand-rolled generation tag in this tree

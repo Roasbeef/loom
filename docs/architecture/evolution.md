@@ -237,7 +237,28 @@ proof that no selection committed.
 
 ## Worker custody
 
-The live owner serializes complete promoted invocation folds against replacement.
+The live owner serializes complete promoted invocation folds against
+replacement, and does not serialize them against each other. A tool call, a
+hook fold or an invocation asks the owner for a lease, runs on its own
+process against the generation the lease names, and returns the lease when it
+finishes. A replacement, publication or retirement waits until every
+outstanding lease is returned or its holder has died, and requests that arrive
+meanwhile queue behind it, so no call runs against a generation that is being
+replaced or retired and a steady stream of calls cannot starve the
+replacement. The owner never runs a tool: calls of different strands overlap,
+and the deadline a caller passes bounds only its wait for a lease, so a call
+longer than that deadline returns its own result. A refused admission is
+`Busy` when the deadline passed, and `CleanupUnconfirmed` when native custody
+is retained. Notify-only hooks run one at a time, in arrival order, on a
+runner that takes a lease for each. The evolution doors take their own custody
+or none, and are never wrapped in a lease. Author tests and source snapshots are
+leased as well, so the owner runs no work of its own. A running call must not
+ask for a second lease, since the second request would queue behind a
+replacement that is waiting for the first, and a holder must not block on a
+process that will need a lease. The subagent wait tool is therefore not
+leased, and `strand.wait` inside `code_mode` stays bounded by its 300 second
+deadline. A frozen session clock never expires a queued request, so tests that
+queue requests use a ticking clock.
 A provider request already rendered retains its original bytes. Installed
 hooks remain installed; the promoted hook layer captures one generation for
 its complete fold. Newly promoted hooks join future events; activation does
@@ -309,7 +330,7 @@ relative to `packages/client/src/client/evolution/`.
 | [`record`](../../packages/client/src/client/evolution/record.gleam), [`identity`](../../packages/client/src/client/evolution/identity.gleam), [`store`](../../packages/client/src/client/evolution/store.gleam) | Immutable envelopes, native compatibility identity, protected catalogue, approval and selection transactions. |
 | [`candidate`](../../packages/client/src/client/evolution/candidate.gleam), [`evaluate`](../../packages/client/src/client/evolution/evaluate.gleam), [`program`](../../packages/client/src/client/evolution/program.gleam) | Jailed capture, author checks, compilation and fresh program inputs. |
 | [`control`](../../packages/client/src/client/evolution/control.gleam), [`board`](../../packages/client/src/client/evolution/board.gleam), [`cli`](../../packages/client/src/client/evolution/cli.gleam), [`queue`](../../packages/client/src/client/evolution/queue.gleam), [`page`](../../packages/client/src/client/evolution/page.gleam) | Authenticated operator actions, the bounded board a panel draws, bounded managed staging, receipts and complete paged inspection. |
-| [`live`](../../packages/client/src/client/evolution/live.gleam), [`machine`](../../packages/client/src/client/evolution/machine.gleam), [`machine/local`](../../packages/client/src/client/evolution/machine/local.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, the machine seam it is staged through and its local implementation over jailed planes, remaining cleanup obligations and serialized invocation folds. |
+| [`live`](../../packages/client/src/client/evolution/live.gleam), [`machine`](../../packages/client/src/client/evolution/machine.gleam), [`machine/local`](../../packages/client/src/client/evolution/machine/local.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, the machine seam it is staged through and its local implementation over jailed planes, remaining cleanup obligations and leased invocation folds. |
 | [`prompt`](../../packages/client/src/client/evolution/prompt.gleam), [`model_door`](../../packages/client/src/client/evolution/model_door.gleam), [`tasks`](../../packages/client/src/client/evolution/tasks.gleam) | Profile capture, model-facing dispatch and independently admitted task criteria. |
 | [`rollout`](../../packages/client/src/client/evolution/rollout.gleam), [`rollout_host`](../../packages/client/src/client/evolution/rollout_host.gleam), [`fixture`](../../packages/client/src/client/evolution/fixture.gleam), [`trace`](../../packages/client/src/client/evolution/trace.gleam) | Paired production runs, aggregate request budgets, scoring after native retirement and bounded observations. |
 

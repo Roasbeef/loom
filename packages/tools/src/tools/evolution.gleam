@@ -6,6 +6,7 @@
 
 import broker/policy
 import core/json.{type JsonValue}
+import gleam/list
 import gleam/option.{Some}
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
@@ -25,7 +26,8 @@ pub type Door {
   )
 }
 
-/// The generic invocation name, shared with the generation hook wrapper.
+/// The generic invocation name. The wrapper that leases a generation learns
+/// which tools bypass it from `names`, never from this constant.
 pub const invoke_name = "evolution_invoke"
 
 /// Registers the five stable lifecycle tools.
@@ -191,6 +193,32 @@ fn test_properties() -> List(#(String, JsonValue)) {
       ),
     ),
   ]
+}
+
+/// The registered door names, derived from the declarations themselves.
+///
+/// The generation hook wrapper skips these tools because each is a door into
+/// the owner or the catalogue and needs no generation of its own. Deriving the list from `tools` means a door added there is skipped
+/// without a second edit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // evolution.names() == ["evolution_propose", ..., "evolution_invoke"]
+/// ```
+///
+pub fn names() -> List(String) {
+  let unreachable = fn(_ctx, _args) {
+    tool.failure("names declares doors and never runs them")
+  }
+  tools(Door(
+    propose: unreachable,
+    test_candidate: unreachable,
+    inspect: unreachable,
+    catalogue: unreachable,
+    invoke: unreachable,
+  ))
+  |> list.map(fn(declared) { declared.name })
 }
 
 fn declared(

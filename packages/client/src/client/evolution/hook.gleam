@@ -1,12 +1,17 @@
-//// Promoted hooks preserve every native predecessor while generation custody
-//// serializes a complete before-tool, tool and after-tool sequence.
+//// Promoted hooks preserve every native predecessor while a generation lease
+//// pins one generation across a complete before-tool, tool and after-tool
+//// sequence.
 ////
-//// A generic invocation already enters the generation owner itself. Its outer
-//// runtime wrapper therefore delegates directly, avoiding owner re-entry.
+//// The sequence runs on the calling strand's own process. The owner grants
+//// the lease and holds a replacement until it is returned, but it never runs
+//// the tool, so concurrent calls proceed together and a long call is never
+//// reported busy. The evolution doors take their own custody, or none, and
+//// the wrapper delegates to them directly rather than leasing around them.
 //// Promoted hooks join future events. The native session_start event belongs
 //// to session boot and is not replayed during activation or recovery.
 
 import client/evolution/live
+import client/evolution/model_door
 import client/extension/hooks
 import core/clock
 import core/codec
@@ -16,12 +21,18 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import runtime/effects
+import tools/agent
+import tools/evolution as evolution_tool
+
+/// How long a tool call waits to be admitted to a generation lease. The call
+/// itself is not bounded by it.
+const admission_ms = 120_000
 
 /// Composes the promoted tool hook phases over the existing runtime slots.
 ///
 /// Each closure retains only its predecessor slot. Native clearance remains
-/// unchanged; the promoted gate runs immediately before dispatch inside the
-/// same captured generation as the settled-result transform.
+/// unchanged; the promoted gate runs immediately before dispatch under the
+/// same leased generation as the settled-result transform.
 ///
 /// ## Examples
 ///
@@ -37,20 +48,25 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
   let compact = built.hooks.compaction_note
   let usage = built.hooks.usage
   let time = built.clock
+
+  // The doors take their own custody, or none, so they run unwrapped. Reading
+  // the names from the declarations keeps a door added later out of the lease.
+  // A subagent wait is not an effect: it blocks on descendants whose own tool
+  // calls need a lease, so holding one across it would stall them behind any
+  // replacement that is waiting for the wait.
+  let doors =
+    list.append(evolution_tool.names(), model_door.names())
+    |> list.append([agent.wait_tool_name])
   effects.Effects(
     ..built,
     tools: effects.ToolSurface(..built.tools, run: fn(request: effects.ToolRun) {
-      case request.call.name {
-        "evolution_invoke"
-        | "evolution_propose"
-        | "evolution_test"
-        | "evolution_inspect"
-        | "evolution_catalogue" -> run(request)
-        _native ->
+      case list.contains(doors, request.call.name) {
+        True -> run(request)
+        False ->
           live.run(
             owner,
             fn(generation) { run_with(generation, request, run) },
-            120_000,
+            admission_ms,
           )
       }
     }),

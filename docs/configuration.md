@@ -96,7 +96,7 @@ is not in this list is refused.
 | `models` | table of `[models.<name>]` | Provider endpoints. Required. | [`[models.<name>]`](#modelsname) |
 | `roles` | table | Which models serve which role. Required, and must route `main`. | [`[roles]`](#roles) |
 | `profiles` | table of `[profiles.<name>]` | Named alternatives to `[roles]`. | [`[profiles.<name>]`](#profilesname) |
-| `mcp` | table of `[mcp.<name>]` | Stdio MCP servers exposed to code mode. | [`[mcp.<name>]`](#mcpname) |
+| `mcp` | table of `[mcp.<name>]` | Stdio and streamable-HTTP MCP servers exposed to code mode. | [`[mcp.<name>]`](#mcpname) |
 | `lsp` | table of `[lsp.<name>]` | Language servers behind the `lsp_*` tools. | [`[lsp.<name>]`](#lspname) |
 | `rule` | array of tables, `[[rule]]` | Triggered project rules. | [`[[rule]]`](#rule) |
 | `schedule` | array of tables, `[[schedule]]` | Operator-written scheduled heartbeats. | [`[[schedule]]`](#schedule) |
@@ -239,18 +239,22 @@ web page.
 
 ## `[mcp.<name>]`
 
-Optional, one table per stdio MCP server. `<name>` becomes the `cap/mcp/<name>`
-module that code-mode programs import, so it is a single lowercase-ASCII
-identifier segment (`[a-z][a-z0-9_]*`), is not `internal`, and is a name that
-module-name mangling leaves unchanged. Adding a server is an operator trust
-decision. There is no flag, discovery or live reload. See
-[mcp](architecture/mcp.md) and [code mode](architecture/code-mode.md).
+Optional, one table per MCP server (either a locally-spawned stdio server with
+`command` or a remote streamable-HTTP server with `url`). `<name>` becomes the
+`cap/mcp/<name>` module that code-mode programs import, so it is a single
+lowercase-ASCII identifier segment (`[a-z][a-z0-9_]*`), is not `internal`, and
+is a name that module-name mangling leaves unchanged. Adding a server is an
+operator trust decision. See [mcp](architecture/mcp.md) and
+[code mode](architecture/code-mode.md).
 
 | Key | Type | Required, default | Allowed values | Meaning |
 | --- | --- | --- | --- | --- |
-| `command` | array of strings | required | non-empty, each element non-empty | The server's argv, executable first. Never a shell string. |
-| `api_key_env` | string | none | an environment variable name | A host variable read when the server process starts and injected into its environment under the same name. |
-| `runs_on` | string | `"orchestrator"` | `"orchestrator"`, `"executor"` | Where the server runs for a session whose workspace is on an executor. `"orchestrator"` spawns it here with the key this machine holds, and a program on the executor reaches it through the owner port. `"executor"` names a server the executor runs from its own `[mcp.<name>]` table, with that table's `command` and `api_key_env`; this table's `command` is then used only by local sessions. A local session ignores the key and starts every server here. |
+| `command` | array of strings | required unless `url` is set | non-empty, each element non-empty | The stdio server's argv, executable first. Never a shell string. Exclusive with `url`. |
+| `url` | string | required unless `command` is set | absolute `http://` or `https://` URL without userinfo or fragment | The remote streamable-HTTP MCP endpoint (`https://` or loopback `http://` when `auth = "oauth"`). Exclusive with `command`. |
+| `auth` | string | `"none"` when `api_key_env` is absent, `"bearer"` when `api_key_env` is set; `url` servers only | `"none"`, `"bearer"`, `"macaroon"`, `"oauth"` | How outbound HTTP requests authenticate: `"none"` sends no header, `"bearer"` sends `Authorization: Bearer <secret>` from `api_key_env`, `"macaroon"` sends `Authorization: Macaroon <secret>` from `api_key_env`, and `"oauth"` uses the OAuth 2.1 grant authorized by `loomd mcp login <name>`. |
+| `api_key_env` | string | required for `auth = "bearer"` or `"macaroon"`, forbidden for `"none"` and `"oauth"` | an environment variable name | For `command`, injected into the child's environment under the same name; for `url`, resolved from the session's secret store into the `Authorization` header. |
+| `client_id` | string | Dynamic Client Registration (RFC 7591) | 1–256 bytes without control characters; `auth = "oauth"` only | Optional pre-registered OAuth 2.1 client identifier for `loomd mcp login <name>`. |
+| `runs_on` | string | `"orchestrator"` | `"orchestrator"`, `"executor"` | Where the server runs for a session whose workspace is on an executor. `"orchestrator"` connects here with the credentials this machine holds, and a program on the executor reaches it through the owner port. `"executor"` names a server the executor connects to from its own `[mcp.<name>]` table; this table is then used only by local sessions. A local session ignores the key and starts every server here. |
 
 A session whose workspace is on an executor reports, at attach, how each
 server it expects the executor to run fared: the orchestrator logs `mcp.ready`

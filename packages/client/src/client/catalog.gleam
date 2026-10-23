@@ -82,8 +82,11 @@
 ////                                    #   roles it omits keep the default
 ////
 //// [mcp.<name>]                       # optional; one table per server
-//// command = ["server-binary", "arg"] # the stdio server's argv
+//// command = ["server-binary", "arg"] # stdio server argv (or url = "https://...")
 //// api_key_env = "SOME_API_KEY"       # optional; env var *name*
+//// # url = "https://mcp.example/mcp"  # remote Streamable HTTP server
+//// # auth = "bearer"                  # none | bearer | macaroon | oauth
+//// # client_id = "public-client-id"   # optional when auth = "oauth"
 ////
 //// [lsp.<name>]                       # optional; one table per server
 //// command = ["gopls"]                # argv, never a shell string
@@ -186,6 +189,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/uri
 import provider/gateway as provider_gateway
 import provider/http.{type Transport}
 import provider/image_budget
@@ -281,27 +285,71 @@ pub type ImageReading {
   TextOnly
 }
 
-/// One configured MCP server: the stdio process code mode reaches as
-/// the generated `cap/mcp/<name>` module.
+/// One configured MCP server: the stdio process or remote HTTP endpoint
+/// code mode reaches as the generated `cap/mcp/<name>` module.
 ///
 /// Constructor invariants: `name` is unique within the catalogue and is
 /// a legal lowercase-ASCII module segment (`[a-z][a-z0-9_]*`), because
 /// it becomes the `cap/mcp/<name>` module name a program imports;
-/// `command` is a non-empty argv whose every element is a non-empty
-/// string; `api_key_env` is an environment variable *name*, never a key
-/// value — read from the host environment at server spawn and injected
-/// into the child environment under the same name.
+/// `target` is either a stdio `command` (non-empty argv of non-empty
+/// strings with optional `api_key_env` variable *name*) or a remote HTTP
+/// `url` (validated absolute HTTP/HTTPS endpoint without userinfo or
+/// fragment) with its `McpHttpAuth`.
 pub type McpServer {
   McpServer(
     /// The table key — the `<name>` in `cap/mcp/<name>`.
     name: String,
+    /// How the server is reached and authenticated.
+    target: McpTarget,
+    /// Where the server answers for a session whose workspace is on an
+    /// executor. A local session ignores it and starts every server here.
+    runs_on: McpPlacement,
+  )
+}
+
+/// How Loom reaches a configured `[mcp.<name>]` server.
+pub type McpTarget {
+  /// A child OS process spawned over stdio with `command` (executable first)
+  /// and optional `api_key_env` injected into its environment under the same
+  /// variable name.
+  McpStdio(
     /// The stdio server's argv, executable first.
     command: List(String),
     /// The environment variable holding the server's API key, if any.
     api_key_env: Option(String),
-    /// Where the server answers for a session whose workspace is on an
-    /// executor. A local session ignores it and starts every server here.
-    runs_on: McpPlacement,
+  )
+
+  /// A remote Streamable HTTP endpoint at `url`, authenticated by `auth`.
+  McpHttp(
+    /// Absolute `http://` or `https://` endpoint URL without userinfo or fragment.
+    url: String,
+    /// How outbound HTTP requests to `url` are authenticated.
+    auth: McpHttpAuth,
+  )
+}
+
+/// How a remote HTTP `[mcp.<name>]` server authenticates its requests.
+pub type McpHttpAuth {
+  /// No `Authorization` header is sent.
+  McpNoAuth
+
+  /// `Authorization: Bearer <secret>`, resolved from `api_key_env`.
+  McpBearerAuth(
+    /// The secret-store / environment variable name holding the bearer token.
+    api_key_env: String,
+  )
+
+  /// `Authorization: Macaroon <secret>`, resolved from `api_key_env`.
+  McpMacaroonAuth(
+    /// The secret-store / environment variable name holding the macaroon.
+    api_key_env: String,
+  )
+
+  /// An OAuth 2.1 authorization-code + PKCE grant stored under `<name>`.
+  McpOAuth(
+    /// Optional pre-registered OAuth client identifier; `None` selects
+    /// Dynamic Client Registration (RFC 7591).
+    client_id: Option(String),
   )
 }
 
@@ -1125,18 +1173,10 @@ fn parse_mcp_server(
   // first request.
   use Nil <- result.try(known_keys(
     dict.keys(fields),
-    ["command", "api_key_env", "runs_on"],
+    ["command", "url", "auth", "api_key_env", "client_id", "runs_on"],
     place,
   ))
-  use command <- result.try(mcp_command(fields, place))
-  use api_key_env <- result.try(
-    case optional_string(fields, place, "api_key_env") {
-      Ok(Ok("")) -> Error(place <> ".api_key_env must be non-empty")
-      Ok(Ok(env_name)) -> Ok(Some(env_name))
-      Ok(Error(Nil)) -> Ok(None)
-      Error(message) -> Error(message)
-    },
-  )
+  use target <- result.try(mcp_target(fields, place))
   use runs_on <- result.try(case optional_string(fields, place, "runs_on") {
     Ok(Error(Nil)) | Ok(Ok("orchestrator")) -> Ok(RunsOnOrchestrator)
     Ok(Ok("executor")) -> Ok(RunsOnExecutor)
@@ -1144,7 +1184,233 @@ fn parse_mcp_server(
       Error(place <> ".runs_on must be \"orchestrator\" or \"executor\"")
     Error(message) -> Error(message)
   })
-  Ok(McpServer(name:, command:, api_key_env:, runs_on:))
+  Ok(McpServer(name:, target:, runs_on:))
+}
+
+fn mcp_target(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(McpTarget, String) {
+  use api_key_env <- result.try(mcp_optional_nonempty(
+    fields,
+    place,
+    "api_key_env",
+  ))
+  use auth <- result.try(mcp_optional_nonempty(fields, place, "auth"))
+  use client_id <- result.try(mcp_client_id(fields, place))
+  case dict.has_key(fields, "command"), dict.has_key(fields, "url") {
+    True, True -> Error(place <> " cannot set both command and url")
+    False, False ->
+      Error(
+        place
+        <> ".command is required (or "
+        <> place
+        <> ".url for a remote HTTP server)",
+      )
+    True, False -> {
+      use command <- result.try(mcp_command(fields, place))
+      use Nil <- result.try(case auth {
+        None -> Ok(Nil)
+        Some(_) ->
+          Error(
+            place
+            <> ".auth is only supported for remote HTTP servers ("
+            <> place
+            <> ".url)",
+          )
+      })
+      use Nil <- result.try(case client_id {
+        None -> Ok(Nil)
+        Some(_) ->
+          Error(
+            place
+            <> ".client_id is only supported when "
+            <> place
+            <> ".auth is \"oauth\"",
+          )
+      })
+      Ok(McpStdio(command:, api_key_env:))
+    }
+    False, True -> {
+      use #(url, scheme, host) <- result.try(mcp_url(fields, place))
+      use http_auth <- result.try(mcp_http_auth(
+        place,
+        scheme,
+        host,
+        auth,
+        api_key_env,
+        client_id,
+      ))
+      Ok(McpHttp(url:, auth: http_auth))
+    }
+  }
+}
+
+fn mcp_optional_nonempty(
+  fields: Dict(String, tom.Toml),
+  place: String,
+  key: String,
+) -> Result(Option(String), String) {
+  case optional_string(fields, place, key) {
+    Ok(Ok("")) -> Error(place <> "." <> key <> " must be non-empty")
+    Ok(Ok(value)) -> Ok(Some(value))
+    Ok(Error(Nil)) -> Ok(None)
+    Error(message) -> Error(message)
+  }
+}
+
+fn mcp_client_id(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(Option(String), String) {
+  use value <- result.try(mcp_optional_nonempty(fields, place, "client_id"))
+  case value {
+    None -> Ok(None)
+    Some(id) ->
+      case
+        string.byte_size(id) <= 256
+        && !string.contains(id, "\n")
+        && !string.contains(id, "\r")
+      {
+        True -> Ok(Some(id))
+        False ->
+          Error(
+            place
+            <> ".client_id must be at most 256 bytes without control characters",
+          )
+      }
+  }
+}
+
+fn mcp_url(
+  fields: Dict(String, tom.Toml),
+  place: String,
+) -> Result(#(String, String, String), String) {
+  use raw <- result.try(case dict.get(fields, "url") {
+    Ok(tom.String("")) -> Error(place <> ".url must be non-empty")
+    Ok(tom.String(text)) -> Ok(text)
+    Ok(_other) -> Error(place <> ".url must be a string")
+    Error(Nil) -> Error(place <> ".url is required")
+  })
+  let invalid =
+    place
+    <> ".url must be an absolute http:// or https:// URL without userinfo or fragment"
+  use parsed <- result.try(uri.parse(raw) |> result.replace_error(invalid))
+  use #(scheme, host) <- result.try(
+    case parsed.scheme, parsed.host, parsed.userinfo, parsed.fragment {
+      Some("https"), Some(host), None, None if host != "" -> Ok(#("https", host))
+      Some("http"), Some(host), None, None if host != "" -> Ok(#("http", host))
+      _, _, _, _ -> Error(invalid)
+    },
+  )
+  use Nil <- result.try(case parsed.port {
+    None -> Ok(Nil)
+    Some(port) if port > 0 && port <= 65_535 -> Ok(Nil)
+    Some(_) -> Error(place <> ".url has an invalid port")
+  })
+  Ok(#(raw, scheme, host))
+}
+
+fn mcp_http_auth(
+  place: String,
+  scheme: String,
+  host: String,
+  auth: Option(String),
+  api_key_env: Option(String),
+  client_id: Option(String),
+) -> Result(McpHttpAuth, String) {
+  let no_client_id = fn() {
+    case client_id {
+      None -> Ok(Nil)
+      Some(_) ->
+        Error(
+          place
+          <> ".client_id is only supported when "
+          <> place
+          <> ".auth is \"oauth\"",
+        )
+    }
+  }
+  case auth {
+    None -> {
+      use Nil <- result.try(no_client_id())
+      case api_key_env {
+        None -> Ok(McpNoAuth)
+        Some(env_name) -> Ok(McpBearerAuth(api_key_env: env_name))
+      }
+    }
+    Some("none") -> {
+      use Nil <- result.try(no_client_id())
+      case api_key_env {
+        None -> Ok(McpNoAuth)
+        Some(_) ->
+          Error(
+            place
+            <> ".api_key_env is not supported when "
+            <> place
+            <> ".auth is \"none\"",
+          )
+      }
+    }
+    Some("bearer") -> {
+      use Nil <- result.try(no_client_id())
+      case api_key_env {
+        Some(env_name) -> Ok(McpBearerAuth(api_key_env: env_name))
+        None ->
+          Error(
+            place
+            <> ".api_key_env is required when "
+            <> place
+            <> ".auth is \"bearer\"",
+          )
+      }
+    }
+    Some("macaroon") -> {
+      use Nil <- result.try(no_client_id())
+      case api_key_env {
+        Some(env_name) -> Ok(McpMacaroonAuth(api_key_env: env_name))
+        None ->
+          Error(
+            place
+            <> ".api_key_env is required when "
+            <> place
+            <> ".auth is \"macaroon\"",
+          )
+      }
+    }
+    Some("oauth") ->
+      case api_key_env {
+        Some(_) ->
+          Error(
+            place
+            <> ".api_key_env is not supported when "
+            <> place
+            <> ".auth is \"oauth\"",
+          )
+        None ->
+          case scheme == "https" || is_loopback_host(host) {
+            True -> Ok(McpOAuth(client_id:))
+            False ->
+              Error(
+                place
+                <> ".url must use https:// (or loopback http://) when "
+                <> place
+                <> ".auth is \"oauth\"",
+              )
+          }
+      }
+    Some(_other) ->
+      Error(
+        place <> ".auth must be \"none\", \"bearer\", \"macaroon\" or \"oauth\"",
+      )
+  }
+}
+
+fn is_loopback_host(host: String) -> Bool {
+  case string.lowercase(host) {
+    "127.0.0.1" | "localhost" | "::1" | "[::1]" -> True
+    _other -> False
+  }
 }
 
 // The table key becomes the `cap/mcp/<name>` module a code-mode program
