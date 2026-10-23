@@ -5,13 +5,14 @@
 //// The sequence runs on the calling strand's own process. The owner grants
 //// the lease and holds a replacement until it is returned, but it never runs
 //// the tool, so concurrent calls proceed together and a long call is never
-//// reported busy. The evolution doors take their own custody, or none, and
-//// the wrapper delegates to them directly rather than leasing around them.
+//// reported busy. The evolution operations are capabilities of a program,
+//// so they run inside a leased `code_mode` call and take their own custody,
+//// or none, from the doors.
+////
 //// Promoted hooks join future events. The native session_start event belongs
 //// to session boot and is not replayed during activation or recovery.
 
 import client/evolution/live
-import client/evolution/model_door
 import client/extension/hooks
 import core/clock
 import core/codec
@@ -22,7 +23,6 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import runtime/effects
 import tools/agent
-import tools/evolution as evolution_tool
 
 /// How long a tool call waits to be admitted to a generation lease. The call
 /// itself is not bounded by it.
@@ -49,18 +49,14 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
   let usage = built.hooks.usage
   let time = built.clock
 
-  // The doors take their own custody, or none, so they run unwrapped. Reading
-  // the names from the declarations keeps a door added later out of the lease.
   // A subagent wait is not an effect: it blocks on descendants whose own tool
   // calls need a lease, so holding one across it would stall them behind any
   // replacement that is waiting for the wait.
-  let doors =
-    list.append(evolution_tool.names(), model_door.names())
-    |> list.append([agent.wait_tool_name])
+  let unleased = [agent.wait_tool_name]
   effects.Effects(
     ..built,
     tools: effects.ToolSurface(..built.tools, run: fn(request: effects.ToolRun) {
-      case list.contains(doors, request.call.name) {
+      case list.contains(unleased, request.call.name) {
         True -> run(request)
         False ->
           live.run(

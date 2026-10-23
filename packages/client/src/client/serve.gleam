@@ -4161,14 +4161,6 @@ fn assemble_in(
       [
         contributions.Contribution(
           contributions.BuiltIn,
-          case evolution_wiring {
-            None -> []
-            Some(wiring) ->
-              list.append(evolution_tool.tools(wiring.door), wiring.trace_tools)
-          },
-        ),
-        contributions.Contribution(
-          contributions.BuiltIn,
           list.append(skill_tool.tools(skills), peers.tools(peer_wiring)),
         ),
         // `advise` is registered for the whole session because a registry
@@ -6603,14 +6595,10 @@ type EvolutionWiring {
     live: evolution_live.Live,
     /// Serialises approved transitions; closed before `live`.
     transitions: evolution_queue.Queue,
-    /// The model-facing tools over the catalogue.
-    door: evolution_tool.Door,
     /// The operator commands the gateway exposes.
     control: evolution_control.Seam,
     /// Read when the session pins its prompt profiles at boot.
     catalogue: evolution_store.Store,
-    /// Trace tools that read the session's own conversation.
-    trace_tools: List(tool.Tool),
   )
 }
 
@@ -6818,9 +6806,7 @@ fn open_evolution(
   Ok(EvolutionWiring(
     live:,
     transitions:,
-    door:,
     catalogue:,
-    trace_tools: evolution_model_door.tools(source, actual),
     control: evolution_control.announcing(
       evolution_operator_controls(
         agency_config,
