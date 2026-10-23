@@ -2,11 +2,13 @@
 %% per package; every function here is reached only through the Gleam
 %% externals in codemode/internal/ffi_*.gleam).
 %%
-%% The whole of it is the broker end of one AF_UNIX capability socket: the
+%% Most operations serve the broker end of one AF_UNIX capability socket: the
 %% link a jailed satellite node connects back on. Options mirror the
 %% satellite side in cap_ffi:connect_unix/1 exactly — binary, passive,
 %% raw packets — because the two ends must agree that Gleam, not the port
-%% driver, owns frame boundaries.
+%% driver, owns frame boundaries. Bounded literal inflation is the other native
+%% operation: the pure Gleam byte parser inspects its output without interning
+%% atoms or decoding untrusted Erlang terms.
 %%
 %% Each shim converts to Gleam conventions at the boundary: exceptions are
 %% caught, results come back as {ok, X} | {error, E}, and error reasons are
@@ -19,7 +21,8 @@
     socket_recv/1,
     socket_send/2,
     socket_close/1,
-    listener_close/1
+    listener_close/1,
+    literal_bytes/1
 ]).
 
 %% gen_tcp:listen/2 with an {ifaddr, {local, Path}} address — the BEAM's
@@ -114,3 +117,28 @@ describe(Reason) when is_atom(Reason) ->
     atom_to_binary(Reason, utf8);
 describe(Reason) ->
     unicode:characters_to_binary(io_lib:format("~0p", [Reason])).
+
+%% Literal inflation cannot use binary_to_term: that would intern names before
+%% the cumulative atom budget can reserve them. safeInflate bounds actual
+%% output even when the table's declared expanded size lies.
+literal_bytes(<<0:32, Bytes/binary>>) when byte_size(Bytes) =< 8388608 ->
+    {ok, Bytes};
+literal_bytes(<<Size:32, Compressed/binary>>) when Size > 0, Size =< 8388608 ->
+    Z = zlib:open(),
+    try
+        zlib:inflateInit(Z),
+        Bytes = literal_inflate(Z, Compressed, 0, []),
+        true = byte_size(Bytes) =:= Size,
+        {ok, Bytes}
+    catch _:_ -> {error, <<"invalid or oversized BEAM literal compression">>}
+    after zlib:close(Z) end;
+literal_bytes(_) -> {error, <<"BEAM expanded literals exceed 8 MiB">>}.
+
+literal_inflate(Z, Input, Written, Acc) ->
+    {Status, Output} = zlib:safeInflate(Z, Input),
+    Next = Written + iolist_size(Output),
+    true = Next =< 8388608,
+    case Status of
+        continue -> literal_inflate(Z, <<>>, Next, [Acc, Output]);
+        finished -> iolist_to_binary([Acc, Output])
+    end.

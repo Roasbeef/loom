@@ -1,0 +1,4 @@
+OTP 29 compiled fixture. Never load this module in a harness VM.
+
+pub type Tag { ReviewUniqueLiteralAbcxyz }
+pub fn value() -> List(Tag) { [ReviewUniqueLiteralAbcxyz] }
