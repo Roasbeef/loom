@@ -180,8 +180,8 @@ type Launch {
   Remote(address: String, session: String, token: String)
   Invalid(reason: String)
 
-  // `loom ext …`, `loom distribution …` (`dist` for short) and
-  // `loom executor …` are not
+  // `loom ext …`, `loom evolution …`, `loom distribution …` (`dist` for
+  // short) and `loom executor …` are not
   // terminal applications at all: they are passthroughs to `loomd`, whose
   // own subcommand owns every verb. Forwarding rather than reimplementing
   // is what stops the launcher and the server disagreeing about what an
@@ -385,6 +385,7 @@ pub fn main() {
 
       let #(record, arguments) = case raw {
         ["ext", ..]
+        | ["evolution", ..]
         | ["distribution", ..]
         | ["dist", ..]
         | ["executor", ..]
@@ -516,6 +517,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
     Ok("directory") -> Some(directory_usage())
     Ok("claim") | Ok("enroll") -> Some(claim.usage)
     Ok("ext") -> Some(extension_usage())
+    Ok("evolution") -> Some(evolution_usage())
     Ok("distribution") | Ok("dist") -> Some(distribution_usage())
     Ok("executor") -> Some(executor_usage())
     Ok("update") -> Some(update_options.usage())
@@ -532,6 +534,7 @@ fn is_topic(word: String) -> Bool {
     | "deployment"
     | "directory"
     | "ext"
+    | "evolution"
     | "distribution"
     | "dist"
     | "executor"
@@ -1160,10 +1163,12 @@ fn parse_words(arguments: List(String)) -> Launch {
     ["version"] | ["--version"] -> Version
     ["version", ..] | ["--version", ..] -> Invalid(version_usage())
     ["ext", ..rest] -> Forward(verb: "ext", arguments: rest)
+    ["evolution", ..rest] -> Forward(verb: "evolution", arguments: rest)
     ["distribution", ..rest] | ["dist", ..rest] -> forward_distribution(rest)
     ["executor", ..rest] -> Forward(verb: "executor", arguments: rest)
     ["update", ..rest] -> Update(arguments: rest)
     ["help", "ext"] -> Forward(verb: "ext", arguments: ["--help"])
+    ["help", "evolution"] -> Forward(verb: "evolution", arguments: ["--help"])
     ["help", "distribution"] | ["help", "dist"] ->
       Forward(verb: "distribution", arguments: ["--help"])
     ["help", "executor"] -> Forward(verb: "executor", arguments: ["--help"])
@@ -2765,6 +2770,7 @@ fn launch_usage() -> String {
   <> "                      Runs against the local daemon, or a remote one\n"
   <> "                      with --addr and --token-file.\n"
   <> "  ext <command>       Manage daemon extensions.\n"
+  <> "  evolution <action>  Inspect and select authored candidates.\n"
   <> "  distribution <command>\n"
   <> "                      Provision trusted distribution between daemons\n"
   <> "                      (init, provision, install, show). `dist` is short.\n"
@@ -2836,6 +2842,19 @@ fn extension_usage() -> String {
   <> "A source is a local path, an https:// .tar.gz, or an\n"
   <> "https://github.com/<owner>/<repo> URL. Extensions install under\n"
   <> "<home>/.loom/extensions."
+}
+
+// Evolution shares the server command's JSON transport and native owner
+// credential. Keeping its help here makes the client-only shipment
+// discoverable without opening terminal state or starting a daemon.
+fn evolution_usage() -> String {
+  "usage: loom evolution [--state-dir PATH] ACTION SESSION [--args FILE]\n"
+  <> "       [--candidate-id ID] [--evidence-id ID] [--request-id ID]\n\n"
+  <> "Actions: catalogue, inspect, evidence, status, approve, revoke, select, "
+  <> "rollback, admit_tasks, mark_outcome, core_status, core_upgrade, core_downgrade.\n"
+  <> "SESSION must already be resident. The private daemon owner credential "
+  <> "authenticates the command. Output is JSON; status=queued means accepted, "
+  <> "not completed. Poll status with the exact request_id for completion."
 }
 
 // The help text of `loom distribution`, held here for the reason

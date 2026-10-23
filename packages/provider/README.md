@@ -290,6 +290,21 @@ and answers `Error(Nil)` for anything else, which surfaces as
 `Failed(UnmappedStopReason(raw))` in band. A provider that ships a new
 stop reason tomorrow degrades to a readable error, never a crash.
 
+## Immutable model profiles
+
+`provider/profile.Profile` contains approved prose for one exact provider,
+model and API. It can append system instructions and tool descriptions;
+registered names, argument schemas, requirements and replay metadata still
+come from the base request. `client` owns approval and pins the selected map
+when it assembles a new session.
+
+The gateway composes a profile after resolving each attempt's actual target,
+including fallback, vision and child-operation routes. A retry starts from
+the unchanged base request rather than composing onto the previous attempt.
+During governed evaluation, native aggregate budget admission runs before
+credentials and transport are used. The host records actual profile identities
+and composition digests for [governed evaluation](../../docs/architecture/evolution.md).
+
 ## Secrets
 
 Provider configuration holds a secret *name*, never a value.

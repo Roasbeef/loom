@@ -4,14 +4,15 @@
 //// spawn takes, how much memory an idle jail holds, which OS processes a
 //// cancelled execution left behind. None of that is visible to Gleam, and
 //// none of it may be added to `src`, so every observation lives here and is
-//// backed by `test/bench_exec_ffi.erl`. Each is a read of `/proc`, a clock,
-//// or one `kill(1)`; none changes what the pool does.
+//// backed by `test/bench_exec_ffi.erl`. Each is a read of native process
+//// metadata, a clock, or one `kill(1)`; none changes what the pool does.
 ////
-//// Linux only. `/proc` is the interface, and the benchmark's gate refuses to
-//// run where the helper has no jail to measure. The three functions that
-//// do not read `/proc` (`port_os_pids`, `suspend` and `resume`) work on any
-//// host, and are bound straight to OTP's `erlang` and `sys` modules rather
-//// than to a shim.
+//// Linux observations read `/proc`; Darwin observations read native `/bin/ps`
+//// with a bounded deadline and output. An observation failure raises rather
+//// than becoming an empty census that falsely proves death. Metadata alone
+//// never attests jailed descendant retirement: the broker's retained native
+//// status and original owner still decide that verdict. `port_os_pids`,
+//// `suspend` and `resume` use OTP's `erlang` and `sys` modules directly.
 
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode

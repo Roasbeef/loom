@@ -72,6 +72,7 @@
 //// profile means the same thing in either file and is refused with the
 //// same words.
 
+import client/extension/live_contract
 import client/lsp/profile.{type LspServer}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
@@ -350,9 +351,10 @@ pub fn decode(
   use document <- result.try(tom.parse(text) |> result.map_error(parse_reason))
   use Nil <- result.try(known_keys(
     dict.keys(document),
-    ["extension", "tool", "hook", "net", "lsp", "check"],
+    ["extension", "tool", "hook", "net", "lsp", "check", "live"],
     "the top level",
   ))
+  use _live <- result.try(live_contract.decode(text, surroundings.modules))
   use extension <- result.try(table(document, "extension"))
   use Nil <- result.try(known_keys(
     dict.keys(extension),

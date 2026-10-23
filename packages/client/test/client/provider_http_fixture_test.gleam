@@ -340,7 +340,7 @@ pub fn provider_http_fixture_rejects_error_wrong_text_and_extra_result_content_t
         [
           result_block(
             json.String("fixture-call"),
-            [text_block(string.repeat("x", 4097))],
+            [text_block(string.repeat("x", 8193))],
             json.Bool(False),
           ),
         ],
@@ -364,7 +364,7 @@ pub fn provider_http_fixture_rejects_error_wrong_text_and_extra_result_content_t
             json.Bool(True),
           ),
         ],
-        "tool result requires an ID and one successful content block",
+        "tool result failed: fixture-call\ndone",
       ),
       #(
         [

@@ -147,11 +147,19 @@ jobs:
       - name: Install rust-analyzer
         run: .github/scripts/install_rust_analyzer.sh
 
+      - name: Delegate enforcement for the cold lifecycle tests
+        run: .github/scripts/delegate_cgroup.sh
+
       - name: Prepare the code-mode build seed
         run: make codemode-seed
 
       - name: make check
-        run: set -o pipefail; make check 2>&1 | tee cold-check.log
+        env:
+          LOOM_EVOLUTION_E2E: "1"
+        run: |
+          set -o pipefail
+          . .github/scripts/join_delegated_cgroup.sh
+          make check 2>&1 | tee cold-check.log
 
       - name: make doc-check
         run: make doc-check

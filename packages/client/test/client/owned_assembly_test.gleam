@@ -71,6 +71,7 @@ pub fn settings() -> serve.Settings {
       lsp_servers: [],
     )
   serve.Settings(
+    evolution_role: serve.Source,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,

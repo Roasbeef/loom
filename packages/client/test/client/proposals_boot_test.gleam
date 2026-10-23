@@ -74,6 +74,7 @@ fn settings(root: String, file: String) -> serve.Settings {
     laptop: None,
     first_prompt: None,
     profile_desk: None,
+    evolution_role: serve.Source,
     codemode_sockets: None,
     secrets: secret.env(),
     secret_failures: [],

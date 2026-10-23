@@ -54,6 +54,7 @@
 //// An extension is somebody else's repository, and "the extension was
 //// refused" without a path is a bug report nobody can act on.
 
+import codemode/compile
 import codemode/vet.{type Vetted}
 import codemode/vet/policy.{type VetPolicy}
 import gleam/dict.{type Dict}
@@ -167,6 +168,81 @@ pub fn vet_package(
   case refusals {
     [] -> Ok(VettedPackage(modules: passed(judged)))
     [_, ..] -> Error(refusals)
+  }
+}
+
+/// Vets a candidate envelope's sources and tests under the same seam.
+///
+/// Tests are promoted into the generated compiler source directory only after
+/// this admission. Native files, duplicate module names and unchecked paths
+/// refuse before the compiler receives any candidate bytes. Legacy installation
+/// pruning remains unchanged.
+///
+/// ## Examples
+///
+/// `vet_candidate(files, policy)` vets `test/example.gleam` beside `src/`.
+pub fn vet_candidate(
+  files: List(#(String, String)),
+  policy: VetPolicy,
+) -> Result(VettedPackage, List(#(String, Rejection))) {
+  use admitted <- result.try(list.try_map(files, candidate_file))
+  let paths = list.map(admitted, fn(file) { file.0 })
+  use _ <- result.try(
+    case list.length(paths) == list.length(list.unique(paths)) {
+      True -> Ok(Nil)
+      False ->
+        Error([
+          #("test/", FileNotAllowed("candidate tests shadow a source module")),
+        ])
+    },
+  )
+  vet_package(admitted, policy)
+}
+
+fn candidate_file(
+  file: #(String, String),
+) -> Result(#(String, String), List(#(String, Rejection))) {
+  let #(path, text) = file
+  use Nil <- result.try(
+    case
+      path == "src/" <> compile.entry_module <> ".gleam"
+      || path == "test/" <> compile.entry_module <> ".gleam"
+    {
+      True ->
+        Error([
+          #(
+            path,
+            FileNotAllowed(
+              "candidate source cannot shadow the generated entry module",
+            ),
+          ),
+        ])
+      False -> Ok(Nil)
+    },
+  )
+
+  case string.starts_with(path, "test/") {
+    True ->
+      case string.ends_with(path, ".gleam") {
+        True -> Ok(#("src/" <> string.drop_start(path, 5), text))
+        False ->
+          Error([
+            #(path, FileNotAllowed("candidate tests must be Gleam source")),
+          ])
+      }
+    False ->
+      case is_installed(path) || string.starts_with(path, "fixtures/") {
+        True -> Ok(file)
+        False ->
+          Error([
+            #(
+              path,
+              FileNotAllowed(
+                "file is outside the candidate source, schema and fixture envelope",
+              ),
+            ),
+          ])
+      }
   }
 }
 

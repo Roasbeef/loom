@@ -60,6 +60,7 @@ cap|schedule_test|installs the capability channel in cap/internal/dispatch's VM-
 cap|strand_map_test|installs the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|strand_test|depends on the capability channel in cap/internal/dispatch's VM-global persistent_term slot
 cap|workflow_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot
+ext|ext@live_runtime_test|loads fixed trusted live-code slots and observes queued system operations
 ext|ext_test|start_serving resets cap/internal/dispatch's VM-global persistent_term slot for every serving test
 tools|tools@call_record_redaction_test|installs and resets the capability channel in cap/internal/dispatch's VM-global persistent_term slot to capture the arguments the cap encoders write
 
@@ -87,6 +88,7 @@ host|host@build_identity_test|sets and clears LOOM_BUILD_VERSION and LOOM_BUILD_
 # and freeze another module's actors — and a sibling actor that dies between
 # the census and the suspension answers `noproc`.
 client|client@assembly_heap_census_test|differences erlang:processes/0 and suspends what it finds; node-wide
+client|client@evolution_acceptance_test|differences native helper birth identities beneath this BEAM VM across activation and rollback
 
 # --- the node's own helper ports and process count -------------------------
 # The kill-custody tests find "the new helper" by differencing the OS pids
@@ -103,3 +105,7 @@ client|client@directory@ownership_test|the Khepri store and its Ra system are re
 client|client@directory@migrate_test|the Khepri store and its Ra system are registered once per emulator under fixed names
 client|client@ledger_install_test|starts the production ledger process, which registers the fixed name loom_ledger once per emulator
 client|client@ledger_boot_test|starts the production ledger process, which registers the fixed name loom_ledger once per emulator
+client|client@evolution_program_acceptance_test|owns real jailed helper identities and witnessed session retirement
+client|client@evolution_prompt_acceptance_test|owns isolated coding runtimes and aggregate native helper census
+client|client@live_upgrade_acceptance_test|owns real jailed live-code slots and native helper retirement census
+client|client@upgrade_native_test|loads VM-global reviewed scratch slots and verifies actor ownership across upgrades

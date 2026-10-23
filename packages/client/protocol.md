@@ -484,3 +484,37 @@ reserved `fact.custom/client/permission_grants` atomically with the approval,
 under expectations for both records. A conflict saves no authority and approves
 nothing. Later tool dispatches capture these grants; session reopen preserves
 them. Exact file grants do not become directory grants. See protocol 041.
+
+
+## Governed evolution controls
+
+Protocol-change 068 adds command `evolution` with an object body
+`{"action":"...","arguments":{...}}`. The closed action vocabulary is
+`catalogue`, `inspect`, `evidence`, `status`, `approve`, `revoke`, `select`,
+`rollback`, `admit_tasks` and `mark_outcome`. The correlated response is a
+snapshot with mode `evolution`; native validation failures use the existing
+command error. Connection authentication supplies the authority and principal.
+Payloads cannot mint either. Observers may use the four read actions only.
+
+`inspect` names `candidate_id`; `evidence` names `evidence_id`. A small verified
+canonical envelope is returned whole. A large one returns its verified
+`identity`, `encoding: "base64"`, `total_bytes`, `offset_bytes`,
+`fragment_base64` and `next_offset_bytes` (null at the end). The next request
+uses that byte offset. Join exact bytes before decoding UTF-8 JSON; do not treat
+a fragment as a partial candidate or clipped evidence.
+
+`approve` names candidate and evidence. `select` and `rollback` also name
+`expected_generation`, `reason` and an exact `request_id`; a session extension
+may supply `deadline_ms` from 1 through 120000. Queued admission returns before
+staging. `status` with the same request ID distinguishes waiting work, durable
+commit and completed publication; `committed` can precede publication, and a
+missing acknowledgement cannot prove that selection failed. Reusing a request
+ID for different arguments refuses. Global prompt/program selections require
+owner authority, while a session operator controls their own session extension.
+
+`admit_tasks` captures version-one task objects with fixed initial and expected
+file maps under native ownership. `mark_outcome` names an actual settled
+assistant entry in this session and `succeeded` or `failed`; it cannot mark a
+foreign session or accept a model-authored authority field. Task and outcome
+facts are reserved from model mutation. The operator CLI forwards these typed
+controls to the already resident session; it does not open a new one.

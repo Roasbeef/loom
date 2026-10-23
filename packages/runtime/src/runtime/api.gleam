@@ -2735,6 +2735,7 @@ pub fn reserved_fact_key(key: String) -> Bool {
   || string.starts_with(key, remote_mail_fact_prefix)
   || string.starts_with(key, remote_escalation_fact_prefix)
   || string.starts_with(key, remote_send_fact_prefix)
+  || string.starts_with(key, "evolution/")
 }
 
 /// Writes one cell under a reserved prefix — the harness-only companion

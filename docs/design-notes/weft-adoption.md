@@ -146,7 +146,7 @@ Ranked by LOC-reduction-per-risk:
    `weft/state_machine`, not an actor hook.
 
 6. **`conformance/simulation/control.attempt` → `weft` single-task run**
-   (`control.gleam:621-674`, ~55 lines). Same spawn/monitor/deadline/kill
+   (`conformance/simulation/control.gleam:621-674`, ~55 lines). Same spawn/monitor/deadline/kill
    shape as the TUI's; `Answered`/`Raised`/`Expired` is weft's outcome
    taxonomy with local names. The port must preserve the comment trail
    explaining why this one function reads the wall clock inside an

@@ -252,6 +252,19 @@ Escalation cannot clear it and retrying cannot either, and an agent that
 mistakes it for a policy denial retries forever against a wall. The two
 demand different behaviour, so the prompt distinguishes them.
 
+## Selected model profiles
+
+Governed model profiles add prose to the stable base prompt. The native host
+in `client/evolution` captures and admits their exact provider, model and API
+identity. A new session pins the selected profile map; an existing or resumed
+session retains its pinned bytes.
+
+`provider/profile` composes that map only after each attempt's actual target
+is resolved. Every retry starts from the unchanged base request. Reading,
+approval and profile selection remain outside this pure package. See
+[the evolution architecture](../../docs/architecture/evolution.md) for the
+selection boundary and independent evaluation workflow.
+
 ## Where to look
 
 The package is two modules.

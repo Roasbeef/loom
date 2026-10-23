@@ -77,6 +77,7 @@
 
 import broker/exec.{type EnforcementDemand}
 import broker/policy.{type SandboxPolicy}
+import client/evolution/prompt as evolution_prompt
 import core/corruption.{type CorruptionReport}
 import core/json.{type JsonValue}
 import core/register
@@ -87,6 +88,7 @@ import gleam/result
 import gleam/string
 import prompt/default
 import prompt/pack
+import provider/profile.{type Profile}
 import runtime/api.{type Runtime}
 import session/session.{type Session}
 import simplifile
@@ -104,6 +106,48 @@ pub const system_key = "prompt/system"
 /// attribution (a cache miss traced to a prompt change) and never read
 /// back for behaviour.
 pub const pack_key = "prompt/pack"
+
+/// The reserved session pin for immutable exact-model prompt profiles.
+/// Its separate shape leaves the existing prompt decoder and identity intact.
+pub const profiles_key = "prompt/evolution-profiles"
+
+/// Reads the map before the runtime starts. Absence means an old session or
+/// a new session without a pin; `Some([])` is a durable selection of no profiles.
+/// Corruption refuses boot rather than reconsulting changed catalogue state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.pinned_profiles_in(opened)
+/// ```
+pub fn pinned_profiles_in(
+  session: Session,
+) -> Result(Option(List(Profile)), String) {
+  use pin <- result.try(
+    storage.get_register(session.store, register.FactCustom, profiles_key)
+    |> result.map_error(fn(_) { "the pinned model profiles are unreadable" }),
+  )
+  case pin {
+    None -> Ok(None)
+    Some(storage.Register(value:, ..)) ->
+      evolution_prompt.decode_map(value.payload) |> result.map(Some)
+  }
+}
+
+/// Pins new-session selection through the native reserved fact capability.
+/// The caller performs this before publishing any request-capable runtime.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // system_prompt.pin_profiles(runtime, approved_profiles)
+/// ```
+pub fn pin_profiles(
+  runtime: Runtime,
+  profiles: List(Profile),
+) -> Result(Nil, String) {
+  write(runtime, profiles_key, evolution_prompt.encode_map(profiles))
+}
 
 /// The environment variable naming a pack file to use instead of the
 /// shipped default.

@@ -63,8 +63,8 @@ import simplifile
 import tom
 
 /// The files an owner keeps beside its session that a jailed process must
-/// never write: the search index, and the memory store with the notes index
-/// sidecar rendered from it.
+/// never write: the search index, the memory store with the notes index
+/// sidecar rendered from it, and the evolution plane's directories.
 ///
 /// Plain paths, because masking a file needs only its name. A workspace
 /// whose owner is on another machine is given none, since those files do
@@ -80,6 +80,12 @@ pub type OwnerFiles {
     rules: String,
     /// The absolute path of the notes index sidecar.
     memory_notes: String,
+    /// The evolution plane's directories: the candidate catalogue, its run
+    /// scratch and the trial workspaces. A jail that could write the catalogue
+    /// could forge an approval, so each is masked unconditionally; the owner
+    /// creates them after `workspace_plane.prepare` accepts the policy and
+    /// before any jailed call runs, which is when a mask over them must exist.
+    evolution: List(String),
   )
 }
 
@@ -869,10 +875,11 @@ fn protecting_owner_files(
 ) -> policy.SandboxPolicy {
   case files {
     None -> base
-    Some(OwnerFiles(index:, memory_store:, memory_notes:, rules:)) ->
+    Some(OwnerFiles(index:, memory_store:, memory_notes:, rules:, evolution:)) ->
       protecting_index(base, index)
       |> protecting_memory(memory_store, memory_notes)
       |> protecting_rules(rules)
+      |> protecting(always: evolution, where_maskable: [])
   }
 }
 

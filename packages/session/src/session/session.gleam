@@ -194,6 +194,36 @@ pub fn open_sqlite_owned(
   #(opened, retire)
 }
 
+/// Opens owned SQLite with a bounded native lock wait.
+///
+/// Foreground catalogue admission uses a shorter SQLite busy timeout than a
+/// long-lived session. Successful acquisition returns the same retirement
+/// capability, including when the native probe consumed its caller's budget.
+///
+/// ## Examples
+///
+/// `open_sqlite_owned_waiting(path:, owner:, lease_ttl_ms:, clock:, busy_timeout_ms: 10)`
+/// returns custody for exactly one admitted writer.
+@internal
+pub fn open_sqlite_owned_waiting(
+  path path: String,
+  owner owner: String,
+  lease_ttl_ms lease_ttl_ms: Int,
+  clock clock: Clock,
+  busy_timeout_ms busy_timeout_ms: Int,
+) -> Result(#(Session, fn() -> Result(Nil, StorageError)), OpenError) {
+  let config =
+    sqlite.config(path:, owner:)
+    |> sqlite.lease_ttl(lease_ttl_ms)
+    |> sqlite.busy_timeout(busy_timeout_ms)
+  use #(opened, retire, _transfer) <- result.map(open_sqlite_configured(
+    config,
+    clock,
+    lease_ttl_ms,
+  ))
+  #(opened, retire)
+}
+
 /// Opens storage with separate retirement and startup-link transfer capabilities.
 ///
 /// Publish retirement to the surviving owner before invoking transfer. Until
@@ -224,6 +254,21 @@ pub fn open_sqlite_custody(
   let config =
     sqlite.config(path:, owner:)
     |> sqlite.lease_ttl(lease_ttl_ms)
+  open_sqlite_configured(config, clock, lease_ttl_ms)
+}
+
+fn open_sqlite_configured(
+  config: sqlite.Config,
+  clock: Clock,
+  lease_ttl_ms: Int,
+) -> Result(
+  #(
+    Session,
+    fn() -> Result(Nil, StorageError),
+    fn() -> Result(Pid, StorageError),
+  ),
+  OpenError,
+) {
   case sqlite.open_with_migrations(config, clock, migration_chain()) {
     Ok(store) -> {
       let handle = store.handle

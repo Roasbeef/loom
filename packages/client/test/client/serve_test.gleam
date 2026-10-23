@@ -168,7 +168,7 @@ fn absolute(path: String) -> String {
   here <> "/" <> path
 }
 
-fn settings_under(root: String) -> serve.Settings {
+pub fn settings_under(root: String) -> serve.Settings {
   // Absolute, because the workspace root really is: it becomes the base
   // policy's writable root, and `workspace_policy.base_policy_fault` refuses a boot
   // on a policy whose paths the jail could not accept. A test that
@@ -176,6 +176,7 @@ fn settings_under(root: String) -> serve.Settings {
   // no tool call could ever run under.
   let root = absolute(root)
   serve.Settings(
+    evolution_role: serve.Source,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,
@@ -2637,12 +2638,15 @@ fn blob_jail_fixture(name: String) -> BlobJail {
   let base =
     workspace_policy.session_base(
       basis(managed),
-      Some(workspace_policy.OwnerFiles(
-        index: domain <> "/loom-search.db",
-        memory_store: domain <> "/loom-memory.db",
-        rules: domain <> "/loom-rules.md",
-        memory_notes: domain <> "/loom-memory.notes",
-      )),
+      Some(
+        workspace_policy.OwnerFiles(
+          index: domain <> "/loom-search.db",
+          memory_store: domain <> "/loom-memory.db",
+          rules: domain <> "/loom-rules.md",
+          memory_notes: domain <> "/loom-memory.notes",
+          evolution: [],
+        ),
+      ),
       Error("no toolchain in this fixture"),
     )
     |> serve.protecting_standalone_blobs(managed, blob_root)
@@ -3119,6 +3123,7 @@ fn owner_files(settings: serve.Settings) -> workspace_policy.OwnerFiles {
     memory_store: settings.session_path <> ".memory",
     rules: settings.session_path <> ".rules",
     memory_notes: settings.session_path <> ".notes",
+    evolution: [],
   )
 }
 

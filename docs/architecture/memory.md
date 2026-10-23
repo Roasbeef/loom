@@ -333,7 +333,7 @@ instructions win every conflict. A repository with no notes, or an index over
 
 Bodies are fetched on demand. A model that wants a note's full text calls
 `history_search` with `kind: note`. The store joins the history owner's
-sources through `client/serve.gleam:1190` (`with_memory_source`), so each note
+sources through `client/serve.gleam:1244` (`with_memory_source`), so each note
 is indexed under kind `note`, with its title, description and text as its
 words.
 
@@ -507,9 +507,9 @@ Everything below sits in that directory unless the table says otherwise.
 Protection means the jail bars writes to the path. Writing is the entire
 poisoning path: the notes index and the rules file reach later sessions
 unasked, and a search snippet reaches a later session whenever a model
-searches for it. `client/workspace_policy.gleam:1268` (`protecting_memory`)
+searches for it. `client/workspace_policy.gleam:1274` (`protecting_memory`)
 covers the store and the notes index, and
-`client/workspace_policy.gleam:1296` (`protecting_rules`) covers the rules
+`client/workspace_policy.gleam:1302` (`protecting_rules`) covers the rules
 file. The protection is conditional on the paths because none of them need
 exist, and the jail refuses to mask a missing path under a read-only parent.
 The state root's `workspaces/` and `domains/` directories are also masked
