@@ -244,28 +244,41 @@ pub fn the_bound_holds_for_any_catalogue_size_test() {
       use description <- qcheck.parameter
       use events <- qcheck.parameter
       use reason <- qcheck.parameter
-      #(rows, description, events, reason)
+      use older <- qcheck.parameter
+      #(rows, description, events, reason, older)
     })
     |> qcheck.apply(qcheck.bounded_int(from: 0, to: 80))
     |> qcheck.apply(qcheck.bounded_int(from: 0, to: 3000))
     |> qcheck.apply(qcheck.bounded_int(from: 0, to: 64))
     |> qcheck.apply(qcheck.bounded_int(from: 0, to: 1500))
+    |> qcheck.apply(qcheck.bounded_int(from: 0, to: 4000))
 
   qcheck.run(config, generator, fn(drawn) {
-    let #(row_count, description, event_count, reason) = drawn
+    let #(row_count, description, event_count, reason, older) = drawn
     let candidates =
       list.map(counting(row_count), candidate_named(_, description))
     let history =
       list.map(counting(event_count), fn(index) {
         event(event_count - index, reason)
       })
-    let value = board.value(input(list.map(candidates, row), [], history, 0))
+
+    // Every candidate is currently selected, so each row carries a selection
+    // that the bound has to pay for.
+    let value =
+      board.value(input(
+        list.map(candidates, row),
+        list.map(candidates, selection_of),
+        history,
+        older,
+      ))
     assert string.byte_size(json.to_string(value)) <= board.max_bytes
     assert list.length(items(value, "candidates"))
       + omitted(value, "candidates")
       == row_count
     assert list.length(items(value, "history")) + omitted(value, "history")
-      == event_count
+      == event_count + older
+    assert list.length(items(value, "selections"))
+      == list.length(items(value, "candidates"))
   })
 }
 

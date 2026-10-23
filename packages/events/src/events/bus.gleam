@@ -53,8 +53,8 @@
 //// `start` obtains the shared process-group scope.
 //// `publish` pairs the session with `topic_of` and sends a `Published` value.
 //// `subscribe` joins that exact group; `select_published` unwraps its messages.
-//// `GoalChanged`, `ProposalsChanged` and `EvolutionChanged` belong to `Outputs`, independently of
-//// `hint_topics`.
+//// `GoalChanged`, `ProposalsChanged` and `EvolutionChanged` belong to
+//// `Outputs`, independently of `hint_topics`.
 //// The publisher owns commit ordering; this bus owns only best-effort delivery.
 
 import core/ids.{type EntryId, type OpId, type Seq, type SessionId, type UsageId}
@@ -99,8 +99,8 @@ pub type Topic {
 
   /// Display feeds: rolling output tails of running tool calls
   /// (`ToolOutput`), summarizer labels (`BlockSummary`) and data-free goal
-  /// invalidation (`GoalChanged`, `ProposalsChanged`, `EvolutionChanged`, `RemoteChildrenChanged`). This is not the
-  /// commit-hint topic.
+  /// invalidation (`GoalChanged`, `ProposalsChanged`, `EvolutionChanged`,
+  /// `RemoteChildrenChanged`). This is not the commit-hint topic.
   Outputs
 }
 

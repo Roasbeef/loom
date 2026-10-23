@@ -6665,10 +6665,13 @@ fn open_evolution(
   // Subscribers learn of a change through the session's own key: the catalogue
   // is daemon-wide, but the live generation and the queue this board draws are
   // this session's. The key is the runtime's canonical session identity, which
-  // the settings string need not be, so it is read at publication from the
-  // runtime that owns it. A hint with no runtime to name has no subscriber.
+  // the settings string need not be, so it is read from the runtime that owns
+  // it. That read runs inside the transition queue's turn, where a stalled
+  // holder must not crash the custodian of a live transition, so it is a
+  // bounded `try_call` that gives up silently; a hint with no key has no one
+  // to wake and the board's own refresh covers it.
   let announce = fn() {
-    case agency.borrow_runtime(agency_config) {
+    case agency.try_borrow_runtime(agency_config) {
       Ok(runtime) ->
         bus.publish(
           bus.start(),

@@ -6,8 +6,8 @@
 ////
 //// The read actions (`catalogue`, `evidence`, `inspect`, `status`) return
 //// bounded pages, and `board` returns the whole panel in one bounded answer
-//// (`board`, protocol-change/099). The mutating actions (`approve`, `revoke`, `select`,
-//// `rollback`) each name a candidate. A selection of this session's own
+//// (`board`, protocol-change/099). The mutating actions (`approve`, `revoke`,
+//// `select`, `rollback`) each name a candidate. A selection of this session's own
 //// extension is checked against its durable receipt and then runs through the
 //// live owner's transition queue. An extension selection scoped to another
 //// session is refused with `Authority: foreign session activation` and is not
@@ -57,8 +57,11 @@ pub type Seam {
 /// ## Examples
 ///
 /// ```gleam
-/// // for_principal(access.Participant(access.Operator), access.OwnerPrincipal, "approve")
-/// // == access.Owner
+/// // for_principal(
+/// //   access.Participant(access.Operator),
+/// //   access.OwnerPrincipal,
+/// //   "approve",
+/// // ) == access.Owner
 /// ```
 pub fn for_principal(
   authority: access.Authority,
@@ -146,7 +149,7 @@ fn retained(owner: live.Live) -> fn(store.Refusal) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // control.announcing(seam, fn() { bus.publish(bus.start(), key, bus.EvolutionChanged) })
+/// // control.announcing(seam, fn() { publish_evolution_changed() })
 /// ```
 pub fn announcing(seam: Seam, announce: fn() -> Nil) -> Seam {
   let command = seam.command

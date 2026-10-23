@@ -78,10 +78,13 @@ type Sized(a) {
 /// // board.value(Input(session_id, identity, read, published, waiting))
 /// ```
 pub fn value(input: Input) -> json.JsonValue {
-  let candidates = list.map(input.board.rows, candidate_row(input.identity, _))
-  let history = list.map(input.board.history, event_row)
   let selections = list.map(input.board.selections, selection_row(_, input))
-  let fixed = fixed_bytes(input, selections)
+  let candidates =
+    list.map(input.board.rows, fn(row) {
+      charged(candidate_row(input.identity, row), selections)
+    })
+  let history = list.map(input.board.history, event_row)
+  let fixed = fixed_bytes(input, candidates, history)
   let total = fixed + list.fold(candidates, 0, add) + list.fold(history, 0, add)
 
   // History goes first. A reader who needs an old decision can still read the
@@ -104,11 +107,37 @@ fn add(total: Int, row: Sized(a)) -> Int {
   total + row.bytes + 1
 }
 
-// The bytes of everything that is neither a candidate nor an audit entry, with
-// every selection counted because the candidates that survive are not known
-// yet. Counting them all can only over-estimate, which keeps the bound safe.
-fn fixed_bytes(input: Input, selections: List(Sized(record.Selection))) -> Int {
-  render(input, [], selections, [], 0, 0)
+// A selection is shown exactly when its candidate is, so its bytes belong to
+// that candidate's row. Shedding the row then sheds the selection with it, and
+// the fixed part of the board carries no selections at all.
+fn charged(
+  row: Sized(store.Row),
+  selections: List(Sized(record.Selection)),
+) -> Sized(store.Row) {
+  let id = row.item.candidate.id
+  let owed =
+    list.filter(selections, fn(selection) { selection.item.candidate_id == id })
+    |> list.fold(0, add)
+  Sized(..row, bytes: row.bytes + owed)
+}
+
+// The bytes of everything that is neither a candidate, a selection nor an audit
+// entry. The omitted counters are sized at their largest, which is every row
+// dropped, because their digits are part of the reply and over-estimating by a
+// few bytes keeps the bound safe.
+fn fixed_bytes(
+  input: Input,
+  candidates: List(Sized(store.Row)),
+  history: List(Sized(store.Event)),
+) -> Int {
+  render(
+    input,
+    [],
+    [],
+    [],
+    list.length(candidates),
+    input.board.history_omitted + list.length(history),
+  )
   |> json.to_string
   |> string.byte_size
 }
@@ -323,9 +352,9 @@ fn waiting_value(waiting: queue.Waiting) -> json.JsonValue {
     #("request_id", json.String(waiting.request_id)),
     #(
       "state",
-      json.String(case waiting.status {
-        queue.Running(_) -> "running"
-        queue.Queued(_) | queue.Completed(_) | queue.Failed(_) -> "queued"
+      json.String(case waiting.phase {
+        queue.Staging -> "running"
+        queue.Accepted -> "queued"
       }),
     ),
     #("candidate_id", json.String(record.id_string(waiting.candidate_id))),

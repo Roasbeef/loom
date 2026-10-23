@@ -5443,15 +5443,17 @@ fn evolution_via(
   binding: Binding,
   arguments: JsonValue,
 ) -> evolution_store.Via {
-  let page = case binding.signin, access.credential_kind(binding.digest) {
-    Some(_), _ | None, access.Browser -> True
-    None, access.Bearer -> False
-  }
-  case page, tool.optional_string(arguments, "via") {
-    True, _ -> evolution_store.Web
-    False, Ok(Some("terminal")) -> evolution_store.Terminal
-    False, Ok(Some(_)) | False, Ok(None) | False, Error(_) ->
-      evolution_store.Cli
+  case
+    binding.signin,
+    access.credential_kind(binding.digest),
+    tool.optional_string(arguments, "via")
+  {
+    Some(_), _, _ | None, access.Browser, _ -> evolution_store.Web
+    None, access.Bearer, Ok(Some("terminal")) -> evolution_store.Terminal
+    None, access.Bearer, Ok(Some(_))
+    | None, access.Bearer, Ok(None)
+    | None, access.Bearer, Error(_)
+    -> evolution_store.Cli
   }
 }
 

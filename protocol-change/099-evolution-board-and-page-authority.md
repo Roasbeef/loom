@@ -36,7 +36,7 @@ completion reaches nobody.
 relay caps it at `Operator` (051). The evolution door maps `Participant(Operator)`
 to the store's session operator, and the store refuses that authority three
 things: approving or selecting a workspace program or an exact-model prompt,
-reading exact-model candidates at all, and every `core_*` action. The owner's own
+reading exact-model candidates proposed by another session, and every `core_*` action. The owner's own
 page could approve only this session's own extensions. 073 met the same wall for
 `approve scope:"session"` and `permissions`, and ruled that the gateway gates
 those by the principal's kind and not by the capped role. The evolution door
@@ -177,7 +177,7 @@ observer's board holds this session's candidates and the owner's holds all of
 them. The audit journal is daemon-wide, so history is filtered the same way
 before it is counted: an entry shows only when its scope is one the capability
 may read, and `omitted.history` never counts an entry of a scope the reader
-cannot see. An entry whose text does not parse has no scope and is the owner's.
+cannot see. An entry whose text does not parse has no scope and is the owner's. An operator also sees its own session's exact-model candidates, because the store admits those by origin, but it shows them with `selected: null` and no history even when one is the current selection, because the store refuses an operator that scope. That mirrors the `selected` read and the operator cannot act on that scope.
 Evidence rows are those the candidate has retained, newest first, with
 `observation` left out because one can be 64 KiB. Candidates are the store's 128
 at most; history is the newest 64 entries; `pending` is the queue's accepted and
@@ -246,7 +246,7 @@ confirm this ruling before the page that uses it ships; this change adds the
 authority and no page.
 
 The board's catalogue read is one lease and decodes every retained evidence row
-to find its candidate's, at most 256 rows. It runs on a page open, a push and a
+to find its candidate's, at most 256 rows. Decoding recomputes each row's content address over its whole observation, so a read hashes up to 16 MiB that it then discards. That is the price of reusing the verified decoder; an evidence index keyed by candidate is the remedy if a profile ever shows it. It runs on a page open, a push and a
 slow interval, never in a tight loop, and the lease is the same fenced one every
 catalogue operation takes.
 

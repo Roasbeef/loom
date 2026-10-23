@@ -36,6 +36,15 @@ pub type Status {
   Failed(reason: String)
 }
 
+/// How far an unfinished transition has got.
+pub type Phase {
+  /// Accepted, and not yet running.
+  Accepted
+
+  /// Staging is running under its deadline.
+  Staging
+}
+
 /// One transition the queue has accepted and not yet finished.
 ///
 /// The queue runs one job at a time, so a listing holds at most one of these.
@@ -45,8 +54,8 @@ pub type Waiting {
   Waiting(
     /// The operator's request identity.
     request_id: String,
-    /// `Queued` or `Running`; a finished job is not waiting.
-    status: Status,
+    /// Whether staging has begun. A finished job is not waiting.
+    phase: Phase,
     /// The candidate the transition would select.
     candidate_id: record.CandidateId,
     /// The absolute clock deadline after which publication is forbidden.
@@ -369,18 +378,21 @@ fn waiting(state: State) -> List(Waiting) {
   case state.active {
     Some(job) ->
       case job.receipt.status {
-        Queued(_) | Running(_) -> [
-          Waiting(
-            request_id: job.receipt.request_id,
-            status: job.receipt.status,
-            candidate_id: job.candidate_id,
-            expires_at: job.expires_at,
-          ),
-        ]
+        Queued(_) -> [waiting_job(job, Accepted)]
+        Running(_) -> [waiting_job(job, Staging)]
         Completed(_) | Failed(_) -> []
       }
     None -> []
   }
+}
+
+fn waiting_job(job: Job, phase: Phase) -> Waiting {
+  Waiting(
+    request_id: job.receipt.request_id,
+    phase:,
+    candidate_id: job.candidate_id,
+    expires_at: job.expires_at,
+  )
 }
 
 fn receipt(state: State, id: String) -> Option(Receipt) {

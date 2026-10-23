@@ -57,7 +57,7 @@ pub fn pending_lists_the_running_request_and_notice_follows_its_end_test() {
     Ok([
       queue.Waiting(
         request_id: "request",
-        status: queue.Running("request"),
+        phase: queue.Staging,
         candidate_id: selected.candidate_id,
         expires_at: 10_000,
       ),
