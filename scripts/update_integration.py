@@ -55,12 +55,15 @@ class UpdateTest(unittest.TestCase):
                                             'version': '0.3.0', 'commit': self.commit,
                                             'platform': 'linux-x86_64', 'artifacts': artifacts}))
 
-    def update(self, *arguments, success=True, install_only=True):
+    def update(self, *arguments, success=True, install_only=True, nightly=False):
         environment = os.environ.copy()
         environment['LOOM_BUILD_VERSION'] = '0.2.0'
         environment['LOOM_BUILD_PLATFORM'] = 'linux-x86_64'
         action = ['--install-only'] if install_only else []
-        result = subprocess.run(['gleam', 'run', '-m', 'tui', '--', 'update', '--from', str(self.dist),
+        module = 'update_github_probe_test' if nightly else 'tui'
+        selection = ['--nightly'] if nightly else ['--from', str(self.dist)]
+        environment['LOOM_UPDATE_FIXTURE_DIR'] = str(self.dist)
+        result = subprocess.run(['gleam', 'run', '-m', module, '--', *([] if nightly else ['update']), *selection,
                                  '--prefix', str(self.prefix), *action, *arguments],
                                 cwd=ROOT / 'packages/tui', env=environment, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
@@ -69,6 +72,27 @@ class UpdateTest(unittest.TestCase):
         else:
             self.assertNotEqual(result.returncode, 0, result.stdout)
         return result.stdout
+
+    def test_nightly_installs_published_main_build_and_rejects_tampering(self):
+        head = 'b' * 40
+        tag = 'commit-' + self.commit
+        document = json.loads(self.manifest.read_text())
+        document['tag'] = tag
+        self.manifest.write_text(json.dumps(document))
+        (self.dist / 'main.json').write_text(json.dumps({'sha': head}))
+        (self.dist / 'history.json').write_text(json.dumps([{'sha': head}, {'sha': self.commit}]))
+        (self.dist / 'releases.json').write_text(json.dumps([
+            {'tag_name': tag, 'draft': False, 'published_at': '2026-10-08T08:23:00Z', 'prerelease': True},
+        ]))
+        self.update('--check', nightly=True, install_only=False)
+        self.assertFalse(self.prefix.exists())
+        self.update(nightly=True)
+        installed = (self.prefix / 'lib/loom/server').resolve()
+        self.assertTrue((installed / 'bin/loomd').is_file())
+        archive = self.dist / 'loom-fixture-server.tar.gz'
+        archive.write_bytes(archive.read_bytes() + b'tampered')
+        self.update(nightly=True, success=False)
+        self.assertEqual((self.prefix / 'lib/loom/server').resolve(), installed)
 
     def test_check_is_noninteractive_and_does_not_create_installation_or_state(self):
         state = self.root / 'private-state'

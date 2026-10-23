@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -53,6 +54,22 @@ class StagingTest(unittest.TestCase):
             digest, name = line.split('  ')
             self.assertEqual(hashlib.sha256((upload / name).read_bytes()).hexdigest(), digest)
         self.assertEqual(set(json.loads((upload / 'reproduction.json').read_text())), {'linux-x86_64', 'macos-arm64'})
+
+    def test_commit_release_uses_package_version_and_binds_sha(self):
+        tag = 'commit-' + COMMIT
+        # A commit release takes its version from the client package, which moves with every release bump.
+        with (Path(__file__).resolve().parent.parent / 'packages/client/gleam.toml').open('rb') as stream:
+            version = tomllib.load(stream)['version']
+        for path in self.root.glob('release*/manifest-*.json'):
+            document = json.loads(path.read_text())
+            document['tag'] = tag
+            document['version'] = version
+            path.write_text(json.dumps(document))
+        staging.stage(self.root, self.root / 'upload', tag, COMMIT)
+        self.assertTrue((self.root / 'upload/SHA256SUMS').is_file())
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            staging.stage(self.root, self.root / 'wrong', 'commit-' + 'b' * 40, 'b' * 40)
+        self.assertFalse((self.root / 'wrong').exists())
 
     def test_matching_builds_cannot_claim_other_identity(self):
         for field, wrong in [('commit', 'b' * 40), ('tag', 'v0.3.0'), ('version', '0.3.0'), ('platform', 'linux-arm64')]:
