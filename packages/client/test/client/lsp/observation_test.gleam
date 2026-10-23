@@ -703,3 +703,86 @@ pub fn inferred_scope_selects_nested_worktree_owner_test() {
   assert string.contains(reason, "configured server fake at " <> nested)
   finish(manager, root)
 }
+
+pub fn single_variant_record_seed_coalesces_and_collects_both_reference_sets_test() {
+  let root = scratch()
+  let assert Ok(Nil) =
+    simplifile.write(
+      root <> "/a.gleam",
+      "pub type Participant {\n  Participant(id: String)\n}\n",
+    )
+    as "write single-variant record fixture"
+  let type_span = json.Object([#("start", position(9)), #("end", position(20))])
+  let ctor_pos =
+    json.Object([#("line", json.Int(1)), #("character", json.Int(2))])
+  let ctor_span =
+    json.Object([
+      #("start", ctor_pos),
+      #(
+        "end",
+        json.Object([#("line", json.Int(1)), #("character", json.Int(13))]),
+      ),
+    ])
+  let record_outline =
+    json.Array([
+      json.Object([
+        #("name", json.String("Participant")),
+        #("kind", json.Int(5)),
+        #("range", json.Object([#("start", position(0)), #("end", ctor_pos)])),
+        #("selectionRange", type_span),
+        #(
+          "children",
+          json.Array([
+            json.Object([
+              #("name", json.String("Participant")),
+              #("kind", json.Int(9)),
+              #("range", ctor_span),
+              #("selectionRange", ctor_span),
+              #("children", json.Array([])),
+            ]),
+          ]),
+        ),
+      ]),
+    ])
+  let #(manager, _fake) =
+    rig(root, fn(method, params) {
+      case method {
+        "textDocument/documentSymbol" -> fake_lsp.Answer(record_outline)
+        "textDocument/references" -> {
+          let raw = option.map(params, json.to_string) |> option.unwrap("")
+          case string.contains(raw, "\"line\":0") {
+            True ->
+              fake_lsp.Answer(
+                json.Array([
+                  json.Object([
+                    #("uri", json.String("file://" <> root <> "/a.gleam")),
+                    #("range", type_span),
+                  ]),
+                ]),
+              )
+            False ->
+              fake_lsp.Answer(
+                json.Array([
+                  json.Object([
+                    #("uri", json.String("file://" <> root <> "/a.gleam")),
+                    #("range", ctor_span),
+                  ]),
+                ]),
+              )
+          }
+        }
+        _ -> fake_lsp.Answer(json.Null)
+      }
+    })
+  let seed = query.SymbolQuery("pkg/a.Participant", Some("a.gleam"), None)
+  let assert Ok(served) = manager.door(manager).references(seed)
+    as "door.references coalesces type and constructor and unions their references"
+  assert list.map(served.value, fn(r) { r.site.line }) == [1, 2]
+  let requested = observation.Request("fake", root, [], [seed])
+  let assert Ok(batch) =
+    manager.observation_door(manager).collect(requested, control(5000))
+    as "observation seed coalesces type and constructor without ambiguity"
+  assert list.length(batch.targets) == 1
+  assert list.map(batch.references, fn(r) { r.site.line }) == [1, 2]
+  finish(manager, root)
+}

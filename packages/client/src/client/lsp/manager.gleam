@@ -106,7 +106,7 @@
 ////
 //// ```text
 //// start / supervised → builder → handle        (the manager actor)
-//// door → definition | references | hover | outline | calls
+//// door → definition | references → target_references | hover | outline | calls
 ////      | diagnostics | prepare_rename | after_write
 //// a path-scoped query:
 ////   session_for → owned → acquire → ask(Acquire) → handle
@@ -116,7 +116,9 @@
 ////   → resync (pull) → readied (cold query only) → the request
 ////   → sites / named_uri / gate → the door's answer
 //// a bare name: target → anywhere → searched → backend.search
-////   → resync → readied → definitions → defined_at
+////   → resync → readied → definitions → defined_at → coalesce_in_file
+//// an observation seed: collect_references → resolve_observed_target
+////   → observed_references
 //// a write: after_write → pushed → lsp.sync → lsp.settle → from_settlement
 //// session end: stop → ask(Shutdown) → handle
 //// ```
@@ -1144,9 +1146,15 @@ type Session {
   )
 }
 
-// A resolved question: the file and position the server is asked at.
+// A resolved question: the file, the primary position the server is asked at,
+// and any coalesced companion positions (such as a same-name constructor).
 type Target {
-  Target(session: Session, path: String, at: Position)
+  Target(
+    session: Session,
+    path: String,
+    at: Position,
+    companions: List(Position),
+  )
 }
 
 // Every door query below has the same shape, which is the one to learn
@@ -1175,10 +1183,7 @@ fn references(
 ) -> Result(Served(List(query.Reference)), QueryError) {
   use target <- result.try(target(manager, asked))
   let session = target.session
-  use locations <- result.try(
-    lsp.references(session.client, target.path, target.at, request_ms(session))
-    |> result.map_error(request_error(session, _)),
-  )
+  use locations <- result.try(target_references(target))
 
   let named =
     list.map(locations, fn(location) {
@@ -1217,6 +1222,23 @@ fn references(
       )
     })
   Ok(Served(value: found, warmth: session.warmth))
+}
+
+// Queries references at the target's primary position and any coalesced companion
+// positions (a type and its same-name constructor), deduplicating locations in order.
+fn target_references(target: Target) -> Result(List(Location), QueryError) {
+  let session = target.session
+  let positions = [target.at, ..target.companions]
+  use batches <- result.try(
+    list.try_map(positions, fn(at) {
+      lsp.references(session.client, target.path, at, request_ms(session))
+      |> result.map_error(request_error(session, _))
+    }),
+  )
+  case batches {
+    [single] -> Ok(single)
+    many -> Ok(list.unique(list.flatten(many)))
+  }
 }
 
 // Whether a failed request leaves the server worth asking the next one of
@@ -1865,7 +1887,7 @@ fn on_line(
     })
     |> result.replace_error(query.NotFound(query: asked, searched: None)),
   )
-  Ok(Target(session:, path: owned.path, at:))
+  Ok(Target(session:, path: owned.path, at:, companions: []))
 }
 
 fn in_outline(
@@ -1882,7 +1904,7 @@ fn in_outline(
   )
   let content = result.unwrap(resolve.read_text(owned.path), "")
   let found =
-    resolve.named(
+    resolve.in_file(
       symbols,
       symbol.identifier,
       symbol.qualifier,
@@ -1890,20 +1912,23 @@ fn in_outline(
       root: session.identity.root,
       path: owned.path,
       methods: resolve.method_names(server),
+      refine: refine(content, _, symbol.identifier),
     )
-    |> list.map(fn(entry) { refine(content, entry.1, symbol.identifier) })
-    |> list.unique
   case found {
     [] -> Error(query.NotFound(query: asked, searched: None))
-    [at] -> Ok(Target(session:, path: owned.path, at:))
+    [resolved] ->
+      Ok(Target(
+        session:,
+        path: owned.path,
+        at: resolved.at,
+        companions: resolved.companions,
+      ))
     many ->
       Error(
         query.Ambiguous(
-          candidates: list.map(many, resolve.site(
-            content,
-            shown(manager, owned.path),
-            _,
-          )),
+          candidates: list.map(many, fn(resolved) {
+            resolve.site(content, shown(manager, owned.path), resolved.at)
+          }),
         ),
       )
   }
@@ -1954,20 +1979,82 @@ fn anywhere(
         query: asked,
         searched: Some(searched_root(identity)),
       ))
-    [one] -> Ok(Target(session:, path: one.path, at: one.at))
-    many ->
-      Error(
-        query.Ambiguous(
-          candidates: list.map(many, fn(definition) {
-            let named = named_path(session, definition.path)
-            resolve.site(
-              named_text(named),
-              shown(manager, named.path),
-              definition.at,
+    [one] -> Ok(Target(session:, path: one.path, at: one.at, companions: []))
+    many -> coalesce_in_file(manager, session, asked, many)
+  }
+}
+
+// When every search-hit definition lands in the same file, consult that file's
+// outline so a type and its same-name constructor coalesce into one Target.
+fn coalesce_in_file(
+  manager: Manager,
+  session: Session,
+  asked: SymbolQuery,
+  many: List(Definition),
+) -> Result(Target, QueryError) {
+  let ambiguous = fn() {
+    Error(
+      query.Ambiguous(
+        candidates: list.map(many, fn(definition) {
+          let named = named_path(session, definition.path)
+          resolve.site(
+            named_text(named),
+            shown(manager, named.path),
+            definition.at,
+          )
+        }),
+      ),
+    )
+  }
+  case list.unique(list.map(many, fn(definition) { definition.path })) {
+    [one_path] -> {
+      let server = session.identity.server
+      let symbol = symbol_for(server, asked.symbol)
+      let named = named_path(session, one_path)
+      let content = named_text(named)
+      let resolved =
+        lsp.document_symbol(session.client, one_path, request_ms(session))
+        |> result.replace_error(Nil)
+        |> result.try(fn(symbols) {
+          let items =
+            resolve.in_file(
+              symbols,
+              symbol.identifier,
+              symbol.qualifier,
+              server.module_case,
+              root: session.identity.root,
+              path: one_path,
+              methods: resolve.method_names(server),
+              refine: refine(content, _, symbol.identifier),
             )
-          }),
-        ),
-      )
+          case items {
+            [only] -> {
+              let positions = [only.at, ..only.companions]
+              let all_coalesced =
+                list.all(many, fn(d) { list.contains(positions, d.at) })
+              let top_level_hit =
+                only.name == symbol.identifier
+                && list.any(many, fn(d) { d.at == only.at })
+              case all_coalesced || top_level_hit {
+                True -> Ok(only)
+                False -> Error(Nil)
+              }
+            }
+            _ -> Error(Nil)
+          }
+        })
+      case resolved {
+        Ok(only) ->
+          Ok(Target(
+            session:,
+            path: one_path,
+            at: only.at,
+            companions: only.companions,
+          ))
+        Error(Nil) -> ambiguous()
+      }
+    }
+    _ -> ambiguous()
   }
 }
 
@@ -3507,21 +3594,17 @@ fn collect_references(
     )),
   )
   let symbol = symbol_for(collection.session.identity.server, asked.symbol)
-  use #(collection, at) <- result.try(case asked.line {
+  use #(collection, at, companions) <- result.try(case asked.line {
     Some(line) ->
       text.symbol_position(file.content, line, symbol.identifier)
       |> result.replace_error(
         observation.QueryFailed(query.NotFound(asked, searched: None)),
       )
-      |> result.map(fn(at) { #(collection, at) })
+      |> result.map(fn(at) { #(collection, at, []) })
     None -> resolve_observed_target(collection, asked, file, symbol)
   })
-  use #(collection, left) <- result.try(request_slot(collection))
-  use locations <- result.try(
-    lsp.references(collection.session.client, file.path, at, left)
-    |> result.map_error(fn(error) {
-      observation.QueryFailed(request_error(collection.session, error))
-    }),
+  use #(collection, locations) <- result.try(
+    observed_references(collection, file.path, [at, ..companions]),
   )
   let target =
     observation.Target(
@@ -3576,6 +3659,33 @@ fn collect_references(
   })
 }
 
+// Collects references across a target's primary position and any coalesced
+// companion positions, charging one protocol request slot per position.
+fn observed_references(
+  collection: Collection,
+  path: String,
+  positions: List(Position),
+) -> Result(#(Collection, List(Location)), observation.Error) {
+  use #(collection, batches) <- result.try(
+    list.try_fold(positions, #(collection, []), fn(acc, at) {
+      let #(collection, batches) = acc
+      use #(collection, left) <- result.try(request_slot(collection))
+      use locations <- result.try(
+        lsp.references(collection.session.client, path, at, left)
+        |> result.map_error(fn(error) {
+          observation.QueryFailed(request_error(collection.session, error))
+        }),
+      )
+      Ok(#(collection, [locations, ..batches]))
+    }),
+  )
+  let locations = case list.reverse(batches) {
+    [single] -> single
+    many -> many |> list.flatten |> list.unique
+  }
+  Ok(#(collection, locations))
+}
+
 // A reference answer names the same few files many times over, and the gate
 // resolves a path's real location with one file-system call per path
 // component. Judging each distinct URI once per collection makes the cost of
@@ -3609,7 +3719,7 @@ fn resolve_observed_target(
   asked: SymbolQuery,
   file: ObservedFile,
   symbol: Symbol,
-) -> Result(#(Collection, Position), observation.Error) {
+) -> Result(#(Collection, Position, List(Position)), observation.Error) {
   use #(collection, symbols) <- result.try(observation_symbols(
     collection,
     file.path,
@@ -3620,7 +3730,7 @@ fn resolve_observed_target(
   use Nil <- result.try(valid_observed_positions(symbols, file.content))
   let server = collection.session.identity.server
   let found =
-    resolve.named(
+    resolve.in_file(
       symbols,
       symbol.identifier,
       symbol.qualifier,
@@ -3628,17 +3738,18 @@ fn resolve_observed_target(
       root: collection.session.identity.root,
       path: file.path,
       methods: resolve.method_names(server),
+      refine: refine(file.content, _, symbol.identifier),
     )
-    |> list.map(fn(entry) { refine(file.content, entry.1, symbol.identifier) })
-    |> list.unique
   case found {
     [] -> Error(observation.QueryFailed(query.NotFound(asked, searched: None)))
-    [at] -> Ok(#(collection, at))
+    [resolved] -> Ok(#(collection, resolved.at, resolved.companions))
     many ->
       Error(
         observation.QueryFailed(
           query.Ambiguous(
-            list.map(many, resolve.site(file.content, file.path, _)),
+            list.map(many, fn(resolved) {
+              resolve.site(file.content, file.path, resolved.at)
+            }),
           ),
         ),
       )

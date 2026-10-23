@@ -104,3 +104,155 @@ pub fn another_servers_dotted_names_keep_whole_name_matching_test() {
     )
   assert found == []
 }
+
+pub fn same_name_type_and_constructor_coalesce_in_file_test() {
+  let record_outline =
+    protocol.Hierarchical([
+      protocol.DocumentSymbol(
+        name: "Participant",
+        kind: 5,
+        detail: None,
+        range: range.Range(range.Position(10, 0), range.Position(14, 1)),
+        selection_range: range.Range(
+          range.Position(10, 9),
+          range.Position(10, 20),
+        ),
+        children: [
+          protocol.DocumentSymbol(
+            name: "Participant",
+            kind: 9,
+            detail: None,
+            range: range.Range(range.Position(11, 2), range.Position(13, 3)),
+            selection_range: range.Range(
+              range.Position(11, 2),
+              range.Position(11, 13),
+            ),
+            children: [],
+          ),
+        ],
+      ),
+    ])
+  let resolved =
+    resolve.in_file(
+      record_outline,
+      "Participant",
+      Some("model"),
+      profile.AsWritten,
+      root: "/w/packages/tui",
+      path: "/w/packages/tui/src/tui/mermaid/model.gleam",
+      methods: resolve.ExactNames,
+      refine: fn(pos) { pos },
+    )
+  assert resolved
+    == [
+      resolve.ResolvedSymbol("Participant", range.Position(10, 9), [
+        range.Position(11, 2),
+      ]),
+    ]
+  let explicit_ctor =
+    resolve.in_file(
+      record_outline,
+      "Participant",
+      Some("Participant"),
+      profile.AsWritten,
+      root: "/w/packages/tui",
+      path: "/w/packages/tui/src/tui/mermaid/model.gleam",
+      methods: resolve.ExactNames,
+      refine: fn(pos) { pos },
+    )
+  assert explicit_ctor
+    == [
+      resolve.ResolvedSymbol(
+        "Participant.Participant",
+        range.Position(11, 2),
+        [],
+      ),
+    ]
+}
+
+pub fn module_or_alias_qualifier_falls_back_in_named_file_test() {
+  let fn_outline = protocol.Hierarchical([entry("check_label", 40)])
+  list.each(
+    ["packages/tui/src/tui/mermaid/parse", "mermaid_parse", "p"],
+    fn(qualifier) {
+      let resolved =
+        resolve.in_file(
+          fn_outline,
+          "check_label",
+          Some(qualifier),
+          profile.AsWritten,
+          root: "/w/packages/tui",
+          path: "/w/packages/tui/src/tui/mermaid/parse.gleam",
+          methods: resolve.ExactNames,
+          refine: fn(pos) { pos },
+        )
+      assert resolved
+        == [resolve.ResolvedSymbol("check_label", range.Position(40, 20), [])]
+    },
+  )
+  let wrong_receiver =
+    resolve.in_file(
+      outline(),
+      "AcceptForScheme",
+      Some("Mux"),
+      profile.AsWritten,
+      root: "/w",
+      path: "/w/auth/multi_authenticator.go",
+      methods: resolve.ReceiverNames,
+      refine: fn(pos) { pos },
+    )
+  assert wrong_receiver == []
+}
+
+pub fn top_level_declaration_wins_over_nested_field_of_same_name_test() {
+  let mixed_outline =
+    protocol.Hierarchical([
+      protocol.DocumentSymbol(
+        name: "Data",
+        kind: 5,
+        detail: None,
+        range: range.Range(range.Position(1, 0), range.Position(6, 1)),
+        selection_range: range.Range(range.Position(1, 5), range.Position(1, 9)),
+        children: [
+          protocol.DocumentSymbol(
+            name: "Data",
+            kind: 9,
+            detail: None,
+            range: range.Range(range.Position(2, 2), range.Position(5, 3)),
+            selection_range: range.Range(
+              range.Position(2, 2),
+              range.Position(2, 6),
+            ),
+            children: [entry("opened", 3)],
+          ),
+        ],
+      ),
+      entry("opened", 50),
+    ])
+  let top_level =
+    resolve.in_file(
+      mixed_outline,
+      "opened",
+      None,
+      profile.AsWritten,
+      root: "/w",
+      path: "/w/src/manager.gleam",
+      methods: resolve.ExactNames,
+      refine: fn(pos) { pos },
+    )
+  assert top_level
+    == [resolve.ResolvedSymbol("opened", range.Position(50, 20), [])]
+  let field_only =
+    resolve.in_file(
+      mixed_outline,
+      "opened",
+      Some("Data"),
+      profile.AsWritten,
+      root: "/w",
+      path: "/w/src/manager.gleam",
+      methods: resolve.ExactNames,
+      refine: fn(pos) { pos },
+    )
+  assert field_only
+    == [resolve.ResolvedSymbol("Data.Data.opened", range.Position(3, 20), [])]
+}
