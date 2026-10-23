@@ -25,6 +25,7 @@
 //// names the file that moved:
 ////
 ////   2b425752c259520016e01882443af8a98dc30fff962f3235f417104f463afe63  packages/cap/src/cap/actor.gleam
+////   76b25f5eed3c61580383caf93aedb3da7ae37b78538291459eb3d5633ce23e5a  packages/cap/src/cap/evolution.gleam
 ////   c983a1d854d70c42e45e8d609bf12e6b909af10344a65a6fbc3f2cd5e4d24efa  packages/cap/src/cap/execution.gleam
 ////   cbd6841dc7f937beccf4e648b94e80c904099c90feecbdd7abef8fb8ede6015f  packages/cap/src/cap/fs.gleam
 ////   862cacde4152ef13b16e817de8ff0d3d73d4e5f53b751b2346e5e47cf89f2c54  packages/cap/src/cap/git.gleam
@@ -48,7 +49,7 @@
 ////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam
 ////   eefe3ffc20ce42f1645ccb4058927df05445301f4fb31aee2831c679c0385d37  packages/tools/dev/gen_prelude/wrap.gleam
 ////
-//// Body digest (every line after the marker): 20a677ab6c5e1ff9269151fb7cd66c2096e81d0c86da7f636d1339359b56f341
+//// Body digest (every line after the marker): d5eccd390a6c5119b1392dcafc04bfbb2300ad0f6e6b5c6d6cf744081c483295
 
 // --- generated body: the digests above cover every line below this one ---
 /// Every module of the capability prelude, in the order the
@@ -136,6 +137,152 @@ pub fn spawn(a, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 pub fn spawn_bounded(a, Int, fn(a, b) -> Next(a)) -> Result(Address(a, b), ActorError)
 /// Stop the actor after this message.
 pub fn stop() -> Next(a)
+",
+  ),
+  #(
+    "cap/evolution",
+    "### cap/evolution
+`cap/evolution` — governed self-extension, and the only model-facing route
+to it.
+
+/// Why an evolution call failed.
+pub type EvolutionError {
+  /// The catalogue refused the call in band. `code` is
+  /// `evolution_refused`; `message` names the refusal, for example
+  /// `Bounds`, `Authority`, `Stale` or `CoreChangeRequired`.
+  EvolutionDenied(code: String, message: String)
+  /// The capability channel could not carry the call.
+  EvolutionUnavailable(reason: String)
+}
+/// What a candidate is.
+pub type Kind {
+  /// A stateful or stateless tool the operator may promote into the
+  /// session.
+  Extension
+  /// A program run through code mode with fresh JSON input on each call.
+  Program
+  /// A system-prompt profile for the exact model; tested by comparison.
+  Prompt
+}
+/// Budget ceilings for a paired prompt comparison. Every field is
+/// required and may only lower the matching native ceiling.
+pub type Limits {
+  Limits(trials: Int, turns: Int, tokens: Int, dollars: Float, output_bytes: Int, wall_ms: Int)
+}
+/// The source a candidate is captured from.
+pub type Proposal {
+  Proposal(directory: String, name: String, kind: Kind, test_entry: option.Option(String), description: option.Option(String), input_schema: option.Option(String))
+}
+/// What `inspect` reads.
+pub type Target {
+  /// The immutable bytes of one candidate.
+  CandidateBytes(candidate_id: String)
+  /// One retained evidence envelope.
+  EvidenceBytes(evidence_id: String)
+}
+/// Lists the operator-selected candidates with the exact `candidate_id`,
+/// `generation` and input schema `invoke` needs, plus visible candidate
+/// metadata. `offset` pages callable entries, `candidate_offset` pages
+/// candidates, and `count` bounds the candidates per page. Capability:
+/// evolution.catalogue.
+///
+///  ## Examples
+///
+///  ```gleam
+///  evolution.catalogue(0, 0, 8)
+///  ```
+///
+pub fn catalogue(Int, Int, Int) -> Result(report.Value, EvolutionError)
+/// Runs a paired coding comparison for a `Prompt` candidate against an
+/// independently admitted task set, under `limits`. Capability:
+/// evolution.test.
+///
+///  ## Examples
+///
+///  ```gleam
+///  evolution.compare(\"candidate-id\", \"taskset-id\", evolution.native_limits())
+///  ```
+///
+pub fn compare(String, String, Limits) -> Result(report.Value, EvolutionError)
+/// A one-line rendering of an `EvolutionError`.
+///
+///  ## Examples
+///
+///  ```gleam
+///  assert evolution.error_text(evolution.EvolutionUnavailable(\"no channel\")) == \"evolution unavailable: no channel\"
+///  ```
+///
+///
+pub fn error_text(EvolutionError) -> String
+/// Reads one bounded base64 page of a candidate or of evidence. Start at
+/// offset 0 and pass back the returned `next_offset_bytes` to continue.
+/// Capability: evolution.inspect.
+///
+///  ## Examples
+///
+///  ```gleam
+///  evolution.inspect(evolution.CandidateBytes(\"candidate-id\"), 0)
+///  ```
+///
+pub fn inspect(Target, Int) -> Result(report.Value, EvolutionError)
+/// Calls tool `name` of a discovered candidate with fresh `arguments`
+/// under your current authority. Both `candidate_id` and `generation`
+/// must match the selection now in force; otherwise the call is refused
+/// as stale. Capability: evolution.invoke.
+///
+///  ## Examples
+///
+///  ```gleam
+///  evolution.invoke(\"candidate-id\", 1, \"tally\", report.object([#(\"path\", report.string(\"a.csv\"))]))
+///  ```
+///
+pub fn invoke(String, Int, String, report.Value) -> Result(report.Value, EvolutionError)
+/// The native ceilings, which a comparison uses when it names no limits.
+pub fn native_limits() -> Limits
+/// A proposal with only the required fields set; extend it with record
+/// update syntax.
+///
+///  ## Examples
+///
+///  ```gleam
+///  evolution.proposal(\"skills/tally\", \"tally\", evolution.Program)
+///  ```
+///
+pub fn proposal(String, String, Kind) -> Proposal
+/// Captures a workspace directory as an immutable candidate. The result
+/// carries the `candidate_id` that every later call names. Capability:
+/// evolution.propose.
+///
+///  ## Examples
+///
+///  ```gleam
+///  evolution.propose(evolution.proposal(\"skills/tally\", \"tally\", evolution.Program))
+///  ```
+///
+pub fn propose(Proposal) -> Result(report.Value, EvolutionError)
+/// Runs a candidate's author tests in the jail and retains the evidence.
+/// For a `Prompt` candidate use `compare`. Success does not approve or
+/// select anything. Capability: evolution.test.
+///
+///  ## Examples
+///
+///  ```gleam
+///  evolution.test_candidate(\"candidate-id\")
+///  ```
+///
+pub fn test_candidate(String) -> Result(report.Value, EvolutionError)
+/// Reads up to `limit` (1 to 32) bounded excerpts of this session's own
+/// transcript for the actual model, with usage and operator-marked
+/// outcomes. Thinking is excluded. Credential scrubbing is heuristic and
+/// can miss short unlabelled secrets. Capability: evolution.trace.
+///
+///  ## Examples
+///
+///  ```gleam
+///  evolution.trace(12)
+///  ```
+///
+pub fn trace(Int) -> Result(report.Value, EvolutionError)
 ",
   ),
   #(
@@ -3870,6 +4017,49 @@ pub type Next(a) {
 /// The handler answers it with `reply`; the program never sees a raw
 /// `Subject`.
 pub type Reply(a)
+",
+  ),
+  #(
+    "cap/evolution",
+    "### cap/evolution
+`cap/evolution` — governed self-extension, and the only model-facing route
+to it.
+
+/// Why an evolution call failed.
+pub type EvolutionError {
+  /// The catalogue refused the call in band. `code` is
+  /// `evolution_refused`; `message` names the refusal, for example
+  /// `Bounds`, `Authority`, `Stale` or `CoreChangeRequired`.
+  EvolutionDenied(code: String, message: String)
+  /// The capability channel could not carry the call.
+  EvolutionUnavailable(reason: String)
+}
+/// What a candidate is.
+pub type Kind {
+  /// A stateful or stateless tool the operator may promote into the
+  /// session.
+  Extension
+  /// A program run through code mode with fresh JSON input on each call.
+  Program
+  /// A system-prompt profile for the exact model; tested by comparison.
+  Prompt
+}
+/// Budget ceilings for a paired prompt comparison. Every field is
+/// required and may only lower the matching native ceiling.
+pub type Limits {
+  Limits(trials: Int, turns: Int, tokens: Int, dollars: Float, output_bytes: Int, wall_ms: Int)
+}
+/// The source a candidate is captured from.
+pub type Proposal {
+  Proposal(directory: String, name: String, kind: Kind, test_entry: option.Option(String), description: option.Option(String), input_schema: option.Option(String))
+}
+/// What `inspect` reads.
+pub type Target {
+  /// The immutable bytes of one candidate.
+  CandidateBytes(candidate_id: String)
+  /// One retained evidence envelope.
+  EvidenceBytes(evidence_id: String)
+}
 ",
   ),
   #(
