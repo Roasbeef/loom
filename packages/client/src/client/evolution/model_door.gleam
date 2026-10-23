@@ -66,33 +66,51 @@ pub fn tools(
         let policy = tool.read_requirements(workspace)
         policy.SandboxPolicy(..policy, readable_roots: [])
       },
-      run: fn(ctx, args) {
-        let result = {
-          use source <- result.try(source(ctx))
-          use target <- result.try(actual(ctx))
-          use requested <- result.try(tool.optional_int(args, "limit"))
-          let limit = case requested {
-            None -> 12
-            Some(limit) -> limit
-          }
-          use Nil <- result.try(case limit > 0 && limit <= 32 {
-            True -> Ok(Nil)
-            False -> Error("Bounds: trace limit must be from one to thirty-two")
-          })
-          use brief <- result.try(trace.select(
-            source,
-            target,
-            trace.Bounds(100, 256, limit, 1024, 32_768),
-          ))
-          Ok(encode_brief(brief))
-        }
-        case result {
-          Ok(value) -> tool.success(json.to_string(value))
-          Error(reason) -> tool.failure(reason)
-        }
-      },
+      run: trace_door(source, actual),
     ),
   ]
+}
+
+/// The trace door as a plain function of the dispatching context.
+///
+/// A tool declaration and a capability both call this, so the bounds, the
+/// native source-session binding and the encoding have one definition.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // model_door.trace_door(source_for_ctx, actual_model_for_ctx)(ctx, args)
+/// ```
+///
+pub fn trace_door(
+  source: fn(tool.Ctx) -> Result(session.Session, String),
+  actual: fn(tool.Ctx) -> Result(record.ModelScope, String),
+) -> fn(tool.Ctx, json.JsonValue) -> tool.ToolOutcome {
+  fn(ctx, args) {
+    let result = {
+      use source <- result.try(source(ctx))
+      use target <- result.try(actual(ctx))
+      use requested <- result.try(tool.optional_int(args, "limit"))
+      let limit = case requested {
+        None -> 12
+        Some(limit) -> limit
+      }
+      use Nil <- result.try(case limit > 0 && limit <= 32 {
+        True -> Ok(Nil)
+        False -> Error("Bounds: trace limit must be from one to thirty-two")
+      })
+      use brief <- result.try(trace.select(
+        source,
+        target,
+        trace.Bounds(100, 256, limit, 1024, 32_768),
+      ))
+      Ok(encode_brief(brief))
+    }
+    case result {
+      Ok(value) -> tool.success(json.to_string(value))
+      Error(reason) -> tool.failure(reason)
+    }
+  }
 }
 
 /// Decodes only a task-set identity and ceilings for the paired native evaluator.

@@ -6773,12 +6773,16 @@ fn open_evolution(
       failed,
     )
   let door =
-    evolution_tool.Door(..initial, catalogue: fn(ctx, args) {
-      case lookup(ctx) {
-        Error(error) -> failed(error)
-        Ok(visible) -> evolution_catalogue(live, visible, args, failed)
-      }
-    })
+    evolution_tool.Door(
+      ..initial,
+      catalogue: fn(ctx, args) {
+        case lookup(ctx) {
+          Error(error) -> failed(error)
+          Ok(visible) -> evolution_catalogue(live, visible, args, failed)
+        }
+      },
+      trace: evolution_model_door.trace_door(source, actual),
+    )
 
   Ok(EvolutionWiring(
     live:,

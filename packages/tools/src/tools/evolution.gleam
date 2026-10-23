@@ -10,7 +10,8 @@ import gleam/list
 import gleam/option.{Some}
 import tools/tool.{type Ctx, type Tool, type ToolOutcome}
 
-/// The host-owned lifecycle doors. No operator authority crosses this seam.
+/// The host-owned lifecycle doors: five over the catalogue and one over the
+/// session's own transcript. No operator authority crosses this seam.
 pub type Door {
   Door(
     /// Captures authorized source into an immutable proposal.
@@ -23,6 +24,8 @@ pub type Door {
     catalogue: fn(Ctx, JsonValue) -> ToolOutcome,
     /// Calls an exact discovered candidate under the current caller's policy.
     invoke: fn(Ctx, JsonValue) -> ToolOutcome,
+    /// Reads bounded excerpts of the session's own transcript.
+    trace: fn(Ctx, JsonValue) -> ToolOutcome,
   )
 }
 
@@ -217,6 +220,7 @@ pub fn names() -> List(String) {
     inspect: unreachable,
     catalogue: unreachable,
     invoke: unreachable,
+    trace: unreachable,
   ))
   |> list.map(fn(declared) { declared.name })
 }

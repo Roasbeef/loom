@@ -10,7 +10,14 @@ pub fn prompt_evaluation_schema_admits_native_taskset_and_exact_limits_test() {
   let unused = fn(_, _) { tool.failure("schema test does not execute effects") }
   let registry =
     tool.registry(
-      evolution.tools(evolution.Door(unused, unused, unused, unused, unused)),
+      evolution.tools(evolution.Door(
+        unused,
+        unused,
+        unused,
+        unused,
+        unused,
+        unused,
+      )),
     )
   let assert Ok(declared) = tool.lookup(registry, "evolution_test")
     as "the production lifecycle registry advertises its evaluation tool"
