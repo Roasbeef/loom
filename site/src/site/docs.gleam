@@ -58,6 +58,11 @@ pub fn pages() -> List(Page) {
       "Orchestrators, executors, pools and moving a session, and what a remote session cannot do yet.",
     ),
     Page(
+      "self-evolution",
+      "Self-evolution",
+      "Let an agent write extensions, programs and prompt profiles, and let you test, approve and select them while the session runs.",
+    ),
+    Page(
       "terminal-and-web",
       "Terminal and web view",
       "Use Loom from the terminal, a browser, or both.",

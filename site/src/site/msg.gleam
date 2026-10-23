@@ -9,6 +9,7 @@ pub type FigureId {
   Approval
   CodeMode
   Migration
+  Evolution
 }
 
 /// What the visitor can answer at the replay's approval dialog.
@@ -84,6 +85,7 @@ pub fn figure_key(id: FigureId) -> String {
     Approval -> "approval"
     CodeMode -> "code-mode"
     Migration -> "migration"
+    Evolution -> "evolution"
   }
 }
 
@@ -94,6 +96,7 @@ pub fn figure_from_key(key: String) -> Result(FigureId, Nil) {
     "approval" -> Ok(Approval)
     "code-mode" -> Ok(CodeMode)
     "migration" -> Ok(Migration)
+    "evolution" -> Ok(Evolution)
     _ -> Error(Nil)
   }
 }

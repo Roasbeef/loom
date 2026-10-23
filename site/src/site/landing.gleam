@@ -17,8 +17,8 @@
 //// - `sections` is the list the sidebar and the scroll spy share.
 //// - `view` is the page: header, hero, at-a-glance facts, then the sidebar
 ////   beside the sections.
-//// - `story` is one figure's section; `multiplayer`, `clients`, `more`,
-////   `status` and `install` are the rest.
+//// - `story` is one figure's section; `multiplayer`, `evolution`, `clients`,
+////   `more`, `status` and `install` are the rest.
 
 import gleam/list
 import lustre/attribute.{attribute}
@@ -51,6 +51,7 @@ pub fn sections() -> List(Section) {
     Section("clients", "Terminal and web"),
     Section("sandbox", "Sandboxing"),
     Section("code-mode", "Code mode"),
+    Section("evolution", "Self-evolution"),
     Section("more", "Also in Loom"),
     Section("status", "Platforms and status"),
     Section("install", "Install"),
@@ -125,6 +126,7 @@ pub fn view(model: Model) -> Element(Msg) {
             ],
             msg.CodeMode,
           ),
+          evolution(),
           more(),
           status(),
           install(model),
@@ -315,6 +317,23 @@ fn multiplayer() -> Element(Msg) {
           "Two people can drive one agent session, or one drives and others watch. The owner invites operators, who can direct the work and answer approvals, and observers, who can only watch. Everyone you invite attaches from their own terminal or browser and sees the transcript and tool steps live, and every command is tagged with who sent it. [The multiplayer guide]("
           <> release.source("docs/guide/multiplayer.md")
           <> ") walks through it.",
+        ),
+      ),
+    ]),
+  ])
+}
+
+fn evolution() -> Element(Msg) {
+  html.section([attribute.class("story"), attribute.id("evolution")], [
+    html.div([attribute.class("story-head")], [
+      html.p([attribute.class("kicker")], [element.text("Self-evolution")]),
+      html.h2([], [
+        element.text("The agent can extend itself, under your approval"),
+      ]),
+      html.p(
+        [],
+        inline.render(
+          "An agent can write an extension, a code-mode program or a prompt profile for its own model. You approve the exact version, so the model cannot approve its own work. A running session switches to a new extension or program without restarting, and a prompt profile applies to the next session. The agent's code is tested and run in jailed satellites, separate BEAM nodes in kernel sandboxes, and never in the harness VM. An extension that opts in keeps its process, mailbox and state across the swap, through `sys:suspend`, `sys:change_code` and `sys:resume`. The same path can replace one harness component, the scratch store, but only with a reviewed release build and never a candidate, and none has been released yet. It works today for sessions on a local workspace with code mode available, not yet on executors. [How governed self-evolution works](#/docs/self-evolution).",
         ),
       ),
     ]),
