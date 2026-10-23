@@ -66,6 +66,15 @@ pub type Copy {
   CopyRefused
 }
 
+/// Whether the diagram box is inline in the transcript or expanded to full screen.
+pub type ViewMode {
+  /// Rendered inline inside the transcript column.
+  Inline
+
+  /// Expanded to a full-viewport overlay.
+  Expanded
+}
+
 /// The DOM resources owned by a connected element.
 pub type Resources {
   Resources(
@@ -99,6 +108,8 @@ pub type Model {
     resources: Option(Resources),
     /// Fixed feedback for an explicit copy press.
     copy: Copy,
+    /// Whether the diagram is inline or expanded to full screen.
+    view_mode: ViewMode,
   )
 }
 
@@ -131,6 +142,9 @@ pub type Msg {
   /// The reader pressed Copy source.
   CopyPressed
 
+  /// The reader pressed Expand or Collapse.
+  ToggleExpand
+
   /// The browser completed that clipboard write.
   Written(revision: Int, outcome: Result(Nil, Nil))
 }
@@ -151,7 +165,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
 }
 
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
-  #(Model(rule.new(), Loading, Distant, None, Untouched), effect.none())
+  #(Model(rule.new(), Loading, Distant, None, Untouched, Inline), effect.none())
 }
 
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
@@ -170,7 +184,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           rule.Empty,
         )
       #(
-        Model(diagram, Loading, Distant, None, Untouched),
+        Model(diagram, Loading, Distant, None, Untouched, Inline),
         cleanup(model.resources),
       )
     }
@@ -194,6 +208,13 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
     CopyPressed -> #(model, copy(model.diagram))
+    ToggleExpand -> {
+      let next_mode = case model.view_mode {
+        Inline -> Expanded
+        Expanded -> Inline
+      }
+      #(Model(..model, view_mode: next_mode), effect.none())
+    }
     Written(revision, outcome) -> {
       let notice = case outcome {
         Ok(Nil) -> Copied
@@ -418,11 +439,38 @@ fn view(model: Model) -> Element(Msg) {
     CopyRefused -> "Copy unavailable — select source"
   }
 
-  html.div([attribute.class("mermaid-box")], [
+  let box_class = case model.view_mode, model.diagram.phase {
+    Expanded, rule.Shown(_) -> "mermaid-box mermaid-box-expanded"
+    _, _ -> "mermaid-box"
+  }
+  let #(expand_label, aria_expanded) = case model.view_mode {
+    Inline -> #("Expand", "false")
+    Expanded -> #("Collapse", "true")
+  }
+  let expand_button = case model.diagram.phase {
+    rule.Shown(_) ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.attribute("aria-expanded", aria_expanded),
+          event.on_click(ToggleExpand),
+        ],
+        [html.text(expand_label)],
+      )
+    rule.Empty
+    | rule.Waiting
+    | rule.Rendering
+    | rule.TooLarge
+    | rule.Unavailable -> element.none()
+  }
+  html.div([attribute.class(box_class)], [
     html.div([attribute.class("mermaid-toolbar")], [
       html.span([], [html.text(status(model.diagram.phase))]),
-      html.button([attribute.type_("button"), event.on_click(CopyPressed)], [
-        html.text(label),
+      html.div([attribute.class("mermaid-actions")], [
+        expand_button,
+        html.button([attribute.type_("button"), event.on_click(CopyPressed)], [
+          html.text(label),
+        ]),
       ]),
     ]),
     case model.distance, model.diagram.phase {

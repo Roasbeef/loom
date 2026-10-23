@@ -124,6 +124,15 @@ pub fn limits_and_configuration_test() {
   controller.reply_json(controller.RenderedReply(4, 300))
   |> string.contains("\"height\":300")
   |> should.be_true
+  controller.configuration(controller.Dark)
+  |> string.contains("\"wrappingWidth\":320")
+  |> should.be_true
+  controller.normalize_source(
+    "flowchart LR\n  CFG[\"client/catalog.gleam<br/>[mcp.<name>]<br/><state_root>\"]\n  A -->|ok| B",
+  )
+  |> should.equal(
+    "flowchart LR\n  CFG[\"client/catalog.gleam<br/>[mcp.&lt;name&gt;]<br/>&lt;state_root&gt;\"]\n  A -->|ok| B",
+  )
 }
 
 fn request_json(revision: Int, theme: String, source: String) -> String {

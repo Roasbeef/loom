@@ -6007,9 +6007,9 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   the manager's `Phase` (`Idle`, `Starting`, `Running`) and the keeper's
   `KeeperPhase` (`AwaitingPrevious`, `Beginning`, `Holding`); the state,
   message and keeper types sit before the first function.
-- `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, owner, admit,
-  same, display, split_symbol, cased, satisfies, named, container,
-  outline, site}` — the pure half: which `{server, root}` owns a path
+- `client/lsp/resolve.{Identity, Owned, Unowned, Symbol, ResolvedSymbol, owner,
+  admit, same, display, split_symbol, cased, satisfies, in_file, named,
+  container, outline, site}` — the pure half: which `{server, root}` owns a path
   (nearest root marker, real path under the root; an absolute path is
   placed under the workspace as written or its real location, since the
   write observer hands over real paths), which server-named paths the
@@ -6018,7 +6018,13 @@ such as `lsp_go` in them is a fixture's, not a dependency on that repository.
   first, segments joined with `/`), which definition a qualifier selects
   (`satisfies(root, path, qualifier, module_case)`, the module-path match
   `cased` to snake_case under `Snake`; `named` compares an outline parent
-  chain with the qualifier as written), and how a location renders as
+  chain with the qualifier as written; `in_file` falls back when a lowercase
+  module/path/alias qualifier misses in an explicitly named file, coalesces
+  same-name parent+child declarations such as Gleam record types and their
+  constructors into `ResolvedSymbol(name, at, companions)` so `references`
+  and `observation` union both without failing as `Ambiguous`, and prefers a
+  unique top-level declaration over nested fields of other types), and how a
+  location renders as
   `path:line:anchor|text`. The manager splits a symbol only once it knows
   the owning server: after `owner` for a path, per server for a bare-name
   search. A document's `languageId` is `LspServer.language_id`.

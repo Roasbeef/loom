@@ -41,7 +41,7 @@ command = [\"gleam\", \"lsp\"]
 extensions = [\".gleam\"]
 root_markers = [\"gleam.toml\"]
 project = \"writable\"
-hint = \"Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module\"
+hint = \"Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module; when a file path is given, a bare name resolves directly in its outline\"
 
 [lsp.go]
 command = [\"gopls\"]
@@ -99,7 +99,8 @@ pub fn documented_servers_parse_to_exact_records_test() {
         module_case: profile.AsWritten,
         hint: Some(
           "Qualify a name with its module as imported: probe.greet, or"
-          <> " pkg/mod.name for a nested module",
+          <> " pkg/mod.name for a nested module; when a file path is given, a"
+          <> " bare name resolves directly in its outline",
         ),
       ),
       profile.LspServer(

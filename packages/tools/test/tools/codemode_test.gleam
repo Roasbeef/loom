@@ -2481,6 +2481,29 @@ pub fn the_lsp_sql_recipe_appears_once_however_many_seams_admit_it_test() {
     == 1
 }
 
+pub fn the_lsp_edit_recipe_needs_every_module_and_diagnostics_cap_test() {
+  let imports = [
+    "cap/fs", "cap/lsp", "cap/report", "gleam/int", "gleam/list", "gleam/option",
+    "gleam/string",
+  ]
+  let offer =
+    codemode.SeamOffer(
+      ..workspace_offer(),
+      allowed_imports: imports,
+      serviced_caps: ["lsp.diagnostics"],
+    )
+  assert occurrences(
+      codemode.description(echoing_over(codemode.one_seam(offer))),
+      codemode_recipes.lsp_edit(),
+    )
+    == 1
+  let without_cap = codemode.SeamOffer(..offer, serviced_caps: [])
+  assert !string.contains(
+    codemode.description(echoing_over(codemode.one_seam(without_cap))),
+    "LSP edit recipe",
+  )
+}
+
 // --- the last failing command -----------------------------------------------
 
 fn failure_record() -> proc_failure.ProcFailure {

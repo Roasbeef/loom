@@ -42,6 +42,19 @@ pub fn lsp_sql_skeleton() -> String {
   "import cap/lsp_sql\nimport cap/report\nimport gleam/int\nimport gleam/list\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  let file = \"auth/multi_authenticator.go\"\n  let seeds = [\n    lsp_sql.target(\"MultiAuthenticator.AcceptForScheme\", file),\n    lsp_sql.target_at(\"AcceptForScheme\", file, 69),\n  ]\n  case lsp_sql.collect_seeds([], seeds) {\n    Error(error) -> report.failure(lsp_sql.error_text(error))\n    Ok(observation) ->\n      case lsp_sql.references(observation) {\n        Error(error) -> report.failure(lsp_sql.query_error_text(error))\n        Ok(references) ->\n          report.text(\n            references\n            |> list.map(fn(reference) {\n              reference.symbol\n                <> \" \"\n                <> reference.path\n                <> \":\"\n                <> int.to_string(reference.line)\n                <> \": \"\n                <> string.trim(reference.text)\n            })\n            |> string.join(\"\\n\"),\n          )\n      }\n  }\n}\n"
 }
 
+/// A complete `cap/fs` + `cap/lsp` program that applies an exact substring edit
+/// and immediately checks settled diagnostics in the same invocation. The
+/// codemode end-to-end test compiles this exact string.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Submit lsp_edit() as code_mode's program with seam: "workspace".
+/// ```
+pub fn lsp_edit() -> String {
+  "import cap/fs\nimport cap/lsp\nimport cap/report\nimport gleam/int\nimport gleam/list\nimport gleam/option.{Some}\nimport gleam/string\n\npub fn main() -> report.Outcome {\n  let path = \"src/app.gleam\"\n  let edits = [fs.Replacement(find: \"old_call()\", replace_with: \"new_call()\")]\n  case fs.edit(path, edits) {\n    Error(error) -> report.failure(fs.error_text(error))\n    Ok(Nil) ->\n      case lsp.diagnostics(Some(path)) {\n        Ok(lsp.Settled([])) -> report.text(\"clean\")\n        Ok(lsp.Settled(diagnostics)) | Ok(lsp.Unsettled(diagnostics)) ->\n          report.text(\n            diagnostics\n            |> list.map(fn(d) {\n              d.site.path <> \":\" <> int.to_string(d.site.line) <> \": \" <> d.message\n            })\n            |> string.join(\"\\n\"),\n          )\n        Error(error) -> report.failure(lsp.error_text(error))\n      }\n  }\n}\n"
+}
+
 /// A complete shell-probe program: independent `proc.stdout` probes whose
 /// failures stay local to their own section, and one `gh --json` call decoded
 /// into typed rows with `json.parse` and filtered in the program. The same
