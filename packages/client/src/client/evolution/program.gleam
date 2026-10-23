@@ -3,6 +3,7 @@
 //// admission, vetting, compilation and jail pipeline with fresh JSON input.
 
 import client/codemode
+import client/evolution/evaluate
 import client/evolution/record
 import client/evolution/retirement
 import client/evolution/store
@@ -62,14 +63,16 @@ pub fn invoke(
   Ok(codemode.execute(host, request))
 }
 
-/// Runs vetted source through a native owned runner before persisting evidence.
+/// Runs vetted source through a native owned runner and answers its report.
 ///
 /// A skill's test_entry names a zero-argument function in program.gleam whose
 /// result is report.Outcome. Invocation and testing both re-vet and recompile.
 ///
 /// The runner preserves the caller's capability router while its native owner
 /// isolates compiler and satellite artifacts. Retirement still happens once on
-/// every outcome, including rejected source and interrupted execution.
+/// every outcome, including rejected source and interrupted execution, and it
+/// happens before the report is answered. The caller records the report with
+/// `evaluate.record`.
 ///
 /// ## Examples
 ///
@@ -79,7 +82,7 @@ pub fn test_with(
   id: record.CandidateId,
   run: fn(String) -> Result(surface.Execution, store.Refusal),
   retire: retirement.Task,
-) -> Result(record.Evidence, store.Refusal) {
+) -> Result(evaluate.Report, store.Refusal) {
   let observed = test_execution(catalogue, id, run)
   use Nil <- result.try(
     retirement.perform(retire)
@@ -87,40 +90,53 @@ pub fn test_with(
       store.CleanupUnconfirmed(failure.reason, failure.retry)
     }),
   )
-  use #(verdict, observation) <- result.try(case observed {
-    Ok(execution) -> {
-      let verdict = case execution.result {
-        surface.Ran(surface.Completed(_), _) -> record.Passed
-        surface.Ran(surface.Errored(_, _), _)
-        | surface.VetRejected(_)
-        | surface.CompileFailed(_) -> record.Failed
-        surface.RunFailed(_) ->
-          record.Inconclusive("jailed skill test did not complete")
-      }
-      Ok(#(
-        verdict,
-        json.to_string(
-          json.object([
-            #("execution", json.string(string.inspect(execution.result))),
-            #("enforcement", json.string(string.inspect(execution.enforcement))),
-            #("retirement", json.string("native executor close confirmed")),
-          ]),
-        ),
-      ))
-    }
-    Error(store.TestFailed(reason)) ->
-      Ok(#(
-        record.Failed,
-        json.to_string(json.object([#("refusal", json.string(reason))])),
-      ))
-    Error(store.Unavailable(reason)) ->
-      Ok(#(
-        record.Inconclusive(reason),
-        json.to_string(json.object([#("refusal", json.string(reason))])),
-      ))
-    Error(refusal) -> Error(refusal)
-  })
-  store.record_evidence(catalogue, id, record.AuthorTests, verdict, observation)
+  evaluate.report_of(result.map(observed, executed))
+}
+
+fn executed(execution: surface.Execution) -> #(record.Verdict, String) {
+  let verdict = case execution.result {
+    surface.Ran(surface.Completed(_), _) -> record.Passed
+
+    surface.Ran(surface.Errored(_, _), _)
+    | surface.VetRejected(_)
+    | surface.CompileFailed(_) -> record.Failed
+
+    surface.RunFailed(_) ->
+      record.Inconclusive("jailed skill test did not complete")
+  }
+  #(
+    verdict,
+    json.to_string(
+      json.object([
+        #("execution", json.string(string.inspect(execution.result))),
+        #("enforcement", json.string(string.inspect(execution.enforcement))),
+        #("retirement", json.string("native executor close confirmed")),
+      ]),
+    ),
+  )
+}
+
+/// Words a program's execution as the tool outcome its caller sees.
+///
+/// A completed run is a success and every other result is a failure; both
+/// carry the execution's JSON value as text and as details. The outcome is
+/// plain data, so a machine on another host can answer the same value.
+///
+/// ## Examples
+///
+/// `outcome(execution)` is `tool.success(..)` for a completed run.
+pub fn outcome(execution: surface.Execution) -> tool.ToolOutcome {
+  let rendered = surface.execution_value(execution)
+  let outcome = case execution.result {
+    surface.Ran(surface.Completed(_), _) ->
+      tool.success(value.to_string(rendered))
+
+    surface.Ran(surface.Errored(_, _), _)
+    | surface.VetRejected(_)
+    | surface.CompileFailed(_)
+    | surface.RunFailed(_) -> tool.failure(value.to_string(rendered))
+  }
+  tool.with_details(outcome, rendered)
 }
 
 fn test_execution(

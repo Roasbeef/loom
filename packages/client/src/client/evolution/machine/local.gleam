@@ -463,7 +463,7 @@ pub fn evaluate_candidate(
   ctx: tool.Ctx,
   catalogue: store.Store,
   id: record.CandidateId,
-) -> Result(record.Evidence, store.Refusal) {
+) -> Result(evaluate.Report, store.Refusal) {
   let directory =
     config.scratch
     <> "/tests-"
@@ -501,7 +501,7 @@ fn evaluate_kind(
   base: policy.SandboxPolicy,
   plane: Plane,
   candidate: Result(record.Candidate, store.Refusal),
-) -> Result(record.Evidence, store.Refusal) {
+) -> Result(evaluate.Report, store.Refusal) {
   case candidate {
     Error(error) -> failed(plane, error)
     Ok(candidate) ->
@@ -636,14 +636,15 @@ fn cleaning(plane: Plane, directory: String) -> Plane {
 ///
 /// ## Examples
 ///
-/// `local.invoke_program(config, store, selection, ctx, input)` closes its pool.
+/// `local.invoke_program(config, store, selection, ctx, input)` closes its pool
+/// and answers the outcome the model sees.
 pub fn invoke_program(
   config: Config,
   catalogue: store.Store,
   selection: record.Selection,
   ctx: tool.Ctx,
   input: json.JsonValue,
-) -> Result(codemode_tool.Execution, store.Refusal) {
+) -> Result(tool.ToolOutcome, store.Refusal) {
   use candidate <- result.try(store.authorized(catalogue, selection))
   use Nil <- result.try(case candidate.kind {
     record.Program -> Ok(Nil)
@@ -684,7 +685,7 @@ pub fn invoke_program(
       store.CleanupUnconfirmed(failure.reason, failure.retry)
     }),
   )
-  ran
+  result.map(ran, program.outcome)
 }
 
 fn private_program(

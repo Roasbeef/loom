@@ -84,7 +84,10 @@ exact receipt before applying that check.
 `machine` is the one seam between evolution's authority (catalogue, selection,
 `live`, `hook`, the doors) and the machine that holds the workspace: a record of
 `identity`, `snapshot`, `evaluate`, `stage` and `run_program`. It holds no
-catalogue; each call that needs one is handed it. `machine/local` is the former
+catalogue; each call that needs one is handed it. Its answers are plain data:
+`evaluate` returns an `evaluate.Report` that `serve` writes with
+`evaluate.record`, and `run_program` returns the `tool.ToolOutcome`
+(`program.outcome`). `machine/local` is the former
 `native` module and builds the record for a workspace in this VM; `serve` builds
 one per session. Generations keep their own `tools`, `hooks`, `inventory`,
 `mode` and `retire`, so the seam has no invoke or retire function. Prompt trials
