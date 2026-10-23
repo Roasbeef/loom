@@ -175,6 +175,86 @@ MUTATIONS = {
      "      }\n"
      "    }\n",
      "")]),
+
+  # --- the evolution path (protocol-change/098, proposed) ----------------------
+
+  # EvolutionStage is idempotent by (candidate, generation). Here a re-send, or
+  # a stage from a restarted runtime, starts a second generation.
+  "M13-stage-not-idempotent": ("tcOnlyOneServingGeneration", 20000, r"generations serve at once", [
+    ("PSrc/Evolution.p",
+     "    h = findServing(m.gen);\n",
+     "    h = 0;\n")]),
+
+  # EvolutionPublish is idempotent: a second publish answers the same receipt.
+  # Here a re-sent publish applies the migration again.
+  "M14-publish-not-idempotent": ("tcOnlyMigrationOnce", 20000, r"was applied twice", [
+    ("PSrc/Evolution.p",
+     "    if (tr.phase == TR_PREPARED) {\n      applyPublish(m, tr);",
+     "    if (tr.phase != TR_ABORTED) {\n      applyPublish(m, tr);")]),
+
+  # EvolutionAbort names its successor and a published transition refuses it
+  # (AlreadyPublished). Here an abort is matched by handle alone and applied
+  # to a published transition, so a dead runtime's late abort of a replaced
+  # successor undoes the publish of the one that replaced it.
+  "M15-abort-after-publish": ("tcOnlyNoAbortAfterPublish", 20000, r"was applied after its publish", [
+    ("PSrc/Evolution.p",
+     "    if (!(m.handle in trans) || trans[m.handle].succ != m.succ) {\n      announce eAbortStale",
+     "    if (!(m.handle in trans)) {\n      announce eAbortStale"),
+    ("PSrc/Evolution.p",
+     "    if (tr.phase == TR_PUBLISHED) {\n      announce eAbortRefused",
+     "    if (false) {\n      announce eAbortRefused")]),
+
+  # An attach at a higher incarnation retires the generations of the one
+  # before. Here they are kept.
+  "M16-attach-keeps-generations": ("tcOnlyGenerationsFollowTheScope", 20000, r"outlived the (attach|close)", [
+    ("PSrc/Evolution.p",
+     "    if (m.inc > scopeInc) {\n      retireAll();\n      scopeInc = m.inc;",
+     "    if (m.inc > scopeInc) {\n      scopeInc = m.inc;")]),
+
+  # Every message that acts on a scope is admitted only for the scope's token.
+  # Here a publish is admitted for any token at the right incarnation.
+  "M17-publish-accepts-stale-token": ("tcOnlyStaleMessageActsNothing", 20000, r"acted for incarnation", [
+    ("PSrc/Evolution.p",
+     "v = admit(m, OP_PUBLISH, true);",
+     "v = admit(m, OP_PUBLISH, false);")]),
+
+  # An unconfirmed retirement keeps the cleanup obligation. Here the live owner
+  # drops the obligation on UnknownCleanup as it does on AllRetired.
+  "M18-unknown-cleanup-forgotten": ("tcOnlyCleanupCustody", 20000, r"dropped before its retirement", [
+    ("PSrc/Evolution.p",
+     "        } else if (m.verdict == V_UNKNOWN_CLEANUP) {\n          request(K_E_RETIRE, 0, queue[0], 0);",
+     "        } else if (m.verdict == V_UNKNOWN_CLEANUP) {\n          announce eObligationDropped, queue[0];\n          queue -= (0);\n          startRetire();")]),
+
+  # The publish follows a committed compare-and-set. Here a rejected one
+  # publishes too, so the executor serves generation 2 under selection 1.
+  "M19-publish-after-rejected-cas": ("tcOnlyExecutorNeverAhead", 20000, r"while the catalogue selects", [
+    ("PSrc/Evolution.p",
+     "      } else if (r.result == CAS_REJECTED) {\n        startAbort();",
+     "      } else if (r.result == CAS_REJECTED) {\n        startPublish();")]),
+
+  # A stage supersedes a prepared successor of its generation and never joins
+  # it. Here it joins, so a new open that stages the selection a dead owner
+  # committed gets the prepared, non-serving successor and the executor serves
+  # generation 1 while the catalogue selects 2.
+  "M20-stage-joins-prepared": ("tcOnlyServedConverges", 20000, r"liveness bug", [
+    ("PSrc/Evolution.p",
+     "    h = findServing(m.gen);\n    if (h != 0) {\n      announce eStageJoined",
+     "    h = findGen(m.gen);\n    if (h != 0) {\n      announce eStageJoined")]),
+
+  # The selection's generation only increases, so a stage for an older
+  # generation than a live one is refused. Here a dead runtime's late stage
+  # starts generation 1 beside the published generation 2.
+  "M21-stage-accepts-older-generation": ("tcOnlyOneServingGeneration", 20000, r"generations serve at once", [
+    ("PSrc/Evolution.p",
+     "    if (newerThan(m.gen)) {",
+     "    if (false) {")]),
+
+  # EvolutionRetire is admitted by token like the rest. Here a dead runtime's
+  # retire is admitted.
+  "M22-retire-accepts-stale-token": ("tcOnlyStaleMessageActsNothing", 20000, r"acted for incarnation", [
+    ("PSrc/Evolution.p",
+     "v = admit(m, OP_RETIRE, true);",
+     "v = admit(m, OP_RETIRE, false);")]),
 }
 
 

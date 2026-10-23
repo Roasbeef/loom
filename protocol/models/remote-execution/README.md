@@ -394,6 +394,162 @@ router (`client/remote/owner_link_test`); the idle expiry, which closes a record
 as the deadline does; the result size limit; and MCP, which is configuration
 and placement rather than protocol.
 
+## The evolution path (proposed)
+
+`protocol-change/098-remote-evolution.md` proposes governed evolution on a remote
+workspace: the orchestrator keeps the catalogue, the executor stages, publishes
+and retires the generations. None of the code exists yet, so this section maps
+the model to the proposal's names, not to files and lines, and the model is a
+check of the proposal's design, not of an implementation. It follows the local
+code where 098 says the remote path keeps the local contract.
+
+The model does not repeat `EvolutionRun`. It is admitted in the execution ledger
+by key exactly as `Run` is, with the tool column `evolution:<name>`, so
+`Host.admitRun` and the specs of "Specs" already cover it. The same holds for
+`EvolutionEvaluate`, which 098 admits by call key. What is new is the lifetime of
+the generations that a tool run acts on, and the migration that swaps one for
+another. The machines, in `PSrc/Evolution.p`, share the `Wire` with the execution
+model and nothing else.
+
+| Machine | Stands for (proposed) |
+|---|---|
+| `EvolutionPlane` | The `evolution` field of `remote/host.Plane`: generations, prepared transitions, and the scope checks that admit `EvolutionStage`, the steps of `EvolutionTransition` and `EvolutionRetire`. The scope (incarnation, token, open) and the handle counter are durable, as the ledger's scope row is. The generations are the VM's memory, filed under custody `Evolution`, so a scope close, an attach at a higher incarnation and an executor restart each retire them. |
+| `Catalogue` | The orchestrator's authority: the durable selection, the receipt of the catalogue compare-and-set, and the code that opens a session. An open crash mints a new token at the same incarnation, a runtime restart starts a new live owner under the same token, and a reopen closes the scope and attaches at the next incarnation. |
+| `LiveOwner` | The live owner with its `machine.remote(hands)` stubs: one process per open or per runtime. It attaches, stages the selection, drives the migration, and retires superseded generations. It sends a request again when the connection drops, as `surface.send_and_wait` does. |
+
+One session, one candidate, generations 1 and 2. A session has one executable
+slot: one generation serves, and at most one successor is prepared.
+
+- `EvolutionStage` answers a serving generation of exactly the selection's
+  generation, so a re-send and a stage from a restarted runtime join it.
+  Otherwise it aborts a prepared successor of that generation (it never joins
+  one, because a prepared successor does not serve), starts the generation,
+  stops an older serving generation, and answers the older live generations as
+  `superseded`. A stage for a generation older than a live serving or retiring
+  one is refused `StaleGeneration`.
+- `EvolutionTransition` with step `Prepare` on a serving handle replaces any
+  unpublished successor and prepares a fresh one. Step `Publish` names its
+  successor, applies the migration once, makes the successor serve and leaves the
+  predecessor to its retire; a second publish answers the same receipt, and a
+  successor the plane does not hold is refused `UnknownHandle`. Step `Abort`
+  names its successor; one the plane does not hold is a no-op, and a published one
+  is refused `AlreadyPublished`.
+- The catalogue compare-and-set moves the selection from 1 to 2 and writes a
+  receipt in one step. The receipt holds the request signature and the selection,
+  no handle and no published phase, as `evolution/store` keeps it. The
+  compare-and-set may be rejected, and may commit with its reply lost
+  (`CAS_UNKNOWN`), in which case the owner reads the receipt to learn whether it
+  committed and takes the publish arm or the abort arm.
+- A new open always stages the catalogue's selection. It does not finish a
+  migration its predecessor began: an owner that dies between the compare-and-set
+  and the publish loses the migrated state, as `serve.evolution_recover` does for
+  a local session. A publish answered `UnknownHandle` ends the transition and the
+  owner stages the selection.
+- `EvolutionRetire` carries the token and answers `AllRetired` or
+  `UnknownCleanup`. The owner's obligations are its memory for one open. They
+  come from `superseded` and from a confirmed publish, and only `AllRetired`
+  discharges one. A dead owner's obligations are found again through the next
+  stage's `superseded`, or settled by the scope close verdict. The model does not
+  store them in the catalogue, because neither the proposal nor the local code
+  does.
+
+Two faults are injected beyond the wire's. An owner can die right after it
+hands a request to the wire (`deaths`, or `deathAt` for one request kind), and
+the wire then holds that dead owner's queue back (`eWireStall`), because the
+hazard is a dead owner's request arriving beside its successor's. Without them
+the late-abort interleaving was not reached in 30,000 schedules of a
+runtime-restart case, since the wire delivers a lone message at once. The stall
+is a delay, which an asynchronous network is allowed. It biases the wire's
+choice of queue, with probability 1/4 per step, and is not a bound; the set of
+stalled senders is never cleared, which is sound because only halted owners and
+an owner about to die are stalled.
+
+| Spec | Rule | Proposal |
+|---|---|---|
+| `OneServingGeneration` | At most one generation serves at a time, and at most one successor is prepared. | `EvolutionStage` supersedes the slot; `Prepare` replaces |
+| `GenerationsFollowTheScope` | A generation starts only in an open scope at its own incarnation; after an attach at a higher incarnation, a close, or a VM restart none is left from the one before. | custody `Evolution` in `executor_plane` |
+| `StaleMessageActsNothing` | Whenever the plane stages, prepares, publishes, aborts or retires, the message's incarnation and token are the scope's. | "Every message that acts on a scope carries `incarnation` and `token`" |
+| `MigrationAppliedOnce` | A migration is applied at most once per (handle, target generation). | `Publish` idempotent |
+| `NoAbortAfterPublish` | An abort is never applied to a published transition. | `AlreadyPublished`, and aborts that name their successor |
+| `ExecutorNeverAheadOfCatalogue` | Whenever the executor serves a generation, the durable selection names it or a later one. | "Authority stays on the orchestrator" |
+| `ServedConvergesToSelection` | Liveness: while the scope is open and has a plane, the served generation converges to the selection. A crashed executor has no plane until the next attach, so the claim rests there (this is the execution model's rule, restated). | the stage supersedes |
+| `CleanupCustodyKept` | A cleanup obligation is dropped only after the live owner saw `AllRetired`. | `EvolutionRetire`, "unconfirmed retirement keeps cleanup custody" |
+
+`AlreadyPublished` is a guard that no honest sender reaches. An abort names the
+successor it prepared, and a later prepare never reuses a successor, so a late
+abort of a replaced successor finds a different one and does nothing. The probe
+`tcProbeAbortStale` shows that case, and mutant `M15` removes both the name check
+and the refusal.
+
+The attach at a higher incarnation retires the generations of the one before
+even when the scope is open. The real ledger refuses that attach until the scope
+is `closed` with `all_retired` (`storage/exec_ledger.gleam`, reopen), so the model
+reaches it only because a close is not awaited. Mutant `M16` therefore stands for
+the ledger's reopen path: a generation must not outlive the incarnation that
+started it, whether the close or the attach retires it.
+
+The cases (`PTst/Evolution.p`), each checking every spec above:
+
+| Case | Faults |
+|---|---|
+| `tcEvolutionQuiet` | none |
+| `tcEvolutionPartition` | three drops, one lost compare-and-set reply, one unconfirmed retirement |
+| `tcEvolutionRestart` | one drop, one rejected compare-and-set, a runtime restart, owners dying after requests |
+| `tcEvolutionAbortRace` | one rejected compare-and-set and the owner dying right after its abort: the dead runtime's abort, same token, against the next runtime's replacing prepare and publish |
+| `tcEvolutionOpen` | one drop, an open ending, owners dying after requests, a lost reply, an unconfirmed retirement |
+| `tcEvolutionReopen` | one drop, an open ending, two close-and-reopen at the next incarnation |
+| `tcEvolutionCrash` | one drop, an executor crash, an open ending, a reopen, a lost reply |
+| `tcEvolutionAll` | every fault |
+| `tcOnly*` (evolution) | one spec each, for `mutate.py` |
+
+The eight evolution cases take 6 to 15 seconds each at 1,000 schedules, the 15
+probes a few seconds each, and the ten evolution mutants 2 to 4 seconds each.
+The whole `make model-check` gate, with every other model, passed in 17 minutes
+on a Mac.
+
+Probes (`PTst/EvolutionProbes.p`) show the paths are reached: a migration is
+applied; a re-send and a new runtime's stage join the serving generation; a
+re-sent publish is answered idempotently; a prepare replaces an unpublished
+successor; an abort of a replaced successor does nothing; a stale publish, stage
+and retire are refused; a stage for an older generation is refused; a stage
+supersedes an older generation; a new open stages a selection a dead owner
+committed; a lost compare-and-set reply is reconciled; a retirement is
+unconfirmed; the executor crashes with a generation started.
+
+| Mutant | The change | Caught by |
+|---|---|---|
+| `M13-stage-not-idempotent` | A stage always starts a generation, so a re-send starts a second one serving. | `tcOnlyOneServingGeneration` (`OneServingGeneration`) |
+| `M14-publish-not-idempotent` | A publish of a published transition applies the migration again. | `tcOnlyMigrationOnce` (`MigrationAppliedOnce`) |
+| `M15-abort-after-publish` | An abort is matched by handle alone and applied to a published transition. | `tcOnlyNoAbortAfterPublish` (`NoAbortAfterPublish`) |
+| `M16-attach-keeps-generations` | An attach at a higher incarnation leaves the generations of the one before. | `tcOnlyGenerationsFollowTheScope` (`GenerationsFollowTheScope`) |
+| `M17-publish-accepts-stale-token` | A publish is admitted for any token at the scope's incarnation. | `tcOnlyStaleMessageActsNothing` (`StaleMessageActsNothing`) |
+| `M18-unknown-cleanup-forgotten` | The live owner drops the obligation on `UnknownCleanup`. | `tcOnlyCleanupCustody` (`CleanupCustodyKept`) |
+| `M19-publish-after-rejected-cas` | A rejected compare-and-set publishes too. | `tcOnlyExecutorNeverAhead` (`ExecutorNeverAheadOfCatalogue`) |
+| `M20-stage-joins-prepared` | A stage joins a prepared successor instead of superseding it, so the executor stays on generation 1 while the catalogue selects 2. | `tcOnlyServedConverges` (`ServedConvergesToSelection`) |
+| `M21-stage-accepts-older-generation` | A dead runtime's late stage for generation 1 starts it beside the published generation 2. | `tcOnlyOneServingGeneration` (`OneServingGeneration`) |
+| `M22-retire-accepts-stale-token` | A retire is admitted for any token. | `tcOnlyStaleMessageActsNothing` (`StaleMessageActsNothing`) |
+
+### What the model found and 098 now states
+
+- A late stage under the same token. A runtime sends `Stage(1)` and dies, the
+  next runtime migrates to generation 2, and the first stage arrives. Without a
+  rule it starts generation 1 beside the published generation 2. 098 now refuses
+  a stage for a generation older than a live one (`StaleGeneration`); `M21`
+  removes the rule.
+- A stage that joined a prepared successor, which does not serve, left the
+  executor on generation 1 under selection 2 (`M20`). A stage now supersedes it.
+
+### Not modelled
+
+- The state a migration carries. The model has no state, so it does not show
+  that a prepare which joined an earlier successor would publish stale state.
+  098 makes prepare replace instead, and no mutant covers that choice.
+- A stage in progress and its waiters, and handle uniqueness across VM boots
+  (098 states both); the model's stage is instantaneous and its handle counter is
+  durable.
+- `EvolutionSnapshot`, `EvolutionHook`, `EvolutionInventory`, `EvolutionTrial`
+  and `EvolutionCore`: they act on no generation's lifetime.
+
 ## Running it
 
 ```sh

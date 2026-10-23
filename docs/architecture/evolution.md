@@ -253,7 +253,11 @@ Credential-shape and credential-named-JSON scrubbing happens before clipping.
 This heuristic can leave short unlabelled secrets or private prose; it is not
 an arbitrary-text secrecy proof.
 
-A session pins its immutable profile map. The gateway chooses an overlay only
+A session pins its immutable profile map when it makes a choice. A session with
+evolution wired chooses at its first boot, and an empty map is a choice of no
+profile that later selections do not change. A session with no evolution wiring
+chooses nothing and pins nothing, so a later boot with wiring still chooses. The
+gateway chooses an overlay only
 after each actual fallback, vision or child target is resolved, starting from
 the unchanged base request on every attempt. Description overlays cannot change
 registered names, schemas, requirements, replay policy or generated capability
@@ -270,7 +274,7 @@ relative to `packages/client/src/client/evolution/`.
 | [`record`](../../packages/client/src/client/evolution/record.gleam), [`identity`](../../packages/client/src/client/evolution/identity.gleam), [`store`](../../packages/client/src/client/evolution/store.gleam) | Immutable envelopes, native compatibility identity, protected catalogue, approval and selection transactions. |
 | [`candidate`](../../packages/client/src/client/evolution/candidate.gleam), [`evaluate`](../../packages/client/src/client/evolution/evaluate.gleam), [`program`](../../packages/client/src/client/evolution/program.gleam) | Jailed capture, author checks, compilation and fresh program inputs. |
 | [`control`](../../packages/client/src/client/evolution/control.gleam), [`cli`](../../packages/client/src/client/evolution/cli.gleam), [`queue`](../../packages/client/src/client/evolution/queue.gleam), [`page`](../../packages/client/src/client/evolution/page.gleam) | Authenticated operator actions, bounded managed staging, receipts and complete paged inspection. |
-| [`live`](../../packages/client/src/client/evolution/live.gleam), [`native`](../../packages/client/src/client/evolution/native.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, its jailed planes, remaining cleanup obligations and serialized invocation folds. |
+| [`live`](../../packages/client/src/client/evolution/live.gleam), [`machine`](../../packages/client/src/client/evolution/machine.gleam), [`machine/local`](../../packages/client/src/client/evolution/machine/local.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, the machine seam it is staged through and its local implementation over jailed planes, remaining cleanup obligations and serialized invocation folds. |
 | [`prompt`](../../packages/client/src/client/evolution/prompt.gleam), [`model_door`](../../packages/client/src/client/evolution/model_door.gleam), [`tasks`](../../packages/client/src/client/evolution/tasks.gleam) | Profile capture, model-facing dispatch and independently admitted task criteria. |
 | [`rollout`](../../packages/client/src/client/evolution/rollout.gleam), [`rollout_host`](../../packages/client/src/client/evolution/rollout_host.gleam), [`fixture`](../../packages/client/src/client/evolution/fixture.gleam), [`trace`](../../packages/client/src/client/evolution/trace.gleam) | Paired production runs, aggregate request budgets, scoring after native retirement and bounded observations. |
 

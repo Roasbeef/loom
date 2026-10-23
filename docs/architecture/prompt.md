@@ -277,7 +277,7 @@ complaint.
 ## Project instructions
 
 The `repository_guidance` section carries the session's instruction files.
-`discover` (`client/system_prompt.gleam:897`) fills three slots, in the
+`discover` (`client/system_prompt.gleam:937`) fills three slots, in the
 order they render:
 
 1. The operator's standing file: `AGENTS.md` under `~/.agents/`, then under

@@ -1,9 +1,21 @@
-//// Production assembly of a promoted jailed generation.
+//// The machine for a workspace in this VM: production assembly of a promoted
+//// jailed generation, and the checks that run beside it.
+////
+//// This is the module that was `evolution/native`, moved behind
+//// `evolution/machine` without being rewritten. `new` wraps its functions in
+//// the `machine.Machine` record, and `serve` builds that record for a session
+//// whose workspace has a local code-mode host. The functions below keep their
+//// own names and behaviour so the jail, retirement and custody rules read as
+//// they did before the seam existed.
 ////
 //// One dedicated plane carries offline compilation, the persistent satellite
 //// and its nested brokered processes. Its close capability is retained before
 //// compilation begins and remains the native retirement witness through every
 //// failed preparation and every later activation or rollback.
+////
+//// The configuration holds no catalogue. Staging, evaluation and program runs
+//// receive it per call from the authority half, so this machine can be built
+//// before the catalogue is opened with the identity it reports.
 
 import broker/broker.{type Broker}
 import broker/egress
@@ -12,7 +24,9 @@ import broker/policy
 import client/codemode
 import client/evolution/candidate
 import client/evolution/evaluate
+import client/evolution/identity as compile_identity
 import client/evolution/live
+import client/evolution/machine.{type Machine}
 import client/evolution/program
 import client/evolution/record
 import client/evolution/retirement
@@ -61,8 +75,6 @@ pub type Plane {
 /// Immutable native assembly inputs; no candidate can choose these terms.
 pub type Config {
   Config(
-    /// Session catalogue authority for exact approvals and selections.
-    catalogue: store.Store,
     /// Existing code-mode host configuration, reused with the isolated broker.
     host: codemode.Config,
     /// The session's policy, unchanged for capability calls.
@@ -84,6 +96,37 @@ pub type Config {
   )
 }
 
+/// Builds the machine for a workspace in this VM over `config`.
+///
+/// Each field is a function of this module with `config` applied, so the
+/// record adds no behaviour of its own: `identity` is
+/// `evolution/identity.current` over `config.host`, `snapshot` is `snapshot`,
+/// `evaluate` is `evaluate_candidate`, `stage` is `stage`, and `run_program`
+/// is `invoke_program`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let machine = local.new(config)
+/// // machine.stage(catalogue, selection)
+/// ```
+///
+pub fn new(config: Config) -> Machine {
+  let host = config.host
+
+  machine.Machine(
+    identity: fn() { compile_identity.current(host) },
+    snapshot: fn(ctx, directory) { snapshot(config, ctx, directory) },
+    evaluate: fn(catalogue, ctx, id) {
+      evaluate_candidate(config, ctx, catalogue, id)
+    },
+    stage: fn(catalogue, selection) { stage(config, catalogue, selection) },
+    run_program: fn(catalogue, selection, ctx, input) {
+      invoke_program(config, catalogue, selection, ctx, input)
+    },
+  )
+}
+
 /// Prepares an approved candidate in a dedicated generation plane.
 ///
 /// The plane opens first and its close task is the cleanup witness for every
@@ -96,14 +139,15 @@ pub type Config {
 /// ## Examples
 ///
 /// ```gleam
-/// // native.stage(config, selection)
+/// // local.stage(config, catalogue, selection)
 /// ```
 ///
 pub fn stage(
   config: Config,
+  catalogue: store.Store,
   selection: record.Selection,
 ) -> Result(live.Generation, store.Refusal) {
-  use _ <- result.try(store.approved(config.catalogue, selection))
+  use _ <- result.try(store.approved(catalogue, selection))
   let directory =
     config.scratch
     <> "/"
@@ -118,14 +162,14 @@ pub fn stage(
 
   use prepared <- result.try(
     evaluate.prepare(
-      config.catalogue,
+      catalogue,
       selection.candidate_id,
       directory,
       compiler(config, host, base),
     )
     |> retiring(plane),
   )
-  assemble(config, host, plane, selection, directory, prepared)
+  assemble(config, catalogue, host, plane, selection, directory, prepared)
 }
 
 // Starts the satellite and its hook bus over a prepared artifact and wraps
@@ -138,6 +182,7 @@ pub fn stage(
 // and the plane, so an attach refusal retires through it.
 fn assemble(
   config: Config,
+  catalogue: store.Store,
   host: codemode.Config,
   plane: Plane,
   selection: record.Selection,
@@ -210,7 +255,6 @@ fn assemble(
     }
   })
 
-  let catalogue = config.catalogue
   let generation =
     live.Generation(
       selection:,
@@ -411,7 +455,7 @@ fn failed(plane: Plane, reason: store.Refusal) -> Result(a, store.Refusal) {
 /// ## Examples
 ///
 /// ```gleam
-/// // native.evaluate(config, ctx, catalogue, candidate_id)
+/// // local.evaluate_candidate(config, ctx, catalogue, candidate_id)
 /// ```
 ///
 pub fn evaluate_candidate(
@@ -559,7 +603,7 @@ fn run_tests(
 ///
 /// ## Examples
 ///
-/// `native.snapshot(config, ctx, directory)` applies current caller masks.
+/// `local.snapshot(config, ctx, directory)` applies current caller masks.
 pub fn snapshot(
   config: Config,
   ctx: tool.Ctx,
@@ -592,7 +636,7 @@ fn cleaning(plane: Plane, directory: String) -> Plane {
 ///
 /// ## Examples
 ///
-/// `native.invoke_program(config, store, selection, ctx, input)` closes its pool.
+/// `local.invoke_program(config, store, selection, ctx, input)` closes its pool.
 pub fn invoke_program(
   config: Config,
   catalogue: store.Store,
