@@ -80,6 +80,7 @@ import provider/model.{
   MissingIdentity, ResolvedModel,
 }
 import provider/pricing.{type Pricing}
+import provider/profile.{type Profile}
 import provider/retry.{Retryable, Terminal}
 import provider/secret.{type SecretStore}
 import provider/stream.{
@@ -251,6 +252,36 @@ pub opaque type Gateway {
     secrets: SecretStore,
     clock: Clock,
     attempt_timeout_ms: Int,
+    profiles: Option(ProfileConfiguration),
+    request_guard: Option(
+      fn(ResolvedModel, String, ProviderRequest) ->
+        Result(ProviderRequest, String),
+    ),
+  )
+}
+
+/// Nonsecret provenance emitted before each resolved attempt begins.
+pub type ProfileAttempt {
+  ProfileAttempt(
+    /// Actual exact provider/model target, including fallback identities.
+    target: ResolvedModel,
+    /// Adapter API dialect selected from native configuration.
+    api: String,
+    /// Position in this request's fallback walk.
+    ordinal: Int,
+    /// Selected immutable profile, or absence for the base request.
+    profile_id: Option(String),
+    /// Caller-computed digest of the composed system and descriptions.
+    digest: String,
+  )
+}
+
+/// The session owns immutable selection and the native provenance writer.
+type ProfileConfiguration {
+  ProfileConfiguration(
+    profiles: List(Profile),
+    fingerprint: fn(Option(String), List(model.ToolSpec)) -> String,
+    observe: fn(ProfileAttempt) -> Result(Nil, String),
   )
 }
 
@@ -495,6 +526,8 @@ pub fn new(
     secrets:,
     clock:,
     attempt_timeout_ms: 300_000,
+    profiles: None,
+    request_guard: None,
   )
 }
 
@@ -511,6 +544,47 @@ pub fn with_codex_transport(
   transport: CodexTransport,
 ) -> Gateway {
   Gateway(..gateway, codex_transport: Some(transport))
+}
+
+/// Attaches a pinned exact-target map and native provenance capabilities.
+/// A failed observation refuses dispatch before a secret or socket is acquired.
+/// Keep the observer's closure limited to its durable event writer.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_profiles(gw, pinned, digest, record_attempt)
+/// ```
+pub fn with_profiles(
+  gateway: Gateway,
+  profiles: List(Profile),
+  fingerprint: fn(Option(String), List(model.ToolSpec)) -> String,
+  observe: fn(ProfileAttempt) -> Result(Nil, String),
+) -> Result(Gateway, String) {
+  use profiles <- result.try(profile.validate_map(profiles))
+  Ok(
+    Gateway(
+      ..gateway,
+      profiles: Some(ProfileConfiguration(profiles:, fingerprint:, observe:)),
+    ),
+  )
+}
+
+/// Installs an isolated evaluation's native request admission capability.
+/// Ordinary session gateways carry none. A refusal is terminal and occurs
+/// before any credential lookup or transport preparation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.with_request_guard(isolated, admit_exact_trial)
+/// ```
+pub fn with_request_guard(
+  gateway: Gateway,
+  guard: fn(ResolvedModel, String, ProviderRequest) ->
+    Result(ProviderRequest, String),
+) -> Gateway {
+  Gateway(..gateway, request_guard: Some(guard))
 }
 
 /// Registers a provider endpoint.
@@ -668,6 +742,19 @@ pub fn price(gateway: Gateway, provider: String, card: Pricing) -> Gateway {
 ///
 pub fn card_for(gateway: Gateway, provider: String) -> Result(Pricing, Nil) {
   list.key_find(gateway.prices, provider)
+}
+
+/// Returns the native registered adapter dialect for an exact resolved target.
+/// Callers bind model profile scope to this registered configuration rather than
+/// inferring a protocol from a provider label or accepting candidate declarations.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gateway.api_for(gateway, exact_target)
+/// ```
+pub fn api_for(gateway: Gateway, target: ResolvedModel) -> Result(String, Nil) {
+  find_provider(gateway, target.provider) |> result.map(adapter_api)
 }
 
 /// Overrides the absolute per-attempt deadline in milliseconds. Response
@@ -1882,11 +1969,28 @@ fn attempt_one(
 ) -> AttemptOutcome {
   let gateway = walk.gateway
   let now = walk.now
+  use config <- or_failure(find_provider(gateway, target.provider), fn() {
+    AttemptTerminal(Failed(
+      UnknownProvider(provider: target.provider),
+      accounting.empty(),
+    ))
+  })
+  use request <- or_profile_failure(compose_profile(
+    gateway,
+    walk.request,
+    target,
+    config,
+    ordinal,
+  ))
+  use request <- or_admission_failure(case gateway.request_guard {
+    None -> Ok(request)
+    Some(guard) -> guard(target, adapter_api(config), request)
+  })
   let limit =
     list.key_find(gateway.image_limits, #(target.provider, target.model_id))
     |> result.unwrap(image_budget.default_max_images)
   use messages <- or_image_failure(
-    image_budget.project(walk.request.messages, limit, gateway.protected_images),
+    image_budget.project(request.messages, limit, gateway.protected_images),
     fn(reason) {
       AttemptTerminal(Failed(
         stream.StreamError(
@@ -1897,13 +2001,7 @@ fn attempt_one(
       ))
     },
   )
-  let request = model.ProviderRequest(..walk.request, messages:)
-  use config <- or_failure(find_provider(gateway, target.provider), fn() {
-    AttemptTerminal(Failed(
-      UnknownProvider(provider: target.provider),
-      accounting.empty(),
-    ))
-  })
+  let request = model.ProviderRequest(..request, messages:)
   let cyber_access =
     option.from_result(list.key_find(gateway.cyber_access, target.provider))
   let outcome = case config {
@@ -2051,6 +2149,79 @@ fn subscription_attempt(
         responses.subscription_response_machine(target, now: walk.now),
         usage_evidence.ChatGptPlan,
       )
+  }
+}
+
+// This is the only composition site, after the real adapter identity exists.
+// `attempt` retains its base request and passes that same value to every walk.
+fn compose_profile(
+  gateway: Gateway,
+  request: ProviderRequest,
+  target: ResolvedModel,
+  config: ProviderConfig,
+  ordinal: Int,
+) -> Result(ProviderRequest, String) {
+  case gateway.profiles {
+    None -> Ok(request)
+    Some(configuration) -> {
+      let api = adapter_api(config)
+      let #(profile_id, composed) =
+        profile.apply(configuration.profiles, target, api, request)
+      use Nil <- result.try(
+        configuration.observe(ProfileAttempt(
+          target:,
+          api:,
+          ordinal:,
+          profile_id:,
+          digest: configuration.fingerprint(composed.system, composed.tools),
+        )),
+      )
+      Ok(composed)
+    }
+  }
+}
+
+fn adapter_api(config: ProviderConfig) -> String {
+  case config {
+    AnthropicProvider(..) -> anthropic.api_name
+    OpenAiCompatibleProvider(..) -> openai.api_name
+    OpenAiResponsesProvider(..) -> responses.api_name
+    GeminiProvider(..) -> gemini.api_name
+    CodexSubscriptionProvider(..) -> responses.subscription_api_name
+  }
+}
+
+fn or_profile_failure(
+  composed: Result(ProviderRequest, String),
+  next: fn(ProviderRequest) -> AttemptOutcome,
+) -> AttemptOutcome {
+  case composed {
+    Ok(request) -> next(request)
+    Error(_reason) ->
+      AttemptTerminal(Failed(
+        stream.StreamError(
+          api_error_type: "profile_provenance",
+          message: "the resolved prompt profile could not be recorded",
+        ),
+        accounting.empty(),
+      ))
+  }
+}
+
+// Admission owns its refusal before credentials or transport exist. Preserve
+// the native reason so an exhausted trial budget is not reported as lost
+// profile provenance, which would hide the boundary that stopped the request.
+fn or_admission_failure(
+  admitted: Result(ProviderRequest, String),
+  next: fn(ProviderRequest) -> AttemptOutcome,
+) -> AttemptOutcome {
+  case admitted {
+    Ok(request) -> next(request)
+    Error(reason) ->
+      AttemptTerminal(Failed(
+        stream.StreamError(api_error_type: "request_admission", message: reason),
+        accounting.empty(),
+      ))
   }
 }
 
