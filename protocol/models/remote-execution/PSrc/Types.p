@@ -38,11 +38,18 @@ enum tLook { LOOK_MISSING, LOOK_ADMITTED, LOOK_TERMINAL, LOOK_UNKNOWN, LOOK_FENC
 // text of a refusal (surface.run turns RunRefused into ToolFailed).
 enum tDelivery { D_FINISHED, D_LOST, D_NOT_RUN, D_STALE, D_NOPLANE }
 
+// The executor's verdict on an evolution request (the refusals and the retire
+// answers of protocol-change/098). V_STALE is a message whose incarnation or
+// token is not the scope's, V_STALE_GENERATION a stage for a generation older
+// than one the slot already holds, V_NOPLANE a scope with no evolution plane in this
+// VM, V_UNKNOWN_HANDLE a handle or transition the plane does not hold.
+enum tVerdict { V_OK, V_STALE, V_STALE_GENERATION, V_NOPLANE, V_UNKNOWN_HANDLE, V_ALREADY_PUBLISHED, V_ALL_RETIRED, V_UNKNOWN_CLEANUP }
+
 // The message kinds that cross the wire (protocol.HostMessage and its replies).
 // K_CALL_DOWN is not a message in the code: it is the host's monitor of an
 // effect process firing, and it is carried like one because the monitor's
 // signal travels the same wire.
-enum tKind { K_ATTACH, K_ATTACHED, K_RUN, K_ANSWER, K_ASK, K_LOOKUP, K_ACK, K_CALL_DOWN, K_START, K_STOP, K_LIST, K_LISTED, K_CALL_LOST }
+enum tKind { K_ATTACH, K_ATTACHED, K_RUN, K_ANSWER, K_ASK, K_LOOKUP, K_ACK, K_CALL_DOWN, K_START, K_STOP, K_LIST, K_LISTED, K_CALL_LOST, K_E_STAGE, K_E_STAGED, K_E_PREPARE, K_E_PREPARED, K_E_PUBLISH, K_E_PUBLISHED, K_E_ABORT, K_E_ABORTED, K_E_RETIRE, K_E_RETIRED, K_E_CLOSE }
 
 // The background executions (protocol-change/078, the addendum on background
 // code mode) add five kinds. K_START is `StartExecution`, admitted by key as a
@@ -53,6 +60,12 @@ enum tKind { K_ATTACH, K_ATTACHED, K_RUN, K_ANSWER, K_ASK, K_LOOKUP, K_ACK, K_CA
 // message: the waiter's node went away, so the DOWN's reason is `noconnection`.
 // An execution's key is an integer like a call's; the executions use keys from
 // `firstExecution()` up, so the two never share one.
+
+// The evolution path (protocol-change/098, proposed) adds eleven kinds, each
+// the `Evolution*` message of the same name and its reply. They are used only
+// by the evolution machines in PSrc/Evolution.p, which share the wire and
+// nothing else with the execution machines. K_E_CLOSE is the scope's `Close`,
+// which has no reply here.
 
 // Whether an effect process starts a fresh call or recovers an orphaned one.
 enum tMode { MODE_RUN, MODE_RECOVER }
@@ -74,7 +87,13 @@ type tRowRec = (phase: tRow, outcome: int);
 // in a K_ASK. `attempt` numbers the sender's exchanges (each has its own reply
 // subject) and a reply carries the attempt it answers; `resent` marks a send
 // repeated after a dropped connection, so the probes can tell it from a first send.
-type tMsg = (kind: tKind, dest: machine, from: machine, key: tKey, token: int, attempt: int, resent: bool, fence: bool, answer: tAnswer, look: tLook, outcome: int, running: seq[tKey], settled: seq[tKey]);
+//
+// The last six fields belong to the evolution messages: the scope's
+// incarnation, the candidate generation a stage or prepare names, the handle
+// of the generation the message acts on, the successor handle of a migration,
+// the executor's verdict on the request (tVerdict), and the older
+// generations a stage reports as superseded.
+type tMsg = (kind: tKind, dest: machine, from: machine, key: tKey, token: int, attempt: int, resent: bool, fence: bool, answer: tAnswer, look: tLook, outcome: int, running: seq[tKey], settled: seq[tKey], inc: int, gen: int, handle: int, succ: int, verdict: tVerdict, superseded: seq[int]);
 
 // One process waiting on a live run, and the attempt whose reply subject it
 // waits on. Each attempt of a request has a reply subject of its own
@@ -88,6 +107,17 @@ type tLive = (job: int, waiters: seq[tWaiter]);
 // A message handed to the wire together with the process that sent it, which
 // is what the wire's per-pair ordering is keyed on.
 type tSubmit = (sender: machine, msg: tMsg);
+
+// Whether a message is a request whose sender waits for a reply, and so is
+// watched by the wire until the reply arrives or the connection breaks.
+fun expectsReply(kind: tKind): bool {
+  return kind == K_RUN || kind == K_START || kind == K_ASK || kind == K_ATTACH || kind == K_E_STAGE || kind == K_E_PREPARE || kind == K_E_PUBLISH || kind == K_E_ABORT || kind == K_E_RETIRE;
+}
+
+// Whether a message is a reply, which ends the sender's wait for that attempt.
+fun isReply(kind: tKind): bool {
+  return kind == K_ANSWER || kind == K_LOOKUP || kind == K_ATTACHED || kind == K_E_STAGED || kind == K_E_PREPARED || kind == K_E_PUBLISHED || kind == K_E_ABORTED || kind == K_E_RETIRED;
+}
 
 // The outcome the fence stores (`protocol.did_not_run_text` as a ToolFailed).
 fun fenceOutcome(): int {
@@ -133,6 +163,7 @@ event eCrash;
 
 // Tells the wire which host to notify.
 event eWireHost: machine;
+event eWireStall: machine;
 
 // ---------------------------------------------------------------------------
 // Host and orchestrator events.

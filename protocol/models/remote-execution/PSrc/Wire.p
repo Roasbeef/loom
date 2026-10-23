@@ -24,10 +24,22 @@ machine Wire {
   var watching: map[machine, int];
   var stepPending: bool;
   var lazy: seq[tSubmit];
+  // Senders whose queues are slow: a delivery step that picks such a sender's
+  // queue delivers its head with probability 1/4 and otherwise does nothing, so
+  // the other queues move. The delay is a bias in the choice of queue, not a
+  // bound. The set is never cleared, which is sound because only halted owners
+  // and an owner about to die are ever stalled. The evolution cases stall
+  // an owner that died, so its last request is still in flight when its
+  // successor's arrive. The execution cases never stall a sender.
+  var stalled: set[machine];
 
   start state Up {
     on eWireHost do (h: machine) {
       host = h;
+    }
+
+    on eWireStall do (sender: machine) {
+      stalled += (sender);
     }
 
     on eSend do (s: tSubmit) {
@@ -70,7 +82,7 @@ machine Wire {
     }
     q += (sizeof(q), s.msg);
     queues[pair] = q;
-    if (s.msg.kind == K_RUN || s.msg.kind == K_START || s.msg.kind == K_ASK || s.msg.kind == K_ATTACH) {
+    if (expectsReply(s.msg.kind)) {
       watching[s.sender] = s.msg.attempt;
     }
   }
@@ -92,11 +104,14 @@ machine Wire {
       return;
     }
     pair = choose(ready);
+    if (pair.0 in stalled && !($ && $)) {
+      return;
+    }
     q = queues[pair];
     m = q[0];
     q -= (0);
     queues[pair] = q;
-    if (m.kind == K_ANSWER || m.kind == K_LOOKUP || m.kind == K_ATTACHED) {
+    if (isReply(m.kind)) {
       if (m.dest in watching) {
         if (watching[m.dest] == m.attempt) {
           watching -= (m.dest);
