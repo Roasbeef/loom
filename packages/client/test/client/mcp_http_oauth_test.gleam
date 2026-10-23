@@ -936,6 +936,27 @@ pub fn mcp_oauth_mid_session_refresh_and_terminal_expiry_refusal_test() {
   let assert Ok(Some(cleared)) = credentials.load(dir <> "/linear.json")
   assert cleared.grant == None
   assert cleared.client_id == "dcr_linear_client"
+
+  // Restore a grant, verify a transient 503 preserves it, while an
+  // unrecognized 400 or invalid_client rejection clears it.
+  let assert Ok(Nil) = credentials.save(dir <> "/linear.json", initial)
+  let transient_503 =
+    oauth.Services(..revoked_services, fetch: fn(_, _) {
+      Ok(network.Response(503, "service unavailable"))
+    })
+  assert oauth.authorize_at(dir, "linear", server_url, None, transient_503)
+    == Error("token_endpoint_unavailable")
+  let assert Ok(Some(preserved)) = credentials.load(dir <> "/linear.json")
+  assert preserved.grant != None
+
+  let invalid_client_401 =
+    oauth.Services(..revoked_services, fetch: fn(_, _) {
+      Ok(network.Response(401, "{\"error\":\"invalid_client\"}"))
+    })
+  assert oauth.authorize_at(dir, "linear", server_url, None, invalid_client_401)
+    == Error("reauthorization_required")
+  let assert Ok(Some(cleared_again)) = credentials.load(dir <> "/linear.json")
+  assert cleared_again.grant == None
   assert mcp.close(layer, within: 2000) == Ok(Nil)
 }
 

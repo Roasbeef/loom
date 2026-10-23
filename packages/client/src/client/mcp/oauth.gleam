@@ -1006,7 +1006,7 @@ fn renew(
       ))
       Ok(grant.access)
     }
-    Error("reauthorization_required") -> {
+    Error("reauthorization_required") | Error("invalid_client") -> {
       use Nil <- result.try(credentials.save(
         path,
         Binding(..binding, grant: None),
@@ -1164,7 +1164,7 @@ fn token_request(
   ))
   use Nil <- result.try(case resp.status {
     200 -> Ok(Nil)
-    _ -> Error(token_error(resp.body))
+    status -> Error(token_error(status, resp.body))
   })
   use token <- result.try(
     json.parse(resp.body, token_decoder())
@@ -1181,7 +1181,7 @@ fn token_request(
   Ok(token)
 }
 
-fn token_error(body: String) -> String {
+fn token_error(status: Int, body: String) -> String {
   let decoder = {
     use error <- decode.field(
       "error",
@@ -1194,16 +1194,20 @@ fn token_error(body: String) -> String {
     )
     decode.success(error)
   }
-  case json.parse(body, decoder) {
-    Ok("invalid_grant")
-    | Ok("invalid_refresh_token")
-    | Ok("token_expired")
-    | Ok("refresh_token_expired")
-    | Ok("refresh_token_invalidated")
-    | Ok("refresh_token_reused")
-    | Ok("unauthorized_client") -> "reauthorization_required"
-    Ok("invalid_client") -> "invalid_client"
-    Ok(_) | Error(_) -> "token_endpoint_unavailable"
+  case json.parse(body, decoder), status {
+    Ok("invalid_client"), _ -> "invalid_client"
+    Ok("invalid_grant"), _
+    | Ok("invalid_refresh_token"), _
+    | Ok("token_expired"), _
+    | Ok("refresh_token_expired"), _
+    | Ok("refresh_token_invalidated"), _
+    | Ok("refresh_token_reused"), _
+    | Ok("unauthorized_client"), _
+    | _, 400
+    | _, 401
+    | _, 403
+    -> "reauthorization_required"
+    _, _ -> "token_endpoint_unavailable"
   }
 }
 

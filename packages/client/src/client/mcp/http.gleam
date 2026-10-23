@@ -69,8 +69,9 @@ import provider/http
 import weft
 import weft/state_machine as sm
 
-/// The byte ceiling for one HTTP JSON response body or one SSE event (8 MiB),
-/// matching `gleam_mcp/client_http`.
+/// The byte ceiling for retained accumulation of one HTTP JSON response body or
+/// one SSE event (8 MiB), matching `gleam_mcp/client_http`. Checked before
+/// appending each delivered `provider/http` fragment.
 pub const max_response_bytes = 8_388_608
 
 /// How outbound HTTP requests authenticate to the remote MCP endpoint.
