@@ -177,6 +177,20 @@ summarize = ["gemini-flash"]
 command = ["mcp-server-github", "--stdio"]
 api_key_env = "GITHUB_TOKEN"
 
+# Remote Streamable HTTP MCP servers use `url` in place of `command`:
+#   auth = "none" | "bearer" | "macaroon" | "oauth"
+# Static credentials (`bearer` or `macaroon`) resolve `api_key_env` from the
+# secret store and send it in the `Authorization` header; OAuth servers
+# (`auth = "oauth"`) use the grant obtained by `loomd mcp login <name>`.
+# [mcp.magi]
+# url = "http://127.0.0.1:8790/mcp"
+# auth = "macaroon"
+# api_key_env = "MAGI_MACAROON"
+#
+# [mcp.linear]
+# url = "https://mcp.linear.app/mcp"
+# auth = "oauth"
+
 # Language servers, one [lsp.<name>] table per server. They are
 # configured, never discovered: with no [lsp] table there are no lsp_*
 # tools and nothing is spawned. Loom has no built-in servers; the gleam

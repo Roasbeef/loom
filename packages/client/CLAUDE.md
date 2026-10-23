@@ -3055,7 +3055,7 @@ catalogue without opening runtimes. Explicit admission invokes
   than N consecutive ones; `weft.start` hands outcomes back sorted by
   input position, so zipping them against the unchanged `servers` list is
   what restores catalogue order regardless of which server answers first.
-  Each task still spawns its server over `gleam_mcp/transport.PortTransport`,
+  Each task connects its server over `gleam_mcp/transport.PortTransport` (for `McpStdio`) or `client/mcp/http.seam` (`ChannelTransport` over `provider/http.Transport`, for `McpHttp` with `none`, `bearer`, `macaroon`, or `oauth` credentials from `client/mcp/oauth` and `client/mcp/credentials`),
   hand-shakes, lists its tools and generates its `cap/mcp/<server>`
   façade, keeping the client **running** for the session because dispatch
   is the same client; each failing step refuses *that* server with a

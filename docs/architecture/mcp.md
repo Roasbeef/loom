@@ -95,6 +95,15 @@ project file, and no live reload.
 [mcp.github]
 command = ["mcp-server-github", "--stdio"]
 api_key_env = "GITHUB_TOKEN"
+
+[mcp.magi]
+url = "http://127.0.0.1:8790/mcp"
+auth = "macaroon"
+api_key_env = "MAGI_MACAROON"
+
+[mcp.linear]
+url = "https://mcp.linear.app/mcp"
+auth = "oauth"
 ```
 
 The table key names the server in three places: the `<name>` in the
@@ -111,17 +120,43 @@ rather than usually true. `internal` is refused by name, because
 `cap/mcp/internal` would sit confusingly beside the unimportable
 marshaling layer.
 
-`command` is an argv list with the executable first, never a shell
-string. `api_key_env` names an environment *variable*, never a key. At
-spawn, the harness resolves that name through the same `provider/secret`
-store used by configured providers and sets the value in the child's
-environment under the same name. The store defaults to the daemon's
-environment; an operator's `[secrets]` command source can supply it instead,
-as described in the [Jev guide](../jev-mcp.md). The value is
-stored in no record, log line, or refusal message. If the configured
-variable is unset, the server is refused before anything is spawned,
-because a server started without its configured key would fail later,
-further from the cause, and in the server's own words.
+A table sets either `command` (a locally-spawned stdio child) or `url`
+(a remote Streamable HTTP endpoint), never both.
+
+For a stdio server, `command` is an argv list with the executable first,
+never a shell string, and `api_key_env` names an environment *variable*,
+never a key. At spawn, the harness resolves that name through the same
+`provider/secret` store used by configured providers and sets the value
+in the child's environment under the same name. The store defaults to
+the daemon's environment; an operator's `[secrets]` command source can
+supply it instead, as described in the [Jev guide](../jev-mcp.md).
+
+For a remote HTTP server, `url` is an absolute `http://` or `https://`
+endpoint without userinfo or fragment, and `auth` selects how outbound
+requests authenticate:
+
+- `"none"` (default when `api_key_env` is omitted): no `Authorization`
+  header is sent (for example, an unauthenticated loopback server).
+- `"bearer"` (default when `api_key_env` is set) or `"macaroon"`:
+  resolves `api_key_env` from the session's `SecretStore` at preparation
+  time and sends `Authorization: Bearer <secret>` or
+  `Authorization: Macaroon <secret>` on every request.
+- `"oauth"`: uses an OAuth 2.1 authorization-code + PKCE grant stored
+  under `<config_home>/loom/mcp-oauth/<name>.json` (`0600` in a `0700`
+  private directory, serialized under `<name>.lock`). The operator
+  consents in their browser via `loomd mcp login <name>`, which discovers
+  Protected Resource Metadata (RFC 9728) and Authorization Server
+  Metadata (RFC 8414), uses a configured `client_id` or Dynamic Client
+  Registration (RFC 7591), and binds tokens to the server's `resource`
+  URL (RFC 8707). Access tokens refresh automatically when expired or on
+  an HTTP 401 response; if a token expires mid-session and cannot be
+  refreshed, the stored grant is cleared and the call fails in-band as
+  `mcp_unavailable` (`ServerUnavailable`) naming `loomd mcp login <name>`.
+
+In every mode, no credential value is stored in `loom.toml`, log lines,
+transcripts, or refusal messages. If a configured `api_key_env` is unset
+or an `oauth` server is not signed in, the server is refused before any
+process is spawned or connection opened.
 
 ### Generation happens once, at boot
 
@@ -993,7 +1028,8 @@ success. Transport refusals and `ToolFailed` keep their existing meanings.
 | generated source | 512 KiB | `SourceTooLarge`; the server is refused whole |
 | rendered surface | 64 KiB | `SurfaceTooLarge`; the server is refused whole |
 | `tools/list` pages | 64 | `TooManyPages`; the listing fails |
-| one JSON-RPC line | 16 MiB | `LineTooLong`, and the client latches dead |
+| one stdio JSON-RPC line | 16 MiB | `LineTooLong`, and the stdio client latches dead |
+| one HTTP JSON body or SSE event | 8 MiB | that call is refused `mcp_malformed`; the HTTP client stays live |
 | one `cap_result` | the cap channel's frame cap, less a 64 KiB envelope margin | the call is refused `mcp_malformed` |
 | result nesting | msgpack's `max_depth`, less the two containers the frame adds | the call is refused `mcp_malformed` |
 
@@ -1207,7 +1243,7 @@ bring it back.
 | Sampling, roots, elicitation | a server must not spend Loom's model, learn about the filesystem, or question a human through the harness; upstream deprecated the first two in 2026-07-28 | nothing short of a design change; a test pins the empty capabilities object, so widening it is deliberate and test-breaking |
 | The 2026-07-28 stateless revision | it has no `initialize`, and servers in the field speak the older lifecycle | servers in the field speaking it |
 | `listChanged` handling | it decodes faithfully and is ignored: this client lists tools once per connection | a server whose tool set changes mid-session, which also means re-rendering a description the model was already given |
-| HTTP and SSE transports | a locally-spawned server speaks stdio, and a spawned child is what the jailing story attaches to | a server worth reaching that speaks nothing else, decided together with the jail question |
+| Deprecated HTTP+SSE (`GET` session stream) | Streamable HTTP (`POST` with JSON or SSE responses) and stdio cover both local and remote servers (`client/mcp/http`) | none; deprecated upstream in favour of Streamable HTTP |
 | Restart and reconnect supervision | a dead peer latches dead and answers `Unavailable` in band | unbuilt; the LSP client (#25, ADR-015) restarts lazily on the next query rather than supervising a reconnect, so no shared substrate exists yet |
 | Per-tool trust | a human trusts a server, not a tool | a policy vocabulary keyed on tool identity, which is a protocol change and strictly more work than generating modules |
 
@@ -1223,7 +1259,7 @@ lint.
 
 **Tracked in issues.** Each open item above has an issue:
 
-- **#108**: streamable HTTP transport plus OAuth, for remote servers.
+- **#108** *(shipped)*: streamable HTTP transport (`2025-06-18` initialized sessions with `Mcp-Session-Id` and `2026-07-28` stateless HTTP) plus static `bearer`/`macaroon` header auth and OAuth 2.1 authorization-code + PKCE (`loomd mcp login`).
 - **#109**: the jail decision for an MCP server process, undesigned and
   not merely unbuilt.
 - **#110**: an end-to-end against a third-party server from the wild.
@@ -1253,8 +1289,10 @@ lint.
 | `mcp/internal/render_text.gleam` | The shared sanitizer, bounded doc text and total literal escaping. |
 | `mcp/interchange.gleam` | msgpack ↔ JSON, total both ways, with the four disagreements decided. |
 | `gleam_mcp/internal/ffi_port.gleam` | The port externals over the library's Erlang shim; the local adapter has no FFI. |
-| `client/catalog.gleam` | `[mcp.<name>]`: the key grammar, the mangling gate, and the `api_key_env` indirection. |
+| `client/catalog.gleam` | `[mcp.<name>]`: the key grammar, the mangling gate, `McpStdio` (`command` + `api_key_env`) and `McpHttp` (`url` + `none`/`bearer`/`macaroon`/`oauth`). |
 | `client/mcp.gleam` | The layer: boot per server, the refusal wording, the `mcp.<server>` router arm, the pinned result shape, and the result ceilings. |
+| `client/mcp/http.gleam` | Streamable HTTP `ChannelTransport` adapter over `provider/http.Transport`, speaking both initialized (`2025-06-18`) and stateless (`2026-07-28`) HTTP under an 8 MiB response/SSE event bound. |
+| `client/mcp/credentials.gleam`, `client/mcp/oauth.gleam`, `client/mcp/cli.gleam` | OAuth 2.1 Protected Resource / Authorization Server discovery, Dynamic Client Registration, loopback PKCE login (`loomd mcp login`/`status`/`logout`), locked `0600` credential storage, and token refresh. |
 | `client/codemode.gleam` | `over_mcp`, `seam_allowlist`, `seam_caps_on` — the one `Config.mcp` field and the four things it widens. |
 | `cap/mcp.gleam` | The façades' vocabulary: `Content`, `ToolResult`, `DecodeError`, `McpError`. Types and result readers only, no authority. |
 | `cap/internal/mcp.gleam` | The invocation seam: `invoke`, `invoke_typed`, the pinned envelope decoder and denial-code mapping. |
