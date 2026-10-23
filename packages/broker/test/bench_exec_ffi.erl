@@ -3,9 +3,9 @@
 %% The benchmark has to observe things the BEAM does not expose through
 %% Gleam: a microsecond monotonic clock, the OS processes a helper pool
 %% leaves behind, a helper's resident memory, and a way to stop a helper
-%% process the way a hung kernel or a debugger would. Every one of them is
-%% a read of /proc or a `kill(1)`, so none is reachable from the pure
-%% packages, and none belongs in `src`.
+%% process the way a hung kernel or a debugger would. Process observations
+%% read /proc on Linux and native ps on Darwin; signals use kill(1). None
+%% of them is reachable from the pure packages, and none belongs in `src`.
 -module(bench_exec_ffi).
 
 -export([getenv/1, now_us/0, system_time_ns/0, close_port_of/1, unique/0, vm_counts/0, vm_settled_memory/0,
@@ -126,8 +126,82 @@ matches(Cmd, Markers) ->
 %% A process can exit between the directory listing and the reads; such a
 %% row is skipped rather than reported half-read.
 table() ->
+    case os:type() of
+        {unix, darwin} -> darwin_table();
+        {unix, linux} -> linux_table()
+    end.
+
+linux_table() ->
     {ok, Names} = file:list_dir("/proc"),
     lists:filtermap(fun row/1, Names).
+
+%% The host bootstrap's Darwin identity probe uses this same native ps
+%% boundary. The table adds parentage and argv so these tests can identify
+%% their original port owner and the marked payload it left behind. Failure
+%% raises rather than manufacturing an empty census as death evidence.
+darwin_table() ->
+    {ok, 0, Bytes} = ps_capture(
+        ["-wwaxo", "pid=,ppid=,rss=,ucomm=,args="]
+    ),
+    Rows = lists:filtermap(fun darwin_row/1, binary:split(Bytes, <<"\n">>, [global])),
+
+    %% The observing VM must always be in a complete native table. A changed
+    %% ps format or incomplete output therefore cannot turn every row into
+    %% a skipped parse and manufacture an empty death census.
+    Observer = list_to_integer(os:getpid()),
+    true = lists:any(fun({Pid, _, _, _, _}) -> Pid =:= Observer end, Rows),
+    Rows.
+
+darwin_row(Line) ->
+    case re:run(Line, <<"^\\s*(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\S+)\\s+(.+)$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [Pid, Ppid, Rss, Comm, Cmd]} ->
+            {true, {binary_to_integer(Pid), binary_to_integer(Ppid),
+                    Comm, Cmd, binary_to_integer(Rss)}};
+        nomatch -> false
+    end.
+
+%% This existing test shim owns the metadata subprocess to its native exit.
+%% An absolute two-second deadline and an eight-MiB output ceiling bound
+%% the observation even on a host whose process arguments are unusually
+%% large. Neither failure can become an empty process table.
+ps_capture(Arguments) ->
+    Port = open_port({spawn_executable, "/bin/ps"},
+                     [binary, exit_status, use_stdio, stderr_to_stdout, hide,
+                      {args, Arguments}]),
+    Deadline = erlang:monotonic_time(millisecond) + 2000,
+    ps_collect(Port, [], 0, Deadline).
+
+ps_collect(Port, Chunks, Size, Deadline) ->
+    Remaining = ps_remaining(Port, Deadline),
+    receive
+        {Port, {data, Data}} when Size + byte_size(Data) =< 8388608 ->
+            ps_collect(Port, [Data | Chunks], Size + byte_size(Data), Deadline);
+        {Port, {data, _Data}} ->
+            port_close(Port),
+            error(native_process_metadata_too_large);
+        {Port, {exit_status, Status}} ->
+            %% A scheduler pause while awaiting the status must not turn a
+            %% late queued exit into a successful bounded observation.
+            _ = ps_remaining(Port, Deadline),
+            {ok, Status, iolist_to_binary(lists:reverse(Chunks))}
+    after Remaining ->
+        ps_timeout(Port)
+    end.
+
+ps_remaining(Port, Deadline) ->
+    case Deadline - erlang:monotonic_time(millisecond) of
+        Remaining when Remaining > 0 -> Remaining;
+        _Expired -> ps_timeout(Port)
+    end.
+
+ps_timeout(Port) ->
+    %% The queued exit may have already closed the native port. That does
+    %% not change the expired observation into success or another error.
+    try port_close(Port)
+    catch error:badarg -> ok
+    end,
+    error(native_process_metadata_timed_out).
 
 row(Name) ->
     try
@@ -158,6 +232,16 @@ last_paren(Stat) ->
 %% The command line with its NUL separators shown as spaces. Empty for a
 %% kernel thread or a process that has gone.
 cmdline(Pid) ->
+    case os:type() of
+        {unix, darwin} ->
+            case ps_capture(["-ww", "-p", integer_to_list(Pid), "-o", "args="]) of
+                {ok, 0, Bytes} -> string:trim(Bytes);
+                {ok, 1, <<>>} -> <<>>
+            end;
+        {unix, linux} -> linux_cmdline(Pid)
+    end.
+
+linux_cmdline(Pid) ->
     Path = "/proc/" ++ integer_to_list(Pid) ++ "/cmdline",
     case file:read_file(Path) of
         {ok, Bytes} ->
