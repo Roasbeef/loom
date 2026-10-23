@@ -111,7 +111,7 @@ an answer, and the harness reads outside every jail. So every path out of
 an answer (a definition, a reference, a call edge, a published diagnostic,
 a rename's edit) becomes `Admitted` or `Withheld` through one function,
 `admit` (`client/lsp/resolve.gleam:420`), called from one place in the
-manager (`gate`, `client/lsp/manager.gleam:2322`). Without it, a hostile
+manager (`gate`, `client/lsp/manager.gleam:2427`). Without it, a hostile
 project's server could name `~/.loom/owner.token` and have the harness
 print its first line.
 
@@ -820,7 +820,7 @@ command = ["gleam", "lsp"]
 extensions = [".gleam"]
 root_markers = ["gleam.toml"]
 project = "writable"
-hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module"
+hint = "Qualify a name with its module as imported: probe.greet, or pkg/mod.name for a nested module; when a file path is given, a bare name resolves directly in its outline"
 
 # gopls reads the module cache, outside the project, so it is named
 # here. Its caches are private: cache_env points GOCACHE, GOPLSCACHE and

@@ -79,7 +79,8 @@
 ////       → Owned | Unowned                       (may we ask?)
 //// admit → Ok(real path) | Error(reason)         (may the harness read it?)
 //// split_symbol → segments                       (what did the model name?)
-//// named → flatten → walk → satisfies → cased → snake
+//// in_file → named → flatten → walk → satisfies → cased → snake
+////         → is_module_qualifier, coalesce, prefer_top_level
 //// container → flatten → holds → compare         (what contains this?)
 //// site | outline → entry → display, read_text   (show it)
 //// ```
@@ -677,6 +678,72 @@ pub fn method_names(server: LspServer) -> MethodNames {
   }
 }
 
+/// One symbol declaration resolved in an outline, together with any
+/// companion declarations of the same name directly inside it (such as a
+/// Gleam record constructor `Foo` inside `pub type Foo`).
+pub type ResolvedSymbol {
+  ResolvedSymbol(
+    /// The outer declaration's qualified name in the outline.
+    name: String,
+    /// The outer declaration's position.
+    at: Position,
+    /// Positions of same-name child declarations absorbed into this
+    /// symbol so that reference queries cover both type and constructor
+    /// uses without failing as ambiguous.
+    companions: List(Position),
+  )
+}
+
+/// Resolves `identifier` inside an explicitly named file's outline.
+///
+/// Three rules make path-scoped queries resilient to how code reads:
+/// 1. When a lowercase module/path/alias qualifier (such as a workspace-relative
+///    module prefix or an `import ... as alias` qualifier) misses in `named`,
+///    the explicit `path` already fixes the module, so resolution falls back to
+///    unqualified matching in `symbols`. Uppercase type or receiver qualifiers
+///    never fall back, so a wrong receiver still misses.
+/// 2. A declaration `Foo` and its direct same-name child `Foo.Foo` (the single-
+///    variant Gleam record pattern) coalesce into one `ResolvedSymbol` whose `at`
+///    is the outer declaration and whose `companions` hold the constructor.
+/// 3. When a unique top-level declaration (`name == identifier`) competes only with
+///    nested children of other types (such as a record field of the same name),
+///    the top-level declaration wins unless the caller qualified by parent type.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // resolve.in_file(symbols, "Participant", Some("model"), profile.AsWritten, ...)
+/// //   == [ResolvedSymbol("Participant", Position(163, 9), [Position(164, 2)])]
+/// ```
+///
+pub fn in_file(
+  symbols: DocumentSymbols,
+  identifier: String,
+  qualifier: Option(String),
+  module_case: ModuleCase,
+  root root: String,
+  path path: String,
+  methods methods: MethodNames,
+  refine refine: fn(Position) -> Position,
+) -> List(ResolvedSymbol) {
+  let matched =
+    named(symbols, identifier, qualifier, module_case, root:, path:, methods:)
+  let entries = case matched, qualifier {
+    [], Some(written) ->
+      case is_module_qualifier(written) {
+        True ->
+          named(symbols, identifier, None, module_case, root:, path:, methods:)
+        False -> []
+      }
+
+    _, _ -> matched
+  }
+  entries
+  |> list.map(fn(entry) { #(entry.0, refine(entry.1)) })
+  |> coalesce(identifier)
+  |> prefer_top_level(identifier)
+}
+
 /// Positions of every outline entry named `identifier`, with the entry's
 /// parents joined as `Outer.inner`. A qualifier keeps an entry when its
 /// parent chain ends with it, or when the file at `path` under `root`
@@ -729,6 +796,62 @@ pub fn named(
     }
   })
   |> list.map(fn(entry) { #(qualified(entry), entry.at) })
+}
+
+// A lowercase last segment names a module, package, directory or import alias,
+// never an UpperCamelCase type or receiver (`Mux`, `Server`, `Web/Endpoint`).
+fn is_module_qualifier(qualifier: String) -> Bool {
+  let segment = list.last(string.split(qualifier, "/")) |> result.unwrap("")
+  case string.pop_grapheme(segment) {
+    Ok(#(first, _rest)) -> is_lower(first)
+    Error(Nil) -> False
+  }
+}
+
+// Absorbs direct same-name child declarations (`Parent.Foo` under `Parent` when
+// both matched `Foo`) into their parent's `companions` list, and deduplicates
+// primary declarations by position.
+fn coalesce(
+  entries: List(#(String, Position)),
+  identifier: String,
+) -> List(ResolvedSymbol) {
+  let primaries =
+    list.filter(entries, fn(entry) {
+      !list.any(entries, fn(parent) { entry.0 == parent.0 <> "." <> identifier })
+    })
+  primaries
+  |> list.fold([], fn(acc: List(ResolvedSymbol), primary) {
+    let #(name, at) = primary
+    let child_name = name <> "." <> identifier
+    let companions =
+      entries
+      |> list.filter_map(fn(entry) {
+        case entry.0 == child_name && entry.1 != at {
+          True -> Ok(entry.1)
+          False -> Error(Nil)
+        }
+      })
+      |> list.unique
+    case list.any(acc, fn(existing) { existing.at == at }) {
+      True -> acc
+      False -> [ResolvedSymbol(name:, at:, companions:), ..acc]
+    }
+  })
+  |> list.reverse
+}
+
+// When a unique top-level declaration (`item.name == identifier`) competes with
+// nested children of other types (such as a record field of the same name), keep
+// the top-level declaration. Two receiver methods or two record fields have no
+// top-level entry and stay ambiguous.
+fn prefer_top_level(
+  resolved: List(ResolvedSymbol),
+  identifier: String,
+) -> List(ResolvedSymbol) {
+  case list.filter(resolved, fn(item) { item.name == identifier }) {
+    [only_top_level] -> [only_top_level]
+    [] | [_, _, ..] -> resolved
+  }
 }
 
 // The receiver and method of an entry the server spelled as one name,
