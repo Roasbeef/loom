@@ -185,6 +185,13 @@ pub fn label_width_is_counted_in_cells_test() {
   assert parse.parse("graph TD\nA[" <> wide <> "]") |> is_ok
   assert refusal("graph TD\nA[" <> wide <> "漢]")
     == model.TooLarge(model.LabelCells)
+
+  // Multi-word node and sequence labels past forty cells wrap at spaces
+  // rather than failing the diagram.
+  let wrapped_node =
+    flow("graph TD\nA[POST /mcp (Accept: json + sse, Mcp-Session-Id)] --> B")
+  assert list.map(wrapped_node.nodes, fn(n) { n.lines })
+    == [["POST /mcp (Accept: json + sse,", "Mcp-Session-Id)"], ["B"]]
 }
 
 pub fn unmeasurable_labels_are_refused_test() {

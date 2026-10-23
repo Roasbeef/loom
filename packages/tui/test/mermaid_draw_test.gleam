@@ -163,6 +163,36 @@ pub fn a_wide_flow_is_turned_to_fit_test() {
   assert !string.contains(rows, "────▶")
 }
 
+pub fn a_wide_sequence_diagram_with_long_messages_wraps_to_fit_test() {
+  let source =
+    "sequenceDiagram
+    participant P as Code-mode program
+    participant M as client/mcp
+    participant C as gleam_mcp/client
+    participant H as client/mcp/http
+    participant O as client/mcp/oauth
+    participant S as Remote HTTP MCP Server
+    P->>M: cap_call mcp.<server>
+    M->>C: call_tool(name, args, timeout)
+    C->>H: ChannelTransport send(JSON-RPC)
+    H->>O: authorize / refresh under <server>.lock
+    O-->>H: Bearer / Macaroon / NoAuth header
+    H->>S: POST /mcp (Accept: json + sse, Mcp-Session-Id)
+    S-->>H: 200 JSON or SSE stream (<= 8 MiB)
+    H-->>C: correlated JSON-RPC response
+    C-->>M: CallToolResult
+    M-->>P: typed result or in-band refusal"
+  list.each([80, 100, 120, 200], fn(width) {
+    let picture = drawn(source, width)
+    assert string.contains(picture, "POST")
+    assert string.contains(picture, "▶")
+  })
+  let wide_picture = drawn(source, 120)
+  assert string.contains(wide_picture, "POST /mcp")
+  assert string.contains(wide_picture, "Mcp-Session-Id)")
+  assert string.contains(wide_picture, "CallToolResult")
+}
+
 pub fn a_diagram_that_fits_no_layout_is_too_wide_test() {
   assert refused("graph TD\nA[a long enough label] --> B[another label]", 10)
     == model.TooWide

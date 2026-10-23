@@ -3573,11 +3573,17 @@ line cells), `draw` (flowcharts) and `sequence`.
   other node shapes, bidirectional edges, and sequence blocks such as `loop`
   and `activate`.
 - **Limits** (each a `TooLarge` refusal naming it): source 16 KiB, 32 nodes,
-  48 edges, 40 display cells per label line, 65,536 canvas cells including the
-  router's margins. A label with a control character or a multi-codepoint
-  cluster is `Unmeasurable`. Widths use `etui/text.cell_width`.
+  48 edges, 40 display cells per label line (`parse.wrap_words` wraps
+  multi-word flowchart node and sequence participant/message/note labels at
+  spaces before checking the per-line bound, while an unbreakable token past 40
+  cells or a sequence label exceeding four wrapped lines is still refused),
+  65,536 canvas cells including the router's margins. A label with a control
+  character or a multi-codepoint cluster is `Unmeasurable`. Widths use
+  `etui/text.cell_width`.
 - **Width:** a flowchart wider than the room is drawn in the transposed
   direction (TD/BT to LR, LR/RL to TD) and the first that fits is used;
+  a sequence diagram (`sequence.draw_within`) wraps headers, messages and notes
+  to a per-column budget when the soft-wrapped layout would exceed the room;
   otherwise `TooWide`. The drawing gets the pane width less the two cells of
   the code gutter, so `wrap_lines` never has to split a drawn row.
 - **Routing:** each edge is one search over free cells, step 1, turn +3,
