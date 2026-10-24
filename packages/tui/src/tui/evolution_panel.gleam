@@ -1067,22 +1067,12 @@ fn event_words(event: evolution.Event, wall_ms: Int) -> String {
     }
   let who = case event.principal, evolution.surface_words(event.via) {
     "", "" -> ""
-    principal, "" -> " (" <> principal_words(principal) <> ")"
+    principal, "" -> " (" <> evolution.principal_words(principal) <> ")"
     "", surface -> " (" <> surface <> ")"
     principal, surface ->
-      " (" <> principal_words(principal) <> ", " <> surface <> ")"
+      " (" <> evolution.principal_words(principal) <> ", " <> surface <> ")"
   }
   proposals.age(event.at_ms, wall_ms) <> "  " <> what <> who
-}
-
-// A principal's identity as the daemon names it, cut to fit a row. An owner's
-// is a long digest, and the first characters tell two principals apart.
-fn principal_words(principal: String) -> String {
-  let one_line = text_hygiene.single_line(principal)
-  case string.length(one_line) > 16 {
-    True -> string.slice(one_line, 0, 14) <> "…"
-    False -> one_line
-  }
 }
 
 // What the daemon left out of the board and what this client could not read,
@@ -1219,7 +1209,7 @@ fn decision_lines(
         surface -> " from the " <> surface
       }
       "Approved by "
-      <> principal_words(approval.by)
+      <> evolution.principal_words(approval.by)
       <> via
       <> " on evidence "
       <> evolution.short_id(approval.evidence_id)
