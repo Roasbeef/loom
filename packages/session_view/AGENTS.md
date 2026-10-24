@@ -689,6 +689,12 @@ fit. It is pure and portable, and the web view's `component.held` is its one
 caller (protocol-change/070); `newest` and `item_rows` are public so a host that
 reads a fold's steps keeps no more than a page draws.
 
+`block_summary.has_labels` distinguishes presentation from read bookkeeping:
+stored or live values count, while wanted/asked keys and refused reads do not.
+Empty text and unbound live generations still count. When it is false,
+`turn_labels.apply` returns the original pieces without UUID lookups or rebuilding
+the lane. With labels present, the existing replacement path runs unchanged.
+
 `turn_labels` draws the summarizer's labels on the finished pieces
 (`apply(pieces, labels)`): each reasoning row of a `Plain` block or a `Work`
 item whose content block has a label (`transcript_lines.labels_for`: the stored

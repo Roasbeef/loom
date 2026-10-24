@@ -1,0 +1,647 @@
+{
+  "base": "d675088f2",
+  "branch": "codex/no-label-fastpath",
+  "otp": "29",
+  "schedulers": 1,
+  "word_bytes": 8,
+  "unit": "cumulative allocated heap words, not retained heap or RSS",
+  "paired_trials": {
+    "reasoning": {
+      "before": {
+        "unchanged": {
+          "median": {
+            "reductions": 50881190,
+            "wall_us": 485821,
+            "cpu_ms": 411,
+            "allocated_words": 89630393
+          },
+          "trials": [
+            {
+              "reductions": 50894594,
+              "wall_us": 499367,
+              "cpu_ms": 425,
+              "allocated_words": 89630393
+            },
+            {
+              "reductions": 50881190,
+              "wall_us": 485821,
+              "cpu_ms": 411,
+              "allocated_words": 89630393
+            },
+            {
+              "reductions": 50879438,
+              "wall_us": 479903,
+              "cpu_ms": 409,
+              "allocated_words": 89630393
+            }
+          ]
+        },
+        "first_paint": {
+          "median": {
+            "reductions": 15250486,
+            "wall_us": 131440,
+            "cpu_ms": 108,
+            "allocated_words": 27550731
+          },
+          "trials": [
+            {
+              "reductions": 15250486,
+              "wall_us": 135014,
+              "cpu_ms": 113,
+              "allocated_words": 27550731
+            },
+            {
+              "reductions": 15250711,
+              "wall_us": 130880,
+              "cpu_ms": 108,
+              "allocated_words": 27550731
+            },
+            {
+              "reductions": 15250435,
+              "wall_us": 131440,
+              "cpu_ms": 108,
+              "allocated_words": 27550731
+            }
+          ]
+        },
+        "witnesses": [
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "d4987f3da2dc445af932f7eb8319d13ddccf45186266d2ffe23886587c5fea09"
+          ],
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "d4987f3da2dc445af932f7eb8319d13ddccf45186266d2ffe23886587c5fea09"
+          ],
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "d4987f3da2dc445af932f7eb8319d13ddccf45186266d2ffe23886587c5fea09"
+          ]
+        ]
+      },
+      "after": {
+        "unchanged": {
+          "median": {
+            "reductions": 39579082,
+            "wall_us": 399607,
+            "cpu_ms": 350,
+            "allocated_words": 72298572
+          },
+          "trials": [
+            {
+              "reductions": 39579082,
+              "wall_us": 401679,
+              "cpu_ms": 350,
+              "allocated_words": 72298572
+            },
+            {
+              "reductions": 39579042,
+              "wall_us": 399607,
+              "cpu_ms": 350,
+              "allocated_words": 72298572
+            },
+            {
+              "reductions": 39579354,
+              "wall_us": 397106,
+              "cpu_ms": 349,
+              "allocated_words": 72298572
+            }
+          ]
+        },
+        "first_paint": {
+          "median": {
+            "reductions": 14878980,
+            "wall_us": 128130,
+            "cpu_ms": 108,
+            "allocated_words": 27042065
+          },
+          "trials": [
+            {
+              "reductions": 14878980,
+              "wall_us": 126480,
+              "cpu_ms": 105,
+              "allocated_words": 27042065
+            },
+            {
+              "reductions": 14878980,
+              "wall_us": 130094,
+              "cpu_ms": 110,
+              "allocated_words": 27042065
+            },
+            {
+              "reductions": 14878980,
+              "wall_us": 128130,
+              "cpu_ms": 108,
+              "allocated_words": 27042065
+            }
+          ]
+        },
+        "witnesses": [
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "d4987f3da2dc445af932f7eb8319d13ddccf45186266d2ffe23886587c5fea09"
+          ],
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "d4987f3da2dc445af932f7eb8319d13ddccf45186266d2ffe23886587c5fea09"
+          ],
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "d4987f3da2dc445af932f7eb8319d13ddccf45186266d2ffe23886587c5fea09"
+          ]
+        ]
+      },
+      "witnesses_identical": true
+    },
+    "answers": {
+      "before": {
+        "unchanged": {
+          "median": {
+            "reductions": 43675831,
+            "wall_us": 451921,
+            "cpu_ms": 363,
+            "allocated_words": 71999900
+          },
+          "trials": [
+            {
+              "reductions": 43675439,
+              "wall_us": 451921,
+              "cpu_ms": 363,
+              "allocated_words": 71999900
+            },
+            {
+              "reductions": 43676799,
+              "wall_us": 432287,
+              "cpu_ms": 362,
+              "allocated_words": 71999900
+            },
+            {
+              "reductions": 43675831,
+              "wall_us": 471816,
+              "cpu_ms": 378,
+              "allocated_words": 71999900
+            }
+          ]
+        },
+        "first_paint": {
+          "median": {
+            "reductions": 19965740,
+            "wall_us": 178094,
+            "cpu_ms": 153,
+            "allocated_words": 40093326
+          },
+          "trials": [
+            {
+              "reductions": 19965868,
+              "wall_us": 181784,
+              "cpu_ms": 155,
+              "allocated_words": 40093319
+            },
+            {
+              "reductions": 19965504,
+              "wall_us": 178070,
+              "cpu_ms": 153,
+              "allocated_words": 40093326
+            },
+            {
+              "reductions": 19965740,
+              "wall_us": 178094,
+              "cpu_ms": 152,
+              "allocated_words": 40093326
+            }
+          ]
+        },
+        "witnesses": [
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "d71c684e6d738127a86b650a8a6f1726f414a822804b5bd33dce7233daf86d2e"
+          ],
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "d71c684e6d738127a86b650a8a6f1726f414a822804b5bd33dce7233daf86d2e"
+          ],
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "d71c684e6d738127a86b650a8a6f1726f414a822804b5bd33dce7233daf86d2e"
+          ]
+        ]
+      },
+      "after": {
+        "unchanged": {
+          "median": {
+            "reductions": 30859355,
+            "wall_us": 349532,
+            "cpu_ms": 293,
+            "allocated_words": 53611505
+          },
+          "trials": [
+            {
+              "reductions": 30865235,
+              "wall_us": 370775,
+              "cpu_ms": 310,
+              "allocated_words": 53611505
+            },
+            {
+              "reductions": 30859355,
+              "wall_us": 349532,
+              "cpu_ms": 293,
+              "allocated_words": 53611505
+            },
+            {
+              "reductions": 30852475,
+              "wall_us": 325947,
+              "cpu_ms": 272,
+              "allocated_words": 53611505
+            }
+          ]
+        },
+        "first_paint": {
+          "median": {
+            "reductions": 19614464,
+            "wall_us": 170109,
+            "cpu_ms": 143,
+            "allocated_words": 39534954
+          },
+          "trials": [
+            {
+              "reductions": 19615144,
+              "wall_us": 177627,
+              "cpu_ms": 147,
+              "allocated_words": 39534954
+            },
+            {
+              "reductions": 19614464,
+              "wall_us": 170109,
+              "cpu_ms": 143,
+              "allocated_words": 39534954
+            },
+            {
+              "reductions": 19614300,
+              "wall_us": 168634,
+              "cpu_ms": 139,
+              "allocated_words": 39534954
+            }
+          ]
+        },
+        "witnesses": [
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "d71c684e6d738127a86b650a8a6f1726f414a822804b5bd33dce7233daf86d2e"
+          ],
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "d71c684e6d738127a86b650a8a6f1726f414a822804b5bd33dce7233daf86d2e"
+          ],
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "d71c684e6d738127a86b650a8a6f1726f414a822804b5bd33dce7233daf86d2e"
+          ]
+        ]
+      },
+      "witnesses_identical": true
+    },
+    "siblings": {
+      "before": {
+        "unchanged": {
+          "median": {
+            "reductions": 6948091,
+            "wall_us": 52682,
+            "cpu_ms": 42,
+            "allocated_words": 10942178
+          },
+          "trials": [
+            {
+              "reductions": 6948091,
+              "wall_us": 51669,
+              "cpu_ms": 39,
+              "allocated_words": 10942178
+            },
+            {
+              "reductions": 6948091,
+              "wall_us": 52682,
+              "cpu_ms": 42,
+              "allocated_words": 10942178
+            },
+            {
+              "reductions": 6948091,
+              "wall_us": 56617,
+              "cpu_ms": 46,
+              "allocated_words": 10942178
+            }
+          ]
+        },
+        "first_paint": {
+          "median": {
+            "reductions": 1141420,
+            "wall_us": 18317,
+            "cpu_ms": 16,
+            "allocated_words": 1573549
+          },
+          "trials": [
+            {
+              "reductions": 1141420,
+              "wall_us": 17581,
+              "cpu_ms": 16,
+              "allocated_words": 1573549
+            },
+            {
+              "reductions": 1141420,
+              "wall_us": 18317,
+              "cpu_ms": 16,
+              "allocated_words": 1573549
+            },
+            {
+              "reductions": 1141420,
+              "wall_us": 18700,
+              "cpu_ms": 17,
+              "allocated_words": 1573549
+            }
+          ]
+        },
+        "witnesses": [
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "f4cab2fe3f48bf63df5f687c5e6fe83a5ac7d5c86ac8cb89b484833b06781525"
+          ],
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "f4cab2fe3f48bf63df5f687c5e6fe83a5ac7d5c86ac8cb89b484833b06781525"
+          ],
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "f4cab2fe3f48bf63df5f687c5e6fe83a5ac7d5c86ac8cb89b484833b06781525"
+          ]
+        ]
+      },
+      "after": {
+        "unchanged": {
+          "median": {
+            "reductions": 6929227,
+            "wall_us": 52695,
+            "cpu_ms": 41,
+            "allocated_words": 10922069
+          },
+          "trials": [
+            {
+              "reductions": 6929227,
+              "wall_us": 51658,
+              "cpu_ms": 40,
+              "allocated_words": 10922069
+            },
+            {
+              "reductions": 6929227,
+              "wall_us": 52695,
+              "cpu_ms": 41,
+              "allocated_words": 10922069
+            },
+            {
+              "reductions": 6929227,
+              "wall_us": 57078,
+              "cpu_ms": 45,
+              "allocated_words": 10922069
+            }
+          ]
+        },
+        "first_paint": {
+          "median": {
+            "reductions": 1141082,
+            "wall_us": 19215,
+            "cpu_ms": 18,
+            "allocated_words": 1572953
+          },
+          "trials": [
+            {
+              "reductions": 1141082,
+              "wall_us": 17989,
+              "cpu_ms": 16,
+              "allocated_words": 1572953
+            },
+            {
+              "reductions": 1141082,
+              "wall_us": 19215,
+              "cpu_ms": 18,
+              "allocated_words": 1572953
+            },
+            {
+              "reductions": 1141082,
+              "wall_us": 20049,
+              "cpu_ms": 18,
+              "allocated_words": 1572953
+            }
+          ]
+        },
+        "witnesses": [
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "f4cab2fe3f48bf63df5f687c5e6fe83a5ac7d5c86ac8cb89b484833b06781525"
+          ],
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "f4cab2fe3f48bf63df5f687c5e6fe83a5ac7d5c86ac8cb89b484833b06781525"
+          ],
+          [
+            "a23d53dbd6d31d55b130713b917062a1a62c24c5c025127c789c20022edb382b",
+            "f4cab2fe3f48bf63df5f687c5e6fe83a5ac7d5c86ac8cb89b484833b06781525"
+          ]
+        ]
+      },
+      "witnesses_identical": true
+    },
+    "present": {
+      "before": {
+        "unchanged": {
+          "median": {
+            "reductions": 51584112,
+            "wall_us": 484174,
+            "cpu_ms": 413,
+            "allocated_words": 94188617
+          },
+          "trials": [
+            {
+              "reductions": 51678409,
+              "wall_us": 478140,
+              "cpu_ms": 401,
+              "allocated_words": 94194815
+            },
+            {
+              "reductions": 51577272,
+              "wall_us": 484174,
+              "cpu_ms": 413,
+              "allocated_words": 94188617
+            },
+            {
+              "reductions": 51584112,
+              "wall_us": 489314,
+              "cpu_ms": 418,
+              "allocated_words": 94188617
+            }
+          ]
+        },
+        "first_paint": {
+          "median": {
+            "reductions": 13398962,
+            "wall_us": 119569,
+            "cpu_ms": 102,
+            "allocated_words": 20299198
+          },
+          "trials": [
+            {
+              "reductions": 13399854,
+              "wall_us": 119569,
+              "cpu_ms": 102,
+              "allocated_words": 20299433
+            },
+            {
+              "reductions": 13398962,
+              "wall_us": 122379,
+              "cpu_ms": 105,
+              "allocated_words": 20299198
+            },
+            {
+              "reductions": 13398822,
+              "wall_us": 119527,
+              "cpu_ms": 101,
+              "allocated_words": 20299198
+            }
+          ]
+        },
+        "witnesses": [
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "31ac92885dc10b61b06090136fabde1caad8f53f7602b4e5db2b27f8d7d0bc1c"
+          ],
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "31ac92885dc10b61b06090136fabde1caad8f53f7602b4e5db2b27f8d7d0bc1c"
+          ],
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "31ac92885dc10b61b06090136fabde1caad8f53f7602b4e5db2b27f8d7d0bc1c"
+          ]
+        ]
+      },
+      "after": {
+        "unchanged": {
+          "median": {
+            "reductions": 51676949,
+            "wall_us": 472434,
+            "cpu_ms": 397,
+            "allocated_words": 94172209
+          },
+          "trials": [
+            {
+              "reductions": 51676949,
+              "wall_us": 475406,
+              "cpu_ms": 400,
+              "allocated_words": 94172209
+            },
+            {
+              "reductions": 51681197,
+              "wall_us": 472434,
+              "cpu_ms": 397,
+              "allocated_words": 94172209
+            },
+            {
+              "reductions": 51674793,
+              "wall_us": 469052,
+              "cpu_ms": 395,
+              "allocated_words": 94172209
+            }
+          ]
+        },
+        "first_paint": {
+          "median": {
+            "reductions": 13398981,
+            "wall_us": 115239,
+            "cpu_ms": 95,
+            "allocated_words": 20298350
+          },
+          "trials": [
+            {
+              "reductions": 13398853,
+              "wall_us": 115239,
+              "cpu_ms": 95,
+              "allocated_words": 20298350
+            },
+            {
+              "reductions": 13398981,
+              "wall_us": 114073,
+              "cpu_ms": 94,
+              "allocated_words": 20298350
+            },
+            {
+              "reductions": 13399265,
+              "wall_us": 122023,
+              "cpu_ms": 104,
+              "allocated_words": 20298350
+            }
+          ]
+        },
+        "witnesses": [
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "31ac92885dc10b61b06090136fabde1caad8f53f7602b4e5db2b27f8d7d0bc1c"
+          ],
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "31ac92885dc10b61b06090136fabde1caad8f53f7602b4e5db2b27f8d7d0bc1c"
+          ],
+          [
+            "441b397c9c2b01eb041e2634f0621ca28d312cce6b5d770b40ccf788c7e889ba",
+            "31ac92885dc10b61b06090136fabde1caad8f53f7602b4e5db2b27f8d7d0bc1c"
+          ]
+        ]
+      },
+      "witnesses_identical": true
+    }
+  },
+  "gleam": "1.19.0",
+  "validation": {
+    "focused_turn_labels_passed": 9,
+    "session_view": {
+      "exit": 0,
+      "passed": 685,
+      "seconds": 4.3
+    },
+    "web_view": {
+      "exit": 0,
+      "passed": 1332,
+      "seconds": 34.23
+    },
+    "lint": {
+      "session_view": {
+        "errors": 0,
+        "warnings": 262
+      },
+      "web_view": {
+        "errors": 0,
+        "warnings": 182
+      }
+    },
+    "javascript": {
+      "exit": 1,
+      "passed": 605,
+      "failed": 78,
+      "baseline_passed": 603,
+      "baseline_failed": 78,
+      "failure_identities_identical": true,
+      "new_focused_tests": {
+        "exit": 0,
+        "passed": 2
+      }
+    },
+    "doc_check": {
+      "exit": 0,
+      "errors": 0,
+      "warnings": 230,
+      "scope": "before documentation commit"
+    },
+    "tui": {
+      "exit": 0,
+      "passed": 1603,
+      "seconds": 20.06
+    }
+  },
+  "source_hashes_match_measured_candidate": true,
+  "source_commit": "8f41b7a63"
+}
