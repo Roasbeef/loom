@@ -169,9 +169,9 @@ token, but `settle` was never called, so no `CallSettled` follows.
 
 ### The per-session effect plane
 
-`start_effect_plane_in` (`client/workspace_plane.gleam:1418`) builds one pool and one
+`start_effect_plane_in` (`client/workspace_plane.gleam:1465`) builds one pool and one
 broker for each session, and one executor service between them. The pool and the broker are captured by value in closures, and each is a
-fatal child of the instance (`instance_children`, `client/serve.gleam:2344`),
+fatal child of the instance (`instance_children`, `client/serve.gleam:2327`),
 since a replacement would be unreachable. The service is a third fatal child. The custody order of a session's teardown is Runtime,
 Services, Broker, Helpers, Mcp, Storage, Namespace (`clean`,
 `client/internal/instance_owner.gleam:366`), so the session's writer lease is
@@ -1088,7 +1088,7 @@ a leaf over `core`.
 ### Operator access
 
 The brief asked for an operator route without a new wire. None exists. Every
-daemon command, `loomd access` (`client/daemon/admin.gleam:146`) and `loomd
+daemon command, `loomd access` (`client/daemon/admin.gleam:38`) and `loomd
 peer` (`client/daemon/peer_cli.gleam:185`) among them, is a request on the
 authenticated control protocol, decoded by `client/daemon/protocol` and bounded
 by Part 1.6. An `executor.snapshot` verb would be a new command on that wire.

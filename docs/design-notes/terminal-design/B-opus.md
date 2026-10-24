@@ -34,7 +34,7 @@ index is in section 14.
 [light](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-120x40-light.png) ·
 [80×24 png](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/B-opus-before-picker-80x24-dark.png)
 
-The before frames were rendered from `render` at `tui/session_selector.gleam:815` with six fixture sessions, because `--demo` has no daemon and
+The before frames were rendered from `render` at `tui/session_selector.gleam:836` with six fixture sessions, because `--demo` has no daemon and
 answers `←` with "daemon control is unavailable". What is wrong with it:
 
 - **Alignment.** A row is the name, then ` · ` and the short identity, so the
@@ -100,7 +100,7 @@ Everything drawn is already in the control protocol. A row is
 `Activity` at `tui/daemon/protocol.gleam:407`: state, strands, working,
 approvals, last outcome, last message and model, with up to four
 `GlanceLine` at `tui/daemon/protocol.gleam:427` rows. The filter counts are
-`counts` at `tui/session_selector.gleam:736`. "Created" uses `created_at`. A
+`counts` at `tui/session_selector.gleam:755`. "Created" uses `created_at`. A
 "last active" column would need a new control field, which is a
 protocol-change; this concept does not ask for one (question 6).
 
@@ -216,7 +216,7 @@ No protocol change is needed for the view as drawn.
 |---|---|---|
 | Header row: brand, session, model, `Ctrl+g details` | removed; session name on the input frame's top rule | one row back at every size |
 | `transcript / main` label | a breadcrumb row only when a strand other than `main` is focused | the frame already names the target |
-| Footer of one to three rows (`footer_rows`, `tui/layout.gleam:571`) | the input frame's bottom rule: model › workspace › branch › ctx › cost, needs-you count on the right | up to three rows back; omp and Codex show this is enough |
+| Footer of one to three rows (`footer_rows`, `tui/layout.gleam:587`) | the input frame's bottom rule: model › workspace › branch › ctx › cost, needs-you count on the right | up to three rows back; omp and Codex show this is enough |
 | Status band under the composer rule | an activity line above the input frame | the spinner sits next to the thing it describes |
 | Agent strip under the footer | kept, under the input frame, with the same keys | the owner's recordings show it is the part that works |
 | 34-cell rail toggled by `Shift+Tab` (`body_layout` at `tui/layout.gleam:138`) and the 72-cell changes pane | one drawer with tabs; `Shift+Tab` docks and hides it | one side region instead of two that take turns |
@@ -281,7 +281,7 @@ and the roster returns under the input.
 | Strand cards with a ring and one status line | a ring is not drawable in cells | a glyph, the name, the status line, and the cache outlook as `3m` |
 | Strand focus from dots, tags and cards | dots are cells, not buttons; no hover | `Ctrl+T` timeline cursor, `Enter` on a row; clicks are additive |
 | Breadcrumb with `All strands` and `Esc` | `Esc` already interrupts the active strand | breadcrumb with `↓ ⏎ main` |
-| `⌘B`, `⌘⌥B` | terminals do not deliver `⌘`; `Ctrl+B` is tmux's prefix; `Ctrl+Alt+B` parses as `Unknown`; any `Alt` letter is read as Escape then the letter (`interrupt_and_insert` at `tui/submit.gleam:411`) | `Shift+Tab`, which already toggles the rail |
+| `⌘B`, `⌘⌥B` | terminals do not deliver `⌘`; `Ctrl+B` is tmux's prefix; `Ctrl+Alt+B` parses as `Unknown`; any `Alt` letter is read as Escape then the letter (`interrupt_and_insert` at `tui/submit.gleam:421`) | `Shift+Tab`, which already toggles the rail |
 | Left session sidebar | costs 26 or more cells and duplicates the multiplexer | not drawn; the `←` picker |
 | 180 ms width animation, shadows, rounded cards | no | none |
 | Approval card in the dock | fits | today's bottom-anchored approval panel, unchanged in rules |
@@ -351,9 +351,9 @@ call list in both needs a new wire record (section 10).
 | Key | Today | Concept B |
 |---|---|---|
 | `←` on an empty composer | session picker (`tui/interaction.gleam:1376`) | unchanged |
-| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1672`) | unchanged; lands on `main` when another strand is focused |
-| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1625`) | toggle the drawer, which replaces the rail |
-| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1567`) | open Strands: full body, or focus the docked drawer |
+| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1721`) | unchanged; lands on `main` when another strand is focused |
+| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1672`) | toggle the drawer, which replaces the rail |
+| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1611`) | open Strands: full body, or focus the docked drawer |
 | `Ctrl+T` | unbound | timeline cursor (new) |
 | `Ctrl+G` | details everywhere | unchanged |
 | `Ctrl+D` | changes navigator focus | focus the drawer on Changes |
@@ -411,7 +411,7 @@ record would need a new control command.
 | Session tab: jobs, viewers | jobs board, presence | `jobs` at `session_view/session_summary.gleam:99`, `viewers` at `session_view/session_summary.gleam:122` |
 | Code mode block, Trace tab | program, status, result | `code_mode_program` at `session_view/transcript_lines.gleam:3875`, `code_mode_result_lines` at `session_view/transcript_lines.gleam:4187`; the call list has no data and needs a new wire record |
 | Peer messages | authenticated origin | `PeerOrigin` at `core/message.gleam:43`, `peer_message_lines` at `session_view/transcript_lines.gleam:2912` |
-| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:2795`; not recognised by `session_view` today |
+| Strand messages | harness text frame | `frame_message` at `client/agency.gleam:2902`; not recognised by `session_view` today |
 | Images | mime type and bytes | `Image` at `session_view/transcript_image.gleam:29` |
 
 Every row above is either drawn today or a change inside `session_view` or
@@ -495,7 +495,7 @@ that heading.
 **Local strand messages are weaker.** A message from another strand in the
 same session arrives as a user turn with no origin. Its sender is written by
 the harness into a text frame, `[message from <strand>]` … `[end message. …]`
-(`frame_message` at `client/agency.gleam:2795`). Today `session_view` does not
+(`frame_message` at `client/agency.gleam:2902`). Today `session_view` does not
 recognise the frame, so these messages are drawn as `› User` turns, which is
 one of the pain points in the owner's recordings. Concept B recognises the
 frame by both its header and its footer, as advisor frames are recognised,
