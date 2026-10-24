@@ -1754,8 +1754,14 @@ fn catalogue_facts(
   catalogue: catalog.Catalog,
 ) -> fn(machine_strand.ModelIdentity) ->
   Result(#(model.ResolvedModel, String, catalog.ImageReading), Nil) {
+  // Facts travel through several provider and hook closures in every runtime.
+  // Only model entries belong there; profile routes and server configuration
+  // remain with the catalogue's owners rather than multiplying on each copy.
+  let models = catalogue.models
   fn(identity: machine_strand.ModelIdentity) {
-    use entry <- result.map(catalog.find(catalogue, identity.provider))
+    use entry <- result.map(
+      list.find(models, fn(entry) { entry.name == identity.provider }),
+    )
     #(catalog.resolved(entry), adapter_api(entry.dialect), entry.vision)
   }
 }
