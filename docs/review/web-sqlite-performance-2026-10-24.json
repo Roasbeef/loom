@@ -737,5 +737,60 @@
   "implementation_commits": {
     "web": "d240d5492",
     "gateway": "f08c1179f"
+  },
+  "callback_retention": {
+    "implementation_head": "403c314d6",
+    "metric": "erts_debug:flat_size words, sharing removed; not physical heap or RSS",
+    "word_size_bytes": 8,
+    "otp": "29",
+    "padding_entries": 4096,
+    "padding_words": 53248,
+    "supervisor": {
+      "ordinary_before": 377991,
+      "ordinary_after": 377303,
+      "padded_before": 484487,
+      "padded_after": 377303
+    },
+    "evolution_trace": {
+      "ordinary_before": 1014,
+      "ordinary_after": 748,
+      "padded_before": 54262,
+      "padded_after": 748
+    },
+    "evolution_door": {
+      "ordinary_before": 51930,
+      "ordinary_after": 40586,
+      "padded_before": 1809114,
+      "padded_after": 93834
+    },
+    "live_daemon_updated": false,
+    "logs": [
+      "/private/tmp/loom-startup-retention-before.log",
+      "/private/tmp/loom-startup-retention-after.log",
+      "/private/tmp/loom-evolution-retention-baseline.log",
+      "/private/tmp/loom-evolution-retention-after-numbers.log",
+      "/private/tmp/loom-evolution-retention-stronger.log"
+    ]
+  },
+  "final_validation": {
+    "implementation_head": "403c314d6",
+    "client_gate_exit": 0,
+    "client_eunit_passes": 5316,
+    "client_test_elapsed_seconds": 625.46,
+    "existing_skip_diagnostics": {
+      "shipped_server_unset": 51,
+      "evolution_live_upgrade_opt_in": 4,
+      "linux_proc_unavailable": 1,
+      "rust_analyzer_unavailable": 1
+    },
+    "new_memory_regressions_executed": true,
+    "real_tui_executed": true,
+    "separate_real_evolution_acceptance_passes": 2,
+    "codemode_passes": 441,
+    "ext_passes": 49,
+    "doc_errors": 0,
+    "doc_warnings": 232,
+    "hosted_ci_run": false,
+    "linux_signoff_run": false
   }
 }
