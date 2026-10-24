@@ -1,11 +1,11 @@
 //// The model can inspect bounded traces and request admitted coding comparisons.
 ////
-//// Native callers supply the source session and its actual resolved identity.
+//// Both reach a program through `cap/evolution`. Native callers supply the
+//// source session and its actual resolved identity.
 //// The model cannot select an arbitrary private session, supply operator marks,
 //// admit fixtures, or author the scorer. Evaluation arguments name an already
 //// admitted immutable task set and lower the native hard budget ceilings.
 
-import broker/policy
 import client/evolution/record
 import client/evolution/rollout
 import client/evolution/trace
@@ -19,80 +19,46 @@ import gleam/result
 import session/session
 import tools/tool
 
-/// The names of the doors `tools` declares, for the wrapper that skips them.
+/// The trace door as a plain function of the dispatching context.
+///
+/// The capability calls this, so the bounds, the
+/// native source-session binding and the encoding have one definition.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // model_door.names() == ["evolution_trace"]
+/// // model_door.trace_door(source_for_ctx, actual_model_for_ctx)(ctx, args)
 /// ```
 ///
-pub fn names() -> List(String) {
-  tools(
-    fn(_ctx) { Error("names declares doors and never runs them") },
-    fn(_ctx) { Error("names declares doors and never runs them") },
-  )
-  |> list.map(fn(declared) { declared.name })
-}
-
-/// Declares the trace tool using native session and exact-model grants.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // model_door.tools(source_for_ctx, actual_model_for_ctx)
-/// ```
-pub fn tools(
+pub fn trace_door(
   source: fn(tool.Ctx) -> Result(session.Session, String),
   actual: fn(tool.Ctx) -> Result(record.ModelScope, String),
-) -> List(tool.Tool) {
-  [
-    tool.Tool(
-      name: "evolution_trace",
-      description: "Inspect bounded excerpts from your native source session for your actual model. Includes usage and independently operator-marked outcomes; missing outcomes remain unmarked. Thinking is excluded. Credential-shape scrubbing is heuristic and can leave short unlabelled secrets or private prose.",
-      prompt_snippet: None,
-      schema: tool.object_schema(
-        [
-          #(
-            "limit",
-            tool.integer_property("Retained turns, 1 to 32; default 12."),
-          ),
-        ],
-        [],
-      ),
-      replay: tool.Never,
-      execution_mode: tool.Exclusive,
-      requirements: fn(workspace) {
-        let policy = tool.read_requirements(workspace)
-        policy.SandboxPolicy(..policy, readable_roots: [])
-      },
-      run: fn(ctx, args) {
-        let result = {
-          use source <- result.try(source(ctx))
-          use target <- result.try(actual(ctx))
-          use requested <- result.try(tool.optional_int(args, "limit"))
-          let limit = case requested {
-            None -> 12
-            Some(limit) -> limit
-          }
-          use Nil <- result.try(case limit > 0 && limit <= 32 {
-            True -> Ok(Nil)
-            False -> Error("Bounds: trace limit must be from one to thirty-two")
-          })
-          use brief <- result.try(trace.select(
-            source,
-            target,
-            trace.Bounds(100, 256, limit, 1024, 32_768),
-          ))
-          Ok(encode_brief(brief))
-        }
-        case result {
-          Ok(value) -> tool.success(json.to_string(value))
-          Error(reason) -> tool.failure(reason)
-        }
-      },
-    ),
-  ]
+) -> fn(tool.Ctx, json.JsonValue) -> tool.ToolOutcome {
+  fn(ctx, args) {
+    let result = {
+      use source <- result.try(source(ctx))
+      use target <- result.try(actual(ctx))
+      use requested <- result.try(tool.optional_int(args, "limit"))
+      let limit = case requested {
+        None -> 12
+        Some(limit) -> limit
+      }
+      use Nil <- result.try(case limit > 0 && limit <= 32 {
+        True -> Ok(Nil)
+        False -> Error("Bounds: trace limit must be from one to thirty-two")
+      })
+      use brief <- result.try(trace.select(
+        source,
+        target,
+        trace.Bounds(100, 256, limit, 1024, 32_768),
+      ))
+      Ok(encode_brief(brief))
+    }
+    case result {
+      Ok(value) -> tool.success(json.to_string(value))
+      Error(reason) -> tool.failure(reason)
+    }
+  }
 }
 
 /// Decodes only a task-set identity and ceilings for the paired native evaluator.

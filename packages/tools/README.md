@@ -419,16 +419,16 @@ skipped layers in separate fields, or `Unreported` with the reason there
 is no report. A tool result must never imply confinement that was not
 applied.
 
-## Evolution tools
+## Evolution doors
 
-`tools/evolution.Door` supplies five host callbacks: propose, test, inspect,
-catalogue and invoke. `client/evolution` implements them; this package owns
-their model-visible descriptions, argument schemas and rendering. The native
-host adds the trace door and prompt-comparison wiring separately.
+`tools/evolution.Door` supplies six host callbacks: propose, test, inspect,
+catalogue, invoke and trace. `client/evolution` implements them. This package
+declares no tool for them, because a program reaches the doors through
+`cap/evolution`, and owns only the record the host fills.
 
 Discovery returns the complete callable schema with a candidate ID and
 generation. Invocation must present both identities, so stale arguments
-cannot silently reach a replacement implementation. None of these tools can
+cannot silently reach a replacement implementation. None of these doors can
 approve or select a candidate. Native controls and the live owner are
 described in [the evolution architecture](../../docs/architecture/evolution.md).
 

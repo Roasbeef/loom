@@ -3,7 +3,6 @@
 
 import client/evolution/hook
 import client/evolution/live
-import client/evolution/model_door
 import client/evolution/queue
 import client/evolution/record
 import client/evolution/record_test
@@ -25,7 +24,6 @@ import machine/operation
 import runtime/effects
 import telemetry/log
 import tools/agent
-import tools/evolution as evolution_tool
 import weft
 import weft/poll
 
@@ -213,7 +211,7 @@ fn reply(text: String, failed: Settlement) -> message.AgentMessage {
   )
 }
 
-pub fn every_registered_door_bypasses_the_generation_lease_test() {
+pub fn only_the_subagent_wait_bypasses_the_generation_lease_test() {
   let events = process.new_subject()
   let gates = process.new_subject()
   let assert Ok(owner) =
@@ -244,16 +242,6 @@ pub fn every_registered_door_bypasses_the_generation_lease_test() {
       ),
       owner,
     )
-  let doors = list.append(evolution_tool.names(), model_door.names())
-  list.contains(doors, "evolution_trace") |> should.be_true
-  list.length(doors) |> should.equal(6)
-  list.each(doors, fn(door) {
-    wired.tools.run(request_named(door))
-    |> should.equal(effects.ToolCompleted(
-      result: reply("bypassed", Succeeded),
-      terminate: False,
-    ))
-  })
   wired.tools.run(request_named(agent.wait_tool_name))
   |> should.equal(effects.ToolCompleted(
     result: reply("bypassed", Succeeded),
@@ -261,6 +249,26 @@ pub fn every_registered_door_bypasses_the_generation_lease_test() {
   ))
   wired.tools.run(request_named("bash"))
   |> should.equal(effects.ToolFailed("Busy: generation owner did not answer"))
+
+  // The evolution operations are capabilities of a program now, so no tool of
+  // those names is special. A call under one of them would be leased like any
+  // other and refused by the closed owner.
+  list.each(
+    [
+      "evolution_propose",
+      "evolution_test",
+      "evolution_inspect",
+      "evolution_catalogue",
+      "evolution_invoke",
+      "evolution_trace",
+    ],
+    fn(name) {
+      wired.tools.run(request_named(name))
+      |> should.equal(effects.ToolFailed(
+        "Busy: generation owner did not answer",
+      ))
+    },
+  )
 }
 
 fn request_named(name: String) -> effects.ToolRun {

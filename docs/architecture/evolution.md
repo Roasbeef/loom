@@ -26,8 +26,14 @@ capabilities. It does not grant approval authority to authored code.
 
 ## Agent and operator workflow
 
-The model sees `evolution_propose`, `evolution_test`, `evolution_inspect`,
-`evolution_catalogue`, `evolution_invoke` and `evolution_trace`. Proposals name
+A model reaches evolution through one route: a `code_mode` program that imports
+`cap/evolution`. The module has `propose`, `test_candidate` and `compare` (both
+are the `evolution.test` capability), `inspect`, `catalogue`, `invoke` and
+`trace`. There are no direct evolution tools, so the six schemas cost no prompt
+bytes on any request, and the `code_mode` description carries the module's
+types and one sentence naming it only on a source session that owns the plane.
+[Reaching evolution from code mode](#reaching-evolution-from-code-mode) says how
+that route is assembled. Proposals name
 a directory in the current caller's readable roots; provenance comes from the
 native session and strand. A bounded tar snapshot runs under the caller's
 kernel jail before the host decodes and hashes its bytes. Native directory
@@ -131,9 +137,9 @@ To roll back, approve the retained earlier version if necessary and submit
 The deadline applies to live session-extension activation; global program and
 model-profile selection changes their discovery boundary.
 
-Promoted extensions use a stable generic tool surface. Discovery returns the
+Promoted extensions use a stable generic call surface. Discovery returns the
 actual callable name, description, schema, candidate ID and generation.
-`evolution_invoke` requires that exact version token. It refuses a stale token
+`invoke` requires that exact version token. It refuses a stale token
 instead of interpreting old arguments under a new implementation or schema.
 Provider-native tool registrations remain the installed contributions.
 
@@ -250,14 +256,21 @@ and the deadline a caller passes bounds only its wait for a lease, so a call
 longer than that deadline returns its own result. A refused admission is
 `Busy` when the deadline passed, and `CleanupUnconfirmed` when native custody
 is retained. Notify-only hooks run one at a time, in arrival order, on a
-runner that takes a lease for each. The evolution doors take their own custody
-or none, and are never wrapped in a lease. Author tests and source snapshots are
+runner that takes a lease for each. The evolution operations take their own
+custody, each asking for its own lease when it needs one, because they run
+inside a `code_mode` call that already holds the lease its hook fold took.
+Author tests and source snapshots are
 leased as well, so the owner runs no work of its own. A running call must not
 ask for a second lease, since the second request would queue behind a
 replacement that is waiting for the first, and a holder must not block on a
 process that will need a lease. The subagent wait tool is therefore not
 leased, and `strand.wait` inside `code_mode` stays bounded by its 300 second
-deadline. A frozen session clock never expires a queued request, so tests that
+deadline. An evolution call from a program is the one place a second request
+can occur. It happens only while a replacement is already waiting for the
+program's own call, and it ends when the second request's admission deadline
+passes: 120 seconds for a test, a snapshot or a program invocation, and the
+program reads `Busy`. The replacement then proceeds when the program returns.
+The cost is a delayed activation, never a call against a retiring generation. A frozen session clock never expires a queued request, so tests that
 queue requests use a ticking clock.
 A provider request already rendered retains its original bytes. Installed
 hooks remain installed; the promoted hook layer captures one generation for
@@ -285,7 +298,7 @@ Failure to receive a report still proves no cleanup.
 An operator uses `admit_tasks` to capture a version-one task set. Each task has
 an ID, prompt, initial file map and an exact expected-file map. Sorted fixture
 and criterion bytes are part of the immutable task-set identity. The model can
-name that admitted identity in `evolution_test`; it cannot author its scorer.
+name that admitted identity in `evolution.compare`; it cannot author its scorer.
 Every baseline and candidate arm opens a fresh production runtime and workspace,
 with ordinary jailed tools and one exact resolved model. Trial workers retire
 before independent file comparison, eliminating authored path races during scoring.
@@ -302,7 +315,7 @@ scripted HTTP provider to prove the coding/evaluation machinery. It does not
 demonstrate a statistical improvement on a commercial model.
 
 An authenticated operator can `mark_outcome` on a settled assistant entry in their
-source session. `evolution_trace` joins bounded source excerpts, actual model
+source session. `evolution.trace` joins bounded source excerpts, actual model
 identity, usage and these independent marks. A missing mark stays `unmarked`.
 Thinking, opaque signatures, images and provider diagnostics are excluded.
 Credential-shape and credential-named-JSON scrubbing happens before clipping.
@@ -319,6 +332,54 @@ the unchanged base request on every attempt. Description overlays cannot change
 registered names, schemas, requirements, replay policy or generated capability
 signatures. Every attempt journals its actual profile and composition digest.
 
+## Reaching evolution from code mode
+
+`cap/evolution` is a harness-only prelude module, so no static seam admits it.
+`client/codemode.over_evolution` admits it for a session that owns the plane,
+and the one optional field it sets does four things together: it allows the
+import on the workspace seam, renders the type surface into the description,
+advertises the six `evolution.*` names with their admission ceilings, and
+installs their router arm (`codemode/evolution`). The orchestration, extension
+and resident seams never see it. A trial session is never offered it, because
+a trial is judged by its source and must not hold a door over the source's
+catalogue.
+
+The plane is opened after the code-mode configuration is assembled, since the
+plane takes that configuration as the host its candidates run under. The
+configuration therefore holds a builder over a name, and
+`client/evolution/capability` registers a cell under that name with the
+finished doors once the plane is open. Each call borrows the doors from the
+cell and runs them on the calling process under a `tool.Ctx` rebuilt from the
+request (strand, operation, step, workspace, policy, grants, directory access).
+The call's source index is replaced by one folded from its capability slot and
+ordinal, so two calls of one execution never share a scratch directory. The
+clearance runner is the session's broker and the raise seam refuses where a
+direct tool would have asked, so an approval costs a re-execution as it does
+for any program.
+
+Gating is `tool_gate.required_tool`: each name needs `code_mode`, which the
+Agency re-reads on every call. Placement is owner-bound. A strand that holds
+`code_mode` can call evolution, so withholding `code_mode` is the only
+per-strand control; no tool name stands for evolution alone. The operator has
+one switch: listing the reserved name `evolution` in `LOOM_DISABLE_TOOLS`
+withholds the module from the whole session (`serve.evolution_switch`). The
+cost of the per-strand gap is bounded. A strand holding `code_mode` can
+`propose`, `compare` (paid trials against an operator-admitted task set) and
+`trace`, but it cannot run a candidate, because `invoke` requires the
+operator's exact selection.
+
+Candidates can never import the module. Extension candidates are vetted under
+the extension seam, which never admits it. Program candidates are vetted and
+run under the host with the evolution door withdrawn
+(`client/codemode.without_evolution`), so the allowlist that `identity` hashes
+excludes it, and a selected program cannot propose, test or invoke another
+candidate from inside its own run.
+
+Adding a prelude module changes `identity.build`, which hashes the vendored
+prelude, so every candidate and evidence envelope retained before this change
+is refused `Changed`. Governed evolution has not shipped in a release, so no
+operator holds one.
+
 ## Module ownership and reading order
 
 The controller lives in the existing `client` package; it is not a new
@@ -331,7 +392,8 @@ relative to `packages/client/src/client/evolution/`.
 | [`candidate`](../../packages/client/src/client/evolution/candidate.gleam), [`evaluate`](../../packages/client/src/client/evolution/evaluate.gleam), [`program`](../../packages/client/src/client/evolution/program.gleam) | Jailed capture, author checks, compilation and fresh program inputs. |
 | [`control`](../../packages/client/src/client/evolution/control.gleam), [`board`](../../packages/client/src/client/evolution/board.gleam), [`cli`](../../packages/client/src/client/evolution/cli.gleam), [`queue`](../../packages/client/src/client/evolution/queue.gleam), [`page`](../../packages/client/src/client/evolution/page.gleam) | Authenticated operator actions, the bounded board a panel draws, bounded managed staging, receipts and complete paged inspection. |
 | [`live`](../../packages/client/src/client/evolution/live.gleam), [`machine`](../../packages/client/src/client/evolution/machine.gleam), [`machine/local`](../../packages/client/src/client/evolution/machine/local.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, the machine seam it is staged through and its local implementation over jailed planes, remaining cleanup obligations and leased invocation folds. |
-| [`prompt`](../../packages/client/src/client/evolution/prompt.gleam), [`model_door`](../../packages/client/src/client/evolution/model_door.gleam), [`tasks`](../../packages/client/src/client/evolution/tasks.gleam) | Profile capture, model-facing dispatch and independently admitted task criteria. |
+| [`prompt`](../../packages/client/src/client/evolution/prompt.gleam), [`model_door`](../../packages/client/src/client/evolution/model_door.gleam), [`tasks`](../../packages/client/src/client/evolution/tasks.gleam) | Profile capture, the comparison request decoder and trace door, and independently admitted task criteria. |
+| [`capability`](../../packages/client/src/client/evolution/capability.gleam), [`codemode/evolution`](../../packages/codemode/src/codemode/evolution.gleam), [`cap/evolution`](../../packages/cap/src/cap/evolution.gleam) | The code-mode route: the program-side stubs, the router that answers their six names, and the cell that lends the session's doors to a call. |
 | [`rollout`](../../packages/client/src/client/evolution/rollout.gleam), [`rollout_host`](../../packages/client/src/client/evolution/rollout_host.gleam), [`fixture`](../../packages/client/src/client/evolution/fixture.gleam), [`trace`](../../packages/client/src/client/evolution/trace.gleam) | Paired production runs, aggregate request budgets, scoring after native retirement and bounded observations. |
 
 The adjacent package contracts are described in the READMEs for

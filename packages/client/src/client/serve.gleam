@@ -85,6 +85,7 @@ import client/directories
 import client/effect_abort
 import client/escalate
 import client/evolution
+import client/evolution/capability as evolution_capability
 import client/evolution/control as evolution_control
 import client/evolution/evaluate as evolution_evaluate
 import client/evolution/fixture as evolution_fixture
@@ -171,6 +172,7 @@ import client/workspace_plane
 import client/workspace_policy
 import client/worktree_diff
 import codemode/compile
+import codemode/evolution as codemode_evolution
 import codemode/seed
 import core/clock.{type Clock}
 import core/entry as evolution_entry
@@ -691,6 +693,10 @@ pub type Instance {
     executor: Option(executor.Executor),
     /// Native evolution retirement, including the bounded transition queue.
     evolution_retire: evolution_retirement.Task,
+    /// The name the evolution doors are borrowed under, or `None` without an
+    /// evolution plane. Exposed so a test can prove `evolution_retire` stops
+    /// the cell, which no custody owner does on the legacy path.
+    evolution_cell: Option(address.Address(evolution_capability.Message)),
     /// The legacy host owns teardown; daemon instances instead use custody.
     legacy_host: Option(host.Host),
     /// The hub's stable address. Everything that talks to the hub — the
@@ -2508,6 +2514,42 @@ fn code_mode_mcp(
   }
 }
 
+/// The reserved name that `LOOM_DISABLE_TOOLS` (`settings.deactivated_tools`)
+/// reads as the evolution switch.
+///
+/// Evolution has no tool of its own to deactivate, so the operator's knob for
+/// withholding it names the module instead. With this name listed, a source
+/// session is not offered `cap/evolution`: the import, the type surface, the
+/// six names and the router arm are all absent, exactly as on a trial.
+pub const evolution_switch = "evolution"
+
+/// The evolution builder a session's code mode is configured with, or `None`.
+///
+/// A source session is offered it unless the operator listed
+/// `evolution_switch` in `LOOM_DISABLE_TOOLS`. A trial is never offered it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.evolution_offer(settings, name) == option.None
+/// // for a trial, or when `deactivated_tools` holds "evolution"
+/// ```
+///
+@internal
+pub fn evolution_offer(
+  settings: Settings,
+  name: address.Address(evolution_capability.Message),
+) -> Option(fn(tool.Ctx) -> codemode_evolution.Door) {
+  case settings.evolution_role {
+    Source ->
+      case list.contains(settings.deactivated_tools, evolution_switch) {
+        True -> None
+        False -> Some(evolution_capability.door_over(name))
+      }
+    Trial(_) -> None
+  }
+}
+
 // The owner's arms of the code-mode configuration: the doors only the
 // session's owner can serve. The workspace applies them after its own, so
 // the peer router wraps the working-directory router as it always has.
@@ -2517,6 +2559,7 @@ fn code_mode_arms(
   schedule_door: Option(scheduleseam.Door),
   layer: mcp_wiring.Layer,
   peer_wiring: peers.Wiring,
+  evolution_name: address.Address(evolution_capability.Message),
 ) -> fn(codemode_wiring.Config) -> codemode_wiring.Config {
   let seams = settings.codemode_seams
   fn(config) {
@@ -2534,6 +2577,13 @@ fn code_mode_arms(
     // description and its router together; an empty layer widens nothing,
     // so this is unconditional.
     |> codemode_wiring.over_mcp(layer)
+    // `cap/evolution` is the one route to governed evolution, offered to a
+    // source session only: a trial is judged by its source and is handed no
+    // door over the source's catalogue. The plane is opened after this
+    // configuration exists (it takes the configuration as its candidates'
+    // host), so the builder holds the cell's name and the cell is registered
+    // under it by `open_evolution`.
+    |> codemode_wiring.over_evolution(evolution_offer(settings, evolution_name))
     |> with_code_mode_peers(peer_wiring)
   }
 }
@@ -3805,6 +3855,10 @@ fn assemble_in(
   // on an executor sends every owner-bound call here instead, and the
   // answer is composed from this session's own doors: the Agency, the
   // scheduling door and the peer mailbox it would have been given locally.
+
+  // The name the evolution cell is registered under once the plane is open.
+  // The code-mode configuration below is built first and holds only the name.
+  let evolution_name = address.new_address(namespace)
   let owner_api =
     owner_services.local(
       handle: agency.fact_supplier(agency_config),
@@ -3868,6 +3922,7 @@ fn assemble_in(
               schedule_door,
               mcp_layer,
               peer_wiring,
+              evolution_name,
             ),
             tool: code_mode_tool(_, async_name, agency_config),
           ),
@@ -4114,6 +4169,7 @@ fn assemble_in(
           clock,
           logger,
           owner,
+          evolution_name,
         )
         |> result.map(Some)
     },
@@ -4141,14 +4197,6 @@ fn assemble_in(
       // collision message names the *second* claimant as the thing to
       // remove, and the newcomer is the extension.
       [
-        contributions.Contribution(
-          contributions.BuiltIn,
-          case evolution_wiring {
-            None -> []
-            Some(wiring) ->
-              list.append(evolution_tool.tools(wiring.door), wiring.trace_tools)
-          },
-        ),
         contributions.Contribution(
           contributions.BuiltIn,
           list.append(skill_tool.tools(skills), peers.tools(peer_wiring)),
@@ -4966,6 +5014,7 @@ fn assemble_in(
     pool: half.pool,
     executor: half.executor,
     evolution_retire: close_evolution(evolution_wiring),
+    evolution_cell: option.map(evolution_wiring, fn(wiring) { wiring.cell }),
     legacy_host: None,
     plane:,
     gateway: hub.Gateway(name:),
@@ -6585,14 +6634,13 @@ type EvolutionWiring {
     live: evolution_live.Live,
     /// Serialises approved transitions; closed before `live`.
     transitions: evolution_queue.Queue,
-    /// The model-facing tools over the catalogue.
-    door: evolution_tool.Door,
+    /// The name programs borrow the doors under; stopped before either owner
+    /// closes, so a late call is refused at once.
+    cell: address.Address(evolution_capability.Message),
     /// The operator commands the gateway exposes.
     control: evolution_control.Seam,
     /// Read when the session pins its prompt profiles at boot.
     catalogue: evolution_store.Store,
-    /// Trace tools that read the session's own conversation.
-    trace_tools: List(tool.Tool),
   )
 }
 
@@ -6610,6 +6658,7 @@ fn open_evolution(
   clock: Clock,
   logger: Logger,
   owner: Option(custody.Owner),
+  name: address.Address(evolution_capability.Message),
 ) -> Result(EvolutionWiring, String) {
   let root = evolution_root(settings)
   let scratch = evolution_scratch(settings)
@@ -6619,9 +6668,11 @@ fn open_evolution(
   // policy that check was granted. It holds no catalogue, so it exists before
   // the catalogue is opened with the identity it reports, and every call that
   // needs the catalogue is handed it.
+  // Candidates are vetted and run under the host with the evolution door
+  // withdrawn, so no selected program can import `cap/evolution`.
   let config =
     evolution_machine_local.Config(
-      host:,
+      host: codemode_wiring.without_evolution(host),
       base:,
       at: hook_coordinates(
         settings,
@@ -6687,25 +6738,6 @@ fn open_evolution(
     clock,
     announce,
   ))
-
-  // Registering custody makes the owner's close retire the queue and then the
-  // live owner, and its detach drop both without closing, so a host that exits
-  // early cannot leave a staged generation unaccounted for.
-  use Nil <- result.try(
-    retain(
-      owner,
-      custody.Evolution,
-      fn() {
-        use Nil <- result.try(evolution_queue.close(transitions))
-        evolution_live.close(live, 120_000)
-        |> result.map_error(evolution_store.describe)
-      },
-      fn() {
-        evolution_live.detach(live)
-        evolution_queue.detach(transitions)
-      },
-    ),
-  )
 
   // A failed door call hands its refusal to `live` first, which retains any
   // cleanup authority the refusal carries, and only then words the error.
@@ -6773,19 +6805,50 @@ fn open_evolution(
       failed,
     )
   let door =
-    evolution_tool.Door(..initial, catalogue: fn(ctx, args) {
-      case lookup(ctx) {
-        Error(error) -> failed(error)
-        Ok(visible) -> evolution_catalogue(live, visible, args, failed)
-      }
-    })
+    evolution_tool.Door(
+      ..initial,
+      catalogue: fn(ctx, args) {
+        case lookup(ctx) {
+          Error(error) -> failed(error)
+          Ok(visible) -> evolution_catalogue(live, visible, args, failed)
+        }
+      },
+      trace: evolution_model_door.trace_door(source, actual),
+    )
+
+  // The doors become reachable from programs only here, and custody is
+  // registered in the same step, so the cell never exists without an owner
+  // that stops it. Registering custody makes the owner's close stop the cell,
+  // so a late program call reads "not open" at once instead of waiting for a
+  // lease, and then retire the queue and the live owner. Its detach drops all
+  // three without closing, so a host that exits early cannot leave a staged
+  // generation unaccounted for. On the no-custody path nothing is detached and
+  // the builder's own death takes them, with `close_evolution` as the orderly
+  // close.
+  use cell <- result.try(evolution_capability.start(name, door))
+  use Nil <- result.try(
+    retain(
+      owner,
+      custody.Evolution,
+      fn() {
+        evolution_capability.stop(name)
+        use Nil <- result.try(evolution_queue.close(transitions))
+        evolution_live.close(live, 120_000)
+        |> result.map_error(evolution_store.describe)
+      },
+      fn() {
+        evolution_capability.detach(cell)
+        evolution_live.detach(live)
+        evolution_queue.detach(transitions)
+      },
+    ),
+  )
 
   Ok(EvolutionWiring(
     live:,
     transitions:,
-    door:,
+    cell: name,
     catalogue:,
-    trace_tools: evolution_model_door.tools(source, actual),
     control: evolution_control.announcing(
       evolution_operator_controls(
         agency_config,
@@ -7274,12 +7337,17 @@ fn close_evolution(
     Some(wiring) ->
       evolution_retirement.sequence(
         evolution_retirement.repeat(fn() {
-          evolution_queue.close(wiring.transitions)
+          Ok(evolution_capability.stop(wiring.cell))
         }),
-        evolution_retirement.repeat(fn() {
-          evolution_live.close(wiring.live, 120_000)
-          |> result.map_error(evolution_store.describe)
-        }),
+        evolution_retirement.sequence(
+          evolution_retirement.repeat(fn() {
+            evolution_queue.close(wiring.transitions)
+          }),
+          evolution_retirement.repeat(fn() {
+            evolution_live.close(wiring.live, 120_000)
+            |> result.map_error(evolution_store.describe)
+          }),
+        ),
       )
   }
 }

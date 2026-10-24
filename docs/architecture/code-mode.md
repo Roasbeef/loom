@@ -231,7 +231,8 @@ The **cap prelude** is the set of modules a code-mode program may import:
 `cap/fs`, `cap/proc`, `cap/net`, `cap/git`, `cap/task`, `cap/actor`,
 `cap/report`, `cap/kv`, `cap/schedule`, `cap/job`, and `cap/search`, plus
 the modules a host adds where it has the door behind them: `cap/lsp`
-where a language server is configured, `cap/notes`, and the generated MCP
+where a language server is configured, `cap/notes`, `cap/evolution` on a
+source session that owns an evolution plane, and the generated MCP
 façades. (`cap/search` offers read-only navigation and search over
 the workspace, so a program that only needs to find its way around a
 tree can import it instead of `cap/fs` and declare in its imports that it
@@ -265,6 +266,13 @@ harness-side bridges over it:
   because the module a program imports is the unit of authorization, and
   `cap/search` grants strictly less than `cap/fs`.
 - `client/mcp.routing` serves the generated per-server modules.
+- `codemode/evolution.routing` serves the six `evolution.*` names over the
+  session's governed-evolution doors, the only route to them: there are no
+  direct evolution tools. One optional `client/codemode.Config` field admits
+  `cap/evolution`, renders its types, advertises the names and installs this
+  arm, on the workspace seam only and only for a source session. Each name is
+  gated on `code_mode` and placed on the owner. Candidates are vetted without
+  it. See [evolution](evolution.md#reaching-evolution-from-code-mode).
 - `codemode/lsp.routing` serves `lsp.*` over the session's
   language-server door, the same door the `lsp_*` tools call. It is
   installed, and `cap/lsp` admitted, only on a host where an
@@ -351,7 +359,8 @@ messages, and report a result. Omitting `seam` selects workspace, and
 explicit `--codemode-seams workspace` keeps the effect-only restriction.
 The host's tool description lists the imports and public types it admits;
 `fs_read` at `cap://<module>` returns full declarations on demand. Installed
-MCP façades and `cap/notes` appear in that index when configured.
+MCP façades, `cap/notes` and `cap/evolution` appear in that index when
+configured.
 
 `cap/strand` uses the same `client/agency` closures that sit behind the
 model's `agent_*` tools, so Agency (the owner of child-strand lifecycle)

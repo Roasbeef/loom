@@ -14,13 +14,17 @@ On-demand `cap://` function surfaces retain runnable examples and indentation;
 the cached type-only surface excludes them. Finite LSP plans can infer their
 owner from explicit sources and advertise the actual SQL column names.
 
-## Stable evolution doors
+## Evolution doors
 
 `tools/evolution.Door` is a native-filled set of callbacks for proposal, author
 checks or independent prompt evaluation, catalogue discovery, invocation and
-bounded trace retrieval. The registered names are stable; selected tool schemas
-and implementation identities arrive through the catalogue rather than a
-mutable native registry. Proposal and testing convey no approval authority.
+bounded trace retrieval. It declares no tool: governed evolution has no direct
+model tools, and a program reaches the doors through `cap/evolution`
+(`client/evolution/capability` builds the six closures for one execution).
+Selected tool schemas and implementation identities arrive through the
+catalogue rather than a mutable native registry. The `code_mode` description
+carries one sentence naming the module, stated only for an offer that admits
+it. Proposal and testing convey no approval authority.
 Every invocation passes fresh JSON through the native current-scope and
 selection fence, then uses the caller's current capability context. Authored
 code cannot grant itself native credentials or model outcome marks. See

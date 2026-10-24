@@ -279,3 +279,58 @@ it, or the scope closes, which retires both.
 What this does not do: installed extensions stay refused on executor sessions.
 The executor-side satellite registry this adds is the piece they lack, so
 enabling them is a later and smaller change.
+
+## Addendum, 2026-10-23: the evolution operations arrive as capability calls
+
+This note was written when the six operations were model tools, and it names
+them that way: `evolution_test` and `evolution_invoke` are the calls whose
+admission and recovery it describes. The owner has since ruled that governed
+evolution is reachable only through code mode. The six direct tools are removed
+and the operations are the capabilities of `cap/evolution` (`evolution.propose`,
+`evolution.test`, `evolution.inspect`, `evolution.catalogue`, `evolution.invoke`
+and `evolution.trace`), answered by `codemode/evolution` on the owner. The node
+vocabulary above is unchanged. This addendum states what the new route does to
+the two sentences that assumed a tool call. The status stays PROPOSED.
+
+**Admission keys on the capability call.** A tool call had its own
+`{operation, step, source_index}`, so "admitted in the execution ledger by call
+key exactly as `Run` is" named one operation. A capability call shares its
+`code_mode` call's key. The key for `EvolutionEvaluate` and `EvolutionRun` is
+therefore `(code_mode call key, cap, OwnerCapCall.ordinal)`, the same device
+`strand.spawn` uses to keep two calls of one program apart. The local route
+already folds the capability's slot and ordinal into the context's source index
+for the same reason (`client/evolution/capability.call_index`), so two calls of
+one execution never share a scratch directory.
+
+**Recovery follows the `code_mode` call.** `Hands.recover` does not look for an
+orphaned `evolution_test` or `evolution_invoke` call by name, because none can
+exist. A cap-originated operation is recovered under the policy of the
+`code_mode` call that made it, which is `replay: Never`: the call is fenced and
+the model re-submits, and the ordinal makes a re-submission a new operation
+rather than a duplicate of the admitted one.
+
+**Placement is owner-bound.** The catalogue and the live owner are the
+orchestrator's, so `cap_placement` already lists the six names among the owner's
+capabilities. On an executor session each operation travels as
+`Capability(OwnerCapCall)` to the owner, which then sends
+`EvolutionSnapshot`, `EvolutionEvaluate` or `EvolutionRun` back to the
+executor and answers the program: two node round trips where the direct tool
+needed one. Every owner-bound capability already pays the first hop. The
+`tool.Ctx` the local route rebuilds from the request is the same narrowing slice
+3 plans for `snapshot`, `evaluate` and `run_program`, so one door implementation
+serves both placements.
+
+**Candidates cannot import the module.** A candidate is vetted under the
+extension seam, which never admits `cap/evolution`, and a program candidate is
+vetted and run under the host with the evolution door withdrawn, so the
+allowlist that `evolution/identity` hashes excludes it. A selected program
+cannot propose, test or invoke another candidate from inside its own run.
+
+**The build identity resets.** `identity.build` hashes the vendored prelude, so
+adding `cap/evolution` changes it, and every candidate and evidence envelope
+retained before this change is refused `Changed` with "candidate or evaluator
+identity changed". That is acceptable because governed evolution has not shipped
+in a release: `v0.3.2` (2026-10-12) is the latest tag, it contains no
+`client/evolution` and the release notes do not mention it, so no operator holds
+a retained candidate. A later prelude addition resets the catalogue the same
+way, and this note is where that cost is recorded.

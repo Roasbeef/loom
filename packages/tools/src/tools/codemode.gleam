@@ -763,6 +763,7 @@ pub fn description(mode: CodeMode) -> String {
   <> "or `program_path` (a source file loaded once after read authorization). "
   <> composition_guidance(mode.seams)
   <> notes_guidance(mode.seams)
+  <> evolution_guidance(mode.seams)
   <> lsp_sql_guidance(mode.seams)
   <> seams_text(mode.seams)
   <> async_text(mode.background, mode.seams)
@@ -791,6 +792,20 @@ fn composition_guidance(seams: Seams) -> String {
     True ->
       "You can combine workspace effects and child operations in one program; "
       <> "omitting `seam` uses the default offer. "
+    False -> ""
+  }
+}
+
+// Governed evolution has no direct tools, so this sentence is the only place a
+// model learns it exists. It is stated only for an offer that admits the module.
+fn evolution_guidance(seams: Seams) -> String {
+  case
+    list.any(offered(seams), fn(offer) {
+      list.contains(offer.allowed_imports, "cap/evolution")
+    })
+  {
+    True ->
+      "Evolution (propose, test, then call operator-selected candidates) is only reachable through `cap/evolution`; read cap://evolution. "
     False -> ""
   }
 }

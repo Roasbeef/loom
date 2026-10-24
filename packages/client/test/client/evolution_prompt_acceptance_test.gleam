@@ -33,6 +33,7 @@ import provider/profile
 import provider/secret
 import runtime/api
 import simplifile
+import support/evolution_programs as programs
 import support/extensions
 import support/provider_http as peer
 import telemetry/log
@@ -284,29 +285,20 @@ fn author_script(
         )
       },
     ),
-    peer.ComputedExchange(peer.AwaitToolResult("prompt-write-" <> v), fn(_) {
-      peer.ReplyToolUse(
-        "prompt-propose-" <> v,
-        "evolution_propose",
-        json.Object([
-          #("directory", json.String("prompt-" <> v)),
-          #("name", json.String("profile_" <> v)),
-          #("kind", json.String("prompt")),
-          #("description", json.String("Independent fixture prompt " <> v)),
-        ]),
-      )
-    }),
+    // One program captures the written prompt and runs the paired comparison
+    // against the admitted task set, the way a model using `cap/evolution`
+    // writes it. The author supplies only the task-set identity and lowered
+    // ceilings; the native evaluator owns criteria, target and workspaces.
     peer.ComputedExchange(
-      peer.AwaitToolResult("prompt-propose-" <> v),
+      peer.AwaitToolResult("prompt-write-" <> v),
       fn(requests) {
-        assert_evaluation_schema(requests)
+        assert_evolution_surface(requests)
         let assert Ok(<<"SQLite format 3":utf8, _:bits>>) =
           simplifile.read_bits(root <> "/run/evolution/evolution.db")
           as "negative trial targets an existing nonempty native catalogue"
         assert simplifile.read(root <> "/owner-secret.token")
           == Ok("native owner fixture secret\n")
           as "negative trial targets the existing nonempty owner secret"
-        let receipt = latest(requests)
         let assert Ok(authored) =
           list.find(list.reverse(requests), fn(request) {
             case request.latest {
@@ -321,23 +313,14 @@ fn author_script(
         let prefix = "author prompt version " <> v <> " "
         let taskset_id = string.drop_start(author_text, string.length(prefix))
         peer.ReplyToolUse(
-          "prompt-test-" <> v,
-          "evolution_test",
-          json.Object([
-            #("candidate_id", field(receipt, "candidate_id")),
-            #("taskset_id", json.String(taskset_id)),
-            #(
-              "limits",
-              json.Object([
-                #("trials", json.Int(2)),
-                #("turns", json.Int(6)),
-                #("tokens", json.Int(1_000_000)),
-                #("dollars", json.Float(2.0)),
-                #("output_bytes", json.Int(65_536)),
-                #("wall_ms", json.Int(120_000)),
-              ]),
-            ),
-          ]),
+          "prompt-author-" <> v,
+          programs.tool_name,
+          programs.arguments(propose_and_compare(
+            directory: "prompt-" <> v,
+            name: "profile_" <> v,
+            description: "Independent fixture prompt " <> v,
+            taskset_id:,
+          )),
         )
       },
     ),
@@ -352,7 +335,7 @@ fn author_script(
       peer.ReplyText("candidate work complete")
     }),
     peer.ComputedExchange(
-      peer.AwaitToolResult("prompt-test-" <> v),
+      peer.AwaitToolResult("prompt-author-" <> v),
       fn(requests) {
         let receipt = latest(requests)
         process.send(
@@ -365,16 +348,13 @@ fn author_script(
         )
         peer.ReplyToolUse(
           "prompt-trace-" <> v,
-          "evolution_trace",
-          json.Object([
-            #(
-              "limit",
-              json.Int(case version {
-                1 -> 12
-                _ -> 3
-              }),
-            ),
-          ]),
+          programs.tool_name,
+          programs.arguments(
+            programs.trace(case version {
+              1 -> 12
+              _ -> 3
+            }),
+          ),
         )
       },
     ),
@@ -614,8 +594,8 @@ fn marked_trace_script() -> List(peer.Exchange) {
     peer.ToolUseExchange(
       "inspect marked source trace",
       "marked-trace",
-      "evolution_trace",
-      json.Object([#("limit", json.Int(12))]),
+      programs.tool_name,
+      programs.arguments(programs.trace(12)),
     ),
     peer.ComputedExchange(peer.AwaitToolResult("marked-trace"), fn(requests) {
       let assert json.Array(excerpts) = field(latest(requests), "excerpts")
@@ -634,7 +614,8 @@ fn marked_trace_script() -> List(peer.Exchange) {
 }
 
 // A trial runs a candidate against a fixture; it is not a second operator. The
-// evolution doors over the source's catalogue must not be advertised to it.
+// door over the source's catalogue must not be offered to it, and that door is
+// a module now: the trial's `code_mode` description must not admit it.
 fn assert_no_evolution_doors(requests: List(peer.ObservedRequest)) {
   let assert Ok(request) = list.last(requests) as "real provider request exists"
   let assert json.Array(tools) = field(request.body, "tools")
@@ -646,7 +627,11 @@ fn assert_no_evolution_doors(requests: List(peer.ObservedRequest)) {
       _ -> False
     }
   })
-    as "a trial is offered no evolution door over the source catalogue"
+    as "no evolution tool exists in any session"
+  assert !list.any(tools, fn(tool) {
+    string.contains(json.to_string(tool), "cap/evolution")
+  })
+    as "a trial's code mode does not admit the door over the source catalogue"
 }
 
 fn assert_profile(requests: List(peer.ObservedRequest), applied: Option(Int)) {
@@ -666,28 +651,90 @@ fn assert_profile(requests: List(peer.ObservedRequest), applied: Option(Int)) {
   }
 }
 
-fn assert_evaluation_schema(requests: List(peer.ObservedRequest)) {
+// The source session offers evolution through code mode and nowhere else: no
+// direct tool, a `code_mode` description that admits the module with its
+// types, and the one sentence that tells a model it exists.
+fn assert_evolution_surface(requests: List(peer.ObservedRequest)) {
   let assert Ok(request) = list.last(requests)
     as "actual provider request exists"
   let assert json.Array(tools) = field(request.body, "tools")
     as "actual callable tools are advertised"
-  let assert Ok(declared) =
+  assert !list.any(tools, fn(tool) {
+    case field(tool, "name") {
+      json.String(name) -> string.starts_with(name, "evolution_")
+      _ -> False
+    }
+  })
+    as "evolution has no direct tool"
+  let assert Ok(code_mode) =
     list.find(tools, fn(tool) {
-      field(tool, "name") == json.String("evolution_test")
+      field(tool, "name") == json.String(programs.tool_name)
     })
-    as "prompt evaluator is model-visible"
-  let schema = field(declared, "input_schema")
-  let properties = field(schema, "properties")
-  assert field(field(properties, "taskset_id"), "type") == json.String("string")
-    as "model schema permits the native admitted task-set identity"
-  let assert json.Object(limits) =
-    field(field(properties, "limits"), "properties")
-    as "bounded comparison limits are model-visible"
-  assert list.sort(list.map(limits, fn(field) { field.0 }), string.compare)
-    == ["dollars", "output_bytes", "tokens", "trials", "turns", "wall_ms"]
-    as "schema advertises exactly the native six budget fields"
-  assert field(schema, "additionalProperties") == json.Bool(False)
-    as "ordinary unknown evaluator arguments remain forbidden"
+    as "code mode is model-visible"
+  let assert json.String(description) = field(code_mode, "description")
+    as "the tool carries its description"
+  assert string.contains(description, "only reachable through `cap/evolution`")
+    && string.contains(description, "### cap/evolution")
+    && string.contains(description, "pub type Limits")
+    as "the description admits the module and states the six budget fields"
+}
+
+// The program a model writes for a prompt candidate: capture the directory,
+// then compare against the admitted task set under lowered ceilings.
+fn propose_and_compare(
+  directory directory: String,
+  name name: String,
+  description description: String,
+  taskset_id taskset_id: String,
+) -> String {
+  string.join(
+    [
+      "import cap/evolution",
+      "import cap/report",
+      "import gleam/option.{Some}",
+      "import gleam/result",
+      "",
+      "pub fn main() -> report.Outcome {",
+      "  case run() {",
+      "    Ok(evidence) -> report.value(evidence)",
+      "    Error(reason) -> report.failure(reason)",
+      "  }",
+      "}",
+      "",
+      "fn run() -> Result(report.Value, String) {",
+      "  let proposal =",
+      "    evolution.Proposal(",
+      "      ..evolution.proposal("
+        <> programs.literal(directory)
+        <> ", "
+        <> programs.literal(name)
+        <> ", evolution.Prompt),",
+      "      description: Some(" <> programs.literal(description) <> "),",
+      "    )",
+      "  use proposed <- result.try(",
+      "    evolution.propose(proposal) |> result.map_error(evolution.error_text),",
+      "  )",
+      "  use id <- result.try(",
+      "    report.field(proposed, \"candidate_id\")",
+      "    |> result.try(report.as_string)",
+      "    |> result.replace_error(\"propose returned no candidate_id\"),",
+      "  )",
+      "  let limits =",
+      "    evolution.Limits(",
+      "      trials: 2,",
+      "      turns: 6,",
+      "      tokens: 1_000_000,",
+      "      dollars: 2.0,",
+      "      output_bytes: 65_536,",
+      "      wall_ms: 120_000,",
+      "    )",
+      "  evolution.compare(id, " <> programs.literal(taskset_id) <> ", limits)",
+      "  |> result.map_error(evolution.error_text)",
+      "}",
+      "",
+    ],
+    "\n",
+  )
 }
 
 fn pinned(instance: serve.Instance, expected: Option(String)) {
@@ -869,11 +916,7 @@ fn settings(root: String, url: String, tag: String) -> serve.Settings {
 }
 
 fn latest(requests: List(peer.ObservedRequest)) -> json.JsonValue {
-  let assert Ok(request) = list.last(requests) as "actual request exists"
-  let assert peer.SuccessfulToolResult(_, text) = request.latest
-    as "ordinary production tool succeeds before script advances"
-  let assert Ok(value) = json.parse(text) as "native receipt totally parses"
-  value
+  programs.result_value(requests)
 }
 
 fn field(value: json.JsonValue, name: String) -> json.JsonValue {

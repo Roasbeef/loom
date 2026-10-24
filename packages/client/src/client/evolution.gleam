@@ -106,6 +106,12 @@ pub fn door_over_capture_model(
     inspect: fn(ctx, args) { outcome(inspect(lookup, ctx, args), failed) },
     catalogue: fn(ctx, args) { outcome(catalogue(lookup, ctx, args), failed) },
     invoke:,
+    // The transcript door reads the native session, which the caller of this
+    // constructor does not hold, so assembly replaces it the way it replaces
+    // the catalogue door.
+    trace: fn(_ctx, _args) {
+      tool.failure("evolution trace is not wired to a session")
+    },
   )
 }
 

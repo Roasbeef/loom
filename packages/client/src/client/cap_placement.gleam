@@ -22,6 +22,12 @@
 //// journal and progress channel back over the owner port. An `mcp.<server>`
 //// name is the owner's here; a workspace that runs some servers itself
 //// answers those names locally (`owner_codemode.over_owner_serving`).
+////
+//// The six `evolution.*` names are the owner's because the catalogue and the
+//// generation owner live beside the session. No remote workspace is offered
+//// `cap/evolution` yet: a session on an executor has no evolution plane, so
+//// the placement states where the names will be answered once one does
+//// (`protocol-change/098`), and the owner's chain denies them until then.
 
 import client/async_codemode
 import client/codemode
@@ -29,6 +35,7 @@ import client/extension/seam as extension_seam
 import client/peers
 import client/workflows
 import codemode/artifact
+import codemode/evolution
 import codemode/lsp as codemode_lsp
 import codemode/notes
 import codemode/observation as codemode_observation
@@ -80,6 +87,7 @@ pub fn owner_caps() -> List(String) {
   list.flatten([
     orchestration_caps,
     notes.serviced_caps,
+    evolution.serviced_caps,
     peers.serviced_caps,
     schedule_caps,
     async_codemode.serviced_caps,

@@ -672,6 +672,12 @@ pub fn extension_stdlib_modules() -> List(String) {
 /// and serviced capabilities, and never for extensions or resident hooks.
 /// `default_cap_modules` says why it is not static.
 ///
+/// `cap/evolution` is the governed-evolution door, the only model-facing route
+/// to it. `client/codemode` admits it for workspace programs on a session that
+/// owns an evolution plane, and never for extensions, resident hooks, or the
+/// candidates evolution itself vets: a candidate that could import it could
+/// propose, test or invoke another candidate from inside its own run.
+///
 /// `cap/runtime` is the boot runtime: the satellite's generated entry
 /// module calls it, and a submitted program has no business naming it. So
 /// it is unreachable from either allowlist — which, on its own, is
@@ -705,11 +711,17 @@ pub fn extension_stdlib_modules() -> List(String) {
 ///
 /// ```gleam
 /// assert policy.harness_only_cap_modules()
-///   == ["cap/notes", "cap/lsp", "cap/lsp_sql", "cap/mcp", "cap/runtime"]
+///   == [
+///     "cap/notes", "cap/lsp", "cap/lsp_sql", "cap/evolution", "cap/mcp",
+///     "cap/runtime",
+///   ]
 /// ```
 ///
 pub fn harness_only_cap_modules() -> List(String) {
-  ["cap/notes", "cap/lsp", "cap/lsp_sql", "cap/mcp", "cap/runtime"]
+  [
+    "cap/notes", "cap/lsp", "cap/lsp_sql", "cap/evolution", "cap/mcp",
+    "cap/runtime",
+  ]
 }
 
 /// The standard-library modules in the default allowlist. Every one has a pure,
