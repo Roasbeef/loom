@@ -343,10 +343,9 @@
   /* The tab bar (web_client/shell): one real button per tab, the shown one
      underlined. The Strands tab's badge counts the strands that wait on a
      decision, as a filled pill in the attention colour. Six tabs do not all fit the
-     panel's default width, so the bar scrolls inside itself: a tab chosen out of
-     view scrolls the bar and never the panel, and the tabs are a little tighter
-     than they were. */
-  .panel-tabs{flex:0 0 auto;display:flex;gap:0;padding:0 8px;min-width:0;overflow-x:auto;scrollbar-width:thin;border-bottom:1px solid var(--color-divider);}
+     panel's default width, so the bar wraps onto a second row and no tab is
+     ever clipped. */
+  .panel-tabs{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:0;padding:0 8px;min-width:0;border-bottom:1px solid var(--color-divider);}
   .panel-tab{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;margin:0;padding:10px 7px 9px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
   .panel-tab:hover{color:var(--color-fg);}
   .panel-tab[aria-pressed="true"]{color:var(--color-fg);border-bottom-color:var(--color-fg);font-weight:500;}

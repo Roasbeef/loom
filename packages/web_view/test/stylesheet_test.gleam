@@ -268,6 +268,18 @@ pub fn the_evolution_pane_is_shown_by_its_own_tab_state_test() {
   )
 }
 
+// Six tabs do not fit the panel's default width, so the bar wraps onto a
+// second row. It never scrolls inside itself, which clipped the first tab to a
+// fragment when the last was chosen.
+pub fn the_panel_tabs_wrap_and_never_clip_test() {
+  let css = stylesheet()
+  assert string.contains(css, ".panel-tabs{")
+  let assert Ok(#(_, after)) = string.split_once(css, ".panel-tabs{")
+  let assert Ok(#(rule, _)) = string.split_once(after, "}")
+  assert string.contains(rule, "flex-wrap:wrap")
+  assert !string.contains(rule, "overflow")
+}
+
 // A candidate is a tinted box with a hairline border, and the question a
 // change asks is a tinted block with a hairline border. No rule of the pane
 // draws a bar down an edge or a shadow (the owner's UI rules).
