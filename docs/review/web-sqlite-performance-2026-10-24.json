@@ -1,0 +1,741 @@
+{
+  "base": "1dfef315fd3b44d35a51ea21a6d5fda45f4869a3",
+  "otp": "29",
+  "gleam": "1.19.0",
+  "schedulers": 1,
+  "web": {
+    "reasoning": {
+      "before": {
+        "unchanged": {
+          "trials": [
+            {
+              "n": 1000,
+              "reductions": 70083751,
+              "us": 856699,
+              "cpu_ms": 752,
+              "words": 127070489,
+              "bytes": 1016563912
+            },
+            {
+              "n": 1000,
+              "reductions": 70170603,
+              "us": 1017071,
+              "cpu_ms": 897,
+              "words": 127070489,
+              "bytes": 1016563912
+            },
+            {
+              "n": 1000,
+              "reductions": 70115855,
+              "us": 908937,
+              "cpu_ms": 781,
+              "words": 127070489,
+              "bytes": 1016563912
+            }
+          ],
+          "median": {
+            "n": 1000,
+            "reductions": 70115855,
+            "us": 908937,
+            "cpu_ms": 781,
+            "words": 127070489,
+            "bytes": 1016563912
+          }
+        },
+        "first_paint": {
+          "trials": [
+            {
+              "n": 30,
+              "reductions": 15220225,
+              "us": 148438,
+              "cpu_ms": 126,
+              "words": 27657755,
+              "bytes": 221262040
+            },
+            {
+              "n": 30,
+              "reductions": 15220225,
+              "us": 162073,
+              "cpu_ms": 137,
+              "words": 27657755,
+              "bytes": 221262040
+            },
+            {
+              "n": 30,
+              "reductions": 15220225,
+              "us": 177476,
+              "cpu_ms": 150,
+              "words": 27657755,
+              "bytes": 221262040
+            }
+          ],
+          "median": {
+            "n": 30,
+            "reductions": 15220225,
+            "us": 162073,
+            "cpu_ms": 137,
+            "words": 27657755,
+            "bytes": 221262040
+          }
+        }
+      },
+      "after": {
+        "unchanged": {
+          "trials": [
+            {
+              "n": 1000,
+              "reductions": 51045029,
+              "us": 525857,
+              "cpu_ms": 452,
+              "words": 89060676,
+              "bytes": 712485408
+            },
+            {
+              "n": 1000,
+              "reductions": 51297100,
+              "us": 1059071,
+              "cpu_ms": 951,
+              "words": 89060676,
+              "bytes": 712485408
+            },
+            {
+              "n": 1000,
+              "reductions": 51158920,
+              "us": 774393,
+              "cpu_ms": 682,
+              "words": 89060676,
+              "bytes": 712485408
+            }
+          ],
+          "median": {
+            "n": 1000,
+            "reductions": 51158920,
+            "us": 774393,
+            "cpu_ms": 682,
+            "words": 89060676,
+            "bytes": 712485408
+          }
+        },
+        "first_paint": {
+          "trials": [
+            {
+              "n": 30,
+              "reductions": 15201491,
+              "us": 129865,
+              "cpu_ms": 108,
+              "words": 27552137,
+              "bytes": 220417096
+            },
+            {
+              "n": 30,
+              "reductions": 15203646,
+              "us": 255904,
+              "cpu_ms": 203,
+              "words": 27552137,
+              "bytes": 220417096
+            },
+            {
+              "n": 30,
+              "reductions": 15201194,
+              "us": 143318,
+              "cpu_ms": 121,
+              "words": 27552137,
+              "bytes": 220417096
+            }
+          ],
+          "median": {
+            "n": 30,
+            "reductions": 15201491,
+            "us": 143318,
+            "cpu_ms": 121,
+            "words": 27552137,
+            "bytes": 220417096
+          }
+        }
+      }
+    },
+    "answers": {
+      "before": {
+        "unchanged": {
+          "trials": [
+            {
+              "n": 1000,
+              "reductions": 182588881,
+              "us": 2291954,
+              "cpu_ms": 1955,
+              "words": 448099554,
+              "bytes": 3584796432
+            },
+            {
+              "n": 1000,
+              "reductions": 182631337,
+              "us": 2716305,
+              "cpu_ms": 2402,
+              "words": 448099554,
+              "bytes": 3584796432
+            },
+            {
+              "n": 1000,
+              "reductions": 182632593,
+              "us": 2713837,
+              "cpu_ms": 2379,
+              "words": 448099554,
+              "bytes": 3584796432
+            }
+          ],
+          "median": {
+            "n": 1000,
+            "reductions": 182631337,
+            "us": 2713837,
+            "cpu_ms": 2379,
+            "words": 448099554,
+            "bytes": 3584796432
+          }
+        },
+        "first_paint": {
+          "trials": [
+            {
+              "n": 30,
+              "reductions": 20098274,
+              "us": 190054,
+              "cpu_ms": 150,
+              "words": 40215919,
+              "bytes": 321727352
+            },
+            {
+              "n": 30,
+              "reductions": 20098274,
+              "us": 275922,
+              "cpu_ms": 236,
+              "words": 40215933,
+              "bytes": 321727464
+            },
+            {
+              "n": 30,
+              "reductions": 20098278,
+              "us": 247645,
+              "cpu_ms": 210,
+              "words": 40215919,
+              "bytes": 321727352
+            }
+          ],
+          "median": {
+            "n": 30,
+            "reductions": 20098274,
+            "us": 247645,
+            "cpu_ms": 210,
+            "words": 40215919,
+            "bytes": 321727352
+          }
+        }
+      },
+      "after": {
+        "unchanged": {
+          "trials": [
+            {
+              "n": 1000,
+              "reductions": 47501239,
+              "us": 429055,
+              "cpu_ms": 364,
+              "words": 78020655,
+              "bytes": 624165240
+            },
+            {
+              "n": 1000,
+              "reductions": 47522695,
+              "us": 513255,
+              "cpu_ms": 445,
+              "words": 78020655,
+              "bytes": 624165240
+            },
+            {
+              "n": 1000,
+              "reductions": 47741806,
+              "us": 727785,
+              "cpu_ms": 624,
+              "words": 78002249,
+              "bytes": 624017992
+            }
+          ],
+          "median": {
+            "n": 1000,
+            "reductions": 47522695,
+            "us": 513255,
+            "cpu_ms": 445,
+            "words": 78020655,
+            "bytes": 624165240
+          }
+        },
+        "first_paint": {
+          "trials": [
+            {
+              "n": 30,
+              "reductions": 20095360,
+              "us": 197798,
+              "cpu_ms": 165,
+              "words": 40275650,
+              "bytes": 322205200
+            },
+            {
+              "n": 30,
+              "reductions": 20096368,
+              "us": 198438,
+              "cpu_ms": 166,
+              "words": 40275650,
+              "bytes": 322205200
+            },
+            {
+              "n": 30,
+              "reductions": 20084437,
+              "us": 201068,
+              "cpu_ms": 173,
+              "words": 40259103,
+              "bytes": 322072824
+            }
+          ],
+          "median": {
+            "n": 30,
+            "reductions": 20095360,
+            "us": 198438,
+            "cpu_ms": 166,
+            "words": 40275650,
+            "bytes": 322205200
+          }
+        }
+      }
+    },
+    "siblings": {
+      "before": {
+        "unchanged": {
+          "trials": [
+            {
+              "n": 1000,
+              "reductions": 7216490,
+              "us": 73999,
+              "cpu_ms": 61,
+              "words": 11292019,
+              "bytes": 90336152
+            },
+            {
+              "n": 1000,
+              "reductions": 7216490,
+              "us": 132455,
+              "cpu_ms": 111,
+              "words": 11292019,
+              "bytes": 90336152
+            },
+            {
+              "n": 1000,
+              "reductions": 7216490,
+              "us": 67744,
+              "cpu_ms": 54,
+              "words": 11292019,
+              "bytes": 90336152
+            }
+          ],
+          "median": {
+            "n": 1000,
+            "reductions": 7216490,
+            "us": 73999,
+            "cpu_ms": 61,
+            "words": 11292019,
+            "bytes": 90336152
+          }
+        },
+        "first_paint": {
+          "trials": [
+            {
+              "n": 30,
+              "reductions": 1150440,
+              "us": 24118,
+              "cpu_ms": 22,
+              "words": 1584176,
+              "bytes": 12673408
+            },
+            {
+              "n": 30,
+              "reductions": 1150440,
+              "us": 34151,
+              "cpu_ms": 32,
+              "words": 1584176,
+              "bytes": 12673408
+            },
+            {
+              "n": 30,
+              "reductions": 1150440,
+              "us": 21970,
+              "cpu_ms": 21,
+              "words": 1584176,
+              "bytes": 12673408
+            }
+          ],
+          "median": {
+            "n": 30,
+            "reductions": 1150440,
+            "us": 24118,
+            "cpu_ms": 22,
+            "words": 1584176,
+            "bytes": 12673408
+          }
+        }
+      },
+      "after": {
+        "unchanged": {
+          "trials": [
+            {
+              "n": 1000,
+              "reductions": 7223654,
+              "us": 67147,
+              "cpu_ms": 53,
+              "words": 11298019,
+              "bytes": 90384152
+            },
+            {
+              "n": 1000,
+              "reductions": 7223654,
+              "us": 138445,
+              "cpu_ms": 119,
+              "words": 11298019,
+              "bytes": 90384152
+            },
+            {
+              "n": 1000,
+              "reductions": 7223654,
+              "us": 68653,
+              "cpu_ms": 57,
+              "words": 11298019,
+              "bytes": 90384152
+            }
+          ],
+          "median": {
+            "n": 1000,
+            "reductions": 7223654,
+            "us": 68653,
+            "cpu_ms": 57,
+            "words": 11298019,
+            "bytes": 90384152
+          }
+        },
+        "first_paint": {
+          "trials": [
+            {
+              "n": 30,
+              "reductions": 1151572,
+              "us": 20593,
+              "cpu_ms": 19,
+              "words": 1584241,
+              "bytes": 12673928
+            },
+            {
+              "n": 30,
+              "reductions": 1151572,
+              "us": 44366,
+              "cpu_ms": 42,
+              "words": 1584241,
+              "bytes": 12673928
+            },
+            {
+              "n": 30,
+              "reductions": 1151572,
+              "us": 22304,
+              "cpu_ms": 20,
+              "words": 1584241,
+              "bytes": 12673928
+            }
+          ],
+          "median": {
+            "n": 30,
+            "reductions": 1151572,
+            "us": 22304,
+            "cpu_ms": 20,
+            "words": 1584241,
+            "bytes": 12673928
+          }
+        }
+      }
+    }
+  },
+  "gateway": {
+    "before": {
+      "1": {
+        "trials": [
+          {
+            "strands": 1,
+            "pulls": 200,
+            "us": 74145,
+            "cpu_ms": 54,
+            "reductions": 501019,
+            "sql_calls": 1600,
+            "words": 573200,
+            "bytes": 4585600
+          },
+          {
+            "strands": 1,
+            "pulls": 200,
+            "us": 29183,
+            "cpu_ms": 32,
+            "reductions": 501019,
+            "sql_calls": 1600,
+            "words": 573200,
+            "bytes": 4585600
+          }
+        ],
+        "median": {
+          "strands": 1.0,
+          "pulls": 200.0,
+          "us": 51664.0,
+          "cpu_ms": 43.0,
+          "reductions": 501019.0,
+          "sql_calls": 1600.0,
+          "words": 573200.0,
+          "bytes": 4585600.0
+        }
+      },
+      "8": {
+        "trials": [
+          {
+            "strands": 8,
+            "pulls": 200,
+            "us": 202075,
+            "cpu_ms": 166,
+            "reductions": 1978239,
+            "sql_calls": 5800,
+            "words": 2727553,
+            "bytes": 21820424
+          },
+          {
+            "strands": 8,
+            "pulls": 200,
+            "us": 157057,
+            "cpu_ms": 129,
+            "reductions": 1978239,
+            "sql_calls": 5800,
+            "words": 2727553,
+            "bytes": 21820424
+          }
+        ],
+        "median": {
+          "strands": 8.0,
+          "pulls": 200.0,
+          "us": 179566.0,
+          "cpu_ms": 147.5,
+          "reductions": 1978239.0,
+          "sql_calls": 5800.0,
+          "words": 2727553.0,
+          "bytes": 21820424.0
+        }
+      },
+      "64": {
+        "trials": [
+          {
+            "strands": 64,
+            "pulls": 200,
+            "us": 1085966,
+            "cpu_ms": 782,
+            "reductions": 13847940,
+            "sql_calls": 39400,
+            "words": 19949403,
+            "bytes": 159595224
+          },
+          {
+            "strands": 64,
+            "pulls": 200,
+            "us": 967969,
+            "cpu_ms": 696,
+            "reductions": 13848073,
+            "sql_calls": 39400,
+            "words": 19949841,
+            "bytes": 159598728
+          }
+        ],
+        "median": {
+          "strands": 64.0,
+          "pulls": 200.0,
+          "us": 1026967.5,
+          "cpu_ms": 739.0,
+          "reductions": 13848006.5,
+          "sql_calls": 39400.0,
+          "words": 19949622.0,
+          "bytes": 159596976.0
+        }
+      },
+      "128": {
+        "trials": [
+          {
+            "strands": 128,
+            "pulls": 200,
+            "us": 2470658,
+            "cpu_ms": 1839,
+            "reductions": 27419443,
+            "sql_calls": 77800,
+            "words": 39637397,
+            "bytes": 317099176
+          },
+          {
+            "strands": 128,
+            "pulls": 200,
+            "us": 2042383,
+            "cpu_ms": 1500,
+            "reductions": 27420020,
+            "sql_calls": 77800,
+            "words": 39636314,
+            "bytes": 317090512
+          }
+        ],
+        "median": {
+          "strands": 128.0,
+          "pulls": 200.0,
+          "us": 2256520.5,
+          "cpu_ms": 1669.5,
+          "reductions": 27419731.5,
+          "sql_calls": 77800.0,
+          "words": 39636855.5,
+          "bytes": 317094844.0
+        }
+      }
+    },
+    "after": {
+      "1": {
+        "trials": [
+          {
+            "strands": 1,
+            "pulls": 200,
+            "us": 46892,
+            "cpu_ms": 39,
+            "reductions": 439044,
+            "sql_calls": 1400,
+            "words": 490800,
+            "bytes": 3926400
+          },
+          {
+            "strands": 1,
+            "pulls": 200,
+            "us": 34814,
+            "cpu_ms": 30,
+            "reductions": 439883,
+            "sql_calls": 1400,
+            "words": 490800,
+            "bytes": 3926400
+          }
+        ],
+        "median": {
+          "strands": 1.0,
+          "pulls": 200.0,
+          "us": 40853.0,
+          "cpu_ms": 34.5,
+          "reductions": 439463.5,
+          "sql_calls": 1400.0,
+          "words": 490800.0,
+          "bytes": 3926400.0
+        }
+      },
+      "8": {
+        "trials": [
+          {
+            "strands": 8,
+            "pulls": 200,
+            "us": 137931,
+            "cpu_ms": 114,
+            "reductions": 1482061,
+            "sql_calls": 4200,
+            "words": 2063678,
+            "bytes": 16509424
+          },
+          {
+            "strands": 8,
+            "pulls": 200,
+            "us": 100769,
+            "cpu_ms": 92,
+            "reductions": 1482061,
+            "sql_calls": 4200,
+            "words": 2063678,
+            "bytes": 16509424
+          }
+        ],
+        "median": {
+          "strands": 8.0,
+          "pulls": 200.0,
+          "us": 119350.0,
+          "cpu_ms": 103.0,
+          "reductions": 1482061.0,
+          "sql_calls": 4200.0,
+          "words": 2063678.0,
+          "bytes": 16509424.0
+        }
+      },
+      "64": {
+        "trials": [
+          {
+            "strands": 64,
+            "pulls": 200,
+            "us": 780525,
+            "cpu_ms": 554,
+            "reductions": 9960651,
+            "sql_calls": 26600,
+            "words": 14649841,
+            "bytes": 117198728
+          },
+          {
+            "strands": 64,
+            "pulls": 200,
+            "us": 834496,
+            "cpu_ms": 604,
+            "reductions": 9963563,
+            "sql_calls": 26600,
+            "words": 14650247,
+            "bytes": 117201976
+          }
+        ],
+        "median": {
+          "strands": 64.0,
+          "pulls": 200.0,
+          "us": 807510.5,
+          "cpu_ms": 579.0,
+          "reductions": 9962107.0,
+          "sql_calls": 26600.0,
+          "words": 14650044.0,
+          "bytes": 117200352.0
+        }
+      },
+      "128": {
+        "trials": [
+          {
+            "strands": 128,
+            "pulls": 200,
+            "us": 1834478,
+            "cpu_ms": 1405,
+            "reductions": 19588537,
+            "sql_calls": 52200,
+            "words": 29037329,
+            "bytes": 232298632
+          },
+          {
+            "strands": 128,
+            "pulls": 200,
+            "us": 1600384,
+            "cpu_ms": 1193,
+            "reductions": 19596114,
+            "sql_calls": 52200,
+            "words": 29036966,
+            "bytes": 232295728
+          }
+        ],
+        "median": {
+          "strands": 128.0,
+          "pulls": 200.0,
+          "us": 1717431.0,
+          "cpu_ms": 1299.0,
+          "reductions": 19592325.5,
+          "sql_calls": 52200.0,
+          "words": 29037147.5,
+          "bytes": 232297180.0
+        }
+      }
+    }
+  },
+  "candidate_source_head": "64a30c125",
+  "implementation_commits": {
+    "web": "d240d5492",
+    "gateway": "f08c1179f"
+  }
+}
