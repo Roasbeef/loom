@@ -42,6 +42,7 @@
 import core/entry
 import core/ids
 import core/message
+import gleam/bool
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import session_view/block_summary.{type Key, type Labels}
@@ -62,6 +63,10 @@ import session_view/turns.{type Item, type Piece}
 /// assert turn_labels.apply([], block_summary.new()) == []
 /// ```
 pub fn apply(pieces: List(Piece), labels: Labels) -> List(Piece) {
+  // Read bookkeeping holds no display labels. Existing summaries and digests
+  // stay exactly as they are when neither label book can replace a row.
+  use <- bool.guard(when: !block_summary.has_labels(labels), return: pieces)
+
   list.map(pieces, fn(piece) {
     case piece {
       turns.Plain(block:, thoughts:, took:) ->

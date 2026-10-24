@@ -11,6 +11,7 @@ import core/json
 import core/message
 import core/usage_evidence
 import gleam/dict
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import session_view/block_summary
@@ -120,6 +121,74 @@ fn stored(index: Int, text: String) -> block_summary.Labels {
 
 pub fn a_book_with_no_labels_changes_nothing_test() {
   assert turn_labels.apply([piece()], block_summary.new()) == [piece()]
+}
+
+// A request ledger can be populated while both label books remain empty.
+// Presence follows stored or live values, even empty or unbound live text.
+pub fn label_presence_ignores_read_bookkeeping_and_preserves_live_values_test() {
+  let fresh = block_summary.new()
+  let key = block_summary.Key(ids.entry_id_to_string(id(7)), 0)
+  let wanted = block_summary.want(fresh, [key])
+  let assert Some(#(_, asked)) = block_summary.next_read(wanted)
+    as "A wanted label starts its read."
+  list.each([fresh, wanted, asked, block_summary.refused(asked)], fn(book) {
+    assert !block_summary.has_labels(book)
+  })
+
+  // Empty text is still an accepted value; an unbound generation is still live.
+  let stored = block_summary.receive(fresh, block_summary.SettledBlock(key), "")
+  let live =
+    block_summary.receive(
+      fresh,
+      block_summary.LiveStream("main", "op", "unbound-generation"),
+      "",
+    )
+  list.each([stored, live], fn(book) {
+    assert block_summary.has_labels(book)
+    assert block_summary.has_labels(block_summary.refused(book))
+  })
+  assert !block_summary.has_labels(
+    block_summary.retain_live(live, fn(_) { False }),
+  )
+}
+
+// The shortcut must preserve rows that were already summarized, rather than
+// restoring a digest or changing a block merely because a read is pending.
+pub fn empty_label_books_preserve_original_and_already_summarized_pieces_test() {
+  let block = Block("7.0", FromEntry(response()), rows())
+  let original = [
+    piece(),
+    turns.Work(
+      "work:7.0",
+      turns.Worked(None, 1, 0, 0, turns.Finished),
+      [turns.Narrated(block, dict.new(), None)],
+      turns.Unfolded(0),
+      Some(7),
+    ),
+    turns.Plain(
+      Block("stale", transcript_lines.FromSpacer, [
+        #("stale:0", Line(transcript_line.ReasoningDigest, "stale digest")),
+      ]),
+      dict.new(),
+      None,
+    ),
+  ]
+  let summarized = turn_labels.apply(original, stored(0, "Already summarized."))
+  assert summarized != original
+
+  // Both queued and completed reads may have found no labels yet.
+  let fresh = block_summary.new()
+  let wanted = block_summary.want(fresh, turn_labels.keys(original))
+  let assert Some(#(_, asked)) = block_summary.next_read(wanted)
+    as "The fixture has long reasoning blocks to request."
+  list.each([fresh, wanted, asked, block_summary.refused(asked)], fn(book) {
+    assert turn_labels.apply(original, book) == original
+    assert turn_labels.apply(summarized, book) == summarized
+  })
+
+  // Applying a later book retains the existing summarized rows, as before.
+  assert turn_labels.apply(summarized, stored(0, "Replacement label."))
+    == summarized
 }
 
 // The label is of the content block, which counts the call, so the second
