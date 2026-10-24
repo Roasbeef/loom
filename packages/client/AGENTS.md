@@ -7001,7 +7001,7 @@ below.
   `CloseOutcome`. The census is a type parameter the host never reads.
   `unknown_outcome_text` is the model's wording for a lost call and
   `did_not_run_text` the wording of a fenced one. `Attach` carries
-  `protocol.version` (4); the host refuses any other value with `VersionMismatch`.
+  `protocol.version` (5); the host refuses any other value with `VersionMismatch`.
   Change the version whenever a constructor or field changes. Version 2 moved
   the executor's clock reading out of the census and into `Attached`, so each
   reply carries the time it was sent. Version 3 added background executions
@@ -7010,7 +7010,18 @@ below.
   executor asks the owner port for while it builds a plane. Version 4 added the
   `WorktreeFailed` refusal and `RemoteCensus.branch` for worktree workspaces
   (protocol-change/095), and `host.PlaneFailure` is how a factory says which
-  refusal a failed build is. `Attach` keeps the
+  refusal a failed build is. Version 5 added the eight evolution messages
+  (`EvolutionSnapshot`, `EvolutionEvaluate`, `EvolutionStage`, `EvolutionRun`,
+  `EvolutionHook`, `EvolutionTransition`, `EvolutionRetire`,
+  `EvolutionInventory`), their plain-data types (`Coordinates`, `Handle`,
+  `Staged`, `Prepared`, `TransitionStep`, `TransitionAnswer`, `Target`,
+  `Activation`, `EvolutionRequest`), the refusals `UnknownHandle`,
+  `AlreadyPublished`, `StaleGeneration` and `NoEvolution`, and
+  `RemoteCensus.evolution` (`Compiles(identity)` or `Uncompiled(reason)`).
+  `coordinates_of` builds a `Coordinates` from a door's `tool.Ctx`. The host's
+  arms judge the fence first (`exec_ledger.current`), then ask the plane's
+  optional `host.Evolution`; no plane has one yet, so each arm answers
+  `NoEvolution`. `Attach` keeps the
   shape it had in version 2, so a peer of either version reaches the version
   check and is refused by value; never add a field to it, or the refusal
   becomes a crash of the host and the executor daemon. Every other message
@@ -7367,7 +7378,8 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   `owner_codemode.advertising_peers` as the `code_mode` tool. The census it
   returns is
   `RemoteCensus` (plain data plus the broker's subject; the prompt facts are read
-  once, at attach). `workspace_plane` itself is unchanged apart from `WorkspaceSpec.blob_root`.
+  once, at attach; `evolution` is `Uncompiled` until the executor's evolution
+  plane is built). `workspace_plane` itself is unchanged apart from `WorkspaceSpec.blob_root`.
 - **A remote session's blobs.** They live in `<state>/blobs/<session>`, passed as
   `WorkspaceSpec.blob_root`. Not in `<state>/scopes/<session>`, which is removed
   when a scope retires cleanly while a reopened session must still read the

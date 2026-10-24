@@ -72,7 +72,7 @@ connection with `epmd -names`, `lsof` or `ss`.
 Nothing answers "what sessions do you hold".
 
 **Health.** The pieces exist and none is readable from a client. The executor's
-census is returned in `Attached` (`client/remote/protocol.gleam:171`) and kept by
+census is returned in `Attached` (`client/remote/protocol.gleam:197`) and kept by
 the live plane. The execution ledger holds the scope rows, the byte budget, the
 unacknowledged results and the scopes that block a reopen, and the only reader is
 `loomd executor release`, which runs with the daemon stopped. A move stalls with a

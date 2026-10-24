@@ -447,6 +447,19 @@ shared by later Erlang nodes on the machine, as any `epmd` is.
 
 ### What the closed vocabularies limit
 
+Version 5 added the vocabulary a session's evolution work travels in
+(protocol-change/098): eight `HostMessage` constructors, the plain-data types
+they carry, and `RemoteCensus.evolution`, which says whether the executor can
+compile candidates and under which identity. In this version the host only
+refuses them. Each arm judges the scope's fence by the ledger's own check
+(`exec_ledger.current`, or `current_incarnation` for the token-less inventory)
+before it asks the plane, so a dead runtime hears `StaleToken`,
+`StaleIncarnation` or `ScopeNotOpen` first, and a plane with no `Evolution`
+answers `NoEvolution` to a current one. `EvolutionEvaluate` and `EvolutionRun`
+are keyed calls, admitted like a background execution and a `Run` under the
+ledger names `evolution:test` and `evolution:<tool>`; the other six change no
+row.
+
 The messages between nodes are values of closed custom types: `HostMessage` to
 the executor host, `OwnerMessage` to the owner port, and `orchestrator_port`'s
 `Message` between orchestrators. They hold only plain data and subjects, and no
@@ -460,8 +473,8 @@ function on the node directly.
 
 Because the peers are trusted, a message is a typed Erlang term matched
 directly, not decoded from untrusted bytes. The only guard on its shape is
-`Attach.version` (`protocol.version`, 4 today). `Attach` keeps the shape it had
-in version 2, so a peer of either version reaches that check, and the host
+`Attach.version` (`protocol.version`, 5 today). `Attach` keeps the shape it had
+in version 2, so a peer of any version reaches that check, and the host
 refuses a different version with `VersionMismatch`, creates nothing and stays
 up. Anything newer a peer needs at attach, such as the MCP plan, is asked for
 after the check. Every other message assumes a peer built from the same source:
@@ -620,7 +633,7 @@ There is no cancel message. The runtime aborts a call by killing its effect
 process, and the host monitors the process that owns each `Run`'s reply subject.
 A `DOWN` with any reason except `noconnection` means someone asked to stop, and
 when the run's last waiter is gone the host cancels it
-(`cancels_run`, `remote/host.gleam:491`). A `noconnection` `DOWN` means only
+(`cancels_run`, `remote/host.gleam:533`). A `noconnection` `DOWN` means only
 that the orchestrator is unreachable. The run continues to completion or to its
 own deadline, which is built on the executor's clock, and its outcome waits in
 the ledger. An abort issued during a partition arrives only as `noconnection`,
@@ -1169,7 +1182,7 @@ there.
 
 ## Background code mode and MCP on a remote session
 
-**Status: built, introduced at protocol version 3 (the current version is 4).** The rules are in the protocol-change/078
+**Status: built, introduced at protocol version 3 (the current version is 5).** The rules are in the protocol-change/078
 addendum "background code mode and MCP façades on a remote session", together
 with the failure table for both paths. This section shows how the parts fit.
 
