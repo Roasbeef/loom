@@ -107,6 +107,22 @@ pub fn new() -> Labels {
   )
 }
 
+/// Whether the attachment holds any stored or live labels.
+///
+/// Wanted and asked keys, and whether reads were refused, only schedule reads:
+/// they hold no label a row can display. Any stored or live value counts,
+/// including empty text and a live generation not yet tied to an entry, so a
+/// caller can skip label projection only when both books are empty.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert block_summary.has_labels(block_summary.new()) == False
+/// ```
+pub fn has_labels(labels: Labels) -> Bool {
+  !dict.is_empty(labels.stored) || !dict.is_empty(labels.live)
+}
+
 /// The stored label of one committed block.
 ///
 /// ## Examples
