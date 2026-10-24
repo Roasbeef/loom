@@ -4,6 +4,13 @@
 //// Durable evidence is written only after the native runner proves cleanup.
 //// The check answers a `Report` and writes nothing; the durable write is the
 //// caller's `record`, after cleanup.
+////
+//// Every check here takes the `record.Candidate` itself, never a catalogue and
+//// an id. Reading the candidate and confirming that it was admitted under the
+//// host's current evaluator identity (`current`) belong to the orchestrator's
+//// wrapper in `machine/local`, so the checks hold nothing that only the
+//// orchestrator can reach and an executor can run them over a candidate it
+//// was handed.
 
 import client/evolution/record
 import client/evolution/retirement
@@ -65,14 +72,13 @@ pub type Observation {
 ///
 /// ## Examples
 ///
-/// `prepare(store, id, directory, offline_build)` yields a disposable recipe.
+/// `prepare(candidate, directory, offline_build)` yields a disposable recipe.
 pub fn prepare(
-  catalogue: store.Store,
-  id: record.CandidateId,
+  candidate: record.Candidate,
   directory: String,
   build: install.Build,
 ) -> Result(Prepared, store.Refusal) {
-  prepare_slot(catalogue, id, directory, build, live_slots.First)
+  prepare_slot(candidate, directory, build, live_slots.First)
 }
 
 /// Compiles the same immutable candidate into a native-selected reusable slot.
@@ -80,18 +86,15 @@ pub fn prepare(
 /// ## Examples
 ///
 /// ```gleam
-/// // evaluate.prepare_slot(store, id, root, build, live_slots.Second)
+/// // evaluate.prepare_slot(candidate, root, build, live_slots.Second)
 /// ```
 ///
 pub fn prepare_slot(
-  catalogue: store.Store,
-  id: record.CandidateId,
+  candidate: record.Candidate,
   directory: String,
   build: install.Build,
   slot: live_slots.Slot,
 ) -> Result(Prepared, store.Refusal) {
-  use candidate <- result.try(store.read_candidate(catalogue, id))
-  use Nil <- result.try(current(catalogue, candidate))
   use decoded <- result.try(decode_manifest(candidate))
   use vetted <- result.try(vet(candidate))
   use Nil <- result.try(
@@ -117,8 +120,8 @@ pub fn prepare_slot(
   let written =
     extension_record.for_install(
       decoded,
-      from: source.LocalPath("candidate:" <> record.id_string(id)),
-      revision: record.id_string(id),
+      from: source.LocalPath("candidate:" <> record.id_string(candidate.id)),
+      revision: record.id_string(candidate.id),
       tree_digest: archive.digest(tree),
       manifest_hash: products.manifest_hash,
       allowlist: install.allowlist(),
@@ -160,15 +163,14 @@ pub type Report {
 ///
 /// ## Examples
 ///
-/// `extension(store,id,directory,build,run)` answers the author-test report.
+/// `extension(candidate,directory,build,run)` answers the author-test report.
 pub fn extension(
-  catalogue: store.Store,
-  id: record.CandidateId,
+  candidate: record.Candidate,
   directory: String,
   build: install.Build,
   run: fn(compile.Artifact) -> Result(Observation, store.Refusal),
 ) -> Result(Report, store.Refusal) {
-  extension_owned(catalogue, id, directory, build, run, retirement.done())
+  extension_owned(candidate, directory, build, run, retirement.done())
 }
 
 /// Retires the native evaluation executor on every path before answering.
@@ -181,16 +183,15 @@ pub fn extension(
 ///
 /// ## Examples
 ///
-/// `extension_owned(store,id,root,build,run,retire)` is the production evaluator.
+/// `extension_owned(candidate,root,build,run,retire)` is the production evaluator.
 pub fn extension_owned(
-  catalogue: store.Store,
-  id: record.CandidateId,
+  candidate: record.Candidate,
   directory: String,
   build: install.Build,
   run: fn(compile.Artifact) -> Result(Observation, store.Refusal),
   retire: retirement.Task,
 ) -> Result(Report, store.Refusal) {
-  let outcome = tested(catalogue, id, directory, build, run)
+  let outcome = tested(candidate, directory, build, run)
   use Nil <- result.try(
     retirement.perform(retire)
     |> result.map_error(fn(failure) {
@@ -257,14 +258,11 @@ pub fn record(
 }
 
 fn tested(
-  catalogue: store.Store,
-  id: record.CandidateId,
+  candidate: record.Candidate,
   directory: String,
   build: install.Build,
   run: fn(compile.Artifact) -> Result(Observation, store.Refusal),
 ) -> Result(#(record.Verdict, String), store.Refusal) {
-  use candidate <- result.try(store.read_candidate(catalogue, id))
-  use Nil <- result.try(current(catalogue, candidate))
   use decoded <- result.try(decode_manifest(candidate))
   use vetted <- result.try(vet(candidate))
   use Nil <- result.try(
@@ -370,7 +368,17 @@ fn vet(
   })
 }
 
-fn current(
+/// Refuses a candidate admitted under a different evaluator identity.
+///
+/// A check's verdict is only evidence for the identity that produced it, so
+/// the orchestrator confirms the candidate still carries the catalogue's
+/// identity before it hands the candidate to a check. The checks themselves
+/// no longer repeat this read, because an executor has no catalogue to read.
+///
+/// ## Examples
+///
+/// `current(catalogue, candidate)` is `Error(store.Changed)` for a foreign identity.
+pub fn current(
   catalogue: store.Store,
   candidate: record.Candidate,
 ) -> Result(Nil, store.Refusal) {

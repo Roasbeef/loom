@@ -1,6 +1,10 @@
 //// Executable skills retain source rather than reusable authority or observations.
 //// Each exact selected version enters the ordinary current-caller code-mode
 //// admission, vetting, compilation and jail pipeline with fresh JSON input.
+////
+//// `test_with` takes the candidate itself. The orchestrator's wrapper in
+//// `machine/local` reads it from the catalogue and checks that it was admitted
+//// under the current identity, so the check runs without a catalogue.
 
 import client/codemode
 import client/evolution/evaluate
@@ -76,14 +80,13 @@ pub fn invoke(
 ///
 /// ## Examples
 ///
-/// `test_with(store,id,run,retire)` borrows a dedicated native program executor.
+/// `test_with(candidate,run,retire)` borrows a dedicated native program executor.
 pub fn test_with(
-  catalogue: store.Store,
-  id: record.CandidateId,
+  candidate: record.Candidate,
   run: fn(String) -> Result(surface.Execution, store.Refusal),
   retire: retirement.Task,
 ) -> Result(evaluate.Report, store.Refusal) {
-  let observed = test_execution(catalogue, id, run)
+  let observed = test_execution(candidate, run)
   use Nil <- result.try(
     retirement.perform(retire)
     |> result.map_error(fn(failure) {
@@ -140,20 +143,9 @@ pub fn outcome(execution: surface.Execution) -> tool.ToolOutcome {
 }
 
 fn test_execution(
-  catalogue: store.Store,
-  id: record.CandidateId,
+  candidate: record.Candidate,
   run: fn(String) -> Result(surface.Execution, store.Refusal),
 ) -> Result(surface.Execution, store.Refusal) {
-  use candidate <- result.try(store.read_candidate(catalogue, id))
-  use Nil <- result.try(
-    case
-      candidate.kind == record.Program
-      && candidate.identity == store.identity(catalogue)
-    {
-      True -> Ok(Nil)
-      False -> Error(store.Changed)
-    },
-  )
   use source <- result.try(
     list.key_find(candidate.files, "program.gleam")
     |> result.replace_error(store.Corrupt("skill has no program.gleam")),

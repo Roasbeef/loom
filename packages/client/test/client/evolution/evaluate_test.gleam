@@ -51,8 +51,7 @@ pub fn compiler_failure_is_durable_author_evidence_after_retirement_test() {
   let run = fn(_) { Error(store.Unavailable("runner must not run")) }
   let assert Ok(report) =
     evaluate.extension_owned(
-      catalogue,
-      candidate.id,
+      candidate,
       scratch,
       build,
       run,
@@ -106,8 +105,7 @@ pub fn unconfirmed_executor_cleanup_retains_retry_and_writes_no_evidence_test() 
   }
   let refused =
     evaluate.extension_owned(
-      catalogue,
-      candidate.id,
+      candidate,
       scratch,
       build,
       fn(_) { Error(store.Unknown) },
@@ -136,8 +134,7 @@ pub fn partial_trial_is_inconclusive_and_cannot_be_approved_test() {
   }
   let assert Ok(report) =
     evaluate.extension_owned(
-      catalogue,
-      candidate.id,
+      candidate,
       scratch,
       build,
       fn(_) { Error(store.Unavailable("evaluation cancelled")) },

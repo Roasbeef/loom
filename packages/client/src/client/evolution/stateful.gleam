@@ -1,6 +1,11 @@
 //// A stateful generation shares its existing jail, host registry and native
 //// retirement capability. New source goes through the same compiler and seam;
 //// only the exact authored fixed-slot BEAM set travels to the trusted loader.
+////
+//// The module holds no catalogue. Whatever must be read from it arrives as an
+//// `Authority`, two closures the orchestrator builds, so a later upgrade is
+//// approved on the orchestrator's side and the compiler receives only the
+//// candidate that approval returned.
 
 import client/evolution/evaluate
 import client/evolution/live
@@ -25,12 +30,27 @@ import tools/blob
 
 /// Native compiler custody remains separate from source-owned declarations.
 pub type Compiler =
-  fn(record.CandidateId, String, live_slots.Slot) ->
+  fn(record.Candidate, String, live_slots.Slot) ->
     Result(evaluate.Prepared, store.Refusal)
+
+/// The catalogue reads a stateful generation needs, supplied by the orchestrator.
+///
+/// `approved` is the staging check for a successor selection and answers the
+/// candidate to compile. It runs before any compilation, so no upgrade path
+/// reaches the compiler unchecked. `authorized` is the later recheck that a
+/// selection is still current, installed as the successor's `validate`.
+pub type Authority {
+  Authority(
+    /// Checks staging approval of a selection and answers its candidate.
+    approved: fn(record.Selection) -> Result(record.Candidate, store.Refusal),
+    /// Rechecks that a selection is still the current approved one.
+    authorized: fn(record.Selection) -> Result(Nil, store.Refusal),
+  )
+}
 
 type Context {
   Context(
-    catalogue: store.Store,
+    authority: Authority,
     dispatch: dispatch.Config,
     hosting: hosts.Hosts,
     prepared: evaluate.Prepared,
@@ -49,12 +69,12 @@ type Context {
 /// ## Examples
 ///
 /// ```gleam
-/// // stateful.attach(generation, store, dispatch, hosting, prepared, compile)
+/// // stateful.attach(generation, authority, dispatch, hosting, prepared, compile)
 /// ```
 ///
 pub fn attach(
   generation: live.Generation,
-  catalogue: store.Store,
+  authority: Authority,
   dispatch: dispatch.Config,
   hosting: hosts.Hosts,
   prepared: evaluate.Prepared,
@@ -69,7 +89,7 @@ pub fn attach(
       Ok(with_mode(
         generation,
         Context(
-          catalogue,
+          authority,
           dispatch,
           hosting,
           prepared,
@@ -126,7 +146,7 @@ fn prepare(
   context: Context,
   selection: record.Selection,
 ) -> Result(live.PreparedUpgrade, store.Refusal) {
-  use _ <- result.try(store.approved(context.catalogue, selection))
+  use candidate <- result.try(context.authority.approved(selection))
 
   // The candidate compiles into the namespace the running generation does not
   // occupy, so the two versions never share module names.
@@ -136,11 +156,7 @@ fn prepare(
   }
   let directory =
     context.root <> "/live-" <> int.to_string(selection.generation)
-  use prepared <- result.try(context.compile(
-    selection.candidate_id,
-    directory,
-    slot,
-  ))
+  use prepared <- result.try(context.compile(candidate, directory, slot))
 
   // A stateful generation may only be replaced by one that declares a
   // contract compatible with the running state version.
@@ -197,10 +213,10 @@ fn prepare(
     )
     |> result.map_error(store.Unavailable),
   )
-  let catalogue = context.catalogue
+  let authorized = context.authority.authorized
   let successor =
     live.Generation(..current, selection:, tools:, validate: fn() {
-      store.authorized(catalogue, selection) |> result.replace(Nil)
+      authorized(selection)
     })
   let next = Context(..context, prepared:, contract: target, slot:)
   Ok(
