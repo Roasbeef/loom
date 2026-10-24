@@ -62,7 +62,6 @@
 //// keeps one shape across versions (see `version`).
 
 import broker/framing.{type CapOutcome}
-import broker/policy
 import client/escalate
 import client/evolution/record
 import client/extension/archive
@@ -71,7 +70,7 @@ import client/notice
 import client/owner_services.{
   type ExecutionTerms, type FactFault, type OwnerCapCall,
 }
-import client/wiring.{type Authority, Authority}
+import client/wiring.{type Authority}
 import codemode/satellite.{type CapDenial}
 import core/ids.{type OpId, type Seq}
 import core/json.{type JsonValue}
@@ -370,9 +369,10 @@ pub type McpPlan {
 
 /// What a tool call's door knows about the call, as far as the executor needs
 /// it to run evolution work on the session's behalf. It is the `Key` the
-/// ledger files the call under, the strand that dispatched it, the grants its
-/// escalation approvals consumed, and the stored `Authority` the executor
+/// ledger files the call under, the strand that dispatched it, and the stored
+/// `Authority` (directory additions and standing grants) the executor
 /// revalidates against its own filesystem before widening the call's policy.
+/// The authority is the only carrier of grants.
 /// Nothing machine-local crosses: the executor supplies its own workspace,
 /// base policy, environment and clock when it rebuilds the context.
 /// `coordinates_of` is the one place the two are related.
@@ -382,8 +382,6 @@ pub type Coordinates {
     key: Key,
     /// The strand whose driver dispatched the call.
     strand: String,
-    /// The grants the call's consumed approvals hold.
-    grants: List(policy.Grant),
     /// The directory additions and standing grants the call runs under.
     authority: Authority,
   )
@@ -800,21 +798,30 @@ pub fn key_of(session: String, run: ToolRun) -> Key {
   )
 }
 
-/// The coordinates of one door call: its key, strand, consumed grants and the
-/// authority it runs under, and nothing else. The context's closures and its
-/// machine-local fields (workspace, base policy, environment, clock, blob
-/// root) stay on the orchestrator, because the executor rebuilds them from its
-/// own machine and revalidates the authority against its own filesystem.
+/// The coordinates of one door call: its key, strand and the authority it runs
+/// under, and nothing else. The context's closures and its machine-local
+/// fields (workspace, base policy, environment, clock, blob root) stay on the
+/// orchestrator, because the executor rebuilds them from its own machine and
+/// revalidates the authority against its own filesystem.
 ///
-/// The context holds one grant list, the call's consumed grants, so the
-/// authority's `standing` is that list.
+/// `authority` is the door call's stored authority, read from the session's
+/// store as `surface` reads it for a `Run` (`read_authority`), and not derived
+/// from `ctx`. The context holds only the grants of consumed escalation
+/// approvals, because the standing network grants were folded into its base
+/// policy, which does not cross; building the authority from the context would
+/// drop them from a remote check.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // protocol.coordinates_of("session-1", ctx).key.step == ctx.step_id
+/// // protocol.coordinates_of("session-1", ctx, authority).key.step
+/// //   == ctx.step_id
 /// ```
-pub fn coordinates_of(session: String, ctx: tool.Ctx) -> Coordinates {
+pub fn coordinates_of(
+  session: String,
+  ctx: tool.Ctx,
+  authority: Authority,
+) -> Coordinates {
   Coordinates(
     key: Key(
       session:,
@@ -823,8 +830,7 @@ pub fn coordinates_of(session: String, ctx: tool.Ctx) -> Coordinates {
       source_index: ctx.source_index,
     ),
     strand: ctx.strand,
-    grants: ctx.grants,
-    authority: Authority(access: ctx.directory_access, standing: ctx.grants),
+    authority:,
   )
 }
 

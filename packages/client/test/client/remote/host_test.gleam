@@ -1295,6 +1295,13 @@ pub fn a_plane_without_evolution_refuses_every_evolution_message_test() {
   assert heard_all(send_evolution(rig, 0, token(1)))
     == all_refused(protocol.NoEvolution(no_evolution_text()))
   assert fixtures.runs(rig.probe) == []
+
+  // The fence passed and the plane was refused, so the keyed pair is the path
+  // most worth proving wrote no row.
+  assert lookup(rig, fixtures.evolution_coordinates("s1", "check").key)
+    == Ok(protocol.Missing)
+  assert lookup(rig, fixtures.evolution_coordinates("s1", "tool").key)
+    == Ok(protocol.Missing)
   stop(rig)
 }
 

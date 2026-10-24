@@ -41,8 +41,12 @@ fn a_ctx(strand: String, grants: List(policy.Grant)) -> tool.Ctx {
 
 pub fn the_coordinates_of_a_door_call_carry_its_identity_and_authority_test() {
   let grants = [policy.GrantReadableRoot("/srv/data")]
-  let ctx = a_ctx("main", grants)
-  let coordinates = protocol.coordinates_of("session-1", ctx)
+  let ctx = a_ctx("main", [])
+
+  // The authority is the stored one the caller read, standing network grants
+  // included, and is carried as given.
+  let stored = wiring.Authority(access: ctx.directory_access, standing: grants)
+  let coordinates = protocol.coordinates_of("session-1", ctx, stored)
 
   // The key is the door call's own: the session the caller names, then the
   // operation, step and source index the driver minted.
@@ -54,22 +58,22 @@ pub fn the_coordinates_of_a_door_call_carry_its_identity_and_authority_test() {
       source_index: 2,
     )
   assert coordinates.strand == "main"
-  assert coordinates.grants == grants
 
-  // The authority is what the context was granted. The workspace, the base
-  // policy, the environment and the closures are not part of the coordinates,
-  // because the executor supplies its own.
-  assert coordinates.authority
-    == wiring.Authority(access: ctx.directory_access, standing: grants)
+  // Nothing else crosses. The workspace, the base policy, the environment and
+  // the closures are not part of the coordinates, because the executor
+  // supplies its own.
+  assert coordinates.authority == stored
 }
 
 pub fn the_coordinates_follow_the_strand_and_the_named_session_test() {
-  let first = protocol.coordinates_of("s", a_ctx("main", []))
-  let other = protocol.coordinates_of("s", a_ctx("helper", []))
+  let none = wiring.Authority(access: directory_access.none(), standing: [])
+  let first = protocol.coordinates_of("s", a_ctx("main", []), none)
+  let other = protocol.coordinates_of("s", a_ctx("helper", []), none)
   assert first.strand == "main"
   assert other.strand == "helper"
   assert first.key == other.key
-  assert protocol.coordinates_of("t", a_ctx("main", [])).key.session == "t"
+  assert protocol.coordinates_of("t", a_ctx("main", []), none).key.session
+    == "t"
 }
 
 pub fn every_new_refusal_has_a_sentence_test() {

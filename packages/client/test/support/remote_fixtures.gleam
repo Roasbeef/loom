@@ -734,7 +734,6 @@ pub fn evolution_coordinates(
       source_index: 0,
     ),
     strand: "main",
-    grants: [],
     authority: authority(),
   )
 }
