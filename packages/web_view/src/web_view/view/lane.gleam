@@ -39,7 +39,9 @@
 ////
 //// Every transcript line and card body is drawn inside its own memo whose
 //// one dependency is that line or body, with no memo around them. A failed
-//// step keeps its refusal and remaining rows together in one leaf instead. `view`
+//// step keeps its refusal and remaining rows together in one leaf instead.
+//// A reasoning block likewise keeps its source-derived headings, previews
+//// and bodies in one leaf, so unchanged sources are not expanded again. `view`
 //// says why the memos have to be the leaves; `lane_memo_test` counts the
 //// lines a render draws, and a change here must leave its counts as they
 //// are.
@@ -95,17 +97,18 @@ import web_view/view/program_card as program_view
 import web_view/view/strip
 
 /// The lane: the page strand's turns, keyed by the engine's identity for
-/// each piece, with every transcript line and every card body drawn inside
-/// a memo whose one dependency is that line or body. A capture draws only
-/// what is new: a line equal to the one its memo drew from reuses the
-/// element it drew, so its Markdown is not parsed again. The pieces, the
-/// turns' folds and the blocks around the lines are rebuilt on each render,
-/// which costs little. A window that drops its oldest rows removes them
-/// rather than rewriting the rows after them.
+/// each piece. Ordinary lines and card bodies each have a memo over that line
+/// or body, so a capture reuses their Markdown while they are unchanged. The
+/// pieces and turns' folds around those leaves are rebuilt on each render.
+/// A window that drops its oldest rows removes them rather than rewriting the
+/// rows after them.
 ///
 /// A failed step instead keeps its refusal and remaining rows in one leaf
 /// over its words and rows (`fold_row.step_body`), so unchanged failures do
 /// not repeat joins and Unicode trims. That leaf draws its rows directly.
+///
+/// A reasoning block keeps its headings, previews and bodies in one leaf,
+/// so splitting the source and expanding its body happen only when it changes.
 ///
 /// The memos are the leaves, with no memo around them, and that is what
 /// makes them hold. Lustre 5.7.1 keeps a render's memo elements in a table
@@ -115,10 +118,10 @@ import web_view/view/strip
 /// a render in which an enclosing memo hit would drop the entries of every
 /// memo inside it, and the next render that changed the enclosing one would
 /// draw and parse every line again. A turn's work is one piece that changes
-/// whenever an answer moves into it, which is why the memos are per line and
-/// not per piece. Every render visits each line's memo and carries each hit
-/// forward, at the cost of comparing each line with the one it was drawn
-/// from; Lustre compares dependencies with `==` on the BEAM.
+/// whenever an answer moves into it, which is why no memo encloses a turn.
+/// Every render visits each leaf and carries each hit forward, at the cost of
+/// comparing its inputs with those it was drawn from; Lustre compares
+/// dependencies with `==` on the BEAM.
 ///
 /// The lane is drawn inside a `<loom-follow>` (`packages/web_client`),
 /// which is the transcript's scroll container (the page's frame is pinned
@@ -1186,17 +1189,71 @@ fn block_element(
   session: String,
   newest: String,
 ) -> Element(message) {
+  // A reasoning block owns one leaf for its source-derived headings and bodies.
+  // Ordinary blocks retain their per-line leaves as the running turn grows.
+  case
+    list.any(block.rows, fn(row) {
+      case row.1.speaker {
+        transcript_line.ReasoningDigest
+        | transcript_line.Reasoning
+        | transcript_line.SummarizedReasoning -> True
+        _ -> False
+      }
+    })
+  {
+    True -> {
+      // Only a block that contains the newest row depends on its live handoff.
+      let inherited = case list.any(block.rows, fn(row) { row.0 == newest }) {
+        True -> newest
+        False -> ""
+      }
+
+      use <- element.memo([
+        element.ref(block),
+        element.ref(thoughts),
+        element.ref(took),
+        element.ref(folds),
+        element.ref(session),
+        element.ref(inherited),
+      ])
+      block_body(block, thoughts, took, draw, folds, session, inherited)
+    }
+    False ->
+      block_body(
+        block,
+        thoughts,
+        took,
+        fn(line) { fold_row.line_row(line, draw) },
+        folds,
+        session,
+        newest,
+      )
+  }
+}
+
+/// Source-derived counts and bodies are calculated once for the block, inside
+/// its leaf when it contains reasoning. Its children draw directly there:
+/// nested memos would lose their entries whenever the block's memo hits.
+fn block_body(
+  block: transcript_lines.Block,
+  held: Dict(String, List(Line)),
+  took: Option(Int),
+  draw: fn(Line) -> Element(message),
+  folds: Folds(message),
+  session: String,
+  newest: String,
+) -> Element(message) {
   let counted = turns.reasoning_lines(block)
 
-  // Dispatch on block_element state.
-  let thoughts = case dict.is_empty(thoughts) {
+  // Held expansion rows replace source expansion only while the page owns them.
+  let thoughts = case dict.is_empty(held) {
     True -> turns.reasoning_thoughts(block, expansion.capped)
-    False -> thoughts
+    False -> held
   }
 
   let rows =
     list.map(block.rows, fn(row) {
-      // Dispatch on block_element state.
+      // The newest settled row alone may inherit the former live row state.
       let heir = case row.0 == newest {
         True -> fold_row.Takes
         False -> fold_row.Declines
@@ -1204,19 +1261,19 @@ fn block_element(
 
       let known = option.from_result(dict.get(counted, row.0))
 
-      // Dispatch on block_element state.
+      // Each speaker retains its original preview, body and fold controls.
       case row.1.speaker {
         transcript_line.ReasoningDigest -> {
           let held = result.unwrap(dict.get(thoughts, row.0), [])
 
-          // Dispatch on block_element state.
+          // A digest uses the full source only while the page holds it.
           case held {
             [first, ..] ->
               reasoning_row(
                 step_words.Raw,
                 first.text,
                 preview(first.text),
-                list.map(held, fold_row.line_row(_, draw)),
+                list.map(held, draw),
                 known,
                 took,
                 heir,
@@ -1238,7 +1295,7 @@ fn block_element(
             step_words.Raw,
             row.1.text,
             preview(row.1.text),
-            list.map(more_of(row.1.text), fold_row.line_row(_, draw)),
+            list.map(more_of(row.1.text), draw),
             known,
             took,
             heir,
@@ -1253,7 +1310,7 @@ fn block_element(
             draw,
           )
         transcript_line.User -> message_row(block, row, draw, folds)
-        _ -> fold_row.line_row(row.1, draw)
+        _ -> draw(row.1)
       }
     })
   html.div(
@@ -1304,10 +1361,7 @@ fn message_row(
       }
 
       html.div([attribute.class("message")], [
-        html.div(
-          [attribute.class("message-text")],
-          list.map(lines, fold_row.line_row(_, draw)),
-        ),
+        html.div([attribute.class("message-text")], list.map(lines, draw)),
         html.button(
           [
             attribute.type_("button"),
@@ -1325,7 +1379,7 @@ fn message_row(
         ),
       ])
     }
-    NoFolds, _ | Folds(..), _ -> fold_row.line_row(row.1, draw)
+    NoFolds, _ | Folds(..), _ -> draw(row.1)
   }
 }
 
@@ -1367,52 +1421,34 @@ fn reasoning_row(
   )
 }
 
-/// The one-line preview of a settled block, parsed once. A settled block's text
-/// does not change, so the memo's one dependency is the text and a lane render
-/// that finds it unchanged does no Markdown work for it. Only the preview is
-/// memoized: the body's own line memos are leaves, and a memo around them
-/// would drop their cache entries when it hit (see `rows`). Blankness belongs
-/// inside the memo too: trimming unchanged reasoning can scan and allocate
-/// from its whole text even when the preview's Markdown is already cached.
+/// The settled row's one-line preview, constructed inside its memo leaf.
+/// Blankness and Markdown parsing both stay behind the same dependency check.
 fn preview(text: String) -> List(Element(message)) {
   [
-    element.memo([element.ref(text)], fn() {
-      case string.trim(text) {
-        "" -> element.none()
-        _ ->
-          fold_row.preview_span(markdown_view.line(
-            text,
-            step_words.result_limit,
-          ))
-      }
-    }),
+    case string.trim(text) {
+      "" -> element.none()
+      _ ->
+        fold_row.preview_span(markdown_view.line(text, step_words.result_limit))
+    },
   ]
 }
 
-/// The preview of a provider's summary: every non-blank line of it, uncut and
-/// separated by line breaks, in a span the stylesheet wraps and clamps to a few
-/// lines (`.preview.summary`). The terminal prints the whole summary above the
-/// detail, and a reader should not have to open the row to read it. Each line
-/// is provider text drawn as text nodes through `markdown_view.line`, and the
-/// memo is keyed by the summary like `preview`.
+/// A provider's whole summary, wrapped and clamped by the browser. The settled
+/// reasoning row owns the memo, so its summary is drawn directly here.
 fn summary_preview(summary: String) -> List(Element(message)) {
   [
-    element.memo([element.ref(summary)], fn() {
-      case string.trim(summary) {
-        "" -> element.none()
-        _ ->
-          fold_row.summary_span(
-            summary
-            |> string.split("\n")
-            |> list.filter(fn(line) { string.trim(line) != "" })
-            |> list.map(fn(line) {
-              markdown_view.line(line, string.length(line))
-            })
-            |> list.intersperse([html.br([])])
-            |> list.flatten,
-          )
-      }
-    }),
+    case string.trim(summary) {
+      "" -> element.none()
+      _ ->
+        fold_row.summary_span(
+          summary
+          |> string.split("\n")
+          |> list.filter(fn(line) { string.trim(line) != "" })
+          |> list.map(fn(line) { markdown_view.line(line, string.length(line)) })
+          |> list.intersperse([html.br([])])
+          |> list.flatten,
+        )
+    },
   ]
 }
 
@@ -1443,7 +1479,7 @@ fn summary_row(
   }
 
   let summary_lines = [transcript_line.Line(transcript_line.Reasoning, summary)]
-  let drawn = fn(lines) { list.map(lines, fold_row.line_row(_, draw)) }
+  let drawn = fn(lines) { list.map(lines, draw) }
 
   // Dispatch on summary_row state.
   case held, string.trim(summary) {
