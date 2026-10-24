@@ -2992,8 +2992,8 @@ commands:
                                   applied. Give the same --bundle-dir the node
                                   was enrolled with, so the bundle installs
                                   over its credentials in place.
-  attach-file NAME --node N --links DAEMON --out DIR [--host H] [--force]
-         [--wait SECONDS] [COMMON]
+  attach-file NAME --node N --links DAEMON (--out DIR | --for pickglass)
+         [--host H] [--force] [--wait SECONDS] [COMMON]
                                   Let a debugging tool (pickglass, Observer,
                                   `erl -remsh`) join a distributed daemon. Like
                                   `enroll`, it mints a certificate and signs a
@@ -3006,7 +3006,11 @@ commands:
                                   sessions and is never asked anything, but it
                                   is a full Erlang node on the daemon: revoke it
                                   when you are done. Renew it by revoking it
-                                  and attaching again.
+                                  and attaching again. --for pickglass makes
+                                  --out optional: DIR defaults to NAME under
+                                  $PICKGLASS_ATTACH_HOME (else
+                                  $HOME/.pickglass/attach), and the recipe adds
+                                  `pickglass attach --node D --attach NAME`.
   log [--json] [--config PATH] [COMMON]
                                   Print the ledger's entries with their
                                   identities, then the last refusal and each
@@ -3023,7 +3027,9 @@ commands:
 COMMON is [--home DIR] [--deployment ID] [--passphrase-file PATH]
 [--state-dir DIR | --addr URL --token-file PATH]. The key is found under
 DIR/.loom/authority (DIR defaults to $HOME); --deployment picks one when
-several are kept. The passphrase is asked for on the terminal, which only
+several are kept. When the key is not under DIR, pass the --home that ran
+`provision`; with no --home, a home recorded beside the installed ledger is
+tried. The passphrase is asked for on the terminal, which only
 `loomd distribution` can do; `loom distribution enroll`, `revoke`, `renew` and `attach-file`
 need --passphrase-file. The daemon is the one on this host, found through its
 state directory (default $HOME/.loom), unless --addr names another.
