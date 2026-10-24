@@ -4278,6 +4278,11 @@ fn attribute(
   heads: List(EntryHead),
   cache: Dict(String, EntryAttribution),
 ) -> #(Dict(String, EntryAttribution), List(Attributed)) {
+  // An empty entry cut has no branch to claim. In particular, an idle
+  // commit hint must not read every strand's leaf merely to find no head.
+  use <- bool.lazy_guard(when: list.is_empty(heads), return: fn() {
+    #(cache, [])
+  })
   let by_id =
     list.fold(heads, dict.new(), fn(by_id, head) {
       dict.insert(by_id, ids.entry_id_to_string(head.id), head)

@@ -1333,6 +1333,13 @@ catalogue without opening runtimes. Explicit admission invokes
   registered-name projection behind `active_tools` (derived from the same
   registry the effect wiring dispatches through; without one, active-set
   changes are refused in band).
+  Durable pulls skip per-strand leaf reads when the new entry cut is empty:
+  no head can be attributed, so no branch can change the attribution cache.
+  A nonempty cut retains the original per-strand leaf reads and claim order;
+  ownership, result and operation phase reads remain unchanged.
+  `gateway_read_test` counts the store calls at 1/8/64/128 strands and checks
+  once-only fast terminal results. `gateway_read_fixture` supplies the same
+  real gateway pull to the isolated SQLite benchmark.
 - `client/gateway.{attach, detach, handle_text}` — the transport seam: a
   connection is a `fn(String) -> Nil` sink, inbound frames arrive as
   text, and nothing in the module knows about sockets. `attach` returns
