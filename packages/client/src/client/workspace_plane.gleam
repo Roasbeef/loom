@@ -385,6 +385,12 @@ pub type Started {
     /// How the workspace's tools describe themselves, in registration
     /// order.
     decls: List(tool.Described),
+    /// The workspace as a tool context needs it, the same view the plane's
+    /// `run` closes over. It is kept out of `WorkspacePlane` because that
+    /// record is copied into every process which holds the instance; only the
+    /// executor's evolution plane asks for it, to rebuild a tool context for a
+    /// call whose coordinates arrive from the orchestrator.
+    view: wiring.WorkspaceView,
   )
 }
 
@@ -646,7 +652,7 @@ fn effective_lsp_servers(
 /// ## Examples
 ///
 /// ```gleam
-/// // let assert Ok(workspace_plane.Started(plane:, children:, decls:)) =
+/// // let assert Ok(workspace_plane.Started(plane:, children:, decls:, view:)) =
 /// //   workspace_plane.start(prepared, attach)
 /// ```
 ///
@@ -808,11 +814,13 @@ fn finish_local(
     Census(..census, warnings: list.append(census.warnings, identity))
   let jobs_wiring =
     jobs_wiring(prepared, census, attach, effect.broker, clock, entropy)
+  let view = view_of(prepared, census, effect, registry, wired)
   Ok(Local(
     started: Started(
-      plane: plane_over(prepared, census, attach, effect, registry, wired),
+      plane: plane_over(prepared, census, attach, effect, view, wired),
       children: children_over(wired, jobs_wiring),
       decls: list.map(tool.registered(registry), tool.describe),
+      view:,
     ),
     pool: effect.pool,
     executor: effect.executor,
@@ -942,6 +950,33 @@ fn workspace_tools_in(
   |> list.filter(fn(each) { !list.contains(spec.deactivated_tools, each.name) })
 }
 
+// What `run` needs from this machine, and no more: the same slice of the
+// wiring configuration `wiring.run_tool` hands the workspace half. It is built
+// once and given both to the plane's `run` and to `Started.view`, so the two
+// cannot describe different machines.
+
+/// Builds the workspace view a tool runs under.
+fn view_of(
+  prepared: Prepared,
+  census: Census,
+  effect: EffectPlane,
+  registry: tool.Registry,
+  wired: Wired,
+) -> wiring.WorkspaceView {
+  let spec = prepared.spec
+  wiring.WorkspaceView(
+    broker: effect.broker,
+    broker_timeout_ms:,
+    registry:,
+    workspace: spec.workspace,
+    blob_root: spec.blob_root,
+    base_policy: census.base_policy,
+    demand: spec.demand,
+    env: census.env,
+    clock: wired.clock,
+  )
+}
+
 // What the owner is given to hold. Each function closes over only what it
 // reads, since the plane is copied into every process which holds the
 // instance.
@@ -952,28 +987,13 @@ fn plane_over(
   census: Census,
   attach: Attach,
   effect: EffectPlane,
-  registry: tool.Registry,
+  view: wiring.WorkspaceView,
   wired: Wired,
 ) -> WorkspacePlane {
   let spec = prepared.spec
   let workspace = spec.workspace
   let broker_actor = effect.broker
   let jobs_name = wired.jobs_name
-
-  // What `run` needs from this machine, and no more: the same slice of the
-  // wiring configuration `wiring.run_tool` hands the workspace half.
-  let view =
-    wiring.WorkspaceView(
-      broker: broker_actor,
-      broker_timeout_ms:,
-      registry:,
-      workspace:,
-      blob_root: prepared.spec.blob_root,
-      base_policy: census.base_policy,
-      demand: spec.demand,
-      env: census.env,
-      clock: wired.clock,
-    )
 
   // The only owner-side functions the workspace half calls while running a
   // tool, and the language-server handle `close` stops. Each closure below
