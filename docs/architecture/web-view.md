@@ -2143,7 +2143,9 @@ would try to trick the person into approving:
   because a session-scoped selection runs through this session's queue and live
   owner and a row of another session belongs to that session's own. A member
   operator's page is offered this session's own rows only, for both, which is
-  the store's rule. The daemon
+  the store's rule. An approval, revocation or selection from the page records
+  `web` in its audit entry; the daemon reads that from the page's door and
+  sign-in, never from the click. The daemon
   refuses what a page should not have offered, so the offer is a convenience
   and never the gate. An observer's page draws no tab, no pane and no `evolution`
   attribute on `<loom-shell>`, and its socket drops every event beneath the

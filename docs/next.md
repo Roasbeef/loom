@@ -1,89 +1,120 @@
 # Current handoff
 
-This is a scoped profiling handoff, checked October 23, 2026 against
-`3cf6bdc09c281e39dd126d5b7daa6c9d7eb4308d` plus the local terminal optimization
-commits `4e8417fbf` and `0e7b74a2f`. It records this task's measurements and validation, not a fresh
-whole-repository or hosted-CI audit. Rewrite it after the next body of work.
-Publication integrates main `cc6d7be5e`, including LSP ergonomics, Mermaid and
-nightly-update changes. The earlier fixture numbers precede that integration.
-The [publication PR](https://github.com/Roasbeef/loom/pull/1080) records the
-final reviewed head, hosted checks and merge state.
+This handoff covers governed runtime evolution, checked on October 24, 2026
+against `dbf33ff0c` (main after PR #1096). It is a scoped handoff, not a fresh
+audit of the whole repository or of hosted CI. Rewrite it after the next body
+of work.
 
-The [previous reconnect handoff](next-2026-10-22-before-live-profile.md) is
-preserved. Its pending-merge instructions are outdated: GitHub now confirms
-[PR #1069](https://github.com/Roasbeef/loom/pull/1069) merged at `68034bd1a`.
-The installed server and client both identify `3cf6bdc09`, which contains that
-merge. The rest of the previous handoff's detailed validation is historical
-and was not repeated here.
+The previous handoff, a profiling pass over the terminal and the live daemon,
+is preserved in [next-2026-10-24-before-evolution-ui.md](next-2026-10-24-before-evolution-ui.md).
+Its terminal patch merged as PR #1080. Its first item, profiling the live
+daemon through Pickglass, was not worked in this pass and is still open there.
 
 ## Where the tree is
 
 | Work | Verified state |
 | --- | --- |
-| Live terminal | Pickglass census, CPU and cumulative allocation captured from PID 28061 on OTP 29. The user reported Ctrl+G CPU spikes during the switch. |
-| Terminal patch | Layout avoids unused activity labels. Image discovery rejects ordinary text before grapheme conversion and measures span widths only after finding a marker. |
-| Fixture evidence | The 120-column Ctrl+G fixture uses about 18% fewer reductions and 12% fewer heap words with identical expanded/collapsed cells. Forty ordinary styled rows use 94% fewer reductions and 97% fewer words for image discovery alone. These are disposable fixture measurements. |
-| Validation | Before the latest base integration, the full local affected gate and all 1,564 TUI tests passed. Independent source review found no actionable issue. Hosted Linux and hard macOS end-to-end gates passed; one macOS advisory artifact exposed the throughput failure described below. Validation must be refreshed after the base integration. |
-| Live daemon | Native observation averaged 5.71% of one core over 30.138 seconds; RSS ranged 542–579 MiB. No function-level attribution was obtained. |
-| Daemon Pickglass access | Updated Pickglass supports TLS. The observed local ledger has no tool grant; local authority and attach files were absent. Known-peer checks found no usable verified authority access. |
-| Delivery | The owner authorized publication, review and merge after all gates pass, and explicitly waived Linux signoff for this PR because the configured host was offline. Exact-head hosted checks, raw advisory logs and strict skip censuses remain merge gates. Both installed processes remain on their original code; live savings are unmeasured. |
-
-The [resource report](review/loom-resource-profile-2026-10-22.md) records
-provenance, ownership paths, repeated measurements, limitations and local
-artifact names. The image regression checks both protocols after wide and
-combining text and a marker prefix followed by ordinary text.
-
-The first hosted macOS shard's raw log reported 1,651 stream deltas per second
-against the unchanged 2,000-per-second bound, despite its advisory job's green
-badge. The memory bounds passed. Five unchanged local reproductions passed at
-19,480–20,718 deltas per second; independent source tracing found no plausible
-causal regression. Runner contention remains a hypothesis. The queued retry
-was cancelled when main advanced, so it produced no new evidence. Preserve the
-assertion and inspect the fresh run's raw logs before merging.
+| Local evolution | An agent proposes, tests, compares and inspects candidates, an operator approves and selects, and a session serves the selected version. Extensions, programs and model profiles all work. This is governed by [the architecture page](architecture/evolution.md) and passes `make e2e-evolution`. |
+| Reach | A model reaches evolution only through a `code_mode` program importing `cap/evolution` (PR #1091). The six direct tools are gone and cost no prompt bytes. Listing `evolution` in `LOOM_DISABLE_TOOLS` withholds the module from a session. |
+| Tool calls | A tool call, a hook fold or an invocation takes a lease from the live owner and runs on its own process (PR #1087). The owner runs no tool. |
+| Operator UI | Complete. The `board` action, the `evolution_changed` push, page owner authority and the `via` audit field are protocol-change/099 (PR #1088). The `session_view` lane is PR #1093, the terminal `/evolution` overlay is PR #1094, the web Evolution tab is PR #1096, and PR #1099 makes an owner page record `web`. The docs for all of it are [evolution](architecture/evolution.md), [web view](architecture/web-view.md), [terminal](architecture/terminal.md) and [live upgrades](architecture/live-upgrades.md). |
+| Remote evolution | Slice 3 is partly done. The seam narrowed to plain data (PR #1086), the catalogue-free check core (PR #1089), protocol version 5 with the evolution messages, the census field and arms that refuse (PR #1092), and the split of staging into a plain `Staged` value and a wrapper (PR #1098) are merged. The 098 as-built addendum is PR #1097. |
+| Not built | No executor builds an evolution plane, so every version-5 evolution arm still answers `NoEvolution` and the census reports `Uncompiled`. An executor session cannot use evolution. |
 
 ## What to do next
 
-1. Complete daemon profiling. **Exit:** locate the deployment authority or an
-   existing supported tool grant, enroll through `loomd distribution attach-file`
-   if needed, then obtain a Pickglass census and CPU sample before choosing
-   daemon code to change. Updating Pickglass supplies transport support, not
-   a new deployment grant. Do not infer a memory leak from the native cuts.
-2. Publish, review and merge the terminal patch. **Exit:** pass hosted CI,
-   inspect advisory artifacts and strict skip censuses, and confirm review for
-   the exact published head before a guarded merge. Linux signoff is explicitly
-   waived for this PR.
-   Installation remains a separate request; compare the same live Ctrl+G
-   workload after an authorized client update. Local fixture improvements
-   alone are not installed CPU or RSS savings.
-3. Revisit remaining transition work only with a matched measurement.
-   **Exit:** distinguish transcript projection, JSON previews, buffer painting
-   and terminal diff costs before introducing retained caches or other
-   machinery. These paths were sampled and left unchanged.
+Slice 3 of [remote evolution](design-notes/remote-evolution.md) has seven steps.
+Steps 1, 2a, 2b and 3 are merged. Step 4 is in progress on another branch and
+is not merged; treat it as next work, not as done.
 
-## Rulings retained
+1. **Step 4, the executor's evolution plane.** One actor per scope in the
+   executor stages, runs, hooks, migrates, retires and inventories generations,
+   files its cleanup under the scope's custody, and takes `<state>/evolution`
+   as a masked path. **Exit:** raw protocol messages stage and run the fixture
+   extension through a real executor, a `Close` after a stage still retires it,
+   and `retire_all` is terminal so a stage that arrives after it is refused. The
+   last point came from the PR #1092 review. It also needs
+   `extension/memory.over_facts` and the `ext/` fact prefix on the owner port.
+2. **Step 5, `machine/remote` and the `serve` wiring.** A registered session
+   gets an evolution wiring whose machine sends the version-5 messages.
+   **Exit:** a session on an executor registers the evolution operations when
+   the census says `Compiles`, none when it says `Uncompiled`, and a minimal
+   author, test, approve, select and invoke runs on two daemons. This is the
+   step that first lets an executor session use evolution.
+3. **Step 6, refuse `sessions.move` with a selection.** **Exit:** moving a
+   session that has a session-scoped selection is refused with a message naming
+   `evolution revoke`, and a session with only a workspace selection still moves.
+4. **Step 7, acceptance and records.** **Exit:** a shipped two-daemon fixture
+   covers a fixed executor, a pool of one, an executor restart with a selected
+   extension, and a program candidate. Protocol 098 gains its implemented line,
+   and `distributed.md`, `executor.md` and the package docs are brought up to
+   date.
+5. **Slice 4, trials and profiles remotely.** A model profile's paired trials
+   run on a registered session instead of answering `Authority`. Until then the
+   guard stays: prompt trials run on a local workspace only.
+6. **Slice 5, core upgrades remotely.** The core upgrade and downgrade path,
+   which is command-line only today, reaches a session on an executor.
+7. **Slice 6, two-daemon acceptance for the failure cases.** A link cut during
+   staging and an orchestrator restart, which step 7 leaves out on purpose.
 
-**Measure distinct memory properties.** Cumulative heap allocation, process
-capacity, binary memory, RSS and physical footprint answer different questions.
-The resource report and `skills/beam-memory-review/SKILL.md` describe the cuts.
+The order is firm up to step 5. Steps 6 and 7 are independent of each other.
 
-**Use the deployment's supported tool identity.** Protocol 096 defines the TLS
-attachment and revocation path. No alternate trust path was introduced.
+## Rulings not to re-litigate
 
-**Render only the text a caller needs.** A liveness check reads a phase; a
-visible activity label retains its full formatting. Image recognition still
-validates complete marker spans and their terminal-cell positions.
+**A model reaches evolution through code mode only.** There are no direct
+evolution tools. A candidate can never import `cap/evolution`, and a program
+candidate runs with the door withdrawn.
+
+**Tool calls hold leases.** The live owner serializes a replacement against
+outstanding leases and does not serialize calls against each other. A running
+call must not request a second lease.
+
+**Refuse `sessions.move` when the session has a selection.** Carrying catalogue
+rows in the manifest was considered and left out. Refusal is one read.
+
+**One catalogue.** A daemon that serves local and executor sessions keeps both
+placements' candidates in `<state>/evolution/evolution.db`. Reads filter by
+visibility and a stale identity is refused as `Changed`, so the mix is safe. The
+catalogue page shows the other placement's candidates as not authorised.
+
+**Per-strand evolution gating is accepted as a cost.** A strand that holds
+`code_mode` can `propose`, `compare` and `trace`, but cannot run a candidate
+because `invoke` needs the operator's exact selection. The one switch is
+`evolution` in `LOOM_DISABLE_TOOLS`.
+
+**Owner page authority.** The gateway hands the evolution door `Owner` when an
+operator attachment's principal is the daemon's owner, for every action except
+`core_upgrade` and `core_downgrade`. A page never attaches as `Owner`. A member
+acts on this session's rows only, and an observer reads only.
+
+**The page door decides `via`.** `web` comes from the page's door and sign-in,
+never from a request argument. A terminal's `terminal` is audit text and grants
+nothing.
+
+## Known open items
+
+- Protocol 098 is still PROPOSED. Its header records slice 3's messages as
+  implemented at version 5, and the status changes only after slices 4 and 5.
+- `client/remote/protocol.gleam` imports `client/extension/hooks`. This is a
+  layering nit: the wire vocabulary should not depend on the extension package.
+  Nothing is broken by it.
+- On a Mac, the local client suite needs `rust-analyzer` and times out without
+  it. [language-servers.md](language-servers.md) says how to install it.
+- `serve_test` times out on git-identity setup under load. It has flaked under
+  contention and passes when rerun alone. A flake does not block a merge here.
+- An executor's rolling output tail is absent for a remote author check, because
+  the door call's id is not on the wire. The plan accepts this for slice 3.
 
 ## How to verify
 
 ```sh
-bash scripts/check.sh tui
+make check-client
+make e2e-evolution
 make doc-check
-bash scripts/tui_perf.sh . candidate render 120 40
 ```
 
-The full package gate needs process inspection and loopback networking. The
-sandboxed run failed five bootstrap/process-identity tests because `/bin/ps`
-was blocked; the unrestricted rerun passed all tests. The standalone Ctrl+G
-comparison advances the fixture clock by 50 ms before each toggle, otherwise
-frame pacing can reuse a stale frame. Gate exit codes and artifact names are
-recorded in the report. See `docs/execution.md` for the remaining hazards.
+`make e2e-evolution` needs `make binaries codemode-seed` first, and runs against
+a scripted loopback provider, so it proves the loop and not commercial-model
+quality. Read each gate's own exit code. See [execution.md](execution.md) for
+the remaining hazards, including the one where a green `tail` hides a red
+`make`.
