@@ -1373,7 +1373,12 @@ pub fn a_decision_inside_a_folded_turn_stays_a_visible_row_test() {
 }
 
 pub fn no_decisions_leave_the_pieces_untouched_test() {
-  assert turns.with_decisions(pieces([]), []) == pieces([])
+  // Settled and running work both retain their original order and fold state.
+  list.each([[], [#("main", "running")]], fn(operations) {
+    let original = pieces(operations)
+    assert turns.with_decisions(original, []) == original
+  })
+  assert turns.with_decisions([], []) == []
 }
 
 // A page that has not read a strand's records draws no piece, and a decision
