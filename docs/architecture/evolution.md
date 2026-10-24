@@ -354,7 +354,9 @@ and no `live` type. `machine/local.generation_of` then starts the hook bus over
 it and builds the `live.Generation`: `validate` asks `store.authorized`, an
 upgrade asks `store.approved` before the machine compiles the successor, and
 retirement closes the bus, then stops the host, then closes the plane. A
-successor shares the predecessor's bus.
+successor shares the predecessor's bus. A `Staged` value's tools and upgrade
+still hold a `dispatch.Config`, whose memory and secrets are orchestrator
+doors, so an executor holding one must supply its own (`memory.over_facts`).
 
 The plane is opened after the code-mode configuration is assembled, since the
 plane takes that configuration as the host its candidates run under. The

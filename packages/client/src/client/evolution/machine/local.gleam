@@ -18,8 +18,8 @@
 //// before the catalogue is opened with the identity it reports.
 ////
 //// Staging splits the same way. `stage_candidate` takes an approved
-//// `record.Candidate` and answers a `staged.Staged`: the plane, the compiled
-//// artifact, the satellite host and its declared tools, with no catalogue, no
+//// `record.Candidate` and answers a `staged.Staged`: closures over the plane,
+//// the compiled artifact and the satellite host, and its declared tools, with no catalogue, no
 //// hook bus and no `live` type in it. `generation_of` is the orchestrator's
 //// half. It starts the hook bus over the staged value's `invoke`, builds the
 //// `live.Generation` whose `validate` and in-place upgrade apply the
@@ -334,9 +334,7 @@ fn assemble(
     evaluate.prepare_slot(candidate, directory, build, slot)
   }
   stateful.attach(staged, dispatch, hosting, prepared, compile, config.at)
-  |> result.try_recover(fn(reason) {
-    failed(Plane(..plane, close: staged.retire), reason)
-  })
+  |> result.try_recover(fn(reason) { failed_task(staged.retire, reason) })
 }
 
 /// Starts the orchestrator's half of a staged generation.

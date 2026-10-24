@@ -1353,7 +1353,7 @@ pub fn context_for_refuses_an_authority_whose_directory_is_gone_test() {
       stored,
     )
     as "a vanished directory must refuse"
-  assert string.length(reason) > 0
+  assert reason == "an added directory no longer exists"
 }
 
 // --- calls routed to the half that runs them --------------------------------

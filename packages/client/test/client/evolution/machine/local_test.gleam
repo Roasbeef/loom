@@ -95,7 +95,9 @@ pub fn the_bus_names_the_extension_the_staged_value_names_test() {
 
 /// Retirement closes the bus before it runs the staged value's own task. The
 /// staged task asks the bus one more question as it runs: a closed bus answers
-/// nothing, so the satellite is not reached from inside it.
+/// nothing, so the satellite is not reached from inside it. The weft crash
+/// report this prints from the dead manager is the expected signature of a
+/// closed bus, not a failure.
 pub fn retiring_closes_the_bus_before_the_staged_task_test() {
   let seen = process.new_subject()
   let box = process.new_subject()

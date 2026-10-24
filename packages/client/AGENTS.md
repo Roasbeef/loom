@@ -181,6 +181,7 @@ to `retire`, so retirement runs bus, host, plane. An upgrade's successor reuses
 the predecessor's bus. `machine/local.open_plane` (moved from `serve`) opens a
 check's effect plane, and `wiring.context_for` is the revalidate-and-widen half
 of `run_workspace_tool`.
+
 `evolution/live.Generation.mode` distinguishes `ReplacementOnly` from
 `Stateful(prepare)`. A `PreparedUpgrade` carries the successor generation,
 publication callback and unpublished compensation callback. The live owner
