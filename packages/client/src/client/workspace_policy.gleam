@@ -1281,6 +1281,37 @@ pub fn protecting_blobs(
   protecting(base, always: [blob_root], where_maskable: [])
 }
 
+/// The base policy with an executor's evolution directory masked from every
+/// jail it hands out.
+///
+/// The directory holds the scratch of the candidates an executor builds and
+/// runs for an orchestrator's session. The mask keeps the session's own jailed
+/// tools (`bash`, code mode) out of every scope's candidate scratch. It is not
+/// what isolates one candidate's build from another's: the build jail lifts
+/// the mask for its own directory (`codemode.reaching_socket`) and narrows its
+/// readable roots to that directory and the toolchain, and that narrowing is
+/// what keeps it from another scope's scratch.
+///
+/// The entry is conditional, on the argument `protecting` states: the jail
+/// refuses to mask a missing path under a read-only parent, and that refusal
+/// fails every jailed call of the session. The executor creates the directory
+/// before it builds the policy, so in practice the mask always applies, and the
+/// condition only keeps a caller that forgot to create it from turning that
+/// mistake into a refusal of every call.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // workspace_policy.protecting_evolution(base, "/state/evolution").protected
+/// ```
+///
+pub fn protecting_evolution(
+  base: policy.SandboxPolicy,
+  directory: String,
+) -> policy.SandboxPolicy {
+  protecting(base, always: [], where_maskable: [directory])
+}
+
 /// The base policy with this repository's memory protected: the notes index
 /// sidecar the server injects at every run start, and the store the index is
 /// rendered from.
