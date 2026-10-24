@@ -78,7 +78,12 @@ terminal-profiling handoff is preserved in
 
 ## Continued allocation follow-up
 
-Three private changes continue the same PR: Anthropic merges consecutive tool
+The owner approved a separate follow-up PR after #1110 merges. The integration
+owner will rebase commits e97af0e98 through 2885a7e08 onto post-#1110 main,
+rerun affected gates and publish that PR. Do not add this wave to #1110 or
+delay its merge. No follow-up PR or post-rebase validation is claimed yet.
+
+Three private changes form the follow-up: Anthropic merges consecutive tool
 results from the end so it copies each original block list once; code-mode
 workspace readers capture the blob-root string rather than their host Config;
 and expandable rows no longer construct an unused flat header. Normal and
