@@ -6324,10 +6324,17 @@ pub fn peer_links_section(
   model: Model(socket),
   presses: peer_links_view.Presses(message),
 ) -> Element(message) {
+  // Only the picker draws candidates. Selection events still validate against
+  // the complete live catalogue, including a second pick before the next draw.
+  let candidates = case model.view.peering {
+    peer_links.Offered(step: peer_links.Choosing, ..) -> peer_candidates(model)
+    peer_links.Offered(..) | peer_links.Withheld -> []
+  }
+
   peer_links_view.view(
     model.view.peering,
     model.shared.active_strand,
-    peer_candidates(model),
+    candidates,
     presses,
   )
 }

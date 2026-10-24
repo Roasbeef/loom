@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Measure repeated operator-page renders with the real Lustre diff cache.
-# Usage: bash scripts/web_view_perf.sh <built-checkout> <label> [siblings|reasoning|answers]
+# Usage: bash scripts/web_view_perf.sh <built-checkout> <label> [siblings|reasoning|answers|peers-{3,128}-{resting,choosing,configuring,removing,withheld}]
 # Build packages/web_view with gleam build first, including its test fixtures.
 # Compare checkouts built with the same compiler, alternating before and after.
 set -euo pipefail
@@ -8,7 +8,14 @@ set -euo pipefail
 checkout="$(cd "${1:?a built checkout is required}" && pwd)"
 label="${2:?a comparison label is required}"
 scenario="${3:-siblings}"
-case "$scenario" in siblings|reasoning|answers) ;; *) echo "unknown scenario: $scenario" >&2; exit 2;; esac
+case "$scenario" in
+  siblings|reasoning|answers) ;;
+  *)
+    if ! [[ "$scenario" =~ ^peers-(3|128)-(resting|choosing|configuring|removing|withheld)$ ]]; then
+      echo "unknown scenario: $scenario" >&2
+      exit 2
+    fi ;;
+esac
 web="$checkout/packages/web_view"
 here="$(cd "$(dirname "$0")" && pwd)"
 out="$web/build/web_view_perf/ebin"
