@@ -460,27 +460,39 @@ fn transfer() -> List(connection_event.Message) {
 // overlay will make, so both lanes make the same read at the same moment, the
 // way `mirror_decided_read` does for the one read only the page makes.
 fn terminal() -> tui_model.Model {
-  {
-    let base =
-      tui.new_model(connection.new_inbox(), workspace.Context("test", None))
-    tui_model.Model(
-      shared: session_model.Shared(
-        ..base.shared,
-        peer: session_model.Attached,
-        stamp: msg.Stamp(now_ms: 0, transport_ms: 0),
-        evolution_refresh: worktree_view.Requested,
-        evolution_watch: session_model.WatchingEvolution,
-        channel: Some(
-          session_channel.replay(snapshot.Expected(
-            "session",
-            "epoch",
-            "incarnation",
-          )),
-        ),
+  let bare = bare_terminal()
+  tui_model.Model(
+    ..bare,
+    shared: session_model.Shared(
+      ..bare.shared,
+      evolution_refresh: worktree_view.Requested,
+      evolution_watch: session_model.WatchingEvolution,
+    ),
+  )
+}
+
+// The same terminal with no want of the evolution board, which is what the
+// terminal's own tick sees when no overlay is open: it drops the watch every
+// tick, so a test that runs that real tick compares it with a step that wants
+// nothing.
+fn bare_terminal() -> tui_model.Model {
+  let base =
+    tui.new_model(connection.new_inbox(), workspace.Context("test", None))
+  tui_model.Model(
+    shared: session_model.Shared(
+      ..base.shared,
+      peer: session_model.Attached,
+      stamp: msg.Stamp(now_ms: 0, transport_ms: 0),
+      channel: Some(
+        session_channel.replay(snapshot.Expected(
+          "session",
+          "epoch",
+          "incarnation",
+        )),
       ),
-      view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
-    )
-  }
+    ),
+    view: tui_model.View(..base.view, transport_time_ms: fn() { 0 }),
+  )
 }
 
 // One step of the shared script, as each host receives it.
@@ -767,7 +779,7 @@ fn filed(
 // reads, so the strand's notes read leaves in the tick that drained the
 // capture; a tick that serviced the reads first would send it a tick later.
 pub fn the_terminals_real_tick_runs_the_shared_steps_order_test() {
-  let held = filed(terminal(), transfer())
+  let held = filed(bare_terminal(), transfer())
   let at = msg.Stamp(now_ms: 10, transport_ms: 10)
   let #(by_step, _) =
     session_step.update(held.shared, msg.Input(at, msg.Ticked))
