@@ -719,7 +719,15 @@ fn wait_slice(
   |> result.map_error(malformed("strand.wait"))
 }
 
-/// Updates the settled dictionary with newly observed slice results.
+/// Merges newly observed slice results into the settled map, accumulating
+/// elapsed wait time for handles that remain pending.
+///
+/// The host's per-slice `waited_ms` is the measure, taken as reported:
+/// the agency computes it from its own clock as the time the wait loop
+/// actually ran, so a host whose ceiling sits below the slice this
+/// module requested is still accounted by what elapsed, never by the
+/// request. Zero is reported honestly by a zero-window probe and taken
+/// at face value — nothing was charged and nothing elapsed.
 fn update_settled(
   waited: List(Waited),
   settled: Dict(String, Waited),
@@ -753,7 +761,12 @@ fn filter_pending(
   })
 }
 
-/// Computes the elapsed wall-clock milliseconds consumed by a wait slice.
+/// Computes how much wall time this slice consumed from host reports.
+///
+/// The largest pending `waited_ms` is what the agency's clock measured
+/// for this slice, whatever ceiling actually fired. Zero is a real
+/// answer — a zero-window probe reports it — and `step_wait` treats a
+/// zero-length slice as the join's end rather than looping on it.
 fn slice_elapsed(waited: List(Waited), _slice_ms: Int) -> Int {
   list.fold(waited, 0, fn(acc, item) {
     case item {
@@ -870,7 +883,13 @@ fn optional_strings(value: Option(List(String))) -> Value {
   }
 }
 
-/// Encodes a list of result schema field descriptors into a report value.
+/// Encodes a declared result shape as a list of field descriptors.
+///
+/// The descriptor list crosses the wire, not a schema document. The
+/// harness constructs the schema from these fields and runs it through
+/// its own total parser, so a program cannot smuggle a constraint into a
+/// child's brief without the harness checking it
+/// (`tools/agent.parse_result_schema`).
 fn encode_schema(fields: List(Field)) -> Value {
   // Nothing asked for is *nothing*, not an empty list: a program that
   // declared no shape and one that declared an empty one would otherwise
@@ -1319,7 +1338,6 @@ fn map_batches(
       let joined = join_batch(admitted, within_ms)
       let reversed =
         list.fold(joined, reversed, fn(acc, item) { [item, ..acc] })
-      list.fold(joined, reversed, fn(acc, item) { [item, ..acc] })
 
       // Check whether all items in the batch have settled.
       case list.all(joined, batch_settled) {

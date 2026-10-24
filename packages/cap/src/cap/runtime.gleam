@@ -666,7 +666,6 @@ fn serving(
     process.new_selector()
     |> process.select(signals)
     |> process.select_monitors(WorkerDown)
-    |> process.select_monitors(WorkerDown)
 
   // Handle signals and worker status events based on current serving phase.
   case process.selector_receive_forever(selector), phase {

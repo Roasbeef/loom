@@ -864,12 +864,11 @@ fn parse_participant(
     True -> Error(model.Malformed(line, "a participant name without spaces"))
     False -> {
       // Resolve optional label text into a sequence label.
-      let label_res = case label {
+      use label <- result.try(case label {
         Some(value) -> sequence_label(value) |> result.map(Some)
         None -> Ok(None)
-      }
+      })
 
-      use label <- result.try(label_res)
       use #(builder, _) <- result.map(participant(builder, id, label))
       builder
     }
