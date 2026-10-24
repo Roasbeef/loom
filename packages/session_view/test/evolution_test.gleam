@@ -544,6 +544,25 @@ pub fn a_terminal_names_itself_and_a_page_does_not_test() {
   assert list.key_find(fields, "via") == Ok(text("terminal"))
 }
 
+// A read refuses a field it does not know, and the live daemon refused a
+// `core_status` that carried the claim, so the claim goes only with a change.
+pub fn a_terminals_claim_goes_only_with_a_change_test() {
+  let claimed = fn(request) {
+    let assert json.Object(fields) =
+      evolution.arguments(request, evolution.ClaimsTerminal, "ui-1", 60_000)
+    list.key_find(fields, "via")
+  }
+  assert claimed(evolution.Approve("c", "e")) == Ok(text("terminal"))
+  assert claimed(evolution.Revoke("c", "r")) == Ok(text("terminal"))
+  assert claimed(evolution.Select("c", "n", "e", 0, "r"))
+    == Ok(text("terminal"))
+  assert claimed(evolution.Rollback("c", "n", "e", 0, "r"))
+    == Ok(text("terminal"))
+  assert claimed(evolution.Inspect("c")) == Error(Nil)
+  assert claimed(evolution.ReadEvidence("e")) == Error(Nil)
+  assert claimed(evolution.CoreStatus) == Error(Nil)
+}
+
 pub fn each_request_is_sent_as_its_action_test() {
   assert evolution.action_word(evolution.Approve("c", "e")) == "approve"
   assert evolution.action_word(evolution.Revoke("c", "r")) == "revoke"

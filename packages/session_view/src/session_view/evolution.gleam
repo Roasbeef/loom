@@ -919,6 +919,8 @@ pub fn action_word(request: Request) -> String {
 /// The `arguments` object of a request. A `Select` and a `Rollback` carry the
 /// `request_id` the lane minted and the deadline it keeps, so the daemon
 /// waits exactly as long as the lane polls. Every other request ignores them.
+/// A terminal's `via` claim goes only with the four changes, because only they
+/// write an audit entry, and a read refuses a field it does not know.
 ///
 /// ## Examples
 ///
@@ -954,10 +956,26 @@ pub fn arguments(
     ReadEvidence(evidence_id:) -> [#("evidence_id", json.String(evidence_id))]
     CoreStatus -> []
   }
-  case via {
-    Unclaimed -> json.Object(fields)
-    ClaimsTerminal ->
+  case via, records_surface(request) {
+    ClaimsTerminal, Records ->
       json.Object(list.append(fields, [#("via", json.String("terminal"))]))
+    Unclaimed, Records | _, Silent -> json.Object(fields)
+  }
+}
+
+// Whether a request is one the daemon writes an audit entry for, and so reads
+// `via` from. The gateway hands every action's arguments to its door as they
+// came, and the readers (`inspect`, `evidence`, `core_status`) refuse a field
+// they do not know, so a claim sent with one is refused as a bad request.
+type Recording {
+  Records
+  Silent
+}
+
+fn records_surface(request: Request) -> Recording {
+  case request {
+    Approve(..) | Revoke(..) | Select(..) | Rollback(..) -> Records
+    Inspect(..) | ReadEvidence(..) | CoreStatus -> Silent
   }
 }
 
