@@ -1128,3 +1128,23 @@ clears `evolution_read_ms`; the next board restores the selections the daemon
 still holds. A refused `board` read does not ask again, and the backstop
 retries it once a minute. `Shared.evolution_via` is `ClaimsTerminal` for the
 terminal, which sends `via: "terminal"` so the audit entry says so.
+
+A change (`Approve`, `Revoke`, `Select`, `Rollback`) is made only on an
+attached lane with no command out, as a read is, and `begin` refuses while a
+reply is awaited: a reply belongs to `Tracker.awaiting`, so a second request
+cannot be tracked until the first reply has arrived. The daemon holds one
+active job and does not queue a second. `queue.admit` keys on `request_id` and
+refuses a different signature under the same id, and the lane never reuses an
+id, so a double press is a new request that the daemon answers `Busy:` (worded
+by `refusal_words`) or, after the first commit, `Stale` through
+`expected_generation`. The design note's "deduplicated by signature" is wrong
+about this. The 16-request bound in `evolution_pending` keeps the tracker
+finite under a daemon ahead of this client; the lane itself reaches one
+request of its own and at most one adopted from a board.
+
+A host that sleeps between events (the web view has no periodic tick) arms one
+wake-up for `surfaces.evolution_due(shared)`, beside `session_channel.next_due`
+and `context_deferred_until`, and runs its ordinary tick when it fires. It is
+the earliest staging poll or deadline, the instant a requested read is owed, and
+the instant a watched board goes stale, or `None` when detached or idle. A past
+instant means a tick is owed now.

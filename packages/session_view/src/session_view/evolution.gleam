@@ -28,8 +28,9 @@
 //// `decode_board` reads the envelope and hands each row to `decode_candidate`,
 //// `decode_selection`, `decode_waiting` or `decode_event`. `read` is the entry
 //// for a reply: it names the action the reply answers, because every action
-//// shares one wire command, and returns a `Reply` that is never an error. `arguments` is the encoder for a `Request`. The functions after them
-//// are words and offers, and the board queries a host draws from.
+//// shares one wire command, and returns a `Reply` that is never an error.
+//// `arguments` is the encoder for a `Request`. The functions after them are
+//// words and offers, and the board queries a host draws from.
 ////
 //// The public surface a host uses is `decode_board`, `read`, `arguments`,
 //// `action_word`, `refusal_words`, the `*_words` functions, `approval_target`,
@@ -463,8 +464,7 @@ pub type Page {
 /// A page a reader opened: the action that asked for it and what came back.
 pub type Opened {
   Opened(
-    /// The action that asked: `inspect`, `evidence`, `catalogue` or
-    /// `core_status`.
+    /// The action that asked: `inspect`, `evidence` or `core_status`.
     action: String,
     /// The first page of what the daemon answered.
     page: Page,
@@ -609,7 +609,10 @@ fn decode_candidate(value: json.JsonValue) -> Result(Candidate, String) {
       other -> UnknownKind(other)
     },
     scope:,
-    description: text_hygiene.multiline(text_or(fields, "description", "")),
+    description: case list.key_find(fields, "description") {
+      Ok(json.String(description)) -> text_hygiene.multiline(description)
+      _ -> ""
+    },
     parent:,
     origin: case list.key_find(fields, "origin") {
       Ok(json.Object(origin)) ->
@@ -755,7 +758,10 @@ fn decode_event(value: json.JsonValue) -> Result(Event, String) {
   use fields <- result.try(object(value))
   use seq <- result.try(required_int(fields, "seq"))
   use decision <- result.try(required_text(fields, "event"))
-  use candidate_id <- result.try(required_text(fields, "candidate_id"))
+
+  // The daemon writes an empty candidate for an audit entry whose text did not
+  // parse, on purpose, so an empty one is a row to draw and not a malformed one.
+  let candidate_id = text_or(fields, "candidate_id", "")
   Ok(Event(
     seq:,
     at_ms: int_or(fields, "at_ms", 0),
@@ -886,8 +892,7 @@ pub fn is_action(action: String) -> Bool {
 /// ```
 pub fn is_read_action(action: String) -> Bool {
   case action {
-    "board" | "status" | "catalogue" | "inspect" | "evidence" | "core_status" ->
-      True
+    "board" | "status" | "inspect" | "evidence" | "core_status" -> True
     _ -> False
   }
 }
@@ -1199,9 +1204,13 @@ pub fn refusal_words(code: String, message: String) -> String {
     _, "the evolution plane is unavailable" ->
       "Evolution is not available for this session."
     _, _ ->
-      case string.starts_with(said, "authority: ") {
-        True -> "Not allowed: " <> string.drop_start(said, 11) <> "."
-        False -> "Evolution refused: " <> said
+      case
+        string.starts_with(said, "authority: "),
+        string.starts_with(said, "Busy:")
+      {
+        True, _ -> "Not allowed: " <> string.drop_start(said, 11) <> "."
+        _, True -> "Another selection is still staging; wait for it."
+        False, False -> "Evolution refused: " <> said
       }
   }
 }

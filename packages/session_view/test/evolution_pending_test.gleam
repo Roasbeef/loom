@@ -56,9 +56,29 @@ fn begun(
   now: Int,
   candidate: String,
 ) -> #(pending.Tracker, String) {
-  let assert Ok(made) =
-    pending.begin(tracker, session, now, pending.Selecting, candidate, "fmt")
+  // An example that begins twice has answered the first request already, so
+  // the awaited reply is cleared here and `begin`'s own refusal is tested apart.
+  let answered = pending.Tracker(..tracker, awaiting: None)
+  let assert Ok(made) = pending.begin(answered, session, now, candidate, "fmt")
   made
+}
+
+pub fn a_request_is_refused_while_a_reply_is_awaited_test() {
+  let #(tracker, _) = begun(pending.new(), 0, "cand")
+  let refused = pending.begin(tracker, session, 5, "other", "fmt")
+  assert refused |> result.is_error
+  assert tracker.awaiting != None
+}
+
+pub fn the_next_due_instant_is_the_earliest_poll_or_deadline_test() {
+  assert pending.next_due(pending.new()) == None
+  let #(tracker, _) = begun(pending.new(), 1000, "cand")
+  assert pending.next_due(tracker) == Some(1000 + pending.window_ms)
+  let #(tracker, _) =
+    pending.answered(tracker, evolution.InFlight(evolution.Queued), 1100)
+  assert pending.next_due(tracker) == Some(1100 + pending.poll_ms)
+  let #(tracker, _) = pending.expire(tracker, 1000 + pending.window_ms)
+  assert pending.next_due(tracker) == None
 }
 
 fn only(tracker: pending.Tracker) -> pending.Tracked {
@@ -233,16 +253,14 @@ pub fn the_tracker_is_bounded_and_makes_room_from_the_settled_test() {
       tracker
     })
   assert list.length(full.requests) == pending.limit
-  assert pending.begin(full, session, 5, pending.Selecting, "cand", "fmt")
-    |> result.is_error
+  assert pending.begin(full, session, 5, "cand", "fmt") |> result.is_error
   let #(settled, _) =
     pending.answered(
       pending.Tracker(..full, awaiting: Some(only_first(full).request_id)),
       evolution.Done(None),
       2,
     )
-  let assert Ok(#(room, id)) =
-    pending.begin(settled, session, 5, pending.Selecting, "cand", "fmt")
+  let assert Ok(#(room, id)) = pending.begin(settled, session, 5, "cand", "fmt")
   assert list.length(room.requests) == pending.limit
   assert list.all(settled.requests, fn(row) { row.request_id != id })
   assert list.all(room.requests, fn(row) { row != only_first(full) })
@@ -260,7 +278,6 @@ pub fn the_words_say_where_a_request_stands_test() {
       request_id: "r",
       candidate_id: "3f9a0c2e1b",
       name: "fmt_check",
-      move: pending.Selecting,
       stage:,
       deadline_ms: 60_000,
       next_poll_ms: 0,
@@ -365,9 +382,10 @@ fn predict(model: Model, command: Command) -> Model {
 }
 
 fn begin(model: Model, candidate: Int) -> Model {
-  let room = case list.length(model.rows) < limit {
-    True -> Ok(model.rows)
-    False ->
+  let room = case model.awaiting, list.length(model.rows) < limit {
+    Some(_), _ -> Error(Nil)
+    None, True -> Ok(model.rows)
+    None, False ->
       case list.find(model.rows, fn(row) { is_settled(row.tag) }) {
         Ok(oldest) -> Ok(list.filter(model.rows, fn(row) { row != oldest }))
         Error(Nil) -> Error(Nil)
@@ -613,7 +631,6 @@ fn run_real(
           sut.tracker,
           session,
           model.now,
-          pending.Selecting,
           candidate_id(candidate),
           "fmt",
         )
@@ -784,13 +801,10 @@ fn command(model: Model) -> qcheck.Generator(Command) {
   )
 }
 
-// A lane has one command out at a time, so a request is begun only when no
-// reply is awaited.
-fn admitted(model: Model, command: Command) -> statem.Admission {
-  case command, model.awaiting {
-    Begin(..), Some(_) -> statem.Reject
-    _, _ -> statem.Admit
-  }
+// Every command is admitted, a `Begin` while a reply is awaited included: the
+// tracker refuses it itself, and the model says it changes nothing.
+fn admitted(_model: Model, _command: Command) -> statem.Admission {
+  statem.Admit
 }
 
 fn spec() -> statem.Spec(Model, Command, Sut) {

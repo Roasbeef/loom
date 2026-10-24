@@ -74,6 +74,7 @@ import core/entry
 import core/json
 import gleam/bool
 import gleam/dict
+import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import session_view/advisor_pending
@@ -647,7 +648,7 @@ fn poll_evolution_status(
 /// Makes one evolution request, as the host drew it.
 ///
 /// A change (`Approve`, `Revoke`, `Select`, `Rollback`) needs what an approval
-/// needs: a live attachment that may mutate, and a free command slot. A refusal
+/// needs: a live attachment that may mutate, and a lane with no command out. A refusal
 /// is the surface's own news and lands in `evolution_notice`. A `Select` and a
 /// `Rollback` are tracked first, because the daemon answers them `queued` and
 /// finishes later: the lane mints the request identity, sends it with its own
@@ -672,13 +673,39 @@ pub fn evolve(
     evolution.Approve(..)
     | evolution.Revoke(..)
     | evolution.Select(..)
-    | evolution.Rollback(..) ->
-      case outbound.mutation_refusal(shared, command.Approve("")) {
-        Some(reason) -> shared_set.evolution_notice(shared, reason)
-        None -> evolve_change(shared, request)
-      }
+    | evolution.Rollback(..) -> evolve_checked(shared, request)
     evolution.Inspect(..) | evolution.ReadEvidence(..) | evolution.CoreStatus ->
       evolve_read(shared, request)
+  }
+}
+
+// A change is made only on a live attachment with a free command slot, as a
+// read is. A slot held by a read is not free: the change would wait behind it,
+// and the reply of the read in flight would be taken for the change's own. The
+// attachment's right to mutate is the one an approval needs.
+fn evolve_checked(
+  shared: Shared(socket, recorder, source, replay_source),
+  request: evolution.Request,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.peer {
+    Some(channel), Attached ->
+      case
+        session_channel.ready_for_read(channel),
+        outbound.mutation_refusal(shared, command.Approve(""))
+      {
+        True, None -> evolve_change(shared, request)
+        True, Some(_) ->
+          shared_set.evolution_notice(
+            shared,
+            "This attachment cannot change the evolution catalogue.",
+          )
+        False, _ ->
+          shared_set.evolution_notice(
+            shared,
+            "The session is busy; try that again in a moment.",
+          )
+      }
+    _, _ -> shared_set.evolution_notice(shared, "No conversation is attached.")
   }
 }
 
@@ -688,22 +715,9 @@ fn evolve_change(
 ) -> Shared(socket, recorder, source, replay_source) {
   let cleared = shared_set.evolution_notice(shared, "")
   case request {
-    evolution.Select(candidate_id:, name:, ..) ->
-      stage_evolution(
-        cleared,
-        request,
-        evolution_pending.Selecting,
-        candidate_id,
-        name,
-      )
-    evolution.Rollback(candidate_id:, name:, ..) ->
-      stage_evolution(
-        cleared,
-        request,
-        evolution_pending.RollingBack,
-        candidate_id,
-        name,
-      )
+    evolution.Select(candidate_id:, name:, ..)
+    | evolution.Rollback(candidate_id:, name:, ..) ->
+      stage_evolution(cleared, request, candidate_id, name)
     evolution.Approve(..)
     | evolution.Revoke(..)
     | evolution.Inspect(..)
@@ -718,7 +732,6 @@ fn evolve_change(
 fn stage_evolution(
   shared: Shared(socket, recorder, source, replay_source),
   request: evolution.Request,
-  move: evolution_pending.Move,
   candidate_id: String,
   name: String,
 ) -> Shared(socket, recorder, source, replay_source) {
@@ -727,7 +740,6 @@ fn stage_evolution(
       shared.evolution_pending,
       shared.session,
       shared.stamp.transport_ms,
-      move,
       candidate_id,
       name,
     )
@@ -779,6 +791,47 @@ fn send_evolution(
       ),
     ),
   )
+}
+
+/// The transport-clock instant at which the evolution surface next needs a
+/// tick, or `None` when it needs none: the earliest poll or deadline of a
+/// staging selection, the instant a requested or never-made read is owed, and
+/// the instant a watched board goes stale.
+///
+/// A host that sleeps between events (the web view has no periodic tick) arms
+/// one wake-up for this instant, next to the lane's own
+/// (`session_channel.next_due`) and `context_deferred_until`, and runs its
+/// ordinary tick when it fires; `service_evolution_status` and
+/// `service_evolution_read` then send what is due. A detached record needs no
+/// tick, since nothing can be sent. A due instant already past means a tick
+/// is owed now, and a host clamps it to now.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert surfaces.evolution_due(shared) == None
+/// ```
+pub fn evolution_due(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Option(Int) {
+  case shared.channel, shared.peer {
+    Some(_), Attached -> {
+      let read = case shared.evolution_refresh, shared.evolution_watch {
+        worktree_view.Requested, _ -> Some(shared.stamp.transport_ms)
+        worktree_view.Settled, session_model.WatchingEvolution ->
+          case shared.evolution_read_ms {
+            Some(at) -> Some(at + evolution.backstop_ms)
+            None -> Some(shared.stamp.transport_ms)
+          }
+        worktree_view.Settled, session_model.NotWatchingEvolution -> None
+      }
+      [evolution_pending.next_due(shared.evolution_pending), read]
+      |> list.filter_map(option.to_result(_, Nil))
+      |> list.reduce(int.min)
+      |> option.from_result
+    }
+    _, _ -> None
+  }
 }
 
 /// Folds what an evolution command answered. `action` is the action the lane

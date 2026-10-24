@@ -1378,16 +1378,10 @@ fn matching_presentation(name, intent, event) {
     // the name. A read action may only be answered as a read and a change
     // only as a change; the board shape each carries is `evolution.read`'s
     // business and is never a reason to close the lane.
-    "evolution:board", Read, protocol.EvolutionSnapshot(_) -> True
-    "evolution:status", Read, protocol.EvolutionSnapshot(_) -> True
-    "evolution:catalogue", Read, protocol.EvolutionSnapshot(_) -> True
-    "evolution:inspect", Read, protocol.EvolutionSnapshot(_) -> True
-    "evolution:evidence", Read, protocol.EvolutionSnapshot(_) -> True
-    "evolution:core_status", Read, protocol.EvolutionSnapshot(_) -> True
-    "evolution:approve", Mutation, protocol.EvolutionSnapshot(_) -> True
-    "evolution:revoke", Mutation, protocol.EvolutionSnapshot(_) -> True
-    "evolution:select", Mutation, protocol.EvolutionSnapshot(_) -> True
-    "evolution:rollback", Mutation, protocol.EvolutionSnapshot(_) -> True
+    "evolution:" <> action, Read, protocol.EvolutionSnapshot(_) ->
+      evolution.is_read_action(action)
+    "evolution:" <> action, Mutation, protocol.EvolutionSnapshot(_) ->
+      evolution.is_action(action) && !evolution.is_read_action(action)
     _, _, _ -> False
   }
 }

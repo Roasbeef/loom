@@ -42,6 +42,7 @@
 //// an identity is never minted twice by one lane. The next board lists the
 //// transitions the daemon still holds, and `restore` tracks them again.
 
+import gleam/bool
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -57,8 +58,10 @@ pub const poll_ms = 2000
 /// when the lane does. The daemon's bound is 120 seconds.
 pub const window_ms = 60_000
 
-/// The most requests tracked at once. A person cannot stage more selections
-/// than this before one settles, and the daemon queues them one at a time.
+/// The most requests tracked at once. The daemon holds one active job and
+/// refuses a second with `Busy:`, so a lane reaches one unsettled request of its
+/// own and at most one adopted from a board. The bound only keeps the tracker
+/// finite under a daemon that is ahead of this client.
 pub const limit = 16
 
 /// The requests a lane is tracking.
@@ -76,15 +79,6 @@ pub type Tracker {
   )
 }
 
-/// Whether a request selects a candidate or selects an earlier one again.
-pub type Move {
-  /// A new generation.
-  Selecting
-
-  /// An earlier approved candidate selected again.
-  RollingBack
-}
-
 /// One tracked request.
 pub type Tracked {
   Tracked(
@@ -94,8 +88,6 @@ pub type Tracked {
     candidate_id: String,
     /// The name it runs under, for the words.
     name: String,
-    /// What the request asked.
-    move: Move,
     /// Where the request stands.
     stage: Stage,
     /// When the lane stops waiting, on the transport clock.
@@ -177,21 +169,28 @@ pub fn reset(tracker: Tracker) -> Tracker {
 /// apart. A tracker already holding `limit` requests drops its oldest settled
 /// request to make room, and refuses when none has settled.
 ///
+/// A tracker that is still waiting for a reply refuses a new request, because
+/// the reply that arrives belongs to the request it was awaited for and
+/// `awaiting` names exactly one.
+///
 /// ## Examples
 ///
 /// ```gleam
 /// let assert Ok(#(tracker, id)) =
-///   evolution_pending.begin(tracker, "0198c0de-0000", 5000, Selecting, "3f9a0c2e1b", "fmt_check")
+///   evolution_pending.begin(tracker, "0198c0de-0000", 5000, "3f9a0c2e1b", "fmt_check")
 /// assert string.starts_with(id, "ui-0198c0de-")
 /// ```
 pub fn begin(
   tracker: Tracker,
   session_id: String,
   now_ms: Int,
-  move: Move,
   candidate_id: String,
   name: String,
 ) -> Result(#(Tracker, String), String) {
+  use <- bool.guard(
+    tracker.awaiting != None,
+    Error("a reply is still awaited; wait for it"),
+  )
   use room <- result.try(make_room(tracker.requests))
   let minted = tracker.minted + 1
   let request_id =
@@ -210,7 +209,6 @@ pub fn begin(
       request_id:,
       candidate_id:,
       name:,
-      move:,
       stage: Submitted,
       deadline_ms: now_ms + window_ms,
       next_poll_ms: now_ms + window_ms,
@@ -481,7 +479,6 @@ fn adopt(
     request_id: waiting.request_id,
     candidate_id: waiting.candidate_id,
     name:,
-    move: Selecting,
     stage: Staging(waiting.phase),
     deadline_ms: now_ms + window_ms,
     next_poll_ms: now_ms + poll_ms,
@@ -502,6 +499,29 @@ pub fn for_candidate(
   tracker.requests
   |> list.reverse
   |> list.find(fn(tracked) { tracked.candidate_id == candidate_id })
+  |> option.from_result
+}
+
+/// The earliest instant, on the transport clock, at which a tracked request
+/// needs the lane's attention: the next poll or the deadline of one that is
+/// still moving. `None` when nothing is moving. A host that sleeps between
+/// events wakes then (`surfaces.evolution_due`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert evolution_pending.next_due(evolution_pending.new()) == None
+/// ```
+pub fn next_due(tracker: Tracker) -> Option(Int) {
+  list.filter_map(tracker.requests, fn(tracked) {
+    case tracked.stage {
+      Submitted -> Ok(tracked.deadline_ms)
+      Staging(..) | Publishing ->
+        Ok(int.min(tracked.next_poll_ms, tracked.deadline_ms))
+      Landed(..) | Refused(..) | Vanished | TimedOut -> Error(Nil)
+    }
+  })
+  |> list.reduce(int.min)
   |> option.from_result
 }
 

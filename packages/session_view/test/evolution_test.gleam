@@ -558,12 +558,12 @@ pub fn each_request_is_sent_as_its_action_test() {
 
 pub fn the_lane_issues_nine_actions_and_three_of_them_change_nothing_test() {
   let actions = [
-    "board", "status", "catalogue", "inspect", "evidence", "core_status",
-    "approve", "revoke", "select", "rollback",
+    "board", "status", "inspect", "evidence", "core_status", "approve", "revoke",
+    "select", "rollback",
   ]
   assert list.all(actions, evolution.is_action)
   assert list.filter(actions, evolution.is_read_action)
-    == ["board", "status", "catalogue", "inspect", "evidence", "core_status"]
+    == ["board", "status", "inspect", "evidence", "core_status"]
   assert !evolution.is_action("core_upgrade")
   assert !evolution.is_action("admit_tasks")
 }
@@ -849,7 +849,35 @@ fn pick_json(choices: List(json.JsonValue), index: Int) -> json.JsonValue {
   }
 }
 
-// --- arbitrary JSON ----------------------------------------------------------------
+// The daemon writes an empty candidate for an audit entry whose text did not
+// parse, so the row is drawn and not counted as unread.
+pub fn an_audit_row_with_no_candidate_is_kept_test() {
+  let row = event(7, "approved", "", "")
+  let read = decoded(json.Object([#("history", json.Array([row]))]))
+  let assert [kept] = read.history
+  assert kept.candidate_id == ""
+  assert read.unread == 0
+}
+
+pub fn a_busy_refusal_and_a_multiline_description_read_as_written_test() {
+  assert evolution.refusal_words(
+      "bad_request",
+      "Busy: one live transition is already pending",
+    )
+    == "Another selection is still staging; wait for it."
+  let assert json.Object(fields) =
+    candidate("aaaa1111", "a", json.Null, [], json.Null)
+  let with_lines =
+    json.Object([
+      #("description", text("first\nsecond")),
+      ..list.filter(fields, fn(field) { field.0 != "description" })
+    ])
+  let read = decoded(json.Object([#("candidates", json.Array([with_lines]))]))
+  let assert [row] = read.candidates
+  assert row.description == "first\nsecond"
+}
+
+// --- arbitrary JSON----------------------------------------------------------------
 
 const keys = [
   "candidates", "selections", "published", "pending", "history", "omitted",

@@ -653,7 +653,47 @@ pub fn an_observer_may_read_and_may_not_change_test() {
   assert list.length(written(read)) == 1
 }
 
-// --- the wire forms ---------------------------------------------------------------------
+pub fn a_change_is_refused_while_a_read_holds_the_slot_test() {
+  let #(shared, sent) = begun(ready(), 1000, "candA")
+  let assert [id] = request_ids(shared)
+  let staged = answered(shared, sent.id, queued(id))
+  let #(polled, _) = reads(staged, 1000 + pending.poll_ms + 10)
+  assert polled.evolution_pending.awaiting == Some(id)
+  let #(again, effects) =
+    step.update(polled, acted(4000, selecting("candB", 3)))
+  assert written(effects) == []
+  assert request_ids(again) == [id]
+  assert again.evolution_pending.awaiting == Some(id)
+  assert string.contains(again.evolution_notice, "busy")
+}
+
+pub fn a_change_is_refused_without_an_attached_lane_test() {
+  let detached = Shared(..ready(), peer: session_model.Preview)
+  let #(after, effects) =
+    step.update(detached, acted(1000, selecting("candA", 3)))
+  assert written(effects) == []
+  assert after.evolution_pending.requests == []
+  assert string.contains(after.evolution_notice, "attached")
+}
+
+pub fn a_sleeping_host_is_told_when_the_next_tick_is_due_test() {
+  assert surfaces.evolution_due(ready()) == None
+  let owed = shared_set.evolution_refresh(ready(), worktree_view.Requested)
+  assert surfaces.evolution_due(owed) == Some(owed.stamp.transport_ms)
+  let #(shared, sent) = begun(ready(), 1000, "candA")
+  let assert [id] = request_ids(shared)
+  let staged = answered(shared, sent.id, queued(id))
+  assert surfaces.evolution_due(staged) == Some(1000 + pending.poll_ms)
+    as "the earlier of the poll and the deadline"
+  let watching =
+    shared_set.evolution_watch(ready(), session_model.WatchingEvolution)
+  let #(read, _) = reads(watching, 500)
+  assert surfaces.evolution_due(read) == Some(500 + evolution.backstop_ms)
+  let adrift = Shared(..staged, peer: session_model.Disconnected)
+  assert surfaces.evolution_due(adrift) == None
+}
+
+// --- the wire forms---------------------------------------------------------------------
 
 pub fn a_recorded_evolution_request_decodes_and_an_unknown_one_does_not_test() {
   let issued = fn(kind) {
