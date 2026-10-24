@@ -88,6 +88,9 @@ pub fn census_over(
     broker: executor_broker,
     mcp: [],
     branch: None,
+    evolution: remote_census.Uncompiled(
+      "the fake executor has no evolution plane",
+    ),
   )
 }
 

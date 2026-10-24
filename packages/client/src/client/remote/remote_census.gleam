@@ -13,6 +13,7 @@
 //// value it finds.
 
 import broker/broker
+import client/evolution/record
 import client/executors
 import client/system_prompt
 import client/workspace_plane
@@ -47,7 +48,26 @@ pub type RemoteCensus {
     /// session on a workspace in worktree mode and `None` otherwise
     /// (protocol-change/095). The session header shows it.
     branch: Option(String),
+    /// Whether this executor can compile evolution candidates, and under which
+    /// identity. The orchestrator opens the scope's catalogue with the identity
+    /// (protocol-change/098), so evidence recorded against one executor's
+    /// toolchain and seed never authorizes a build on another's.
+    evolution: EvolutionCensus,
   )
+}
+
+/// What an executor says about compiling evolution candidates. It is computed
+/// when the scope's plane is built, because the identity depends on the scope's
+/// seed, and a rebound attach reuses it.
+pub type EvolutionCensus {
+  /// The executor compiles candidates, and `identity` is the toolchain, seed
+  /// and evaluator fingerprint its builds carry.
+  Compiles(identity: record.Identity)
+
+  /// The executor cannot compile candidates, for a reason the operator can act
+  /// on: no code-mode toolchain, or an evolution plane not built yet. A session
+  /// on it has no evolution catalogue.
+  Uncompiled(reason: String)
 }
 
 /// How one expected MCP server fared on the executor.

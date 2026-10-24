@@ -815,6 +815,9 @@ fn plane_over(
             broker: broker.subject(broker_actor),
             mcp: built.mcp,
             branch: option.map(built.custody, fn(held) { held.branch }),
+            evolution: remote_census.Uncompiled(
+              "the executor's evolution plane is not built yet",
+            ),
           ),
           children: fn(builder) {
             builder
