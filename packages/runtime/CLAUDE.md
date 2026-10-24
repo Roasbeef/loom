@@ -241,6 +241,11 @@ extended by the M3 runtime wave.
   grace is the `Cancelling` state's **state timeout**, so it is armed by the
   move in, cancelled by the move out, and never re-armed by the `keep` that
   every late delta produces.
+  Startup projects the preparation callback and timeout before copying into
+  that worker. Prepared surfaces do not retain their unused compatibility
+  request facade there; legacy requests are wrapped without invocation until
+  the permit. The native provider_custodian_retention_test observes the actual
+  linked fixture worker and preserves normal exit plus full-subtree drain.
 - `runtime/writer.Message` — the writer actor's mailbox; `writer.Event` is
   the `Committed(ordinal, seqs, ts)` published to subscribers.
 - `runtime/writer.Subscriber` distinguishes `Direct(Subject(Event))`

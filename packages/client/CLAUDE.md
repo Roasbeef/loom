@@ -299,8 +299,12 @@ workspace, catalogue, remote reach and code-mode refusal inputs before
 constructing the restart specification. Those callbacks retain the runtime inputs they require,
 but no longer add a path through the complete startup `Settings` record.
 `owned_assembly_test` verifies this on actual service supervisor state while
-preserving custody retirement and lease release. Both memory regressions count
+preserving custody retirement and lease release. These memory regressions count
 flattened reachable terms, not physical retained heap or resident memory.
+The model-facts callback projects only model entries before closure construction,
+so unused catalogue profiles and server configuration do not enter provider and
+compaction-hook copies. owned_assembly_test varies valid unused profiles while
+checking the real runtime Effects graph, model admission and missing-model fallback.
 
 ## Transfer captures and a slow storage actor
 

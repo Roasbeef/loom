@@ -792,5 +792,43 @@
     "doc_warnings": 232,
     "hosted_ci_run": false,
     "linux_signoff_run": false
+  },
+  "memory_round2": {
+    "implementation_commits": [
+      "1bd9f39e9",
+      "7c466fead"
+    ],
+    "client_gate_head": "23acc9315",
+    "client_gate": {
+      "exit": 0,
+      "eunit_passes": 5317,
+      "elapsed_seconds": 631.16
+    },
+    "runtime_eunit_passes": 210,
+    "unit": "flattened words, not physical retained bytes or RSS",
+    "catalogue_facts": {
+      "unused_profiles": [
+        0,
+        64,
+        256
+      ],
+      "effects_before": [
+        39231,
+        48121,
+        75001
+      ],
+      "effects_after": [
+        39112,
+        39112,
+        39112
+      ]
+    },
+    "parked_provider_worker": {
+      "ordinary_before": 113,
+      "ordinary_after": 101,
+      "padded_before": 8305,
+      "padded_after": 101,
+      "padding_words": 8192
+    }
   }
 }
