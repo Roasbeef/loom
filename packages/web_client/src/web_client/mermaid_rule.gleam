@@ -102,14 +102,17 @@ pub fn new() -> State {
 /// assert state.phase == Waiting
 /// ```
 pub fn read(state: State, source: String, theme: Theme, units: Int) -> State {
+  // Retain current state when source and theme are unchanged.
   case source == state.source && theme == state.theme {
     True -> state
     False -> {
+      // Determine initial render phase from trimmed source length.
       let phase = case string.trim(source), units > max_source {
         "", _ -> Empty
         _, True -> TooLarge
         _, False -> Waiting
       }
+
       State(source, theme, state.revision + 1, phase)
     }
   }
@@ -175,10 +178,12 @@ pub fn expire(state: State, revision: Int) -> State {
 /// // mermaid_rule.request(state)
 /// ```
 pub fn request(state: State) -> String {
+  // Map theme variant to mermaid configuration theme word.
   let theme = case state.theme {
     Dark -> "dark"
     Light -> "default"
   }
+
   json.object([
     #("source", json.string(state.source)),
     #("theme", json.string(theme)),
@@ -195,6 +200,7 @@ pub fn request(state: State) -> String {
 /// assert mermaid_rule.reply("{\"kind\":\"ready\"}") == Ready
 /// ```
 pub fn reply(text: String) -> Reply {
+  // Discard replies exceeding maximum payload size.
   case string.byte_size(text) > 512 {
     True -> Ignored
     False -> {
@@ -204,8 +210,11 @@ pub fn reply(text: String) -> Reply {
   }
 }
 
+/// Decodes frame status reply messages from JSON payloads.
 fn reply_decoder() -> decode.Decoder(Reply) {
   use kind <- decode.field("kind", decode.string)
+
+  // Dispatch reply variant based on message kind.
   case kind {
     "ready" -> decode.success(Ready)
     "rendered" -> {

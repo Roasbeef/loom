@@ -29,15 +29,20 @@ pub fn read(bytes: BitArray) -> Result(List(String), String) {
   }
 }
 
+/// Parses IFF chunks from the BEAM container payload collecting atom definitions.
 fn chunks(
   bytes: BitArray,
   atoms: List(String),
 ) -> Result(List(String), String) {
+  // Read chunk headers sequentially until end of container payload.
   case bytes {
     <<name:bytes-size(4), size:32, rest:bytes>> -> {
       let padding = { 4 - size % 4 } % 4
+
+      // Extract chunk payload and verify 4-byte padding boundary.
       case rest {
         <<payload:bytes-size(size), _:bytes-size(padding), tail:bytes>> -> {
+          // Inspect chunk type and parse atom or literal tables.
           case name {
             <<"AtU8">> | <<"Atom">> -> {
               use found <- result.try(atom_table(payload))
@@ -59,6 +64,7 @@ fn chunks(
   }
 }
 
+/// Parses atom table entries from standard or compact encoding payloads.
 fn atom_table(bytes: BitArray) -> Result(List(String), String) {
   case bytes {
     <<count:32-signed, rest:bytes>> if count < 0 && count >= -8192 ->
@@ -68,11 +74,13 @@ fn atom_table(bytes: BitArray) -> Result(List(String), String) {
   }
 }
 
+/// Decodes atom names using compact tag-length encoding.
 fn compact_names(
   bytes: BitArray,
   remaining: Int,
   found: List(String),
 ) -> Result(List(String), String) {
+  // Decode remaining compact-encoded atom names until count reaches zero.
   case remaining, bytes {
     0, <<>> -> Ok(list.reverse(found))
     _, <<size:4, 0:4, text:bytes-size(size), tail:bytes>> if remaining > 0 -> {
@@ -84,6 +92,8 @@ fn compact_names(
     }
     _, <<high:3, 0:1, 1:1, 0:3, low:8, tail:bytes>> if remaining > 0 -> {
       let size = high * 256 + low
+
+      // Extract atom text slice according to decoded two-byte size.
       case tail {
         <<text:bytes-size(size), rest:bytes>> if size <= 1020 -> {
           use name <- result.try(
@@ -99,11 +109,13 @@ fn compact_names(
   }
 }
 
+/// Decodes atom names using standard length-prefixed encoding.
 fn names(
   bytes: BitArray,
   remaining: Int,
   found: List(String),
 ) -> Result(List(String), String) {
+  // Decode remaining length-prefixed atom names until count reaches zero.
   case remaining, bytes {
     0, <<>> -> Ok(list.reverse(found))
     0, _ -> Error("BEAM atom table has trailing bytes")

@@ -130,10 +130,13 @@ fn unknown_values(diagnostics: String) -> List(#(String, String)) {
 
 // Reads ``cap/proc` does not have a `int_to_string` value.`` from the text
 // after "The module `".
+/// Extracts the module and value name from compiler diagnostic text.
 fn missing_value(segment: String) -> Result(#(String, String), Nil) {
   use #(module, rest) <- result.try(string.split_once(segment, on: "`"))
   use rest <- result.try(drop_prefix(rest, " does not have a `"))
   use #(value, rest) <- result.try(string.split_once(rest, on: "`"))
+
+  // Require the error sentence to conclude with value.
   case string.starts_with(rest, " value") {
     True -> Ok(#(module, value))
     False -> Error(Nil)
@@ -147,6 +150,7 @@ fn drop_prefix(text: String, prefix: String) -> Result(String, Nil) {
   }
 }
 
+/// Suggests a replacement import or standard library location for an unrecognised value.
 fn suggest(
   module: String,
   value: String,
@@ -161,6 +165,7 @@ fn suggest(
 
 // The first allowed module other than `module` whose surface declares
 // `pub fn value(`.
+/// Searches capability surfaces for an alternative module exposing `pub fn value`.
 fn owner_in_surfaces(
   module: String,
   value: String,
@@ -182,9 +187,12 @@ fn owner_in_surfaces(
 
 // `int_to_string` is a guess at `int.to_string`, offered only when
 // `gleam/int` is importable and said to be unchecked.
+/// Heuristically suggests standard library qualified calls matching a snake_case name.
 fn stdlib_guess(value: String, allowed: List(String)) -> Result(String, Nil) {
   use #(prefix, rest) <- result.try(string.split_once(value, on: "_"))
   let module = "gleam/" <> prefix
+
+  // Check whether the prefix matches an allowed standard library module.
   case prefix != "" && rest != "" && list.contains(allowed, module) {
     True ->
       Ok(
@@ -238,6 +246,7 @@ fn is_capability(module: String) -> Bool {
 // The capability `lsp.snapshot` is the one call whose owning module is not
 // its prefix: it is `cap/lsp_sql`'s only call, and `cap/lsp` has no
 // `snapshot`.
+/// Resolves the owning capability module for a capability identifier.
 fn owner(capability: String) -> String {
   case capability {
     "lsp.snapshot" -> "cap/lsp_sql"
@@ -251,11 +260,15 @@ fn owner(capability: String) -> String {
 
 // The character offset of the first mention of `module`, as its import path
 // or, boundary-checked, as a qualified use of its last segment.
+/// Finds the earliest character index where `module` is imported or qualified in `text`.
 fn mention_index(text: String, module: String) -> Result(Int, Nil) {
+  // Extract the short un-namespaced module identifier.
   let short = case list.last(string.split(module, "/")) {
     Ok(last) -> last
     Error(Nil) -> module
   }
+
+  // Return the earliest occurrence between full import path and qualified call site.
   case first_index(text, module), qualified_index(text, short <> ".", 0) {
     Ok(path), Ok(use_) -> Ok(int.min(path, use_))
     Ok(path), Error(Nil) -> Ok(path)
@@ -270,6 +283,7 @@ fn first_index(text: String, needle: String) -> Result(Int, Nil) {
   first_bounded(text, needle, 0)
 }
 
+/// Locates `needle` in `text` at word boundaries, ignoring substring prefixes.
 fn first_bounded(
   text: String,
   needle: String,
@@ -300,6 +314,7 @@ fn starts_a_name(after: String) -> Bool {
 // A qualified use only counts when the text before it is not part of a
 // longer name: `fs.read` is a mention of `fs`, `tools.fs.read` and
 // `my_fs.read` are not.
+/// Finds the first qualified call site not preceded by identifier characters.
 fn qualified_index(
   text: String,
   needle: String,

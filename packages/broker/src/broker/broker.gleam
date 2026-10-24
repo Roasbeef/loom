@@ -532,9 +532,9 @@ pub fn clear_call(
 // caller is a strand effect process holding the refusal the model is
 // meant to read: a panic here loses it and settles as a synthetic
 // zero-usage abort instead. And a retry is only issued with a window
-// the broker could plausibly answer in (`min_retry_window_ms`), so the
-// loop stops waiting rather than spending its last few milliseconds on
-// an exchange it does not expect to win.
+/// Clears a call by delegating to the broker actor, retrying across transient helper congestion.
+/// Stops waiting rather than spending its last few milliseconds on
+/// an exchange it does not expect to win.
 fn clear_awaiting_helper(
   broker: Broker,
   spec: CallSpec,
@@ -574,15 +574,8 @@ fn clear_awaiting_helper(
   clear_awaiting_helper(broker, spec, events, clock, after_nap, Some(epoch))
 }
 
-// use #(outcome, epoch) <- or_unavailable(call.try_call(..))
-//
-// Turns an exchange that produced no reply into a refusal. The broker
-// is a serial actor: an exchange waits behind whatever handler is
-// running, so a late answer is congestion wearing a different hat, and
-// a caller that died of it would have had no verdict to hand back at
-// all. A broker that has stopped underneath a parked waiter reaches the
-// same place — the operation cannot run, and saying so beats faulting
-// the strand.
+/// Converts broker actor communication faults into a BrokerUnavailable refusal.
+/// The broker is a serial actor, so an exchange timeout or crash indicates unavailability.
 fn or_unavailable(
   attempt: Result(a, call.CallFault),
   then: fn(a) -> Result(CallHandle, Refusal),
@@ -593,15 +586,8 @@ fn or_unavailable(
   }
 }
 
-// Whether a clearance came back because the pool is momentarily full,
-// as opposed to because something decided this call may not run. Only
-// `AllBusy` with slots that can still lend qualifies. `size` counts the
-// entries that may return to lending, not the configured pool size, so
-// zero means either a pool sized zero (the seam tests wire when they want
-// a broker that always refuses) or a pool whose every slot is held by an
-// unconfirmed retirement. Neither will ever check a helper back in, so
-// waiting on one would stall the caller for its whole budget to reach the
-// same answer.
+/// Returns whether an outcome indicates transient helper pool congestion.
+/// Only `AllBusy` with lendable slots qualifies as transient congestion.
 fn congested(outcome: Result(CallHandle, Refusal)) -> Bool {
   case outcome {
     Error(NoHelper(error: exec.AllBusy(size:))) -> size > 0
@@ -896,41 +882,44 @@ fn sweeps_over(state: State, op_id: OpId, step_id: String) -> Int {
   op_sweeps + step_sweeps
 }
 
+/// Dispatches incoming broker actor messages to their respective handlers.
 fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
+  // Dispatch on the broker actor message variant.
   case message {
     ClearCall(spec:, events:, since:, reply:) -> {
       let epoch = sweeps_over(state, spec.op_id, spec.step_id)
 
-      // A clearance that began before a sweep of this operation — or of
-      // this step of it — must not dispatch after it: the sweep revoked
-      // the tokens and cancelled the running calls it could see, so
-      // admitting this one would leave exactly the execution the sweep
-      // could not reach. A first attempt carries no count and is judged
-      // on its own merits, which is what lets a strand go on working
-      // after code mode's teardown reaps its step.
+      // Check whether an abort sweep landed while waiting to retry.
       let resumed_across_abort = case since {
         Some(seen) -> seen != epoch
         None -> False
       }
+
+      // Refuse aborted operations or proceed with clearance.
       let #(state, outcome) = case resumed_across_abort {
         True -> #(state, Error(OperationAborted))
         False -> do_clear_call(state, spec, events)
       }
+
       process.send(reply, #(outcome, epoch))
       actor.continue(state)
     }
     SendStdin(handle:, data:, eof:) -> {
+      // Look up active execution and send standard input.
       case dict.get(state.active, handle.id) {
         Ok(active) -> active.execution.stdin(data, eof)
         Error(Nil) -> Nil
       }
+
       actor.continue(state)
     }
     CancelCall(handle:) -> {
+      // Look up active execution and request cancellation.
       case dict.get(state.active, handle.id) {
         Ok(active) -> active.execution.cancel()
         Error(Nil) -> Nil
       }
+
       actor.continue(state)
     }
     AbortOp(op_id:) -> {
@@ -1011,21 +1000,20 @@ fn handle(state: State, message: Msg) -> actor.Next(State, Msg) {
       actor.continue(state)
     }
     QueryRelay(handle:, reply:) -> {
+      // Reply with the guarantor pid for the queried active call.
       case dict.get(state.active, handle.id) {
         Ok(active) -> process.send(reply, Ok(active.execution.guarantor))
         Error(Nil) -> process.send(reply, Error(Nil))
       }
+
       actor.continue(state)
     }
     StopBroker -> actor.stop()
   }
 }
 
-// A guarantor died without settling (a normal exit settles first, and
-// settlement demonitors): its call can no longer reach the caller, so
-// fail closed — abandon the execution, which stops it and returns the
-// helper (the pool retires it if it died too), revoke the token, and free
-// the budget slot so a crashed call never leaks a reservation.
+/// Handles abnormal guarantor process death by abandoning execution and reclaiming resources.
+/// Fail closed so a crashed call never leaks a reservation.
 fn handle_guarantor_down(
   state: State,
   down: process.Down,
@@ -1047,11 +1035,7 @@ fn handle_guarantor_down(
   }
 }
 
-// Revokes a settled call's token and returns its budget slot — the common
-// tail of both an in-band `Settle` and a guarantor dying unsettled. The
-// helper is not returned here: the `Settle` arm called the execution's
-// `release` before reclaiming, and the unsettled path called `abandon`,
-// so exactly one of the two has already returned it.
+/// Reclaims token and budget reservation after settlement or fail-closed abort.
 fn reclaim(state: State, call_id: Int, active: Active) -> State {
   // Tokens are single-use: settlement (or the fail-closed reclaim of an
   // unsettled death) revokes.
@@ -1069,7 +1053,7 @@ fn retired_token(state: State, bytes: BitArray) -> token.Vault {
   |> token.drop_expired(now:, grace_ms: 5000)
 }
 
-// The active call whose guarantor is `pid`, if any.
+/// Finds the active call corresponding to a guarantor pid.
 fn call_of_guarantor(
   active: Dict(Int, Active),
   pid: Pid,
@@ -1082,6 +1066,7 @@ fn call_of_guarantor(
   })
 }
 
+/// Validates, composes policy, and clears an authorized execution request.
 fn do_clear_call(
   state: State,
   spec: CallSpec,
@@ -1099,13 +1084,17 @@ fn do_clear_call(
     )
   let #(final_policy, unenforceable) = policy.narrow_unenforceable(composed)
   let narrowings = list.append(narrowings, unenforceable)
+
+  // Check policy narrowings and dispatch response mode.
   case narrowings, spec.response {
     [_, ..], RefuseNarrowed -> {
+      // Provide refusal reason for unenforceable policies or exceeded requirements.
       let reason = case unenforceable {
         [] -> "tool requirements exceed the session policy"
         [_, ..] ->
           "network proxy mode is not enforceable in phase 1 (the egress proxy sidecar is unimplemented); proxy-mode calls fail closed"
       }
+
       let denial =
         escalation.Denial(
           reason:,
@@ -1122,16 +1111,19 @@ fn do_clear_call(
   }
 }
 
+/// Reserves budget and initiates token minting for an authorized call.
 fn authorize(
   state: State,
   spec: CallSpec,
   final_policy: SandboxPolicy,
   events: Subject(CallEvent),
 ) -> #(State, Result(CallHandle, Refusal)) {
-  // 2. Budget: reserve one effect slot in the execution's pooled
+  // 2. Budget: reserve one effect slot in the execution pooled
   // ledger, against its aggregate cap and wall deadline.
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
+
+  // Attempt to reserve budget for this execution.
   case reserve_budget(state, spec, now) {
     Error(refusal) -> #(state, Error(BudgetRefused(refusal:)))
     Ok(#(state, generation)) ->
@@ -1139,7 +1131,7 @@ fn authorize(
   }
 }
 
-// 3. Token: mint bound to {op_id, step_id, policy, deadline}.
+/// Mints a single-use capability token bound to the call parameters.
 fn mint_token(
   state: State,
   spec: CallSpec,
@@ -1154,6 +1146,8 @@ fn mint_token(
       policy: final_policy,
       deadline_ms: spec.budget.deadline_ms,
     )
+
+  // Mint the capability token in the vault.
   case token.mint(state.vault, binding) {
     Error(error) -> {
       // Nothing dispatched: hand the slot back.
@@ -1172,8 +1166,7 @@ fn mint_token(
   }
 }
 
-// 4. Dispatch: hand the cleared call to the dispatcher, which borrows a
-// helper and starts the execution.
+/// Hands the cleared call to the dispatcher to borrow a helper and execute.
 fn start_execution(
   state: State,
   spec: CallSpec,
@@ -1208,6 +1201,8 @@ fn start_execution(
       deliver: deliver_to(events),
       settle: settle_to(state.self, events, call_id),
     )
+
+  // Dispatch execution to the borrowed helper.
   case state.dispatcher.start(dispatch_request) {
     Error(refusal) -> {
       // Nothing is running, so nothing will settle: hand back the slot
@@ -1244,9 +1239,7 @@ fn refusal_of(refusal: dispatch.StartRefusal) -> Refusal {
   }
 }
 
-// Forwards one output chunk to the caller. It runs in whatever process the
-// dispatcher drives the execution from, and the caller sees the chunks in
-// the order the dispatcher delivers them.
+/// Constructs a delivery callback that forwards output chunks to the caller.
 fn deliver_to(events: Subject(CallEvent)) -> fn(dispatch.Chunk) -> Nil {
   fn(chunk: dispatch.Chunk) {
     process.send(
@@ -1261,17 +1254,9 @@ fn deliver_to(events: Subject(CallEvent)) -> fn(dispatch.Chunk) -> Nil {
   }
 }
 
-// Reports a call's end with two messages, in this order: the broker
-// first, so it reclaims the budget slot and token, then the caller. Both
-// leave from the process the dispatcher settles in, so a caller that reacts
-// to `CallSettled` by clearing another call finds the slot already queued
-// for release ahead of its own clearance.
-//
-// The order is also a proof the service lane relies on. A process's
-// messages reach the broker before its own death notice, so a guarantor
-// that ran this closure at all is seen as settled and never abandoned;
-// `Abandon` therefore means no settlement send happened, and the service
-// may settle the caller itself without a second settlement.
+/// Constructs a settlement callback that notifies the broker and caller of completion.
+/// Reports a call end with two messages, in this order: the broker
+/// first, so it reclaims the budget slot and token, then the caller.
 fn settle_to(
   broker_subject: Subject(Msg),
   events: Subject(CallEvent),
@@ -1291,14 +1276,15 @@ fn outcome_of(terminal: dispatch.Terminal) -> CallOutcome {
   }
 }
 
-// Reserves one effect slot in the execution's pooled ledger, opening a
-// fresh ledger (with this call's budget) when the key has none.
+/// Reserves an effect slot in the ledger for an execution.
 fn reserve_budget(
   state: State,
   spec: CallSpec,
   now: Int,
 ) -> Result(#(State, Int), budget.Refusal) {
   let key = #(spec.op_id, spec.step_id)
+
+  // Find existing ledger slot or open a new one.
   let #(slot, next_generation) = case dict.get(state.ledgers, key) {
     Ok(slot) -> #(slot, state.next_generation)
     Error(Nil) -> #(
@@ -1309,6 +1295,7 @@ fn reserve_budget(
       state.next_generation + 1,
     )
   }
+
   use ledger <- result.map(budget.reserve(slot.ledger, now:))
   let ledgers = dict.insert(state.ledgers, key, LedgerSlot(..slot, ledger:))
   #(State(..state, ledgers:, next_generation:), slot.generation)
@@ -1319,11 +1306,7 @@ fn release_budget(state: State, active: Active) -> State {
   release_slot(state, active.op_id, active.step_id, active.ledger_generation)
 }
 
-// Returns one reserved slot to an execution's ledger, provided the
-// reservation belongs to the ledger's current incarnation — a stale
-// release from before an abort must not free budget of a successor
-// ledger under the same key. A ledger with nothing outstanding leaves
-// the table.
+/// Returns one reserved slot to an execution ledger if current generation.
 fn release_slot(
   state: State,
   op_id: OpId,
@@ -1331,6 +1314,8 @@ fn release_slot(
   generation: Int,
 ) -> State {
   let key = #(op_id, step_id)
+
+  // Look up ledger for releasing slot.
   case dict.get(state.ledgers, key) {
     Error(Nil) -> state
 
@@ -1339,10 +1324,13 @@ fn release_slot(
     Ok(slot) if slot.generation != generation -> state
     Ok(slot) -> {
       let ledger = budget.settle(slot.ledger)
+
+      // Delete empty ledgers or update remaining outstanding count.
       let ledgers = case budget.outstanding(ledger) {
         0 -> dict.delete(state.ledgers, key)
         _ -> dict.insert(state.ledgers, key, LedgerSlot(..slot, ledger:))
       }
+
       State(..state, ledgers:)
     }
   }

@@ -118,8 +118,11 @@ pub fn int() -> Decoder(Int) {
   })
 }
 
+/// Verifies that a float has no fractional component and converts it to integer.
 fn integral(number: Float) -> Result(Int, DecodeError) {
   let truncated = float.truncate(number)
+
+  // Check if truncating the float retains its exact numerical value.
   case int.to_float(truncated) == number {
     True -> Ok(truncated)
     False -> failure("expected an integer")
@@ -168,6 +171,7 @@ pub fn boolean() -> Decoder(Bool) {
   primitive(report.as_bool, "expected a boolean")
 }
 
+/// Constructs a decoder for primitive values with a custom error message.
 fn primitive(
   read: fn(report.Value) -> Result(a, Nil),
   reason: String,
@@ -195,13 +199,14 @@ pub fn list(item: Decoder(a)) -> Decoder(List(a)) {
   })
 }
 
-// Stop at the first invalid element rather than decoding the unused tail.
+/// Recursively decodes a list of items, stopping at the first failure.
 fn list_loop(
   items: List(report.Value),
   decoder: Decoder(a),
   index: Int,
   reversed: List(a),
 ) -> Result(List(a), DecodeError) {
+  // Process items sequentially until the list is exhausted.
   case items {
     [] -> Ok(list.reverse(reversed))
     [item, ..rest] -> {
@@ -287,6 +292,7 @@ pub fn optional_field(
   })
 }
 
+/// Decodes an optional object property, returning None if the key is missing.
 fn optional_property(
   fields: List(#(report.Value, report.Value)),
   name: String,
@@ -323,6 +329,7 @@ pub fn object(
   })
 }
 
+/// Extracts field key-value pairs from an object msgpack value.
 fn object_fields(
   value: report.Value,
 ) -> Result(List(#(report.Value, report.Value)), DecodeError) {
@@ -338,12 +345,15 @@ fn object_fields(
   }
 }
 
+/// Validates an object property name against additional property constraints.
 fn check_property(
   key: report.Value,
   names: List(String),
   additional: AdditionalProperties,
 ) -> Result(Nil, DecodeError) {
   use name <- result.try(decode(key, string()))
+
+  // Validate property according to allowed additional property rules.
   case additional {
     AllowAdditional -> Ok(Nil)
     RejectAdditional -> {
@@ -353,6 +363,7 @@ fn check_property(
   }
 }
 
+/// Finds a field with a given string name within an object field list.
 fn find_field(
   fields: List(#(report.Value, report.Value)),
   name: String,
@@ -381,6 +392,7 @@ pub fn literal(expected: report.Value, decoded: a) -> Decoder(a) {
   })
 }
 
+/// Checks if an actual value matches the expected literal value.
 fn literal_matches(actual: report.Value, expected: report.Value) -> Bool {
   case actual, expected {
     msgpack.IntValue(a), msgpack.FloatValue(b) -> integral(b) == Ok(a)
@@ -409,8 +421,7 @@ pub fn one_of(alternatives: List(Decoder(a))) -> Decoder(a) {
   })
 }
 
-// Carry one success rather than collecting every matching branch. Keep a
-// concrete branch failure for its nested path when no branch can decode.
+/// Evaluates alternatives sequentially, ensuring exactly one matches.
 fn one_of_loop(
   alternatives: List(Decoder(a)),
   value: report.Value,
@@ -529,6 +540,7 @@ fn failure(reason: String) -> Result(a, DecodeError) {
   Error(DecodeError([], reason))
 }
 
+/// Prefixes a decode error path with the given segment name.
 fn at(
   result: Result(a, DecodeError),
   segment: String,

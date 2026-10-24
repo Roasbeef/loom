@@ -797,6 +797,7 @@ pub fn resolve(
 }
 
 // The role's chain restricted to targets whose provider is registered.
+/// Filters a role's target model chain to models whose provider is configured.
 fn usable_chain(gateway: Gateway, role: Role) -> List(ResolvedModel) {
   case list.key_find(gateway.routes, role) {
     Ok(chain) ->
@@ -877,6 +878,7 @@ pub fn prepare(
   // failure rather than a wait.
   let started = start_guard(gateway, request, now, events, consumer)
 
+  // Handle successful guard start or return immediate failed stream.
   case started {
     Ok(#(owner, control, begin)) -> {
       let custodian = custodian.start(owner, control, CancelRequest, consumer)
@@ -914,6 +916,7 @@ pub fn prepare(
 // Starts the guard machine, unlinked from the consumer that asked for it,
 // and returns its identity: the pid the custodian adopts and the two
 // subjects the request is driven through.
+/// Spawns the unlinked request guard state machine.
 fn start_guard(
   gateway: Gateway,
   request: ProviderRequest,
@@ -967,6 +970,7 @@ fn start_guard(
     |> sm.unlinked
     |> sm.start
 
+  // Return guard pid and control channels or signal start error.
   case started {
     Ok(machine) -> {
       let #(control, begin) = machine.data
@@ -985,6 +989,7 @@ fn start_guard(
 // the guard never sends to itself, so nothing is lost by leaving it out.
 // Monitors go on as a single arm because the three the guard installs do
 // not exist yet when this is built.
+/// Constructs the composite signal selector for guard state transitions.
 fn guard_selector(
   control: process.Subject(RequestControl),
   begin: process.Subject(RequestStart),
@@ -1067,6 +1072,7 @@ fn attempt_watch(attempt: Attempt) -> Option(process.Monitor) {
 
 // Only a normal exit acknowledges that native work stopped. Death alone is
 // not enough: the owner may have abandoned a process or a socket beneath it.
+/// Adjudicates process down signal into active drain outcome.
 fn active_exit(down: process.Down) -> ActiveExit {
   case down {
     process.ProcessDown(reason:, ..) ->
@@ -1084,6 +1090,7 @@ fn active_exit(down: process.Down) -> ActiveExit {
 // deadline die with its state: `Cancelling`'s grace does not refresh when a
 // second cancel arrives, because `keep` is not a state change, and it is
 // gone the moment a terminal moves the machine on.
+/// Configures state timeouts and transitions on entering new guard phases.
 fn entered(
   _from: Phase,
   to: Phase,
@@ -1125,6 +1132,7 @@ fn entered(
 // Adding a phase or an event makes the compiler name each combination
 // nobody has thought about, which is where the hand-rolled guard used to
 // carry a stale-deadline arm and a re-read of its own phase.
+/// Handles guard machine events in current phase.
 fn step(phase: Phase, guard: Guard, event: Event) -> Step {
   case phase, event {
     // Replacing a report never renews a phase deadline. A later registration
@@ -1213,10 +1221,12 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
     // native descendant stopped — so the public terminal says exactly that
     // and the guard stays alive behind it until the owner retires.
     Reaping(cause), ReapExpired -> {
+      // Map reaping cause to initiator observation type.
       let initiator = case cause {
         PumpStoppedEarly -> stream.TransportExit
         PumpGoneAfterCancel -> stream.CancellationRequested
       }
+
       emit(
         guard,
         gateway_failure(
@@ -1383,6 +1393,7 @@ fn step(phase: Phase, guard: Guard, event: Event) -> Step {
 // guard's ability to author a terminal, which is the whole reason there are
 // two processes here. The guard drops the request and gateway when it leaves
 // Parked; its remaining work needs only monitors, subjects and accounting.
+/// Initiates request execution by adopting and releasing the parked pump.
 fn begin_request(
   gateway: Gateway,
   request: ProviderRequest,
@@ -1416,6 +1427,7 @@ fn begin_request(
 
 // The pump before its first effect: it publishes its own control and begin
 // subjects and then waits to be told which of the two happened.
+/// Runs parked pump waiting for begin authorization or cancellation.
 fn parked_pump(
   gateway: Gateway,
   request: ProviderRequest,
@@ -1442,6 +1454,8 @@ fn parked_pump(
       StopBeforePump
     })
     |> process.selector_receive_forever()
+
+  // Handle start or cancellation decision for parked pump.
   case parked {
     StopBeforePump -> process.demonitor_process(creator_monitor)
     StartPump -> {
@@ -1454,6 +1468,7 @@ fn parked_pump(
 }
 
 // Adopts the parked pump and, only then, releases it.
+/// Adopts the parked pump process under custodian supervision and permits it to start.
 fn release_pump(
   guard: Guard,
   control: process.Subject(Control),
@@ -1469,6 +1484,7 @@ fn release_pump(
   }
 }
 
+/// Verifies custodian adoption before signaling the pump to begin.
 fn permit_pump(
   guard: Guard,
   owner: process.Pid,
@@ -1495,6 +1511,7 @@ fn permit_pump(
   }
 }
 
+/// Registers pump process with the request custodian.
 fn adopt_pump(
   guard: Guard,
   owner: process.Pid,
@@ -1514,7 +1531,9 @@ fn adopt_pump(
 }
 
 // A delta is display data on the open response window; a terminal closes it.
+/// Emits delta events or transitions guard to settling phase on terminal event.
 fn forward_or_settle(guard: Guard, streamed: StreamEvent) -> Step {
+  // Forward streaming deltas or settle stream on terminal event.
   case streamed {
     Delta(..) -> {
       emit(guard, streamed)
@@ -1527,6 +1546,7 @@ fn forward_or_settle(guard: Guard, streamed: StreamEvent) -> Step {
 // Cancellation remains an owner-authored terminal. The guard forwards a
 // real pump terminal if one arrives; pump death or expiry only proves that
 // the request could not confirm which side of the race won.
+/// Handles streamed events arriving during cancellation grace period.
 fn forward_cancelled(guard: Guard, streamed: StreamEvent) -> Step {
   let streamed =
     stream.contextual_event(
@@ -1540,6 +1560,8 @@ fn forward_cancelled(guard: Guard, streamed: StreamEvent) -> Step {
         None,
       ),
     )
+
+  // Ignore deltas after cancel or forward terminal/settled events.
   case streamed {
     // The response window closed when cancellation was selected.
     Delta(..) -> sm.keep(guard)
@@ -1566,6 +1588,7 @@ fn forward_cancelled(guard: Guard, streamed: StreamEvent) -> Step {
 // The pump authored a terminal, but the guard may publish it only once the
 // active transport's owner has retired: an abnormal exit under a terminal
 // is a lost drain proof, not the terminal the pump computed.
+/// Moves guard to Settling phase while waiting for attempt exit.
 fn settle(guard: Guard, terminal: StreamEvent) -> Step {
   case guard.attempt {
     LiveAttempt(..) -> sm.transition(to: Settling(terminal:), data: guard)
@@ -1574,6 +1597,7 @@ fn settle(guard: Guard, terminal: StreamEvent) -> Step {
   }
 }
 
+/// Emits terminal event to consumer and initiates pump closure.
 fn publish_settled(
   guard: Guard,
   terminal: StreamEvent,
@@ -1587,8 +1611,11 @@ fn publish_settled(
 }
 
 // Lost custody changes the error class, not the event which began cleanup.
+/// Wraps terminal failure in DrainProofLost error context.
 fn lost_terminal_proof(terminal: StreamEvent) -> StreamEvent {
   let report = stream.terminal_accounting(terminal)
+
+  // Transform terminal event to reflect lost drain proof.
   case terminal {
     Failed(error, _) ->
       Failed(
@@ -1606,9 +1633,12 @@ fn lost_terminal_proof(terminal: StreamEvent) -> StreamEvent {
 
 // The pump died without authoring a terminal. The active transport is asked
 // to stop and given the same fixed grace to acknowledge it.
+/// Reaps request when pump exits prematurely.
 fn reap(guard: Guard, cause: ReapCause) -> Step {
   let guard = pump_gone(forget_consumer(guard))
   cancel_attempt(guard.attempt)
+
+  // Transition to Reaping or publish immediate failure based on attempt state.
   case guard.attempt {
     LiveAttempt(..) -> sm.transition(to: Reaping(cause:), data: guard)
     NoAttempt -> publish_reaped(guard, cause, ActiveDrained)
@@ -1616,6 +1646,7 @@ fn reap(guard: Guard, cause: ReapCause) -> Step {
   }
 }
 
+/// Publishes terminal failure event after pump has been reaped.
 fn publish_reaped(guard: Guard, cause: ReapCause, exit: ActiveExit) -> Step {
   emit(guard, case exit {
     ActiveProofLost ->
@@ -1649,6 +1680,7 @@ fn publish_reaped(guard: Guard, cause: ReapCause, exit: ActiveExit) -> Step {
 // the active transport, and the guard authors the one terminal it is
 // entitled to: only an owner may claim that cancellation won its race, so
 // an owner that has not answered leaves the result unconfirmed.
+/// Emits CancellationUnconfirmed failure when cancellation grace expires.
 fn expire_cancellation(guard: Guard) -> Step {
   cancel_pump(guard)
   cancel_attempt(guard.attempt)
@@ -1673,9 +1705,12 @@ fn expire_cancellation(guard: Guard) -> Step {
 // grace interval to run its ordinary cancellation path. Killing it
 // immediately would bypass an injected transport's cancel capability and
 // would make the test seam weaker than the production custodian.
+/// Cancels and abandons pump when consumer exits.
 fn abandon(guard: Guard) -> Step {
   cancel_pump(guard)
   cancel_attempt(guard.attempt)
+
+  // Transition to Abandoning or close attempt if pump already gone.
   case guard.pump {
     PumpParked(..) | PumpRunning(..) ->
       sm.transition(to: Abandoning, data: guard)
@@ -1688,6 +1723,7 @@ fn abandon(guard: Guard) -> Step {
 // after that terminal, so registrations are adopted and refused until the
 // pump exits: each parked owner then receives a permit decision, and the
 // pump cannot remain blocked behind a guard that has stopped answering.
+/// Transitions to ClosingPump phase or closes attempt if pump has terminated.
 fn close_pump(guard: Guard) -> Step {
   case guard.pump {
     PumpParked(..) | PumpRunning(..) ->
@@ -1697,6 +1733,7 @@ fn close_pump(guard: Guard) -> Step {
 }
 
 // Nothing is left but the last transport owner's acknowledgement.
+/// Transitions to ClosingActive phase or stops machine if no live attempt exists.
 fn close_attempt(guard: Guard) -> Step {
   case guard.attempt {
     LiveAttempt(..) -> sm.transition(to: ClosingActive, data: guard)
@@ -1708,6 +1745,7 @@ fn close_attempt(guard: Guard) -> Step {
 
 // Adopts a freshly registered transport and permits it, unless the
 // custodian has already begun teardown.
+/// Admits a freshly prepared transport attempt into custodian tracking.
 fn admit_attempt(guard: Guard, registration: AttemptRegistration) -> Step {
   let AttemptRegistration(running:, permit:, billing:) = registration
   let guard = hold_attempt(guard, running)
@@ -1716,15 +1754,19 @@ fn admit_attempt(guard: Guard, registration: AttemptRegistration) -> Step {
     True -> BeginAttempt
     False -> RejectAttempt
   })
+
+  // Record pending usage if attempt was admitted.
   let pending_usage = case accepted {
     True -> Some(accounting.unknown_usage(billing))
     False -> None
   }
+
   sm.keep(Guard(..guard, pending_usage:))
 }
 
 // Adopts a registration and refuses it. Adoption still happens, because a
 // transport the custodian does not know about is one it cannot wait for.
+/// Rejects attempt registration when guard is tearing down.
 fn refuse_attempt(guard: Guard, registration: AttemptRegistration) -> Guard {
   let AttemptRegistration(running:, permit:, billing: _) = registration
   let guard = hold_attempt(guard, running)
@@ -1733,6 +1775,7 @@ fn refuse_attempt(guard: Guard, registration: AttemptRegistration) -> Guard {
   guard
 }
 
+/// Adopts running HTTP request process under custodian custody.
 fn adopt_running(guard: Guard, running: RunningRequest) -> Bool {
   case guard.custodian {
     Some(custodian) ->
@@ -1749,6 +1792,7 @@ fn adopt_running(guard: Guard, running: RunningRequest) -> Bool {
 // Takes custody of a new attempt, releasing the monitor on the one it
 // supersedes so that a superseded owner's exit never has to be told apart
 // from the live one's.
+/// Records running HTTP request attempt in guard state.
 fn hold_attempt(guard: Guard, running: RunningRequest) -> Guard {
   release_attempt(guard.attempt)
   Guard(
@@ -1777,11 +1821,14 @@ fn pump_gone(guard: Guard) -> Guard {
 
 // Releases the consumer monitor once its death has stopped mattering, so a
 // `Down` already in flight cannot be mistaken for a live monitor's.
+/// Demonitors consumer process and clears watch in guard state.
 fn forget_consumer(guard: Guard) -> Guard {
+  // Clean up consumer monitor if active.
   case guard.consumer_watch {
     Some(monitor) -> process.demonitor_process(monitor)
     None -> Nil
   }
+
   Guard(..guard, consumer_watch: None)
 }
 
@@ -1807,10 +1854,12 @@ fn kill_parked_pump(pump: Pump) -> Nil {
 }
 
 // The guard is the sole terminal sender on the public subject.
+/// Sends stream event to the public events subject.
 fn emit(guard: Guard, event: StreamEvent) -> Nil {
   process.send(guard.events, event)
 }
 
+/// Main loop running fallback target walk for a request.
 fn pump(
   gateway: Gateway,
   request: ProviderRequest,
@@ -1822,6 +1871,8 @@ fn pump(
 ) -> Nil {
   let walk =
     Walk(gateway:, request:, now:, events:, attempts:, control:, consumer:)
+
+  // Dispatch attempt walk for explicit model or configured role.
   case request.target {
     ForResolved(resolved:) -> attempt(walk, 1, [resolved], accounting.empty())
     ForRole(role:, thinking:) -> dispatch_role(walk, role, thinking)
@@ -1832,6 +1883,7 @@ fn pump(
 // role naming no registered provider at all is the empty chain, handled
 // here rather than by `attempt` so the reported failure names the role,
 // not a generic exhaustion.
+/// Resolves target model chain for role and initiates attempts.
 fn dispatch_role(
   walk: Walk,
   role: Role,
@@ -1860,6 +1912,7 @@ fn dispatch_role(
 // budget the turn asked for, not for whatever its own route row declares,
 // or a walk would silently change how hard the model thinks. `None` is the
 // other half of the contract — each target keeps its own static level.
+/// Applies thinking level override to a resolved model.
 fn overlaid(
   chain: List(ResolvedModel),
   thinking: Option(ThinkingLevel),
@@ -1874,6 +1927,7 @@ fn overlaid(
 // Walks the chain: one streamed attempt per target, falling to the next
 // target only on a retryable failure. The last attempt's terminal event
 // is delivered as-is, so an exhausted chain surfaces the real error.
+/// Executes fallback chain attempt walk across target models.
 fn attempt(
   walk: Walk,
   ordinal: Int,
@@ -1905,6 +1959,7 @@ fn attempt(
 // The one terminal event a fallback walk ever has to decide about: retry
 // the remaining chain on a retryable failure, otherwise deliver whatever
 // came back (a settlement, or a terminal failure) as-is.
+/// Forwards attempt terminal outcome or retries remaining targets in fallback chain.
 fn continue_or_deliver(
   walk: Walk,
   ordinal: Int,
@@ -1917,6 +1972,8 @@ fn continue_or_deliver(
   // The surviving guard retains the priced prefix before another target starts.
   // Repeated stream snapshots never pass this point as separate attempts.
   process.send(walk.attempts, ReportRetained(report))
+
+  // Deliver terminal or continue fallback walk based on attempt outcome.
   case outcome {
     AttemptCancelled(context, _) ->
       process.send(
@@ -1942,6 +1999,7 @@ fn continue_or_deliver(
   }
 }
 
+/// Evaluates terminal outcome for retry eligibility across remaining fallback targets.
 fn continue_terminal(
   walk: Walk,
   ordinal: Int,
@@ -1962,6 +2020,7 @@ fn continue_terminal(
 
 // Runs one attempt against one target, delivering deltas as they stream
 // and returning the attempt's terminal event.
+/// Executes a single target attempt with image budget, profiling, and transport execution.
 fn attempt_one(
   walk: Walk,
   ordinal: Int,
@@ -1984,6 +2043,8 @@ fn attempt_one(
     config,
     ordinal,
   ))
+
+  // Run request admission guard hook if configured.
   use request <- or_admission_failure(case gateway.request_guard {
     None -> Ok(request)
     Some(guard) -> guard(target, adapter_api(config), request)
@@ -2008,6 +2069,8 @@ fn attempt_one(
   let request = model.ProviderRequest(..request, messages:)
   let cyber_access =
     option.from_result(list.key_find(gateway.cyber_access, target.provider))
+
+  // Dispatch to provider-specific attempt execution based on config.
   let outcome = case config {
     AnthropicProvider(name:, base_url:, api_key_secret:) ->
       keyed_attempt(
@@ -2081,6 +2144,7 @@ fn attempt_one(
 
 // API-key dispatch remains the only branch that reads a secret. Scrubbing
 // happens before the fallback walk can inspect or retain a remote failure.
+/// Runs an attempt authenticated with an API key secret.
 fn keyed_attempt(
   walk: Walk,
   name: String,
@@ -2109,6 +2173,7 @@ fn keyed_attempt(
 
 // The optional bridge is never substituted with the public API-key transport.
 // A missing bridge or profile fails before request preparation.
+/// Runs an attempt against the Codex subscription provider.
 fn subscription_attempt(
   walk: Walk,
   profile: String,
@@ -2158,6 +2223,7 @@ fn subscription_attempt(
 
 // This is the only composition site, after the real adapter identity exists.
 // `attempt` retains its base request and passes that same value to every walk.
+/// Composes matching prose prompt profile onto request system and tools.
 fn compose_profile(
   gateway: Gateway,
   request: ProviderRequest,
@@ -2165,6 +2231,7 @@ fn compose_profile(
   config: ProviderConfig,
   ordinal: Int,
 ) -> Result(ProviderRequest, String) {
+  // Apply configured prompt profile if available.
   case gateway.profiles {
     None -> Ok(request)
     Some(configuration) -> {
@@ -2185,6 +2252,7 @@ fn compose_profile(
   }
 }
 
+/// Maps provider configuration to its canonical API protocol string.
 fn adapter_api(config: ProviderConfig) -> String {
   case config {
     AnthropicProvider(..) -> anthropic.api_name
@@ -2195,6 +2263,7 @@ fn adapter_api(config: ProviderConfig) -> String {
   }
 }
 
+/// Unwraps composed profile result or produces profile provenance stream failure.
 fn or_profile_failure(
   composed: Result(ProviderRequest, String),
   next: fn(ProviderRequest) -> AttemptOutcome,
@@ -2215,6 +2284,7 @@ fn or_profile_failure(
 // Admission owns its refusal before credentials or transport exist. Preserve
 // the native reason so an exhausted trial budget is not reported as lost
 // profile provenance, which would hide the boundary that stopped the request.
+/// Unwraps admitted request or produces admission denial stream failure.
 fn or_admission_failure(
   admitted: Result(ProviderRequest, String),
   next: fn(ProviderRequest) -> AttemptOutcome,
@@ -2233,6 +2303,7 @@ fn or_admission_failure(
 // consumer, the transport is registered with the guard before it begins, and
 // the attempt is bounded by the gateway's attempt timeout. Only the transport,
 // the built request and the billing basis differ.
+/// Registers attempt with guard and executes request with tracking.
 fn tracked(
   walk: Walk,
   transport: Transport,
@@ -2255,6 +2326,7 @@ fn tracked(
 }
 
 // The ordinal names this route walk, independently of the machine's retries.
+/// Attaches target metadata and attempt ordinal annotations to output message.
 fn annotate_attempt(
   outcome: AttemptOutcome,
   ordinal: Int,
@@ -2292,6 +2364,7 @@ fn annotate_attempt(
   }
 }
 
+/// Constructs a gateway failure stream event with context.
 fn gateway_failure(
   error: stream.ProviderError,
   cause: stream.FailureCause,
@@ -2316,15 +2389,19 @@ fn gateway_failure(
 // Each attempt is priced under its actual target before the fallback fold.
 // Failures retain reported consumption too; an absent card keeps the
 // estimate unavailable instead of certifying the adapter's numeric zero.
+/// Prices an attempt outcome against the configured target rate card.
 fn priced(
   gateway: Gateway,
   outcome: AttemptOutcome,
   target: ResolvedModel,
 ) -> AttemptOutcome {
+  // Look up rate card for provider and calculate cost.
   case list.key_find(gateway.prices, target.provider) {
     Error(Nil) -> outcome
     Ok(card) -> {
       let report = price_attempt(outcome_accounting(outcome), card)
+
+      // Reprice settled message and update outcome accounting report.
       case outcome {
         AttemptTerminal(Settled(message: settled, ..)) ->
           AttemptTerminal(Settled(repriced(settled, card), report))
@@ -2345,6 +2422,7 @@ fn priced(
 // Context readers consume only the final assistant's usage, while the report
 // owns the request sum. Pricing this message separately preserves that split.
 // Updating usage cannot change its settled stop reason, so settle succeeds.
+/// Prices the settled assistant message usage against the rate card.
 fn repriced(
   settled: stream.SettledAssistantMessage,
   card: pricing.Pricing,
@@ -2363,6 +2441,7 @@ fn repriced(
 // any diagnostic field. Scrub the terminal before retry classification, not
 // only before final delivery, so a fallback never carries the credential into
 // another lifetime or a later diagnostic.
+/// Scrubs sensitive API keys from failure diagnostics in attempt outcome.
 fn scrub_attempt(outcome: AttemptOutcome, api_key: String) -> AttemptOutcome {
   case outcome {
     AttemptTerminal(Failed(error:, accounting: report)) ->
@@ -2386,6 +2465,7 @@ fn scrub_attempt(outcome: AttemptOutcome, api_key: String) -> AttemptOutcome {
 // deadline, so this wait always receives a decision while the guard is alive.
 // Rejection cancels the prepared owner before `run_tracked` sends its begin
 // message; per-sender ordering prevents the underlying transport from starting.
+/// Registers transport attempt with guard and awaits begin authorization.
 fn register_attempt(
   attempts: process.Subject(PumpUpdate),
   running: RunningRequest,
@@ -2406,6 +2486,8 @@ fn register_attempt(
     })
     |> process.selector_receive_forever()
   process.demonitor_process(guard_monitor)
+
+  // Handle permit decision or cancel rejected running request.
   case permit {
     BeginAttempt -> Nil
     RejectAttempt -> http.cancel(running)
@@ -2415,6 +2497,7 @@ fn register_attempt(
 // Cancellation is checked before any target starts, including a fallback.
 // A live consumer receives the one cancellation terminal; a dead consumer
 // needs no terminal and only suppresses new work.
+/// Checks whether consumer has stopped or requested cancellation.
 fn stop_requested(walk: Walk, report: RequestAccounting) -> Bool {
   case process.is_alive(walk.consumer) {
     False -> True
@@ -2433,6 +2516,7 @@ fn stop_requested(walk: Walk, report: RequestAccounting) -> Bool {
 // or the given terminal failure on `Error` — the gateway's counterpart to
 // `machine/planner`'s `or_fault`, for the one place here a lookup failure
 // must become an in-band `Failed` rather than a corruption report.
+/// Unwraps Result or invokes error fallback handler.
 fn or_failure(
   result: Result(a, Nil),
   on_error: fn() -> AttemptOutcome,
@@ -2446,6 +2530,7 @@ fn or_failure(
 
 // An image-budget rejection is terminal before secret lookup or transport
 // registration. Keeping its reason preserves the corrective action for users.
+/// Unwraps projected messages or produces image budget failure.
 fn or_image_failure(
   result: Result(a, String),
   failure: fn(String) -> AttemptOutcome,
@@ -2459,6 +2544,7 @@ fn or_image_failure(
 
 // A custodian can retain only observations it received. Its permitted current
 // attempt is unknown when the pump dies before replacing that observation.
+/// Extracts retained request accounting report from guard state.
 fn retained_accounting(guard: Guard) -> RequestAccounting {
   case guard.pending_usage {
     None -> guard.report
@@ -2466,6 +2552,7 @@ fn retained_accounting(guard: Guard) -> RequestAccounting {
   }
 }
 
+/// Extracts accounting report from attempt outcome.
 fn outcome_accounting(outcome: AttemptOutcome) -> RequestAccounting {
   case outcome {
     AttemptTerminal(terminal) -> stream.terminal_accounting(terminal)
@@ -2476,6 +2563,7 @@ fn outcome_accounting(outcome: AttemptOutcome) -> RequestAccounting {
   }
 }
 
+/// Attaches updated accounting report to stream event.
 fn with_accounting(
   event: StreamEvent,
   report: RequestAccounting,
@@ -2492,6 +2580,7 @@ fn with_accounting(
 // pricing it alone prices everything the target consumed. Pricing precedes
 // route-fold addition, so fallback models can have different rates without
 // repricing history.
+/// Prices usage tokens from the latest attempt in report using the rate card.
 fn price_attempt(
   report: RequestAccounting,
   card: Pricing,

@@ -168,10 +168,12 @@ fn approved(config: ExecConfig) -> List(Grant) {
   identity.grants(identity.run_phase(config.identity))
 }
 
-// Nothing was dispatched, so nothing about a jail is claimed — and the two
-// stages say that in as many words rather than by omission. An approval
-// attributed to this execution went unspent, and says so: a human answered
-// a question and the program never reached the door it opened.
+/// Constructs an execution report for a program refused by source vetting.
+///
+/// Nothing was dispatched, so nothing about a jail is claimed — and the two
+/// stages say that in as many words rather than by omission. An approval
+/// attributed to this execution went unspent, and says so: a human answered
+/// a question and the program never reached the door it opened.
 fn vet_rejected(rejections: List(Rejection), config: ExecConfig) -> Execution {
   Execution(
     outcome: VetRejected(rejections),
@@ -191,6 +193,7 @@ fn vet_rejected(rejections: List(Rejection), config: ExecConfig) -> Execution {
   )
 }
 
+/// Compiles the vetted source, attempts unused repairs once on failure, and runs the artifact.
 fn compile_and_run(
   source: String,
   vetted: Vetted,
@@ -209,6 +212,8 @@ fn compile_and_run(
     )
     Error(Nil) -> #(source, first, [])
   }
+
+  // Run the compiled binary if build succeeded; report failure otherwise.
   case compiled.result {
     Error(error) -> compile_failed(compiled.enforcement, error, edits, config)
     Ok(artifact) ->
@@ -216,9 +221,11 @@ fn compile_and_run(
   }
 }
 
-// The build's identity is *derived* here, from the execution's, rather
-// than supplied alongside it: that derivation is the only thing standing
-// between the build and a ledger of its own invention.
+/// Dispatches a single hermetic compilation attempt for the vetted module.
+///
+/// The build's identity is *derived* here, from the execution's, rather
+/// than supplied alongside it: that derivation is the only thing standing
+/// between the build and a ledger of its own invention.
 fn compile_once(vetted: Vetted, config: ExecConfig) -> compile.Compiled {
   compile.compile(
     vetted,
@@ -230,20 +237,20 @@ fn compile_once(vetted: Vetted, config: ExecConfig) -> compile.Compiled {
   )
 }
 
-// The program with the imports, arguments and bindings a failed build named
-// as unused repaired, vetted again, when that is the whole of the failure.
-//
-// What runs is what was vetted, so the rewritten source goes back through
-// `vet.vet` under the same policy and the new `Vetted` is what is built. A
-// repair removes an import or prefixes a name with an underscore, so it
-// cannot add an import and the vet is not expected to refuse; if it ever
-// does, the original failure stands rather than a program nobody vetted
-// being built.
+/// Rewrites unused names identified in compiler warnings and re-vets the repaired source.
+///
+/// What runs is what was vetted, so the rewritten source goes back through
+/// `vet.vet` under the same policy and the new `Vetted` is what is built. A
+/// repair removes an import or prefixes a name with an underscore, so it
+/// cannot add an import and the vet is not expected to refuse; if it ever
+/// does, the original failure stands rather than a program nobody vetted
+/// being built.
 fn rewritten(
   vetted: Vetted,
   compiled: compile.Compiled,
   config: ExecConfig,
 ) -> Result(#(Vetted, unused_repair.Rewrite), Nil) {
+  // Attempt automated unused binding repair only if compilation failed on diagnostics.
   case compiled.result {
     Error(compile.BuildRejected(diagnostics:)) -> {
       use rewrite <- result.try(unused_repair.rewrite(
@@ -251,6 +258,8 @@ fn rewritten(
         diagnostics,
         "src/" <> compile.program_module <> ".gleam",
       ))
+
+      // Re-vet the repaired source code under the active vetting policy.
       case vet.vet(rewrite.source, config.vet_policy) {
         vet.Passed(next) -> Ok(#(next, rewrite))
         vet.Rejected(_) -> Error(Nil)
@@ -274,11 +283,13 @@ fn rewritten(
 // and the cost of a configured server scales with the imports a program
 // wrote rather than with what an operator enabled.
 //
-// It is a *cost* filter and not an authorization one, and the difference
-// matters: what a program may import is the vetting allowlist's
-// decision, already made by the time this runs, and a module written
-// into a build the program does not import is dead source. Narrowing
-// cannot widen anything.
+/// Filters generated capability modules down to those referenced by module imports.
+///
+/// It is a *cost* filter and not an authorization one, and the difference
+/// matters: what a program may import is the vetting allowlist's
+/// decision, already made by the time this runs, and a module written
+/// into a build the program does not import is dead source. Narrowing
+/// cannot widen anything.
 fn imported(
   generated: List(#(String, String)),
   vetted: Vetted,
@@ -290,6 +301,7 @@ fn imported(
   list.filter(generated, fn(module) { list.contains(imports, module.0) })
 }
 
+/// Assembles an execution record representing a compilation failure.
 fn compile_failed(
   build: Report,
   error: CompileError,
@@ -315,6 +327,7 @@ fn compile_failed(
   )
 }
 
+/// Runs the compiled satellite artifact and produces the terminal execution report.
 fn run_and_report(
   source: String,
   artifact: Artifact,
@@ -355,8 +368,10 @@ fn run_and_report(
 // an operator most wants to see: an approval that was spent and still was
 // not enough.
 //
-// Matched variant by variant rather than with a catch-all, so a ninth
-// `RunError` cannot silently inherit either answer.
+/// Determines whether execution reached clearance composition or left grants unspent.
+///
+/// Matched variant by variant rather than with a catch-all, so a ninth
+/// `RunError` cannot silently inherit either answer.
 fn run_widening(
   grants: List(Grant),
   outcome: Result(Outcome, RunError),

@@ -179,6 +179,7 @@ pub fn grant_label(grant: Grant) -> String {
   }
 }
 
+/// Returns a concise description of the network policy grant.
 fn network_label(network: policy.NetworkPolicy) -> String {
   case network {
     policy.NetworkOff -> "off"
@@ -188,6 +189,7 @@ fn network_label(network: policy.NetworkPolicy) -> String {
   }
 }
 
+/// Returns the label for the exceeded resource limit.
 fn limit_label(field: policy.LimitField) -> String {
   case field {
     policy.CpuSeconds -> "cpu_s"

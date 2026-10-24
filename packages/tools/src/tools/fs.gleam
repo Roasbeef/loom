@@ -182,8 +182,10 @@ pub fn real_filesystem() -> FileSystem {
   )
 }
 
-// simplifile's error vocabulary is the POSIX errno list — genuinely
-// open-ended for our purposes, so the catch-all is deliberate.
+/// Maps a `simplifile.FileError` to a tool-facing `FsError`.
+///
+/// simplifile's error vocabulary is the POSIX errno list — genuinely
+/// open-ended for our purposes, so the catch-all is deliberate.
 fn map_file_error(path: String, error: simplifile.FileError) -> FsError {
   case error {
     simplifile.Enoent -> tool.FsNotFound(path:)
@@ -219,6 +221,8 @@ pub fn resolve_path(
   path path: String,
 ) -> Result(String, PathError) {
   let root = strip_trailing_slash(workspace)
+
+  // Lexically resolve the path against the workspace root.
   case path {
     "" -> Error(EmptyPath)
     "/" <> _ -> check_under(root, normalize(path), path)
@@ -277,13 +281,17 @@ pub fn resolve_real(
   path path: String,
 ) -> Result(String, PathError) {
   let root = strip_trailing_slash(workspace)
+
+  // Lexically resolve the path against the workspace root.
   case path {
     "" -> Error(EmptyPath)
     _ -> {
+      // Determine the absolute candidate path before symlink resolution.
       let joined = case path {
         "/" <> _ -> path
         _ -> root <> "/" <> path
       }
+
       use real_root <- result.try(
         walk(filesystem, root)
         |> result.map_error(Unresolvable(path:, reason: _)),
@@ -400,6 +408,8 @@ pub fn resolve_blob_uri(
 // and no jail is handed the root. Only reads compose with this policy:
 // `writable_roots` is untouched, and the write path judges the unmodified
 // `protected` list, so reading the store does not make it writable.
+/// Composes the session's base read policy with approved directory grants
+/// and the exempt blob root.
 fn readable_policy(ctx: Ctx) -> policy.SandboxPolicy {
   let widened =
     directory_access.widen(
@@ -466,6 +476,7 @@ pub fn resolve_writable_roots(
 // be usable, the resolved target must lie under the workspace or a root, and
 // no protected entry may cover it. Reads and writes differ only in which
 // roots they pass, so neither can acquire a check the other lacks.
+/// Validates protection and containment of a target path under authorized roots.
 fn resolve_contained(
   filesystem: FileSystem,
   workspace: String,
@@ -495,6 +506,7 @@ fn resolve_contained(
 // Protection is judged before containment so that a protected path outside
 // the roots is reported as protected, which no grant lifts, and not as merely
 // outside, which a grant would appear to fix.
+/// Resolves a path against the filesystem, verifying protection and containment.
 fn resolve_within(
   filesystem: FileSystem,
   workspace: String,
@@ -505,10 +517,13 @@ fn resolve_within(
   path: String,
 ) -> Result(String, PathError) {
   use <- bool.guard(path == "", Error(EmptyPath))
+
+  // Prefix relative paths with the workspace directory.
   let joined = case path {
     "/" <> _ -> path
     _ -> workspace <> "/" <> path
   }
+
   use real_root <- result.try(
     walk(filesystem, workspace)
     |> result.map_error(Unresolvable(path:, reason: _)),
@@ -610,11 +625,11 @@ pub fn refuse_protected_read_in(
   )
 }
 
-// Refuses a resolved read target under a root the jail replaces, unless it is
-// under the workspace. The lexical and the real form of each root are both
-// compared, so macOS `/tmp` -> `/private/tmp` is covered. An empty `replaced`
-// is a write, which has no such rule: a write outside the workspace is
-// already refused.
+/// Refuses a resolved read target under a root the jail replaces, unless it is
+/// under the workspace. The lexical and the real form of each root are both
+/// compared, so macOS `/tmp` -> `/private/tmp` is covered. An empty `replaced`
+/// is a write, which has no such rule: a write outside the workspace is
+/// already refused.
 fn refuse_replaced(
   filesystem: FileSystem,
   replaced: List(String),
@@ -659,6 +674,7 @@ pub fn walk_exclusions(
 }
 
 // Refuses a resolved target that any protected entry covers.
+/// Refuses targets matching any entry on the protected list.
 fn refuse_protected(
   filesystem: FileSystem,
   protected: List(String),
@@ -668,12 +684,12 @@ fn refuse_protected(
   refuse_protected_except(filesystem, protected, [], path, resolved)
 }
 
-// Resolves an absolute path against the real filesystem, component by
-// component. The accumulator stack holds resolved components (each
-// verified not to be a symlink, or known missing); `..` pops it, which
-// is sound exactly because no stack entry is a link. Once a component
-// is missing, everything deeper is kept verbatim: nothing can exist —
-// or be a symlink — below a missing component.
+/// Resolves an absolute path against the real filesystem, component by
+/// component. The accumulator stack holds resolved components (each
+/// verified not to be a symlink, or known missing); `..` pops it, which
+/// is sound exactly because no stack entry is a link. Once a component
+/// is missing, everything deeper is kept verbatim: nothing can exist —
+/// or be a symlink — below a missing component.
 fn walk(filesystem: FileSystem, path: String) -> Result(String, String) {
   walk_loop(
     filesystem,
@@ -684,6 +700,7 @@ fn walk(filesystem: FileSystem, path: String) -> Result(String, String) {
   )
 }
 
+/// Recursive loop resolving path components and tracking missing prefixes.
 fn walk_loop(
   filesystem: FileSystem,
   stack stack: List(String),
@@ -691,15 +708,18 @@ fn walk_loop(
   missing missing: Bool,
   budget budget: Int,
 ) -> Result(String, String) {
+  // Process each path segment against the accumulated resolved stack.
   case remaining {
     [] -> Ok("/" <> string.join(list.reverse(stack), with: "/"))
     ["", ..rest] | [".", ..rest] ->
       walk_loop(filesystem, stack:, remaining: rest, missing:, budget:)
     ["..", ..rest] -> {
+      // Pop the parent segment from the stack on relative dot-dot.
       let stack = case stack {
         [] -> []
         [_, ..parent] -> parent
       }
+
       walk_loop(filesystem, stack:, remaining: rest, missing:, budget:)
     }
     [segment, ..rest] ->
@@ -711,6 +731,7 @@ fn walk_loop(
 // can exist below it — so nothing there can be a symlink either — and
 // the segment is kept verbatim; otherwise `read_link` tells a plain
 // component from a symlink that must be followed.
+/// Resolves a single path segment, inspecting symlinks unless missing.
 fn walk_segment(
   filesystem: FileSystem,
   stack: List(String),
@@ -719,6 +740,7 @@ fn walk_segment(
   missing: Bool,
   budget: Int,
 ) -> Result(String, String) {
+  // Retain missing segments verbatim; otherwise inspect the filesystem entry.
   case missing {
     True ->
       walk_loop(
@@ -731,6 +753,8 @@ fn walk_segment(
     False -> {
       let candidate =
         "/" <> string.join(list.reverse([segment, ..stack]), with: "/")
+
+      // Query whether candidate is a symlink, missing, or normal file.
       case filesystem.read_link(candidate) {
         Error(error) -> Error(fs_error_text(error))
         Ok(tool.NotALink) ->
@@ -761,6 +785,7 @@ fn walk_segment(
 // stack at root; a relative one is appended in front of what
 // remained. The segment that named the link is not pushed — it is
 // replaced by its target, not kept alongside it.
+/// Follows a symlink target, checking loop budget and restarting stack if absolute.
 fn walk_link_target(
   filesystem: FileSystem,
   stack: List(String),
@@ -768,14 +793,18 @@ fn walk_link_target(
   budget: Int,
   target: String,
 ) -> Result(String, String) {
+  // Ensure the link follow budget has not been exhausted.
   case budget < 1 {
     True -> Error("too many symlinks (loop?)")
     False -> {
       let target_segments = string.split(target, on: "/")
+
+      // Absolute symlink targets reset the accumulated stack to the root.
       let #(stack, remaining) = case target {
         "/" <> _ -> #([], list.append(target_segments, rest))
         _ -> #(stack, list.append(target_segments, rest))
       }
+
       walk_loop(
         filesystem,
         stack:,
@@ -788,6 +817,7 @@ fn walk_link_target(
 }
 
 // A short description of a seam error for `Unresolvable`.
+/// Formats an `FsError` as descriptive text for unresolvable path errors.
 fn fs_error_text(error: FsError) -> String {
   case error {
     tool.FsNotFound(path:) -> "not found: " <> path
@@ -803,24 +833,28 @@ fn strip_trailing_slash(path: String) -> String {
   }
 }
 
+/// Verifies that candidate resolves under the authorized root path.
 fn check_under(
   root: String,
   candidate: String,
   original: String,
 ) -> Result(String, PathError) {
+  // Check prefix containment under root.
   let inside = case root {
     "/" -> True
     _ -> candidate == root || string.starts_with(candidate, root <> "/")
   }
+
+  // Return candidate on containment or fail with EscapesWorkspace.
   case inside {
     True -> Ok(candidate)
     False -> Error(EscapesWorkspace(path: original))
   }
 }
 
-// Lexical normalization: collapse `.`, empty segments, and `..`
-// (popping past the filesystem root stays at the root; the caller's
-// under-workspace check rejects the escape).
+/// Lexical normalization: collapse `.`, empty segments, and `..`
+/// (popping past the filesystem root stays at the root; the caller's
+/// under-workspace check rejects the escape).
 fn normalize(path: String) -> String {
   let segments =
     string.split(path, on: "/")
@@ -895,21 +929,26 @@ type Intent {
   Writing
 }
 
+/// Resolves a tool target path, requesting authorization for outside targets.
 fn resolve_invocation(
   ctx: Ctx,
   path: String,
   intent: Intent,
 ) -> Result(String, ToolOutcome) {
+  // Expand empty or relative paths against workspace.
   let absolute = case path {
     "" -> ""
     "/" <> _ -> path
     _ -> ctx.workspace <> "/" <> path
   }
+
   let reads = readable_policy(ctx)
   use workspace <- result.try(
     resolve_real(ctx.filesystem, ctx.workspace, ".")
     |> result.map_error(path_outcome),
   )
+
+  // Resolve the target path for reading or writing.
   use target <- result.try(case intent {
     Reading ->
       resolve_target_for_read(ctx, reads, workspace, absolute)
@@ -931,6 +970,7 @@ fn resolve_invocation(
       ))
       |> result.map_error(path_outcome)
   })
+
   let access = directory_access.approved(ctx.directory_access, ctx.grants)
 
   // A read is judged against the roots the jail reads under, so under host
@@ -938,6 +978,8 @@ fn resolve_invocation(
   // A write differs only in its writable roots: the workspace plus explicit
   // additions.
   let readable = [workspace, ..reads.readable_roots]
+
+  // Construct the base policy for the requested intent.
   let base = case intent {
     Reading -> policy.SandboxPolicy(..reads, readable_roots: readable)
     Writing ->
@@ -947,6 +989,8 @@ fn resolve_invocation(
         writable_roots: [workspace, ..access.writable],
       )
   }
+
+  // Construct the requested policy with the target added.
   let requested = case intent {
     Reading -> policy.SandboxPolicy(..base, readable_roots: [target])
     Writing ->
@@ -954,24 +998,27 @@ fn resolve_invocation(
         target,
       ])
   }
+
   use _ <- result.try(
     tool.authorize_policy(ctx, base, requested)
     |> result.map_error(fn(outcome) {
+      // Format refusal outcome according to intent.
       let refused = case intent {
         Reading -> read_path_outcome(EscapesWorkspace(path))
         Writing -> path_outcome(EscapesWorkspace(path))
       }
+
       tool.ToolOutcome(..refused, details: outcome.details)
     }),
   )
   Ok(target)
 }
 
-// The exact target of a native read. It is resolved against the real
-// filesystem from the root, so the approval below judges the canonical path
-// and not the spelling, and it is refused here, before any approval is
-// asked, when a protected entry covers it (no grant lifts a protected path)
-// or when the jail replaces it (the host's version is not what a tool sees).
+/// The exact target of a native read. It is resolved against the real
+/// filesystem from the root, so the approval below judges the canonical path
+/// and not the spelling, and it is refused here, before any approval is
+/// asked, when a protected entry covers it (no grant lifts a protected path)
+/// or when the jail replaces it (the host's version is not what a tool sees).
 fn resolve_target_for_read(
   ctx: Ctx,
   reads: policy.SandboxPolicy,
@@ -1012,13 +1059,16 @@ pub fn resolve_writable(
   refuse_protected(filesystem, protected, path, resolved)
 }
 
-// Extracts the blob roots `exempting_blob_root` recorded in `mounts` that sit
-// strictly under a protected parent entry (such as `<state_root>/workspaces`).
+/// Extracts the blob roots `exempting_blob_root` recorded in `mounts` that sit
+/// strictly under a protected parent entry (such as `<state_root>/workspaces`).
 fn carved_blob_roots(base: policy.SandboxPolicy) -> List(String) {
   list.filter_map(base.mounts, fn(mount) {
+    // Only inspect optional read-only mounts.
     case mount.access, mount.requirement {
       policy.MountReadOnly, policy.MountOptional -> {
         let candidate = normalize(mount.path)
+
+        // Retain mount candidate if covered by a protected entry.
         case list.any(base.protected, entry_covers_carved(_, candidate)) {
           True -> Ok(candidate)
           False -> Error(Nil)
@@ -1029,9 +1079,10 @@ fn carved_blob_roots(base: policy.SandboxPolicy) -> List(String) {
   })
 }
 
-// Whether a protected entry is a strict ancestor of `candidate`. An entry that
-// is not absolute is skipped here because `all_absolute` refuses it first.
+/// Whether a protected entry is a strict ancestor of `candidate`. An entry that
+/// is not absolute is skipped here because `all_absolute` refuses it first.
 fn entry_covers_carved(entry: String, candidate: String) -> Bool {
+  // Only absolute entries can cover a candidate.
   case string.starts_with(entry, "/") {
     False -> False
     True -> {
@@ -1042,8 +1093,8 @@ fn entry_covers_carved(entry: String, candidate: String) -> Bool {
   }
 }
 
-// Refuses a resolved target covered by `protected`, unless the target lies
-// inside a carved-out `blob_root` that sits strictly under that protected entry.
+/// Refuses a resolved target covered by `protected`, unless the target lies
+/// inside a carved-out `blob_root` that sits strictly under that protected entry.
 fn refuse_protected_except(
   filesystem: FileSystem,
   protected: List(String),
@@ -1059,6 +1110,8 @@ fn refuse_protected_except(
         && covers_target(filesystem, exempt, resolved)
       })
     })
+
+  // Refuse if covered by a non-exempt protected entry.
   case blocking {
     Error(Nil) -> Ok(resolved)
     Ok(entry) -> Error(ProtectedPath(path:, protected: entry))
@@ -1080,6 +1133,7 @@ fn refuse_protected_except(
 // Refusing the whole write rather than the one entry is the point: a
 // misconfigured list cannot be partially honoured, because what it
 // *meant* to cover is exactly what cannot be determined from it.
+/// Validates that all entries in the protected path list are absolute.
 fn all_absolute(
   protected: List(String),
   path: String,
@@ -1110,6 +1164,7 @@ fn all_absolute(
 // The entry is known absolute here: `resolve_writable` refuses a
 // relative one before this is reached, which is what keeps `normalize`
 // from silently rooting `.git` at `/`.
+/// Checks whether an entry lexically or physically covers the target.
 fn covers_target(
   filesystem: FileSystem,
   entry: String,
@@ -1237,6 +1292,7 @@ fn scheme_sentences(schemes: List(Scheme)) -> String {
   |> string.concat
 }
 
+/// Parses arguments and dispatches virtual scheme or local file reads.
 fn run_read(schemes: List(Scheme), ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use offset <- tool.with_arg(tool.optional_int(args, "offset"))
@@ -1246,6 +1302,8 @@ fn run_read(schemes: List(Scheme), ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use <- bool.lazy_guard(when: offset < 1 || limit < 1, return: fn() {
     tool.failure("invalid arguments: offset and limit must be >= 1")
   })
+
+  // Check for virtual scheme prefix before resolving local file.
   case string.split_once(path, on: "://") {
     Ok(#(name, reference)) ->
       scheme_outcome(schemes, ctx, name, reference, offset, limit)
@@ -1255,6 +1313,7 @@ fn run_read(schemes: List(Scheme), ctx: Ctx, args: JsonValue) -> ToolOutcome {
 
 // A virtual reference is resolved before path approval and never falls back
 // to the filesystem. Ordinary paths retain the existing approval boundary.
+/// Reads a file from disk, returning an image block or text window outcome.
 fn file_outcome(
   ctx: Ctx,
   path: String,
@@ -1269,6 +1328,8 @@ fn file_outcome(
     read_bytes(ctx.filesystem, resolved),
     read_error_outcome,
   )
+
+  // Render image if recognizable binary header, otherwise decode UTF-8 text.
   case image_media_type(bytes) {
     Some(mime_type) -> image_outcome(path, bytes, mime_type)
     None -> {
@@ -1281,6 +1342,7 @@ fn file_outcome(
   }
 }
 
+/// Dispatches a virtual URI read to its registered scheme resolver.
 fn scheme_outcome(
   schemes: List(Scheme),
   ctx: Ctx,
@@ -1289,11 +1351,13 @@ fn scheme_outcome(
   offset: Int,
   limit: Int,
 ) -> ToolOutcome {
+  // Lookup matching scheme or fallback to the built-in blob scheme.
   let matched = case list.find(schemes, fn(scheme) { scheme.name == name }) {
     Ok(scheme) -> Ok(scheme)
     Error(Nil) if name == "blob" -> Ok(blob_scheme())
     Error(Nil) -> Error(Nil)
   }
+
   use scheme <- tool.or_outcome(matched, fn(_missing) {
     unknown_scheme_outcome(schemes, name)
   })
@@ -1321,6 +1385,7 @@ pub fn blob_scheme() -> Scheme {
   )
 }
 
+/// Reads a content-addressed blob payload from the session blob store.
 fn read_blob_scheme(
   ctx: Ctx,
   reference: String,
@@ -1332,6 +1397,8 @@ fn read_blob_scheme(
     )),
   )
   let resolved = blob.ref_path(normalize(ctx.blob_root), reference)
+
+  // Read the blob file from disk and translate errors into scheme refusals.
   case read_text_file(filesystem: ctx.filesystem, resolved:) {
     Ok(content) -> Ok(content)
     Error(ReadFailed(tool.FsNotFound(..))) ->
@@ -1346,7 +1413,9 @@ fn read_blob_scheme(
   }
 }
 
+/// Produces a tool failure listing available schemes when an unknown scheme is requested.
 fn unknown_scheme_outcome(schemes: List(Scheme), name: String) -> ToolOutcome {
+  // Describe available schemes on this host.
   let served = case schemes {
     [] -> "this host serves only file paths"
     _ ->
@@ -1356,6 +1425,7 @@ fn unknown_scheme_outcome(schemes: List(Scheme), name: String) -> ToolOutcome {
         ", ",
       )
   }
+
   tool.failure("unknown scheme `" <> name <> "://`; " <> served)
   |> tool.with_details(
     json.Object([
@@ -1365,7 +1435,9 @@ fn unknown_scheme_outcome(schemes: List(Scheme), name: String) -> ToolOutcome {
   )
 }
 
+/// Converts a `SchemeRefusal` into a structured tool failure outcome.
 fn scheme_refusal_outcome(refusal: SchemeRefusal) -> ToolOutcome {
+  // Map the refusal to a machine-readable code and explanatory message.
   let #(code, reason) = case refusal {
     NotFound(what:) -> #("scheme_not_found", "no such " <> what)
     Unavailable(reason:) -> #("scheme_unavailable", reason)
@@ -1374,6 +1446,7 @@ fn scheme_refusal_outcome(refusal: SchemeRefusal) -> ToolOutcome {
       "malformed reference: " <> reason,
     )
   }
+
   tool.failure(reason)
   |> tool.with_details(
     json.Object([
@@ -1389,6 +1462,7 @@ fn scheme_refusal_outcome(refusal: SchemeRefusal) -> ToolOutcome {
 // a spilled blob read with the default 2000-line limit), `clamp_scheme_window`
 // trims the window to the lines that fit and marks `has_more` so the caller
 // pages forward with `offset` instead of failing on the first read.
+/// Renders a window of virtual scheme text, applying inline clamping.
 fn scheme_read_outcome(
   scheme: String,
   body: String,
@@ -1396,10 +1470,13 @@ fn scheme_read_outcome(
   limit: Int,
 ) -> ToolOutcome {
   let window = clamp_scheme_window(hashline.window(body, offset:, limit:))
+
+  // Join windowed lines or render empty indicator.
   let text = case window.lines {
     [] -> empty_window_text(window.total_lines, offset)
     lines -> string.join(list.map(lines, fn(line) { line.text }), "\n")
   }
+
   let text = text <> continuation(window)
   use <- bool.lazy_guard(
     when: bit_array.byte_size(<<text:utf8>>) > blob.overflow_threshold_bytes,
@@ -1427,25 +1504,32 @@ const scheme_continuation_reserve_bytes = 128
 // continuation footer fit within `blob.overflow_threshold_bytes`. A single line
 // that already exceeds the threshold is kept as-is so `scheme_read_outcome`
 // still rejects an unwindowable single-line payload.
+/// Clamps a virtual read window's lines to fit within inline threshold bytes.
 fn clamp_scheme_window(window: hashline.Window) -> hashline.Window {
   let budget = blob.overflow_threshold_bytes - scheme_continuation_reserve_bytes
   let #(kept, trimmed) = take_lines_within_bytes(window.lines, budget, 0, [])
+
+  // Set has_more flag if lines were trimmed to fit budget.
   case trimmed {
     False -> window
     True -> hashline.Window(..window, lines: kept, has_more: True)
   }
 }
 
+/// Slices lines that fit within byte budget, indicating if any lines were trimmed.
 fn take_lines_within_bytes(
   remaining: List(hashline.AnchoredLine),
   budget: Int,
   used: Int,
   acc: List(hashline.AnchoredLine),
 ) -> #(List(hashline.AnchoredLine), Bool) {
+  // Accumulate lines until budget exhausted or remaining lines empty.
   case remaining, acc {
     [], _ -> #(list.reverse(acc), False)
     [line, ..rest], [] -> {
       let line_bytes = bit_array.byte_size(<<line.text:utf8>>)
+
+      // Check whether the first line alone fits the byte budget.
       case line_bytes <= budget {
         True -> take_lines_within_bytes(rest, budget, line_bytes, [line])
         False -> #([line], rest != [])
@@ -1453,6 +1537,8 @@ fn take_lines_within_bytes(
     }
     [line, ..rest], _ -> {
       let next_used = used + 1 + bit_array.byte_size(<<line.text:utf8>>)
+
+      // Check whether appending this line stays within budget.
       case next_used <= budget {
         True -> take_lines_within_bytes(rest, budget, next_used, [line, ..acc])
         False -> #(list.reverse(acc), True)
@@ -1463,6 +1549,7 @@ fn take_lines_within_bytes(
 
 // File contents determine the media type; a misleading extension must not
 // turn a text file into an image or hide a supported image from the model.
+/// Inspects magic header bytes to recognize PNG, JPEG, GIF, or WebP images.
 fn image_media_type(bytes: BitArray) -> Option(String) {
   case bytes {
     <<0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, _:bits>> ->
@@ -1476,6 +1563,7 @@ fn image_media_type(bytes: BitArray) -> Option(String) {
 
 // Images use the existing durable tool-result block. The accompanying text
 // identifies the file even when a later text-only turn placeholders its pixels.
+/// Packages base64 image data into an image tool result block.
 fn image_outcome(
   path: String,
   bytes: BitArray,
@@ -1497,6 +1585,7 @@ fn image_outcome(
   )
 }
 
+/// Renders an anchored window of file text along with digest and continuation info.
 fn read_outcome(
   path: String,
   content: String,
@@ -1505,6 +1594,8 @@ fn read_outcome(
 ) -> ToolOutcome {
   let window = hashline.window(content, offset:, limit:)
   let digest = hashline.digest(content)
+
+  // Render hashline anchored lines or empty window notice.
   let lines = case window.lines {
     [] -> empty_window_text(window.total_lines, offset)
     _ -> hashline.render(window)
@@ -1559,6 +1650,7 @@ fn read_outcome(
 // A window at an offset past the end has no lines in it, and the file's
 // length is already in `empty_window_text`; naming a range there would
 // invert it, so the empty window says nothing here.
+/// Formats a continuation notice showing lines returned and pagination hint.
 fn continuation(window: hashline.Window) -> String {
   let returned = list.length(window.lines)
   let whole_file = !window.has_more && window.offset == 1
@@ -1571,6 +1663,8 @@ fn continuation(window: hashline.Window) -> String {
     <> int.to_string(last)
     <> " of "
     <> int.to_string(window.total_lines)
+
+  // Append next offset recommendation when more lines remain.
   case window.has_more {
     False -> range <> ")"
     True ->
@@ -1580,6 +1674,7 @@ fn continuation(window: hashline.Window) -> String {
 
 // The message for a window with no lines in it: an empty file reads
 // differently from an offset past the end of a non-empty one.
+/// Returns descriptive message for empty file or offset past end of file.
 fn empty_window_text(total_lines: Int, offset: Int) -> String {
   case total_lines {
     0 -> "(empty file)"
@@ -1660,6 +1755,7 @@ pub fn read_text_file(
 
 // Text capability reads and multimodal tool reads share the same byte bound.
 // Only fs_read interprets image bytes; cap/fs.read remains a text operation.
+/// Reads the raw bytes of a regular file, rejecting directories, special files or oversized files.
 fn read_bytes(
   filesystem: FileSystem,
   resolved: String,
@@ -1696,6 +1792,7 @@ fn not_regular(filesystem: FileSystem, resolved: String) -> FsError {
 // The prose the text tools have always answered a failed read with, one
 // sentence per `ReadError`. Extracting the decision above left the
 // wording here, unchanged, so a model reads what it read before.
+/// Formats a `ReadError` into a user-facing tool failure outcome.
 fn read_error_outcome(error: ReadError) -> ToolOutcome {
   case error {
     ReadFailed(error:) -> fs_error_outcome(error)
@@ -1755,6 +1852,7 @@ fn observed_text(text: String, observed: Option(String)) -> String {
 
 // The same block, whole, in the structured half under `diagnostics`, so a
 // client can show it apart from the text it trails.
+/// Appends observed diagnostics text into details fields if present.
 fn observed_fields(
   fields: List(#(String, JsonValue)),
   observed: Option(String),
@@ -1817,6 +1915,7 @@ pub fn write_tool_with(observer: WriteObserver) -> tool.Tool {
   )
 }
 
+/// Executes an `fs_write` invocation by resolving, checking policy, and writing whole bytes.
 fn run_write(
   observer: WriteObserver,
   ctx: Ctx,
@@ -1880,6 +1979,7 @@ pub fn write_whole(
 //
 // `fs_write`'s `content` is a required *string*, so a write is always text
 // and there is no binary or image payload for anchors to be wrong about.
+/// Builds success tool outcome for a write, including byte count, digest, and fresh anchors.
 fn write_outcome(
   path: String,
   content: String,
@@ -1904,16 +2004,18 @@ fn write_outcome(
   )
 }
 
-// The whole written file as one region, or the standing-in line when it is
-// too large.
-//
-// The size check comes first and decides on its own wherever it can:
-// anchored rendering is strictly larger than the content it renders, since
-// every line gains its number, its anchor and two delimiters, so a file
-// already at the cap cannot fit inside the block and there is no reason to
-// annotate it to find that out. Under the cap, the ordinary path runs and
-// the early-stop fold still has the final say — a file of very many very
-// short lines pays more in anchors than in content.
+/// Computes fresh anchor text for the written file or returns an oversized warning.
+///
+/// The whole written file as one region, or the standing-in line when it is
+/// too large.
+///
+/// The size check comes first and decides on its own wherever it can:
+/// anchored rendering is strictly larger than the content it renders, since
+/// every line gains its number, its anchor and two delimiters, so a file
+/// already at the cap cannot fit inside the block and there is no reason to
+/// annotate it to find that out. Under the cap, the ordinary path runs and
+/// the early-stop fold still has the final say — a file of very many very
+/// short lines pays more in anchors than in content.
 fn written_anchor_text(content: String, size: Int) -> String {
   use <- bool.lazy_guard(when: size >= max_fresh_anchor_bytes, return: fn() {
     oversized_text(write_too_large(hashline.Region(start: 1, end: 1)))
@@ -1932,6 +2034,7 @@ fn written_anchor_text(content: String, size: Int) -> String {
 }
 
 // The directory part of an absolute path ("/" for top-level entries).
+/// Returns the directory containing path, or root if top-level.
 fn parent_directory(path: String) -> String {
   case string.split(path, on: "/") |> list.reverse {
     [_name, ..rest] ->
@@ -1998,6 +2101,7 @@ pub fn edit_tool_with(observer: WriteObserver) -> tool.Tool {
 }
 
 // The `op` enum schema, naming the four hunk operations `fs_edit` accepts.
+/// Returns JSON schema for the hunk op enum.
 fn hunk_op_schema() -> JsonValue {
   json.Object([
     #("type", json.String("string")),
@@ -2015,6 +2119,7 @@ fn hunk_op_schema() -> JsonValue {
 
 // The `hunks` array schema: at least one per-hunk item, checked with the
 // digest before any hunk is applied.
+/// Returns JSON schema for the hunks array parameter.
 fn hunks_schema(hunk: JsonValue) -> JsonValue {
   json.Object([
     #("type", json.String("array")),
@@ -2030,6 +2135,7 @@ fn hunks_schema(hunk: JsonValue) -> JsonValue {
   ])
 }
 
+/// Returns the full JSON schema for `fs_edit` arguments.
 fn edit_schema() -> JsonValue {
   let anchor_ref =
     tool.object_schema(
@@ -2095,6 +2201,7 @@ fn edit_schema() -> JsonValue {
   ])
 }
 
+/// Executes an `fs_edit` invocation, applying hunks and notifying write observer.
 fn run_edit(observer: WriteObserver, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use path <- tool.with_arg(tool.required_string(args, "path"))
   use digest <- tool.with_arg(tool.required_string(args, "digest"))
@@ -2293,6 +2400,7 @@ pub const max_fresh_anchor_bytes = 8192
 // current `{line, anchor}` pair to reference and the only way to get one
 // is to read the file again. Echoing them is what makes a chain of edits
 // on one file cost one read instead of one read per edit.
+/// Constructs success tool outcome for applied edit hunks with fresh anchors.
 fn edit_outcome(
   path: String,
   before: String,
@@ -2353,6 +2461,7 @@ const fresh_anchors_heading = "Fresh anchors:"
 // first region: an edit names the offset its own regions begin at, a write
 // has the whole file and so names the choice instead. It is a function
 // because it is the branch not taken on nearly every call.
+/// Renders fresh anchor text for modified regions or empty/oversized fallback.
 fn fresh_anchor_text(
   regions: List(hashline.Region),
   annotated: List(hashline.AnchoredLine),
@@ -2360,17 +2469,21 @@ fn fresh_anchor_text(
   oversized oversized: fn(hashline.Region) -> String,
 ) -> String {
   let heading = "\n" <> fresh_anchors_heading <> "\n"
+
+  // Check whether file became empty or format changed regions.
   case regions, total_lines {
     // A file with no lines has nothing to anchor. Saying so is the useful
     // answer: the next write to it cannot reference a line, and
     // `InsertAtStart` needs no anchor.
     _, 0 -> "\n(the file is now empty)"
     [], _ -> ""
-    [first, ..], _ ->
+    [first, ..], _ -> {
+      // Render regions within byte budget or fallback to oversized text.
       case rendered_regions(regions, annotated, string.byte_size(heading), []) {
         Ok(blocks) -> heading <> string.join(blocks, with: "\n")
         Error(Nil) -> oversized_text(oversized(first))
       }
+    }
   }
 }
 
@@ -2406,12 +2519,14 @@ fn write_too_large(_first: hashline.Region) -> String {
 // file afresh, that was a re-split and a re-annotate of the whole file per
 // region. Both costs are gone: the caller annotates once and this slices,
 // and the walk ends as soon as the answer is known to be the offset.
+/// Renders anchored lines for each region, halting if byte threshold exceeded.
 fn rendered_regions(
   regions: List(hashline.Region),
   annotated: List(hashline.AnchoredLine),
   size: Int,
   built: List(String),
 ) -> Result(List(String), Nil) {
+  // Render each region successively or stop if budget exceeded.
   case regions {
     [] -> Ok(list.reverse(built))
     [region, ..rest] -> {
@@ -2430,6 +2545,7 @@ fn rendered_regions(
   }
 }
 
+/// Decodes the `hunks` array from tool arguments into a list of `hashline.Hunk`s.
 fn decode_hunks(args: JsonValue) -> Result(List(hashline.Hunk), String) {
   case object_field(args, "hunks") {
     Ok(json.Array(items)) ->
@@ -2453,6 +2569,7 @@ fn decode_hunks(args: JsonValue) -> Result(List(hashline.Hunk), String) {
 // so a refused edit costs no read and applies nothing. `fs_write` takes one
 // `content` string rather than a list of lines, and a whole-file string is
 // not a paste of display lines, so it is left alone.
+/// Rejects hunks whose replacement text includes verbatim `fs_read` display prefixes.
 fn refuse_display_prefixes(hunks: List(hashline.Hunk)) -> Result(Nil, String) {
   hunks
   |> list.index_map(fn(hunk, index) { #(index + 1, hunk_replacement(hunk)) })
@@ -2479,6 +2596,7 @@ fn refuse_display_prefixes(hunks: List(hashline.Hunk)) -> Result(Nil, String) {
 }
 
 // The replacement text a hunk carries; a delete carries none.
+/// Extracts replacement lines carried by a hunk.
 fn hunk_replacement(hunk: hashline.Hunk) -> List(String) {
   case hunk {
     hashline.Replace(from: _, to: _, lines:) -> lines
@@ -2488,8 +2606,11 @@ fn hunk_replacement(hunk: hashline.Hunk) -> List(String) {
   }
 }
 
+/// Decodes a single edit hunk JSON object into a `hashline.Hunk`.
 fn decode_hunk(value: JsonValue) -> Result(hashline.Hunk, String) {
   use op <- result.try(tool.required_string(value, "op"))
+
+  // Decode fields according to hunk operation kind.
   case op {
     "replace" -> {
       use from <- result.try(decode_ref(value, "from"))
@@ -2520,7 +2641,9 @@ fn decode_hunk(value: JsonValue) -> Result(hashline.Hunk, String) {
   }
 }
 
+/// Decodes a line reference with line number and anchor hash.
 fn decode_ref(value: JsonValue, key: String) -> Result(hashline.Ref, String) {
+  // Validate presence and shape of line reference object.
   case object_field(value, key) {
     Error(Nil) -> Error("`" <> key <> "` is required for this hunk op")
     Ok(ref_value) -> {
@@ -2551,6 +2674,7 @@ fn required_lines(value: JsonValue) -> Result(List(String), String) {
 // be absent or not (issue #56, the same hazard R1's `bool.guard`/
 // `result.unwrap` table already knows by name). Called only from the one
 // branch that needs it.
+/// Unwraps an optional value or returns error from lazy generator.
 fn require(
   optional: Result(Option(a), String),
   when_absent when_absent: fn() -> String,
@@ -2562,10 +2686,12 @@ fn require(
   }
 }
 
+/// Translates a `hashline.ApplyError` into an explanatory failure outcome with fresh anchors.
 fn apply_error_outcome(
   error: hashline.ApplyError,
   content: String,
 ) -> ToolOutcome {
+  // Describe the specific hunk failure cause.
   case error {
     hashline.MalformedPlan(reason:) ->
       tool.failure("invalid edit plan: " <> reason)
@@ -2627,6 +2753,7 @@ fn fresh_lines_text(fresh: List(hashline.AnchoredLine)) -> String {
 
 // The repair message for one stale hunk: where it was expected, and
 // the fresh anchors to re-plan against.
+/// Formats a stale anchor error report line.
 fn stale_region_text(entry: hashline.Stale) -> String {
   "line "
   <> int.to_string(entry.line)
@@ -2636,6 +2763,7 @@ fn stale_region_text(entry: hashline.Stale) -> String {
   <> fresh_lines_text(entry.fresh)
 }
 
+/// Encodes an anchored line record to JSON.
 fn encode_anchored_line(anchored: hashline.AnchoredLine) -> JsonValue {
   json.Object([
     #("line", json.Int(anchored.line)),
@@ -2644,6 +2772,7 @@ fn encode_anchored_line(anchored: hashline.AnchoredLine) -> JsonValue {
   ])
 }
 
+/// Encodes a stale entry record with expected anchor and fresh lines to JSON.
 fn encode_stale_entry(entry: hashline.Stale) -> JsonValue {
   json.Object([
     #("line", json.Int(entry.line)),
@@ -2655,6 +2784,7 @@ fn encode_stale_entry(entry: hashline.Stale) -> JsonValue {
 // --- shared plumbing -----------------------------------------------------
 
 // First occurrence of a field in a JSON object.
+/// Looks up the first matching property in a JSON object.
 fn object_field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
   case value {
     json.Object(fields:) ->
@@ -2772,6 +2902,7 @@ pub fn read_path_outcome(error: PathError) -> ToolOutcome {
   }
 }
 
+/// Produces a tool failure outcome for accesses into jail-replaced host roots.
 fn jail_replaced_outcome(path: String, root: String) -> ToolOutcome {
   tool.failure(jail_replaced_text(path, root))
   |> tool.with_details(
@@ -2861,6 +2992,7 @@ pub fn misconfigured_read_text(path: String, protected: String) -> String {
   <> "grant widens this."
 }
 
+/// Maps an `FsError` to a tool failure outcome.
 fn fs_error_outcome(error: FsError) -> ToolOutcome {
   case error {
     tool.FsNotFound(path:) -> tool.failure("file not found: " <> path)

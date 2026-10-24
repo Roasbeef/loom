@@ -206,6 +206,8 @@ pub fn examine(seed seed: Int) -> Examination {
     list.append(base.coverage, faulted.coverage)
     |> list.unique
     |> list.sort(string.compare)
+
+  // Judge whether the faulted execution converges with the baseline.
   let verdict = case judge(script, schedule, base, faulted) {
     Ok(Nil) -> Passed
     Error(failure) ->
@@ -217,6 +219,7 @@ pub fn examine(seed seed: Int) -> Examination {
         corroborate_seed(seed, failure.check),
       )
   }
+
   Examination(verdict:, coverage:)
 }
 
@@ -233,6 +236,8 @@ pub fn examine(seed seed: Int) -> Examination {
 ///
 pub fn check(seed seed: Int, shrink_budget shrink_budget: Int) -> Verdict {
   let #(script, schedule, base) = plan(seed)
+
+  // Verify convergence of faulted schedule against baseline.
   case verify(script, schedule, base) {
     Ok(Nil) -> Passed
 
@@ -261,6 +266,7 @@ pub fn check(seed seed: Int, shrink_budget shrink_budget: Int) -> Verdict {
 // fault-free `base` the failing run was judged against; the confirming runs
 // replan it, exactly as `corroborate` does for the original, so a candidate
 // is not condemned or excused by one unlucky baseline.
+/// Searches for a minimal schedule that reproduces the failure within budget.
 fn shrink(
   script: Script,
   base: Report,
@@ -334,6 +340,8 @@ pub fn minimize(
       reprobe,
       remaining,
     )
+
+  // Check whether a smaller reproducing candidate schedule was found.
   case found {
     None -> #(current, failure)
     Some(#(smaller, smaller_failure)) ->
@@ -353,6 +361,7 @@ pub fn minimize(
 // event: it passes, it fails something else, it fails `check` once, or it
 // fails `check` every time. Only the last is accepted; the others fall
 // through to the next candidate at the price of one unit of budget.
+/// Finds the first candidate schedule whose failure is corroborated.
 fn first_confirmed(
   candidates: List(a),
   check: String,
@@ -360,9 +369,11 @@ fn first_confirmed(
   reprobe: fn(a) -> Result(Nil, Failure),
   remaining: Int,
 ) -> #(Option(#(a, Failure)), Int) {
+  // Stop search if candidates exhausted or budget consumed.
   case candidates, remaining <= 0 {
     [], _ | _, True -> #(None, 0)
     [candidate, ..rest], False -> {
+      // Check if candidate fails the targeted check.
       let accepted = case same_check(probe(candidate), check) {
         Some(failure) ->
           case reproduces(candidate, check, reprobe, corroboration_runs) {
@@ -371,6 +382,8 @@ fn first_confirmed(
           }
         None -> None
       }
+
+      // Accept corroborated candidate or continue searching remaining.
       case accepted {
         Some(_) -> #(accepted, 1)
         None -> {
@@ -386,6 +399,7 @@ fn first_confirmed(
 // The failure a run reported, if it is the check we are shrinking. A pass
 // and a different check are the same answer here: this candidate does not
 // reproduce the failure being minimised.
+/// Returns the failure if its check matches the target failure check.
 fn same_check(outcome: Result(Nil, Failure), check: String) -> Option(Failure) {
   case outcome {
     Ok(Nil) -> None
@@ -400,6 +414,7 @@ fn same_check(outcome: Result(Nil, Failure), check: String) -> Option(Failure) {
 // Every one of `remaining` confirming runs fails the same check. The first
 // run that passes, or fails something else, ends the search at once, so a
 // racy candidate costs about one extra run rather than all of them.
+/// Re-runs candidate to verify that the failure check reproduces consistently.
 fn reproduces(
   candidate: a,
   check: String,
@@ -407,12 +422,15 @@ fn reproduces(
   remaining: Int,
 ) -> Bool {
   use <- bool.guard(when: remaining <= 0, return: True)
+
+  // Check whether candidate reprobe continues to fail the same check.
   case same_check(reprobe(candidate), check) {
     Some(_) -> reproduces(candidate, check, reprobe, remaining - 1)
     None -> False
   }
 }
 
+/// Draws script, schedule, and baseline report for a given seed.
 fn plan(seed: Int) -> #(Script, Schedule, Report) {
   let rng = random.from_seed(seed)
   let #(script_rng, rng) = random.split(rng)
@@ -505,6 +523,7 @@ pub fn reproduce(seed: Int, script: Script, schedule: Schedule) -> String {
 
 // --- the checks -----------------------------------------------------------
 
+/// Executes a schedule against a baseline and judges whether they converge.
 fn verify(
   script: Script,
   schedule: Schedule,
@@ -518,6 +537,7 @@ fn verify(
 // anywhere near a clock before deciding whether the diff is at fault,
 // and asking them to re-run to find out is exactly the expensive habit
 // this annotation exists to retire.
+/// Judges simulation execution convergence and annotates failures with timing.
 fn judge(
   script: Script,
   schedule: Schedule,
@@ -528,6 +548,7 @@ fn judge(
   |> result.map_error(with_timing(_, base, faulted))
 }
 
+/// Evaluates simulation invariants and compares outputs across executions.
 fn adjudicate(
   script: Script,
   schedule: Schedule,
@@ -537,6 +558,8 @@ fn adjudicate(
   use _ <- result.try(sound("fault-free", base))
   use _ <- result.try(sound("faulted", faulted))
   use _ <- result.try(crash_fired(schedule, faulted))
+
+  // Aborted scripts skip convergence checks against baseline.
   case script.aborts(script) {
     // An abort is a race by design: how far the run got before the
     // marker landed is not a property of the fault schedule. Outcome
@@ -573,6 +596,7 @@ fn adjudicate(
 // this line correctly reports no wall-clock wait while the failure is
 // still not a behaviour difference. `Corroboration` is the half that
 // settles it.
+/// Attaches observed wait and timing details to a simulation failure.
 fn with_timing(failure: Failure, base: Report, faulted: Report) -> Failure {
   let dangling =
     list.append(dangling("fault-free", base), dangling("faulted", faulted))
@@ -604,6 +628,7 @@ fn matching(which: String, report: Report, prefix: String) -> List(String) {
 // brackets each admission with `intervening@path` and `intervened@path`,
 // so an opening with no closing is an admission that was still in flight
 // when the report was read.
+/// Collects unclosed interventions in flight when the report was captured.
 fn dangling(which: String, report: Report) -> List(String) {
   let opened = paths_after(report, "intervening@")
   let closed = paths_after(report, "intervened@")
@@ -621,6 +646,7 @@ fn paths_after(report: Report, prefix: String) -> List(String) {
 // The verdict on a failing run's own conduct, strongest evidence first.
 // Each case names a mechanism the reader can act on rather than a
 // suspicion they have to chase.
+/// Formats dangling interventions and timing expiries into a diagnostic string.
 fn timing_line(
   dangling: List(String),
   expiries: List(String),
@@ -764,6 +790,7 @@ pub fn corroborate(
   corroborate_loop(check, rerun, corroboration_runs, 1, 1)
 }
 
+/// Recursively re-executes seed runs to assess failure stability.
 fn corroborate_loop(
   check: String,
   rerun: fn() -> Result(Nil, Failure),
@@ -772,6 +799,8 @@ fn corroborate_loop(
   of: Int,
 ) -> Corroboration {
   use <- bool.guard(when: remaining <= 0, return: Reproducible(runs: of))
+
+  // Check whether re-run outcome reproduces the failure check.
   case same_check(rerun(), check) {
     None -> Unstable(failed:, of: of + 1)
     Some(_failure) ->
@@ -782,6 +811,7 @@ fn corroborate_loop(
 // Builds the verdict for a seed that failed, paying for corroboration
 // once and folding it into the detail the existing printers already
 // show.
+/// Constructs a Failed verdict with reproduction details and corroboration report.
 fn failed(
   seed: Int,
   failure: Failure,
@@ -805,6 +835,7 @@ fn failed(
 // The checks one run must pass on its own, regardless of the other. Each
 // stage either continues or reports the first failing check; the order
 // here is the order a violation is diagnosed in.
+/// Verifies that report invariants hold on an individual execution.
 fn sound(which: String, report: Report) -> Result(Nil, Failure) {
   use _ <- result.try(check_terminated(which, report))
   use _ <- result.try(check_no_violation(which, report))
@@ -816,6 +847,7 @@ fn sound(which: String, report: Report) -> Result(Nil, Failure) {
 // The effect plane's own two checks, which hold of one run on its own: no
 // execution outlived its caller, and each settled once. A violation line is
 // `check: detail`, and the check's name is what the failure carries.
+/// Asserts that effect execution counts and outcomes conform to invariants.
 fn check_effects(which: String, report: Report) -> Result(Nil, Failure) {
   case report.effect_violations {
     [] -> Ok(Nil)
@@ -832,6 +864,7 @@ fn check_effects(which: String, report: Report) -> Result(Nil, Failure) {
   }
 }
 
+/// Verifies that all simulation processes terminated cleanly.
 fn check_terminated(which: String, report: Report) -> Result(Nil, Failure) {
   use <- bool.guard(when: !report.stalled, return: Ok(Nil))
   Error(Failure(
@@ -840,6 +873,7 @@ fn check_terminated(which: String, report: Report) -> Result(Nil, Failure) {
   ))
 }
 
+/// Asserts that no invariant violations were recorded during execution.
 fn check_no_violation(which: String, report: Report) -> Result(Nil, Failure) {
   case report.violations {
     [] -> Ok(Nil)
@@ -851,6 +885,7 @@ fn check_no_violation(which: String, report: Report) -> Result(Nil, Failure) {
   }
 }
 
+/// Asserts that replayable tool calls were executed at most once.
 fn check_replay_once(which: String, report: Report) -> Result(Nil, Failure) {
   case list.find(report.never_calls, fn(pair: #(String, Int)) { pair.1 > 1 }) {
     Error(Nil) -> Ok(Nil)
@@ -874,6 +909,7 @@ fn check_replay_once(which: String, report: Report) -> Result(Nil, Failure) {
 // how many operations the runner believes each strand ran — is reported
 // rather than only the pre-summed total, so a future investigation does
 // not have to re-instrument from scratch to learn even that much.
+/// Asserts that terminal result registers were written exactly once per operation.
 fn check_terminal_writes_once(
   which: String,
   report: Report,
@@ -925,6 +961,7 @@ pub fn counts_exactly(items: List(a), count: Int) -> Bool {
 // vacuous. An effect-indexed one is only reachable — a faulted run may
 // dispatch fewer effects than the fault-free run did — so it is not
 // required to fire.
+/// Confirms that scheduled crashes actually fired during the execution.
 fn crash_fired(schedule: Schedule, faulted: Report) -> Result(Nil, Failure) {
   let armed =
     list.any(schedule.faults, fn(item) {
@@ -936,6 +973,8 @@ fn crash_fired(schedule: Schedule, faulted: Report) -> Result(Nil, Failure) {
         _ -> False
       }
     })
+
+  // Assert that scheduled crash was actually triggered.
   case armed && !faulted.crashed {
     True ->
       Error(Failure(
@@ -946,6 +985,7 @@ fn crash_fired(schedule: Schedule, faulted: Report) -> Result(Nil, Failure) {
   }
 }
 
+/// Asserts identical operation outcome sequences between baseline and faulted runs.
 fn same_outcomes(base: Report, faulted: Report) -> Result(Nil, Failure) {
   case base.outcomes == faulted.outcomes {
     True -> Ok(Nil)
@@ -960,6 +1000,7 @@ fn same_outcomes(base: Report, faulted: Report) -> Result(Nil, Failure) {
   }
 }
 
+/// Asserts identical context projections between baseline and faulted runs.
 fn same_projection(base: Report, faulted: Report) -> Result(Nil, Failure) {
   case converged(base.projection, faulted.projection) {
     True -> Ok(Nil)
@@ -975,6 +1016,7 @@ fn same_projection(base: Report, faulted: Report) -> Result(Nil, Failure) {
   }
 }
 
+/// Asserts identical entry ledger streams between baseline and faulted runs.
 fn same_ledger(base: Report, faulted: Report) -> Result(Nil, Failure) {
   case base.usage_total == faulted.usage_total {
     True -> Ok(Nil)
@@ -1015,6 +1057,7 @@ pub fn converged(base: List(String), crashed: List(String)) -> Bool {
 // A subagent forked over shared history repeats the main transcript's
 // lines under the `sub|` prefix, so the allowance must recognize the
 // interrupted variant there too.
+/// Translates an interrupted variant description for matching.
 fn interrupted_variant(base: String, crashed: String) -> Bool {
   case string.split(base, ":"), string.split(crashed, ":") {
     ["tool", name_b, id_b, ..], ["tool", name_c, id_c, "err", ..]
@@ -1087,6 +1130,7 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
         tool_execution: operation.Sequential,
       )
   }
+
   let options =
     api.Options(
       ..base,
@@ -1197,7 +1241,9 @@ pub fn execute(script: Script, schedule: Schedule) -> Report {
 // post-commit seam to finish. Exhausting the wait is not an error here: a run
 // that stalled may have left a writer wedged, and `run/terminated` is the
 // check that reports it.
+/// Awaits quiet writer state after a commit seam.
 fn settle_seam(ctl: Control, attempts: Int) -> Nil {
+  // Check if writer seam is quiet or timeout reached.
   case attempts <= 0 || control.seam_quiet(ctl) {
     True -> Nil
     False -> {
@@ -1230,6 +1276,7 @@ pub fn configuration() -> StrandConfiguration {
 // trigger, and the abort that races the terminal transaction all fire
 // from here, after the commit is durable and published but before its
 // committer learns of it.
+/// Evaluates whether post-commit actions or interventions should fire.
 fn post_commit(
   ctl: Control,
   raw: Session,
@@ -1246,6 +1293,8 @@ fn post_commit(
     || list.any(script.interventions, fn(intervention) {
       script.trigger_of(intervention) == script.AtTerminalCommit
     })
+
+  // Check if post-commit faults or interventions are armed.
   case armed {
     False -> Nil
     True -> fire_post_commit(ctl, raw, script, schedule)
@@ -1260,6 +1309,7 @@ fn post_commit(
   control.seam_done(ctl)
 }
 
+/// Triggers scheduled crashes or interventions at the post-commit boundary.
 fn fire_post_commit(
   ctl: Control,
   raw: Session,
@@ -1268,6 +1318,8 @@ fn fire_post_commit(
 ) -> Nil {
   let landed = control.commits(ctl)
   terminal_interventions(ctl, raw, script)
+
+  // Check if scheduled crash applies at current commit ordinal.
   case
     list.any(schedule.faults, fn(item) {
       case item {
@@ -1294,6 +1346,7 @@ fn fire_post_commit(
 // into this very writer, so awaiting one deadlocks it until the wait
 // times out — which is how a crash armed on the terminal commit came to
 // lose a race against the runner's own terminal detection.
+/// Fires interventions configured for the terminal commit trigger.
 fn terminal_interventions(ctl: Control, raw: Session, script: Script) -> Nil {
   use <- bool.guard(
     when: control.read(ctl, "terminal_commits") < 1,
@@ -1310,6 +1363,7 @@ fn terminal_interventions(ctl: Control, raw: Session, script: Script) -> Nil {
 // schedule aimed at this very commit is about to kill it — claiming
 // here would risk spending the one-shot on a process that does not live
 // long enough to use it.
+/// Fires an intervention if its trigger is AtTerminalCommit.
 fn fire_if_terminal(
   ctl: Control,
   raw: Session,
@@ -1322,16 +1376,20 @@ fn fire_if_terminal(
   surface.apply(ctl, raw, intervention, awaited: False)
 }
 
+/// Sequentially drives scripted operations until completion or stall.
 fn drive_ops(
   ctx: Context,
   ops: List(Op),
   outcomes: List(String),
   stalled: Bool,
 ) -> #(List(String), Bool) {
+  // Continue driving operations or terminate if stalled.
   case ops, stalled {
     [], _ | _, True -> #(outcomes, stalled)
     [op, ..rest], False -> {
       let before = latest_result(ctx.raw)
+
+      // Attempt admission of operation into runtime.
       case admit(ctx, op, before, 5) {
         // Refused is a legitimate answer (a navigation with nowhere to
         // go): nothing opened, so nothing is awaited.
@@ -1342,6 +1400,8 @@ fn drive_ops(
         Completed(last) -> drive_ops(ctx, rest, [tag(last), ..outcomes], False)
         Opened(op_id) -> {
           ring(ctx)
+
+          // Pump event loop until operation completes.
           case pump(ctx, op_id, budget) {
             Error(Nil) -> #(outcomes, True)
             Ok(last) -> drive_ops(ctx, rest, [tag(last), ..outcomes], False)
@@ -1402,6 +1462,8 @@ pub fn await_writer(ctl: Control, runtime: api.Runtime) -> Nil {
         Error(Nil), False -> poll.Fail(Nil)
       }
     })
+
+  // Check poll outcome for writer restart.
   case outcome {
     poll.Answered(Nil) | poll.Failed(Nil) -> Nil
     poll.Expired -> control.note_wait(ctl, "expired@writer-restart")
@@ -1437,12 +1499,15 @@ pub fn sub_configuration() -> StrandConfiguration {
 // the main ops: a crash reboots the tree (the strand booter must restore
 // both strands), a refused commit retries after the durable state is
 // re-checked.
+/// Drives subagent lifecycle operations according to the simulation script.
 fn drive_subagent(
   ctx: Context,
   brief: String,
   outcomes: List(String),
 ) -> #(List(String), Bool) {
   control.mark(ctx.ctl, "subagent-spawn")
+
+  // Attempt to spawn subagent child strand.
   case spawn_child(ctx, brief, 6) {
     Refused -> #(outcomes, True)
     Completed(last) -> cross_message(ctx, [tag(last), ..outcomes])
@@ -1457,6 +1522,7 @@ fn drive_subagent(
 // Creating the child under faults mirrors `admit`: an attempt may lose
 // its commit reply while the commit landed, so every retry first asks
 // the durable state what actually happened.
+/// Spawns a child subagent strand with retries on failure.
 fn spawn_child(ctx: Context, brief: String, attempts: Int) -> Admission {
   case session.strand_state(ctx.raw, sub_strand) {
     // Seeded already (or partially created): the durable state decides.
@@ -1473,12 +1539,15 @@ fn spawn_child(ctx: Context, brief: String, attempts: Int) -> Admission {
   }
 }
 
+/// Attempts to create a child strand with backoff retry.
 fn attempt_create_child(
   ctx: Context,
   brief: String,
   attempts: Int,
 ) -> Admission {
   use <- bool.guard(when: attempts <= 0, return: Refused)
+
+  // Attempt child strand creation via runtime.
   case
     control.attempt(
       ctx.ctl,
@@ -1500,11 +1569,15 @@ fn attempt_create_child(
   }
 }
 
+/// Creates a child subagent strand in the runtime.
 fn create_child(ctx: Context, brief: String) -> Result(OpId, Nil) {
+  // Look up parent strand leaf for fork provenance.
   let fork = case session.strand_leaf(ctx.raw, strand) {
     Ok(Some(cell)) -> cell.value
     _ -> None
   }
+
+  // Create subagent strand with brief.
   case
     api.create_strand(
       ctx.runtime,
@@ -1521,6 +1594,7 @@ fn create_child(ctx: Context, brief: String) -> Result(OpId, Nil) {
 
 // The strand exists but its brief run never opened (the seed committed,
 // the acceptance was lost to a fault): accept it directly.
+/// Submits the child subagent initial brief to begin execution.
 fn accept_child_brief(ctx: Context, brief: String, attempts: Int) -> Admission {
   use <- bool.guard(when: attempts <= 0, return: Refused)
   let child = api.on_strand(ctx.runtime, sub_strand)
@@ -1531,6 +1605,8 @@ fn accept_child_brief(ctx: Context, brief: String, attempts: Int) -> Admission {
       action: fn() { api.accept_quietly(child, [surface.user(brief)]) },
       within_ms: 3000,
     )
+
+  // Check whether child accepted initial brief.
   case accepted {
     control.Answered(Ok(op_id)) -> {
       control.detached(fn() { api.nudge(child) })
@@ -1546,11 +1622,14 @@ fn accept_child_brief(ctx: Context, brief: String, attempts: Int) -> Admission {
 // The child's completion travels back as a durable message: the main
 // strand is idle after its scripted ops, so the send accepts a fresh
 // run there (design §4.6 request/reply, closed the durable way).
+/// Delivers a cross-strand message to or from a child subagent.
 fn cross_message(
   ctx: Context,
   outcomes: List(String),
 ) -> #(List(String), Bool) {
   control.mark(ctx.ctl, "cross-strand-message")
+
+  // Attempt delivery of cross-strand message.
   case deliver_cross(ctx, latest_result(ctx.raw), 6) {
     Refused -> #(outcomes, True)
     Completed(last) -> #([tag(last), ..outcomes], False)
@@ -1562,6 +1641,7 @@ fn cross_message(
   }
 }
 
+/// Submits a cross-strand message to the recipient strand.
 fn deliver_cross(
   ctx: Context,
   before: Option(LastResult),
@@ -1581,6 +1661,8 @@ fn deliver_cross(
       },
       within_ms: 3000,
     )
+
+  // Check delivery outcome for cross-strand message.
   case sent {
     control.Answered(Ok(api.Started(operation:))) -> Opened(operation)
 
@@ -1610,6 +1692,7 @@ fn deliver_cross(
 // what the api's own admission path does — but a retry must first ask
 // the strand whether the previous attempt actually opened (or even
 // finished) an operation, or the runner would start a second one.
+/// Admits an operation into the session runtime queue.
 fn admit(
   ctx: Context,
   op: Op,
@@ -1674,7 +1757,9 @@ fn open_operation_on(raw: Session, strand_name: String) -> Option(OpId) {
   }
 }
 
+/// Dispatches operation acceptance to the appropriate runtime method.
 fn accept(ctx: Context, op: Op) -> Result(OpId, String) {
+  // Dispatch operation acceptance based on op type.
   case op {
     script.RunOp(prompt:, ..) ->
       case api.accept_quietly(ctx.runtime, [surface.user(prompt)]) {
@@ -1699,6 +1784,8 @@ fn accept(ctx: Context, op: Op) -> Result(OpId, String) {
         True -> "navigation-summarized"
         False -> "navigation-unsummarized"
       })
+
+      // Look up oldest entry for navigation target.
       case oldest_entry(ctx.raw) {
         None -> Error("no navigation target")
         Some(target) ->
@@ -1727,10 +1814,12 @@ fn accept(ctx: Context, op: Op) -> Result(OpId, String) {
 // and `api.navigate`. The fixture controls the logical clock and prepared
 // structural inputs; the commit still goes through the session's one
 // committer.
+/// Constructs and commits an acceptance plan directly via the writer.
 fn accept_directly(
   ctx: Context,
   request: acceptance.AcceptRequest,
 ) -> Result(OpId, String) {
+  // Retrieve strand state and leaf to build acceptance plan.
   case
     session.strand_state(ctx.raw, strand),
     session.strand_leaf(ctx.raw, strand)
@@ -1757,6 +1846,8 @@ fn accept_directly(
             pending: dict.new(),
           ),
         )
+
+      // Commit the acceptance plan via writer.
       case plan {
         Error(_reason) -> Error("acceptance refused")
         Ok(acceptance.AcceptancePlan(operation:, tx: plan_tx, ..)) ->
@@ -1770,6 +1861,7 @@ fn accept_directly(
   }
 }
 
+/// Retrieves the oldest entry ID on the strand branch for navigation.
 fn oldest_entry(raw: Session) -> Option(ids.EntryId) {
   use cell <- option.then(result.unwrap(session.strand_leaf(raw, strand), None))
   use leaf <- option.then(cell.value)
@@ -1779,6 +1871,8 @@ fn oldest_entry(raw: Session) -> Option(ids.EntryId) {
       storage.branch_scan(from: leaf),
     )),
   )
+
+  // Return root entry ID from reversed branch entries.
   case list.reverse(entries) {
     // A single-entry (or empty) branch has nowhere to navigate to.
     [] | [_] -> None
@@ -1786,6 +1880,7 @@ fn oldest_entry(raw: Session) -> Option(ids.EntryId) {
   }
 }
 
+/// Extracts the canonical entry ID from a stored Entry.
 fn entry_id(row: Entry) -> ids.EntryId {
   case row {
     entry.MessageEntry(id:, ..)
@@ -1798,6 +1893,7 @@ fn entry_id(row: Entry) -> ids.EntryId {
 // Ring the doorbell, subject to the message faults: a dropped doorbell
 // must cost latency alone, and a late one must not reorder anything that
 // matters.
+/// Dispatches scheduled doorbells with configured delay or drop faults.
 fn ring(ctx: Context) -> Nil {
   let index = control.bump(ctx.ctl, "doorbell")
   let dropped =
@@ -1816,6 +1912,8 @@ fn ring(ctx: Context) -> Nil {
       }
     })
   let runtime = ctx.runtime
+
+  // Deliver doorbell unless dropped by fault.
   case dropped, delay {
     True, _ -> Nil
     False, Some(delay_ms) ->
@@ -1829,6 +1927,7 @@ fn ring(ctx: Context) -> Nil {
 // The drive loop: watch the session's event counter, and when it stops
 // moving advance logical time to the next deadline rather than sleeping
 // for it.
+/// Drives the session event loop until operation completion or timeout.
 fn pump(
   ctx: Context,
   op_id: OpId,
@@ -1846,6 +1945,7 @@ fn pump(
 // the effect waiting on the release cannot also take the admission with
 // it — the admission already ran, on a carrier this call owns, before
 // that effect is ever resumed.
+/// Fires pending interventions waiting in the simulation control actor.
 fn service_interventions(ctx: Context) -> Nil {
   case control.take_pending_interventions(ctx.ctl) {
     [] -> Nil
@@ -1858,6 +1958,7 @@ fn service_interventions(ctx: Context) -> Nil {
   }
 }
 
+/// Polls strand state until operation reaches terminal outcome.
 fn pump_strand(
   ctx: Context,
   strand_name: String,
@@ -1866,6 +1967,8 @@ fn pump_strand(
 ) -> Result(LastResult, Nil) {
   use <- bool.guard(when: idle_remaining <= 0, return: Error(Nil))
   service_interventions(ctx)
+
+  // Check whether terminal result is recorded on strand.
   case terminal_on(ctx.raw, strand_name, op_id) {
     // A terminal result is visible before the writer has run the
     // post-commit seam for the transaction that wrote it, so taking
@@ -1915,6 +2018,7 @@ fn pump_strand(
 // keys on. A terminal reachable only through the strand register means
 // the operation-keyed half is missing — the ABA hole where a child's
 // second run makes the first result unobservable.
+/// Records a violation note when an operation finishes without terminal result.
 fn note_missing_op_result(
   ctl: Control,
   raw: Session,
@@ -1938,6 +2042,7 @@ fn note_missing_op_result(
 // record (the register `api.await_strand_result` keys on, immune to a
 // later run's overwrite) and falling back to the strand's latest-wins
 // register.
+/// Checks whether an operation has committed a terminal result.
 fn terminal_on(
   raw: Session,
   strand_name: String,
@@ -1960,6 +2065,7 @@ fn terminal_on(
 // The durable `operation-result/{op}` record, read straight from the
 // store. Unreadable or undecodable reads as absent: the pump keeps
 // polling, and the terminal check above reports the record's absence.
+/// Retrieves the terminal operation result value if present.
 fn op_result_on(raw: Session, op_id: OpId) -> Option(LastResult) {
   case
     storage.get_register(
@@ -1977,6 +2083,7 @@ fn op_result_on(raw: Session, op_id: OpId) -> Option(LastResult) {
   }
 }
 
+/// Extracts the operation ID from an operation result record.
 fn result_operation(last: LastResult) -> OpId {
   case last {
     operation.RunLastResult(operation:, ..)
@@ -2007,6 +2114,7 @@ pub fn tag(last: LastResult) -> String {
   }
 }
 
+/// Converts a structural preparation into a short tag string.
 fn structural_tag(outcome: operation.StructuralOutcome) -> String {
   case outcome {
     operation.StructuralCompleted -> "completed"
@@ -2018,18 +2126,21 @@ fn structural_tag(outcome: operation.StructuralOutcome) -> String {
 
 // --- reporting ------------------------------------------------------------
 
+/// Checks terminal invariant conditions and returns observed violations.
 fn terminal_violations(raw: Session, stalled: Bool) -> List(String) {
   case stalled {
     // A stalled run has not reached a terminal boundary, so the terminal
     // invariants do not apply to it; `run/terminated` reports it.
     True -> []
     False -> {
+      // Check subagent terminal registers if strand exists.
       let sub_checks = case session.strand_state(raw, sub_strand) {
         Ok(Some(_)) -> [
           invariant.terminal_registers(raw.store, strand: sub_strand),
         ]
         _ -> []
       }
+
       [
         invariant.terminal_registers(raw.store, strand:),
         invariant.calls_answered(raw.store),
@@ -2045,6 +2156,7 @@ fn terminal_violations(raw: Session, stalled: Bool) -> List(String) {
   }
 }
 
+/// Collects execution counts for tools that should never be replayed.
 fn never_calls(ctl: Control, script: Script) -> List(#(String, Int)) {
   script.ops
   |> list.flat_map(fn(op) {
@@ -2068,6 +2180,7 @@ fn never_calls(ctl: Control, script: Script) -> List(#(String, Int)) {
   })
 }
 
+/// Computes total token count from a list of usage records.
 fn ledger_total(raw: Session) -> Int {
   case storage.scan_usage(raw.store, storage.usage_scan()) {
     Ok(rows) ->
@@ -2076,6 +2189,7 @@ fn ledger_total(raw: Session) -> Int {
   }
 }
 
+/// Computes fingerprint hashes for entries in a projection.
 fn fingerprints(raw: Session) -> List(String) {
   case session.strand_leaf(raw, strand) {
     Ok(Some(cell)) ->
@@ -2090,6 +2204,7 @@ fn fingerprints(raw: Session) -> List(String) {
 // The subagent strand's final projection, prefixed so its lines never
 // collide with the main strand's; empty when the script had no
 // subagent (or it never got created).
+/// Computes fingerprint hashes for subagent strand entries.
 fn sub_fingerprints(raw: Session) -> List(String) {
   case session.strand_leaf(raw, sub_strand) {
     Ok(Some(cell)) ->
@@ -2163,6 +2278,7 @@ pub fn fingerprint(message: AgentMessage) -> String {
   }
 }
 
+/// Formats a stop reason into its short diagnostic string.
 fn stop_tag(stop: message.StopReason) -> String {
   case stop {
     message.Pending -> "pending"

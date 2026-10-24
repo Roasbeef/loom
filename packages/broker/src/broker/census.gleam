@@ -109,6 +109,8 @@ pub fn skew(ours: Census, theirs: Census) -> Result(Nil, List(Skew)) {
     differing(ours.exec_proto, theirs.exec_proto, ExecProtoSkew),
     differing(ours.policy_v, theirs.policy_v, PolicySkew),
   ]
+
+  // Fail when any field differs between the two censuses.
   case found {
     [[], [], []] -> Ok(Nil)
     _ -> Error(list.flatten(found))

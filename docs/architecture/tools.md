@@ -22,7 +22,7 @@ that owns its internals.
 
 ## What a tool is
 
-A tool is a record, `Tool` (`tools/tool.gleam:460`), with eight fields:
+A tool is a record, `Tool` (`tools/tool.gleam:470`), with eight fields:
 
 | Field | What it holds |
 |---|---|
@@ -136,7 +136,7 @@ The rule is enforced in four places, from the tool outward:
    `exec_failure_outcome`). A policy refusal carries the exact wanted
    grants in `details`, ready for the escalation flow.
 2. **The registry's dispatch is total.** For an unknown name,
-   `dispatch` (`tools/tool.gleam:747`) answers with text saying that
+   `dispatch` (`tools/tool.gleam:757`) answers with text saying that
    tool is unavailable, `is_error` set, and no `details`. The
    registry does not invent a value for a tool's details contract.
 3. **The wiring always answers `ToolCompleted`.** The function
@@ -147,7 +147,7 @@ The rule is enforced in four places, from the tool outward:
 4. **The runtime turns a dead worker into a result.** Each call runs in
    its own effect process. If that process exits without reporting, the
    strand driver settles the call as `ToolFailed`, and
-   `tool_observation` (`runtime/strand_runtime.gleam:1102`) converts that
+   `tool_observation` (`runtime/strand_runtime.gleam:1066`) converts that
    into a synthetic error result for the same call. Only
    provider effects halt the driver on an unreported exit; a tool never
    does.
@@ -351,7 +351,7 @@ shows where the tool layer enters it.
    which the intent commit persists. Clearance is not an execution
    grant: sandbox policy is composed later, inside the tool.
 3. **Scheduling.** The driver's check
-   `tool_may_start` (`runtime/strand_runtime.gleam:3146`) starts a
+   `tool_may_start` (`runtime/strand_runtime.gleam:3322`) starts a
    call only if no `Exclusive` tool is running, and starts an
    `Exclusive` tool only when nothing else is running. The default
    `tool_execution` setting is `parallel`, so calls to `Concurrent`

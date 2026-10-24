@@ -79,6 +79,8 @@ pub fn field(
 ///
 pub fn string(value: MsgPackValue, key: String) -> Result(String, CapDenial) {
   use found <- result.try(field(value, key))
+
+  // Validate that the extracted field value is text.
   case found {
     msgpack.StringValue(text) -> Ok(text)
     msgpack.NilValue
@@ -108,6 +110,8 @@ pub fn string(value: MsgPackValue, key: String) -> Result(String, CapDenial) {
 ///
 pub fn binary(value: MsgPackValue, key: String) -> Result(BitArray, CapDenial) {
   use found <- result.try(field(value, key))
+
+  // Accept binary payloads or decode string payloads to raw bytes.
   case found {
     msgpack.BinaryValue(bytes:) -> Ok(bytes)
     msgpack.StringValue(text) -> Ok(<<text:utf8>>)
@@ -137,6 +141,8 @@ pub fn binary(value: MsgPackValue, key: String) -> Result(BitArray, CapDenial) {
 ///
 pub fn int(value: MsgPackValue, key: String) -> Result(Int, CapDenial) {
   use found <- result.try(field(value, key))
+
+  // Validate that the extracted field value is an integer.
   case found {
     msgpack.IntValue(number) -> Ok(number)
     msgpack.NilValue
@@ -165,6 +171,8 @@ pub fn int(value: MsgPackValue, key: String) -> Result(Int, CapDenial) {
 ///
 pub fn bool(value: MsgPackValue, key: String) -> Result(Bool, CapDenial) {
   use found <- result.try(field(value, key))
+
+  // Validate that the extracted field value is a boolean.
   case found {
     msgpack.BoolValue(flag) -> Ok(flag)
     msgpack.NilValue
@@ -195,6 +203,8 @@ pub fn string_array(
   key: String,
 ) -> Result(List(String), CapDenial) {
   use found <- result.try(field(value, key))
+
+  // Extract the array of elements from the argument field.
   use items <- result.try(case found {
     msgpack.ArrayValue(items:) -> Ok(items)
     msgpack.NilValue
@@ -206,6 +216,7 @@ pub fn string_array(
     | msgpack.MapValue(..) ->
       Error(invalid("`" <> key <> "` must be an array of text"))
   })
+
   list.try_map(items, fn(item) {
     case item {
       msgpack.StringValue(text) -> Ok(text)

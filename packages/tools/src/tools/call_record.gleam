@@ -233,12 +233,15 @@ pub fn settle(
   error: Option(String),
   now: Int,
 ) -> Ledger {
+  // Tally outcome status counts for the ledger summary.
   let counted = case status {
     CallOk -> ledger
     CallFailed -> Ledger(..ledger, failed: ledger.failed + 1)
     CallCancelled -> Ledger(..ledger, cancelled: ledger.cancelled + 1)
     CallUnsettled -> Ledger(..ledger, unsettled: ledger.unsettled + 1)
   }
+
+  // Update the call record with duration and error details if recorded.
   let records = case dict.get(ledger.records, seq) {
     Error(Nil) -> ledger.records
     Ok(record) ->
@@ -253,6 +256,7 @@ pub fn settle(
         ),
       )
   }
+
   Ledger(..counted, records:)
 }
 
@@ -280,6 +284,7 @@ pub fn finish(ledger: Ledger, open: List(Int), now: Int) -> CallLog {
 }
 
 // Keeps a record only while the log still has room for it.
+/// Stores a call record in `records` if `seq` falls within the record ceiling.
 fn retain(
   records: Dict(Int, CallRecord),
   seq: Int,
@@ -321,6 +326,7 @@ pub fn to_json(log: CallLog) -> JsonValue {
   ])
 }
 
+/// Encodes an individual CallRecord into structured JSON.
 fn record_json(record: CallRecord) -> JsonValue {
   let optional = fn(key: String, value: Option(String)) {
     case value {
@@ -358,6 +364,7 @@ pub fn status_text(status: CallStatus) -> String {
 // replacement character per offending character, cut to `limit` bytes.
 // Every kept character is one byte, so counting characters is counting
 // bytes.
+/// Strips invalid code characters and clamps text within `limit` bytes.
 fn clean_code(text: String, limit: Int) -> String {
   string.to_utf_codepoints(text)
   |> list.take(limit)
@@ -399,6 +406,7 @@ fn code_character(code: Int) -> Bool {
 /// ```
 ///
 pub fn summarise(cap: String, args: MsgPackValue) -> Option(String) {
+  // Extract capability-specific target arguments for summary display.
   let summary = case cap {
     "fs.read" | "fs.write" | "fs.edit" | "fs.list" -> text_field(args, "path")
     "kv.get" | "kv.set" | "kv.delete" -> text_field(args, "key")
@@ -407,6 +415,7 @@ pub fn summarise(cap: String, args: MsgPackValue) -> Option(String) {
     "proc.run" -> process_summary(args)
     _ -> Error(Nil)
   }
+
   summary
   |> result.map(fn(text) { cut(strip_controls(text), max_summary_bytes) })
   |> result.try(fn(text) {
@@ -418,6 +427,7 @@ pub fn summarise(cap: String, args: MsgPackValue) -> Option(String) {
   |> option.from_result
 }
 
+/// Extracts a string property value matching `key` from MsgPack map arguments.
 fn text_field(args: MsgPackValue, key: String) -> Result(String, Nil) {
   case args {
     msgpack.MapValue(entries:) ->
@@ -436,6 +446,7 @@ fn text_field(args: MsgPackValue, key: String) -> Result(String, Nil) {
 // The executable's basename and how many arguments follow it. The
 // arguments themselves are never read: secrets travel on a command line
 // far more often than in the name of the program.
+/// Formats a concise summary of process execution arguments.
 fn process_summary(args: MsgPackValue) -> Result(String, Nil) {
   case args {
     msgpack.MapValue(entries:) ->
@@ -450,6 +461,7 @@ fn process_summary(args: MsgPackValue) -> Result(String, Nil) {
   }
 }
 
+/// Extracts the executable base name and argument count from an argv array.
 fn executable_summary(argv: List(MsgPackValue)) -> Result(String, Nil) {
   case argv {
     [msgpack.StringValue(program), ..rest] ->
@@ -471,6 +483,7 @@ fn basename(path: String) -> String {
 // holding `=` is skipped because `API_KEY=hunter2 ./deploy` carries its
 // secret in the very place a program name would be. A string made only of
 // assignments names no command, so it has no summary.
+/// Extracts the first whitespace-separated command word.
 fn command_word(command: String) -> Result(String, Nil) {
   string.to_utf_codepoints(command)
   |> list.map(fn(codepoint) {
@@ -490,6 +503,7 @@ fn is_whitespace(code: Int) -> Bool {
 
 // Removes C0 controls, DEL and C1 controls, so a client drawing the text
 // cannot be handed a terminal escape sequence.
+/// Strips terminal control characters from display text.
 fn strip_controls(text: String) -> String {
   string.to_utf_codepoints(text)
   |> list.filter(fn(codepoint) {
@@ -501,6 +515,7 @@ fn strip_controls(text: String) -> String {
 
 // Cuts `text` to at most `limit` bytes on a code point boundary. A cut
 // text ends with the ellipsis, and the ellipsis counts toward the limit.
+/// Clamps `text` within `limit` bytes on codepoint boundaries with ellipsis.
 fn cut(text: String, limit: Int) -> String {
   case byte_size(text) <= limit {
     True -> text
@@ -514,14 +529,18 @@ fn cut(text: String, limit: Int) -> String {
   }
 }
 
+/// Takes codepoints from `remaining` while their encoded size fits within `budget`.
 fn take_within(
   remaining: List(UtfCodepoint),
   budget: Int,
   kept: List(UtfCodepoint),
 ) -> String {
+  // Walk codepoints accumulating those that fit within the remaining byte budget.
   case remaining {
     [codepoint, ..rest] -> {
       let width = byte_size(string.from_utf_codepoints([codepoint]))
+
+      // Check whether adding this codepoint stays within budget.
       case width <= budget {
         True -> take_within(rest, budget - width, [codepoint, ..kept])
         False -> string.from_utf_codepoints(list.reverse(kept))

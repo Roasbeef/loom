@@ -885,7 +885,7 @@ grant Owner.
 A principal has a stable ID and a display name (`Principal`
 (`storage/access.gleam:202`)), set by the inviter (`loomd access invite
 SESSION PRINCIPAL ROLE NAME`, and `Guest <digits>` from the page). The
-catalogue can rename one (`rename` (`storage/access.gleam:1195`)) and no control
+catalogue can rename one (`rename` (`storage/access.gleam:1239`)) and no control
 command exposes it (053, Open). A claim binds a credential to the principal
 (`claim` (`client/daemon/manager.gleam:1069`)) and carried no name before this change. The name
 reaches everyone through the roster: the gateway stamps each connection and

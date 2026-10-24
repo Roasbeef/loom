@@ -694,13 +694,7 @@ pub fn cron_within(
   ))
 }
 
-// The fields every creation shares, plus the one that names its timing.
-//
-// Written once because the timing is the only thing that differs between
-// six of these functions, and a seventh spelling of `name`/`body`/`wake`
-// is a seventh place for one of them to be misspelled — the host denies
-// an unknown argument, so a typo here is a capability that never works
-// rather than one that works oddly.
+/// Builds the argument list for schedule creation requests.
 fn schedule_fields(
   name: String,
   body: String,
@@ -718,10 +712,7 @@ fn schedule_fields(
   ]
 }
 
-// `DefaultBounds` sends no field at all rather than sending the host's
-// ceiling back to it: the default is the host's to state, and a program
-// that echoed today's number would pin a bound the host may later
-// narrow.
+/// Serializes recurrence bounds into schedule fields.
 fn bounds_fields(bounds: Bounds) -> List(#(String, MsgPackValue)) {
   case bounds {
     DefaultBounds -> []
@@ -733,6 +724,7 @@ fn bounds_fields(bounds: Bounds) -> List(#(String, MsgPackValue)) {
   }
 }
 
+/// Dispatches a schedule.create capability call and decodes the Created record.
 fn create(
   fields: List(#(String, MsgPackValue)),
 ) -> Result(Created, ScheduleError) {
@@ -772,6 +764,7 @@ pub fn list() -> Result(List(Schedule), ScheduleError) {
   list.try_map(rows, decode_row)
 }
 
+/// Decodes a single schedule row from the list response.
 fn decode_row(row: MsgPackValue) -> Result(Schedule, ScheduleError) {
   use name <- result.try(field(row, "name"))
   use target <- result.try(field(row, "target"))
@@ -854,6 +847,7 @@ fn wake_flag(wake: Wake) -> Bool {
   }
 }
 
+/// Decodes a wake policy boolean field into a Wake variant.
 fn wake_field(value: MsgPackValue, key: String) -> Result(Wake, ScheduleError) {
   case wire.bool_field(value, key) {
     Error(reason) -> Error(bad_result(reason))
@@ -873,13 +867,14 @@ fn map_error(error: CallError) -> ScheduleError {
   }
 }
 
-// The display string is deliberately not an input here: it can change wording
-// while the stable tagged record continues to carry host-resolved values.
+/// Decodes the cadence configuration object from the payload.
 fn cadence_field(value: MsgPackValue) -> Result(Cadence, ScheduleError) {
   use cadence <- result.try(
     wire.field(value, "cadence") |> result.map_error(bad_result),
   )
   use kind <- result.try(field(cadence, "kind"))
+
+  // Decode the cadence configuration according to its kind.
   case kind {
     "interval" -> {
       use seconds <- result.try(positive_field(cadence, "seconds"))
@@ -913,6 +908,7 @@ fn cadence_field(value: MsgPackValue) -> Result(Cadence, ScheduleError) {
   }
 }
 
+/// Decodes recurrence expiry limits from the cadence payload.
 fn expiry_field(value: MsgPackValue) -> Result(Expiry, ScheduleError) {
   use expiry <- result.try(
     wire.field(value, "expiry") |> result.map_error(bad_result),
@@ -922,6 +918,7 @@ fn expiry_field(value: MsgPackValue) -> Result(Expiry, ScheduleError) {
   Ok(Expiry(max_fires:, expires_after_s:))
 }
 
+/// Reads a positive integer field or returns a malformed result error.
 fn positive_field(
   value: MsgPackValue,
   key: String,
@@ -929,20 +926,23 @@ fn positive_field(
   use number <- result.try(
     wire.int_field(value, key) |> result.map_error(bad_result),
   )
+
+  // Verify that the decoded integer is strictly positive.
   case number > 0 {
     True -> Ok(number)
     False -> Error(bad_result("field " <> key <> " must be positive"))
   }
 }
 
-// Unlike optional arrays elsewhere on the channel, this stable response always
-// carries an array. Nil is malformed, rather than evidence of no schedules.
+/// Extracts the schedules array from the list response.
 fn schedule_rows(
   value: MsgPackValue,
 ) -> Result(List(MsgPackValue), ScheduleError) {
   use rows <- result.try(
     wire.field(value, "schedules") |> result.map_error(bad_result),
   )
+
+  // Verify that the schedules field holds an array value.
   case rows {
     ArrayValue(items:) -> Ok(items)
     _ -> Error(bad_result("field schedules is not an array"))

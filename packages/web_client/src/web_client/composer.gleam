@@ -214,6 +214,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
 // A new editor is empty and holds nothing, so its send buttons start shut:
 // the server draws the editor afresh after every send, and this is the
 // moment the buttons beside it learn there is nothing to send.
+/// Initializes default composer model state and disables submit actions.
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(
     Model(
@@ -363,6 +364,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 // form because the submit's target is the form, not the editor in the slot.
 // Reading is all it does here: the server's own handler reads the same form
 // in the same dispatch, so nothing is cleared until after the paint.
+/// Attaches form submit event listener to capture draft and delivery choices.
 fn listening() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let started = {
@@ -388,7 +390,9 @@ fn listening() -> Effect(Msg) {
   result.unwrap(started, or: Nil)
 }
 
+/// Cleans up registered form submit event listener.
 fn unlistening(submitting: Option(Submitting)) -> Effect(Msg) {
+  // Remove submit event listener when active.
   case submitting {
     None -> effect.none()
     Some(Submitting(form:, listener:)) -> {
@@ -398,8 +402,7 @@ fn unlistening(submitting: Option(Submitting)) -> Effect(Msg) {
   }
 }
 
-// Empties the editor once the press has been read, and tells the element so
-// the send buttons shut as they would after typing nothing.
+/// Clears the composer textarea value after message submission.
 fn clearing() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let cleared = {
@@ -410,8 +413,7 @@ fn clearing() -> Effect(Msg) {
   result.unwrap(cleared, or: Nil)
 }
 
-// Puts a refused draft back in the editor, after anything typed since, as a
-// returned prompt is joined, and tells the element what it wrote.
+/// Re-inserts a refused draft text into the textarea editor after paint.
 fn restoring_draft(text: String) -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let restored = {
@@ -423,21 +425,23 @@ fn restoring_draft(text: String) -> Effect(Msg) {
   result.unwrap(restored, or: Nil)
 }
 
-// Takes row `index` of the list as the draft. A command that takes an
-// argument gets its space, and stays listed when it has words of its own to
-// offer, as the terminal's palette does after `/effort `; a whole command
-// closes the list.
+/// Selects a command candidate row and applies command completion text.
 fn choose(model: Model, index: Int) -> #(Model, Effect(Msg)) {
+  // Retrieve selected command completion row at index.
   case list.drop(shown(model), index) {
     [row, ..] -> {
+      // Append argument space when command expects parameters.
       let text = case row.then {
         Continues -> row.command <> " "
         Complete -> row.command
       }
+
+      // Keep completion palette open when further subcommands exist.
       let palette = case row.then, composer_rule.matching(model.entries, text) {
         Continues, [_, ..] -> Listing
         Continues, [] | Complete, _ -> Closed
       }
+
       let chosen = Model(..model, draft: text, selected: 0, palette:)
       #(chosen, effect.batch([placing(text), gating(gate(chosen))]))
     }
@@ -457,6 +461,7 @@ fn editor(root: Dynamic) -> Result(ffi_dom.Element, Nil) {
 // gives it focus, since the operator has just chosen it from a list beside
 // it. A programmatic write fires no `input` event, which is right: the
 // component records the text itself when it writes it.
+/// Sets textarea value to text, positions caret at the end, and focuses.
 fn placing(text: String) -> Effect(Msg) {
   use _, root <- effect.after_paint
   let placed = {
@@ -469,12 +474,7 @@ fn placing(text: String) -> Effect(Msg) {
   result.unwrap(placed, or: Nil)
 }
 
-// Submits the composer's form as a press of its first submit button does:
-// the button is Send while the strand is idle and Queue while it is busy, and
-// the submit that results carries the button's delivery. `requestSubmit`,
-// unlike `submit`, runs the form's own submit listeners, which is where the
-// server component's handler is, and it is the same event that button
-// raises, so the server sees nothing new.
+/// Submits the enclosing form using browser requestSubmit API.
 fn sending() -> Effect(Msg) {
   use _, root <- effect.after_paint
   let submitted = {
@@ -482,6 +482,8 @@ fn sending() -> Effect(Msg) {
       ffi_dom.host(ffi_dom.as_element(root)),
       "form",
     ))
+
+    // Request form submission through submit button or form directly.
     case ffi_dom.query_selector(form, "button[type=\"submit\"]") {
       Ok(button) -> ffi_dom.request_submit_with(form, button)
       Error(Nil) -> ffi_dom.request_submit(form)
@@ -490,14 +492,7 @@ fn sending() -> Effect(Msg) {
   result.unwrap(submitted, or: Nil)
 }
 
-// Brings the prompts the daemon handed back into the editor. The server draws
-// each as a child of this element in the slot named `returned`, which this
-// element's shadow root has no slot for, so none is displayed there; each is
-// read here as text, numbered by its `data-n`. `taken` picks the ones this
-// call was told are new, and `joined` says how each meets the draft.
-//
-// A write to the editor fires no `input` event, so the element tells itself
-// what it wrote: a returned prompt makes an empty editor sendable.
+/// Appends returned prompts from the daemon back into the textarea draft.
 fn restoring(after: Int, up_to: Int) -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let restored = {
@@ -506,6 +501,8 @@ fn restoring(after: Int, up_to: Int) -> Effect(Msg) {
       ffi_dom.host(ffi_dom.as_element(root))
       |> ffi_dom.query_selector_all("[slot=\"returned\"]")
       |> list.filter_map(numbered)
+
+    // Append newly returned prompt values into editor textarea.
     case composer_rule.taken(held, after, up_to) {
       [] -> Nil
       [_, ..] as prompts -> {
@@ -528,6 +525,7 @@ fn restoring(after: Int, up_to: Int) -> Effect(Msg) {
 // so with an empty editor they start enabled until the next keystroke. The
 // server's "Nothing to send." still refuses that press, and no observer is
 // kept to catch the swap.
+/// Enables or disables submit buttons in the form according to gate state.
 fn gating(gate: Gate) -> Effect(Msg) {
   use _, root <- effect.after_paint
   let gated = {
@@ -555,10 +553,7 @@ fn numbered(held: ffi_dom.Element) -> Result(#(Int, String), Nil) {
   #(n, ffi_dom.text_content(held))
 }
 
-// Scrolls the completion list, and only the list, so the highlighted row is
-// inside it. The list is positioned, so a row's offset is from the list's
-// top edge. The transcript and the page are left where they are, which
-// `scrollIntoView` would not promise: it scrolls every ancestor that can.
+/// Scrolls the completion listbox to bring the selected row into view.
 fn revealing() -> Effect(Msg) {
   use _, root <- effect.after_paint
   let root = ffi_dom.as_element(root)
@@ -576,6 +571,8 @@ fn revealing() -> Effect(Msg) {
         before,
         ffi_dom.client_height(menu),
       )
+
+    // Update scroll position when required to bring row into bounds.
     case after == before {
       True -> Nil
       False -> ffi_dom.set_scroll_top(menu, after)
@@ -588,6 +585,7 @@ fn revealing() -> Effect(Msg) {
 // upward and leaves the editor and its buttons where they were. The editor
 // is the slot's child and is drawn by the server; every word in the list is
 // the daemon's completion table's.
+/// Renders completion palette listbox, pending status line, and editor slot.
 fn view(model: Model) -> Element(Msg) {
   let rows = shown(model)
   element.fragment([
@@ -624,8 +622,7 @@ fn view(model: Model) -> Element(Msg) {
   ])
 }
 
-// The pending line: the person's own text as a text node, and the fixed
-// word for how it is delivered, in the quiet style.
+/// Renders the pending message confirmation bar and delivery mark.
 fn pending(state: pending_rule.State) -> Element(Msg) {
   case state {
     pending_rule.Clear -> element.none()
@@ -639,6 +636,7 @@ fn pending(state: pending_rule.State) -> Element(Msg) {
   }
 }
 
+/// Renders an individual completion command item with command and hint text.
 fn completion(row: Entry, index: Int, selected: Int) -> Element(Msg) {
   let current = index == selected
   html.li(
@@ -663,7 +661,7 @@ fn typed() -> decode.Decoder(Msg) {
   decode.success(Typed(text))
 }
 
-// The message for what a key is to do.
+/// Converts composer keyboard action into component update message.
 fn message(action: composer_rule.Action) -> Msg {
   case action {
     composer_rule.Send -> Sent
@@ -674,8 +672,7 @@ fn message(action: composer_rule.Action) -> Msg {
   }
 }
 
-// The decoder for a key press. A key the element leaves to the browser fails
-// the decoder, so nothing is dispatched and nothing is cancelled.
+/// Decodes keyboard navigation and submit keystrokes in composer editor.
 fn keystroke(
   palette: Palette,
   rows: List(Entry),
@@ -687,11 +684,15 @@ fn keystroke(
   use alt <- decode.field("altKey", decode.bool)
   use composing <- decode.field("isComposing", decode.bool)
   use repeating <- decode.field("repeat", decode.bool)
+
+  // Identify modifier chord combinations for command submission.
   let chord = case meta || control, shift, alt {
     True, _, False -> Sending
     False, False, False -> Bare
     _, _, _ -> Other
   }
+
+  // Determine composition and key repetition phase.
   let phase = case composing, repeating {
     True, _ -> Composing
     False, True -> Repeating
@@ -704,6 +705,8 @@ fn keystroke(
     [] -> Closed
     [_, ..] -> palette
   }
+
+  // Dispatch navigation or submit action handler based on key intent.
   case composer_rule.intent(key, chord, phase, palette) {
     Some(Consumed(action)) ->
       decode.success(event.handler(
@@ -725,8 +728,7 @@ fn keystroke(
   }
 }
 
-// Catalogue names remain text throughout the server and browser rendering.
-// Slot changes reload the table without replacing the operator's draft.
+/// Parses command entries from the hidden commands slot element.
 fn configuring() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let read = {

@@ -83,7 +83,7 @@ Each job has a `job/<id>` register in the session store. It is a key
 prefix inside the existing `fact.custom` namespace, so it costs no
 protocol change (`core/register.gleam:27-28` freezes the namespace set;
 prefixes are free). It becomes the tenth reserved corner: one line in
-`reserved_fact_key` (`runtime/api.gleam:2711`), one row in the table
+`reserved_fact_key` (`runtime/api.gleam:2810`), one row in the table
 at `api.gleam:1669-1682`, written only through
 `put_reserved_fact_expecting`. Creation uses the expect-absent CAS the
 schedule seam uses for a named create (`client/scheduleseam.gleam:390-401`),
@@ -163,7 +163,7 @@ the token deadline *is* the budget deadline (`broker/token.gleam:38-45`,
 `{op_id, step_id}` where `step_id` is the model batch (ADR-005), the
 first clearance opens the ledger with its `max_outstanding`, and a later
 clearance cannot widen it (`broker.gleam:140-147`). `bash` opens that
-ledger with `max_outstanding: 1` (`bash.gleam:903`). So if a job cleared
+ledger with `max_outstanding: 1` (`bash.gleam:941`). So if a job cleared
 under the batch's own identity, a foreground `bash` earlier in the same
 batch would cap it, and a second job in the batch would be refused
 `OutstandingCapReached` while the first still ran. That is the wrong

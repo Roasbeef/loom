@@ -31,15 +31,18 @@ pub fn check(
   visit([entry], [], modules, pure)
 }
 
+/// Recursively walks reachable modules verifying none introduce forbidden effects.
 fn visit(
   pending: List(String),
   visited: List(String),
   modules: List(#(String, vet.Vetted)),
   pure: policy.VetPolicy,
 ) -> Result(Nil, String) {
+  // Process each pending migration module in depth-first order.
   case pending {
     [] -> Ok(Nil)
     [name, ..rest] -> {
+      // Skip modules that have already been vetted.
       case list.contains(visited, name) {
         True -> visit(rest, visited, modules, pure)
         False -> {
@@ -50,6 +53,8 @@ fn visit(
             }),
           )
           let text = vet.vetted_source(source)
+
+          // Ensure the module obeys the pure migration policy.
           use Nil <- result.try(case vet.vet(text, pure) {
             vet.Passed(_) -> Ok(Nil)
             vet.Rejected(_) ->
@@ -58,6 +63,7 @@ fn visit(
                 <> name,
               )
           })
+
           let authored =
             list.filter(vet.token_imports(text), fn(imported) {
               list.any(modules, fn(module) { module.0 == imported })

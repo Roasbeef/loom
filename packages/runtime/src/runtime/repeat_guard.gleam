@@ -96,6 +96,8 @@ pub type Verdict {
 ///
 pub fn judge(call: ToolCall, newest_first: List(AgentMessage)) -> Verdict {
   let count = streak(call, newest_first)
+
+  // Decides whether to allow, warn against, or terminate the turn on repeated tool calls.
   case count >= end_after, count >= refuse_after {
     True, _ ->
       Refuse(reason: ended(call, count), ending: planner.RefusalEndsRun)
@@ -119,10 +121,11 @@ pub fn streak(call: ToolCall, newest_first: List(AgentMessage)) -> Int {
   count(newest_first, call.id, key, dict.new(), 0)
 }
 
-// The walk meets a turn's results before the turn itself, because it runs
-// newest first, so it carries what it has seen as it goes: each result's
-// failure flag by call id, read when the assistant message that made the
-// calls arrives.
+/// Walks message history newest-first to count how many consecutive turns repeated a failing call.
+/// The walk meets a turn's results before the turn itself, because it runs
+/// newest first, so it carries what it has seen as it goes: each result's
+/// failure flag by call id, read when the assistant message that made the
+/// calls arrives.
 fn count(
   messages: List(AgentMessage),
   current: String,
@@ -150,6 +153,8 @@ fn count(
     [AssistantMessage(content:, ..), ..rest] -> {
       let calls = calls_in(content)
       let matching = list.filter(calls, fn(made) { identity(made) == key })
+
+      // Inspects whether the turn matches the current batch or contains failed calls.
       case list.any(calls, fn(made) { made.id == current }), matching {
         // The batch being cleared: its results are not in the tree yet.
         True, _ -> count(rest, current, key, failed, total)
@@ -172,6 +177,7 @@ fn count(
   }
 }
 
+/// Extracts all tool call blocks contained in an assistant message content list.
 fn calls_in(content: List(message.AssistantBlock)) -> List(ToolCall) {
   list.filter_map(content, fn(block) {
     case block {
@@ -187,6 +193,7 @@ fn identity(call: ToolCall) -> #(String, String) {
 
 // --- the words ---------------------------------------------------------------
 
+/// Formats a warning refusal explanation for a repeated failed tool call.
 fn warned(call: ToolCall, count: Int) -> String {
   "loom refused this call without running it. `"
   <> call.name
@@ -198,6 +205,7 @@ fn warned(call: ToolCall, count: Int) -> String {
   <> "the run."
 }
 
+/// Formats a terminal refusal explanation for an excessively repeated tool call.
 fn ended(call: ToolCall, count: Int) -> String {
   "loom refused this call and ended the run. `"
   <> call.name

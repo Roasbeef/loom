@@ -311,12 +311,15 @@ pub fn authorize_policy(
   requested: SandboxPolicy,
 ) -> Result(Ctx, ToolOutcome) {
   let #(_, missing) = policy.compose(base, requested, ctx.grants)
+
+  // Check whether any requested permissions exceed the authorized policy.
   case missing {
     [] -> Ok(ctx)
     _ -> ask_permission(ctx, base, requested, missing)
   }
 }
 
+/// Raises an escalation request for missing sandbox grants and returns the updated context.
 fn ask_permission(
   ctx: Ctx,
   base: SandboxPolicy,
@@ -330,11 +333,15 @@ fn ask_permission(
       wanted: policy.wanted_grants(missing),
     )
   let #(now, _) = clock.read(ctx.clock)
+
+  // Request an interactive escalation or return a policy refusal.
   case ctx.raise_refusal(RaisedRefusal(denial, now + 600_000)) {
     Settle -> Error(refused(denial))
     Resume(grants) -> {
       let ctx = Ctx(..ctx, grants: list.append(ctx.grants, grants))
       let #(_, remaining) = policy.compose(base, requested, ctx.grants)
+
+      // Verify that all missing grants have been satisfied upon resumption.
       case remaining {
         [] -> Ok(ctx)
         _ ->
@@ -1041,6 +1048,7 @@ pub fn optional_value(
 
 // First occurrence of a field in an args object; non-objects have no
 // fields.
+/// Looks up a property field by key in a JSON object.
 fn field(args: JsonValue, key: String) -> Result(JsonValue, Nil) {
   case args {
     json.Object(fields:) ->
@@ -1282,6 +1290,7 @@ type Gathering {
   )
 }
 
+/// Receives output events until the process settles or times out.
 fn collect_loop(
   events: Subject(CallEvent),
   timeout: Int,
@@ -1313,6 +1322,7 @@ fn collect_loop(
 // One chunk into its stream's chunk list and rolling window. The
 // truncation flag is sticky: the helper reports it on the chunk that hit
 // the cap, and the collected result must still say so at settlement.
+/// Appends a new data chunk to the gathering stream accumulator and rolling tail.
 fn absorb(
   gathering: Gathering,
   stream: framing.OutputStream,
@@ -1320,6 +1330,8 @@ fn absorb(
   truncated: Bool,
 ) -> Gathering {
   let tails = gathering.tails
+
+  // Fold incoming chunk into the targeted output stream.
   case stream {
     framing.Stdout ->
       Gathering(
@@ -1345,11 +1357,14 @@ fn absorb(
 // the last complete character, so a UTF-8 stream always converts. A
 // window that does not convert holds bytes that are not text, and the
 // honest display is no text with a byte count that keeps moving.
+/// Creates a snapshot observation of the current window for `stream`.
 fn observed(tails: Tails, stream: framing.OutputStream) -> OutputTail {
+  // Select the appropriate rolling tail window.
   let window = case stream {
     framing.Stdout -> tails.stdout
     framing.Stderr -> tails.stderr
   }
+
   OutputTail(
     stream:,
     tail: tail.since(window, 0).bytes
@@ -1452,12 +1467,15 @@ pub fn exec_failure_text(failure_value: exec.ExecFailure) -> String {
 // the command may have run, because the model's next move depends on it: a
 // retry of a command that already ran is its decision to make with that
 // fact in hand, never something this layer does for it.
+/// Formats an explanatory sentence for an execution loss event.
 fn execution_lost_text(cause: exec.LossCause) -> String {
+  // Describe the specific failure that caused execution loss.
   let reason = case cause {
     exec.HelperActorDown -> "the sandbox helper process manager died"
     exec.RelayDown -> "the output relay for the execution died"
     exec.ExecutorClosing -> "the session's executor was closing"
   }
+
   "the execution may have run, and its outcome is unknown: " <> reason
 }
 
@@ -1522,6 +1540,7 @@ pub fn grant_to_json(grant: Grant) -> JsonValue {
   }
 }
 
+/// Encodes a NetworkPolicy value into structured JSON.
 fn network_to_json(network: policy.NetworkPolicy) -> JsonValue {
   case network {
     policy.NetworkOff -> json.Object([#("mode", json.String("off"))])
@@ -1535,6 +1554,7 @@ fn network_to_json(network: policy.NetworkPolicy) -> JsonValue {
   }
 }
 
+/// Formats a limit field identifier as text.
 fn limit_field_text(limit_field: policy.LimitField) -> String {
   case limit_field {
     policy.CpuSeconds -> "cpu_s"
@@ -1553,6 +1573,7 @@ fn scratch_text(scratch: policy.Scratch) -> String {
   }
 }
 
+/// Formats a human-readable description of a policy validation error.
 fn policy_error_text(error: policy.PolicyError) -> String {
   case error {
     policy.RelativePath(path:) -> "relative path " <> path
@@ -1586,6 +1607,7 @@ fn policy_error_text(error: policy.PolicyError) -> String {
   }
 }
 
+/// Formats a human-readable description of an execution budget refusal.
 fn budget_text(refusal: budget.Refusal) -> String {
   case refusal {
     budget.OutstandingCapReached(cap:) ->
@@ -1595,6 +1617,7 @@ fn budget_text(refusal: budget.Refusal) -> String {
   }
 }
 
+/// Formats a diagnostic message for a helper pool checkout error.
 fn checkout_text(error: exec.CheckoutError) -> String {
   case error {
     exec.AllBusy(size: 0) ->

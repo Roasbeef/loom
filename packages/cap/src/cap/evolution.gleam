@@ -242,6 +242,7 @@ pub fn inspect(
   target: Target,
   offset_bytes: Int,
 ) -> Result(Value, EvolutionError) {
+  // Project the target identity into argument fields.
   let subject = case target {
     CandidateBytes(candidate_id:) -> #(
       "candidate_id",
@@ -249,6 +250,7 @@ pub fn inspect(
     )
     EvidenceBytes(evidence_id:) -> #("evidence_id", wire.string(evidence_id))
   }
+
   call("evolution.inspect", [
     subject,
     #("offset_bytes", wire.int(offset_bytes)),
@@ -316,6 +318,7 @@ pub fn trace(limit: Int) -> Result(Value, EvolutionError) {
   call("evolution.trace", [#("limit", wire.int(limit))])
 }
 
+/// Returns the string representation for a candidate kind.
 fn kind_text(kind: Kind) -> String {
   case kind {
     Extension -> "extension"
@@ -324,6 +327,7 @@ fn kind_text(kind: Kind) -> String {
   }
 }
 
+/// Dispatches a capability call through the internal wire transport.
 fn call(
   capability: String,
   fields: List(#(String, Value)),

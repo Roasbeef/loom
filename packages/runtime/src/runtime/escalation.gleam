@@ -239,6 +239,7 @@ fn encode_optional_string(value: Option(String)) -> JsonValue {
   }
 }
 
+/// Encodes an optional call scope into a JSON representation.
 fn encode_scope(scope: Option(CallScope)) -> JsonValue {
   case scope {
     None -> json.Null
@@ -264,12 +265,16 @@ fn encode_scope(scope: Option(CallScope)) -> JsonValue {
 ///
 pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
   let where = "runtime/escalation.decode"
+
+  // Decodes the escalation payload object fields into a structured record.
   case payload {
     json.Object(fields) -> {
       use id <- result.try(require_string(fields, "id", where))
       use denial <- result.try(require(fields, "denial", where))
       use scope <- result.try(decode_scope(fields, where))
       use grants_value <- result.try(require(fields, "grants", where))
+
+      // Validates that grants is a JSON array.
       use grants <- result.try(case grants_value {
         json.Array(items) -> Ok(items)
         _ ->
@@ -280,6 +285,7 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
             context: json.to_string(grants_value),
           ))
       })
+
       use status_text <- result.try(require_string(fields, "status", where))
       use status <- result.try(status_from_string(status_text, where))
       use tool <- result.try(optional_string(fields, "tool", where))
@@ -315,10 +321,12 @@ pub fn decode(payload: JsonValue) -> Result(Escalation, CorruptionReport) {
 // object must decode in full — a half-readable scope is corruption, not
 // a record to fall back to unscoped, because falling back would change
 // which calls the grant reaches.
+/// Decodes the optional scope field into a CallScope record.
 fn decode_scope(
   fields: List(#(String, JsonValue)),
   where: String,
 ) -> Result(Option(CallScope), CorruptionReport) {
+  // Checks if the scope field is present and decodes its subfields.
   case list.key_find(fields, "scope") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(json.Object(scope_fields)) -> {
@@ -356,6 +364,7 @@ fn decode_scope(
 // but of the wrong type stays corruption — a half-readable record is
 // not one to fall back on, because falling back would change which
 // claimant the record answers to.
+/// Decodes an optional string field from JSON fields list.
 fn optional_string(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -374,6 +383,7 @@ fn optional_string(
   }
 }
 
+/// Decodes an optional integer field from JSON fields list, defaulting to zero.
 fn optional_int(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -392,6 +402,7 @@ fn optional_int(
   }
 }
 
+/// Formats a status variant into its lowercase wire string representation.
 fn status_to_string(status: Status) -> String {
   case status {
     Pending -> "pending"
@@ -401,6 +412,7 @@ fn status_to_string(status: Status) -> String {
   }
 }
 
+/// Parses an escalation status string into a typed status variant.
 fn status_from_string(
   text: String,
   where: String,
@@ -420,6 +432,7 @@ fn status_from_string(
   }
 }
 
+/// Looks up a required field from JSON fields or returns a corruption report.
 fn require(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -437,12 +450,15 @@ fn require(
   }
 }
 
+/// Looks up a required string field from JSON fields or returns a corruption report.
 fn require_string(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(String, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Validates that the field value is a string.
   case value {
     json.String(text) -> Ok(text)
     other ->
@@ -455,12 +471,15 @@ fn require_string(
   }
 }
 
+/// Looks up a required integer field from JSON fields or returns a corruption report.
 fn require_int(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(Int, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Validates that the field value is an integer.
   case value {
     json.Int(number) -> Ok(number)
     other ->
@@ -535,6 +554,7 @@ pub fn raised(
   action action: Option(Action),
   scope scope: Option(CallScope),
 ) -> Escalation {
+  // Extracts optional action components into tool, digest, and preview.
   let #(tool, digest, preview) = case action {
     None -> #(None, None, None)
     Some(Action(tool:, digest:, preview:)) -> #(
@@ -543,6 +563,7 @@ pub fn raised(
       Some(preview),
     )
   }
+
   Escalation(
     id:,
     denial:,
@@ -655,6 +676,7 @@ pub fn claimed(
 
 // A new cycle on an old row: the same id, the claimant's denial and
 // action, no grants, and one more question on the counter.
+/// Re-opens a rejected or expired escalation row for a fresh question cycle.
 fn reopened(
   record: Escalation,
   denial: JsonValue,

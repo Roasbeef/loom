@@ -3,54 +3,54 @@
    make gen-client.
    input 68e36cc61d51e009fce34bfcfb974ef5a03c450b4ffbba3d83478b3493f0b82c  packages/web_client/gleam.toml
    input f3ab6e0dbb95b18908bb7ac779e6b39ee27b194fded7dcc3e36ced3018e52e3d  packages/web_client/manifest.toml
-   input e433004ed650f560481af04b194f314c9507737def486868b146c248e774680e  packages/web_client/src/web_client.gleam
-   input 709a88ec6b162e0d976dd38f84b9148e1d7ee45ed53a67460b7c4afb09056cf2  packages/web_client/src/web_client/attach.gleam
-   input e837660f49bd0de719b5853366d6967299822514394e0c9616c48fd082429cb0  packages/web_client/src/web_client/attach_rule.gleam
-   input b85e3f17c9d6d574afc4057d9857b8e9f5a7aa0f6de469af11a456e48bbe075c  packages/web_client/src/web_client/back.gleam
-   input e7d29d8c35a5fff4a6f74930821a13d5aa3e51526740ed10ea3c490b0c121684  packages/web_client/src/web_client/composer.gleam
-   input 56bf3a2c18e9740298d98d8bf1df388a98315bc9655946f912942865c8ffdf88  packages/web_client/src/web_client/composer_rule.gleam
-   input c3f4d11a115d3185597c231e45e84677833e743093c2431e127b5a3f6aad1fb1  packages/web_client/src/web_client/copy.gleam
-   input 3790f2fc9f147a6229e9d06a1694cebe6791b646d925dd24143c786681da7d94  packages/web_client/src/web_client/copy_rule.gleam
-   input adbe718461a993162f78d3fa323b35aecae677068889526671572c0f79be6f7c  packages/web_client/src/web_client/dismiss.gleam
+   input 34e9908eaa33fa4622963ae89b912a935b49bff44b58dc5bc9007ae8ebe3af65  packages/web_client/src/web_client.gleam
+   input 9faa877df5d0cc8a8484f06ae68f1b4e523b35a1dfde470058119c043cb93d76  packages/web_client/src/web_client/attach.gleam
+   input 42b263dd84ac2a5a0d533b83e2750b18c7218aaf812e2a28ba997db398f923d3  packages/web_client/src/web_client/attach_rule.gleam
+   input f82e6143842804167e9e57dd0b63a45d41ba1e9e206d642c8cb9fef3c3157c29  packages/web_client/src/web_client/back.gleam
+   input 3487cb9f9716556b2fe8750517ccf04e69f193a89b184dc3075498ca8441ccfa  packages/web_client/src/web_client/composer.gleam
+   input 550247d3415bb20e887c7bf1746147b4c81100e5733e372a3a7c18f9d4df052b  packages/web_client/src/web_client/composer_rule.gleam
+   input 328cfa62f1bd288e68af1e4fa7e40f9cddcd20df69e1041de1621fc24c52a3ed  packages/web_client/src/web_client/copy.gleam
+   input 56c9ab0c4ad8852d29ec0a40207a9d0b78fec086693ddc73facc2a686aed8770  packages/web_client/src/web_client/copy_rule.gleam
+   input dcc8da9c4513a0810fd709c81cf1ea5bea1093809229eddbd0c8a2cc501c97ba  packages/web_client/src/web_client/dismiss.gleam
    input ad9ac64d100a46d326564c5674593453fc0f5b1344d9a4d0e18b9e33561cd2a1  packages/web_client/src/web_client/dismiss_rule.gleam
    input 525611281f346ea6ccacde5cf6ee92bf49862c578abb5ed64c21b81086cfe93a  packages/web_client/src/web_client/drop_guard.gleam
    input 64097c972554a497c7908986cd37cf130475abb2497e10bb138bb1d882117b1a  packages/web_client/src/web_client/drop_rule.gleam
    input 5fa114ae78a84e71dfef4200150d41c07795d303ce4293195b7c98bd54c57676  packages/web_client/src/web_client/duration.gleam
-   input 9e8f3cd62e60cc337d27f7b118891ee788c9446f5c491c4c42a15ff5fb202173  packages/web_client/src/web_client/elapsed.gleam
-   input f5a5063eb62728de4568fb0088b9242fa8db3e5143347f518830f83bb0e04d3d  packages/web_client/src/web_client/expand.gleam
+   input 822e6f318503d39e6dc58a439baacb6c35be80b26c9e83d0fbc912598c600b8f  packages/web_client/src/web_client/elapsed.gleam
+   input 47c2c35fa125b1363ca60dac519ff766939d09faaa6be647e80ce9abd95c4281  packages/web_client/src/web_client/expand.gleam
    input d45a440a16cfe5294af611b720d2b2f50a57c8b85e301f93835260ec84b2267d  packages/web_client/src/web_client/expand_rule.gleam
-   input 3e038808b473603a4854cbe86c83374a5a42f2a8bc7b7ea58bdfe8f21f76abff  packages/web_client/src/web_client/fold.gleam
-   input 347708701f54e1019fe1ec5c5c9520d3c451e5773ec99ac3f6599a19251ebe93  packages/web_client/src/web_client/follow.gleam
-   input 27f595fcdb4fb87eac1cc4bd036423504f61ecdf9818336d52be77d3bc81332e  packages/web_client/src/web_client/follow_rule.gleam
-   input 46c99c0a76cda799bed7fad3f1c35f9d2020797a6b11728868c8ff1fdea9d9b0  packages/web_client/src/web_client/grip_rule.gleam
+   input 19d254933b38e3e5bb1343c267196958e4cb84014505f852c30bc508da948e8e  packages/web_client/src/web_client/fold.gleam
+   input 18b797ddca60062978412046cb8b2b40bbd7bea9619f21c2259d337415b289b9  packages/web_client/src/web_client/follow.gleam
+   input a090eb0058874ef60ecfcff960ae16bc933f8ff7b5f032a6366aea12404b5f7c  packages/web_client/src/web_client/follow_rule.gleam
+   input 54fcbdbde645d7becd59d9afe8fd30d922a230f7e8c2da71ee3f907164f6569e  packages/web_client/src/web_client/grip_rule.gleam
    input 3727727c2764b5bd7afc1ba818ba0fedb2fc1958f5bf5bcb5b538d71b969adc8  packages/web_client/src/web_client/internal/dom.mjs
    input c6f51d821315b936bce84e50d1e023c84c8cdf7247f6aba4ba5e82350add16b9  packages/web_client/src/web_client/internal/ffi_dom.gleam
-   input f1186eec90d4770177ded3df2065a9845ecaa2b771fccacf43b3015d86ffffa5  packages/web_client/src/web_client/layout_rule.gleam
-   input c427a51ee900542d48ab989f1d2da17084b5594148d468a86254479723c202d6  packages/web_client/src/web_client/link.gleam
-   input acecbe3bb1d631be22968260589996ca88d3630ccaf44b51ef8e9443bacaee04  packages/web_client/src/web_client/link_rule.gleam
-   input 4e5889df0b3e2f8038717e75a8c92fd7a7146863c9614f8bd9fd8ef8fe4c86f1  packages/web_client/src/web_client/mermaid.gleam
-   input 0e8944b650785d4d5777af50d29898dd9d05ba5b134784610f8536e55de5dd7d  packages/web_client/src/web_client/mermaid_rule.gleam
-   input 995bc68651b94d23b54a5c83a7c9853c71954d7fcff6ebe25bf8107a9b785c99  packages/web_client/src/web_client/notes.gleam
+   input 8e40c8347322ed33c42ffd64345264810a9f6b33fe88408440379ee4c88d07dd  packages/web_client/src/web_client/layout_rule.gleam
+   input 42555b03b8a4d9c093b252f24b96e57436662332b5606d340ba2682fc09f4494  packages/web_client/src/web_client/link.gleam
+   input ea5423ce96052346c8411c257c92cc4b3bc06bdc4eeb1625d2d37797eab730e9  packages/web_client/src/web_client/link_rule.gleam
+   input 95200853a3f0ffeb99625dd56e94fd063dee23a0e833e5eef15428785245cdb4  packages/web_client/src/web_client/mermaid.gleam
+   input 78ce3bedba3ce4be8247f333e908826115a05ca1ae291c9d8e80f0b70bf3c279  packages/web_client/src/web_client/mermaid_rule.gleam
+   input 3a69c29b35de430ea2b66b999df59b5a48482663ec8701d59a4bb7c1344828b0  packages/web_client/src/web_client/notes.gleam
    input 1e03fd42be5b58ffaebd30339b3cb01b253edf349b7c1731d8a02f49363d4e4c  packages/web_client/src/web_client/pending_rule.gleam
-   input 492ca4d9e457aa176b4f7fd4d3e076667bcc454df41dc6fdf2fed90134f99e7d  packages/web_client/src/web_client/popover.gleam
+   input 9fe67276f88a2d02088d7d8fc27ce2479da76fa7e00bd280fe5b8389907f658f  packages/web_client/src/web_client/popover.gleam
    input b8ef129c1a538e75dfaaf54b70bb30859013df7d3dcb090c36454d113a3c434f  packages/web_client/src/web_client/popover_rule.gleam
    input 7f5cc508a3fa2c50a65ee2896c97dc26f674f020586ce42efaebe3ce2be6f66e  packages/web_client/src/web_client/proposals_rule.gleam
-   input 20c0366187196823c841927d2601133956f9b3cf95377d341f839d95400bc2f3  packages/web_client/src/web_client/rename.gleam
+   input a33424f64cf6cba532e37b4c3fa10a8c8f29ef654b40ed23fe561ee2c9118ebc  packages/web_client/src/web_client/rename.gleam
    input b545588b4d1b6d193bd58909449c5c068ea9958c6e06a03f9cadbd27421b8986  packages/web_client/src/web_client/rename_rule.gleam
-   input 268209da0d7cb5717dfc97fc254f4068630e47c859d2ca3d32e8bef77ac5c55b  packages/web_client/src/web_client/reveal.gleam
-   input dbff0475e6ac6447d0d5cf817790380b739de20f1ece519fb1618dcc9472e353  packages/web_client/src/web_client/saved.gleam
+   input aacc8a8342bf81b861f0d2b1f520bc79df7a378a56a9e1af60424c4bc76e2a27  packages/web_client/src/web_client/reveal.gleam
+   input 818924b5cc4fa8718f2e51bf0a69ea7548f91cf9a366d14c7a1eb9276b6dc6e8  packages/web_client/src/web_client/saved.gleam
    input 1cd181010669e2dfe37b7c51c9df331cbacfd889f5484766bb3fadcde4853344  packages/web_client/src/web_client/saved_rule.gleam
-   input cfbd258a6d9ba8a0cbb25a149de70363ea04b00bb982fb039114d7c3e2b2d78b  packages/web_client/src/web_client/shell.gleam
-   input 928f72d00c9d3fc55ae009da1b43369f3c4b5fc91816075e8bb51a241ba71762  packages/web_client/src/web_client/shell_rule.gleam
+   input 81f0f05d65f9908f17925aabe0f7373ac5b30013c26ccafd9c1103bddb432e92  packages/web_client/src/web_client/shell.gleam
+   input b26c28d7422d8ce491333be5672d7d13a69c9d66952a4e6cd6ac6c600e7e3bb5  packages/web_client/src/web_client/shell_rule.gleam
    input b2e3b58f4885a4ab8b0ccf6474b5a29fc714eaab7eb85b0de39eb62746cc349b  packages/web_client/src/web_client/switch.gleam
-   input 4ab727d76b57102f01ade648e40c1e763ef84ee0b4008bdf769f64999febdcad  packages/web_client/src/web_client/switch_rule.gleam
-   input c3ccd4961a5395e7080651fa238f4ce39764ffda8ed4b80d5ec33a758b958630  packages/web_client/src/web_client/switcher.gleam
-   input de2351e0edc8258ae6e49cc863e1cb074d200ceb25caf7a36a7720a85db68ed6  packages/web_client/src/web_client/switcher_rule.gleam
-   input 8d17dadf7a3fc226dcb236cad9ed9fb4a69065e664138410fbb87ec6ab4f8b71  packages/web_client/src/web_client/time.gleam
-   input 1f482d0f1b292c9bf83db1086efd4e41e9195d4ecf29fc521b79d18cac619f7f  packages/web_client/src/web_client/time_rule.gleam
-   input 6757c169d2c84aeadeacd45641df667fae3170dbbde78f7d70bc0c31a41ae376  packages/web_client/src/web_client/title.gleam
+   input 30a2c1d2aa353323c622bf2f9e14e07c86ce786b22e8beb711b43549b3748f72  packages/web_client/src/web_client/switch_rule.gleam
+   input 0f3b81b0ee0cc712e0447a3b6e2b21669a52b12b7eb1d8d0458078f2cf86c650  packages/web_client/src/web_client/switcher.gleam
+   input 8866be0c1d22fea5f5e308dda8530d730a4c62253603734536291b507817dc1e  packages/web_client/src/web_client/switcher_rule.gleam
+   input 891f7439051f11b0b0cf758c30a4a516fed94670487d0a0f989c1dafd6de49cd  packages/web_client/src/web_client/time.gleam
+   input b284aace68b7788c0593b26eda007f0f63554380f70205dc24ff54e6dd11968f  packages/web_client/src/web_client/time_rule.gleam
+   input 4ef724caaa5ffd15984753bb83db1e2a85da7ce3d69cadccf1a79a6f4e01b8d3  packages/web_client/src/web_client/title.gleam
    input c4550c305b0f3b13a95575e55b803a084783868489496e72efb32b2198ce5088  packages/web_client/src/web_client/title_rule.gleam
-   input 381cf05e3c581ce781989abc32b80b27e232481e82bef90bfec4401d831a073b  packages/web_client/src/web_client/waiting.gleam
+   input e7b835ff701e1b30aeab8f5b1aaad2c7f4eeb0f5661459043b7f73534f5c84ad  packages/web_client/src/web_client/waiting.gleam
    body 51396a070804938809acebfbf6e26a69b61a284dd417705d348c1746ee51dafe
 */
 /* --- generated body: the digests above cover everything below this line --- */

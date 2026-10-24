@@ -487,6 +487,7 @@ pub fn start_for_session(command: String) -> Result(Started, JobError) {
   ])
 }
 
+/// Dispatches job.start capability call and parses the started response.
 fn started(fields: List(#(String, MsgPackValue))) -> Result(Started, JobError) {
   use value <- result.try(
     dispatch.call("job.start", wire.args(fields)) |> result.map_error(map_error),
@@ -623,10 +624,7 @@ pub fn send_last(id: JobId, data: BitArray) -> Result(Nil, JobError) {
   write(id, data, close: True)
 }
 
-// The capability wire carries the end-of-input question as a boolean,
-// which is what the host's router decodes. The two public functions above
-// are what keep that boolean off every call site: `send_last` names what
-// it does, and `send(id, data, True)` would not.
+/// Sends standard input data to a running background job.
 fn write(
   id: JobId,
   data: BitArray,
@@ -645,12 +643,8 @@ fn write(
 }
 
 // --- decoding ---------------------------------------------------------------
-//
-// The host answers a flat map, because msgpack has no sum type: `state`
-// names the variant and licenses the fields that go with it. So the state
-// is read first and each arm reads only what its own variant carries — a
-// live job carries no exit report and none is looked for.
 
+/// Decodes a full Job snapshot from capability poll response.
 fn decode_job(value: MsgPackValue) -> Result(Job, JobError) {
   use id <- result.try(decode_job_id(value))
   use state <- result.try(decode_state(value))
@@ -664,6 +658,7 @@ fn decode_job(value: MsgPackValue) -> Result(Job, JobError) {
   Ok(Job(id:, state:, age_ms:, deadline_ms:, stdout:, stderr:, spill:))
 }
 
+/// Decodes a Job summary row from capability list response.
 fn decode_row(row: MsgPackValue) -> Result(Row, JobError) {
   use id <- result.try(decode_job_id(row))
   use state <- result.try(decode_state(row))
@@ -672,8 +667,11 @@ fn decode_row(row: MsgPackValue) -> Result(Row, JobError) {
   Ok(Row(id:, state:, age_ms:, deadline_ms:))
 }
 
+/// Decodes a job State variant from the payload status string.
 fn decode_state(value: MsgPackValue) -> Result(State, JobError) {
   use name <- result.try(text(value, "state"))
+
+  // Map the state tag string to the corresponding State variant.
   case name {
     "starting" -> Ok(Starting)
     "running" -> Ok(Running)
@@ -702,8 +700,11 @@ fn decode_killed(value: MsgPackValue) -> Result(State, JobError) {
   Ok(Killed(by:, exit:))
 }
 
+/// Decodes the LostReason variant for lost jobs.
 fn decode_lost(value: MsgPackValue) -> Result(State, JobError) {
   use name <- result.try(text(value, "lost_reason"))
+
+  // Map the lost reason string to the corresponding LostReason variant.
   case name {
     "vm_restart" -> Ok(Lost(reason: VmRestart))
     "owner_restart" -> Ok(Lost(reason: OwnerRestart))
@@ -713,8 +714,11 @@ fn decode_lost(value: MsgPackValue) -> Result(State, JobError) {
   }
 }
 
+/// Decodes the StopCause variant for stopped jobs.
 fn decode_cause(value: MsgPackValue) -> Result(StopCause, JobError) {
   use name <- result.try(text(value, "stopped_by"))
+
+  // Map the stop cause string to the corresponding StopCause variant.
   case name {
     "owner" -> Ok(ByOwner)
     "deadline" -> Ok(ByDeadline)
@@ -725,6 +729,7 @@ fn decode_cause(value: MsgPackValue) -> Result(StopCause, JobError) {
   }
 }
 
+/// Decodes a process Exit report from the payload.
 fn decode_exit(value: MsgPackValue) -> Result(Exit, JobError) {
   use report <- result.try(
     wire.field(value, "exit") |> result.map_error(bad_result),
@@ -756,7 +761,7 @@ fn decode_job_id(value: MsgPackValue) -> Result(JobId, JobError) {
   parse_job_id(raw) |> result.map_error(bad_result)
 }
 
-// The parser fixes the stream's cursor domain before its value is exposed.
+/// Decodes a Stream record containing byte payload and cursor.
 fn decode_stream(
   value: MsgPackValue,
   key: String,
@@ -786,6 +791,7 @@ fn flag(value: MsgPackValue, key: String) -> Result(Bool, JobError) {
   wire.bool_field(value, key) |> result.map_error(bad_result)
 }
 
+/// Decodes an optional string field from a msgpack value.
 fn optional_text(
   value: MsgPackValue,
   key: String,
@@ -801,12 +807,7 @@ fn bad_result(reason: String) -> JobError {
   JobResultMalformed("bad job result: " <> reason)
 }
 
-// The other half of a contract whose first half is
-// `codemode/workspace.job_denial` and `tools/job.refusal_code`: the same
-// five strings reach a model in a tool result and a program here. A code
-// this module has not learned arrives as `JobDenied` carrying it
-// verbatim, which is a worse answer than a named variant and a much
-// better one than a lie.
+/// Maps capability channel errors to typed job domain errors.
 fn map_error(error: CallError) -> JobError {
   case error {
     Unreachable(reason:) -> JobUnavailable(reason:)

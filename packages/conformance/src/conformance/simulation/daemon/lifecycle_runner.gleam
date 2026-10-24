@@ -174,6 +174,7 @@ pub fn converges_under(
   script: Script,
   fault: Fault,
 ) -> Result(Nil, Failure) {
+  // Dispatch convergence comparison based on the script.
   case script {
     RestartScript -> {
       let pending = lifecycle_faults.pending_for(seed)
@@ -310,6 +311,7 @@ pub fn revocation_script(seed: Int, fault: Fault) -> Result(Report, Failure) {
 // and the entropy keeps a rerun from inheriting a previous one's catalogue and
 // lock. Nothing durable is derived from any of them, because every path the
 // verdict reads has the root substituted out of it.
+/// Generates an isolated temporary state root path for lifecycle simulation.
 fn state_root(seed: Int, label: String) -> String {
   let suffix = bit_array.base16_encode(token.production_entropy()(8))
   "build/test_db/daemon-lifecycle-"
@@ -329,6 +331,7 @@ fn state_root(seed: Int, label: String) -> String {
 // request is in flight; fault-free it settles the request and drains. Both
 // hand the same state root to the second daemon, and the second daemon's
 // answer is what the two runs are compared on.
+/// Executes restart simulation across two sequential daemon incarnations.
 fn restart_over(
   path: String,
   clock: Clockwork,
@@ -358,6 +361,8 @@ fn restart_over(
       }
     Ok(#(record, epoch)), FaultFree | Ok(#(record, epoch)), RevokeAt(..) -> {
       let settled = settle(first, record.id, pending)
+
+      // Retire the first daemon before starting the second incarnation.
       case retire(first, settled) {
         Error(failure) -> Error(failure)
         Ok(Nil) -> restarted(path, clock, seed, record, epoch, pending)
@@ -368,6 +373,7 @@ fn restart_over(
 
 // The second daemon: the one a crash restarts into, or the one an orderly
 // stop is followed by. Both take the same checks, which is the point.
+/// Resumes the second daemon incarnation and verifies lifecycle invariants.
 fn restarted(
   path: String,
   clock: Clockwork,
@@ -385,6 +391,8 @@ fn restarted(
     use Nil <- result.try(no_resend(second, seed, record, epoch, pending))
     snapshot(second)
   }
+
+  // Retire the resumed daemon and return observed report.
   case retire(second, observed) {
     Error(failure) -> Error(failure)
     Ok(report) -> Ok(report)
@@ -399,6 +407,7 @@ fn restarted(
 // resumed an interrupted request on the owner's behalf would have a resident
 // or opening session here, and a daemon that lost the record would have no
 // row at all.
+/// Asserts restored session metadata matches original registration.
 fn reopen_policy(
   daemon: Harness,
   record: catalogue.Registration,
@@ -414,6 +423,8 @@ fn reopen_policy(
       )
     }),
   )
+
+  // Verify that restored session metadata matches the committed record.
   case
     restored.request_key == record.request_key
     && restored.workspace == record.workspace
@@ -435,6 +446,7 @@ fn reopen_policy(
 // Every row a restoration produced must read as saved. `Reserved` would mean
 // an unconfirmed reservation was published as a session, and anything live
 // would mean restoration opened something.
+/// Asserts that all restored catalogue rows have Saved state.
 fn saved_only(check: String, rows: List(harness.Row)) -> Result(Nil, Failure) {
   case list.filter(rows, fn(row: harness.Row) { row.state != "Saved" }) {
     [] -> Ok(Nil)
@@ -467,6 +479,7 @@ fn saved_only(check: String, rows: List(harness.Row)) -> Result(Nil, Failure) {
 // a caller still holding the previous lifetime's coordinates is refused
 // `StaleEpoch` rather than resolved. That refusal is what makes the absence of
 // a resend a property of the daemon rather than of the script's timing.
+/// Asserts that interrupted requests are not re-issued or settled on restart.
 fn no_resend(
   daemon: Harness,
   seed: Int,
@@ -475,6 +488,8 @@ fn no_resend(
   pending: Pending,
 ) -> Result(Nil, Failure) {
   let check = "lifecycle/no-resend"
+
+  // Verify status check for pending open or proceed for pending stop.
   use Nil <- result.try(case pending {
     PendingStop -> Ok(Nil)
     PendingOpen -> nothing_reopened(daemon, record)
@@ -495,6 +510,8 @@ fn no_resend(
       incarnation: "the-interrupted-operation",
       digest: member,
     )
+
+  // Check that frame authority refuses prior lifetime's epoch.
   case stale {
     Error(manager.StaleEpoch) -> Ok(Nil)
     _other ->
@@ -511,6 +528,7 @@ fn no_resend(
 // to. The session was saved when the open was accepted, so anything but
 // `Saved` here is an operation the restarted daemon started on the owner's
 // behalf to finish what the dead lifetime began.
+/// Asserts that an interrupted open leaves the session in Saved state.
 fn nothing_reopened(
   daemon: Harness,
   record: catalogue.Registration,
@@ -520,6 +538,8 @@ fn nothing_reopened(
     harness.status(daemon, record.id)
     |> result.map_error(fn(reason) { Failure(check, reason) }),
   )
+
+  // Assert that restarted session remains in Saved state.
   case status {
     manager.Saved -> Ok(Nil)
     manager.Reserved
@@ -545,12 +565,15 @@ fn nothing_reopened(
 // resident, so the open is preceded by an ordered stop that is allowed to
 // complete. That preparation runs identically under both schedules; only the
 // request after it is interrupted.
+/// Submits a lifecycle request to be interrupted by a daemon kill.
 fn request(
   daemon: Harness,
   id: String,
   pending: Pending,
 ) -> Result(Nil, Failure) {
   let check = "lifecycle/request-accepted"
+
+  // Submit pending open or pending stop request.
   case pending {
     PendingStop ->
       accepted(check, id, manager.stop_session(harness.registry(daemon), id))
@@ -570,6 +593,7 @@ fn request(
 // Both requests answer with the operation they accepted rather than with the
 // state the session has reached, which is exactly what makes the outcome
 // ambiguous when the daemon then dies.
+/// Confirms that a lifecycle request answered with an in-flight operation.
 fn accepted(
   check: String,
   id: String,
@@ -592,6 +616,7 @@ fn accepted(
 // The fault-free half of the same moment: let the request finish, so the
 // orderly run reaches the same durable place the crashed one is restarted
 // into.
+/// Waits for a lifecycle request to settle under a fault-free run.
 fn settle(
   daemon: Harness,
   id: String,
@@ -607,6 +632,7 @@ fn is_saved(status: manager.Status) -> Bool {
   status == manager.Saved
 }
 
+/// Predicate checking if status is Resident.
 fn is_resident(status: manager.Status) -> Bool {
   case status {
     manager.Resident(_) -> True
@@ -627,6 +653,7 @@ fn is_resident(status: manager.Status) -> Bool {
 // end with the same durable rows, because a membership is not a registration:
 // a revocation that moved a session's catalogue row would be a finding, and
 // the comparison the caller runs afterwards is what says so.
+/// Drives the revocation scenario and returns the catalogue snapshot.
 fn revocation_body(
   daemon: Harness,
   seed: Int,
@@ -640,6 +667,8 @@ fn revocation_body(
   )
   use member <- result.try(member_digest(seed))
   use Nil <- result.try(invite(daemon, owner, member, record.id))
+
+  // Dispatch command execution based on whether revocation fault is active.
   use Nil <- result.try(case fault {
     FaultFree -> fault_free_command(daemon, record.id, incarnation, member)
     RevokeAt(at:, ..) ->
@@ -657,6 +686,7 @@ fn revocation_body(
           <> ", which names no revocation coordinate",
       ))
   })
+
   snapshot(daemon)
 }
 
@@ -672,6 +702,7 @@ fn revocation_body(
 // remembered grant alive across an administration would pass unnoticed. The
 // second pair is the command's own two authority answers, at admission and at
 // delivery.
+/// Verifies that an unrevoked principal is repeatedly admitted.
 fn fault_free_command(
   daemon: Harness,
   id: String,
@@ -700,6 +731,7 @@ fn fault_free_command(
 // administration fails to clear observable under one coordinate and not the
 // other. Both then check that the principal stays refused, which is the
 // silence the name is about.
+/// Verifies authority boundary refusals following credential revocation.
 fn revoked_command(
   daemon: Harness,
   owner: access.Digest,
@@ -708,6 +740,7 @@ fn revoked_command(
   incarnation: String,
   at: Coordinate,
 ) -> Result(Nil, Failure) {
+  // Handle admission warm-up before revocation if coordinate requires.
   use Nil <- result.try(case at {
     BeforeAdmission -> Ok(Nil)
     BetweenAdmissionAndDelivery -> {
@@ -716,6 +749,7 @@ fn revoked_command(
       admitted(daemon, id, incarnation, member)
     }
   })
+
   use Nil <- result.try(revoke(daemon, owner))
   use Nil <- result.try(refused(daemon, id, incarnation, member))
 
@@ -723,6 +757,8 @@ fn revoked_command(
   // claim is that the principal stays out, not that it was out once.
   use Nil <- result.try(refused(daemon, id, incarnation, member))
   let check = "revocation/silence-after-close"
+
+  // Verify that session authority check is refused.
   case manager.session_authority(harness.registry(daemon), member, id) {
     Error(_refused) -> Ok(Nil)
     Ok(answer) ->
@@ -734,6 +770,7 @@ fn revoked_command(
   }
 }
 
+/// Asserts that a member principal is accepted at the frame authority boundary.
 fn admitted(
   daemon: Harness,
   id: String,
@@ -749,6 +786,8 @@ fn admitted(
       incarnation:,
       digest: member,
     )
+
+  // Check that frame authority accepted operator participant.
   case answer {
     Ok(#(_principal, access.Participant(access.Operator))) -> Ok(Nil)
     _other ->
@@ -762,6 +801,7 @@ fn admitted(
   }
 }
 
+/// Asserts that a revoked principal is refused at the frame authority boundary.
 fn refused(
   daemon: Harness,
   id: String,
@@ -777,6 +817,8 @@ fn refused(
       incarnation:,
       digest: member,
     )
+
+  // Check that frame authority returned Unauthorized refusal.
   case answer {
     Error(manager.Unauthorized) -> Ok(Nil)
     _other ->
@@ -791,6 +833,7 @@ fn refused(
   }
 }
 
+/// Invites a member principal to a shared session via administration.
 fn invite(
   daemon: Harness,
   owner: access.Digest,
@@ -805,6 +848,8 @@ fn invite(
       id,
       access.Operator,
     )
+
+  // Administer member invitation and verify success.
   case
     manager.administer(
       harness.registry(daemon),
@@ -829,7 +874,9 @@ fn invite(
 // mutation would leave the principal authenticated, and the claim under test
 // is about the boundary refusing it, not about which of the two admin actions
 // reached it.
+/// Revokes a member principal credential via administration.
 fn revoke(daemon: Harness, owner: access.Digest) -> Result(Nil, Failure) {
+  // Administer member credential revocation.
   case
     manager.administer(
       harness.registry(daemon),
@@ -853,6 +900,7 @@ fn revoke(daemon: Harness, owner: access.Digest) -> Result(Nil, Failure) {
 // A session an owner may invite anyone to has to have an aggregate of its
 // own; sharing a workspace-private one requires an explicit stopped isolation
 // first, which is a different claim with its own fixture.
+/// Creates an isolated shared session for multi-principal testing.
 fn create_shared(
   daemon: Harness,
   key: String,
@@ -864,6 +912,7 @@ fn create_shared(
   })
 }
 
+/// Creates a session for lifecycle simulation testing.
 fn create(
   daemon: Harness,
   key: String,
@@ -879,12 +928,15 @@ fn create(
 // coordinate of the admission, and every frame check the script makes names
 // it, so a session that were silently restarted underneath the script would
 // fail the admission check rather than pass under a new instance.
+/// Retrieves the active incarnation operation ID of a resident session.
 fn incarnation_of(daemon: Harness, id: String) -> Result(String, Failure) {
   let check = "revocation/resident"
   use status <- result.try(
     harness.status(daemon, id)
     |> result.map_error(fn(reason) { Failure(check, reason) }),
   )
+
+  // Extract resident incarnation operation or report error.
   case status {
     manager.Resident(operation) -> Ok(operation)
     manager.Reserved
@@ -906,6 +958,7 @@ fn incarnation_of(daemon: Harness, id: String) -> Result(String, Failure) {
 // The member's credential is derived from the seed rather than fixed, so two
 // seeds do not invite the same digest into two catalogues, and a single seed
 // derives the same one on both of its runs.
+/// Derives a deterministic member credential digest from a random seed.
 fn member_digest(seed: Int) -> Result(access.Digest, Failure) {
   let hex = string.lowercase(int.to_base16(seed))
   let padded = string.slice(hex <> string.repeat("b", 64), 0, 64)
@@ -928,6 +981,7 @@ fn started(path: String, clock: Clockwork) -> Result(Harness, Failure) {
 // Everything one incarnation is started from. Only the incarnation number
 // differs between the two daemons a restart script runs, and it is what moves
 // the writer lease clock past the lease the killed incarnation left behind.
+/// Constructs harness boot configuration for simulation.
 fn boot(path: String, clock: Clockwork, incarnation: Int) -> harness.Boot {
   harness.Boot(
     state_root: path,
@@ -957,6 +1011,7 @@ fn snapshot(daemon: Harness) -> Result(Report, Failure) {
 // logical clock governs what a run mints, not how long a real registry takes
 // to publish it, so this is a deadlock backstop rather than part of the
 // schedule.
+/// Polls until a session status satisfies the target settled predicate.
 fn await(
   daemon: Harness,
   id: String,
@@ -974,6 +1029,8 @@ fn await(
           }
       }
     })
+
+  // Check poll outcome for session status settlement.
   case answer {
     poll.Answered(Nil) -> Ok(Nil)
     poll.Failed(reason) -> Error(Failure(check, reason))
@@ -985,6 +1042,7 @@ fn await(
 // work is the lifecycle operation it deliberately interrupts. Saved alone
 // proves only session retirement. The separate domain_runner covers admission
 // while domain cleanup is still pending; no census barrier precedes its open.
+/// Polls until all sessions and domain services have completely retired.
 fn await_retirement(daemon: Harness) -> Result(Nil, Failure) {
   let check = "lifecycle/retirement"
   let answer =
@@ -998,6 +1056,8 @@ fn await_retirement(daemon: Harness) -> Result(Nil, Failure) {
           }
       }
     })
+
+  // Check poll outcome for daemon retirement.
   case answer {
     poll.Answered(Nil) -> Ok(Nil)
     poll.Failed(reason) -> Error(Failure(check, reason))
@@ -1009,11 +1069,13 @@ fn await_retirement(daemon: Harness) -> Result(Nil, Failure) {
 // The convergence check. Both the rows and the revision they were read at have
 // to agree: a run that rewrote a row would carry the same rows at a higher
 // revision and would otherwise pass.
+/// Compares baseline and faulted lifecycle snapshots for convergence.
 fn compare(
   check: String,
   base: Report,
   faulted: Report,
 ) -> Result(Nil, Failure) {
+  // Check that catalogue revisions agree between runs.
   case base.fence == faulted.fence {
     False ->
       Error(Failure(
@@ -1032,6 +1094,7 @@ fn compare(
   }
 }
 
+/// Renders a human-readable diff between baseline and faulted reports.
 fn difference(base: Report, faulted: Report) -> String {
   let render = fn(report: Report) {
     list.map(report.rows, harness.describe_row) |> string.join("\n  ")
@@ -1042,6 +1105,7 @@ fn difference(base: Report, faulted: Report) -> String {
   <> render(faulted)
 }
 
+/// Constructs a Failed verdict for lifecycle simulation.
 fn failed(seed: Int, failure: Failure) -> Verdict {
   Failed(
     seed:,

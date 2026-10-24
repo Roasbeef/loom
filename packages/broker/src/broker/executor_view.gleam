@@ -283,6 +283,7 @@ pub fn completed(
 ) -> Snapshot {
   let live =
     list.map(observation.live, fn(row) {
+      // Look up helper custody ordinal if the pool is responding.
       let ordinal = case pool {
         Ok(custody) ->
           list.find(custody.helpers, fn(view) { view.pid == row.helper })
@@ -290,6 +291,7 @@ pub fn completed(
           |> option.from_result
         Error(_) -> None
       }
+
       LiveView(..row, helper_ordinal: ordinal)
     })
   Snapshot(
@@ -436,20 +438,26 @@ pub fn record_settlement(
   cancel_ms cancel_ms: Option(Int),
   at_ms at_ms: Int,
 ) -> Books {
+  // Tally outcome counts.
   let counted = case settled.outcome {
     Completed(..) -> Books(..books, completed: books.completed + 1)
     Failed(..) -> Books(..books, failed: books.failed + 1)
     Lost(..) -> Books(..books, lost: books.lost + 1)
   }
+
+  // Record the most recent failure if the outcome was not successful.
   let last_failure = case settled.outcome {
     Completed(..) -> books.last_failure
     Failed(..) | Lost(..) ->
       Some(Failure(id: settled.id, outcome: settled.outcome, at_ms:))
   }
+
+  // Push cancel duration into the ring when cancellation was recorded.
   let cancelled = case cancel_ms {
     Some(ms) -> push(books.cancel_to_settle, ms)
     None -> books.cancel_to_settle
   }
+
   Books(
     ..counted,
     output_bytes: books.output_bytes
@@ -539,14 +547,17 @@ pub fn summarise(samples: List(Int)) -> LatencySummary {
   )
 }
 
-// The nearest-rank percentile of ascending samples: the value at rank
-// ceil(percent * count / 100), counted from one. An empty series has no
-// rank and answers zero, which the `samples` count disambiguates.
+/// The nearest-rank percentile of ascending samples: the value at rank
+/// ceil(percent * count / 100), counted from one. An empty series has no
+/// rank and answers zero, which the `samples` count disambiguates.
 fn nearest_rank(sorted: List(Int), count: Int, percent: Int) -> Int {
+  // Zero samples yield zero.
   case count {
     0 -> 0
     _ -> {
       let rank = { percent * count + 99 } / 100
+
+      // Take the sample value at the calculated percentile rank.
       case list.drop(sorted, int.max(rank - 1, 0)) {
         [value, ..] -> value
         [] -> 0

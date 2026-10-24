@@ -404,12 +404,14 @@ pub fn apply_replacements(
   })
 }
 
+/// Collects 1-based line numbers of each match within the file text.
 fn match_lines(
   parts: List(String),
   find_newlines: Int,
   current_line: Int,
   acc: List(Int),
 ) -> List(Int) {
+  // Scan line pieces computing line offset of each occurrence.
   case parts {
     [] | [_after_last_match] -> list.reverse(acc)
     [before, ..rest] -> {
@@ -848,6 +850,7 @@ pub fn routing(seam: Workspace, over inner: CapRouter) -> CapRouter {
 
 // --- fs ---------------------------------------------------------------------
 
+/// Plans an fs.read capability call validating target path and permissions.
 fn read_plan(
   seam: Workspace,
   request: CapRequest,
@@ -863,6 +866,7 @@ fn read_plan(
   )
 }
 
+/// Plans an fs.list capability call listing directory contents.
 fn list_plan(
   seam: Workspace,
   request: CapRequest,
@@ -881,6 +885,7 @@ fn list_plan(
   )
 }
 
+/// Plans an fs.write capability call overwriting file content.
 fn write_plan(
   seam: Workspace,
   request: CapRequest,
@@ -897,6 +902,7 @@ fn write_plan(
   )
 }
 
+/// Plans an fs.edit capability call applying anchored text replacements.
 fn edit_plan(
   seam: Workspace,
   request: CapRequest,
@@ -913,12 +919,16 @@ fn edit_plan(
   )
 }
 
-// The replacement list, exactly as `cap/fs.edit` marshals it: an array
-// under `edits` of maps carrying `find` and `replace_with`. Empty is
-// refused at plan time — an edit that edits nothing is a mistake to
-// repair, not a success to fake.
+/// Decodes the edits array argument into a non-empty list of Replacement records.
+///
+/// An array
+/// under `edits` of maps carrying `find` and `replace_with`. Empty is
+/// refused at plan time — an edit that edits nothing is a mistake to
+/// repair, not a success to fake.
 fn edits_arg(value: MsgPackValue) -> Result(List(Replacement), CapDenial) {
   use found <- result.try(args.field(value, "edits"))
+
+  // Decode edits array from MsgPack map argument.
   use entries <- result.try(case found {
     msgpack.ArrayValue(items:) -> Ok(items)
     msgpack.NilValue
@@ -930,7 +940,10 @@ fn edits_arg(value: MsgPackValue) -> Result(List(Replacement), CapDenial) {
     | msgpack.MapValue(..) ->
       Error(args.invalid("`edits` must be an array of replacements"))
   })
+
   use replacements <- result.try(list.try_map(entries, replacement_arg))
+
+  // Verify that at least one replacement operation was supplied.
   case replacements {
     [] -> Error(args.invalid("`edits` must hold at least one replacement"))
     _ -> Ok(replacements)
@@ -952,6 +965,7 @@ fn entry_value(entry: DirEntry) -> MsgPackValue {
 
 // --- kv ---------------------------------------------------------------------
 
+/// Plans a kv.get capability call reading bytes from the scratch store.
 fn kv_get_plan(
   seam: Workspace,
   request: CapRequest,
@@ -976,6 +990,7 @@ fn kv_get_plan(
   )
 }
 
+/// Plans a kv.set capability call writing bytes to the scratch store.
 fn kv_set_plan(
   seam: Workspace,
   request: CapRequest,
@@ -992,6 +1007,7 @@ fn kv_set_plan(
   )
 }
 
+/// Plans a kv.delete capability call removing a key from the scratch store.
 fn kv_delete_plan(
   seam: Workspace,
   request: CapRequest,
@@ -1009,6 +1025,7 @@ fn kv_delete_plan(
 
 // --- answers and refusals ----------------------------------------------------
 
+/// Wraps field pairs into a successful MsgPack map capability outcome.
 fn answered(fields: List(#(String, MsgPackValue))) -> CapOutcome {
   framing.CapOk(
     value: msgpack.MapValue(
@@ -1067,8 +1084,10 @@ pub fn fs_denial(refusal: FsRefusal) -> CapDenial {
   }
 }
 
-// The find text is program-controlled and can be a whole file, so the
-// excerpt quoted back is bounded; the program has the full value.
+/// Translates an fs.edit failure into an in-band capability denial structure.
+///
+/// The find text is program-controlled and can be a whole file, so the
+/// excerpt quoted back is bounded; the program has the full value.
 fn edit_denial(refusal: EditRefusal) -> CapDenial {
   case refusal {
     StaleFind(find:) ->
@@ -1100,7 +1119,9 @@ fn edit_denial(refusal: EditRefusal) -> CapDenial {
 
 const max_reported_match_lines = 10
 
+/// Formats match line numbers for ambiguous replacement error messages.
 fn ambiguous_lines_note(lines: List(Int)) -> String {
+  // Build comma-separated list of ambiguous match line numbers.
   case lines {
     [] -> ""
     _ -> {
@@ -1109,10 +1130,13 @@ fn ambiguous_lines_note(lines: List(Int)) -> String {
         |> list.take(max_reported_match_lines)
         |> list.map(int.to_string)
         |> string.join(", ")
+
+      // Add ellipsis suffix if match list exceeded maximum reported lines.
       let suffix = case list.drop(lines, max_reported_match_lines) {
         [] -> ""
         _ -> ", …"
       }
+
       " (at lines " <> shown <> suffix <> ")"
     }
   }
@@ -1127,6 +1151,7 @@ fn excerpt(text: String) -> String {
   }
 }
 
+/// Maps filesystem path resolution errors to capability denials.
 fn path_denial(error: fs.PathError) -> CapDenial {
   case error {
     fs.EmptyPath ->
@@ -1190,6 +1215,7 @@ fn path_denial(error: fs.PathError) -> CapDenial {
 // here is the part a program or a model needs — how to get access, or that
 // no access exists. An unknown code reaches the program as `FsFailed` or
 // `SearchFailed` with the message verbatim.
+/// Maps read path errors to specific capability denials preserving detail.
 fn read_path_denial(error: fs.PathError) -> CapDenial {
   case error {
     fs.EscapesWorkspace(path:) ->
@@ -1216,6 +1242,7 @@ fn read_path_denial(error: fs.PathError) -> CapDenial {
   }
 }
 
+/// Maps filesystem read errors to capability denial structures.
 fn read_denial(error: fs.ReadError) -> CapDenial {
   case error {
     fs.ReadFailed(error:) ->
@@ -1261,6 +1288,7 @@ pub fn fs_error_text(error: tool.FsError) -> String {
 
 // --- schedule ---------------------------------------------------------------
 
+/// Plans a schedule.create capability call validating timing and wake bounds.
 fn schedule_create_plan(
   seam: Workspace,
   request: CapRequest,
@@ -1323,6 +1351,7 @@ fn schedule_create_plan(
 // so this is a question about a length: four spellings crossed would be
 // sixteen arms saying three things, and the refusal a program reads is
 // better for naming exactly what it sent.
+/// Verifies that exactly one timing option was provided for schedule creation.
 fn one_timing(
   every_seconds: Option(Int),
   at: Option(String),
@@ -1338,6 +1367,7 @@ fn one_timing(
     ]
     |> option.values
 
+  // Check count of configured timing arguments.
   case named {
     [_only] -> Ok(Nil)
 
@@ -1366,6 +1396,7 @@ fn one_timing(
 // the denial a program reads names the argument it actually sent, and a
 // request that reached the host with an offset and no expression would
 // leave the host inventing what it meant.
+/// Verifies that utc_offset is only supplied alongside a cron expression.
 fn licensed_offset(
   cron: Option(String),
   utc_offset: Option(String),
@@ -1387,6 +1418,7 @@ fn licensed_offset(
 // milder of the two states — the same default the tool door and the
 // operator's TOML use, so a program that never considered waking never
 // gets it whichever door it came through.
+/// Decodes the wake flag argument defaulting to SteersOnly if absent.
 fn requested_wake(args: MsgPackValue) -> Result(ScheduleWake, CapDenial) {
   case optional_bool(args, "wake") {
     Error(denial) -> Error(denial)
@@ -1405,6 +1437,7 @@ fn wake_flag(wake: ScheduleWake) -> Bool {
   }
 }
 
+/// Plans a schedule.list capability call returning registered heartbeat rows.
 fn schedule_list_plan(
   seam: Workspace,
   _request: CapRequest,
@@ -1422,6 +1455,7 @@ fn schedule_list_plan(
   )
 }
 
+/// Serializes a registered schedule heartbeat entry into MsgPack format.
 fn schedule_row(row: ScheduleRow) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("name"), msgpack.StringValue(row.name)),
@@ -1434,6 +1468,7 @@ fn schedule_row(row: ScheduleRow) -> MsgPackValue {
   ])
 }
 
+/// Plans a schedule.cancel capability call unregistering a named heartbeat.
 fn schedule_cancel_plan(
   seam: Workspace,
   request: CapRequest,
@@ -1498,6 +1533,7 @@ pub fn schedule_denial(refusal: ScheduleRefusal) -> CapDenial {
 
 // The capability admits only explicit session lifetime, never a zero finite
 // wall. The host still checks the launching invocation's captured authority.
+/// Validates requested job lifetime mode and wall deadline milliseconds.
 fn job_lifetime(
   lifetime: Option(String),
   wall_ms: Option(Int),
@@ -1518,6 +1554,7 @@ fn job_lifetime(
   }
 }
 
+/// Plans a job.start capability call launching a jailed background job.
 fn job_start_plan(
   seam: Workspace,
   request: CapRequest,
@@ -1542,6 +1579,7 @@ fn job_start_plan(
   )
 }
 
+/// Plans a job.poll capability call fetching new stream output and status.
 fn job_poll_plan(
   seam: Workspace,
   request: CapRequest,
@@ -1572,12 +1610,15 @@ fn job_poll_plan(
 // the harness minted, so one that could not have been minted means the
 // program computed its own, and quietly rewinding it to the start of the
 // stream would hide that behind a flood of output it had already read.
+/// Decodes nonnegative stdout and stderr byte cursors for job stream polling.
 fn job_cursors(
   stdout: Option(Int),
   stderr: Option(Int),
 ) -> Result(job.Cursors, CapDenial) {
   let stdout = option.unwrap(stdout, 0)
   let stderr = option.unwrap(stderr, 0)
+
+  // Refuse negative cursor positions.
   case stdout < 0 || stderr < 0 {
     True ->
       Error(args.invalid(
@@ -1592,6 +1633,7 @@ fn job_cursors(
 // The poll answer, flat rather than nested under a state variant,
 // because msgpack has no sum type and `cap/job` reads `state` first and
 // then the fields that state licenses.
+/// Serializes polled job state, streams, and metrics into MsgPack field pairs.
 fn job_fields(polled: job.Polled) -> List(#(String, MsgPackValue)) {
   [
     #("job_id", msgpack.StringValue(polled.id)),
@@ -1606,6 +1648,7 @@ fn job_fields(polled: job.Polled) -> List(#(String, MsgPackValue)) {
   ]
 }
 
+/// Formats a polled job output stream into a MsgPack map.
 fn job_stream(streamed: job.Streamed) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("bytes"), msgpack.BinaryValue(streamed.bytes)),
@@ -1617,6 +1660,7 @@ fn job_stream(streamed: job.Streamed) -> MsgPackValue {
 // What each state licenses beyond its name: who stopped the job, why it
 // can no longer be spoken for, and the helper's own exit report. A live
 // job carries none of the three, and `cap/job` reads none of them.
+/// Serializes state-specific fields for draining, exited, or lost jobs.
 fn job_state_fields(state: job.JobState) -> List(#(String, MsgPackValue)) {
   case state {
     job.Starting | job.Running -> []
@@ -1634,6 +1678,7 @@ fn job_state_fields(state: job.JobState) -> List(#(String, MsgPackValue)) {
   }
 }
 
+/// Maps a job stop cause variant to its wire string representation.
 fn job_cause(cause: job.StopCause) -> MsgPackValue {
   case cause {
     job.ByOwner -> msgpack.StringValue("owner")
@@ -1643,6 +1688,7 @@ fn job_cause(cause: job.StopCause) -> MsgPackValue {
   }
 }
 
+/// Maps an untracked job loss reason variant to its wire string.
 fn job_loss(reason: job.LostReason) -> MsgPackValue {
   case reason {
     job.VmRestart -> msgpack.StringValue("vm_restart")
@@ -1651,6 +1697,7 @@ fn job_loss(reason: job.LostReason) -> MsgPackValue {
   }
 }
 
+/// Serializes helper process exit report into MsgPack fields.
 fn job_exit(result: ExecResult) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("code"), msgpack.IntValue(result.code)),
@@ -1679,6 +1726,7 @@ fn job_exit(result: ExecResult) -> MsgPackValue {
   ])
 }
 
+/// Plans a job.list capability call querying all strand background jobs.
 fn job_list_plan(
   seam: Workspace,
   _request: CapRequest,
@@ -1702,6 +1750,7 @@ fn job_list_plan(
 // strand acquires a terminal job the first time anything it started ends,
 // so a listing that omitted these would fail for every strand that had
 // ever run a job.
+/// Formats a single listed job row into MsgPack format.
 fn job_row(row: job.Listed) -> MsgPackValue {
   msgpack.MapValue(list.append(
     [
@@ -1719,6 +1768,7 @@ fn job_row(row: job.Listed) -> MsgPackValue {
   ))
 }
 
+/// Plans a job.kill capability call stopping a running background job.
 fn job_kill_plan(
   seam: Workspace,
   request: CapRequest,
@@ -1734,6 +1784,7 @@ fn job_kill_plan(
   )
 }
 
+/// Plans a job.send capability call writing data to a background job stdin.
 fn job_send_plan(
   seam: Workspace,
   request: CapRequest,
@@ -1754,6 +1805,7 @@ fn job_send_plan(
 // The capability wire carries `eof` as a msgpack boolean, which is what
 // `cap/job` encodes on the far side; absent leaves stdin open, which is
 // what a write that never considered the question means.
+/// Decodes the eof flag argument indicating whether to close job stdin.
 fn requested_end(value: MsgPackValue) -> Result(job.StdinEnd, CapDenial) {
   case optional_bool(value, "eof") {
     Error(denial) -> Error(denial)
@@ -1804,6 +1856,7 @@ pub fn job_denial(refusal: job.Refusal) -> CapDenial {
 // alternatives. Absent and null both read as `None`, matching how
 // `tools/tool.optional_*` treats a tool argument.
 
+/// Extracts a field value from MsgPack returning None if missing or nil.
 fn optional_field(value: MsgPackValue, key: String) -> Option(MsgPackValue) {
   case args.field(value, key) {
     Error(_missing) -> None
@@ -1812,6 +1865,7 @@ fn optional_field(value: MsgPackValue, key: String) -> Option(MsgPackValue) {
   }
 }
 
+/// Decodes an optional string argument field from MsgPack.
 fn optional_string(
   value: MsgPackValue,
   key: String,
@@ -1823,6 +1877,7 @@ fn optional_string(
   }
 }
 
+/// Decodes an optional whole integer argument field from MsgPack.
 fn optional_int(
   value: MsgPackValue,
   key: String,
@@ -1834,6 +1889,7 @@ fn optional_int(
   }
 }
 
+/// Decodes an optional boolean flag argument field from MsgPack.
 fn optional_bool(
   value: MsgPackValue,
   key: String,
@@ -1877,6 +1933,7 @@ pub fn kv_denial(refusal: KvRefusal) -> CapDenial {
 
 // One tagged record makes interval, calendar, and resolved one-shot timing
 // distinguishable without parsing display text. Recurring bounds stay paired.
+/// Serializes schedule cadence timing details into MsgPack format.
 fn schedule_cadence(cadence: ScheduleCadence) -> MsgPackValue {
   case cadence {
     Interval(seconds:, expiry:) ->

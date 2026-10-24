@@ -597,6 +597,8 @@ pub fn needing(value: String) -> Int {
   let plain =
     list.all(graphemes, fn(grapheme) { string.contains("0123456789", grapheme) })
     && string.drop_start(value, 4) == ""
+
+  // Parse bounded integer value or return zero when invalid.
   case plain {
     True -> result.unwrap(int.parse(value), 0)
     False -> 0
@@ -624,6 +626,8 @@ pub fn offered(value: String) -> Option(Int) {
       string.contains("0123456789", grapheme)
     })
     && string.drop_start(value, 4) == ""
+
+  // Parse the bounded digit string into an integer count when valid.
   case plain {
     True -> option.from_result(int.parse(value))
     False -> None
@@ -733,6 +737,8 @@ pub fn relay(value: String) -> Result(Relay, Nil) {
       string.contains("0123456789", grapheme)
     })
     && string.drop_start(value, 3) == ""
+
+  // Construct relay descriptor for valid card indices.
   case plain, int.parse(value) {
     True, Ok(0) -> Ok(Relay(card: 0, reveal: Keep))
     True, Ok(card) -> Ok(Relay(card:, reveal: Show))
@@ -921,7 +927,7 @@ pub fn intent(keystroke: Keystroke, presence: Presence) -> Option(Intent) {
   }
 }
 
-// The three keys, for a keystroke that may be read at all.
+/// Resolves global keyboard shortcut intent for active target.
 fn shortcut(
   keystroke: Keystroke,
   target: Target,
@@ -1104,6 +1110,7 @@ pub fn target(path: List(Step)) -> Target {
   }
 }
 
+/// Checks whether an event path step corresponds to an editable input.
 fn editable(step: Step) -> Bool {
   case step.tag, step.editing {
     "loom-composer", _ -> True

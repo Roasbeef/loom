@@ -170,11 +170,16 @@ pub fn error_response(id: Option(Id), error: RpcError) -> JsonValue {
     #("code", json.Int(error.code)),
     #("message", json.String(error.message)),
   ]
+
+  // Appends the error data payload when present.
   let details = case error.data {
     None -> details
     Some(data) -> list.append(details, [#("data", data)])
   }
+
   let fields = [#("jsonrpc", json.String(version))]
+
+  // Appends the correlated request identifier when present.
   let fields = case id {
     None -> fields
     Some(id) -> list.append(fields, [#("id", encode_id(id))])
@@ -183,6 +188,7 @@ pub fn error_response(id: Option(Id), error: RpcError) -> JsonValue {
   json.Object(list.append(fields, [#("error", json.Object(details))]))
 }
 
+/// Appends an optional parameter object to the JSON-RPC member list.
 fn with_params(
   fields: List(#(String, JsonValue)),
   params: Option(JsonValue),
@@ -230,18 +236,23 @@ pub fn decode(text: String) -> Result(Inbound, MessageFault) {
     json.parse(text)
     |> result.map_error(fn(report) { MalformedMessage(report:) }),
   )
+
+  // Unwraps the root payload object into its constituent member fields.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error(BadMessage(reason: "a json object message"))
   })
+
   use Nil <- result.try(check_version(fields))
 
+  // Routes between method calls and response outcomes based on method presence.
   case list.key_find(fields, "method") {
     Ok(method) -> decode_call(fields, method)
     Error(Nil) -> decode_response(fields)
   }
 }
 
+/// Confirms the JSON-RPC protocol version string is 2.0.
 fn check_version(
   fields: List(#(String, JsonValue)),
 ) -> Result(Nil, MessageFault) {
@@ -251,21 +262,21 @@ fn check_version(
   }
 }
 
-// A message with a `method` is a request when an id is present and a
-// notification when it is absent. `params` is carried raw. The spec wants a
-// structured value, but interpreting it is `lsp/protocol`'s job, and a
-// server that sent a scalar fails there with a better-worded fault.
+/// Decodes a request or notification message carrying a method name.
 fn decode_call(
   fields: List(#(String, JsonValue)),
   method: JsonValue,
 ) -> Result(Inbound, MessageFault) {
+  // Extracts the string method identifier from the method value.
   use method <- result.try(case method {
     json.String(method) -> Ok(method)
     _ -> Error(BadMessage(reason: "a string method name"))
   })
+
   use Nil <- result.try(check_no_outcome(fields))
   let params = option.from_result(list.key_find(fields, "params"))
 
+  // Distinguishes requests requiring replies from one-way notifications.
   case list.key_find(fields, "id") {
     Error(Nil) -> Ok(Notification(method:, params:))
     Ok(id) -> {
@@ -275,8 +286,7 @@ fn decode_call(
   }
 }
 
-// A request or notification carrying a `result` or `error` fits neither the
-// call shape nor the response shape, and refusing beats picking one.
+/// Verifies that a call message omits both result and error members.
 fn check_no_outcome(
   fields: List(#(String, JsonValue)),
 ) -> Result(Nil, MessageFault) {
@@ -289,14 +299,17 @@ fn check_no_outcome(
   }
 }
 
+/// Decodes an inbound response message carrying an outcome.
 fn decode_response(
   fields: List(#(String, JsonValue)),
 ) -> Result(Inbound, MessageFault) {
+  // Ensures the response message carries a valid identifier.
   use id <- result.try(case list.key_find(fields, "id") {
     Ok(id) -> decode_id(id)
     Error(Nil) -> Error(BadMessage(reason: "an id on a response"))
   })
 
+  // Validates that exactly one outcome field was supplied.
   case list.key_find(fields, "result"), list.key_find(fields, "error") {
     Ok(result), Error(Nil) -> Ok(Response(id:, outcome: Ok(result)))
     Error(Nil), Ok(error) -> {
@@ -310,6 +323,7 @@ fn decode_response(
   }
 }
 
+/// Decodes a request or response identifier value.
 fn decode_id(value: JsonValue) -> Result(Id, MessageFault) {
   case value {
     json.Int(id) -> Ok(IdInt(id))
@@ -318,19 +332,26 @@ fn decode_id(value: JsonValue) -> Result(Id, MessageFault) {
   }
 }
 
+/// Decodes a JSON-RPC error member into an RpcError record.
 fn decode_error(value: JsonValue) -> Result(RpcError, MessageFault) {
+  // Extracts the error object member map.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error(BadMessage(reason: "a json object error member"))
   })
+
+  // Extracts the numeric error code.
   use code <- result.try(case list.key_find(fields, "code") {
     Ok(json.Int(code)) -> Ok(code)
     _ -> Error(BadMessage(reason: "an integer error code"))
   })
+
+  // Extracts the descriptive error message string.
   use message <- result.try(case list.key_find(fields, "message") {
     Ok(json.String(message)) -> Ok(message)
     _ -> Error(BadMessage(reason: "a string error message"))
   })
+
   let data = option.from_result(list.key_find(fields, "data"))
 
   Ok(RpcError(code:, message:, data:))

@@ -127,6 +127,8 @@ pub fn verify(
       "no seed at " <> root <> "; run `make codemode-seed`"
     }),
   )
+
+  // Check whether the seed's gleam.toml matches the expected configuration.
   use _ <- result.try(case present == compile.project_toml(dependencies) {
     True -> Ok(Nil)
     False ->
@@ -137,6 +139,7 @@ pub fn verify(
         <> "codemode-seed`",
       )
   })
+
   use _ <- result.try(exists(
     root <> "/manifest.toml",
     "the seed has no resolved manifest.toml; run `make codemode-seed`",
@@ -153,10 +156,12 @@ pub fn verify(
     |> list.append(policy.extension_cap_modules())
     |> list.unique
   list.try_each(modules, fn(module) {
+    // Determine vendor package name from module prefix.
     let package = case module {
       "cap/" <> _ -> "cap"
       _ -> "ext"
     }
+
     exists(
       root <> "/vendor/" <> package <> "/src/" <> module <> ".gleam",
       "the seed at "
@@ -184,8 +189,10 @@ pub fn main() -> Nil {
   }
 }
 
-// The placeholder the seed is built with. It exists only so the seed's
-// build compiles a real program module; every build root overwrites it.
+/// Returns source code for a minimal valid placeholder program module.
+///
+/// The placeholder the seed is built with. It exists only so the seed's
+/// build compiles a real program module; every build root overwrites it.
 fn placeholder_program() -> String {
   "//// A seed placeholder. Every build root overwrites this.\n\n"
   <> "import cap/report\n\n"
@@ -194,9 +201,11 @@ fn placeholder_program() -> String {
   <> "}\n"
 }
 
-// Vendors one package: its project file and the source trees Gleam reads.
-// Deliberately not a whole-directory copy — a package's own `build/` is
-// tens of megabytes of artifacts belonging to a different project root.
+/// Copies a package's manifest and source files into the vendor directory.
+///
+/// Vendors one package: its project file and the source trees Gleam reads.
+/// Deliberately not a whole-directory copy — a package's own `build/` is
+/// tens of megabytes of artifacts belonging to a different project root.
 fn vendor(source: String, destination: String) -> Result(Nil, String) {
   use _ <- result.try(make_directory(destination))
   use _ <- result.try(copy_file(
@@ -230,6 +239,7 @@ fn vendor(source: String, destination: String) -> Result(Nil, String) {
   copy_optional_tree(source <> "/include", destination <> "/include")
 }
 
+/// Copies an optional subdirectory tree if it exists at source.
 fn copy_optional_tree(
   source: String,
   destination: String,
@@ -265,6 +275,7 @@ fn exists(path: String, complaint: String) -> Result(Nil, String) {
   }
 }
 
+/// Formats filesystem operation errors into human-readable messages.
 fn describe(
   outcome: Result(a, simplifile.FileError),
   what: String,

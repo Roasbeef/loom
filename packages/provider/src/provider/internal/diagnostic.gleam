@@ -46,6 +46,8 @@ pub fn append_error_body(
   chunk: BitArray,
 ) -> Result(BitArray, Nil) {
   let remaining = max_error_body_bytes - bit_array.byte_size(body)
+
+  // Reject chunk if it exceeds the remaining budget for error bodies.
   case bit_array.byte_size(chunk) > remaining {
     True -> Error(Nil)
     False -> Ok(bit_array.append(body, chunk))
@@ -147,8 +149,11 @@ fn scrub(value: String, secret: String) -> String {
 // Test only the prefix needed to answer the bound. Walking the entire remote
 // string merely to learn that it is long would make diagnostics proportional
 // to attacker-controlled input after the byte budget had already done its job.
+/// Bounds a diagnostic string to a maximum byte length, appending an ellipsis if truncated.
 fn bound(value: String, bytes: Int) -> String {
   let encoded = bit_array.from_string(value)
+
+  // Keep whole string if it fits within byte limit; otherwise truncate at UTF-8 boundary.
   case bit_array.byte_size(encoded) <= bytes {
     True -> value
     False -> utf8_prefix(encoded, bytes) <> "…"
@@ -158,6 +163,7 @@ fn bound(value: String, bytes: Int) -> String {
 // A byte cut may split one UTF-8 codepoint. Backing up can inspect at most
 // three additional prefixes, so a remote string cannot turn truncation itself
 // into work proportional to the untrusted suffix.
+/// Truncates a BitArray to the longest valid UTF-8 prefix within the byte budget.
 fn utf8_prefix(value: BitArray, bytes: Int) -> String {
   case bit_array.slice(value, at: 0, take: bytes) {
     Error(Nil) -> ""

@@ -54,6 +54,7 @@ pub fn routing(
 ) -> satellite.CapRouter {
   let collect = door.collect
   fn(request: satellite.CapRequest) {
+    // Dispatch LSP snapshot capture requests to the collector.
     case request.cap {
       "lsp.snapshot" -> {
         use scope <- result.try(decode_request(request.args))
@@ -71,6 +72,7 @@ pub fn routing(
   }
 }
 
+/// Decodes an inbound snapshot capture request payload into validated options.
 fn decode_request(
   value: m.MsgPackValue,
 ) -> Result(o.Request, satellite.CapDenial) {
@@ -100,14 +102,18 @@ fn decode_request(
   Ok(o.Request(server:, root:, outlines:, targets:))
 }
 
-// Fixed list bounds are checked before decoding any entry, so malformed large
-// requests spend no collector work and build no second unbounded target list.
+/// Validates that an array field does not exceed its maximum entry limit.
+///
+/// Fixed list bounds are checked before decoding any entry, so malformed large
+/// requests spend no collector work and build no second unbounded target list.
 fn bounded_array(
   value: m.MsgPackValue,
   key: String,
   limit: Int,
 ) -> Result(List(m.MsgPackValue), satellite.CapDenial) {
   use raw <- result.try(args.field(value, key))
+
+  // Check array bounds against configured maximum size.
   case raw {
     m.ArrayValue(items) ->
       case list.drop(items, limit) {
@@ -125,21 +131,27 @@ fn bounded_array(
   }
 }
 
+/// Decodes a target symbol query from message-pack map fields.
 fn decode_target(
   value: m.MsgPackValue,
 ) -> Result(query.SymbolQuery, satellite.CapDenial) {
   use symbol <- result.try(args.string(value, "symbol"))
   use path <- result.try(args.string(value, "path"))
   use raw <- result.try(args.field(value, "line"))
+
+  // Decode optional 1-based integer line number.
   use line <- result.try(case raw {
     m.NilValue -> Ok(None)
     m.IntValue(n) if n > 0 -> Ok(Some(n))
     _other -> Error(args.invalid("target line must be positive or nil"))
   })
+
   Ok(query.SymbolQuery(symbol:, path: Some(path), line:))
 }
 
+/// Translates observation collector errors into capability denials.
 fn refusal(error: o.Error) -> framing.CapOutcome {
+  // Map collector errors to capability denial codes and explanations.
   let #(code, message) = case error {
     o.InvalidScope(reason) -> #("invalid_scope", reason)
     o.Changed(reason) -> #("observation_changed", reason)
@@ -150,6 +162,7 @@ fn refusal(error: o.Error) -> framing.CapOutcome {
     )
     o.QueryFailed(error) -> #("observation_query", query_message(error))
   }
+
   framing.CapErr(code:, message:)
 }
 
@@ -171,6 +184,7 @@ fn optional_text(value) {
   }
 }
 
+/// Serializes a source location site to a list of MsgPack values.
 fn site(site: query.Site) -> List(m.MsgPackValue) {
   [
     m.StringValue(site.path),
@@ -185,8 +199,10 @@ fn rows(values, render) {
   m.ArrayValue(list.map(values, fn(value) { m.ArrayValue(render(value)) }))
 }
 
-// Metadata is outside the tables, so every projected query keeps the same
-// declared scope, generation, interval and withheld count.
+/// Encodes an observation batch into MsgPack table records and metadata.
+///
+/// Metadata is outside the tables, so every projected query keeps the same
+/// declared scope, generation, interval and withheld count.
 fn encode(batch: o.Batch) -> m.MsgPackValue {
   map([
     #("server", m.StringValue(batch.requested.server)),
@@ -253,10 +269,12 @@ fn encode(batch: o.Batch) -> m.MsgPackValue {
   ])
 }
 
-// A bare name is the usual reason a seed misses: the server indexes a method
-// under its receiver and a package-level item under its package, and a program
-// that wrote only the last segment gets no more than "not found" to go on. The
-// resolver is unchanged; only the reason says what to try.
+/// Constructs a diagnostic message for unfound symbols suggesting qualification.
+///
+/// A bare name is the usual reason a seed misses: the server indexes a method
+/// under its receiver and a package-level item under its package, and a program
+/// that wrote only the last segment gets no more than "not found" to go on. The
+/// resolver is unchanged; only the reason says what to try.
 fn not_found_message(symbol: String) -> String {
   case string.contains(symbol, ".") {
     True -> "symbol not found: " <> symbol
@@ -268,6 +286,7 @@ fn not_found_message(symbol: String) -> String {
   }
 }
 
+/// Converts an LSP query error into human-readable diagnostic text.
 fn query_message(error: query.QueryError) -> String {
   case error {
     query.NoServer(reason) | query.Unavailable(reason) -> reason

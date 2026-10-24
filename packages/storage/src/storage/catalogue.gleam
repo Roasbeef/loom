@@ -213,6 +213,8 @@ pub fn open(path: String) -> Result(Catalogue, Error) {
   use connection <- result.try(
     sqlight.open(path) |> result.map_error(sql_error),
   )
+
+  // Configure SQLite connection policy and verify or migrate schema.
   case initialize(connection) {
     Ok(Nil) -> Ok(Catalogue(connection))
     Error(error) -> {
@@ -222,6 +224,8 @@ pub fn open(path: String) -> Result(Catalogue, Error) {
   }
 }
 
+/// Applies standard SQLite connection policy, verifies the schema, and configures
+/// the database pragmas for catalogue access.
 fn initialize(connection: sqlight.Connection) -> Result(Nil, Error) {
   let defaults = sqlite_policy.defaults()
   let options =
@@ -242,9 +246,14 @@ fn initialize(connection: sqlight.Connection) -> Result(Nil, Error) {
 // catalogue applies every schema it lacks in one transaction, so a crash
 // part-way through a migration leaves the previous version intact rather
 // than a catalogue that claims a version whose tables are missing.
+/// Verifies application ID and user version pragmas, migrating an older schema
+/// forward or initializing a fresh database layout in one transaction.
 fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use found <- result.try(number(connection, "PRAGMA application_id"))
   use version <- result.try(number(connection, "PRAGMA user_version"))
+
+  // Dispatch on whether this is an existing catalogue database, a blank file,
+  // or an unsupported schema.
   case found, version {
     1_281_253_197, found_version if found_version == current_version -> {
       use _revision <- result.try(revision(Catalogue(connection)))
@@ -261,6 +270,8 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
     }
     0, 0 -> {
       use tables <- result.try(number(connection, "PRAGMA schema_version"))
+
+      // An uninitialized SQLite file has schema version 0 and accepts the initial tables.
       case tables {
         0 ->
           transaction(connection, fn() {
@@ -322,6 +333,7 @@ fn user_version_pragma() -> String {
 // The schemas a catalogue at `version` lacks, applied in version order. A
 // fresh catalogue is version one once `sql_schema` is in place, so creation
 // and migration run the same list and cannot drift apart.
+/// Applies each migration step strictly greater than `version` in numerical order.
 fn migrations_after(
   connection: sqlight.Connection,
   version: Int,
@@ -370,11 +382,13 @@ pub fn reserve_in_transaction(
   reserve_record(catalogue, record, existing)
 }
 
+/// Reserves a record or validates retry compatibility against existing registrations.
 fn reserve_record(
   catalogue: Catalogue,
   record: Registration,
   existing: List(Registration),
 ) {
+  // Check whether a registration for the request key is already recorded.
   case existing {
     [old] -> {
       case requested(old) == requested(record) {
@@ -384,6 +398,8 @@ fn reserve_record(
     }
     [] -> {
       use conflicts <- result.try(find(catalogue, record.id, "", record.path))
+
+      // Ensure no conflicting session identity or path is already reserved.
       case conflicts {
         [] -> insert(catalogue, Registration(..record, state: Reserved))
         [_, ..] -> Error(Conflict)
@@ -403,6 +419,7 @@ fn requested(record: Registration) -> Registration {
   }
 }
 
+/// Inserts a new registration row into the catalogue and increments the global revision.
 fn insert(
   catalogue: Catalogue,
   record: Registration,
@@ -462,6 +479,8 @@ pub fn confirm_in_transaction(
   id: String,
 ) -> Result(Registration, Error) {
   use record <- result.try(get(catalogue, id))
+
+  // A reserved record is transitioned to saved; already saved records are returned as-is.
   case record.state {
     Saved -> Ok(record)
     Reserved -> {
@@ -487,6 +506,8 @@ pub fn confirm_in_transaction(
 /// ```
 pub fn get(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
   use found <- result.try(find(catalogue, id, "", ""))
+
+  // Exactly one registration row is expected for a session ID.
   case found {
     [record] -> display_record(catalogue, record)
     [] -> Error(Missing)
@@ -515,6 +536,8 @@ pub fn rename(
   use Nil <- result.try(display_name(name))
   transaction(catalogue.connection, fn() {
     use record <- result.try(get(catalogue, id))
+
+    // Skip updating the display name if the registration already matches it.
     case record.name == name {
       True -> Ok(record)
       False -> {
@@ -554,6 +577,7 @@ pub fn set_profile(
   id: String,
   profile: Option(String),
 ) -> Result(Registration, Error) {
+  // Validate optional profile name syntax before updating.
   use Nil <- result.try(case profile {
     None -> Ok(Nil)
     Some(name) ->
@@ -562,8 +586,11 @@ pub fn set_profile(
         False -> Error(Invalid("registration profile is not a profile name"))
       }
   })
+
   transaction(catalogue.connection, fn() {
     use record <- result.try(get(catalogue, id))
+
+    // Skip modifying profile metadata if the record already holds this profile.
     case record.profile == profile {
       True -> Ok(record)
       False -> {
@@ -600,6 +627,8 @@ pub fn set_profile(
 pub fn display_name(name: String) -> Result(Nil, Error) {
   let points =
     list.map(string.to_utf_codepoints(name), string.utf_codepoint_to_int)
+
+  // Validate length bounds and absence of control or invisible characters.
   case
     string.trim(name) != ""
     && string.byte_size(name) <= 256
@@ -666,6 +695,8 @@ pub fn seed_subtitle(
     Some(subtitle) ->
       transaction(catalogue.connection, fn() {
         use record <- result.try(get(catalogue, id))
+
+        // Record a subtitle once; ignore updates if one is already present.
         case record.subtitle {
           Some(_) -> Ok(record)
           None -> {
@@ -711,6 +742,8 @@ pub fn seed_executor(
     True ->
       transaction(catalogue.connection, fn() {
         use record <- result.try(get(catalogue, id))
+
+        // Record the executor choice once for pooled sessions.
         case record.pool == "" || record.executor != "" {
           True -> Ok(record)
           False -> {
@@ -751,6 +784,8 @@ pub fn subtitle_from_prompt(prompt: String) -> Option(String) {
     |> string.replace("\r", "\n")
     |> string.split("\n")
     |> list.map(collapse)
+
+  // Find the first nonblank line from the prompt to format as subtitle.
   case list.find(lines, fn(line) { line != "" }) {
     Ok(line) -> Some(fit_subtitle(line))
     Error(Nil) -> None
@@ -759,11 +794,14 @@ pub fn subtitle_from_prompt(prompt: String) -> Option(String) {
 
 // One line with whitespace runs reduced to a single space and unprintable code
 // points dropped, trimmed at both ends.
+/// Collapses whitespace runs and drops unprintable code points across a string.
 fn collapse(line: String) -> String {
   line
   |> string.to_utf_codepoints
   |> list.filter_map(fn(point) {
     let value = string.utf_codepoint_to_int(point)
+
+    // Normalize spacing characters and filter control or invisible code points.
     case value {
       9 | 32 | 0xA0 | 0x3000 -> Ok(" ")
       _ ->
@@ -779,7 +817,9 @@ fn collapse(line: String) -> String {
   |> string.join(" ")
 }
 
+/// Fits a subtitle string within the code point limit, breaking at a word boundary if possible.
 fn fit_subtitle(line: String) -> String {
+  // Check if the line already fits within the subtitle code point limit.
   case code_points(line) <= subtitle_limit {
     True -> line
     False -> {
@@ -793,11 +833,13 @@ fn fit_subtitle(line: String) -> String {
         True, _ | False, False -> kept
         False, True -> without_last_word(kept)
       }
+
       string.trim_end(cut) <> "…"
     }
   }
 }
 
+/// Removes the trailing word from a space-separated string.
 fn without_last_word(text: String) -> String {
   text
   |> string.split(" ")
@@ -809,15 +851,19 @@ fn without_last_word(text: String) -> String {
 
 // The longest run of whole graphemes holding at most `room` code points, so a
 // cut never splits a character a reader sees as one.
+/// Consumes whole graphemes that collectively fit within the remaining code point capacity.
 fn take_points(
   graphemes: List(String),
   room: Int,
   kept: List(String),
 ) -> String {
+  // Walk graphemes until the remaining room is exhausted.
   case graphemes {
     [] -> string.concat(list.reverse(kept))
     [next, ..rest] -> {
       let used = code_points(next)
+
+      // Include this grapheme if remaining room permits.
       case used <= room {
         True -> take_points(rest, room - used, [next, ..kept])
         False -> string.concat(list.reverse(kept))
@@ -833,6 +879,7 @@ fn code_points(text: String) -> Int {
 // A stored subtitle decodes only when it still satisfies what `seed_subtitle`
 // writes. One that does not (written by a later version, or damaged) reads as
 // absent rather than failing the listing it appears in.
+/// Validates and decodes a stored subtitle string, returning None on invalid format.
 fn stored_subtitle(subtitle: String) -> Option(String) {
   case
     subtitle != ""
@@ -849,6 +896,7 @@ fn stored_subtitle(subtitle: String) -> Option(String) {
 
 // Display reads layer mutable labels over immutable creation metadata. This
 // helper must not enter find/by_request_key, which prove retry equality.
+/// Overlays mutable display name and subtitle metadata onto an immutable registration record.
 fn display_record(catalogue: Catalogue, record: Registration) {
   use names <- result.try(query(
     catalogue,
@@ -858,11 +906,15 @@ fn display_record(catalogue: Catalogue, record: Registration) {
     catalogue,
     sql.registration_subtitle(record.id),
   ))
+
+  // Layer the display name override if present.
   use named <- result.try(case names {
     [] -> Ok(record)
     [name] -> Ok(Registration(..record, name: name.name))
     [_, _, ..] -> Error(Invalid("duplicate session display name"))
   })
+
+  // Layer the stored subtitle if present.
   case subtitles {
     [] -> Ok(named)
     [found] ->
@@ -888,6 +940,8 @@ pub fn by_request_key(
   request_key: String,
 ) -> Result(Registration, Error) {
   use found <- result.try(find(catalogue, "", request_key, ""))
+
+  // Exactly one registration row is expected for a unique request key.
   case found {
     [record] -> Ok(record)
     [] -> Error(Missing)
@@ -921,6 +975,8 @@ pub fn workspace_default(
         }
       }),
     )
+
+    // Ensure the default session belongs to the queried workspace.
     case record.workspace == workspace {
       True -> Ok(record)
       False -> Error(Invalid("workspace default refers to another workspace"))
@@ -949,6 +1005,8 @@ pub fn set_workspace_default(
   transaction(catalogue.connection, fn() {
     use record <- result.try(get(catalogue, id))
     use state <- result.try(archive_state(catalogue, id))
+
+    // Only active sessions may be chosen as workspace defaults.
     use Nil <- result.try(case state {
       Active -> Ok(Nil)
       Archived -> Error(Conflict)
@@ -966,6 +1024,8 @@ pub fn set_workspace_default(
         False -> Error(Conflict)
       },
     )
+
+    // Check whether the requested default is already recorded.
     case default_identity(catalogue, workspace) {
       Ok(current) if current == id -> Ok(record)
       Ok(_) | Error(Missing) -> {
@@ -1000,11 +1060,14 @@ pub fn visibility(
   archive_state(catalogue, id)
 }
 
+/// Reads whether a session is currently marked archived in the catalogue.
 fn archive_state(
   catalogue: Catalogue,
   id: String,
 ) -> Result(Visibility, Error) {
   use rows <- result.try(query(catalogue, sql.session_archive(id)))
+
+  // Absence of an archive row indicates an active session.
   case rows {
     [] -> Ok(Active)
     [sql.SessionArchive(found)] if found == id -> Ok(Archived)
@@ -1032,9 +1095,12 @@ pub fn set_visibility(
   transaction(catalogue.connection, fn() {
     use record <- result.try(get(catalogue, id))
     use current <- result.try(archive_state(catalogue, id))
+
+    // Skip modifications when the current visibility matches the target.
     case current == visibility {
       True -> Ok(record)
       False -> {
+        // Either restore to active or record an archive tombstone and clear defaults.
         use Nil <- result.try(case visibility {
           Active -> statement(catalogue, sql.restore_session(id))
           Archived -> {
@@ -1045,6 +1111,7 @@ pub fn set_visibility(
             statement(catalogue, sql.archive_session(id))
           }
         })
+
         use Nil <- result.try(statement(
           catalogue,
           sql.increment_catalogue_revision(),
@@ -1182,8 +1249,11 @@ pub fn custodies(
   })
 }
 
+/// Queries the custody row for a session, returning Resident when no move row exists.
 fn stored_custody(catalogue: Catalogue, id: String) -> Result(Custody, Error) {
   use rows <- result.try(query(catalogue, sql.session_move(id)))
+
+  // Absence of move metadata signifies normal resident custody.
   case rows {
     [] -> Ok(Resident)
     [row] -> decode_custody(row.op, row.peer, row.state)
@@ -1191,6 +1261,7 @@ fn stored_custody(catalogue: Catalogue, id: String) -> Result(Custody, Error) {
   }
 }
 
+/// Decodes custody move operation and peer strings into a verified Custody value.
 fn decode_custody(
   op: String,
   peer: String,
@@ -1251,6 +1322,8 @@ pub fn record_start_failure(
   use failure <- result.try(decode_start_failure(reason, at))
   transaction(catalogue.connection, fn() {
     use record <- result.try(get(catalogue, id))
+
+    // Only reserved registrations can record start failure details.
     case record.state {
       Saved -> Error(Conflict)
       Reserved -> {
@@ -1285,6 +1358,8 @@ pub fn start_failure(
   id: String,
 ) -> Result(Option(StartFailure), Error) {
   use rows <- result.try(query(catalogue, sql.start_failure(id)))
+
+  // Decode the start failure record if present.
   case rows {
     [] -> Ok(None)
     [row] -> decode_start_failure(row.reason, row.failed_at) |> result.map(Some)
@@ -1307,11 +1382,14 @@ pub fn clear_start_failure(
   transaction(catalogue.connection, fn() { clear_in_transaction(catalogue, id) })
 }
 
+/// Clears any recorded start failure for a session within the current transaction.
 fn clear_in_transaction(
   catalogue: Catalogue,
   id: String,
 ) -> Result(Nil, Error) {
   use kept <- result.try(start_failure(catalogue, id))
+
+  // Delete failure record and bump catalogue revision if a failure was kept.
   case kept {
     None -> Ok(Nil)
     Some(_) -> {
@@ -1325,6 +1403,7 @@ fn clear_in_transaction(
 // printable text. The table's CHECK holds the same length bound, and the
 // control-character half is held here, where the text is judged on its way in
 // and again on its way out.
+/// Validates and decodes start failure reason text and timestamp.
 fn decode_start_failure(
   reason: String,
   at: Int,
@@ -1335,6 +1414,8 @@ fn decode_start_failure(
       let code = string.utf_codepoint_to_int(codepoint)
       code >= 0x20 && code != 0x7f
     })
+
+  // Ensure byte size, ASCII printability, and timestamp validity.
   case size >= 1 && size <= start_failure_limit && plain && at >= 0 {
     True -> Ok(StartFailure(reason:, at:))
     False -> Error(Invalid("invalid start failure"))
@@ -1378,6 +1459,8 @@ pub fn begin_move(
   use Nil <- result.try(validate_move(op, to))
   transaction(catalogue.connection, fn() {
     use current <- result.try(custody(catalogue, id))
+
+    // Transition resident or imported sessions into the moving state.
     case current {
       Resident -> {
         use Nil <- result.try(insert_move(catalogue, id, op, to, "moving"))
@@ -1418,6 +1501,8 @@ pub fn finish_move(
 ) -> Result(Custody, Error) {
   transaction(catalogue.connection, fn() {
     use current <- result.try(custody(catalogue, id))
+
+    // Transition moving sessions into the terminal moved state.
     case current {
       Moving(op: held, to: peer) if held == op -> {
         use Nil <- result.try(statement(
@@ -1458,6 +1543,8 @@ pub fn abort_move(
 ) -> Result(Custody, Error) {
   transaction(catalogue.connection, fn() {
     use current <- result.try(custody(catalogue, id))
+
+    // Abort active move operation and revert session custody to resident.
     case current {
       Resident -> Ok(Resident)
       Moving(op: held, ..) if held == op -> {
@@ -1534,6 +1621,8 @@ pub fn unmark_deleting(catalogue: Catalogue, id: String) -> Result(Nil, Error) {
 /// ```
 pub fn deletion(catalogue: Catalogue, id: String) -> Result(Deletion, Error) {
   use rows <- result.try(query(catalogue, sql.session_deletion(id)))
+
+  // Check whether a session deletion marker row exists.
   case rows {
     [] -> Ok(NotDeleting)
     [_, ..] -> Ok(Deleting)
@@ -1619,6 +1708,8 @@ pub fn import_in_transaction(
 ) -> Result(Custody, Error) {
   use Nil <- result.try(validate_move(op, from))
   use current <- result.try(custody(catalogue, id))
+
+  // Validate state transitions when importing an incoming session.
   case current {
     Resident -> {
       use Nil <- result.try(insert_move(catalogue, id, op, from, "imported"))
@@ -1635,6 +1726,7 @@ pub fn import_in_transaction(
   }
 }
 
+/// Inserts a move record row and increments the catalogue revision.
 fn insert_move(
   catalogue: Catalogue,
   id: String,
@@ -1743,11 +1835,16 @@ pub fn claim_delegate(
     // domain answer, and it runs inside the transaction so a concurrent
     // `delete` cannot slip between the check and the insert.
     use registered <- result.try(find(catalogue, session_id, "", ""))
+
+    // Ensure the delegate session ID is already registered in the catalogue.
     use Nil <- result.try(case registered {
       [] -> Error(Missing)
       [_, ..] -> Ok(Nil)
     })
+
     use held <- result.try(delegate_for(catalogue, spawner, parent_session))
+
+    // Claim existing delegate session or check spawner limit before insertion.
     case held {
       Some(found) if found.session_id != session_id -> Error(Conflict)
       Some(found) -> {
@@ -1759,6 +1856,8 @@ pub fn claim_delegate(
       }
       None -> {
         use count <- result.try(delegates_held(catalogue, spawner))
+
+        // Check whether the spawner has reached its delegate session limit.
         case count >= limit {
           True -> Ok(AtLimit(held: count))
           False -> {
@@ -1785,6 +1884,7 @@ pub fn claim_delegate(
   })
 }
 
+/// Validates syntax of a spawner profile name and parent session identity.
 fn validate_pair(
   spawner: String,
   parent_session: String,
@@ -1798,6 +1898,7 @@ fn validate_pair(
   }
 }
 
+/// Validates spawner name, parent session, child session identity, and timestamp.
 fn validate_delegate(
   spawner: String,
   parent_session: String,
@@ -1838,6 +1939,8 @@ pub fn delegate_for(
     catalogue,
     sql.delegate_session(spawner, parent_session),
   ))
+
+  // Decode the single delegate row if present.
   case rows {
     [] -> Ok(None)
     [row] -> {
@@ -1872,6 +1975,8 @@ pub fn delegate_of(
   session_id: String,
 ) -> Result(Option(Delegate), Error) {
   use rows <- result.try(query(catalogue, sql.delegate_of_session(session_id)))
+
+  // Decode the delegate row referencing this session.
   case rows {
     [] -> Ok(None)
     [row] ->
@@ -1910,6 +2015,7 @@ pub fn delegate_of(
 pub fn delegates(catalogue: Catalogue) -> Result(List(Delegate), Error) {
   use rows <- result.try(query(catalogue, sql.all_delegate_sessions()))
   list.try_map(rows, fn(row) {
+    // Validate identifiers and decode the delegate record.
     case
       is_profile_name(row.spawner)
       && result.is_ok(ids.parse_session_id(row.parent_session))
@@ -1931,6 +2037,7 @@ pub fn delegates(catalogue: Catalogue) -> Result(List(Delegate), Error) {
 
 // The stored text of a state, total: a word this build does not know is a
 // damaged row, never an open session.
+/// Decodes the textual representation of a delegate lifecycle state.
 fn delegate_state(text: String) -> Result(DelegateState, Error) {
   case text {
     "open" -> Ok(Open)
@@ -1940,6 +2047,7 @@ fn delegate_state(text: String) -> Result(DelegateState, Error) {
   }
 }
 
+/// Returns the canonical database string representation of a delegate state.
 fn delegate_state_text(state: DelegateState) -> String {
   case state {
     Open -> "open"
@@ -1948,6 +2056,7 @@ fn delegate_state_text(state: DelegateState) -> String {
   }
 }
 
+/// Assigns monotonic ranks to delegate states to enforce forward-only transitions.
 fn delegate_state_rank(state: DelegateState) -> Int {
   case state {
     Open -> 0
@@ -1974,6 +2083,8 @@ pub fn set_delegate_state(
 ) -> Result(Nil, Error) {
   transaction(catalogue.connection, fn() {
     use found <- result.try(delegate_of(catalogue, session_id))
+
+    // Ensure the delegate session exists and state transition is strictly forward.
     case found {
       None -> Error(Missing)
       Some(current) ->
@@ -2026,6 +2137,7 @@ pub fn write_remote_releases(
   orchestrators: List(String),
   now_ms now_ms: Int,
 ) -> Result(Nil, Error) {
+  // Validate parent session ID, timestamp, and orchestrator profile names.
   use Nil <- result.try(
     case
       result.is_ok(ids.parse_session_id(parent_session))
@@ -2036,6 +2148,7 @@ pub fn write_remote_releases(
       False -> Error(Invalid("invalid remote release metadata"))
     },
   )
+
   transaction(catalogue.connection, fn() {
     list.try_each(orchestrators, fn(orchestrator) {
       statement(
@@ -2105,6 +2218,8 @@ pub fn delegates_held(
   spawner: String,
 ) -> Result(Int, Error) {
   use rows <- result.try(query(catalogue, sql.count_delegate_sessions(spawner)))
+
+  // Exactly one count row is returned by the aggregation query.
   case rows {
     [row] -> Ok(row.count)
     [] | [_, _, ..] -> Error(Invalid("expected one delegate count row"))
@@ -2257,6 +2372,8 @@ pub fn relayed_for(
 ) -> Result(Option(Relayed), Error) {
   use Nil <- result.try(validate_relayed(spawner, request_id))
   use rows <- result.try(query(catalogue, sql.relayed_by_request(request_id)))
+
+  // Decode the relayed session row matching the request id.
   case rows {
     [] -> Ok(None)
     [row] ->
@@ -2293,6 +2410,8 @@ pub fn relayed_of(
   session_id: String,
 ) -> Result(Option(Relayed), Error) {
   use rows <- result.try(query(catalogue, sql.relayed_of_session(session_id)))
+
+  // Decode the relayed session row for this session ID if present.
   case rows {
     [] -> Ok(None)
     [row] ->
@@ -2322,6 +2441,8 @@ pub fn relayed_held(
   spawner: String,
 ) -> Result(Int, Error) {
   use rows <- result.try(query(catalogue, sql.count_relayed_held(spawner)))
+
+  // Exactly one count row is returned by the count query.
   case rows {
     [row] -> Ok(row.count)
     [] | [_, _, ..] -> Error(Invalid("expected one relayed count row"))
@@ -2345,6 +2466,8 @@ pub fn relayed_since(
     catalogue,
     sql.count_relayed_since(spawner, since_ms),
   ))
+
+  // Exactly one count row is returned by the time-windowed count query.
   case rows {
     [row] -> Ok(row.count)
     [] | [_, _, ..] -> Error(Invalid("expected one relayed count row"))
@@ -2381,6 +2504,8 @@ pub fn claim_relayed(
   reserve: fn() -> Result(Registration, Error),
 ) -> Result(RelayedClaim, Error) {
   use found <- result.try(relayed_for(catalogue, spawner, request_id))
+
+  // Return existing record on retry or evaluate limits for a new creation.
   case found {
     Some(record) -> Ok(RelayedFound(record:))
     None -> {
@@ -2390,6 +2515,8 @@ pub fn claim_relayed(
         spawner,
         limits.now_ms - relayed_hour_ms,
       ))
+
+      // Enforce total active and hourly relayed session rate limits.
       case held >= limits.max_sessions, recent >= limits.max_per_hour {
         True, _ ->
           Ok(RelayedCapped(cap: RelayedSessions, limit: limits.max_sessions))
@@ -2441,12 +2568,15 @@ pub fn relayed_page(
   after after: String,
   limit limit: Int,
 ) -> Result(List(RelayedListing), Error) {
+  // Validate spawner profile name before listing relayed sessions.
   use Nil <- result.try(case is_profile_name(spawner) {
     True -> Ok(Nil)
     False -> Error(Invalid("invalid relayed session metadata"))
   })
+
   let bound = int.max(1, int.min(limit, relayed_page_limit))
   snapshot(catalogue.connection, fn() {
+    // Choose between first page or subsequent continuation page.
     case after {
       "" -> {
         use rows <- result.try(query(
@@ -2490,6 +2620,7 @@ pub fn relayed_page(
   })
 }
 
+/// Decodes a flat query row into a RelayedListing record with mapped visibility.
 fn relayed_listing(
   spawner: String,
   request_id: String,
@@ -2501,11 +2632,13 @@ fn relayed_listing(
   pool: String,
   archived: Int,
 ) -> Result(RelayedListing, Error) {
+  // Decode the integer archived flag into a typed Visibility value.
   use visibility <- result.map(case archived {
     0 -> Ok(Active)
     1 -> Ok(Archived)
     _ -> Error(Invalid("invalid archive metadata"))
   })
+
   RelayedListing(
     record: Relayed(spawner:, request_id:, session_id:, created_at:),
     name:,
@@ -2568,12 +2701,14 @@ pub fn add_spawner_spend(
   tokens tokens: Int,
   spawns spawns: Int,
 ) -> Result(Nil, Error) {
+  // Validate spawner profile name, timestamp, and spend metrics.
   use Nil <- result.try(
     case is_profile_name(spawner) && now_ms >= 0 && tokens >= 0 && spawns >= 0 {
       True -> Ok(Nil)
       False -> Error(Invalid("invalid spawner spend metadata"))
     },
   )
+
   let bucket = spend_bucket(now_ms)
   transaction(catalogue.connection, fn() {
     use Nil <- result.try(statement(
@@ -2605,10 +2740,12 @@ pub fn spawner_spend(
   spawner: String,
   now_ms now_ms: Int,
 ) -> Result(Spend, Error) {
+  // Validate spawner profile name and timestamp before querying spend.
   use Nil <- result.try(case is_profile_name(spawner) && now_ms >= 0 {
     True -> Ok(Nil)
     False -> Error(Invalid("invalid spawner spend metadata"))
   })
+
   let first = spend_bucket(now_ms) - spend_day_buckets + 1
   use rows <- result.try(query(
     catalogue,
@@ -2656,6 +2793,8 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
     // and the move's tombstone has no way out. An imported session's row is
     // only provenance, so it leaves with the session.
     use current <- result.try(stored_custody(catalogue, id))
+
+    // Verify custody state allows deletion and remove imported move rows.
     use Nil <- result.try(case current {
       Moving(..) | Moved(..) -> Error(Conflict)
       Imported(..) -> statement(catalogue, sql.delete_session_move(id))
@@ -2707,11 +2846,14 @@ pub fn delete(catalogue: Catalogue, id: String) -> Result(Registration, Error) {
   })
 }
 
+/// Looks up the session ID configured as default for the given workspace.
 fn default_identity(
   catalogue: Catalogue,
   workspace: String,
 ) -> Result(String, Error) {
   use rows <- result.try(query(catalogue, sql.workspace_default(workspace)))
+
+  // Decode the default session identity row.
   case rows {
     [sql.WorkspaceDefault(id)] -> Ok(id)
     [] -> Error(Missing)
@@ -2748,15 +2890,18 @@ pub fn archived_page(
   page_for(catalogue, after, Archived)
 }
 
+/// Reads one snapshot page of registrations filtered by visibility status.
 fn page_for(
   catalogue: Catalogue,
   after: String,
   visibility: Visibility,
 ) -> Result(Page, Error) {
+  // Map visibility domain type to database archived integer column.
   let archived = case visibility {
     Active -> 0
     Archived -> 1
   }
+
   snapshot(catalogue.connection, fn() {
     use revision <- result.try(revision(catalogue))
     use rows <- result.try(query(
@@ -2789,8 +2934,11 @@ fn page_for(
   })
 }
 
+/// Reads the current monotonic revision number of the catalogue database.
 fn revision(catalogue: Catalogue) -> Result(Int, Error) {
   use rows <- result.try(query(catalogue, sql.catalogue_revision()))
+
+  // Exactly one catalogue revision row must exist.
   case rows {
     [sql.CatalogueRevision(revision)] -> Ok(revision)
     [] | [_, _, ..] -> Error(Invalid("expected one catalogue revision"))
@@ -2934,6 +3082,7 @@ pub fn close(catalogue: Catalogue) -> Result(Nil, Error) {
 
 // The three unique keys share a generated row type. Empty arguments exclude
 // unused keys because valid registrations cannot contain an empty key or path.
+/// Queries registration rows matching session id, request key, or database path.
 fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
   use rows <- result.try(query(
     catalogue,
@@ -2961,8 +3110,11 @@ fn find(catalogue: Catalogue, id: String, request_key: String, path: String) {
   })
 }
 
+/// Validates a decoded registration record and parses its stored state text.
 fn decoded(record: Registration, state: String) -> Result(Registration, Error) {
   use Nil <- result.try(validate(record))
+
+  // Decode the database state string into a typed RegistrationState.
   case state {
     "reserved" -> Ok(record)
     "saved" -> Ok(Registration(..record, state: Saved))
@@ -3012,6 +3164,7 @@ pub fn statement(catalogue: Catalogue, generated: #(String, List(dev.Param))) {
 // binding does; a present value binds as itself, and an absent one is refused
 // rather than silently binding NULL, because no catalogue write clears a
 // column. A future generator change must add an explicit conversion here.
+/// Converts an internal query parameter into an sqlight value.
 fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
   case param {
     dev.ParamInt(value) -> Ok(sqlight.int(value))
@@ -3029,6 +3182,7 @@ fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
   }
 }
 
+/// Validates the structural integrity and semantic invariants of a registration record.
 fn validate(record: Registration) -> Result(Nil, Error) {
   use _id <- result.try(
     ids.parse_session_id(record.id)
@@ -3048,6 +3202,8 @@ fn validate(record: Registration) -> Result(Nil, Error) {
       && is_pool_name(pool)
       && is_workspace_name(record.workspace)
   }
+
+  // Verify paths, placement, request key, and creation timestamp.
   case
     string.starts_with(record.path, "/")
     && placed
@@ -3055,6 +3211,7 @@ fn validate(record: Registration) -> Result(Nil, Error) {
     && record.created_at >= 0
   {
     True -> {
+      // Validate optional profile name syntax.
       use Nil <- result.try(case record.profile {
         None -> Ok(Nil)
         Some(name) ->
@@ -3064,6 +3221,8 @@ fn validate(record: Registration) -> Result(Nil, Error) {
               Error(Invalid("registration profile is not a profile name"))
           }
       })
+
+      // Validate optional model key syntax.
       case record.model {
         None -> Ok(Nil)
         Some(key) ->
@@ -3219,6 +3378,7 @@ fn stored_model(text: String) -> Option(String) {
   }
 }
 
+/// Executes a scalar integer query over the connection.
 fn number(connection: sqlight.Connection, sql: String) -> Result(Int, Error) {
   use values <- result.try(
     sqlight.query(
@@ -3229,6 +3389,8 @@ fn number(connection: sqlight.Connection, sql: String) -> Result(Int, Error) {
     )
     |> result.map_error(sql_error),
   )
+
+  // Ensure exactly one scalar value was returned.
   case values {
     [value] -> Ok(value)
     [] | [_, _, ..] -> Error(Invalid("expected one catalogue metadata row"))
@@ -3256,21 +3418,26 @@ fn snapshot(
   transact(connection, Read, run)
 }
 
+/// Executes a callback inside a SQLite transaction, committing on success or rolling back on error.
 fn transact(
   connection: sqlight.Connection,
   intent: Intent,
   run: fn() -> Result(a, Error),
 ) -> Result(a, Error) {
+  // Select deferred or immediate transaction mode according to intent.
   let begin = case intent {
     Read -> "BEGIN DEFERRED"
     Write -> "BEGIN IMMEDIATE"
   }
+
   use Nil <- result.try(execute(connection, begin))
   let outcome =
     run()
     |> result.try(fn(value) {
       execute(connection, "COMMIT") |> result.replace(value)
     })
+
+  // Return the committed outcome or roll back and return the failure.
   case outcome {
     Ok(value) -> Ok(value)
     Error(error) -> {

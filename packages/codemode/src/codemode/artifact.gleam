@@ -158,6 +158,8 @@ pub fn plan(emit: Emit, request: CapRequest) -> Result(CapPlan, CapDenial) {
   use content_type <- result.try(args.string(request.args, "content_type"))
   use bytes <- result.try(args.binary(request.args, "bytes"))
   let size = bit_array.byte_size(bytes)
+
+  // Guard against artifacts that exceed the maximum admitted payload size.
   case size > max_emit_bytes {
     True -> Error(oversized(size))
     False ->
@@ -186,6 +188,7 @@ pub fn answer(id: String) -> CapOutcome {
   )
 }
 
+/// Constructs the denial returned when emitted bytes exceed the byte ceiling.
 fn oversized(size: Int) -> CapDenial {
   CapDenial(
     code: too_large_code,

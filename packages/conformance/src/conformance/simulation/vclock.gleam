@@ -68,7 +68,9 @@ pub fn start(from now: Int) -> Clockwork {
   Clockwork(subject: started.data, pid: started.pid)
 }
 
+/// Handles clockwork messages for read, schedule, and time advancement.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Dispatch on the clockwork message variant.
   case message {
     Read(reply:) -> {
       process.send(reply, state.now)
@@ -102,6 +104,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Returns the earliest pending deadline from the deadline list, if any.
 fn earliest(deadlines: List(Deadline)) -> Option(Deadline) {
   list.fold(deadlines, None, fn(best: Option(Deadline), candidate: Deadline) {
     case best {
@@ -115,7 +118,7 @@ fn earliest(deadlines: List(Deadline)) -> Option(Deadline) {
   })
 }
 
-// Drops the first deadline due at `at` (the one `earliest` returned).
+/// Drops the first deadline due at `at` (the one `earliest` returned).
 fn without(deadlines: List(Deadline), at: Int) -> List(Deadline) {
   case deadlines {
     [] -> []
@@ -197,6 +200,7 @@ pub fn pending(vc: Clockwork) -> Int {
 /// ```
 ///
 pub fn advance(vc: Clockwork) -> Bool {
+  // Check whether any deadline is ready to fire.
   case process.call_forever(vc.subject, TakeEarliest) {
     None -> False
     Some(wake) -> {

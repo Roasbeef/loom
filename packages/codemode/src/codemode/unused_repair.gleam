@@ -130,8 +130,10 @@ pub fn rewrite(
 
 // --- reading the compiler's output ---------------------------------------
 
-// Every diagnostic block must be an unused warning, apart from the
-// closing `error: N warning(s) generated.` summary, whose count must match.
+/// Parses compiler diagnostic output extracting unused warnings.
+///
+/// Every diagnostic block must be an unused warning, apart from the
+/// closing `error: N warning(s) generated.` summary, whose count must match.
 fn parse(diagnostics: String, file: String) -> Result(List(Unused), Nil) {
   let blocks = blocks(string.split(diagnostics, "\n"))
   use classified <- result.try(list.try_map(blocks, classify(_, file)))
@@ -144,6 +146,8 @@ fn parse(diagnostics: String, file: String) -> Result(List(Unused), Nil) {
       }
     })
   let listed = list.length(warnings)
+
+  // Check that summary count matches total parsed warnings.
   case summaries, warnings {
     [count], [_, ..] if count == listed -> Ok(warnings)
     _, _ -> Error(Nil)
@@ -162,9 +166,11 @@ fn warning_of(entry: Classified) -> Result(Unused, Nil) {
   }
 }
 
-// Splits the output into blocks, each a title line at the left margin and
-// the lines up to the next title. Progress lines before the first title
-// (`Compiling ...`) belong to no block and are dropped.
+/// Partitions diagnostic lines into title and body line blocks.
+///
+/// Splits the output into blocks, each a title line at the left margin and
+/// the lines up to the next title. Progress lines before the first title
+/// (`Compiling ...`) belong to no block and are dropped.
 fn blocks(lines: List(String)) -> List(#(String, List(String))) {
   case lines {
     [] -> []
@@ -184,11 +190,14 @@ fn is_title(line: String) -> Bool {
   string.starts_with(line, "warning: ") || string.starts_with(line, "error: ")
 }
 
+/// Classifies a diagnostic block as a specific unused category or summary.
 fn classify(
   block: #(String, List(String)),
   file: String,
 ) -> Result(Classified, Nil) {
   let #(title, body) = block
+
+  // Dispatch on the warning title prefix.
   case title {
     "warning: Unused imported module" ->
       unused(fn(_) { Ok(Statement) }, body, file) |> result.map(Warning)
@@ -204,10 +213,12 @@ fn classify(
   }
 }
 
-// The scope of a rename warning. The `Hint:` line names the replacement,
-// `` `_e` ``, and the text under the underline must be that name without the
-// underscore: a hint that disagrees with the underline, such as the `name:`
-// shorthand in a pattern, is not a name this module knows how to rename.
+/// Extracts the name from compiler hint message and constructs the Scope variant.
+///
+/// The scope of a rename warning. The `Hint:` line names the replacement,
+/// `` `_e` ``, and the text under the underline must be that name without the
+/// underscore: a hint that disagrees with the underline, such as the `name:`
+/// shorthand in a pattern, is not a name this module knows how to rename.
 fn named(
   found: #(List(String), String),
   scope: fn(String) -> Scope,
@@ -220,15 +231,21 @@ fn named(
   )
   use hinted <- result.try(string.split_once(hint, "`"))
   use name <- result.try(after_prefix(hinted.0, "_"))
+
+  // Verify extracted name matches the source underlined token.
   case name != "" && name == underlined {
     True -> Ok(scope(name))
     False -> Error(Nil)
   }
 }
 
-// `error: 7 warnings generated.`, and only that, is the closing line.
+/// Parses the terminal warning count summary line.
+///
+/// `error: 7 warnings generated.`, and only that, is the closing line.
 fn summary(title: String) -> Result(Classified, Nil) {
   use rest <- result.try(after_prefix(title, "error: "))
+
+  // Match count and warning suffix format.
   case string.split(rest, " ") {
     [count, "warning", "generated."] | [count, "warnings", "generated."] ->
       int.parse(count) |> result.map(fn(count) { Summary(count:) })
@@ -236,9 +253,11 @@ fn summary(title: String) -> Result(Classified, Nil) {
   }
 }
 
-// The location line, then the echoed source line and the underline under it.
-// `scope_of` is given the block body and the underlined text and answers
-// the scope, or refuses.
+/// Parses location, echoed line, and underline span from a diagnostic body.
+///
+/// The location line, then the echoed source line and the underline under it.
+/// `scope_of` is given the block body and the underlined text and answers
+/// the scope, or refuses.
 fn unused(
   scope_of: fn(#(List(String), String)) -> Result(Scope, Nil),
   body: List(String),
@@ -250,10 +269,13 @@ fn unused(
     }),
   )
   use #(path, line, column) <- result.try(split_location(location))
+
+  // Check whether diagnostic refers to the target file.
   use _ <- result.try(case string.ends_with(path, file) {
     True -> Ok(Nil)
     False -> Error(Nil)
   })
+
   use #(echoed, width, offset) <- result.try(echoed_span(body, line))
   let underlined = slice(echoed, offset, width)
   use scope <- result.try(scope_of(#(body, underlined)))
@@ -278,8 +300,11 @@ fn slice(text: String, offset: Int, width: Int) -> String {
   text |> string.drop_start(offset) |> string.slice(0, width)
 }
 
-// `path:line:column`, split from the right because a path may hold colons.
+/// Parses file path, line number, and column from a location string.
+///
+/// `path:line:column`, split from the right because a path may hold colons.
 fn split_location(location: String) -> Result(#(String, Int, Int), Nil) {
+  // Split trailing column and line components from the path.
   case list.reverse(string.split(string.trim(location), ":")) {
     [column, line, ..path] if path != [] -> {
       use column <- result.try(int.parse(column))
@@ -293,6 +318,7 @@ fn split_location(location: String) -> Result(#(String, Int, Int), Nil) {
 // Finds `<line> │ <source>` followed by `  │ <spaces>^^^ <message>` and
 // returns the echoed source, the underline's width and its offset in
 // characters from the start of the source line.
+/// Locates source line and carets underline returning line text, width, and offset.
 fn echoed_span(
   body: List(String),
   line: Int,
@@ -301,13 +327,18 @@ fn echoed_span(
   |> list.find_map(fn(pair) {
     use #(number, source) <- result.try(gutter(pair.0))
     use #(blank, marks) <- result.try(gutter(pair.1))
+
+    // Verify gutter line number corresponds to target line.
     use _ <- result.try(case int.parse(number) == Ok(line) && blank == "" {
       True -> Ok(Nil)
       False -> Error(Nil)
     })
+
     let spaces = string.length(marks) - string.length(string.trim_start(marks))
     let carets = string.trim_start(marks) |> string.to_graphemes
     let width = list.length(list.take_while(carets, fn(c) { c == "^" }))
+
+    // Check that width of caret underline is positive.
     case width > 0 {
       True -> Ok(#(source, width, spaces))
       False -> Error(Nil)
@@ -324,10 +355,12 @@ fn gutter(line: String) -> Result(#(String, String), Nil) {
 
 // --- editing the source --------------------------------------------------
 
-// Walks the source line by line. `kept` is the output newest first, and
-// `notes` the removal notes, newest first. A warning about a line that is
-// not in the source, or that the line does not match, refuses the whole
-// rewrite.
+/// Applies line-by-line edits across the source file for all parsed warnings.
+///
+/// Walks the source line by line. `kept` is the output newest first, and
+/// `notes` the removal notes, newest first. A warning about a line that is
+/// not in the source, or that the line does not match, refuses the whole
+/// rewrite.
 fn edit_lines(
   lines: List(String),
   warnings: List(Unused),
@@ -335,6 +368,7 @@ fn edit_lines(
   kept: List(String),
   notes: List(String),
 ) -> Result(#(List(String), List(String)), Nil) {
+  // Process source lines sequentially tracking current line number.
   case lines {
     [] ->
       case list.any(warnings, fn(warning) { warning.line >= number }) {
@@ -356,13 +390,16 @@ fn edit_lines(
   }
 }
 
-// One source line and the warnings about it: the line unchanged, deleted,
-// or with some list members removed, and the notes for what changed.
+/// Applies removals or renames to a single line based on its warnings.
+///
+/// One source line and the warnings about it: the line unchanged, deleted,
+/// or with some list members removed, and the notes for what changed.
 fn edit_line(
   line: String,
   warnings: List(Unused),
   number: Int,
 ) -> Result(#(List(String), List(String)), Nil) {
+  // Handle empty warnings case or validate echoed source line.
   case warnings {
     [] -> Ok(#([line], []))
     _ -> {
@@ -373,6 +410,8 @@ fn edit_line(
           False -> Error(Nil)
         },
       )
+
+      // Dispatch between rename, import statement removal, or member deletion.
       case list.all(warnings, is_rename), list.any(warnings, is_rename) {
         True, _ -> rename_names(line, warnings, number)
         False, True -> Error(Nil)
@@ -401,6 +440,7 @@ fn is_rename(warning: Unused) -> Bool {
 // double the underscore, so they refuse. The underlined text was checked
 // against the hinted name while parsing, and the echoed line against this
 // one, so the column is known to hold the name.
+/// Prepends underscores to unused names on a line from right to left.
 fn rename_names(
   line: String,
   warnings: List(Unused),
@@ -409,10 +449,13 @@ fn rename_names(
   let ordered =
     list.sort(warnings, fn(a, b) { int.compare(a.column, b.column) })
   let columns = list.map(ordered, fn(warning) { warning.column })
+
+  // Ensure distinct column positions to prevent duplicate underscores.
   use _ <- result.try(case list.unique(columns) == columns {
     True -> Ok(Nil)
     False -> Error(Nil)
   })
+
   let rebuilt =
     list.fold(list.reverse(ordered), line, fn(text, warning) {
       string.slice(text, 0, warning.column - 1)
@@ -422,11 +465,15 @@ fn rename_names(
   Ok(#([rebuilt], list.map(ordered, rename_note(_, line, number))))
 }
 
-// The note for one rename. A `use` or `let` binding gets the warning that
-// nothing reads it, because that usually means the program forgot to use a
-// value it computed; underscoring only silences the compiler.
+/// Constructs an informative audit note describing a name rename operation.
+///
+/// A `use` or `let` binding gets the warning that
+/// nothing reads it, because that usually means the program forgot to use a
+/// value it computed; underscoring only silences the compiler.
 fn rename_note(warning: Unused, line: String, number: Int) -> String {
   let at = " (line " <> int.to_string(number) <> ")"
+
+  // Check whether scope is argument, binding, or import member.
   case warning.scope {
     Argument(name:) ->
       case is_use_binding(line, warning.column) {
@@ -438,6 +485,7 @@ fn rename_note(warning: Unused, line: String, number: Int) -> String {
   }
 }
 
+/// Formats warning message for an unused binding.
 fn binding_note(name: String, at: String) -> String {
   "renamed unused binding "
   <> name
@@ -452,8 +500,11 @@ fn binding_note(name: String, at: String) -> String {
 // two apart. Only identifier characters, commas and spaces may stand between
 // `use ` and the name, so a lambda argument later on a `use` line, as in
 // `use _ <- result.try(f(fn(y) { 1 }))`, is not mistaken for a binding.
+/// Tests whether an argument warning corresponds to a use binding pattern.
 fn is_use_binding(line: String, column: Int) -> Bool {
   let before = string.trim_start(string.slice(line, 0, column - 1))
+
+  // Check whether line segment begins with use keyword.
   case string.starts_with(before, "use ") {
     True ->
       string.drop_start(before, 4)
@@ -463,6 +514,7 @@ fn is_use_binding(line: String, column: Int) -> Bool {
   }
 }
 
+/// Checks whether a character is valid inside a use binding pattern.
 fn is_pattern_character(grapheme: String) -> Bool {
   grapheme == "_"
   || grapheme == ","
@@ -474,6 +526,7 @@ fn is_pattern_character(grapheme: String) -> Bool {
 // A whole-import warning removes the line. It must start the line and span
 // the entire statement. A list member flagged on a line that is being
 // deleted anyway is the same fact twice and is not counted separately.
+/// Deletes an entire unused import statement line.
 fn remove_statement(
   line: String,
   warnings: List(Unused),
@@ -487,6 +540,8 @@ fn remove_statement(
       warning.column == 1
       && warning.width == string.length(string.trim_end(line))
     })
+
+  // Delete line if warning covers the full import statement.
   case whole {
     True ->
       Ok(
@@ -502,7 +557,9 @@ fn remove_statement(
   }
 }
 
-// Removes the named members from `import module.{a, b as c, type D}`.
+/// Removes specific unused items from an unqualified import list.
+///
+/// Removes the named members from `import module.{a, b as c, type D}`.
 fn remove_members(
   line: String,
   warnings: List(Unused),
@@ -525,8 +582,11 @@ fn remove_members(
     True -> Ok(Nil)
     False -> Error(Nil)
   })
+
   let remaining =
     list.filter(members, fn(member) { !list.contains(removed, member) })
+
+  // Format remaining members or drop delimiters if list is empty.
   let rebuilt = case remaining {
     [] -> head <> tail
     _ ->
@@ -536,6 +596,7 @@ fn remove_members(
       <> "}"
       <> tail
   }
+
   let notes =
     list.map(removed, fn(member) {
       "removed unused import "
@@ -549,19 +610,24 @@ fn remove_members(
   Ok(#([rebuilt], notes))
 }
 
-// The members of a list's inside as `#(column, text)`, columns counted from
-// one in characters over the whole line. `start` is how many characters
-// precede the inside.
+/// Parses comma-separated member tokens with their start column offsets.
+///
+/// The members of a list's inside as `#(column, text)`, columns counted from
+/// one in characters over the whole line. `start` is how many characters
+/// precede the inside.
 fn members(inside: String, start: Int) -> List(#(Int, String)) {
   let #(found, _next) =
     list.fold(string.split(inside, ","), #([], start), fn(state, piece) {
       let #(found, offset) = state
       let text = string.trim(piece)
       let lead = string.length(piece) - string.length(string.trim_start(piece))
+
+      // Filter out empty entries and record column positions.
       let found = case text {
         "" -> found
         _ -> [#(offset + lead + 1, text), ..found]
       }
+
       #(found, offset + string.length(piece) + 1)
     })
   list.reverse(found)

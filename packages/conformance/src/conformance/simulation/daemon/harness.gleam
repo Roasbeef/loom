@@ -300,6 +300,8 @@ pub fn kill(
     "the registry",
     manager.pid(harness.ready.registry),
   ))
+
+  // Destroy any parked builder if present.
   case parked {
     None -> Ok(Nil)
     Some(builder) -> destroy("the parked builder", builder)
@@ -310,7 +312,7 @@ pub fn kill(
 // gone rather than that it chose to acknowledge anything. Monitoring a pid
 // that has already died delivers DOWN immediately, so a process that the
 // previous kill took down with it costs this nothing and the order the three
-// die in carries no meaning.
+/// Kills a process and waits for its monitor DOWN message.
 fn destroy(what: String, pid: Pid) -> Result(Nil, String) {
   let monitor = process.monitor(pid)
   process.kill(pid)
@@ -352,6 +354,8 @@ pub fn resume(boot: Boot) -> Result(Harness, String) {
         Error(_busy) -> poll.Retry
       }
     })
+
+  // Check the poll outcome of the startup attempt.
   case answer {
     poll.Answered(daemon) -> Ok(daemon)
     poll.Failed(reason) -> Error(reason)
@@ -524,7 +528,7 @@ pub fn sessions_directory(harness: Harness) -> String {
 // Creation returns as soon as a builder owns the operation, so the durable
 // row is still `Reserved` at that point and a read-back would see a session
 // that has no database behind it. Waiting for the published incarnation is
-// what makes the row the caller then reads the confirmed one.
+/// Waits for the registry to publish a resident view of the session.
 fn await_resident(harness: Harness, id: String) -> Result(Nil, String) {
   let answer =
     poll.until(within: settle_ms, every: 1, attempt: fn() {
@@ -534,6 +538,8 @@ fn await_resident(harness: Harness, id: String) -> Result(Nil, String) {
         Error(error) -> poll.Fail(describe(error))
       }
     })
+
+  // Check whether the session residency poll succeeded or timed out.
   case answer {
     poll.Answered(Nil) -> Ok(Nil)
     poll.Failed(reason) -> Error(reason)
@@ -544,7 +550,7 @@ fn await_resident(harness: Harness, id: String) -> Result(Nil, String) {
 // Two runs of one script use two temporary directories, so every absolute
 // path the daemon derived from its state root differs between them by
 // construction. Substituting the root is what leaves a difference in the
-// *shape* of a path visible while hiding the difference in its prefix.
+/// Renders a registration record and its selected domain into a Row for snapshot comparison.
 fn render(
   harness: Harness,
   record: catalogue.Registration,
@@ -590,7 +596,7 @@ fn describe(error: manager.Error) -> String {
 // its retirement under custody, and persisting the reserved identity before
 // the registry may confirm the reservation. That order is the invariant a
 // creation-key claim rests on, so a harness that skipped it would confirm
-// rows no production path could have produced.
+/// Constructs the assembly callbacks for the test daemon manager.
 fn assembly(
   lease_clock: clock.Clock,
   arrest: Arrest,
@@ -612,8 +618,9 @@ fn assembly(
 
 // The retirement schedule uses the existing assembly boundary. Its callback
 // is retained by the real custody owner, so the registry sees genuine closing
-// and normal retirement messages without a pause hook in production code.
+/// Intercepts domain custody publication to attach test retirement holds.
 fn domain_custody(arrest: Arrest, workspace: String, owner: custody.Owner) {
+  // Match on the arrest instruction for domain retirement.
   case arrest {
     HoldDomainRetirement(workspace: selected, cleanup:, built:)
       if selected == workspace
@@ -626,6 +633,7 @@ fn domain_custody(arrest: Arrest, workspace: String, owner: custody.Owner) {
   }
 }
 
+/// Initializes the session SQLite database under custody for simulation.
 fn initialize(
   record: catalogue.Registration,
   owner: custody.Owner,
@@ -665,7 +673,7 @@ fn initialize(
 // A parked builder never returns. It announces its own pid, so that the kill
 // can reach a process no link and no readable monitor would take down, and
 // then waits out the deadline. The deadline is a backstop for a schedule whose
-// kill never arrives, which would otherwise hang the suite.
+/// Parks a builder at a designated simulation step coordinate.
 fn park(arrest: Arrest, step: Step, coordinate: String) -> Nil {
   case arrest {
     Unimpeded | HoldDomainRetirement(..) -> Nil

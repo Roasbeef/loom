@@ -161,6 +161,7 @@ pub fn routing(seam: Search, over inner: CapRouter) -> CapRouter {
 
 // --- the arms -----------------------------------------------------------------
 
+/// Plans a search.glob capability call decoding patterns and options.
 fn glob_plan(seam: Search, request: CapRequest) -> Result(CapPlan, CapDenial) {
   use root <- result.try(args.string(request.args, "root"))
   use pattern <- result.try(args.string(request.args, "pattern"))
@@ -182,6 +183,7 @@ fn glob_plan(seam: Search, request: CapRequest) -> Result(CapPlan, CapDenial) {
   )
 }
 
+/// Plans a search.grep capability call decoding regex and options.
 fn grep_plan(seam: Search, request: CapRequest) -> Result(CapPlan, CapDenial) {
   use root <- result.try(args.string(request.args, "root"))
   use pattern <- result.try(args.string(request.args, "pattern"))
@@ -208,6 +210,7 @@ fn grep_plan(seam: Search, request: CapRequest) -> Result(CapPlan, CapDenial) {
   )
 }
 
+/// Plans a search.stat capability call querying metadata for a single path.
 fn stat_plan(seam: Search, request: CapRequest) -> Result(CapPlan, CapDenial) {
   use path <- result.try(args.string(request.args, "path"))
   Ok(
@@ -225,6 +228,7 @@ fn stat_plan(seam: Search, request: CapRequest) -> Result(CapPlan, CapDenial) {
   )
 }
 
+/// Plans a search.read_lines capability call reading a bounded line span.
 fn read_lines_plan(
   seam: Search,
   request: CapRequest,
@@ -248,11 +252,15 @@ fn read_lines_plan(
   )
 }
 
-// The wire carries `include_hidden` as a msgpack boolean in both
-// directions, which is what `cap/search` marshals. The type starts at
-// this line and the engine never sees the boolean.
+/// Decodes the include_hidden boolean argument into a typed domain option.
+///
+/// The wire carries `include_hidden` as a msgpack boolean in both
+/// directions, which is what `cap/search` marshals. The type starts at
+/// this line and the engine never sees the boolean.
 fn hidden_arg(value: MsgPackValue) -> Result(search.Hidden, CapDenial) {
   use include_hidden <- result.try(args.bool(value, "include_hidden"))
+
+  // Convert wire boolean into search domain hidden mode.
   case include_hidden {
     True -> Ok(search.IncludeHidden)
     False -> Ok(search.SkipHidden)
@@ -261,6 +269,7 @@ fn hidden_arg(value: MsgPackValue) -> Result(search.Hidden, CapDenial) {
 
 // --- rendering ------------------------------------------------------------------
 
+/// Wraps field pairs into a successful MsgPack map capability outcome.
 fn answered(fields: List(#(String, MsgPackValue))) -> CapOutcome {
   framing.CapOk(
     value: msgpack.MapValue(
@@ -269,6 +278,7 @@ fn answered(fields: List(#(String, MsgPackValue))) -> CapOutcome {
   )
 }
 
+/// Serializes a filesystem directory entry into a MsgPack map.
 fn entry_value(entry: search.Entry) -> MsgPackValue {
   msgpack.MapValue(
     list.map(entry_fields(entry), fn(field) {
@@ -280,10 +290,12 @@ fn entry_value(entry: search.Entry) -> MsgPackValue {
 // The entry fields, as one list so `glob`'s array element and `stat`'s
 // top-level answer are built from one place.
 //
-// `target` is present only on a symlink, and its absence elsewhere is
-// load-bearing: `cap/search.decode_kind` reads `target` only after it has
-// seen `kind == "symlink"`, so a `target` beside a `kind` of `file` would
-// be a field nothing reads and a claim nothing checked.
+/// Builds key-value pairs representing the attributes of a file entry.
+///
+/// `target` is present only on a symlink, and its absence elsewhere is
+/// load-bearing: `cap/search.decode_kind` reads `target` only after it has
+/// seen `kind == "symlink"`, so a `target` beside a `kind` of `file` would
+/// be a field nothing reads and a claim nothing checked.
 fn entry_fields(entry: search.Entry) -> List(#(String, MsgPackValue)) {
   let fields = [
     #("path", msgpack.StringValue(entry.path)),
@@ -291,6 +303,8 @@ fn entry_fields(entry: search.Entry) -> List(#(String, MsgPackValue)) {
     #("size", msgpack.IntValue(entry.size)),
     #("mtime", msgpack.IntValue(entry.mtime_seconds)),
   ]
+
+  // Append symlink target destination if entry is a symbolic link.
   case entry.kind {
     search.Symlink(target:) ->
       list.append(fields, [#("target", msgpack.StringValue(target))])
@@ -299,6 +313,7 @@ fn entry_fields(entry: search.Entry) -> List(#(String, MsgPackValue)) {
   }
 }
 
+/// Returns the wire string representation of a filesystem entry kind.
 fn kind_name(kind: search.Kind) -> String {
   case kind {
     search.File -> "file"
@@ -311,6 +326,7 @@ fn kind_name(kind: search.Kind) -> String {
   }
 }
 
+/// Serializes a single grep match with context into MsgPack format.
 fn match_value(found: search.Match) -> MsgPackValue {
   msgpack.MapValue([
     #(msgpack.StringValue("path"), msgpack.StringValue(found.path)),
@@ -326,6 +342,7 @@ fn lines_value(lines: List(String)) -> MsgPackValue {
   msgpack.ArrayValue(list.map(lines, msgpack.StringValue))
 }
 
+/// Indicates whether a glob listing hit entry limits and truncated.
 fn truncated(completeness: search.Completeness) -> Bool {
   case completeness {
     search.Complete -> False
@@ -334,6 +351,7 @@ fn truncated(completeness: search.Completeness) -> Bool {
   }
 }
 
+/// Converts a search coverage enum variant into its wire string name.
 fn coverage_name(coverage: search.Coverage) -> String {
   case coverage {
     search.Exhaustive -> "exhaustive"
@@ -380,6 +398,7 @@ pub fn denial(refusal: SearchRefusal) -> CapDenial {
   }
 }
 
+/// Maps internal search query errors to capability denial structures.
 fn query_denial(error: search.SearchError) -> CapDenial {
   case error {
     // Every bound check is the engine's, so every message about one is

@@ -158,6 +158,8 @@ pub fn choose(
   let #(state, reversed) =
     list.fold(candidates, #(State(..state, notice: ""), []), fn(acc, candidate) {
       let #(state, reads) = acc
+
+      // Validate candidate image format and bounds before enqueueing.
       case vet(state, candidate) {
         Ok(Nil) -> {
           let id = state.next
@@ -185,11 +187,14 @@ fn refused(state: State, reason: String) -> State {
   }
 }
 
+/// Validates a candidate image against type, size, and total capacity limits.
 fn vet(state: State, candidate: Candidate(file)) -> Result(Nil, String) {
   let name = label(candidate.name)
   let taken =
     list.fold(state.held, 0, fn(total, held) { total + held.size })
     + list.fold(state.reading, 0, fn(total, reading) { total + reading.size })
+
+  // Verify candidate mime type, non-emptiness, and count/byte bounds.
   case
     list.contains(state.limits.types, string.lowercase(candidate.mime_type)),
     candidate.size <= 0,
@@ -249,6 +254,8 @@ pub fn loaded(state: State, id: Int, read: Result(String, Nil)) -> State {
           ..state,
           reading: list.filter(state.reading, fn(reading) { reading.id != id }),
         )
+
+      // Store read image data or record failure notice.
       case result.try(read, data_of) {
         Ok(data) ->
           State(
@@ -274,6 +281,8 @@ pub fn loaded(state: State, id: Int, read: Result(String, Nil)) -> State {
 /// ```
 pub fn data_of(url: String) -> Result(String, Nil) {
   use #(header, data) <- result.try(string.split_once(url, ","))
+
+  // Ensure header declares base64 payload and payload is non-empty.
   case
     string.starts_with(header, "data:") && string.ends_with(header, ";base64"),
     data

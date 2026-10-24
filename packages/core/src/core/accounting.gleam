@@ -150,11 +150,14 @@ pub fn last(report: RequestAccounting) -> Option(Usage) {
 ///   == Some(accounting.zero_usage())
 /// ```
 pub fn observed_usage(usage: Usage) -> Option(Usage) {
+  // Check whether provider reporting was omitted for this usage.
   let unreported = case usage.evidence {
     usage_evidence.Remote(_, usage_evidence.Unreported) -> True
     usage_evidence.NoProvider
     | usage_evidence.Remote(_, usage_evidence.Reported(..)) -> False
   }
+
+  // Determine whether this usage record carries meaningful observed activity.
   case
     unreported
     && usage.input == 0
@@ -266,10 +269,12 @@ pub fn details(
   report: RequestAccounting,
   extra: List(#(String, JsonValue)),
 ) -> JsonValue {
+  // Encode the final attempt usage or null if there were no attempts.
   let last = case last(report) {
     None -> json.Null
     Some(usage) -> codec.encode_usage(usage)
   }
+
   json.Object(
     list.append(extra, [
       #(
@@ -303,10 +308,13 @@ pub fn details(
 pub fn decode_row(
   row: entry.UsageRow,
 ) -> Result(RequestAccounting, CorruptionReport) {
+  // Extract detail fields from the row metadata if present.
   let fields = case row.details {
     Some(json.Object(fields)) -> fields
     None | Some(_) -> []
   }
+
+  // Find the namespaced accounting record in the row details.
   case list.filter(fields, fn(field) { field.0 == namespace }) {
     [] -> Ok(from_usage(row.usage))
     [#(_, value)] -> decode_report(value, row.usage)
@@ -314,6 +322,7 @@ pub fn decode_row(
   }
 }
 
+/// Adds two optional integer quantities together.
 fn add_optional(left: Option(Int), right: Option(Int)) -> Option(Int) {
   case left, right {
     None, None -> None
@@ -322,9 +331,11 @@ fn add_optional(left: Option(Int), right: Option(Int)) -> Option(Int) {
   }
 }
 
-// The namespaced value is `{version, attempt_count, last}`. A null `last`
-// describes the empty report and a usage object describes at least one
-// attempt, so the two shapes are decoded by separate functions.
+/// Decodes a namespaced accounting JSON report into typed accounting state.
+///
+/// The namespaced value is `{version, attempt_count, last}`. A null `last`
+/// describes the empty report and a usage object describes at least one
+/// attempt, so the two shapes are decoded by separate functions.
 fn decode_report(
   value: JsonValue,
   total: Usage,
@@ -340,6 +351,8 @@ fn decode_report(
     invalid("version", "1")
   })
   use count <- result.try(field(fields, "attempt_count"))
+
+  // Validate that the attempt count is a non-negative integer.
   use count <- result.try(case count {
     json.Int(count) if count >= 0 -> Ok(count)
     json.Int(_)
@@ -350,7 +363,10 @@ fn decode_report(
     | json.Array(_)
     | json.Object(_) -> invalid("attempt_count", "a non-negative integer")
   })
+
   use raw_last <- result.try(field(fields, "last"))
+
+  // Branch between an empty report and a report containing attempts.
   case raw_last {
     json.Null -> decode_empty(total, count)
     json.Object(_) -> decode_attempts(total, raw_last, count)
@@ -362,8 +378,10 @@ fn decode_report(
   }
 }
 
-// An empty report is the addition identity, so it records no attempts and no
-// consumption.
+/// Validates that an empty report records zero attempts and zero consumption.
+///
+/// An empty report is the addition identity, so it records no attempts and no
+/// consumption.
 fn decode_empty(
   total: Usage,
   count: Int,
@@ -374,8 +392,10 @@ fn decode_empty(
   }
 }
 
-// Count and final observation must describe the same ownership frontier.
-// The aggregate must contain its final observation, never replace it.
+/// Decodes a non-empty report, verifying consistency between total and final observation.
+///
+/// Count and final observation must describe the same ownership frontier.
+/// The aggregate must contain its final observation, never replace it.
 fn decode_attempts(
   total: Usage,
   raw_last: JsonValue,
@@ -394,6 +414,7 @@ fn decode_attempts(
   Ok(Attempts(total:, last:, count:))
 }
 
+/// Checks that an aggregate usage report contains its final attempt usage.
 fn contains_final(total: Usage, last: Usage, count: Int) -> Bool {
   case count {
     1 -> total == last
@@ -412,9 +433,11 @@ fn contains_final(total: Usage, last: Usage, count: Int) -> Bool {
   }
 }
 
+/// Validates that a JSON object contains exactly the required accounting fields.
 fn exact_fields(
   value: JsonValue,
 ) -> Result(List(#(String, JsonValue)), CorruptionReport) {
+  // Extract object key-value pairs or reject non-object JSON values.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     json.Null
@@ -424,6 +447,7 @@ fn exact_fields(
     | json.String(_)
     | json.Array(_) -> invalid("value", "an object")
   })
+
   use <- bool.lazy_guard(
     list.sort(list.map(fields, fn(field) { field.0 }), string.compare)
       != ["attempt_count", "last", "version"],
@@ -432,6 +456,7 @@ fn exact_fields(
   Ok(fields)
 }
 
+/// Extracts a named field from an association list of fields.
 fn field(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -444,6 +469,7 @@ fn invalid(subject: String, expected: String) -> Result(a, CorruptionReport) {
   Error(report(subject, expected))
 }
 
+/// Constructs a corruption report for invalid accounting structures.
 fn report(subject: String, expected: String) -> CorruptionReport {
   corruption.report(
     at: "core/accounting.decode_row",
@@ -453,7 +479,9 @@ fn report(subject: String, expected: String) -> CorruptionReport {
   )
 }
 
-// Adjustments may be signed, but an attempt cannot refund prior consumption.
+/// Asserts that all token and cost counts in a usage struct are non-negative.
+///
+/// Adjustments may be signed, but an attempt cannot refund prior consumption.
 fn nonnegative(usage: Usage) -> Bool {
   usage.input >= 0
   && usage.output >= 0

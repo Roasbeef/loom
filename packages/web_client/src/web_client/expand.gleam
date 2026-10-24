@@ -99,6 +99,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
   |> lustre.register(name)
 }
 
+/// Initializes default model state for expand disclosure element.
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(
     Model(
@@ -110,6 +111,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
   )
 }
 
+/// Applies expansion toggles and handoff transitions to model.
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     // The event is emitted in the turn of this update and the render
@@ -162,8 +164,11 @@ fn opened(shown: Shown) -> Effect(Msg) {
   }
 }
 
+/// Publishes or clears document handoff attributes for live rows.
 fn publish(kind: expand_rule.Kind, shown: Shown) -> Effect(Msg) {
   use _ <- effect.from
+
+  // Set or remove root element handoff attribute.
   case kind, shown {
     expand_rule.Live, expand_rule.Open ->
       ffi_dom.set_attribute(
@@ -184,9 +189,12 @@ fn claim(model: Model) -> Effect(Msg) {
   }
 }
 
+/// Claims handoff offer from document attribute if valid within window.
 fn take_offer(mark: expand_rule.Mark) -> Effect(Msg) {
   use dispatch <- effect.from
   let root = ffi_dom.document_element()
+
+  // Read handoff attribute deadline and claim offer when eligible.
   case ffi_dom.attribute(root, handoff_attribute) {
     Ok(deadline) ->
       case expand_rule.takes(mark, deadline, ffi_dom.now()) {
@@ -200,9 +208,12 @@ fn take_offer(mark: expand_rule.Mark) -> Effect(Msg) {
   }
 }
 
+/// Sets expiration deadline on document handoff attribute when live row departs.
 fn expire_offer() -> Effect(Msg) {
   use _ <- effect.from
   let root = ffi_dom.document_element()
+
+  // Update handoff attribute to short expiration deadline.
   case ffi_dom.attribute(root, handoff_attribute) {
     Ok(_) ->
       ffi_dom.set_attribute(
@@ -214,6 +225,7 @@ fn expire_offer() -> Effect(Msg) {
   }
 }
 
+/// Renders expandable toggle button and body slot content.
 fn view(model: Model) -> Element(Msg) {
   let shown = model.shown
   element.fragment([

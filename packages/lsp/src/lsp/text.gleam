@@ -309,6 +309,8 @@ pub fn to_utf16_character(
 ) -> Result(Int, TextFault) {
   let codepoints = string.to_utf_codepoints(line_text)
   let width = list.length(codepoints)
+
+  // Verifies the 1-based character column lies within the line width.
   case column < 1 || column > width + 1 {
     True -> Error(ColumnOutOfRange(column:, width:))
     False ->
@@ -339,11 +341,14 @@ fn walk_units(
   taken: Int,
   at: Position,
 ) -> Result(Int, TextFault) {
+  // Advances through UTF-16 units until the target offset is spent.
   case codepoints {
     _ if remaining == 0 -> Ok(taken)
     [] -> Ok(taken)
     [codepoint, ..rest] -> {
       let units = utf16_width(codepoint)
+
+      // Refuses an offset that splits a multi-unit surrogate pair.
       case remaining < units {
         True ->
           Error(MalformedPosition(position: at, reason: SplitsSurrogatePair))
@@ -483,6 +488,8 @@ fn hashline_text(line: Line) -> String {
 /// ```
 pub fn occurrences(line_text: String, symbol: String) -> List(Int) {
   let needle = codes(symbol)
+
+  // Refuses an empty needle or scans the line for non-empty symbols.
   case needle {
     [] -> []
     [first, ..rest] -> {
@@ -551,13 +558,16 @@ fn scan(
   column: Int,
   found: List(Int),
 ) -> List(Int) {
+  // Slides the needle across remaining characters in the line.
   case haystack {
     [] -> list.reverse(found)
     [code, ..rest] -> {
+      // Records the matching column when boundaries and contents match.
       let found = case matches_at(haystack, needle, edges, previous) {
         True -> [column, ..found]
         False -> found
       }
+
       scan(rest, needle, edges, Some(code), column + 1, found)
     }
   }
@@ -573,6 +583,8 @@ fn matches_at(
   previous: Option(Int),
 ) -> Bool {
   let #(first, last) = edges
+
+  // Verifies the needle prefix and boundary invariants at this position.
   case strip_prefix(haystack, needle) {
     Error(Nil) -> False
     Ok(after) -> {
@@ -679,6 +691,8 @@ pub fn check_selects(
     let found =
       between(indexed, resolved.start, resolved.end)
       |> string_tree.to_string
+
+    // Verifies the selected text span matches the expected old content.
     case found == old {
       True -> Ok(Nil)
       False ->
@@ -702,6 +716,8 @@ fn resolve_edit(
   let Range(start:, end:) = edit.range
   use start_point <- result.try(resolve(document, start))
   use end_point <- result.try(resolve(document, end))
+
+  // Rejects inverted edit ranges where start follows end.
   case compare_positions(start, end) {
     order.Gt -> Error(InvertedRange(range: edit.range))
     order.Lt | order.Eq ->
@@ -738,6 +754,7 @@ fn splice(
   cursor: Point,
   tree: StringTree,
 ) -> StringTree {
+  // Applies each edit in sequence until all edits are spliced in.
   case ordered {
     [] -> {
       let end_of_file = Point(line: document.count, column: 0)
@@ -758,6 +775,8 @@ fn splice(
 /// only the lines at either end are cut, and they are cut by codepoint.
 fn between(document: Document, from: Point, to: Point) -> StringTree {
   let first = line_at(document, from.line)
+
+  // Handles single-line spans directly or stitches multi-line text.
   case from.line == to.line {
     True -> string_tree.from_string(cut(first.text, from.column, to.column))
     False -> {
@@ -780,6 +799,7 @@ fn whole_lines(
   stop: Int,
   tree: StringTree,
 ) -> StringTree {
+  // Copies full intermediate lines until the stop line is reached.
   case line < stop {
     False -> tree
     True -> {

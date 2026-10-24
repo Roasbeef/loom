@@ -39,6 +39,8 @@ pub fn get(key: String) -> Result(Option(BitArray), KvError) {
       KvUnavailable("bad kv.get result: " <> reason)
     }),
   )
+
+  // Decode the stored binary payload only when the key was present.
   case found {
     False -> Ok(None)
     True ->

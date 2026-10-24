@@ -122,7 +122,9 @@ pub fn supervised(
   supervision.supervisor(fn() { start(name) })
 }
 
+/// Handles drain registry messages to manage effect chains, monitor down events, and shutdown.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Dispatches the message to record new reapers or handle monitored exits.
   case message {
     Claim(strand:, reaper:, reply_with:) -> {
       // The ledger's original monitor owns the exit reason. Filtering by
@@ -131,6 +133,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let previous = dict.get(state.chains, strand) |> result.unwrap([])
       let _monitor = process.monitor(reaper)
       let chains = dict.insert(state.chains, strand, [reaper, ..previous])
+
+      // Determines whether the claim can reply immediately or must wait for predecessors.
       case previous {
         [] -> {
           // Install the monitor before releasing the caller. A fast normal
@@ -208,6 +212,7 @@ type Verdict {
 // arrives when a claim outlives the reaper it names — the reaper drained and
 // exited between the claim being sent and this actor reaching it — and the
 // window is real because the claim travels as a message, not as a monitor.
+/// Translates a reaper process exit reason into a classified verdict.
 fn verdict(reason: process.ExitReason) -> Verdict {
   case reason {
     process.Normal -> Drained
@@ -229,6 +234,7 @@ fn retire(state: State, departed: Pid) -> actor.Next(State, Message) {
   )
 }
 
+/// Releases any waiters whose pending predecessor reapers have all exited normally.
 fn acknowledge_departure(
   waiters: List(ClaimWaiter),
   departed: Pid,
@@ -237,6 +243,8 @@ fn acknowledge_departure(
     let ClaimWaiter(predecessors:, reply_with:) = waiter
     let predecessors =
       list.filter(predecessors, fn(reaper) { reaper != departed })
+
+    // Checks if all predecessors have departed to answer the waiter immediately.
     case predecessors {
       [] -> {
         // An empty reply is the snapshot-specific acknowledgement: every PID
@@ -250,6 +258,7 @@ fn acknowledge_departure(
   })
 }
 
+/// Removes a departed reaper process from all registered strand effect chains.
 fn forget(
   chains: Dict(String, List(Pid)),
   departed: Pid,
@@ -259,6 +268,7 @@ fn forget(
   })
 }
 
+/// Decides whether to stop or continue the actor depending on closing state and active reapers.
 fn continue_or_stop(state: State) -> actor.Next(State, Message) {
   // Entries remain authoritative until their original monitor supplies a
   // Normal Down. A dead PID still present here is pending adjudication, not an
@@ -266,6 +276,8 @@ fn continue_or_stop(state: State) -> actor.Next(State, Message) {
   let reapers_remain =
     dict.values(state.chains)
     |> list.any(fn(reapers) { !list.is_empty(reapers) })
+
+  // Decides whether to stop the actor if closing has begun and no reapers remain.
   case state.closing && !reapers_remain {
     True -> actor.stop()
     False -> actor.continue(state)

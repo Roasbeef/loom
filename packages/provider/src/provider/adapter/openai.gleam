@@ -136,12 +136,15 @@ pub fn build_request(
 ) -> HttpRequest {
   let max_tokens =
     option.unwrap(request.max_output_tokens, resolved.max_output_tokens)
+
+  // Map model thinking configuration into OpenAI reasoning effort parameter.
   let reasoning_effort = case resolved.thinking {
     ThinkingOff -> None
     ThinkingLow -> Some("low")
     ThinkingMedium -> Some("medium")
     ThinkingHigh -> Some("high")
   }
+
   let body =
     json.Object(
       list.flatten([
@@ -177,6 +180,7 @@ pub fn build_request(
   )
 }
 
+/// Encodes a tool specification into an OpenAI function declaration object.
 fn encode_tool(tool: ToolSpec) -> JsonValue {
   json.Object([
     #("type", json.String("function")),
@@ -191,7 +195,9 @@ fn encode_tool(tool: ToolSpec) -> JsonValue {
   ])
 }
 
+/// Encodes provider request messages into OpenAI chat completion messages.
 fn encode_messages(request: ProviderRequest) -> List(JsonValue) {
+  // Encode system prompt when present.
   let system = case request.system {
     Some(system) -> [
       json.Object([
@@ -201,6 +207,7 @@ fn encode_messages(request: ProviderRequest) -> List(JsonValue) {
     ]
     None -> []
   }
+
   let messages = move_tool_images(request.messages, [], [])
   list.append(system, list.filter_map(messages, encode_message))
 }
@@ -209,11 +216,13 @@ fn encode_messages(request: ProviderRequest) -> List(JsonValue) {
 // user message. Collect images across a whole tool-result batch before adding
 // that user turn: inserting it between parallel results leaves calls pending.
 // This is a wire-only projection; durable messages keep their original roles.
+/// Projects tool result images into separate user turns so tool turns carry text only.
 fn move_tool_images(
   messages: List(AgentMessage),
   pending: List(message.UserBlock),
   collected: List(AgentMessage),
 ) -> List(AgentMessage) {
+  // Process messages extracting tool result images into pending user turns.
   case messages {
     [] -> list.reverse(flush_tool_images(pending, collected))
     [CustomMessage(..), ..rest] -> move_tool_images(rest, pending, collected)
@@ -239,6 +248,7 @@ fn move_tool_images(
             fn(acc, block) { [block, ..acc] },
           )
       }
+
       move_tool_images(rest, pending, [entry, ..collected])
     }
     [entry, ..rest] ->
@@ -249,6 +259,7 @@ fn move_tool_images(
   }
 }
 
+/// Emits accumulated pending tool images as an extra user message.
 fn flush_tool_images(
   pending: List(message.UserBlock),
   collected: List(AgentMessage),
@@ -262,7 +273,9 @@ fn flush_tool_images(
   }
 }
 
+/// Encodes a single agent message into an OpenAI chat completion message.
 fn encode_message(message: AgentMessage) -> Result(JsonValue, Nil) {
+  // Map message role to appropriate wire schema.
   case message {
     UserMessage(content:, origin:, ..) ->
       Ok(
@@ -320,6 +333,7 @@ fn encode_message(message: AgentMessage) -> Result(JsonValue, Nil) {
   }
 }
 
+/// Extracts text content from an assistant text block.
 fn assistant_text_block(block: message.AssistantBlock) -> Result(String, Nil) {
   case block {
     AssistantText(text:, text_signature: _) -> Ok(text)
@@ -327,6 +341,7 @@ fn assistant_text_block(block: message.AssistantBlock) -> Result(String, Nil) {
   }
 }
 
+/// Encodes an assistant tool call block into wire JSON.
 fn assistant_tool_call_block(
   block: message.AssistantBlock,
 ) -> Result(JsonValue, Nil) {
@@ -336,6 +351,7 @@ fn assistant_tool_call_block(
   }
 }
 
+/// Extracts text content from a tool result block.
 fn tool_result_text_block(
   block: message.ToolResultBlock,
 ) -> Result(String, Nil) {
@@ -345,6 +361,7 @@ fn tool_result_text_block(
   }
 }
 
+/// Encodes a tool call record into an OpenAI tool_calls wire object.
 fn encode_tool_call(call: message.ToolCall) -> JsonValue {
   let ToolCall(id:, name:, arguments:, thought_signature: _, namespace: _) =
     call
@@ -361,6 +378,7 @@ fn encode_tool_call(call: message.ToolCall) -> JsonValue {
   ])
 }
 
+/// Encodes a user block into an OpenAI content part object.
 fn encode_user_block(block: message.UserBlock) -> JsonValue {
   case block {
     UserText(text:, text_signature: _) ->
@@ -517,11 +535,14 @@ pub fn response_machine(
   )
 }
 
+/// Feeds response chunks into the SSE parser and handles produced events.
 fn on_chunk(
   acc: Accumulator,
   chunk: BitArray,
 ) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(when: acc.done, return: #(acc, []))
+
+  // Process 200 streaming chunks or append to error body buffer.
   case acc.status {
     200 -> {
       let #(sse, sse_events) = stream.feed(acc.sse, chunk)
@@ -554,8 +575,11 @@ fn on_chunk(
   }
 }
 
+/// Settle response on stream completion or handle error status.
 fn on_end(acc: Accumulator) -> List(StreamEvent) {
   use <- bool.guard(when: acc.done, return: [])
+
+  // Check HTTP status code to settle or fail stream.
   case acc.status {
     200 -> settle_or_disconnect(acc)
     status -> fail(acc, http_error(status, acc)).1
@@ -564,6 +588,7 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
 
 // Some compatible providers end the stream without a `[DONE]` sentinel;
 // a recorded finish_reason still settles the response.
+/// Settles accumulator if stop reason was reached or fails with disconnection.
 fn settle_or_disconnect(acc: Accumulator) -> List(StreamEvent) {
   case acc.stop {
     Some(_) -> settle(acc).1
@@ -579,12 +604,15 @@ fn settle_or_disconnect(acc: Accumulator) -> List(StreamEvent) {
 
 // Parses the collected error body — `{"error":{"message","type","code"}}`
 // — into a redacted HttpError.
+/// Formats an HTTP error response using structured error fields or body excerpt.
 fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
   let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
   let error_field =
     json.parse(body_text)
     |> result.replace_error(Nil)
     |> result.try(wire.field(_, "error"))
+
+  // Decode structured error object or fallback to excerpt.
   case error_field {
     Ok(error) ->
       HttpError(
@@ -613,6 +641,7 @@ fn excerpt(text: String) -> String {
   }
 }
 
+/// Handles parsed SSE event messages or framing errors.
 fn handle_sse(
   acc: Accumulator,
   event: SseEvent,
@@ -625,6 +654,7 @@ fn handle_sse(
   }
 }
 
+/// Parses SSE message data string into a JSON document.
 fn handle_sse_data(
   acc: Accumulator,
   data: String,
@@ -636,6 +666,7 @@ fn handle_sse_data(
 // A chunk document carrying its own `error` field is how some
 // compatible proxies report a mid-stream failure (rather than an
 // out-of-band `error` SSE event, which this dialect does not define).
+/// Inspects chunk document for proxy error field or candidate choices.
 fn handle_document(
   acc: Accumulator,
   document: JsonValue,
@@ -654,6 +685,7 @@ fn handle_document(
   }
 }
 
+/// Constructs a structured corruption report for malformed stream data.
 fn corruption_report(expected: String, context: String) -> CorruptionReport {
   corruption.report(
     at: "provider/adapter/openai",
@@ -663,6 +695,7 @@ fn corruption_report(expected: String, context: String) -> CorruptionReport {
   )
 }
 
+/// Processes valid chunk document, extracting usage and choice deltas.
 fn handle_chunk_document(
   acc: Accumulator,
   document: JsonValue,
@@ -680,10 +713,14 @@ fn handle_chunk_document(
         acc.response_model,
       ),
     )
+
+  // Extract usage metadata if present in chunk.
   let acc = case wire.field(document, "usage") {
     Ok(usage) -> extract_usage(acc, usage)
     Error(Nil) -> acc
   }
+
+  // Process stream choice deltas if choices array is present.
   let #(acc, events) = case wire.array_field(document, "choices") {
     Ok([choice, ..]) -> handle_choice(acc, choice)
     _ -> #(acc, [])
@@ -698,6 +735,7 @@ fn handle_chunk_document(
 // Response identity survives the event document in the accumulator and settled
 // message. Copy only a bounded field from a much larger event; copying every
 // JSON string penalizes callers that continue to own the entire document.
+/// Extracts and bounds a response identity string field from document.
 fn retained_identity(
   document: JsonValue,
   key: String,
@@ -706,6 +744,8 @@ fn retained_identity(
   wire.string_field(document, key)
   |> result.map(fn(text) {
     let size = string.byte_size(text)
+
+    // Materialize bounded slice if string is oversized.
     case size > 64 && size <= 256 && document_bytes >= size * 8 {
       // OTP 29 already materializes slices up to 64 bytes. A second, empty
       // chunk makes concatenation materialize larger selected fields too.
@@ -718,6 +758,7 @@ fn retained_identity(
 
 // Required input/cache witnesses may come from earlier snapshots, but the
 // final generated count must be reported after output has finished.
+/// Validates final usage evidence once generation completes.
 fn final_usage_evidence(
   acc: Accumulator,
   document: JsonValue,
@@ -741,6 +782,7 @@ fn final_usage_evidence(
 // so a later chunk carrying a partial usage object cannot erase counts an
 // earlier chunk already reported (mirrors the Anthropic adapter's
 // handle_message_start).
+/// Merges usage tokens and witness observations into accumulator.
 fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
   let witness = usage_witness.observe(acc.witness, usage, required_usage_fields)
   Accumulator(
@@ -788,6 +830,7 @@ fn extract_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
 // cached_tokens`), defaulting to `previous` when either level is absent —
 // mirrors the flat counters above, which default to the accumulator
 // rather than to zero.
+/// Extracts nested count property defaulting to previous count.
 fn nested_count_or(
   document: JsonValue,
   field: String,
@@ -803,6 +846,7 @@ fn nested_count_or(
 // The `Option`-valued sibling of `nested_count_or`, for counters with no
 // natural zero default (reasoning tokens: absent means "not reported",
 // not "reported as zero").
+/// Extracts optional nested count property defaulting to previous optional count.
 fn nested_optional_count(
   document: JsonValue,
   field: String,
@@ -815,15 +859,20 @@ fn nested_optional_count(
   }
 }
 
+/// Evaluates choice delta and finish reason from a choice object.
 fn handle_choice(
   acc: Accumulator,
   choice: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
   let finish = wire.string_field(choice, "finish_reason")
+
+  // Apply delta content if present in choice.
   let #(acc, events) = case wire.field(choice, "delta") {
     Ok(delta) -> handle_delta(acc, delta)
     Error(Nil) -> #(acc, [])
   }
+
+  // Handle finish reason or prioritize delta failure event.
   case events, finish {
     // A failure emitted by the delta handler wins; drop the finish.
     [Failed(..), ..], _ -> #(acc, events)
@@ -832,11 +881,13 @@ fn handle_choice(
   }
 }
 
+/// Maps raw finish reason string and sets accumulator stop state.
 fn apply_finish_reason(
   acc: Accumulator,
   raw: String,
   events: List(StreamEvent),
 ) -> #(Accumulator, List(StreamEvent)) {
+  // Translate finish reason string to canonical StopReason.
   case map_finish_reason(raw) {
     Ok(#(stop, error_message)) -> #(
       Accumulator(
@@ -854,10 +905,12 @@ fn apply_finish_reason(
   }
 }
 
+/// Dispatches delta content fragments to text, thinking, and tool call handlers.
 fn handle_delta(
   acc: Accumulator,
   delta: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
+  // Apply text content delta if present.
   let #(acc, text_events) = case wire.string_field(delta, "content") {
     Ok("") | Error(Nil) -> #(acc, [])
     Ok(text) -> append_text(acc, text)
@@ -869,10 +922,14 @@ fn handle_delta(
     Ok(thinking) -> Ok(thinking)
     Error(Nil) -> wire.string_field(delta, "reasoning")
   }
+
+  // Apply reasoning/thinking delta if present.
   let #(acc, thinking_events) = case reasoning {
     Ok("") | Error(Nil) -> #(acc, [])
     Ok(thinking) -> append_thinking(acc, thinking)
   }
+
+  // Apply tool call fragments if present in delta.
   let #(acc, tool_events) = case wire.array_field(delta, "tool_calls") {
     Ok(fragments) ->
       list.fold(fragments, #(acc, []), fn(folded, fragment) {
@@ -882,13 +939,16 @@ fn handle_delta(
       })
     Error(Nil) -> #(acc, [])
   }
+
   #(acc, list.flatten([text_events, thinking_events, tool_events]))
 }
 
+/// Appends text fragment to existing text block or creates new text block.
 fn append_text(
   acc: Accumulator,
   text: String,
 ) -> #(Accumulator, List(StreamEvent)) {
+  // Find active text block to append delta or allocate new block index.
   case find_text(acc.blocks) {
     Ok(index) -> {
       let blocks = list.map(acc.blocks, update_text_block(_, index, text))
@@ -903,6 +963,7 @@ fn append_text(
   }
 }
 
+/// Appends text fragment to matching OaText block.
 fn update_text_block(block: OaBlock, index: Int, text: String) -> OaBlock {
   case block {
     OaText(index: i, text: so_far) if i == index ->
@@ -911,6 +972,7 @@ fn update_text_block(block: OaBlock, index: Int, text: String) -> OaBlock {
   }
 }
 
+/// Locates the block index of the first OaText block in blocks list.
 fn find_text(blocks: List(OaBlock)) -> Result(Int, Nil) {
   case blocks {
     [] -> Error(Nil)
@@ -919,10 +981,12 @@ fn find_text(blocks: List(OaBlock)) -> Result(Int, Nil) {
   }
 }
 
+/// Appends reasoning fragment to existing thinking block or creates new thinking block.
 fn append_thinking(
   acc: Accumulator,
   thinking: String,
 ) -> #(Accumulator, List(StreamEvent)) {
+  // Find active thinking block to append delta or allocate new block index.
   case find_thinking(acc.blocks) {
     Ok(index) -> {
       let blocks =
@@ -939,6 +1003,7 @@ fn append_thinking(
   }
 }
 
+/// Appends thinking fragment to matching OaThinking block.
 fn update_thinking_block(
   block: OaBlock,
   index: Int,
@@ -951,6 +1016,7 @@ fn update_thinking_block(
   }
 }
 
+/// Locates the block index of the first OaThinking block in blocks list.
 fn find_thinking(blocks: List(OaBlock)) -> Result(Int, Nil) {
   case blocks {
     [] -> Error(Nil)
@@ -959,6 +1025,7 @@ fn find_thinking(blocks: List(OaBlock)) -> Result(Int, Nil) {
   }
 }
 
+/// Appends tool call fragment to tool block accumulator and emits ToolCallDelta.
 fn append_tool_fragment(
   acc: Accumulator,
   fragment: JsonValue,
@@ -969,6 +1036,8 @@ fn append_tool_fragment(
     result.unwrap(wire.field(fragment, "function"), json.Object([]))
   let name = option.from_result(wire.string_field(function, "name"))
   let arguments = wire.string_field_or(function, "arguments", or: "")
+
+  // Find existing tool call block by provider index or allocate new tool block.
   case find_tool(acc.blocks, provider_index) {
     Ok(#(index, existing_id, existing_name)) -> {
       let call_id = option.unwrap(call_id, existing_id)
@@ -1013,6 +1082,7 @@ fn append_tool_fragment(
   }
 }
 
+/// Appends arguments and merges call ID or name on matching OaTool block.
 fn update_tool_block(
   block: OaBlock,
   index: Int,
@@ -1033,6 +1103,7 @@ fn update_tool_block(
   }
 }
 
+/// Finds tool block index, call ID, and name by provider index.
 fn find_tool(
   blocks: List(OaBlock),
   provider_index: Int,
@@ -1048,8 +1119,11 @@ fn find_tool(
 
 // --- settlement ---------------------------------------------------------
 
+/// Settles stream on completion or fails if finish reason is missing.
 fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(when: acc.done, return: #(acc, []))
+
+  // Verify stop reason is recorded before settling.
   case acc.stop {
     None ->
       fail(
@@ -1060,6 +1134,7 @@ fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
   }
 }
 
+/// Finalizes stream state with settled assistant message event.
 fn settle_with_stop(
   acc: Accumulator,
   stop: StopReason,
@@ -1075,6 +1150,8 @@ fn settle_with_stop(
   let overflowed =
     input_tokens > acc.resolved.context_window
     && usage.output <= negligible_output_tokens
+
+  // Check whether request overflowed model context limit.
   let #(stop, error_message) = case overflowed {
     True -> #(
       Errored,
@@ -1085,6 +1162,7 @@ fn settle_with_stop(
     )
     False -> #(stop, acc.error_message)
   }
+
   let assistant =
     AssistantMessage(
       content:,
@@ -1120,6 +1198,7 @@ fn settle_with_stop(
 // with `to_error(err)` — the adapter's counterpart to `machine/planner`'s
 // `or_fault`, for the handful of settlement steps that must end the
 // stream in-band rather than propagate a bare `Result`.
+/// Settlement combinator failing stream if result is an Error.
 fn or_fail(
   result: Result(a, e),
   acc: Accumulator,
@@ -1138,6 +1217,7 @@ fn or_fail(
 // not parse is settled by `wire.tool_arguments` as a call carrying the
 // failure, not raised as an error that would fail the stream, so there is
 // no longer a failure mode here for the caller to settle.
+/// Maps accumulated OaBlock records to canonical assistant blocks.
 fn build_blocks(
   blocks: List(OaBlock),
   built: List(message.AssistantBlock),
@@ -1168,6 +1248,7 @@ fn build_blocks(
   }
 }
 
+/// Constructs final Usage statistics record from accumulator state.
 fn build_usage(acc: Accumulator) -> Usage {
   // `prompt_tokens` is the whole prompt, cached reads and cache writes
   // included; split both out so the ledger's vocabulary (`input` = tokens
@@ -1207,6 +1288,7 @@ fn build_usage(acc: Accumulator) -> Usage {
   )
 }
 
+/// Marks accumulator done and generates Failed terminal stream event.
 fn fail(
   acc: Accumulator,
   error: stream.ProviderError,

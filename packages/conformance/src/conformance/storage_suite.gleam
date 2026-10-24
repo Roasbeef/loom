@@ -113,6 +113,7 @@ fn mint(ctx: Ctx) -> #(EntryId, Ctx) {
   #(id, Ctx(generator:))
 }
 
+/// Constructs a user MessageEntry fixture with minted ID.
 fn message(ctx: Ctx, parent: Option(EntryId), text: String) -> #(Entry, Ctx) {
   let #(id, ctx) = mint(ctx)
   let entry =
@@ -131,6 +132,7 @@ fn message(ctx: Ctx, parent: Option(EntryId), text: String) -> #(Entry, Ctx) {
   #(entry, ctx)
 }
 
+/// Constructs a CompactionEntry fixture with minted ID.
 fn compaction(
   ctx: Ctx,
   parent: Option(EntryId),
@@ -152,6 +154,7 @@ fn compaction(
   #(entry, ctx)
 }
 
+/// Constructs a CustomEntry fixture with minted ID.
 fn custom(
   ctx: Ctx,
   parent: Option(EntryId),
@@ -161,6 +164,7 @@ fn custom(
   #(CustomEntry(id:, parent:, seq: 0, ts: 0, custom_type:, data: None), ctx)
 }
 
+/// Builds an artificial Usage record with specified input tokens.
 fn usage_of(input: Int) -> message.Usage {
   Usage(
     input:,
@@ -181,6 +185,7 @@ fn usage_of(input: Int) -> message.Usage {
   )
 }
 
+/// Constructs a UsageRow fixture with minted ID.
 fn usage(ctx: Ctx, entry_id: Option(EntryId), input: Int) -> #(UsageRow, Ctx) {
   let #(id, generator) = ids.mint_usage(ctx.generator)
   let row =
@@ -206,6 +211,7 @@ fn json_value(n: Int) -> register.RegisterValue {
 // computed ledger sum and message count — "after every commit", exactly
 // as the spec demands.
 
+/// Executes commit asserting verified stats match model expectation.
 fn commit_ok(
   store: Storage(handle),
   model: SessionStats,
@@ -248,6 +254,7 @@ fn scan_ids(store: Storage(handle), q: storage.BranchScan) -> List(EntryId) {
 // corruption (a duplicate id, an unresolvable parent) leaves no trace at
 // all — not the register before it, not the valid entry beside it, not
 // even a consumed seq — and a clean commit afterward starts fresh.
+/// Verifies all-or-nothing transaction atomicity on write errors.
 fn atomicity_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("atomicity")
   let ctx = new_ctx()
@@ -322,6 +329,7 @@ fn atomicity_checks(backend: Backend(handle)) -> Nil {
 // transactions, and on the stored rows themselves — while tolerating the
 // gaps that interleaved register writes legitimately consume; an empty
 // transaction is legal and assigns nothing.
+/// Verifies strictly monotonic seq numbering across commits.
 fn seq_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("seqs")
   let ctx = new_ctx()
@@ -394,6 +402,7 @@ fn seq_checks(backend: Backend(handle)) -> Nil {
 // entry may name an earlier one (still in the same write list) as its
 // parent, and among repeated register writes to the same cell the last
 // one standing decides both the value and the stamped seq.
+/// Verifies entry scan and branch scan follow transaction write order.
 fn write_order_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("write_order")
   let ctx = new_ctx()
@@ -451,6 +460,7 @@ fn write_order_checks(backend: Backend(handle)) -> Nil {
 // or usage row under an id already in use is corruption, never a silent
 // update, whether the collision is same-kind or a usage row minted under
 // what is really an entry id.
+/// Verifies duplicate entry insertion refusal without corrupting store.
 fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("duplicate_ids")
   let ctx = new_ctx()
@@ -497,6 +507,7 @@ fn duplicate_id_checks(backend: Backend(handle)) -> Nil {
 // no-op, recreate as a fresh cell with a fresh seq) and `list_registers`
 // ordering: key-ascending, prefix-filtered, namespace-scoped, and safe
 // against keys containing SQL LIKE metacharacters.
+/// Verifies isolated register namespaces and key operations.
 fn register_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("registers")
   let model = storage.empty_stats()
@@ -620,6 +631,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
 // and fails on a stale or missing one, several expectations on one
 // commit all must hold, and a deleted cell satisfies expect-absent again
 // — a failed expectation applies nothing.
+/// Verifies compare-and-swap register expectations on commit.
 fn cas_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("cas")
   let model = storage.empty_stats()
@@ -708,6 +720,7 @@ fn cas_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+/// Verifies mutually exclusive pending registers and placed entries.
 fn placement_checks(backend: Backend(handle)) -> Nil {
   // The pi §2.2 placement pattern: content staged in a PendingEntry
   // register, then one transaction inserts the complete entry, deletes
@@ -801,6 +814,7 @@ fn placement_checks(backend: Backend(handle)) -> Nil {
 // interaction with the cursor, kind and custom-type filters, the
 // clamped-non-positive-limit rule, cursor paging reproducing a full
 // scan, and an unknown start entry surfacing as `UnknownEntry`.
+/// Verifies branch scan traversal semantics across forks and checkpoints.
 fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("branch_scan")
   let ctx = new_ctx()
@@ -996,7 +1010,9 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+/// Advances the entry ID generator by n mint cycles.
 fn skip_mints(ctx: Ctx, n: Int) -> Ctx {
+  // Stop once all requested mint cycles have been skipped.
   case n <= 0 {
     True -> ctx
     False -> {
@@ -1008,6 +1024,7 @@ fn skip_mints(ctx: Ctx, n: Int) -> Ctx {
 
 // Pages a branch scan with the given page size until an empty page,
 // concatenating the pages.
+/// Scans an entire branch by paging through it sequentially.
 fn page_through(
   store: Storage(handle),
   q: storage.BranchScan,
@@ -1016,6 +1033,7 @@ fn page_through(
   page_through_loop(store, q, page, None, [])
 }
 
+/// Recursive helper accumulating entry IDs across scan pages.
 fn page_through_loop(
   store: Storage(handle),
   q: storage.BranchScan,
@@ -1023,12 +1041,16 @@ fn page_through_loop(
   cursor: Option(Int),
   accumulator: List(EntryId),
 ) -> List(EntryId) {
+  // Apply pagination cursor if present from previous page.
   let paged = case cursor {
     Some(seq) -> q |> storage.branch_limit(page) |> storage.branch_cursor(seq)
     None -> q |> storage.branch_limit(page)
   }
+
   let assert Ok(entries) = storage.scan_branch(store, paged)
     as "conformance storage check"
+
+  // Check if scan page is empty or continue accumulating.
   case entries {
     [] -> list.reverse(accumulator)
     _ -> {
@@ -1044,6 +1066,7 @@ fn page_through_loop(
   }
 }
 
+/// Verifies tree branch index resolution across complex fork histories.
 fn branch_index_checks(backend: Backend(handle)) -> Nil {
   // A branching torture script. After every commit, every entry ever
   // written must scan to exactly its model root path (pi §2.6: chains
@@ -1165,12 +1188,15 @@ fn branch_index_checks(backend: Backend(handle)) -> Nil {
   Nil
 }
 
+/// Computes expected branch entry path by following parent links.
 fn model_path(
   parents: Dict(EntryId, Option(EntryId)),
   id: EntryId,
   accumulator: List(EntryId),
 ) -> List(EntryId) {
   let accumulator = [id, ..accumulator]
+
+  // Traverse parent pointer until root is reached.
   case dict.get(parents, id) {
     Ok(Some(parent)) -> model_path(parents, parent, accumulator)
     Ok(None) -> accumulator
@@ -1183,6 +1209,7 @@ fn model_path(
 // non-positive-limit rule — SQLite's own `LIMIT -1` means unlimited, so
 // this guards against a backend that forwards the raw value instead of
 // clamping it.
+/// Verifies session-wide entry scan filters and pagination limits.
 fn entry_scan_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("entry_scan")
   let ctx = new_ctx()
@@ -1298,6 +1325,7 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
 
 // Every query shape `entry_scan_checks` exercises on `scan_entries`, plus
 // combinations of its filters, so the heads read is held to each of them.
+/// Enumerates distinct entry scan query filter combinations.
 fn entry_scan_shapes() -> List(storage.EntryScan) {
   let base = storage.entry_scan()
   [
@@ -1331,6 +1359,7 @@ fn entry_scan_shapes() -> List(storage.EntryScan) {
 // standalone, the adjustment flag), ordering and limiting, the
 // catch-up-by-seq window a projection resumes from, and the
 // non-positive-limit rule.
+/// Verifies usage scan ordering, filtering, and sequence bounds.
 fn usage_scan_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("usage_scan")
   let ctx = new_ctx()
@@ -1405,6 +1434,7 @@ fn usage_scan_checks(backend: Backend(handle)) -> Nil {
 // Proves close semantics (pi §1.5): idempotent — a second close still
 // answers `Ok(Nil)` — and a closed handle refuses reads in-band with
 // `HandleClosed` while a commit against it faults rather than crashing.
+/// Verifies operations on closed storage handles return HandleClosed.
 fn close_checks(backend: Backend(handle)) -> Nil {
   let store = backend.open("close")
   let ctx = new_ctx()

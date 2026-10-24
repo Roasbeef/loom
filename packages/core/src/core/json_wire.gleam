@@ -44,9 +44,12 @@ pub fn to_json(value: MsgPackValue) -> Result(JsonValue, String) {
   convert(value, 0)
 }
 
-// Hand-built report values have not crossed the wire decoder. Bound their
-// nesting here and reject ambiguous objects before serializing them.
+/// Converts a MsgPack value to a JSON value, checking nesting depth and key constraints.
+///
+/// Hand-built report values have not crossed the wire decoder. Bound their
+/// nesting here and reject ambiguous objects before serializing them.
 fn convert(value: MsgPackValue, depth: Int) -> Result(JsonValue, String) {
+  // Map MsgPack variants to their equivalent JSON representations.
   case value {
     msgpack.NilValue -> Ok(json.Null)
     msgpack.BoolValue(value:) -> Ok(json.Bool(value))
@@ -87,6 +90,7 @@ fn convert(value: MsgPackValue, depth: Int) -> Result(JsonValue, String) {
   }
 }
 
+/// Ensures all keys in an object map are unique.
 fn unique_keys(
   entries: List(#(MsgPackValue, MsgPackValue)),
 ) -> Result(Nil, String) {
@@ -191,6 +195,8 @@ pub fn optional_text_at(
 /// ```
 pub fn count_at(value: JsonValue, key: String) -> Result(Int, String) {
   use found <- result.try(field(value, key))
+
+  // Validate that the resolved field value is a non-negative integer count.
   case found {
     json.Int(count) if count >= 0 -> Ok(count)
     json.Int(_)

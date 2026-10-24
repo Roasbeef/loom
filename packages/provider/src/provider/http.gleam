@@ -173,6 +173,7 @@ pub fn httpc_transport() -> Transport {
   })
 }
 
+/// Starts an asynchronous streaming HTTP request backed by Erlang's httpc.
 fn start_httpc(
   request: HttpRequest,
   subject: Subject(HttpEvent),

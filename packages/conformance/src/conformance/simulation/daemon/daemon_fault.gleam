@@ -125,6 +125,7 @@ fn describe_fault(fault: Fault) -> String {
   }
 }
 
+/// Converts a failure step enum into its short string representation.
 fn describe_step(step: Step) -> String {
   case step {
     AfterReservation -> "reserved"
@@ -153,6 +154,8 @@ pub fn generate(
   creations: List(#(String, String)),
 ) -> #(Schedule, Rng) {
   let #(faulted, rng) = random.chance(rng, 75)
+
+  // Decide whether to inject a fault into the schedule.
   case faulted, first_in_workspace(creations, [], []) {
     False, _ | _, [] -> #(Schedule(faults: []), rng)
     True, [first, ..rest] -> {
@@ -164,23 +167,24 @@ pub fn generate(
   }
 }
 
-// Every creation, paired with the steps its position makes reachable. A
-// creation whose workspace an earlier one already opened cannot be killed at
-// `AfterReservation`, so that step is left out of its choices rather than
-// drawn and discarded.
+/// Returns each creation paired with the steps its position makes reachable.
 fn first_in_workspace(
   creations: List(#(String, String)),
   seen: List(String),
   acc: List(#(String, String, List(Step))),
 ) -> List(#(String, String, List(Step))) {
+  // Filter and assign reachable steps for each creation.
   case creations {
     [] -> list.reverse(acc)
     [#(key, workspace), ..rest] -> {
       let later = [AfterDomainBind, AfterCustodyPublish, AfterConfirm]
+
+      // Include reservation step only for first creation in workspace.
       let steps = case list.contains(seen, workspace) {
         True -> later
         False -> [AfterReservation, ..later]
       }
+
       first_in_workspace(rest, [workspace, ..seen], [
         #(key, workspace, steps),
         ..acc
@@ -237,15 +241,15 @@ pub fn shrink(
   list.append(drops, pulls)
 }
 
-// The faults one step or one creation earlier than `fault`, each only if its
-// step is reachable at the creation it names. The earlier step is tried
-// first, because it keeps the same creation and so changes one thing.
+/// Returns candidate faults shifted earlier by step or creation order.
 fn earlier(
   fault: Fault,
   reachable: List(#(String, String, List(Step))),
 ) -> List(Fault) {
   let KillDaemonAt(key:, workspace: _, step:) = fault
   let steps_of = fn(key) { list.find(reachable, fn(entry) { entry.0 == key }) }
+
+  // Attempt to shift to an earlier step of the same creation.
   let earlier_step = case steps_of(key), previous_step(step) {
     Ok(#(_key, workspace, steps)), Some(before) ->
       case list.contains(steps, before) {
@@ -254,6 +258,8 @@ fn earlier(
       }
     _unknown, _none -> []
   }
+
+  // Attempt to shift to the previous creation at the same step.
   let earlier_key = case previous_creation(reachable, key) {
     Some(#(before, workspace, steps)) ->
       case list.contains(steps, step) {
@@ -262,9 +268,11 @@ fn earlier(
       }
     None -> []
   }
+
   list.append(earlier_step, earlier_key)
 }
 
+/// Returns the immediate predecessor step toward reservation, if any.
 fn previous_step(step: Step) -> Option(Step) {
   case step {
     AfterConfirm -> Some(AfterCustodyPublish)
@@ -274,7 +282,7 @@ fn previous_step(step: Step) -> Option(Step) {
   }
 }
 
-// The creation immediately before `key` in script order.
+/// Returns the creation immediately preceding `key` in script order.
 fn previous_creation(
   creations: List(#(String, String, List(Step))),
   key: String,

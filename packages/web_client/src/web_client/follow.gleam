@@ -315,7 +315,7 @@ fn keyed(value: String) -> Result(Msg, Nil) {
   int.parse(value) |> result.map(Keyed)
 }
 
-// Only the server's two fixed endpoint words are accepted.
+/// Parses historical or live transcript stream endpoint names.
 fn endpoint_changed(value: String) -> Result(Msg, Nil) {
   case value {
     "reading" -> Ok(EndpointChanged(Historical))
@@ -324,6 +324,7 @@ fn endpoint_changed(value: String) -> Result(Msg, Nil) {
   }
 }
 
+/// Initializes follow component model starting at live transcript tail.
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(
     Model(
@@ -559,6 +560,7 @@ const reader_input = [
 // its own box has a fixed height, so it does not change when a row lands. The
 // children are observed as they are added, since the scroller can be
 // connected before the server's rows are in it.
+/// Attaches scroll, touch, resize, and child mutation observers to scroller.
 fn start() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
@@ -602,7 +604,9 @@ fn observe_children(sizes: ffi_dom.Observer, host: ffi_dom.Element) -> Nil {
   list.each(ffi_dom.children(host), ffi_dom.observe(sizes, _))
 }
 
+/// Disconnects scroll listeners, resize observers, and mutation watchers.
 fn stop(watching: Option(Watching)) -> Effect(Msg) {
+  // Disconnect active event listeners and observers on stop.
   case watching {
     None -> effect.none()
     Some(watching) -> {
@@ -622,10 +626,9 @@ fn stop(watching: Option(Watching)) -> Effect(Msg) {
   }
 }
 
-// Scrolls the transcript to its bottom at once. It is never animated: a
-// smooth scroll reports its intermediate positions, and each would be a move
-// for `<loom-follow>` to read as the reader leaving the tail.
+/// Sets scroll offset directly to the bottom of the transcript without animation.
 fn to_bottom(watching: Option(Watching)) -> Effect(Msg) {
+  // Set scroll offset to element scroll height.
   case watching {
     None -> effect.none()
     Some(Watching(host:, ..)) -> {
@@ -635,33 +638,37 @@ fn to_bottom(watching: Option(Watching)) -> Effect(Msg) {
   }
 }
 
-// The shadow button activates the server's read-only return handler before
-// following. A normal resize scroll must never retire a historical endpoint.
+/// Activates latest button to return from historical stream to live tail.
 fn jump_to_latest(watching: Option(Watching)) -> Effect(Msg) {
+  // Trigger jump-to-latest click and scroll to bottom.
   case watching {
     None -> effect.none()
     Some(Watching(host:, ..)) -> {
       use _ <- effect.from
+
+      // Click latest return trigger button when present.
       case ffi_dom.query_selector(host, "[data-loom-latest]") {
         Ok(button) -> ffi_dom.click(button)
         Error(Nil) -> Nil
       }
+
       ffi_dom.set_scroll_top(host, ffi_dom.scroll_height(host))
     }
   }
 }
 
-// Applies an arrival once the new rows are painted: to the bottom, or back to
-// the offset the reader left the strand at. The browser clamps an offset
-// past the end of the content.
+/// Positions scroll offset after strand arrival to tail or restored position.
 fn arrive(
   watching: Option(Watching),
   arrival: follow_rule.Arrival,
 ) -> Effect(Msg) {
+  // Apply arrival position after paint.
   case watching {
     None -> effect.none()
     Some(Watching(host:, ..)) -> {
       use dispatch, _ <- effect.after_paint
+
+      // Position scroller at bottom tail or previous top offset.
       case arrival {
         follow_rule.Tail ->
           ffi_dom.set_scroll_top(host, ffi_dom.scroll_height(host))
@@ -680,7 +687,9 @@ fn arrive(
   }
 }
 
+/// Measures current pixel distance from bottom of scroller container.
 fn measure(watching: Option(Watching)) -> Effect(Msg) {
+  // Compute scroller gap distance.
   case watching {
     None -> effect.none()
     Some(Watching(host:, ..)) -> {
@@ -690,10 +699,9 @@ fn measure(watching: Option(Watching)) -> Effect(Msg) {
   }
 }
 
-// Holds the first row of the lane inside the watched scroller, and the
-// viewport position of its top edge. The lane is the element's `.lane`
-// child; nothing here reads a row's content.
+/// Captures anchor element position to preserve relative scroll placement.
 fn hold(watching: Option(Watching)) -> Effect(Msg) {
+  // Capture first row anchor element and top coordinate.
   case watching {
     None -> effect.none()
     Some(Watching(host:, ..)) -> {
@@ -708,9 +716,9 @@ fn hold(watching: Option(Watching)) -> Effect(Msg) {
   }
 }
 
-// Holds the divider that was pressed and the viewport position of its top
-// edge, when the element is watching a transcript.
+/// Captures pressed divider position to stabilize layout across expansion.
 fn place(watching: Option(Watching), button: ffi_dom.Element) -> Effect(Msg) {
+  // Record divider top bounding coordinate.
   case watching {
     None -> effect.none()
     Some(Watching(host:, ..)) -> {
@@ -722,16 +730,18 @@ fn place(watching: Option(Watching), button: ffi_dom.Element) -> Effect(Msg) {
   }
 }
 
-// Puts a held divider back where it was in the viewport, and measures the gap
-// either way. A divider that left the page is let go. Scrolling by nothing is
-// not a scroll, so a lane that grew below the divider moves nothing.
+/// Restores divider viewport placement after fold and expansion toggles.
 fn restore(watching: Option(Watching), divider: Divider) -> Effect(Msg) {
   use dispatch <- effect.from
+
+  // Adjust scroll offset to keep divider at stable viewport coordinate.
   case ffi_dom.is_connected(divider.button) {
     False -> dispatch(Placed(None))
     True -> {
       let by =
         follow_rule.holding(divider.top, ffi_dom.bounding_top(divider.button))
+
+      // Scroll container by delta when divider has displaced.
       case by == 0.0 {
         True -> Nil
         False -> ffi_dom.scroll_by(divider.host, by)
@@ -739,14 +749,16 @@ fn restore(watching: Option(Watching), divider: Divider) -> Effect(Msg) {
     }
   }
 
+  // Update gap measurement after divider restoration.
   case watching {
     None -> Nil
     Some(Watching(host:, ..)) -> dispatch(Measured(gap_of(host)))
   }
 }
 
-// The same row, measured again after the reader scrolled.
+/// Re-evaluates top boundary position of the active anchor row.
 fn remeasure(anchor: Option(Anchor)) -> Effect(Msg) {
+  // Re-read bounding top coordinate of anchor row.
   case anchor {
     None -> effect.none()
     Some(anchor) -> {
@@ -764,7 +776,7 @@ fn leads(anchor: Anchor) -> Bool {
   |> result.unwrap(or: False)
 }
 
-// Where the held row stands on the page now.
+/// Evaluates whether the anchor row is leading, displaced, or detached.
 fn standing(anchor: Anchor) -> follow_rule.Standing {
   case ffi_dom.is_connected(anchor.row), leads(anchor) {
     False, _ -> Detached
@@ -773,24 +785,25 @@ fn standing(anchor: Anchor) -> follow_rule.Standing {
   }
 }
 
-// Puts a held row back if older rows have landed above it, and measures
-// the gap either way, so a reader who is held while more rows arrive below
-// still sees the button. The stylesheet turns the browser's own scroll
-// anchoring off for the scroller, so this is the one place the reader's
-// place is kept.
+/// Preserves reading position when prepending historical transcript rows.
 fn keep(watching: Option(Watching), anchor: Anchor) -> Effect(Msg) {
   use dispatch <- effect.from
+
+  // Restore scroll position when older rows arrive above anchor.
   case follow_rule.keeping(standing(anchor), anchor.top) {
     Waiting -> Nil
     Restored(by:) -> {
+      // Compensate scroll container offset by prepended height.
       case by == 0.0 {
         True -> Nil
         False -> ffi_dom.scroll_by(anchor.host, by)
       }
+
       dispatch(Released)
     }
   }
 
+  // Re-measure bottom gap distance following anchor compensation.
   case watching {
     None -> Nil
     Some(Watching(host:, ..)) -> dispatch(Measured(gap_of(host)))
@@ -812,6 +825,7 @@ fn keep(watching: Option(Watching), anchor: Anchor) -> Effect(Msg) {
 // that the stylesheet keeps clear of rows at every width, so it is over no
 // line. A disc with an arrow has no room for words, and so its name is its
 // title and its accessible label.
+/// Renders scroller default slot and floating jump-to-latest button.
 fn view(model: Model) -> Element(Msg) {
   let slot =
     component.default_slot(
@@ -828,10 +842,13 @@ fn view(model: Model) -> Element(Msg) {
       [],
     )
 
+  // Determine whether jump button should be offered to the reader.
   let jump = case model.endpoint {
     Historical | Returning -> follow_rule.Offered
     Live -> follow_rule.jump(model.reader.position, model.reader.gap)
   }
+
+  // Render jump button floating over content when offered.
   case jump {
     follow_rule.Offered ->
       element.fragment([

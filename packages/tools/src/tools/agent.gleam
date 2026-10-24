@@ -801,9 +801,7 @@ pub fn parse_handle(text: String) -> Result(Handle, Refusal) {
   }
 }
 
-// The strand half is everything before the last `#`, rejoined — a
-// minted slug never contains one, but an operator-created strand name
-// is not required to avoid it.
+/// Recombines split handle segments and parses the operation identity.
 fn handle_from_parts(
   text: String,
   operation_text: String,
@@ -814,15 +812,17 @@ fn handle_from_parts(
     ids.parse_op_id(without_orchestrator(operation_text))
     |> result.replace_error(MalformedHandle(text:)),
   )
+
+  // Rejoin strand segments before the last hash and verify non-empty.
   case string.join(list.reverse([first, ..rest]), "#") {
     "" -> Error(MalformedHandle(text:))
     strand -> Ok(Handle(strand:, operation:))
   }
 }
 
-// The operation half of a handle with its `@{orchestrator}` suffix removed. A
-// suffix that is empty or holds a second `@` is left in place, and the
-// operation id then fails to parse, so a mangled suffix is a malformed handle.
+/// The operation half of a handle with its `@{orchestrator}` suffix removed. A
+/// suffix that is empty or holds a second `@` is left in place, and the
+/// operation id then fails to parse, so a mangled suffix is a malformed handle.
 fn without_orchestrator(operation_text: String) -> String {
   case string.split_once(operation_text, "@") {
     Ok(#(operation, orchestrator)) ->
@@ -872,12 +872,15 @@ pub fn slug(purpose: String) -> Result(String, Nil) {
     |> collapse_dashes
     |> string.slice(at_index: 0, length: max_slug_length)
     |> trim_dashes
+
+  // Return the slugged text or error if no usable characters remain.
   case slugged {
     "" -> Error(Nil)
     text -> Ok(text)
   }
 }
 
+/// Checks whether a single character is allowed in a strand slug (a-z, 0-9, or dash).
 fn is_slug_character(character: String) -> Bool {
   case character {
     "a"
@@ -928,6 +931,7 @@ fn collapse_dashes(text: String) -> String {
   }
 }
 
+/// Recursively strips leading and trailing dash characters from a slug candidate.
 fn trim_dashes(text: String) -> String {
   case text {
     "-" <> rest -> trim_dashes(rest)
@@ -967,16 +971,22 @@ fn trim_dashes(text: String) -> String {
 /// ```
 ///
 pub fn parse_result_schema(value: JsonValue) -> Result(ResultSchema, String) {
+  // Verify the top-level schema payload is a JSON object.
   use fields <- result.try(case value {
     json.Object(fields:) -> Ok(fields)
     other -> Error("must be a JSON object, not `" <> type_name(other) <> "`")
   })
+
   use Nil <- result.try(only_keys(fields, envelope_keys, "a result schema"))
+
+  // Verify the top level declares type object.
   use Nil <- result.try(case list.key_find(fields, "type") {
     Ok(json.String("object")) -> Ok(Nil)
     Ok(_other) | Error(Nil) ->
       Error("must declare `\"type\": \"object\"` at its top level")
   })
+
+  // Verify properties is present and structured as a JSON object.
   use properties <- result.try(case list.key_find(fields, "properties") {
     Ok(json.Object(fields: properties)) -> Ok(properties)
     Ok(other) ->
@@ -1010,10 +1020,13 @@ pub fn parse_result_schema(value: JsonValue) -> Result(ResultSchema, String) {
   // walk.
   use required <- result.try(required_names(fields))
   use declared <- result.try(list.try_map(properties, parse_property))
+
+  // Require at least one declared property in the schema.
   use Nil <- result.try(case declared {
     [] -> Error("must declare at least one property to be worth demanding")
     [_, ..] -> Ok(Nil)
   })
+
   use Nil <- result.try(
     list.try_each(required, fn(name) {
       case list.key_find(declared, name) {
@@ -1100,10 +1113,12 @@ pub fn validate_result(
   schema: ResultSchema,
   value: JsonValue,
 ) -> Result(Nil, Mismatch) {
+  // Ensure the value to validate against the schema is a JSON object.
   use fields <- result.try(case value {
     json.Object(fields:) -> Ok(fields)
     other -> Error(NotAnObject(received: type_name(other)))
   })
+
   list.try_each(schema.fields, fn(field) { check_field(fields, field) })
 }
 
@@ -1151,6 +1166,7 @@ const envelope_keys = ["type", "properties", "required", "description"]
 // the constraint quietly dropped.
 const property_keys = ["type", "items", "description"]
 
+/// Ensures an object carries only allowed keys, refusing unknown schema fields.
 fn only_keys(
   fields: List(#(String, JsonValue)),
   allowed: List(String),
@@ -1169,9 +1185,11 @@ fn only_keys(
   }
 }
 
+/// Parses and bounds property names declared in the `required` array.
 fn required_names(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(String), String) {
+  // Locate and parse the optional required array.
   case list.key_find(fields, "required") {
     Error(Nil) -> Ok([])
     Ok(json.Array(items:)) -> {
@@ -1210,10 +1228,13 @@ fn required_names(
   }
 }
 
+/// Parses a single property definition into a typed field mapping.
 fn parse_property(
   property: #(String, JsonValue),
 ) -> Result(#(String, FieldType), String) {
   let #(name, described) = property
+
+  // Validate the property name against length and alphabet bounds.
   use Nil <- result.try(case usable_field_name(name) {
     True -> Ok(Nil)
     False ->
@@ -1225,6 +1246,7 @@ fn parse_property(
         <> " characters",
       )
   })
+
   use expects <- result.try(
     parse_field_type(described, 0)
     |> result.map_error(fn(reason) { "property `" <> name <> "` " <> reason }),
@@ -1232,10 +1254,10 @@ fn parse_property(
   Ok(#(name, expects))
 }
 
-// A field name is rendered into the child's brief and into the sentence
-// a mismatch produces, so its shape is checked rather than trusted: an
-// unbounded name carrying newlines could imitate the harness's own
-// framing markers in the very text framing exists to make legible.
+/// A field name is rendered into the child's brief and into the sentence
+/// a mismatch produces, so its shape is checked rather than trusted: an
+/// unbounded name carrying newlines could imitate the harness's own
+/// framing markers in the very text framing exists to make legible.
 fn usable_field_name(name: String) -> Bool {
   name != ""
   && string.length(name) <= max_field_name_length
@@ -1247,6 +1269,7 @@ fn usable_field_name(name: String) -> Bool {
 const field_name_alphabet =
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
 
+/// Parses a field type description within recursion depth limits.
 fn parse_field_type(
   described: JsonValue,
   depth: Int,
@@ -1258,6 +1281,8 @@ fn parse_field_type(
       <> " levels",
     )
   })
+
+  // Ensure the field definition is an object.
   use fields <- result.try(case described {
     json.Object(fields:) -> Ok(fields)
     other ->
@@ -1267,7 +1292,10 @@ fn parse_field_type(
         <> "`",
       )
   })
+
   use Nil <- result.try(only_keys(fields, property_keys, "a property"))
+
+  // Resolve the declared type string to its FieldType constructor.
   case list.key_find(fields, "type") {
     Error(Nil) -> Ok(AnyField)
     Ok(json.String("string")) -> Ok(StringField)
@@ -1286,6 +1314,7 @@ fn parse_field_type(
   }
 }
 
+/// Parses the `items` property of an array field type.
 fn parse_array_type(
   fields: List(#(String, JsonValue)),
   depth: Int,
@@ -1298,6 +1327,7 @@ fn parse_array_type(
   }
 }
 
+/// Renders a FieldType into a JSON Schema representation.
 fn render_field_type(expects: FieldType) -> JsonValue {
   case expects {
     AnyField -> json.Object([])
@@ -1314,6 +1344,7 @@ fn render_field_type(expects: FieldType) -> JsonValue {
   }
 }
 
+/// Checks whether an object contains the expected field and valid type.
 fn check_field(
   fields: List(#(String, JsonValue)),
   field: ResultField,
@@ -1328,6 +1359,7 @@ fn check_field(
   }
 }
 
+/// Validates that a value matches the declared field type.
 fn check_type(field: ResultField, value: JsonValue) -> Result(Nil, Mismatch) {
   case matches(field.expects, value) {
     True -> Ok(Nil)
@@ -1340,9 +1372,7 @@ fn check_type(field: ResultField, value: JsonValue) -> Result(Nil, Mismatch) {
   }
 }
 
-// The type test runs through `type_name` rather than re-matching the
-// constructors, so the vocabulary a mismatch is reported in and the
-// vocabulary it is judged in cannot drift apart.
+/// Tests whether a JsonValue matches the expected FieldType.
 fn matches(expects: FieldType, value: JsonValue) -> Bool {
   case expects {
     AnyField -> True
@@ -1364,10 +1394,7 @@ fn matches(expects: FieldType, value: JsonValue) -> Bool {
   }
 }
 
-// What actually arrived, said in the vocabulary the expectation is said
-// in — and, for an array, said about the first element that broke the
-// promise rather than about the array as a whole, because "array" is not
-// the news when an array is what was asked for.
+/// Describes the actual type of a value against expected type expectations.
 fn received_name(expects: FieldType, value: JsonValue) -> String {
   case expects {
     ArrayField(items:) -> received_array_name(items, value)
@@ -1380,6 +1407,7 @@ fn received_name(expects: FieldType, value: JsonValue) -> String {
   }
 }
 
+/// Describes the type of offending array elements when mismatching expected items.
 fn received_array_name(items: FieldType, value: JsonValue) -> String {
   case value {
     json.Array(items: values) ->
@@ -1438,11 +1466,11 @@ pub fn field_type_name(expects: FieldType) -> String {
   }
 }
 
-// A rendered value quoted inside a message, bounded. `string.slice`
-// answers the question the bound asks; comparing the slice back against
-// the whole says whether anything was cut without measuring the rest.
+/// Truncates text to a maximum excerpt length with an ellipsis when truncated.
 fn excerpt(text: String) -> String {
   let cut = string.slice(text, at_index: 0, length: max_excerpt)
+
+  // Append ellipsis if the string exceeded maximum excerpt length.
   case cut == text {
     True -> text
     False -> cut <> "…"
@@ -1530,11 +1558,7 @@ pub fn describe(refusal: Refusal) -> String {
 /// `runtime/api.parent_reference_prefix`, which this package cannot import.
 pub const parent_reference_prefix = "^"
 
-// The refusal a child reads when it messages its parent and the parent is on
-// another orchestrator. The same send to a parent in the same session would be
-// delivered into the parent's open run; here the parent's session is not this
-// one, and phase 1 carries no upward messages, so the words say where to put
-// the report instead.
+/// Renders refusal prose when addressing a parent residing on a remote orchestrator.
 fn parent_elsewhere_text(parent: String) -> String {
   "your parent `"
   <> string.drop_start(parent, string.length(parent_reference_prefix))
@@ -1576,9 +1600,7 @@ pub fn tools(agency: Agency) -> List(Tool) {
   ]
 }
 
-// Binds the one slot before building the closure, for the reason
-// `agent_size_test` pins: a closure over the whole Agency would copy every
-// other slot into the tool as well.
+/// Adapts the Agency todos slot for the todos tool closure.
 fn todo_door(
   slot: fn(Caller, fn(Option(JsonValue)) -> Result(JsonValue, String)) ->
     Result(JsonValue, Refusal),
@@ -1688,9 +1710,7 @@ pub fn spawn_tool(
   )
 }
 
-// The `on` argument, offered only where there is somewhere to run a child. A
-// session that reaches no other orchestrator advertises none, so the wire tool
-// array a provider caches carries no argument that could only be refused.
+/// Renders the schema property for remote orchestrator placement when available.
 fn on_property(names: List(String)) -> List(#(String, JsonValue)) {
   case names {
     [] -> []
@@ -1714,19 +1734,21 @@ fn on_property(names: List(String)) -> List(#(String, JsonValue)) {
   }
 }
 
-// The catalogue is the selection boundary. Advertising its names prevents
-// callers from guessing provider identifiers where a configured alias belongs.
+/// Builds the model argument schema property depending on configured catalogue models.
 fn spawn_model_property(names: List(String)) -> JsonValue {
   let description =
     "Optional configured model name for the child; seeds that model's "
     <> "thinking level. Omit to use the subagent route, or inherit your "
     <> "model when no route is configured"
+
+  // Select string or enum schema depending on configured model names.
   case names {
     [] -> tool.string_property(description <> ". No explicit models configured")
     [_, ..] -> tool.enum_property(names, description)
   }
 }
 
+/// Decodes spawn arguments and executes child strand creation.
 fn run_spawn(
   spawn: fn(Caller, SpawnRequest) -> Result(Spawned, Refusal),
   ctx: Ctx,
@@ -1753,6 +1775,8 @@ fn run_spawn(
       detach: option.unwrap(detach, False),
       on:,
     )
+
+  // Dispatch spawn request to Agency and render outcome.
   case spawn(caller(ctx), request) {
     Error(refusal) -> refusal_outcome(refusal)
     Ok(spawned) -> {
@@ -1807,6 +1831,7 @@ fn orchestrator_detail(on: Option(String)) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Formats orchestrator placement detail for human-readable output.
 fn orchestrator_text(on: Option(String)) -> String {
   case on {
     Some(orchestrator) ->
@@ -1815,15 +1840,17 @@ fn orchestrator_text(on: Option(String)) -> String {
   }
 }
 
-// The schema is parsed in the shell, before the Agency mints anything.
-// A malformed schema is the parent's own mistake and nothing about it
-// needs a runtime to diagnose, so the parent is told in the turn it made
-// the mistake rather than after waiting on a child it had already paid
-// for.
+/// The schema is parsed in the shell, before the Agency mints anything.
+/// A malformed schema is the parent's own mistake and nothing about it
+/// needs a runtime to diagnose, so the parent is told in the turn it made
+/// the mistake rather than after waiting on a child it had already paid
+/// for.
 fn decode_result_schema(
   args: JsonValue,
 ) -> Result(Option(ResultSchema), String) {
   use described <- result.try(tool.optional_value(args, "result_schema"))
+
+  // Parse result schema when specified.
   case described {
     None | Some(json.Null) -> Ok(None)
     Some(value) ->
@@ -1833,6 +1860,7 @@ fn decode_result_schema(
   }
 }
 
+/// Decodes the context provenance argument from spawn JSON arguments.
 fn decode_provenance(args: JsonValue) -> Result(Provenance, String) {
   case tool.optional_string(args, "context") {
     Error(reason) -> Error(reason)
@@ -1901,6 +1929,7 @@ pub fn wait_tool(
   )
 }
 
+/// Parses handles and awaits completion of subagents within deadline.
 fn run_wait(
   wait: fn(Caller, List(Handle), Int) -> Result(List(Waited), Refusal),
   max_wait_ms: Int,
@@ -1959,6 +1988,7 @@ fn is_pending(waited: Waited) -> Bool {
   }
 }
 
+/// Formats waited subagent results into human-readable text.
 fn waited_text(waited: Waited) -> String {
   case waited {
     Pending(handle:, waited_ms:, unanswered: None) ->
@@ -1987,9 +2017,7 @@ fn waited_text(waited: Waited) -> String {
   }
 }
 
-// The result section, or nothing at all when the spawn named no schema —
-// which is what keeps a schema-less join rendering exactly the bytes it
-// rendered before result contracts existed.
+/// Formats the terminal result section for human-readable output.
 fn result_suffix(result: TerminalResult) -> String {
   case result {
     NoResultAsked -> ""
@@ -2018,8 +2046,7 @@ fn report_text(report: String) -> String {
   }
 }
 
-// The trailing `[notes] key=value, ...` line, empty when the child
-// wrote none.
+/// Formats blackboard notes suffix for waited output.
 fn notes_suffix(notes: List(#(String, JsonValue))) -> String {
   case notes {
     [] -> ""
@@ -2032,6 +2059,7 @@ fn notes_suffix(notes: List(#(String, JsonValue))) -> String {
   }
 }
 
+/// Converts an Outcome variant into human-readable text.
 fn outcome_text(outcome: Outcome) -> String {
   case outcome {
     Completed -> "completed"
@@ -2044,6 +2072,7 @@ fn outcome_text(outcome: Outcome) -> String {
   }
 }
 
+/// Serializes a Waited outcome into structured JSON details.
 fn waited_json(waited: Waited) -> JsonValue {
   case waited {
     Pending(handle:, waited_ms:, unanswered:) ->
@@ -2083,11 +2112,7 @@ fn waited_json(waited: Waited) -> JsonValue {
 // so its details object is byte for byte what it was before — the
 // compatibility floor this feature is only allowed to stand on.
 //
-// The outcome above is left alone deliberately: it says how the child's
-// *run* ended, and a run that completed did complete even when the value
-// it left behind is unusable. Folding the contract verdict into it would
-// make the one field a waiter reads to decide "did this crash" answer a
-// different question than it advertises.
+/// Serializes terminal result state and schema diagnostics into JSON properties.
 fn result_json(result: TerminalResult) -> List(#(String, JsonValue)) {
   case result {
     NoResultAsked -> []
@@ -2121,6 +2146,7 @@ fn result_json(result: TerminalResult) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Serializes an Outcome variant into a JSON string value.
 fn outcome_json(outcome: Outcome) -> JsonValue {
   case outcome {
     Completed -> json.String("completed")
@@ -2190,6 +2216,7 @@ pub fn send_tool(
   )
 }
 
+/// Dispatches a message to an addressable peer and renders the delivery outcome.
 fn run_send(
   send: fn(Caller, String, String, Option(Int)) -> Result(Delivery, Refusal),
   ctx: Ctx,
@@ -2202,6 +2229,8 @@ fn run_send(
     send(caller(ctx), to, message, within_ms),
     refusal_outcome,
   )
+
+  // Render outcome based on whether delivery steered, started, or queued.
   case delivery {
     Steered(entry:) -> steered_outcome(to, entry)
     Started(operation:, deadline_ms:) ->
@@ -2210,6 +2239,7 @@ fn run_send(
   }
 }
 
+/// Formats the result outcome for queued delivery to a remote orchestrator.
 fn queued_outcome(to: String) -> ToolOutcome {
   tool.success(
     "recorded for `"
@@ -2221,6 +2251,7 @@ fn queued_outcome(to: String) -> ToolOutcome {
   |> tool.with_details(json.Object([#("delivery", json.String("queued"))]))
 }
 
+/// Formats the result outcome for steered message delivery into an open run.
 fn steered_outcome(to: String, entry: EntryId) -> ToolOutcome {
   tool.success("delivered to `" <> to <> "` on its open run")
   |> tool.with_details(
@@ -2231,6 +2262,7 @@ fn steered_outcome(to: String, entry: EntryId) -> ToolOutcome {
   )
 }
 
+/// Formats the result outcome when delivery started a fresh run on an idle strand.
 fn started_outcome(
   to: String,
   operation: OpId,
@@ -2294,6 +2326,7 @@ pub fn note_tool(
   )
 }
 
+/// Executes writing a blackboard cell under the caller's namespace.
 fn run_note(
   note: fn(Caller, String, JsonValue) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -2336,6 +2369,7 @@ pub fn notes_tool(
   )
 }
 
+/// Reads blackboard cells under optional prefix filter and formats results.
 fn run_notes(
   notes: fn(Caller, Option(String)) ->
     Result(List(#(String, JsonValue)), Refusal),
@@ -2343,6 +2377,8 @@ fn run_notes(
   args: JsonValue,
 ) -> ToolOutcome {
   use prefix <- tool.with_arg(tool.optional_string(args, "prefix"))
+
+  // Query notes from Agency and render blackboard cells.
   case notes(caller(ctx), prefix) {
     Error(refusal) -> refusal_outcome(refusal)
     Ok([]) -> tool.success("no notes")
@@ -2379,6 +2415,7 @@ pub fn roster_tool(roster: fn(Caller) -> Result(List(Peer), Refusal)) -> Tool {
   )
 }
 
+/// Dispatches a roster query to discover lineage peers and handles.
 fn run_roster(
   roster: fn(Caller) -> Result(List(Peer), Refusal),
   ctx: Ctx,
@@ -2394,6 +2431,7 @@ fn run_roster(
   }
 }
 
+/// Formats peer relation, standing, and handle for human-readable output.
 fn peer_text(peer: Peer) -> String {
   relation_text(peer.relation)
   <> " "
@@ -2422,8 +2460,7 @@ fn peer_text(peer: Peer) -> String {
   <> deadline_text(peer.deadline_ms)
 }
 
-// A child elsewhere is named by its handle with the orchestrator suffix, the
-// text `agent_spawn` printed, so the roster hands back what a wait accepts.
+/// Formats peer handle text, appending remote orchestrator suffix when elsewhere.
 fn peer_handle_text(handle: Handle, placement: Placement) -> String {
   case placement {
     Here -> handle_to_string(handle)
@@ -2439,6 +2476,7 @@ fn relation_text(relation: Relation) -> String {
   }
 }
 
+/// Serializes peer details and placement into structured JSON.
 fn peer_json(peer: Peer) -> JsonValue {
   json.Object(list.append(
     [
@@ -2463,8 +2501,7 @@ fn peer_json(peer: Peer) -> JsonValue {
   ))
 }
 
-// The fields a local entry never carried: where a remote child runs and how the
-// caller's record of it stands.
+/// Serializes placement and standing fields for remote peers.
 fn placement_json(placement: Placement) -> List(#(String, JsonValue)) {
   case placement {
     Here -> []
@@ -2479,6 +2516,7 @@ fn placement_json(placement: Placement) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Renders standing status as a short identifier string.
 fn standing_text(standing: Standing) -> String {
   case standing {
     AwaitingAnswer -> "unknown"
@@ -2598,6 +2636,7 @@ fn coordinate_hash(text: String) -> Int {
   hash_loop(<<text:utf8>>, fnv_offset_basis)
 }
 
+/// Folds 64-bit FNV-1a steps over UTF-8 coordinate bytes under a 64-bit mask.
 fn hash_loop(bytes: BitArray, accumulator: Int) -> Int {
   case bytes {
     <<byte, rest:bytes>> ->
@@ -2646,7 +2685,7 @@ fn empty_requirements(workspace: String) -> SandboxPolicy {
   policy.SandboxPolicy(..base, readable_roots: [])
 }
 
-// Keep terminal outcomes compatible while recording the reason separately.
+/// Translates terminal outcome variants into abort reason JSON values.
 fn abort_reason_json(outcome: Outcome) -> JsonValue {
   case outcome {
     BudgetExpired -> json.String("budget_expired")

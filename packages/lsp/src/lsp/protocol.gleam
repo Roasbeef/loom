@@ -282,21 +282,25 @@ pub fn decode_initialize_result(
   value: JsonValue,
 ) -> Result(InitializeResult, ProtocolFault) {
   use fields <- result.try(object_fields(value, "an initialize result object"))
+
+  // Extracts mandatory server capabilities advertised during initialize.
   use capabilities <- result.try(case list.key_find(fields, "capabilities") {
     Ok(capabilities) -> decode_capabilities(capabilities)
     Error(Nil) -> Error(BadResult(reason: "capabilities is required"))
   })
+
+  // Decodes optional server identification details when present.
   use #(server_name, server_version) <- result.try(
     case list.key_find(fields, "serverInfo") {
       Error(Nil) -> Ok(#(None, None))
       Ok(info) -> decode_server_info(info)
     },
   )
+
   Ok(InitializeResult(capabilities:, server_name:, server_version:))
 }
 
-// `serverInfo` is optional as a whole, but its `name` is required when it is
-// present; the version is optional. The pair is `Some(name)` or neither.
+/// Decodes optional server name and version metadata from the initialize response.
 fn decode_server_info(
   value: JsonValue,
 ) -> Result(#(Option(String), Option(String)), ProtocolFault) {
@@ -306,11 +310,7 @@ fn decode_server_info(
   Ok(#(Some(name), version))
 }
 
-// Reads only the providers `ServerCapabilities` carries; every other key a
-// server advertises is never looked at. The `use x <- result.try(...)`
-// lines are one fallible step each: the first `Error` leaves the function
-// at once and the rest of the body is skipped, so a lying capability is a
-// `ProtocolFault` and the later lines run only on valid input.
+/// Decodes the subset of server capabilities required by the harness.
 fn decode_capabilities(
   value: JsonValue,
 ) -> Result(ServerCapabilities, ProtocolFault) {
@@ -342,9 +342,7 @@ fn decode_capabilities(
   ))
 }
 
-// `true` or any options object advertises; absent, `false` or `null` does
-// not. `null` is not in the schema, but reading it as "not provided" is the
-// conservative answer — the request is simply never sent.
+/// Resolves whether a capability provider is advertised by the server.
 fn provider(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -363,16 +361,19 @@ fn provider(
   }
 }
 
-// `renameProvider` is `boolean | RenameOptions`; only the object form can
-// carry `prepareProvider`.
+/// Decodes rename capability support including optional prepareProvider.
 fn rename_support(
   fields: List(#(String, JsonValue)),
 ) -> Result(RenameSupport, ProtocolFault) {
   use advertised <- result.try(provider(fields, "renameProvider"))
+
+  // Inspects rename support shape to see if prepare rename is offered.
   case advertised, list.key_find(fields, "renameProvider") {
     NotProvided, _ -> Ok(NoRename)
     Provided, Ok(json.Object(options)) -> {
       use prepare <- result.try(defaulted_bool(options, "prepareProvider"))
+
+      // Checks if prepareProvider was explicitly enabled in options.
       case prepare {
         True -> Ok(RenameWithPrepare)
         False -> Ok(RenameOnly)
@@ -382,17 +383,18 @@ fn rename_support(
   }
 }
 
-// `textDocumentSync` is a bare `TextDocumentSyncKind` number or a
-// `TextDocumentSyncOptions` object. The bare number predates the object,
-// and editors read a non-zero one as also asking for open and close.
+/// Decodes document synchronisation kind and open/close notification preferences.
 fn text_document_sync(
   fields: List(#(String, JsonValue)),
 ) -> Result(#(SyncKind, OpenClose), ProtocolFault) {
+  // Dispatches across integer or options object synchronization schemas.
   case list.key_find(fields, "textDocumentSync") {
     Error(Nil) -> Ok(#(SyncNone, OpenCloseSilent))
     Ok(json.Null) -> Ok(#(SyncNone, OpenCloseSilent))
     Ok(json.Int(kind)) -> {
       use kind <- result.try(sync_kind(kind))
+
+      // Infers open/close notification requirements from numeric sync kind.
       case kind {
         SyncNone -> Ok(#(SyncNone, OpenCloseSilent))
         SyncFull | SyncIncremental -> Ok(#(kind, OpenCloseNotified))
@@ -400,12 +402,16 @@ fn text_document_sync(
     }
     Ok(json.Object(options)) -> {
       use open_close <- result.try(defaulted_bool(options, "openClose"))
+
+      // Extracts change synchronization kind from options object.
       use kind <- result.try(case list.key_find(options, "change") {
         Error(Nil) -> Ok(SyncNone)
         Ok(json.Int(kind)) -> sync_kind(kind)
         Ok(_) ->
           Error(BadResult(reason: "textDocumentSync.change must be an integer"))
       })
+
+      // Evaluates whether open/close document lifecycle notices are expected.
       case open_close {
         True -> Ok(#(kind, OpenCloseNotified))
         False -> Ok(#(kind, OpenCloseSilent))
@@ -416,8 +422,7 @@ fn text_document_sync(
   }
 }
 
-// The three kinds the specification defines, and nothing else: an unknown
-// number is a lie about the protocol, not a dialect.
+/// Decodes numeric document sync kind into SyncNone, SyncFull, or SyncIncremental.
 fn sync_kind(kind: Int) -> Result(SyncKind, ProtocolFault) {
   case kind {
     0 -> Ok(SyncNone)
@@ -528,8 +533,7 @@ pub fn initialize_request(
   jsonrpc.request(id, "initialize", Some(params))
 }
 
-// Shared by `initialize_request` and the `workspace/workspaceFolders`
-// answer, so the server hears the same folders both ways.
+/// Encodes workspace folder structures into their JSON-RPC array representation.
 fn encode_folders(folders: List(WorkspaceFolder)) -> JsonValue {
   json.Array(
     list.map(folders, fn(folder) {
@@ -663,10 +667,12 @@ pub fn did_close(uri: String) -> JsonValue {
 /// ```
 ///
 pub fn cancel_request(id: Id) -> JsonValue {
+  // Encodes numeric or string request ID for cancellation notification.
   let id = case id {
     jsonrpc.IdInt(value:) -> json.Int(value)
     jsonrpc.IdString(value:) -> json.String(value)
   }
+
   jsonrpc.notification("$/cancelRequest", Some(json.Object([#("id", id)])))
 }
 
@@ -822,8 +828,7 @@ pub fn outgoing_calls_request(id: Id, item: CallHierarchyItem) -> JsonValue {
   )
 }
 
-// The common shape of every request addressed to one position: the
-// document, the position, and whatever extra parameters the method adds.
+/// Builds standard position-targeted request payloads with method-specific extras.
 fn position_request(
   id: Id,
   method: String,
@@ -877,6 +882,7 @@ pub type Location {
 pub fn decode_locations(
   value: JsonValue,
 ) -> Result(List(Location), ProtocolFault) {
+  // Handles null, single location object, or array of location records.
   case value {
     json.Null -> Ok([])
     json.Object(_) -> {
@@ -892,14 +898,14 @@ pub fn decode_locations(
   }
 }
 
-// A `Location` has `uri`; a `LocationLink` has `targetUri`. Deciding by
-// that one field rather than by position in a list is what lets a server
-// mix them, which nothing in the protocol forbids.
+/// Decodes either a Location or LocationLink object into a normalized Location.
 fn decode_location_like(
   value: JsonValue,
   at: String,
 ) -> Result(Location, ProtocolFault) {
   use fields <- result.try(object_fields(value, at <> " must be an object"))
+
+  // Distinguishes LocationLink from Location by inspecting targetUri.
   case list.key_find(fields, "targetUri") {
     Ok(_) -> {
       use uri <- result.try(required_string(fields, at, "targetUri"))
@@ -910,7 +916,7 @@ fn decode_location_like(
   }
 }
 
-// The plain `Location` shape, once the caller has decided it is not a link.
+/// Decodes standard Location fields into a Location record.
 fn decode_location(
   fields: List(#(String, JsonValue)),
   at: String,
@@ -953,18 +959,20 @@ pub fn decode_hover(
 ) -> Result(Option(HoverResult), ProtocolFault) {
   use <- bool.guard(when: value == json.Null, return: Ok(None))
   use fields <- result.try(object_fields(value, "a hover result object"))
+
+  // Extracts mandatory hover contents payload.
   use contents <- result.try(case list.key_find(fields, "contents") {
     Ok(contents) -> hover_contents(contents)
     Error(Nil) -> Error(BadResult(reason: "hover contents is required"))
   })
+
   use range <- result.try(optional_range(fields, "hover", "range"))
   Ok(Some(HoverResult(contents:, range:)))
 }
 
-// Flattens the four shapes `contents` may take to one string. A list is
-// joined by blank lines after dropping empty parts, because the model
-// reads the text, not the structure.
+/// Flattens markdown, string, marked, or array hover contents into a string.
 fn hover_contents(value: JsonValue) -> Result(String, ProtocolFault) {
+  // Normalizes scalar, marked object, or multi-part hover content shapes.
   case value {
     json.String(text) -> Ok(text)
     json.Object(fields) -> marked(fields)
@@ -990,12 +998,12 @@ fn hover_contents(value: JsonValue) -> Result(String, ProtocolFault) {
   }
 }
 
-// `MarkupContent` carries `kind`; a `MarkedString` object carries
-// `language`. Both carry `value`. Only the second needs dressing: its
-// language is metadata a model would otherwise lose.
+/// Decodes marked string or markup content objects, formatting fenced code blocks.
 fn marked(fields: List(#(String, JsonValue))) -> Result(String, ProtocolFault) {
   use text <- result.try(required_string(fields, "hover contents", "value"))
   use language <- result.try(optional_string(fields, "language"))
+
+  // Applies code block language fencing when language is specified.
   case language {
     Some(language) -> Ok("```" <> language <> "\n" <> text <> "\n```")
     None -> Ok(text)
@@ -1100,8 +1108,7 @@ fn decode_document_symbol_list(
   indexed_map(items, at, decode_document_symbol)
 }
 
-// Recursion here is bounded by `core/json.max_depth`: the parser refuses a
-// document nested deeper than that before any decoder sees it.
+/// Decodes a hierarchical DocumentSymbol node and its nested children.
 fn decode_document_symbol(
   value: JsonValue,
   at: String,
@@ -1112,17 +1119,19 @@ fn decode_document_symbol(
   use detail <- result.try(optional_string(fields, "detail"))
   use range <- result.try(required_range(fields, at, "range"))
   use selection_range <- result.try(required_range(fields, at, "selectionRange"))
+
+  // Decodes optional child symbol lists recursively.
   use children <- result.try(case list.key_find(fields, "children") {
     Error(Nil) | Ok(json.Null) -> Ok([])
     Ok(json.Array(items)) ->
       decode_document_symbol_list(items, at <> ".children")
     Ok(_) -> Error(BadResult(reason: at <> ".children must be a list"))
   })
+
   Ok(DocumentSymbol(name:, kind:, detail:, range:, selection_range:, children:))
 }
 
-// The flat outline entry. Its `location` is required, which is how
-// `decode_document_symbols` distinguishes it from the hierarchical shape.
+/// Decodes a flat SymbolInformation record carrying an exact Location.
 fn decode_symbol_information(
   value: JsonValue,
   at: String,
@@ -1130,11 +1139,14 @@ fn decode_symbol_information(
   use fields <- result.try(object_fields(value, at <> " must be an object"))
   use name <- result.try(required_string(fields, at, "name"))
   use kind <- result.try(required_int(fields, at, "kind"))
+
+  // Extracts mandatory location structure for flat symbol record.
   use location <- result.try(case list.key_find(fields, "location") {
     Ok(json.Object(location)) -> decode_location(location, at <> ".location")
     Ok(_) | Error(Nil) ->
       Error(BadResult(reason: at <> ".location must be an object"))
   })
+
   use container_name <- result.try(optional_string(fields, "containerName"))
   Ok(SymbolInformation(name:, kind:, location:, container_name:))
 }
@@ -1243,6 +1255,8 @@ pub fn decode_workspace_edit(
     object_fields(value, "a workspace edit object")
     |> result.map_error(EditMalformed),
   )
+
+  // Routes between modern documentChanges format and legacy changes map.
   case list.key_find(fields, "documentChanges") {
     Ok(json.Array(changes)) -> {
       use documents <- result.try(document_changes(changes, 0, []))
@@ -1270,8 +1284,7 @@ fn malformed_edit(reason: String) -> Result(a, WorkspaceEditFault) {
   Error(EditMalformed(BadResult(reason:)))
 }
 
-// The older `changes` shape: a map from URI to that document's edits. It
-// carries no document version and cannot carry a resource operation.
+/// Decodes legacy changes URI map into document edits records.
 fn changes_map(
   by_uri: List(#(String, JsonValue)),
 ) -> Result(List(DocumentEdits), ProtocolFault) {
@@ -1282,14 +1295,13 @@ fn changes_map(
   })
 }
 
-// Each entry is a `TextDocumentEdit` or a resource operation; the latter
-// carries a string `kind`. It is refused on sight, before any later entry
-// is read, so the refusal names the first file operation in the edit.
+/// Decodes a list of document change entries, refusing resource operations.
 fn document_changes(
   changes: List(JsonValue),
   index: Int,
   done: List(DocumentEdits),
 ) -> Result(List(DocumentEdits), WorkspaceEditFault) {
+  // Processes document change entries in list sequence.
   case changes {
     [] -> Ok(list.reverse(done))
     [change, ..rest] -> {
@@ -1307,14 +1319,15 @@ fn document_changes(
   }
 }
 
+/// Rejects resource creation, renaming, or deletion operations.
 fn refuse_resource_operation(
   fields: List(#(String, JsonValue)),
 ) -> Result(Nil, WorkspaceEditFault) {
+  // Detects resource operations by looking for a kind field.
   case list.key_find(fields, "kind") {
     Error(Nil) -> Ok(Nil)
     Ok(kind) -> {
-      // A non-string kind is still a resource operation's shape; its JSON
-      // text names it well enough for the refusal.
+      // Formats the operation kind for informative error reporting.
       let kind = case kind {
         json.String(kind) -> kind
         json.Object(_)
@@ -1324,6 +1337,7 @@ fn refuse_resource_operation(
         | json.Bool(_)
         | json.Null -> json.to_string(kind)
       }
+
       let uri =
         list.find_map(["uri", "oldUri"], fn(key) {
           case list.key_find(fields, key) {
@@ -1337,33 +1351,38 @@ fn refuse_resource_operation(
   }
 }
 
-// One `documentChanges` entry once it is known not to be a resource
-// operation: a document identifier with an optional version, and its edits.
+/// Decodes text document edit payloads containing URI, version, and edits.
 fn text_document_edit(
   fields: List(#(String, JsonValue)),
   at: String,
 ) -> Result(DocumentEdits, ProtocolFault) {
+  // Extracts the target text document identifier object.
   use document <- result.try(case list.key_find(fields, "textDocument") {
     Ok(json.Object(document)) -> Ok(document)
     Ok(_) | Error(Nil) ->
       Error(BadResult(reason: at <> ".textDocument must be an object"))
   })
+
   use uri <- result.try(required_string(document, at <> ".textDocument", "uri"))
+
+  // Extracts optional document version constraint integer.
   use version <- result.try(case list.key_find(document, "version") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(json.Int(version)) -> Ok(Some(version))
     Ok(_) ->
       Error(BadResult(reason: at <> ".textDocument.version must be an integer"))
   })
+
+  // Extracts the list of text edits to apply to this document.
   use edits <- result.try(case list.key_find(fields, "edits") {
     Ok(edits) -> text_edits(edits, at <> ".edits")
     Error(Nil) -> Error(BadResult(reason: at <> ".edits is required"))
   })
+
   Ok(DocumentEdits(uri:, version:, edits:))
 }
 
-// `TextEdit` and `AnnotatedTextEdit` share `range` and `newText`; the
-// annotation id is ignored, since the harness confirms nothing per edit.
+/// Decodes a list of TextEdit and AnnotatedTextEdit elements.
 fn text_edits(
   value: JsonValue,
   at: String,
@@ -1416,6 +1435,8 @@ pub fn decode_prepare_rename(
 ) -> Result(PrepareRename, ProtocolFault) {
   use <- bool.guard(when: value == json.Null, return: Ok(CannotRename))
   use fields <- result.try(object_fields(value, "a prepare rename result"))
+
+  // Inspects prepare rename response fields to determine rename feasibility.
   case
     list.key_find(fields, "start"),
     list.key_find(fields, "range"),
@@ -1532,27 +1553,32 @@ pub fn decode_outgoing_calls(
   })
 }
 
-// An incoming and an outgoing call share their shape and differ only in
-// whether the item sits under `from` or `to`; `end` names which.
+/// Decodes call hierarchy edge objects for incoming or outgoing calls.
 fn call_edge(
   value: JsonValue,
   at: String,
   end: String,
 ) -> Result(#(CallHierarchyItem, List(Range)), ProtocolFault) {
   use fields <- result.try(object_fields(value, at <> " must be an object"))
+
+  // Extracts call hierarchy item target corresponding to edge direction.
   use item <- result.try(case list.key_find(fields, end) {
     Ok(item) -> decode_call_hierarchy_item(item, at <> "." <> end)
     Error(Nil) -> Error(BadResult(reason: at <> "." <> end <> " is required"))
   })
+
+  // Extracts the call source ranges indicating call sites.
   use ranges <- result.try(case list.key_find(fields, "fromRanges") {
     Ok(json.Array(ranges)) ->
       indexed_map(ranges, at <> ".fromRanges", decode_range)
     Ok(_) | Error(Nil) ->
       Error(BadResult(reason: at <> ".fromRanges must be a list"))
   })
+
   Ok(#(item, ranges))
 }
 
+/// Decodes CallHierarchyItem fields from JSON-RPC call responses.
 fn decode_call_hierarchy_item(
   value: JsonValue,
   at: String,
@@ -1627,22 +1653,25 @@ pub fn decode_publish_diagnostics(
 ) -> Result(PublishDiagnostics, ProtocolFault) {
   use fields <- result.try(object_fields(value, "publishDiagnostics params"))
   use uri <- result.try(required_string(fields, "publishDiagnostics", "uri"))
+
+  // Extracts optional document version associated with published diagnostics.
   use version <- result.try(case list.key_find(fields, "version") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(json.Int(version)) -> Ok(Some(version))
     Ok(_) -> Error(BadResult(reason: "version must be an integer"))
   })
+
+  // Extracts published diagnostic list entries.
   use diagnostics <- result.try(case list.key_find(fields, "diagnostics") {
     Ok(json.Array(items)) ->
       indexed_map(items, "diagnostics", decode_diagnostic)
     Ok(_) | Error(Nil) -> Error(BadResult(reason: "diagnostics must be a list"))
   })
+
   Ok(PublishDiagnostics(uri:, version:, diagnostics:))
 }
 
-// The severity arms below are the one place the omitted-severity policy
-// is applied: absent or `null` reads as an error, 1 to 4 map directly, and
-// anything else is refused.
+/// Decodes diagnostic records mapping severity integers to Severity variants.
 fn decode_diagnostic(
   value: JsonValue,
   at: String,
@@ -1651,6 +1680,8 @@ fn decode_diagnostic(
   use range <- result.try(required_range(fields, at, "range"))
   use message <- result.try(required_string(fields, at, "message"))
   use source <- result.try(optional_string(fields, "source"))
+
+  // Maps diagnostic severity codes defaulting missing severity to error.
   use severity <- result.try(case list.key_find(fields, "severity") {
     Error(Nil) | Ok(json.Null) -> Ok(SeverityError)
     Ok(json.Int(1)) -> Ok(SeverityError)
@@ -1659,6 +1690,7 @@ fn decode_diagnostic(
     Ok(json.Int(4)) -> Ok(SeverityHint)
     Ok(_) -> Error(BadResult(reason: at <> ".severity must be 1, 2, 3 or 4"))
   })
+
   Ok(ServerDiagnostic(range:, severity:, message:, source:))
 }
 
@@ -1764,6 +1796,8 @@ pub fn classify_notification(
         "window message",
         "message",
       ))
+
+      // Maps window message type codes to notification classifications.
       case kind {
         1 -> Ok(ServerFailure(message:))
         2 | 3 | 4 | 5 -> Ok(Ignored(method:))
@@ -1791,12 +1825,16 @@ pub fn decode_work_done_progress(
   value: JsonValue,
 ) -> Result(WorkDoneProgress, ProtocolFault) {
   use fields <- result.try(object_fields(value, "progress params"))
+
+  // Extracts progress token as either an integer or a string.
   use token <- result.try(case list.key_find(fields, "token") {
     Ok(json.Int(number)) -> Ok(IntToken(value: number))
     Ok(json.String(text)) -> Ok(StringToken(value: text))
     Ok(_) | Error(Nil) ->
       Error(BadResult(reason: "progress.token must be an integer or a string"))
   })
+
+  // Extracts the progress value object payload.
   use progress <- result.try(case list.key_find(fields, "value") {
     Ok(progress) -> object_fields(progress, "progress.value must be an object")
     Error(Nil) -> Error(BadResult(reason: "progress.value is required"))
@@ -1806,6 +1844,8 @@ pub fn decode_work_done_progress(
   // is the protocol's partial-result shape, which this client never
   // requested.
   use kind <- result.try(required_string(progress, "progress.value", "kind"))
+
+  // Categorizes work-done progress phases by kind identifier.
   case kind {
     "begin" -> {
       use title <- result.try(required_string(
@@ -1891,8 +1931,7 @@ pub fn answer_server_request(
   }
 }
 
-// `workspace/configuration` asks for one settings value per item and gets
-// `null` for each: the harness configures servers at launch only.
+/// Builds null-filled response entries for workspace configuration requests.
 fn configuration_answer(
   params: Option(JsonValue),
 ) -> Result(JsonValue, RpcError) {
@@ -1969,8 +2008,7 @@ fn encode_byte(byte: Int) -> String {
   }
 }
 
-// RFC 3986 `pchar` plus `/`, minus `%`: ALPHA, DIGIT, `-._~`, the
-// sub-delimiters `!$&'()*+,;=`, and `:@`.
+/// Checks if a byte belongs to unescaped RFC 3986 path characters.
 fn is_path_safe(byte: Int) -> Bool {
   { byte >= 0x61 && byte <= 0x7A }
   || { byte >= 0x41 && byte <= 0x5A }
@@ -2031,6 +2069,7 @@ fn hex2(byte: Int) -> String {
 /// ```
 ///
 pub fn uri_to_path(uri: String) -> Result(String, UriFault) {
+  // Verifies the file URI scheme prefix.
   use rest <- result.try(case string.split_once(uri, "://") {
     Ok(#(scheme, rest)) ->
       case string.lowercase(scheme) {
@@ -2039,11 +2078,14 @@ pub fn uri_to_path(uri: String) -> Result(String, UriFault) {
       }
     Error(Nil) -> Error(NotFileUri(uri:))
   })
+
+  // Strips localhost prefix and ensures leading path slash.
   use encoded <- result.try(case rest {
     "/" <> _ -> Ok(rest)
     "localhost/" <> path -> Ok("/" <> path)
     _ -> Error(NotFileUri(uri:))
   })
+
   use <- bool.guard(
     when: string.contains(encoded, "?") || string.contains(encoded, "#"),
     return: Error(NotFileUri(uri:)),
@@ -2052,20 +2094,21 @@ pub fn uri_to_path(uri: String) -> Result(String, UriFault) {
   use path <- result.try(
     bit_array.to_string(bytes) |> result.replace_error(NotAPath(uri:)),
   )
+
+  // Rejects paths that contain embedded null bytes.
   case string.contains(path, "\u{0}") {
     True -> Error(NotAPath(uri:))
     False -> Ok(path)
   }
 }
 
-// Walks the encoded bytes, turning each `%XX` into its byte. A `%` with
-// fewer than two bytes after it, or with a non-hex digit, is `BadEscape`;
-// the accumulator is built in the order the bytes appear.
+/// Decodes percent-encoded hexadecimal escape sequences in file URIs.
 fn decode_escapes(
   bytes: BitArray,
   done: BitArray,
   uri: String,
 ) -> Result(BitArray, UriFault) {
+  // Decodes percent escape triplets or passes plain bytes through.
   case bytes {
     <<>> -> Ok(done)
     <<0x25, high, low, rest:bytes>> -> {
@@ -2079,7 +2122,7 @@ fn decode_escapes(
   }
 }
 
-// One hex digit of either case as its value, else `BadEscape` for the URI.
+/// Decodes an ASCII hex digit byte into its numeric 0-15 value.
 fn hex_digit(byte: Int, uri: String) -> Result(Int, UriFault) {
   case byte {
     _ if byte >= 0x30 && byte <= 0x39 -> Ok(byte - 0x30)
@@ -2091,10 +2134,7 @@ fn hex_digit(byte: Int, uri: String) -> Result(Int, UriFault) {
 
 // --- shared decoding helpers ------------------------------------------------
 
-// Maps a decoder over a list, naming each element `<at>[<index>]` so a
-// fault says which entry of which list broke. One lying entry fails the
-// whole list: a server lying about one location is not a server to
-// half-trust (the MCP protocol layer's posture).
+/// Maps a decoding function over list elements with contextual indexed path strings.
 fn indexed_map(
   items: List(JsonValue),
   at: String,
@@ -2107,6 +2147,7 @@ fn indexed_map(
   })
 }
 
+/// Decodes a null or array JSON value using the provided item decoder.
 fn nullable_list(
   value: JsonValue,
   at: String,
@@ -2123,6 +2164,7 @@ fn nullable_list(
   }
 }
 
+/// Extracts member key-value pairs from a JSON object.
 fn object_fields(
   value: JsonValue,
   expected: String,
@@ -2138,6 +2180,7 @@ fn object_fields(
   }
 }
 
+/// Extracts a required string field from an object member list.
 fn required_string(
   fields: List(#(String, JsonValue)),
   at: String,
@@ -2150,6 +2193,7 @@ fn required_string(
   }
 }
 
+/// Extracts an optional string field from an object member list.
 fn optional_string(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -2161,6 +2205,7 @@ fn optional_string(
   }
 }
 
+/// Extracts a required integer field from an object member list.
 fn required_int(
   fields: List(#(String, JsonValue)),
   at: String,
@@ -2173,8 +2218,7 @@ fn required_int(
   }
 }
 
-// Absent reads as `False`, the protocol's stated default for both
-// `openClose` and `prepareProvider`; present-and-not-a-boolean is a fault.
+/// Extracts an optional boolean field, defaulting absent values to False.
 fn defaulted_bool(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -2186,6 +2230,7 @@ fn defaulted_bool(
   }
 }
 
+/// Decodes a mandatory Range structure field from an object member list.
 fn required_range(
   fields: List(#(String, JsonValue)),
   at: String,
@@ -2197,11 +2242,13 @@ fn required_range(
   }
 }
 
+/// Decodes an optional Range field from an object member list.
 fn optional_range(
   fields: List(#(String, JsonValue)),
   at: String,
   key: String,
 ) -> Result(Option(Range), ProtocolFault) {
+  // Extracts Range when key is present and non-null.
   case list.key_find(fields, key) {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(value) -> {
@@ -2218,20 +2265,24 @@ fn decode_range(value: JsonValue, at: String) -> Result(Range, ProtocolFault) {
   Ok(Range(start:, end:))
 }
 
-// Lines and characters are `uinteger` in the protocol; a negative one is
-// refused here so `lsp/text` never has to ask.
+/// Decodes a non-negative Position object from a parent member list.
 fn position_field(
   fields: List(#(String, JsonValue)),
   at: String,
   key: String,
 ) -> Result(Position, ProtocolFault) {
   let at = at <> "." <> key
+
+  // Extracts position object for the given field key.
   use position <- result.try(case list.key_find(fields, key) {
     Ok(json.Object(position)) -> Ok(position)
     Ok(_) | Error(Nil) -> Error(BadResult(reason: at <> " must be a position"))
   })
+
   use line <- result.try(required_int(position, at, "line"))
   use character <- result.try(required_int(position, at, "character"))
+
+  // Enforces non-negative coordinate invariants.
   case line >= 0 && character >= 0 {
     True -> Ok(Position(line:, character:))
     False -> Error(BadResult(reason: at <> " must not be negative"))

@@ -159,11 +159,15 @@ pub fn encode_readiness(readiness: Readiness) -> JsonValue {
 /// assert async_execution.decode_readiness(json.Null) |> result.is_error
 /// ```
 pub fn decode_readiness(value: JsonValue) -> Result(Readiness, String) {
+  // Validates that the outer readiness JSON is an object.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("an object")
   })
+
   use version <- result.try(field(fields, "version"))
+
+  // Validates that the readiness version is 1.
   use Nil <- result.try(case version {
     json.Int(1) -> Ok(Nil)
     _ -> Error("readiness version 1")
@@ -171,9 +175,12 @@ pub fn decode_readiness(value: JsonValue) -> Result(Readiness, String) {
 
   // Parse and validate the declared execution endpoints array.
   use encoded <- result.try(field(fields, "endpoints"))
+
+  // Parses the encoded endpoints array.
   use endpoints <- result.try(case encoded {
     json.Array(values) ->
       list.try_map(values, fn(value) {
+        // Validates that each endpoint name is a string.
         case value {
           json.String(name) -> Ok(name)
           _ -> Error("text endpoint names")
@@ -181,6 +188,8 @@ pub fn decode_readiness(value: JsonValue) -> Result(Readiness, String) {
       })
     _ -> Error("an endpoint array")
   })
+
+  // Validates endpoints list count and uniqueness.
   use Nil <- result.try(case valid_endpoints(endpoints) {
     True -> Ok(Nil)
     False -> Error("one to sixteen unique bounded endpoint names")
@@ -188,15 +197,20 @@ pub fn decode_readiness(value: JsonValue) -> Result(Readiness, String) {
 
   // Parse and validate the idle timeout duration.
   use idle <- result.try(field(fields, "idle_within_ms"))
+
+  // Validates the idle timeout integer value.
   use idle_within_ms <- result.try(case idle {
     json.Int(value) if value >= 0 && value <= 300_000 -> Ok(value)
     _ -> Error("an idle interval from 0 to 300000 ms")
   })
+
+  // Validates idle timeout policy for declared endpoints.
   use Nil <- result.try(case endpoints, idle_within_ms {
     ["default"], 0 -> Ok(Nil)
     _, value if value > 0 -> Ok(Nil)
     _, _ -> Error("zero idle only for the legacy default endpoint")
   })
+
   Ok(Readiness(endpoints:, idle_within_ms:))
 }
 
@@ -248,6 +262,7 @@ pub fn terminal(phase: Phase) -> Bool {
 /// // async_execution.decode(async_execution.encode(record)) == Ok(record)
 /// ```
 pub fn encode(record: Execution) -> JsonValue {
+  // Encodes the execution phase and associated terminal result.
   let #(phase, result) = case record.phase {
     Starting -> #("starting", json.Null)
     Running -> #("running", json.Null)
@@ -255,6 +270,7 @@ pub fn encode(record: Execution) -> JsonValue {
     Finished(value) -> #("finished", value)
     Lost(reason) -> #("lost", json.String(reason))
   }
+
   json.Object([
     #("version", json.Int(1)),
     #("id", json.String(record.id)),
@@ -270,6 +286,7 @@ pub fn encode(record: Execution) -> JsonValue {
   ])
 }
 
+/// Encodes optional launch coordinates into JSON.
 fn encode_launch(launch: Option(Launch)) -> JsonValue {
   case launch {
     None -> json.Null
@@ -284,14 +301,18 @@ fn encode_launch(launch: Option(Launch)) -> JsonValue {
 // The launching coordinates, which records written before the field existed
 // do not carry. An absent field and a null both read as `None`; anything else
 // must be the whole pair, so a damaged value is refused rather than guessed.
+/// Decodes optional launch coordinates from execution JSON fields.
 fn decode_launch(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Launch), String) {
+  // Checks for the launch field and decodes its subfields when present.
   case list.key_find(fields, "launch") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(json.Object(launch)) -> {
       use step <- result.try(text(launch, "step"))
       use index <- result.try(field(launch, "source_index"))
+
+      // Validates that the launching source index is a nonnegative integer.
       case index {
         json.Int(source_index) if source_index >= 0 ->
           Ok(Some(Launch(step:, source_index:)))
@@ -323,17 +344,25 @@ pub fn decode(
   })
 }
 
+/// Decodes an async execution record from a JSON value.
 fn decode_record(value: JsonValue) -> Result(Execution, String) {
+  // Validates that the outer record JSON value is an object.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("an object")
   })
+
   use version <- result.try(field(fields, "version"))
+
+  // Validates that the record format version is 1.
   use Nil <- result.try(case version {
     json.Int(1) -> Ok(Nil)
     _ -> Error("version 1")
   })
+
   use id <- result.try(text(fields, "id"))
+
+  // Validates the execution id format and length.
   use Nil <- result.try(case valid_id(id) {
     True -> Ok(Nil)
     False -> Error("a bounded execution identity")
@@ -346,6 +375,8 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
     ids.parse_op_id(operation) |> result.replace_error("an operation id"),
   )
   use step <- result.try(text(fields, "step"))
+
+  // Validates that step matches async/id prefix.
   use Nil <- result.try(case step == "async/" <> id {
     True -> Ok(Nil)
     False -> Error("the execution's own broker step")
@@ -353,12 +384,17 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
 
   // Parse execution deadline and target environment fields.
   use deadline <- result.try(field(fields, "deadline_ms"))
+
+  // Validates that deadline is a positive integer.
   use deadline_ms <- result.try(case deadline {
     json.Int(at) if at > 0 -> Ok(at)
     _ -> Error("a positive absolute deadline")
   })
+
   use source <- result.try(text(fields, "source"))
   use seam <- result.try(text(fields, "seam"))
+
+  // Validates that seam is one of the recognized execution seams.
   use Nil <- result.try(case seam {
     "workspace" | "orchestration" -> Ok(Nil)
     _ -> Error("a known execution seam")
@@ -367,6 +403,8 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
   // Decode lifecycle phase and terminal payload outcome.
   use phase <- result.try(text(fields, "phase"))
   use payload <- result.try(field(fields, "result"))
+
+  // Parses lifecycle phase and associates result payload.
   use phase <- result.try(case phase, payload {
     "starting", json.Null -> Ok(Starting)
     "running", json.Null -> Ok(Running)
@@ -375,6 +413,7 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
     "lost", json.String(reason) -> Ok(Lost(reason))
     _, _ -> Error("a complete execution phase")
   })
+
   use launch <- result.try(decode_launch(fields))
   Ok(Execution(
     id:,
@@ -396,11 +435,14 @@ fn field(
   list.key_find(fields, name) |> result.map_error(fn(_) { "field " <> name })
 }
 
+/// Extracts a required string field from a JSON fields list.
 fn text(
   fields: List(#(String, JsonValue)),
   name: String,
 ) -> Result(String, String) {
   use value <- result.try(field(fields, name))
+
+  // Validates that the field value is a string.
   case value {
     json.String(text) -> Ok(text)
     _ -> Error("text field " <> name)

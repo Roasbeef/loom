@@ -431,6 +431,7 @@ pub fn compile_glob(pattern: String) -> Result(Glob, String) {
 // occurrence of `**` is a pattern whose author meant something the
 // language does not express, which is worth a refusal rather than a
 // reading they did not intend.
+/// Compiles a single path segment into wildcard or literal token matching rules.
 fn compile_segment(segment: String) -> Result(Segment, String) {
   use <- bool.guard(when: segment == "**", return: Ok(AnySegments))
   use <- bool.guard(
@@ -444,6 +445,7 @@ fn compile_segment(segment: String) -> Result(Segment, String) {
   Ok(Tokens(tokens: list.map(string.to_graphemes(segment), token_of)))
 }
 
+/// Converts a single grapheme into a glob pattern Token.
 fn token_of(grapheme: String) -> Token {
   case grapheme {
     "*" -> AnyRun
@@ -467,10 +469,12 @@ fn token_of(grapheme: String) -> Token {
 /// ```
 ///
 pub fn glob_matches(glob: Glob, relative_path: String) -> Bool {
+  // Select whole relative path or file basename based on glob scope.
   let subject = case glob.scope {
     WholePath -> strip_dot_slash(relative_path)
     Basename -> basename(relative_path)
   }
+
   match_segments(glob.segments, string.split(subject, "/"))
 }
 
@@ -480,6 +484,7 @@ pub fn glob_matches(glob: Glob, relative_path: String) -> Bool {
 // tries to consume nothing, and failing that consumes one segment and
 // asks itself again. That ordering is what makes `**/x` match `x` at
 // the root as well as at depth.
+/// Matches a pattern's compiled segments against actual path segments.
 fn match_segments(pattern: List(Segment), path: List(String)) -> Bool {
   case pattern, path {
     [], [] -> True
@@ -504,6 +509,7 @@ fn descend_star(pattern: List(Segment), path: List(String)) -> Bool {
 
 // Matches one segment's tokens against one segment's graphemes. `AnyRun`
 // backtracks the same way `**` does, one grapheme at a time.
+/// Matches segment token rules against graphemes of a filename.
 fn match_tokens(tokens: List(Token), chars: List(String)) -> Bool {
   case tokens, chars {
     [], [] -> True
@@ -603,6 +609,7 @@ type Walker(acc) {
 // that is a file answers `NotADirectory` — the refusal a caller can act
 // on, since it names `read_lines` as the call that was wanted — rather
 // than a bare errno out of `read_directory`.
+/// Walks a directory tree applying a visitor to each entry under resource limits.
 fn walk_tree(
   root root: String,
   walker walker: Walker(acc),
@@ -631,6 +638,7 @@ fn walk_tree(
 // Walks the sorted names of one directory, stopping the moment a bound
 // has been reached so a halt does not have to unwind through the rest
 // of the tree.
+/// Sequentially visits sorted directory entry names until limits are reached.
 fn walk_names(
   dir: String,
   prefix: String,
@@ -656,6 +664,7 @@ fn walk_names(
 // The hidden rule, the protected rule and the visit budget, in that order:
 // a dot-entry the caller excluded, or an entry the session masks from every
 // jail, is not an entry the walk touched, so it must not spend a visit.
+/// Evaluates filters on a single directory entry name before visiting it.
 fn walk_name(
   dir: String,
   prefix: String,
@@ -670,6 +679,8 @@ fn walk_name(
     when: under_protected(dir <> "/" <> name, walker.protected),
     return: fn() { cursor },
   )
+
+  // Check whether the traversal has exceeded the maximum entry visit cap.
   case cursor.visited >= max_visited {
     True -> Cursor(..cursor, limit: VisitLimit)
     False -> visit_name(dir, prefix, name, walker, cursor)
@@ -694,6 +705,7 @@ fn hidden_here(name: String, hidden: Hidden) -> Bool {
 // spends a visit and is otherwise passed over. The alternative, failing
 // the whole search on one racing entry, turns an ordinary concurrent
 // write in the workspace into a failed query.
+/// Inspects a filesystem entry and offers it to the visitor callback.
 fn visit_name(
   dir: String,
   prefix: String,
@@ -702,11 +714,14 @@ fn visit_name(
   cursor: Cursor(acc),
 ) -> Cursor(acc) {
   let absolute = dir <> "/" <> name
+
+  // Construct relative path from search root.
   let relative = case prefix {
     "" -> name
     parent -> parent <> "/" <> name
   }
 
+  // Inspect entry metadata and offer to visitor.
   case simplifile.link_info(absolute) {
     Error(_vanished) -> Cursor(..cursor, visited: cursor.visited + 1)
     Ok(info) ->
@@ -722,6 +737,7 @@ fn visit_name(
 // Hands an entry to the visitor and, if it said `Continue`, descends.
 // Descent happens after the visit so a directory is reported before its
 // contents, which is what makes the order a stable pre-order.
+/// Offers a visited entry to the visitor function and recurses if it is a directory.
 fn offer(
   entry: WalkEntry,
   name: String,
@@ -740,6 +756,7 @@ fn offer(
 // `Symlink`, not `Directory`, so it is reported and left alone. A
 // directory that cannot be read is passed over for the same reason a
 // racing entry is.
+/// Reads a subdirectory's contents to continue traversal unless pruned.
 fn descend(
   entry: WalkEntry,
   name: String,
@@ -750,6 +767,8 @@ fn descend(
   use <- bool.lazy_guard(when: list.contains(walker.prune, name), return: fn() {
     cursor
   })
+
+  // Read subdirectory entries for traversal.
   case simplifile.read_directory(entry.absolute) {
     Error(_unreadable) -> cursor
     Ok(names) ->
@@ -765,6 +784,7 @@ fn descend(
 
 // Turns `lstat`'s mode bits into the reported kind, reading a symlink's
 // stored target through the `tools/fs` seam rather than resolving it.
+/// Determines the entry Kind from FileInfo attributes.
 fn classify(absolute: String, info: simplifile.FileInfo) -> Kind {
   case simplifile.file_info_type(info) {
     simplifile.File -> File
@@ -777,6 +797,7 @@ fn classify(absolute: String, info: simplifile.FileInfo) -> Kind {
 // A dangling or unreadable link still has a kind worth reporting, so a
 // target that cannot be read becomes the empty string rather than an
 // error that loses the entry.
+/// Resolves a symbolic link target path without raising file errors.
 fn link_target(absolute: String) -> String {
   case fs.real_filesystem().read_link(absolute) {
     Ok(tool.LinkTarget(target:)) -> target
@@ -864,6 +885,8 @@ pub fn glob(
   // from one that had more to give. Dropping it here rather than never
   // taking it is what keeps the answer exactly `max_entries` long.
   let collected = list.reverse(cursor.state.entries)
+
+  // Check whether collected results exceeded max_entries ceiling.
   case cursor.state.count > query.max_entries {
     True ->
       Ok(Listing(
@@ -883,6 +906,7 @@ pub fn glob(
 // exactly and held nothing more — telling a program it missed entries
 // when it missed none, which is the reading a model acts on. So the walk
 // looks one further, and `glob` drops the overflow.
+/// Returns a visitor closure that collects matching entries for a glob query.
 fn glob_visitor(
   compiled: Glob,
   base: String,
@@ -906,6 +930,8 @@ fn glob_visitor(
         ],
         count: collected.count + 1,
       )
+
+    // Halt traversal once entry count exceeds the query limit.
     case taken.count > max_entries {
       True -> Halt(state: taken)
       False -> Continue(state: taken)
@@ -913,6 +939,7 @@ fn glob_visitor(
   }
 }
 
+/// Maps the traversal limit outcome to query Completeness.
 fn completeness(limit: Limit) -> Completeness {
   case limit {
     Completed -> Complete
@@ -1039,6 +1066,8 @@ pub fn grep(
   // `max_matches` long and the coverage honest in both directions.
   let scan = cursor.state
   let matches = list.reverse(scan.matches)
+
+  // Check whether match count exceeded the query maximum.
   case scan.taken > query.max_matches {
     True ->
       Ok(Found(
@@ -1057,6 +1086,7 @@ pub fn grep(
   }
 }
 
+/// Initializes a fresh Scan state accumulator.
 fn fresh_scan() -> Scan {
   Scan(
     matches: [],
@@ -1073,6 +1103,7 @@ fn fresh_scan() -> Scan {
 // against the total plus this file's size, so the budget is a floor a
 // search is allowed to cross once and never a reason to skip a file that
 // would have fitted.
+/// Returns a visitor closure that searches regular file contents for regex matches.
 fn grep_visitor(
   expression: regexp.Regexp,
   filters: List(Glob),
@@ -1087,6 +1118,8 @@ fn grep_visitor(
       when: !selected(filters, entry.relative),
       return: fn() { Continue(state: scan) },
     )
+
+    // Halt traversal if the aggregate byte budget is exhausted.
     case scan.bytes >= max_scan_bytes {
       True -> Halt(state: Scan(..scan, stopped: HitBytes))
       False -> scan_file(entry, expression, base, query, scan)
@@ -1107,6 +1140,7 @@ fn selected(filters: List(Glob), relative: String) -> Bool {
 // too large, not text, or an errno — is one skipped file rather than a
 // failed search, because a single unreadable file in a tree is not a
 // reason to answer nothing.
+/// Reads a file's contents and scans lines for matching regular expressions.
 fn scan_file(
   entry: WalkEntry,
   expression: regexp.Regexp,
@@ -1145,6 +1179,7 @@ fn scan_file(
 // Walks one file's lines, carrying the preceding `context` lines in
 // reverse so a match can render its `before` without indexing back into
 // the list.
+/// Scans lines of a file sequentially, accumulating matches and context lines.
 fn scan_lines(
   remaining: List(String),
   preceding: List(String),
@@ -1171,6 +1206,7 @@ fn scan_lines(
 
 // Records one line if it matches, and halts the scan on the last match
 // the caller asked for.
+/// Tests a single line against the regex pattern and appends match context.
 fn record_line(
   line: String,
   rest: List(String),
@@ -1214,6 +1250,7 @@ fn record_line(
 // is where a zero-width match at the start of the line is; that is the
 // one case where the derivation is a convention rather than a
 // measurement, and it is stated here rather than hidden.
+/// Calculates the 1-based grapheme column offset of the first regex match in `line`.
 fn first_column(expression: regexp.Regexp, line: String) -> Int {
   case regexp.split(with: expression, content: line) {
     [prefix, _rest, ..] -> string.length(prefix) + 1
@@ -1225,6 +1262,7 @@ fn first_column(expression: regexp.Regexp, line: String) -> Int {
 // Splits text into lines, treating a final newline as a terminator
 // rather than as the start of an empty last line — so "a\nb\n" is two
 // lines, and the empty file is no lines at all.
+/// Splits text on newline boundaries without creating phantom empty trailing lines.
 fn split_lines(text: String) -> List(String) {
   case text == "", string.ends_with(text, "\n") {
     True, _terminated -> []
@@ -1233,6 +1271,7 @@ fn split_lines(text: String) -> List(String) {
   }
 }
 
+/// Translates the scan stop cause into a Coverage verdict.
 fn coverage(stopped: Stop, limit: Limit) -> Coverage {
   case stopped, limit {
     HitMatches, _reached -> MatchesCapped
@@ -1243,6 +1282,7 @@ fn coverage(stopped: Stop, limit: Limit) -> Coverage {
   }
 }
 
+/// Compiles a pattern string into a regular expression, validating length and syntax.
 fn compile_regexp(pattern: String) -> Result(regexp.Regexp, SearchError) {
   use <- bool.lazy_guard(when: over_length(pattern), return: fn() {
     Error(InvalidQuery(
@@ -1352,6 +1392,7 @@ pub fn read_lines(
 // `list.length` is an O(n) walk, and here that is the answer rather than
 // lint R5's complaint: `total` is the file's line count, which is the
 // very thing being walked.
+/// Extracts a subslice of lines from `first` to `last` inclusive.
 fn window(text: String, first: Int, last: Int) -> Lines {
   let lines = split_lines(text)
   let total = list.length(lines)
@@ -1360,6 +1401,7 @@ fn window(text: String, first: Int, last: Int) -> Lines {
   Lines(text: string.join(selected, "\n"), first:, last: stop, total:)
 }
 
+/// Maps a file read error to a domain SearchError.
 fn read_failure(path: String, error: fs.ReadError) -> SearchError {
   case error {
     fs.TooLarge(size:, limit: _limit) -> TooLarge(path:, size:)
@@ -1373,6 +1415,7 @@ fn read_failure(path: String, error: fs.ReadError) -> SearchError {
 // `ENOTDIR` on a lookup means an ancestor component is not a directory,
 // so nothing exists at the path; both it and `ENOENT` are the same
 // answer to the caller.
+/// Maps missing file errors to SearchError Missing or general backend failures.
 fn missing_or_backend(
   path: String,
   error: simplifile.FileError,
@@ -1387,6 +1430,7 @@ fn missing_or_backend(
 // `ENOTDIR` from `read_directory` on the root means the path is there
 // and `read_lines` is the call that was wanted, which is a repair the
 // caller can act on.
+/// Maps directory inspection errors on search root paths to SearchError variants.
 fn root_error(root: String, error: simplifile.FileError) -> SearchError {
   case error {
     simplifile.Enotdir -> NotADirectory(path: root)
@@ -1401,6 +1445,7 @@ fn root_error(root: String, error: simplifile.FileError) -> SearchError {
 // Everything else keeps the backend's own description: inventing a
 // sentence for an errno nobody anticipated is how a refusal starts
 // lying.
+/// Maps underlying simplifile errors into backend tool errors.
 fn backend_error(path: String, error: simplifile.FileError) -> SearchError {
   case error {
     simplifile.Eacces -> Backend(error: tool.FsPermissionDenied(path:))
@@ -1422,8 +1467,11 @@ fn backend_error(path: String, error: simplifile.FileError) -> SearchError {
 // (readable under host reads or an added directory) contributes its
 // absolute path, because a path relative to that root would resolve
 // against the workspace instead and name a different file.
+/// Determines the relative path prefix to display for paths under `root`.
 fn display_prefix(workspace workspace: String, root root: String) -> String {
   use <- bool.guard(when: root == workspace, return: "")
+
+  // Determine prefix based on whether root sits under workspace or host root.
   case string.starts_with(root, workspace <> "/"), root {
     True, _ -> string.drop_start(root, string.length(workspace) + 1) <> "/"
     False, "/" -> "/"

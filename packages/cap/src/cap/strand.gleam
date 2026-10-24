@@ -616,8 +616,7 @@ pub fn wait(
   }
 }
 
-// Slices a long join across multiple capability calls of at most 30 s each
-// until all handles settle or the caller's requested deadline has expired.
+/// Slices a long join across multiple capability calls until all settle or timeout.
 fn do_wait(
   original_handles: List(Handle),
   pending_handles: List(Handle),
@@ -625,10 +624,12 @@ fn do_wait(
   settled: Dict(String, Waited),
   total_waited_ms: Int,
 ) -> Result(List(Waited), StrandError) {
+  // Check if any handles remain pending to be waited.
   case pending_handles {
     [] -> Ok(assemble_waited(original_handles, settled))
 
     _ -> {
+      // Bound the current slice wait duration to at most max_wait_slice_ms.
       let slice_ms = case remaining_ms > max_wait_slice_ms {
         True -> max_wait_slice_ms
         False -> int.max(0, remaining_ms)
@@ -649,8 +650,7 @@ fn do_wait(
   }
 }
 
-// Processes the result of a single wait slice, advancing the accumulated
-// waited time and deciding whether to poll again or conclude the join.
+/// Steps the wait loop by updating settled map and recursing on remaining pending handles.
 fn step_wait(
   original_handles: List(Handle),
   pending_handles: List(Handle),
@@ -674,12 +674,14 @@ fn step_wait(
         update_settled(waited, settled, total_waited_ms, slice_ms)
       let still_pending = filter_pending(pending_handles, new_settled)
 
+      // Check if all handles have settled or some remain pending.
       case still_pending {
         [] -> Ok(assemble_waited(original_handles, new_settled))
 
         _ -> {
           let slice_waited = slice_elapsed(waited, slice_ms)
 
+          // Conclude the join if wait time budget is exhausted.
           case slice_waited <= 0 || remaining_ms <= slice_waited {
             True -> Ok(assemble_waited(original_handles, new_settled))
 
@@ -698,7 +700,7 @@ fn step_wait(
   }
 }
 
-// Performs one bounded capability call to the harness.
+/// Performs one bounded capability call to wait for handles.
 fn wait_slice(
   handles: List(Handle),
   within_ms: Int,
@@ -717,15 +719,7 @@ fn wait_slice(
   |> result.map_error(malformed("strand.wait"))
 }
 
-// Merges newly observed slice results into the settled map, accumulating
-// elapsed wait time for any handles that remain pending.
-//
-// The host's per-slice `waited_ms` is the measure, taken as reported:
-// the agency computes it from its own clock as the time the wait loop
-// actually ran, so a host whose ceiling sits below the slice this
-// module requested is still accounted by what elapsed, never by the
-// request. Zero is reported honestly by a zero-window probe and taken
-// at face value — nothing was charged and nothing elapsed.
+/// Updates the settled dictionary with newly observed slice results.
 fn update_settled(
   waited: List(Waited),
   settled: Dict(String, Waited),
@@ -746,7 +740,7 @@ fn update_settled(
   })
 }
 
-// Identifies which handles from the slice still need further waiting.
+/// Filters out handles that have already reached a Ready terminal state.
 fn filter_pending(
   pending_handles: List(Handle),
   settled: Dict(String, Waited),
@@ -759,11 +753,7 @@ fn filter_pending(
   })
 }
 
-// How much wall time this slice consumed, from the host's own reports:
-// the largest pending `waited_ms` is what the agency's clock measured
-// for this slice, whatever ceiling actually fired. Zero is a real
-// answer — a zero-window probe reports it — and `step_wait` treats a
-// zero-length slice as the join's end rather than looping on it.
+/// Computes the elapsed wall-clock milliseconds consumed by a wait slice.
 fn slice_elapsed(waited: List(Waited), _slice_ms: Int) -> Int {
   list.fold(waited, 0, fn(acc, item) {
     case item {
@@ -880,11 +870,7 @@ fn optional_strings(value: Option(List(String))) -> Value {
   }
 }
 
-// The declared shape crosses as a list of field descriptors, not as a
-// schema document. The harness builds the schema itself from these and
-// runs it through its own total parser, so a program cannot smuggle a
-// constraint the harness would render into a child's brief without ever
-// checking (`tools/agent.parse_result_schema`).
+/// Encodes a list of result schema field descriptors into a report value.
 fn encode_schema(fields: List(Field)) -> Value {
   // Nothing asked for is *nothing*, not an empty list: a program that
   // declared no shape and one that declared an empty one would otherwise
@@ -913,6 +899,7 @@ fn unless_empty(fields: List(Field), then: fn() -> Value) -> Value {
   }
 }
 
+/// Maps a FieldType to its protocol schema type name.
 fn field_type_name(expects: FieldType) -> String {
   case expects {
     StringField -> "string"
@@ -925,8 +912,7 @@ fn field_type_name(expects: FieldType) -> String {
   }
 }
 
-// An array's element type nests, so it is carried as a nested descriptor
-// rather than flattened into the type name.
+/// Encodes nested items descriptor for array field types.
 fn encode_items(expects: FieldType) -> Value {
   case expects {
     ArrayField(items:) ->
@@ -943,6 +929,7 @@ fn encode_items(expects: FieldType) -> Value {
   }
 }
 
+/// Encodes a list of strand handles into wire payload format.
 fn encode_handles(handles: List(Handle)) -> Value {
   report.list(
     list.map(handles, fn(handle) {
@@ -973,9 +960,12 @@ fn decode_handle(value: Value) -> Result(Handle, String) {
   Ok(Handle(strand:, operation:))
 }
 
+/// Decodes a single Waited result record from msgpack.
 fn decode_waited(value: Value) -> Result(Waited, String) {
   use kind <- result.try(wire.string_field(value, "kind"))
   use handle <- result.try(decode_handle(value))
+
+  // Decode either pending or ready waited variants.
   case kind {
     "pending" -> {
       use waited_ms <- result.try(wire.int_field(value, "waited_ms"))
@@ -997,8 +987,11 @@ fn decode_outcome_field(value: Value, key: String) -> Result(Outcome, String) {
   decode_outcome(found)
 }
 
+/// Decodes an Outcome variant from the status kind string.
 fn decode_outcome(value: Value) -> Result(Outcome, String) {
   use kind <- result.try(wire.string_field(value, "kind"))
+
+  // Map the outcome string to Completed, Aborted, or Failed.
   case kind {
     "completed" -> Ok(Completed)
     "aborted" -> Ok(Aborted)
@@ -1010,9 +1003,12 @@ fn decode_outcome(value: Value) -> Result(Outcome, String) {
   }
 }
 
+/// Decodes a TerminalResult record from msgpack.
 fn decode_terminal_result(value: Value) -> Result(TerminalResult, String) {
   use found <- result.try(wire.field(value, "result"))
   use kind <- result.try(wire.string_field(found, "kind"))
+
+  // Map the result kind to the corresponding TerminalResult variant.
   case kind {
     "none" -> Ok(NoResultAsked)
     "given" -> {
@@ -1039,8 +1035,11 @@ fn decode_note(value: Value) -> Result(#(String, Value), String) {
   Ok(#(key, held))
 }
 
+/// Decodes a delivery response into Steered, Started, or Queued.
 fn decode_delivery(value: Value) -> Result(Delivery, String) {
   use kind <- result.try(wire.string_field(value, "kind"))
+
+  // Map the delivery kind string to Delivery variant.
   case kind {
     "steered" -> {
       use entry_text <- result.try(wire.string_field(value, "entry"))
@@ -1057,23 +1056,32 @@ fn decode_delivery(value: Value) -> Result(Delivery, String) {
   }
 }
 
+/// Decodes a Peer record from roster response data.
 fn decode_peer(value: Value) -> Result(Peer, String) {
   use strand <- result.try(wire.string_field(value, "strand"))
   use relation <- result.try(decode_relation(value))
+
+  // Decode optional peer operation handle.
   use handle <- result.try(case wire.optional_field(value, "handle") {
     None -> Ok(None)
     Some(found) -> decode_handle(found) |> result.map(Some)
   })
+
+  // Decode optional peer terminal outcome.
   use outcome <- result.try(case wire.optional_field(value, "outcome") {
     None -> Ok(None)
     Some(found) -> decode_outcome(found) |> result.map(Some)
   })
+
   use tools <- result.try(decode_tools(value))
   Ok(Peer(strand:, relation:, handle:, outcome:, tools:))
 }
 
+/// Decodes a peer Relation variant from the relation string.
 fn decode_relation(value: Value) -> Result(Relation, String) {
   use relation <- result.try(wire.string_field(value, "relation"))
+
+  // Map relation string to ParentOf or ChildOf.
   case relation {
     "parent" -> Ok(ParentOf)
     "child" -> Ok(ChildOf)
@@ -1093,6 +1101,7 @@ fn decode_tools(value: Value) -> Result(List(String), String) {
 // code. An unrecognized code is not swallowed: it comes back as
 // `StrandRefused` carrying the code verbatim, so a name this module has
 // not learned yet still reaches the program as itself.
+/// Maps capability channel errors to typed StrandError variants.
 fn map_error(error: CallError) -> StrandError {
   case error {
     Unreachable(reason:) -> StrandUnavailable(reason:)
@@ -1204,6 +1213,7 @@ pub fn waited_text(one: Waited) -> String {
   }
 }
 
+/// Returns the string representation of an Outcome variant.
 fn outcome_text(outcome: Outcome) -> String {
   case outcome {
     Completed -> "completed"
@@ -1294,12 +1304,14 @@ pub fn map(
 
 // A completed batch releases all its child slots. Any unresolved child stops
 // admission, so a timeout can never silently turn the bound into extra fan-out.
+/// Executes assignments in batches up to concurrency width.
 fn map_batches(
   assignments: List(Assignment),
   width: Int,
   within_ms: Int,
   reversed: List(Mapped),
 ) -> List(Mapped) {
+  // Process remaining assignments in batches or return assembled results.
   case assignments {
     [] -> list.reverse(reversed)
     [_, ..] -> {
@@ -1307,6 +1319,9 @@ fn map_batches(
       let joined = join_batch(admitted, within_ms)
       let reversed =
         list.fold(joined, reversed, fn(acc, item) { [item, ..acc] })
+      list.fold(joined, reversed, fn(acc, item) { [item, ..acc] })
+
+      // Check whether all items in the batch have settled.
       case list.all(joined, batch_settled) {
         True -> map_batches(remaining, width, within_ms, reversed)
         False ->
@@ -1318,15 +1333,19 @@ fn map_batches(
 
 // Stop on the first refused or uncertain admission. Keeping earlier handles is
 // essential: an error in a later spawn does not roll back children already born.
+/// Admits a batch of assignments up to available concurrency slots.
 fn admit_batch(
   assignments: List(Assignment),
   slots: Int,
   reversed: List(Result(Handle, StrandError)),
 ) -> #(List(Result(Handle, StrandError)), List(Assignment)) {
+  // Check available slots and remaining assignments to admit.
   case slots, assignments {
     0, _ | _, [] -> #(list.reverse(reversed), assignments)
     _, [assignment, ..remaining] -> {
       let admitted = spawn(assignment)
+
+      // Recurse on successful spawn or stop batch admission on error.
       case admitted {
         Ok(_) -> admit_batch(remaining, slots - 1, [admitted, ..reversed])
         Error(_) -> #(list.reverse([admitted, ..reversed]), remaining)
@@ -1335,11 +1354,14 @@ fn admit_batch(
   }
 }
 
+/// Joins admitted assignments in a batch against the specified timeout.
 fn join_batch(
   admitted: List(Result(Handle, StrandError)),
   within_ms: Int,
 ) -> List(Mapped) {
   let handles = list.filter_map(admitted, fn(item) { item })
+
+  // Wait for handles if any were admitted successfully.
   let joined = case handles {
     [] -> Ok([])
     [_, ..] -> wait(handles, within_ms:)
@@ -1370,6 +1392,7 @@ fn join_batch(
   }
 }
 
+/// Returns whether a Mapped result represents a settled child operation.
 fn batch_settled(item: Mapped) -> Bool {
   case item {
     Joined(Ready(..)) -> True
