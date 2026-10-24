@@ -74,6 +74,7 @@ import session_view/cache_watch
 import session_view/command
 import session_view/composer
 import session_view/context_view
+import session_view/evolution
 import session_view/generation_rate
 import session_view/history_view
 import session_view/live_jobs
@@ -519,6 +520,19 @@ pub fn apply_event(
     protocol.ProposalsChanged ->
       shared_set.proposals_refresh(shared, worktree_view.Requested)
 
+    // The evolution catalogue, a selection or the transition queue changed,
+    // here or elsewhere, so the board this host holds is old. The shared step
+    // reads it again on its next tick.
+    protocol.EvolutionChanged ->
+      shared_set.evolution_refresh(shared, worktree_view.Requested)
+
+    // An evolution command's answer, read by the action the lane issued. The
+    // unlabelled form is the wire's and never reaches a fold, because the
+    // channel labels it before it hands the event on.
+    protocol.EvolutionAnswered(action:, body:) ->
+      surfaces.receive_evolution(shared, action, evolution.read(action, body))
+    protocol.EvolutionSnapshot(_) -> shared
+
     // A resumed marker names a stream that continues from a cut this
     // terminal already holds. The lane reports it as its own update, so a
     // frame arriving outside one is nothing to paint.
@@ -540,7 +554,8 @@ pub fn apply_event(
     protocol.Committed(..)
     | protocol.MetadataChanged
     | protocol.GoalChanged
-    | protocol.ProposalsChanged -> updated
+    | protocol.ProposalsChanged
+    | protocol.EvolutionChanged -> updated
     protocol.Resumed(_) -> updated
     protocol.HeldInputReturned(..) -> updated
     protocol.Ignored(_) -> updated
@@ -564,6 +579,8 @@ pub fn apply_event(
     | protocol.PermissionsSnapshot(..)
     | protocol.ProposalsSnapshot(..)
     | protocol.MemorySnapshot(..)
+    | protocol.EvolutionSnapshot(..)
+    | protocol.EvolutionAnswered(..)
     | protocol.ProfileSnapshot(..)
     | protocol.ConfigSnapshot(..)
     | protocol.EntryAdded(..)

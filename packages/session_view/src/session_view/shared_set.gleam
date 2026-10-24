@@ -689,6 +689,123 @@ pub fn memory_watch(
   Shared(..shared, memory_watch:)
 }
 
+/// Replaces `Shared.evolution`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.evolution(model.shared, value)
+/// ```
+@internal
+pub fn evolution(shared: Shared(a, b, c, d), evolution) -> Shared(a, b, c, d) {
+  Shared(..shared, evolution:)
+}
+
+/// Replaces `Shared.evolution_refresh`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.evolution_refresh(model.shared, value)
+/// ```
+@internal
+pub fn evolution_refresh(
+  shared: Shared(a, b, c, d),
+  evolution_refresh,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, evolution_refresh:)
+}
+
+/// Replaces `Shared.evolution_notice`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.evolution_notice(model.shared, value)
+/// ```
+@internal
+pub fn evolution_notice(
+  shared: Shared(a, b, c, d),
+  evolution_notice,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, evolution_notice:)
+}
+
+/// Replaces `Shared.evolution_open`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.evolution_open(model.shared, value)
+/// ```
+@internal
+pub fn evolution_open(
+  shared: Shared(a, b, c, d),
+  evolution_open,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, evolution_open:)
+}
+
+/// Replaces `Shared.evolution_pending`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.evolution_pending(model.shared, value)
+/// ```
+@internal
+pub fn evolution_pending(
+  shared: Shared(a, b, c, d),
+  evolution_pending,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, evolution_pending:)
+}
+
+/// Replaces `Shared.evolution_read_ms`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.evolution_read_ms(model.shared, value)
+/// ```
+@internal
+pub fn evolution_read_ms(
+  shared: Shared(a, b, c, d),
+  evolution_read_ms,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, evolution_read_ms:)
+}
+
+/// Replaces `Shared.evolution_watch`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.evolution_watch(model.shared, value)
+/// ```
+@internal
+pub fn evolution_watch(
+  shared: Shared(a, b, c, d),
+  evolution_watch,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, evolution_watch:)
+}
+
+/// Replaces `Shared.evolution_via`; the record documents the field.
+///
+/// ## Examples
+///
+/// ```gleam
+/// shared_set.evolution_via(model.shared, value)
+/// ```
+@internal
+pub fn evolution_via(
+  shared: Shared(a, b, c, d),
+  evolution_via,
+) -> Shared(a, b, c, d) {
+  Shared(..shared, evolution_via:)
+}
+
 /// Replaces `Shared.agent_messages`; the record documents the field.
 ///
 /// ## Examples

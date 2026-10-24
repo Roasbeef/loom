@@ -1070,3 +1070,81 @@ hosts share. `Shared` carries `memory`, `memory_refresh`, `memory_notice`,
 `memory_read_ms` and `memory_watch`. `surfaces.service_memory_read` is the 11th
 read in `service_reads` and re-reads a watched board once it is `backstop_ms`
 old.
+
+## Governed evolution (protocol-change/099)
+
+The lane reads and drives the evolution catalogue so the web view and the
+terminal draw one board in one set of words. Two pure modules and the lane
+wiring.
+
+`session_view/evolution` is the total decoder and the words. `decode_board`
+reads the `board` reply: a row of an unknown kind, scope, purpose, verdict,
+phase or event is kept as `UnknownKind(..)` and the like, and a row that cannot
+be read is left out and counted in `Board.unread`. A nested row that fails
+(an approval, a piece of evidence) fails its candidate rather than being drawn
+as absent, because "not approved" read from a broken approval invites a second
+one. Only a body that is not an object is an error. `Freshness`, `Liveness`,
+`Surface` and `Phase` stand where a `Bool` would. `Request` is what a person
+asks (`Approve | Revoke | Select | Rollback | Inspect | ReadEvidence |
+CoreStatus`); `arguments` encodes it, and a `Select` or `Rollback` carries the
+`expected_generation` the host drew, so a stale board is refused by the
+daemon. `read(action, body)` is the one reader of a reply and never fails:
+`BoardReply`, `ProgressReply(Report)` for `select`, `rollback` and `status`
+alike, `ApprovalReply`, `RevocationReply`, `PageReply(Whole | Large)` and
+`Unreadable`. The offers a host draws are `approval_target`,
+`selection_target`, `rollback_choices` and `awaiting_approval`; each returns
+nothing for a row of a kind this client cannot name.
+
+`session_view/evolution_pending` is the pending-request machine. `begin` mints
+the request identity (`ui-<session>-<clock>-<candidate>-<count>`) and tracks a
+`Submitted` request; `answered` applies a reply to `Tracker.awaiting`, the one
+request whose reply the lane expects (the lane has one command out at a time);
+`poll` names the next request whose `status` is due (every `poll_ms`) and marks
+it awaiting; `expire` ends a wait at `window_ms`, the deadline the lane also
+asks the daemon for; `restore` repairs the tracker from a board; `reset` is a
+reconnect, which forgets the requests and keeps the counter. The transition
+table is in the module doc and `evolution_pending_test` holds it to a `statem`
+model.
+
+The wire names no action in an evolution reply, so `session_channel` names a
+request by its action, `evolution:<action>`, for the reply pairing
+(`matching_presentation`), `RequestRefused`, `is_read` and the recording
+(`attempt` accepts exactly the actions `evolution.is_action` lists, and
+`replay_frame` rebuilds the frame). The wire decoder yields
+`protocol.EvolutionSnapshot(body)`, which the channel replaces with
+`EvolutionAnswered(action, body)` before a fold sees it. An `evolution_changed`
+push becomes `protocol.EvolutionChanged` and sets `Shared.evolution_refresh`.
+
+`Shared` carries `evolution`, `evolution_refresh`, `evolution_notice`,
+`evolution_open`, `evolution_pending`, `evolution_read_ms`, `evolution_watch`
+and `evolution_via`. `surfaces.service_evolution_status` (expire, then poll) and
+`surfaces.service_evolution_read` (a requested read, or a watched board older
+than `evolution.backstop_ms`) are the last two reads in `service_reads`.
+`msg.Evolve(request)` reaches `surfaces.evolve`, which refuses a change the
+attachment may not make, tracks a `Select` or `Rollback` before sending it, and
+leaves the footer's `notice` alone: evolution reports in `evolution_notice`,
+which a board arriving does not clear. A lost lane resets the tracker and
+clears `evolution_read_ms`; the next board restores the selections the daemon
+still holds. A refused `board` read does not ask again, and the backstop
+retries it once a minute. `Shared.evolution_via` is `ClaimsTerminal` for the
+terminal, which sends `via: "terminal"` so the audit entry says so.
+
+A change (`Approve`, `Revoke`, `Select`, `Rollback`) is made only on an
+attached lane with no command out, as a read is, and `begin` refuses while a
+reply is awaited: a reply belongs to `Tracker.awaiting`, so a second request
+cannot be tracked until the first reply has arrived. The daemon holds one
+active job and does not queue a second. `queue.admit` keys on `request_id` and
+refuses a different signature under the same id, and the lane never reuses an
+id, so a double press is a new request that the daemon answers `Busy:` (worded
+by `refusal_words`) or, after the first commit, `Stale` through
+`expected_generation`. The design note's "deduplicated by signature" is wrong
+about this. The 16-request bound in `evolution_pending` keeps the tracker
+finite under a daemon ahead of this client; the lane itself reaches one
+request of its own and at most one adopted from a board.
+
+A host that sleeps between events (the web view has no periodic tick) arms one
+wake-up for `surfaces.evolution_due(shared)`, beside `session_channel.next_due`
+and `context_deferred_until`, and runs its ordinary tick when it fires. It is
+the earliest staging poll or deadline, the instant a requested read is owed, and
+the instant a watched board goes stale, or `None` when detached or idle. A past
+instant means a tick is owed now.

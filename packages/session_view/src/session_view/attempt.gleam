@@ -11,6 +11,7 @@ import gleam/list
 import gleam/result
 import gleam/string
 import session_view/connection_event
+import session_view/evolution
 import session_view/snapshot
 
 /// An increasing terminal-local identity, never a server-issued identifier.
@@ -297,6 +298,14 @@ fn decode_selection(kind, fields) {
       Ok(LineageFrom(entry))
     }
     "escalations_decided" -> Ok(DecidedList)
+
+    // An evolution request is recorded under its action, since the wire
+    // command is the same for all of them. Its arguments are not recorded.
+    "evolution:" <> action ->
+      case evolution.is_action(action) {
+        True -> Ok(NoSelection)
+        False -> Error("unknown recorded evolution action")
+      }
     "escalations_get" -> {
       use values <- result.try(case list.key_find(fields, "ids") {
         Ok(json.Array(values)) -> Ok(values)

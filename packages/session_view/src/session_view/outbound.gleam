@@ -250,6 +250,10 @@ fn record_sent(
       |> shared_set.notice(case command {
         // Automatic observation must not erase a user's command outcome.
         "context" -> shared.notice
+
+        // The evolution surface reports in its own notice, and its polls
+        // are no command of the operator's.
+        "evolution:" <> _ -> shared.notice
         "goal_get" ->
           case shared.goal_report {
             HoldGoalReport -> shared.notice

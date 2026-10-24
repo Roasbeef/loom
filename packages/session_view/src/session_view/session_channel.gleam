@@ -113,6 +113,7 @@ import gleam/string
 import session_view/approval
 import session_view/attempt
 import session_view/connection_event
+import session_view/evolution
 import session_view/protocol
 import session_view/session_wire
 import session_view/snapshot
@@ -966,7 +967,8 @@ fn apply_pushed(
     | protocol.BtwSnapshot(_)
     | protocol.UsageChanged(..)
     | protocol.BlockSummarized(..)
-    | protocol.ProposalsChanged -> #(channel, [
+    | protocol.ProposalsChanged
+    | protocol.EvolutionChanged -> #(channel, [
       Auxiliary(event),
     ])
 
@@ -987,6 +989,8 @@ fn apply_pushed(
     | protocol.PermissionsSnapshot(..)
     | protocol.ProposalsSnapshot(..)
     | protocol.MemorySnapshot(..)
+    | protocol.EvolutionSnapshot(..)
+    | protocol.EvolutionAnswered(..)
     | protocol.ProfileSnapshot(..)
     | protocol.EntryAdded(..)
     | protocol.OperationChanged(..)
@@ -1288,7 +1292,11 @@ fn apply_reply(
     AwaitingReply(name, intent), session_wire.Presentation(event) ->
       case matching_presentation(name, intent, event) {
         True ->
-          send_queued(Channel(..channel, phase: Ready), [Auxiliary(event)], now)
+          send_queued(
+            Channel(..channel, phase: Ready),
+            [Auxiliary(labelled(name, event))],
+            now,
+          )
         False -> fail(channel, "presentation does not match its command")
       }
     AwaitingBegin,
@@ -1364,7 +1372,29 @@ fn matching_presentation(name, intent, event) {
     // (protocol-change/087).
     "memory_get", Read, protocol.MemorySnapshot(_) -> True
     "proposal_decide", Mutation, protocol.ProposalsSnapshot(_) -> True
+
+    // Every evolution action answers with the same snapshot, so the pairing
+    // is keyed on the action the lane issued, which `outbound` folded into
+    // the name. A read action may only be answered as a read and a change
+    // only as a change; the board shape each carries is `evolution.read`'s
+    // business and is never a reason to close the lane.
+    "evolution:" <> action, Read, protocol.EvolutionSnapshot(_) ->
+      evolution.is_read_action(action)
+    "evolution:" <> action, Mutation, protocol.EvolutionSnapshot(_) ->
+      evolution.is_action(action) && !evolution.is_read_action(action)
     _, _, _ -> False
+  }
+}
+
+// The wire names no action in an evolution reply, so the lane names it from
+// the request it issued: the reply to `evolution:select` is a selection's
+// report, however much its body looks like a status. Every other event passes
+// through untouched.
+fn labelled(name: String, event: protocol.Event) -> protocol.Event {
+  case name, event {
+    "evolution:" <> action, protocol.EvolutionSnapshot(body) ->
+      protocol.EvolutionAnswered(action:, body:)
+    _, _ -> event
   }
 }
 
@@ -1634,7 +1664,7 @@ pub fn replay_issued(
       history(channel, after, before, now)
     Ready, attempt.LineageFrom(entry) -> lineage(channel, entry, now)
     Ready, attempt.NoSelection ->
-      admit(channel, session_wire.command(1, request.kind, []), now)
+      admit(channel, replay_frame(request.kind), now)
       |> result.map(fn(admitted) { admitted.0 })
     Ready, attempt.Credit(..) -> Error("unsolicited recorded snapshot credit")
     AwaitingBegin, _ | Receiving(..), _ | AwaitingReply(..), _ -> Ok(channel)
@@ -1644,6 +1674,17 @@ pub fn replay_issued(
   case next.issued == request {
     True -> Ok(next)
     False -> Error("recorded request does not match protocol progress")
+  }
+}
+
+// A recording keeps the command's name and not its body, so replay rebuilds a
+// frame that is the same request as far as the channel can tell. An evolution
+// request is recorded under its action, and the empty arguments are enough for
+// the lane to name it again.
+fn replay_frame(kind: String) -> String {
+  case kind {
+    "evolution:" <> action -> protocol.evolution(1, action, json.Object([]))
+    _ -> session_wire.command(1, kind, [])
   }
 }
 
@@ -1939,7 +1980,7 @@ fn outbound(frame: String) {
   use _ <- result.try(
     int.parse(id) |> result.replace_error("invalid generated command identity"),
   )
-  use #(name, _body) <- result.try(
+  use #(name, body) <- result.try(
     string.split_once(suffix, session_wire.command_body)
     |> result.replace_error("invalid generated command body"),
   )
@@ -1947,6 +1988,17 @@ fn outbound(frame: String) {
     json.parse(name) |> result.replace_error("invalid generated command name"),
   )
   case name {
+    // Every evolution action is the one command `evolution`, so the lane
+    // names its request by the action it carries. The reply pairing, the
+    // refusal and the recording all read that name.
+    json.String("evolution") -> {
+      use action <- result.try(evolution_action(body))
+      let intent = case evolution.is_read_action(action) {
+        True -> Read
+        False -> Mutation
+      }
+      Ok(Outbound("evolution:" <> action, suffix, intent))
+    }
     json.String(name) -> {
       let intent = case is_read(name) {
         True -> Read
@@ -1955,6 +2007,28 @@ fn outbound(frame: String) {
       Ok(Outbound(name, suffix, intent))
     }
     _ -> Error("invalid generated command name")
+  }
+}
+
+// The action of a generated `evolution` command. The body text still ends in
+// the closing brace of the envelope, which the command encoder always writes
+// last, so it is dropped before the body is read as JSON.
+fn evolution_action(body: String) -> Result(String, String) {
+  use parsed <- result.try(
+    json.parse(string.drop_end(body, 1))
+    |> result.replace_error("invalid generated evolution body"),
+  )
+  case parsed {
+    json.Object(fields) ->
+      case list.key_find(fields, "action") {
+        Ok(json.String(action)) ->
+          case evolution.is_action(action) {
+            True -> Ok(action)
+            False -> Error("unknown evolution action")
+          }
+        Ok(_) | Error(Nil) -> Error("missing evolution action")
+      }
+    _ -> Error("invalid generated evolution body")
   }
 }
 
@@ -1970,9 +2044,12 @@ fn outbound(frame: String) {
 /// ```gleam
 /// assert session_channel.is_read("notes")
 /// assert !session_channel.is_read("prompt")
+/// assert session_channel.is_read("evolution:board")
+/// assert !session_channel.is_read("evolution:select")
 /// ```
 pub fn is_read(command: String) -> Bool {
   case command {
+    "evolution:" <> action -> evolution.is_read_action(action)
     "models"
     | "skills"
     | "schedules"

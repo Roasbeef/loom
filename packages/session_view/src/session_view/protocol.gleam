@@ -233,6 +233,23 @@ pub type Event {
   /// again; this push carries nothing to draw.
   ProposalsChanged
 
+  /// What an `evolution` command answered, as the wire carries it: a body
+  /// and no name for the action, because every action answers with the same
+  /// snapshot (protocol-change/099). The channel replaces it with
+  /// `EvolutionAnswered` before any reducer sees it, so a fold never reads
+  /// this one.
+  EvolutionSnapshot(body: JsonValue)
+
+  /// What an `evolution` command answered, labelled with the action the lane
+  /// issued. Only `session_channel` produces it, from the issued request, and
+  /// `session_view/evolution.read` is what interprets the body.
+  EvolutionAnswered(action: String, body: JsonValue)
+
+  /// The evolution catalogue, a selection or the session's transition queue
+  /// changed. The board is read again; this push carries nothing to draw
+  /// (protocol-change/099).
+  EvolutionChanged
+
   /// An authoritative replacement for the schedule listing — the reply
   /// to `/schedules` and to a successful cancel alike.
   SchedulesSnapshot(
@@ -659,6 +676,22 @@ pub fn proposal_decide(
   ])
 }
 
+/// Encodes one `evolution` command: the action and its arguments object
+/// (protocol-change/099). The daemon answers every action with one snapshot,
+/// which the lane that issued it reads by the action's name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// protocol.evolution(16, "board", json.Object([]))
+/// ```
+pub fn evolution(id: Int, action: String, arguments: JsonValue) -> String {
+  command(id, "evolution", [
+    #("action", json.String(action)),
+    #("arguments", arguments),
+  ])
+}
+
 /// Encodes a read of the memory overview (protocol-change/087).
 ///
 /// ## Examples
@@ -829,6 +862,7 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | PermissionsSnapshot(_)
     | ProposalsSnapshot(_)
     | MemorySnapshot(_)
+    | EvolutionSnapshot(_)
     | ProfileSnapshot(..)
     | Resumed(_)
     | ServerError(..) -> Ok(event)
@@ -848,6 +882,8 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
     | BlockSummarized(..)
     | GoalChanged
     | ProposalsChanged
+    | EvolutionAnswered(..)
+    | EvolutionChanged
     | Ignored(_) -> Error("unexpected live presentation response")
   }
 }
@@ -940,6 +976,10 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
     "proposals_changed" -> {
       use _ <- result.try(object_fields(body, "proposals_changed body"))
       Ok(ProposalsChanged)
+    }
+    "evolution_changed" -> {
+      use _ <- result.try(object_fields(body, "evolution_changed body"))
+      Ok(EvolutionChanged)
     }
     "block_summary" -> decode_block_summary(body)
     other -> Ok(Ignored(other))
@@ -1067,6 +1107,14 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
     "memory" -> {
       use board <- result.try(required_value(fields, "board"))
       memory_overview.decode(board) |> result.map(MemorySnapshot)
+    }
+
+    // The board is kept as the daemon sent it. What it means depends on the
+    // action it answers, which the wire does not name, so the lane that
+    // issued the request reads it (`session_view/evolution.read`).
+    "evolution" -> {
+      use board <- result.try(required_value(fields, "board"))
+      Ok(EvolutionSnapshot(board))
     }
     "profile" -> {
       use current <- result.try(optional_string(fields, "profile"))
