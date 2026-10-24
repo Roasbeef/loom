@@ -93,6 +93,14 @@ one per session. Generations keep their own `tools`, `hooks`, `inventory`,
 `mode` and `retire`, so the seam has no invoke or retire function. Prompt trials
 and the core upgrade (`control.Seam`) stay outside it.
 
+Evolution callbacks project their secret store, helper path, source session and
+model gateway before closure construction. Trace callbacks still borrow the
+native runtime and read its current model; prompt trials retain their required
+source settings. `evolution_retention_test` assembles the real seeded plane and
+checks that consumed startup diagnostics add no trace terms and at most one
+copy to the complete capability door. The single-package client gate prepares
+that seed rather than omitting the plane.
+
 `live` leases the active generation to each complete promoted hook/tool fold,
 which runs on the caller's own process, and holds activation and close until
 every lease is returned or its holder has died (a `weft/state_machine`:
@@ -287,9 +295,12 @@ executors in this slot. Public startup options still accept the same registry
 used by the runtime effect surface; execution remains owned by that surface.
 
 The async-run and hub child-start callbacks project their heartbeat, session,
-workspace, catalogue and code-mode refusal inputs before constructing the
-restart specification. Those callbacks retain the runtime inputs they require,
+workspace, catalogue, remote reach and code-mode refusal inputs before
+constructing the restart specification. Those callbacks retain the runtime inputs they require,
 but no longer add a path through the complete startup `Settings` record.
+`owned_assembly_test` verifies this on actual service supervisor state while
+preserving custody retirement and lease release. Both memory regressions count
+flattened reachable terms, not physical retained heap or resident memory.
 
 ## Transfer captures and a slow storage actor
 

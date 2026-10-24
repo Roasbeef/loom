@@ -39,11 +39,98 @@ The gateway returns the existing attribution cache and an empty list when the en
 
 Synthetic initial HTML is identical after removing Lustre memo bookkeeping comments, and unchanged patches remain two bytes. Regressions cover consecutive memo reuse, changed source/body/time, escaped text and newest-row handoff. Gateway regressions cover read counts, nonempty entry attribution and once-only terminal delivery. The new stored-reasoning regression fails on baseline because it observes sixteen unexpected trims; the idle-read regression fails on baseline because it observes a strand-leaf read.
 
+## Reachable callback terms
+
+The installed daemon's census attributes 686 MiB to processes and 234 MiB to
+binaries; its three largest listed processes are static supervisors at roughly
+24 to 26 MiB each. About 575 MiB of process memory lacks a declared ownership
+label. These are allocation observations, not proof that a particular source
+closure owns those bytes. The installed serve BEAM imports build_effects_held,
+so the older tool-registry multiplication diagnosis cannot simply be applied
+to this daemon.
+
+Two new source fixes remove broad Settings captures. The hub restart callback
+now captures its remote reach field directly. Evolution callbacks capture their
+secret store, helper path, source session and gateway before closure construction;
+native model and authority reads remain at their original call boundaries.
+Prompt trials retain their required source settings.
+
+Matched real disposable assemblies use OTP 29 and eight-byte words. The first
+fixture reads its service supervisor state; the second enables the real evolution
+plane, asserts its capability cell exists, and borrows the actual callback door.
+The varied input is 4,096 startup-only diagnostics, already consumed by logging.
+Its flattened term size is 53,248 words. Both new regressions fail for their
+intended assertions against the corresponding unfixed source.
+
+| Flattened words | Before | After |
+| --- | ---: | ---: |
+| Ordinary service supervisor state | 377,991 | 377,303 |
+| Supervisor state with diagnostic padding | 484,487 | 377,303 |
+| Ordinary evolution trace callback | 1,014 | 748 |
+| Padded evolution trace callback | 54,262 | 748 |
+| Ordinary whole evolution door | 51,930 | 40,586 |
+| Padded whole evolution door | 1,809,114 | 93,834 |
+
+The ordinary evolution door is 21.8% smaller by this metric. Diagnostic
+amplification falls from two copies to zero in supervisor state and from
+33 copies to one in the whole evolution door. The remaining copy belongs to
+unchanged prompt-trial assembly. The supervisor fixture's ordinary reduction
+is only 5,504 bytes, so its padding result is not a claim of a large default
+footprint saving. The regressions preserve custody retirement and lease release.
+
+erts_debug:flat_size removes sharing and counts closure environments. These
+figures describe reachable terms and their flattened copy cost; they are not
+physical retained heap, unique off-heap binary bytes or RSS. The live daemon
+has not received either fix. An installed RSS reduction remains unmeasured.
+
+A remaining source candidate is serve.catalogue_facts: the returned lookup
+captures the whole Catalog although model lookup reads only models. Unused
+profile/MCP/LSP configuration can therefore enter provider and compaction-hook
+closures. This is a reachable copy path, but its cost has not been measured and
+it is not claimed as the cause of the daemon's large heaps. The next fixture
+should vary unused profiles while measuring actual Runtime.effects, before
+considering a models-only projection.
+
 ## Validation and limits
 
-Independent Astra review found no actionable correctness, simplification or same-shape issue in the affected implementation, tests and benchmark scripts. Full web-view tests passed all 1,330 cases. Affected package lint passes. All 203 gateway-focused client tests passed, including the three new regressions. Their initial linked-process teardown cancellation was fixed by unlinking immediately before intentional cleanup; the independent reviewer verified that links remain active during execution. A full client gate remains incomplete: its first attempt exposed missing fixture prerequisites, and preparing the code-mode seed exposes a compile error in untouched ext/internal/live_runtime.gleam on main. The failed seed build is not reported as a passing end-to-end gate.
+Independent Astra review found no actionable issue in the rendering, gateway,
+callback projections, regressions and benchmark scripts. Full web-view tests
+passed all 1,330 cases; all 203 gateway-focused tests passed. Both affected lints
+pass. Real evolution acceptance passed both lifecycle scenarios; model scope
+passed ten tests and capability handling passed twelve. All ten owned-assembly
+tests and the new evolution retention regression pass without prerequisite skips.
 
-The global documentation gate reports exactly the same 83 errors on pristine main and the candidate, after updating the three gateway citations shifted by this patch. They are existing symbol/line drift, mainly from earlier terminal formatting changes. No documentation gate waiver or disabled assertion was added.
+The approved baseline repairs remove a duplicate private extension argument,
+restore comment-only parity between host and satellite literal-atom walkers,
+and repair 83 stale documentation citations. The seed builds, all 441 code-mode
+tests including jailed satellite acceptance pass, and documentation checking
+reports zero errors with 232 existing warnings. Exact-source security checks
+pass all sixteen cases; no assertion, deadline or gate was weakened.
+
+The first full client run exposed a native-transport test monitor race. Monitoring
+is asynchronous, and begin releases a different process. A test-only aliveness
+barrier guarantees delivery of the earlier monitor signal before release while
+keeping strict normal-exit and once-only assertions. The original race reproduced
+once in 2,000 parallel iterations; all 2,000 pass after the barrier, as do all six
+native transport tests. The ordering guarantee is specified by
+[OTP](https://www.erlang.org/doc/apps/erts/erlang.html#is_process_alive/1).
+
+The final client package gate at implementation head 403c314d6 exits zero in
+625.46 seconds with 5,316 EUnit passes, including the real native TUI drive and
+both memory regressions. Source and compiled implementations were held fixed.
+The log contains 57 existing prerequisite-skip diagnostics: 51 require the shipped
+server fixture, four require dedicated evolution/live-upgrade acceptance flags,
+one requires Linux /proc, and one requires a working rust-analyzer. Those returns
+are included in EUnit's pass count and are not claimed as executed acceptance
+proof. The two evolution lifecycle scenarios described above ran separately
+with their flag enabled. Hosted CI and Linux signoff were not run here.
+The local origin/main tracking ref has two later TLS attachment commits at
+3e258a2f3; these measurements and tests retain their stated base. Current-base
+integration is still required before publication or merge.
+
+The earlier broad run loaded the unfixed serve module before a new retention
+test was compiled. Its expected baseline assertion and two subsequently repaired
+failures are retained in the raw log, not used as final-head evidence.
 
 The web asset body is unchanged; its generated source digest was rebuilt. Three pre-existing formatter-rejected blank lines in ui_socket/evolution control were removed so the client gate can reach tests. The daemon was not restarted or modified, so installed CPU/RSS savings remain unmeasured.
 
