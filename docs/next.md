@@ -24,8 +24,20 @@ daemon through Pickglass, was not worked in this pass and is still open there.
 ## What to do next
 
 Slice 3 of [remote evolution](design-notes/remote-evolution.md) has seven steps.
-Steps 1, 2a, 2b and 3 are merged. Step 4 is in progress on another branch and
-is not merged; treat it as next work, not as done.
+Steps 1, 2a, 2b and 3 are merged. The step-by-step plan, with every type, actor
+arm, file and test for steps 4 to 7, is
+[remote-evolution-slice3-plan.md](design-notes/remote-evolution-slice3-plan.md).
+Read its status note first: the plan predates steps 1 to 3, and where it
+disagrees with the code, the code and 098's as-built addendum win.
+
+**First, check that `main` builds.** As of this handoff `main`'s CI is red on
+every job that builds the code-mode seed (`deps`, `jail`, `stock compiler`):
+PR #1100's lint sweep (commit `de81892d3`) duplicated the parameter
+`requested: Decision,` in `finish` in
+`packages/ext/src/ext/internal/live_runtime.gleam`, so `ext` does not compile.
+The fix is deleting the second copy of that line, and another session owns it.
+Nothing below can go green until it lands, and PR #1101 (this handoff) fails
+those jobs for the same reason.
 
 1. **Step 4, the executor's evolution plane.** One actor per scope in the
    executor stages, runs, hooks, migrates, retires and inventories generations,
@@ -33,8 +45,29 @@ is not merged; treat it as next work, not as done.
    as a masked path. **Exit:** raw protocol messages stage and run the fixture
    extension through a real executor, a `Close` after a stage still retires it,
    and `retire_all` is terminal so a stage that arrives after it is refused. The
-   last point came from the PR #1092 review. It also needs
-   `extension/memory.over_facts` and the `ext/` fact prefix on the owner port.
+   last point came from the PR #1092 review. The plan's "Step 4 acceptance, as
+   briefed" section lists the five requirements a reviewer should hold it to.
+
+   **State of the work.** The branch `runtime/executor-evolution` is pushed
+   and has no PR. It is based on `5395e640e` (after PR #1098) and has two
+   commits. `dcea651a2` is finished: `extension/memory.over_facts` builds the
+   memory door over the owner's `FactAccess`, and
+   `owner_services.served_prefixes` admits `ext/`, with tests. `0c875675b` is
+   an explicit WIP commit and must not merge as is. It holds
+   `client/executor_evolution.gleam` (about 2,000 lines: the actor, its state,
+   the stage, transition, retire, hook, inventory, evaluate and run arms, and
+   the terminal `retire_all`) and `candidate.source_path`, which lets the
+   executor authorise a snapshot directory without a catalogue. The module has
+   never been compiled, has no tests, and nothing starts it.
+
+   What is left: rebase onto `main`; make the module compile; review it
+   against `docs/weft.md`, and rewrite it from the plan if it reads as too
+   large; write `executor_evolution_test` over hand-built `Staged` values
+   through `start_over` (the P model's probes as Gleam tests, plus a close
+   before and after a stage completes); start it in `executor_plane.start` with
+   the `local.Config` the plan lists; add the `<state>/evolution` mask; fill
+   `plane_over`'s `evolution` field and the census identity; decide how secrets
+   are served on an executor; add the `executor_plane_test` cases.
 2. **Step 5, `machine/remote` and the `serve` wiring.** A registered session
    gets an evolution wiring whose machine sends the version-5 messages.
    **Exit:** a session on an executor registers the evolution operations when
@@ -104,6 +137,40 @@ nothing.
   contention and passes when rerun alone. A flake does not block a merge here.
 - An executor's rolling output tail is absent for a remote author check, because
   the door call's id is not on the wire. The plan accepts this for slice 3.
+
+## How this work was run, and what bit
+
+Each PR in this series was written by one worker in its own git worktree off
+`origin/main`, reviewed once by a separate reviewer reading the diff cold, fixed,
+and merged with a merge commit (`gh pr merge N --merge --admin
+--match-head-commit <sha>`) once `gate (linux)` was green on that head. The macOS
+gates are advisory. Signoff boxes were unavailable, so hosted CI was the gate.
+Every review found something real (a selection-blind size bound in #1088, a
+paired-reply bug in #1093, the owner page recording `cli` in #1096, a grant
+carried from the wrong list in #1092), so the review pass is worth keeping.
+
+Hazards that cost time in this series:
+
+- **Merge before the aggregate.** `gate (linux)` appears only after every
+  Linux job finishes. Several workers merged on the individual jobs before the
+  aggregate existed (#1097, #1099). Wait for the aggregate check itself.
+- **Mac load.** Running more than two or three client builds at once on one Mac
+  produced false failures: `serve_test`'s git-identity timeout (32 of 96 once,
+  96 of 96 green when rerun alone on both `main` and the branch) and
+  `live_upgrade_acceptance_test` answering `strand_busy`. Rerun alone before
+  believing a client failure. The full `make check-client` also stops at the
+  `rust-analyzer` LSP test on a Mac without it, so later modules never run.
+- **Unix socket length.** A worktree under `.claude/worktrees/agent-...` is deep
+  enough that a scratch state dir inside it pushes the code-mode cap socket past
+  the 100-byte Unix limit. Live drives used short paths under `$HOME` and
+  removed them afterwards. Never use `/tmp`, which the jail replaces.
+- **Rebase drift.** After a rebase, run the affected client tests again. #1096
+  went red once on a terminal parity test because #1094's merge changed when
+  the terminal reads the board.
+- **Pipe hides status.** One worker read `make e2e-evolution` through `grep`,
+  which dropped `make`'s exit code. Read each gate's own exit code.
+- **A branch named `evolution/...` cannot be created.** A stale local branch
+  named `evolution` in the main checkout blocks the prefix. Use another name.
 
 ## How to verify
 
