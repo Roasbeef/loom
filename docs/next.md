@@ -12,7 +12,12 @@ Earlier sweep delivery notes also overstated verification: a zero lint census
 did not prove that the comment edits preserved compiling, executable code.
 The repairs below address concrete mistakes found by the final audit.
 
-## Where the tree is
+Reasoning blocks now own one Lustre memo leaf, including source-derived line
+counts, expansion, preview and body work. Its keys preserve changed source,
+held text, elapsed time, fold controls, session and newest-row handoff. Normal
+rows keep their existing leaves. An empty gateway entry cut now preserves its
+attribution cache immediately, avoiding one unnecessary leaf query per strand.
+Operation/result register reads and nonempty attribution keep their ordering.
 
 | Work | Measured state |
 | --- | --- |
@@ -36,7 +41,12 @@ gates. The lint totals remain zero errors and 2,515 warnings.
 No installation, daemon restart or hotpatch was performed. A hosted CI verdict
 for the final published head is still required before merge.
 
-## What to do next
+The full web-view gate passed all 1,330 tests. All 203 gateway-focused client
+tests passed, including read counts at 1/8/64/128 strands, nonempty attribution
+and once-only terminal outcomes. Both affected lints pass. An independent Astra
+adversarial review found no actionable issue; it also checked the later
+fixture unlink-before-kill repair. The new performance regressions fail for
+the intended assertions on pristine production code.
 
 1. Finish validation and publish the final sweep PR. **Exit:** the exact PR
    head passes the required Linux fan-in, including both client shards, and
