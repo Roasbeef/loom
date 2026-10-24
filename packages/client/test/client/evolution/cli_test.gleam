@@ -16,6 +16,7 @@ fn session() -> String {
 
 pub fn operator_grammar_requires_native_identity_and_admitted_action_test() {
   cli.parse(["catalogue", session()]) |> should.be_ok
+  cli.parse(["board", session()]) |> should.be_ok
   cli.parse(["status", session(), "--request-id", "publish-1"]) |> should.be_ok
   cli.parse(["select", session(), "--request-id", "publish-1"]) |> should.be_ok
   cli.parse(["unknown", session()]) |> should.be_error
@@ -86,4 +87,9 @@ pub fn queued_receipt_is_returned_without_inferred_completion_test() {
     protocol.SnapshotEvent(protocol.ResumeSnapshot(9)),
   ))
   |> should.be_error
+}
+
+pub fn the_usage_names_the_board_before_the_older_reads_test() {
+  string.contains(cli.usage, "Actions: board, catalogue,") |> should.be_true
+  string.contains(cli.usage, "loomd evolution board SESSION") |> should.be_true
 }

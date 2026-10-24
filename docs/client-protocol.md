@@ -95,7 +95,7 @@ Source: (`client/gateway.gleam:129-134`).
 
 `snapshot`, `snapshot_begin`, `snapshot_chunk`, `snapshot_end`,
 `stream_delta`, `tool_output`, `block_summary`, `goal_changed`, `proposals_changed`,
-`mutation_outcome`, `presence` and `error` carry no `seq`.
+`evolution_changed`, `mutation_outcome`, `presence` and `error` carry no `seq`.
 
 ### 1.5 Forward compatibility
 
@@ -2072,7 +2072,7 @@ single strand's chain. Source: (`client/gateway.gleam:1378-1381`) and
 (`storage/snapshot.gleam:42`).
 
 A `session` that is not this attachment's own is refused with the code
-`wrong_session`. Source: (`client/gateway.gleam:2653`).
+`wrong_session`. Source: (`client/gateway.gleam:2663`).
 
 `from_seq` exists in the command's decoder for the in-process host
 fixture, where it selects a resume reply. Over the authenticated
@@ -2355,7 +2355,7 @@ See [protocol 022](../protocol-change/022-human-input-priority.md).
 
 #### 4.9.4 `follow_up`
 
-Body is identical to `steer`. Source: (`client/protocol.gleam:1464`).
+Body is identical to `steer`. Source: (`client/protocol.gleam:1470`).
 
 ```json
 {"v":2,"id":5,"cmd":"follow_up","body":{"strand":"main","text":"now add tests"}}
@@ -2417,7 +2417,7 @@ Source: (`client/gateway.gleam:3883-3915`).
 Three checks, in order:
 
 1. `expected_seq` MUST equal the record's current sequence. A mismatch
-   is `stale_approval`. Source: (`client/gateway.gleam:7364`).
+   is `stale_approval`. Source: (`client/gateway.gleam:7408`).
 2. The record MUST still be pending. Otherwise the code is
    `not_pending`.
    Source: (`client/gateway.gleam:3941-3952`).
@@ -3206,7 +3206,7 @@ Over the authenticated session transport a client sees:
   `permissions`, `queued_input`, `live_jobs`, `block_summaries`, `btw`, or pending `worktree_diff` /
   `context` / `child_history`;
 - pushed frames: `committed`, `stream_delta`, `tool_output`, `block_summary`, `goal_changed`,
-  `proposals_changed`, `presence`, `snapshot` with mode `config` or `remote_children`, or
+  `proposals_changed`, `evolution_changed`, `presence`, `snapshot` with mode `config` or `remote_children`, or
   final `worktree_diff` / `context` / `child_history`, and `error`;
 - refusals: `error` with `reply_to`.
 
@@ -3958,6 +3958,24 @@ A client with no proposals view MAY ignore it.
 
 ---
 
+### 5.22 `evolution_changed`
+
+```json
+{"v":2,"event":"evolution_changed","body":{}}
+```
+
+The host pushes this to subscribed, authorized peers after the evolution
+catalogue changed: an approval, revocation or selection committed, or a staged
+selection ended (protocol-change/099). It carries no board, `reply_to` or `seq`.
+The authoritative observation is the `evolution` command with action `board`,
+which any attached peer may make, an observer included. A client that is showing
+the evolution catalogue SHOULD read the board again, and repeated notifications
+may coalesce. A client with no such view MAY ignore it. A generation that
+publishes late is not announced, so a client that shows one SHOULD also read the
+board on a long interval.
+
+---
+
 ## 6. Pushed frames and client obligations
 
 ### 6.1 What may arrive uncorrelated
@@ -4427,7 +4445,7 @@ below have not been edited.
 
 8. **Two operation phases are missing from the documented label set.**
    `packages/client/protocol.md` lists eight labels. The code also emits
-   `checkpoint` (`client/gateway.gleam:4551`) and `navigating`
+   `checkpoint` (`client/gateway.gleam:4565`) and `navigating`
    (`client/gateway.gleam:3052`).
 
 9. **The spec's control command list is incomplete.**

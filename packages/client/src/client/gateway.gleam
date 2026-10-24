@@ -206,6 +206,7 @@ import client/directories
 import client/escalate
 import client/escalation_view
 import client/evolution/control as evolution_control
+import client/evolution/store as evolution_store
 import client/goal_pending
 import client/goalcommand
 import client/grants
@@ -2470,6 +2471,15 @@ fn dispatch_message(state: State, message: Message) -> State {
       state
     }
 
+    // The evolution catalogue, a selection or the transition queue moved. The
+    // push carries nothing, and each subscribed peer reads the board again
+    // through the same bounded command. The publisher sends it only after the
+    // commit it announces is durable (protocol-change/099).
+    BusHint(published: bus.Published(event: bus.EvolutionChanged, ..)) -> {
+      push_to_subscribed(state, protocol.EvolutionChanged)
+      state
+    }
+
     // A remote child's stub changed. The stubs are read again in a weft run
     // and pushed whole to every subscribed peer, so the hub's turn never
     // waits on the store, a lost hint costs a stale strip until the next
@@ -3691,7 +3701,10 @@ fn observer(state: State, connection: Int) {
 fn read_only(command: Command) {
   case command {
     protocol.Evolution(action, _) ->
-      list.contains(["catalogue", "inspect", "evidence", "status"], action)
+      list.contains(
+        ["catalogue", "inspect", "evidence", "status", "board"],
+        action,
+      )
     protocol.Subscribe(..)
     | protocol.CatchUp(..)
     | protocol.SnapshotNext(..)
@@ -3858,6 +3871,7 @@ fn notice_strand(state: State, event: WireEvent) -> String {
     | protocol.BlockSummaryEvent(..)
     | protocol.GoalChanged
     | protocol.ProposalsChanged
+    | protocol.EvolutionChanged
     | protocol.CommittedEvent(..)
     | protocol.ErrorEvent(..)
     | protocol.UnknownEvent(..) -> single_live_strand(state)
@@ -5390,11 +5404,19 @@ fn evolution_command(
       dict.get(state.connections, connection)
       |> result.replace_error("evolution connection is unavailable"),
     )
-    let #(authority, principal) = case link.authentication {
-      Authenticated(binding, ..) -> #(binding.authority, binding.principal.id)
-      HostFixture -> #(access.Owner, "host-fixture")
+    let #(authority, principal, via) = case link.authentication {
+      Authenticated(binding, ..) -> #(
+        evolution_control.for_principal(
+          binding.authority,
+          binding.principal.kind,
+          action,
+        ),
+        binding.principal.id,
+        evolution_via(binding, arguments),
+      )
+      HostFixture -> #(access.Owner, "host-fixture", evolution_store.Cli)
     }
-    seam.command(authority, principal, action, arguments)
+    seam.command(authority, principal, via, action, arguments)
   }
 
   case outcome {
@@ -5409,6 +5431,30 @@ fn evolution_command(
       )
   }
   state
+}
+
+// The surface an evolution command came through, for the audit entry. A page is
+// known by its sign-in or by a browser credential, and the daemon reads both
+// from the binding. Every other attachment is a bearer, and a terminal and the
+// `loom evolution` command hold the same kind of bearer, so the terminal says
+// which it is in an optional `via` argument. That claim is audit text only: it
+// can name `terminal` or `cli`, never `web`, and nothing reads it for authority.
+fn evolution_via(
+  binding: Binding,
+  arguments: JsonValue,
+) -> evolution_store.Via {
+  case
+    binding.signin,
+    access.credential_kind(binding.digest),
+    tool.optional_string(arguments, "via")
+  {
+    Some(_), _, _ | None, access.Browser, _ -> evolution_store.Web
+    None, access.Bearer, Ok(Some("terminal")) -> evolution_store.Terminal
+    None, access.Bearer, Ok(Some(_))
+    | None, access.Bearer, Ok(None)
+    | None, access.Bearer, Error(_)
+    -> evolution_store.Cli
+  }
 }
 
 fn goal_command(

@@ -81,9 +81,9 @@ pub fn supervised(
 
 /// Session-bound owner-only native door, composed with ordinary evolution.
 /// ## Examples
-/// `seam(name).command(access.Owner, principal, "core_status", args)` is native-only.
+/// `seam(name).command(access.Owner, principal, via, "core_status", args)` is native-only.
 pub fn seam(name: registry.Address(Message)) -> evolution.Seam {
-  evolution.Seam(command: fn(authority, principal, action, args) {
+  evolution.Seam(command: fn(authority, principal, _via, action, args) {
     use _ <- result.try(case authority {
       access.Owner -> Ok(Nil)
       access.Participant(_) ->

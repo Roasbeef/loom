@@ -124,6 +124,23 @@ discovery and the resident session websocket; they never open a session.
 `page` fragments large canonical inspections, preserving complete source and
 evidence bytes within the existing control frame.
 
+`board` is the read a panel draws (protocol-change 099). `store.read_board` reads
+candidates, retained evidence (observation left out), approvals, selections and
+the audit journal under one lease, filtered by the capability's visibility, and
+`evolution/board.value` is the pure renderer that caps the reply at 48 KiB by
+dropping the oldest history, then the oldest candidates, and counts both in
+`omitted`. `Seam.command` takes the surface (`store.Via`: `Cli`, `Web`,
+`Terminal`) between the principal and the action; `store.with_via` makes the
+catalogue record it in the approval, revocation and selection audit text, and the
+selection text is now an object (`store.event_from` still reads the old
+`reason: selection` shape). `control.for_principal` is the one place a page's
+authority is derived: an `Operator` whose principal is `OwnerPrincipal` reaches
+the door as `Owner` for everything but `core_upgrade` and `core_downgrade`, and
+`gateway.evolution_via` reads `web` from the sign-in. `control.announcing` wraps
+a door so a committed mutation publishes `bus.EvolutionChanged`;
+`queue.start_notifying` publishes it when a staged request ends, and
+`queue.pending` lists the transition in flight for the board.
+
 `prompt` captures exact provider/model/API overlays and `system_prompt` pins
 selected bytes at session assembly. A session pins a profile map only when it
 made a choice: a trial (`evolution_role: Trial(profiles)`) always chooses, and a

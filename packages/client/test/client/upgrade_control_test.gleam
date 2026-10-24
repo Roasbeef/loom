@@ -1,5 +1,7 @@
 //// Native control is owner-only, asynchronous and exact-request idempotent.
 
+import client/evolution/control as evolution_control
+import client/evolution/store as evolution_store
 import client/scratch
 import client/upgrade/control
 import core/json
@@ -32,7 +34,13 @@ pub fn owner_control_queues_and_preserves_exact_replay_test() -> Nil {
     as "the production nonblocking control owner starts"
   let door = control.seam(control_name)
   let assert Ok(json.Object(current)) =
-    door.command(access.Owner, "owner", "core_status", json.Object([]))
+    door.command(
+      access.Owner,
+      "owner",
+      evolution_store.Cli,
+      "core_status",
+      json.Object([]),
+    )
     as "native status reports the actual recipient"
   list.key_find(current, "pid")
   |> should.equal(Ok(json.String(string.inspect(store.pid))))
@@ -40,6 +48,7 @@ pub fn owner_control_queues_and_preserves_exact_replay_test() -> Nil {
   door.command(
     access.Participant(access.Operator),
     "participant",
+    evolution_store.Cli,
     "core_upgrade",
     asked,
   )
@@ -47,15 +56,28 @@ pub fn owner_control_queues_and_preserves_exact_replay_test() -> Nil {
   door.command(
     access.Participant(access.Observer),
     "observer",
+    evolution_store.Cli,
     "core_status",
     json.Object([]),
   )
   |> should.be_error
   let assert Ok(queued) =
-    door.command(access.Owner, "owner", "core_downgrade", asked)
+    door.command(
+      access.Owner,
+      "owner",
+      evolution_store.Cli,
+      "core_downgrade",
+      asked,
+    )
     as "native owner receives a queued acknowledgement"
   status(queued) |> should.equal("queued")
-  door.command(access.Owner, "another-owner", "core_downgrade", asked)
+  door.command(
+    access.Owner,
+    "another-owner",
+    evolution_store.Cli,
+    "core_downgrade",
+    asked,
+  )
   |> should.be_error
   let changed = case asked {
     json.Object(fields) ->
@@ -69,7 +91,13 @@ pub fn owner_control_queues_and_preserves_exact_replay_test() -> Nil {
       )
     _ -> asked
   }
-  door.command(access.Owner, "owner", "core_downgrade", changed)
+  door.command(
+    access.Owner,
+    "owner",
+    evolution_store.Cli,
+    "core_downgrade",
+    changed,
+  )
   |> should.be_error
   let completed =
     poll.until(2000, 5, fn() {
@@ -77,6 +105,7 @@ pub fn owner_control_queues_and_preserves_exact_replay_test() -> Nil {
         door.command(
           access.Owner,
           "owner",
+          evolution_store.Cli,
           "core_status",
           json.Object([#("request_id", json.String("same-request"))]),
         )
@@ -96,7 +125,13 @@ pub fn owner_control_queues_and_preserves_exact_replay_test() -> Nil {
     })
   let assert poll.Answered(receipt) = completed
     as "the queued managed operation completes"
-  door.command(access.Owner, "owner", "core_downgrade", asked)
+  door.command(
+    access.Owner,
+    "owner",
+    evolution_store.Cli,
+    "core_downgrade",
+    asked,
+  )
   |> should.equal(Ok(receipt))
   scratch.stat(scratch_name, timeout_ms: 1000) |> should.equal(#(0, 0))
   process.unlink(owner.pid)
@@ -118,4 +153,43 @@ fn status(value: json.JsonValue) -> String {
       }
     _ -> "unknown"
   }
+}
+
+// protocol-change/099: the owner's page is raised to `Owner` for evolution, and
+// the reviewed harness upgrade is the one thing it is never raised for.
+pub fn a_page_principal_reads_core_status_and_is_refused_a_core_change_test() {
+  let scratch_name = addresses.new()
+  let control_name = addresses.new()
+  let assert Ok(_store) = scratch.start(scratch_name, scratch.default_bounds())
+    as "the production store starts"
+  let assert Ok(_owner) = control.start(control_name, scratch_name)
+    as "the production nonblocking control owner starts"
+  let door = control.seam(control_name)
+  let page = fn(action) {
+    evolution_control.for_principal(
+      access.Participant(access.Operator),
+      access.OwnerPrincipal,
+      action,
+    )
+  }
+  door.command(
+    page("core_status"),
+    "owner",
+    evolution_store.Web,
+    "core_status",
+    json.Object([]),
+  )
+  |> should.be_ok
+  list.each(["core_upgrade", "core_downgrade"], fn(action) {
+    door.command(
+      page(action),
+      "owner",
+      evolution_store.Web,
+      action,
+      args("page-request"),
+    )
+    |> should.equal(Error(
+      "Forbidden: reviewed harness upgrades require the native owner",
+    ))
+  })
 }

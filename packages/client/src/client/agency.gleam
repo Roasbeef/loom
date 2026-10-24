@@ -1118,6 +1118,24 @@ pub fn borrow_runtime(config: Config) -> Result(api.Runtime, Nil) {
   borrow_named(config.name, config.holder_timeout_ms)
 }
 
+/// Borrows the runtime without ever crashing the caller.
+///
+/// `borrow_runtime` is a `process.call`, which takes its caller down when the
+/// holder is slow or exits mid-call. A caller that must survive a draining
+/// session, such as a notification sent from inside an actor's turn, uses this
+/// bounded `try_call` instead and treats `Error(Nil)` as nothing to do.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // agency.try_borrow_runtime(config)
+/// ```
+pub fn try_borrow_runtime(config: Config) -> Result(api.Runtime, Nil) {
+  use subject <- result.try(address.lookup(config.name))
+  call.try_call(subject, waiting: config.holder_timeout_ms, sending: Borrow)
+  |> result.replace_error(Nil)
+}
+
 /// Projects a fact-only supplier without retaining the rest of the Agency.
 ///
 /// ## Examples

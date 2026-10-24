@@ -47,9 +47,44 @@ principal identity. JSON cannot grant an owner role. A session operator can
 mutate their session; global workspace skills and exact model profiles require
 owner authority. An observer can inspect their visible catalogue and status.
 
+The `board` action answers the whole panel in one read, which is what a page or
+an overlay draws: every candidate the caller may see with its kind, scope,
+approval, retained evidence and current selection, the selection of each scope
+and name, the generation this session runs, the transition the queue is working
+on, and the newest sixty-four decisions from the audit journal. It is bounded at
+48 KiB. When the board would exceed that, it drops the oldest decisions first and
+then the oldest candidates, and its `omitted` counts say what was cut. Nothing
+else is trimmed silently, and `catalogue`, `inspect` and `evidence` still read
+what the board leaves out. `board` is a read, so an observer may make it, and the
+store's own visibility applies to every row and to the journal: an observer sees
+this session's candidates and the decisions about them, and the owner sees all.
+[protocol-change 099](../../protocol-change/099-evolution-board-and-page-authority.md)
+freezes the shape.
+
+A committed change is pushed. The door's wrapper publishes `bus.EvolutionChanged`
+after an approval, revocation or selection returns `Ok`, which is after its
+commit is durable, and the transition queue publishes it when a staged selection
+ends, completed or failed. The gateway turns it into a data-free
+`evolution_changed` push, and a subscriber reads the board again. A generation
+that publishes late, through the live owner's retry of an earlier retirement, is
+not announced; a reader refreshes on an interval as well.
+
+Authority on a page follows the principal's kind, as it does for remembered
+permissions (073). A page never attaches as `Owner`, but the gateway hands the
+evolution door `Owner` when the attachment is an operator and its principal is the
+daemon's owner, for every action except `core_upgrade` and `core_downgrade`. A
+member, an observer and an attachment that already holds a role pass through
+unchanged, so a member operator can still act only on this session's own rows and
+a page can read `core_status` and cannot start a reviewed harness upgrade. Each
+approval, revocation and selection records the surface it came from, `cli`, `web`
+or `terminal`, in its audit entry. The gateway reads `web` from the page's sign-in
+and nothing else; a terminal says `terminal` in an optional `via` argument, which
+is audit text and decides no authority.
+
 Both `loom evolution` and `loomd evolution` expose those controls:
 
 ```sh
+loom evolution board SESSION
 loom evolution catalogue SESSION
 loom evolution inspect SESSION --candidate-id SHA256
 loom evolution evidence SESSION --evidence-id SHA256
@@ -294,7 +329,7 @@ relative to `packages/client/src/client/evolution/`.
 | --- | --- |
 | [`record`](../../packages/client/src/client/evolution/record.gleam), [`identity`](../../packages/client/src/client/evolution/identity.gleam), [`store`](../../packages/client/src/client/evolution/store.gleam) | Immutable envelopes, native compatibility identity, protected catalogue, approval and selection transactions. |
 | [`candidate`](../../packages/client/src/client/evolution/candidate.gleam), [`evaluate`](../../packages/client/src/client/evolution/evaluate.gleam), [`program`](../../packages/client/src/client/evolution/program.gleam) | Jailed capture, author checks, compilation and fresh program inputs. |
-| [`control`](../../packages/client/src/client/evolution/control.gleam), [`cli`](../../packages/client/src/client/evolution/cli.gleam), [`queue`](../../packages/client/src/client/evolution/queue.gleam), [`page`](../../packages/client/src/client/evolution/page.gleam) | Authenticated operator actions, bounded managed staging, receipts and complete paged inspection. |
+| [`control`](../../packages/client/src/client/evolution/control.gleam), [`board`](../../packages/client/src/client/evolution/board.gleam), [`cli`](../../packages/client/src/client/evolution/cli.gleam), [`queue`](../../packages/client/src/client/evolution/queue.gleam), [`page`](../../packages/client/src/client/evolution/page.gleam) | Authenticated operator actions, the bounded board a panel draws, bounded managed staging, receipts and complete paged inspection. |
 | [`live`](../../packages/client/src/client/evolution/live.gleam), [`machine`](../../packages/client/src/client/evolution/machine.gleam), [`machine/local`](../../packages/client/src/client/evolution/machine/local.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, the machine seam it is staged through and its local implementation over jailed planes, remaining cleanup obligations and leased invocation folds. |
 | [`prompt`](../../packages/client/src/client/evolution/prompt.gleam), [`model_door`](../../packages/client/src/client/evolution/model_door.gleam), [`tasks`](../../packages/client/src/client/evolution/tasks.gleam) | Profile capture, model-facing dispatch and independently admitted task criteria. |
 | [`rollout`](../../packages/client/src/client/evolution/rollout.gleam), [`rollout_host`](../../packages/client/src/client/evolution/rollout_host.gleam), [`fixture`](../../packages/client/src/client/evolution/fixture.gleam), [`trace`](../../packages/client/src/client/evolution/trace.gleam) | Paired production runs, aggregate request budgets, scoring after native retirement and bounded observations. |
@@ -315,6 +350,7 @@ The adjacent package contracts are described in the READMEs for
 | Candidate catalogue | 128 candidates, 1 MiB per candidate, 32 MiB retained envelope bytes. |
 | Author snapshot | 256 archive entries, 256 KiB per file, 1 MiB inflated source; bounded complete archive output. |
 | Evidence | 256 records, 64 KiB per envelope. |
+| Operator board | 48 KiB reply; the newest 64 audit entries; observations left out. Oldest decisions, then oldest candidates, shed first and counted in `omitted`. |
 | Task admission | Ten tasks, 64 initial and 64 expected paths per task, 256 KiB captured JSON. |
 | Operator activation | One queued managed job; relative deadline at most 120 seconds; bounded deduplication receipts. |
 | Model-facing comparison | At most 20 trials, 20 turns, one million aggregate tokens, two dollars, 64 KiB retained output and 120 seconds. Callers may lower ceilings. |

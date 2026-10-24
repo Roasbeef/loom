@@ -6662,7 +6662,31 @@ fn open_evolution(
     )
     |> result.map_error(string.inspect),
   )
-  use transitions <- result.try(evolution_queue.start(live, clock))
+
+  // Subscribers learn of a change through the session's own key: the catalogue
+  // is daemon-wide, but the live generation and the queue this board draws are
+  // this session's. The key is the runtime's canonical session identity, which
+  // the settings string need not be, so it is read from the runtime that owns
+  // it. That read runs inside the transition queue's turn, where a stalled
+  // holder must not crash the custodian of a live transition, so it is a
+  // bounded `try_call` that gives up silently; a hint with no key has no one
+  // to wake and the board's own refresh covers it.
+  let announce = fn() {
+    case agency.try_borrow_runtime(agency_config) {
+      Ok(runtime) ->
+        bus.publish(
+          bus.start(),
+          session: bus.key(of: api.session_id(runtime)),
+          event: bus.EvolutionChanged,
+        )
+      Error(Nil) -> Nil
+    }
+  }
+  use transitions <- result.try(evolution_queue.start_notifying(
+    live,
+    clock,
+    announce,
+  ))
 
   // Registering custody makes the owner's close retire the queue and then the
   // live owner, and its detach drop both without closing, so a host that exits
@@ -6762,16 +6786,19 @@ fn open_evolution(
     door:,
     catalogue:,
     trace_tools: evolution_model_door.tools(source, actual),
-    control: evolution_operator_controls(
-      agency_config,
-      evolution_control.new(
-        settings.session_id,
-        settings.workspace,
-        opener,
-        live,
-        transitions,
-        clock,
+    control: evolution_control.announcing(
+      evolution_operator_controls(
+        agency_config,
+        evolution_control.new(
+          settings.session_id,
+          settings.workspace,
+          opener,
+          live,
+          transitions,
+          clock,
+        ),
       ),
+      announce,
     ),
   ))
 }
@@ -7118,13 +7145,14 @@ fn with_evolution_control(
   let extensions = option.map(wiring, fn(wiring) { wiring.control })
   hub.with_evolution(
     options,
-    evolution_control.Seam(command: fn(authority, principal, action, args) {
+    evolution_control.Seam(command: fn(authority, principal, via, action, args) {
       case action {
         "core_status" | "core_upgrade" | "core_downgrade" ->
-          core.command(authority, principal, action, args)
+          core.command(authority, principal, via, action, args)
         _ ->
           case extensions {
-            Some(control) -> control.command(authority, principal, action, args)
+            Some(control) ->
+              control.command(authority, principal, via, action, args)
             None -> Error("runtime evolution is unavailable for this session")
           }
       }
@@ -7630,39 +7658,41 @@ fn evolution_operator_controls(
   config: agency.Config,
   lifecycle: evolution_control.Seam,
 ) -> evolution_control.Seam {
-  evolution_control.Seam(command: fn(authority, principal, action, arguments) {
-    case action {
-      "admit_tasks" | "mark_outcome" -> {
-        use Nil <- result.try(case authority {
-          access.Owner | access.Participant(access.Operator) -> Ok(Nil)
-          access.Participant(access.Observer) ->
-            Error("Denied: an operator is required")
-        })
-        use runtime <- result.try(
-          agency.borrow_runtime(config)
-          |> result.replace_error("the native source runtime is unavailable"),
-        )
-        case action {
-          "admit_tasks" -> {
-            use admitted <- result.try(evolution_tasks.admit(
-              runtime,
-              authority,
-              principal,
-              arguments,
-            ))
-            Ok(
-              json.Object([
-                #("taskset_id", json.String(admitted.id)),
-                #("tasks", json.Int(list.length(admitted.tasks))),
-              ]),
-            )
+  evolution_control.Seam(
+    command: fn(authority, principal, via, action, arguments) {
+      case action {
+        "admit_tasks" | "mark_outcome" -> {
+          use Nil <- result.try(case authority {
+            access.Owner | access.Participant(access.Operator) -> Ok(Nil)
+            access.Participant(access.Observer) ->
+              Error("Denied: an operator is required")
+          })
+          use runtime <- result.try(
+            agency.borrow_runtime(config)
+            |> result.replace_error("the native source runtime is unavailable"),
+          )
+          case action {
+            "admit_tasks" -> {
+              use admitted <- result.try(evolution_tasks.admit(
+                runtime,
+                authority,
+                principal,
+                arguments,
+              ))
+              Ok(
+                json.Object([
+                  #("taskset_id", json.String(admitted.id)),
+                  #("tasks", json.Int(list.length(admitted.tasks))),
+                ]),
+              )
+            }
+            _ -> evolution_mark(runtime, principal, arguments)
           }
-          _ -> evolution_mark(runtime, principal, arguments)
         }
+        _ -> lifecycle.command(authority, principal, via, action, arguments)
       }
-      _ -> lifecycle.command(authority, principal, action, arguments)
-    }
-  })
+    },
+  )
 }
 
 fn evolution_mark(

@@ -129,7 +129,13 @@ fn replay(candidate: record.Candidate) {
     #("request_id", json.String("original-request")),
   ]
   let assert Ok(value) =
-    door.command(access.Owner, "operator", "select", json.Object(fields))
+    door.command(
+      access.Owner,
+      "operator",
+      store.Cli,
+      "select",
+      json.Object(fields),
+    )
     as "the exact retry recovers its original acknowledgement"
   let committed = case candidate.kind {
     record.Extension -> field(value, "committed")
@@ -151,6 +157,7 @@ fn replay(candidate: record.Candidate) {
   door.command(
     access.Owner,
     "operator",
+    store.Cli,
     "select",
     json.Object(list.key_set(fields, "reason", json.String("different intent"))),
   )
@@ -158,6 +165,7 @@ fn replay(candidate: record.Candidate) {
   door.command(
     access.Owner,
     "operator",
+    store.Cli,
     "select",
     json.Object(list.key_set(fields, "expected_generation", json.Int(2))),
   )
@@ -165,6 +173,7 @@ fn replay(candidate: record.Candidate) {
   door.command(
     access.Owner,
     "operator",
+    store.Cli,
     "select",
     json.Object(list.key_set(
       fields,
