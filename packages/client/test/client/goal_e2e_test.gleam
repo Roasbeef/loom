@@ -1382,6 +1382,7 @@ fn authenticated_as(
         role,
         digest,
         None,
+        gateway.SocketDoor,
       ),
       fn() { Ok(#(principal, role)) },
       fn(frame) { process.send(inbox, frame) },

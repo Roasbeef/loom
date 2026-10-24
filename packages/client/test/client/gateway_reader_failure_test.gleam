@@ -150,6 +150,7 @@ fn attach(resident: Resident, name: String, epoch: String) -> Attachment {
         access.Owner,
         digest,
         None,
+        gateway.SocketDoor,
       ),
       fn() { Ok(#(principal, access.Owner)) },
       fn(_) { Nil },

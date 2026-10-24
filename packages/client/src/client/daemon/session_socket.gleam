@@ -139,6 +139,7 @@ pub fn upgrade(
         authority: attachment.authority,
         digest: attachment.digest,
         signin: None,
+        door: gateway.SocketDoor,
       ),
       permit: attachment.permit,
       registry: attachment.registry,

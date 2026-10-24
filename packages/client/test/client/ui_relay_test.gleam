@@ -74,6 +74,7 @@ fn attach_under(
       authority: access.Participant(access.Operator),
       digest:,
       signin: None,
+      door: gateway.PageDoor,
     ),
     check:,
     ceiling:,

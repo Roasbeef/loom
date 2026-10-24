@@ -533,6 +533,7 @@ pub fn upgrade(
         authority: attachment.authority,
         digest: attachment.digest,
         signin: option.map(seen.login, fn(issuer) { issuer.fingerprint }),
+        door: gateway.PageDoor,
       ),
       check: ui_relay.while_open(
         authorize_for(
@@ -6648,6 +6649,7 @@ fn first_message_for(
         authority: ui_relay.capped(authority, access.Operator),
         digest: attachment.digest,
         signin: None,
+        door: gateway.PageDoor,
       )
 
     // The gateway compares what the check answers with the binding's authority

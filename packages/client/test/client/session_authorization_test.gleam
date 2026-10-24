@@ -110,6 +110,7 @@ fn attach_as(
         authority: access.Participant(role),
         digest:,
         signin: None,
+        door: gateway.SocketDoor,
       ),
       fn() { process.call(script, waiting: 1000, sending: Ask) },
       fn(frame) { process.send(harness.inbox, frame) },

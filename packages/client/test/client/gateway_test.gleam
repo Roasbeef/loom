@@ -617,7 +617,16 @@ fn attach_socket(
   role: access.Authority,
   socket: process.Pid,
 ) {
-  attach_socket_from(hub, runtime, inbox, principal, role, socket, None)
+  attach_socket_from(
+    hub,
+    runtime,
+    inbox,
+    principal,
+    role,
+    socket,
+    None,
+    gateway.SocketDoor,
+  )
 }
 
 // The same attachment for a web page that belongs to a browser sign-in. The
@@ -631,6 +640,7 @@ fn attach_socket_from(
   role: access.Authority,
   socket: process.Pid,
   signin: Option(String),
+  door: gateway.Door,
 ) {
   let assert Ok(digest) = access.credential_digest(string.repeat("a", 64))
     as "the fixture digest is valid"
@@ -664,6 +674,7 @@ fn attach_socket_from(
         role,
         digest,
         signin,
+        door,
       ),
       fn() {
         call.try_call(auth.data, waiting: 1000, sending: ReadAuth)
@@ -4581,6 +4592,7 @@ pub fn a_join_is_not_pushed_to_a_peer_of_another_session_test() {
         access.Participant(access.Operator),
         digest,
         None,
+        gateway.SocketDoor,
       ),
       fn() { Ok(#(mallory, access.Participant(access.Operator))) },
       fn(frame) { process.send(watcher, frame) },
@@ -6042,6 +6054,7 @@ pub fn draining_waits_for_transport_flush_outside_the_gateway_test() {
         access.Owner,
         digest,
         None,
+        gateway.SocketDoor,
       ),
       fn() { Ok(#(principal, access.Owner)) },
       fn(_) { Nil },
@@ -6484,6 +6497,7 @@ pub fn a_web_page_grant_records_its_browser_signin_test() {
       access.Participant(access.Operator),
       process.self(),
       Some(signin),
+      gateway.PageDoor,
     )
   gateway.connection_text(handle, subscribe_frame(harness.runtime, 700))
   let _snapshot = next_reply(harness, 700, 8)
@@ -8311,6 +8325,7 @@ fn first_prompt_binding(
       role,
       digest,
       None,
+      gateway.SocketDoor,
     ),
     fn() { Ok(#(principal, checked)) },
   )
@@ -8520,6 +8535,17 @@ fn attached(
   role: access.Authority,
   signin: Option(String),
 ) {
+  attached_through(harness, principal, role, signin, gateway.SocketDoor)
+}
+
+// The same attachment, admitted through the listener the caller names.
+fn attached_through(
+  harness: Harness,
+  principal: access.Principal,
+  role: access.Authority,
+  signin: Option(String),
+  door: gateway.Door,
+) {
   let #(handle, _auth, _closed) =
     attach_socket_from(
       harness.hub,
@@ -8529,6 +8555,7 @@ fn attached(
       role,
       process.self(),
       signin,
+      door,
     )
   gateway.connection_text(handle, subscribe_frame(harness.runtime, 700))
   let _snapshot = next_reply(harness, 700, 8)
@@ -8717,6 +8744,53 @@ pub fn the_surface_is_read_from_the_credential_and_not_from_the_page_test() {
   let assert Ok(#(_, _, via, _)) = process.receive(calls, within: 1000)
     as "the gateway called the seam"
   assert via == evolution_store.Web
+}
+
+/// An owner page opened with `loom ui` has no sign-in and holds the terminal's
+/// bearer, so the credential alone calls it a terminal or the command line. The
+/// door that admitted it is what records `web`, whatever the page claims, while
+/// the same bearer on the socket door still records `cli` or `terminal`.
+pub fn an_owner_page_without_a_signin_records_web_through_its_door_test() {
+  let calls = process.new_subject()
+  let harness =
+    start_harness_adjusted(
+      None,
+      None,
+      None,
+      None,
+      SettlingProvider,
+      None,
+      None,
+      gateway.with_evolution(_, recording_evolution(calls)),
+    )
+  let owner = access.Principal("owner", "Owner", access.OwnerPrincipal)
+
+  let page =
+    attached_through(harness, owner, access.Owner, None, gateway.PageDoor)
+  let socket =
+    attached_through(harness, owner, access.Owner, None, gateway.SocketDoor)
+
+  list.each(
+    [
+      #(page, 831, [], evolution_store.Web),
+      #(page, 832, [#("via", json.String("terminal"))], evolution_store.Web),
+      #(socket, 833, [], evolution_store.Cli),
+      #(
+        socket,
+        834,
+        [#("via", json.String("terminal"))],
+        evolution_store.Terminal,
+      ),
+    ],
+    fn(asked) {
+      let assert protocol.SnapshotEvent(protocol.EvolutionSnapshot(_)) =
+        evolve(harness, asked.0, asked.1, "revoke", asked.2)
+        as "the attachment reaches the seam"
+      let assert Ok(#(_, _, via, _)) = process.receive(calls, within: 1000)
+        as "the gateway called the seam"
+      assert via == asked.3
+    },
+  )
 }
 
 /// A change to the evolution catalogue published on the session's `Outputs`

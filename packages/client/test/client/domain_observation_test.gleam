@@ -93,6 +93,7 @@ fn attach_checked(
         authority,
         digest,
         None,
+        gateway.SocketDoor,
       ),
       check,
       fn(frame) { process.send(inbox, frame) },
