@@ -15,6 +15,16 @@ column and §5.1 of `docs/loom-implementation-spec.md`,
 
 ---
 
+## CI feedback latency
+
+[#1104](https://github.com/Roasbeef/loom/issues/1104) is the `phase:debt` tracking
+issue for measured GitHub CI improvements and progressive Dagger-backed Linux
+signoff. The [baseline and plan](design-notes/ci-feedback-dagger.md) records
+actual scheduling/build/test costs and the [optional pilot](dagger-pilot.md).
+This work does not alter the milestone gates, required statuses, native macOS
+coverage or the fresh enforcement/skip obligations below. Each cutover needs
+parity evidence first; Dagger Cloud is outside the approved scope.
+
 ## The milestone
 
 **Name: `v0.1 — claimed, true, and self-extending`.**
