@@ -68,6 +68,7 @@ import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
 import session_view/event_fold
+import session_view/evolution_pending
 import session_view/generation_rate
 import session_view/history_view
 import session_view/inbox
@@ -485,6 +486,12 @@ fn fold_update(
             goal_awaiting: None,
             goal_request: None,
             goal_report: HoldGoalReport,
+            // The selections a person was waiting on are tracked by this
+            // lane's request identities, and a reconnect is a new lane. The
+            // next board lists what the daemon still holds, and a host that is
+            // showing the surface reads it as soon as the new lane is ready.
+            evolution_pending: evolution_pending.reset(shared.evolution_pending),
+            evolution_read_ms: None,
             worktree: case shared.worktree.awaiting {
               Some(id) ->
                 worktree_view.receive(
@@ -1482,6 +1489,15 @@ fn apply_request_refused(
   // page says in its own words, and a footer error every half minute would
   // be the only other trace.
   use <- bool.lazy_guard(command == "permissions", fn() { shared })
+
+  // The evolution surface words its own refusals as well, and keeps them
+  // beside the board. Which action was refused decides what else follows: a
+  // refused selection loses its tracked request and a refused change reads the
+  // board again, since a conflict means the board it was made from is old.
+  use <- bool.lazy_guard(string.starts_with(command, "evolution:"), fn() {
+    surfaces.refuse_evolution(shared, command, code, message)
+    |> session_model.invalidate_frame
+  })
 
   // The proposals surface words its own refusals: a refused read says why
   // beside the list, and a refused decision also asks for the list again,

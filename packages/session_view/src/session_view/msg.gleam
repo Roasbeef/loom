@@ -22,6 +22,7 @@ import session_view/approval
 import session_view/attempt
 import session_view/command
 import session_view/connection_event
+import session_view/evolution
 import session_view/operator
 import session_view/proposals
 import session_view/remembered
@@ -88,6 +89,14 @@ pub type Command {
   /// (protocol-change/086). It is refused to an attachment that may not
   /// approve, and the daemon refuses it again to anyone but the owner.
   DecideProposal(id: String, decision: proposals.Decision)
+
+  /// Make one governed-evolution request, as the host drew it
+  /// (protocol-change/099): approve, revoke, select, roll back, or read one
+  /// candidate. A `Select` and a `Rollback` echo the generation the host
+  /// drew, and the lane polls their completion itself. A change is refused to
+  /// an attachment that may not mutate, and the daemon refuses it again to
+  /// one that may not touch the candidate's scope.
+  Evolve(request: evolution.Request)
 
   /// Switch the active strand to the catalogue model `name`.
   SelectModel(name: String)

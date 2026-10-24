@@ -71,6 +71,7 @@
 //// Lane-owned goal invalidation reads use the same reply and refusal reducers.
 
 import core/entry
+import core/json
 import gleam/bool
 import gleam/dict
 import gleam/list
@@ -80,6 +81,8 @@ import session_view/block_summary
 import session_view/btw
 import session_view/command
 import session_view/context_view
+import session_view/evolution
+import session_view/evolution_pending
 import session_view/goal_view
 import session_view/live_jobs
 import session_view/memory_overview
@@ -517,6 +520,390 @@ pub fn decide_proposal(
         shared_set.proposals_notice(shared, ""),
         protocol.proposal_decide(shared.next_id, id, decision),
       )
+  }
+}
+
+// --- the governed-evolution board -------------------------------------------
+
+/// Sends the evolution board read when one is owed and the channel is ready.
+///
+/// A read is owed when a host asked for it (`evolution_refresh`: the first
+/// time the surface is wanted, an `evolution_changed` push, a settled
+/// selection, a refused change), or when a host is showing the surface and the
+/// board is older than `evolution.backstop_ms`, since the push does not
+/// announce a generation that publishes late or a session restart. A lost lane
+/// clears the read time, so a watching host reads again as soon as a new lane
+/// is ready. The read is stamped as it is sent, so a slow or refused reply is
+/// not asked for twice. A read that cannot be sent now stays owed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_evolution_read(model.shared)
+/// ```
+@internal
+pub fn service_evolution_read(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, evolution_read_owed(shared), shared.peer {
+    Some(channel), OwedEvolution, Attached ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          outbound.send_frame(
+            shared
+              |> shared_set.evolution_refresh(worktree_view.Settled)
+              |> shared_set.evolution_read_ms(Some(shared.stamp.transport_ms)),
+            protocol.evolution(shared.next_id, "board", json.Object([])),
+          )
+        False -> shared
+      }
+    _, OwedEvolution, _ | _, NotOwedEvolution, _ -> shared
+  }
+}
+
+// Whether a read of the board is due, and nothing more: the lane's readiness
+// is asked after, so a due read waits for a free slot.
+type EvolutionRead {
+  OwedEvolution
+  NotOwedEvolution
+}
+
+fn evolution_read_owed(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> EvolutionRead {
+  case
+    shared.evolution_refresh,
+    shared.evolution_watch,
+    shared.evolution_read_ms
+  {
+    worktree_view.Requested, _, _ -> OwedEvolution
+    worktree_view.Settled, session_model.WatchingEvolution, None ->
+      OwedEvolution
+    worktree_view.Settled, session_model.WatchingEvolution, Some(at)
+      if shared.stamp.transport_ms - at >= evolution.backstop_ms
+    -> OwedEvolution
+    worktree_view.Settled, _, _ -> NotOwedEvolution
+  }
+}
+
+/// Ends the wait of any staging selection whose deadline has passed, and
+/// sends the `status` poll of the next one that is due.
+///
+/// A queued selection finishes minutes after the daemon accepts it, and the
+/// daemon reports the end only to a caller that asks with the request's
+/// identity, so the lane polls on the cadence `evolution_pending` owns and the
+/// person never sees an identity. A wait that ran out asks for one more read of
+/// the board and says so in the notice, so the surface shows what the daemon
+/// holds now. A poll waits for a free lane like any other read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// surfaces.service_evolution_status(model.shared)
+/// ```
+@internal
+pub fn service_evolution_status(
+  shared: Shared(socket, recorder, source, replay_source),
+) -> Shared(socket, recorder, source, replay_source) {
+  let now = shared.stamp.transport_ms
+  let #(tracker, expiry) =
+    evolution_pending.expire(shared.evolution_pending, now)
+  let expired = case expiry {
+    evolution_pending.Expired ->
+      shared
+      |> shared_set.evolution_refresh(worktree_view.Requested)
+      |> shared_set.evolution_notice(evolution_pending.timeout_words)
+    evolution_pending.NoneExpired -> shared
+  }
+  let shared = shared_set.evolution_pending(expired, tracker)
+  case shared.channel, shared.peer {
+    Some(channel), Attached ->
+      case session_channel.ready_for_read(channel) {
+        True -> poll_evolution_status(shared, now)
+        False -> shared
+      }
+    _, _ -> shared
+  }
+}
+
+fn poll_evolution_status(
+  shared: Shared(socket, recorder, source, replay_source),
+  now: Int,
+) -> Shared(socket, recorder, source, replay_source) {
+  case evolution_pending.poll(shared.evolution_pending, now) {
+    None -> shared
+    Some(#(tracker, request_id)) ->
+      outbound.send_frame(
+        shared_set.evolution_pending(shared, tracker),
+        protocol.evolution(
+          shared.next_id,
+          "status",
+          json.Object([#("request_id", json.String(request_id))]),
+        ),
+      )
+  }
+}
+
+/// Makes one evolution request, as the host drew it.
+///
+/// A change (`Approve`, `Revoke`, `Select`, `Rollback`) needs what an approval
+/// needs: a live attachment that may mutate, and a free command slot. A refusal
+/// is the surface's own news and lands in `evolution_notice`. A `Select` and a
+/// `Rollback` are tracked first, because the daemon answers them `queued` and
+/// finishes later: the lane mints the request identity, sends it with its own
+/// deadline, and polls until the daemon is done, so the host draws the staging
+/// of a row and never an identity. The request echoes the generation the host
+/// drew, so a board that has moved is refused by the daemon and read again.
+///
+/// The three reads (`Inspect`, `ReadEvidence`, `CoreStatus`) need only a free
+/// lane.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.evolve(shared, evolution.Approve(candidate_id, evidence_id))
+/// ```
+@internal
+pub fn evolve(
+  shared: Shared(socket, recorder, source, replay_source),
+  request: evolution.Request,
+) -> Shared(socket, recorder, source, replay_source) {
+  case request {
+    evolution.Approve(..)
+    | evolution.Revoke(..)
+    | evolution.Select(..)
+    | evolution.Rollback(..) ->
+      case outbound.mutation_refusal(shared, command.Approve("")) {
+        Some(reason) -> shared_set.evolution_notice(shared, reason)
+        None -> evolve_change(shared, request)
+      }
+    evolution.Inspect(..) | evolution.ReadEvidence(..) | evolution.CoreStatus ->
+      evolve_read(shared, request)
+  }
+}
+
+fn evolve_change(
+  shared: Shared(socket, recorder, source, replay_source),
+  request: evolution.Request,
+) -> Shared(socket, recorder, source, replay_source) {
+  let cleared = shared_set.evolution_notice(shared, "")
+  case request {
+    evolution.Select(candidate_id:, name:, ..) ->
+      stage_evolution(
+        cleared,
+        request,
+        evolution_pending.Selecting,
+        candidate_id,
+        name,
+      )
+    evolution.Rollback(candidate_id:, name:, ..) ->
+      stage_evolution(
+        cleared,
+        request,
+        evolution_pending.RollingBack,
+        candidate_id,
+        name,
+      )
+    evolution.Approve(..)
+    | evolution.Revoke(..)
+    | evolution.Inspect(..)
+    | evolution.ReadEvidence(..)
+    | evolution.CoreStatus -> send_evolution(cleared, request, "")
+  }
+}
+
+// A selection is tracked before it is sent. The tracker marks the request as
+// the one whose reply the lane awaits, so the daemon's first answer, however
+// it reads, is applied to this request and to no other.
+fn stage_evolution(
+  shared: Shared(socket, recorder, source, replay_source),
+  request: evolution.Request,
+  move: evolution_pending.Move,
+  candidate_id: String,
+  name: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  case
+    evolution_pending.begin(
+      shared.evolution_pending,
+      shared.session,
+      shared.stamp.transport_ms,
+      move,
+      candidate_id,
+      name,
+    )
+  {
+    Error(reason) -> shared_set.evolution_notice(shared, reason)
+    Ok(#(tracker, request_id)) ->
+      send_evolution(
+        shared_set.evolution_pending(shared, tracker),
+        request,
+        request_id,
+      )
+  }
+}
+
+fn evolve_read(
+  shared: Shared(socket, recorder, source, replay_source),
+  request: evolution.Request,
+) -> Shared(socket, recorder, source, replay_source) {
+  case shared.channel, shared.peer {
+    Some(channel), Attached ->
+      case session_channel.ready_for_read(channel) {
+        True ->
+          send_evolution(shared_set.evolution_notice(shared, ""), request, "")
+        False ->
+          shared_set.evolution_notice(
+            shared,
+            "The session is busy; try that again in a moment.",
+          )
+      }
+    _, _ -> shared_set.evolution_notice(shared, "No conversation is attached.")
+  }
+}
+
+fn send_evolution(
+  shared: Shared(socket, recorder, source, replay_source),
+  request: evolution.Request,
+  request_id: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  outbound.send_frame(
+    shared,
+    protocol.evolution(
+      shared.next_id,
+      evolution.action_word(request),
+      evolution.arguments(
+        request,
+        shared.evolution_via,
+        request_id,
+        evolution_pending.window_ms,
+      ),
+    ),
+  )
+}
+
+/// Folds what an evolution command answered. `action` is the action the lane
+/// issued, which the channel attached to the reply because the wire names none.
+///
+/// A board replaces the held one and repairs the tracker from its `pending`
+/// list. A selection's report moves the one request the lane awaited, and a
+/// settled request announces itself in the notice and asks for the board again,
+/// since the board is where the new generation shows. An approval or a
+/// revocation asks for the board too. An opened page is kept for the reader. A
+/// reply this client cannot read says so and changes nothing else.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.receive_evolution(shared, "board", evolution.read("board", body))
+/// ```
+@internal
+pub fn receive_evolution(
+  shared: Shared(socket, recorder, source, replay_source),
+  action: String,
+  reply: evolution.Reply,
+) -> Shared(socket, recorder, source, replay_source) {
+  let now = shared.stamp.transport_ms
+  case reply {
+    evolution.BoardReply(board:) ->
+      shared
+      |> shared_set.evolution(Some(board))
+      |> shared_set.evolution_pending(evolution_pending.restore(
+        shared.evolution_pending,
+        board,
+        now,
+      ))
+    evolution.ProgressReply(report:) -> {
+      let #(tracker, moved) =
+        evolution_pending.answered(shared.evolution_pending, report, now)
+      announce_progress(shared_set.evolution_pending(shared, tracker), moved)
+    }
+    evolution.ApprovalReply(candidate_id:) ->
+      shared
+      |> shared_set.evolution_refresh(worktree_view.Requested)
+      |> shared_set.evolution_notice(
+        "Approved " <> evolution.short_id(candidate_id) <> ".",
+      )
+    evolution.RevocationReply(candidate_id:) ->
+      shared
+      |> shared_set.evolution_refresh(worktree_view.Requested)
+      |> shared_set.evolution_notice(
+        "Revoked the approval of " <> evolution.short_id(candidate_id) <> ".",
+      )
+    evolution.PageReply(page:) ->
+      shared_set.evolution_open(shared, Some(evolution.Opened(action:, page:)))
+    evolution.Unreadable(reason:) ->
+      shared_set.evolution_notice(
+        shared,
+        "The daemon's evolution reply could not be read: " <> reason,
+      )
+  }
+}
+
+// A request that settled says how, and the board is read again so the row
+// shows the generation the daemon now holds. A request still moving says
+// nothing: its row is drawn from the tracker.
+fn announce_progress(
+  shared: Shared(socket, recorder, source, replay_source),
+  moved: Option(evolution_pending.Tracked),
+) -> Shared(socket, recorder, source, replay_source) {
+  case moved {
+    Some(tracked) ->
+      case evolution_pending.settled(tracked.stage) {
+        True ->
+          shared
+          |> shared_set.evolution_refresh(worktree_view.Requested)
+          |> shared_set.evolution_notice(evolution_pending.words(
+            tracked,
+            shared.stamp.transport_ms,
+          ))
+        False -> shared
+      }
+    None -> shared
+  }
+}
+
+/// Folds the daemon's refusal of an evolution command, by the command's name
+/// (`evolution:` and the action). The refusal is the surface's own news, so it
+/// lands in `evolution_notice` and not in the transcript.
+///
+/// A refused `select` or `rollback` was never queued, so its request is
+/// dropped, and a refused `status` poll is asked again after the cadence. A
+/// refused change asks for the board again, because a refusal usually means the
+/// board it was made from is old. A refused board read does not ask again: a
+/// daemon that refuses it would be asked in a loop, and the backstop retries
+/// once a minute.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let shared = surfaces.refuse_evolution(shared, "evolution:select", "bad_request", "selection changed")
+/// ```
+@internal
+pub fn refuse_evolution(
+  shared: Shared(socket, recorder, source, replay_source),
+  command: String,
+  code: String,
+  message: String,
+) -> Shared(socket, recorder, source, replay_source) {
+  let now = shared.stamp.transport_ms
+  let noted =
+    shared_set.evolution_notice(shared, evolution.refusal_words(code, message))
+  case command {
+    "evolution:select" | "evolution:rollback" ->
+      noted
+      |> shared_set.evolution_pending(evolution_pending.refused(
+        shared.evolution_pending,
+        now,
+      ))
+      |> shared_set.evolution_refresh(worktree_view.Requested)
+    "evolution:status" ->
+      shared_set.evolution_pending(
+        noted,
+        evolution_pending.refused(shared.evolution_pending, now),
+      )
+    "evolution:approve" | "evolution:revoke" ->
+      shared_set.evolution_refresh(noted, worktree_view.Requested)
+    _ -> noted
   }
 }
 

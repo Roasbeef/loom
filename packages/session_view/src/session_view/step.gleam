@@ -47,6 +47,8 @@ import session_view/commands
 import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
+import session_view/evolution
+import session_view/evolution_pending
 import session_view/generation_rate
 import session_view/history_view
 import session_view/inbox.{type Inbox}
@@ -91,12 +93,13 @@ pub fn settle(
 /// Sends whichever of the side surfaces' waiting reads the lane allows, in
 /// the order the tick has always serviced them: the queue, the worktree,
 /// the notes, the todo seed, the live jobs, the context, the advisor's
-/// pending nudges, the goal, the remembered permissions, the proposals and
-/// the memory overview.
+/// pending nudges, the goal, the remembered permissions, the proposals, the
+/// memory overview, the status poll of a staging evolution selection and the
+/// evolution board.
 ///
 /// The reads share the lane's one command slot, so the order decides which
 /// waiting read is sent first. Each reads and writes the shared record
-/// alone, so the eleven run as one chain and a host stores the result once.
+/// alone, so the thirteen run as one chain and a host stores the result once.
 ///
 /// ## Examples
 ///
@@ -120,6 +123,8 @@ pub fn service_reads(
   |> surfaces.service_remembered_read
   |> surfaces.service_proposals_read
   |> surfaces.service_memory_read
+  |> surfaces.service_evolution_status
+  |> surfaces.service_evolution_read
 }
 
 /// Advances the active strand's activity clock and the generation clock to
@@ -265,6 +270,14 @@ pub fn new(
     memory_notice: "",
     memory_read_ms: None,
     memory_watch: session_model.NotWatchingMemory,
+    evolution: None,
+    evolution_refresh: worktree_view.Settled,
+    evolution_notice: "",
+    evolution_open: None,
+    evolution_pending: evolution_pending.new(),
+    evolution_read_ms: None,
+    evolution_watch: session_model.NotWatchingEvolution,
+    evolution_via: evolution.Unclaimed,
     nudges: None,
     nudges_refresh: worktree_view.Settled,
     nudges_awaiting: None,

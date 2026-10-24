@@ -92,6 +92,8 @@ import session_view/cache_watch
 import session_view/completion_summary
 import session_view/connection_event
 import session_view/context_view
+import session_view/evolution
+import session_view/evolution_pending
 import session_view/generation_rate
 import session_view/history_view
 import session_view/model.{
@@ -718,6 +720,14 @@ pub fn new_model_with_clock(
       memory_notice: "",
       memory_read_ms: None,
       memory_watch: session_model.NotWatchingMemory,
+      evolution: None,
+      evolution_refresh: worktree_view.Settled,
+      evolution_notice: "",
+      evolution_open: None,
+      evolution_pending: evolution_pending.new(),
+      evolution_read_ms: None,
+      evolution_watch: session_model.NotWatchingEvolution,
+      evolution_via: evolution.Unclaimed,
       nudges: None,
       nudges_refresh: worktree_view.Settled,
       nudges_awaiting: None,

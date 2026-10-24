@@ -368,6 +368,7 @@ pub fn act(
     msg.Forget(forget:) -> surfaces.forget_remembered(shared, forget)
     msg.DecideProposal(id:, decision:) ->
       surfaces.decide_proposal(shared, id, decision)
+    msg.Evolve(request:) -> surfaces.evolve(shared, request)
     msg.SelectModel(name:) -> select_model(shared, name)
     msg.Quit -> quit(shared)
   }

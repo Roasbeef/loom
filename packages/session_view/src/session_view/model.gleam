@@ -77,6 +77,8 @@ import session_view/completion_summary
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
+import session_view/evolution
+import session_view/evolution_pending
 import session_view/generation_rate
 import session_view/goal_view
 import session_view/history_view
@@ -270,6 +272,37 @@ pub type Shared(socket, recorder, source, replay_source) {
     /// Whether a host is showing the overview, which is when the backstop
     /// runs. A closed overview is not read.
     memory_watch: MemoryWatch,
+    /// The governed-evolution board the daemon last listed
+    /// (protocol-change/099). `None` is "not read", never "no candidates";
+    /// only a daemon's board says that. A host draws it only while its
+    /// `session` is the attached one.
+    evolution: Option(evolution.Board),
+    /// One evolution board read waiting for a free command lane. A host sets
+    /// it when it first wants the board; an `evolution_changed` push and a
+    /// refused change set it again.
+    evolution_refresh: worktree_view.Refresh,
+    /// The words for the last evolution outcome or refusal, or empty. It is
+    /// the surface's own news, so it is kept here and not written to the
+    /// transcript. A board arriving does not clear it, because the outcome of
+    /// a selection is announced as the board is read again.
+    evolution_notice: String,
+    /// The candidate, evidence or core-status page a reader asked to open, and
+    /// the action that asked. Only the first page of an envelope is kept.
+    evolution_open: Option(evolution.Opened),
+    /// The selections a person has asked for that have not finished, with the
+    /// request identities the lane minted for them. A reconnect forgets them
+    /// and the next board restores the ones the daemon still holds.
+    evolution_pending: evolution_pending.Tracker,
+    /// When the board was last asked for, on the transport clock. `None` after
+    /// a lost lane, so a host that is showing the board reads it as soon as a
+    /// new lane is ready.
+    evolution_read_ms: Option(Int),
+    /// Whether a host is showing the evolution surface, which is when the
+    /// backstop reads run. A closed surface is not read on a timer.
+    evolution_watch: EvolutionWatch,
+    /// What a terminal says about itself in an audit entry
+    /// (protocol-change/099); a page leaves it unclaimed.
+    evolution_via: evolution.Via,
     /// The advisor's undelivered nudge queue, observed while the primary is
     /// idle. `None` is "nothing observed", never "the queue is empty".
     nudges: Option(advisor_pending.Board),
@@ -608,6 +641,15 @@ pub type MemoryWatch {
 
   /// Nothing shows the overview, so nothing reads it.
   NotWatchingMemory
+}
+
+/// Whether a host is showing the evolution surface.
+pub type EvolutionWatch {
+  /// The surface is open, so the board is read again once it is stale.
+  WatchingEvolution
+
+  /// Nothing shows the surface, so nothing reads it on a timer.
+  NotWatchingEvolution
 }
 
 /// A named set rather than a boolean field, because the cases are

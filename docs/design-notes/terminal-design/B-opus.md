@@ -404,7 +404,7 @@ record would need a new control command.
 | Spawn tree, roster, Strands tab | status, words, time, tokens | `Line` at `session_view/agent_roster.gleam:103`, `chips` at `session_view/agent_roster.gleam:568` |
 | Activity line | the active operation | `tui/layout` labels today (`active_status_label`) |
 | Status rule: ctx | context estimate | `footer` at `session_view/context_view.gleam:414` |
-| Status rule: cost | session total | `usage` at `session_view/model.gleam:404` |
+| Status rule: cost | session total | `usage` at `session_view/model.gleam:437` |
 | Status rule: needs you | approvals per strand | `needing` at `session_view/strand_card.gleam:240` |
 | Strands tab: cache | outlook per strand | `outlook` at `session_view/cache_watch.gleam:120` |
 | Changes tab | session edits | `fold` at `session_view/changes_view.gleam:210` |
