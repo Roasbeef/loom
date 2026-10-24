@@ -1200,8 +1200,13 @@ page keys and nonces, and the relay into the session's gateway.
   instead keeps its refusal and remaining rows in one leaf keyed on its
   words and rows (`fold_row.step_body`). It draws those rows directly, so
   unchanged failures repeat neither joins nor Unicode trims, and it nests
-  no line memos. `render_work_test` checks repeated hits, invalidation and
-  escaped output. Lustre forgets
+  no line memos. A block containing settled reasoning likewise owns one leaf
+  over the block, held full text, elapsed figure, fold controls, session and
+  its own newest-row handoff (`lane.block_element`). Its source line counts,
+  expanded reasoning and previews are built once per block inside that leaf;
+  all its children draw directly, so no nested line memo is lost on a hit.
+  Other blocks keep their per-line leaves. `render_work_test` checks repeated
+  hits, source/body/time/handoff invalidation and escaped output. Lustre forgets
   memos nested inside a memo that hit and redraws a keyed subtree whose
   key changed, which is why the memos are leaves and why `turns` keys a
   turn's work by its input (`docs/lustre.md`, "A memo inside a memo that
