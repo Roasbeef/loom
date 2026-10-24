@@ -420,11 +420,14 @@ fn openable(
   head: List(Element(message)),
   body: List(Element(message)),
 ) -> Element(message) {
-  let line = html.span([attribute.class("row-head")], head)
-
-  // Dispatch on openable state.
+  // A flat row owns its header span. An expandable row uses the slotted
+  // header below and needs no second copy of that element.
   case body {
-    [] -> html.div([attribute.class("flat"), ..attributes], [line])
+    [] ->
+      html.div([attribute.class("flat"), ..attributes], [
+        html.span([attribute.class("row-head")], head),
+      ])
+
     [_, ..] ->
       element.element("loom-expand", [attribute.class("expand"), ..attributes], [
         html.span(
