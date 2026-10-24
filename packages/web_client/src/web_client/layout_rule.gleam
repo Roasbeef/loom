@@ -38,8 +38,8 @@ import gleam/result
 import gleam/string
 import web_client/grip_rule
 import web_client/shell_rule.{
-  type Layout, type State, type Tab, Changes, Closed, Evolution, Layout, Notes, Open,
-  Session, Strands, Trace,
+  type Layout, type State, type Tab, Changes, Closed, Evolution, Layout, Notes,
+  Open, Session, Strands, Trace,
 }
 
 /// The item the theme lives in. The theme is the reader's preference for the

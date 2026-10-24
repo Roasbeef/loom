@@ -342,9 +342,12 @@
   .panel-body{flex:1 1 0;min-height:0;}
   /* The tab bar (web_client/shell): one real button per tab, the shown one
      underlined. The Strands tab's badge counts the strands that wait on a
-     decision, as a filled pill in the attention colour. */
-  .panel-tabs{flex:0 0 auto;display:flex;gap:2px;padding:0 10px;border-bottom:1px solid var(--color-divider);}
-  .panel-tab{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;margin:0;padding:10px 8px 9px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
+     decision, as a filled pill in the attention colour. Six tabs do not all fit the
+     panel's default width, so the bar scrolls inside itself: a tab chosen out of
+     view scrolls the bar and never the panel, and the tabs are a little tighter
+     than they were. */
+  .panel-tabs{flex:0 0 auto;display:flex;gap:0;padding:0 8px;min-width:0;overflow-x:auto;scrollbar-width:thin;border-bottom:1px solid var(--color-divider);}
+  .panel-tab{flex:0 0 auto;display:inline-flex;align-items:center;gap:6px;margin:0;padding:10px 7px 9px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--color-fg-quiet);font:13px/1.4 var(--font-sans);cursor:pointer;}
   .panel-tab:hover{color:var(--color-fg);}
   .panel-tab[aria-pressed="true"]{color:var(--color-fg);border-bottom-color:var(--color-fg);font-weight:500;}
   .panel-tab:focus-visible{outline:2px solid var(--color-current);outline-offset:-2px;}
@@ -410,6 +413,9 @@
   loom-shell:state(tab-changes) .pane:not(.pane-changes){display:none;}
   loom-shell:state(tab-session) .pane:not(.pane-session){display:none;}
   loom-shell:state(tab-trace) .pane:not(.pane-trace){display:none;}
+  loom-shell:state(tab-evolution) .pane:not(.pane-evolution){display:none;}
+  loom-shell:not(:state(tab-evolution)) .pane-evolution{display:none;}
+  loom-shell:state(tab-evolution) aside.panel > section.nudges{display:none;}
   section.pane{min-width:0;}
   .pane-changes,.pane-session,.pane-trace{font:13px/1.5 var(--font-sans);}
   .pane-empty{margin:0;color:var(--color-fg-quiet);}
@@ -1469,6 +1475,42 @@
   .proposals-notice{margin:0 0 8px 0;color:var(--color-danger-text);}
   button.proposal-approve,button.proposal-reject{font-size:12px;}
   .tab-badge.tab-badge-proposals{background:var(--color-signal);color:var(--color-on-danger);}
+  /* The strand panel's Evolution tab (web_view/view/evolution,
+     protocol-change/099), the panel's seventh child. Each candidate is a tinted
+     box with a hairline border, and the question a change asks replaces the
+     buttons in place as a tinted block, so there is no bar down an edge and no
+     shadow anywhere in the pane. Every name, description and reason is model
+     text, so each wraps instead of widening the column. */
+  .pane-evolution{font:13px/1.5 var(--font-sans);min-width:0;}
+  .evolution-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px 12px;flex-wrap:wrap;}
+  .evolution-head > .panel-title{margin:0 0 10px 0;}
+  button.evolution-read{font-size:11px;padding:5px 8px;border:1px solid var(--color-divider);border-radius:5px;color:var(--color-fg);background:var(--color-bg-raised);cursor:pointer;}
+  .evolution-notice{margin:0 0 10px 0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-signal) 35%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-signal) 7%,transparent);overflow-wrap:anywhere;}
+  section.evolution-section{margin:14px 0 0 0;}
+  ul.evolution-lines,ul.evolution-list,ul.evolution-history,ul.evolution-evidence{list-style:none;margin:0;padding:0;}
+  li.evolution-line,li.evolution-event{margin:0 0 4px 0;overflow-wrap:anywhere;}
+  li.evolution-event{font-size:12px;color:var(--color-fg-quiet);}
+  li.evolution-candidate{margin:0 0 8px 0;padding:8px 10px;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);}
+  li.evolution-candidate.evolution-selected{border-color:color-mix(in srgb,var(--color-signal) 35%,var(--color-divider));background:color-mix(in srgb,var(--color-signal) 7%,transparent);}
+  li.evolution-candidate p{margin:0;}
+  .evolution-title-line{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;}
+  .evolution-name{font-weight:500;overflow-wrap:anywhere;}
+  .evolution-id{font:12px/1.5 var(--font-mono);color:var(--color-fg-quiet);}
+  .evolution-state{font-weight:500;}
+  .evolution-description{margin:2px 0 4px 0;overflow-wrap:anywhere;white-space:pre-wrap;}
+  .evolution-meta{font-size:12px;overflow-wrap:anywhere;}
+  li.evolution-evidence-row{margin:2px 0 0 0;font-size:12px;color:var(--color-fg-quiet);overflow-wrap:anywhere;}
+  .evolution-approval{font-size:12px;overflow-wrap:anywhere;}
+  .evolution-staging{margin:6px 0 0 0;font-weight:500;color:var(--color-signal-text);}
+  .evolution-actions{display:flex;flex-wrap:wrap;gap:6px 8px;margin:8px 0 0 0;}
+  .evolution-actions button{font-size:12px;}
+  .evolution-ask{margin:8px 0 0 0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-signal) 35%,var(--color-divider));border-radius:6px;background:color-mix(in srgb,var(--color-signal) 7%,transparent);}
+  .evolution-ask .evolution-ask-lead{margin:0 0 6px 0;color:var(--color-fg);overflow-wrap:anywhere;}
+  .evolution-ask > p.session-quiet{margin:0 0 8px 0;font-size:12px;}
+  .evolution-ask-form{display:flex;flex-direction:column;gap:8px;}
+  label.evolution-reason{display:flex;flex-direction:column;gap:2px;font-size:12px;}
+  label.evolution-reason input{width:100%;box-sizing:border-box;border:1px solid var(--color-divider);border-radius:6px;background:var(--color-bg-sunk);color:var(--color-fg);padding:6px 8px;font:inherit;font-size:12px;}
+  section.evolution-core button.evolution-read{margin:4px 0 0 0;}
   /* The owner's read-only memory overview, the Session pane's ninth and last
      child (web_view/view/memory). It is placed after the proposals review.
      The counts and each note or rule are tinted blocks with a hairline

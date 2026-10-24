@@ -443,10 +443,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     EvolutionChanged(count:) -> {
       let model = Model(..model, evolution: count)
       let layout = shell_rule.reconcile(model.layout, count)
-      #(
-        Model(..model, layout:),
-        tab_changed(model.layout.tab, layout.tab),
-      )
+      #(Model(..model, layout:), tab_changed(model.layout.tab, layout.tab))
     }
 
     // One listener per connection: moving the element stops the old one
