@@ -238,6 +238,8 @@ fn generation(
   let route_images =
     reading == TextOnly
     && admission.image_bearing(provider.session, operation, context)
+
+  // Only an image-bearing request on a text-only model looks for a vision route.
   let routed = case route_images {
     True -> routing.vision_route(provider.routing, configuration)
     False -> None
