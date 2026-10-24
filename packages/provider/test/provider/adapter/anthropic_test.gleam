@@ -8,6 +8,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import provider/adapter/anthropic
+import provider/anthropic_merge_fixture
 import provider/fixture.{sse_event}
 import provider/internal/wire
 import provider/model
@@ -1107,4 +1108,59 @@ pub fn frozen_base_breakpoint_survives_an_adjacent_side_question_test() {
   let assert Ok(side_tools) = wire.field(parsed(body), "tools")
     as "side tools exist"
   assert main_tools == side_tools
+}
+
+pub fn parallel_results_preserve_block_order_and_the_final_cache_marker_test() {
+  list.each([1, 8, 64, 128], fn(count) {
+    let request = anthropic_merge_fixture.batch(count)
+    let body =
+      anthropic.build_request(
+        "https://example.invalid",
+        "dummy",
+        resolved(),
+        request,
+      ).body
+    let assert Ok([turn]) = wire.array_field(parsed(body), "messages")
+      as "parallel results share one user turn"
+    let assert Ok(blocks) = wire.array_field(turn, "content")
+      as "the result turn has content"
+    assert list.map(blocks, wire.string_field(_, "tool_use_id"))
+      == list.index_map(list.repeat(Nil, count), fn(_, index) {
+        Ok("call-" <> int_string(index + 1))
+      })
+    assert list.map(blocks, breakpoint)
+      == list.append(list.repeat(None, count - 1), [Some("5m")])
+    list.each(blocks, fn(block) {
+      let assert Ok(content) = wire.array_field(block, "content")
+        as "each tool result retains its ordered text blocks"
+      assert list.map(content, wire.string_field(_, "text"))
+        == [Ok("first"), Ok("second")]
+    })
+  })
+}
+
+pub fn merging_preserves_empty_turns_and_empty_block_lists_test() {
+  let empty = message.UserMessage([], 1, None)
+  let document =
+    parsed(
+      cached_request([], [
+        empty,
+        assistant(""),
+        assistant(""),
+        user("first"),
+        empty,
+        user("last"),
+      ]),
+    )
+  let assert Ok([first, middle, last]) = wire.array_field(document, "messages")
+    as "empty assistant turns still separate the two user turns"
+  assert wire.string_field(first, "role") == Ok("user")
+  assert wire.array_field(first, "content") == Ok([])
+  assert wire.string_field(middle, "role") == Ok("assistant")
+  assert wire.array_field(middle, "content") == Ok([])
+  let assert Ok(content) = wire.array_field(last, "content")
+    as "nonempty user blocks survive the empty neighbors"
+  assert list.map(content, wire.string_field(_, "text"))
+    == [Ok("first"), Ok("last")]
+  assert list.map(content, breakpoint) == [None, Some("5m")]
 }

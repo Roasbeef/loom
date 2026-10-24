@@ -278,7 +278,7 @@ fn encode_tool(tool: ToolSpec) -> JsonValue {
 fn encode_messages(messages: List(AgentMessage)) -> List(JsonValue) {
   messages
   |> list.filter_map(to_turn)
-  |> merge_turns([])
+  |> merge_turns
   |> mark_tail_user_turns
   |> list.map(fn(turn) {
     let #(role, blocks) = turn
@@ -326,21 +326,32 @@ fn to_turn(message: AgentMessage) -> Result(#(String, List(JsonValue)), Nil) {
   }
 }
 
+// Work from the last turn toward the first. A same-role merge then copies
+// only the earlier turn's original blocks, rather than the growing prefix of
+// every parallel tool-result batch. Prepending preserves both role and block
+// order, including empty turns and cache markers applied before this merge.
 /// Merges consecutive turns of identical roles into single conversation turns.
 fn merge_turns(
   turns: List(#(String, List(JsonValue))),
+) -> List(#(String, List(JsonValue))) {
+  merge_reversed_turns(list.reverse(turns), [])
+}
+
+/// Prepends earlier turns into an already merged chronological suffix.
+fn merge_reversed_turns(
+  reversed: List(#(String, List(JsonValue))),
   merged: List(#(String, List(JsonValue))),
 ) -> List(#(String, List(JsonValue))) {
-  case turns, merged {
-    [], _ -> list.reverse(merged)
-    [#(role, blocks), ..rest], [#(previous_role, previous_blocks), ..earlier]
-      if role == previous_role
+  case reversed, merged {
+    [], _ -> merged
+    [#(role, blocks), ..rest], [#(next_role, next_blocks), ..later]
+      if role == next_role
     ->
-      merge_turns(rest, [
-        #(role, list.append(previous_blocks, blocks)),
-        ..earlier
+      merge_reversed_turns(rest, [
+        #(role, list.append(blocks, next_blocks)),
+        ..later
       ])
-    [turn, ..rest], _ -> merge_turns(rest, [turn, ..merged])
+    [turn, ..rest], _ -> merge_reversed_turns(rest, [turn, ..merged])
   }
 }
 
@@ -1432,13 +1443,13 @@ fn encode_frozen_messages(
   prefix: Int,
 ) -> List(JsonValue) {
   let base =
-    list.take(messages, prefix) |> list.filter_map(to_turn) |> merge_turns([])
+    list.take(messages, prefix) |> list.filter_map(to_turn) |> merge_turns
   let side =
-    list.drop(messages, prefix) |> list.filter_map(to_turn) |> merge_turns([])
+    list.drop(messages, prefix) |> list.filter_map(to_turn) |> merge_turns
   let base = mark_user_turns(list.reverse(base), 1, [])
   let side = mark_user_turns(list.reverse(side), 1, [])
   list.append(base, side)
-  |> merge_turns([])
+  |> merge_turns
   |> list.map(fn(turn) {
     json.Object([
       #("role", json.String(turn.0)),
