@@ -19,6 +19,10 @@
 //// recovery run behind the custodian, not become a fabricated provider
 //// response. The whole boundary is a Gleam process protocol.
 ////
+//// `preparation` selects the callable before `prepare` copies startup into
+//// the parked worker. Its compatibility request facade is unused there and
+//// must not duplicate rendered tool definitions or other closure captures.
+////
 //// ## The request worker is a `weft/state_machine`
 ////
 //// `Parked → Forwarding → Cancelling → Draining`, four states which are the
@@ -115,7 +119,8 @@ type Handles {
 /// out of the machine's data.
 type Startup {
   Startup(
-    surface: effects.ProviderSurface,
+    prepare: fn(effects.RequestSpec) -> stream.PreparedStream,
+    timeout_ms: Int,
     spec: effects.RequestSpec,
     consumer: Pid,
     outer: Subject(stream.StreamEvent),
@@ -252,7 +257,14 @@ pub fn prepare(
 ) -> Prepared {
   let consumer = process.self()
   let outer = process.new_subject()
-  let startup = Startup(surface:, spec:, consumer:, outer:)
+  let startup =
+    Startup(
+      prepare: preparation(surface),
+      timeout_ms: effects.provider_timeout_ms(surface),
+      spec:,
+      consumer:,
+      outer:,
+    )
 
   // A plain linked start, because the link is the point: the worker and this
   // effect are one failure domain, so an unexpected surface crash faults the
@@ -274,6 +286,19 @@ pub fn prepare(
     // start that died under us. Nothing has been asked of the provider, so
     // the failure is reportable in band rather than terminal.
     Error(_error) -> unstarted(outer)
+  }
+}
+
+// Project without calling the surface: both variants still cross their first
+// provider instruction only after the parked worker receives its begin permit.
+fn preparation(
+  surface: effects.ProviderSurface,
+) -> fn(effects.RequestSpec) -> stream.PreparedStream {
+  case surface {
+    effects.PreparedProviderSurface(prepare:, ..) -> prepare
+    effects.ProviderSurface(request:, ..) -> fn(spec) {
+      stream.PreparedStream(handle: request(spec), begin: fn() { Nil })
+    }
   }
 }
 
@@ -520,7 +545,7 @@ fn admit(
   owner: custodian.Custodian,
 ) -> sm.Next(Phase, Data, Msg) {
   let stream.PreparedStream(handle: inner, begin: begin_inner) =
-    effects.prepare_provider(startup.surface, startup.spec)
+    startup.prepare(startup.spec)
   let consumer_monitor = process.monitor(startup.consumer)
   let drain = watch_inner(inner)
   let serving =
@@ -534,7 +559,7 @@ fn admit(
         startup.spec,
         stream.RuntimeSource,
         stream.CancellationRequested,
-        effects.provider_timeout_ms(startup.surface),
+        startup.timeout_ms,
         cancel_grace_ms,
       ),
     ))
