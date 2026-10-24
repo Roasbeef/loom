@@ -4815,6 +4815,7 @@ fn assemble_in(
   let hub_session_id = settings.session_id
   let btw_gateway = gateway
   let hub_catalog = settings.catalog
+  let child_history_reach = settings.remote_reach
   let first_prompt = settings.first_prompt
 
   // Project profile, spawner, remote reach, and memory settings for the hub.
@@ -5037,7 +5038,7 @@ fn assemble_in(
             |> hub.with_context(context_reader)
             |> hub.with_btw(btw_name)
             |> hub.with_live_jobs(live_jobs)
-            |> with_child_history(settings.remote_reach, runtime)
+            |> with_child_history(child_history_reach, runtime)
             |> hub.with_catalog(hub_catalog)
             |> with_first_prompt(first_prompt)
             |> with_profile_desk(profile_desk)

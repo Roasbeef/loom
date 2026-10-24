@@ -14,14 +14,17 @@ import client/jobs
 import client/memory_config
 import client/retryconf
 import client/schedule
+import client/secrets
 import client/serve
 import client/workspace_policy
 import core/clock
 import core/ids
 import gleam/erlang/process
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/system
 import machine/operation
 import machine/strand
 import provider/adapter/anthropic
@@ -442,4 +445,38 @@ fn interrupted_assembly(cleanup_result: Result(Nil, String)) {
     }
   }
   process.demonitor_process(watch)
+}
+
+/// Startup-only diagnostics do not survive inside service restart specifications.
+/// The observation reads only these disposed fixture supervisors, never a daemon.
+pub fn startup_diagnostics_do_not_grow_service_restart_terms_test() {
+  let small = startup_settings_words(0)
+  let large = startup_settings_words(4096)
+  let marker = startup_failures(4096) |> ffi_memory.flat_words
+  io.println(
+    "startup supervisor retained words: small="
+    <> int.to_string(small)
+    <> " large="
+    <> int.to_string(large)
+    <> " marker="
+    <> int.to_string(marker),
+  )
+  assert large == small
+    as "consumed startup diagnostics must not grow retained restart specifications"
+}
+
+fn startup_failures(count: Int) -> List(secrets.Failure) {
+  list.repeat(secrets.Failure("fixture", "startup-only"), count)
+}
+
+fn startup_settings_words(count: Int) -> Int {
+  let settings =
+    serve.Settings(..settings(), secret_failures: startup_failures(count))
+  let #(prepared, instance, watch) = opened(settings, identity(71))
+  let words = instance.services |> system.get_state |> ffi_memory.flat_words
+  assert host.close(prepared, within_ms: 5000) == custody.Closed
+    as "the measured assembly closes through its original custody"
+  lease_is_released(settings)
+  process.demonitor_process(watch)
+  words
 }
