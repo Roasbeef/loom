@@ -158,6 +158,10 @@ pub type Policy {
     /// R18 counts a one-caller private function whose body spans at most
     /// this many lines.
     unnamed_helper_lines: Int,
+    /// R22 requires a `///` doc comment on a private function whose body
+    /// spans strictly more than this many lines, and on any public function
+    /// in a module with a `////` doc (or spanning strictly more than this).
+    function_doc_lines: Int,
   )
 }
 
@@ -174,6 +178,7 @@ pub fn default() -> Policy {
     flow_order_min_helpers: 10,
     flow_order_percent: 50,
     unnamed_helper_lines: 6,
+    function_doc_lines: 6,
   )
 }
 
