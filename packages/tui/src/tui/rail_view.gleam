@@ -169,6 +169,8 @@ fn strands(
         True -> agent_strip.window(lines, model.view.strip_focus, room - 1)
         False -> lines
       }
+
+      // Format rendered agent rows with appropriate cursor markers.
       let rows =
         agent_row.rows(
           shown,
@@ -186,6 +188,8 @@ fn strands(
             }
           },
         )
+
+      // Calculate hidden count and append overflow note if necessary.
       let hidden = list.length(lines) - list.length(shown)
       let more = case hidden > 0 {
         True -> [

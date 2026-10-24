@@ -290,6 +290,8 @@ pub fn event(hook: Hook) -> String {
 ///
 pub fn answer(hook: Hook, args: String) -> Result(String, String) {
   use document <- result.try(parse(args))
+
+  // Dispatch the incoming hook event to its configured handler.
   case hook {
     OnSessionStart(run:) -> {
       run()
@@ -359,6 +361,7 @@ fn injection(text: Option(String)) -> Json {
   }
 }
 
+/// Encodes a tool call verdict into a JSON object.
 fn verdict(verdict: Verdict) -> Json {
   case verdict {
     Allow -> json.object([#("verdict", json.string("allow"))])
@@ -389,6 +392,7 @@ fn note(text: Option(String)) -> Json {
   }
 }
 
+/// Decodes a before-compact hook event document into a Compaction record.
 fn compaction_of(document: Dynamic) -> Result(Compaction, String) {
   use op_id <- result.try(field_string(document, "op_id"))
   use reason <- result.try(field_string(document, "reason"))
@@ -409,6 +413,7 @@ fn compaction_of(document: Dynamic) -> Result(Compaction, String) {
 // `Usage` and `UsageRow` have them optional; everything else is
 // required, so a document missing a count is a disagreement about the
 // wire rather than a provider that reported nothing.
+/// Decodes an on-usage hook event document into a Usage record.
 fn usage_of(document: Dynamic) -> Result(Usage, String) {
   use op_id <- result.try(field_string(document, "op_id"))
   use usage_id <- result.try(field_string(document, "usage_id"))
@@ -440,6 +445,7 @@ fn usage_of(document: Dynamic) -> Result(Usage, String) {
   ))
 }
 
+/// Decodes a tool call hook event document into a Call record.
 fn call_of(document: Dynamic) -> Result(Call, String) {
   use op_id <- result.try(field_string(document, "op_id"))
   use tool <- result.try(field_string(document, "tool"))
@@ -483,6 +489,7 @@ pub fn rendered(value: Dynamic) -> Result(Json, String) {
 // value that reached it and render it `null`, turning a shape this
 // decoder does not know into silent data loss instead of the `Error`
 // the caller is promised.
+/// Builds a decoder that reconstructs any JSON document into Json.
 fn renderer() -> decode.Decoder(Json) {
   decode.one_of(decode.map(decode.string, json.string), or: [
     decode.map(decode.int, json.int),
@@ -556,6 +563,7 @@ fn optional_int(document: Dynamic, name: String) -> Option(Int) {
   }
 }
 
+/// Decodes a named list field from a dynamic document.
 fn field_list(
   document: Dynamic,
   name: String,

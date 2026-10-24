@@ -448,6 +448,8 @@ fn failed(
 ) -> ProgramCard {
   let said = content |> list.map(result_text) |> string.join("\n")
   let status = string_field(details, "status") |> option.unwrap("")
+
+  // Determine the failed execution state and error description.
   let #(state, error) = case status {
     "compile_failed" -> #(
       CompileFailed,
@@ -465,11 +467,15 @@ fn failed(
     |> text_hygiene.multiline
     |> string.trim
     |> bounded(failure_limit)
+
+  // Parse a structured compiler diagnostic when compilation failed.
   let diagnostic = case state {
     CompileFailed -> parse_diagnostic(text)
     Running | Completed | Rejected | RunFailed | ProgramFailed -> None
   }
   let log = call_tree.read(json.Object(details))
+
+  // Construct the failure representation card.
   ProgramCard(
     state:,
     status_word: transcript_lines.status_title(status),

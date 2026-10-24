@@ -195,8 +195,12 @@ fn attempt(
     && port.1 >= window.1
     && port.1 <= window.3
   }
+
+  // Filter reachable goal ports and establish search target bounding box.
   let reachable = list.filter(goals, usable)
   let target = bounds_of(reachable)
+
+  // Construct search goal specification.
   let goal =
     Goal(
       cells: dict.from_list(
@@ -531,6 +535,8 @@ fn move(
   let #(dx, dy) = step_of(next)
   let #(nx, ny) = #(at.x + dx, at.y + dy)
   let arriving = key(goal.width, nx, ny, next)
+
+  // Assess direction change penalty cost.
   let turn = case next == at.heading {
     True -> 0
     False -> turn_cost
@@ -540,10 +546,14 @@ fn move(
     && ny >= goal.window.1
     && nx <= goal.window.2
     && ny <= goal.window.3
+
+  // Check whether a lower or equal cost route to this cell is already settled.
   let settled = case dict.get(search.best, arriving) {
     Ok(known) -> known <= at.cost + 1 + turn
     Error(_) -> False
   }
+
+  // Validate canvas accessibility and cell crossing feasibility.
   let entering = case inside && !settled, canvas.cell(canvas, nx, ny) {
     False, _ -> Error(Nil)
     True, None -> Ok(1 + hugging(canvas, nx, ny))

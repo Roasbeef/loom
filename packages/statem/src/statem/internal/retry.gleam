@@ -50,6 +50,7 @@ fn loop(
 ) -> Attempted(failure) {
   let done = done + 1
 
+  // Run the trial attempt and test for the target failure.
   case run(done - 1) {
     Error(failure) ->
       case wanted(failure) {

@@ -110,6 +110,7 @@ pub fn to_json(value: MsgPackValue) -> Result(JsonValue, InterchangeFault) {
   json_at(value, root_path)
 }
 
+/// Converts a MessagePack value at the given path into a JSON representation.
 fn json_at(
   value: MsgPackValue,
   at: String,
@@ -126,6 +127,7 @@ fn json_at(
   }
 }
 
+/// Converts each MessagePack array element at indexed paths into JSON elements.
 fn json_items(
   items: List(MsgPackValue),
   at: String,
@@ -136,6 +138,7 @@ fn json_items(
   |> result.map(json.Array)
 }
 
+/// Converts MessagePack map entries into JSON object fields after verifying string keys.
 fn json_entries(
   entries: List(#(MsgPackValue, MsgPackValue)),
   at: String,
@@ -156,6 +159,7 @@ fn json_entries(
 // Enumerated rather than closed with a catch-all, so a ninth
 // `MsgPackValue` variant is a compile error here instead of silently
 // joining the refusal it happens to fit.
+/// Validates that a MessagePack map key is a string suitable for JSON.
 fn json_key(key: MsgPackValue, at: String) -> Result(String, InterchangeFault) {
   case key {
     msgpack.StringValue(value:) -> Ok(value)
@@ -191,6 +195,7 @@ pub fn to_msgpack(value: JsonValue) -> Result(MsgPackValue, InterchangeFault) {
   msgpack_at(value, root_path)
 }
 
+/// Converts a JSON value at the given path into a MessagePack representation.
 fn msgpack_at(
   value: JsonValue,
   at: String,
@@ -208,6 +213,7 @@ fn msgpack_at(
 
 // `gleam_mcp/json.Int` is arbitrary precision and msgpack is not, so this is
 // the one place a value can be too large for the wire it is headed for.
+/// Validates that a JSON integer fits within MessagePack's supported integer range.
 fn msgpack_int(
   value: Int,
   at: String,
@@ -218,6 +224,7 @@ fn msgpack_int(
   }
 }
 
+/// Converts each JSON array item at indexed paths into MessagePack values.
 fn msgpack_items(
   items: List(JsonValue),
   at: String,
@@ -228,6 +235,7 @@ fn msgpack_items(
   |> result.map(msgpack.ArrayValue)
 }
 
+/// Converts JSON object fields into MessagePack map entries.
 fn msgpack_fields(
   fields: List(#(String, JsonValue)),
   at: String,

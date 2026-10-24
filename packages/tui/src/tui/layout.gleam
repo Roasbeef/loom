@@ -690,10 +690,14 @@ pub fn input_view_state(
 ) -> text_area.TextAreaState {
   let width = int.max(2, available_width)
   let text_area.TextAreaState(lines:, cursor_x:, cursor_y:) = state
+
+  // Locate current cursor position within the wrapped line representation.
   let current_line =
     lines |> list.drop(cursor_y) |> list.first |> result.unwrap("")
   let cursor_prefix = text.truncate(current_line, cursor_x, "")
   let #(cursor_row, wrapped_cursor_x) = wrapped_cursor(cursor_prefix, width, 0)
+
+  // Count wrapped display rows preceding the cursor line.
   let rows_before =
     lines
     |> list.take(cursor_y)

@@ -206,10 +206,14 @@ fn provenance(fields: List(#(String, json.JsonValue))) -> Provenance {
       Ok(json.Int(at)) if at >= 0 -> Ok(at)
       _ -> Error(Nil)
     })
+
+    // Extract the approving principal details if captured.
     let by = case list.key_find(record, "by") {
       Ok(json.Object(by)) -> by
       _ -> []
     }
+
+    // Assemble the approved provenance record.
     Approved(
       principal: optional_text(by, "principal"),
       name: optional_text(by, "name"),

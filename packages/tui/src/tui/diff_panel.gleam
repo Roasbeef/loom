@@ -36,6 +36,8 @@ pub fn layout(area: geometry.Rect, labels: Int, selected: Int) -> Layout {
     False -> int.min(2, area.size.height)
   }
   let remaining = int.max(0, area.size.height - heading_height)
+
+  // Determine vertical height allocated to navigation items.
   let navigation_limit = case area.size.height {
     height if height < 8 -> 1
     height if height < 10 -> 2
@@ -48,11 +50,15 @@ pub fn layout(area: geometry.Rect, labels: Int, selected: Int) -> Layout {
     False -> 0
   }
   let patch_height = int.max(0, remaining - navigation_height - selected_height)
+
+  // Calculate scrolled navigation offset to keep the selected item in view.
   let navigation_offset =
     int.min(
       int.max(0, selected - navigation_height + 1),
       int.max(0, labels - navigation_height),
     )
+
+  // Construct partitioned rectangular regions for each panel component.
   let heading =
     geometry.rect_new(
       area.position.x,
@@ -81,6 +87,8 @@ pub fn layout(area: geometry.Rect, labels: Int, selected: Int) -> Layout {
       area.size.width,
       patch_height,
     )
+
+  // Return the calculated layout dimensions and navigation offset.
   Layout(heading, navigation, selected_area, patch, navigation_offset)
 }
 

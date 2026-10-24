@@ -1719,6 +1719,8 @@ fn point_excerpt(source: String, offset: Int) -> String {
 fn excerpt_line(before: String, after: String) -> String {
   let lines = string.split(before, "\n")
   let prefix = list.last(lines) |> result.unwrap("")
+
+  // Calculate column offsets and ellipsis bounds around excerpt point.
   let suffix = string.split(after, "\n") |> list.first |> result.unwrap("")
   let column = string.length(prefix) + 1
   let start = int.max(0, column - 1 - 60)

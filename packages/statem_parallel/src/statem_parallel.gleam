@@ -547,6 +547,7 @@ fn run_with(
       fn(_) { True },
     )
 
+  // Return Ok on clean run or shrink the failing trial.
   case tried.accepted {
     None -> Ok(Nil)
     Some(trial) -> Error(shrink(spec, config, run, drawn, trial))
@@ -597,12 +598,14 @@ fn check_from(
   run: Int,
   stream: qcheck.Seed,
 ) -> Result(Nil, Failure(cmd, response)) {
+  // Stop once all runs in the test count succeed.
   case run >= config.test_count {
     True -> Ok(Nil)
 
     False -> {
       let #(seed, stream) = statem.next_run_seed(stream)
 
+      // Execute the parallel case and continue or return failure.
       case run_with(spec, config, run, seed) {
         Ok(Nil) -> check_from(spec, config, run + 1, stream)
         Error(failure) -> Error(failure)
@@ -625,6 +628,7 @@ pub fn report(
   failure: Failure(cmd, response),
   describe describe: fn(cmd) -> String,
 ) -> String {
+  // Describe how shrinking completed.
   let ending = case failure.shrink_end {
     statem.ShrinkConverged -> "converged"
     statem.ShrinkBoundHit -> "shrink bound hit"
@@ -753,6 +757,7 @@ fn render_explanation(
   explanation: Option(linearize.Explanation(cmd, response)),
   describe: fn(cmd) -> String,
 ) -> List(String) {
+  // Render either out-of-budget notice or the linearizability witness.
   case explanation {
     None -> ["the search ran out of budget before it could decide"]
 
@@ -843,6 +848,7 @@ fn draw_branches(
   let #(drawn, seed) = grow_branches(spec, config, model, seed)
   let bounded = bound_interleavings(drawn)
 
+  // Check whether drawn branches are admissible and contain racing candidates.
   case admissible(spec, model, bounded), bounded {
     Admit, [_, _, ..] -> bounded
 
@@ -976,6 +982,7 @@ fn execute(
   config: Config,
   shown: Case(cmd),
 ) -> Result(Nil, Trial(cmd, response)) {
+  // Create fresh SUT instance under rescue.
   case exception.rescue(spec.new_sut) {
     Error(crash) -> Error(Trial(statem.crashed("new_sut", crash), Unrecorded))
 
@@ -1082,6 +1089,7 @@ fn judge_histories(
       postcondition: spec.postcondition,
     )
 
+  // Check whether parallel execution histories can be linearized.
   case
     exception.rescue(fn() {
       linearize.check(machine, model, histories, config.search_budget)
@@ -1274,12 +1282,14 @@ fn pay(
 ) -> Verdict(cmd, response) {
   use <- bool.guard(executed >= config.max_shrinks, Stopped)
 
+  // Check shrink stop predicate before paying for another execution.
   case config.shrink_stop() {
     statem.StopShrinking -> Stopped
 
     statem.KeepShrinking -> {
       let tried = attempt(spec, config, tag, candidate, executed)
 
+      // Check whether this candidate produced the target failure.
       case tried.accepted {
         Some(trial) -> Accepted(trial, tried.executions)
         None -> Refuted(tried.executions)

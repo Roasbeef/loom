@@ -140,6 +140,8 @@ pub fn check_with(
   let own = module_path(path)
   let foreign =
     portable.externals_at(package, own, source.external_offsets(code))
+
+  // Check whether the module parses and run the remaining linters or report syntax errors.
   case glance.module(code) {
     Error(error) -> [
       parse_finding(path, code, error),
@@ -346,6 +348,7 @@ fn marks_generated(line: String) -> Bool {
 /// difference in offset conventions between the two parsers cannot invent a
 /// finding.
 fn backstop(found: List(Raw), code: String, policy: Policy) -> List(Raw) {
+  // Check whether the policy permits panics or requires AST backstop validation.
   case policy.allow_panic {
     True -> []
     False -> {
@@ -358,6 +361,8 @@ fn backstop(found: List(Raw), code: String, policy: Policy) -> List(Raw) {
             False -> Error(Nil)
           }
         })
+
+      // Check whether lexed panic keywords match seen AST occurrences.
       case list.length(lexed) == list.length(seen) {
         True -> []
         False ->
@@ -385,18 +390,24 @@ fn backstop(found: List(Raw), code: String, policy: Policy) -> List(Raw) {
 /// (a bare filename in a doctest, a `test/` source, which R1's structural
 /// half has no local combinators to key under anyway).
 fn module_path(path: String) -> String {
+  // Extract the relative path portion after any src/ segment.
   let after_src = case string.split_once(path, "/src/") {
     Ok(#(_, rest)) -> rest
     Error(Nil) -> path
   }
+
+  // Strip the trailing .gleam extension if present.
   case string.ends_with(after_src, ".gleam") {
     True -> string.drop_end(after_src, 6)
     False -> after_src
   }
 }
 
+/// Constructs a structured unparseable finding from a glance parser error.
 fn parse_finding(path: String, code: String, error: glance.Error) -> Finding {
   let starts = source.line_starts(code)
+
+  // Extract the error offset and diagnostic message for the given parse error.
   let #(offset, detail) = case error {
     glance.UnexpectedEndOfInput -> #(
       string.byte_size(code),
@@ -409,6 +420,7 @@ fn parse_finding(path: String, code: String, error: glance.Error) -> Finding {
         <> "`; nothing in this file was linted",
     )
   }
+
   Finding(
     rule: finding.Unparseable,
     path:,

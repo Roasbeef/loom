@@ -221,6 +221,8 @@ pub fn join(remote: Node, within_ms: Int, seat: Seat) -> Result(Nil, String) {
       Voter -> ffi_khepri.AsVoter
       Learner -> ffi_khepri.AsLearner
     }
+
+    // Begin cluster join handshake with the requested seat.
     use uid <- result.try(ffi_khepri.join_start(asked))
     let joined = {
       use Nil <- result.try(

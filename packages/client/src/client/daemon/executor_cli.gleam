@@ -187,6 +187,8 @@ fn settle_worktrees(flags: List(String)) -> Result(String, String) {
       <> "; stop the daemon first"
     }),
   )
+
+  // Construct the executor machine plane and sweep target worktrees.
   let #(config, _paths, _fence) = claimed
   use Nil <- result.try(migrated(ledger_path))
   let helper = case asked.helper {

@@ -238,12 +238,16 @@ pub fn ensure_private_directory(path: String) -> Result(Nil, String) {
     simplifile.link_info(path)
     |> result.map_error(simplifile.describe_error),
   )
+
+  // Ensure the state path resolved to a directory rather than a file or symlink.
   use Nil <- result.try(case simplifile.file_info_type(info) {
     simplifile.Directory -> Ok(Nil)
     other -> Error("state path is not a directory: " <> string.inspect(other))
   })
 
   use uid <- result.try(current_uid())
+
+  // Verify the directory is owned by the current user before applying permissions.
   use Nil <- result.try(case info.user_id == uid {
     True -> Ok(Nil)
     False -> Error("state path is not owned by the current user: " <> path)
@@ -364,12 +368,16 @@ pub fn read_private_bounded(
     simplifile.link_info(path)
     |> result.map_error(simplifile.describe_error),
   )
+
+  // Verify the target path is a regular file before reading.
   use Nil <- result.try(case simplifile.file_info_type(info) {
     simplifile.File -> Ok(Nil)
     _ -> Error("path is not a regular file")
   })
 
   use uid <- result.try(current_uid())
+
+  // Ensure the file is owned by the current user.
   use Nil <- result.try(case info.user_id == uid {
     True -> Ok(Nil)
     False -> Error("file is not owned by the current user")

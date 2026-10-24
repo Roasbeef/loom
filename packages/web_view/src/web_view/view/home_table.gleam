@@ -519,6 +519,8 @@ fn row(
 ) -> Element(message) {
   let kind = resume.kind(resume, entry)
   let standing = standing(entry, activity, kind, opening)
+
+  // Find notification note targeted to this row if present.
   let note = case landing {
     Some(InRow(session:, notice:)) if session == entry.id -> Some(notice)
     Some(InRow(..))
@@ -527,6 +529,8 @@ fn row(
     | Some(Under(..))
     | None -> None
   }
+
+  // Construct label spans, glyph indicator, and subtitle text.
   let body = [
     html.span([attribute.class("home-glyph"), attribute.aria_hidden(True)], [
       html.text(standing.glyph),
@@ -541,6 +545,8 @@ fn row(
       ),
     ]),
   ]
+
+  // Construct interactive button or container div based on residency and status.
   let item = case entry.residency, kind {
     Live, _ -> pressable("Open this session", open(entry.id), body)
     Saved, resume.Button(press:) ->
@@ -554,6 +560,8 @@ fn row(
     Saved, _ | Blocked, _ | FailedStart(_), _ | Moving(_), _ ->
       html.div([attribute.class("home-item")], body)
   }
+
+  // Determine row action classes and render active form or item row.
   let classes = [attribute.class("home-row"), attribute.class(standing.class)]
   let manage = in_row(manage)
   case rename, manage {

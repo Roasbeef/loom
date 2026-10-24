@@ -609,6 +609,8 @@ fn paint_self_message(
   let x = centre_of(columns, message.from)
   let bar = horizontal(message)
   let out = string.repeat(bar, loop_reach - 1)
+
+  // Construct return loop path ending and junction markers.
   let back = case message.end {
     model.Head -> "◀" <> string.repeat(bar, loop_reach - 2)
     model.Cross -> "×" <> string.repeat(bar, loop_reach - 2)

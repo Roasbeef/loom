@@ -116,6 +116,8 @@ fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
     )
   })
   use root <- tool.or_outcome(search_root(ctx, path), identity_outcome)
+
+  // Build execution specification and initialize events subject.
   let #(now, _clock) = clock.read(ctx.clock)
   let spec = call_spec(ctx, pattern, root, globs, context, now)
   let events = process.new_subject()

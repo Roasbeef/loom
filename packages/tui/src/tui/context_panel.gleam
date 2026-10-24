@@ -27,11 +27,15 @@ pub fn lines(state: context_view.State, width: Int) -> List(span.Line) {
     Some(board) -> {
       let meter_width = int.min(24, int.max(4, width - 12))
       let filled = int.min(meter_width, board.used * meter_width / board.window)
+
+      // Clarify token estimation basis source description.
       let basis = case board.basis {
         "reported_plus_estimate" ->
           "provider usage plus newer-message estimate; includes output"
         _ -> "prompt, tools, and message estimate"
       }
+
+      // Format automatic compaction threshold statistics.
       let boundary = case board.checkpoint_at {
         Some(at) ->
           "Compaction threshold "
@@ -42,6 +46,8 @@ pub fn lines(state: context_view.State, width: Int) -> List(span.Line) {
           <> count(int.max(0, at - board.compaction_used))
         None -> "Automatic compaction disabled"
       }
+
+      // Format detailed inventory items or summary hint based on surface.
       let detail = case state.surface {
         context_view.All ->
           list.flatten([

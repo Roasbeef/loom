@@ -830,6 +830,8 @@ fn valid_peers(local: String, peers: List(PeerPin)) -> Result(Nil, String) {
       }
     }),
   )
+
+  // Ensure node names and fingerprint pins are unique and exclude local.
   let names = list.map(peers, fn(pin) { pin.node })
   let pins = list.map(peers, fn(pin) { pin.sha256 })
   case

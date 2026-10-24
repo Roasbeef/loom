@@ -139,6 +139,7 @@ pub fn module(
 // it can identify the retention shape, but cannot prove the record is broad or
 // the closure lives long enough for the retained value to matter.
 
+/// Walks every function in the module to find closures capturing broad values.
 fn closure_captures(module: glance.Module) -> List(Raw) {
   list.flat_map(module.functions, fn(definition) {
     let function = definition.definition
@@ -151,19 +152,23 @@ fn closure_captures(module: glance.Module) -> List(Raw) {
   })
 }
 
+/// Finds broad closure captures across a statement list, tracking tail escape.
 fn closures_in_statements(
   body: List(glance.Statement),
   visible: List(String),
   function: String,
   tail_fate: ClosureFate,
 ) -> List(Raw) {
+  // Check whether the statement list is empty or decompose head and tail.
   case body {
     [] -> []
     [statement, ..rest] -> {
+      // Determine if this statement is at tail position or scoped within the block.
       let fate = case rest {
         [] -> tail_fate
         _ -> Scoped
       }
+
       let found = closures_in_statement(statement, visible, function, fate)
       let visible = list.append(statement_bindings(statement), visible)
       list.append(
@@ -174,6 +179,7 @@ fn closures_in_statements(
   }
 }
 
+/// Dispatches broad capture detection over a single statement node.
 fn closures_in_statement(
   statement: glance.Statement,
   visible: List(String),
@@ -198,12 +204,14 @@ fn closures_in_statement(
   }
 }
 
+/// Recursively searches an expression for broad capture violations.
 fn closures_in_expression(
   value: glance.Expression,
   visible: List(String),
   function: String,
   fate: ClosureFate,
 ) -> List(Raw) {
+  // Dispatch across expression variants to locate escaping closures.
   case value {
     glance.Int(..)
     | glance.Float(..)
@@ -235,10 +243,13 @@ fn closures_in_expression(
       let arguments = fn_parameter_names(arguments)
       let captured =
         list.filter(visible, fn(name) { !list.contains(arguments, name) })
+
+      // Only report broad captures when the closure escapes outer scope.
       let direct = case fate {
         Escapes -> capture_findings(body, captured, function, location)
         Scoped -> []
       }
+
       let inside = list.append(arguments, visible)
       list.append(
         direct,
@@ -255,10 +266,12 @@ fn closures_in_expression(
     glance.FieldAccess(container:, ..) ->
       closures_in_expression(container, visible, function, Scoped)
     glance.Call(function: called, arguments:, ..) -> {
+      // Retain escape fate when arguments are stored in constructor references.
       let argument_fate = case constructor_reference(called) {
         True -> fate
         False -> Scoped
       }
+
       list.append(
         closures_in_expression(called, visible, function, Scoped),
         closures_in_fields(arguments, visible, function, argument_fate),
@@ -305,6 +318,7 @@ fn closures_in_expression(
   }
 }
 
+/// Constructs broad capture findings for variables only accessed via fields.
 fn capture_findings(
   body: List(glance.Statement),
   visible: List(String),
@@ -339,15 +353,19 @@ fn capture_use(body: List(glance.Statement), wanted: String) -> CaptureUse {
   capture_statements(body, wanted, FieldUse([]))
 }
 
+/// Accumulates identifier usage across statements until shadowed or exhausted.
 fn capture_statements(
   body: List(glance.Statement),
   wanted: String,
   usage: CaptureUse,
 ) -> CaptureUse {
+  // Check whether the statement list has been exhausted.
   case body {
     [] -> usage
     [statement, ..rest] -> {
       let usage = capture_statement(statement, wanted, usage)
+
+      // Stop inspection if the identifier is shadowed by a new statement binding.
       case list.contains(statement_bindings(statement), wanted) {
         True -> usage
         False -> capture_statements(rest, wanted, usage)
@@ -356,6 +374,7 @@ fn capture_statements(
   }
 }
 
+/// Inspects a statement for usage of a wanted captured identifier.
 fn capture_statement(
   statement: glance.Statement,
   wanted: String,
@@ -379,11 +398,13 @@ fn capture_statement(
   }
 }
 
+/// Inspects an expression for field accesses or broad references to wanted.
 fn capture_expression(
   value: glance.Expression,
   wanted: String,
   usage: CaptureUse,
 ) -> CaptureUse {
+  // Discriminate expression variants to classify usage of the wanted identifier.
   case value {
     glance.Int(..) | glance.Float(..) | glance.String(..) -> usage
     glance.Variable(name:, ..) ->
@@ -408,6 +429,8 @@ fn capture_expression(
       )
     glance.Fn(arguments:, body:, ..) -> {
       let shadowed = fn_parameter_names(arguments) |> list.contains(wanted)
+
+      // Check if parameter shadowing prevents outer reference escape.
       case shadowed {
         True -> usage
         False ->
@@ -468,6 +491,7 @@ fn capture_expression(
   }
 }
 
+/// Accumulates identifier usage across an expression list.
 fn capture_expressions(
   values: List(glance.Expression),
   wanted: String,
@@ -478,6 +502,7 @@ fn capture_expressions(
   })
 }
 
+/// Checks an optional expression for usage of the wanted identifier.
 fn capture_optional(
   value: Option(glance.Expression),
   wanted: String,
@@ -489,6 +514,7 @@ fn capture_optional(
   }
 }
 
+/// Inspects call argument fields for usage of the wanted identifier.
 fn capture_fields(
   fields: List(glance.Field(glance.Expression)),
   wanted: String,
@@ -507,6 +533,7 @@ fn capture_fields(
   })
 }
 
+/// Inspects record update fields for usage or shorthand references.
 fn capture_record_fields(
   fields: List(glance.RecordUpdateField(glance.Expression)),
   wanted: String,
@@ -521,6 +548,7 @@ fn capture_record_fields(
   })
 }
 
+/// Checks assert messages within assignments for identifier usage.
 fn capture_assignment_message(
   kind: glance.AssignmentKind,
   wanted: String,
@@ -532,6 +560,7 @@ fn capture_assignment_message(
   }
 }
 
+/// Records an accessed field name if the variable has not been broadly used.
 fn add_capture_field(usage: CaptureUse, field: String) -> CaptureUse {
   case usage {
     OtherUse -> OtherUse
@@ -543,6 +572,7 @@ fn add_capture_field(usage: CaptureUse, field: String) -> CaptureUse {
   }
 }
 
+/// Returns all identifier names newly bound by a statement.
 fn statement_bindings(statement: glance.Statement) -> List(String) {
   case statement {
     glance.Use(patterns:, ..) ->
@@ -558,6 +588,7 @@ fn clause_bindings(clause: glance.Clause) -> List(String) {
   })
 }
 
+/// Recursively collects all variable names bound within a pattern.
 fn pattern_bindings(pattern: glance.Pattern) -> List(String) {
   case pattern {
     glance.PatternVariable(name:, ..) -> [name]
@@ -608,6 +639,7 @@ fn assignment_name(name: glance.AssignmentName) -> String {
   }
 }
 
+/// Extracts a list of bound names from an optional assignment pattern.
 fn optional_assignment_name(
   name: Option(glance.AssignmentName),
 ) -> List(String) {
@@ -617,6 +649,7 @@ fn optional_assignment_name(
   }
 }
 
+/// Recursively checks an optional expression for escaping closures.
 fn closures_in_optional(
   value: Option(glance.Expression),
   visible: List(String),
@@ -629,6 +662,7 @@ fn closures_in_optional(
   }
 }
 
+/// Checks whether an assignment's assertion message creates escaping closures.
 fn closures_in_assignment_message(
   kind: glance.AssignmentKind,
   visible: List(String),
@@ -641,6 +675,7 @@ fn closures_in_assignment_message(
   }
 }
 
+/// Scans call arguments for nested closures with the assigned fate.
 fn closures_in_fields(
   fields: List(glance.Field(glance.Expression)),
   visible: List(String),
@@ -656,6 +691,7 @@ fn closures_in_fields(
   })
 }
 
+/// Deduplicates a list of identifier names preserving first appearance order.
 fn unique_names(names: List(String)) -> List(String) {
   list.fold(names, [], fn(unique, name) {
     case list.contains(unique, name) {
@@ -682,6 +718,8 @@ fn plural(fields: List(String)) -> String {
 /// R2, which is about the function rather than about anything inside it.
 fn nesting(function: glance.Function, ctx: Ctx) -> List(Raw) {
   let depth = statements_depth(function.body)
+
+  // Report an R2 violation if measured nesting depth exceeds configured limit.
   case depth > ctx.policy.nesting_threshold {
     False -> []
     True -> [
@@ -722,9 +760,12 @@ fn nesting(function: glance.Function, ctx: Ctx) -> List(Raw) {
 // Recursion is not a caller: a function that calls itself and is called
 // once is the same shape as one that does not.
 
+/// Flags private functions whose parameter arity exceeds the threshold and have one caller.
 fn lone_callers(module: glance.Module, policy: Policy) -> List(Raw) {
   list.flat_map(module.functions, fn(definition) {
     let function = definition.definition
+
+    // Only inspect private functions whose arity exceeds the lone caller limit.
     case function.publicity, over_arity(function, policy.lone_caller_arity) {
       glance.Private, True ->
         lone_caller_finding(function, callers(module, function.name))
@@ -744,6 +785,7 @@ fn callers(module: glance.Module, name: String) -> Int {
   list.length(calls.callers_of(module, name))
 }
 
+/// Formats an R8 census finding if the function has exactly one caller.
 fn lone_caller_finding(function: glance.Function, callers: Int) -> List(Raw) {
   case callers {
     1 -> [
@@ -806,6 +848,7 @@ fn naked_bools(module: glance.Module) -> List(Raw) {
   list.append(parameter_bools(module), field_bools(module))
 }
 
+/// Checks all function parameters across the module for naked Bool types.
 fn parameter_bools(module: glance.Module) -> List(Raw) {
   list.flat_map(module.functions, fn(definition) {
     let function = definition.definition
@@ -820,6 +863,7 @@ fn parameter_bools(module: glance.Module) -> List(Raw) {
   })
 }
 
+/// Checks all custom type variant fields across the module for naked Bool types.
 fn field_bools(module: glance.Module) -> List(Raw) {
   list.flat_map(module.custom_types, fn(definition) {
     let custom_type = definition.definition
@@ -882,6 +926,7 @@ fn bool_within(type_: glance.Type) -> Option(glance.Span) {
   }
 }
 
+/// Finds the first span of a nested Bool type in a type list, if any.
 fn first_bool(types: List(glance.Type)) -> Option(glance.Span) {
   case types {
     [] -> None
@@ -922,6 +967,7 @@ fn field_name(field: glance.VariantField) -> String {
 
 // --- name resolution --------------------------------------------------------
 
+/// Collects imported qualifiers, imported unqualified values, and local functions.
 fn names_of(module: glance.Module, own_path: String) -> Names {
   let local_functions =
     list.fold(module.functions, dict.new(), fn(locals, definition) {
@@ -936,6 +982,8 @@ fn names_of(module: glance.Module, own_path: String) -> Names {
     )
   list.fold(module.imports, base, fn(names, imported) {
     let import_ = imported.definition
+
+    // Determine the qualifier mapping based on module import alias or default name.
     let qualifiers = case import_.alias {
       Some(glance.Named(alias)) ->
         dict.insert(names.qualifiers, alias, import_.module)
@@ -947,12 +995,15 @@ fn names_of(module: glance.Module, own_path: String) -> Names {
           import_.module,
         )
     }
+
     let values =
       list.fold(import_.unqualified_values, names.values, fn(values, value) {
+        // Resolve unqualified imported value alias or original identifier.
         let local = case value.alias {
           Some(alias) -> alias
           None -> value.name
         }
+
         dict.insert(values, local, #(import_.module, value.name))
       })
     Names(..names, qualifiers:, values:)
@@ -1090,6 +1141,7 @@ fn local_eager_rows(module: glance.Module, own_path: String) -> List(Eager) {
   })
 }
 
+/// Derives eager-fallback policy rows for local short-circuiting combinators.
 fn combinator_rows(function: glance.Function, own_path: String) -> List(Eager) {
   case list.reverse(function.parameters) {
     [last, ..reversed_rest] ->
@@ -1102,6 +1154,8 @@ fn combinator_rows(function: glance.Function, own_path: String) -> List(Eager) {
         // (`or_fail`'s `to_error`, say) is a different shape and left alone.
         True, False -> {
           let leading = list.reverse(reversed_rest)
+
+          // Check if the combinator branches on its own first parameter.
           case decision(function.body, leading) {
             None -> []
             Some(subject) ->
@@ -1140,6 +1194,8 @@ fn decision(
 ) -> Option(glance.Expression) {
   use subject <- option.then(branch_of(body))
   use first <- option.then(option.from_result(list.first(parameters)))
+
+  // Confirm that the branch condition explicitly references the first parameter.
   case calls.mentions(subject, binding(first)) {
     True -> Some(subject)
     False -> None
@@ -1179,6 +1235,7 @@ fn binding(parameter: glance.FunctionParameter) -> String {
   }
 }
 
+/// Builds an Eager specification row for an evaluated fallback parameter.
 fn eager_row(
   function: String,
   own_path: String,
@@ -1197,6 +1254,7 @@ fn eager_row(
   )
 }
 
+/// Extracts the public label or parameter variable name from a parameter.
 fn parameter_label(parameter: glance.FunctionParameter) -> String {
   case parameter.label {
     Some(label) -> label
@@ -1302,6 +1360,7 @@ fn counted(target: Option(#(String, String))) -> Option(Counted) {
 
 // --- the walk ---------------------------------------------------------------
 
+/// Folds the AST statement walker over a list of statements.
 fn statements(
   body: List(glance.Statement),
   ctx: Ctx,
@@ -1310,17 +1369,20 @@ fn statements(
   list.fold(body, acc, fn(acc, statement) { statement_(statement, ctx, acc) })
 }
 
+/// Dispatches AST lint scanning over a single statement node.
 fn statement_(
   statement: glance.Statement,
   ctx: Ctx,
   acc: List(Raw),
 ) -> List(Raw) {
+  // Dispatch over statement variants to walk child expressions and bindings.
   case statement {
     glance.Use(function:, ..) -> expression(function, ctx, acc)
     glance.Expression(value) -> expression(value, ctx, acc)
     glance.Assert(expression: value, message:, ..) ->
       optional(message, ctx, expression(value, ctx, acc))
     glance.Assignment(kind:, value:, location:, ..) -> {
+      // Forbid let assert in source when panic in source is not permitted by policy.
       let acc = case kind, ctx.policy.allow_panic {
         glance.LetAssert(..), False -> [
           Raw(
@@ -1335,11 +1397,13 @@ fn statement_(
         ]
         _, _ -> acc
       }
+
       expression(value, ctx, unnamed_assert(kind, location, ctx, acc))
     }
   }
 }
 
+/// Folds the AST expression walker over a list of expressions.
 fn expressions(
   values: List(glance.Expression),
   ctx: Ctx,
@@ -1348,6 +1412,7 @@ fn expressions(
   list.fold(values, acc, fn(acc, value) { expression(value, ctx, acc) })
 }
 
+/// Walks an expression node, dispatching calls, operators, and panic checks.
 fn expression(value: glance.Expression, ctx: Ctx, acc: List(Raw)) -> List(Raw) {
   case value {
     glance.Int(..)
@@ -1424,6 +1489,7 @@ fn unnamed_assert(
   }
 }
 
+/// Generates an R4 finding for panic invocations outside test files.
 fn panic_finding(location: glance.Span, ctx: Ctx, acc: List(Raw)) -> List(Raw) {
   case ctx.policy.allow_panic {
     True -> acc
@@ -1440,6 +1506,7 @@ fn panic_finding(location: glance.Span, ctx: Ctx, acc: List(Raw)) -> List(Raw) {
   }
 }
 
+/// Inspects an optional expression if present, passing acc through if absent.
 fn optional(
   value: Option(glance.Expression),
   ctx: Ctx,
@@ -1451,6 +1518,7 @@ fn optional(
   }
 }
 
+/// Walks through a list of call argument fields to lint inner expressions.
 fn fields(
   arguments: List(glance.Field(glance.Expression)),
   ctx: Ctx,
@@ -1470,6 +1538,7 @@ fn fields(
 
 // --- R1: the eager fallback -------------------------------------------------
 
+/// Inspects a function call for eager-fallback arguments and walks arguments.
 fn call(
   function: glance.Expression,
   arguments: List(glance.Field(glance.Expression)),
@@ -1477,6 +1546,7 @@ fn call(
   ctx: Ctx,
   acc: List(Raw),
 ) -> List(Raw) {
+  // Check if the called function resolves to a registered eager combinator.
   let acc = case resolve(ctx.names, function) {
     Some(#(path, name)) ->
       list.fold(eager_specs(ctx, path, name), acc, fn(acc, spec) {
@@ -1484,9 +1554,11 @@ fn call(
       })
     None -> acc
   }
+
   fields(arguments, ctx, expression(function, ctx, acc))
 }
 
+/// Checks an eager combinator call for costly unthunked fallback arguments.
 fn eager(
   spec: Eager,
   function: glance.Expression,
@@ -1548,13 +1620,16 @@ fn eager_argument(
   arguments: List(glance.Field(glance.Expression)),
   piped: Bool,
 ) -> Option(glance.Expression) {
+  // Look for a matching labelled argument before checking positional arguments.
   case labelled(arguments, spec.label) {
     Some(item) -> Some(item)
     None -> {
+      // Adjust positional parameter index when the first argument was piped.
       let position = case piped {
         True -> spec.position - 1
         False -> spec.position
       }
+
       let positional =
         list.filter_map(arguments, fn(field) {
           case field {
@@ -1562,6 +1637,8 @@ fn eager_argument(
             glance.LabelledField(..) | glance.ShorthandField(..) -> Error(Nil)
           }
         })
+
+      // Ensure the positional index is valid before retrieving the target argument.
       case position >= 0 {
         False -> None
         True ->
@@ -1574,6 +1651,7 @@ fn eager_argument(
   }
 }
 
+/// Looks up an argument field matching the given label name.
 fn labelled(
   arguments: List(glance.Field(glance.Expression)),
   wanted: String,
@@ -1635,6 +1713,7 @@ pub fn cheap(value: glance.Expression) -> Bool {
   }
 }
 
+/// Determines whether a call argument field evaluates trivially.
 fn cheap_field(field: glance.Field(glance.Expression)) -> Bool {
   case field {
     glance.LabelledField(item:, ..) | glance.UnlabelledField(item:) ->
@@ -1650,6 +1729,7 @@ fn cheap_optional(value: Option(glance.Expression)) -> Bool {
   }
 }
 
+/// Checks if a binary operator is trivial single-word arithmetic or comparison.
 fn cheap_operator(operator: glance.BinaryOperator) -> Bool {
   case operator {
     glance.Concatenate | glance.Pipe -> False
@@ -1677,6 +1757,7 @@ fn cheap_operator(operator: glance.BinaryOperator) -> Bool {
   }
 }
 
+/// Determines if an expression references a custom type constructor name.
 fn constructor_reference(function: glance.Expression) -> Bool {
   case function {
     glance.Variable(name:, ..) -> starts_upper(name)
@@ -1717,6 +1798,7 @@ fn describe(value: glance.Expression) -> String {
   }
 }
 
+/// Produces a descriptive message for the first non-cheap constructor argument.
 fn describe_costly(arguments: List(glance.Field(glance.Expression))) -> String {
   case list.filter(arguments, fn(field) { !cheap_field(field) }) {
     [glance.LabelledField(item:, ..), ..]
@@ -1725,6 +1807,7 @@ fn describe_costly(arguments: List(glance.Field(glance.Expression))) -> String {
   }
 }
 
+/// Formats the target function expression into a readable callee string.
 fn callee_text(function: glance.Expression) -> String {
   case function {
     glance.Variable(name:, ..) -> name
@@ -1772,6 +1855,7 @@ pub fn span_of(value: glance.Expression) -> glance.Span {
 
 // --- R5: an O(n) answer to a bounded question -------------------------------
 
+/// Inspects binary operator expressions for R5 bounded length checks and pipes.
 fn binary(
   operator: glance.BinaryOperator,
   left: glance.Expression,
@@ -1779,6 +1863,7 @@ fn binary(
   ctx: Ctx,
   acc: List(Raw),
 ) -> List(Raw) {
+  // Check comparison operators for bounded length questions against counts.
   let acc = case operator {
     glance.Eq
     | glance.NotEq
@@ -1788,12 +1873,15 @@ fn binary(
     | glance.GtEqInt -> bounded(left, right, ctx, acc)
     _ -> acc
   }
+
+  // Handle pipeline operators with piped call resolution or descend into operands.
   case operator {
     glance.Pipe -> piped(right, ctx, expression(left, ctx, acc))
     _ -> expression(right, ctx, expression(left, ctx, acc))
   }
 }
 
+/// Inspects the right-hand expression of a pipe for eager call patterns.
 fn piped(right: glance.Expression, ctx: Ctx, acc: List(Raw)) -> List(Raw) {
   case right {
     glance.Call(function:, arguments:, ..) ->
@@ -1827,12 +1915,15 @@ fn bounded(
   }
 }
 
+/// Constructs an R5 finding for an O(n) count compared against a bound.
 fn bounded_finding(
   found: #(glance.Span, Counted),
   bound: Option(String),
   ctx: Ctx,
 ) -> Raw {
   let #(span, call) = found
+
+  // Tailor finding advice based on comparison against zero or non-zero literal.
   let #(question, advice) = case bound {
     Some("0") -> #(
       "a comparison against 0",
@@ -1856,6 +1947,7 @@ fn bounded_finding(
         <> "` and stop at the bound",
     )
   }
+
   Raw(
     rule: finding.BoundedLength,
     offset: span.start,
@@ -1897,6 +1989,7 @@ fn counted_call(
   }
 }
 
+/// Extracts the literal text from an integer expression if present.
 fn int_literal(value: glance.Expression) -> Option(String) {
   case value {
     glance.Int(value: text, ..) -> Some(text)
@@ -1908,6 +2001,7 @@ fn int_literal(value: glance.Expression) -> Option(String) {
 
 // --- R3: catch-all patterns -------------------------------------------------
 
+/// Inspects a case expression for catch-all patterns and walks clauses.
 fn case_(
   subjects: List(glance.Expression),
   clauses: List(glance.Clause),
@@ -1915,10 +2009,13 @@ fn case_(
   acc: List(Raw),
 ) -> List(Raw) {
   let acc = expressions(subjects, ctx, acc)
+
+  // Identify whether this case expression evaluates a single subject.
   let single = case subjects {
     [_] -> True
     _ -> False
   }
+
   let reportable =
     { single || ctx.policy.catch_all_multi_subject }
     && !list.any(clauses, is_guarded)
@@ -1930,6 +2027,7 @@ fn case_(
   })
 }
 
+/// Scans a case clause for catch-all patterns and walks guard and body.
 fn clause_(
   clause: glance.Clause,
   reportable: Bool,
@@ -1951,6 +2049,7 @@ fn clause_(
     ]
     _, _ -> acc
   }
+
   optional(clause.guard, ctx, expression(clause.body, ctx, acc))
 }
 
@@ -1996,6 +2095,8 @@ fn swallows(spelling: CatchAll, body: glance.Expression) -> String {
   let swallowed =
     " swallows every remaining shape, so the compiler cannot tell you when "
     <> "a new variant needs handling here; "
+
+  // Format the diagnostic message based on discard or bound variable catch-all.
   case spelling {
     Discarded(..) ->
       "`_ ->`"
@@ -2059,6 +2160,7 @@ fn two_arm_predicate(clauses: List(glance.Clause)) -> Bool {
   }
 }
 
+/// Checks whether an expression body is a constant literal or bare variable.
 fn constant_body(body: glance.Expression) -> Bool {
   case body {
     glance.Int(..)
@@ -2069,6 +2171,7 @@ fn constant_body(body: glance.Expression) -> Bool {
   }
 }
 
+/// Appends a mitigating note for catch-alls in two-arm constant predicates.
 fn predicate_note(predicate: Bool) -> String {
   case predicate {
     False -> ""
@@ -2095,6 +2198,8 @@ fn predicate_note(predicate: Bool) -> String {
 fn flat_variant_dispatch(clauses: List(glance.Clause)) -> Bool {
   let dispatching =
     list.filter(clauses, fn(clause) { catch_all_of(clause.patterns) == None })
+
+  // Verify that remaining non-catch-all clauses are flat constructor dispatches.
   case dispatching {
     [] -> False
     _ ->
@@ -2106,6 +2211,7 @@ fn flat_variant_dispatch(clauses: List(glance.Clause)) -> Bool {
   }
 }
 
+/// Checks if a pattern is a constructor with only variable binders or discards.
 fn is_flat_variant(pattern: glance.Pattern) -> Bool {
   case pattern {
     glance.PatternVariant(arguments:, ..) ->
@@ -2143,6 +2249,7 @@ fn matches_a_primitive(clause: glance.Clause) -> Bool {
   })
 }
 
+/// Recursively determines whether a pattern discriminates on a primitive literal.
 fn is_primitive_pattern(pattern: glance.Pattern) -> Bool {
   case pattern {
     glance.PatternInt(..)
@@ -2184,6 +2291,7 @@ fn statements_depth(body: List(glance.Statement)) -> Int {
   })
 }
 
+/// Calculates the maximum AST case-nesting depth inside a statement.
 fn statement_depth(statement: glance.Statement) -> Int {
   case statement {
     glance.Use(function:, ..) -> depth(function)
@@ -2194,6 +2302,7 @@ fn statement_depth(statement: glance.Statement) -> Int {
   }
 }
 
+/// Computes the longest chain of nested case expressions in an expression.
 fn depth(value: glance.Expression) -> Int {
   case value {
     glance.Case(subjects:, clauses:, ..) ->
@@ -2235,6 +2344,7 @@ fn depth(value: glance.Expression) -> Int {
   }
 }
 
+/// Computes the maximum case-nesting depth across a list of call argument fields.
 fn field_depth(arguments: List(glance.Field(glance.Expression))) -> Int {
   list.fold(arguments, 0, fn(deepest, field) {
     case field {

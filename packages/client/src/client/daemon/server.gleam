@@ -1616,6 +1616,8 @@ fn resume_exchange(
     login.Observer -> access.Observer
     login.Operator -> access.Operator
   }
+
+  // Select target exchange scope and address for the resumed allowance.
   let #(scope, reach, exchange, address) = case resumed.allowance.session {
     option.Some(id) -> #(
       ui_sessions.Session(id),
@@ -1630,6 +1632,8 @@ fn resume_exchange(
       page.home_path,
     )
   }
+
+  // Mint and redeem ticket for the target session grant.
   let grant =
     ui_sessions.Grant(
       scope:,

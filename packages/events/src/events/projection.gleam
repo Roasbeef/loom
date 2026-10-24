@@ -185,14 +185,19 @@ fn frontier(store: Storage(handle)) -> Result(Seq, StorageError) {
     |> storage.usage_limit(1)
   use entries <- result.try(storage.scan_entries(store, newest_entry))
   use usage <- result.try(storage.scan_usage(store, newest_usage))
+
+  // Read the newest entry sequence if one exists.
   let entry_seq = case entries {
     [entry, ..] -> entry.seq
     [] -> 0
   }
+
+  // Read the newest usage row sequence if one exists.
   let usage_seq = case usage {
     [row, ..] -> row.seq
     [] -> 0
   }
+
   Ok(int.max(entry_seq, usage_seq))
 }
 
@@ -235,6 +240,7 @@ fn merge(entries: List(Entry), usage: List(UsageRow)) -> List(Change) {
   merge_loop(entries, usage, [])
 }
 
+/// Recursively merges entries and usage rows in ascending seq order into an accumulator.
 fn merge_loop(
   entries: List(Entry),
   usage: List(UsageRow),
@@ -269,6 +275,7 @@ pub fn stats_projection() -> Projection(SessionStats) {
   Projection(initial: storage.empty_stats(), apply: apply_stats)
 }
 
+/// Updates session statistics with a single entry or usage change.
 fn apply_stats(stats: SessionStats, change: Change) -> SessionStats {
   case change {
     EntryAppended(entry: entry.MessageEntry(..)) ->
@@ -342,6 +349,7 @@ pub fn start(
   options: Options(state, handle),
 ) -> actor.StartResult(Subject(Message(state))) {
   actor.new_with_initialiser(5000, fn(subject) {
+    // Subscribe to hint events if requested by driver options.
     let selector = case options.hints {
       FromBus(bus:, session:) -> {
         bus.subscribe_hints(bus, session:)
@@ -361,6 +369,7 @@ pub fn start(
       Some(saved) -> saved
       None -> #(options.projection.initial, 0, options.generation())
     }
+
     let driver =
       DriverState(
         get_store: options.store,
@@ -376,10 +385,13 @@ pub fn start(
     // First convergence at start; a fault keeps the checkpointed state
     // and the next hint retries.
     let #(driver, result) = pull(driver)
+
+    // Log any pull error encountered during initial convergence.
     case result {
       Ok(Nil) -> Nil
       Error(error) -> surface_pull_fault(options.logger, error)
     }
+
     actor.initialised(driver)
     |> actor.selecting(selector)
     |> actor.returning(subject)
@@ -404,10 +416,12 @@ pub fn supervised(
   supervision.worker(fn() { start(options) })
 }
 
+/// Handles incoming driver actor messages by pulling or serving state.
 fn handle_message(
   driver: DriverState(state, handle),
   message: Message(state),
 ) -> actor.Next(DriverState(state, handle), Message(state)) {
+  // Dispatch on the driver actor message variant.
   case message {
     Hinted -> {
       // A hint carries no reply channel to return a fault to, but the
@@ -417,10 +431,13 @@ fn handle_message(
       // surfacing the read failure). Log it; an explicit `sync` still
       // returns it to a caller that is watching.
       let #(driver, result) = pull(driver)
+
+      // Surface any background pull fault encountered while processing the hint.
       case result {
         Ok(Nil) -> Nil
         Error(error) -> surface_pull_fault(driver.logger, error)
       }
+
       actor.continue(driver)
     }
     Read(reply:) -> {
@@ -429,10 +446,13 @@ fn handle_message(
     }
     Synchronize(reply:) -> {
       let #(driver, result) = pull(driver)
+
+      // Reply with updated state or forward the pull error to caller.
       case result {
         Ok(Nil) -> process.send(reply, Ok(driver.state))
         Error(error) -> process.send(reply, Error(error))
       }
+
       actor.continue(driver)
     }
   }
@@ -457,10 +477,14 @@ fn pull(
 ) -> #(DriverState(state, handle), Result(Nil, StorageError)) {
   let store = driver.get_store()
   let current_generation = driver.get_generation()
+
+  // Reset fold state if store generation changed since last pull.
   let #(state, high_water) = case current_generation == driver.generation {
     True -> #(driver.state, driver.high_water)
     False -> #(driver.projection.initial, 0)
   }
+
+  // Fold forward from the high-water mark toward the newest frontier.
   case catch_up(store, driver.projection, state, after: high_water) {
     Ok(#(state, high_water)) -> {
       driver.checkpoint.save(state, high_water, current_generation)

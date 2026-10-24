@@ -443,6 +443,8 @@ pub fn render(system: System) -> String {
         }
       })
     })
+
+  // Format aligned row cells and append peer trust edges.
   let line = fn(cells) {
     list.zip(cells, widths)
     |> list.map(fn(pair) { string.pad_end(pair.0, pair.1, " ") })

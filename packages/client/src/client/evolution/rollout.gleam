@@ -233,6 +233,8 @@ pub fn evaluate(
         ))
     },
   )
+
+  // Initialize rollout state and execute paired trials.
   let #(started, clock) = clock.read(callbacks.clock)
   let state =
     State(
@@ -261,6 +263,8 @@ pub fn evaluate(
       let state = run_trial(state, callbacks, target, api, task, None)
       run_trial(state, callbacks, target, api, task, Some(profile))
     })
+
+  // Record retained evaluation evidence and clean up.
   let verdict = verdict(state, callbacks.mode, list.length(tasks) * 2)
   let observation =
     observation(state, callbacks.mode, tasks, candidate_id, target, api)

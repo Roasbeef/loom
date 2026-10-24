@@ -161,15 +161,18 @@ pub fn discover(locations: List(String)) -> Catalogue {
   )
 }
 
+/// Discovers skills within a root directory.
 fn discover_directory(state: Discovery, location: String) -> Discovery {
   use <- bool.guard(when: !bootstrap.path_exists(location), return: state)
 
+  // Canonicalize directory path before scanning.
   case bootstrap.canonical_directory(location) {
     Error(reason) -> refused(state, location, reason)
     Ok(directory) -> discover_resolved_directory(state, directory)
   }
 }
 
+/// Scans a resolved directory for skill definitions.
 fn discover_resolved_directory(
   state: Discovery,
   directory: String,
@@ -181,6 +184,7 @@ fn discover_resolved_directory(
   let state =
     Discovery(..state, directories: set.insert(state.directories, directory))
 
+  // Enumerate directory entries up to the bounded limit.
   case bootstrap.list_directory_bounded(directory, max_directory_entries) {
     Error(reason) -> refused(state, directory, reason)
     Ok(children) ->
@@ -192,19 +196,23 @@ fn discover_resolved_directory(
   }
 }
 
+/// Discovers a skill from a specific file path.
 fn discover_file(state: Discovery, path: String) -> Discovery {
   use <- bool.guard(when: !bootstrap.path_exists(path), return: state)
 
+  // Resolve canonical path of candidate skill file.
   case bootstrap.canonical_path(path) {
     Error(reason) -> refused(state, path, reason)
     Ok(path) -> discover_resolved_file(state, path)
   }
 }
 
+/// Reads and registers a skill from a resolved file path.
 fn discover_resolved_file(state: Discovery, path: String) -> Discovery {
   use <- bool.guard(when: set.contains(state.files, path), return: state)
   let state = Discovery(..state, files: set.insert(state.files, path))
 
+  // Attempt to parse the skill document from disk.
   case read(path) {
     Error(reason) -> refused(state, path, reason)
     Ok(skill) ->
@@ -228,6 +236,7 @@ fn refused(state: Discovery, path: String, reason: String) -> Discovery {
   Discovery(..state, warnings: [path <> ": " <> reason, ..state.warnings])
 }
 
+/// Reads and parses a skill document from disk within bounds.
 fn read(path: String) -> Result(Skill, String) {
   use bytes <- result.try(bootstrap.read_bounded(path, max_file_bytes))
   use text <- result.try(
@@ -300,6 +309,7 @@ fn next_line(text: String) -> Result(#(String, String), String) {
   |> result.replace_error("skill frontmatter is not terminated")
 }
 
+/// Extracts frontmatter lines and body from markdown document lines.
 fn frontmatter(
   text: String,
   reversed: List(String),
@@ -308,12 +318,15 @@ fn frontmatter(
     Ok(#(list.reverse(reversed), ""))
   })
   use #(line, remaining) <- result.try(next_line(text))
+
+  // Check for closing frontmatter fence or collect header line.
   case line {
     "---" | "---\r" -> Ok(#(list.reverse(reversed), remaining))
     _ -> frontmatter(remaining, [line, ..reversed])
   }
 }
 
+/// Parses frontmatter YAML lines into a key-value node mapping.
 fn parse_fields(
   lines: List(String),
 ) -> Result(Dict(String, glaml.Node), String) {
@@ -321,15 +334,20 @@ fn parse_fields(
     glaml.parse_string(string.join(lines, "\n"))
     |> result.replace_error("invalid YAML skill frontmatter"),
   )
+
+  // Verify parsed YAML document contains a single top-level mapping.
   use pairs <- result.try(case documents {
     [glaml.Document(glaml.NodeMap(pairs))] -> Ok(pairs)
     _ -> Error("skill frontmatter must be one YAML mapping")
   })
+
   list.try_fold(pairs, dict.new(), fn(fields, pair) {
+    // Ensure mapping key is a YAML string.
     use key <- result.try(case pair.0 {
       glaml.NodeStr(key) -> Ok(key)
       _ -> Error("skill frontmatter keys must be strings")
     })
+
     use <- bool.lazy_guard(dict.has_key(fields, key), fn() {
       Error("duplicate skill frontmatter field: " <> key)
     })
@@ -337,6 +355,7 @@ fn parse_fields(
   })
 }
 
+/// Retrieves and verifies a required string field from parsed fields.
 fn required(
   fields: Dict(String, glaml.Node),
   key: String,
@@ -346,6 +365,8 @@ fn required(
     |> result.map_error(fn(_) { "missing skill frontmatter field: " <> key }),
   )
   use value <- result.try(text_value(value, key))
+
+  // Ensure required field value is not whitespace-only.
   case string.trim(value) {
     "" -> Error("empty skill frontmatter field: " <> key)
     value -> Ok(value)
@@ -359,6 +380,7 @@ fn text_value(value: glaml.Node, key: String) -> Result(String, String) {
   }
 }
 
+/// Extracts an optional text field from parsed fields or defaults to empty.
 fn optional_text(
   fields: Dict(String, glaml.Node),
   key: String,
@@ -369,6 +391,7 @@ fn optional_text(
   }
 }
 
+/// Validates optional metadata and compatibility fields.
 fn validate_optional_fields(
   fields: Dict(String, glaml.Node),
 ) -> Result(Nil, String) {
@@ -378,6 +401,8 @@ fn validate_optional_fields(
     list.length(string.to_utf_codepoints(compatibility)) > 500,
     Error("skill compatibility exceeds 500 characters"),
   )
+
+  // Validate optional metadata dictionary structure.
   case dict.get(fields, "metadata") {
     Error(Nil) -> Ok(Nil)
     Ok(glaml.NodeMap(pairs)) ->
@@ -390,6 +415,7 @@ fn validate_optional_fields(
   }
 }
 
+/// Validates skill name character set and length constraints.
 fn validate_name(name: String) -> Result(Nil, String) {
   use pattern <- result.try(
     regexp.from_string("^[\\p{L}\\p{N}]+(?:-[\\p{L}\\p{N}]+)*$")
@@ -397,6 +423,8 @@ fn validate_name(name: String) -> Result(Nil, String) {
   )
   let valid_characters =
     regexp.check(pattern, name) && string.lowercase(name) == name
+
+  // Check character pattern match and codepoint length limit.
   case valid_characters && list.length(string.to_utf_codepoints(name)) <= 64 {
     True -> Ok(Nil)
     False ->
@@ -406,6 +434,7 @@ fn validate_name(name: String) -> Result(Nil, String) {
   }
 }
 
+/// Resolves user invocation visibility from parsed fields.
 fn user_invocation(
   fields: Dict(String, glaml.Node),
 ) -> Result(UserInvocation, String) {
@@ -416,6 +445,7 @@ fn user_invocation(
   }
 }
 
+/// Resolves model invocation eligibility from parsed fields.
 fn model_invocation(
   fields: Dict(String, glaml.Node),
 ) -> Result(ModelInvocation, String) {

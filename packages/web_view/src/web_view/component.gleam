@@ -2558,6 +2558,8 @@ fn browsed(
 ) -> Model(socket) {
   let scrollback = model.shared.scrollback
   let branch = history_view.branch(scrollback, view)
+
+  // Render historical blocks for the active scrollback branch.
   let all =
     transcript.branch_blocks(
       branch,
@@ -2568,6 +2570,8 @@ fn browsed(
     )
     |> historical_blocks(branch.records)
   let blocks = oldest_blocks(all, held_rows, 0, [])
+
+  // Find excluded block sequence to bound historical records.
   let excluded =
     all
     |> list.drop(list.length(blocks))
@@ -3410,11 +3414,15 @@ fn fitted_page(
   let kept_window = int.min(fitted.kept, held)
   let by_rows = list.take(model.view.sealed, int.max(fitted.kept - held, 0))
   let kept_sealed = within_bytes(by_rows, fold_budget.sealed_bytes)
+
+  // Extract window blocks and flatten into display sequence.
   let blocks =
     weights.group_blocks
     |> list.take(kept_window)
     |> list.reverse
     |> list.flatten
+
+  // Extract pieces from closed turns and late cache misses.
   let closed_pieces =
     kept_sealed
     |> list.reverse
@@ -3436,6 +3444,8 @@ fn fitted_page(
       turns.Expand(expansion.capped),
     )
     |> fold_budget.draw(fitted.folds, fitted.allowance)
+
+  // Evaluate budget saturation boundaries for rows and sealed bytes.
   let rows = case fitted.kept < held + list.length(model.view.sealed) {
     True -> Beyond
     False -> Within

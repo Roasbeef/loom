@@ -280,6 +280,8 @@ fn tested(
         Error(store.TestFailed("test entry is absent from vetted sources"))
     },
   )
+
+  // Materialize sources and prepare directory environment.
   use Nil <- result.try(materialize(directory <> "/sources", candidate.files))
   use Nil <- result.try(
     install.prepare(directory, decoded, vetted)

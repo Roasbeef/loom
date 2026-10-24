@@ -38,6 +38,7 @@ pub fn line_starts(source: String) -> List(Int) {
   |> list.reverse
 }
 
+/// Scans byte stream accumulating byte offsets of all newline characters.
 fn newlines(bytes: BitArray, offset: Int, found: List(Int)) -> List(Int) {
   case bytes {
     <<0x0A, rest:bits>> -> newlines(rest, offset + 1, [offset + 1, ..found])
@@ -54,12 +55,14 @@ pub fn lines_of(starts: List(Int), offsets: List(Int)) -> List(Int) {
   walk(offsets, starts, 1, [])
 }
 
+/// Maps byte offsets to line numbers by walking starts and offsets in parallel.
 fn walk(
   offsets: List(Int),
   starts: List(Int),
   line: Int,
   found: List(Int),
 ) -> List(Int) {
+  // Walk remaining byte offsets converting each into its 1-based line number.
   case offsets {
     [] -> list.reverse(found)
     [offset, ..rest] -> {
@@ -144,6 +147,7 @@ pub fn classify(code: String) -> Lines {
   )
 }
 
+/// Iterates over source line texts classifying each line kind and tracking offsets.
 fn classify_loop(
   texts: List(String),
   comments: List(Int),
@@ -151,6 +155,7 @@ fn classify_loop(
   offset: Int,
   found: Lines,
 ) -> Lines {
+  // Classify each line text in sequence until the file ends.
   case texts {
     [] -> Lines(..found, starts: list.reverse(found.starts))
     [text, ..rest] -> {
@@ -193,6 +198,7 @@ fn drop_before(comments: List(Int), limit: Int) -> List(Int) {
   }
 }
 
+/// Determines the kind of a source line based on its text and comment presence.
 fn kind_of_text(text: String, commented: Bool) -> LineKind {
   case string.trim(text), commented {
     "", _ -> Blank
@@ -253,6 +259,7 @@ fn comment_offsets(text: String) -> List(Int) {
   |> comments([])
 }
 
+/// Extracts byte offsets of all comment tokens from a lexed token list.
 fn comments(
   tokens: List(#(token.Token, glexer.Position)),
   found: List(Int),
@@ -303,6 +310,7 @@ pub fn variant_offsets(
   list.map(spans, fn(span) { variants_in(tokens, span) })
 }
 
+/// Finds variant head byte offsets within a specific custom type source span.
 fn variants_in(
   tokens: List(#(token.Token, glexer.Position)),
   span: #(Int, Int),
@@ -328,6 +336,7 @@ fn skip_to_body(
   }
 }
 
+/// Scans custom type body tokens collecting byte offsets of top-level variant heads.
 fn heads(
   tokens: List(#(token.Token, glexer.Position)),
   depth: Int,
@@ -407,6 +416,7 @@ pub fn external_offsets(text: String) -> List(Int) {
   |> externals([])
 }
 
+/// Extracts byte offsets of external attribute annotations from token stream.
 fn externals(
   tokens: List(#(token.Token, glexer.Position)),
   found: List(Int),
@@ -424,6 +434,7 @@ pub type Keywords {
   Keywords(panics: List(Int), let_asserts: List(Int))
 }
 
+/// Scans token stream collecting byte offsets of panic and let assert keywords.
 fn scan(
   tokens: List(#(token.Token, glexer.Position)),
   found: Keywords,

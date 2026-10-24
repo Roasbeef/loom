@@ -182,14 +182,7 @@ pub fn resolution(provider_gateway: Gateway, role: Role) -> ModelResolution {
   }
 }
 
-// Which role, if any, this dispatch is on route for.
-//
-// A role serves a request exactly when the head of its usable chain is the
-// identity the intent captured, because the head is what `gateway.resolve`
-// would have stored and what the walk will try first. Candidates are taken in
-// canonical order so the answer is a function of durable state alone: a tie
-// between `main` and `subagent` routed to the same entry resolves to `main`,
-// every time, on every boot.
+/// Determines which role this model identity is actively routed to serve.
 fn routed_role(routing: Routing, identity: ModelIdentity) -> Result(Role, Nil) {
   list.find(candidate_roles(routing.role), fn(role) {
     case gateway.resolve(routing.gateway, role) {
@@ -204,9 +197,7 @@ fn heads(resolved: ResolvedModel, identity: ModelIdentity) -> Bool {
   && resolved.model_id == identity.model_id
 }
 
-// The configured role leads only when it is neither `main` nor `subagent`,
-// which is the one case a host has said something the canonical order does
-// not cover.
+/// Produces candidate routing roles ordered by priority for resolution.
 fn candidate_roles(configured: Role) -> List(Role) {
   case configured {
     model.Main | model.Subagent -> [model.Main, model.Subagent]

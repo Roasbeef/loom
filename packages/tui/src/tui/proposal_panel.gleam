@@ -291,6 +291,8 @@ pub fn render(
     |> block.with_colors(theme.current, theme.graphite)
     |> block.with_bg_fill
     |> block.with_title(title(board), block.Top)
+
+  // Generate body rows and calculate viewport scroll offset.
   let rows = body_lines(state, board, notice, now, content)
   let maximum = int.max(0, list.length(rows) - content.size.height)
   let offset = case state.place {
@@ -333,6 +335,8 @@ fn layout_areas(
     True -> 2
     False -> 0
   }
+
+  // Construct bounded card outer rectangle.
   let card =
     geometry.rect_new(
       area.position.x + horizontal,
@@ -340,11 +344,15 @@ fn layout_areas(
       int.max(1, area.size.width - horizontal * 2),
       area.size.height,
     )
+
+  // Inset inner bounds when rendered inside a rounded border frame.
   let inside = case framed {
     True ->
       block.inner(card, block.block_new() |> block.with_border(block.Rounded))
     False -> card
   }
+
+  // Partition inside area between main content and bottom controls.
   let controls_height = case inside.size.height >= 3 {
     True -> 1
     False -> 0
@@ -511,9 +519,13 @@ fn row_line(
     <> proposals.state_words(row.state)
     <> "  "
   let tail = "  " <> proposals.short_session(row.source.session)
+
+  // Fit the rationale headline within the remaining row width.
   let room = int.max(8, width - text.cell_width(fixed) - text.cell_width(tail))
   let why = proposals.headline(row.rationale, room)
   let words = text.truncate(fixed <> why <> tail, width, "…")
+
+  // Select text styling based on cursor position and proposal state.
   let appearance = case cursor, row.state {
     Here, _ -> theme.overlay_current()
     Elsewhere, proposals.Pending -> theme.overlay_plain()

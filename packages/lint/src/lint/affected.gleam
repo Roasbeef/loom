@@ -296,10 +296,12 @@ pub fn affected_closure(
 /// // -> ["broker", "client", "codemode", "core", "events", "host", ...]
 /// ```
 pub fn daemon_packages(graph: Graph) -> Set(String) {
+  // Resolve daemon roots to compute reachable packages.
   let roots = case list.contains(graph.gleam, daemon_root) {
     True -> [daemon_root]
     False -> []
   }
+
   let reached = reach(roots, set.new(), graph)
   set.drop(reached, daemon_exempt)
 }
@@ -333,6 +335,7 @@ pub fn classify(path: String, graph: Graph) -> Kind {
 /// // -> ["binaries", "server-shipment"]
 /// ```
 pub fn prep(selection: Selection) -> List(String) {
+  // Select prep targets depending on full or affected mode.
   case selection.mode {
     Full -> ["codemode-seed", "binaries", "server-shipment"]
     Affected -> {
@@ -375,10 +378,13 @@ pub fn lanes(selection: Selection) -> List(Lane) {
     list.map(selection.gates, fn(gate) {
       Lane(gate_name(gate.0), gate_command(gate.0))
     })
+
+  // Resolve package execution lanes depending on full or affected mode.
   let package_lanes = case selection.mode {
     Full -> [Lane("full", ["bash", "scripts/check.sh"])]
     Affected -> grouped_lanes(selection)
   }
+
   list.flatten([[static_lane], gate_lanes, package_lanes])
 }
 
@@ -392,10 +398,12 @@ pub fn lanes(selection: Selection) -> List(Lane) {
 /// // -> "static make fmt-check lint doc-check prelude-check client-check"
 /// ```
 pub fn render_lanes(selection: Selection) -> String {
+  // Format prep command line if prep targets were selected.
   let prep_lines = case prep(selection) {
     [] -> []
     targets -> [string.join(["prep", "make", ..targets], " ")]
   }
+
   let lane_lines =
     list.map(lanes(selection), fn(lane) {
       string.join([lane.name, ..lane.words], " ")
@@ -426,12 +434,15 @@ pub fn render(selection: Selection) -> String {
     list.map(selection.gates, fn(gate) {
       "gate " <> gate_name(gate.0) <> "  " <> gate.1
     })
+
+  // Format signoff requirement lines.
   let signoff = case selection.signoff {
     [] -> [
       "signoff not-required  affected gates suffice with a dispositioned review",
     ]
     reasons -> list.map(reasons, fn(reason) { "signoff required  " <> reason })
   }
+
   [[mode_line], escalations, statics, others, check_lines(selection), signoff]
   |> list.flatten
   |> string.join("\n")
@@ -476,6 +487,7 @@ type Acc {
   )
 }
 
+/// Returns the initial empty accumulator for tracking affected paths.
 fn start() -> Acc {
   Acc(
     mode: Affected,
@@ -490,9 +502,12 @@ fn start() -> Acc {
 // One changed path: what its kind decides, then what it adds to the signoff
 // and to the readers. Package Markdown is read by no build, so neither the
 // signoff rule nor a test that reads the package's files applies to it.
+/// Processes a changed path and updates signoff and reader notes.
 fn visit(acc: Acc, path: String, graph: Graph, daemon: Set(String)) -> Acc {
   let kind = classify(path, graph)
   let decided = decide(acc, kind, path)
+
+  // Update signoff and reader records for non-documentation kinds.
   case kind {
     PackageDoc -> decided
     Machinery
@@ -509,6 +524,7 @@ fn visit(acc: Acc, path: String, graph: Graph, daemon: Set(String)) -> Acc {
   }
 }
 
+/// Updates accumulator mode or changed package sets based on path kind.
 fn decide(acc: Acc, kind: Kind, path: String) -> Acc {
   case kind {
     Machinery -> escalate(acc, path <> " is build or CI machinery")
@@ -549,6 +565,7 @@ fn package_of(path: String) -> String {
 
 // The signoff notes a path earns, each recorded once: the fixed prefixes
 // first, then the daemon rule for a package or manifest of a daemon package.
+/// Records signoff requirements based on touched sensitive path prefixes or daemon components.
 fn note_signoff(
   acc: Acc,
   kind: Kind,
@@ -560,6 +577,8 @@ fn note_signoff(
     |> list.filter(fn(entry) { under(path, entry.0) })
     |> list.map(fn(entry) { "touches " <> entry.1 })
   let package = package_of(path)
+
+  // Note whether the changed package is part of the daemon build.
   let daemon_note = case kind, set.contains(daemon, package) {
     Package, True | PackageManifest, True -> [
       "touches the daemon (packages/"
@@ -568,6 +587,7 @@ fn note_signoff(
     ]
     _, _ -> []
   }
+
   Acc(
     ..acc,
     signoff: list.fold(
@@ -581,6 +601,7 @@ fn note_signoff(
 // A file some package's tests read by relative path selects that package,
 // whatever kind of file it is otherwise; `docs/examples` is prose and a
 // codemode fixture at once. The first reading to name a reader wins.
+/// Records packages that read the changed file in tests or fixtures.
 fn note_readers(acc: Acc, path: String, graph: Graph) -> Acc {
   let found =
     graph.reads
@@ -606,6 +627,7 @@ fn note_readers(acc: Acc, path: String, graph: Graph) -> Acc {
 // The dependency closure's reasons win over a read, since a package that
 // changed or builds against a change is selected for that first. Then the
 // escalations that depend on the final set, and the signoff.
+/// Finalizes package selection computing closure, self-test gates, and signoffs.
 fn finish(acc: Acc, graph: Graph) -> Selection {
   let packages =
     dict.merge(
@@ -624,6 +646,7 @@ fn finish(acc: Acc, graph: Graph) -> Selection {
       )
     False -> acc
   }
+
   let escalated = escalate_if_wide(with_selftest, packages, graph)
   let signoff = signoff_reasons(escalated, acc.changed)
   Selection(
@@ -636,6 +659,7 @@ fn finish(acc: Acc, graph: Graph) -> Selection {
 }
 
 // More than half of the Gleam packages is where a subset saves little.
+/// Escalates to full check mode if more than half of all Gleam packages are affected.
 fn escalate_if_wide(
   acc: Acc,
   packages: Dict(String, String),
@@ -643,6 +667,8 @@ fn escalate_if_wide(
 ) -> Acc {
   let reached = list.count(dict.keys(packages), list.contains(graph.gleam, _))
   let total = list.length(graph.gleam)
+
+  // Check whether affected packages exceed half of total packages.
   case 2 * reached > total {
     True ->
       escalate(
@@ -659,8 +685,11 @@ fn escalate_if_wide(
 // The reasons the change still needs the full signoff: the ones the paths
 // earned, a change that crosses many packages, and the full check itself,
 // which is always listed first.
+/// Determines signoff requirement explanations for direct package changes or full check mode.
 fn signoff_reasons(acc: Acc, changed: List(String)) -> List(String) {
   let directly = list.length(changed)
+
+  // Note if directly changed packages exceed threshold.
   let crossing = case directly > signoff_package_limit {
     True ->
       list.append(acc.signoff, [
@@ -668,6 +697,8 @@ fn signoff_reasons(acc: Acc, changed: List(String)) -> List(String) {
       ])
     False -> acc.signoff
   }
+
+  // Prepend notice if full check mode was selected.
   case acc.mode {
     Full -> ["the full check was selected", ..crossing]
     Affected -> crossing
@@ -680,6 +711,7 @@ fn int_text(value: Int) -> String {
 
 // The kinds that need the path's position in the tree, once machinery is
 // ruled out.
+/// Classifies path kinds for non-machinery files based on position and package context.
 fn classify_beyond_machinery(
   path: String,
   parts: List(String),
@@ -701,6 +733,7 @@ fn classify_beyond_machinery(
   }
 }
 
+/// Classifies files located directly at a package root.
 fn classify_package_root(file: String) -> Kind {
   case list.contains(escalate_package_files, file) {
     True -> PackageManifest
@@ -712,11 +745,15 @@ fn classify_package_root(file: String) -> Kind {
   }
 }
 
+/// Classifies paths located outside recognised package sources.
 fn classify_outside(path: String, parts: List(String), graph: Graph) -> Kind {
+  // Check if root-level file has markdown extension.
   let root_markdown = case parts {
     [_] -> string.ends_with(path, ".md")
     _ -> False
   }
+
+  // Classify path as model, doc, read-by-test, or unknown.
   case
     string.starts_with(path, model_prefix),
     list.any(doc_prefixes, string.starts_with(path, _))
@@ -747,10 +784,12 @@ fn is_machinery(path: String) -> Bool {
 /// under("docs/examplesX", "docs/examples")         // -> False
 /// ```
 pub fn under(path: String, prefix: String) -> Bool {
+  // Strip trailing slashes from prefix before path comparison.
   let prefix = case string.ends_with(prefix, "/") {
     True -> under_trim(prefix)
     False -> prefix
   }
+
   path == prefix || string.starts_with(path, prefix <> "/")
 }
 
@@ -765,11 +804,13 @@ fn under_trim(prefix: String) -> String {
 // The reverse-dependency walk. Each package popped finds the packages that
 // list it under `[dependencies]` and have not been selected yet, in package
 // name order, and pushes them for their own dependents.
+/// Traverses reverse dependencies pushing affected packages onto the selected dictionary.
 fn spread(
   frontier: List(String),
   selected: Dict(String, String),
   graph: Graph,
 ) -> Dict(String, String) {
+  // Walk remaining frontier packages collecting dependents.
   case frontier {
     [] -> selected
     [package, ..rest] -> {
@@ -792,12 +833,14 @@ fn spread(
 // against packages other dev edges added, which is what keeps the edge from
 // propagating: a package that merely dev-depends on one of those is not
 // reached.
+/// Adds a dev-dependency package if one of its declared dev dependencies is affected.
 fn add_dev_edge(
   found: Dict(String, String),
   regular: Dict(String, String),
   other: String,
   graph: Graph,
 ) -> Dict(String, String) {
+  // Check whether the package is already marked affected.
   case dict.has_key(regular, other) {
     True -> found
     False -> {
@@ -806,6 +849,8 @@ fn add_dev_edge(
         |> set.to_list
         |> list.sort(string.compare)
         |> list.find(dict.has_key(regular, _))
+
+      // Insert edge reason if any dev dependency was affected.
       case hit {
         Ok(package) -> dict.insert(found, other, "dev-depends on " <> package)
         Error(Nil) -> found
@@ -822,6 +867,7 @@ fn dependencies_of(
 }
 
 // Depth-first over `[dependencies]` edges from the roots.
+/// Collects reachable dependency packages using depth-first search.
 fn reach(stack: List(String), found: Set(String), graph: Graph) -> Set(String) {
   case stack {
     [] -> found
@@ -840,6 +886,7 @@ fn reach(stack: List(String), found: Set(String), graph: Graph) -> Set(String) {
 
 // The package lanes of an `Affected` selection: the named lane groups first,
 // then every other selected package, in `check_order`, in one `fast` lane.
+/// Groups affected package check commands into named parallel lane buckets.
 fn grouped_lanes(selection: Selection) -> List(Lane) {
   let remaining = list.filter(check_order, dict.has_key(selection.packages, _))
   let named =
@@ -852,6 +899,8 @@ fn grouped_lanes(selection: Selection) -> List(Lane) {
   let grouped = list.flat_map(lane_groups, fn(group) { group.1 })
   let rest =
     list.filter(remaining, fn(package) { !list.contains(grouped, package) })
+
+  // Append fast lane for any unbucketed affected packages.
   case rest {
     [] -> named
     _ ->
@@ -861,7 +910,9 @@ fn grouped_lanes(selection: Selection) -> List(Lane) {
 
 // One `gate check-<package>` line per selected package, in `check_order`
 // and then name order for any the order does not list.
+/// Produces human-readable gate lines for each selected affected package.
 fn check_lines(selection: Selection) -> List(String) {
+  // Render full check notice or individual package check gates.
   case selection.mode {
     Full -> ["gate check  every package (make check)"]
     Affected -> {

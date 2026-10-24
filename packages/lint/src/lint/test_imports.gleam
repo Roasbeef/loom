@@ -86,6 +86,7 @@ fn walk(
   modules: Dict(String, #(String, String)),
   acc: List(Finding),
 ) -> List(Finding) {
+  // Process frontier nodes until the search queue is empty.
   case frontier {
     [] -> list.reverse(acc)
     [node, ..rest] -> {
@@ -106,6 +107,8 @@ fn advance(
   state: #(List(Node), Set(String), List(Finding)),
 ) -> #(List(Node), Set(String), List(Finding)) {
   let #(entered, seen, acc) = state
+
+  // Handle whether the step imports a forbidden module or descends locally.
   case step {
     Forbidden(module:, offset:) -> #(entered, seen, [
       reached(node, module, offset),
@@ -148,6 +151,8 @@ fn steps(wall: Wall, code: String) -> List(Step) {
     Ok(module) ->
       list.filter_map(module.imports, fn(definition) {
         let import_ = definition.definition
+
+        // Classify whether this import is forbidden, local, or ignored.
         case
           list.any(wall.forbidden, under(_, import_.module)),
           under(wall.package, import_.module)

@@ -652,6 +652,8 @@ fn render_lines(state: State, width: Int, height: Int) {
     EditingTargetStrand -> editor_lines(state, width)
     Confirming(proposal) -> confirmation_lines(state, proposal, width)
   }
+
+  // Format prompt-specific key control hint line.
   let footer = case state.prompt {
     Browsing -> {
       let continuation = case state.next_cursor {
@@ -670,6 +672,8 @@ fn render_lines(state: State, width: Int, height: Int) {
     Confirming(_) ->
       quiet("←→ or Tab change wake · Enter create link · Esc back")
   }
+
+  // Format any active operation status or notice messages.
   let result = case state.operation_result {
     Some(message) -> [quiet(text.truncate(message, width, "…"))]
     None -> []
@@ -681,12 +685,16 @@ fn render_lines(state: State, width: Int, height: Int) {
     ]
   }
   let footers = list.append(list.append(result, notice), [footer])
+
+  // Slice visible content viewport based on current prompt state.
   let room = int.max(0, height - list.length(footers))
   let visible = case state.prompt {
     Browsing -> grant_viewport(content, state.selected_grant, room)
     ChoosingSession -> row_viewport(content, state.selected_session, 3, room)
     EditingTargetStrand | Confirming(_) -> list.take(content, room)
   }
+
+  // Append footer lines to visible content rows.
   list.append(visible, footers)
 }
 

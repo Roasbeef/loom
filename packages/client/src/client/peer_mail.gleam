@@ -1303,6 +1303,8 @@ fn standing_from(
     Ok(Some(_)) -> True
     Ok(None) | Error(Nil) -> False
   }
+
+  // Determine whether terminal failure requires user intervention.
   let failed = case last {
     Some(operation.RunLastResult(outcome: operation.RunFailed(_), ..)) -> True
     Some(operation.RunLastResult(..))

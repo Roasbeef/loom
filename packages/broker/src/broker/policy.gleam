@@ -950,6 +950,8 @@ fn shortfall(
     requirements.readable_roots
     |> list.filter(fn(path) { !covered_by(path, final.readable_roots) })
     |> list.map(fn(path) { NarrowedReadableRoot(path:) })
+
+  // Network requirements must not widen granted network access.
   let network = case network_exceeds(requirements.network, final.network) {
     True -> [
       NarrowedNetwork(wanted: requirements.network, granted: final.network),
@@ -969,6 +971,8 @@ fn shortfall(
         False -> Error(Nil)
       }
     })
+
+  // Scratch directory changes represent a shortfall if unmet.
   let scratch = case requirements.scratch == final.scratch {
     True -> []
     False -> [NarrowedScratch(wanted: requirements.scratch)]

@@ -184,6 +184,7 @@ fn describe(errors: List(decode.DecodeError)) -> String {
   }
 }
 
+/// Formats a single decode error into human-readable text.
 fn describe_one(error: decode.DecodeError) -> String {
   let decode.DecodeError(expected:, found:, path:) = error
   "expected "

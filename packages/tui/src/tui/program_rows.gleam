@@ -55,10 +55,14 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     ProgramSettled -> theme.added
     _ -> theme.current
   }
+
+  // Calculate box dimensions and border styles.
   let box = int.max(8, width - 3)
   let inside = box - 4
   let border = style.new(edge, style.Default, style.none())
   let heading = style.new(edge, style.Default, style.bold())
+
+  // Render framed interior content rows.
   let middle =
     list.index_map(body, fn(row, index) {
       span.line_new([

@@ -71,6 +71,8 @@ pub fn start_helper() -> exec.Helper {
   })
   let assert Ok(inbox) = process.receive(handoff, 1000)
     as "the fake helper started"
+
+  // Wire in-memory transport connecting to the background fake process.
   let transport =
     exec.ChannelTransport(
       send: fn(bytes) { process.send(inbox, Outbound(bytes:)) },
@@ -84,6 +86,8 @@ pub fn start_helper() -> exec.Helper {
       kill_witness_ms: 5000,
       heartbeat_interval_ms: 0,
     )
+
+  // Start the broker-side helper actor and complete initial handshake.
   let assert Ok(helper) = exec.start(config) as "the helper actor starts"
   process.send(inbox, Attach(wire: exec.wire(helper)))
   let assert Ok(_features) = exec.await_ready(helper, waiting: 3000)

@@ -460,6 +460,8 @@ pub fn lines(state: State) -> List(String) {
           item.name <> ": ~" <> count(item.tokens) <> " tokens"
         })
       ]
+
+      // Format the auto-compaction boundary line when configured.
       let boundary = case board.checkpoint_at {
         Some(at) ->
           "Auto-compaction at "
@@ -471,6 +473,8 @@ pub fn lines(state: State) -> List(String) {
           <> " remaining"
         None -> "Auto-compaction is off."
       }
+
+      // Format the item estimates list according to the active surface.
       let details = case state.surface {
         All -> [
           "",
@@ -483,6 +487,8 @@ pub fn lines(state: State) -> List(String) {
         ]
         Overview | Hidden -> ["", "/context all or a expands item estimates."]
       }
+
+      // Combine all formatted sections into a single list of lines.
       list.flatten([
         common,
         [

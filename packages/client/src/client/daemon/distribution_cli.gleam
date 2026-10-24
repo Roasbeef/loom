@@ -535,6 +535,8 @@ fn install(arguments: List(String)) -> Result(String, String) {
     _ -> Error(usage)
   })
   use bundle_path <- result.try(bootstrap.absolute_path(bundle_path))
+
+  // Resolve installation directories and read the bundle source.
   use home <- result.try(case parsed.home {
     Some(home) -> bootstrap.absolute_path(home)
     None ->

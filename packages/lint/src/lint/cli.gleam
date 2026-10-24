@@ -72,12 +72,15 @@ is `# <errors> <warnings>`, which is what the wrapper script reads.
 
 pub fn main() -> Nil {
   let options = parse(argv.load().arguments, defaults())
+
+  // Print usage help or execute the lint run.
   case options.help || options.paths == [] {
     True -> io.println(usage)
     False -> run(options)
   }
 }
 
+/// Returns the default CLI options configuration.
 fn defaults() -> Options {
   Options(
     paths: [],
@@ -97,6 +100,7 @@ fn parse(arguments: List(String), options: Options) -> Options {
   }
 }
 
+/// Applies a single command line argument to update CLI options.
 fn apply(argument: String, options: Options) -> Options {
   case string.split_once(argument, "=") {
     Ok(#("--depth", value)) ->
@@ -145,6 +149,7 @@ fn promoted(value: String) -> List(Rule) {
 
 // --- running ----------------------------------------------------------------
 
+/// Executes the full linting pipeline across all resolved source files.
 fn run(options: Options) -> Nil {
   let files =
     options.paths
@@ -207,6 +212,8 @@ fn run(options: Options) -> Nil {
 /// repeats only what the full set does not say.
 fn lint_test(source: #(String, String), options: Options) -> List(Finding) {
   let found = lint.check_tests(display(source.0), source.1)
+
+  // Filter unparseable findings if already covered in full run.
   case options.include_tests {
     True -> list.filter(found, fn(f) { f.rule != finding.Unparseable })
     False -> found
@@ -223,6 +230,8 @@ fn import_wall_findings(tests: List(#(String, String))) -> List(Finding) {
       list.filter(tests, fn(source) {
         lint.package_of(display(source.0)) == option.Some(wall.package)
       })
+
+    // Check whether tests exist for the walled package.
     case own {
       [] -> []
       [first, ..] ->
@@ -267,16 +276,20 @@ fn contents(path: String) -> Result(#(String, String), Nil) {
   }
 }
 
+/// Lints a single source file using the configured policy and combinators.
 fn lint_source(
   source: #(String, String),
   options: Options,
   combinators: List(Eager),
 ) -> List(Finding) {
   let #(path, code) = source
+
+  // Adjust policy if linting a test file directly.
   let file_policy = case is_test(path) {
     True -> policy.for_tests_like(options.policy)
     False -> options.policy
   }
+
   lint.check_with(display(path), code, file_policy, combinators)
 }
 
@@ -344,9 +357,12 @@ fn package_of(path: String) -> String {
 
 // --- printing ---------------------------------------------------------------
 
+/// Prints all findings grouped by rule up to the display limit.
 fn print_findings(findings: List(Finding), limit: Int) -> Nil {
   list.each(finding.rules(), fn(rule) {
     let matching = list.filter(findings, fn(found) { found.rule == rule })
+
+    // Print matching rule findings if any exist.
     case matching {
       [] -> Nil
       _ -> {
@@ -359,10 +375,13 @@ fn print_findings(findings: List(Finding), limit: Int) -> Nil {
           <> count_text(matching)
           <> " finding(s)",
         )
+
+        // Bound output to the display limit if positive.
         let shown = case limit > 0 {
           True -> list.take(matching, limit)
           False -> matching
         }
+
         list.each(shown, fn(found) { io.println("  " <> finding.render(found)) })
         elision(matching, shown)
       }
@@ -370,8 +389,11 @@ fn print_findings(findings: List(Finding), limit: Int) -> Nil {
   })
 }
 
+/// Prints an elision notice when findings exceed the display limit.
 fn elision(matching: List(Finding), shown: List(Finding)) -> Nil {
   let hidden = list.length(matching) - list.length(shown)
+
+  // Print count of omitted findings if limit was reached.
   case hidden > 0 {
     False -> Nil
     True ->
@@ -385,6 +407,7 @@ fn count_text(findings: List(Finding)) -> String {
   int.to_string(list.length(findings))
 }
 
+/// Prints the census table showing findings per rule per package.
 fn print_census(findings: List(Finding), files: List(String)) -> Nil {
   let by_package = tally(findings)
   let packages =
@@ -413,6 +436,7 @@ fn header() -> String {
   <> pad_left("total", 8)
 }
 
+/// Formats a single census table row for a package or total line.
 fn row(label: String, counter: fn(Rule) -> Int) -> String {
   let counts = list.map(finding.rules(), counter)
   let cells =
@@ -422,17 +446,22 @@ fn row(label: String, counter: fn(Rule) -> Int) -> String {
   cells <> pad_left(int.to_string(int.sum(counts)), 8)
 }
 
+/// Aggregates findings counts by package and rule.
 fn tally(findings: List(Finding)) -> Dict(#(String, Rule), Int) {
   list.fold(findings, dict.new(), fn(counts, found) {
     let key = #(package_of(found.path), found.rule)
+
+    // Look up current tally for the package and rule.
     let seen = case dict.get(counts, key) {
       Ok(value) -> value
       Error(Nil) -> 0
     }
+
     dict.insert(counts, key, seen + 1)
   })
 }
 
+/// Looks up finding count for a specific package and rule combination.
 fn count(
   counts: Dict(#(String, Rule), Int),
   package: String,
@@ -444,9 +473,12 @@ fn count(
   }
 }
 
+/// Prints overall pass/fail summary and error/warning counts.
 fn print_summary(findings: List(Finding), errors: List(Rule)) -> Nil {
   let #(gated, warned) = finding.gate(findings, errors)
   io.println("")
+
+  // Print error promotion level summary.
   case errors {
     [] ->
       io.println("every rule is at warning level; nothing here fails the build")
@@ -457,6 +489,7 @@ fn print_summary(findings: List(Finding), errors: List(Rule)) -> Nil {
         <> " — every other rule warns",
       )
   }
+
   io.println(
     "lint: "
     <> int.to_string(gated)
@@ -475,6 +508,8 @@ fn print_summary(findings: List(Finding), errors: List(Rule)) -> Nil {
 /// answers without walking a label to its end (R5, this tool's own rule).
 fn pad(text: String, width: Int) -> String {
   let padded = string.pad_end(text, width, " ")
+
+  // Ensure trailing space if text already meets width.
   case padded == text {
     True -> text <> " "
     False -> padded

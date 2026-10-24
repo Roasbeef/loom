@@ -309,6 +309,13 @@ pub fn with_min_commands(config: Config, length: Int) -> Config {
   Config(..config, min_commands: int.max(length, 0))
 }
 
+/// Replaces the maximum command list length.
+///
+/// ## Examples
+///
+/// ```gleam
+/// statem.default_config(seed: 7) |> statem.with_max_commands(50)
+/// ```
 pub fn with_max_commands(config: Config, length: Int) -> Config {
   Config(..config, max_commands: int.max(length, 0))
 }
@@ -504,6 +511,7 @@ fn run_with(
 ) -> Result(Nil, Failure(cmd)) {
   let trees = draw(spec, config, seed)
 
+  // Execute drawn commands and shrink upon first failure.
   case execute_list(spec, roots(trees)) {
     Ok(Nil) -> Ok(Nil)
     Error(failure) -> Error(shrink(spec, config, run, trees, failure))
@@ -520,12 +528,14 @@ fn check_from(
   run: Int,
   stream: qcheck.Seed,
 ) -> Result(Nil, Failure(cmd)) {
+  // Stop once all planned test runs pass.
   case run >= config.test_count {
     True -> Ok(Nil)
 
     False -> {
       let #(seed, stream) = next_run_seed(stream)
 
+      // Execute the run with the drawn seed or stop on failure.
       case run_with(spec, config, run, seed) {
         Ok(Nil) -> check_from(spec, config, run + 1, stream)
         Error(failure) -> Error(failure)
@@ -577,6 +587,7 @@ pub fn report(
   failure: Failure(cmd),
   describe describe: fn(cmd) -> String,
 ) -> String {
+  // Describe whether shrinking converged or exhausted its budget.
   let ending = case failure.shrink_end {
     ShrinkConverged -> "converged"
     ShrinkBoundHit -> "shrink bound hit"
@@ -584,14 +595,17 @@ pub fn report(
 
   let numbered = fn(commands, failing) {
     list.index_map(commands, fn(command, index) {
+      // Mark the failing command step with an arrow prefix.
       let marker = case index == failing {
         True -> "  > "
         False -> "    "
       }
+
       marker <> int.to_string(index) <> ". " <> describe(command)
     })
   }
 
+  // Add finish marker when violation occurred during the finish step.
   let finish_marker = case list.drop(failure.shrunk, failure.step) {
     [] -> ["  > end of list (finish)"]
     [_, ..] -> []
@@ -684,6 +698,7 @@ pub fn run_seed(seed: Int, run: Int) -> qcheck.Seed {
 fn skip_seeds(stream: qcheck.Seed, count: Int) -> qcheck.Seed {
   let #(seed, stream) = next_run_seed(stream)
 
+  // Check if remaining skip count is exhausted.
   case count <= 0 {
     True -> seed
     False -> skip_seeds(stream, count - 1)
@@ -812,6 +827,7 @@ fn grow_loop(
   acc: List(Tree(cmd)),
   rejected: Int,
 ) -> Grown(model, cmd) {
+  // Stop when desired command count is reached or rejection limit exceeded.
   case remaining <= 0 || rejected >= max_rejections {
     True -> Grown(trees: list.reverse(acc), model: model, seed: seed)
 
@@ -819,6 +835,7 @@ fn grow_loop(
       let #(drawn, seed) = qcheck.generate_tree(command(model), seed)
       let Tree(chosen, _) = drawn
 
+      // Check precondition before admitting the drawn command.
       case precondition(model, chosen) {
         Reject ->
           grow_loop(
@@ -864,6 +881,7 @@ fn execute_list(
   spec: Spec(model, cmd, sut),
   commands: List(cmd),
 ) -> Result(Nil, StepFailure) {
+  // Create a fresh SUT instance under rescue.
   case exception.rescue(spec.new_sut) {
     Error(crash) -> Error(StepFailure(0, crashed("new_sut", crash)))
 
@@ -1042,11 +1060,14 @@ fn shrink(
       stop: config.shrink_stop,
     )
   let none = Spent(executed: 0, discarded: 0)
+
+  // Empty list is tested first as a shrink candidate.
   let whole = case trees {
     [] -> yielder.empty()
     _ -> yielder.single([])
   }
 
+  // Search for minimal failing candidate sequence.
   let Shrunk(final_trees, final_failure, accepted, spent, ending) = case
     search(spec, limits, whole, none)
   {
@@ -1130,6 +1151,7 @@ fn judge(
 ) -> Verdict {
   let commands = roots(candidate)
 
+  // Reject candidates that fail preconditions without executing them.
   case first_rejection(spec, spec.initial, commands, 0) {
     Some(_) ->
       case spent.discarded >= max_inadmissible {
@@ -1172,6 +1194,7 @@ fn attempt(
     )
   let spent = Spent(..spent, executed: spent.executed + result.executions)
 
+  // Record whether any execution in this attempt reproduced the target violation.
   case result.accepted {
     Some(failure) -> Accepted(failure, spent)
     None -> Refuted(spent)

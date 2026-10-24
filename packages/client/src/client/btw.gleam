@@ -747,6 +747,8 @@ fn finished(
     Ok(stream.Delta(_)) -> Error("side stream ended without a terminal")
     Error(reason) -> Error(reason)
   }
+
+  // Settle token accounting before recording the conversation update.
   let answer = case auxiliary.record_request(data.session, report, "btw") {
     Ok(Nil) -> answer
     Error(reason) -> Error(reason)

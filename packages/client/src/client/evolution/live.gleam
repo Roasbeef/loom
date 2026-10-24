@@ -669,6 +669,8 @@ fn closing(
         Error(failed) -> Ok(failed.retry)
       }
     })
+
+  // Deliver the shutdown answer and transition to the target state.
   let answer = case unconfirmed, pending {
     [], [] -> Ok(Nil)
     _, [_, ..] | [_, ..], [] ->

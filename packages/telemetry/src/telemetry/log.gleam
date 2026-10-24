@@ -285,6 +285,7 @@ pub fn error(logger: Logger, event: String, fields: List(Field)) -> Nil {
   write(logger, level.Error, event, fields)
 }
 
+/// Dispatches a log event to the configured sink if permitted by the threshold.
 fn write(
   logger: Logger,
   level: Level,

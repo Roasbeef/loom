@@ -1384,6 +1384,8 @@ fn observe_completion(
     True -> shared.completion
     False -> completion_summary.new()
   }
+
+  // Filter loaded entries from the captured snapshot window.
   let entries =
     list.filter_map(cut.window.items, fn(item) {
       case item {
@@ -1391,10 +1393,14 @@ fn observe_completion(
         snapshot.Unloaded(..) -> Error(Nil)
       }
     })
+
+  // Observe the completion summary and detect whether the active strand changed.
   let completion = completion_summary.observe(previous, view.cells, entries)
   let changed =
     completion_summary.latest(previous, active)
     != completion_summary.latest(completion, active)
+
+  // Update shared view state with the fresh completion observations.
   Shared(
     ..{
       shared

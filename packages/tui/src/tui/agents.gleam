@@ -1050,6 +1050,8 @@ fn detail_lines(
     Spacious -> [span.line_new([])]
     Compact -> []
   }
+
+  // Render the agent title header and status line.
   let #(glyph, tone) = agent_row.glyph(row.id, row.status, theme.graphite)
   let title = [
     span.line_new([
@@ -1061,6 +1063,8 @@ fn detail_lines(
     ]),
     state_line(row, figures, width),
   ]
+
+  // Render the task brief section according to spacing constraints.
   let task_rows = case spacing {
     Spacious -> 4
     Compact -> 2

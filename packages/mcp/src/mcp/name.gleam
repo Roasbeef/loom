@@ -127,6 +127,7 @@ pub fn first_collision(
   collision_loop(named, dict.new())
 }
 
+/// Checks sequentially for collision among mangled names against already seen names.
 fn collision_loop(
   remaining: List(#(String, String)),
   seen: Dict(String, String),
@@ -143,6 +144,7 @@ fn collision_loop(
 
 // --- the pipeline ------------------------------------------------------------
 
+/// Applies name flattening, keyword guarding, and collision avoidance tagging.
 fn mangle_against(
   original: String,
   reserved: List(String),
@@ -150,6 +152,8 @@ fn mangle_against(
 ) -> String {
   let flattened = flatten(original)
   let fronted = front(flattened)
+
+  // Append an underscore if the fronted identifier matches a reserved keyword.
   let guarded = case list.contains(reserved, fronted) {
     True -> fronted <> "_"
     False -> fronted
@@ -158,6 +162,8 @@ fn mangle_against(
   // The bound test stops at the bound instead of walking a 200-char
   // name's whole length (lint R5).
   let oversize = string.drop_start(guarded, max_length) != ""
+
+  // Retain pristine identifiers or tag modified and oversized names with a digest.
   case guarded == original && !oversize {
     True -> guarded
     False -> tag(clip(guarded, oversize), digest(original))
@@ -173,7 +179,9 @@ fn front(flattened: String) -> String {
   }
 }
 
+/// Determines whether a text string begins with an ASCII digit.
 fn digit_led(text: String) -> Bool {
+  // Check whether the first codepoint falls in the ASCII digit range.
   case string.to_utf_codepoints(text) {
     [] -> False
     [first, ..] -> {
@@ -192,8 +200,11 @@ fn clip(text: String, oversize: Bool) -> String {
 
 // The digest join never doubles an underscore: a keyword-guarded or
 // truncation-cut base can already end in one.
+/// Tags a base name with a truncated hex digest suffix.
 fn tag(base: String, digest_hex: String) -> String {
   let suffix = string.lowercase(string.slice(digest_hex, 0, 8))
+
+  // Join with an underscore unless the base name already terminates in one.
   case string.ends_with(base, "_") {
     True -> base <> suffix
     False -> base <> "_" <> suffix
@@ -202,6 +213,7 @@ fn tag(base: String, digest_hex: String) -> String {
 
 // --- codepoint translation ---------------------------------------------------
 
+/// Flattens arbitrary unicode identifier text into snake_case ASCII segments.
 fn flatten(original: String) -> String {
   let #(pieces, _) =
     list.fold(string.to_utf_codepoints(original), #([], Boundary), step)
@@ -211,12 +223,15 @@ fn flatten(original: String) -> String {
   |> collapse
 }
 
+/// Steps the identifier folding machine across one codepoint with boundary tracking.
 fn step(
   state: #(List(String), Previous),
   codepoint: UtfCodepoint,
 ) -> #(List(String), Previous) {
   let #(pieces, previous) = state
   let code = string.utf_codepoint_to_int(codepoint)
+
+  // Transition casing boundary states and emit formatted character segments.
   case classify(code), previous {
     LowerCase, _ -> #([ascii(code), ..pieces], LowerOrDigit)
     Digit, _ -> #([ascii(code), ..pieces], LowerOrDigit)
@@ -226,6 +241,7 @@ fn step(
   }
 }
 
+/// Classifies an ASCII integer codepoint into letter, digit, or other category.
 fn classify(code: Int) -> Class {
   case code {
     _ if code >= 0x61 && code <= 0x7A -> LowerCase

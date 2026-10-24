@@ -288,6 +288,8 @@ fn run(
       "the real coding operation could not be admitted"
     }),
   )
+
+  // Await operation settlement and summarize the resulting progress.
   let observed_result =
     api.await_result(
       runtime,
@@ -309,6 +311,8 @@ fn run(
     | Ok(operation.NavigationLastResult(..)) ->
       rollout.Interrupted("trial did not settle a coding operation")
   }
+
+  // Query storage statistics and entry history.
   use stats <- result.try(
     storage.stats(runtime.session.store)
     |> result.map_error(fn(_) { "rollout ledger observation failed" }),
@@ -328,6 +332,8 @@ fn run(
     call.try_call(guard.requests, waiting: 5000, sending: Count)
     |> result.map_error(fn(_) { "rollout attempt count is unavailable" }),
   )
+
+  // Aggregate tool executions and assistant scrubbed output.
   let tools =
     list.count(entries, fn(entry) {
       case entry {

@@ -1356,10 +1356,14 @@ fn ledger_text(found: Ledger) -> String {
     <> " of "
     <> int.to_string(list.length(found.members))
     <> " members hold it"
+
+  // Format daemon standing message if degraded or lagging.
   let standing = case found.standing {
     "ok" -> []
     other -> ["this daemon is " <> clean(other) <> " in the ledger"]
   }
+
+  // Format table of member nodes and their reported ledger positions.
   let rows = case found.members {
     [] -> []
     members -> [
@@ -1369,6 +1373,8 @@ fn ledger_text(found: Ledger) -> String {
       ),
     ]
   }
+
+  // Format last recorded refusal error details when present.
   let refusal = case found.last_refusal {
     None -> []
     Some(refused) -> [

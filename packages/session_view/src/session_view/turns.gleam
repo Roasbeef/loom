@@ -993,16 +993,22 @@ fn timed(classified: List(Classified)) -> List(Classified) {
   list.fold(classified, #([], None), fn(acc, item) {
     let #(out, before) = acc
     let now = at_of(item)
+
+    // Compute elapsed duration since the prior timestamp when monotonic.
     let took = case before, now {
       Some(before), Some(now) if now >= before -> Some(now - before)
       _, _ -> None
     }
+
+    // Attach calculated elapsed duration to supported turn items.
     let item = case item {
       Answer(..) -> Answer(..item, took:)
       Doing(item: Narrated(..) as narrated, ..) ->
         Doing(..item, item: Narrated(..narrated, took:))
       Input(..) | Doing(..) | Outside(..) -> item
     }
+
+    // Advance the high-water timestamp observed across processed items.
     let latest = case before, now {
       Some(before), Some(now) -> Some(int.max(before, now))
       None, now -> now
@@ -1886,10 +1892,14 @@ fn worked(turn: Turn) -> Worked {
     _ -> list.first(times) |> option.from_result
   }
   let end = list.max(times, int.compare) |> option.from_result
+
+  // Measure the turn's total elapsed duration from start to end.
   let duration_ms = case start, end {
     Some(start), Some(end) if end >= start -> Some(end - start)
     _, _ -> None
   }
+
+  // Sum tool and assistant execution steps across the turn.
   let steps =
     list.fold(turn.rest, 0, fn(total, item) {
       case item {
@@ -1897,6 +1907,8 @@ fn worked(turn: Turn) -> Worked {
         Answer(..) | Input(..) | Outside(..) -> total
       }
     })
+
+  // Count distinct workspace file paths modified during the turn.
   let files =
     turn.rest
     |> list.flat_map(fn(item) {
@@ -1907,6 +1919,8 @@ fn worked(turn: Turn) -> Worked {
     })
     |> set.from_list
     |> set.size
+
+  // Count failed tool executions or programs with failed sub-calls.
   let failed =
     list.count(turn.rest, fn(item) {
       case item {
@@ -1922,10 +1936,14 @@ fn worked(turn: Turn) -> Worked {
         Doing(..) | Answer(..) | Input(..) | Outside(..) -> False
       }
     })
+
+  // Check whether any action in the turn ended in an interrupted state.
   let ending = case list.any(turn.rest, stopped) {
     True -> Interrupted
     False -> Finished
   }
+
+  // Return the compiled turn activity statistics.
   Worked(duration_ms:, steps:, files:, failed:, ending:)
 }
 

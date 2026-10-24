@@ -61,6 +61,8 @@ pub fn observe(
   |> list.filter_map(fn(strand) {
     use current <- result.try(dict.get(view.operations, strand.id))
     let task = task_excerpt(view.cells, entries, current)
+
+    // Fall back to previously retained task brief if history is outside the window.
     let retained = case task {
       "" ->
         previous
@@ -71,6 +73,8 @@ pub fn observe(
         |> result.unwrap("task brief outside loaded history")
       text -> text
     }
+
+    // Determine current progress summary from active tool calls.
     let calls = tool_activity.running(view.cells, entries, current)
     let progress = case calls {
       [] -> option.unwrap(strand.live_phase, "running")
@@ -80,6 +84,8 @@ pub fn observe(
         |> list.map(fn(call) { call.name })
         |> string.join(", ")
     }
+
+    // Check pending inputs queued for this strand.
     let pending = case view.pending_inputs {
       None -> "pending input unknown"
       Some(inputs) -> {
@@ -90,6 +96,8 @@ pub fn observe(
         }
       }
     }
+
+    // Emit the observed row for the reviewer strand.
     Ok(Row(strand.id, current, retained, progress, pending))
   })
 }

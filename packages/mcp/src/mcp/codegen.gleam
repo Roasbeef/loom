@@ -168,14 +168,18 @@ pub fn generate(
     schema.check_budget([
       json.String(server),
       ..list.flat_map(tools, fn(tool) {
+        // Collect optional output schema JSON values when present.
         let output = case tool.output_schema {
           None -> []
           Some(output) -> [output]
         }
+
+        // Collect optional tool description text when present.
         let description = case tool.description {
           None -> []
           Some(text) -> [json.String(text)]
         }
+
         list.flatten([
           [json.String(tool.name), tool.input_schema],
           output,
@@ -288,6 +292,8 @@ pub fn scan_for_at(source: String) -> Result(Nil, String) {
   |> list.index_map(fn(line, index) { #(index + 1, line) })
   |> list.try_each(fn(numbered) {
     let #(line_number, line) = numbered
+
+    // Validate that the line is either doc prose or free of stray @ tokens.
     case
       string.starts_with(string.trim_start(line), "///") || line_clear(line)
     {
@@ -308,6 +314,7 @@ type Scan {
   Found
 }
 
+/// Checks whether a single source line contains no unquoted @ characters.
 fn line_clear(line: String) -> Bool {
   let final =
     list.fold_until(string.to_graphemes(line), Outside, fn(state, grapheme) {
@@ -319,6 +326,7 @@ fn line_clear(line: String) -> Bool {
   final != Found
 }
 
+/// Advances the string literal scanner across one grapheme.
 fn advance(state: Scan, grapheme: String) -> Scan {
   case state, grapheme {
     Outside, "\"" -> Inside

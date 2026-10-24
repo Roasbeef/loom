@@ -191,14 +191,20 @@ pub fn render_frame(
     layout.layout(screen, model)
   let #(conversation_area, queue_area) =
     layout.queue_body_layout(body_area, model)
+
+  // Layout transcript and changes panels within the screen.
   let transcript_panel = conversation_area
   let changes_panel = layout.changes_panel_area(screen, model)
   let transcript_area = layout.transcript_inner(transcript_panel)
+
+  // Compute nested input composer and editor rects.
   let #(pending_area, composer_area) =
     layout.pending_layout(layout.panel_inner(input_area), model)
   let #(paste_area, editor_area) =
     layout.input_layout(composer_area, model.shared.attachments)
   let editor_area = input_frame.prompt_area(editor_area)
+
+  // Split footer line into status message and agent strip.
   let #(footer_area, strip_area) = layout.footer_split(footer_area, model)
   let strip = layout.strip_lines(model)
 
@@ -2185,6 +2191,8 @@ fn render_command_palette(
       let selected =
         int.min(model.view.command_selected, list.length(suggestions) - 1)
       let offset = int.max(0, selected - { height - 3 })
+
+      // Create bounded card area positioned above composer.
       let area =
         geometry.rect_new(
           body.position.x + 2,
@@ -2203,6 +2211,8 @@ fn render_command_palette(
           ],
           block.Top,
         )
+
+      // Render visible suggestion lines.
       let lines =
         suggestions
         |> list.drop(offset)
@@ -2290,6 +2300,8 @@ fn render_inline_queue(
   // The queue card and composer use one shared hold predicate. Even the
   // smallest card keeps the hold label instead of suggesting automatic drain.
   let held = tui_model.active_queue_halted(model)
+
+  // Configure title and control hint strings based on queue hold status.
   let held_hint = case held {
     True -> " · held until your next message "
     False -> " "
@@ -2302,6 +2314,8 @@ fn render_inline_queue(
     True -> " queue · held ↵ Esc "
     False -> " queue · ↑↓ Pg ↵ e Esc "
   }
+
+  // Render the queue editor according to surface and height.
   case state.surface, area.size.height {
     _, 0 -> buf
     queue_editor.Closed, _ -> {
@@ -2596,6 +2610,8 @@ fn diff_navigation_line(
 ) -> span.Line {
   let DiffNavigationItem(label, tone) = item
   let chosen = index == selected
+
+  // Select cursor indicator and background color based on selection.
   let marker = case chosen {
     True -> "▸ "
     False -> "  "
@@ -2604,6 +2620,8 @@ fn diff_navigation_line(
     True -> theme.raised
     False -> theme.graphite
   }
+
+  // Color file name tone according to diff modification type.
   let foreground = case tone {
     DiffCurrent -> theme.current
     DiffAdded -> theme.added
@@ -2611,6 +2629,8 @@ fn diff_navigation_line(
     DiffRemoved -> theme.danger
     DiffQuiet -> theme.quiet
   }
+
+  // Format and truncate file label line.
   let value =
     marker
     <> label

@@ -1855,8 +1855,12 @@ fn admit(
   signals: process.Subject(Signal),
   settled: process.Subject(Nil),
 ) -> mist.Next(Phase, Signal) {
+
+  // Resolve connection roles and transfer the root admission permit.
   let role = role_of(attachment)
   let standing = page_standing(attachment, seen)
+
+  // Transfer admission permit and notify arrival.
   let reach = seen.grant.reach
   let transferred = root.transfer(daemon, attachment.permit, within: 1000)
   process.send(settled, Nil)
@@ -1927,6 +1931,8 @@ fn admit(
   let models_fn = attachment.models
   let profiles_fn = attachment.profiles
   let start = fn(standing) {
+
+    // Build initial component configuration payload.
     component.Start(
       session_id:,
       // The route read the registration when it resolved the session,
@@ -1961,6 +1967,8 @@ fn admit(
       transport:,
     )
   }
+
+  // Start the appropriate page component under the established role.
   let started = case transferred {
     Error(reason) -> {
       upgrade_log.closed_early(upgrade_log.Page, "transfer", reason)

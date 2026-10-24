@@ -263,6 +263,30 @@ pub fn portable_packages() -> List(String) {
   ["core", "machine", "prompt", "session_view", "statem"]
 }
 
+/// The packages whose R21 (`case-stanza`) and R22 (`function-doc`) censuses
+/// have been driven to zero and therefore gate at error level.
+///
+/// Data rather than a `case` for the same reason `portable_packages` is:
+/// each wave adds the packages it swept, and a regression in a swept package
+/// fails `make lint` immediately without waiting for the remaining packages.
+pub fn literate_packages() -> List(String) {
+  [
+    "events",
+    "executor",
+    "ext",
+    "harness",
+    "host",
+    "lint",
+    "mcp",
+    "prompt",
+    "session",
+    "statem",
+    "statem_parallel",
+    "telemetry",
+    "web_mermaid",
+  ]
+}
+
 /// A dependency that exists only on the BEAM, named from both sides.
 pub type BeamOnly {
   BeamOnly(

@@ -168,6 +168,8 @@ pub fn decode_readiness(value: JsonValue) -> Result(Readiness, String) {
     json.Int(1) -> Ok(Nil)
     _ -> Error("readiness version 1")
   })
+
+  // Parse and validate the declared execution endpoints array.
   use encoded <- result.try(field(fields, "endpoints"))
   use endpoints <- result.try(case encoded {
     json.Array(values) ->
@@ -183,6 +185,8 @@ pub fn decode_readiness(value: JsonValue) -> Result(Readiness, String) {
     True -> Ok(Nil)
     False -> Error("one to sixteen unique bounded endpoint names")
   })
+
+  // Parse and validate the idle timeout duration.
   use idle <- result.try(field(fields, "idle_within_ms"))
   use idle_within_ms <- result.try(case idle {
     json.Int(value) if value >= 0 && value <= 300_000 -> Ok(value)
@@ -334,6 +338,8 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
     True -> Ok(Nil)
     False -> Error("a bounded execution identity")
   })
+
+  // Parse strand, operation, and step routing metadata.
   use strand <- result.try(text(fields, "strand"))
   use operation <- result.try(text(fields, "operation"))
   use operation <- result.try(
@@ -344,6 +350,8 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
     True -> Ok(Nil)
     False -> Error("the execution's own broker step")
   })
+
+  // Parse execution deadline and target environment fields.
   use deadline <- result.try(field(fields, "deadline_ms"))
   use deadline_ms <- result.try(case deadline {
     json.Int(at) if at > 0 -> Ok(at)
@@ -355,6 +363,8 @@ fn decode_record(value: JsonValue) -> Result(Execution, String) {
     "workspace" | "orchestration" -> Ok(Nil)
     _ -> Error("a known execution seam")
   })
+
+  // Decode lifecycle phase and terminal payload outcome.
   use phase <- result.try(text(fields, "phase"))
   use payload <- result.try(field(fields, "result"))
   use phase <- result.try(case phase, payload {

@@ -1048,6 +1048,8 @@ fn change_part(
 ) -> #(Accumulator, List(StreamEvent)) {
   use item <- or_malformed(find_item(acc, value), acc, "text_item")
   use index <- or_malformed(part_index(event, value), acc, "text_index")
+
+  // Find the matching open part in the active output item.
   let kind = event_part_kind(event)
   use part <- or_malformed(
     list.find(item.parts, fn(part) {
@@ -1056,6 +1058,8 @@ fn change_part(
     acc,
     "text_part",
   )
+
+  // Check whether this event completes the active text part.
   let done =
     list.contains(
       [
@@ -1078,6 +1082,8 @@ fn change_part(
   use <- bool.lazy_guard(done && text != part.text, fn() {
     malformed(acc, "text_done_witness")
   })
+
+  // Update the matched part and reassemble the parent item.
   let next = case done {
     True -> Part(..part, closure: TextDone)
     False -> Part(..part, text: part.text <> text)
@@ -1425,6 +1431,8 @@ fn terminal(
     acc,
     "terminal_response",
   )
+
+  // Record response usage evidence and extract identity fact.
   use acc <- or_malformed(
     record_usage(acc, response, usage_evidence.Complete),
     acc,
@@ -1435,12 +1443,16 @@ fn terminal(
     acc,
     "terminal_identity",
   )
+
+  // Guard against unexpected missing creation context or response error.
   use <- bool.lazy_guard(acc.identity == None, fn() {
     malformed(acc, "terminal_before_created")
   })
   use <- bool.lazy_guard(wire.field(response, "error") != Error(Nil), fn() {
     malformed(acc, "terminal_error")
   })
+
+  // Extract output array and decode individual output items.
   use output <- or_malformed(
     wire.array_field(response, "output"),
     acc,
@@ -1451,6 +1463,8 @@ fn terminal(
     acc,
     "terminal_item_decode",
   )
+
+  // Order output items and extract finished item payloads.
   let ordered = list.sort(acc.items, fn(a, b) { int.compare(a.index, b.index) })
   let expected =
     list.filter_map(ordered, fn(item) {
@@ -1480,6 +1494,8 @@ fn terminal(
     ),
     fn() { malformed(acc, "terminal_items_noncontiguous") },
   )
+
+  // Verify completion status and confirm no incomplete items remain.
   use status <- or_malformed(
     wire.string_field(response, "status"),
     acc,

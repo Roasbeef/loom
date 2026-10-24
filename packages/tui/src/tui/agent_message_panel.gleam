@@ -295,6 +295,8 @@ fn wide(
   let gap = 2
   let right_width = int.max(1, width - left_width - gap)
   let visible = int.max(1, { area.size.height - 2 } / 3)
+
+  // Render the left message list and right preview panels.
   let left = message_rows(messages, current, left_width, visible)
   let right = preview(current, body_scroll, right_width, page_step(area))
   let height = int.max(list.length(left), list.length(right))
@@ -325,14 +327,20 @@ fn message_rows(
     |> list.index_map(fn(item, index) { #(identity(item), index) })
     |> list.key_find(identity(current))
     |> result.unwrap(0)
+
+  // Determine viewport slice offset around the selected message.
   let offset =
     int.min(selected_index, int.max(0, list.length(messages) - visible))
   let visible_messages = messages |> list.drop(offset) |> list.take(visible)
+
+  // Render header notices and visible message cards.
   [
     styled("OBSERVED SENDS · latest 20", width, theme.overlay_current()),
     styled("Acceptance is not a read receipt", width, theme.overlay_quiet()),
     ..list.flat_map(visible_messages, fn(item) {
       let chosen = identity(item) == identity(current)
+
+      // Set item marker and background style.
       let marker = case chosen {
         True -> "▸ "
         False -> "  "
@@ -341,6 +349,8 @@ fn message_rows(
         True -> theme.raised
         False -> theme.graphite
       }
+
+      // Prepare text styles for the message row.
       let primary = style.new(theme.paper, background, style.none())
       let secondary =
         style.new(state_color(item.state), background, style.none())

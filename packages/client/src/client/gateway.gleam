@@ -3048,6 +3048,8 @@ fn captured_transfer(
     | transfer.Lineage(_)
     | transfer.Escalations(_) -> cut
   }
+
+  // Assemble snapshot metadata dictionary for the transfer.
   let metadata =
     json.Object([
       #(
@@ -3130,6 +3132,8 @@ fn captured_transfer(
       connection,
       Connection(..link, transfer: Some(current)),
     )
+
+  // Format session binding identity fields and reply to subscriber.
   let identity = case link.authentication {
     Authenticated(binding, ..) -> [
       #("session_id", json.String(binding.session_id)),
@@ -5873,6 +5877,8 @@ fn subscribe(
     )
     state
   })
+
+  // Register subscription and notify presence across connections.
   let state = pull_and_broadcast(state)
   let state = mark_subscribed(state, connection)
   case dict.get(state.connections, connection) {
@@ -7107,6 +7113,8 @@ fn reply_with_matched(
       }
     })
   broadcast_except(state, emits, connection, matched)
+
+  // Dispatch matching event envelope or return an internal error.
   case matched {
     Some(emit) ->
       send_to(
@@ -7820,6 +7828,8 @@ fn dispatch_resolve(
       ids.parse_op_id(record.op)
       |> result.replace_error("the request names no operation"),
     )
+
+    // Resolve matching remote child entry for the targeted placement.
     use kept <- result.try(remote_child.all(state.runtime))
     use entry <- result.map(
       list.find(kept, fn(entry) {
@@ -7865,6 +7875,8 @@ fn dispatch_resolve(
         Some(socket) -> weft.cancel_when_exits(run, socket)
         None -> run
       }
+
+      // Start the relay and track pending resolve operation.
       let _relay = weft.start_relayed(run, to: reports)
       let pending =
         PendingResolve(
@@ -9190,6 +9202,8 @@ fn apply_changes(
     api.run_defaults_cell(state.runtime)
     |> result.map_error(fn(_) { "shared run settings could not be read" }),
   )
+
+  // Refresh runtime settings from shared defaults.
   let state =
     State(
       ..state,
@@ -9250,6 +9264,8 @@ fn apply_changes(
         ],
       )
   }
+
+  // Commit transaction to durable storage and report changed fields.
   let settings = option.unwrap(plan.settings, defaults.settings)
   let updated = State(..state, runtime: api.Runtime(..state.runtime, settings:))
   use target <- result.try(case strand {
@@ -9262,6 +9278,8 @@ fn apply_changes(
     writer.commit(state.runtime.tree.writer, transaction)
     |> result.map_error(fn(_) { "the configuration commit was refused" }),
   )
+
+  // Format changed strand configuration payload.
   let changed =
     dict.to_list(plan.cells)
     |> list.map(fn(pair) {

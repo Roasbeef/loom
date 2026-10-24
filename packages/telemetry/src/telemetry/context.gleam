@@ -175,6 +175,7 @@ pub fn fields(context: Context) -> List(Field) {
   |> option_fields([])
 }
 
+/// Converts present optional string slots into identity fields.
 fn option_fields(
   slots: List(#(String, Option(String))),
   acc: List(Field),

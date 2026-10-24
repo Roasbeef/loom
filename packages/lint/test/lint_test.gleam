@@ -2199,6 +2199,7 @@ pub fn the_gating_rules_are_pinned_test() {
     finding.PortablePurity,
     finding.AssertWithoutMessage,
     finding.CommentStanza,
+    finding.DenseStanza,
     finding.FlowSpine,
     finding.TransitionTable,
     finding.StateFirst,
@@ -2206,6 +2207,36 @@ pub fn the_gating_rules_are_pinned_test() {
     finding.StdoutSkip,
     finding.TestImportWall,
   ])
+}
+
+/// R11 gates globally now that its census across all 29 packages is zero, and
+/// R21/R22 gate in every package listed by `policy.literate_packages()`.
+pub fn r11_gates_globally_and_literate_packages_ratchet_r21_r22_test() {
+  gate_of(
+    "packages/core/src/core/dense.gleam",
+    "fn f(x) {
+  let a = x
+  let b = a
+  let c = b
+  let d = c
+  let e = d
+  let g = e
+  let h = g
+  let i = h
+  i
+}
+",
+  )
+  |> should.equal(#(1, 0))
+
+  gate_of(
+    "packages/executor/src/executor/thing.gleam",
+    "//// Module doc.
+
+pub fn undocumented(x) { x }
+",
+  )
+  |> should.equal(#(1, 0))
 }
 
 /// R13 gates, and the gate is what keeps a spine honest: a spine naming a

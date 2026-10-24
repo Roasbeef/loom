@@ -118,7 +118,9 @@ pub fn classify_fault(message: String) -> Option(FaultKind) {
   })
 }
 
+/// Converts client MCP HTTP configuration to streamable HTTP client configuration.
 fn to_streamable_config(config: Config) -> sh.Config {
+  // Translate authorization strategy to streamable representation.
   let auth = case config.auth {
     NoAuth -> sh.NoAuth
     Bearer(token:) -> sh.Bearer(token:)
@@ -126,6 +128,7 @@ fn to_streamable_config(config: Config) -> sh.Config {
     OAuth(authorize:, refresh_unauthorized:) ->
       sh.OAuth(authorize:, refresh_unauthorized:)
   }
+
   sh.Config(
     server: config.server,
     url: config.url,
@@ -138,6 +141,7 @@ fn to_streamable_config(config: Config) -> sh.Config {
   )
 }
 
+/// Adapts provider HTTP transport to the streamable HTTP transport interface.
 fn adapt_transport(provider_transport: http.Transport) -> sh.HttpTransport {
   let prepare_streaming = provider_transport.prepare_streaming
   sh.HttpTransport(prepare_streaming: fn(req, events) {
@@ -149,9 +153,13 @@ fn adapt_transport(provider_transport: http.Transport) -> sh.HttpTransport {
         headers: req.headers,
         body: req.body,
       )
+
+    // Spawn asynchronous worker relaying provider events to stream receiver.
     let relay =
       process.spawn_unlinked(fn() {
         let provider_events = process.new_subject()
+
+        // Dispatch streaming request to underlying provider transport.
         case prepare_streaming(provider_req, provider_events) {
           Error(reason) -> process.send(ready, Error(reason))
           Ok(prepared) -> {
@@ -160,6 +168,8 @@ fn adapt_transport(provider_transport: http.Transport) -> sh.HttpTransport {
           }
         }
       })
+
+    // Await preparation response from spawned streaming worker.
     use prepared <- result.try(case process.receive(ready, 5000) {
       Ok(outcome) -> outcome
       Error(Nil) -> {
@@ -167,6 +177,7 @@ fn adapt_transport(provider_transport: http.Transport) -> sh.HttpTransport {
         Error("mcp http relay timed out preparing request")
       }
     })
+
     let running = prepared.running
     let begin = prepared.begin
     Ok(sh.PreparedHttp(
@@ -179,10 +190,12 @@ fn adapt_transport(provider_transport: http.Transport) -> sh.HttpTransport {
   })
 }
 
+/// Forwards events from provider event subject to streamable event subject.
 fn relay_events(
   source: Subject(http.HttpEvent),
   target: Subject(sh.HttpEvent),
 ) -> Nil {
+  // Receive and translate each provider stream event until stream terminates.
   case process.receive(source, 60_000) {
     Error(Nil) -> Nil
     Ok(http.ResponseStatus(status:, headers:)) -> {

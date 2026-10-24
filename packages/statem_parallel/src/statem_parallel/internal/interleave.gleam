@@ -80,6 +80,7 @@ pub fn admissible(
 ) -> Admission {
   let live = list.filter(branches, fn(branch) { branch != [] })
 
+  // Check whether any live branches remain to test for admissibility.
   case live {
     [] -> Admit
     _ -> any_head(precondition, next_model, model, live, [])

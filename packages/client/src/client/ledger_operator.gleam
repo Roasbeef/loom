@@ -145,6 +145,8 @@ pub fn check_enrollment(request: Enrollment) -> Result(Nil, String) {
       )
     _, _ -> Ok(Nil)
   })
+
+  // Ensure workspace arguments match the configured node role.
   use Nil <- result.try(case request.role, request.workspaces {
     Orchestrator, [_, ..] ->
       Error(

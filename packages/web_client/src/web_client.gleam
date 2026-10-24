@@ -127,12 +127,16 @@ pub fn main() -> Nil {
   let _ = follow.register()
   let _ = link.register()
   let _ = mermaid.register()
+
+  // Custom components for inspector notes, popovers, and inline tools.
   let _ = notes.register()
   let _ = popover.register()
   let _ = rename.register()
   let _ = reveal.register()
   let _ = saved.register()
   let _ = shell.register()
+
+  // Session navigation and clock controls.
   let _ = switch.register()
   let _ = switcher.register()
   let _ = time.register()

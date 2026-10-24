@@ -177,6 +177,8 @@ fn execute(request: Request, emit: fn(String) -> Nil) -> Result(Nil, String) {
     |> process.select_specific_monitor(monitor, fn(down) {
       OwnerGone(down.reason)
     })
+
+  // Start the prepared runner and await command completion.
   prepared.begin()
   let answer = await_event(selector, request.command, emit)
   case answer {

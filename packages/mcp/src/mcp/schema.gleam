@@ -104,6 +104,7 @@ pub type Plan {
 /// ```
 ///
 pub fn plan(input_schema: JsonValue) -> Plan {
+  // Plan the schema as a whole value on failure or extract structured typed parameters.
   case top_level(input_schema) {
     Error(reason) -> WholeValue(reason:)
     Ok(#(properties, required)) -> {
@@ -125,35 +126,45 @@ pub fn plan(input_schema: JsonValue) -> Plan {
 
 // --- the top level -----------------------------------------------------------
 
+/// Validates and unpacks top-level schema object fields, properties, and required list.
 fn top_level(
   input_schema: JsonValue,
 ) -> Result(#(List(#(String, JsonValue)), List(String)), String) {
+  // Validate that the root schema is a JSON object.
   use fields <- result.try(case input_schema {
     json.Object(fields) -> Ok(fields)
     _ -> Error("inputSchema is not an object")
   })
+
+  // Ensure that the schema declares type "object".
   use Nil <- result.try(case list.key_find(fields, "type") {
     Ok(json.String("object")) -> Ok(Nil)
     Ok(_) -> Error("inputSchema type is not \"object\"")
     Error(Nil) -> Error("inputSchema declares no type")
   })
+
+  // Extract the properties object dictionary or default to an empty mapping.
   use properties <- result.try(case list.key_find(fields, "properties") {
     Error(Nil) -> Ok([])
     Ok(json.Object(properties)) -> Ok(properties)
     Ok(_) -> Error("properties is not an object")
   })
+
   use required <- result.try(required_names(fields))
   Ok(#(properties, required))
 }
 
+/// Parses and deduplicates string names listed in the required array.
 fn required_names(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(String), String) {
+  // Locate the optional required property array in fields.
   use entries <- result.try(case list.key_find(fields, "required") {
     Error(Nil) -> Ok([])
     Ok(json.Array(entries)) -> Ok(entries)
     Ok(_) -> Error("required is not an array")
   })
+
   use names <- result.try(
     list.try_map(entries, fn(entry) {
       case entry {
@@ -169,10 +180,13 @@ fn required_names(
 // occurrence keeps its place and the rest are dropped rather than minting
 // a duplicate argument. Membership is a set, not a scan of the kept list,
 // so a million-name `required` costs n log n rather than n².
+/// Retains first occurrences of strings while stripping subsequent duplicates.
 fn dedupe(names: List(String)) -> List(String) {
   let #(_seen, kept) =
     list.fold(names, #(set.new(), []), fn(state, name) {
       let #(seen, kept) = state
+
+      // Retain the name if not yet seen, recording it into the set.
       case set.contains(seen, name) {
         True -> state
         False -> #(set.insert(seen, name), [name, ..kept])
@@ -185,11 +199,14 @@ fn dedupe(names: List(String)) -> List(String) {
 // scan this replaces answered with the *first* — a dict built by blind
 // insert would keep the last, silently changing which declaration wins.
 // The fold inserts only names not yet present, so first still wins.
+/// Gathers the first declaration of each property name from the properties list.
 fn first_declarations(
   properties: List(#(String, JsonValue)),
 ) -> Dict(String, JsonValue) {
   list.fold(properties, dict.new(), fn(declared, entry) {
     let #(name, value) = entry
+
+    // Preserve first declaration semantics by ignoring already inserted property names.
     case dict.has_key(declared, name) {
       True -> declared
       False -> dict.insert(declared, name, value)
@@ -199,6 +216,7 @@ fn first_declarations(
 
 // --- required parameters -----------------------------------------------------
 
+/// Resolves a required parameter from properties or builds an undeclared structured param.
 fn required_param(name: String, declared: Dict(String, JsonValue)) -> Param {
   case dict.get(declared, name) {
     // Tier 2 by decree: `required` names it, `properties` never declared
@@ -210,6 +228,7 @@ fn required_param(name: String, declared: Dict(String, JsonValue)) -> Param {
   }
 }
 
+/// Interprets the declared JSON schema of a parameter into a typed Param.
 fn interpret(name: String, declared: JsonValue) -> Param {
   case declared {
     json.Object(fields) ->
@@ -228,6 +247,7 @@ fn structured_param(name: String, reason: String) -> Param {
   Param(original: name, kind: Structured(reason:), note: None, one_of: [])
 }
 
+/// Determines the parameter kind from property fields.
 fn kind_of(fields: List(#(String, JsonValue))) -> ParamType {
   case list.key_find(fields, "type") {
     Ok(json.String("string")) -> Simple(scalar: ScalarString)
@@ -242,6 +262,7 @@ fn kind_of(fields: List(#(String, JsonValue))) -> ParamType {
   }
 }
 
+/// Extracts the element type of an array property from its items declaration.
 fn items_of(fields: List(#(String, JsonValue))) -> ParamType {
   case list.key_find(fields, "items") {
     Error(Nil) -> Structured(reason: "array items are undeclared")
@@ -250,6 +271,7 @@ fn items_of(fields: List(#(String, JsonValue))) -> ParamType {
   }
 }
 
+/// Resolves simple scalar item types for array parameters.
 fn scalar_items(items: List(#(String, JsonValue))) -> ParamType {
   case list.key_find(items, "type") {
     Ok(json.String("string")) -> ListOf(scalar: ScalarString)
@@ -265,6 +287,7 @@ fn scalar_items(items: List(#(String, JsonValue))) -> ParamType {
   }
 }
 
+/// Extracts the optional description string from property fields.
 fn note_of(fields: List(#(String, JsonValue))) -> Option(String) {
   case list.key_find(fields, "description") {
     Ok(json.String(note)) -> Some(note)
@@ -276,6 +299,7 @@ fn note_of(fields: List(#(String, JsonValue))) -> Option(String) {
 // Only string members: enum values are rendered into doc prose, and a
 // string is the one member kind prose can quote faithfully. A non-string
 // member neither disqualifies the parameter nor appears in the prose.
+/// Extracts string enum choices from property fields.
 fn enum_of(fields: List(#(String, JsonValue))) -> List(String) {
   case list.key_find(fields, "enum") {
     Ok(json.Array(members)) ->
@@ -292,12 +316,15 @@ fn enum_of(fields: List(#(String, JsonValue))) -> List(String) {
 
 // --- optionals ---------------------------------------------------------------
 
+/// Extracts optional property declarations not listed in the required set.
 fn optionals(
   properties: List(#(String, JsonValue)),
   required: Set(String),
 ) -> List(Optional) {
   list.filter_map(properties, fn(entry) {
     let #(name, declared) = entry
+
+    // Exclude property names that are part of the required parameter set.
     case set.contains(required, name) {
       True -> Error(Nil)
       False -> Ok(Optional(original: name, note: declared_note(declared)))
@@ -421,6 +448,7 @@ pub fn shape(value: JsonValue) -> Shape {
   shape_at(value, 0)
 }
 
+/// Interprets a schema value at bounded recursion depth into a Shape.
 fn shape_at(value: JsonValue, depth: Int) -> Shape {
   case depth >= 12 {
     True -> ValueFallback("schema depth exceeds 12")
@@ -432,6 +460,7 @@ fn shape_at(value: JsonValue, depth: Int) -> Shape {
   }
 }
 
+/// Resolves shape combinations, oneOf branches, or declared field types.
 fn shape_fields(fields: List(#(String, JsonValue)), depth: Int) -> Shape {
   // References and mixed combinators are retained as values rather than
   // interpreted as a weaker primitive declaration beside them.
@@ -454,6 +483,7 @@ fn shape_fields(fields: List(#(String, JsonValue)), depth: Int) -> Shape {
   }
 }
 
+/// Maps explicit type declarations into primitive or complex Shape representations.
 fn declared_shape(fields: List(#(String, JsonValue)), depth: Int) -> Shape {
   case list.key_find(fields, "type") {
     Ok(json.String("string")) -> string_shape(fields)
@@ -472,6 +502,7 @@ fn declared_shape(fields: List(#(String, JsonValue)), depth: Int) -> Shape {
   }
 }
 
+/// Maps string schemas with optional enum or const restrictions into a Shape.
 fn string_shape(fields: List(#(String, JsonValue))) -> Shape {
   case list.key_find(fields, "const"), list.key_find(fields, "enum") {
     Ok(json.String(value)), _ -> Enumeration([value])
@@ -493,12 +524,15 @@ fn string_shape(fields: List(#(String, JsonValue))) -> Shape {
   }
 }
 
+/// Recognizes and unpacks nullable type unions containing null and one inner type.
 fn nullable_shape(
   types: List(JsonValue),
   fields: List(#(String, JsonValue)),
   depth: Int,
 ) -> Shape {
   let nonnull = list.filter(types, fn(t) { t != json.String("null") })
+
+  // Verify that the array contains exactly null alongside one valid inner type.
   case nonnull, list.contains(types, json.String("null")) {
     [json.String(kind)], True ->
       Nullable(declared_shape(
@@ -509,6 +543,7 @@ fn nullable_shape(
   }
 }
 
+/// Resolves object schema properties or additionalProperties into record or map shapes.
 fn record_shape(fields: List(#(String, JsonValue)), depth: Int) -> Shape {
   case list.key_find(fields, "properties") {
     Ok(json.Object(_)) ->
@@ -533,15 +568,19 @@ fn object_openness(fields: List(#(String, JsonValue))) -> Openness {
   }
 }
 
+/// Resolves property fields into typed Field definitions in required-first order.
 fn record_fields(
   fields: List(#(String, JsonValue)),
   depth: Int,
 ) -> Result(List(Field), String) {
   use required <- result.try(required_names(fields))
+
+  // Extract properties object fields or default to empty list.
   let properties = case list.key_find(fields, "properties") {
     Ok(json.Object(properties)) -> properties
     _ -> []
   }
+
   let declared = first_declarations(properties)
   let required_set = set.from_list(required)
   let ordered =
@@ -552,10 +591,13 @@ fn record_fields(
     )
   Ok(
     list.map(ordered, fn(original) {
+      // Determine whether the field is marked required in the schema.
       let presence = case set.contains(required_set, original) {
         True -> Required
         False -> OptionalField
       }
+
+      // Look up property declaration to extract shape and annotations.
       case dict.get(declared, original) {
         Error(Nil) ->
           Field(
@@ -566,10 +608,12 @@ fn record_fields(
             None,
           )
         Ok(value) -> {
+          // Unpack object annotations dictionary when present.
           let annotations = case value {
             json.Object(fs) -> fs
             _ -> []
           }
+
           Field(
             original,
             shape_at(value, depth + 1),
@@ -595,6 +639,8 @@ fn record_fields(
 /// ```
 pub fn input_fields(value: JsonValue) -> Result(List(Field), String) {
   use _ <- result.try(top_level(value))
+
+  // Extract record fields from the validated top-level object schema.
   case value {
     json.Object(fields) -> record_fields(fields, 0)
     _ -> Error("inputSchema is not an object")
@@ -615,22 +661,28 @@ pub fn check_budget(values: List(JsonValue)) -> Result(Nil, String) {
 
 // The budget is checked before even the empty worklist succeeds: a terminal
 // string or default can exhaust bytes without leaving a child to inspect.
+/// Recursively checks node and byte budget limits across the schema tree.
 fn budget_loop(
   pending: List(#(JsonValue, Int)),
   nodes: Int,
   bytes: Int,
 ) -> Result(Nil, String) {
+  // Reject schema trees that exceed node count or serialized byte limits.
   use _ <- result.try(case nodes > 16_384 || bytes > 262_144 {
     True -> Error("schema exceeds 16384 nodes or 262144 text bytes")
     False -> Ok(Nil)
   })
+
+  // Process pending schema nodes or finish when the worklist is empty.
   case pending {
     [] -> Ok(Nil)
     [#(value, depth), ..rest] ->
+      // Enforce depth ceiling alongside node and byte budget limits.
       case nodes >= 16_384 || bytes >= 262_144 || depth > 32 {
         True ->
           Error("schema exceeds 16384 nodes, 262144 text bytes, or depth 32")
         False -> {
+          // Inspect child values and compute byte sizes for string and numeric scalars.
           let #(children, added) = case value {
             json.Object(fields) -> #(
               list.map(fields, fn(p) { #(p.1, depth + 1) }),
@@ -645,6 +697,7 @@ fn budget_loop(
             json.Float(value) -> #([], string.byte_size(float.to_string(value)))
             _ -> #([], 0)
           }
+
           budget_loop(list.append(children, rest), nodes + 1, bytes + added)
         }
       }
@@ -654,10 +707,14 @@ fn budget_loop(
 // Branches are typed only when the declared shapes prove exclusivity without
 // interpreting annotations such as ranges or patterns. Otherwise a field
 // remains a value, rather than rejecting valid wire data as ambiguous.
+/// Resolves multiple oneOf branches into a disjoint union, nullable, or fallback shape.
 fn union_shape(branches: List(Shape)) -> Shape {
+  // Verify that all candidate branches are pairwise structurally disjoint.
   case branches_disjoint(branches) {
     True -> {
       let nonnull = list.filter(branches, fn(branch) { branch != NullValue })
+
+      // Match nullability and alternative branches across the union.
       case list.contains(branches, NullValue), nonnull {
         True, [inner] -> Nullable(inner)
         True, [] -> NullValue
@@ -686,6 +743,7 @@ pub fn branches_disjoint(branches: List(Shape)) -> Bool {
   }
 }
 
+/// Checks pairwise disjointness between two candidate branch shapes.
 fn disjoint(left: Shape, right: Shape) -> Bool {
   case left, right {
     Alternatives(branches), other -> list.all(branches, disjoint(_, other))
@@ -711,6 +769,7 @@ fn disjoint(left: Shape, right: Shape) -> Bool {
   }
 }
 
+/// Classifies a shape into coarse disjoint category strings.
 fn shape_category(shape: Shape) -> String {
   case shape {
     Primitive(ScalarString) | Enumeration(_) -> "string"

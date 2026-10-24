@@ -208,6 +208,7 @@ pub fn answer(
 // name came from a manifest this artifact was built beside, and the
 // arguments were schema-checked before they were sent — so both name the
 // tool they were about.
+/// Resolves and executes a declared tool invocation, returning the formatted answer.
 fn tool_answer(
   tools: List(#(String, Tool)),
   name: String,
@@ -219,6 +220,7 @@ fn tool_answer(
   }
 }
 
+/// Resolves tool function, decodes dynamic arguments, and constructs context.
 fn resolve(
   tools: List(#(String, Tool)),
   name: String,
@@ -253,6 +255,7 @@ fn resolve(
 // A strand the harness did not name is the empty string rather than a
 // refusal: attribution is what it is for, and an invocation with no
 // strand is still one a tool can serve.
+/// Constructs the execution context handed to a tool call invocation.
 fn context(asked: runtime.Asked) -> Ctx {
   Ctx(
     strand: result.unwrap(string_field(asked.args, "strand"), ""),
@@ -281,6 +284,7 @@ fn body(outcome: Outcome) -> Value {
   ])
 }
 
+/// Formats a tool outcome content block into a structured report value.
 fn block(content: Content) -> Value {
   case content {
     Text(text:) ->
@@ -307,6 +311,7 @@ fn terminates(terminate: Terminate) -> Bool {
 // written by the same install, so a mismatch is a broken install rather
 // than a bad model call — and the fastest way for an operator to see that
 // is both lists side by side.
+/// Builds a refusal answer listing available tool names when a tool is not found.
 fn unknown_tool(tools: List(#(String, Tool)), name: String) -> runtime.Answer {
   let served = list.map(tools, fn(entry) { entry.0 })
   runtime.Refused(
@@ -329,6 +334,7 @@ fn unknown_tool(tools: List(#(String, Tool)), name: String) -> runtime.Answer {
 // text, which is `client/extension/hooks`'s wire and `ext/hook`'s
 // marshalling: the extension seam admits `gleam/json` and no msgpack
 // decoder, so text is the only shape both ends can read.
+/// Dispatches an event to its declared hook handler if registered.
 fn event_answer(
   hooks: List(Declared),
   name: String,
@@ -344,6 +350,7 @@ fn event_answer(
   }
 }
 
+/// Verifies hook name match before firing the hook handler.
 fn fire(declared: Hook, name: String, args: Value) -> runtime.Answer {
   case hook.event(declared) == name {
     False ->
@@ -359,6 +366,7 @@ fn fire(declared: Hook, name: String, args: Value) -> runtime.Answer {
   }
 }
 
+/// Fires the hook handler with stringified JSON arguments and formats the answer.
 fn fired(declared: Hook, name: String, args: Value) -> runtime.Answer {
   case as_text(args) {
     Error(reason) -> runtime.Refused(code: bad_arguments_code, message: reason)
@@ -398,6 +406,7 @@ fn as_text(args: Value) -> Result(String, String) {
 // missing or is not text is a message rather than a crash: the envelope
 // comes off a wire, and this module decodes it like every other boundary
 // in the tree.
+/// Extracts a required string field from a report value envelope.
 fn string_field(value: Value, key: String) -> Result(String, String) {
   case report.field(value, key) {
     Error(Nil) -> Error("the invocation carried no `" <> key <> "` field")

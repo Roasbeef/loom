@@ -1021,6 +1021,8 @@ pub fn close(
   let deadline = monotonic_ms() + timeout
   let monitor = process.monitor(helper.pid)
   process.send(helper.commands, Shutdown)
+
+  // Await helper retirement or map the call failure to a pending retirement.
   let outcome = case
     call.try_call(helper.commands, waiting: timeout, sending: fn(reply) {
       AwaitRetirement(fn(outcome) { process.send(reply, outcome) })
@@ -1030,6 +1032,8 @@ pub fn close(
     Error(call.NoReply) -> Error(RetirementPending)
     Error(call.CalleeGone) -> Error(RetirementOwnerGone)
   }
+
+  // When the helper retired cleanly, wait for BEAM monitor confirmation.
   let outcome = case outcome {
     Ok(Nil) -> {
       process.send(helper.commands, ForgetRetired)
@@ -3252,6 +3256,8 @@ pub fn close_pool(
   let deadline = monotonic_ms() + timeout
   let monitor = process.monitor(pool.pid)
   process.send(pool.subject, StopPool)
+
+  // Await pool retirement or map the call failure to a pending retirement.
   let outcome = case
     call.try_call(pool.subject, waiting: timeout, sending: AwaitPoolRetirement)
   {
@@ -3259,6 +3265,8 @@ pub fn close_pool(
     Error(call.NoReply) -> Error(RetirementPending)
     Error(call.CalleeGone) -> Error(RetirementOwnerGone)
   }
+
+  // When the pool retired cleanly, wait for the BEAM monitor to confirm.
   let outcome = case outcome {
     Ok(Nil) -> {
       process.send(pool.subject, ForgetPool)

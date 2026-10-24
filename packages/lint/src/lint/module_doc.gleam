@@ -66,6 +66,7 @@ pub fn lines(code: String) -> List(DocLine) {
   |> doc_lines([])
 }
 
+/// Collects module comment tokens into positioned doc lines.
 fn doc_lines(
   tokens: List(#(token.Token, glexer.Position)),
   found: List(DocLine),
@@ -82,10 +83,12 @@ fn doc_lines(
 /// whitespace, so a comparison with `## Flow` does not depend on how the
 /// author's editor treats line ends.
 fn tidy(text: String) -> String {
+  // Strip a single leading space if present.
   let text = case string.starts_with(text, " ") {
     True -> string.drop_start(text, 1)
     False -> text
   }
+
   string.trim_end(text)
 }
 

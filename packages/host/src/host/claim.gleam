@@ -124,6 +124,8 @@ pub fn remote_address(address: String) -> Result(Nil, String) {
   use endpoint <- result.try(
     uri.parse(address) |> result.replace_error("invalid control address"),
   )
+
+  // Ensure the URI points strictly to the expected unqualified path and query.
   use Nil <- result.try(case endpoint {
     uri.Uri(
       path: "/v2/control",
@@ -161,6 +163,8 @@ pub fn remote_address(address: String) -> Result(Nil, String) {
 /// ```
 pub fn endpoint(address: String) -> Result(String, String) {
   use Nil <- result.try(remote_address(address))
+
+  // Replace the control path suffix with the claim path.
   case string.ends_with(address, "/v2/control") {
     True -> Ok(string.drop_end(address, string.length("control")) <> "claim")
     False -> Error("expected an unqualified /v2/control endpoint")

@@ -103,6 +103,8 @@ pub fn recall(key: String) -> Result(Option(Dynamic), Refusal) {
   use found <- result.try(
     wire.bool_field(answer, "found") |> result.map_error(malformed),
   )
+
+  // Return None when key was not found or decode stored value.
   case found {
     False -> Ok(None)
     True -> {
@@ -118,6 +120,7 @@ pub fn recall(key: String) -> Result(Option(Dynamic), Refusal) {
 // text because the extension wrote a value and should read a value: the
 // text is the wire's business, and an author who wanted the string could
 // not tell it apart from a stored string.
+/// Decodes stored JSON text back into a dynamic value.
 fn decoded(text: String) -> Result(Option(Dynamic), Refusal) {
   json.parse(text, decode.dynamic)
   |> result.map(Some)
@@ -130,6 +133,7 @@ fn decoded(text: String) -> Result(Option(Dynamic), Refusal) {
 // to the model. The code travels inside the sentence rather than being
 // dropped: `memory_unavailable` is the host's problem and worth
 // retrying, and `invalid_argument` is this extension's and is not.
+/// Formats a capability error into an author-facing refusal.
 fn refusal(cap: String) -> fn(CallError) -> Refusal {
   fn(error) {
     case error {

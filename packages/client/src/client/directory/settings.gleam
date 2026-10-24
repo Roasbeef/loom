@@ -186,6 +186,8 @@ fn table(
     False ->
       Error("directory.members must include this daemon's own node " <> local)
   })
+
+  // Validate that all directory members are recognized peers.
   let peers = ledger_reference.peers(config)
   use Nil <- result.try(
     list.try_each(members, fn(member) {

@@ -114,6 +114,8 @@ fn restore_item(
         [], [], [message.AssistantThinking(thinking: "", ..), ..rest] -> rest
         _, _, _ -> content
       }
+
+      // Restore summary parts and remaining content blocks recursively.
       use summary_state <- result.try(restore_parts(summary, remaining))
       use content_state <- result.try(restore_parts(parts, summary_state.1))
       let raw = put(raw, "summary", json.Array(summary_state.0))

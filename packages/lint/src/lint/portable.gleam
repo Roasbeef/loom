@@ -145,6 +145,7 @@ pub fn externals_at(
   }
 }
 
+/// Checks whether the module path matches approved FFI encapsulation boundaries.
 fn is_confined_ffi_module(module_path: String) -> Bool {
   module_path == ""
   || module_path == "host/bootstrap"
@@ -198,6 +199,7 @@ pub fn manifest(package: Option(String), code: String) -> List(Raw) {
   found |> list.reverse |> list.flatten
 }
 
+/// Checks a gleam.toml line for forbidden non-portable package declarations.
 fn declarations(line: String, offset: Int, package: String) -> List(Raw) {
   matching(
     fn(dependency) { declares(line, dependency.package) },

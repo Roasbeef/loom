@@ -20,18 +20,22 @@ pub fn read(bytes: BitArray) -> Result(List(String), String) {
   }
 }
 
+/// Parses remaining entries from the literal table binary stream.
 fn literals(
   bytes: BitArray,
   remaining: Int,
   atoms: List(String),
   budget: Int,
 ) -> Result(List(String), String) {
+  // Walk each literal entry while remaining count and budget allow.
   case remaining, bytes {
     0, <<>> -> Ok(atoms)
     _, <<size:32, 131:8, term:bytes-size(size - 1), rest:bytes>>
       if remaining > 0 && size > 0
     -> {
       use parsed <- result.try(walk(term, [1], atoms, budget))
+
+      // Verify that no trailing unparsed bytes remain after the term.
       case parsed.0 {
         <<>> -> literals(rest, remaining - 1, parsed.1, parsed.2)
         _ -> Error("BEAM literal has trailing term bytes")
@@ -41,12 +45,14 @@ fn literals(
   }
 }
 
+/// Walks pending nested ETF terms iteratively within the remaining node budget.
 fn walk(
   bytes: BitArray,
   pending: List(Int),
   atoms: List(String),
   budget: Int,
 ) -> Result(#(BitArray, List(String), Int), String) {
+  // Continue to next pending term count or decode next node.
   case pending {
     [] -> Ok(#(bytes, atoms, budget))
     [0, ..rest] -> walk(bytes, rest, atoms, budget)
@@ -58,12 +64,14 @@ fn walk(
   }
 }
 
+/// Decodes a single ETF node tag, advancing through atoms and compound terms.
 fn node(
   bytes: BitArray,
   pending: List(Int),
   atoms: List(String),
   budget: Int,
 ) -> Result(#(BitArray, List(String), Int), String) {
+  // Match ETF term tag byte and dispatch traversal.
   case bytes {
     <<97:8, _:8, rest:bytes>>
     | <<98:8, _:32, rest:bytes>>
@@ -102,6 +110,7 @@ fn node(
   }
 }
 
+/// Pushes child term counts onto the pending stack after checking bounds.
 fn children(
   bytes: BitArray,
   count: Int,
@@ -115,10 +124,12 @@ fn children(
   }
 }
 
+/// Decodes Latin1 encoded atom bytes into a Gleam String.
 fn latin1(
   bytes: BitArray,
   codepoints: List(UtfCodepoint),
 ) -> Result(String, String) {
+  // Accumulate Latin1 codepoints until byte sequence is exhausted.
   case bytes {
     <<>> -> Ok(string.from_utf_codepoints(list.reverse(codepoints)))
     <<value:8, rest:bytes>> -> {

@@ -92,6 +92,8 @@ pub fn findings_with_doc(
   own_path: String,
 ) -> List(Raw) {
   let _ = own_path
+
+  // Check whether the module doc has a flow spine section or should be reported as missing.
   case module_doc.section(doc, heading) {
     Ok(section) -> check_section(module, section)
     Error(Nil) -> missing(code, lines, policy)
@@ -102,6 +104,8 @@ pub fn findings_with_doc(
 /// where the missing section would have been.
 fn missing(code: String, lines: Lines, policy: Policy) -> List(Raw) {
   let count = line_count(code, lines)
+
+  // Check whether the line count meets the threshold requiring a flow spine.
   case count >= policy.spine_lines {
     False -> []
     True -> [
@@ -126,6 +130,8 @@ fn missing(code: String, lines: Lines, policy: Policy) -> List(Raw) {
 /// start, so a final newline contributes no phantom line.
 fn line_count(code: String, lines: Lines) -> Int {
   let starts = list.length(lines.starts)
+
+  // Check whether the code ends with a newline to determine accurate line count.
   case string.ends_with(code, "\n") {
     True -> starts
     False -> starts + 1
@@ -180,6 +186,7 @@ type Shape {
   Plain
 }
 
+/// Validates references and structure within an existing Flow section.
 fn check_section(module: glance.Module, section: Section) -> List(Raw) {
   let scan = read_lines(section.body, Scan([], [], [], Outside))
   let spans = list.reverse(scan.spans)
@@ -202,6 +209,7 @@ fn check_section(module: glance.Module, section: Section) -> List(Raw) {
   ])
 }
 
+/// Reads lines of the Flow section scanning for diagram blocks, code fences, and backtick spans.
 fn read_lines(lines: List(DocLine), scan: Scan) -> Scan {
   case lines, scan.inside {
     [], _ -> scan
@@ -275,10 +283,12 @@ fn runs(
             _ -> runs(tail, before, [grapheme, ..run], grapheme, found, offset)
           }
         False -> {
+          // Identify the following grapheme to disambiguate trailing punctuation.
           let after = case tail {
             [next, ..] -> next
             [] -> ""
           }
+
           let found = keep(run, before, grapheme, after, found, offset)
           runs(tail, "", [], grapheme, found, offset)
         }
@@ -305,19 +315,25 @@ fn keep(
     || string.ends_with(name, "_")
     || list.contains(["<", ">", "*"], before)
     || list.contains(["<", ">", "*"], next)
+
+  // Discard empty or qualified names, or extract the shape of valid word identifiers.
   case name == "" || qualified || pattern || !starts_lowercase(name) {
     True -> found
     False -> {
+      // Distinguish name-shaped words from plain prose words.
       let shape = case string.contains(name, "_") || next == "(" {
         True -> NameShaped
         False -> Plain
       }
+
       [Word(offset:, name:, shape:), ..found]
     }
   }
 }
 
+/// Determines whether a grapheme is an ASCII alphanumeric character or underscore.
 fn is_word_grapheme(grapheme: String) -> Bool {
+  // Inspect the codepoint of the grapheme to classify word characters.
   case string.to_utf_codepoints(grapheme) {
     [point] -> {
       let code = string.utf_codepoint_to_int(point)
@@ -330,6 +346,7 @@ fn is_word_grapheme(grapheme: String) -> Bool {
   }
 }
 
+/// Checks whether an identifier name starts with a valid lowercase or underscore character.
 fn starts_lowercase(name: String) -> Bool {
   case string.first(name) {
     Ok(first) ->
@@ -356,6 +373,7 @@ fn resolve_word(word: Word, nameable: Set(String)) -> Result(Raw, Nil) {
   }
 }
 
+/// Collects backtick code spans from a documentation line.
 fn spans_of(
   line: DocLine,
   found: List(#(Int, String)),
@@ -365,6 +383,7 @@ fn spans_of(
   |> list.fold(found, fn(found, span) { [#(line.offset, span), ..found] })
 }
 
+/// Constructs a flow-spine raw finding for a forbidden code listing fence.
 fn fence(line: DocLine) -> Raw {
   Raw(
     rule: finding.FlowSpine,
@@ -398,6 +417,8 @@ fn import_aliases(module: glance.Module) -> Set(String) {
   module.imports
   |> list.filter_map(fn(definition) {
     let import_ = definition.definition
+
+    // Extract the alias or fallback module name for the imported module.
     case import_.alias {
       Some(glance.Named(alias)) -> Ok(alias)
       Some(glance.Discarded(_)) -> Error(Nil)
@@ -441,6 +462,7 @@ fn resolve(
   }
 }
 
+/// Constructs a flow-spine raw finding for an unresolved function reference.
 fn unresolved(offset: Int, name: String, reason: String) -> Raw {
   Raw(
     rule: finding.FlowSpine,
@@ -472,6 +494,7 @@ fn named_functions(
   |> list.length
 }
 
+/// Produces a flow-spine finding if the section lists fewer functions than required.
 fn too_few(at: DocLine, named: Int) -> List(Raw) {
   case named >= minimum_functions {
     True -> []
@@ -515,6 +538,7 @@ fn reference(span: String) -> Reference {
   }
 }
 
+/// Strips call or arity suffixes like () or /N from backticked reference spans.
 fn without_suffix(span: String) -> Result(String, Nil) {
   case string.split_once(span, "(") {
     Ok(#(before, rest)) ->

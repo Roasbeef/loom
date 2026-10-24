@@ -73,6 +73,7 @@ pub fn admit(
   let identity = query.configuration.model
   let facts = model_facts.of_identity(lookup, fallback, identity)
 
+  // Route image-bearing requests for text-only models through vision.
   case
     facts.reading == TextOnly
     && image_bearing_projected(opened, query.operation)
@@ -88,11 +89,7 @@ pub fn admit(
   }
 }
 
-// The admission for an image-bearing request a strand's own model cannot
-// read: through the vision chain when one resolves and its head reads images,
-// or refused in band. The head's facts, not the strand's, are what the request
-// is admitted against, because they are the facts of the identity the request
-// will actually reach.
+/// Admits an image-bearing request through the resolved vision provider chain.
 fn admit_through_vision(
   provider_gateway: Gateway,
   lookup: Lookup,
@@ -101,6 +98,7 @@ fn admit_through_vision(
 ) -> RequestAdmission {
   let identity = query.configuration.model
 
+  // Resolve the vision chain model or fail with a no-route refusal.
   case gateway.resolve(provider_gateway, model.Vision) {
     Error(_missing) -> vision.no_route_refusal(identity)
     Ok(head) ->
@@ -126,7 +124,7 @@ fn identity_of(resolved: ResolvedModel) -> ModelIdentity {
   ModelIdentity(provider: resolved.provider, model_id: resolved.model_id)
 }
 
-// Whether this operation's strand projection or admitted batch carries images.
+/// Checks if the projected context for an operation's strand carries images.
 fn image_bearing_projected(opened: Session, operation: OpId) -> Bool {
   case session_read.strand_of(opened, operation) {
     Error(Nil) -> False
@@ -160,6 +158,7 @@ pub fn image_bearing(
   || admitted_image_bearing(opened, operation) |> result.unwrap(False)
 }
 
+/// Checks whether prompt entries admitted for the operation carry images.
 fn admitted_image_bearing(
   session: Session,
   operation: OpId,
@@ -169,16 +168,22 @@ fn admitted_image_bearing(
   )
   use cell <- result.try(option.to_result(cell, Nil))
   let meta = cell.value
+
+  // Extract the latest prompt entry from the run intent.
   use last_prompt <- result.try(case meta.intent {
     operation.RunIntent(prompt_entries:) -> list.last(prompt_entries)
     operation.CompactionIntent(..) | operation.NavigationIntent(..) ->
       Error(Nil)
   })
+
   let scan = storage.branch_scan(last_prompt)
+
+  // Bound the branch scan to the operation's source leaf when present.
   let scan = case meta.source_leaf {
     None -> scan
     Some(leaf) -> storage.branch_stop_at_id(scan, leaf)
   }
+
   use entries <- result.try(
     storage.scan_branch(session.store, scan) |> result.replace_error(Nil),
   )
@@ -227,10 +232,13 @@ pub fn active_run_images(opened: Session, operation: OpId) -> Result(Int, Nil) {
   use leaf <- result.try(option.to_result(leaf_cell.value, Nil))
 
   let scan = storage.branch_scan(leaf)
+
+  // Stop scanning at the source leaf to bound active run entries.
   let scan = case meta.source_leaf {
     None -> scan
     Some(source) -> storage.branch_stop_at_id(scan, source)
   }
+
   use entries <- result.try(
     storage.scan_branch(opened.store, scan) |> result.replace_error(Nil),
   )

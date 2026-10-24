@@ -538,6 +538,8 @@ fn start_worker(
     )
     |> result.map_error(string.inspect),
   )
+
+  // Prepare worker reporting and cancellation signals.
   let reports = process.new_subject()
   let cancel = weft.cancel_signal()
   let _scope =
@@ -545,6 +547,8 @@ fn start_worker(
     |> weft.deadline(record.deadline_ms - now)
     |> weft.cancel_with(cancel)
     |> weft.start_relayed(reports)
+
+  // Track the running execution in live state.
   let held =
     Held(
       record:,
@@ -793,6 +797,8 @@ fn publish_readiness(
     None -> Ok(Nil)
     Some(_) -> Error("initiating operation has been aborted")
   })
+
+  // Validate endpoint registration and idle timeouts.
   use Nil <- result.try(case execution.valid_endpoints(endpoints) {
     True -> Ok(Nil)
     False -> Error("ready requires one to sixteen unique endpoint names")
@@ -803,6 +809,8 @@ fn publish_readiness(
     _, _ ->
       Error("typed readiness requires an idle interval from 1 to 300000 ms")
   })
+
+  // Record verified readiness for the execution.
   let ready = execution.Readiness(endpoints:, idle_within_ms:)
   use existing <- result.try(readiness(wiring.runtime, record.id))
   case existing {
@@ -1520,6 +1528,8 @@ fn append_input(
     None -> Ok(Nil)
     Some(_) -> Error("initiating operation has been aborted")
   })
+
+  // Verify readiness and endpoint membership before staging input.
   use ready <- result.try(readiness(wiring.runtime, record.id))
   use ready <- result.try(option.to_result(
     ready,
@@ -1533,6 +1543,8 @@ fn append_input(
   let entry =
     json.Object([#("endpoint", json.String(endpoint)), #("value", value)])
   let next = list.append(values, [entry])
+
+  // Ensure appended input fits within bounded journal limits.
   use Nil <- result.try(
     case
       list.length(next) <= 128

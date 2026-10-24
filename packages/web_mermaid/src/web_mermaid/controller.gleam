@@ -152,6 +152,7 @@ pub fn input(text: String) -> Input {
   |> result.unwrap(Ignored)
 }
 
+/// Validates revision and source safety before accepting or refusing a request.
 fn classify_request(request: Request) -> Input {
   case
     safe_revision(request.revision)
@@ -184,10 +185,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, List(Effect)) {
       case revision > model.latest {
         False -> #(model, [])
         True -> {
+          // Reset queued work while preserving any in-flight render stage.
           let phase = case model.phase {
             Idle -> Idle
             Busy(stage:, request:, ..) -> Busy(stage:, request:, queued: None)
           }
+
           #(Model(latest: revision, phase:, shown: None, width: model.width), [
             Clear,
             ReplyToParent(FailedReply(revision)),
@@ -226,10 +229,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, List(Effect)) {
 /// assert string.contains(configuration(Light), "\"theme\":\"default\"")
 /// ```
 pub fn configuration(theme: Theme) -> String {
+  // Map the theme variant to the vendor theme configuration name.
   let theme_name = case theme {
     Dark -> "dark"
     Light -> "default"
   }
+
   json.object([
     #("startOnLoad", json.bool(False)),
     #("securityLevel", json.string("strict")),
@@ -275,6 +280,7 @@ type QuoteState {
   InsideQuotes
 }
 
+/// Replaces angle brackets in quoted strings with entity references.
 fn escape_quoted_angles(
   chars: List(String),
   quotes: QuoteState,
@@ -365,6 +371,7 @@ pub const min_height = 120
 /// Maximum published frame height.
 pub const max_height = 2000
 
+/// Checks an SVG element against the list of forbidden tags and link targets.
 fn safe_node(node: Node) -> Bool {
   let Node(name, attributes) = node
   let forbidden =
@@ -372,11 +379,15 @@ fn safe_node(node: Node) -> Bool {
       ["parsererror", "a", "foreignObject", "script", "image"],
       name,
     )
+
+  // Reject disallowed element types or inspect attribute values.
   case forbidden {
     True -> False
     False ->
       list.all(attributes, fn(attribute) {
         let Attribute(name, value) = attribute
+
+        // Disallow external or javascript href targets on any element.
         case name == "href" || string.ends_with(name, ":href") {
           True -> string.starts_with(value, "#")
           False -> True
@@ -385,15 +396,19 @@ fn safe_node(node: Node) -> Bool {
   }
 }
 
+/// Decodes incoming JSON requests into typed Request records.
 fn request_decoder() -> decode.Decoder(Request) {
   use source <- decode.field("source", decode.string)
   use theme <- decode.field("theme", decode.string)
   use revision <- decode.field("revision", decode.int)
+
+  // Validate and parse the theme string into a Theme variant.
   use theme <- decode.then(case theme {
     "dark" -> decode.success(Dark)
     "default" -> decode.success(Light)
     _ -> decode.failure(Light, expected: "theme")
   })
+
   decode.success(Request(source:, theme:, revision:))
 }
 
@@ -401,6 +416,7 @@ fn safe_revision(revision: Int) -> Bool {
   revision > 0 && revision <= 9_007_199_254_740_991
 }
 
+/// Measures string length in UTF-16 code units.
 fn utf16_length(source: String) -> Int {
   source
   |> string.to_utf_codepoints
@@ -412,8 +428,7 @@ fn utf16_length(source: String) -> Int {
   })
 }
 
-// Mermaid uses ECMAScript whitespace and line boundaries, which differ from
-// Gleam's Unicode trim rules. Match its parser before accepting source.
+/// Checks whether source text contains forbidden directives or syntax.
 fn forbidden_source(source: String) -> Bool {
   let lines =
     source
@@ -425,7 +440,9 @@ fn forbidden_source(source: String) -> Bool {
   string.contains(source, "%%{") || forbidden_lines(lines)
 }
 
+/// Recursively scans lines for YAML frontmatter or click directives.
 fn forbidden_lines(lines: List(String)) -> Bool {
+  // Scan lines until an empty line list or forbidden directive is encountered.
   case lines {
     [] -> False
     [line, ..rest] -> {
@@ -447,11 +464,15 @@ fn forbidden_lines(lines: List(String)) -> Bool {
   }
 }
 
+/// Checks whether a line matches the Mermaid click directive syntax.
 fn click_directive(line: String) -> Bool {
+  // Check if line begins with click followed by ECMAScript whitespace.
   case string.starts_with(line, "click") {
     False -> False
     True -> {
       let arguments = string.drop_start(line, 5)
+
+      // Verify arguments follow a space character.
       case string.to_utf_codepoints(arguments) {
         [] -> False
         [first, ..] -> ecma_space(first) && ecma_trim(arguments) != ""
@@ -460,6 +481,7 @@ fn click_directive(line: String) -> Bool {
   }
 }
 
+/// Trims leading and trailing ECMAScript whitespace from text.
 fn ecma_trim(text: String) -> String {
   text
   |> string.to_utf_codepoints
@@ -470,6 +492,7 @@ fn ecma_trim(text: String) -> String {
   |> string.from_utf_codepoints
 }
 
+/// Checks whether a UTF codepoint is classified as ECMAScript whitespace.
 fn ecma_space(point: UtfCodepoint) -> Bool {
   let code = string.utf_codepoint_to_int(point)
   { code >= 9 && code <= 13 }
@@ -480,8 +503,11 @@ fn ecma_space(point: UtfCodepoint) -> Bool {
   )
 }
 
+/// Enqueues or begins rendering an accepted diagram request.
 fn accept(model: Model, request: Request) -> #(Model, List(Effect)) {
   let base = Model(..model, latest: request.revision, shown: None)
+
+  // Begin rendering immediately if idle, otherwise queue behind the current task.
   case model.phase {
     Idle -> #(Model(..base, phase: Busy(Drawing, request, None)), [
       Clear,
@@ -494,6 +520,7 @@ fn accept(model: Model, request: Request) -> #(Model, List(Effect)) {
   }
 }
 
+/// Transitions state after vendor rendering finishes and triggers SVG inspection.
 fn rendered(
   model: Model,
   revision: Int,
@@ -515,6 +542,7 @@ fn rendered(
   }
 }
 
+/// Records successful inspection and prepares height report to parent.
 fn published(
   model: Model,
   revision: Int,
@@ -536,6 +564,7 @@ fn published(
   }
 }
 
+/// Drains queued requests or returns controller to Idle phase.
 fn retire(
   model: Model,
   queued: option.Option(Request),
@@ -554,7 +583,7 @@ fn retire(
   }
 }
 
-// A measured height rounds up to whole pixels inside the published bounds.
+/// Rounds height up to pixel bounds and constructs a RenderedReply effect.
 fn height_reply(revision: Int, height: Float) -> Effect {
   let pixels = float.round(float.ceiling(height))
   ReplyToParent(RenderedReply(

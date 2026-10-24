@@ -243,6 +243,8 @@ pub fn describe(script: Script) -> String {
     Generated(split: False) -> "generated"
     Generated(split: True) -> "generated/split"
   }
+
+  // Format threshold and subagent options for diagnostic display.
   let threshold = case script.threshold_after {
     None -> "no threshold"
     Some(n) -> "threshold@" <> int.to_string(n)
@@ -251,6 +253,8 @@ pub fn describe(script: Script) -> String {
     None -> "no subagent"
     Some(_brief) -> "subagent"
   }
+
+  // Format concurrency and escalation flags for diagnostic display.
   let scheduling = case script.parallel {
     True -> "parallel"
     False -> "sequential"
@@ -410,6 +414,8 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
       ],
       [],
     )
+
+  // Draw compaction threshold and structural simulation flags.
   let #(threshold_turns, rng) = random.int_between(rng, 1, 2)
   let #(threshold, rng) =
     random.weighted(rng, [#(6, None), #(4, Some(threshold_turns))], None)
@@ -425,6 +431,8 @@ pub fn generate(rng: Rng) -> #(Script, Rng) {
     )
   let #(tools, rng) = tool_table(rng)
   let #(interventions, rng) = interventions(rng)
+
+  // Sample poll settlement and subagent configuration options.
   let #(poll_answer, rng) = poll_settle(rng)
   let #(subagent, rng) =
     random.weighted(

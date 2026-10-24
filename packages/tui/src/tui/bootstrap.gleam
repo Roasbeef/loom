@@ -663,6 +663,8 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
     state_directory,
     workspace,
   ))
+
+  // Derive private state directory paths for runtime locks and sockets.
   let endpoint_key = digest_prefix(session, 24)
   let endpoint_directory = filepath.join(state_directory, "endpoints")
   let log_directory = filepath.join(state_directory, "logs")
@@ -674,6 +676,8 @@ fn resolve_paths(options: Options, workspace: String) -> Result(Paths, String) {
     lock_directory,
     token_directory,
   ]
+
+  // Construct the resolved paths bundle for the session.
   Ok(Paths(
     session:,
     endpoint: filepath.join(endpoint_directory, endpoint_key <> ".json"),

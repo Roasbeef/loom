@@ -131,6 +131,8 @@ fn encode_body(
     model.ThinkingMedium -> reasoning("medium")
     model.ThinkingHigh -> reasoning("high")
   }
+
+  // Resolve token limits and output mode options.
   let max_tokens = case request.max_output_tokens {
     None -> resolved.max_output_tokens
     Some(count) -> count
@@ -143,6 +145,8 @@ fn encode_body(
     ]
     Subscription -> []
   }
+
+  // Assemble root JSON payload fields.
   json.Object(
     list.flatten([
       [#("model", json.String(resolved.model_id))],

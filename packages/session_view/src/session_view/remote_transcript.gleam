@@ -225,6 +225,8 @@ fn decode_fields(fields: List(#(String, JsonValue))) -> Result(Page, String) {
       }
     Ok(_) | Error(Nil) -> Error("the page's child must be a nonempty string")
   })
+
+  // Validate and decode the transcript page entries.
   use items <- result.try(case list.key_find(fields, "entries") {
     Ok(json.Array(items)) ->
       case list.length(items) > max_entries {
@@ -239,16 +241,22 @@ fn decode_fields(fields: List(#(String, JsonValue))) -> Result(Page, String) {
       |> result.map_error(fn(report) { "an entry: " <> report.expected })
     }),
   )
+
+  // Read the omitted entry count for the page.
   use omitted <- result.try(case list.key_find(fields, "omitted") {
     Ok(json.Int(count)) if count >= 0 -> Ok(count)
     Ok(_) | Error(Nil) ->
       Error("the page's omitted count must be a nonnegative integer")
   })
+
+  // Read the pagination cursor if another page remains.
   use next <- result.map(case list.key_find(fields, "next") {
     Ok(json.Null) -> Ok(None)
     Ok(json.Int(seq)) if seq >= 1 -> Ok(Some(seq))
     Ok(_) | Error(Nil) -> Error("the page's cursor must be a sequence or null")
   })
+
+  // Return the decoded transcript page.
   Page(child:, entries:, omitted:, next:)
 }
 

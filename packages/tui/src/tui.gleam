@@ -1570,10 +1570,14 @@ fn sessions_usage() -> String {
 // names anything is the daemon's configuration to say.
 fn parse_deployment(arguments: List(String)) -> Launch {
   let #(as_json, rest) = take_switch(arguments, "--json")
+
+  // Select whether to format deployment output as JSON or human-readable text.
   let output = case as_json {
     True -> AsJson
     False -> AsText
   }
+
+  // Extract the target orchestrator node name when specified.
   let named_one = list.contains(rest, "--node")
   let #(key, rest) = take_flag(rest, "--node")
   let node = case named_one, placement.is_orchestrator_name(key) {
@@ -1581,6 +1585,8 @@ fn parse_deployment(arguments: List(String)) -> Launch {
     True, True -> Ok(Some(key))
     True, False -> Error("--node takes a key of [executors] or [orchestrators]")
   }
+
+  // Match the remaining subcommand verb and dispatch deployment launch.
   case rest, node {
     _, Error(reason) -> Invalid(reason <> "\n" <> deployment_usage())
     ["status", ..flags], Ok(node) ->
@@ -1894,10 +1900,14 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
   let #(forget, arguments) = take_switch(arguments, "--no-remember")
   let #(device, arguments) = take_switch(arguments, "--device")
   let #(open, rest) = take_switch(arguments, "--open")
+
+  // Determine whether to launch the browser or print the generated URL.
   let delivery = case open {
     True -> view_link.OpenInBrowser
     False -> view_link.PrintLink
   }
+
+  // Parse session and origin arguments from the remaining flag list.
   use session <- result.try(view_session(rest))
   use asked <- result.try(view_origin(rest))
   use remember <- result.try(case session, forget {

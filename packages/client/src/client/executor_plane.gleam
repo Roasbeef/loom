@@ -630,6 +630,8 @@ fn start_mcp(
       Ok(Nil)
     }),
   )
+
+  // Start prepared servers and map facades to external endpoints.
   let #(layer, refusals) = mcp_wiring.start_prepared(prepared)
   let facades =
     list.map(plan.served, fn(facade) {

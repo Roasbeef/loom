@@ -924,20 +924,28 @@ fn abandoning(
   move: machines.Move,
 ) -> List(Element(message)) {
   let action = grants.AbandonMove(move.session)
+
+  // Display notice lines associated with this abandon move action.
   let said = case page.notice {
     Some(Spoken(action: spoken, notice: words)) if spoken == action -> [
       notice.line(words),
     ]
     Some(_) | None -> []
   }
+
+  // Disable controls when background request is pending.
   let occupied = case page.waiting {
     Some(_) -> [attribute.disabled(True)]
     None -> []
   }
+
+  // Only directory members hosting the source move can abandon.
   let offered = case page.machine.whose, page.snapshot.directory {
     machines.This, Some(_) -> True
     machines.This, None | machines.Other, _ -> False
   }
+
+  // Render confirmation question or trigger button based on armed state.
   case offered, page.armed == Some(action) {
     False, _ -> []
     True, False ->

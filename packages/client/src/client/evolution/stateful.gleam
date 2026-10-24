@@ -195,6 +195,8 @@ fn prepare(
         ))
     },
   )
+
+  // Compile prepared candidate and issue live prepare command.
   use compiled <- result.try(compiled(prepared, slot))
   let modules = compiled.0
   let transition =
