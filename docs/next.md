@@ -60,6 +60,22 @@ the intended assertions on pristine production code.
    **Exit:** revalidate the relevant claims against the current tree; this
    sweep does not install, release or redesign those features.
 
+## Web, SQLite and request-preparation performance
+
+A consolidated change set cuts reductions and copied words in the web lane
+(one memo leaf per reasoning block, a bypass when no summary labels exist),
+in idle gateway reads (an empty entry cut skips branch attribution) and in
+request preparation (a within-budget image shortcut and an identity context
+shortcut). The records are
+[web-sqlite-performance](review/web-sqlite-performance-2026-10-24.md),
+[no-label-performance](review/no-label-performance-2026-10-24.md) and
+[request-preparation-performance](review/request-preparation-performance-2026-10-24.md).
+They report reductions, copied words and CPU in single-scheduler fixtures. No
+live RSS or installed-daemon effect was measured, and the request-preparation
+fixture is not a claim about full prepare or transport cost. The earlier
+terminal-profiling handoff is preserved in
+[next-2026-10-24-before-web-sqlite-performance.md](next-2026-10-24-before-web-sqlite-performance.md).
+
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the
