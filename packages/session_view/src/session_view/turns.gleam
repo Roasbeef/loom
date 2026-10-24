@@ -557,11 +557,14 @@ pub fn with_decisions(
   pieces: List(Piece),
   decided: List(decisions.Decision),
 ) -> List(Piece) {
-  case pieces {
+  case pieces, decided {
     // A decision is a line among the records it concerns. With none of them
     // drawn it would stand alone and read as the answer, so it waits for them.
-    [] -> []
-    [_, ..] -> placed_decisions(pieces, decided)
+    [], _ -> []
+
+    // With no decisions to place, keep the lane's existing pieces and spine.
+    _, [] -> pieces
+    [_, ..], [_, ..] -> placed_decisions(pieces, decided)
   }
 }
 
