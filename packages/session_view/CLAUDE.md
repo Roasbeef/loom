@@ -1142,6 +1142,10 @@ about this. The 16-request bound in `evolution_pending` keeps the tracker
 finite under a daemon ahead of this client; the lane itself reaches one
 request of its own and at most one adopted from a board.
 
+`command.Surface` has an `Evolution` variant for `/evolution`, with a help row
+and a palette suggestion. The terminal opens its review overlay for it
+(`tui/evolution_panel`); the web view draws the same board as a tab.
+
 A host that sleeps between events (the web view has no periodic tick) arms one
 wake-up for `surfaces.evolution_due(shared)`, beside `session_channel.next_due`
 and `context_deferred_until`, and runs its ordinary tick when it fires. It is
