@@ -244,6 +244,78 @@ pub fn a_board_drops_settled_requests_and_corrects_a_phase_test() {
   assert list.all(restored.requests, fn(row) { row.request_id != other })
 }
 
+// A staging request that the board no longer lists has left the queue. If its
+// candidate is the selected one the selection committed, and the row says so
+// from the board instead of staying "staging" above a live generation; if the
+// candidate is not selected the board cannot say how it ended, so the row waits
+// for the next status poll.
+pub fn a_board_settles_a_staging_request_whose_candidate_is_selected_test() {
+  let #(tracker, id) = begun(pending.new(), 0, "cand")
+  let #(tracker, _) =
+    pending.answered(tracker, evolution.InFlight(evolution.Running), 10)
+  let selected = fn(live: Bool) {
+    let assert Ok(board) =
+      evolution.decode_board(
+        json.Object([
+          #(
+            "candidates",
+            json.Array([
+              json.Object([
+                #("candidate_id", json.String("cand")),
+                #("name", json.String("fmt_check")),
+                #("kind", json.String("extension")),
+                #(
+                  "scope",
+                  json.Object([
+                    #("kind", json.String("session")),
+                    #("session", json.String("s")),
+                  ]),
+                ),
+                #("identity_current", json.Bool(True)),
+                #(
+                  "selected",
+                  json.Object([
+                    #("generation", json.Int(4)),
+                    #("evidence_id", json.String("e1")),
+                  ]),
+                ),
+              ]),
+            ]),
+          ),
+          #(
+            "selections",
+            json.Array([
+              json.Object([
+                #(
+                  "scope",
+                  json.Object([
+                    #("kind", json.String("session")),
+                    #("session", json.String("s")),
+                  ]),
+                ),
+                #("name", json.String("fmt_check")),
+                #("candidate_id", json.String("cand")),
+                #("evidence_id", json.String("e1")),
+                #("generation", json.Int(4)),
+                #("published", json.Bool(live)),
+              ]),
+            ]),
+          ),
+        ]),
+      )
+    board
+  }
+  let live = pending.restore(tracker, selected(True), 100)
+  assert { only(live) }.stage == pending.Landed(Some(4))
+  assert { only(live) }.request_id == id
+  let durable = pending.restore(tracker, selected(False), 100)
+  assert { only(durable) }.stage == pending.Publishing
+
+  // No selected candidate on the board: left staging for the status poll.
+  let unselected = pending.restore(tracker, board_listing([]), 100)
+  assert { only(unselected) }.stage == pending.Staging(evolution.Running)
+}
+
 pub fn the_tracker_is_bounded_and_makes_room_from_the_settled_test() {
   let full =
     list.fold(counted(pending.limit), pending.new(), fn(tracker, _) {

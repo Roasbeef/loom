@@ -1138,6 +1138,25 @@ pub fn purpose_words(purpose: Purpose) -> String {
   }
 }
 
+/// A principal's identity as the daemon names it, cut to fit a row. An owner's
+/// is a long digest, so only the first characters are kept, which is enough to
+/// tell two principals apart. Both hosts draw a principal through this, so a
+/// history row stays on a line or two.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert evolution.principal_words("member-noa") == "member-noa"
+/// assert evolution.principal_words("owner-2d927c35c48e817d") == "owner-2d927c35…"
+/// ```
+pub fn principal_words(principal: String) -> String {
+  let one_line = text_hygiene.single_line(principal)
+  case string.length(one_line) > 16 {
+    True -> string.slice(one_line, 0, 14) <> "…"
+    False -> one_line
+  }
+}
+
 /// The word for where a decision was made. An entry written before surfaces
 /// were recorded says nothing.
 ///
@@ -1250,7 +1269,9 @@ pub fn find(board: Board, candidate_id: String) -> Result(Candidate, Nil) {
 }
 
 /// The evidence an approval of this candidate could rest on: the newest
-/// observation that passed under the evaluator the host runs now. A candidate
+/// observation that passed under the evaluator the host runs now, and for a
+/// prompt only an independent rollout, since the store refuses an approval of a
+/// prompt on its author's tests. A candidate
 /// that is already approved, of a kind or purpose this client cannot name, or
 /// tested under another identity offers none. The daemon is the gate; this is
 /// what the UI can describe, so it is all the UI offers.
@@ -1261,19 +1282,34 @@ pub fn find(board: Board, candidate_id: String) -> Result(Candidate, Nil) {
 /// assert evolution.approval_target(candidate) == Ok("5c2e")
 /// ```
 pub fn approval_target(candidate: Candidate) -> Result(String, Nil) {
-  case candidate.approval, candidate.kind, candidate.identity {
-    None, Extension, Current | None, Program, Current | None, Prompt, Current ->
-      list.find(candidate.evidence, passed_and_current)
+  case candidate.approval, candidate.identity {
+    None, Current ->
+      case candidate.kind {
+        Extension | Program ->
+          list.find(candidate.evidence, fn(found) {
+            passed_and_current(found, AuthorTests)
+            || passed_and_current(found, IndependentRollout)
+          })
+        Prompt ->
+          list.find(candidate.evidence, passed_and_current(
+            _,
+            IndependentRollout,
+          ))
+        UnknownKind(..) -> Error(Nil)
+      }
       |> result.map(fn(evidence) { evidence.evidence_id })
-    _, _, _ -> Error(Nil)
+    _, _ -> Error(Nil)
   }
 }
 
-fn passed_and_current(evidence: Evidence) -> Bool {
-  case evidence.verdict, evidence.purpose, evidence.identity {
-    Passed, AuthorTests, Current | Passed, IndependentRollout, Current -> True
-    _, _, _ -> False
-  }
+// Passing evidence made under the evaluator the host runs now, for one purpose.
+// The store approves an extension or a program on either purpose and a prompt
+// only on an independent rollout, since a prompt cannot be vouched for by tests
+// its author wrote, and refuses the author's tests there.
+fn passed_and_current(evidence: Evidence, purpose: Purpose) -> Bool {
+  evidence.verdict == Passed
+  && evidence.identity == Current
+  && evidence.purpose == purpose
 }
 
 /// What a selection of this candidate would send: its approval's evidence and
