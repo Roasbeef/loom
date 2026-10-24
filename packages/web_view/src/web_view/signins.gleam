@@ -123,6 +123,8 @@ pub fn ends_in(now: Int, then: Int) -> String {
   let seconds = up(int.max(then - now, 0), 1000)
   let minutes = up(seconds, 60)
   let hours = up(seconds, 3600)
+
+  // Format remaining lease duration into coarse bucket string.
   case seconds {
     0 -> "ended"
     _ if seconds < 60 -> "under a minute"

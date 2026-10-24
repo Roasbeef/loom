@@ -119,6 +119,7 @@ pub fn action_name(action: Action) -> String {
 /// assert btw.action("read", "") == Ok(btw.Read)
 /// ```
 pub fn action(name: String, text: String) -> Result(Action, String) {
+  // Dispatch requested side board action by command name.
   case name {
     "read" -> Ok(Read)
     "refresh" -> Ok(Refresh)
@@ -214,6 +215,7 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   Ok(Board(strand, snapshot, model, status, exchanges, notice))
 }
 
+/// Extracts value field from JSON object.
 fn value_field(value, name) {
   case value {
     json.Object(fields) ->
@@ -230,8 +232,11 @@ fn array(value) {
   }
 }
 
+/// Finds named field in key-value pairs.
 fn field(value, name) {
   use value <- result.try(value_field(value, name))
+
+  // Decode expected string value from JSON field.
   case value {
     json.String(text) -> Ok(text)
     _ -> Error("invalid side board field: " <> name)
@@ -249,6 +254,7 @@ pub fn lines(state: State) -> List(String) {
   raw_lines(state) |> list.map(text_hygiene.multiline)
 }
 
+/// Helper `raw_lines` for raw lines.
 fn raw_lines(state: State) -> List(String) {
   case state.board {
     None -> [

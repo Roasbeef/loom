@@ -204,7 +204,7 @@ pub fn tool_tail_lines(presentation: Presentation) -> List(Line) {
   }
 }
 
-// The window itself, once the reader has asked for detail.
+/// The window itself, once the reader has asked for detail.
 fn expanded_tool_tail_lines(presentation: Presentation) -> List(Line) {
   presentation.tool_tails
   |> list.filter(fn(tail) { tail.strand == presentation.active_strand })
@@ -221,9 +221,11 @@ fn expanded_tool_tail_lines(presentation: Presentation) -> List(Line) {
   })
 }
 
-// The last `count` of `lines`, in order.
+/// The last `count` of `lines`, in order.
 fn last_lines(lines: List(String), count: Int) -> List(String) {
   let extra = list.length(lines) - count
+
+  // Dispatch based on branch condition.
   case extra > 0 {
     True -> list.drop(lines, extra)
     False -> lines
@@ -249,15 +251,15 @@ pub fn clear_streams(streams: List(Stream), strand: String) -> List(Stream) {
   })
 }
 
-// The submission still awaiting its outcome is drawn with the ones the daemon
-// has already acknowledged, and last, because it is the newest. Waiting for
-// the reply before drawing it would cost the echo a round trip, which is most
-// of what it is for.
-//
-// The echoes are the newest thing on screen: they were typed after the run
-// that is streaming above them started, and they run after it finishes. One
-// trailer under the group says what they are waiting for, rather than a
-// marker repeated beside every line of it.
+/// The submission still awaiting its outcome is drawn with the ones the daemon
+/// has already acknowledged, and last, because it is the newest. Waiting for
+/// the reply before drawing it would cost the echo a round trip, which is most
+/// of what it is for.
+///
+/// The echoes are the newest thing on screen: they were typed after the run
+/// that is streaming above them started, and they run after it finishes. One
+/// trailer under the group says what they are waiting for, rather than a
+/// marker repeated beside every line of it.
 fn queued_lines(
   queued: List(Submission),
   awaiting: Option(Submission),
@@ -275,6 +277,8 @@ fn queued_lines(
         }
       },
     )
+
+  // Dispatch based on branch condition.
   case held {
     [] -> []
     [_, ..] ->
@@ -327,6 +331,7 @@ pub fn held_words(kind: snapshot_view.InputKind) -> String {
 /// idle interval, without matching repeated text against transcript entries.
 @internal
 pub fn pending_input_lines(presentation: Presentation) -> List(Line) {
+  // Dispatch based on branch condition.
   case held_inputs(presentation) {
     None -> queued_lines(presentation.queued, presentation.awaiting_outcome)
     Some(visible) -> {
@@ -350,6 +355,8 @@ pub fn display_streams(presentation: Presentation) -> List(Stream) {
       stream.strand == presentation.active_strand
       && !response_recorded(presentation.records, stream.generation)
     })
+
+  // Dispatch based on branch condition.
   let preview = case presentation.captured {
     Some(#(_, view)) ->
       case view.preview, dict.get(view.operations, presentation.active_strand) {
@@ -362,6 +369,8 @@ pub fn display_streams(presentation: Presentation) -> List(Stream) {
       }
     None -> None
   }
+
+  // Dispatch based on branch condition.
   case active, preview {
     [], Some(sample) -> [preview_stream(presentation.active_strand, sample)]
     _, _ -> active
@@ -444,6 +453,8 @@ pub fn stream_lines(
   streams
   |> list.filter_map(fn(stream) {
     let Stream(strand:, kind:, fragments:, generation:, ..) = stream
+
+    // Dispatch based on branch condition.
     case strand == active_strand && kind != "end" {
       False -> Error(Nil)
       True -> {
@@ -461,17 +472,17 @@ pub fn stream_lines(
   |> separated_tool_groups(WithinResponse)
 }
 
-// The live and settled forms of one reasoning block are drawn by different
-// code paths a few hundred milliseconds apart — this one from the stream
-// the provider is still writing, the other from the record the daemon has
-// committed — so the two functions below are deliberately the same shape.
-// Collapsed without a summary, each is exactly one `ReasoningDigest` row —
-// clipped to the pane rather than wrapped, so the count holds at every width
-// — and the settle therefore changes the row's words and not the
-// transcript's height. With a summary each is one `SummarizedReasoning`
-// line: a header row and the summary beneath it. The settled block borrows
-// the stream's summary until its own arrives (`labels_for`), so a block that
-// showed a summary while streaming settles into the same number of rows.
+/// The live and settled forms of one reasoning block are drawn by different
+/// code paths a few hundred milliseconds apart — this one from the stream
+/// the provider is still writing, the other from the record the daemon has
+/// committed — so the two functions below are deliberately the same shape.
+/// Collapsed without a summary, each is exactly one `ReasoningDigest` row —
+/// clipped to the pane rather than wrapped, so the count holds at every width
+/// — and the settle therefore changes the row's words and not the
+/// transcript's height. With a summary each is one `SummarizedReasoning`
+/// line: a header row and the summary beneath it. The settled block borrows
+/// the stream's summary until its own arrives (`labels_for`), so a block that
+/// showed a summary while streaming settles into the same number of rows.
 fn live_reasoning_line(
   text: String,
   extent: notes_view.Extent,
@@ -487,6 +498,7 @@ fn live_reasoning_line(
   }
 }
 
+/// Helper function `settled_reasoning_line` for transcript formatting.
 fn settled_reasoning_line(
   text: String,
   extent: notes_view.Extent,
@@ -521,6 +533,8 @@ fn settled_reasoning_line(
 @internal
 pub fn live_summary_digest(text: String, elapsed_s: Int) -> String {
   let lines = line_count(text)
+
+  // Dispatch based on branch condition.
   case elapsed_s > 0 {
     True -> lines <> " · " <> elapsed_words(elapsed_s) <> " so far"
     False -> lines <> " so far"
@@ -539,6 +553,8 @@ pub fn live_summary_digest(text: String, elapsed_s: Int) -> String {
 @internal
 pub fn live_summary_header(text: String, elapsed_s: Int) -> String {
   let lines = " · " <> line_count(text)
+
+  // Dispatch based on branch condition.
   case elapsed_s > 0 {
     True -> lines <> " · " <> elapsed_words(elapsed_s)
     False -> lines
@@ -587,17 +603,21 @@ pub fn line_count(text: String) -> String {
   }
 }
 
-// Seconds as the row reads them: `45s`, `1m 04s`. The seconds are padded
-// under a minute so the figure does not change width every ten seconds.
+/// Seconds as the row reads them: `45s`, `1m 04s`. The seconds are padded
+/// under a minute so the figure does not change width every ten seconds.
 fn elapsed_words(seconds: Int) -> String {
+  // Dispatch based on branch condition.
   case seconds < 60 {
     True -> int.to_string(seconds) <> "s"
     False -> {
       let rest = seconds % 60
+
+      // Dispatch based on branch condition.
       let padded = case rest < 10 {
         True -> "0" <> int.to_string(rest)
         False -> int.to_string(rest)
       }
+
       int.to_string(seconds / 60) <> "m " <> padded <> "s"
     }
   }
@@ -678,13 +698,15 @@ pub fn reasoning_opening(text: String) -> String {
   compact(opening, reasoning_digest_limit)
 }
 
-// Whether one source line can open a digest, and what it reads as if it can.
-// A blank line and a fence delimiter say nothing on their own; a heading or
-// quotation marker says something only about the line that carries it, so it
-// is shed and the remainder is judged again — a line of markers alone falls
-// through to the next candidate.
+/// Whether one source line can open a digest, and what it reads as if it can.
+/// A blank line and a fence delimiter say nothing on their own; a heading or
+/// quotation marker says something only about the line that carries it, so it
+/// is shed and the remainder is judged again — a line of markers alone falls
+/// through to the next candidate.
 fn digest_opening_line(line: String) -> Result(String, Nil) {
   let trimmed = string.trim(line)
+
+  // Dispatch based on branch condition.
   case trimmed {
     "" -> Error(Nil)
     "```" <> _ | "~~~" <> _ -> Error(Nil)
@@ -946,10 +968,13 @@ pub fn keyed_record_blocks(
   |> separated_tool_blocks(BetweenEntries)
   |> list.fold(#([], ""), fn(acc, block) {
     let #(placed, above) = acc
+
+    // Dispatch based on branch condition.
     let #(key, source) = case block.0 {
       "" -> #(above <> "~", FromSpacer)
       key -> #(key, dict.get(sources, key) |> result.unwrap(FromSpacer))
     }
+
     let rows =
       list.index_map(block.1, fn(line, index) {
         #(key <> ":" <> int.to_string(index), line)
@@ -959,10 +984,10 @@ pub fn keyed_record_blocks(
   |> fn(folded) { list.reverse(folded.0) }
 }
 
-// The durable records of the active strand as blocks, each the rows one
-// entry, tool group, spliced notice or advisor block draws, tagged with its
-// durable sequence and in sequence order. `record_lines` flattens them and
-// `keyed_record_lines` keys them.
+/// The durable records of the active strand as blocks, each the rows one
+/// entry, tool group, spliced notice or advisor block draws, tagged with its
+/// durable sequence and in sequence order. `record_lines` flattens them and
+/// `keyed_record_lines` keys them.
 fn record_blocks(
   records: List(protocol.EntryRecord),
   presentation: Presentation,
@@ -978,6 +1003,8 @@ fn record_blocks(
     |> recorded_stop_entries(presentation)
   let sequences = entry_sequences(entries)
   let owner = solo_owner(presentation.captured)
+
+  // Dispatch based on branch condition.
   case presentation.extent {
     // Expanded history alternates a response carrying a call with the entry
     // carrying its result, and both close bare, so without this fold a run
@@ -1053,17 +1080,19 @@ fn record_blocks(
   }
 }
 
-// A stop reason belongs to an operation result, never to the latest run on
-// a reusable strand. Enrich only the display copy; durable messages and their
-// provider acknowledgement diagnostics remain unchanged on disk.
+/// A stop reason belongs to an operation result, never to the latest run on
+/// a reusable strand. Enrich only the display copy; durable messages and their
+/// provider acknowledgement diagnostics remain unchanged on disk.
 fn recorded_stop_entries(
   entries: List(entry.Entry),
   presentation: Presentation,
 ) -> List(entry.Entry) {
+  // Dispatch based on branch condition.
   let cells = case presentation.captured {
     Some(#(_, view)) -> view.cells
     None -> []
   }
+
   let reasons = child_stop.entry_reasons(cells, presentation.active_strand)
   list.map(entries, fn(value) {
     case value {
@@ -1079,10 +1108,13 @@ fn recorded_stop_entries(
         case dict.get(reasons, ids.entry_id_to_string(id)) {
           Ok(reason) -> {
             let diagnostic = error_message |> option.then(stop_detail)
+
+            // Dispatch based on branch condition.
             let text = case diagnostic {
               None -> reason
               Some(detail) -> reason <> " " <> detail
             }
+
             entry.MessageEntry(
               ..value,
               message: message.AssistantMessage(
@@ -1113,8 +1145,8 @@ fn expanded_source(spliced: Spliced(entry.Entry)) -> Source {
   }
 }
 
-// Expanded history renders every entry in full, so a spliced place is
-// either the entry itself or the transient row standing after it.
+/// Expanded history renders every entry in full, so a spliced place is
+/// either the entry itself or the transient row standing after it.
 fn expanded_lines(
   spliced: Spliced(entry.Entry),
   owner: Option(message.Origin),
@@ -1127,11 +1159,11 @@ fn expanded_lines(
   }
 }
 
-// One projected item folded into the compact accumulator: each item's rows,
-// newest item first, the call cache and the narrative cache. Lifted out of
-// the fold so the caches it reads are parameters rather than a closure over
-// the model, which is what lets the notice fold share the same accumulator
-// shape.
+/// One projected item folded into the compact accumulator: each item's rows,
+/// newest item first, the call cache and the narrative cache. Lifted out of
+/// the fold so the caches it reads are parameters rather than a closure over
+/// the model, which is what lets the notice fold share the same accumulator
+/// shape.
 fn compact_item_lines(
   acc: #(
     List(#(Int, #(Source, List(Line)))),
@@ -1217,8 +1249,8 @@ fn compact_item_lines(
   }
 }
 
-// Outcome identity is part of the key, so receiving a result replaces its
-// pending row. The new map contains only visible calls and releases old cuts.
+/// Outcome identity is part of the key, so receiving a result replaces its
+/// pending row. The new map contains only visible calls and releases old cuts.
 fn cached_activity_lines(
   calls: List(tool_activity.Call),
   previous: Dict(tool_activity.Call, List(Line)),
@@ -1301,7 +1333,7 @@ pub fn collapse_repeats(
   })
 }
 
-// The run's length, on the first row so it reads beside the summary.
+/// The run's length, on the first row so it reads beside the summary.
 fn counted(rows: List(Line), count: Int) -> List(Line) {
   case rows {
     [first, ..rest] -> [
@@ -1394,12 +1426,15 @@ pub fn separated_tool_blocks(
     // result its call's row already draws (`joined`), is passed over: the
     // block below comes to sit under the last block that drew a row.
     let drew = fn(earlier: #(String, List(Line))) { earlier.1 != [] }
+
+    // Dispatch based on branch condition.
     let wanted = case list.find(placed, drew) {
       Ok(#(_, previous)) ->
         block_closes_bare(previous) && opens_bare(block.1, opening)
       Error(Nil) -> False
     }
 
+    // Dispatch based on branch condition.
     case wanted {
       True -> [block, #("", [Line(Spacer, "")]), ..placed]
       False -> [block, ..placed]
@@ -1424,11 +1459,11 @@ pub fn separated_lines(lines: List(Line)) -> List(Line) {
   separated_tool_groups(list.map(lines, fn(line) { [line] }), BetweenEntries)
 }
 
-// The same separation over rows that carry no anchor identity.
-//
-// Groups are wrapped as idless blocks and run through the one fold rather
-// than folded again here. Two copies of a two-sided rule drift, and the two
-// projections have to agree row for row or the anchors slide.
+/// The same separation over rows that carry no anchor identity.
+///
+/// Groups are wrapped as idless blocks and run through the one fold rather
+/// than folded again here. Two copies of a two-sided rule drift, and the two
+/// projections have to agree row for row or the anchors slide.
 fn separated_tool_groups(
   groups: List(List(Line)),
   opening: GroupOpening,
@@ -1585,9 +1620,9 @@ pub fn clocked_call_lines(
   call_rows(call.invocation, call.outcome, clock)
 }
 
-// The compact rows of one call and the result joined to it, if any: what a
-// tool group draws for each of its calls, and what a narrative response
-// draws for a call whose result `joined` found in the window.
+/// The compact rows of one call and the result joined to it, if any: what a
+/// tool group draws for each of its calls, and what a narrative response
+/// draws for a call whose result `joined` found in the window.
 fn call_rows(
   invocation: message.ToolCall,
   outcome: Option(message.AgentMessage),
@@ -1608,6 +1643,8 @@ fn call_rows(
   // Gleam renderer instead of displaying the transport JSON as a summary.
   let program = code_mode_program(invocation.name, invocation.arguments, False)
   let summary = program_summary(invocation, program)
+
+  // Dispatch based on branch condition.
   let rows = case outcome {
     None -> [Line(ToolCall, summary <> " · awaiting result")]
     Some(message.ToolResultMessage(is_error: True, content:, ..)) -> [
@@ -1705,9 +1742,9 @@ fn call_rows(
   ])
 }
 
-// A settled `history_search` as its heading and its hits. Details that are not
-// the record the tool writes leave the heading alone, as any other tool's
-// settled call has it.
+/// A settled `history_search` as its heading and its hits. Details that are not
+/// the record the tool writes leave the heading alone, as any other tool's
+/// settled call has it.
 fn recall_rows(summary: String, details: json.JsonValue) -> List(Line) {
   case recall_view.hits(details) {
     Some(found) -> [
@@ -1721,9 +1758,9 @@ fn recall_rows(summary: String, details: json.JsonValue) -> List(Line) {
   }
 }
 
-// The hits as one literal row with a hit to a line. They are session text, so
-// they are never a Markdown row (`ToolDetail` is), and being one row they hang
-// under the heading together, as a plain result's lines do.
+/// The hits as one literal row with a hit to a line. They are session text, so
+/// they are never a Markdown row (`ToolDetail` is), and being one row they hang
+/// under the heading together, as a plain result's lines do.
 fn recall_hit_lines(
   found: List(recall_view.Hit),
   extent: notes_view.Extent,
@@ -1734,8 +1771,8 @@ fn recall_hit_lines(
   }
 }
 
-// The placeholder rows of a tool result's images, under the rows of the
-// call that returned them.
+/// The placeholder rows of a tool result's images, under the rows of the
+/// call that returned them.
 fn result_image_lines(content: List(message.ToolResultBlock)) -> List(Line) {
   content
   |> list.filter_map(fn(block) {
@@ -1747,8 +1784,8 @@ fn result_image_lines(content: List(message.ToolResultBlock)) -> List(Line) {
   |> image_lines
 }
 
-// One placeholder row per image, numbered by its place among its row's
-// images, the numbering `transcript_image` names an image by.
+/// One placeholder row per image, numbered by its place among its row's
+/// images, the numbering `transcript_image` names an image by.
 fn image_lines(images: List(#(String, String))) -> List(Line) {
   list.index_map(images, fn(image, index) {
     Line(
@@ -1780,6 +1817,7 @@ fn image_lines(images: List(#(String, String))) -> List(Line) {
 /// //   == [Line(ToolDetail, "```gleam\n<the whole program>\n```"), ..]
 /// ```
 pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
+  // Dispatch based on branch condition.
   let invocation = case
     assistant_block_lines(
       message.AssistantToolCall(call.invocation),
@@ -1797,10 +1835,13 @@ pub fn expanded_call_lines(call: tool_activity.Call) -> List(Line) {
       }
     [] -> []
   }
+
+  // Dispatch based on branch condition.
   let outcome = case call.outcome {
     Some(result) -> message_lines(result, True, None, [], unjoined, None)
     None -> []
   }
+
   list.append(invocation, outcome)
 }
 
@@ -1820,6 +1861,7 @@ pub fn call_summary(call: tool_activity.Call) -> String {
   )
 }
 
+/// Helper function `program_summary` for transcript formatting.
 fn program_summary(
   invocation: message.ToolCall,
   program: Option(String),
@@ -1863,14 +1905,14 @@ pub fn user_body(content: List(message.UserBlock)) -> String {
   |> string.join("\n")
 }
 
-// Notes are useful output, even when ordinary tool details are collapsed.
-// Known note tools expose their value; arbitrary tool JSON keeps its own schema.
-//
-// A `propose` call is the one case that is not a note: its arguments are an
-// edit, so it is drawn as the diff under this dispatch rather than through the
-// note arms. Arguments that are not an object, or that name no edit at all,
-// draw nothing here and keep the summary row the caller already placed, which
-// is the generic rendering.
+/// Notes are useful output, even when ordinary tool details are collapsed.
+/// Known note tools expose their value; arbitrary tool JSON keeps its own schema.
+///
+/// A `propose` call is the one case that is not a note: its arguments are an
+/// edit, so it is drawn as the diff under this dispatch rather than through the
+/// note arms. Arguments that are not an object, or that name no edit at all,
+/// draw nothing here and keep the summary row the caller already placed, which
+/// is the generic rendering.
 fn note_call_lines(
   name: String,
   arguments: json.JsonValue,
@@ -1882,76 +1924,92 @@ fn note_call_lines(
   }
 }
 
+/// Helper function `note_value_lines` for transcript formatting.
 fn note_value_lines(
   name: String,
   arguments: json.JsonValue,
   extent: notes_view.Extent,
 ) -> List(Line) {
+  // Dispatch based on branch condition.
   let value = case name, arguments {
     "agent_note", json.Object(fields) -> list.key_find(fields, "value")
     "remember", json.Object(fields) -> list.key_find(fields, "note")
     "agent_send", json.Object(fields) -> list.key_find(fields, "message")
     _, _ -> Error(Nil)
   }
+
+  // Dispatch based on branch condition.
   case value {
     Ok(value) -> {
       let body = notes_view.readable(json.to_string(value))
+
+      // Dispatch based on branch condition.
       let body = case name, extent {
         "agent_send", notes_view.Excerpt -> message_excerpt(body)
         _, _ -> body
       }
+
       [Line(ToolDetail, body)]
     }
     Error(Nil) -> []
   }
 }
 
-// The edit a `propose` call asks for, drawn as the diff it is. The call's
-// arguments are the edit, and the person reading the transcript is the person
-// who will be asked to approve it, so the row shows what would change rather
-// than the JSON that asked for it.
-//
-// A collapsed row keeps the opening of the diff, the way a collapsed edit's
-// own patch does, so a proposal against a long file holds a readable number
-// of rows rather than the whole of it. A call whose arguments do not name both
-// texts draws nothing here and keeps the generic rows.
+/// The edit a `propose` call asks for, drawn as the diff it is. The call's
+/// arguments are the edit, and the person reading the transcript is the person
+/// who will be asked to approve it, so the row shows what would change rather
+/// than the JSON that asked for it.
+///
+/// A collapsed row keeps the opening of the diff, the way a collapsed edit's
+/// own patch does, so a proposal against a long file holds a readable number
+/// of rows rather than the whole of it. A call whose arguments do not name both
+/// texts draws nothing here and keeps the generic rows.
 fn propose_patch_lines(
   fields: List(#(String, json.JsonValue)),
   extent: notes_view.Extent,
 ) -> List(Line) {
   let old = string_field(fields, "old") |> option.unwrap("")
   let new = string_field(fields, "new") |> option.unwrap("")
+
+  // Dispatch based on branch condition.
   case old, new {
     "", "" -> []
     _, _ -> {
       let diff = proposals.diff_text(old, new)
+
+      // Dispatch based on branch condition.
       let shown = case extent {
         notes_view.Complete -> diff
         notes_view.Excerpt -> program_preview(diff, patch_preview_lines)
       }
+
       [Line(ToolPatch, shown)]
     }
   }
 }
 
-// The one row an `agent_send` call becomes, or an error when its arguments
-// do not name a recipient and a message, or when the tool refused the send,
-// which leaves the call to the generic rows every other tool gets, so a
-// refusal's reason shows. The heading is built from the call's arguments
-// and its result, which is `None` when no result is joined to the call
-// here; the body is drawn beneath it and never read.
+/// The one row an `agent_send` call becomes, or an error when its arguments
+/// do not name a recipient and a message, or when the tool refused the send,
+/// which leaves the call to the generic rows every other tool gets, so a
+/// refusal's reason shows. The heading is built from the call's arguments
+/// and its result, which is `None` when no result is joined to the call
+/// here; the body is drawn beneath it and never read.
 fn sent_lines(
   call: message.ToolCall,
   outcome: Option(message.AgentMessage),
   extent: notes_view.Extent,
   clock: Option(Int),
 ) -> Result(List(Line), Nil) {
+  // Dispatch based on branch condition.
   use fields <- result.try(case call.name, call.arguments {
     "agent_send", json.Object(fields) -> Ok(fields)
     _, _ -> Error(Nil)
   })
+
   use recipient <- result.try(option.to_result(string_field(fields, "to"), Nil))
   use body <- result.try(option.to_result(string_field(fields, "message"), Nil))
+
+  // Dispatch based on branch condition.
   use taken <- result.try(case outcome {
     None -> Ok("")
     Some(message.ToolResultMessage(
@@ -1969,6 +2027,7 @@ fn sent_lines(
       Ok(" · admitted to its queue" <> clock_text(timestamp, clock))
     Some(_) -> Error(Nil)
   })
+
   Ok([
     Line(
       SentMessage,
@@ -1982,22 +2041,24 @@ fn sent_lines(
   ])
 }
 
-// The rows a compact `code_mode` call becomes, from its program and the
-// result joined to it, or an error for a call that is not a foreground
-// program, which leaves it to the generic rows. A program that completed
-// is a titled block with its calls and a preview of its value; one that
-// failed is a titled block with the error; one with no result yet is a
-// titled block with the opening of its program, which is all the client
-// receives while it runs. All three share one frame, so a program settling
-// replaces the words in its block and does not swap the block for a row.
+/// The rows a compact `code_mode` call becomes, from its program and the
+/// result joined to it, or an error for a call that is not a foreground
+/// program, which leaves it to the generic rows. A program that completed
+/// is a titled block with its calls and a preview of its value; one that
+/// failed is a titled block with the error; one with no result yet is a
+/// titled block with the opening of its program, which is all the client
+/// receives while it runs. All three share one frame, so a program settling
+/// replaces the words in its block and does not swap the block for a row.
 fn program_lines(
   call: message.ToolCall,
   outcome: Option(message.AgentMessage),
 ) -> Result(List(Line), Nil) {
+  // Dispatch based on branch condition.
   use fields <- result.try(case call.name, call.arguments {
     "code_mode", json.Object(fields) -> Ok(fields)
     _, _ -> Error(Nil)
   })
+
   use program <- result.try(option.to_result(
     string_field(fields, "program"),
     Nil,
@@ -2010,6 +2071,8 @@ fn program_lines(
     when: string_field(fields, "mode") |> option.unwrap("run") != "run",
     return: Error(Nil),
   )
+
+  // Dispatch based on branch condition.
   case outcome {
     None -> Ok([Line(ProgramRunning, running_text(program, fields))])
     Some(message.ToolResultMessage(
@@ -2034,17 +2097,19 @@ const fragment_lines = 4
 // How many lines of an error a failure block shows.
 const error_lines = 4
 
-// A settled program's block: its status and call count in the title, the
-// time it ran for in the foot, the same opening of the program a running
-// block showed, the calls the host recorded, and a preview of the value.
-// A result with no readable call record has no calls section and no
-// elapsed time, and a result with no `value` previews its text as a string.
+/// A settled program's block: its status and call count in the title, the
+/// time it ran for in the foot, the same opening of the program a running
+/// block showed, the calls the host recorded, and a preview of the value.
+/// A result with no readable call record has no calls section and no
+/// elapsed time, and a result with no `value` previews its text as a string.
 fn settled_text(
   program: String,
   details: List(#(String, json.JsonValue)),
   content: List(message.ToolResultBlock),
 ) -> String {
   let status = string_field(details, "status") |> option.unwrap("completed")
+
+  // Dispatch based on branch condition.
   let value = case list.key_find(details, "value") {
     Ok(value) -> value
     Error(Nil) ->
@@ -2061,6 +2126,7 @@ fn settled_text(
     )
     None -> #("", "", [])
   }
+
   [
     "✓ code_mode · " <> status <> count,
     foot,
@@ -2092,14 +2158,18 @@ const preview_keys = 3
 /// ```
 @internal
 pub fn value_preview(value: json.JsonValue) -> List(String) {
+  // Dispatch based on branch condition.
   case value {
     json.Object([]) -> ["RESULT · {}"]
     json.Object(fields) -> {
       let unshown = list.length(fields) - preview_keys
+
+      // Dispatch based on branch condition.
       let more = case unshown > 0 {
         True -> ["  … " <> count_text(unshown, "more key", "more keys")]
         False -> []
       }
+
       let rows =
         fields
         |> list.take(preview_keys)
@@ -2121,8 +2191,8 @@ pub fn value_preview(value: json.JsonValue) -> List(String) {
   }
 }
 
-// A value in a few words: a string quoted and cut, a collection by its kind
-// and size, anything else as it is written.
+/// A value in a few words: a string quoted and cut, a collection by its kind
+/// and size, anything else as it is written.
 fn value_hint(value: json.JsonValue) -> String {
   case value {
     json.String(text) -> "\"" <> compact(text, 40) <> "\""
@@ -2145,15 +2215,21 @@ fn call_count(log: CallLog) -> String {
 // How many groups of calls a failure block lists.
 const call_groups = 4
 
-// The calls section of a failure block, from the host's record: a
-// `CALLS · …` line and the calls grouped where consecutive calls share a
-// capability and an ending, with a closing line for the groups and calls
-// not listed. The arguments start in one column, after the widest glyph,
-// capability and count, so a list of calls reads as a table. A failure
-// names its error code in words (`failed · exit status`), and a call that
-// failed, that had not settled or that took over a second says how long
-// it took (`· 4.1s`). A call's argument summary is the host's redacted
-// one, cut to a row.
+/// The calls section of a failure block, from the host's record: a
+/// `CALLS · …` line and the calls grouped where consecutive calls share a
+/// capability and an ending, with a closing line for the groups and calls
+/// not listed. The arguments start in one column, after the widest glyph,
+/// capability and count, so a list of calls reads as a table. A failure
+/// names its error code in words (`failed · exit status`), and a call that
+/// failed, that had not settled or that took over a second says how long
+/// it took (`· 4.1s`). A call's argument summary is the host's redacted
+/// one, cut to a row.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.call_section(log)
+/// ```
 @internal
 pub fn call_section(log: CallLog) -> List(String) {
   let groups = call_groups_of(log.items)
@@ -2166,16 +2242,20 @@ pub fn call_section(log: CallLog) -> List(String) {
     - list.length(log.items)
   let labels =
     list.map(shown, fn(group) {
+      // Dispatch based on branch condition.
       let glyph = case group.call.status {
         call_tree.Settled -> "✓ "
         call_tree.Failed -> "× "
         call_tree.Cancelled -> "○ "
         call_tree.Unsettled -> "◐ "
       }
+
+      // Dispatch based on branch condition.
       let times = case group.count {
         1 -> ""
         n -> " ×" <> int.to_string(n)
       }
+
       glyph <> text_hygiene.single_line(group.call.cap) <> times
     })
 
@@ -2188,6 +2268,7 @@ pub fn call_section(log: CallLog) -> List(String) {
   // Format aligned rows for each shown call group with duration and args.
   let rows =
     list.map2(shown, labels, fn(group, label) {
+      // Dispatch based on branch condition.
       let ending = case group.call.status {
         call_tree.Settled -> ""
         call_tree.Failed ->
@@ -2196,11 +2277,14 @@ pub fn call_section(log: CallLog) -> List(String) {
         call_tree.Cancelled -> "  cancelled"
         call_tree.Unsettled -> "  not settled"
       }
+
+      // Dispatch based on branch condition.
       let took = case group.call.status, group.duration_ms > 1000 {
         call_tree.Failed, _ | call_tree.Unsettled, _ | _, True ->
           " · " <> seconds_text(group.duration_ms)
         call_tree.Settled, False | call_tree.Cancelled, False -> ""
       }
+
       string.pad_end(label, column, " ")
       <> case group.args {
         [] -> ""
@@ -2235,13 +2319,17 @@ type CallGroup {
   )
 }
 
+/// Helper function `call_groups_of` for transcript formatting.
 fn call_groups_of(calls: List(call_tree.Call)) -> List(CallGroup) {
   calls
   |> list.fold([], fn(groups: List(CallGroup), call) {
+    // Dispatch based on branch condition.
     let args = case call.args {
       Some(args) -> [text_hygiene.single_line(args)]
       None -> []
     }
+
+    // Dispatch based on branch condition.
     case groups {
       [first, ..rest]
         if first.call.cap == call.cap
@@ -2297,6 +2385,7 @@ pub fn error_words(code: String) -> String {
 /// ```
 @internal
 pub fn seconds_text(ms: Int) -> String {
+  // Dispatch based on branch condition.
   case ms >= 1000 {
     True -> {
       let tenths = { ms + 50 } / 100
@@ -2306,10 +2395,10 @@ pub fn seconds_text(ms: Int) -> String {
   }
 }
 
-// A program's opening as a block's body shows it, running or settled: a
-// `PROGRAM` row counting the program's lines and then the opening lines,
-// each under its own number. Blank lines are skipped, so the lines shown
-// are ones that say something.
+/// A program's opening as a block's body shows it, running or settled: a
+/// `PROGRAM` row counting the program's lines and then the opening lines,
+/// each under its own number. Blank lines are skipped, so the lines shown
+/// are ones that say something.
 fn program_body(program: String) -> List(String) {
   let lines = string.split(string.trim_end(program), "\n")
   let shown =
@@ -2327,12 +2416,13 @@ fn program_body(program: String) -> List(String) {
   ]
 }
 
-// A running block: the title, the foot naming the budget the call asked
-// for, and the opening of the program.
+/// A running block: the title, the foot naming the budget the call asked
+/// for, and the opening of the program.
 fn running_text(
   program: String,
   fields: List(#(String, json.JsonValue)),
 ) -> String {
+  // Dispatch based on branch condition.
   let budget = case int_field(fields, "within_ms") {
     Some(ms) -> "budget " <> duration_text(ms)
     None -> ""
@@ -2369,9 +2459,9 @@ pub fn status_title(status: String) -> String {
   }
 }
 
-// A failure block: what failed in the title, why in the body, and how much
-// more there is in the foot. A compiler's diagnostic is cut to its heading
-// and the source lines it names; any other error is its opening lines.
+/// A failure block: what failed in the title, why in the body, and how much
+/// more there is in the foot. A compiler's diagnostic is cut to its heading
+/// and the source lines it names; any other error is its opening lines.
 fn failure_text(
   details: List(#(String, json.JsonValue)),
   content: List(message.ToolResultBlock),
@@ -2383,6 +2473,7 @@ fn failure_text(
     Some(ms) -> " · budget " <> duration_text(ms)
     None -> ""
   }
+
   let said = content |> list.map(tool_result_text) |> string.join("\n")
   let status = string_field(details, "status") |> option.unwrap("")
   let title = status_title(status)
@@ -2401,6 +2492,7 @@ fn failure_text(
     )
     _ -> #("the program did not finish", said)
   }
+
   let all = string.split(string.trim(text_hygiene.multiline(error)), "\n")
   let body = diagnostic(all)
 
@@ -2421,15 +2513,17 @@ fn failure_text(
   |> string.join("\n")
 }
 
-// The rows of an error a failure block shows. A Gleam diagnostic opens with
-// `error: …`, names its place on a `┌─ path:line:column` line, and quotes
-// the source under numbered `│` gutters: the heading gains the line number,
-// and the quoted lines follow it. Text in any other shape is shown from the
-// top.
+/// The rows of an error a failure block shows. A Gleam diagnostic opens with
+/// `error: …`, names its place on a `┌─ path:line:column` line, and quotes
+/// the source under numbered `│` gutters: the heading gains the line number,
+/// and the quoted lines follow it. Text in any other shape is shown from the
+/// top.
 fn diagnostic(lines: List(String)) -> List(String) {
   let quoted =
     list.filter(lines, fn(line) {
       let trimmed = string.trim_start(line)
+
+      // Dispatch based on branch condition.
       case string.split_once(trimmed, " │") {
         Ok(#(number, _)) -> int.parse(number) |> result.is_ok
         Error(Nil) ->
@@ -2439,11 +2533,15 @@ fn diagnostic(lines: List(String)) -> List(String) {
   let place =
     list.find_map(lines, fn(line) {
       use #(_, path) <- result.try(string.split_once(line, "┌─ "))
+
+      // Dispatch based on branch condition.
       case list.reverse(string.split(path, ":")) {
         [_column, line, ..] -> int.parse(line)
         _ -> Error(Nil)
       }
     })
+
+  // Dispatch based on branch condition.
   case lines, quoted, place {
     [heading, ..], [_, ..], Ok(number) -> [
       heading <> " · line " <> int.to_string(number),
@@ -2456,8 +2554,8 @@ fn diagnostic(lines: List(String)) -> List(String) {
   }
 }
 
-// Program lines under right-aligned numbers and a gutter, the form the
-// renderer draws as source.
+/// Program lines under right-aligned numbers and a gutter, the form the
+/// renderer draws as source.
 fn numbered(lines: List(#(Int, String))) -> List(String) {
   let width =
     list.fold(lines, 1, fn(widest, pair) {
@@ -2471,6 +2569,7 @@ fn numbered(lines: List(#(Int, String))) -> List(String) {
   })
 }
 
+/// Helper function `count_text` for transcript formatting.
 fn count_text(count: Int, one: String, many: String) -> String {
   int.to_string(count)
   <> " "
@@ -2522,6 +2621,8 @@ pub fn joined(entries: List(entry.Entry)) -> Joined {
       #(Joined(dict.new(), set.new()), dict.new()),
       fn(acc, value) {
         let #(found, open) = acc
+
+        // Dispatch based on branch condition.
         case value {
           // A reused provider id replaces the earlier call: the next result
           // with that id answers the latest call that made it.
@@ -2616,12 +2717,14 @@ pub fn reads_joined(value: entry.Entry) -> Bool {
   }
 }
 
-// A message preview is its first twelve lines and the hint that expands
-// it; expansion exposes the complete body from the same immutable call
-// arguments. The terminal draws a message body as text, line by line, so a
-// cut needs no regard for Markdown.
+/// A message preview is its first twelve lines and the hint that expands
+/// it; expansion exposes the complete body from the same immutable call
+/// arguments. The terminal draws a message body as text, line by line, so a
+/// cut needs no regard for Markdown.
 fn message_excerpt(body: String) -> String {
   let lines = string.split(body, "\n")
+
+  // Dispatch based on branch condition.
   case list.drop(lines, 12) {
     [] -> body
     _ ->
@@ -2650,6 +2753,7 @@ pub fn diff_content(presentation: Presentation) -> List(Line) {
   }
 }
 
+/// Helper function `captured_diff_content` for transcript formatting.
 fn captured_diff_content(presentation: Presentation) -> List(Line) {
   let edits =
     presentation.records
@@ -2680,6 +2784,8 @@ fn captured_diff_content(presentation: Presentation) -> List(Line) {
         _ -> []
       }
     })
+
+  // Dispatch based on branch condition.
   case edits {
     [] -> [
       Line(System, "No captured edit diffs in the retained history window."),
@@ -2766,7 +2872,7 @@ pub fn joined_block_lines(
   block_lines(block, False, label, outcome_in(found, value), None)
 }
 
-// The joined result of each of `value`'s calls.
+/// The joined result of each of `value`'s calls.
 fn outcome_in(
   found: Joined,
   value: entry.Entry,
@@ -2783,6 +2889,7 @@ fn unjoined(_call: message.ToolCall) -> Option(message.AgentMessage) {
   None
 }
 
+/// Helper function `entry_rows` for transcript formatting.
 fn entry_rows(
   value: entry.Entry,
   details_expanded: Bool,
@@ -2792,6 +2899,8 @@ fn entry_rows(
   clock: Option(Int),
 ) -> List(Line) {
   let found = labels_for(value, labels)
+
+  // Dispatch based on branch condition.
   case value {
     entry.MessageEntry(message: value, ..) ->
       value
@@ -2860,10 +2969,10 @@ pub fn agent_notes_payload(value: message.AgentMessage) -> Option(String) {
   }
 }
 
-// The harness-authored user messages the transcript must not attribute to
-// the operator. Notes have a view of their own and so contribute no
-// transcript rows at all; advisor traffic has no other home and collapses
-// in place.
+/// The harness-authored user messages the transcript must not attribute to
+/// the operator. Notes have a view of their own and so contribute no
+/// transcript rows at all; advisor traffic has no other home and collapses
+/// in place.
 fn harness_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
@@ -2879,11 +2988,11 @@ fn harness_message_lines(
   }
 }
 
-// A message another session's agent sent to this strand. It arrives as a
-// user message, but an agent wrote it and the operator did not type it, so
-// it is drawn as the advisor's messages are: a system heading naming where
-// it came from, then its body as Markdown, which is how both hosts draw an
-// agent's prose. The web view's peer card draws the same body the same way.
+/// A message another session's agent sent to this strand. It arrives as a
+/// user message, but an agent wrote it and the operator did not type it, so
+/// it is drawn as the advisor's messages are: a system heading naming where
+/// it came from, then its body as Markdown, which is how both hosts draw an
+/// agent's prose. The web view's peer card draws the same body the same way.
 fn peer_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
@@ -2913,11 +3022,12 @@ fn peer_message_lines(
   }
 }
 
-// A message heading's time: ` · 14:02`, the local clock time `at` (Unix
-// milliseconds) falls on, or nothing when the host knows no offset. A clock
-// time never goes stale, which a relative age (`12s ago`) on a cached row
-// would.
+/// A message heading's time: ` · 14:02`, the local clock time `at` (Unix
+/// milliseconds) falls on, or nothing when the host knows no offset. A clock
+/// time never goes stale, which a relative age (`12s ago`) on a cached row
+/// would.
 fn clock_text(at: Int, clock: Option(Int)) -> String {
+  // Dispatch based on branch condition.
   case clock {
     None -> ""
     Some(offset) -> {
@@ -2945,18 +3055,19 @@ fn short_session(session: String) -> String {
   }
 }
 
-// A message another strand of this same session sent through the Agency.
-// The stored origin is the only thing that selects it: the Agency's framing
-// is removed from a message already known to carry `StrandOrigin`, and a
-// text that merely looks framed, under any other origin, is drawn as the
-// operator's input like any other. A spawn brief's result-contract trailer
-// is the harness's own instruction to the child, so it follows the body as
-// a line of its own.
+/// A message another strand of this same session sent through the Agency.
+/// The stored origin is the only thing that selects it: the Agency's framing
+/// is removed from a message already known to carry `StrandOrigin`, and a
+/// text that merely looks framed, under any other origin, is drawn as the
+/// operator's input like any other. A spawn brief's result-contract trailer
+/// is the harness's own instruction to the child, so it follows the body as
+/// a line of its own.
 fn sibling_message_lines(
   value: message.AgentMessage,
   extent: notes_view.Extent,
   clock: Option(Int),
 ) -> Option(List(Line)) {
+  // Dispatch based on branch condition.
   case value {
     message.UserMessage(
       content:,
@@ -2964,10 +3075,13 @@ fn sibling_message_lines(
       timestamp:,
     ) -> {
       let framed = strand_framing.strip(user_body(content), strand)
+
+      // Dispatch based on branch condition.
       let body = case framed.trailer {
         Some(instruction) -> framed.body <> "\n\n" <> instruction
         None -> framed.body
       }
+
       Some([
         Line(
           StrandMessage,
@@ -2984,12 +3098,14 @@ fn sibling_message_lines(
   }
 }
 
-// A message body as its row draws it: the complete text when details are
-// expanded, and otherwise its first twelve lines with the hint that expands
-// it. Every kind of message is cut the same way, so a sent, a sibling's and
-// a peer's message of one length preview to one height.
+/// A message body as its row draws it: the complete text when details are
+/// expanded, and otherwise its first twelve lines with the hint that expands
+/// it. Every kind of message is cut the same way, so a sent, a sibling's and
+/// a peer's message of one length preview to one height.
 fn message_body(body: String, extent: notes_view.Extent) -> String {
   let body = text_hygiene.multiline(body)
+
+  // Dispatch based on branch condition.
   case extent {
     notes_view.Complete -> body
     notes_view.Excerpt -> message_excerpt(body)
@@ -3080,6 +3196,8 @@ pub fn labels_for(
   use <- bool.guard(when: blocks == [], return: [])
 
   let id = ids.entry_id_to_string(value.id)
+
+  // Dispatch based on branch condition.
   let first_reasoning = case value {
     entry.MessageEntry(message: message.AssistantMessage(..), ..) ->
       list.first(blocks)
@@ -3267,6 +3385,7 @@ pub fn advisor_payload(value: message.AgentMessage) -> Option(AdvisorMessage) {
   }
 }
 
+/// Helper function `advisor_frame` for transcript formatting.
 fn advisor_frame(text: String) -> Option(AdvisorMessage) {
   // Each frame opens with a header line of its own and only the nudges
   // frame carries a fence, so no text satisfies two of these tests and the
@@ -3303,15 +3422,15 @@ fn continuation_frame(text: String) -> Option(AdvisorMessage) {
   |> option.map(Continuation)
 }
 
-// The body between a header line and its footer, or nothing when the text
-// does not carry both.
-//
-// The server writes both tokens on every frame — the footer is appended
-// after the body, and its byte caps bound a slice rather than a frame — so
-// requiring the pair costs nothing a reader would have seen. What it buys
-// is the case this recognizer exists for: a turn that merely quotes a
-// header, an operator pasting a verdict back to ask about it, stays the
-// operator's own prompt instead of being redrawn as harness speech.
+/// The body between a header line and its footer, or nothing when the text
+/// does not carry both.
+///
+/// The server writes both tokens on every frame — the footer is appended
+/// after the body, and its byte caps bound a slice rather than a frame — so
+/// requiring the pair costs nothing a reader would have seen. What it buys
+/// is the case this recognizer exists for: a turn that merely quotes a
+/// header, an operator pasting a verdict back to ask about it, stays the
+/// operator's own prompt instead of being redrawn as harness speech.
 fn framed_body(text: String, header: String, footer: String) -> Option(String) {
   use #(first, rest) <- option.then(
     text |> string.split_once("\n") |> option.from_result,
@@ -3324,9 +3443,9 @@ fn framed_body(text: String, header: String, footer: String) -> Option(String) {
   |> option.map(fn(halves) { halves.0 })
 }
 
-// The bullet lines inside the nudges fence. A fence opened but never closed
-// still renders its remainder: losing the text because a byte cap cut the
-// closing fence would be worse than showing a little more than was fenced.
+/// The bullet lines inside the nudges fence. A fence opened but never closed
+/// still renders its remainder: losing the text because a byte cap cut the
+/// closing fence would be worse than showing a little more than was fenced.
 fn nudges_body(text: String) -> Option(String) {
   use <- bool.guard(
     when: !string.starts_with(text, nudges_header),
@@ -3338,6 +3457,7 @@ fn nudges_body(text: String) -> Option(String) {
     |> option.from_result,
   )
 
+  // Dispatch based on branch condition.
   case string.split_once(rest, "\n```") {
     Ok(#(body, _after)) -> Some(body)
     Error(Nil) -> Some(rest)
@@ -3411,9 +3531,9 @@ pub fn labelled_advisor_lines(
   }
 }
 
-// What the row is, in the words the operator reads. The count belongs in a
-// nudges heading because the bullets are the whole of the content: a reader
-// deciding whether to expand wants to know there are three of them.
+/// What the row is, in the words the operator reads. The count belongs in a
+/// nudges heading because the bullets are the whole of the content: a reader
+/// deciding whether to expand wants to know there are three of them.
 fn advisor_heading(value: AdvisorMessage) -> String {
   case value {
     Advice(..) -> "Advisor · block delivered"
@@ -3429,9 +3549,9 @@ fn advisor_heading(value: AdvisorMessage) -> String {
   }
 }
 
-// The opening of a verdict or a feed, shown beside the heading while the
-// row is collapsed. Nudges add nothing here; their count is already in the
-// heading.
+/// The opening of a verdict or a feed, shown beside the heading while the
+/// row is collapsed. Nudges add nothing here; their count is already in the
+/// heading.
 fn advisor_preview(value: AdvisorMessage) -> String {
   case value {
     Advice(body:) | Continuation(body:) ->
@@ -3457,9 +3577,9 @@ pub fn advisor_body_preview(body: String) -> String {
   compact(opening_line(body), advisor_preview_limit)
 }
 
-// A collapsed long advice or nudges message: its heading, marked as
-// summarized when the summarizer's label is what follows, and then that
-// label or the body's opening line as the secondary text beneath it.
+/// A collapsed long advice or nudges message: its heading, marked as
+/// summarized when the summarizer's label is what follows, and then that
+/// label or the body's opening line as the secondary text beneath it.
 fn delivered_summary_line(
   heading: String,
   value: AdvisorMessage,
@@ -3494,6 +3614,7 @@ fn nudge_count(body: String) -> Int {
   |> list.count(string.starts_with(_, "- "))
 }
 
+/// Helper function `message_lines` for transcript formatting.
 fn message_lines(
   value: message.AgentMessage,
   details_expanded: Bool,
@@ -3502,6 +3623,7 @@ fn message_lines(
   receipt: fn(message.ToolCall) -> Option(message.AgentMessage),
   clock: Option(Int),
 ) -> List(Line) {
+  // Dispatch based on branch condition.
   case value {
     message.UserMessage(content:, origin:, ..) -> [
       Line(
@@ -3597,9 +3719,9 @@ pub fn assistant_terminal_lines(
   }
 }
 
-// What a stop's diagnostic tells the reader beyond `Stopped`, or nothing. The
-// harness's note of where it observed the stop is dropped first, so each
-// diagnostic is read by what it says.
+/// What a stop's diagnostic tells the reader beyond `Stopped`, or nothing. The
+/// harness's note of where it observed the stop is dropped first, so each
+/// diagnostic is read by what it says.
 fn stop_detail(text: String) -> Option(String) {
   case string.split_once(text, " (") {
     Ok(#(head, cause)) ->
@@ -3620,9 +3742,9 @@ fn observed_at(cause: String) -> Bool {
   })
 }
 
-// The words for a stop's diagnostic: nothing for the provider's confirmed
-// cancellation, which `Stopped` already says, plain words for the two stops it
-// could not confirm, and every other diagnostic as it was written.
+/// The words for a stop's diagnostic: nothing for the provider's confirmed
+/// cancellation, which `Stopped` already says, plain words for the two stops it
+/// could not confirm, and every other diagnostic as it was written.
 fn stop_words(diagnostic: String) -> Option(String) {
   case diagnostic {
     "provider request was cancelled" -> None
@@ -3642,6 +3764,8 @@ pub fn solo_owner(
   captured: Option(#(snapshot.Captured, snapshot_view.View)),
 ) -> Option(message.Origin) {
   use #(cut, view) <- option.then(captured)
+
+  // Dispatch based on branch condition.
   case cut.attachment.role, view.peers {
     snapshot.Owner, [peer]
       if peer.connection_id == cut.attachment.connection_id
@@ -3651,6 +3775,7 @@ pub fn solo_owner(
   }
 }
 
+/// Helper function `user_author_prefix` for transcript formatting.
 fn user_author_prefix(
   origin: Option(message.Origin),
   local_owner: Option(message.Origin),
@@ -3694,6 +3819,7 @@ pub fn assistant_block_lines(
   block_lines(block, details_expanded, label, unjoined, None)
 }
 
+/// Helper function `block_lines` for transcript formatting.
 fn block_lines(
   block: message.AssistantBlock,
   details_expanded: Bool,
@@ -3722,10 +3848,12 @@ fn block_lines(
     // group draws for it, so a response holding prose settles its calls
     // as a group of calls does.
     message.AssistantToolCall(call:) -> {
+      // Dispatch based on branch condition.
       use <- result.lazy_unwrap(case details_expanded, receipt(call) {
         False, Some(outcome) -> Ok(call_rows(call, Some(outcome), clock))
         False, None | True, _ -> Error(Nil)
       })
+
       use <- result.lazy_unwrap(sent_lines(
         call,
         receipt(call),
@@ -3739,7 +3867,10 @@ fn block_lines(
         False -> program_lines(call, receipt(call))
         True -> Error(Nil)
       })
+
       let message.ToolCall(name:, arguments:, ..) = call
+
+      // Dispatch based on branch condition.
       case
         code_mode_program(name, arguments, details_expanded),
         patch_program(name, arguments, details_expanded)
@@ -3761,6 +3892,7 @@ fn block_lines(
   }
 }
 
+/// Helper function `patch_program` for transcript formatting.
 fn patch_program(
   name: String,
   arguments: json.JsonValue,
@@ -3770,10 +3902,12 @@ fn patch_program(
     "apply_patch", json.Object(fields) ->
       case string_field(fields, "patch") {
         Some(patch) -> {
+          // Dispatch based on branch condition.
           let source = case details_expanded {
             True -> patch
             False -> program_preview(patch, patch_preview_lines)
           }
+
           Some("```diff\n" <> source <> "\n```")
         }
         None -> None
@@ -3803,10 +3937,12 @@ pub fn code_mode_program(
     "code_mode", json.Object(fields) ->
       case list.key_find(fields, "program") {
         Ok(json.String(program)) -> {
+          // Dispatch based on branch condition.
           let source = case details_expanded {
             True -> program
             False -> program_preview(program, code_preview_lines)
           }
+
           Some(fenced_gleam(source))
         }
         Ok(_) | Error(Nil) -> None
@@ -3822,8 +3958,11 @@ fn fenced_gleam(source: String) -> String {
   }
 }
 
+/// Helper function `program_preview` for transcript formatting.
 fn program_preview(program: String, limit: Int) -> String {
   let lines = string.split(program, "\n")
+
+  // Dispatch based on branch condition.
   case list.drop(lines, limit) {
     [] -> program
     _ ->
@@ -3929,9 +4068,9 @@ pub fn tool_call_summary(
   }
 }
 
-// What a `remember` call is about: `feedback: Prefer small diffs` for a note
-// that has a title and a kind, and `durable note` for a call recorded before
-// notes had either.
+/// What a `remember` call is about: `feedback: Prefer small diffs` for a note
+/// that has a title and a kind, and `durable note` for a call recorded before
+/// notes had either.
 fn remembered_subject(fields: List(#(String, json.JsonValue))) -> String {
   case string_field(fields, "title") {
     Some(title) ->
@@ -3943,12 +4082,13 @@ fn remembered_subject(fields: List(#(String, json.JsonValue))) -> String {
   }
 }
 
-// What a `propose` call is about: which file, how much of it changes, and the
-// reason the model gave. The edit itself is a diff and is drawn as one by
-// `propose_patch_lines`, so this row carries no argument JSON: a reader
-// deciding on the change should never have to read escaped quotes to find
-// out what is being changed.
+/// What a `propose` call is about: which file, how much of it changes, and the
+/// reason the model gave. The edit itself is a diff and is drawn as one by
+/// `propose_patch_lines`, so this row carries no argument JSON: a reader
+/// deciding on the change should never have to read escaped quotes to find
+/// out what is being changed.
 fn propose_summary(fields: List(#(String, json.JsonValue))) -> String {
+  // Dispatch based on branch condition.
   let file = case string_field(fields, "target") {
     Some("config") -> "the configuration"
     _ -> "the rules"
@@ -3964,6 +4104,8 @@ fn propose_summary(fields: List(#(String, json.JsonValue))) -> String {
     Some(reason) -> reason
     None -> ""
   }
+
+  // Dispatch based on branch condition.
   let reason = case reason {
     "" -> ""
     _ -> " · " <> compact(reason, 84)
@@ -3973,6 +4115,7 @@ fn propose_summary(fields: List(#(String, json.JsonValue))) -> String {
   "propose · " <> file <> " · " <> counts <> reason
 }
 
+/// Helper function `generic_tool_call` for transcript formatting.
 fn generic_tool_call(
   name: String,
   rendered: String,
@@ -3991,6 +4134,7 @@ fn option_text(value: Option(String), prefix: String) -> String {
   }
 }
 
+/// Helper function `string_field` for transcript formatting.
 fn string_field(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -4001,11 +4145,13 @@ fn string_field(
   }
 }
 
-// Diagnostics stay multiline and prominent. Extremely long errors have an
-// explicit expansion path rather than retaining an unbounded compact layout.
+/// Diagnostics stay multiline and prominent. Extremely long errors have an
+/// explicit expansion path rather than retaining an unbounded compact layout.
 fn failure_preview(value: String) -> String {
   let clipped = string.slice(value, 0, 1600)
   let lines = string.split(clipped, "\n")
+
+  // Dispatch based on branch condition.
   case list.drop(lines, 8) == [] && clipped == value {
     True -> value
     False ->
@@ -4014,6 +4160,7 @@ fn failure_preview(value: String) -> String {
   }
 }
 
+/// Helper function `tool_result_lines` for transcript formatting.
 fn tool_result_lines(
   tool_name: String,
   content: List(message.ToolResultBlock),
@@ -4033,6 +4180,8 @@ fn tool_result_lines(
       file_read_view.without_fresh_anchors(result)
     _, _ -> result
   }
+
+  // Dispatch based on branch condition.
   case tool_name, is_error, details {
     "code_mode", False, Some(json.Object(fields)) ->
       code_mode_result_lines(fields, result, details_expanded)
@@ -4095,31 +4244,37 @@ fn tool_result_lines(
   }
 }
 
+/// Helper function `recall_result_lines` for transcript formatting.
 fn recall_result_lines(
   found: List(recall_view.Hit),
   extent: notes_view.Extent,
 ) -> List(Line) {
   let heading =
     recall_view.tool_name <> " · " <> recall_view.count_text(list.length(found))
+
+  // Dispatch based on branch condition.
   case recall_view.hit_rows(found, extent) {
     [] -> [Line(ToolResult, heading)]
     rows -> [Line(ToolResult, heading <> "\n" <> string.join(rows, "\n"))]
   }
 }
 
-// One child's part of an expanded `agent_wait` result, read from the
-// result's details. A ready child's report is its final answer, model prose
-// like the parent's own, so it is drawn as Markdown under a heading that
-// names the child and how its run ended, as the web view's result card
-// draws it. A structured result and notes, when the child left them, follow
-// as they are; a child still working is one row.
+/// One child's part of an expanded `agent_wait` result, read from the
+/// result's details. A ready child's report is its final answer, model prose
+/// like the parent's own, so it is drawn as Markdown under a heading that
+/// names the child and how its run ended, as the web view's result card
+/// draws it. A structured result and notes, when the child left them, follow
+/// as they are; a child still working is one row.
 fn waited_lines(value: json.JsonValue) -> List(Line) {
+  // Dispatch based on branch condition.
   case value {
     json.Object(fields) -> {
       let child =
         string_field(fields, "strand")
         |> option.map(agent_roster.short_name)
         |> option.unwrap("sub-agent")
+
+      // Dispatch based on branch condition.
       case string_field(fields, "state") {
         Some("ready") -> ready_lines(fields, child)
         _ -> [Line(System, "sub:" <> child <> " · still working")]
@@ -4129,6 +4284,7 @@ fn waited_lines(value: json.JsonValue) -> List(Line) {
   }
 }
 
+/// Helper function `ready_lines` for transcript formatting.
 fn ready_lines(
   fields: List(#(String, json.JsonValue)),
   child: String,
@@ -4139,16 +4295,21 @@ fn ready_lines(
     <> " · result · "
     <> option.unwrap(string_field(fields, "outcome"), "settled")
     <> option_text(string_field(fields, "abort_reason"), " · ")
+
+  // Dispatch based on branch condition.
   let report = case string_field(fields, "report") {
     Some("") | None -> "(no report: the run ended without a final answer)"
     Some(report) -> report
   }
+
+  // Dispatch based on branch condition.
   let notes = case list.key_find(fields, "notes") {
     Ok(json.Object([_, ..]) as notes) -> [
       Line(System, "notes · " <> json.to_string(notes)),
     ]
     _ -> []
   }
+
   list.flatten([
     [Line(System, heading), Line(ToolDetail, report)],
     result_lines(list.key_find(fields, "result")),
@@ -4156,8 +4317,8 @@ fn ready_lines(
   ])
 }
 
-// A given result is shown as its value, as the tool's own text shows it; an
-// absent or unusable one keeps its whole verdict.
+/// A given result is shown as its value, as the tool's own text shows it; an
+/// absent or unusable one keeps its whole verdict.
 fn result_lines(result: Result(json.JsonValue, Nil)) -> List(Line) {
   case result {
     Ok(json.Object(verdict) as whole) ->
@@ -4172,6 +4333,7 @@ fn result_lines(result: Result(json.JsonValue, Nil)) -> List(Line) {
   }
 }
 
+/// Helper function `plain_result_lines` for transcript formatting.
 fn plain_result_lines(
   tool_name: String,
   result: String,
@@ -4185,8 +4347,8 @@ fn plain_result_lines(
   ]
 }
 
-// The tool's prose is guidance for the model. The transcript already has the
-// measured fields, so show the operator the compact arithmetic instead.
+/// The tool's prose is guidance for the model. The transcript already has the
+/// measured fields, so show the operator the compact arithmetic instead.
 fn context_remaining_result_lines(
   fields: List(#(String, json.JsonValue)),
   fallback: String,
@@ -4210,6 +4372,7 @@ fn context_remaining_result_lines(
   }
 }
 
+/// Helper function `context_remaining_summary` for transcript formatting.
 fn context_remaining_summary(
   fields: List(#(String, json.JsonValue)),
 ) -> Option(String) {
@@ -4217,10 +4380,13 @@ fn context_remaining_summary(
   use used <- option.then(int_field(fields, "used_tokens"))
   use capacity <- option.then(int_field(fields, "context_window"))
   use remaining <- option.then(int_field(fields, "remaining_tokens"))
+
+  // Dispatch based on branch condition.
   let boundary = case int_field(fields, "checkpoint_at") {
     Some(_) -> " until checkpoint"
     None -> " before context limit"
   }
+
   Some(
     "context remaining · window "
     <> int.to_string(window)
@@ -4235,27 +4401,30 @@ fn context_remaining_summary(
   )
 }
 
+/// Helper function `context_remaining_boundary` for transcript formatting.
 fn context_remaining_boundary(
   fields: List(#(String, json.JsonValue)),
 ) -> String {
+  // Dispatch based on branch condition.
   let checkpoint = case int_field(fields, "checkpoint_at") {
     Some(value) -> "checkpoint at " <> tokens(value)
     None -> "no checkpoint"
   }
+
   let notes = int_field(fields, "notes") |> option.unwrap(0)
   checkpoint <> " · " <> int.to_string(notes) <> " saved notes"
 }
 
-// The window a read asked for, appended to its row, and nothing at all for
-// a read that asked for the whole file.
-//
-// The arguments are shown as they were given rather than as a derived line
-// range, because the fact worth seeing is which of them the model sent. A
-// stretch of rows reading one file collapses to a column of identical
-// labels when the row carries only the path, and eight of those rows —
-// differing only in a `limit` that shrank each time, with no `offset` at
-// all — is what a real read loop looked like from here. A rendered
-// `45-89` would have hidden the missing `offset` that caused it.
+/// The window a read asked for, appended to its row, and nothing at all for
+/// a read that asked for the whole file.
+///
+/// The arguments are shown as they were given rather than as a derived line
+/// range, because the fact worth seeing is which of them the model sent. A
+/// stretch of rows reading one file collapses to a column of identical
+/// labels when the row carries only the path, and eight of those rows —
+/// differing only in a `limit` that shrank each time, with no `offset` at
+/// all — is what a real read loop looked like from here. A rendered
+/// `45-89` would have hidden the missing `offset` that caused it.
 fn read_window(fields: List(#(String, json.JsonValue))) -> String {
   let parts =
     [
@@ -4268,12 +4437,15 @@ fn read_window(fields: List(#(String, json.JsonValue))) -> String {
         None -> Error(Nil)
       }
     })
+
+  // Dispatch based on branch condition.
   case parts {
     [] -> ""
     _ -> " · " <> string.join(parts, " ")
   }
 }
 
+/// Helper function `int_field` for transcript formatting.
 fn int_field(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -4284,37 +4456,44 @@ fn int_field(
   }
 }
 
-// An edit renders as the unified diff its details carry — what changed,
-// coloured as a diff — under the tool's one-line summary. Collapsed, the
-// first stretch of the diff is enough to recognise the edit; expanded,
-// the whole of it. Details without a diff (an older record) fall back to
-// the summary alone.
+/// An edit renders as the unified diff its details carry — what changed,
+/// coloured as a diff — under the tool's one-line summary. Collapsed, the
+/// first stretch of the diff is enough to recognise the edit; expanded,
+/// the whole of it. Details without a diff (an older record) fall back to
+/// the summary alone.
 fn edit_patch_lines(
   fields: List(#(String, json.JsonValue)),
   details_expanded: Bool,
 ) -> List(Line) {
+  // Dispatch based on branch condition.
   case string_field(fields, "diff") {
     Some(diff) -> {
+      // Dispatch based on branch condition.
       let shown = case details_expanded {
         True -> diff
         False -> program_preview(diff, patch_preview_lines)
       }
+
       [Line(ToolPatch, shown)]
     }
     None -> []
   }
 }
 
+/// Helper function `code_mode_result_lines` for transcript formatting.
 fn code_mode_result_lines(
   fields: List(#(String, json.JsonValue)),
   fallback: String,
   details_expanded: Bool,
 ) -> List(Line) {
   let status = string_field(fields, "status") |> option.unwrap("completed")
+
+  // Dispatch based on branch condition.
   let value = case list.key_find(fields, "value") {
     Ok(value) -> value
     Error(Nil) -> json.String(fallback)
   }
+
   let sandbox = sandbox_summary(fields)
 
   // The host's record of the program's capability calls, when this result
@@ -4323,6 +4502,8 @@ fn code_mode_result_lines(
   // as they always did.
   let calls = call_tree.read(json.Object(fields))
   let summary = option.map(calls, call_tree.summary)
+
+  // Dispatch based on branch condition.
   case details_expanded {
     False -> [
       Line(
@@ -4355,11 +4536,11 @@ fn code_mode_result_lines(
   }
 }
 
-// The call record under a `code_mode` failure, when there is one. A
-// program that fails or hits its deadline is where the record matters most,
-// and a failure result is not a `code_mode` success, so it reaches this
-// from the failure arm. A failure with no readable record, and any other
-// tool's failure, gets nothing added.
+/// The call record under a `code_mode` failure, when there is one. A
+/// program that fails or hits its deadline is where the record matters most,
+/// and a failure result is not a `code_mode` success, so it reaches this
+/// from the failure arm. A failure with no readable record, and any other
+/// tool's failure, gets nothing added.
 fn failed_call_lines(
   tool_name: String,
   details: Option(json.JsonValue),
@@ -4381,16 +4562,19 @@ fn failed_call_lines(
   }
 }
 
-// One row per itemised call, in admission order, and a closing row for the
-// calls the host counted and did not itemise. The rows are drawn as text in
-// a fence, so no field of a call, all of which derive from program-chosen
-// strings, can be read as markup.
+/// One row per itemised call, in admission order, and a closing row for the
+/// calls the host counted and did not itemise. The rows are drawn as text in
+/// a fence, so no field of a call, all of which derive from program-chosen
+/// strings, can be read as markup.
 fn call_rows_lines(log: CallLog) -> List(Line) {
+  // Dispatch based on branch condition.
   case log.items {
     [] -> []
     items -> {
       let unlisted = log.total - list.length(items)
       let rows = list.map(items, call_row)
+
+      // Dispatch based on branch condition.
       let rows = case unlisted > 0 {
         True ->
           list.append(rows, [
@@ -4398,6 +4582,7 @@ fn call_rows_lines(log: CallLog) -> List(Line) {
           ])
         False -> rows
       }
+
       [
         Line(
           ToolDetail,
@@ -4408,13 +4593,16 @@ fn call_rows_lines(log: CallLog) -> List(Line) {
   }
 }
 
+/// Helper function `call_row` for transcript formatting.
 fn call_row(call: call_tree.Call) -> String {
+  // Dispatch based on branch condition.
   let status = case call.status {
     call_tree.Settled -> "ok"
     call_tree.Failed -> "failed" <> option_text(call.error, " ")
     call_tree.Cancelled -> "cancelled"
     call_tree.Unsettled -> "unsettled"
   }
+
   call.cap
   <> option_text(call.args, " ")
   <> " · "
@@ -4438,6 +4626,7 @@ fn call_row(call: call_tree.Call) -> String {
 pub fn sandbox_summary(
   fields: List(#(String, json.JsonValue)),
 ) -> Option(String) {
+  // Dispatch based on branch condition.
   case list.key_find(fields, "sandbox") {
     Ok(json.Object(sandbox)) -> {
       let build = enforcement_summary(sandbox, "build")
@@ -4448,18 +4637,24 @@ pub fn sandbox_summary(
   }
 }
 
+/// Helper function `enforcement_summary` for transcript formatting.
 fn enforcement_summary(
   sandbox: List(#(String, json.JsonValue)),
   name: String,
 ) -> String {
+  // Dispatch based on branch condition.
   case list.key_find(sandbox, name) {
     Ok(json.Object(report)) -> {
+      // Dispatch based on branch condition.
       let reported = case list.key_find(report, "reported") {
         Ok(json.Bool(value)) -> value
         _ -> False
       }
+
       let enforced = json_array_length(report, "enforced")
       let skipped = json_array_length(report, "skipped")
+
+      // Dispatch based on branch condition.
       case reported {
         True ->
           "enforced "
@@ -4473,6 +4668,7 @@ fn enforcement_summary(
   }
 }
 
+/// Helper function `json_array_length` for transcript formatting.
 fn json_array_length(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -4488,6 +4684,8 @@ fn json_array_length(
 pub fn pretty_json(value: json.JsonValue, depth: Int) -> String {
   let indent = string.repeat("  ", depth)
   let child_indent = string.repeat("  ", depth + 1)
+
+  // Dispatch based on branch condition.
   case value {
     json.Object([]) -> "{}"
     json.Object(fields) ->
@@ -4516,6 +4714,8 @@ pub fn pretty_json(value: json.JsonValue, depth: Int) -> String {
 @internal
 pub fn compact(text: String, limit: Int) -> String {
   let one_line = text_hygiene.single_line(text)
+
+  // Dispatch based on branch condition.
   case string.drop_start(one_line, limit) {
     "" -> one_line
     _ -> string.slice(one_line, 0, limit - 1) <> "…"
@@ -4621,14 +4821,19 @@ pub fn usage_pieces(
 ) -> #(String, List(String)) {
   let pair =
     "cache " <> tokens(usage.cache_read) <> "/" <> tokens(usage.cache_write)
+
+  // Dispatch based on branch condition.
   let reading = case string.split_once(outlook, "cache ") {
     Ok(#("", rest)) -> rest
     Ok(_) | Error(Nil) -> outlook
   }
+
+  // Dispatch based on branch condition.
   let cache = case reading {
     "" -> pair
     reading -> pair <> ", " <> reading
   }
+
   #(cache, [
     cost_words(usage),
     "in " <> tokens(usage.input),
@@ -4679,6 +4884,7 @@ pub fn cost_figure(usage: message.Usage) -> String {
   usage_display.figure(usage.cost.total, usage.evidence)
 }
 
+/// Helper function `advisor_history_label` for transcript formatting.
 fn advisor_history_label(annotation: advisor_history.Annotation) -> String {
   case annotation {
     advisor_history.AdvisorUpdate -> "Advisor · commentary"
@@ -4700,6 +4906,13 @@ pub fn entry_sequences(entries: List(entry.Entry)) -> Dict(ids.EntryId, Int) {
   |> dict.from_list
 }
 
+/// Resolves the sequence number of a tool activity item.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // transcript_lines.item_sequence(item, sequences)
+/// ```
 @internal
 pub fn item_sequence(
   item: tool_activity.Item,
@@ -4760,22 +4973,28 @@ pub fn advisor_splits(board: advisor_history.Board) -> List(Int) {
 pub fn advisor_history_blocks(
   board: advisor_history.Board,
 ) -> List(#(Int, List(Line))) {
+  // Dispatch based on branch condition.
   case board.items {
     [] -> []
     [_, ..] -> {
       let heading = [
         Line(System, "Advisor transcript · captured, not sent to primary"),
       ]
+
+      // Dispatch based on branch condition.
       let missing = case board.unloaded {
         Some(_) -> [Line(System, "Earlier advisor commentary is not loaded")]
         None -> []
       }
+
       board.items
       |> list.index_map(fn(item, index) {
         let body = [
           Line(System, advisor_history_label(item.annotation)),
           Line(ToolDetail, item.text),
         ]
+
+        // Dispatch based on branch condition.
         case index {
           0 -> #(item.seq, list.append(heading, list.append(missing, body)))
           _ -> #(item.seq, body)

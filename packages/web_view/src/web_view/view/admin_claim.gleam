@@ -98,8 +98,8 @@ pub fn for_person(
   }
 }
 
-// The display itself: what the claim is for, both secrets in copy boxes, the
-// words the owner needs to hand both over safely, and the button that ends it.
+/// The display itself: what the claim is for, both secrets in copy boxes, the
+/// words the owner needs to hand both over safely, and the button that ends it.
 fn shown(claim: Claim, dismiss: message) -> Element(message) {
   html.section(
     [
@@ -154,10 +154,10 @@ fn title(claim: Claim) -> String {
   }
 }
 
-// The sentence that says who the claim is for and why, with the principal's
-// identity as text. An invitation names no role: the member's row above it says
-// the role, and says the current one after the owner changes it, which a line
-// written when the invitation was made would not.
+/// The sentence that says who the claim is for and why, with the principal's
+/// identity as text. An invitation names no role: the member's row above it says
+/// the role, and says the current one after the owner changes it, which a line
+/// written when the invitation was made would not.
 fn purpose(claim: Claim) -> String {
   case claim.purpose {
     grants.Invited(..) -> "Principal: " <> claim.principal <> "."

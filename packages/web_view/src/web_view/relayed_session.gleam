@@ -263,6 +263,7 @@ pub fn open(orchestrator: String, session: String) -> State {
 pub fn heard(state: State, read: relayed.Read, now_ms: Int) -> State {
   let state = State(..state, clock_ms: now_ms)
 
+  // Update presence, history, and answering status depending on read outcome.
   case read {
     relayed.Heard(row: Some(_) as row, history:) ->
       State(
@@ -294,19 +295,22 @@ pub fn heard(state: State, read: relayed.Read, now_ms: Int) -> State {
   }
 }
 
-// Once a read no longer lists the request whose decision was sent, the decision
-// has taken effect and the line saying it was sent has nothing left to say. Any
-// other notice stays until the next press replaces it.
+/// Once a read no longer lists the request whose decision was sent, the decision
+/// has taken effect and the line saying it was sent has nothing left to say. Any
+/// other notice stays until the next press replaces it.
 fn settled_decision(state: State) -> State {
+  // Check if there is an in-flight decision to settle.
   case state.decided {
     None -> state
     Some(escalation) -> {
+      // Verify whether the escalated request still appears in needs list.
       let listed = case state.row {
         Some(row) ->
           list.any(row.needs, fn(need) { need.escalation == escalation })
         None -> False
       }
 
+      // Clear decision and notice if the need is no longer listed.
       case listed, state.notice {
         True, _ -> state
         False, Some(Said(_)) -> State(..state, decided: None, notice: None)
@@ -354,10 +358,11 @@ pub fn update(state: State, message: Msg) -> #(State, Intent) {
   }
 }
 
-// A reply, when none is out and the text has something in it within the bound.
+/// A reply, when none is out and the text has something in it within the bound.
 fn replying(state: State, text: String) -> #(State, Intent) {
   let trimmed = string.trim(text)
 
+  // Validate that no reply is currently sending and that message is non-empty.
   case state.sending, trimmed {
     Out, _ -> #(state, Stay)
     Ready, "" -> #(state, Stay)
@@ -413,9 +418,9 @@ fn cancelling_archive(state: State) -> #(State, Intent) {
   }
 }
 
-// A decision for a request the row lists, at the revision the card showed, and
-// one the ceiling lets the page decide. Allowing for the session is asked only
-// for a request whose grants may be remembered.
+/// A decision for a request the row lists, at the revision the card showed, and
+/// one the ceiling lets the page decide. Allowing for the session is asked only
+/// for a request whose grants may be remembered.
 fn deciding(
   state: State,
   row: relayed.Row,
@@ -425,6 +430,7 @@ fn deciding(
 ) -> #(State, Intent) {
   let found = relayed.find_need(row.needs, escalation, seq)
 
+  // Verify the escalation need is actionable and within permissible decision scope.
   case found, state.deciding, choice {
     Ok(relayed.Need(ability: relayed.ViewOnly, ..)), _, _
     | Error(Nil), _, _

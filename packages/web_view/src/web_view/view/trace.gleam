@@ -82,8 +82,8 @@ fn title() -> Element(message) {
   html.h2([attribute.class("panel-title")], [html.text("Trace")])
 }
 
-// The newest program: its label and state on one line, its result under
-// them, and the budget it named in a collapsed line.
+/// The newest program: its label and state on one line, its result under
+/// them, and the budget it named in a collapsed line.
 fn latest_program(program: Program) -> Element(message) {
   html.div([attribute.class("trace-latest")], [
     html.p([attribute.class("trace-head")], [
@@ -98,10 +98,10 @@ fn latest_program(program: Program) -> Element(message) {
   ])
 }
 
-// What the program came to. A program that did not compile or run shows its
-// own diagnostics (`Program.detail`), never the result's text, which is
-// written to tell the model what to fix; one with no diagnostics shows
-// nothing rather than that text. Every other state shows its excerpt.
+/// What the program came to. A program that did not compile or run shows its
+/// own diagnostics (`Program.detail`), never the result's text, which is
+/// written to tell the model what to fix; one with no diagnostics shows
+/// nothing rather than that text. Every other state shows its excerpt.
 fn result(program: Program) -> Element(message) {
   case program.state, program.detail {
     CompileFailed, Some(detail)
@@ -118,9 +118,9 @@ fn result(program: Program) -> Element(message) {
   }
 }
 
-// A failure's diagnostics in the code face: their first two lines, and the
-// rest behind a chevron when there is more. The text is the compiler's or the
-// runtime's, drawn as text nodes.
+/// A failure's diagnostics in the code face: their first two lines, and the
+/// rest behind a chevron when there is more. The text is the compiler's or the
+/// runtime's, drawn as text nodes.
 fn diagnostic(detail: String) -> Element(message) {
   case string.split(detail, "\n") {
     [first, second, third, ..more] ->
@@ -140,8 +140,8 @@ fn diagnostic(detail: String) -> Element(message) {
   }
 }
 
-// A line saying so when the newest program has no call record, so a program
-// that shows no calls is not read as one that made none.
+/// A line saying so when the newest program has no call record, so a program
+/// that shows no calls is not read as one that made none.
 fn no_calls(program: Program) -> Element(message) {
   case program.calls {
     [] ->
@@ -152,8 +152,8 @@ fn no_calls(program: Program) -> Element(message) {
   }
 }
 
-// The rows of the call record the result carried: a heading and one row per
-// call, as text nodes. A program with no record draws nothing here.
+/// The rows of the call record the result carried: a heading and one row per
+/// call, as text nodes. A program with no record draws nothing here.
 fn calls(rows: List(String)) -> Element(message) {
   case rows {
     [] -> element.none()
@@ -170,8 +170,8 @@ fn calls(rows: List(String)) -> Element(message) {
   }
 }
 
-// The earlier programs, newest first under the latest, and a line for any
-// the bound left out.
+/// The earlier programs, newest first under the latest, and a line for any
+/// the bound left out.
 fn earlier_programs(earlier: List(Program), omitted: Int) -> Element(message) {
   case earlier, omitted {
     [], 0 -> element.none()
@@ -190,6 +190,7 @@ fn earlier_programs(earlier: List(Program), omitted: Int) -> Element(message) {
   }
 }
 
+/// Row helper.
 fn row(program: Program) -> Element(message) {
   html.li([attribute.class("trace-row")], [
     html.span([attribute.class("trace-label")], [html.text(program.label)]),
@@ -198,12 +199,12 @@ fn row(program: Program) -> Element(message) {
   ])
 }
 
-// The reason an earlier program did not run, in one line under its row: the
-// first line of what `trace_view` kept as its detail, which for a refusal is
-// the vetting rule that was broken. A state that is only a word (`rejected by
-// vetting`) says what happened and not why, and the newest program alone
-// showed the reason, so a refusal that was fixed and run again left no reason
-// anywhere. A program that ran, or is running, has nothing to explain.
+/// The reason an earlier program did not run, in one line under its row: the
+/// first line of what `trace_view` kept as its detail, which for a refusal is
+/// the vetting rule that was broken. A state that is only a word (`rejected by
+/// vetting`) says what happened and not why, and the newest program alone
+/// showed the reason, so a refusal that was fixed and run again left no reason
+/// anywhere. A program that ran, or is running, has nothing to explain.
 fn why(program: Program) -> Element(message) {
   case program.state, program.detail {
     Rejected, Some(detail)
@@ -218,7 +219,7 @@ fn why(program: Program) -> Element(message) {
   }
 }
 
-// The first line with words, cut to a row's worth with an ellipsis.
+/// The first line with words, cut to a row's worth with an ellipsis.
 fn first_line(detail: String) -> String {
   let line =
     detail
@@ -226,6 +227,8 @@ fn first_line(detail: String) -> String {
     |> list.map(string.trim)
     |> list.find(fn(line) { line != "" })
     |> result.unwrap("")
+
+  // Dispatch on first_line state.
   case string.length(line) > why_limit {
     True -> string.slice(line, 0, why_limit - 1) <> "…"
     False -> line
@@ -243,6 +246,7 @@ fn state_chip(state: State) -> Element(message) {
   ])
 }
 
+/// State class helper.
 fn state_class(state: State) -> attribute.Attribute(message) {
   case state {
     Running -> attribute.class("trace-running")

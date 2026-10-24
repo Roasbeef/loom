@@ -83,20 +83,25 @@ pub fn phase(
     Capture, Some(_), Some(_) -> phase != "assistant"
     _, _, _ -> False
   }
+
+  // Derive the next reading state given lagging status and phase transitions.
   let reading = case lagging, phase, old.phase {
     True, _, _ -> old
 
     False, "assistant", "assistant" -> old
     False, "assistant", _ -> {
+      // Determine whether the timing window is whole or partial.
       let window = case source, existing {
         Transition, _ | Capture, Ok(_) -> Whole
         Capture, Error(_) -> Partial
       }
+
       Reading(..old, phase:, clock: Some(Clock(now, window)), generation: None)
     }
     False, "done", _ -> Reading(..old, phase:, clock: None)
     False, _, _ -> Reading(..old, phase:)
   }
+
   State(dict.insert(state.readings, strand, reading))
 }
 
@@ -117,10 +122,13 @@ pub fn stream(
   kind: String,
   now: Int,
 ) -> State {
+  // Skip rate calculation on end markers or update stream clock.
   case kind {
     "end" -> state
     _ -> {
       let old = reading(state, strand)
+
+      // Update generation and initialize clock if beginning a new request.
       let next = case old.generation, old.clock {
         Some(previous), _ if previous == generation -> old
         None, Some(_) -> Reading(..old, generation: Some(generation))
@@ -132,6 +140,7 @@ pub fn stream(
             generation: Some(generation),
           )
       }
+
       State(dict.insert(state.readings, strand, next))
     }
   }
@@ -148,11 +157,14 @@ pub fn stream(
 /// ```
 pub fn settle(state: State, strand: String, output: Int, now: Int) -> State {
   let old = reading(state, strand)
+
+  // Calculate rate from clock or preserve last known rate.
   let rate = case old.clock {
     Some(Clock(started, Whole)) ->
       transcript_lines.output_rate(output, now - started)
     Some(Clock(_, Partial)) | None -> old.rate
   }
+
   State(dict.insert(state.readings, strand, Reading(..old, clock: None, rate:)))
 }
 

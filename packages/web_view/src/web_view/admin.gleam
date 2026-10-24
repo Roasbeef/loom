@@ -660,11 +660,9 @@ fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
   #(model, effect.batch([people, fleet]))
 }
 
-// Starts the activity read for the running sessions the snapshot that just
-// landed listed, in the order it holds them and no more than `activity_limit`,
-// and returns at once, so the sidebar's dots arrive with its rows and not a
-// refresh later. A page with no snapshot yet asks nothing.
+/// Starts the activity read for running sessions listed by the latest snapshot.
 fn observing(model: Model) -> Effect(Msg) {
+  // Collect IDs of running sessions up to the activity limit.
   let running = case model.snapshot {
     Some(snapshot) ->
       snapshot.sessions
@@ -674,6 +672,7 @@ fn observing(model: Model) -> Effect(Msg) {
     None -> []
   }
 
+  // Dispatch the activity query when connected and sessions are present.
   case running, model.status {
     [], _ | _, Ended(_) | _, Connecting -> effect.none()
     [_, ..], Connected -> {
@@ -683,8 +682,7 @@ fn observing(model: Model) -> Effect(Msg) {
   }
 }
 
-// Asks the daemon to read the deployment, or the one machine `node` names, under
-// the next number. A read still out under the number before is overtaken.
+/// Asks the daemon to read the deployment or a specified machine.
 fn deploying(model: Model, node: Option(String)) -> #(Model, Effect(Msg)) {
   let serial = model.deployed + 1
   #(Model(..model, deployed: serial), {
@@ -695,7 +693,7 @@ fn deploying(model: Model, node: Option(String)) -> #(Model, Effect(Msg)) {
   })
 }
 
-// Asks the daemon what the other orchestrators list, under the next number.
+/// Asks the daemon what other orchestrators list.
 fn peering(model: Model) -> #(Model, Effect(Msg)) {
   let serial = model.peered + 1
   #(Model(..model, peered: serial), {
@@ -704,10 +702,9 @@ fn peering(model: Model) -> #(Model, Effect(Msg)) {
   })
 }
 
-// A machine's name was pressed: the page opens on its Overview, forgetting what
-// it held of the one before, and the daemon reads the machine. A machine the
-// daemon does not dial, and the asking daemon itself, have no long lists to read.
+/// Selects a machine and initiates deployment inspection.
 fn choosing(model: Model, node: String) -> #(Model, Effect(Msg)) {
+  // Look up the requested machine in the held deployment snapshot.
   case machines.snapshot_of(model.held) |> option.map(machines.find(_, node)) {
     Some(Ok(machine)) -> {
       let opened =
@@ -719,6 +716,8 @@ fn choosing(model: Model, node: String) -> #(Model, Effect(Msg)) {
           listed: None,
           peered: model.peered + 1,
         )
+
+      // Inspect long lists if the machine requires dialling.
       case reads_long_lists(machine) {
         True -> deploying(opened, Some(machine.name))
         False -> #(
@@ -744,8 +743,7 @@ fn reads_long_lists(machine: machines.Machine) -> Bool {
   }
 }
 
-// A tab was chosen. The Sessions tab asks the other orchestrators, because only
-// it draws what they list.
+/// Handles switching tabs on the machine overview page.
 fn tabbing(model: Model) -> #(Model, Effect(Msg)) {
   case model.tab {
     machines.SessionsTab -> peering(model)
@@ -756,11 +754,7 @@ fn tabbing(model: Model) -> #(Model, Effect(Msg)) {
   }
 }
 
-// A deployment read landed. A whole deployment replaces what the page holds and
-// carries on to read the chosen machine again, so its page follows the refresh. A
-// machine's lists belong to the page only while that machine is the chosen one. A
-// read that failed leaves what the page holds; a whole-deployment read that
-// failed says so.
+/// Processes landed deployment reads for the overview or a specific machine.
 fn deployment_landed(
   model: Model,
   asked: Option(String),
@@ -792,8 +786,7 @@ fn deployment_landed(
   }
 }
 
-// After a whole deployment landed: read the chosen machine again, or forget it if
-// the deployment no longer lists it.
+/// Follows a whole-deployment read by inspecting the currently selected machine.
 fn following(model: Model) -> #(Model, Effect(Msg)) {
   case
     option.then(model.machine, fn(node) {
@@ -815,7 +808,7 @@ fn following(model: Model) -> #(Model, Effect(Msg)) {
   }
 }
 
-// The chosen node survives a read that still lists it.
+/// Keeps the chosen node if it is still present in the latest snapshot.
 fn still_listed(
   chosen: Option(String),
   snapshot: machines.Snapshot,
@@ -828,10 +821,7 @@ fn still_listed(
   })
 }
 
-// Whether an ask may be sent now. Every change but one is sent by the press
-// that names it; making a session shareable stops and restarts it, so it is sent
-// only once the owner has armed it with a first press and been shown what it
-// does.
+/// Checks whether an admin action requires confirmation and is armed.
 fn confirmed(action: Action, armed: Option(Action)) -> Bool {
   case action {
     grants.MakeShareable(..) | grants.AbandonMove(..) -> armed == Some(action)
@@ -845,9 +835,7 @@ fn confirmed(action: Action, armed: Option(Action)) -> Bool {
   }
 }
 
-// The model after an ask was answered, and the read that follows it. A refusal
-// of a thing that is no longer there also reads again, so the page stops
-// drawing it.
+/// Updates model and triggers follow-up reads after an action settles.
 fn settled(
   model: Model,
   action: Action,
@@ -894,9 +882,7 @@ fn invitations(invited: Int, purpose: grants.Purpose) -> Int {
   }
 }
 
-// What the page says about a refusal. An allowance that is spent says when a
-// place frees as an instant the browser words in its own zone; every other
-// reason is its fixed words.
+/// Formats a declined action reason into a notice.
 fn refusal(reason: grants.Reason) -> notice.Notice {
   case reason {
     grants.TooMany(used:, free_at_ms:) -> notice.Throttled(used:, free_at_ms:)
@@ -914,9 +900,7 @@ fn refusal(reason: grants.Reason) -> notice.Notice {
   }
 }
 
-// The allowance state after a refusal: a refusal for want of allowance records
-// when a place frees and the words that say so, and any other refusal leaves what
-// was recorded, since it says nothing about the allowance.
+/// Records quota throttle expiry details from a refusal.
 fn spent_by(
   reason: grants.Reason,
   before: Option(#(Int, String)),
@@ -938,14 +922,9 @@ fn spent_by(
   }
 }
 
-// Asks for a read and, when `interval` says so, arms the timer for the next one
-// in the same effect, so the next read is counted from this ask. The number the
-// read is asked under is the model's next.
-//
-// Only one read is out at a time. While one is, a tick starts nothing and only
-// arms the timer again, and a press or a settled change marks that one more read
-// is wanted, which starts when the answer lands.
+/// Initiates a catalogue read and arms the refresh timer.
 fn reading(model: Model, interval: Interval) -> #(Model, Effect(Msg)) {
+  // Check the flight status before initiating or queueing a read.
   case model.flight, interval {
     Flying(..), Rearm -> #(model, rearming(model))
     Flying(asked:, ..), Continue -> #(
@@ -978,7 +957,9 @@ fn rearming(model: Model) -> Effect(Msg) {
   arm(model, Rearm)
 }
 
+/// Arms the refresh timer if configured.
 fn arm(model: Model, interval: Interval) -> Nil {
+  // Dispatch the timer rearm event when requested.
   case interval, model.timer {
     Rearm, Some(timer) -> {
       let _ = process.send_after(timer, model.start.refresh_ms, Nil)
@@ -988,12 +969,9 @@ fn arm(model: Model, interval: Interval) -> Nil {
   }
 }
 
-// A read landed: what it found is applied, and the one more read that was asked
-// for while it ran starts now. A read asked under a session that is no longer the
-// chosen one found that session's members, which the page must not draw under the
-// new choice, so its selection is dropped and the choice kept; the read that
-// follows finds the right one. A page that ended starts nothing.
+/// Integrates completed reading results into the model.
 fn landed(model: Model, result: Reading) -> #(Model, Effect(Msg)) {
+  // Extract the flight context and determine next actions.
   let #(asked, then) = case model.flight {
     Flying(asked:, then:) -> #(asked, then)
     Landed -> #(model.chosen, Nothing)
@@ -1008,6 +986,8 @@ fn landed(model: Model, result: Reading) -> #(Model, Effect(Msg)) {
 
   // Apply response and restore the currently selected target.
   let after = answered(Model(..model, flight: Landed), found)
+
+  // Retain the chosen session target if unchanged.
   let after = case asked == model.chosen {
     True -> after
     False -> Model(..after, chosen: model.chosen)
@@ -1023,8 +1003,7 @@ fn landed(model: Model, result: Reading) -> #(Model, Effect(Msg)) {
   }
 }
 
-// Starts the daemon's task for one ask and returns at once; the answer arrives
-// later as `Acted`, dispatched from the task's own process.
+/// Dispatches an asynchronous admin command task.
 fn acting(
   act: fn(Action, fn(Answer) -> Nil) -> Nil,
   action: Action,
@@ -1033,10 +1012,7 @@ fn acting(
   act(action, fn(answer) { dispatch(Acted(answer)) })
 }
 
-// What a read changes. A snapshot replaces what the page holds, so a person who
-// is gone is gone from the page; a closed page keeps the last snapshot it drew
-// with the notice beside it, as the home keeps its last list. A session the
-// owner chose that the catalogue no longer holds is forgotten.
+/// Applies the contents of a completed reading to the model.
 fn answered(model: Model, reading: Reading) -> Model {
   case reading {
     grants.Read(snapshot:) ->
@@ -1054,8 +1030,7 @@ fn answered(model: Model, reading: Reading) -> Model {
   }
 }
 
-// The chosen session survives a read that found its members, and is forgotten
-// when the read found none because the catalogue no longer holds it.
+/// Validates whether the chosen session remains valid under the new snapshot.
 fn still_chosen(
   chosen: Option(String),
   snapshot: grants.Snapshot,
@@ -1066,9 +1041,7 @@ fn still_chosen(
   }
 }
 
-// An armed revocation survives a read, so a refresh does not take back a first
-// press the owner has not yet followed with the second, unless what it names has
-// gone: a principal no longer listed, or a member no longer holding the session.
+/// Validates whether an armed confirmation action remains valid.
 fn still_armed(
   armed: Option(Action),
   snapshot: grants.Snapshot,
@@ -1130,9 +1103,7 @@ fn closed_by(editing: Option(String), action: Action) -> Option(String) {
   }
 }
 
-// The open rename form survives a read that still lists its principal, so a
-// refresh does not take back a name the owner is typing, and goes when the
-// principal is no longer listed.
+/// Validates whether an active inline rename form remains valid.
 fn still_editing(
   editing: Option(String),
   snapshot: grants.Snapshot,
@@ -1217,8 +1188,7 @@ pub fn view(model: Model) -> Element(Msg) {
 }
 
 // The sidebar's place in the frame: the owner's sessions as the last snapshot
-// listed them, or none before the first read. Its rows are text, and its pills
-// narrow the list in place, which is how a machine's "Show its sessions" works.
+/// Renders the sidebar navigation tree for sessions and machines.
 fn sidebar_place(model: Model) -> shell.Sidebar(Msg) {
   case model.snapshot {
     None -> shell.Unlisted
@@ -1249,8 +1219,7 @@ fn sidebar_place(model: Model) -> shell.Sidebar(Msg) {
   }
 }
 
-// How many of the owner's sessions wait on a decision, for the count on the
-// menu button of a narrow window.
+/// Returns the count of sessions awaiting operator decision.
 fn waiting(model: Model) -> Int {
   case model.snapshot {
     Some(snapshot) ->
@@ -1279,9 +1248,7 @@ fn back_home() -> Element(Msg) {
   element.element("loom-back", [], [html.text("Home")])
 }
 
-// The body: a line that says what the page is, then the lists. When the page
-// ends is the bar's pill, not a sentence here.
-// Before the first read it holds that line and one that says the page is reading.
+/// Renders the main body of the admin view based on active tab.
 fn body(model: Model) -> Element(Msg) {
   let presses = presses()
   let busy = busy(model)
@@ -1313,8 +1280,7 @@ fn body(model: Model) -> Element(Msg) {
   ])
 }
 
-// The page's two tabs. Each is a real button that says whether it is the one
-// shown, and a press changes only what the page draws.
+/// Renders tab navigation controls between Machines and People.
 fn tabs(shown: Part) -> Element(Msg) {
   html.div(
     [
@@ -1326,6 +1292,7 @@ fn tabs(shown: Part) -> Element(Msg) {
   )
 }
 
+/// Renders an individual navigation tab button.
 fn tab(label: String, part: Part, shown: Part) -> Element(Msg) {
   html.button(
     [
@@ -1341,8 +1308,7 @@ fn tab(label: String, part: Part, shown: Part) -> Element(Msg) {
   )
 }
 
-// The People tab: each person once with their sign-ins, then the sessions to
-// invite someone to.
+/// Renders the People management section including principals and sessions.
 fn people(
   model: Model,
   snapshot: grants.Snapshot,
@@ -1379,8 +1345,7 @@ fn people(
   ]
 }
 
-// The chosen machine's page, or nothing when none is chosen or the deployment no
-// longer lists it.
+/// Renders detailed metrics and control page for the chosen machine.
 fn machine_page(model: Model, snapshot: grants.Snapshot) -> Element(Msg) {
   let found =
     option.then(model.machine, fn(node) {
@@ -1391,6 +1356,8 @@ fn machine_page(model: Model, snapshot: grants.Snapshot) -> Element(Msg) {
         |> option.from_result
       })
     })
+
+  // Render machine details when a machine selection resolves.
   case found {
     Some(#(held, machine)) ->
       html.div([attribute.class("machine-wrap")], [
@@ -1416,11 +1383,7 @@ fn machine_page(model: Model, snapshot: grants.Snapshot) -> Element(Msg) {
   }
 }
 
-// A machine's "Show its sessions": it narrows the sidebar to the machine, so the
-// admin page points at the sessions without listing them. It is drawn only for a
-// machine the sidebar has a pill for, which is one some session uses, and the
-// press is honoured only for such a name (`listing.chosen`), so it never does
-// nothing quietly.
+/// Renders a button to narrow the session sidebar to a specific machine.
 fn show_sessions(
   model: Model,
   snapshot: grants.Snapshot,
@@ -1442,7 +1405,7 @@ fn show_sessions(
   }
 }
 
-// Whether a button may be pressed: not while an ask is out.
+/// Computes the button interactivity state based on in-flight requests.
 fn busy(model: Model) -> Busy {
   case model.waiting, model.spent {
     Some(_), _ -> admin_buttons.Occupied
@@ -1452,7 +1415,7 @@ fn busy(model: Model) -> Busy {
   }
 }
 
-// The messages the controls send, as values.
+/// Instantiates event message constructors for button interactions.
 fn presses() -> Presses(Msg) {
   admin_buttons.Presses(
     ask: Asking,
@@ -1474,11 +1437,14 @@ fn renaming(principal: String) -> attribute.Attribute(Msg) {
   event.on("submit", renamed(principal)) |> event.prevent_default
 }
 
+/// Decodes inline principal rename form submissions.
 fn renamed(principal: String) -> decode.Decoder(Msg) {
   use listed <- decode.subfield(
     ["detail", "formData"],
     admin_sessions.form_data(),
   )
+
+  // Extract the text field from submitted form data.
   case listed {
     [#("text", name)] -> decode.success(Asking(grants.Rename(principal, name)))
 
@@ -1496,11 +1462,14 @@ fn submitting(session: String) -> attribute.Attribute(Msg) {
   event.on("submit", submitted(session)) |> event.prevent_default
 }
 
+/// Decodes invitation form submissions with name and role.
 fn submitted(session: String) -> decode.Decoder(Msg) {
   use listed <- decode.subfield(
     ["detail", "formData"],
     admin_sessions.form_data(),
   )
+
+  // Extract name and role from invitation form data.
   case admin_sessions.fields(listed) {
     Ok(#(name, role)) ->
       decode.success(Asking(grants.Invite(session, role, name)))
@@ -1515,6 +1484,7 @@ fn submitted(session: String) -> decode.Decoder(Msg) {
   }
 }
 
+/// Returns the display tone for a session connection status.
 fn status_tone(status: Status) -> heading.Tone {
   case status {
     Connecting -> heading.Pending
@@ -1523,6 +1493,7 @@ fn status_tone(status: Status) -> heading.Tone {
   }
 }
 
+/// Returns textual label for a session connection status.
 fn status_words(status: Status) -> String {
   case status {
     Connecting -> "connecting"

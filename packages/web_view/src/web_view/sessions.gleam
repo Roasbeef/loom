@@ -273,6 +273,8 @@ pub fn activity_words(activity: Activity) -> String {
 /// ```
 pub fn ago(now: Int, then: Int) -> String {
   let seconds = int.max(now - then, 0) / 1000
+
+  // Select coarse human-readable elapsed time label.
   case seconds {
     _ if seconds < 60 -> "just now"
     _ if seconds < 3600 -> int.to_string(seconds / 60) <> "m ago"
@@ -486,14 +488,14 @@ fn count(named: List(#(String, String)), title: String) -> Int {
   list.count(named, fn(pair) { pair.1 == title })
 }
 
-// A path's parent directory name and a slash, or nothing for a path at the
-// root.
+/// Extracts the immediate parent directory component of a path, if present.
 fn parent_name(path: String) -> String {
   let segments =
     string.split(path, "/")
     |> list.filter(fn(segment) { segment != "" })
     |> list.reverse
 
+  // Match reversed path segments to extract immediate parent folder.
   case segments {
     [_, parent, ..] -> parent <> "/"
     [_] | [] -> ""
@@ -521,7 +523,7 @@ pub fn grouped(entries: List(Entry)) -> List(Group) {
   |> list.sort(by_group)
 }
 
-// The groups of a grouping, each with its entries newest first.
+/// Converts grouped session dictionary entries into sorted Group structures.
 fn dict_to_groups(grouping: dict.Dict(String, List(Entry))) -> List(Group) {
   dict.to_list(grouping)
   |> list.map(fn(pair) {
@@ -530,9 +532,9 @@ fn dict_to_groups(grouping: dict.Dict(String, List(Entry))) -> List(Group) {
   })
 }
 
-// Where a new session under the group goes: the project's own root when a
-// session lives there, else the newest session's workspace. Both are
-// workspaces the catalogue lists.
+/// Where a new session under the group goes: the project's own root when a
+/// session lives there, else the newest session's workspace. Both are
+/// workspaces the catalogue lists.
 fn target(project: String, entries: List(Entry)) -> String {
   case list.any(entries, fn(entry) { entry.workspace == project }) {
     True -> project
@@ -553,9 +555,11 @@ fn by_recency(left: Entry, right: Entry) -> order.Order {
   }
 }
 
-// Alphabetical by directory name, then by the whole project path.
+/// Orders groups alphabetically by project base directory name, breaking ties by path.
 fn by_group(left: Group, right: Group) -> order.Order {
   let name = fn(group: Group) { string.lowercase(base_name(group.project)) }
+
+  // Compare group directory names alphabetically, tie-breaking on full path.
   case string.compare(name(left), name(right)) {
     order.Eq -> string.compare(left.project, right.project)
     other -> other

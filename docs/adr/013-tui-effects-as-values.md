@@ -372,7 +372,7 @@ The survey of mailbox reads, at the commit this slice started from:
   (`tui/tick.gleam:146` (`drain_connection`)). The attachment's reads:
   `tui/attachment.gleam:492` (`prepare`),
   `tui/attachment.gleam:537` (`drain`) and
-  `tui/attachment.gleam:597` (`settle`). The replay drain:
+  `tui/attachment.gleam:604` (`settle`). The replay drain:
   `tui/tick.gleam:282` (`drain_replay`).
 - **Left for S4 and S5.** The reconnect outcome
   (`tui/tick.gleam:143` (`drain_reconnect`)), the control reply

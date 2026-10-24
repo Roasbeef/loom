@@ -238,6 +238,7 @@ pub fn short_path(path: String) -> String {
     string.split(path, "/")
     |> list.filter(fn(segment) { segment != "" })
 
+  // Truncate path segments to the trailing two components when deeper than 2.
   case list.length(segments) > 2 {
     True ->
       "…/" <> string.join(list.drop(segments, list.length(segments) - 2), "/")
@@ -338,6 +339,8 @@ pub fn sorted(
   let rows =
     list.filter_map(all, fn(entry) {
       let place = place(entry, machine)
+
+      // Keep entry if its place matches the active filter or if it represents current session.
       case matches(place, filter) || entry.id == current {
         True ->
           Ok(Row(entry:, bucket: placed(entry, activity, current), place:))
@@ -426,9 +429,9 @@ pub fn count_words(rows: List(Row)) -> String {
   int.to_string(list.length(rows))
 }
 
-// The group an entry is listed in. The session on screen is always among the
-// running ones, saved or not, so the person sees where they are; its own row still
-// says "saved".
+/// The group an entry is listed in. The session on screen is always among the
+/// running ones, saved or not, so the person sees where they are; its own row still
+/// says "saved".
 fn placed(
   entry: Entry,
   activity: Dict(String, Activity),

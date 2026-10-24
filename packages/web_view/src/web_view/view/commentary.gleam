@@ -67,12 +67,15 @@ pub const visible_items = 3
 /// ```
 pub fn view(board: advisor_history.Board) -> Element(message) {
   use <- element.memo([element.ref(board)])
+
+  // Render the commentary section or omit when empty.
   case board.items {
     [] -> element.none()
     [_, ..] -> section(board)
   }
 }
 
+/// Renders the commentary history section with truncated older entries.
 fn section(board: advisor_history.Board) -> Element(message) {
   // The board is oldest-first, so the newest reviews are its tail. Keeping
   // the tail in board order leaves the newest review last, as in the lane.
@@ -120,6 +123,7 @@ pub fn summary(board: advisor_history.Board) -> String {
       _ -> " reviews"
     }
 
+  // Append the most recent review excerpt to the summary header.
   case list.last(board.items) {
     Ok(newest) ->
       case first_line(newest.text) {
@@ -133,9 +137,9 @@ pub fn summary(board: advisor_history.Board) -> String {
 /// The most characters of the newest review the summary quotes.
 pub const summary_limit = 72
 
-// The first line of a review that has any words, without the backticks and
-// emphasis marks the body's Markdown carries, since a summary is plain text,
-// and cut to `summary_limit` with an ellipsis.
+/// The first line of a review that has any words, without the backticks and
+/// emphasis marks the body's Markdown carries, since a summary is plain text,
+/// and cut to `summary_limit` with an ellipsis.
 fn first_line(text: String) -> String {
   let line =
     text_hygiene.multiline(text)
@@ -147,25 +151,25 @@ fn first_line(text: String) -> String {
     |> string.replace("`", "")
     |> string.replace("**", "")
 
+  // Truncate the first line with an ellipsis when exceeding character limit.
   case string.length(line) > summary_limit {
     True -> string.slice(line, 0, summary_limit - 1) <> "…"
     False -> line
   }
 }
 
-// A leading heading or list marker is Markdown's, not the advisor's words.
+/// Strips markdown headings or list markers from a line.
 fn without_marker(line: String) -> String {
   let markers = ["### ", "## ", "# ", "- ", "* "]
 
+  // Match and strip any leading markdown heading or list marker.
   case list.find(markers, string.starts_with(line, _)) {
     Ok(marker) -> string.drop_start(line, string.length(marker))
     Error(Nil) -> line
   }
 }
 
-// One captured review: the request's label as its head, the advisor's
-// whole text as the body. The label is the projection's own wording, which
-// names the request and never claims the primary received anything.
+/// Renders one captured review with label header and markdown body.
 fn item(entry: advisor_history.Item) -> Element(message) {
   html.article([attribute.class("commentary-item")], [
     html.p([attribute.class("commentary-label")], [
@@ -178,6 +182,7 @@ fn item(entry: advisor_history.Item) -> Element(message) {
   ])
 }
 
+/// Maps an advisor annotation to its display label text.
 fn label(annotation: advisor_history.Annotation) -> String {
   case annotation {
     advisor_history.AdvisorUpdate -> "commentary"
@@ -189,6 +194,7 @@ fn label(annotation: advisor_history.Annotation) -> String {
   }
 }
 
+/// Renders indicator showing count of omitted earlier reviews.
 fn more(omitted: Int) -> List(Element(message)) {
   case omitted > 0 {
     True -> [
@@ -200,9 +206,7 @@ fn more(omitted: Int) -> List(Element(message)) {
   }
 }
 
-// The board's own honesty about the captured window: a missing older
-// parent means this is not the whole advisor history, and the section
-// repeats what the board says rather than claiming completeness.
+/// Renders warning indicator when earlier commentary was truncated.
 fn unloaded(edge: Option(String)) -> List(Element(message)) {
   case edge {
     Some(_) -> [

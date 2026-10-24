@@ -294,6 +294,7 @@ pub fn offers(
   )
 }
 
+/// Constructs an armed approval offer for a test-passed candidate.
 fn approval_offer(candidate: evolution.Candidate) -> Option(Armed) {
   case evolution.approval_target(candidate) {
     Ok(evidence_id) ->
@@ -308,6 +309,7 @@ fn approval_offer(candidate: evolution.Candidate) -> Option(Armed) {
   }
 }
 
+/// Constructs an armed selection offer for an approved candidate.
 fn selection_offer(
   staging: Staging,
   board: evolution.Board,
@@ -326,8 +328,8 @@ fn selection_offer(
   }
 }
 
-// A revocation is offered on any candidate whose approval the page read. The
-// approval's own evidence is what the question names.
+/// A revocation is offered on any candidate whose approval the page read. The
+/// approval's own evidence is what the question names.
 fn revocation_offer(candidate: evolution.Candidate) -> Option(Armed) {
   case candidate.approval {
     Some(approval) ->
@@ -342,9 +344,9 @@ fn revocation_offer(candidate: evolution.Candidate) -> Option(Armed) {
   }
 }
 
-// A rollback belongs to the row that is selected now: it selects an earlier
-// approved candidate of the same name again, and echoes the generation the
-// selected row shows.
+/// A rollback belongs to the row that is selected now: it selects an earlier
+/// approved candidate of the same name again, and echoes the generation the
+/// selected row shows.
 fn rollback_offers(
   staging: Staging,
   board: evolution.Board,

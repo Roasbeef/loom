@@ -158,6 +158,7 @@ pub fn service_todo_seed(
 
 // An operator's own notes read goes first, and a seed with no attached
 // channel waits; session replacement clears it either way.
+/// Sends a todo seed notes request when the channel is ready and not requested.
 fn send_seed_when_free(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -172,6 +173,7 @@ fn send_seed_when_free(
   }
 }
 
+/// Sends the notes request frame to initialize the todo board seed.
 fn send_todo_seed(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -269,6 +271,7 @@ pub fn service_queue_read(
 
 // A wanted read that can no longer be sent is forgotten, and the editor that
 // wanted it is told why.
+/// Forgets a pending queue input read and records a dropped notice.
 fn drop_queue_read(
   shared: Shared(socket, recorder, source, replay_source),
   message: String,
@@ -302,6 +305,8 @@ pub fn service_worktree_read(
   // Both observations borrow the same server worker slot. An acknowledged
   // context read still owns it until its final push arrives.
   use <- bool.guard(context_in_flight(shared.context), shared)
+
+  // Send worktree diff if channel is ready and refresh requested.
   case shared.channel, shared.worktree.refresh, shared.worktree.awaiting {
     Some(channel), worktree_view.Requested, None ->
       case session_channel.ready_for_read(channel) {
@@ -486,6 +491,7 @@ type MemoryRead {
   NotOwed
 }
 
+/// Determines whether a memory board read is owed based on refresh state.
 fn memory_read_owed(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> MemoryRead {
@@ -569,6 +575,7 @@ type EvolutionRead {
   NotOwedEvolution
 }
 
+/// Determines whether an evolution catalogue read is currently owed.
 fn evolution_read_owed(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> EvolutionRead {
@@ -609,6 +616,8 @@ pub fn service_evolution_status(
   let now = shared.stamp.transport_ms
   let #(tracker, expiry) =
     evolution_pending.expire(shared.evolution_pending, now)
+
+  // Check if any tracked evolution request has timed out.
   let expired = case expiry {
     evolution_pending.Expired ->
       shared
@@ -616,7 +625,10 @@ pub fn service_evolution_status(
       |> shared_set.evolution_notice(evolution_pending.timeout_words)
     evolution_pending.NoneExpired -> shared
   }
+
   let shared = shared_set.evolution_pending(expired, tracker)
+
+  // Poll evolution status if channel is attached and ready.
   case shared.channel, shared.peer {
     Some(channel), Attached ->
       case session_channel.ready_for_read(channel) {
@@ -627,6 +639,7 @@ pub fn service_evolution_status(
   }
 }
 
+/// Sends a status poll request for the next due pending evolution action.
 fn poll_evolution_status(
   shared: Shared(socket, recorder, source, replay_source),
   now: Int,
@@ -683,6 +696,7 @@ pub fn evolve(
 // read is. A slot held by a read is not free: the change would wait behind it,
 // and the reply of the read in flight would be taken for the change's own. The
 // attachment's right to mutate is the one an approval needs.
+/// Validates channel readiness and mutation permission before evolving.
 fn evolve_checked(
   shared: Shared(socket, recorder, source, replay_source),
   request: evolution.Request,
@@ -709,11 +723,14 @@ fn evolve_checked(
   }
 }
 
+/// Stages or sends an authorized mutating evolution action.
 fn evolve_change(
   shared: Shared(socket, recorder, source, replay_source),
   request: evolution.Request,
 ) -> Shared(socket, recorder, source, replay_source) {
   let cleared = shared_set.evolution_notice(shared, "")
+
+  // Route request to staging tracker or immediate send.
   case request {
     evolution.Select(candidate_id:, name:, ..)
     | evolution.Rollback(candidate_id:, name:, ..) ->
@@ -729,6 +746,7 @@ fn evolve_change(
 // A selection is tracked before it is sent. The tracker marks the request as
 // the one whose reply the lane awaits, so the daemon's first answer, however
 // it reads, is applied to this request and to no other.
+/// Begins tracking a long-running evolution selection or rollback.
 fn stage_evolution(
   shared: Shared(socket, recorder, source, replay_source),
   request: evolution.Request,
@@ -754,6 +772,7 @@ fn stage_evolution(
   }
 }
 
+/// Sends a read-only evolution request when the channel is free.
 fn evolve_read(
   shared: Shared(socket, recorder, source, replay_source),
   request: evolution.Request,
@@ -773,6 +792,7 @@ fn evolve_read(
   }
 }
 
+/// Encodes and transmits an evolution command protocol frame.
 fn send_evolution(
   shared: Shared(socket, recorder, source, replay_source),
   request: evolution.Request,
@@ -814,8 +834,10 @@ fn send_evolution(
 pub fn evolution_due(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Option(Int) {
+  // Check if channel is attached before computing evolution due instant.
   case shared.channel, shared.peer {
     Some(_), Attached -> {
+      // Determine whether an evolution catalogue read is due.
       let read = case shared.evolution_refresh, shared.evolution_watch {
         worktree_view.Requested, _ -> Some(shared.stamp.transport_ms)
         worktree_view.Settled, session_model.WatchingEvolution ->
@@ -825,6 +847,7 @@ pub fn evolution_due(
           }
         worktree_view.Settled, session_model.NotWatchingEvolution -> None
       }
+
       [evolution_pending.next_due(shared.evolution_pending), read]
       |> list.filter_map(option.to_result(_, Nil))
       |> list.reduce(int.min)
@@ -856,6 +879,8 @@ pub fn receive_evolution(
   reply: evolution.Reply,
 ) -> Shared(socket, recorder, source, replay_source) {
   let now = shared.stamp.transport_ms
+
+  // Handle specific evolution reply variants to update boards and tracking.
   case reply {
     evolution.BoardReply(board:) ->
       shared
@@ -895,6 +920,7 @@ pub fn receive_evolution(
 // A request that settled says how, and the board is read again so the row
 // shows the generation the daemon now holds. A request still moving says
 // nothing: its row is drawn from the tracker.
+/// Announces progress updates or completion notices for tracked evolution work.
 fn announce_progress(
   shared: Shared(socket, recorder, source, replay_source),
   moved: Option(evolution_pending.Tracked),
@@ -941,6 +967,8 @@ pub fn refuse_evolution(
   let now = shared.stamp.transport_ms
   let noted =
     shared_set.evolution_notice(shared, evolution.refusal_words(code, message))
+
+  // Handle refusal based on specific evolution command action.
   case command {
     "evolution:select" | "evolution:rollback" ->
       noted
@@ -994,6 +1022,8 @@ pub fn advisor_nudges_action(
   let review_settled =
     session_model.strand_running(before, advisor_pending.advisor_strand)
     && !session_model.strand_running(after, advisor_pending.advisor_strand)
+
+  // Decide whether to read or drop nudges across this lifecycle edge.
   case review_settled, primary_started {
     // When both edges share one snapshot, the new review may have queued
     // advice after the primary drained its older queue. Read the current
@@ -1024,6 +1054,7 @@ pub fn sync_advisor_nudges(
   before: Shared(socket, recorder, source, replay_source),
   after: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Apply advisor nudges action to update pending nudge observations.
   case advisor_nudges_action(before, after) {
     HoldNudges -> after
 
@@ -1159,9 +1190,7 @@ pub fn retire_nudges_delivered_since_board(
   }
 }
 
-// Whether a primary-strand nudges frame stamped at or after `since` heads the
-// records. Newest first, so the first message older than `since` ends the
-// search; entries that are not messages carry no frame and are stepped over.
+/// Checks if a nudges delivery frame stamped at or after since is present.
 fn delivery_since(records: List(protocol.EntryRecord), since: Int) -> Bool {
   case records {
     [] -> False
@@ -1179,7 +1208,7 @@ fn delivery_since(records: List(protocol.EntryRecord), since: Int) -> Bool {
   }
 }
 
-// Whether the record is the delivered frame of the primary's queue.
+/// Checks if an entry record contains a primary-strand nudges delivery payload.
 fn drains_queue(record: protocol.EntryRecord) -> Bool {
   case record {
     protocol.EntryRecord(strand:, entry: entry.MessageEntry(message: value, ..))
@@ -1194,9 +1223,7 @@ fn drains_queue(record: protocol.EntryRecord) -> Bool {
   }
 }
 
-// Clears the held board and asks for a fresh read, so advice queued after
-// the drain stays visible. A read still in flight is disowned and the
-// transcript and frame are marked stale.
+/// Clears the held advisor nudges board and requests a fresh read.
 fn retire_board(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
@@ -1266,6 +1293,8 @@ pub fn receive_advisor_nudges(
   board: advisor_pending.Board,
 ) -> Shared(socket, recorder, source, replay_source) {
   let current = session_model.queue_owner(shared)
+
+  // Verify that received nudges answer the expected queue owner.
   case shared.nudges_awaiting {
     Some(owner) ->
       case owner == current {
@@ -1316,6 +1345,7 @@ pub fn goal_action(
       && session_model.strand_running(after, advisor_pending.primary_strand)
     }
 
+  // Trigger goal read when run started or nudge sync indicates an update.
   case started, advisor_nudges_action(before, after) {
     True, _ -> ReadGoal
     False, ReadNudges -> ReadGoal
@@ -1381,13 +1411,17 @@ pub fn submit_goal_action(
   shared: Shared(socket, recorder, source, replay_source),
   action: command.Session,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Validate mutation permission before submitting goal action.
   case outbound.mutation_refusal(shared, action) {
     Some(reason) -> session_model.append_error(shared, reason)
     None -> {
+      // Mark pending submission overlay if needed.
       let prepared = case shared.pending_submission {
         Some(_) -> shared
         None -> shared_set.pending_submission(shared, Some(OverlaySubmission))
       }
+
+      // Dispatch specific goal mutation frame.
       case action {
         command.GoalPause ->
           outbound.send_frame(
@@ -1443,6 +1477,7 @@ pub fn service_goal_read(
 // A disconnected host cannot turn Requested into a board. Settle the local
 // read request and record unavailability; an open inspector retains its last
 // observation with that reason, while automatic reads stay transcript-silent.
+/// Settles an unserviceable goal read and records an unavailable notice.
 fn unreachable_goal(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
@@ -1454,6 +1489,8 @@ fn unreachable_goal(
         GoalUnavailable("no conversation is attached"),
       ]),
     )
+
+  // Report error if an active goal mutation report was pending.
   case shared.goal_report {
     HoldGoalReport -> settled
 
@@ -1483,6 +1520,7 @@ pub fn receive_goal(
   shared: Shared(socket, recorder, source, replay_source),
   board: goal_view.Board,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Check whether received goal board matches current queue owner.
   case
     shared.goal_awaiting == None
     || shared.goal_awaiting == Some(session_model.queue_owner(shared))
@@ -1515,6 +1553,7 @@ pub fn receive_goal(
 // A queued mutation can replace an explicit read's report before that read
 // answers. Only the mutation's issued ID owns its confirmation; an older
 // valid board still replaces the observation without consuming that report.
+/// Verifies that an incoming goal reply matches the active goal report slot.
 fn owns_goal_report(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Bool {
@@ -1529,6 +1568,7 @@ fn owns_goal_report(
 // voice, because the status block is several lines and the band beside the
 // composer holds one. An automatic refresh updates the row and prints
 // nothing.
+/// Appends a confirmed goal mutation notice to the transcript.
 fn report_goal(
   shared: Shared(socket, recorder, source, replay_source),
   board: goal_view.Board,
@@ -1694,6 +1734,8 @@ pub fn sync_context(
     context_refresh_due(before, after)
     || context_usage_due(before, after, selected.marked_ms)
     || deferred_read_due(selected.deferred_until_ms, now, live)
+
+  // Update context state according to peer attachment.
   let context = case after.peer {
     Attached ->
       case reading {
@@ -1719,6 +1761,7 @@ pub fn sync_context(
         deferred_until_ms: None,
       )
   }
+
   shared_set.context(after, context)
 }
 
@@ -1740,10 +1783,7 @@ pub fn context_deferred_until(
   shared.context.deferred_until_ms
 }
 
-// The deferred instant a transition leaves behind. A row that landed inside
-// the interval sets it to the end of the interval, an earlier deferral is
-// kept, and a strand that is no longer live drops it, since the settling edge
-// reads the final figure and nothing is left to catch up.
+/// Computes the timestamp for the next deferred context usage refresh.
 fn deferral(
   before: Shared(socket, recorder, source, replay_source),
   after: Shared(socket, recorder, source, replay_source),
@@ -1770,9 +1810,7 @@ fn deferred_read_due(deferred: Option(Int), now: Int, live: Bool) -> Bool {
   }
 }
 
-// Whether a provider usage row landed on this strand in this transition: the
-// ledger records the highest row admitted per strand, so a row is a changed
-// entry there.
+/// Determines whether a provider usage record landed in this transition.
 fn usage_landed(
   before: Shared(socket, recorder, source, replay_source),
   after: Shared(socket, recorder, source, replay_source),
@@ -1831,10 +1869,12 @@ pub fn context_usage_due(
   after: Shared(socket, recorder, source, replay_source),
   marked_ms: Option(Int),
 ) -> Bool {
+  // Check whether minimum pacing interval has elapsed since last refresh.
   let paced = case marked_ms {
     Some(marked) -> after.stamp.now_ms - marked >= usage_refresh_interval_ms
     None -> True
   }
+
   usage_landed(before, after)
   && session_model.active_strand_live(after)
   && paced
@@ -1844,6 +1884,7 @@ pub fn context_usage_due(
 // already tracks for the agent roster leaves `Some(_)` exactly once per
 // operation, when the server reports `done`. Reading on that edge gives one
 // observation per turn instead of one per committed entry.
+/// Detects the settling edge where an active strand operation finishes.
 fn operation_settled(
   before: Shared(socket, recorder, source, replay_source),
   after: Shared(socket, recorder, source, replay_source),
@@ -1870,6 +1911,8 @@ pub fn service_context_read(
   // A worktree acknowledgement releases the command lane, not its worker.
   // Wait for that observation before borrowing the shared slot for context.
   use <- bool.guard(shared.worktree.awaiting != None, shared)
+
+  // Check if context read is requested and channel is ready.
   case shared.channel, shared.context.request, shared.peer, shared.captured {
     Some(channel), context_view.Requested, Attached, Some(_) ->
       case session_channel.ready_for_read(channel) {
@@ -1884,6 +1927,7 @@ pub fn service_context_read(
   }
 }
 
+/// Returns whether a context read request is currently in-flight.
 fn context_in_flight(state: context_view.State) -> Bool {
   case state.request {
     context_view.Awaiting(_) | context_view.RefreshAfter(_) -> True
@@ -1894,6 +1938,7 @@ fn context_in_flight(state: context_view.State) -> Bool {
 
 // A review can add advice while the primary is still running. Its end is the
 // read edge; the primary's end and a fresh attachment are recovery edges.
+/// Evaluates primary strand lifecycle boundaries for advisor nudge updates.
 fn nudge_boundary(
   before: Shared(socket, recorder, source, replay_source),
   after: Shared(socket, recorder, source, replay_source),
@@ -1912,6 +1957,8 @@ fn nudge_boundary(
     )
 
   let session_changed = before.session != after.session
+
+  // Trigger nudge read if primary settled, appeared, or session changed.
   case primary_settled || newly_listed || session_changed {
     True -> ReadNudges
     False -> HoldNudges
@@ -1934,6 +1981,8 @@ pub fn service_btw(
   use <- bool.lazy_guard(shared.btw.owner != owner, fn() {
     Shared(..shared, btw: btw.new())
   })
+
+  // Check if btw poll is due and channel is free.
   case shared.channel, shared.btw.board, shared.btw.pending {
     Some(channel), Some(board), None -> {
       case
@@ -1967,6 +2016,8 @@ pub fn btw_due(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Option(Int) {
   use <- bool.guard(shared.btw.owner != session_model.queue_owner(shared), None)
+
+  // Compute next due instant for running btw side answer.
   case shared.channel, shared.btw.board, shared.btw.pending {
     Some(channel), Some(board), None if board.status == "running" -> {
       case session_channel.ready_for_read(channel) {

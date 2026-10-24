@@ -223,9 +223,9 @@ pub fn begin(
   ))
 }
 
-// Room for one more request. The oldest settled request goes first, since a
-// host has had the longest to draw it; when every request is still moving the
-// lane refuses rather than forget one it owes a poll.
+/// Room for one more request. The oldest settled request goes first, since a
+/// host has had the longest to draw it; when every request is still moving the
+/// lane refuses rather than forget one it owes a poll.
 fn make_room(requests: List(Tracked)) -> Result(List(Tracked), String) {
   case list.drop(requests, limit - 1) {
     [] -> Ok(requests)
@@ -269,10 +269,13 @@ pub fn answered(
   report: evolution.Report,
   now_ms: Int,
 ) -> #(Tracker, Option(Tracked)) {
+  // Check whether a request was awaiting a response.
   case tracker.awaiting {
     None -> #(tracker, None)
     Some(id) -> {
       let cleared = Tracker(..tracker, awaiting: None)
+
+      // Look up the awaited request in tracker state.
       case find(cleared, id) {
         Error(Nil) -> #(cleared, None)
         Ok(tracked) -> move_awaited(cleared, tracked, report, now_ms)
@@ -281,12 +284,14 @@ pub fn answered(
   }
 }
 
+/// Moves an awaiting request forward if it has not already settled.
 fn move_awaited(
   tracker: Tracker,
   tracked: Tracked,
   report: evolution.Report,
   now_ms: Int,
 ) -> #(Tracker, Option(Tracked)) {
+  // Ignore late replies for settled requests, or advance active stage.
   case settled(tracked.stage) {
     True -> #(tracker, None)
     False -> {
@@ -296,8 +301,11 @@ fn move_awaited(
   }
 }
 
+/// Transitions a tracked request stage based on an incoming evolution report.
 fn advance(tracked: Tracked, report: evolution.Report, now_ms: Int) -> Tracked {
   let next_poll_ms = now_ms + poll_ms
+
+  // Map report outcome to the appropriate tracking stage.
   case report {
     evolution.InFlight(phase:) ->
       Tracked(..tracked, stage: Staging(phase), next_poll_ms:)
@@ -320,10 +328,13 @@ fn advance(tracked: Tracked, report: evolution.Report, now_ms: Int) -> Tracked {
 /// assert evolution_pending.refused(tracker, 7000).awaiting == None
 /// ```
 pub fn refused(tracker: Tracker, now_ms: Int) -> Tracker {
+  // Check whether a request is awaiting response before handling refusal.
   case tracker.awaiting {
     None -> tracker
     Some(id) -> {
       let cleared = Tracker(..tracker, awaiting: None)
+
+      // Drop submitted request on refusal or reschedule next poll.
       case find(cleared, id) {
         Error(Nil) -> cleared
         Ok(Tracked(stage: Submitted, ..)) ->
@@ -386,6 +397,8 @@ pub fn expire(tracker: Tracker, now_ms: Int) -> #(Tracker, Expiry) {
   let overdue = fn(tracked: Tracked) {
     !settled(tracked.stage) && now_ms >= tracked.deadline_ms
   }
+
+  // Transition overdue requests to TimedOut if any reached deadline.
   case list.any(tracker.requests, overdue) {
     False -> #(tracker, NoneExpired)
     True -> {
@@ -396,6 +409,8 @@ pub fn expire(tracker: Tracker, now_ms: Int) -> #(Tracker, Expiry) {
             False -> tracked
           }
         })
+
+      // Clear awaiting request if it timed out.
       let awaiting = case tracker.awaiting {
         Some(id) ->
           case list.find(requests, fn(tracked) { tracked.request_id == id }) {
@@ -404,6 +419,7 @@ pub fn expire(tracker: Tracker, now_ms: Int) -> #(Tracker, Expiry) {
           }
         None -> None
       }
+
       #(Tracker(..tracker, requests:, awaiting:), Expired)
     }
   }
@@ -438,6 +454,8 @@ pub fn restore(
     })
     |> list.map(fn(waiting) { adopt(waiting, board, now_ms) })
   let requests = list.take(list.append(kept, adopted), limit)
+
+  // Retain awaiting request only if present in restored requests.
   let awaiting = case tracker.awaiting {
     Some(id) ->
       case list.any(requests, fn(tracked) { tracked.request_id == id }) {
@@ -446,17 +464,18 @@ pub fn restore(
       }
     None -> None
   }
+
   Tracker(..tracker, requests:, awaiting:)
 }
 
-// A request the board lists takes the phase the board gives it. A request in
-// `Staging` that the board no longer lists has left the queue, and the board
-// says how it ended: if the candidate is now the selected one, the selection
-// committed, and it is live or still publishing as the board's selection says.
-// A candidate that is not selected is left as it was for the next status poll
-// to explain, since the board cannot say whether the request failed or is in
-// flight on a queue the board predates. `Submitted` and `Publishing` are never
-// moved backward by a board.
+/// A request the board lists takes the phase the board gives it. A request in
+/// `Staging` that the board no longer lists has left the queue, and the board
+/// says how it ended: if the candidate is now the selected one, the selection
+/// committed, and it is live or still publishing as the board's selection says.
+/// A candidate that is not selected is left as it was for the next status poll
+/// to explain, since the board cannot say whether the request failed or is in
+/// flight on a queue the board predates. `Submitted` and `Publishing` are never
+/// moved backward by a board.
 fn phase_from_board(tracked: Tracked, board: evolution.Board) -> Tracked {
   case
     list.find(board.pending, fn(row) { row.request_id == tracked.request_id }),
@@ -469,6 +488,7 @@ fn phase_from_board(tracked: Tracked, board: evolution.Board) -> Tracked {
   }
 }
 
+/// Reconciles completed staging requests against current selections on the board.
 fn settled_by_board(tracked: Tracked, board: evolution.Board) -> Tracked {
   case evolution.find(board, tracked.candidate_id) {
     Ok(evolution.Candidate(selected: option.Some(chosen), ..)) ->
@@ -485,15 +505,18 @@ fn settled_by_board(tracked: Tracked, board: evolution.Board) -> Tracked {
   }
 }
 
+/// Adopts an unseen waiting transition from the board into tracked state.
 fn adopt(
   waiting: evolution.Waiting,
   board: evolution.Board,
   now_ms: Int,
 ) -> Tracked {
+  // Resolve candidate name from board or fall back to empty string.
   let name = case evolution.find(board, waiting.candidate_id) {
     Ok(candidate) -> candidate.name
     Error(Nil) -> ""
   }
+
   Tracked(
     request_id: waiting.request_id,
     candidate_id: waiting.candidate_id,
@@ -564,11 +587,15 @@ pub fn active(tracker: Tracker) -> Int {
 /// assert evolution_pending.words(staging_row, 12_000) == "fmt_check: staging, 48 s left"
 /// ```
 pub fn words(tracked: Tracked, now_ms: Int) -> String {
+  // Pick explicit candidate name or fall back to short candidate id.
   let name = case tracked.name {
     "" -> evolution.short_id(tracked.candidate_id)
     name -> name
   }
+
   let left = int.max(0, tracked.deadline_ms - now_ms) / 1000
+
+  // Format status string based on the current tracking stage.
   case tracked.stage {
     Submitted -> name <> ": sending the request"
     Staging(evolution.Queued) ->
@@ -592,6 +619,7 @@ fn find(tracker: Tracker, id: String) -> Result(Tracked, Nil) {
   list.find(tracker.requests, fn(tracked) { tracked.request_id == id })
 }
 
+/// Replaces an existing tracked request in the tracker list by its request_id.
 fn replace(tracker: Tracker, moved: Tracked) -> Tracker {
   Tracker(
     ..tracker,

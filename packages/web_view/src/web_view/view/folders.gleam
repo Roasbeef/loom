@@ -113,8 +113,8 @@ pub fn view(
   }
 }
 
-// One remembered folder: its directory name, the whole path as quiet text beside
-// it, the two buttons, and the creation form beneath when this folder's is open.
+/// One remembered folder: its directory name, the whole path as quiet text beside
+/// it, the two buttons, and the creation form beneath when this folder's is open.
 fn row(
   entry: Recent,
   offer: Create(message),

@@ -113,8 +113,8 @@ pub const private_words =
 pub const bookmark_words =
   "This page was opened from a bookmark, so it cannot invite people or make a session shareable. Run loom ui for a page that can."
 
-// The control of a bookmark's page: the heading, the session's private sentence
-// when it has one, and `bookmark_words`.
+/// The control of a bookmark's page: the heading, the session's private sentence
+/// when it has one, and `bookmark_words`.
 fn bookmarked(lead: Element(message)) -> Element(message) {
   html.section(
     [attribute.class("share"), attribute.aria_label("Invite to this session")],
@@ -128,10 +128,10 @@ fn bookmarked(lead: Element(message)) -> Element(message) {
   )
 }
 
-// The control for a private session: its heading and the sentence, and for the
-// owner the button that makes it shareable, in the region's place so no path
-// moves. The status line is always drawn, as the buttons' is, so the region's
-// children keep their places.
+/// The control for a private session: its heading and the sentence, and for the
+/// owner the button that makes it shareable, in the region's place so no path
+/// moves. The status line is always drawn, as the buttons' is, so the region's
+/// children keep their places.
 fn private(moving: Move, presses: Presses(message)) -> Element(message) {
   html.section(
     [attribute.class("share"), attribute.aria_label("Invite to this session")],
@@ -146,10 +146,10 @@ fn private(moving: Move, presses: Presses(message)) -> Element(message) {
   )
 }
 
-// What the owner may do about a private session, by what the control is doing.
-// While the task runs the button is gone and the sentence says what is
-// happening and that this page ends with the stop; the session's own page
-// reloads once it has resumed.
+/// What the owner may do about a private session, by what the control is doing.
+/// While the task runs the button is gone and the sentence says what is
+/// happening and that this page ends with the stop; the session's own page
+/// reloads once it has resumed.
 fn moving_control(moving: Move, presses: Presses(message)) -> Element(message) {
   case moving {
     shareables.Withheld -> element.none()
@@ -204,8 +204,8 @@ fn moving_control(moving: Move, presses: Presses(message)) -> Element(message) {
   }
 }
 
-// The line under the control: what is happening while the task runs, the
-// refusal in the reason's fixed words, or the empty line.
+/// The line under the control: what is happening while the task runs, the
+/// refusal in the reason's fixed words, or the empty line.
 fn moving_status(moving: Move) -> Element(message) {
   case moving {
     shareables.Making ->
@@ -223,9 +223,9 @@ fn moving_status(moving: Move) -> Element(message) {
   }
 }
 
-// The two buttons and a status line. The line is always drawn, empty unless
-// a request was refused, so the region's children keep their places. While a
-// request is with the daemon the buttons are disabled and carry no handler.
+/// The two buttons and a status line. The line is always drawn, empty unless
+/// a request was refused, so the region's children keep their places. While a
+/// request is with the daemon the buttons are disabled and carry no handler.
 fn buttons(presses: Presses(message), share: Share) -> Element(message) {
   html.section(
     [attribute.class("share"), attribute.aria_label("Invite to this session")],
@@ -261,6 +261,7 @@ fn buttons(presses: Presses(message), share: Share) -> Element(message) {
   )
 }
 
+/// Button helper.
 fn button(
   class: String,
   label: String,
@@ -273,6 +274,8 @@ fn button(
     attribute.class(class),
     attribute.title(title),
   ]
+
+  // Dispatch on button state.
   case share {
     invites.Asking ->
       html.button([attribute.disabled(True), ..common], [html.text(label)])
@@ -287,7 +290,7 @@ fn button(
   }
 }
 
-// The refusal in the reason's fixed words, or the empty line.
+/// The refusal in the reason's fixed words, or the empty line.
 fn status(share: Share) -> Element(message) {
   case share {
     invites.Refused(reason:) ->
@@ -305,8 +308,8 @@ fn status(share: Share) -> Element(message) {
   }
 }
 
-// The invitation, once. Both secrets are in copy boxes and nowhere else, and
-// the button that ends the display is the last thing in the region.
+/// The invitation, once. Both secrets are in copy boxes and nowhere else, and
+/// the button that ends the display is the last thing in the region.
 fn showing(
   invitation: Invitation,
   presses: Presses(message),

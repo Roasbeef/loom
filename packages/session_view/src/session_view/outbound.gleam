@@ -126,6 +126,7 @@ pub fn apply_submission(
   shared: Shared(socket, recorder, source, replay_source),
   disposition: session_channel.Disposition,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Dispatch based on the submission disposition: waiting, sent, or rejected.
   case disposition {
     session_channel.Waiting(_) ->
       case has_unsent(shared) {
@@ -144,6 +145,7 @@ pub fn apply_submission(
       record_sent(shared, command, request_id)
 
     session_channel.DefinitelyNotSent(reason) -> {
+      // Clear submission state only if no unsent content remains.
       let shared = case has_unsent(shared) {
         True -> shared
         False ->
@@ -168,11 +170,11 @@ pub fn apply_submission(
   }
 }
 
-// A sent frame settles the submission that carried it. The surface that
-// asked keeps the lane's request ID, so its reply, or a refusal naming that
-// ID, can be matched to it later. The composer's draft is consumed only when
-// the frame was the composer's own, so a selector action sent while the
-// operator is typing leaves the draft alone.
+/// A sent frame settles the submission that carried it. The surface that
+/// asked keeps the lane's request ID, so its reply, or a refusal naming that
+/// ID, can be matched to it later. The composer's draft is consumed only when
+/// the frame was the composer's own, so a selector action sent while the
+/// operator is typing leaves the draft alone.
 fn record_sent(
   shared: Shared(socket, recorder, source, replay_source),
   command: String,
@@ -193,6 +195,7 @@ fn record_sent(
     _, _ -> shared.goal_report
   }
 
+  // Track request IDs and pending goals for commands that expect acknowledgements.
   let shared = case command {
     "queued_input" | "edit_queued_input" | "remove_queued_input" ->
       shared_set.queue_request(
@@ -232,14 +235,18 @@ fn record_sent(
     _ -> shared
   }
 
+  // Consume attachments and increment draft counts if sent from the composer.
   let #(attachments, drafts_sent) = case shared.pending_submission {
     Some(ComposerSubmission) -> #([], shared.drafts_sent + 1)
     Some(OverlaySubmission) | None -> #(shared.attachments, shared.drafts_sent)
   }
+
+  // Mark the active strand as submitting if a prompt prompt was sent from composer.
   let submitting = case command, shared.pending_submission {
     "prompt", Some(ComposerSubmission) -> Some(shared.active_strand)
     _, _ -> shared.submitting
   }
+
   Shared(
     ..{
       shared
@@ -332,6 +339,8 @@ pub fn mutation_refusal(
       Some("recipient unavailable; draft retained for " <> shared.active_strand)
     },
   )
+
+  // Determine refusal message based on whether mutation is needed and peer status.
   case mutates, shared.peer, shared.channel {
     False, _, _ -> None
     True, Disconnected, _ -> Some("no conversation is attached; draft retained")

@@ -236,19 +236,19 @@ pub const max_depth = 8
 /// open past this is text.
 pub const max_emphasis = 8
 
-/// Parses Markdown into blocks.
-///
-/// Total: every input produces a tree, and an unclosed construct becomes
-/// text or, for a code fence, runs to the end of the input. The time taken is
-/// linear in the input's length, and the tree's depth is bounded by
-/// `max_depth` and `max_emphasis`.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert markdown.parse("**bold**")
-///   == [markdown.Paragraph([markdown.Strong([markdown.Text("bold")])])]
-/// ```
+/// / Parses Markdown into blocks.
+/// /
+/// / Total: every input produces a tree, and an unclosed construct becomes
+/// / text or, for a code fence, runs to the end of the input. The time taken is
+/// / linear in the input's length, and the tree's depth is bounded by
+/// / `max_depth` and `max_emphasis`.
+/// /
+/// / ## Examples
+/// /
+/// / ```gleam
+/// / assert markdown.parse("**bold**")
+/// /   == [markdown.Paragraph([markdown.Strong([markdown.Text("bold")])])]
+/// / ```
 pub fn parse(text: String) -> List(Block) {
   let lines =
     text
@@ -259,21 +259,22 @@ pub fn parse(text: String) -> List(Block) {
   blocks(lines, Context(depth: 0, refs: definitions(lines)))
 }
 
-/// The text of inlines with their markup removed, as an image's alternative
-/// text is written.
-///
-/// ## Examples
-///
-/// ```gleam
-/// assert markdown.plain([markdown.Strong([markdown.Text("a")]), markdown.Code("b")])
-///   == "ab"
-/// ```
+/// / The text of inlines with their markup removed, as an image's alternative
+/// / text is written.
+/// /
+/// / ## Examples
+/// /
+/// / ```gleam
+/// / assert markdown.plain([markdown.Strong([markdown.Text("a")]), markdown.Code("b")])
+/// /   == "ab"
+/// / ```
 pub fn plain(inlines: List(Inline)) -> String {
   inlines
   |> list.map(plain_one)
   |> string.concat
 }
 
+/// Helper function `plain_one`.
 fn plain_one(inline: Inline) -> String {
   case inline {
     Text(text:) | Code(text:) -> text
@@ -287,17 +288,20 @@ fn plain_one(inline: Inline) -> String {
   }
 }
 
-// A tab in a line's indentation counts as four columns. Only the leading run
-// is expanded, since indentation is all the block parser measures, and a
-// line whose indentation holds no tab is returned as it came.
+/// A tab in a line's indentation counts as four columns. Only the leading run
+/// is expanded, since indentation is all the block parser measures, and a
+/// line whose indentation holds no tab is returned as it came.
 fn expand_leading_tabs(line: String) -> String {
   let #(width, rest) = indentation(line, 0)
+
+  // Match the current shape and handle its branches.
   case string.byte_size(rest) + width == string.byte_size(line) {
     True -> line
     False -> string.repeat(" ", width) <> rest
   }
 }
 
+/// Helper function `indentation`.
 fn indentation(line: String, width: Int) -> #(Int, String) {
   case line {
     " " <> rest -> indentation(rest, width + 1)
@@ -322,6 +326,7 @@ type Refs {
   Refs(links: Dict(String, String), notes: Set(String))
 }
 
+/// Helper function `deeper`.
 fn deeper(context: Context) -> Context {
   Context(..context, depth: context.depth + 1)
 }
@@ -366,20 +371,25 @@ type Continuation {
   Interrupts
 }
 
+/// Helper function `blocks`.
 fn blocks(lines: List(String), context: Context) -> List(Block) {
   collect(lines, context, [])
 }
 
+/// Helper function `collect`.
 fn collect(
   lines: List(String),
   context: Context,
   done: List(Block),
 ) -> List(Block) {
+  // Match the current shape and handle its branches.
   case lines {
     [] -> list.reverse(done)
     [line, ..rest] -> {
       let #(block, rest) =
         next_block(classify(line, context), line, rest, context)
+
+      // Match the current shape and handle its branches.
       case block {
         Some(block) -> collect(rest, context, [block, ..done])
         None -> collect(rest, context, done)
@@ -388,8 +398,8 @@ fn collect(
   }
 }
 
-// One block from its first line and the lines after it, with the lines the
-// block did not take.
+/// One block from its first line and the lines after it, with the lines the
+/// block did not take.
 fn next_block(
   kind: Line,
   line: String,
@@ -438,8 +448,11 @@ fn next_block(
   }
 }
 
+/// Helper function `classify`.
 fn classify(line: String, context: Context) -> Line {
   let #(indent, rest) = indentation(line, 0)
+
+  // Match the current shape and handle its branches.
   case is_blank(rest), indent >= 4 {
     True, _ -> BlankLine
     False, True -> TextLine(indent:, text: rest)
@@ -447,6 +460,7 @@ fn classify(line: String, context: Context) -> Line {
   }
 }
 
+/// Helper function `block_line`.
 fn block_line(indent: Int, rest: String, context: Context) -> Line {
   fence_line(indent, rest)
   |> result.lazy_or(fn() { heading_line(rest) })
@@ -457,19 +471,23 @@ fn block_line(indent: Int, rest: String, context: Context) -> Line {
   |> result.lazy_unwrap(fn() { TextLine(indent:, text: rest) })
 }
 
-// A definition is recognised only for a label the first pass collected, so
-// the two passes agree on which lines are definitions. A line that looks
-// like one but defines nothing, because it sits where the first pass does
-// not read, stays text rather than vanishing. A footnote definition is a
-// container, so past `max_depth` it is text as well.
+/// A definition is recognised only for a label the first pass collected, so
+/// the two passes agree on which lines are definitions. A line that looks
+/// like one but defines nothing, because it sits where the first pass does
+/// not read, stays text rather than vanishing. A footnote definition is a
+/// container, so past `max_depth` it is text as well.
 fn definition_line(rest: String, context: Context) -> Result(Line, Nil) {
   // Most text defines nothing, and a line opening with a bracket is then
   // paragraph text without reading it as a definition.
   let notes = set.is_empty(context.refs.notes)
   let links = dict.is_empty(context.refs.links)
+
+  // Match the current shape and handle its branches.
   case rest, notes, links {
     "[^" <> _, False, _ -> {
       use #(label, content) <- result.try(note_definition(rest))
+
+      // Match the current shape and handle its branches.
       case
         context.depth < max_depth && set.contains(context.refs.notes, label)
       {
@@ -479,6 +497,8 @@ fn definition_line(rest: String, context: Context) -> Result(Line, Nil) {
     }
     "[" <> _, _, False -> {
       use #(label, _) <- result.try(link_definition(rest))
+
+      // Match the current shape and handle its branches.
       case dict.has_key(context.refs.links, label) {
         True -> Ok(DefinitionLine)
         False -> Error(Nil)
@@ -488,6 +508,7 @@ fn definition_line(rest: String, context: Context) -> Result(Line, Nil) {
   }
 }
 
+/// Helper function `fence_line`.
 fn fence_line(indent: Int, rest: String) -> Result(Line, Nil) {
   case rest {
     "```" <> _ -> fence_of(indent, rest, "`")
@@ -496,18 +517,20 @@ fn fence_line(indent: Int, rest: String) -> Result(Line, Nil) {
   }
 }
 
-// A backtick fence's info string may not hold a backtick, which is what
-// keeps an inline code span at the start of a line from opening a fence.
+/// A backtick fence's info string may not hold a backtick, which is what
+/// keeps an inline code span at the start of a line from opening a fence.
 fn fence_of(indent: Int, rest: String, mark: String) -> Result(Line, Nil) {
   let #(length, info) = run(rest, mark, 0)
   let info = string.trim(info)
+
+  // Match the current shape and handle its branches.
   case mark == "`" && string.contains(info, "`") {
     True -> Error(Nil)
     False -> Ok(FenceLine(indent:, mark:, length:, info:))
   }
 }
 
-// The length of the run of `mark` that opens `text`, and what follows it.
+/// The length of the run of `mark` that opens `text`, and what follows it.
 fn run(text: String, mark: String, count: Int) -> #(Int, String) {
   case string.pop_grapheme(text) {
     Ok(#(grapheme, rest)) if grapheme == mark -> run(rest, mark, count + 1)
@@ -515,6 +538,7 @@ fn run(text: String, mark: String, count: Int) -> #(Int, String) {
   }
 }
 
+/// Helper function `language`.
 fn language(info: String) -> Option(String) {
   case string.split_once(info, " ") {
     Ok(#(word, _)) -> Some(word)
@@ -523,6 +547,7 @@ fn language(info: String) -> Option(String) {
   }
 }
 
+/// Helper function `fence_body`.
 fn fence_body(
   lines: List(String),
   indent: Int,
@@ -544,14 +569,15 @@ fn fence_body(
   }
 }
 
+/// Helper function `closes_fence`.
 fn closes_fence(line: String, mark: String, length: Int) -> Bool {
   let #(indent, rest) = indentation(line, 0)
   let #(count, after) = run(rest, mark, 0)
   indent < 4 && count >= length && is_blank(after)
 }
 
-// Up to `count` leading spaces removed, and no more: a code line indented
-// less than its fence keeps what it has.
+/// Up to `count` leading spaces removed, and no more: a code line indented
+/// less than its fence keeps what it has.
 fn drop_spaces(line: String, count: Int) -> String {
   case count > 0, line {
     True, " " <> rest -> drop_spaces(rest, count - 1)
@@ -559,9 +585,12 @@ fn drop_spaces(line: String, count: Int) -> String {
   }
 }
 
+/// Helper function `heading_line`.
 fn heading_line(rest: String) -> Result(Line, Nil) {
   let #(count, after) = run(rest, "#", 0)
   use level <- result.try(level_of(count))
+
+  // Match the current shape and handle its branches.
   case after {
     "" -> Ok(HeadingLine(level:, text: ""))
     " " <> text -> Ok(HeadingLine(level:, text: heading_text(text)))
@@ -569,6 +598,7 @@ fn heading_line(rest: String) -> Result(Line, Nil) {
   }
 }
 
+/// Helper function `level_of`.
 fn level_of(count: Int) -> Result(Level, Nil) {
   case count {
     1 -> Ok(H1)
@@ -581,13 +611,15 @@ fn level_of(count: Int) -> Result(Level, Nil) {
   }
 }
 
-// A closing run of `#` is dropped when a space separates it from the text,
-// so `# Title ##` is "Title" but `# C#` keeps its sharp. The run is measured
-// on the reversed text, once, rather than trimmed one character at a time.
+/// A closing run of `#` is dropped when a space separates it from the text,
+/// so `# Title ##` is "Title" but `# C#` keeps its sharp. The run is measured
+/// on the reversed text, once, rather than trimmed one character at a time.
 fn heading_text(text: String) -> String {
   let trimmed = string.trim(text)
   let #(closing, reversed) = run(string.reverse(trimmed), "#", 0)
   let without = string.reverse(reversed)
+
+  // Match the current shape and handle its branches.
   case closing > 0 && { without == "" || string.ends_with(without, " ") } {
     True -> string.trim_end(without)
     False -> trimmed
@@ -595,9 +627,9 @@ fn heading_text(text: String) -> String {
   |> without_anchor
 }
 
-// `# Title {#anchor}` is "Title": the heading-id extension's anchor names
-// the heading for a link and is not part of its text. An anchor holding
-// whitespace is not one, and stays.
+/// `# Title {#anchor}` is "Title": the heading-id extension's anchor names
+/// the heading for a link and is not part of its text. An anchor holding
+/// whitespace is not one, and stays.
 fn without_anchor(text: String) -> String {
   case string.ends_with(text, "}") {
     False -> text
@@ -613,6 +645,7 @@ fn without_anchor(text: String) -> String {
   }
 }
 
+/// Helper function `rule_line`.
 fn rule_line(rest: String) -> Result(Line, Nil) {
   case rest {
     "-" <> _ -> rule_of(rest, "-")
@@ -622,6 +655,7 @@ fn rule_line(rest: String) -> Result(Line, Nil) {
   }
 }
 
+/// Helper function `rule_of`.
 fn rule_of(rest: String, mark: String) -> Result(Line, Nil) {
   case rule_marks(rest, mark, 0) {
     Ok(count) if count >= 3 -> Ok(RuleLine)
@@ -629,6 +663,7 @@ fn rule_of(rest: String, mark: String) -> Result(Line, Nil) {
   }
 }
 
+/// Helper function `rule_marks`.
 fn rule_marks(text: String, mark: String, count: Int) -> Result(Int, Nil) {
   case string.pop_grapheme(text) {
     Error(Nil) -> Ok(count)
@@ -639,6 +674,7 @@ fn rule_marks(text: String, mark: String, count: Int) -> Result(Int, Nil) {
   }
 }
 
+/// Helper function `quote_line`.
 fn quote_line(rest: String, depth: Int) -> Result(Line, Nil) {
   case depth >= max_depth {
     True -> Error(Nil)
@@ -647,6 +683,7 @@ fn quote_line(rest: String, depth: Int) -> Result(Line, Nil) {
   }
 }
 
+/// Helper function `quote_content`.
 fn quote_content(rest: String) -> Result(String, Nil) {
   case rest {
     "> " <> content | ">" <> content -> Ok(content)
@@ -654,6 +691,7 @@ fn quote_content(rest: String) -> Result(String, Nil) {
   }
 }
 
+/// Helper function `item_line`.
 fn item_line(indent: Int, rest: String, depth: Int) -> Result(Line, Nil) {
   case depth >= max_depth {
     True -> Error(Nil)
@@ -661,23 +699,29 @@ fn item_line(indent: Int, rest: String, depth: Int) -> Result(Line, Nil) {
   }
 }
 
-// The content starts after the marker and the spaces that follow it, unless
-// there are five or more: then the item's content starts one space in and
-// the rest is indentation that belongs to the content, as CommonMark has it.
+/// The content starts after the marker and the spaces that follow it, unless
+/// there are five or more: then the item's content starts one space in and
+/// the rest is indentation that belongs to the content, as CommonMark has it.
 fn item_of(indent: Int, rest: String) -> Result(Item, Nil) {
   use #(marker, marker_width, after) <- result.try(marker_of(rest))
   let #(spaces, content) = indentation(after, 0)
+
+  // Match the current shape and handle its branches.
   let gap = case spaces >= 1 && spaces <= 4 && content != "" {
     True -> spaces
     False -> 1
   }
+
+  // Match the current shape and handle its branches.
   let content = case gap == spaces {
     True -> content
     False -> drop_spaces(after, 1)
   }
+
   Ok(Item(marker:, width: indent + marker_width + gap, content:))
 }
 
+/// Helper function `marker_of`.
 fn marker_of(rest: String) -> Result(#(Marker, Int, String), Nil) {
   case rest {
     "-" <> after -> bullet("-", after)
@@ -687,6 +731,7 @@ fn marker_of(rest: String) -> Result(#(Marker, Int, String), Nil) {
   }
 }
 
+/// Helper function `bullet`.
 fn bullet(mark: String, after: String) -> Result(#(Marker, Int, String), Nil) {
   case after {
     "" | " " <> _ -> Ok(#(Bullet(mark:), 1, after))
@@ -694,12 +739,14 @@ fn bullet(mark: String, after: String) -> Result(#(Marker, Int, String), Nil) {
   }
 }
 
-// At most nine digits, as CommonMark allows, which also keeps the number a
-// small integer whatever the model wrote.
+/// At most nine digits, as CommonMark allows, which also keeps the number a
+/// small integer whatever the model wrote.
 fn ordinal(rest: String) -> Result(#(Marker, Int, String), Nil) {
   let #(digits, after) = take_digits(rest, "", 0)
   use number <- result.try(int.parse(digits))
   let width = string.length(digits) + 1
+
+  // Match the current shape and handle its branches.
   case after {
     "." <> tail -> ordinal_end(Ordinal(number:, delimiter: "."), width, tail)
     ")" <> tail -> ordinal_end(Ordinal(number:, delimiter: ")"), width, tail)
@@ -707,6 +754,7 @@ fn ordinal(rest: String) -> Result(#(Marker, Int, String), Nil) {
   }
 }
 
+/// Helper function `ordinal_end`.
 fn ordinal_end(
   marker: Marker,
   width: Int,
@@ -718,6 +766,7 @@ fn ordinal_end(
   }
 }
 
+/// Helper function `take_digits`.
 fn take_digits(text: String, digits: String, count: Int) -> #(String, String) {
   case count < 9, string.pop_grapheme(text) {
     True, Ok(#(grapheme, rest)) ->
@@ -729,11 +778,11 @@ fn take_digits(text: String, digits: String, count: Int) -> #(String, String) {
   }
 }
 
-// The character classes below are ranges of ASCII, tested on the byte of a
-// one-byte grapheme or token. Anything longer than one byte belongs to none
-// of them. Reading the byte costs nothing, where testing containment in a
-// string of the class's characters built a search pattern for every
-// character the parser looked at, which was a measurable part of a frame.
+/// The character classes below are ranges of ASCII, tested on the byte of a
+/// one-byte grapheme or token. Anything longer than one byte belongs to none
+/// of them. Reading the byte costs nothing, where testing containment in a
+/// string of the class's characters built a search pattern for every
+/// character the parser looked at, which was a measurable part of a frame.
 fn ascii(grapheme: String) -> Int {
   case bit_array.from_string(grapheme) {
     <<byte>> -> byte
@@ -741,28 +790,32 @@ fn ascii(grapheme: String) -> Int {
   }
 }
 
+/// Helper function `is_digit`.
 fn is_digit(grapheme: String) -> Bool {
   let byte = ascii(grapheme)
   byte >= 0x30 && byte <= 0x39
 }
 
-// The lines of a quote after its first. A line carrying its own `>` stays
-// in the quote. A line without one continues the quote lazily, as CommonMark
-// has it, when it is paragraph text and so was the quote's last line: that
-// line can only be the quoted paragraph going on. Anything else ends the
-// quote. The test reads the quote's last line alone, so a paragraph line
-// after a quoted fence's body joins the fence, where CommonMark would end
-// the quote; models close their fences, and the cost is where one line is
-// drawn.
+/// The lines of a quote after its first. A line carrying its own `>` stays
+/// in the quote. A line without one continues the quote lazily, as CommonMark
+/// has it, when it is paragraph text and so was the quote's last line: that
+/// line can only be the quoted paragraph going on. Anything else ends the
+/// quote. The test reads the quote's last line alone, so a paragraph line
+/// after a quoted fence's body joins the fence, where CommonMark would end
+/// the quote; models close their fences, and the cost is where one line is
+/// drawn.
 fn quoted(
   lines: List(String),
   inner: List(String),
   context: Context,
 ) -> #(List(String), List(String)) {
+  // Match the current shape and handle its branches.
   case lines {
     [] -> #(list.reverse(inner), [])
     [line, ..rest] -> {
       let #(indent, text) = indentation(line, 0)
+
+      // Match the current shape and handle its branches.
       case indent < 4, quote_content(text) {
         True, Ok(content) -> quoted(rest, [content, ..inner], context)
         _, _ ->
@@ -775,6 +828,7 @@ fn quoted(
   }
 }
 
+/// Helper function `lazy_quote`.
 fn lazy_quote(
   line: String,
   inner: List(String),
@@ -790,9 +844,9 @@ fn lazy_quote(
   }
 }
 
-// A quote whose first line is an alert marker is that alert. Text after the
-// marker on the same line opens the alert's body, and a marker alone on its
-// line is dropped with its line.
+/// A quote whose first line is an alert marker is that alert. Text after the
+/// marker on the same line opens the alert's body, and a marker alone on its
+/// line is dropped with its line.
 fn quote_block(inner: List(String), context: Context) -> Block {
   case inner {
     [first, ..rest] ->
@@ -805,16 +859,21 @@ fn quote_block(inner: List(String), context: Context) -> Block {
   }
 }
 
+/// Helper function `alert_marker`.
 fn alert_marker(line: String) -> Result(#(AlertKind, String), Nil) {
   let #(indent, rest) = indentation(line, 0)
+
+  // Match the current shape and handle its branches.
   use #(marker, after) <- result.try(case indent < 4, rest {
     True, "[!" <> tail -> string.split_once(tail, "]")
     _, _ -> Error(Nil)
   })
+
   use kind <- result.try(alert_kind(marker))
   Ok(#(kind, string.trim(after)))
 }
 
+/// Helper function `alert_kind`.
 fn alert_kind(marker: String) -> Result(AlertKind, Nil) {
   case string.lowercase(marker) {
     "note" -> Ok(Note)
@@ -826,6 +885,7 @@ fn alert_kind(marker: String) -> Result(AlertKind, Nil) {
   }
 }
 
+/// Helper function `list_items`.
 fn list_items(
   item: Item,
   lines: List(String),
@@ -835,6 +895,8 @@ fn list_items(
   let #(state, content) = task(item.content)
   let #(body, rest) = item_body(lines, item.width, context, [content])
   let items = [ticked(blocks(body, deeper(context)), state), ..items]
+
+  // Match the current shape and handle its branches.
   case rest {
     [] -> #(list.reverse(items), [])
     [line, ..more] ->
@@ -845,6 +907,7 @@ fn list_items(
   }
 }
 
+/// Helper function `sibling`.
 fn sibling(kind: Line, marker: Marker) -> Result(Item, Nil) {
   case kind, marker {
     ItemLine(item: Item(marker: Bullet(mark: next), ..) as item), Bullet(mark:)
@@ -858,9 +921,9 @@ fn sibling(kind: Line, marker: Marker) -> Result(Item, Nil) {
   }
 }
 
-// A task item's box, taken off the item's first line so that the line
-// parses as the text after it. The spaces after the box go with it: left on,
-// four of them would make the rest an indented code block.
+/// A task item's box, taken off the item's first line so that the line
+/// parses as the text after it. The spaces after the box go with it: left on,
+/// four of them would make the rest an indented code block.
 fn task(content: String) -> #(Option(TaskState), String) {
   case content {
     "[ ] " <> rest -> #(Some(Open), trim_start(rest))
@@ -869,8 +932,8 @@ fn task(content: String) -> #(Option(TaskState), String) {
   }
 }
 
-// The box opens the item's first paragraph, or stands as a paragraph of its
-// own when the item opens with something else.
+/// The box opens the item's first paragraph, or stands as a paragraph of its
+/// own when the item opens with something else.
 fn ticked(blocks: List(Block), state: Option(TaskState)) -> List(Block) {
   case state, blocks {
     None, _ -> blocks
@@ -882,6 +945,7 @@ fn ticked(blocks: List(Block), state: Option(TaskState)) -> List(Block) {
   }
 }
 
+/// Helper function `list_block`.
 fn list_block(marker: Marker, items: List(List(Block))) -> Block {
   case marker {
     Bullet(..) -> BulletList(items:)
@@ -889,20 +953,23 @@ fn list_block(marker: Marker, items: List(List(Block))) -> Block {
   }
 }
 
-// The lines of an item after its first: those indented to its content
-// column, blank lines followed by such a line, and paragraph text that
-// directly continues a non-blank line (a lazy continuation). The lines are
-// returned with the item's indentation removed.
+/// The lines of an item after its first: those indented to its content
+/// column, blank lines followed by such a line, and paragraph text that
+/// directly continues a non-blank line (a lazy continuation). The lines are
+/// returned with the item's indentation removed.
 fn item_body(
   lines: List(String),
   width: Int,
   context: Context,
   body: List(String),
 ) -> #(List(String), List(String)) {
+  // Match the current shape and handle its branches.
   case lines {
     [] -> #(list.reverse(body), [])
     [line, ..rest] -> {
       let #(indent, text) = indentation(line, 0)
+
+      // Match the current shape and handle its branches.
       case is_blank(text), indent >= width {
         True, _ -> after_blank(lines, width, context, body)
         False, True ->
@@ -913,9 +980,9 @@ fn item_body(
   }
 }
 
-// Blank lines belong to the item only when the item goes on after them.
-// Either way they are consumed, so a sibling item after a blank line is the
-// next line the list sees.
+/// Blank lines belong to the item only when the item goes on after them.
+/// Either way they are consumed, so a sibling item after a blank line is the
+/// next line the list sees.
 fn after_blank(
   lines: List(String),
   width: Int,
@@ -923,6 +990,8 @@ fn after_blank(
   body: List(String),
 ) -> #(List(String), List(String)) {
   let #(blanks, rest) = list.split_while(lines, is_blank)
+
+  // Match the current shape and handle its branches.
   case rest {
     [next, ..] ->
       case indentation(next, 0).0 >= width {
@@ -939,6 +1008,7 @@ fn after_blank(
   }
 }
 
+/// Helper function `lazy_line`.
 fn lazy_line(
   line: String,
   rest: List(String),
@@ -946,24 +1016,28 @@ fn lazy_line(
   context: Context,
   body: List(String),
 ) -> #(List(String), List(String)) {
+  // Match the current shape and handle its branches.
   let continues = case body, classify(line, context) {
     [previous, ..], TextLine(..) -> !is_blank(previous)
     _, _ -> False
   }
+
+  // Match the current shape and handle its branches.
   case continues {
     True -> item_body(rest, width, context, [trim_start(line), ..body])
     False -> #(list.reverse(body), [line, ..rest])
   }
 }
 
-// Blank as CommonMark has it: nothing but spaces and tabs. These checks
-// and the trims below read ASCII bytes rather than running a Unicode trim,
-// which searched every line for every kind of whitespace and allocated as
-// it went, on every line of every frame the terminal parses.
+/// Blank as CommonMark has it: nothing but spaces and tabs. These checks
+/// and the trims below read ASCII bytes rather than running a Unicode trim,
+/// which searched every line for every kind of whitespace and allocated as
+/// it went, on every line of every frame the terminal parses.
 fn is_blank(line: String) -> Bool {
   blank_bytes(bit_array.from_string(line))
 }
 
+/// Helper function `blank_bytes`.
 fn blank_bytes(bits: BitArray) -> Bool {
   case bits {
     <<>> -> True
@@ -972,7 +1046,7 @@ fn blank_bytes(bits: BitArray) -> Bool {
   }
 }
 
-// The text without its leading spaces and tabs.
+/// The text without its leading spaces and tabs.
 fn trim_start(text: String) -> String {
   case text {
     " " <> rest | "\t" <> rest -> trim_start(rest)
@@ -980,12 +1054,14 @@ fn trim_start(text: String) -> String {
   }
 }
 
-// The text without its trailing spaces, tabs and line feeds, read from the
-// end, so the cost is what is trimmed rather than the text's length.
+/// The text without its trailing spaces, tabs and line feeds, read from the
+/// end, so the cost is what is trimmed rather than the text's length.
 fn trim_end(text: String) -> String {
   let bits = bit_array.from_string(text)
   let size = bit_array.byte_size(bits)
   let kept = kept_bytes(bits, size)
+
+  // Match the current shape and handle its branches.
   case kept == size {
     True -> text
     False ->
@@ -995,6 +1071,7 @@ fn trim_end(text: String) -> String {
   }
 }
 
+/// Helper function `kept_bytes`.
 fn kept_bytes(bits: BitArray, size: Int) -> Int {
   case bit_array.slice(bits, size - 1, 1) {
     Ok(<<0x20>>) | Ok(<<0x09>>) | Ok(<<0x0A>>) -> kept_bytes(bits, size - 1)
@@ -1002,10 +1079,12 @@ fn kept_bytes(bits: BitArray, size: Int) -> Int {
   }
 }
 
+/// Helper function `trim`.
 fn trim(text: String) -> String {
   text |> trim_start |> trim_end
 }
 
+/// Helper function `indented_code`.
 fn indented_code(
   lines: List(String),
   body: List(String),
@@ -1020,8 +1099,8 @@ fn indented_code(
   }
 }
 
-// Blank lines at the end of an indented block separate it from what comes
-// next rather than belonging to it.
+/// Blank lines at the end of an indented block separate it from what comes
+/// next rather than belonging to it.
 fn code_from(
   body: List(String),
   rest: List(String),
@@ -1034,6 +1113,7 @@ fn code_from(
   #(Some(CodeBlock(language: None, text:)), rest)
 }
 
+/// Helper function `paragraph`.
 fn paragraph(
   line: String,
   rest: List(String),
@@ -1045,6 +1125,7 @@ fn paragraph(
   }
 }
 
+/// Helper function `prose`.
 fn prose(
   lines: List(String),
   context: Context,
@@ -1063,6 +1144,7 @@ fn prose(
   }
 }
 
+/// Helper function `prose_line`.
 fn prose_line(
   line: String,
   rest: List(String),
@@ -1091,7 +1173,7 @@ fn prose_line(
   }
 }
 
-// Whether `line` is a delimiter row for the most recent line of `text`.
+/// Whether `line` is a delimiter row for the most recent line of `text`.
 fn heads_table(text: List(String), line: String) -> Result(Nil, Nil) {
   case text {
     [header, ..] ->
@@ -1107,9 +1189,9 @@ fn heads_table(text: List(String), line: String) -> Result(Nil, Nil) {
   }
 }
 
-// An ordered item interrupts a paragraph only when it starts at one, and an
-// empty item never does, so a sentence that happens to open with "2024." is
-// still a sentence.
+/// An ordered item interrupts a paragraph only when it starts at one, and an
+/// empty item never does, so a sentence that happens to open with "2024." is
+/// still a sentence.
 fn continuation(kind: Line) -> Continuation {
   case kind {
     TextLine(..) -> Continues
@@ -1127,6 +1209,7 @@ fn continuation(kind: Line) -> Continuation {
   }
 }
 
+/// Helper function `joined`.
 fn joined(text: List(String)) -> String {
   text
   |> list.reverse
@@ -1134,9 +1217,12 @@ fn joined(text: List(String)) -> String {
   |> trim_end
 }
 
+/// Helper function `setext`.
 fn setext(line: String) -> Result(Level, Nil) {
   let #(indent, rest) = indentation(line, 0)
   let rest = trim_end(rest)
+
+  // Match the current shape and handle its branches.
   case indent < 4, rest {
     True, "=" <> _ -> underline(rest, "=", H1)
     True, "-" <> _ -> underline(rest, "-", H2)
@@ -1144,6 +1230,7 @@ fn setext(line: String) -> Result(Level, Nil) {
   }
 }
 
+/// Helper function `underline`.
 fn underline(rest: String, mark: String, level: Level) -> Result(Level, Nil) {
   case run(rest, mark, 0) {
     #(_, "") -> Ok(level)
@@ -1153,17 +1240,20 @@ fn underline(rest: String, mark: String, level: Level) -> Result(Level, Nil) {
 
 // ---------------------------------------------------------------- tables
 
-// A table is a header line holding a `|`, then a delimiter row with the same
-// number of cells, then every following non-blank line that holds a `|`.
+/// A table is a header line holding a `|`, then a delimiter row with the same
+/// number of cells, then every following non-blank line that holds a `|`.
 fn table(
   line: String,
   rest: List(String),
   refs: Refs,
 ) -> Result(#(Block, List(String)), Nil) {
+  // Match the current shape and handle its branches.
   case string.contains(line, "|"), rest {
     True, [delimiter, ..body] -> {
       let header = cells(line)
       use aligns <- result.try(alignments(delimiter))
+
+      // Match the current shape and handle its branches.
       case list.length(aligns) == list.length(header) {
         True -> {
           let #(rows, rest) = table_rows(body, aligns, refs, [])
@@ -1176,6 +1266,7 @@ fn table(
   }
 }
 
+/// Helper function `table_rows`.
 fn table_rows(
   lines: List(String),
   aligns: List(Align),
@@ -1196,7 +1287,7 @@ fn table_rows(
   }
 }
 
-// A row is cut or padded to the header's width, as GitHub does.
+/// A row is cut or padded to the header's width, as GitHub does.
 fn row(aligns: List(Align), texts: List(String), refs: Refs) -> List(Cell) {
   case aligns, texts {
     [], _ -> []
@@ -1211,6 +1302,7 @@ fn row(aligns: List(Align), texts: List(String), refs: Refs) -> List(Cell) {
   }
 }
 
+/// Helper function `alignments`.
 fn alignments(line: String) -> Result(List(Align), Nil) {
   case string.contains(line, "-") {
     True -> list.try_map(cells(line), align_of)
@@ -1218,14 +1310,20 @@ fn alignments(line: String) -> Result(List(Align), Nil) {
   }
 }
 
+/// Helper function `align_of`.
 fn align_of(cell: String) -> Result(Align, Nil) {
   let left = string.starts_with(cell, ":")
   let right = string.ends_with(cell, ":")
+
+  // Match the current shape and handle its branches.
   let dashes = case run(string.replace(cell, ":", ""), "-", 0) {
     #(count, "") if count > 0 -> Ok(Nil)
     _ -> Error(Nil)
   }
+
   use Nil <- result.try(dashes)
+
+  // Match the current shape and handle its branches.
   case left, right {
     True, True -> Ok(Center)
     True, False -> Ok(Left)
@@ -1234,23 +1332,29 @@ fn align_of(cell: String) -> Result(Align, Nil) {
   }
 }
 
-// A row's cells: the outer pipes dropped, split on every pipe a backslash
-// does not escape, each cell trimmed. An escaped pipe becomes a plain one.
+/// A row's cells: the outer pipes dropped, split on every pipe a backslash
+/// does not escape, each cell trimmed. An escaped pipe becomes a plain one.
 fn cells(line: String) -> List(String) {
   let trimmed = trim(line)
+
+  // Match the current shape and handle its branches.
   let trimmed = case trimmed {
     "|" <> rest -> rest
     _ -> trimmed
   }
+
+  // Match the current shape and handle its branches.
   let trimmed = case
     string.ends_with(trimmed, "|") && !string.ends_with(trimmed, "\\|")
   {
     True -> string.drop_end(trimmed, 1)
     False -> trimmed
   }
+
   split_cells(tokens(trimmed), [], [])
 }
 
+/// Helper function `split_cells`.
 fn split_cells(
   input: List(String),
   cell: List(String),
@@ -1264,6 +1368,7 @@ fn split_cells(
   }
 }
 
+/// Helper function `finish_cell`.
 fn finish_cell(cell: List(String)) -> String {
   cell |> list.reverse |> string.concat |> trim
 }
@@ -1288,13 +1393,13 @@ type Fencing {
   Fenced(mark: String, length: Int)
 }
 
-// The first pass: every link reference definition and footnote definition
-// in the text, read one line at a time. A quote's markers are stripped from
-// a line before it is read, since a definition inside a quote defines its
-// label for the whole text. Fenced code is skipped, since a definition
-// written inside a fence is an example rather than a definition, and so is
-// a line indented four or more columns, which is code. Each line is read
-// once, so the pass is linear.
+/// The first pass: every link reference definition and footnote definition
+/// in the text, read one line at a time. A quote's markers are stripped from
+/// a line before it is read, since a definition inside a quote defines its
+/// label for the whole text. Fenced code is skipped, since a definition
+/// written inside a fence is an example rather than a definition, and so is
+/// a line indented four or more columns, which is code. Each line is read
+/// once, so the pass is linear.
 fn definitions(lines: List(String)) -> Refs {
   collect_definitions(
     lines,
@@ -1303,11 +1408,13 @@ fn definitions(lines: List(String)) -> Refs {
   )
 }
 
+/// Helper function `collect_definitions`.
 fn collect_definitions(
   lines: List(String),
   fencing: Fencing,
   refs: Refs,
 ) -> Refs {
+  // Match the current shape and handle its branches.
   case lines {
     [] -> refs
     [line, ..rest] -> {
@@ -1317,12 +1424,15 @@ fn collect_definitions(
   }
 }
 
+/// Helper function `definition_step`.
 fn definition_step(
   line: String,
   fencing: Fencing,
   refs: Refs,
 ) -> #(Fencing, Refs) {
   let #(indent, rest) = indentation(line, 0)
+
+  // Match the current shape and handle its branches.
   case fencing {
     Fenced(mark:, length:) ->
       case closes_fence(line, mark, length) {
@@ -1338,18 +1448,20 @@ fn definition_step(
   }
 }
 
-// A line with every leading quote marker removed.
+/// A line with every leading quote marker removed.
 fn unquoted(line: String) -> String {
   let #(indent, rest) = indentation(line, 0)
+
+  // Match the current shape and handle its branches.
   case indent < 4, quote_content(rest) {
     True, Ok(content) -> unquoted(content)
     _, _ -> line
   }
 }
 
-// A definition's label is closed by `]:`, so a line opening with a bracket
-// but holding no such pair is passed over before it is read grapheme by
-// grapheme.
+/// A definition's label is closed by `]:`, so a line opening with a bracket
+/// but holding no such pair is passed over before it is read grapheme by
+/// grapheme.
 fn define(rest: String, refs: Refs) -> Refs {
   case rest {
     "[" <> _ ->
@@ -1361,6 +1473,7 @@ fn define(rest: String, refs: Refs) -> Refs {
   }
 }
 
+/// Helper function `defined`.
 fn defined(rest: String, refs: Refs) -> Refs {
   case rest {
     "[^" <> _ ->
@@ -1381,11 +1494,14 @@ fn defined(rest: String, refs: Refs) -> Refs {
   }
 }
 
-// `[^label]: text`: the label and the text after the colon.
+/// `[^label]: text`: the label and the text after the colon.
 fn note_definition(rest: String) -> Result(#(String, String), Nil) {
+  // Match the current shape and handle its branches.
   case string.to_graphemes(rest) {
     ["[", "^", ..tail] -> {
       use #(label, after, _) <- result.try(label_text(tail, NoSpaces, [], 0))
+
+      // Match the current shape and handle its branches.
       case after {
         [":", ..content] ->
           Ok(#(label, string.trim_start(string.concat(content))))
@@ -1396,16 +1512,19 @@ fn note_definition(rest: String) -> Result(#(String, String), Nil) {
   }
 }
 
-// `[label]: destination "title"`, on one line: the normalized label and the
-// destination. The destination is a run with no whitespace, or anything but
-// `<` and `>` between angle brackets. The title, in double quotes, single
-// quotes or parentheses, is optional and is dropped; anything else after
-// the destination means the line is not a definition.
+/// `[label]: destination "title"`, on one line: the normalized label and the
+/// destination. The destination is a run with no whitespace, or anything but
+/// `<` and `>` between angle brackets. The title, in double quotes, single
+/// quotes or parentheses, is optional and is dropped; anything else after
+/// the destination means the line is not a definition.
 fn link_definition(rest: String) -> Result(#(String, String), Nil) {
+  // Match the current shape and handle its branches.
   case string.to_graphemes(rest) {
     ["[", ..tail] -> {
       use #(raw, after, _) <- result.try(label_text(tail, SpacesAllowed, [], 0))
       use label <- result.try(normalized(raw))
+
+      // Match the current shape and handle its branches.
       case after {
         [":", ..after] -> {
           use destination <- result.try(definition_target(after))
@@ -1418,8 +1537,11 @@ fn link_definition(rest: String) -> Result(#(String, String), Nil) {
   }
 }
 
+/// Helper function `definition_target`.
 fn definition_target(input: List(String)) -> Result(String, Nil) {
   let #(_, input) = list.split_while(input, is_space)
+
+  // Match the current shape and handle its branches.
   let #(destination, after) = case input {
     ["<", ..rest] -> angled(rest, [])
     _ -> {
@@ -1427,13 +1549,17 @@ fn definition_target(input: List(String)) -> Result(String, Nil) {
       #(Ok(string.concat(run)), after)
     }
   }
+
   use destination <- result.try(destination)
+
+  // Match the current shape and handle its branches.
   case destination != "" && is_title(string.trim(string.concat(after))) {
     True -> Ok(destination)
     False -> Error(Nil)
   }
 }
 
+/// Helper function `angled`.
 fn angled(
   input: List(String),
   text: List(String),
@@ -1445,6 +1571,7 @@ fn angled(
   }
 }
 
+/// Helper function `is_title`.
 fn is_title(text: String) -> Bool {
   case text {
     "" -> True
@@ -1455,15 +1582,16 @@ fn is_title(text: String) -> Bool {
   }
 }
 
+/// Helper function `is_space`.
 fn is_space(grapheme: String) -> Bool {
   neighbour(grapheme) == Space
 }
 
-// A label's text: the tokens before the first unescaped `]`, which must
-// come after at least one token and within `max_label`. A `[` refuses the
-// label, as does whitespace in a footnote label. The result is the label,
-// the input after its `]`, and how many tokens the label took. The scan
-// stops at the first bracket, so two label scans never read the same text.
+/// A label's text: the tokens before the first unescaped `]`, which must
+/// come after at least one token and within `max_label`. A `[` refuses the
+/// label, as does whitespace in a footnote label. The result is the label,
+/// the input after its `]`, and how many tokens the label took. The scan
+/// stops at the first bracket, so two label scans never read the same text.
 fn label_text(
   input: List(String),
   spacing: Spacing,
@@ -1487,8 +1615,8 @@ fn label_text(
   }
 }
 
-// Labels match without regard to case or to how whitespace inside them was
-// written. A label of only whitespace names nothing.
+/// Labels match without regard to case or to how whitespace inside them was
+/// written. A label of only whitespace names nothing.
 fn normalized(label: String) -> Result(String, Nil) {
   let words =
     label
@@ -1497,6 +1625,8 @@ fn normalized(label: String) -> Result(String, Nil) {
     |> string.replace("\n", " ")
     |> string.split(" ")
     |> list.filter(fn(word) { word != "" })
+
+  // Match the current shape and handle its branches.
   case words {
     [] -> Error(Nil)
     _ -> Ok(string.join(words, " "))
@@ -1587,24 +1717,25 @@ type Scan {
   )
 }
 
-// Inline parsing reads the text as tokens rather than graphemes. Every ASCII
-// punctuation byte, space, tab and line feed is a token of its own, and every
-// run of other bytes, letters, digits and all non-ASCII text, is one token.
-// The scanner only ever tests a token against ASCII punctuation and
-// whitespace, and UTF-8 never places an ASCII byte inside a multi-byte
-// character, so cutting at those bytes never splits a character, and each
-// test reads the same for a token as it did for a grapheme. A run is a
-// slice of the source rather than a copy, and the text needs no grapheme
-// segmentation, which was most of what parsing a frame allocated.
-// CommonMark is defined over characters rather than grapheme clusters, so a
-// combining mark after a delimiter no longer hides the delimiter, which is
-// the specification's reading. Positions count tokens, which every scan that
-// reads a position does alike.
+/// Inline parsing reads the text as tokens rather than graphemes. Every ASCII
+/// punctuation byte, space, tab and line feed is a token of its own, and every
+/// run of other bytes, letters, digits and all non-ASCII text, is one token.
+/// The scanner only ever tests a token against ASCII punctuation and
+/// whitespace, and UTF-8 never places an ASCII byte inside a multi-byte
+/// character, so cutting at those bytes never splits a character, and each
+/// test reads the same for a token as it did for a grapheme. A run is a
+/// slice of the source rather than a copy, and the text needs no grapheme
+/// segmentation, which was most of what parsing a frame allocated.
+/// CommonMark is defined over characters rather than grapheme clusters, so a
+/// combining mark after a delimiter no longer hides the delimiter, which is
+/// the specification's reading. Positions count tokens, which every scan that
+/// reads a position does alike.
 fn tokens(text: String) -> List(String) {
   let bits = bit_array.from_string(text)
   tokenize(bits, bits, 0, 0, [])
 }
 
+/// Helper function `tokenize`.
 fn tokenize(
   source: BitArray,
   rest: BitArray,
@@ -1626,9 +1757,9 @@ fn tokenize(
   }
 }
 
-// The run of ordinary bytes from `start` up to `index`, if there is one,
-// ahead of `out`. A run ends at an ASCII byte, so it holds whole characters
-// and the conversion back to a string cannot fail.
+/// The run of ordinary bytes from `start` up to `index`, if there is one,
+/// ahead of `out`. A run ends at an ASCII byte, so it holds whole characters
+/// and the conversion back to a string cannot fail.
 fn run_token(
   source: BitArray,
   start: Int,
@@ -1648,8 +1779,8 @@ fn run_token(
   }
 }
 
-// The token a byte stands for on its own, as a literal so that it costs no
-// allocation, or an error for a byte that belongs to a run.
+/// The token a byte stands for on its own, as a literal so that it costs no
+/// allocation, or an error for a byte that belongs to a run.
 fn ascii_token(byte: Int) -> Result(String, Nil) {
   case byte {
     0x09 -> Ok("\t")
@@ -1691,11 +1822,11 @@ fn ascii_token(byte: Int) -> Result(String, Nil) {
   }
 }
 
-// Inline parsing is one pass over the tokens with a stack of open frames.
-// Code spans are matched through `ticks`, the positions of every backtick
-// run by length, found in a first pass: an opener takes the next run of its
-// length after it, and positions already passed are dropped, so each is
-// looked at once.
+/// Inline parsing is one pass over the tokens with a stack of open frames.
+/// Code spans are matched through `ticks`, the positions of every backtick
+/// run by length, found in a first pass: an opener takes the next run of its
+/// length after it, and positions already passed are dropped, so each is
+/// looked at once.
 fn inlines(text: String, refs: Refs) -> List(Inline) {
   let graphemes = tokens(text)
   let start =
@@ -1714,11 +1845,13 @@ fn inlines(text: String, refs: Refs) -> List(Inline) {
   scan(graphemes, 0, "", start)
 }
 
+/// Helper function `tick_runs`.
 fn tick_runs(
   input: List(String),
   position: Int,
   found: Dict(Int, List(Int)),
 ) -> Dict(Int, List(Int)) {
+  // Match the current shape and handle its branches.
   case input {
     [] -> dict.map_values(found, fn(_, positions) { list.reverse(positions) })
     ["`", ..] -> {
@@ -1733,6 +1866,7 @@ fn tick_runs(
   }
 }
 
+/// Helper function `count_run`.
 fn count_run(
   input: List(String),
   mark: String,
@@ -1744,8 +1878,8 @@ fn count_run(
   }
 }
 
-// `position` counts tokens from the start of the text and `previous` is the
-// token before `input`, which the flanking rules read.
+/// `position` counts tokens from the start of the text and `previous` is the
+/// token before `input`, which the flanking rules read.
 fn scan(
   input: List(String),
   position: Int,
@@ -1777,7 +1911,7 @@ fn scan(
   }
 }
 
-// One token with no meaning of its own, added to the text being read.
+/// One token with no meaning of its own, added to the text being read.
 fn read_text(
   grapheme: String,
   rest: List(String),
@@ -1792,29 +1926,34 @@ fn read_text(
   )
 }
 
-// A `[` that may become a link, `rest` being what follows it.
+/// A `[` that may become a link, `rest` being what follows it.
 fn open_link(rest: List(String), position: Int, state: Scan) -> List(Inline) {
   scan(rest, position + 1, "[", open_frame(state, Bracket(ToLink, state.epoch)))
 }
 
-// `[^label]` is a footnote reference when the text defines `label`, and
-// otherwise a `[` like any other. The label scan stops at the first bracket
-// or whitespace, so the text it reads is text no other label scan reads.
+/// `[^label]` is a footnote reference when the text defines `label`, and
+/// otherwise a `[` like any other. The label scan stops at the first bracket
+/// or whitespace, so the text it reads is text no other label scan reads.
 fn footnote_ref(
   rest: List(String),
   position: Int,
   state: Scan,
 ) -> List(Inline) {
+  // Match the current shape and handle its branches.
   let found = case set.is_empty(state.refs.notes) {
     True -> Error(Nil)
     False -> {
       use found <- result.try(label_text(rest, NoSpaces, [], 0))
+
+      // Match the current shape and handle its branches.
       case set.contains(state.refs.notes, found.0) {
         True -> Ok(found)
         False -> Error(Nil)
       }
     }
   }
+
+  // Match the current shape and handle its branches.
   case found {
     Ok(#(label, after, used)) ->
       scan(
@@ -1827,8 +1966,8 @@ fn footnote_ref(
   }
 }
 
-// A backslash before ASCII punctuation makes it text, and before a line
-// break makes the break hard. Before anything else it is itself text.
+/// A backslash before ASCII punctuation makes it text, and before a line
+/// break makes the break hard. Before anything else it is itself text.
 fn escaped(
   next: String,
   rest: List(String),
@@ -1854,8 +1993,8 @@ fn escaped(
   }
 }
 
-// ASCII punctuation: `!` to `/`, `:` to `@`, `[` to the backtick, and `{`
-// to `~`.
+/// ASCII punctuation: `!` to `/`, `:` to `@`, `[` to the backtick, and `{`
+/// to `~`.
 fn is_punctuation(grapheme: String) -> Bool {
   let byte = ascii(grapheme)
   { byte >= 0x21 && byte <= 0x2F }
@@ -1864,8 +2003,11 @@ fn is_punctuation(grapheme: String) -> Bool {
   || { byte >= 0x7B && byte <= 0x7E }
 }
 
+/// Helper function `code_span`.
 fn code_span(input: List(String), position: Int, state: Scan) -> List(Inline) {
   let #(length, after) = count_run(input, "`", 0)
+
+  // Match the current shape and handle its branches.
   case closer(state.ticks, length, position + length) {
     Ok(#(at, ticks)) -> {
       let #(content, rest) = list.split(after, at - position - length)
@@ -1884,6 +2026,7 @@ fn code_span(input: List(String), position: Int, state: Scan) -> List(Inline) {
   }
 }
 
+/// Helper function `closer`.
 fn closer(
   ticks: Dict(Int, List(Int)),
   length: Int,
@@ -1893,16 +2036,20 @@ fn closer(
     dict.get(ticks, length)
     |> result.unwrap([])
     |> list.drop_while(fn(at) { at < from })
+
+  // Match the current shape and handle its branches.
   case later {
     [at, ..rest] -> Ok(#(at, dict.insert(ticks, length, rest)))
     [] -> Error(dict.insert(ticks, length, []))
   }
 }
 
-// Line endings in a code span are spaces, and one space is stripped from
-// each end when both have one, so `` ` `` ` `` can show a backtick.
+/// Line endings in a code span are spaces, and one space is stripped from
+/// each end when both have one, so `` ` `` ` `` can show a backtick.
 fn code_text(content: List(String)) -> String {
   let text = content |> string.concat |> string.replace("\n", " ")
+
+  // Match the current shape and handle its branches.
   case
     string.starts_with(text, " ")
     && string.ends_with(text, " ")
@@ -1913,6 +2060,7 @@ fn code_text(content: List(String)) -> String {
   }
 }
 
+/// Helper function `delimiter_run`.
 fn delimiter_run(
   input: List(String),
   mark: String,
@@ -1927,6 +2075,7 @@ fn delimiter_run(
     [grapheme, ..] -> grapheme
     [] -> ""
   }
+
   let before = neighbour(previous)
   let beyond = neighbour(next)
   let can_open = opens(mark, before, beyond)
@@ -1949,9 +2098,9 @@ fn delimiter_run(
   scan(after, position + length, mark, state)
 }
 
-// The delimiters a run stands for. A run of three is emphasis and strong
-// emphasis together, opened in that order and closed in the other; longer
-// runs, and a lone or tripled tilde, are text.
+/// The delimiters a run stands for. A run of three is emphasis and strong
+/// emphasis together, opened in that order and closed in the other; longer
+/// runs, and a lone or tripled tilde, are text.
 fn delims_of(
   mark: String,
   length: Int,
@@ -1971,6 +2120,7 @@ fn delims_of(
   }
 }
 
+/// Helper function `neighbour`.
 fn neighbour(grapheme: String) -> Neighbour {
   case grapheme {
     "" | " " | "\n" | "\t" -> Space
@@ -1982,9 +2132,9 @@ fn neighbour(grapheme: String) -> Neighbour {
   }
 }
 
-// A run opens when text follows it and closes when text precedes it. An
-// underscore also refuses to open after a word character or close before
-// one, so `snake_case_name` stays one word.
+/// A run opens when text follows it and closes when text precedes it. An
+/// underscore also refuses to open after a word character or close before
+/// one, so `snake_case_name` stays one word.
 fn opens(mark: String, before: Neighbour, after: Neighbour) -> Ability {
   case after, before, mark {
     Space, _, _ -> Unable
@@ -1993,6 +2143,7 @@ fn opens(mark: String, before: Neighbour, after: Neighbour) -> Ability {
   }
 }
 
+/// Helper function `closes`.
 fn closes(mark: String, before: Neighbour, after: Neighbour) -> Ability {
   case before, after, mark {
     Space, _, _ -> Unable
@@ -2001,6 +2152,7 @@ fn closes(mark: String, before: Neighbour, after: Neighbour) -> Ability {
   }
 }
 
+/// Helper function `delimiter`.
 fn delimiter(
   state: Scan,
   delim: Delim,
@@ -2008,6 +2160,8 @@ fn delimiter(
   closes: Ability,
 ) -> Scan {
   let waiting = dict.get(state.open, delim) |> result.unwrap(0)
+
+  // Match the current shape and handle its branches.
   case closes, waiting > 0, opens, state.delims < max_emphasis {
     Able, True, _, _ -> close_delim(state, delim)
     _, _, Able, True -> open_frame(state, Delimited(delim))
@@ -2016,6 +2170,7 @@ fn delimiter(
   }
 }
 
+/// Helper function `delim_text`.
 fn delim_text(delim: Delim) -> String {
   case delim {
     StarOne -> "*"
@@ -2026,6 +2181,7 @@ fn delim_text(delim: Delim) -> String {
   }
 }
 
+/// Helper function `opener_text`.
 fn opener_text(opener: Opener) -> String {
   case opener {
     Root -> ""
@@ -2035,13 +2191,14 @@ fn opener_text(opener: Opener) -> String {
   }
 }
 
+/// Helper function `prepend_text`.
 fn prepend_text(text: String, pending: List(String)) -> List(String) {
   list.append(list.reverse(string.to_graphemes(text)), pending)
 }
 
-// Closing emphasis ends every construct opened inside it: each is spliced
-// back into its parent as text behind its opener, then the emphasis itself
-// becomes a node.
+/// Closing emphasis ends every construct opened inside it: each is spliced
+/// back into its parent as text behind its opener, then the emphasis itself
+/// becomes a node.
 fn close_delim(state: Scan, delim: Delim) -> Scan {
   state
   |> flush
@@ -2049,6 +2206,7 @@ fn close_delim(state: Scan, delim: Delim) -> Scan {
   |> close_frame(fn(children) { wrap(delim, children) })
 }
 
+/// Helper function `wrap`.
 fn wrap(delim: Delim, children: List(Inline)) -> Inline {
   case delim {
     StarOne | UnderOne -> Emphasis(children:)
@@ -2057,6 +2215,7 @@ fn wrap(delim: Delim, children: List(Inline)) -> Inline {
   }
 }
 
+/// Helper function `open_frame`.
 fn open_frame(state: Scan, opener: Opener) -> Scan {
   let state = flush(state)
   Scan(..state, frame: Frame(opener:, pieces: [], holds: Flat), below: [
@@ -2066,6 +2225,7 @@ fn open_frame(state: Scan, opener: Opener) -> Scan {
   |> counted(opener, 1)
 }
 
+/// Helper function `counted`.
 fn counted(state: Scan, opener: Opener, change: Int) -> Scan {
   case opener {
     Root -> state
@@ -2081,7 +2241,9 @@ fn counted(state: Scan, opener: Opener, change: Int) -> Scan {
   }
 }
 
+/// Helper function `flush`.
 fn flush(state: Scan) -> Scan {
+  // Match the current shape and handle its branches.
   case state.pending {
     [] -> state
     pending -> {
@@ -2092,15 +2254,17 @@ fn flush(state: Scan) -> Scan {
   }
 }
 
+/// Helper function `push_node`.
 fn push_node(state: Scan, inline: Inline) -> Scan {
   let state = flush(state)
   let frame = Frame(..state.frame, pieces: [Node(inline), ..state.frame.pieces])
   Scan(..state, frame:)
 }
 
-// The top frame, unclosed, becomes text in its parent: its opener's text,
-// then everything read inside it. The root has no parent and stays.
+/// The top frame, unclosed, becomes text in its parent: its opener's text,
+/// then everything read inside it. The root has no parent and stays.
 fn dissolve(state: Scan) -> Scan {
+  // Match the current shape and handle its branches.
   case state.below {
     [] -> state
     [parent, ..below] -> {
@@ -2117,8 +2281,8 @@ fn dissolve(state: Scan) -> Scan {
   }
 }
 
-// What a frame holds once a child frame, opened by `opener` and holding
-// `child`, has ended inside it, closed or not.
+/// What a frame holds once a child frame, opened by `opener` and holding
+/// `child`, has ended inside it, closed or not.
 fn adopted(parent: Holds, opener: Opener, child: Holds) -> Holds {
   case parent, opener, child {
     Nested, _, _ | _, Bracket(..), _ | _, _, Nested -> Nested
@@ -2126,6 +2290,7 @@ fn adopted(parent: Holds, opener: Opener, child: Holds) -> Holds {
   }
 }
 
+/// Helper function `dissolve_until`.
 fn dissolve_until(state: Scan, target: Opener) -> Scan {
   case state.frame.opener == target || state.below == [] {
     True -> state
@@ -2133,6 +2298,7 @@ fn dissolve_until(state: Scan, target: Opener) -> Scan {
   }
 }
 
+/// Helper function `dissolve_to_bracket`.
 fn dissolve_to_bracket(state: Scan) -> Scan {
   case state.frame.opener, state.below {
     Bracket(..), _ | _, [] -> state
@@ -2140,8 +2306,9 @@ fn dissolve_to_bracket(state: Scan) -> Scan {
   }
 }
 
-// The top frame, closed, becomes one node in its parent.
+/// The top frame, closed, becomes one node in its parent.
 fn close_frame(state: Scan, build: fn(List(Inline)) -> Inline) -> Scan {
+  // Match the current shape and handle its branches.
   case state.below {
     [] -> state
     [parent, ..below] -> {
@@ -2159,6 +2326,7 @@ fn close_frame(state: Scan, build: fn(List(Inline)) -> Inline) -> Scan {
   }
 }
 
+/// Helper function `close_bracket`.
 fn close_bracket(
   rest: List(String),
   position: Int,
@@ -2177,34 +2345,43 @@ fn close_bracket(
   }
 }
 
-// The top frame is the nearest open bracket. It becomes a link or an image
-// when a destination or a defined reference follows and, for a link, when no
-// link has formed since it opened. Otherwise it is text, and so is the `]`.
-// A reference is tried after a destination fails, as CommonMark has it: in
-// `[foo](not a link)` with `foo` defined, `[foo]` is a link and the rest is
-// text.
+/// The top frame is the nearest open bracket. It becomes a link or an image
+/// when a destination or a defined reference follows and, for a link, when no
+/// link has formed since it opened. Otherwise it is text, and so is the `]`.
+/// A reference is tried after a destination fails, as CommonMark has it: in
+/// `[foo](not a link)` with `foo` defined, `[foo]` is a link and the rest is
+/// text.
 fn bracket_closes(
   rest: List(String),
   position: Int,
   state: Scan,
 ) -> List(Inline) {
+  // Match the current shape and handle its branches.
   let active = case state.frame.opener {
     Bracket(target: ToLink, epoch:) -> epoch == state.epoch
     Bracket(target: ToImage, ..) -> True
     Root | Delimited(..) -> False
   }
+
+  // Match the current shape and handle its branches.
   let found = case active {
     True -> destination(rest, position + 2, state.unclosed)
     False -> Error(state.unclosed)
   }
+
+  // Match the current shape and handle its branches.
   case found {
     Ok(#(target, after, next)) -> scan(after, next, ")", linked(state, target))
     Error(unclosed) -> {
       let state = Scan(..state, unclosed:)
+
+      // Match the current shape and handle its branches.
       let referenced = case active {
         True -> reference(rest, state)
         False -> Error(Nil)
       }
+
+      // Match the current shape and handle its branches.
       case referenced {
         Ok(#(target, after, used)) ->
           scan(after, position + 1 + used, "]", linked(state, target))
@@ -2222,20 +2399,21 @@ fn bracket_closes(
   }
 }
 
-// The destination a reference link names, when the bracket that just closed
-// is one: `[text][label]`, `[label][]` or `[label]`. The result is the
-// destination, the input after the reference, and how many tokens after
-// the `]` the reference took.
-//
-// A full reference reads its label from the input, and that scan stops at
-// the first bracket, so no two such scans read the same text. The collapsed
-// and shortcut forms use the bracket's own text as the label, which is read
-// only when the bracket holds no other bracket: two such brackets never
-// overlap, so no text is read for a label twice.
+/// The destination a reference link names, when the bracket that just closed
+/// is one: `[text][label]`, `[label][]` or `[label]`. The result is the
+/// destination, the input after the reference, and how many tokens after
+/// the `]` the reference took.
+/// 
+/// A full reference reads its label from the input, and that scan stops at
+/// the first bracket, so no two such scans read the same text. The collapsed
+/// and shortcut forms use the bracket's own text as the label, which is read
+/// only when the bracket holds no other bracket: two such brackets never
+/// overlap, so no text is read for a label twice.
 fn reference(
   rest: List(String),
   state: Scan,
 ) -> Result(#(String, List(String), Int), Nil) {
+  // Match the current shape and handle its branches.
   case dict.is_empty(state.refs.links), rest {
     True, _ -> Error(Nil)
     False, ["[", "]", ..after] -> {
@@ -2254,6 +2432,7 @@ fn reference(
   }
 }
 
+/// Helper function `shortcut`.
 fn shortcut(
   rest: List(String),
   state: Scan,
@@ -2262,15 +2441,18 @@ fn shortcut(
   Ok(#(target, rest, 0))
 }
 
-// The destination the top bracket's own text names as a label. The text is
-// the plain text of what the bracket holds, so a label written with markup
-// inside it matches a definition only when the definition's label is
-// written without that markup.
+/// The destination the top bracket's own text names as a label. The text is
+/// the plain text of what the bracket holds, so a label written with markup
+/// inside it matches a definition only when the definition's label is
+/// written without that markup.
 fn own_reference(state: Scan) -> Result(String, Nil) {
+  // Match the current shape and handle its branches.
   case state.frame.holds {
     Nested -> Error(Nil)
     Flat -> {
       let label = plain(flatten(state.frame.pieces))
+
+      // Match the current shape and handle its branches.
       case string.drop_start(label, max_label) == "" {
         True -> lookup(state.refs, label)
         False -> Error(Nil)
@@ -2279,12 +2461,15 @@ fn own_reference(state: Scan) -> Result(String, Nil) {
   }
 }
 
+/// Helper function `lookup`.
 fn lookup(refs: Refs, label: String) -> Result(String, Nil) {
   use label <- result.try(normalized(label))
   dict.get(refs.links, label)
 }
 
+/// Helper function `linked`.
 fn linked(state: Scan, target: String) -> Scan {
+  // Match the current shape and handle its branches.
   case state.frame.opener {
     Bracket(target: ToImage, ..) ->
       close_frame(state, fn(children) {
@@ -2300,10 +2485,10 @@ fn linked(state: Scan, target: String) -> Scan {
   }
 }
 
-// A link's label with any link inside it taken out, its own label kept. A
-// link cannot hold a link: `[see https://a.test](https://b.test)` is one
-// link to `b.test`, and a page that drew the inner autolink as well would
-// nest one clickable address inside another.
+/// A link's label with any link inside it taken out, its own label kept. A
+/// link cannot hold a link: `[see https://a.test](https://b.test)` is one
+/// link to `b.test`, and a page that drew the inner autolink as well would
+/// nest one clickable address inside another.
 fn unlinked(inlines: List(Inline)) -> List(Inline) {
   list.flat_map(inlines, fn(inline) {
     case inline {
@@ -2318,19 +2503,19 @@ fn unlinked(inlines: List(Inline)) -> List(Inline) {
   })
 }
 
-// A link's destination: `(` directly after the `]`, then everything up to
-// the `)` that balances it, with no whitespace. Balanced parentheses inside
-// are kept, so `javascript:alert(1)` and a Wikipedia title arrive whole.
-// `start` is where the destination would begin.
-//
-// A scan that fails has reached a whitespace or the end at `unclosed`, and a
-// later scan that starts before that point reads the same characters up to
-// it, so it is refused without looking. That is what keeps a run of `](`
-// from rescanning the same text once per bracket. The refusal is not always
-// what CommonMark would do: when a failed scan ran through a later `](`, as
-// in `[a]([b](c) d)`, that later link could have closed at a `)` the first
-// scan counted as an inner one or passed on its way to the whitespace, and
-// it is drawn as text instead. That costs a link, never the time bound.
+/// A link's destination: `(` directly after the `]`, then everything up to
+/// the `)` that balances it, with no whitespace. Balanced parentheses inside
+/// are kept, so `javascript:alert(1)` and a Wikipedia title arrive whole.
+/// `start` is where the destination would begin.
+/// 
+/// A scan that fails has reached a whitespace or the end at `unclosed`, and a
+/// later scan that starts before that point reads the same characters up to
+/// it, so it is refused without looking. That is what keeps a run of `](`
+/// from rescanning the same text once per bracket. The refusal is not always
+/// what CommonMark would do: when a failed scan ran through a later `](`, as
+/// in `[a]([b](c) d)`, that later link could have closed at a `)` the first
+/// scan counted as an inner one or passed on its way to the whitespace, and
+/// it is drawn as text instead. That costs a link, never the time bound.
 fn destination(
   rest: List(String),
   start: Int,
@@ -2342,6 +2527,7 @@ fn destination(
   }
 }
 
+/// Helper function `destination_text`.
 fn destination_text(
   input: List(String),
   position: Int,
@@ -2366,17 +2552,19 @@ fn destination_text(
   }
 }
 
-// What may stand between a destination and its `)`: whitespace, and a
-// title in double quotes, single quotes or parentheses. Neither host shows
-// a title, so it is read and dropped. A failure reports how far it read, as
-// the destination's own scan does, since the refusal of later scans rests
-// on that.
+/// What may stand between a destination and its `)`: whitespace, and a
+/// title in double quotes, single quotes or parentheses. Neither host shows
+/// a title, so it is read and dropped. A failure reports how far it read, as
+/// the destination's own scan does, since the refusal of later scans rests
+/// on that.
 fn titled(
   input: List(String),
   position: Int,
   text: List(String),
 ) -> Result(#(String, List(String), Int), Int) {
   let #(input, position) = skip_spaces(input, position)
+
+  // Match the current shape and handle its branches.
   case input {
     [")", ..rest] ->
       Ok(#(text |> list.reverse |> string.concat, rest, position + 1))
@@ -2387,17 +2575,21 @@ fn titled(
   }
 }
 
+/// Helper function `title_end`.
 fn title_end(
   input: List(String),
   position: Int,
   closer: String,
   text: List(String),
 ) -> Result(#(String, List(String), Int), Int) {
+  // Match the current shape and handle its branches.
   case input {
     [] -> Error(position)
     ["\\", _, ..rest] -> title_end(rest, position + 2, closer, text)
     [grapheme, ..rest] if grapheme == closer -> {
       let #(after, position) = skip_spaces(rest, position + 1)
+
+      // Match the current shape and handle its branches.
       case after {
         [")", ..rest] ->
           Ok(#(text |> list.reverse |> string.concat, rest, position + 1))
@@ -2408,6 +2600,7 @@ fn title_end(
   }
 }
 
+/// Helper function `skip_spaces`.
 fn skip_spaces(input: List(String), position: Int) -> #(List(String), Int) {
   case input {
     [grapheme, ..rest] ->
@@ -2419,19 +2612,23 @@ fn skip_spaces(input: List(String), position: Int) -> #(List(String), Int) {
   }
 }
 
-// `<scheme:rest>` is a link whose label is its destination, and
-// `<name@domain>` is a link to that address. The scan stops at the first
-// whitespace, `<` or `>`, so two scans never cover the same text, and
-// anything that is neither, an HTML tag above all, stays text.
+/// `<scheme:rest>` is a link whose label is its destination, and
+/// `<name@domain>` is a link to that address. The scan stops at the first
+/// whitespace, `<` or `>`, so two scans never cover the same text, and
+/// anything that is neither, an HTML tag above all, stays text.
 fn autolink(rest: List(String), position: Int, state: Scan) -> List(Inline) {
   let found = {
     use #(uri, after, used) <- result.try(angle(rest, []))
+
+    // Match the current shape and handle its branches.
     case is_uri(uri), is_email(uri) {
       True, _ -> Ok(#(uri, uri, after, used))
       False, True -> Ok(#(uri, "mailto:" <> uri, after, used))
       False, False -> Error(Nil)
     }
   }
+
+  // Match the current shape and handle its branches.
   case found {
     Ok(#(label, target, after, used)) ->
       scan(
@@ -2450,9 +2647,9 @@ fn autolink(rest: List(String), position: Int, state: Scan) -> List(Inline) {
   }
 }
 
-// An address as CommonMark's email autolink allows it: a local part of
-// letters, digits and a fixed set of punctuation, an `@`, and a domain of
-// dot-separated labels of letters, digits and inner hyphens.
+/// An address as CommonMark's email autolink allows it: a local part of
+/// letters, digits and a fixed set of punctuation, an `@`, and a domain of
+/// dot-separated labels of letters, digits and inner hyphens.
 fn is_email(text: String) -> Bool {
   case string.split_once(text, "@") {
     Ok(#(local, domain)) ->
@@ -2466,6 +2663,7 @@ fn is_email(text: String) -> Bool {
   }
 }
 
+/// Helper function `is_domain_label`.
 fn is_domain_label(label: String) -> Bool {
   let length = string.length(label)
   length >= 1
@@ -2477,11 +2675,12 @@ fn is_domain_label(label: String) -> Bool {
   })
 }
 
-// Whether every byte of a non-empty token is an ASCII letter or digit.
+/// Whether every byte of a non-empty token is an ASCII letter or digit.
 fn is_alphanumeric(text: String) -> Bool {
   text != "" && alphanumeric_bytes(bit_array.from_string(text))
 }
 
+/// Helper function `alphanumeric_bytes`.
 fn alphanumeric_bytes(bits: BitArray) -> Bool {
   case bits {
     <<>> -> True
@@ -2498,18 +2697,18 @@ fn alphanumeric_bytes(bits: BitArray) -> Bool {
   }
 }
 
-// A bare link, as GitHub's autolink extension has it: `http://`, `https://`
-// or `www.`, directly after the start of the text, whitespace, or one of
-// `*`, `_`, `~` and `(`, then a domain holding a dot. The link runs to the
-// next whitespace or `<`, less the trailing punctuation that more likely
-// ends the sentence than the link. A `www.` link's destination is its text
-// behind `http://`.
-//
-// The domain is checked before the rest is read. A check that fails has
-// read a run of letters, digits, `_` and `-` and the character after it,
-// and no other link can start inside such a run, since every prefix holds a
-// `.` or a `:`; so failed checks never read the same text twice, and a
-// check that passes takes the whole link, whose text is not read again.
+/// A bare link, as GitHub's autolink extension has it: `http://`, `https://`
+/// or `www.`, directly after the start of the text, whitespace, or one of
+/// `*`, `_`, `~` and `(`, then a domain holding a dot. The link runs to the
+/// next whitespace or `<`, less the trailing punctuation that more likely
+/// ends the sentence than the link. A `www.` link's destination is its text
+/// behind `http://`.
+/// 
+/// The domain is checked before the rest is read. A check that fails has
+/// read a run of letters, digits, `_` and `-` and the character after it,
+/// and no other link can start inside such a run, since every prefix holds a
+/// `.` or a `:`; so failed checks never read the same text twice, and a
+/// check that passes takes the whole link, whose text is not read again.
 fn bare_link(
   input: List(String),
   position: Int,
@@ -2517,27 +2716,36 @@ fn bare_link(
   state: Scan,
 ) -> List(Inline) {
   let found = {
+    // Match the current shape and handle its branches.
     use Nil <- result.try(case previous {
       "" | " " | "\n" | "\t" | "*" | "_" | "~" | "(" -> Ok(Nil)
       _ -> Error(Nil)
     })
+
     use #(prefix, used, rest) <- result.try(link_prefix(input))
     use Nil <- result.try(domain(rest))
     let #(body, after) = split_bare_body(rest, [])
     let #(kept, dropped) = trimmed_link(list.reverse(body), parens(body), [])
     Ok(#(prefix, used, list.reverse(kept), list.append(dropped, after)))
   }
+
+  // Match the current shape and handle its branches.
   case found, input {
     Ok(#(prefix, used, body, after)), _ -> {
       let label = prefix <> string.concat(body)
+
+      // Match the current shape and handle its branches.
       let target = case prefix {
         "www." -> "http://" <> label
         _ -> label
       }
+
+      // Match the current shape and handle its branches.
       let last = case list.last(body) {
         Ok(grapheme) -> grapheme
         Error(Nil) -> "."
       }
+
       scan(
         after,
         position + used + list.length(body),
@@ -2550,10 +2758,10 @@ fn bare_link(
   }
 }
 
-// A bare link's body and what follows it: the body ends at whitespace, at
-// `<`, or at a `](`, the close of a bracketed label and the open of its
-// destination, so `[see https://a.test](https://b.test)` autolinks `a.test`
-// and leaves the real link's destination for the bracket to take.
+/// A bare link's body and what follows it: the body ends at whitespace, at
+/// `<`, or at a `](`, the close of a bracketed label and the open of its
+/// destination, so `[see https://a.test](https://b.test)` autolinks `a.test`
+/// and leaves the real link's destination for the bracket to take.
 fn split_bare_body(
   input: List(String),
   kept: List(String),
@@ -2569,7 +2777,7 @@ fn split_bare_body(
   }
 }
 
-// The prefix, how many tokens it took, and the tokens after it.
+/// The prefix, how many tokens it took, and the tokens after it.
 fn link_prefix(
   input: List(String),
 ) -> Result(#(String, Int, List(String)), Nil) {
@@ -2581,10 +2789,12 @@ fn link_prefix(
   }
 }
 
-// A domain's start: a run of letters, digits, `_` and `-`, a `.`, and one
-// more letter, digit, `.` or `-`.
+/// A domain's start: a run of letters, digits, `_` and `-`, a `.`, and one
+/// more letter, digit, `.` or `-`.
 fn domain(input: List(String)) -> Result(Nil, Nil) {
   let #(label, rest) = list.split_while(input, is_host_character)
+
+  // Match the current shape and handle its branches.
   case label, rest {
     [_, ..], [".", next, ..] ->
       case is_alphanumeric(next) || next == "." || next == "-" {
@@ -2595,12 +2805,13 @@ fn domain(input: List(String)) -> Result(Nil, Nil) {
   }
 }
 
+/// Helper function `is_host_character`.
 fn is_host_character(grapheme: String) -> Bool {
   is_alphanumeric(grapheme) || grapheme == "_" || grapheme == "-"
 }
 
-// How many `(` and `)` a link's text holds, counted once so that trimming
-// its closing parentheses costs nothing per parenthesis.
+/// How many `(` and `)` a link's text holds, counted once so that trimming
+/// its closing parentheses costs nothing per parenthesis.
 fn parens(body: List(String)) -> #(Int, Int) {
   list.fold(body, #(0, 0), fn(counts, grapheme) {
     case grapheme {
@@ -2611,11 +2822,11 @@ fn parens(body: List(String)) -> #(Int, Int) {
   })
 }
 
-// Walks a bare link's text backwards, `reversed` being that text, dropping
-// what GitHub drops: trailing `?`, `!`, `.`, `,`, `:`, `*`, `_` and `~`, a
-// `)` with no `(` left to balance it, and a trailing entity reference such
-// as `&amp;`. It returns the text kept, still reversed, and the text
-// dropped, in order.
+/// Walks a bare link's text backwards, `reversed` being that text, dropping
+/// what GitHub drops: trailing `?`, `!`, `.`, `,`, `:`, `*`, `_` and `~`, a
+/// `)` with no `(` left to balance it, and a trailing entity reference such
+/// as `&amp;`. It returns the text kept, still reversed, and the text
+/// dropped, in order.
 fn trimmed_link(
   reversed: List(String),
   counts: #(Int, Int),
@@ -2641,8 +2852,8 @@ fn trimmed_link(
   }
 }
 
-// The letters and digits of an entity reference's name, read backwards from
-// its `;` to its `&`, in order, with the text before the `&`.
+/// The letters and digits of an entity reference's name, read backwards from
+/// its `;` to its `&`, in order, with the text before the `&`.
 fn entity_name(
   reversed: List(String),
   name: List(String),
@@ -2658,6 +2869,7 @@ fn entity_name(
   }
 }
 
+/// Helper function `angle`.
 fn angle(
   input: List(String),
   text: List(String),
@@ -2674,6 +2886,7 @@ fn angle(
   }
 }
 
+/// Helper function `is_uri`.
 fn is_uri(text: String) -> Bool {
   case string.split_once(text, ":") {
     Ok(#(scheme, rest)) -> is_scheme(scheme) && rest != ""
@@ -2681,6 +2894,7 @@ fn is_uri(text: String) -> Bool {
   }
 }
 
+/// Helper function `is_scheme`.
 fn is_scheme(scheme: String) -> Bool {
   let length = string.length(scheme)
   length >= 2
@@ -2693,34 +2907,39 @@ fn is_scheme(scheme: String) -> Bool {
   })
 }
 
-// A line ending inside a paragraph is a space, unless two spaces end the
-// line, which makes it a hard break. The spaces themselves are dropped.
+/// A line ending inside a paragraph is a space, unless two spaces end the
+/// line, which makes it a hard break. The spaces themselves are dropped.
 fn line_break(state: Scan) -> Scan {
   let #(spaces, pending) = list.split_while(state.pending, fn(g) { g == " " })
+
+  // Match the current shape and handle its branches.
   case spaces {
     [_, _, ..] -> push_node(Scan(..state, pending:), Break)
     _ -> Scan(..state, pending: [" ", ..pending])
   }
 }
 
+/// Helper function `finish`.
 fn finish(state: Scan) -> List(Inline) {
   let state = state |> flush |> dissolve_until(Root)
   flatten(state.frame.pieces)
 }
 
-// Pieces are stored most recent first, so the walk starts from the end of
-// the text and prepends. Runs of text are gathered as segments and joined
-// once, where a node or the start of the text ends them.
+/// Pieces are stored most recent first, so the walk starts from the end of
+/// the text and prepends. Runs of text are gathered as segments and joined
+/// once, where a node or the start of the text ends them.
 fn flatten(pieces: List(Piece)) -> List(Inline) {
   let #(texts, out) = gather(pieces, [], [])
   emit(texts, out)
 }
 
+/// Helper function `gather`.
 fn gather(
   pieces: List(Piece),
   texts: List(String),
   out: List(Inline),
 ) -> #(List(String), List(Inline)) {
+  // Match the current shape and handle its branches.
   case pieces {
     [] -> #(texts, out)
     [piece, ..rest] -> {
@@ -2730,6 +2949,7 @@ fn gather(
   }
 }
 
+/// Helper function `gather_piece`.
 fn gather_piece(
   piece: Piece,
   texts: List(String),
@@ -2743,6 +2963,7 @@ fn gather_piece(
   }
 }
 
+/// Helper function `emit`.
 fn emit(texts: List(String), out: List(Inline)) -> List(Inline) {
   case string.concat(texts) {
     "" -> out

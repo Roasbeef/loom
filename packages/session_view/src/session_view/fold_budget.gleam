@@ -175,11 +175,13 @@ pub const sealed_bytes = 16_777_216
 /// assert fold_budget.fit([fold_budget.Weight(4, option.None)], [], 150).kept == 1
 /// ```
 pub fn fit(weights: List(Weight), open: List(Int), limit: Int) -> Fitted {
+  // Partition weights into kept items and calculate base allowance.
   let held = case weights {
     [] -> Fitted(kept: 0, used: 0, allowance: dict.new(), folds: [])
     [newest, ..older] ->
       fit_older(older, limit, Fitted(1, newest.base, dict.new(), []))
   }
+
   let rows =
     weights
     |> list.take(held.kept)
@@ -192,6 +194,7 @@ pub fn fit(weights: List(Weight), open: List(Int), limit: Int) -> Fitted {
   grant(wanted, rows, int.max(limit - held.used, 0) + fold_rows, held)
 }
 
+/// Recursively accumulates older weights while total base rows remain within limit.
 fn fit_older(older: List(Weight), limit: Int, fitted: Fitted) -> Fitted {
   case older {
     [] -> fitted
@@ -212,19 +215,22 @@ fn fit_older(older: List(Weight), limit: Int, fitted: Fitted) -> Fitted {
   }
 }
 
-// Gives the open folds, most recently opened first, the room the closed turns
-// left. The first that does not fit whole takes what is left as its
-// allowance, so the fold the reader just opened is the last to give way.
+/// Gives the open folds, most recently opened first, the room the closed turns
+/// left. The first that does not fit whole takes what is left as its
+/// allowance, so the fold the reader just opened is the last to give way.
 fn grant(
   wanted: List(Int),
   rows: Dict(Int, Int),
   room: Int,
   fitted: Fitted,
 ) -> Fitted {
+  // Process requested folds in priority order against remaining room.
   case wanted {
     [] -> fitted
     [id, ..rest] -> {
       let size = result.unwrap(dict.get(rows, id), 0)
+
+      // Allocate full fold size if space allows, or give remainder to first fold.
       case size <= room {
         True ->
           grant(
@@ -264,20 +270,26 @@ pub fn draw(
   allowance: Dict(Int, Int),
 ) -> List(Piece) {
   list.map(pieces, fn(piece) {
+    // Draw folded steps within allowed budget or pass through plain pieces.
     case piece {
       turns.Work(key:, worked:, items:, folding: turns.Folded, id:) -> {
+        // Check if this fold is opened by the user.
         let #(kept, folding) = case wanted(id, open) {
           Some(id) -> {
+            // Restrict displayed items to the fold allowance.
             let #(kept, hidden) = case dict.get(allowance, id) {
               Ok(allowed) -> newest(items, allowed)
               Error(Nil) -> #(items, 0)
             }
+
             #(kept, turns.Unfolded(hidden:))
           }
           None -> #([], turns.Folded)
         }
+
         turns.Work(key:, worked:, items: kept, folding:, id:)
       }
+
       turns.Work(folding: turns.Unfolded(_), ..)
       | turns.Work(folding: turns.Reading, ..)
       | turns.Work(folding: turns.Open, ..)
@@ -295,7 +307,7 @@ pub fn draw(
   })
 }
 
-// The fold's number when the reader has it open.
+/// The fold's number when the reader has it open.
 fn wanted(id: Option(Int), open: List(Int)) -> Option(Int) {
   case id {
     Some(id) ->
@@ -321,6 +333,8 @@ pub fn newest(items: List(Item), allowed: Int) -> #(List(Item), Int) {
     list.fold(list.reverse(items), #([], allowed), fn(acc, item) {
       let #(kept, room) = acc
       let size = item_size(item)
+
+      // Include item if within remaining allowance.
       case size <= room {
         True -> #([item, ..kept], room - size)
         False -> #(kept, 0)
@@ -340,8 +354,8 @@ pub fn item_rows(items: List(Item)) -> Int {
   list.fold(items, 0, fn(sum, item) { sum + item_size(item) })
 }
 
-// The rows one step of a fold draws: a call is its line and the rows of its
-// result, a message the rows of its block.
+/// The rows one step of a fold draws: a call is its line and the rows of its
+/// result, a message the rows of its block.
 fn item_size(item: Item) -> Int {
   case item {
     turns.Narrated(block:, ..) -> list.length(block.rows)
@@ -350,12 +364,12 @@ fn item_size(item: Item) -> Int {
   }
 }
 
-// The rows a piece draws outside a fold. A report or a nudge another party
-// wrote is its own lines, because that is what the page retains for it. A
-// peer's or a strand's message is drawn as the line the composer shortens it
-// to and opens in place, so it weighs that line and not its whole text: a
-// long brief would otherwise fill the page's row limit on its own and push
-// the turn out of the window.
+/// The rows a piece draws outside a fold. A report or a nudge another party
+/// wrote is its own lines, because that is what the page retains for it. A
+/// peer's or a strand's message is drawn as the line the composer shortens it
+/// to and opens in place, so it weighs that line and not its whole text: a
+/// long brief would otherwise fill the page's row limit on its own and push
+/// the turn out of the window.
 fn rows(piece: Piece) -> Int {
   case piece {
     turns.Plain(block:, ..) | turns.Prompt(block:, ..) ->

@@ -543,6 +543,7 @@ pub fn replay_traced(
   initial(None, expected, Some(trace), 0)
 }
 
+/// Initializes a new Channel with default polling parameters.
 fn initial(socket, expected, trace, now: Int) {
   Channel(
     socket: socket,
@@ -569,11 +570,14 @@ fn initial(socket, expected, trace, now: Int) {
 // a frame on the wire that it has no request for. A socketless lane has
 // nowhere to write, so it notes the issue and queues no frame, which is
 // what lets replay run the same transitions.
+/// Emits a frame onto the live socket or queues it if tracing.
 fn emit(
   channel: Channel(socket, recorder),
   frame: String,
 ) -> Channel(socket, recorder) {
   let channel = note(channel, attempt.Issued(_, channel.issued))
+
+  // Transmit the frame if a socket is connected, else drop for replay.
   case channel.socket {
     Some(socket) ->
       Channel(..channel, outbox: [Transmit(socket, frame), ..channel.outbox])
@@ -583,6 +587,7 @@ fn emit(
 
 // A lane with no trace records nothing, and one with a trace queues the
 // event under its own attempt identity, behind whatever it queued before.
+/// Records a trace attempt event if tracing is configured on the channel.
 fn note(
   channel: Channel(socket, recorder),
   event: fn(attempt.Id) -> attempt.Event,
@@ -706,6 +711,7 @@ pub fn submit(
   }
 }
 
+/// Admits a command frame, sending immediately or queueing behind inflight work.
 fn admit(channel: Channel(socket, recorder), frame: String, now: Int) {
   use outbound <- result.try(outbound(frame))
   use <- bool.guard(
@@ -720,6 +726,8 @@ fn admit(channel: Channel(socket, recorder), frame: String, now: Int) {
     outbound.intent == Mutation && !mutation_available(channel),
     Error("another command or initial synchronization prevents submission"),
   )
+
+  // Send immediately if channel is ready, or queue if awaiting reply.
   case channel.phase, channel.queued {
     Ready, None -> {
       let next = send(channel, outbound, now)
@@ -769,6 +777,7 @@ pub fn in_flight(channel: Channel(socket, recorder)) -> Bool {
 /// // session_channel.mutation_available(channel)
 /// ```
 pub fn mutation_available(channel: Channel(socket, recorder)) -> Bool {
+  // Check if channel phase permits admitting a mutation command.
   let available = case channel.phase {
     Ready -> True
     AwaitingBegin
@@ -780,6 +789,7 @@ pub fn mutation_available(channel: Channel(socket, recorder)) -> Bool {
     | AwaitingReply(_, History(..)) -> synchronized(channel)
     AwaitingReply(_, Mutation) | Closed -> False
   }
+
   can_mutate(channel) && available && channel.queued == None
 }
 
@@ -832,6 +842,7 @@ pub fn receive(
   // anything the message makes the lane send, including a close.
   let channel = note(channel, attempt.Received(_, message))
 
+  // Handle socket transport message variants (connected, closed, incoming).
   case message {
     connection_event.Connected -> #(channel, [])
 
@@ -883,12 +894,15 @@ pub fn receive(
 // including for a kind this client drops. The switch moves no deadline and
 // no refresh instant already set: the next capture is the first to be
 // followed by the longer refresh.
+/// Applies an unsolicited pushed protocol event onto the channel state.
 fn apply_pushed(
   channel: Channel(socket, recorder),
   event: protocol.Event,
   now: Int,
 ) {
   let channel = Channel(..channel, delivery: Pushing)
+
+  // Dispatch the pushed event based on its specific protocol variant.
   case event {
     protocol.Committed(strand: _, seq:) -> notified(channel, seq, now)
 
@@ -896,6 +910,8 @@ fn apply_pushed(
     // Only the read issued after this notification consumes the debt.
     protocol.GoalChanged -> {
       let invalidated = Channel(..channel, goal_refresh: Due)
+
+      // Dispatch queued reads immediately if ready, else wait.
       case channel.phase {
         Ready -> send_queued(invalidated, [], now)
         AwaitingBegin | Receiving(..) | AwaitingReply(..) | Closed -> #(
@@ -1008,17 +1024,21 @@ fn apply_pushed(
 // Dropping a notice is a statement about what this lane already knows, never
 // about whether the daemon pushed, so the count a reader can trust has to be
 // taken before the drop.
+/// Handles commit notifications from the server, advancing capture or deferring.
 fn notified(channel: Channel(socket, recorder), seq: Int, now: Int) {
+  // Trigger catch-up if sequence is past the adopted cut's next sequence.
   let #(channel, updates) = case channel.cut {
     Some(cut) if seq < cut.next_seq -> #(channel, [])
     Some(_) | None -> capture_or_defer(channel, now)
   }
+
   #(channel, [Noticed(seq), ..updates])
 }
 
 // A push that arrives before any cut exists says nothing the initial
 // transfer will not deliver, so it is dropped here for every kind of trigger
 // rather than deferred into a redundant second catch-up.
+/// Issues a catch-up request if ready, or marks refresh due if busy.
 fn capture_or_defer(channel: Channel(socket, recorder), now: Int) {
   case channel.phase, channel.cut {
     Ready, Some(cut) -> #(
@@ -1047,6 +1067,7 @@ fn capture_or_defer(channel: Channel(socket, recorder), now: Int) {
   }
 }
 
+/// Reduces an incoming correlated protocol reply against current channel state.
 fn apply_reply(
   channel: Channel(socket, recorder),
   reply: session_wire.Reply,
@@ -1078,14 +1099,19 @@ fn apply_reply(
       }
 
     AwaitingBegin, session_wire.Begin(body) -> {
+      // Determine whether we expect a recent or catch-up snapshot window.
       let expected_window = case channel.cut {
         None -> "recent"
         Some(_) -> "catch_up"
       }
+
+      // Extract the baseline window and starting sequence from the cut.
       let #(window, from_seq) = case channel.cut {
         None -> #(snapshot.empty(), 0)
         Some(cut) -> #(cut.window, cut.next_seq)
       }
+
+      // Verify window matches and begin snapshot decoding.
       case
         matching_window(body, expected_window)
         |> result.try(fn(_) {
@@ -1103,10 +1129,13 @@ fn apply_reply(
       }
     }
     AwaitingReply(_, Lookup(ids)), session_wire.Begin(body) -> {
+      // Use next sequence from cut or 0 as lookup baseline.
       let from_seq = case channel.cut {
         Some(cut) -> cut.next_seq
         None -> 0
       }
+
+      // Begin decoding lookup snapshot stream.
       case
         snapshot.begin_lookup(
           body,
@@ -1120,10 +1149,13 @@ fn apply_reply(
       }
     }
     AwaitingReply(_, Listing), session_wire.Begin(body) -> {
+      // Use next sequence from cut or 0 as listing baseline.
       let from_seq = case channel.cut {
         Some(cut) -> cut.next_seq
         None -> 0
       }
+
+      // Begin decoding decided snapshot stream.
       case
         snapshot.begin_decided(
           body,
@@ -1147,6 +1179,8 @@ fn apply_reply(
           after + 1,
         )
       }
+
+      // Check history start result and credit transfer.
       case started {
         Error(reason) -> fail(channel, reason)
         Ok(transfer) -> #(
@@ -1160,6 +1194,8 @@ fn apply_reply(
         use _ <- result.try(matching_window(body, "lineage"))
         snapshot.begin_lineage(body, channel.expected, channel.attachment, 1)
       }
+
+      // Check lineage start result and credit transfer.
       case started {
         Error(reason) -> fail(channel, reason)
         Ok(transfer) -> #(credit(channel, transfer, Lineaged(from)), [])
@@ -1181,6 +1217,8 @@ fn apply_reply(
             }
         }
       }
+
+      // Process completed lineage page or report error.
       case completed {
         Error(reason) -> fail(channel, reason)
         Ok(window) ->
@@ -1203,6 +1241,8 @@ fn apply_reply(
         )
         Ok(cut.window)
       }
+
+      // Process completed history page or report error.
       case completed {
         Error(reason) -> fail(channel, reason)
         Ok(window) ->
@@ -1225,6 +1265,8 @@ fn apply_reply(
         use records <- result.map(approval.records(cells))
         #(records, missing)
       }
+
+      // Process resolved lookup records or report error.
       case resolved {
         Error(reason) -> fail(channel, reason)
         Ok(#(records, missing)) ->
@@ -1241,6 +1283,8 @@ fn apply_reply(
         use cells <- result.try(snapshot_view.decided(cut))
         approval.records(cells)
       }
+
+      // Process resolved decided records or report error.
       case resolved {
         Error(reason) -> fail(channel, reason)
         Ok(records) ->
@@ -1312,6 +1356,7 @@ fn apply_reply(
   }
 }
 
+/// Verifies that a begin snapshot JSON body carries the expected window name.
 fn matching_window(body, expected) {
   case body {
     json.Object(fields) ->
@@ -1324,6 +1369,7 @@ fn matching_window(body, expected) {
   }
 }
 
+/// Checks if an incoming presentation event matches the outstanding command.
 fn matching_presentation(name, intent, event) {
   case name, intent, event {
     _, _, protocol.ServerError(..) -> True
@@ -1390,6 +1436,7 @@ fn matching_presentation(name, intent, event) {
 // the request it issued: the reply to `evolution:select` is a selection's
 // report, however much its body looks like a status. Every other event passes
 // through untouched.
+/// Labels an evolution snapshot with the specific action name issued.
 fn labelled(name: String, event: protocol.Event) -> protocol.Event {
   case name, event {
     "evolution:" <> action, protocol.EvolutionSnapshot(body) ->
@@ -1398,6 +1445,7 @@ fn labelled(name: String, event: protocol.Event) -> protocol.Event {
   }
 }
 
+/// Advances channel transfer state and credits the socket for incoming chunks.
 fn credit(
   channel: Channel(socket, recorder),
   transfer: snapshot.Transfer,
@@ -1536,6 +1584,7 @@ pub fn retire(
   channel: Channel(socket, recorder),
   reason: String,
 ) -> #(Channel(socket, recorder), List(Update)) {
+  // Check if channel is already closed before retiring.
   case channel.phase {
     Closed -> #(channel, [])
     _ -> {
@@ -1555,7 +1604,9 @@ pub fn retire(
 
 // The outcome is read from the lane as it stood, because closing it is what
 // ends the request that was in flight.
+/// Fails the channel, closing the socket and emitting failure updates.
 fn fail(channel: Channel(socket, recorder), reason: String) {
+  // Generate appropriate updates based on the interrupted channel phase.
   let updates = case channel.phase {
     AwaitingReply(name, Mutation) -> [
       UnknownOutcome(name, channel.request_id),
@@ -1573,13 +1624,17 @@ fn fail(channel: Channel(socket, recorder), reason: String) {
       Failed(reason),
     ]
   }
+
+  // Reject any unsent queued mutation upon failure.
   let unsent = case has_unsent(channel) {
     True -> [Submission(DefinitelyNotSent(reason))]
     False -> []
   }
+
   #(close(channel), list.append(unsent, updates))
 }
 
+/// Emits a socket shutdown command onto the outbox if connected.
 fn close_socket(
   channel: Channel(socket, recorder),
 ) -> Channel(socket, recorder) {
@@ -1605,6 +1660,7 @@ pub fn adopted(
   note(channel, attempt.Adopted)
 }
 
+/// Issues a catch-up request from the given sequence cursor.
 fn capture_again(
   channel: Channel(socket, recorder),
   cursor,
@@ -1647,6 +1703,8 @@ pub fn replay_issued(
     channel.socket != None,
     Error("cannot replay into a live channel"),
   )
+
+  // Dispatch request replay based on phase and selection.
   let next = case channel.phase, request.selection {
     Ready, attempt.Cursor(cursor) ->
       case channel.cut {
@@ -1670,7 +1728,10 @@ pub fn replay_issued(
     AwaitingBegin, _ | Receiving(..), _ | AwaitingReply(..), _ -> Ok(channel)
     Closed, _ -> Error("request on a closed recording attempt")
   }
+
   use next <- result.try(next)
+
+  // Verify that the replayed state matches the recorded request exactly.
   case next.issued == request {
     True -> Ok(next)
     False -> Error("recorded request does not match protocol progress")
@@ -1719,6 +1780,8 @@ pub fn lookup(
     ])
   use outbound <- result.try(outbound(frame))
   let outbound = Outbound(..outbound, intent: Lookup(ids))
+
+  // Send lookup immediately if ready, or queue if awaiting reply.
   case channel.phase, channel.queued {
     Ready, None -> Ok(send(channel, outbound, now))
     _, None -> Ok(Channel(..channel, queued: Some(outbound)))
@@ -1836,6 +1899,7 @@ pub fn lineage(
 // Reply updates settle the old owner before any newly issued request installs
 // another. Queued operator intent wins the slot; goal debt and transcript debt
 // remain due if that intent uses it. List order here is reducer order in both hosts.
+/// Dispatches any queued local mutation or pending refresh catch-up.
 fn send_queued(
   channel: Channel(socket, recorder),
   updates: List(Update),
@@ -1843,6 +1907,8 @@ fn send_queued(
 ) {
   let #(channel, updates) = flush_queued(channel, updates, now)
   let #(channel, updates) = read_changed_goal(channel, updates, now)
+
+  // Check if a deferred refresh catch-up can now be issued.
   case channel.phase, channel.refresh, channel.cut {
     Ready, Due, Some(cut) -> #(
       capture_again(
@@ -1866,11 +1932,13 @@ fn send_queued(
 // A held command keeps its original body, but uses the latest attachment
 // authority after reconciliation. Clearing queued before send gives this
 // issuance one owner and prevents later read servicing from issuing it again.
+/// Flushes any queued outbound command if the channel is permitted to send.
 fn flush_queued(
   channel: Channel(socket, recorder),
   updates: List(Update),
   now: Int,
 ) {
+  // Check if an outbound command is queued.
   case channel.queued {
     None -> #(channel, updates)
     Some(outbound) -> {
@@ -1905,11 +1973,13 @@ fn flush_queued(
 // arriving during that read survives its reply and requests a newer board.
 // The host must know this read's ID to accept its refusal. Its sent update
 // follows the older reply's updates so that reply cannot clear the new owner.
+/// Issues a goal read command if a pushed goal change made refresh due.
 fn read_changed_goal(
   channel: Channel(socket, recorder),
   updates: List(Update),
   now: Int,
 ) {
+  // Issue goal read if channel is ready and goal refresh is due.
   case channel.phase, channel.goal_refresh {
     Ready, Due -> {
       // Due becomes Idle at issuance, not at a successful board. A later
@@ -1936,12 +2006,15 @@ fn read_changed_goal(
   }
 }
 
+/// Allocates a request ID and emits an outbound command frame.
 fn send(channel: Channel(socket, recorder), outbound: Outbound, now: Int) {
   let frame =
     session_wire.command_prefix
     <> int.to_string(channel.next_id)
     <> session_wire.command_tag
     <> outbound.suffix
+
+  // Map outbound intent to recorded request selection.
   let selection = case outbound.intent {
     Lookup(ids) -> attempt.Decisions(ids)
     Listing -> attempt.DecidedList
@@ -1949,6 +2022,7 @@ fn send(channel: Channel(socket, recorder), outbound: Outbound, now: Int) {
     Lineage(from) -> attempt.LineageFrom(from)
     Read | Mutation -> attempt.NoSelection
   }
+
   let next =
     Channel(
       ..channel,
@@ -1961,6 +2035,7 @@ fn send(channel: Channel(socket, recorder), outbound: Outbound, now: Int) {
   emit(next, frame)
 }
 
+/// Parses an outbound command frame to determine its name and intent.
 fn outbound(frame: String) {
   use <- bool.guard(
     string.byte_size(frame) > snapshot.record_limit,
@@ -1970,6 +2045,8 @@ fn outbound(frame: String) {
     string.split_once(frame, session_wire.command_tag)
     |> result.replace_error("invalid generated command prefix"),
   )
+
+  // Check prefix format to extract the numeric request ID.
   use id <- result.try(
     case string.starts_with(prefix, session_wire.command_prefix) {
       True ->
@@ -1977,6 +2054,7 @@ fn outbound(frame: String) {
       False -> Error("invalid generated command version")
     },
   )
+
   use _ <- result.try(
     int.parse(id) |> result.replace_error("invalid generated command identity"),
   )
@@ -1987,23 +2065,30 @@ fn outbound(frame: String) {
   use name <- result.try(
     json.parse(name) |> result.replace_error("invalid generated command name"),
   )
+
+  // Determine command kind and intent from parsed name.
   case name {
     // Every evolution action is the one command `evolution`, so the lane
     // names its request by the action it carries. The reply pairing, the
     // refusal and the recording all read that name.
     json.String("evolution") -> {
       use action <- result.try(evolution_action(body))
+
+      // Classify evolution intent as read or mutation based on action.
       let intent = case evolution.is_read_action(action) {
         True -> Read
         False -> Mutation
       }
+
       Ok(Outbound("evolution:" <> action, suffix, intent))
     }
     json.String(name) -> {
+      // Classify command intent as read or mutation.
       let intent = case is_read(name) {
         True -> Read
         False -> Mutation
       }
+
       Ok(Outbound(name, suffix, intent))
     }
     _ -> Error("invalid generated command name")
@@ -2013,11 +2098,14 @@ fn outbound(frame: String) {
 // The action of a generated `evolution` command. The body text still ends in
 // the closing brace of the envelope, which the command encoder always writes
 // last, so it is dropped before the body is read as JSON.
+/// Extracts the action field from a generated evolution command body.
 fn evolution_action(body: String) -> Result(String, String) {
   use parsed <- result.try(
     json.parse(string.drop_end(body, 1))
     |> result.replace_error("invalid generated evolution body"),
   )
+
+  // Extract action field from parsed JSON object.
   case parsed {
     json.Object(fields) ->
       case list.key_find(fields, "action") {

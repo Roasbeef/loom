@@ -53,7 +53,7 @@ pub fn admin(reason: Option(Ending)) -> Element(message) {
   notice(reason, ending.admin_headline, ending.admin_advice)
 }
 
-// The notice for `reason`, worded by `headline` and `advice`, or nothing.
+/// The notice for `reason`, worded by `headline` and `advice`, or nothing.
 fn notice(
   reason: Option(Ending),
   headline: fn(Ending) -> String,

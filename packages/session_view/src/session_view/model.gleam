@@ -1066,6 +1066,7 @@ pub fn queue_rows(
 pub fn queue_owner(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> String {
+  // Construct the composite queue owner key if captured, or empty string.
   case shared.captured {
     Some(#(cut, _)) -> {
       let expected = cut.attachment.expected
@@ -1163,6 +1164,8 @@ pub fn active_strand_phase(
       shared.strands
       |> list.find_map(fn(strand) {
         let protocol.Strand(id:, live_phase:, ..) = strand
+
+        // Check whether this strand matches the active strand and has a live phase.
         case id == shared.active_strand, live_phase {
           True, Some(phase) -> Ok(phase)
           _, _ -> Error(Nil)

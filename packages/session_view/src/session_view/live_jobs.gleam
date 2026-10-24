@@ -61,10 +61,13 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   use observed <- result.try(number(fields, "observed_at_ms"))
   use total <- result.try(number(fields, "total"))
   use omitted <- result.try(number(fields, "omitted"))
+
+  // Extract raw job rows from the jobs field.
   use raw <- result.try(case list.key_find(fields, "jobs") {
     Ok(json.Array(rows)) -> Ok(rows)
     _ -> Error("missing live jobs")
   })
+
   use <- bool.guard(list.drop(raw, 64) != [], Error("too many live jobs"))
   use jobs <- result.try(list.try_map(raw, decode_job))
   let ids = dict.from_list(list.map(jobs, fn(job) { #(job.id, Nil) }))
@@ -78,6 +81,7 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   Ok(Board(strand, observed, jobs, total, omitted))
 }
 
+/// Decodes one live job entry from its JSON object representation.
 fn decode_job(value) {
   use fields <- result.try(object(value))
   use id <- result.try(text(fields, "id"))
@@ -162,6 +166,8 @@ fn number(fields, name) {
 @internal
 pub fn duration(milliseconds: Int) -> String {
   let seconds = int.max(0, milliseconds / 1000)
+
+  // Convert elapsed seconds into coarse human-readable intervals.
   case seconds {
     n if n < 60 -> int.to_string(n) <> "s"
     n if n < 3600 ->

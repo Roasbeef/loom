@@ -141,6 +141,7 @@ pub fn new() -> State {
 /// worktree_view.request(worktree_view.new(), "attachment")
 /// ```
 pub fn request(state: State, owner: String) -> State {
+  // Retain the existing observation state when the owner matches.
   let retained = case state.owner == owner {
     True -> state
     False -> new()
@@ -175,11 +176,15 @@ pub fn sent(state: State, request_id: Int) -> State {
 /// // worktree_view.receive(state, owner, event)
 /// ```
 pub fn receive(state: State, owner: String, event: Event) -> State {
+  // Extract the request identifier correlating to the in-flight observation.
   let id = case event {
     Pending(id) | Failed(id, _) -> id
     Ready(board) -> board.request_id
   }
+
   use <- bool.guard(state.owner != owner || state.awaiting != Some(id), state)
+
+  // Dispatch observation updates to the corresponding state representation.
   case event {
     Pending(_) ->
       State(
@@ -219,6 +224,8 @@ pub fn decode(value: json.JsonValue) -> Result(Event, String) {
   use fields <- result.try(object(value))
   use id <- result.try(number(fields, "request_id"))
   use status <- result.try(text(fields, "status"))
+
+  // Dispatch the payload according to the reported observation status.
   case status {
     "pending" -> Ok(Pending(id))
     "failed" -> {
@@ -231,6 +238,7 @@ pub fn decode(value: json.JsonValue) -> Result(Event, String) {
   }
 }
 
+/// Decodes the detailed file board from worktree observation fields.
 fn decode_board(fields, id) {
   use observed <- result.try(number(fields, "observed_at_ms"))
   use source <- result.try(text(fields, "source"))
@@ -238,10 +246,13 @@ fn decode_board(fields, id) {
   use total <- result.try(number(fields, "total"))
   use omitted <- result.try(number(fields, "omitted"))
   use extent <- result.try(text(fields, "extent"))
+
+  // Extract the raw file entries array from the observation object.
   use raw <- result.try(case list.key_find(fields, "entries") {
     Ok(json.Array(rows)) -> Ok(rows)
     _ -> Error("missing worktree files")
   })
+
   use <- bool.guard(list.drop(raw, 24) != [], Error("too many worktree files"))
   use files <- result.try(list.try_map(raw, decode_file))
   let distinct = dict.from_list(list.map(files, fn(file) { #(file.path, Nil) }))
@@ -257,7 +268,9 @@ fn decode_board(fields, id) {
   Ok(Board(id, observed, repository, files, total, omitted, extent, committed))
 }
 
+/// Decodes the committed diff details from worktree observation fields.
 fn decode_committed(fields) {
+  // Check whether committed session patch details were provided.
   case list.key_find(fields, "committed") {
     Error(Nil) ->
       Ok(Committed("Session commits unavailable from this host", "", "complete"))
@@ -276,6 +289,7 @@ fn decode_committed(fields) {
   }
 }
 
+/// Decodes a single file status row from a serialized JSON value.
 fn decode_file(value) {
   use fields <- result.try(object(value))
   use path <- result.try(text(fields, "path"))
@@ -346,6 +360,7 @@ pub type PatchRow {
 /// worktree_view.patches(worktree_view.new())
 /// ```
 pub fn patches(state: State) -> List(PatchRow) {
+  // Render patches when an observation board has been successfully captured.
   case state.board {
     None -> []
     Some(board) -> {
@@ -353,14 +368,19 @@ pub fn patches(state: State) -> List(PatchRow) {
         state.selected == list.length(board.files) + 1,
         fn() { committed_rows(board.committed) },
       )
+
+      // Select either all modified files or the single chosen file.
       let files = case state.selected {
         0 -> board.files
         n -> list.drop(board.files, n - 1) |> list.take(1)
       }
+
+      // Add a header notice when the workspace is not inside a git repository.
       let header = case board.repository {
         "not_repository" -> [PatchHeading("Workspace is not a Git repository")]
         _ -> []
       }
+
       let details =
         list.flat_map(files, fn(file) {
           [
@@ -390,6 +410,7 @@ pub fn patches(state: State) -> List(PatchRow) {
   }
 }
 
+/// Formats the committed session changes into patch heading and body rows.
 fn committed_rows(committed: Committed) -> List(PatchRow) {
   [
     PatchHeading(text_hygiene.single_line(committed.message)),
@@ -401,6 +422,7 @@ fn committed_rows(committed: Committed) -> List(PatchRow) {
   ]
 }
 
+/// Unwraps a JSON object into its field list.
 fn object(value) {
   case value {
     json.Object(fields) -> Ok(fields)
@@ -408,6 +430,7 @@ fn object(value) {
   }
 }
 
+/// Finds a string field by name in a field list.
 fn text(fields, name) {
   case list.key_find(fields, name) {
     Ok(json.String(value)) -> Ok(value)
@@ -415,6 +438,7 @@ fn text(fields, name) {
   }
 }
 
+/// Finds a non-negative integer field by name in a field list.
 fn number(fields, name) {
   case list.key_find(fields, name) {
     Ok(json.Int(value)) if value >= 0 -> Ok(value)
@@ -422,13 +446,17 @@ fn number(fields, name) {
   }
 }
 
+/// Computes the index to retain after a refreshed board arrives.
 fn retained_selection(state: State, board: Board) -> Int {
+  // Preserve the user selection across board updates when possible.
   case state.board, state.selected {
     Some(previous), index if index > 0 -> {
       use <- bool.lazy_guard(index == list.length(previous.files) + 1, fn() {
         list.length(board.files) + 1
       })
       let selected = previous.files |> list.drop(index - 1) |> list.first
+
+      // Map the previously selected file path to its new index in the board.
       case selected {
         Ok(file) ->
           board.files

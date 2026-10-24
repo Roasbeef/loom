@@ -416,6 +416,8 @@ pub fn latest(
     list.any(rows, fn(row) {
       row.id == strand && row.status == agent_view.NeedsInput
     })
+
+  // Check whether the strand operation is running or waiting for input.
   case dict.has_key(view.operations, strand) || waiting {
     True -> Running
     False -> Settled
@@ -443,10 +445,12 @@ pub fn pieces(
   let count = list.length(turns)
   turns
   |> list.index_map(fn(turn, index) {
+    // Mark latest turn as open if running, or folded otherwise.
     let folding = case index == count - 1, latest {
       True, Running -> Open
       _, _ -> Folded
     }
+
     lay_out(turn, folding)
   })
   |> list.flatten
@@ -514,9 +518,9 @@ pub fn authors(peers: List(snapshot_view.Peer)) -> Dict(String, String) {
   })
 }
 
-// Reviews that stand next to each other are one hairline: the first one's
-// block names the piece, so its key holds as more arrive, and the count says
-// how many there were.
+/// Reviews that stand next to each other are one hairline: the first one's
+/// block names the piece, so its key holds as more arrive, and the count says
+/// how many there were.
 fn merge_commentary(pieces: List(Piece)) -> List(Piece) {
   list.fold(pieces, [], fn(out, piece) {
     case piece, out {
@@ -561,6 +565,7 @@ pub fn with_decisions(
   }
 }
 
+/// Places decision rows adjacent to their triggering sequence events.
 fn placed_decisions(
   pieces: List(Piece),
   decided: List(decisions.Decision),
@@ -572,11 +577,14 @@ fn placed_decisions(
   let #(placed, left) =
     list.fold(pieces, #([], waiting), fn(acc, piece) {
       let #(placed, waiting) = acc
+
+      // Split waiting decisions older than the current piece start.
       let #(older, newer) = case start_seq(piece) {
         Ok(start) ->
           list.split_while(waiting, fn(decision) { decision.seq < start })
         Error(Nil) -> #([], waiting)
       }
+
       #([piece, ..list.append(list.reverse(lines(older)), placed)], newer)
     })
   list.reverse(list.append(list.reverse(lines(left)), placed))
@@ -591,7 +599,7 @@ fn lines(decided: List(decisions.Decision)) -> List(Piece) {
   })
 }
 
-// The sequence a piece starts at, from the key of the first record it draws.
+/// The sequence a piece starts at, from the key of the first record it draws.
 fn start_seq(piece: Piece) -> Result(Int, Nil) {
   case piece {
     Plain(block:, ..) | Prompt(block:, ..) | Commentary(block:, ..) ->
@@ -607,7 +615,7 @@ fn start_seq(piece: Piece) -> Result(Int, Nil) {
   }
 }
 
-// The sequence of the first record a fold holds, which names it.
+/// The sequence of the first record a fold holds, which names it.
 fn fold_id(items: List(Item)) -> Option(Int) {
   case items {
     [Narrated(block:, ..), ..] -> key_seq(block.key) |> option.from_result
@@ -678,6 +686,8 @@ pub fn picture(
   use #(_, images) <- result.try(
     pictured(pieces) |> list.find(fn(row) { row.0 == ref }),
   )
+
+  // Guard against negative image index.
   case index >= 0 {
     True -> list.drop(images, index) |> list.first
     False -> Error(Nil)
@@ -725,6 +735,7 @@ pub fn block_result(block: Block) -> Option(ids.EntryId) {
 /// assert turns.abridged(block) == Some(#("7.0:0", whole_text))
 /// ```
 pub fn abridged(block: Block) -> Option(#(String, String)) {
+  // Extract user message content if block source represents one.
   case block.source {
     transcript_lines.FromEntry(entry.MessageEntry(
       message: message.UserMessage(content:, ..),
@@ -807,6 +818,8 @@ pub fn grouped(
   let #(lead, done, current, held) =
     list.fold(blocks, #([], [], None, []), fn(acc, block) {
       let #(lead, done, current, held) = acc
+
+      // Classify the block into inputs, doing items, or leading elements.
       case classify(block, strands, unjoined, Skip), current {
         [Input(..), ..], None -> #(lead, done, Some([block, ..held]), [])
         [Input(..), ..], Some(turn) -> #(
@@ -835,10 +848,13 @@ pub fn grouped(
         -> #([block, ..lead], done, None, held)
       }
     })
+
+  // Reverse and finalize completed and leading blocks.
   let #(lead, done) = case current {
     None -> #(list.append(held, lead), done)
     Some(turn) -> #(lead, [list.reverse(list.append(held, turn)), ..done])
   }
+
   #(list.reverse(lead), list.reverse(done))
 }
 
@@ -878,14 +894,14 @@ type Classified {
   Outside(piece: Piece)
 }
 
-// The calls the narrative messages in the lane made and the results that
-// answered them, each by the provider's call identity.
-//
-// A response that reasons before it calls a tool is a narrative, drawn with
-// its calls inline, and each result arrives as an entry of its own. The
-// lane draws such a call as one step, the way a compact tool group draws
-// its calls, so the call and its result are joined here; a result whose
-// call is in the window is drawn with that call and not again.
+/// The calls the narrative messages in the lane made and the results that
+/// answered them, each by the provider's call identity.
+///
+/// A response that reasons before it calls a tool is a narrative, drawn with
+/// its calls inline, and each result arrives as an entry of its own. The
+/// lane draws such a call as one step, the way a compact tool group draws
+/// its calls, so the call and its result are joined here; a result whose
+/// call is in the window is drawn with that call and not again.
 type Joined {
   Joined(
     asked: dict.Dict(String, message.ToolCall),
@@ -893,6 +909,7 @@ type Joined {
   )
 }
 
+/// Collects tool calls and results across assistant message blocks.
 fn joined(blocks: List(Block)) -> Joined {
   list.fold(blocks, Joined(dict.new(), dict.new()), fn(joined, block) {
     case block.source {
@@ -927,12 +944,12 @@ fn joined(blocks: List(Block)) -> Joined {
 // The memory context the daemon attached to the run as a user message of its
 // own (`composer.memory_context_lines`), drawn as the first step of the turn's
 // fold: `Memory · 4 lines`, with the whole message as the step's expansion.
-// The host's cap cuts the expansion, so a digest longer than the page draws is
-// cut with a notice and stays whole in the terminal. A host that draws no
-// expansion gets the count alone.
-//
-// It is something the harness did for the strand, not something anyone asked,
-// so it starts no turn and carries no time of its own.
+/// The host's cap cuts the expansion, so a digest longer than the page draws is
+/// cut with a notice and stays whole in the terminal. A host that draws no
+/// expansion gets the count alone.
+///
+/// It is something the harness did for the strand, not something anyone asked,
+/// so it starts no turn and carries no time of its own.
 fn remembered(
   block: Block,
   body: String,
@@ -959,10 +976,10 @@ fn remembered(
   }
 }
 
-// A person's message with its sender drawn apart. The transcript opens an
-// attributed message with `name:` and a newline, which is right in a
-// terminal and is the one line the lane draws as its own, so exactly the
-// prefix `transcript_lines` wrote is taken off the first row.
+/// A person's message with its sender drawn apart. The transcript opens an
+/// attributed message with `name:` and a newline, which is right in a
+/// terminal and is the one line the lane draws as its own, so exactly the
+/// prefix `transcript_lines` wrote is taken off the first row.
 fn prompted(block: Block, principal: String, name: String) -> Piece {
   let name = text_hygiene.single_line(name)
   let prefix = name <> ":\n"
@@ -986,9 +1003,9 @@ fn prompted(block: Block, principal: String, name: String) -> Piece {
   Prompt(transcript_lines.Block(..block, rows:), principal, name, None)
 }
 
-// Fills each response's `took` from the records around it: the time from the
-// latest record before it to its own. A response with no time of its own, or
-// one the records place before what came earlier, has none.
+/// Fills each response's `took` from the records around it: the time from the
+/// latest record before it to its own. A response with no time of its own, or
+/// one the records place before what came earlier, has none.
 fn timed(classified: List(Classified)) -> List(Classified) {
   list.fold(classified, #([], None), fn(acc, item) {
     let #(out, before) = acc
@@ -1014,6 +1031,7 @@ fn timed(classified: List(Classified)) -> List(Classified) {
       None, now -> now
       before, None -> before
     }
+
     #([item, ..out], latest)
   })
   |> fn(acc) { list.reverse(acc.0) }
@@ -1033,6 +1051,7 @@ fn at_of(item: Classified) -> Option(Int) {
   }
 }
 
+/// Classifies a transcript block into turn components.
 fn classify(
   block: Block,
   strands: List(protocol.Strand),
@@ -1061,6 +1080,7 @@ fn classify(
   }
 }
 
+/// Classifies an entry value into turn items based on its message kind.
 fn entry_kind(
   block: Block,
   value: entry.Entry,
@@ -1069,6 +1089,8 @@ fn entry_kind(
   expansion: Expansion,
 ) -> List(Classified) {
   let at = Some(value.ts)
+
+  // Match block rows and entry type to classify turn role.
   case block.rows, value {
     // A block that draws nothing (a run's injected notes) is nothing here
     // either.
@@ -1172,6 +1194,8 @@ fn entry_kind(
           )
         })
         |> list.flatten
+
+      // Distinguish speaking responses from pure tool execution batches.
       case list.any(content, speaks), prose.rows {
         True, _ -> [Answer(prose, at, thoughts, None), ..own]
         False, [] -> own
@@ -1239,14 +1263,19 @@ fn entry_kind(
         ..,
       )
     -> {
+      // Map error status to completion outcome.
       let outcome = case is_error {
         True -> Failed
         False -> Done
       }
+
+      // Clear details payload if execution resulted in error.
       let details = case is_error {
         True -> None
         False -> details
       }
+
+      // Match tool name to emit spawn, wait, or generic call items.
       case dict.has_key(joined.asked, tool_call_id), tool_name {
         True, _ -> []
         False, "agent_spawn" -> [
@@ -1270,14 +1299,14 @@ fn entry_kind(
   }
 }
 
-// A response's own words, without its calls: its text and reasoning, drawn
-// by the transcript's own row builders, and the line its stop left when it
-// did not end cleanly. The calls are drawn as steps instead.
-//
-// Each part that is not a call draws exactly one row, in order, so the
-// row's key is the block's and the part's index. A reasoning block that has
-// more than its opening line to show gets its full form, built by the same
-// builder the terminal's `Ctrl+g` runs and cut by the host, under that key.
+/// A response's own words, without its calls: its text and reasoning, drawn
+/// by the transcript's own row builders, and the line its stop left when it
+/// did not end cleanly. The calls are drawn as steps instead.
+///
+/// Each part that is not a call draws exactly one row, in order, so the
+/// row's key is the block's and the part's index. A reasoning block that has
+/// more than its opening line to show gets its full form, built by the same
+/// builder the terminal's `Ctrl+g` runs and cut by the host, under that key.
 fn prose(
   block: Block,
   content: List(message.AssistantBlock),
@@ -1316,6 +1345,8 @@ fn prose(
       error_message,
     ))
   let key = fn(index) { block.key <> ":" <> int.to_string(index) }
+
+  // Expand reasoning thoughts if requested by expansion policy.
   let thoughts = case expansion {
     Skip -> dict.new()
     Expand(cap:) ->
@@ -1324,6 +1355,7 @@ fn prose(
       |> list.filter_map(fn(pair) { thought(pair.0, key(pair.1), cap) })
       |> dict.from_list
   }
+
   #(
     transcript_lines.Block(
       ..block,
@@ -1333,8 +1365,8 @@ fn prose(
   )
 }
 
-// The full form of one part's row, when it has more to show than its row:
-// a reasoning block longer than the opening line its digest draws.
+/// The full form of one part's row, when it has more to show than its row:
+/// a reasoning block longer than the opening line its digest draws.
 fn thought(
   part: message.AssistantBlock,
   key: String,
@@ -1375,6 +1407,7 @@ fn thought(
 /// assert turns.reasoning_lines(block) == dict.from_list([#("7.0:0", 31)])
 /// ```
 pub fn reasoning_lines(block: Block) -> Dict(String, Int) {
+  // Extract thoughts from assistant message entry.
   case block.source {
     transcript_lines.FromEntry(entry.MessageEntry(
       message: message.AssistantMessage(content:, ..),
@@ -1427,6 +1460,7 @@ pub fn reasoning_thoughts(
   block: Block,
   cap: fn(List(Line)) -> List(Line),
 ) -> Dict(String, List(Line)) {
+  // Extract full reasoning text lines for assistant thinking blocks.
   case block.source {
     transcript_lines.FromEntry(entry.MessageEntry(
       message: message.AssistantMessage(content:, ..),
@@ -1473,6 +1507,7 @@ pub fn reasoning_thoughts(
   }
 }
 
+/// Checks whether a speaker represents a reasoning row.
 fn reasoning_row(speaker: transcript_line.Speaker) -> Bool {
   list.contains(
     [
@@ -1499,7 +1534,7 @@ fn speaks(block: message.AssistantBlock) -> Bool {
   }
 }
 
-// The path a call that writes a file names, which the divider counts.
+/// The path a call that writes a file names, which the divider counts.
 fn written(call: message.ToolCall) -> Result(String, Nil) {
   case call.name {
     "fs_write" | "fs_edit" ->
@@ -1512,8 +1547,8 @@ fn nudged(block: Block, frame: Frame, body: String) -> Piece {
   Nudged(block.key, frame, transcript_lines.advisor_body_preview(body), body)
 }
 
-// A spawn row from the call that asked for the child and the details its
-// result returned, either of which the window may not hold.
+/// A spawn row from the call that asked for the child and the details its
+/// result returned, either of which the window may not hold.
 fn spawned(
   key: String,
   call: Option(message.ToolCall),
@@ -1533,12 +1568,12 @@ fn spawned(
   )
 }
 
-// One call, of a compact tool group or of a narrative response, with its
-// result when the window holds one. A spawn leaves the fold as a spawn row;
-// a wait stays a step, and each ready result it returned leaves as a result
-// card. A call still running keeps the time of the record that asked for it
-// (`tool_activity.Call.asked`) as its step's `since`, the one fact the records
-// give about how long it has run.
+/// One call, of a compact tool group or of a narrative response, with its
+/// result when the window holds one. A spawn leaves the fold as a spawn row;
+/// a wait stays a step, and each ready result it returned leaves as a result
+/// card. A call still running keeps the time of the record that asked for it
+/// (`tool_activity.Call.asked`) as its step's `since`, the one fact the records
+/// give about how long it has run.
 fn called(
   key: String,
   call: tool_activity.Call,
@@ -1546,11 +1581,16 @@ fn called(
   expansion: Expansion,
 ) -> List(Classified) {
   let standing = standing(call.outcome)
+
+  // Extract outcome timestamp if available.
   let at = case call.outcome {
     Some(message.ToolResultMessage(timestamp:, ..)) -> Some(timestamp)
     _ -> None
   }
+
   let wrote = written(call.invocation) |> result.map(list.wrap)
+
+  // Route special agent calls or regular tool calls into turn items.
   case call.invocation.name {
     "agent_spawn" -> [
       Outside(spawned(
@@ -1583,16 +1623,20 @@ fn called(
   }
 }
 
+/// Constructs a Step turn item from a tool activity call.
 fn step(
   key: String,
   call: tool_activity.Call,
   standing: Standing,
   expansion: Expansion,
 ) -> Item {
+  // Extract activity lines for tool detail rendering.
   let detail = case transcript_lines.activity_call_lines(call) {
     [_, ..rest] -> rest
     [] -> []
   }
+
+  // Expand detailed lines when expansion mode is enabled.
   let full = case expansion {
     Skip -> []
     Expand(cap:) ->
@@ -1601,6 +1645,7 @@ fn step(
         more -> cap(more)
       }
   }
+
   Step(
     key:,
     standing:,
@@ -1624,10 +1669,10 @@ fn step(
   )
 }
 
-// How much of a program and its value a card keeps: what the host's
-// expansion keeps of a row, so a settled turn sealed without its full text
-// keeps no whole program in its cards either, and a host that caps an
-// expanded row caps the card's text the same way.
+/// How much of a program and its value a card keeps: what the host's
+/// expansion keeps of a row, so a settled turn sealed without its full text
+/// keeps no whole program in its cards either, and a host that caps an
+/// expanded row caps the card's text the same way.
 fn program_source(expansion: Expansion) -> program_card.Source {
   case expansion {
     Skip -> program_card.OpeningOnly
@@ -1641,15 +1686,17 @@ fn program_source(expansion: Expansion) -> program_card.Source {
   }
 }
 
-// Whether a call's result says its command was stopped on request: the broker
-// asked for the stop while it ran, as a Stop or a steer does, and its wall clock
-// did not run out (`tools/bash`: `cancelled` together with `timed_out` is a
-// deadline). Only a result that says so counts, since other tools do not record
-// why they ended, and the divider says `interrupted` for no other.
+/// Whether a call's result says its command was stopped on request: the broker
+/// asked for the stop while it ran, as a Stop or a steer does, and its wall clock
+/// did not run out (`tools/bash`: `cancelled` together with `timed_out` is a
+/// deadline). Only a result that says so counts, since other tools do not record
+/// why they ended, and the divider says `interrupted` for no other.
 fn cancelled(outcome: Option(message.AgentMessage)) -> Ending {
   let flag = fn(details, name) {
     option.then(details, field(_, name)) == Some(json.Bool(True))
   }
+
+  // Inspect cancellation and deadline flags on outcome.
   case outcome {
     Some(message.ToolResultMessage(details:, ..)) ->
       case flag(details, "cancelled"), flag(details, "timed_out") {
@@ -1660,6 +1707,7 @@ fn cancelled(outcome: Option(message.AgentMessage)) -> Ending {
   }
 }
 
+/// Maps an optional agent message outcome to a standing status.
 fn standing(outcome: Option(message.AgentMessage)) -> Standing {
   case outcome {
     None -> Pending
@@ -1668,6 +1716,7 @@ fn standing(outcome: Option(message.AgentMessage)) -> Standing {
   }
 }
 
+/// Extracts JSON details payload from a successful tool result message.
 fn details(outcome: Option(message.AgentMessage)) -> Option(json.JsonValue) {
   case outcome {
     Some(message.ToolResultMessage(details: Some(value), is_error: False, ..)) ->
@@ -1676,18 +1725,21 @@ fn details(outcome: Option(message.AgentMessage)) -> Option(json.JsonValue) {
   }
 }
 
-// The ready results one wait returned, each a card keyed under the call.
+/// The ready results one wait returned, each a card keyed under the call.
 fn returned(
   key: String,
   value: Option(json.JsonValue),
   strands: List(protocol.Strand),
 ) -> List(Classified) {
+  // Extract results array from wait call payload.
   case option.then(value, field(_, "results")) {
     Some(json.Array(results)) ->
       results
       |> list.index_map(fn(result, index) { #(result, index) })
       |> list.filter_map(fn(pair) {
         let #(result, index) = pair
+
+        // Map ready child states to returned pieces.
         case field_text(result, "state"), field_text(result, "strand") {
           Some("ready"), Some(child) ->
             Ok(
@@ -1733,16 +1785,18 @@ type Turn {
   Turn(input: Option(Classified), rest: List(Classified))
 }
 
-// Splits the lane at every input. What precedes the first input (a window
-// that starts mid-turn) is a turn with no input of its own.
-//
-// The memory context is recorded ahead of the prompt it was attached for, so
-// it is held until the next input and opens that turn's work. A memory with
-// no input after it stays in the turn it was found in.
+/// Splits the lane at every input. What precedes the first input (a window
+/// that starts mid-turn) is a turn with no input of its own.
+///
+/// The memory context is recorded ahead of the prompt it was attached for, so
+/// it is held until the next input and opens that turn's work. A memory with
+/// no input after it stays in the turn it was found in.
 fn split(classified: List(Classified)) -> List(Turn) {
   let #(done, current, held) =
     list.fold(classified, #([], Turn(None, []), []), fn(acc, item) {
       let #(done, current, held) = acc
+
+      // Route item into input opening, memory stash, or turn body.
       case item {
         Input(..) -> #([current, ..done], Turn(Some(item), held), [])
         Doing(item: Memory(..), ..) -> #(done, current, [item, ..held])
@@ -1763,15 +1817,17 @@ fn split(classified: List(Classified)) -> List(Turn) {
   })
 }
 
-// Lays one turn out. The last message with the strand's own prose is its
-// answer and stays in place; every other message, and every step, goes
-// under the divider, which stands where the first of them stood. Pieces
-// outside the fold keep their order around it.
+/// Lays one turn out. The last message with the strand's own prose is its
+/// answer and stays in place; every other message, and every step, goes
+/// under the divider, which stands where the first of them stood. Pieces
+/// outside the fold keep their order around it.
 fn lay_out(turn: Turn, folding: Folding) -> List(Piece) {
   let indexed = list.index_map(turn.rest, fn(item, index) { #(item, index) })
   let answer =
     list.fold(indexed, None, fn(found, pair) {
       let #(item, index) = pair
+
+      // Locate the index of the final answer prose message.
       case item {
         Answer(..) -> Some(index)
         Input(..) | Doing(..) | Outside(..) -> found
@@ -1783,6 +1839,8 @@ fn lay_out(turn: Turn, folding: Folding) -> List(Piece) {
   let working =
     list.filter_map(indexed, fn(pair) {
       let #(item, index) = pair
+
+      // Filter turn items that belong within the working fold.
       case item {
         Doing(item:, ..) -> Ok(item)
         Answer(block:, thoughts:, took:, ..) if Some(index) != answer ->
@@ -1790,10 +1848,14 @@ fn lay_out(turn: Turn, folding: Folding) -> List(Piece) {
         Answer(..) | Input(..) | Outside(..) -> Error(Nil)
       }
     })
+
+  // Find input piece if present.
   let lead = case turn.input {
     Some(Input(piece:, ..)) -> [piece]
     _ -> []
   }
+
+  // Lay out working items under divider or append directly.
   case working {
     [] -> list.append(lead, list.filter_map(turn.rest, placed))
     [_, ..] -> {
@@ -1802,6 +1864,8 @@ fn lay_out(turn: Turn, folding: Folding) -> List(Piece) {
       list.fold(indexed, #([], Undrawn), fn(acc, pair) {
         let #(out, drawn) = acc
         let #(item, index) = pair
+
+        // Determine placement of item relative to fold divider.
         case folded(item, index, answer), drawn {
           Under, Drawn -> #(out, drawn)
           Under, Undrawn -> #([divider, ..out], Drawn)
@@ -1829,6 +1893,7 @@ type Place {
   Beside
 }
 
+/// Determines whether an item sits under the fold or beside it.
 fn folded(item: Classified, index: Int, answer: Option(Int)) -> Place {
   case item {
     Doing(..) -> Under
@@ -1837,6 +1902,7 @@ fn folded(item: Classified, index: Int, answer: Option(Int)) -> Place {
   }
 }
 
+/// Projects a classified item into an optional piece for rendering.
 fn placed(item: Classified) -> Result(Piece, Nil) {
   case item {
     Answer(block:, thoughts:, took:, ..) -> Ok(Plain(block, thoughts, took))
@@ -1846,13 +1912,13 @@ fn placed(item: Classified) -> Result(Piece, Nil) {
   }
 }
 
-// A turn's work is keyed by the input that opened it, which stays the same
-// while the turn grows. Only the turn before the window's first input can
-// lack one, and the window drops its oldest records as new ones arrive, so
-// that turn is keyed by its place at the window's start rather than by its
-// oldest item, which would change with every capture that dropped one. A
-// host that keys its rows (the web view's lane) matches the work to itself
-// across captures instead of replacing and redrawing all of it.
+/// A turn's work is keyed by the input that opened it, which stays the same
+/// while the turn grows. Only the turn before the window's first input can
+/// lack one, and the window drops its oldest records as new ones arrive, so
+/// that turn is keyed by its place at the window's start rather than by its
+/// oldest item, which would change with every capture that dropped one. A
+/// host that keys its rows (the web view's lane) matches the work to itself
+/// across captures instead of replacing and redrawing all of it.
 fn work_key(turn: Turn) -> String {
   case turn.input {
     Some(Input(piece:, ..)) -> "work:" <> piece_key(piece)
@@ -1861,6 +1927,7 @@ fn work_key(turn: Turn) -> String {
   }
 }
 
+/// Extracts the key string from a piece.
 fn piece_key(piece: Piece) -> String {
   case piece {
     Plain(block:, ..) | Prompt(block:, ..) | Commentary(block:, ..) -> block.key
@@ -1875,9 +1942,9 @@ fn piece_key(piece: Piece) -> String {
   }
 }
 
-// The divider's figures, from the records alone: from the input's time to
-// the latest time any record of the turn carries, the calls it made, and
-// the distinct paths it wrote.
+/// The divider's figures, from the records alone: from the input's time to
+/// the latest time any record of the turn carries, the calls it made, and
+/// the distinct paths it wrote.
 fn worked(turn: Turn) -> Worked {
   let times =
     list.filter_map(turn.rest, fn(item) {
@@ -1887,10 +1954,13 @@ fn worked(turn: Turn) -> Worked {
           Error(Nil)
       }
     })
+
+  // Extract earliest timestamp in turn.
   let start = case turn.input {
     Some(Input(at:, ..)) -> at
     _ -> list.first(times) |> option.from_result
   }
+
   let end = list.max(times, int.compare) |> option.from_result
 
   // Measure the turn's total elapsed duration from start to end.
@@ -1947,11 +2017,11 @@ fn worked(turn: Turn) -> Worked {
   Worked(duration_ms:, steps:, files:, failed:, ending:)
 }
 
-// Whether a response of the turn was aborted: its rows lead with the words an
-// aborted response draws (`transcript_lines.assistant_terminal_lines`). A
-// response that spoke before it was stopped is an `Answer`, not a `Doing`, so
-// both are read; otherwise the divider of a turn whose aborted response had
-// prose would not say `interrupted`.
+/// Whether a response of the turn was aborted: its rows lead with the words an
+/// aborted response draws (`transcript_lines.assistant_terminal_lines`). A
+/// response that spoke before it was stopped is an `Answer`, not a `Doing`, so
+/// both are read; otherwise the divider of a turn whose aborted response had
+/// prose would not say `interrupted`.
 fn stopped(item: Classified) -> Bool {
   case item {
     Doing(item: Narrated(block:, ..), ..) | Answer(block:, ..) ->
@@ -1987,6 +2057,8 @@ pub fn divider(worked: Worked) -> String {
       worked.files,
       worked.failed,
     )
+
+  // Format ending status suffix if interrupted.
   case worked.ending {
     Finished -> words
     Interrupted -> words <> " · interrupted"

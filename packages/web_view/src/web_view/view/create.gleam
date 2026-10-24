@@ -257,8 +257,8 @@ pub fn new_button(create: Create(message)) -> Element(message) {
   }
 }
 
-// One "New session" button: disabled while a creation is out, otherwise it
-// sends the message the page chose.
+/// One "New session" button: disabled while a creation is out, otherwise it
+/// sends the message the page chose.
 fn opener(
   words: String,
   state: State,
@@ -352,6 +352,7 @@ fn locks(fields: Fields) -> List(attribute.Attribute(message)) {
   }
 }
 
+/// Drawn helper.
 fn drawn(
   workspace: String,
   submit: fn(String, String, Sharing, Roles) -> message,
@@ -386,10 +387,10 @@ fn drawn(
   )
 }
 
-// The whole new-session form: the "Runs on" choice when the daemon has a place
-// to offer, then the fields for the choice. The choice is the page's own state,
-// so switching it redraws the fields below and the person's typed name is not
-// carried across.
+/// The whole new-session form: the "Runs on" choice when the daemon has a place
+/// to offer, then the fields for the choice. The choice is the page's own state,
+/// so switching it redraws the fields below and the person's typed name is not
+/// carried across.
 fn sheet(
   create: Create(message),
   recent: List(String),
@@ -433,9 +434,9 @@ fn sheet(
   }
 }
 
-// The form for a folder on this machine: the remembered folders, the path, then
-// the same name and box. The name's hint follows the name input, as the
-// stylesheet's sibling rule needs.
+/// The form for a folder on this machine: the remembered folders, the path, then
+/// the same name and box. The name's hint follows the name input, as the
+/// stylesheet's sibling rule needs.
 fn typed(
   submit: fn(String, String, Sharing, Roles) -> message,
   cancel: message,
@@ -481,16 +482,16 @@ fn typed(
   )
 }
 
-// The "Runs on" choice: one card for this machine, then one for each executor
-// and each pool, and the line that says where work happens for the choice.
-// Nothing is chosen on the page's behalf except this machine, which is the
-// default: the cards are drawn in the order the configuration lists them,
-// executors first, and the person presses one.
-//
-// The chosen placement is the page's own state and not a field of the form. A
-// card's button sends the choice it was drawn for, which the server built from
-// the names it was given, so no executor or pool name is ever an attribute, and
-// the form's submit carries only what a person types or picks from a list.
+/// The "Runs on" choice: one card for this machine, then one for each executor
+/// and each pool, and the line that says where work happens for the choice.
+/// Nothing is chosen on the page's behalf except this machine, which is the
+/// default: the cards are drawn in the order the configuration lists them,
+/// executors first, and the person presses one.
+///
+/// The chosen placement is the page's own state and not a field of the form. A
+/// card's button sends the choice it was drawn for, which the server built from
+/// the names it was given, so no executor or pool name is ever an attribute, and
+/// the form's submit carries only what a person types or picks from a list.
 fn places(
   machine: String,
   cards: Cards,
@@ -542,8 +543,8 @@ fn places(
   )
 }
 
-// What the cards say of how they were made. The state of each card is advice,
-// and the line says so before the person reads one.
+/// What the cards say of how they were made. The state of each card is advice,
+/// and the line says so before the person reads one.
 fn readiness_words(readiness: placements.Readiness) -> String {
   case readiness {
     placements.Checking ->
@@ -553,8 +554,8 @@ fn readiness_words(readiness: placements.Readiness) -> String {
   }
 }
 
-// Where the work of a session happens for the choice. The conversation always
-// stays on the daemon serving the page; the commands run where the choice says.
+/// Where the work of a session happens for the choice. The conversation always
+/// stays on the daemon serving the page; the commands run where the choice says.
 fn where_words(
   machine: String,
   cards: Cards,
@@ -578,11 +579,13 @@ fn where_words(
   }
 }
 
-// The executor's declared platform in parentheses, or nothing when its operator
-// declared none or the daemon has not reported.
+/// The executor's declared platform in parentheses, or nothing when its operator
+/// declared none or the daemon has not reported.
 fn platform_words(cards: Cards, name: String) -> String {
   let found =
     list.find(cards.placements.executors, fn(each) { each.name == name })
+
+  // Dispatch on platform_words state.
   case found {
     Ok(placements.Executor(
       report: Some(placements.Report(platform: Some(os), ..)),
@@ -598,6 +601,7 @@ type Mark {
   Unmarked
 }
 
+/// Here card helper.
 fn here_card(
   machine: String,
   chosen: Option(Choice),
@@ -618,6 +622,7 @@ fn here_card(
   )
 }
 
+/// Executor card helper.
 fn executor_card(
   executor: placements.Executor,
   readiness: placements.Readiness,
@@ -654,11 +659,11 @@ fn marked(chosen: Option(Choice), choice: Choice) -> Mark {
   }
 }
 
-// What an executor's card says beyond its name and state: what its operator
-// declared about the machine, which is the operator's claim and is worded as
-// one, then how many scopes the executor says are free and any way its census
-// contradicts the claim. The last two are the executor's own report, drawn as
-// text like the rest.
+/// What an executor's card says beyond its name and state: what its operator
+/// declared about the machine, which is the operator's claim and is worded as
+/// one, then how many scopes the executor says are free and any way its census
+/// contradicts the claim. The last two are the executor's own report, drawn as
+/// text like the rest.
 fn executor_facts(report: placements.Report) -> List(Element(message)) {
   list.flatten([
     [fact(declared_words(report))],
@@ -680,6 +685,7 @@ fn scopes_free_words(free: Int) -> String {
   }
 }
 
+/// Declared words helper.
 fn declared_words(report: placements.Report) -> String {
   let stated =
     list.flatten([
@@ -687,6 +693,8 @@ fn declared_words(report: placements.Report) -> String {
       stated_word(report.enforcement),
       report.toolchains,
     ])
+
+  // Dispatch on declared_words state.
   case stated {
     [] -> "Declares nothing about its machine."
     words -> "Declared: " <> string.join(words, ", ") <> "."
@@ -700,6 +708,7 @@ fn stated_word(word: Option(String)) -> List(String) {
   }
 }
 
+/// Pool card helper.
 fn pool_card(
   pool: placements.Pool,
   readiness: placements.Readiness,
@@ -729,10 +738,10 @@ fn pool_card(
   )
 }
 
-// A pool's card says how many of its executors the daemon reached and in what
-// order a first open tries them. The order is the pool's own and is not changed
-// by health: an open moves to the next executor only for a failed connection or
-// a full one.
+/// A pool's card says how many of its executors the daemon reached and in what
+/// order a first open tries them. The order is the pool's own and is not changed
+/// by health: an open moves to the next executor only for a failed connection or
+/// a full one.
 fn pool_facts(report: placements.PoolReport) -> List(Element(message)) {
   case report.executors {
     [] -> [fact("No executor satisfies the pool's requirements.")]
@@ -761,10 +770,10 @@ fn pill(tone: String, words: String) -> Element(message) {
   ])
 }
 
-// One card: the name, what kind of place it is (nothing for this machine), the
-// state pill, the facts, and the button that chooses it. The chosen card is
-// marked by its class and by a pressed button, and the buttons have no handler
-// while a creation is out.
+/// One card: the name, what kind of place it is (nothing for this machine), the
+/// state pill, the facts, and the button that chooses it. The chosen card is
+/// marked by its class and by a pressed button, and the buttons have no handler
+/// while a creation is out.
 fn card(
   kind: String,
   name: String,
@@ -818,14 +827,14 @@ fn card(
   )
 }
 
-// The form for a workspace registered at the chosen place: a select of the
-// workspaces that place reported, and the optional session name. There is no
-// Shareable box, because the daemon makes a session on an executor or in a pool
-// session-only (its workspace aggregate is keyed by a path on the daemon's
-// host), which is what Shareable asks for. A place that has reported no
-// workspace (still being read, down, not heard, or none registered) offers a
-// text field for the name it serves instead, under a note saying so: the
-// daemon's refusal of a name the executor does not serve is the backstop.
+/// The form for a workspace registered at the chosen place: a select of the
+/// workspaces that place reported, and the optional session name. There is no
+/// Shareable box, because the daemon makes a session on an executor or in a pool
+/// session-only (its workspace aggregate is keyed by a path on the daemon's
+/// host), which is what Shareable asks for. A place that has reported no
+/// workspace (still being read, down, not heard, or none registered) offers a
+/// text field for the name it serves instead, under a note saying so: the
+/// daemon's refusal of a name the executor does not serve is the backstop.
 fn registered(
   cards: Cards,
   choice: Choice,
@@ -866,8 +875,8 @@ fn registered(
   )
 }
 
-// Why the form asks for a typed name: the place has not reported its
-// workspaces. The name of the executor or pool is a text node.
+/// Why the form asks for a typed name: the place has not reported its
+/// workspaces. The name of the executor or pool is a text node.
 fn unknown_words(choice: Choice) -> String {
   case choice {
     placements.OnExecutor(name:) ->
@@ -879,9 +888,9 @@ fn unknown_words(choice: Choice) -> String {
   }
 }
 
-// The text field for a workspace name the page could not list. The name is the
-// browser's text, judged by `creations.registered_name` when the form is read
-// and again by the daemon.
+/// The text field for a workspace name the page could not list. The name is the
+/// browser's text, judged by `creations.registered_name` when the form is read
+/// and again by the daemon.
 fn typed_workspace_field(fields: Fields) -> Element(message) {
   html.input([
     attribute.type_("text"),
@@ -903,9 +912,9 @@ fn workspace_field(
   chooser_of(fields, "workspace", "Workspace", None, workspaces)
 }
 
-// The select of the remembered folders, or nothing when there are none. Its
-// first option is "no choice", so the path field below is the way to name a
-// folder that is not listed.
+/// The select of the remembered folders, or nothing when there are none. Its
+/// first option is "no choice", so the path field below is the way to name a
+/// folder that is not listed.
 fn remembered_field(fields: Fields, recent: List(String)) -> Element(message) {
   case recent {
     [] -> element.none()
@@ -920,6 +929,7 @@ fn remembered_field(fields: Fields, recent: List(String)) -> Element(message) {
   }
 }
 
+/// Name field helper.
 fn name_field(fields: Fields) -> Element(message) {
   html.input([
     attribute.type_("text"),
@@ -933,6 +943,7 @@ fn name_field(fields: Fields) -> Element(message) {
   ])
 }
 
+/// Share field helper.
 fn share_field(fields: Fields) -> Element(message) {
   html.label([attribute.class("home-create-share")], [
     html.input([
@@ -953,8 +964,8 @@ fn share_field(fields: Fields) -> Element(message) {
   ])
 }
 
-// The two optional selects and the line that says how they combine, or nothing
-// when the configuration defines neither.
+/// The two optional selects and the line that says how they combine, or nothing
+/// when the configuration defines neither.
 fn role_fields(
   fields: Fields,
   profiles: List(String),
@@ -987,8 +998,8 @@ fn model_field(fields: Fields, models: List(String)) -> Element(message) {
   chooser(fields, "model", "Main model", models)
 }
 
-// A labelled select of text the daemon supplied whose first option is the
-// default, or nothing when it supplied none.
+/// A labelled select of text the daemon supplied whose first option is the
+/// default, or nothing when it supplied none.
 fn chooser(
   fields: Fields,
   field_name: String,
@@ -1001,12 +1012,12 @@ fn chooser(
   }
 }
 
-// A labelled select of text the page drew. With `unchosen` the first option is
-// that words and has the empty value; without it the first offered text is the
-// one the browser selects. Each other option's value is its position in
-// `offered`, and its label is the text as a text node, so no name, key or path
-// is ever an attribute. The rows share the stylesheet's `home-create-profile`
-// classes, which style any labelled select in this form.
+/// A labelled select of text the page drew. With `unchosen` the first option is
+/// that words and has the empty value; without it the first offered text is the
+/// one the browser selects. Each other option's value is its position in
+/// `offered`, and its label is the text as a text node, so no name, key or path
+/// is ever an attribute. The rows share the stylesheet's `home-create-profile`
+/// classes, which style any labelled select in this form.
 fn chooser_of(
   fields: Fields,
   field_name: String,
@@ -1038,6 +1049,7 @@ fn chooser_of(
   ])
 }
 
+/// Actions helper.
 fn actions(fields: Fields, cancel: message) -> Element(message) {
   html.div([attribute.class("home-create-actions")], [
     html.button(
@@ -1065,9 +1077,9 @@ fn actions(fields: Fields, cancel: message) -> Element(message) {
   ])
 }
 
-// The event's decoder: the form's fields as the browser lists them, refused
-// unless `fields_with_roles` accepts them. A refused event is dropped by Lustre
-// with no message.
+/// The event's decoder: the form's fields as the browser lists them, refused
+/// unless `fields_with_roles` accepts them. A refused event is dropped by Lustre
+/// with no message.
 fn submitted(
   workspace: String,
   submit: fn(String, String, Sharing, Roles) -> message,
@@ -1075,6 +1087,8 @@ fn submitted(
   models: List(String),
 ) -> decode.Decoder(message) {
   use listed <- decode.subfield(["detail", "formData"], decode.list(field()))
+
+  // Dispatch on submitted state.
   case fields_with_roles(listed, profiles, models) {
     Ok(#(name, sharing, roles)) ->
       decode.success(submit(workspace, name, sharing, roles))
@@ -1086,8 +1100,8 @@ fn submitted(
   }
 }
 
-// The folder form's decoder, refused unless `typed_fields_with_roles` accepts
-// the list.
+/// The folder form's decoder, refused unless `typed_fields_with_roles` accepts
+/// the list.
 fn typed_submitted(
   submit: fn(String, String, Sharing, Roles) -> message,
   profiles: List(String),
@@ -1095,6 +1109,8 @@ fn typed_submitted(
   recent: List(String),
 ) -> decode.Decoder(message) {
   use listed <- decode.subfield(["detail", "formData"], decode.list(field()))
+
+  // Dispatch on typed_submitted state.
   case typed_fields_with_roles(listed, profiles, models, recent) {
     Ok(#(path, name, sharing, roles)) ->
       decode.success(submit(path, name, sharing, roles))
@@ -1106,8 +1122,8 @@ fn typed_submitted(
   }
 }
 
-// The registered-workspace form's decoder, refused unless
-// `remote_fields_with_roles` accepts the list.
+/// The registered-workspace form's decoder, refused unless
+/// `remote_fields_with_roles` accepts the list.
 fn remote_submitted(
   submit: fn(String, String, Roles) -> message,
   workspaces: List(String),
@@ -1115,6 +1131,8 @@ fn remote_submitted(
   models: List(String),
 ) -> decode.Decoder(message) {
   use listed <- decode.subfield(["detail", "formData"], decode.list(field()))
+
+  // Dispatch on remote_submitted state.
   case remote_fields_with_roles(listed, workspaces, profiles, models) {
     Ok(#(workspace, name, roles)) ->
       decode.success(submit(workspace, name, roles))
@@ -1149,6 +1167,8 @@ pub fn fields(
 ) -> Result(#(String, Sharing), Nil) {
   let names = list.filter(listed, fn(field) { field.0 == "name" })
   let boxes = list.filter(listed, fn(field) { field.0 == "shareable" })
+
+  // Dispatch on fields state.
   case names, boxes, list.length(listed) {
     [#(_, name)], [], 1 -> Ok(#(name, Private))
     [#(_, name)], [#(_, "on")], 2 -> Ok(#(name, Shareable))
@@ -1175,6 +1195,8 @@ pub fn typed_fields(
 ) -> Result(#(String, String, Sharing), Nil) {
   let paths = list.filter(listed, fn(field) { field.0 == "path" })
   let rest = list.filter(listed, fn(field) { field.0 != "path" })
+
+  // Dispatch on typed_fields state.
   case paths, fields(rest) {
     [#(_, path)], Ok(#(name, sharing)) -> Ok(#(path, name, sharing))
     _, _ -> Error(Nil)
@@ -1253,15 +1275,17 @@ pub fn typed_fields_with_roles(
   use #(path, name, sharing) <- result.map(
     typed_fields(list.filter(rest, fn(field) { field.0 != "folder" })),
   )
+
+  // Dispatch on typed_fields_with_roles state.
   case picked, path {
     Some(folder), "" -> #(folder, name, sharing, roles)
     Some(_), _ | None, _ -> #(path, name, sharing, roles)
   }
 }
 
-// Splits the `profile` and `model` entries from a form's fields and reads each
-// against its own offered list. What remains is the fields the older decoders
-// judge, so they stay as strict as they were.
+/// Splits the `profile` and `model` entries from a form's fields and reads each
+/// against its own offered list. What remains is the fields the older decoders
+/// judge, so they stay as strict as they were.
 fn chosen_roles(
   listed: List(#(String, String)),
   profiles: List(String),
@@ -1280,10 +1304,10 @@ fn chosen_roles(
   #(rest, creations.Roles(profile:, model:))
 }
 
-// The text a form's entries for one select choose: none sent is the default, one
-// with an empty value is the default, and one whose value is the position of an
-// offered text is that text. Two entries, or any other value, is a refusal, and
-// so is any entry at all when nothing was offered.
+/// The text a form's entries for one select choose: none sent is the default, one
+/// with an empty value is the default, and one whose value is the position of an
+/// offered text is that text. Two entries, or any other value, is a refusal, and
+/// so is any entry at all when nothing was offered.
 fn chosen(
   entries: List(#(String, String)),
   offered: List(String),
@@ -1338,12 +1362,16 @@ pub fn remote_fields(
 ) -> Result(#(String, String), Nil) {
   let chosen = list.filter(listed, fn(field) { field.0 == "workspace" })
   let names = list.filter(listed, fn(field) { field.0 == "name" })
+
+  // Dispatch on remote_fields state.
   case chosen, names, list.length(listed) {
     [#(_, text)], [#(_, name)], 2 -> {
+      // Find workspace by registered name or from known list.
       let found = case workspaces {
         [] -> creations.registered_name(text)
         _ -> at(text, workspaces)
       }
+
       result.map(found, fn(workspace) { #(workspace, name) })
     }
     _, _, _ -> Error(Nil)

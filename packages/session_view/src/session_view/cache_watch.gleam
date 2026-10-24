@@ -187,6 +187,7 @@ pub fn observe(
   at: Int,
   timing: Timing,
 ) -> #(Ledger, Option(Missed)) {
+  // Handle the `observe` branch dispatch.
   case timing {
     Replayed -> #(ledger, None)
     Live -> {
@@ -232,13 +233,17 @@ pub fn admit(
   covered: Option(Int),
 ) -> Result(Ledger, Nil) {
   let seen = dict.get(ledger.seen, strand)
+
+  // Handle the `admit` branch dispatch.
   case seq <= result.unwrap(seen, -1) {
     True -> Error(Nil)
     False -> {
+      // Handle the `admit` branch dispatch.
       let already_covered = case covered, seen {
         Some(next_seq), Error(Nil) if seq < next_seq -> True
         _, _ -> False
       }
+
       Ok(
         Ledger(
           ..ledger,
@@ -283,12 +288,16 @@ pub fn settle(
     |> list.fold(#(ledger, []), fn(acc, item) {
       let #(current, missed) = acc
       let #(strand, Observation(seq:, operation:, usage:, at:)) = item
+
+      // Handle the `settle` branch dispatch.
       case seq < next_seq {
         True -> {
           let current =
             Ledger(..current, pending: dict.delete(current.pending, strand))
           let #(current, found) =
             observed(current, strand, operation, usage, at, timing)
+
+          // Handle the `settle` branch dispatch.
           case found {
             None -> #(current, missed)
             Some(value) -> #(current, [value, ..missed])
@@ -304,6 +313,7 @@ pub fn settle(
 // row's operation as the one to skip; the fenced operation's own rows are
 // skipped; the first row of any other operation lifts the fence and is
 // observed.
+/// Helper `observed` for observed.
 fn observed(
   ledger: Ledger,
   strand: String,
@@ -372,6 +382,7 @@ pub fn capture(
   previous: Option(snapshot_view.View),
   view: snapshot_view.View,
 ) -> Ledger {
+  // Handle the `capture` branch dispatch.
   case previous {
     Some(previous) if previous.configurations != view.configurations -> {
       let watches =
@@ -409,6 +420,7 @@ pub fn capture(
   }
 }
 
+/// Helper `configured_model` for configured model.
 fn configured_model(
   view: snapshot_view.View,
   strand: String,

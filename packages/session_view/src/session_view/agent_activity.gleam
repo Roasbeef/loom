@@ -43,6 +43,8 @@ pub fn waiting(calls: List(message.ToolCall)) -> Option(String) {
       }
     })
     |> list.unique
+
+  // Format the waiting status message if any subagents are pending.
   case names {
     [] -> None
     names ->
@@ -61,17 +63,23 @@ pub fn waiting(calls: List(message.ToolCall)) -> Option(String) {
   }
 }
 
+/// Extracts a human-readable strand name from an agent handle value.
 fn handle_name(value: json.JsonValue) -> Result(String, Nil) {
+  // Extract text payload from JSON string value.
   use text <- result.try(case value {
     json.String(text) -> Ok(text)
     _ -> Error(Nil)
   })
+
+  // Split handle into strand identifier and operation suffix.
   case list.reverse(string.split(text, "#")) {
     [operation, first, ..rest] -> {
       use _ <- result.try(
         ids.parse_op_id(operation) |> result.replace_error(Nil),
       )
       let name = string.join(list.reverse([first, ..rest]), "#")
+
+      // Require non-empty strand name component.
       case name {
         "" -> Error(Nil)
         _ -> Ok(text_hygiene.single_line(name))
@@ -107,6 +115,8 @@ pub fn recent(
     use meta <- result.try(
       codec.decode_operation(cell.value) |> result.replace_error(Nil),
     )
+
+    // Find the sequence number of the earliest prompt for this run.
     case meta.intent {
       operation.RunIntent(prompts) ->
         entries
@@ -117,6 +127,8 @@ pub fn recent(
       _ -> Error(Nil)
     }
   }
+
+  // Filter and summarize tool calls occurring after the run started.
   case start {
     Error(Nil) -> []
     Ok(start) ->
@@ -131,12 +143,15 @@ pub fn recent(
   }
 }
 
+/// Formats a single tool call outcome and invocation string.
 fn call_summary(call: tool_activity.Call) -> String {
+  // Label tool execution result status.
   let status = case call.outcome {
     Some(message.ToolResultMessage(is_error: True, ..)) -> "× Failed · "
     Some(message.ToolResultMessage(is_error: False, ..)) -> "✓ Completed · "
     _ -> "· Result unavailable · "
   }
+
   status <> invocation(call.invocation)
 }
 
@@ -149,6 +164,7 @@ fn call_summary(call: tool_activity.Call) -> String {
 /// ```
 @internal
 pub fn invocation(call: message.ToolCall) -> String {
+  // Extract summary argument text from common tool parameter fields.
   let detail = case call.arguments {
     json.Object(fields) ->
       ["path", "command", "pattern"]
@@ -161,6 +177,7 @@ pub fn invocation(call: message.ToolCall) -> String {
       |> result.unwrap("")
     _ -> ""
   }
+
   text_hygiene.single_line(
     call.name
     <> case detail {

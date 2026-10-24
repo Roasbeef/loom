@@ -360,9 +360,9 @@ pub fn read(
   }
 }
 
-// The card the result decides: none yet is a running program, a result that
-// is not an error is a completed one, and an error with details is a failed
-// one. A result without details has nothing to read, so it has no card.
+/// The card the result decides: none yet is a running program, a result that
+/// is not an error is a completed one, and an error with details is a failed
+/// one. A result without details has nothing to read, so it has no card.
 fn settle(
   program: String,
   arguments: List(#(String, json.JsonValue)),
@@ -370,6 +370,8 @@ fn settle(
   source: Source,
 ) -> Option(ProgramCard) {
   let budget = int_field(arguments, "within_ms")
+
+  // Settle into running, completed, or failed program card based on outcome.
   case outcome {
     None -> Some(running(program, budget, source))
     Some(message.ToolResultMessage(
@@ -388,7 +390,7 @@ fn settle(
   }
 }
 
-// A program with no result: its opening and its budget are all there is.
+/// A program with no result: its opening and its budget are all there is.
 fn running(
   program: String,
   budget: Option(Int),
@@ -409,8 +411,8 @@ fn running(
   )
 }
 
-// A program that returned: its record gives the sentence, the chips and the
-// calls, and its value gives the result.
+/// A program that returned: its record gives the sentence, the chips and the
+/// calls, and its value gives the result.
 fn completed(
   program: String,
   budget: Option(Int),
@@ -436,9 +438,9 @@ fn completed(
   )
 }
 
-// A program that did not complete: which way it failed decides the state and
-// where the error text is, and the call record, when the host wrote one,
-// still says what ran before it stopped.
+/// A program that did not complete: which way it failed decides the state and
+/// where the error text is, and the call record, when the host wrote one,
+/// still says what ran before it stopped.
 fn failed(
   program: String,
   budget: Option(Int),
@@ -462,6 +464,7 @@ fn failed(
     )
     _ -> #(RunFailed, said)
   }
+
   let text =
     error
     |> text_hygiene.multiline
@@ -473,6 +476,7 @@ fn failed(
     CompileFailed -> parse_diagnostic(text)
     Running | Completed | Rejected | RunFailed | ProgramFailed -> None
   }
+
   let log = call_tree.read(json.Object(details))
 
   // Construct the failure representation card.
@@ -500,8 +504,8 @@ fn failed(
   )
 }
 
-// Text cut to `limit` characters with a line saying so, or the text itself
-// when it fits.
+/// Text cut to `limit` characters with a line saying so, or the text itself
+/// when it fits.
 fn bounded(text: String, limit: Int) -> String {
   case string.drop_start(text, limit) {
     "" -> text
@@ -515,9 +519,9 @@ fn bounded(text: String, limit: Int) -> String {
 
 // --- the program --------------------------------------------------------
 
-// The program's line count and opening, and the whole text when the host
-// keeps it. The opening skips blank lines, so the lines shown are ones that
-// say something; each keeps the number it has in the program.
+/// The program's line count and opening, and the whole text when the host
+/// keeps it. The opening skips blank lines, so the lines shown are ones that
+/// say something; each keeps the number it has in the program.
 fn program_of(
   program: String,
   source: Source,
@@ -559,6 +563,8 @@ type Family {
 
 // The closed table. A capability is `module.function`, and a function the
 // table does not name is `Other` rather than a guess.
+/// The closed table. A capability is `module.function`, and a function the
+/// table does not name is `Other` rather than a guess.
 fn family(cap: String) -> Family {
   case string.split_once(cap, ".") {
     Ok(#(module, function)) -> family_of(module, function)
@@ -566,6 +572,7 @@ fn family(cap: String) -> Family {
   }
 }
 
+/// Determines the Family category for a given module and capability function name.
 fn family_of(module: String, function: String) -> Family {
   case module, function {
     "fs", "read" -> FileRead
@@ -589,8 +596,8 @@ fn family_of(module: String, function: String) -> Family {
   }
 }
 
-// The calls that took effect or may have: everything the program did not see
-// fail and did not cancel. An unsettled call is in, since it may have run.
+/// The calls that took effect or may have: everything the program did not see
+/// fail and did not cancel. An unsettled call is in, since it may have run.
 fn live(log: CallLog) -> List(Call) {
   list.filter(log.items, fn(call) {
     case call.status {
@@ -604,9 +611,10 @@ fn tally(calls: List(Call), families: List(Family)) -> Int {
   list.count(calls, fn(call) { list.contains(families, family(call.cap)) })
 }
 
-// The sentence of a program that returned. The phrases come first in a fixed
-// order, so two programs that did the same read the same.
+/// The sentence of a program that returned. The phrases come first in a fixed
+/// order, so two programs that did the same read the same.
 fn completed_sentence(log: Option(CallLog)) -> String {
+  // Format outcome sentence from call log if available, else generic.
   case log {
     None -> "Completed"
     Some(log) -> {
@@ -634,6 +642,8 @@ fn completed_sentence(log: Option(CallLog)) -> String {
           other_phrase(tally(calls, [Other]), unlisted),
           failed_phrase(log.failed),
         ])
+
+      // Compose phrases into a sentence or fall back to total call summary.
       case said, log.total {
         [], 0 -> "Ran with no calls"
         [], total -> "Made " <> counted(total, "call", "calls")
@@ -667,7 +677,7 @@ fn failed_phrase(failed: Int) -> List(String) {
   }
 }
 
-// The sentence of a program that did not complete.
+/// The sentence of a program that did not complete.
 fn failed_sentence(
   state: State,
   log: Option(CallLog),
@@ -703,8 +713,8 @@ fn failed_sentence(
   }
 }
 
-// What the foot of a failed card says, in the words the terminal's block
-// uses for the same failure.
+/// What the foot of a failed card says, in the words the terminal's block
+/// uses for the same failure.
 fn failure_foot(state: State, budget: Option(Int)) -> String {
   case state {
     CompileFailed | Rejected -> "the program did not run"
@@ -748,10 +758,11 @@ fn count_words(log: CallLog) -> String {
 
 // --- the chips ----------------------------------------------------------
 
-// The side effects and the failures, only those there were. A write, a
-// command and a request are the calls that change something outside the
-// program, so they are marked; a read is not.
+/// The side effects and the failures, only those there were. A write, a
+/// command and a request are the calls that change something outside the
+/// program, so they are marked; a read is not.
 fn chips(log: Option(CallLog)) -> List(Chip) {
+  // Extract side-effect chips for calls that took place.
   case log {
     None -> []
     Some(log) -> {
@@ -786,9 +797,9 @@ pub fn chip_words(chip: Chip) -> String {
 
 // --- the calls ----------------------------------------------------------
 
-// The record's calls as rows. Consecutive calls to one capability that
-// ended the same way are one row, as the terminal groups them, and each row
-// is placed on the span of the whole execution.
+/// The record's calls as rows. Consecutive calls to one capability that
+/// ended the same way are one row, as the terminal groups them, and each row
+/// is placed on the span of the whole execution.
 fn call_table(log: CallLog) -> CallTable {
   let axis_ms = axis(log)
   CallTable(
@@ -818,6 +829,7 @@ pub fn axis(log: CallLog) -> Int {
 
 // Consecutive calls that share a capability, an ending and an error code,
 // each run as its first call and every call it holds, in order.
+/// Groups consecutive calls to the same capability with the same status.
 fn grouped(calls: List(Call)) -> List(#(Call, List(Call))) {
   calls
   |> list.fold([], fn(groups: List(#(Call, List(Call))), call) {
@@ -834,6 +846,7 @@ fn grouped(calls: List(Call)) -> List(#(Call, List(Call))) {
   |> list.reverse
 }
 
+/// Builds a CallRow from a grouped run of calls and the execution time axis.
 fn row(first: Call, members: List(Call), axis_ms: Int) -> CallRow {
   let start =
     list.fold(members, first.start_ms, fn(earliest, call) {
@@ -863,7 +876,7 @@ fn row(first: Call, members: List(Call), axis_ms: Int) -> CallRow {
   )
 }
 
-// A run's argument summaries on one line, cut to a row.
+/// A run's argument summaries on one line, cut to a row.
 fn args_row(members: List(Call)) -> String {
   let joined =
     members
@@ -871,6 +884,8 @@ fn args_row(members: List(Call)) -> String {
       option.to_result(call.args, Nil) |> result.map(text_hygiene.single_line)
     })
     |> string.join(" · ")
+
+  // Truncate joined argument string to args_limit.
   case string.drop_start(joined, args_limit) {
     "" -> joined
     _ -> string.slice(joined, 0, args_limit - 1) <> "…"
@@ -897,30 +912,36 @@ fn args_row(members: List(Call)) -> String {
 pub fn bar(axis_ms: Int, start_ms: Int, end_ms: Int, status: Status) -> Bar {
   let axis = int.max(1, axis_ms)
   let offset = int.clamp(start_ms * 100 / axis, min: 0, max: 99)
+
+  // Determine the effective end time on the axis according to call status.
   let end = case status {
     call_tree.Unsettled -> axis
     call_tree.Settled | call_tree.Failed | call_tree.Cancelled ->
       int.max(end_ms, start_ms)
   }
+
   let span = int.max(0, end - start_ms) * 100 / axis
   Bar(offset:, width: int.clamp(span, min: 1, max: 100 - offset))
 }
 
 // --- the value ----------------------------------------------------------
 
-// The program's value as the card shows it: the kind of value and a hint
-// per key from the terminal's preview, and the whole value when the host
-// keeps it. A result with no `value` has its text as the value.
+/// The program's value as the card shows it: the kind of value and a hint
+/// per key from the terminal's preview, and the whole value when the host
+/// keeps it. A result with no `value` has its text as the value.
 fn value_of(
   details: List(#(String, json.JsonValue)),
   content: List(message.ToolResultBlock),
   source: Source,
 ) -> Value {
+  // Extract or fall back to stringified result value.
   let value = case list.key_find(details, "value") {
     Ok(value) -> value
     Error(Nil) ->
       json.String(content |> list.map(result_text) |> string.join("\n"))
   }
+
+  // Parse value preview kind and key hints.
   let #(kind, hints) = case transcript_lines.value_preview(value) {
     [first, ..hints] -> #(
       string.split_once(first, "RESULT · ")
@@ -930,6 +951,7 @@ fn value_of(
     )
     [] -> #("", [])
   }
+
   Value(kind:, hints:, whole: case source {
     OpeningOnly -> None
     Whole(cut:) ->
@@ -946,17 +968,19 @@ fn value_of(
 
 // --- the compiler's diagnostic --------------------------------------------
 
-// A Gleam diagnostic opens with `error: …`, names its place on a
-// `┌─ path:line:column` line, and quotes the source under numbered `│`
-// gutters with a row of carets under the line it means. A text that has no
-// place or quotes no source is not a diagnostic the card can lay out, and
-// the card shows it as it came.
+/// A Gleam diagnostic opens with `error: …`, names its place on a
+/// `┌─ path:line:column` line, and quotes the source under numbered `│`
+/// gutters with a row of carets under the line it means. A text that has no
+/// place or quotes no source is not a diagnostic the card can lay out, and
+/// the card shows it as it came.
 fn parse_diagnostic(text: String) -> Option(Diagnostic) {
   case first_error(string.split(text, "\n")) {
     [heading, ..rest] ->
       case list.find_map(rest, place_of) {
         Ok(#(path, line, column)) -> {
           let rows = list.filter_map(rest, row_of)
+
+          // Verify that at least one row represents quoted source.
           case list.any(rows, is_quoted) {
             True -> Some(Diagnostic(heading:, path:, line:, column:, rows:))
             False -> None
@@ -968,10 +992,10 @@ fn parse_diagnostic(text: String) -> Option(Diagnostic) {
   }
 }
 
-// The compiler lists a program's warnings before its error, and it is the
-// error that stopped the build, so the card is laid out from the first
-// `error` and only the rows up to the next diagnostic. A text with no `error`
-// row is read from its first line as it came.
+/// The compiler lists a program's warnings before its error, and it is the
+/// error that stopped the build, so the card is laid out from the first
+/// `error` and only the rows up to the next diagnostic. A text with no `error`
+/// row is read from its first line as it came.
 fn first_error(lines: List(String)) -> List(String) {
   case list.drop_while(lines, fn(row) { !string.starts_with(row, "error") }) {
     [heading, ..rest] -> [
@@ -984,9 +1008,11 @@ fn first_error(lines: List(String)) -> List(String) {
   }
 }
 
-// The path, line and column of a `┌─ path:line:column` row.
+/// The path, line and column of a `┌─ path:line:column` row.
 fn place_of(row: String) -> Result(#(String, Int, Int), Nil) {
   use #(_, place) <- result.try(string.split_once(row, "┌─ "))
+
+  // Split path components and line/column numbers.
   case list.reverse(string.split(string.trim(place), ":")) {
     [column, line, ..path] -> {
       use column <- result.try(int.parse(column))
@@ -997,11 +1023,13 @@ fn place_of(row: String) -> Result(#(String, Int, Int), Nil) {
   }
 }
 
-// A row of the report below its place: quoted source, the carets under it,
-// or a note. The place row and the empty gutters between rows are none of
-// these.
+/// A row of the report below its place: quoted source, the carets under it,
+/// or a note. The place row and the empty gutters between rows are none of
+/// these.
 fn row_of(row: String) -> Result(DiagRow, Nil) {
   let trimmed = string.trim_start(row)
+
+  // Dispatch on whether line is a diagnostic origin or a gutter line.
   case string.contains(row, "┌─ "), string.split_once(trimmed, " │") {
     True, _ -> Error(Nil)
     False, Ok(#(number, text)) ->
@@ -1013,6 +1041,7 @@ fn row_of(row: String) -> Result(DiagRow, Nil) {
   }
 }
 
+/// Parses an unnumbered gutter line into a pointer or note row.
 fn gutter_row(trimmed: String) -> Result(DiagRow, Nil) {
   case string.split_once(trimmed, "│"), string.trim(trimmed) {
     _, "" -> Error(Nil)
@@ -1059,6 +1088,8 @@ fn is_quoted(row: DiagRow) -> Bool {
 /// ```
 pub fn opening(card: ProgramCard) -> Opening {
   let trouble = list.any(card.chips, fn(chip) { chip.kind == FailedCalls })
+
+  // Determine expanded or collapsed status for card sections.
   case card.state, trouble {
     Running, _ ->
       Opening(
@@ -1093,6 +1124,7 @@ pub fn opening(card: ProgramCard) -> Opening {
 
 // --- reading the call and its result --------------------------------------
 
+/// Formats a count with appropriate singular or plural noun.
 fn counted(count: Int, one: String, many: String) -> String {
   int.to_string(count)
   <> " "
@@ -1109,6 +1141,7 @@ fn result_text(block: message.ToolResultBlock) -> String {
   }
 }
 
+/// Extracts an optional string field from JSON object key-value pairs.
 fn string_field(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -1119,6 +1152,7 @@ fn string_field(
   }
 }
 
+/// Extracts an optional integer field from JSON object key-value pairs.
 fn int_field(
   fields: List(#(String, json.JsonValue)),
   name: String,

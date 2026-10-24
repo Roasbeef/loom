@@ -51,8 +51,8 @@ pub fn view(board: Option(words.Board), notice: String) -> Element(message) {
   )
 }
 
-// The last refusal, in the words the shared record kept. It is an alert, so a
-// screen reader says it when it appears.
+/// The last refusal, in the words the shared record kept. It is an alert, so a
+/// screen reader says it when it appears.
 fn refusal(notice: String) -> List(Element(message)) {
   case notice {
     "" -> []
@@ -64,8 +64,8 @@ fn refusal(notice: String) -> List(Element(message)) {
   }
 }
 
-// A board that has not been read says so, unless a refusal has said why it
-// has not, since "reading" beside "forbidden" would contradict itself.
+/// A board that has not been read says so, unless a refusal has said why it
+/// has not, since "reading" beside "forbidden" would contradict itself.
 fn body(board: Option(words.Board), notice: String) -> List(Element(message)) {
   case board, notice {
     None, "" -> [
@@ -90,7 +90,7 @@ fn body(board: Option(words.Board), notice: String) -> List(Element(message)) {
   }
 }
 
-// The four counts, each a small tinted block with its label beneath its value.
+/// The four counts, each a small tinted block with its label beneath its value.
 fn tiles(board: words.Board) -> Element(message) {
   html.div(
     [attribute.class("memory-tiles")],
@@ -107,6 +107,7 @@ fn heading(label: String) -> Element(message) {
   html.h4([attribute.class("memory-heading")], [html.text(label)])
 }
 
+/// Receives helper.
 fn receives(board: words.Board) -> List(Element(message)) {
   [
     heading("What each run receives"),
@@ -125,8 +126,8 @@ fn receives(board: words.Board) -> List(Element(message)) {
   ]
 }
 
-// The closed set of classes a file's state may give its row, each a literal,
-// so no state the daemon names can choose one.
+/// The closed set of classes a file's state may give its row, each a literal,
+/// so no state the daemon names can choose one.
 fn reach_class(reach: words.Reach) -> attribute.Attribute(message) {
   case reach {
     words.Injected -> attribute.class("memory-file-injected")
@@ -137,6 +138,7 @@ fn reach_class(reach: words.Reach) -> attribute.Attribute(message) {
   }
 }
 
+/// Notes helper.
 fn notes(section: words.Section(words.Note)) -> List(Element(message)) {
   [
     heading("Notes"),
@@ -163,8 +165,8 @@ fn notes(section: words.Section(words.Note)) -> List(Element(message)) {
   ]
 }
 
-// One note: its kind and date first, with a `legacy` mark for a note written
-// before notes were typed, then its title and description.
+/// One note: its kind and date first, with a `legacy` mark for a note written
+/// before notes were typed, then its title and description.
 fn note_row(note: words.Note) -> Element(message) {
   html.li([attribute.class("memory-row")], [
     html.span([attribute.class("memory-row-head")], [
@@ -176,6 +178,7 @@ fn note_row(note: words.Note) -> Element(message) {
   ])
 }
 
+/// Rules helper.
 fn rules(section: words.Section(words.Rule)) -> List(Element(message)) {
   [
     heading("Approved rules"),
@@ -199,6 +202,7 @@ fn rules(section: words.Section(words.Rule)) -> List(Element(message)) {
   ]
 }
 
+/// Rule row helper.
 fn rule_row(rule: words.Rule) -> Element(message) {
   html.li([attribute.class("memory-row")], [
     html.span([attribute.class("memory-row-head")], [
@@ -208,8 +212,8 @@ fn rule_row(rule: words.Rule) -> Element(message) {
   ])
 }
 
-// The queue is counted here and reviewed in its own section, which is above
-// this one in the pane.
+/// The queue is counted here and reviewed in its own section, which is above
+/// this one in the pane.
 fn queue(waiting: words.Waiting) -> List(Element(message)) {
   [
     heading("Proposals"),
@@ -219,6 +223,7 @@ fn queue(waiting: words.Waiting) -> List(Element(message)) {
   ]
 }
 
+/// More helper.
 fn more(omitted: Int, pointer: String) -> List(Element(message)) {
   case words.omitted_words(omitted, pointer) {
     "" -> []

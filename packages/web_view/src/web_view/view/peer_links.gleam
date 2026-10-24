@@ -92,6 +92,7 @@ pub fn view(
   }
 }
 
+/// Listing helper.
 fn listing(
   board: option.Option(peer_links.Board),
   step: peer_links.Step,
@@ -132,19 +133,21 @@ fn listing(
   }
 }
 
-// A row's key is its direction, session and strand, which name one link, and
-// never its position, so a button pressed while the list changes reaches the
-// same link or none. The session and strand are text from other sessions, and a
-// key is not an attribute.
+/// A row's key is its direction, session and strand, which name one link, and
+/// never its position, so a button pressed while the list changes reaches the
+/// same link or none. The session and strand are text from other sessions, and a
+/// key is not an attribute.
 fn row_key(row: Row) -> String {
+  // Dispatch on row_key state.
   let direction = case row.direction {
     Outgoing -> "out"
     Incoming -> "in"
   }
+
   direction <> "\t" <> row.session <> "\t" <> row.strand
 }
 
-// One row: the sentence with its marks, and its Unlink button or its question.
+/// One row: the sentence with its marks, and its Unlink button or its question.
 fn item(
   board: peer_links.Board,
   row: Row,
@@ -175,11 +178,13 @@ fn item(
   ])
 }
 
-// `this › target` for a link the strand sends along, `source › this` for one
-// that reaches it. The other session is its name, or the start of its identity
-// when the daemon could not read a name.
+/// `this › target` for a link the strand sends along, `source › this` for one
+/// that reaches it. The other session is its name, or the start of its identity
+/// when the daemon could not read a name.
 fn sentence(row: Row, strand: String) -> String {
   let other = named(row) <> " / " <> row.strand
+
+  // Dispatch on sentence state.
   case row.direction {
     Outgoing -> strand <> " › " <> other
     Incoming -> other <> " › " <> strand
@@ -193,6 +198,7 @@ fn named(row: Row) -> String {
   }
 }
 
+/// Marks helper.
 fn marks(row: Row) -> Element(message) {
   let words =
     list.flatten([
@@ -205,6 +211,8 @@ fn marks(row: Row) -> Element(message) {
         peer_links.Granted -> []
       },
     ])
+
+  // Dispatch on marks state.
   case words {
     [] -> element.none()
     _ ->
@@ -214,8 +222,8 @@ fn marks(row: Row) -> Element(message) {
   }
 }
 
-// The question for one row. A pair that links both ways asks which direction,
-// and a single link asks to confirm.
+/// The question for one row. A pair that links both ways asks which direction,
+/// and a single link asks to confirm.
 fn unlink_question(
   board: peer_links.Board,
   row: Row,
@@ -233,6 +241,8 @@ fn unlink_question(
     )
   }
   let keep = button("share-cancel", "Keep it", peer_links.Cancel)
+
+  // Dispatch on unlink_question state.
   case peer_links.partner(board, row) {
     None ->
       question("Remove " <> sentence(row, strand) <> "?", [
@@ -265,6 +275,7 @@ fn unlink_question(
   }
 }
 
+/// Question helper.
 fn question(
   words: String,
   buttons: List(Element(message)),
@@ -277,11 +288,11 @@ fn question(
   ])
 }
 
-// The sessions the form offers: the running ones the focused strand does not
-// already send to, in any of its strands. Offering a linked session would only
-// be refused as a duplicate or, for a default link, would create a grant beside
-// one that already admits the same mail. A page
-// that has not read its board offers them all.
+/// The sessions the form offers: the running ones the focused strand does not
+/// already send to, in any of its strands. Offering a linked session would only
+/// be refused as a duplicate or, for a default link, would create a grant beside
+/// one that already admits the same mail. A page
+/// that has not read its board offers them all.
 fn linkable(
   board: option.Option(peer_links.Board),
   sessions: List(#(String, String)),
@@ -293,7 +304,7 @@ fn linkable(
   }
 }
 
-// The Link control under the list: a button, the session picker, or the form.
+/// The Link control under the list: a button, the session picker, or the form.
 fn controls(
   strand: String,
   sessions: List(#(String, String)),
@@ -375,6 +386,7 @@ fn controls(
   }
 }
 
+/// Picker helper.
 fn picker(
   running: List(#(String, String)),
   sessions: List(#(String, String)),
@@ -418,8 +430,8 @@ fn picker(
   ])
 }
 
-// A choice that stays on screen: pressed or not, said both in the label's
-// state attribute and by the button being the selected one.
+/// A choice that stays on screen: pressed or not, said both in the label's
+/// state attribute and by the button being the selected one.
 fn toggle(words: String, on: Bool, press: message) -> Element(message) {
   html.div([attribute.class("share-actions")], [
     html.button(
@@ -436,6 +448,7 @@ fn toggle(words: String, on: Bool, press: message) -> Element(message) {
   ])
 }
 
+/// Status helper.
 fn status(note: peer_links.Note) -> Element(message) {
   case note {
     peer_links.Silent ->

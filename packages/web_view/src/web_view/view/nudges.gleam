@@ -45,17 +45,19 @@ import session_view/text_hygiene
 /// ```
 pub fn view(board: Option(advisor_pending.Board)) -> Element(message) {
   use <- element.memo([element.ref(board)])
+
+  // Dispatch on view state.
   case board {
     Some(advisor_pending.Board(pending: [_, ..], ..) as held) -> card(held)
     Some(advisor_pending.Board(pending: [], ..)) | None -> element.none()
   }
 }
 
-// The heading names the count and the recipient, as the terminal's does, and
-// the label the terminal's tail carries: these bodies are not delivered. The
-// list is every body received, oldest first. A server that counted more than
-// it sent is told to the reader, so the card never claims to be the whole
-// queue when it is not.
+/// The heading names the count and the recipient, as the terminal's does, and
+/// the label the terminal's tail carries: these bodies are not delivered. The
+/// list is every body received, oldest first. A server that counted more than
+/// it sent is told to the reader, so the card never claims to be the whole
+/// queue when it is not.
 fn card(board: advisor_pending.Board) -> Element(message) {
   let omitted = board.total - list.length(board.pending)
   html.section(
@@ -85,6 +87,7 @@ fn card(board: advisor_pending.Board) -> Element(message) {
   )
 }
 
+/// More helper.
 fn more(omitted: Int) -> List(Element(message)) {
   case omitted > 0 {
     True -> [

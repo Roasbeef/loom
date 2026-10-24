@@ -199,14 +199,19 @@ pub fn observe(
   usage: Usage,
   at: Int,
 ) -> #(Option(CacheMiss), Option(Watch)) {
+  // Handle the `observe` branch dispatch.
   let hour_head = case watch {
     Some(held) -> held.hour_head
     None -> Unproven
   }
+
+  // Handle the `observe` branch dispatch.
   let hour_head = case usage.cache_write_1h {
     Some(count) if count > 0 -> Split
     Some(_) | None -> hour_head
   }
+
+  // Handle the `observe` branch dispatch.
   case reads_context(usage), watch {
     // An adjustment carries no request of its own to compare against, so
     // the baseline the next real request needs is the one already held.
@@ -311,6 +316,8 @@ pub fn idle_label(idle_ms: Int) -> String {
   let seconds = int.max(0, idle_ms) / 1000
   let minutes = seconds / 60
   let hours = minutes / 60
+
+  // Handle the `idle_label` branch dispatch.
   case hours > 0, minutes > 0 {
     True, _ -> int.to_string(hours) <> "h" <> trailing_minutes(minutes % 60)
     False, True -> int.to_string(minutes) <> "m"
@@ -334,6 +341,7 @@ fn trailing_minutes(minutes: Int) -> String {
 // floor at zero covers the pathological ordering where a provider prices a
 // cached read above fresh input: the operator lost nothing there, and a
 // negative figure in a cost notice would only confuse.
+/// Helper `estimate` for estimate.
 fn estimate(previous: Usage, current: Usage, tokens: Int) -> Option(Float) {
   use input_rate <- option.then(uncached_rate(current))
   use cached_rate <- option.then(rate(
@@ -444,7 +452,9 @@ pub fn outlook_label(outlook: Outlook) -> String {
 
 // Round a TTL upper bound upward. Rounding down would turn 3m 59s into a
 // false claim that no more than 3m remains.
+/// Helper `remaining_label` for remaining label.
 fn remaining_label(remaining_ms: Int) -> String {
+  // Handle the `remaining_label` branch dispatch.
   case remaining_ms > 60_000 {
     True -> {
       let rounded = remaining_ms + 59_999

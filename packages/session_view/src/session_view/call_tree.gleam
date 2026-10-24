@@ -117,10 +117,12 @@ pub fn read(details: JsonValue) -> Option(CallLog) {
 /// ```
 ///
 pub fn summary(log: CallLog) -> String {
+  // Handle the `summary` branch dispatch.
   let noun = case log.total {
     1 -> " call"
     _ -> " calls"
   }
+
   let counted = fn(count: Int, word: String) {
     case count {
       0 -> []
@@ -137,7 +139,9 @@ pub fn summary(log: CallLog) -> String {
 
 // --- decoding --------------------------------------------------------------
 
+/// Decodes call tree log entries from JSON.
 fn decode_log(value: JsonValue) -> Result(CallLog, Nil) {
+  // Handle the `decode_log` branch dispatch.
   case value {
     json.Object(fields) -> {
       use started_unix_ms <- result.try(count(fields, "started_unix_ms"))
@@ -175,7 +179,9 @@ fn decode_items(fields: List(#(String, JsonValue))) -> Result(List(Call), Nil) {
   }
 }
 
+/// Decodes call tree call record from JSON.
 fn decode_call(value: JsonValue) -> Result(Call, Nil) {
+  // Handle the `decode_call` branch dispatch.
   case value {
     json.Object(fields) -> {
       use cap <- result.try(text(fields, "cap"))
@@ -190,6 +196,7 @@ fn decode_call(value: JsonValue) -> Result(Call, Nil) {
   }
 }
 
+/// Helper `decode_status` for decode status.
 fn decode_status(fields: List(#(String, JsonValue))) -> Result(Status, Nil) {
   case list.key_find(fields, "status") {
     Ok(json.String("ok")) -> Ok(Settled)
@@ -209,6 +216,7 @@ fn count(fields: List(#(String, JsonValue)), key: String) -> Result(Int, Nil) {
   }
 }
 
+/// Extracts text field from a JSON object.
 fn text(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -220,6 +228,7 @@ fn text(
 }
 
 // An optional text field: absent is fine, present must be a string.
+/// Extracts optional text field from a JSON object.
 fn optional_text(
   fields: List(#(String, JsonValue)),
   key: String,

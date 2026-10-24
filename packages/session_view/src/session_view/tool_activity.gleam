@@ -98,7 +98,8 @@ pub fn calls(entries: List(entry.Entry)) -> List(Call) {
   |> list.reverse
 }
 
-// Newest-first `found` lets the first open call with the id be the latest.
+/// Pairs a tool result outcome with its corresponding open tool call in the list.
+/// Newest-first `found` lets the first open call with the id be the latest.
 fn join_result(
   found: List(Call),
   tool_call_id: String,
@@ -175,8 +176,10 @@ pub fn project_split(
           [split, ..] if split < value.seq -> Owed
           _ -> pending
         }
+
         let passed = list.drop_while(splits, fn(split) { split < value.seq })
 
+        // Flush the group when a split boundary is owed and all calls are complete.
         let #(items, group, pending) = case pending, complete(group) {
           Owed, True -> #(flush(items, group), Group([], dict.new()), Settled)
           Owed, False | Settled, _ -> #(items, group, pending)
@@ -226,6 +229,8 @@ pub fn running(
     |> result.try(fn(cell) {
       codec.decode_state(cell.value) |> result.replace_error(Nil)
     })
+
+  // Extract running tool calls if currently in the tools run phase.
   case state {
     Ok(operation.RunState(phase: operation.Tools(batch), ..)) ->
       running_batch(entries, batch)
@@ -236,6 +241,7 @@ pub fn running(
   }
 }
 
+/// Filters message entries to resolve tool calls that are currently pending effects.
 fn running_batch(entries: List(entry.Entry), batch: operation.ToolBatch) {
   let pending =
     list.filter_map(batch.calls, fn(call) {
@@ -246,6 +252,8 @@ fn running_batch(entries: List(entry.Entry), batch: operation.ToolBatch) {
         | operation.CallCompleted(..) -> Error(Nil)
       }
     })
+
+  // Match assistant entry to locate invocations corresponding to pending indices.
   case list.find(entries, fn(value) { value.id == batch.assistant_entry }) {
     Ok(entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..)) ->
       content
@@ -304,8 +312,11 @@ pub fn regroups(value: entry.Entry) -> Bool {
   }
 }
 
+/// Collects an entry into the open tool group or flushes it as a boundary.
 fn collect(acc: #(List(Item), Group), value: entry.Entry) {
   let #(items, group) = acc
+
+  // Dispatch by entry type to accumulate assistant calls or tool outcomes.
   case value {
     entry.MessageEntry(
       message: message.AssistantMessage(content:, error_message: None, ..),
@@ -343,12 +354,14 @@ fn collect(acc: #(List(Item), Group), value: entry.Entry) {
   }
 }
 
+/// Processes an assistant message to extract tool calls or mark narrative prose boundary.
 fn collect_assistant(
   items: List(Item),
   group: Group,
   value: entry.Entry,
   content: List(message.AssistantBlock),
 ) {
+  // Flush if the assistant block contains visible prose.
   case list.any(content, has_prose) {
     True -> boundary(items, group, value)
     False -> {
@@ -374,9 +387,9 @@ fn collect_assistant(
   }
 }
 
-// Provider call ids can be reused by a later response. End the visual group
-// at reuse so one dictionary can never overwrite an earlier invocation.
-// This also leaves malformed duplicate ids visible rather than dropping text.
+/// Provider call ids can be reused by a later response. End the visual group
+/// at reuse so one dictionary can never overwrite an earlier invocation.
+/// This also leaves malformed duplicate ids visible rather than dropping text.
 fn collect_call(
   acc: #(List(Item), Group),
   source: ids.EntryId,
@@ -384,6 +397,8 @@ fn collect_call(
   invocation: message.ToolCall,
 ) {
   let #(items, group) = acc
+
+  // Append call or flush if invocation id was already seen in this group.
   case dict.has_key(group.calls, invocation.id) {
     False -> #(items, add_call(group, source, asked, invocation))
     True -> #(
@@ -393,6 +408,7 @@ fn collect_call(
   }
 }
 
+/// Checks if an assistant block contains non-empty text or thinking.
 fn has_prose(block) {
   case block {
     message.AssistantText(text:, ..) -> text != ""
@@ -402,6 +418,7 @@ fn has_prose(block) {
   }
 }
 
+/// Inserts a new tool call record into the active group.
 fn add_call(
   group: Group,
   source: ids.EntryId,
@@ -423,7 +440,9 @@ fn boundary(items: List(Item), group: Group, value: entry.Entry) {
   #([Narrative(value), ..flush(items, group)], Group([], dict.new()))
 }
 
+/// Flushes the active tool group into the items list if it contains calls.
 fn flush(items: List(Item), group: Group) {
+  // Check if any calls were recorded in the group.
   case group.order {
     [] -> items
     order -> {

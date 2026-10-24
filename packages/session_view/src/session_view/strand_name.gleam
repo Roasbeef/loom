@@ -24,6 +24,7 @@ import gleam/string
 /// assert strand_name.short("main") == "main"
 /// ```
 pub fn short(name: String) -> String {
+  // Non-subagent strands keep their full name as-is.
   case string.starts_with(name, "sub:") {
     False -> name
     True -> {
@@ -31,6 +32,8 @@ pub fn short(name: String) -> String {
         string.split(name, "/")
         |> list.last
         |> result.unwrap(name)
+
+      // Split slug from generated hex digest suffix.
       case string.split(leaf, "-") |> list.reverse {
         [digest, first, ..rest] ->
           case is_digest(digest) {

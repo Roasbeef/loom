@@ -123,6 +123,7 @@ pub fn keys(pieces: List(Piece)) -> List(Key) {
   |> list.flat_map(assistant_keys)
 }
 
+/// Replaces reasoning digests within narrations with cached summaries.
 fn labelled_item(item: Item, labels: Labels) -> Item {
   case item {
     turns.Narrated(block:, thoughts:, took:) ->
@@ -131,8 +132,9 @@ fn labelled_item(item: Item, labels: Labels) -> Item {
   }
 }
 
-// A response entry's long reasoning blocks, or none for any other source.
+/// A response entry's long reasoning blocks, or none for any other source.
 fn assistant_keys(block: Block) -> List(Key) {
+  // Inspect the block source to locate assistant message entries.
   case block.source {
     FromEntry(
       value: entry.MessageEntry(message: message.AssistantMessage(..), ..) as value,
@@ -150,11 +152,11 @@ fn assistant_keys(block: Block) -> List(Key) {
   }
 }
 
-// The block's rows with each labelled reasoning row replaced. A response draws
-// one row for each of its content blocks that is not a call, in order
-// (`turns.prose`), so the entry's labels, keyed by content index, are lined up
-// with the rows by walking the two together; rows after the last content
-// block, the stop's own, have no content block and are left as they are.
+/// The block's rows with each labelled reasoning row replaced. A response draws
+/// one row for each of its content blocks that is not a call, in order
+/// (`turns.prose`), so the entry's labels, keyed by content index, are lined up
+/// with the rows by walking the two together; rows after the last content
+/// block, the stop's own, have no content block and are left as they are.
 fn relabelled(block: Block, labels: Labels) -> Block {
   case block.source {
     FromEntry(
@@ -178,8 +180,8 @@ fn relabelled(block: Block, labels: Labels) -> Block {
   }
 }
 
-// The content index each drawn row stands for, in row order: every block of
-// the response that is not a tool call.
+/// The content index each drawn row stands for, in row order: every block of
+/// the response that is not a tool call.
 fn drawn_slots(content: List(message.AssistantBlock)) -> List(Int) {
   content
   |> list.index_map(fn(part, index) { #(part, index) })
@@ -191,6 +193,7 @@ fn drawn_slots(content: List(message.AssistantBlock)) -> List(Int) {
   })
 }
 
+/// Walks rendered rows alongside non-call slots, swapping digest rows with labels.
 fn walked(
   rows: List(#(String, Line)),
   slots: List(Int),
@@ -212,8 +215,8 @@ fn labelled_at(found: List(#(Int, String)), slot: Int) -> Option(String) {
   }
 }
 
-// Only a digest is replaced. A full-text row (an expanded host) or a row some
-// other part drew keeps its words, so a slot that does not line up is harmless.
+/// Only a digest is replaced. A full-text row (an expanded host) or a row some
+/// other part drew keeps its words, so a slot that does not line up is harmless.
 fn swapped(line: Line, label: Option(String)) -> Line {
   case label, line.speaker == transcript_line.ReasoningDigest {
     Some(label), True ->

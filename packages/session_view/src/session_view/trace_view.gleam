@@ -281,10 +281,12 @@ pub fn vetting_word(vetting: Vetting) -> String {
 /// assert trace_view.budget_line(program) == "30000 ms wall · vetted"
 /// ```
 pub fn budget_line(program: Program) -> String {
+  // Format execution wall budget if specified.
   let wall = case program.within_ms {
     Some(ms) -> int.to_string(ms) <> " ms wall"
     None -> "default wall budget"
   }
+
   wall <> " · " <> vetting_word(program.vetting)
 }
 
@@ -373,6 +375,8 @@ pub fn newest(
     })
     |> list.map(fn(record) { record.entry })
     |> code_mode_calls
+
+  // Extract the latest call if one was made.
   case list.last(calls) {
     Ok(call) ->
       Some(Newest(
@@ -383,8 +387,8 @@ pub fn newest(
   }
 }
 
-// A message entry's place in the session; the others carry none a program
-// can have, so they sort first.
+/// A message entry's place in the session; the others carry none a program
+/// can have, so they sort first.
 fn entry_seq(value: entry.Entry) -> Int {
   case value {
     entry.MessageEntry(seq:, ..) -> seq
@@ -404,7 +408,7 @@ fn code_mode_calls(entries: List(entry.Entry)) -> List(tool_activity.Call) {
   |> list.filter(fn(call) { call.invocation.name == "code_mode" })
 }
 
-// The program text a call sent, or nothing when it named a file instead.
+/// The program text a call sent, or nothing when it named a file instead.
 fn program_text(call: tool_activity.Call) -> String {
   case call.invocation.arguments {
     json.Object(fields) ->
@@ -439,6 +443,8 @@ pub fn source_rows(program: String) -> List(String) {
       <> " │ "
       <> text_hygiene.single_line(line)
     })
+
+  // Check if remaining lines exceed the display limit.
   case list.length(lines) - source_lines {
     left if left > 0 ->
       list.append(shown, [
@@ -450,25 +456,32 @@ pub fn source_rows(program: String) -> List(String) {
   }
 }
 
-// One call as a program: the arguments give the label and the budget, the
-// result gives the state and the excerpt.
+/// One call as a program: the arguments give the label and the budget, the
+/// result gives the state and the excerpt.
 fn program(call: tool_activity.Call, position: Int) -> Program {
+  // Extract arguments dictionary or default to empty list.
   let arguments = case call.invocation.arguments {
     json.Object(fields) -> fields
     _ -> []
   }
+
+  // Resolve the wall time budget if specified.
   let within_ms = case list.key_find(arguments, "within_ms") {
     Ok(json.Int(value)) -> Some(value)
     _ -> None
   }
+
   let label = label(arguments, position)
 
+  // Construct the Program record based on whether the call has completed.
   case call.outcome {
     Some(message.ToolResultMessage(content:, details:, is_error:, ..)) -> {
+      // Extract fields from outcome details if available.
       let fields = case details {
         Some(json.Object(fields)) -> fields
         _ -> []
       }
+
       let state = state(fields, is_error)
       let shown = excerpt(fields, content, state)
       Program(
@@ -499,13 +512,13 @@ fn program(call: tool_activity.Call, position: Int) -> Program {
 /// The most characters of a failure's detail a program keeps.
 pub const max_detail = 800
 
-// What went wrong, for a state that is a failure to compile, vet or run. The
-// result's own `detail` is the reason (the compiler's diagnostics, a run's
-// reason), and a vetting refusal keeps its reasons in `rejections[].detail`.
-// A result with neither, or with empty ones, falls back to the first sentence
-// of its text, which states what happened before it tells the model what to
-// do next. So a failed program always has a reason to show, and never the
-// instruction.
+/// What went wrong, for a state that is a failure to compile, vet or run. The
+/// result's own `detail` is the reason (the compiler's diagnostics, a run's
+/// reason), and a vetting refusal keeps its reasons in `rejections[].detail`.
+/// A result with neither, or with empty ones, falls back to the first sentence
+/// of its text, which states what happened before it tells the model what to
+/// do next. So a failed program always has a reason to show, and never the
+/// instruction.
 fn detail(
   fields: List(#(String, json.JsonValue)),
   state: State,
@@ -525,11 +538,15 @@ fn detail(
   }
 }
 
+/// Extracts the error or rejection detail string from the failure result fields.
 fn reason(fields: List(#(String, json.JsonValue))) -> String {
+  // Find the primary detail field.
   let from_detail = case list.key_find(fields, "detail") {
     Ok(json.String(text)) -> text
     _ -> ""
   }
+
+  // Fallback to rejection details if the primary detail is empty.
   let text = case
     string.trim(from_detail),
     list.key_find(fields, "rejections")
@@ -549,6 +566,7 @@ fn reason(fields: List(#(String, json.JsonValue))) -> String {
       |> string.join("\n")
     _, _ -> from_detail
   }
+
   string.trim(from_first_error(text_hygiene.multiline(text)))
 }
 
@@ -567,9 +585,9 @@ fn first_sentence(text: String) -> String {
   }
 }
 
-// The rows of the call record a result's details carry, as the transcript's
-// call section words them without its leading blank row, or nothing when the
-// details carry none.
+/// The rows of the call record a result's details carry, as the transcript's
+/// call section words them without its leading blank row, or nothing when the
+/// details carry none.
 fn call_rows(details: Option(json.JsonValue)) -> List(String) {
   case details {
     Some(record) ->
@@ -582,12 +600,14 @@ fn call_rows(details: Option(json.JsonValue)) -> List(String) {
   }
 }
 
-// The file the call named. Otherwise the text of the program's leading
-// comment, which is usually the model's description of it, found after any
-// blank lines and imports; a program that opens with code says nothing about
-// itself, so it is `Program N` for its place in the session.
+/// The file the call named. Otherwise the text of the program's leading
+/// comment, which is usually the model's description of it, found after any
+/// blank lines and imports; a program that opens with code says nothing about
+/// itself, so it is `Program N` for its place in the session.
 fn label(arguments: List(#(String, json.JsonValue)), position: Int) -> String {
   let fallback = "Program " <> int.to_string(position)
+
+  // Check for program path or program source code in arguments.
   case
     list.key_find(arguments, "program_path"),
     list.key_find(arguments, "program")
@@ -602,13 +622,16 @@ fn label(arguments: List(#(String, json.JsonValue)), position: Int) -> String {
   }
 }
 
-// The text of the first line that is not blank or an import, when that line
-// is a `//` comment, and nothing otherwise.
+/// The text of the first line that is not blank or an import, when that line
+/// is a `//` comment, and nothing otherwise.
 fn leading_comment(lines: List(String)) -> String {
+  // Walk through lines until the first non-import line.
   case lines {
     [] -> ""
     [line, ..rest] -> {
       let line = string.trim(line)
+
+      // Check if line is blank or an import directive.
       case line, string.starts_with(line, "import ") {
         "", _ | _, True -> leading_comment(rest)
         _, False ->
@@ -628,8 +651,8 @@ fn drop_slashes(line: String) -> String {
   }
 }
 
-// The result's `status` word as a closed state. A result without a known
-// word is `Completed` when it is not an error, and `Failed` when it is.
+/// The result's `status` word as a closed state. A result without a known
+/// word is `Completed` when it is not an error, and `Failed` when it is.
 fn state(fields: List(#(String, json.JsonValue)), is_error: Bool) -> State {
   case list.key_find(fields, "status"), is_error {
     Ok(json.String("completed")), _ -> Completed
@@ -643,8 +666,8 @@ fn state(fields: List(#(String, json.JsonValue)), is_error: Bool) -> State {
   }
 }
 
-// A program that reached compilation was vetted. A refusal says so, and a
-// failure with no known word says nothing, so it is not claimed as vetted.
+/// A program that reached compilation was vetted. A refusal says so, and a
+/// failure with no known word says nothing, so it is not claimed as vetted.
 fn vetting(state: State) -> Vetting {
   case state {
     Completed | Errored | CompileFailed | RunFailed -> Passed
@@ -653,13 +676,14 @@ fn vetting(state: State) -> Vetting {
   }
 }
 
-// What the result says: the final value of a program that completed, the
-// failure's message otherwise, falling back to the result's text.
+/// What the result says: the final value of a program that completed, the
+/// failure's message otherwise, falling back to the result's text.
 fn excerpt(
   fields: List(#(String, json.JsonValue)),
   content: List(message.ToolResultBlock),
   state: State,
 ) -> String {
+  // Extract value from fields if completed, or message otherwise.
   let from_fields = case state, list.key_find(fields, "value") {
     Completed, Ok(value) -> Some(json.to_string(value))
     _, _ ->
@@ -668,6 +692,8 @@ fn excerpt(
         _ -> None
       }
   }
+
+  // Fallback to text blocks if neither was extracted.
   case from_fields {
     Some(text) -> clipped(text)
     None ->
@@ -684,20 +710,24 @@ fn excerpt(
   }
 }
 
-// The text from its first `error` line on, or the whole text when it has no
-// such line.
+/// The text from its first `error` line on, or the whole text when it has no
+/// such line.
 fn from_first_error(text: String) -> String {
   let lines = string.split(text, "\n")
+
+  // Find the first line beginning with error prefix.
   case list.drop_while(lines, fn(line) { !string.starts_with(line, "error") }) {
     [] -> text
     [_, ..] as from -> string.join(from, "\n")
   }
 }
 
-// A single line of at most `max_characters` code points, cut with `…`.
+/// A single line of at most `max_characters` code points, cut with `…`.
 fn clipped(text: String) -> String {
   let line = text_hygiene.single_line(text)
   let points = string.to_utf_codepoints(line)
+
+  // Truncate if codepoints exceed max allowed length.
   case list.drop(points, max_characters) {
     [] -> line
     [_, ..] ->

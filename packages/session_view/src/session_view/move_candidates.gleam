@@ -127,8 +127,8 @@ pub fn choose(
   })
 }
 
-// The first reason that applies: reached, then reporting, then accepting, then
-// serving the executor.
+/// The first reason that applies: reached, then reporting, then accepting, then
+/// serving the executor.
 fn judge(facts: Facts, executor: Option(String)) -> Eligibility {
   case facts, executor {
     Silent, _ -> Ineligible(Unreachable)

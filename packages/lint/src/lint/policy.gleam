@@ -289,6 +289,7 @@ pub fn literate_packages() -> List(String) {
     "provider",
     "runtime",
     "session",
+    "session_view",
     "statem",
     "statem_parallel",
     "storage",
@@ -296,6 +297,7 @@ pub fn literate_packages() -> List(String) {
     "tools",
     "web_client",
     "web_mermaid",
+    "web_view",
   ]
 }
 

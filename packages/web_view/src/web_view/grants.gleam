@@ -434,14 +434,18 @@ pub fn utc_clock(milliseconds: Int) -> String {
 ///   == "2 people · private"
 /// ```
 pub fn summary_words(summary: Summary) -> String {
+  // Format the count with a plus suffix when truncated.
   let count = case summary.more {
     Whole -> int.to_string(summary.people)
     Truncated -> int.to_string(summary.people) <> "+"
   }
+
+  // Pluralize the word person based on the resolved count.
   let people = case summary.people, summary.more {
     1, Whole -> count <> " person"
     _, _ -> count <> " people"
   }
+
   people
   <> " · "
   <> case summary.scope {

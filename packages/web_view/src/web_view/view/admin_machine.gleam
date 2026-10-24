@@ -138,9 +138,9 @@ pub fn view(page: Page(message)) -> Element(message) {
   )
 }
 
-// The name, the state and Close, and under them the node and the roles. The
-// name is `machines.title`'s, so a standalone daemon is "This machine" here as
-// in the list and its made-up node name is not drawn.
+/// The name, the state and Close, and under them the node and the roles. The
+/// name is `machines.title`'s, so a standalone daemon is "This machine" here as
+/// in the list and its made-up node name is not drawn.
 fn header(page: Page(message)) -> Element(message) {
   let machine = page.machine
   let title = machines.title(page.snapshot, machine)
@@ -180,7 +180,7 @@ fn header(page: Page(message)) -> Element(message) {
   ])
 }
 
-// One tab's button. The chosen tab says so with `aria-selected`.
+/// One tab's button. The chosen tab says so with `aria-selected`.
 fn tab_button(tab: Tab, page: Page(message)) -> Element(message) {
   html.button(
     [
@@ -229,8 +229,11 @@ fn findings(machine: Machine) -> Option(Findings) {
 
 // --- overview -------------------------------------------------------------------
 
+/// Renders machine overview facts including health, build, and link state.
 fn overview(page: Page(message)) -> Element(message) {
   let machine = page.machine
+
+  // Check if findings were observed for this machine.
   case findings(machine) {
     None ->
       html.div([], [
@@ -276,7 +279,7 @@ fn overview(page: Page(message)) -> Element(message) {
   }
 }
 
-// The state with the daemon's fixed reasons beside it, each in a sentence.
+/// The state with the daemon's fixed reasons beside it, each in a sentence.
 fn health(found: Findings) -> Element(message) {
   html.div([], [
     html.span(
@@ -326,6 +329,7 @@ fn uptime(found: Findings) -> String {
   }
 }
 
+/// Formats machine connection link state into human-readable label.
 fn link_words(machine: Machine) -> String {
   case machine.whose, machine.link {
     machines.This, _ -> "this daemon"
@@ -335,6 +339,7 @@ fn link_words(machine: Machine) -> String {
   }
 }
 
+/// Formats elapsed time since machine last reported head standing.
 fn last_report(machine: Machine) -> String {
   case machine.ledgered {
     Enrolled(machines.Standing(age_ms: Some(age), ..)) ->
@@ -344,8 +349,8 @@ fn last_report(machine: Machine) -> String {
   }
 }
 
-// The relations the daemon reported that touch the machine, one to a line, with
-// the other end named as the daemon names it.
+/// The relations the daemon reported that touch the machine, one to a line, with
+/// the other end named as the daemon names it.
 fn relations(machine: Machine, snapshot: Snapshot) -> Element(message) {
   case
     list.filter(snapshot.edges, fn(each) {
@@ -365,16 +370,21 @@ fn relations(machine: Machine, snapshot: Snapshot) -> Element(message) {
   }
 }
 
+/// Formats a directed edge relation between two machines into descriptive prose.
 fn relation_words(
   machine: Machine,
   edge: machines.Edge,
   snapshot: Snapshot,
 ) -> String {
   let from_here = edge.from == machine.node
+
+  // Resolve identity of opposing machine endpoint.
   let other = case from_here {
     True -> name_of(snapshot, edge.to)
     False -> name_of(snapshot, edge.from)
   }
+
+  // Render directional relationship prose.
   case edge.relation, from_here {
     machines.Serves(sessions:), True ->
       "places " <> plural(sessions, "session") <> " on " <> other
@@ -402,8 +412,11 @@ fn name_of(snapshot: Snapshot, node: String) -> String {
 
 // --- sessions -------------------------------------------------------------------
 
+/// Renders the Sessions tab showing locally placed and remote orchestrator sessions.
 fn sessions_tab(page: Page(message)) -> Element(message) {
   let machine = page.machine
+
+  // Check if machine is linked from current daemon.
   case machine.here {
     NotLinkedFromHere ->
       line(
@@ -421,9 +434,9 @@ fn sessions_tab(page: Page(message)) -> Element(message) {
   }
 }
 
-// The owner's sessions whose workspace is registered on this machine: the ones
-// with no executor for this daemon itself, and the ones that name the machine's
-// key for any other.
+/// The owner's sessions whose workspace is registered on this machine: the ones
+/// with no executor for this daemon itself, and the ones that name the machine's
+/// key for any other.
 fn local(page: Page(message)) -> Element(message) {
   let held =
     list.filter(page.entries, fn(entry) {
@@ -434,6 +447,8 @@ fn local(page: Page(message)) -> Element(message) {
         machines.Other, None -> False
       }
     })
+
+  // Render local sessions list or empty notice.
   case held {
     [] -> line("No session of this daemon's catalogue is placed here.")
     [_, ..] ->
@@ -471,6 +486,7 @@ fn local(page: Page(message)) -> Element(message) {
   }
 }
 
+/// Converts session residency variant to lowercase status text.
 fn residency_words(residency: sessions.Residency) -> String {
   case residency {
     sessions.Live -> "running"
@@ -481,8 +497,8 @@ fn residency_words(residency: sessions.Residency) -> String {
   }
 }
 
-// How many sessions each orchestrator places here, or, for an orchestrator, how
-// many it places on each executor, from what the daemon reported.
+/// How many sessions each orchestrator places here, or, for an orchestrator, how
+/// many it places on each executor, from what the daemon reported.
 fn placed(page: Page(message)) -> Element(message) {
   let machine = page.machine
   let serving =
@@ -498,6 +514,8 @@ fn placed(page: Page(message)) -> Element(message) {
         machines.Serves(..) | machines.Peers | machines.Members -> Error(Nil)
       }
     })
+
+  // Collect placement counts across all executors.
   let on_executors = case long(page) {
     Some(machines.Detail(placements:, ..)) ->
       list.map(placements, fn(each) {
@@ -511,6 +529,8 @@ fn placed(page: Page(message)) -> Element(message) {
       })
     None -> []
   }
+
+  // Render placement summaries if any exist.
   case list.append(serving, on_executors) {
     [] -> element.none()
     lines ->
@@ -528,10 +548,10 @@ fn placed(page: Page(message)) -> Element(message) {
   }
 }
 
-// The sessions another orchestrator lists as placed on this machine, under that
-// orchestrator's name. The node a row names is matched against the machine's, so
-// two orchestrators that key an executor differently still attribute its rows to
-// the same machine.
+/// The sessions another orchestrator lists as placed on this machine, under that
+/// orchestrator's name. The node a row names is matched against the machine's, so
+/// two orchestrators that key an executor differently still attribute its rows to
+/// the same machine.
 fn elsewhere_rows(page: Page(message)) -> Element(message) {
   case page.peers {
     None ->
@@ -552,6 +572,7 @@ fn elsewhere_rows(page: Page(message)) -> Element(message) {
   }
 }
 
+/// Renders sessions placed on this machine grouped by remote orchestrator.
 fn group(each: Group, machine: Machine) -> Element(message) {
   case each.hearing {
     elsewhere.Silent -> line(each.name <> " did not answer.")
@@ -597,6 +618,7 @@ fn group(each: Group, machine: Machine) -> Element(message) {
 
 // --- access ---------------------------------------------------------------------
 
+/// Renders Access tab including ledger enrollment status and command boxes.
 fn access(page: Page(message)) -> Element(message) {
   let machine = page.machine
   html.div([], [
@@ -612,15 +634,18 @@ fn access(page: Page(message)) -> Element(message) {
   ])
 }
 
+/// Renders membership details and command options for an enrolled machine.
 fn enrolled(
   page: Page(message),
   standing: machines.Standing,
 ) -> Element(message) {
+  // Extract head sequence description from snapshot ledger.
   let head = case page.snapshot.ledger {
     Some(machines.Ledger(head_seq:, ..)) ->
       Some(" of " <> int.to_string(head_seq))
     None -> None
   }
+
   html.div([], [
     html.dl(
       [attribute.class("admin-facts")],
@@ -670,6 +695,7 @@ fn enrolled(
   ])
 }
 
+/// Returns label for directory membership voting seat.
 fn seat_words(seat: machines.Seat) -> String {
   case seat {
     machines.Voter -> "voter"
@@ -678,6 +704,7 @@ fn seat_words(seat: machines.Seat) -> String {
   }
 }
 
+/// Formats head entry sequence and age reported by node.
 fn reported(
   seq: Option(Int),
   head: Option(String),
@@ -696,10 +723,12 @@ fn reported(
   }
 }
 
-// A node that is configured here and is no active member: the enroll command,
-// linked to this orchestrator, with the role the daemon found it to have.
+/// A node that is configured here and is no active member: the enroll command,
+/// linked to this orchestrator, with the role the daemon found it to have.
 fn not_listed(page: Page(message)) -> Element(message) {
   let machine = page.machine
+
+  // Determine appropriate cluster enrollment role.
   let role = case list.contains(machine.roles, machines.Executor) {
     True -> Ok(machines.Executor)
     False ->
@@ -708,6 +737,7 @@ fn not_listed(page: Page(message)) -> Element(message) {
         False -> Error(Nil)
       }
   }
+
   html.div([], [
     line(
       "This node is configured here and is not an active member of the membership ledger. Enrolling it signs an entry and writes its bundle.",
@@ -729,8 +759,8 @@ fn not_listed(page: Page(message)) -> Element(message) {
   ])
 }
 
-// Each scope that blocks a reopen, with the command that releases it, run on the
-// executor with its daemon stopped.
+/// Each scope that blocks a reopen, with the command that releases it, run on the
+/// executor with its daemon stopped.
 fn release_lines(page: Page(message)) -> Element(message) {
   case long(page) {
     Some(machines.Detail(unclean: [_, ..] as scopes, ..)) ->
@@ -753,8 +783,8 @@ fn release_lines(page: Page(message)) -> Element(message) {
   }
 }
 
-// A label and the box that copies the command, or the words that say why there
-// is no box.
+/// A label and the box that copies the command, or the words that say why there
+/// is no box.
 fn command_box(
   label: String,
   command: Result(String, Nil),
@@ -784,8 +814,11 @@ fn command_box(
 
 // --- activity -------------------------------------------------------------------
 
+/// Renders the Activity tab showing runtime capacity, unclean scopes, and moves.
 fn activity(page: Page(message)) -> Element(message) {
   let machine = page.machine
+
+  // Check if findings were observed for this machine.
   case findings(machine) {
     None ->
       line(
@@ -810,6 +843,7 @@ fn activity(page: Page(message)) -> Element(message) {
   }
 }
 
+/// Renders executor active and closed scopes counts breakdown.
 fn scopes(found: Findings) -> Element(message) {
   case found.executor {
     None -> element.none()
@@ -830,6 +864,7 @@ fn scopes(found: Findings) -> Element(message) {
   }
 }
 
+/// Renders orchestrator runtime reservation and resident session capacity.
 fn capacity(found: Findings) -> Element(message) {
   case found.orchestrator {
     None -> element.none()
@@ -857,6 +892,7 @@ fn capacity(found: Findings) -> Element(message) {
   }
 }
 
+/// Renders list of unclean scopes that block reopen.
 fn stuck(page: Page(message)) -> Element(message) {
   case long(page) {
     Some(machines.Detail(unclean: [_, ..] as scopes, ..)) ->
@@ -877,6 +913,7 @@ fn stuck(page: Page(message)) -> Element(message) {
   }
 }
 
+/// Formats human-readable explanation of why a scope remains unclean.
 fn stuck_words(scope: Unclean) -> String {
   case scope.stuck {
     machines.Closing -> "closing, its close never finished"
@@ -887,14 +924,17 @@ fn stuck_words(scope: Unclean) -> String {
   }
 }
 
-// The moves in flight. An orchestrator other than the asking daemon states them
-// in its own long list; the asking daemon's are in the overview.
+/// The moves in flight. An orchestrator other than the asking daemon states them
+/// in its own long list; the asking daemon's are in the overview.
 fn moves(page: Page(message)) -> Element(message) {
+  // Extract list of active session migrations.
   let listed = case page.machine.whose, long(page) {
     machines.This, _ -> page.snapshot.moves
     machines.Other, Some(machines.Detail(moves:, ..)) -> moves
     machines.Other, None -> []
   }
+
+  // Render move entries list if any are in flight.
   case listed {
     [] -> element.none()
     _ ->
@@ -913,12 +953,12 @@ fn moves(page: Page(message)) -> Element(message) {
   }
 }
 
-// What a move offers beside its words: Abandon, on the asking daemon's own
-// moves and only when that daemon is a directory member, since only a member
-// can give a move up (`server.abandon_move` refuses it elsewhere). The first
-// press arms a question that says what an abandon does when the receiver has
-// already taken the session, and its button is the one that asks. Every name is
-// a text node, and the daemon checks everything again.
+/// What a move offers beside its words: Abandon, on the asking daemon's own
+/// moves and only when that daemon is a directory member, since only a member
+/// can give a move up (`server.abandon_move` refuses it elsewhere). The first
+/// press arms a question that says what an abandon does when the receiver has
+/// already taken the session, and its button is the one that asks. Every name is
+/// a text node, and the daemon checks everything again.
 fn abandoning(
   page: Page(message),
   move: machines.Move,
@@ -992,6 +1032,7 @@ fn abandoning(
   }
 }
 
+/// Formats migration progress summary line for an in-flight move.
 fn move_words(move: machines.Move) -> String {
   move.session
   <> " to "

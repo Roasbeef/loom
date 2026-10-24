@@ -152,8 +152,8 @@ pub fn view(
   )
 }
 
-// The address the person keeps, as text: the whole of what a visit needs, since
-// the browser holds the rest.
+/// The address the person keeps, as text: the whole of what a visit needs, since
+/// the browser holds the rest.
 fn bookmark_line(bookmark: Option(String)) -> Element(message) {
   case bookmark {
     None -> element.none()
@@ -181,8 +181,8 @@ fn bookmark_line(bookmark: Option(String)) -> Element(message) {
   }
 }
 
-// One browser: whose it is, the words of its history, and the button that ends
-// it. The text is first and the button last, so the row reads left to right.
+/// One browser: whose it is, the words of its history, and the button that ends
+/// it. The text is first and the button last, so the row reads left to right.
 fn row(
   signin: Signin,
   now: Int,
@@ -190,10 +190,13 @@ fn row(
   sign_out: fn(String) -> message,
 ) -> Element(message) {
   let whose = whose(signin, this)
+
+  // Dispatch on row state.
   let name = case whose {
     ThisBrowser -> "This browser"
     AnotherBrowser -> "Another browser"
   }
+
   html.li(
     [
       attribute.class("home-signin"),
@@ -262,19 +265,26 @@ pub fn whose(signin: Signin, this: Option(String)) -> Whose {
 /// ```
 pub fn history(signin: Signin, now: Int, whose: Whose) -> String {
   let signed = "signed in " <> sessions.ago(now, signin.issued_at_ms)
+
+  // Dispatch on history state.
   let via = case signin.issued_by {
     Some(_) -> ["device link"]
     None -> []
   }
+
+  // Dispatch on history state.
   let used = case whose, signin.last_resumed_ms {
     ThisBrowser, _ -> []
     AnotherBrowser, Some(at) -> ["last used " <> sessions.ago(now, at)]
     AnotherBrowser, None -> ["not used yet"]
   }
+
+  // Dispatch on history state.
   let ends = case signin.expires_at_ms {
     Some(at) -> ["ends in " <> signins.ends_in(now, at)]
     None -> []
   }
+
   join([[signed], via, used, ends])
 }
 
@@ -282,8 +292,8 @@ fn join(parts: List(List(String))) -> String {
   string.join(list.flatten(parts), " · ")
 }
 
-// "Sign out everywhere", when there is a sign-in to end, and the device control
-// of a fresh home. They share one row of actions.
+/// "Sign out everywhere", when there is a sign-in to end, and the device control
+/// of a fresh home. They share one row of actions.
 fn controls(
   rows: List(Signin),
   everywhere: message,
@@ -311,12 +321,15 @@ fn controls(
   ])
 }
 
+/// Device button helper.
 fn device_button(press: message, asking: Asking) -> Element(message) {
   let common = [
     attribute.type_("button"),
     attribute.class("home-signin-device"),
     attribute.title("Make a link that signs in another device"),
   ]
+
+  // Dispatch on device_button state.
   case asking {
     Waiting ->
       html.button([attribute.disabled(True), ..common], [
@@ -329,9 +342,9 @@ fn device_button(press: message, asking: Asking) -> Element(message) {
   }
 }
 
-// The line under the controls: the device link in its box while one is shown,
-// the last refusal or press in fixed words, or the empty line, so the region's
-// children keep their places.
+/// The line under the controls: the device link in its box while one is shown,
+/// the last refusal or press in fixed words, or the empty line, so the region's
+/// children keep their places.
 fn status(device: Device(message), notice: Option(String)) -> Element(message) {
   case device {
     Offered(shown: Some(address), done:, ..) ->

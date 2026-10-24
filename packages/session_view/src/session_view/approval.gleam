@@ -18,6 +18,13 @@
 //// whose ceiling admits none of it offers denial only. The session choice is
 //// offered on the same terms as for any request, so it is offered exactly when
 //// the admitted grants can be remembered.
+////
+//// ## Flow
+////
+//// Requests flow through:
+//// 1. `records`: collects and decodes approval reviews from snapshot cells.
+//// 2. `decode`: decodes a cell payload into a review record.
+//// 3. `approve`: formats an approval decision command.
 
 import core/json
 import core/message
@@ -191,6 +198,7 @@ pub fn decisions(
   )
 }
 
+/// Helper `summary` for summary.
 fn summary(record: Review) {
   case record.status {
     Pending -> record
@@ -224,6 +232,7 @@ pub const remote_prefix = "remote-escalation/"
 // A request filed from another orchestrator is the protocol's own record, so its
 // grants are already in the wire vocabulary and are not translated. Its `seq`
 // is the other orchestrator's, which is the one an answer must name.
+/// Helper `decode_remote` for decode remote.
 fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
   use fields <- result.try(object(cell.value))
   use id <- result.try(text(fields, "escalation_id"))
@@ -244,6 +253,8 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
     "consumed" -> Ok(Consumed)
     _ -> Error("invalid captured escalation status")
   })
+
+  // Handle the `decode_remote` branch dispatch.
   use seq <- result.try(case list.key_find(fields, "seq") {
     Ok(json.Int(seq)) if seq >= 0 -> Ok(seq)
     _ -> Error("invalid captured escalation sequence")
@@ -261,6 +272,8 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
   let preview = defaulted(fields, "preview")
   let action = defaulted(fields, "action")
   let child = defaulted(fields, "strand")
+
+  // Handle the `decode_remote` branch dispatch.
   let wanted = case list.key_find(fields, "denial") {
     Ok(json.Object(denial)) ->
       case list.key_find(denial, "wanted") {
@@ -269,6 +282,8 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
       }
     _ -> Error("approval has no captured requested grant set")
   }
+
+  // Handle the `decode_remote` branch dispatch.
   let admitted = case list.key_find(fields, "admitted") {
     Ok(json.Array(grants)) -> grants
     _ -> []
@@ -316,6 +331,7 @@ fn defaulted(fields, key: String) -> String {
   }
 }
 
+/// Helper `decode_local` for decode local.
 fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
   use fields <- result.try(object(cell.value))
   use id <- result.try(text(fields, "id"))
@@ -327,6 +343,8 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     Error("invalid captured escalation identity"),
   )
   use state <- result.try(text(fields, "status"))
+
+  // Handle the `decode_local` branch dispatch.
   use state <- result.try(case state {
     "pending" -> Ok(Pending)
     "approved" -> Ok(Approved)
@@ -334,16 +352,21 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
     "consumed" -> Ok(Consumed)
     _ -> Error("invalid captured escalation status")
   })
+
   use tool <- result.try(optional_text(fields, "tool"))
   use preview <- result.try(optional_text(fields, "preview"))
   use author <- result.try(
     origin.decode_field(fields)
     |> result.replace_error("invalid escalation decision origin"),
   )
+
+  // Handle the `decode_local` branch dispatch.
   let permission = case exact(fields) {
     Ok(permission) -> permission
     Error(reason) -> Unavailable(reason)
   }
+
+  // Handle the `decode_local` branch dispatch.
   let strand = case list.key_find(fields, "scope") {
     Ok(json.Object(scope)) ->
       case list.key_find(scope, "strand") {
@@ -352,6 +375,7 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
       }
     _ -> None
   }
+
   Ok(Review(
     id,
     cell.seq,
@@ -365,6 +389,7 @@ fn decode_local(cell: snapshot_view.Cell) -> Result(Review, String) {
   ))
 }
 
+/// Matches exact approval target specifications.
 fn exact(fields) {
   use action <- result.try(text(fields, "action"))
   use <- bool.guard(
@@ -373,10 +398,13 @@ fn exact(fields) {
   )
   use denial <- result.try(field(fields, "denial") |> result.try(object))
   use wanted <- result.try(field(denial, "wanted"))
+
+  // Handle the `exact` branch dispatch.
   use grants <- result.try(case wanted {
     json.Array(grants) -> list.try_map(grants, wire_grant)
     _ -> Error("approval has no captured requested grant set")
   })
+
   Ok(Exact(action, grants))
 }
 
@@ -415,6 +443,8 @@ pub fn approve_for_session(id: Int, record: Review) -> Result(String, String) {
 /// ```
 pub fn rememberable(record: Review) -> Result(Nil, String) {
   use _ <- result.try(details(record))
+
+  // Handle the `rememberable` branch dispatch.
   case record.permission {
     Unavailable(reason) -> Error(reason)
     Exact(_, grants) -> {
@@ -432,12 +462,15 @@ pub fn rememberable(record: Review) -> Result(Nil, String) {
   }
 }
 
+/// Helper `session_wall` for session wall.
 fn session_wall(grants: List(json.JsonValue)) -> Bool {
   let eligible = {
+    // Handle the `session_wall` branch dispatch.
     use grant <- result.try(case grants {
       [grant] -> Ok(grant)
       _ -> Error("session wall consent must be the complete grant set")
     })
+
     use fields <- result.try(object(grant))
     use kind <- result.try(text(fields, "type"))
     use limit <- result.try(text(fields, "field"))
@@ -469,16 +502,21 @@ pub fn remembered_authority(record: Review) -> String {
   }
 }
 
+/// Helper `persistent_grant` for persistent grant.
 fn persistent_grant(value: json.JsonValue) -> Bool {
   let supported = {
     use fields <- result.try(object(value))
     use kind <- result.try(text(fields, "type"))
+
+    // Handle the `persistent_grant` branch dispatch.
     case kind {
       "readable_root" | "writable_root" -> Ok(Nil)
       "network" -> {
         use network <- result.try(field(fields, "network"))
         use fields <- result.try(object(network))
         use mode <- result.try(text(fields, "mode"))
+
+        // Handle the `persistent_grant` branch dispatch.
         case mode {
           "full" -> Ok(Nil)
           _ -> Error("unsupported network permission")
@@ -490,8 +528,11 @@ fn persistent_grant(value: json.JsonValue) -> Bool {
   result.is_ok(supported)
 }
 
+/// Helper `approve_scoped` for approve scoped.
 fn approve_scoped(id, record, scope) -> Result(String, String) {
   use _ <- result.try(details(record))
+
+  // Handle the `approve_scoped` branch dispatch.
   case record.status, record.permission {
     Pending, Exact(action, grants) ->
       Ok(
@@ -563,10 +604,12 @@ pub const detail_limit = 16_384
 /// // approval.details(captured_request)
 /// ```
 pub fn details(record: Review) -> Result(String, String) {
+  // Handle the `details` branch dispatch.
   use #(action, grants) <- result.try(case record.permission {
     Exact(action, grants) -> Ok(#(action, grants))
     Unavailable(reason) -> Error(reason)
   })
+
   let encoded =
     json.to_string(
       json.Object([
@@ -594,11 +637,14 @@ pub fn details(record: Review) -> Result(String, String) {
   Ok(literal)
 }
 
+/// Helper `escaped_json` for escaped json.
 fn escaped_json(encoded: String) -> String {
   encoded
   |> string.to_utf_codepoints
   |> list.map(fn(point) {
     let code = string.utf_codepoint_to_int(point)
+
+    // Handle the `escaped_json` branch dispatch.
     case code {
       code if code < 0x7F -> string.from_utf_codepoints([point])
       code if code <= 0xFFFF -> escaped_unit(code)
@@ -646,18 +692,25 @@ pub fn readable_details(record: Review) -> Result(String, String) {
 /// ```
 pub fn presentation(record: Review) -> Result(Presentation, String) {
   use _ <- result.try(details(record))
+
+  // Handle the `presentation` branch dispatch.
   use #(_, grants) <- result.try(case record.permission {
     Exact(action, grants) -> Ok(#(action, grants))
     Unavailable(reason) -> Error(reason)
   })
+
+  // Handle the `presentation` branch dispatch.
   let preview = case record.preview {
     "" -> "No action preview was captured."
     preview -> readable_preview(record.tool, preview)
   }
+
+  // Handle the `presentation` branch dispatch.
   let authority = case grants {
     [] -> ["- No additional grants requested."]
     grants -> list.map(grants, readable_grant)
   }
+
   Ok(Presentation(question(record.tool), preview, authority))
 }
 
@@ -684,6 +737,7 @@ pub fn wants(tool: String) -> String {
   }
 }
 
+/// Helper `question` for question.
 fn question(tool: String) -> String {
   case tool {
     "bash" | "shell" -> "Allow this command?"
@@ -695,12 +749,15 @@ fn question(tool: String) -> String {
   }
 }
 
+/// Formats human-readable approval preview text.
 fn readable_preview(tool: String, preview: String) -> String {
   let projected = {
     use value <- result.try(
       json.parse(preview) |> result.replace_error("invalid preview JSON"),
     )
     use fields <- result.try(object(value))
+
+    // Handle the `readable_preview` branch dispatch.
     case tool {
       "fs_read" -> {
         use _ <- result.try(only_keys(fields, ["path", "offset", "limit"]))
@@ -775,6 +832,7 @@ fn readable_file_content(content: String) -> String {
   |> string.join("\n")
 }
 
+/// Helper `only_keys` for only keys.
 fn only_keys(fields, allowed: List(String)) -> Result(Nil, String) {
   case
     list.all(fields, fn(field) {
@@ -801,11 +859,14 @@ fn integer_suffix(fields, key: String, prefix: String) -> String {
   }
 }
 
+/// Helper `readable_grant` for readable grant.
 fn readable_grant(value: json.JsonValue) -> String {
   let exact = value |> json.to_string |> escaped_json
   let readable = {
     use fields <- result.try(object(value))
     use kind <- result.try(text(fields, "type"))
+
+    // Handle the `readable_grant` branch dispatch.
     case kind {
       "readable_root" -> {
         use path <- result.try(text(fields, "path"))
@@ -835,16 +896,20 @@ fn readable_grant(value: json.JsonValue) -> String {
 // proxied allowlist, `net · any host` for full access and `net · off`. A
 // shape this does not know is shown as its exact JSON, escaped, as every
 // other unknown grant is, so nothing the request carries is hidden.
+/// Formats human-readable network permission details.
 fn readable_network(network: json.JsonValue) -> String {
   let exact =
     "Network access: " <> { network |> json.to_string |> escaped_json }
   let readable = {
     use fields <- result.try(object(network))
     use mode <- result.try(text(fields, "mode"))
+
+    // Handle the `readable_network` branch dispatch.
     case mode {
       "full" -> Ok("net · any host")
       "off" -> Ok("net · off")
       "proxy" -> {
+        // Handle the `readable_network` branch dispatch.
         use allowed <- result.try(case field(fields, "allow") {
           Ok(json.Array(hosts)) ->
             list.try_map(hosts, fn(host) {
@@ -855,6 +920,7 @@ fn readable_network(network: json.JsonValue) -> String {
             })
           _ -> Error("unreadable network allowlist")
         })
+
         Ok("net · " <> string.join(allowed, ", ") <> " · via proxy")
       }
       _ -> Error("unknown network mode")
@@ -865,6 +931,7 @@ fn readable_network(network: json.JsonValue) -> String {
 
 // A host as the grant names it, escaped as a literal is when it holds
 // anything but the letters, digits and punctuation of a host and port.
+/// Helper `literal_host` for literal host.
 fn literal_host(host: String) -> String {
   let plain =
     string.to_graphemes(host)
@@ -874,6 +941,8 @@ fn literal_host(host: String) -> String {
         char,
       )
     })
+
+  // Handle the `literal_host` branch dispatch.
   case plain && host != "" {
     True -> host
     False -> literal_text(host)
@@ -919,6 +988,8 @@ pub fn deny(id: Int, record: Review) -> Result(String, String) {
 pub fn wire_grant(value: json.JsonValue) -> Result(json.JsonValue, String) {
   use fields <- result.try(object(value))
   use kind <- result.try(text(fields, "grant"))
+
+  // Handle the `wire_grant` branch dispatch.
   use body <- result.try(case kind {
     "writable_root" | "readable_root" -> {
       use path <- result.try(text(fields, "path"))
@@ -937,18 +1008,25 @@ pub fn wire_grant(value: json.JsonValue) -> Result(json.JsonValue, String) {
     "scratch" -> scratch(fields)
     _ -> Error("unsupported requested grant kind")
   })
+
   Ok(json.Object([#("type", json.String(kind)), ..body]))
 }
 
+/// Helper `limit` for limit.
 fn limit(fields) {
   use name <- result.try(text(fields, "field"))
+
+  // Handle the `limit` branch dispatch.
   use name <- result.try(case name {
     "cpu_s" -> Ok("cpu_seconds")
     "wall_s" -> Ok("wall_seconds")
     "mem_bytes" | "pids" | "fsize_bytes" | "output_bytes" -> Ok(name)
     _ -> Error("unsupported requested resource limit")
   })
+
   use value <- result.try(field(fields, "value"))
+
+  // Handle the `limit` branch dispatch.
   case value {
     json.Int(n) if n >= 0 ->
       Ok([#("field", json.String(name)), #("value", value)])
@@ -956,13 +1034,17 @@ fn limit(fields) {
   }
 }
 
+/// Helper `scratch` for scratch.
 fn scratch(fields) {
   use path <- result.try(text(fields, "scratch"))
+
+  // Handle the `scratch` branch dispatch.
   let scratch = case path {
     "tmpfs" -> json.Object([#("mode", json.String(path))])
     path ->
       json.Object([#("mode", json.String("path")), #("path", json.String(path))])
   }
+
   Ok([#("scratch", scratch)])
 }
 
@@ -977,16 +1059,22 @@ fn field(fields, key) {
   list.key_find(fields, key) |> result.replace_error("missing escalation field")
 }
 
+/// Extracts text field from a JSON object.
 fn text(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Handle the `text` branch dispatch.
   case value {
     json.String(text) -> Ok(text)
     _ -> Error("expected escalation string")
   }
 }
 
+/// Extracts optional text field from a JSON object.
 fn optional_text(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Handle the `optional_text` branch dispatch.
   case value {
     json.Null -> Ok("")
     json.String(text) -> Ok(text)

@@ -221,14 +221,19 @@ pub fn observe(
       list.find(reviewers, fn(row) {
         row.strand == strand.id && Some(row.operation) == current
       })
+
+    // Handle the `observe` branch dispatch.
     let task = case reviewer {
       Ok(row) -> row.task
       Error(Nil) -> {
+        // Handle the `observe` branch dispatch.
         let captured = case current {
           None -> ""
           Some(id) ->
             reviewer_status.task_excerpt(view.cells, dict.values(entries), id)
         }
+
+        // Handle the `observe` branch dispatch.
         case captured {
           "" ->
             earlier
@@ -238,6 +243,7 @@ pub fn observe(
         }
       }
     }
+
     let update =
       latest
       |> option.to_result(Nil)
@@ -265,10 +271,14 @@ pub fn observe(
         pending_approvals(view.cells, reviews, strand.id, current)
       NeedsInput | Finished | Failed | Halted | Idle | Unavailable -> []
     }
+
+    // Handle the `observe` branch dispatch.
     let status = case approvals {
       [] -> status
       [_, ..] -> NeedsInput
     }
+
+    // Handle the `observe` branch dispatch.
     let activity = case status, activity {
       Working, "Working" ->
         reviewer
@@ -278,10 +288,13 @@ pub fn observe(
       _, _ -> activity
     }
 
+    // Extract running tool calls for the current operation.
     let calls = case current {
       Some(id) -> tool_activity.running(view.cells, dict.values(entries), id)
       None -> []
     }
+
+    // Determine status and activity description based on waiting calls.
     let #(status, activity) = case
       status,
       activity,
@@ -303,6 +316,7 @@ pub fn observe(
         }
       _, _, _ -> #(status, activity)
     }
+
     let decision =
       reviews
       |> list.filter(fn(review) { list.contains(approvals, review.id) })
@@ -333,10 +347,12 @@ pub fn observe(
   })
 }
 
+/// Renders evidence items for agent review.
 fn evidence(
   view: snapshot_view.View,
   strand: String,
 ) -> #(Option(String), Status, String, Option(ids.EntryId)) {
+  // Handle the `evidence` branch dispatch.
   case dict.get(view.operations, strand) {
     Ok(current) -> {
       let state =
@@ -344,6 +360,8 @@ fn evidence(
         |> result.try(fn(value) {
           codec.decode_state(value) |> result.replace_error(Nil)
         })
+
+      // Handle the `evidence` branch dispatch.
       case state {
         Ok(state) -> {
           let #(status, activity, latest) = live_state(state)
@@ -361,6 +379,7 @@ fn evidence(
   }
 }
 
+/// Computes the live state from session snapshots.
 fn live_state(
   state: operation.OperationState,
 ) -> #(Status, String, Option(ids.EntryId)) {
@@ -390,6 +409,7 @@ fn live_state(
   }
 }
 
+/// Computes the idle status for the agent view.
 fn idle_state(
   view: snapshot_view.View,
   strand: String,
@@ -399,6 +419,8 @@ fn idle_state(
     |> result.try(fn(value) {
       codec.decode_last_result(value) |> result.replace_error(Nil)
     })
+
+  // Handle the `idle_state` branch dispatch.
   let result = case latest {
     Error(Nil) ->
       case cell(view.cells, register.StrandLastResult, strand) {
@@ -407,6 +429,8 @@ fn idle_state(
       }
     Ok(operation.RunLastResult(operation: id, outcome:, final_assistant:, ..)) -> {
       let #(status, fallback) = run_outcome(outcome)
+
+      // Handle the `idle_state` branch dispatch.
       let reason = case outcome {
         operation.RunAborted ->
           child_stop.operation_reason(
@@ -417,6 +441,7 @@ fn idle_state(
           |> option.unwrap(fallback)
         operation.RunCompleted(_) | operation.RunFailed(_) -> fallback
       }
+
       #(Some(ids.op_id_to_string(id)), status, reason, final_assistant)
     }
     Ok(operation.CompactionLastResult(operation: id, outcome:, ..))
@@ -434,6 +459,7 @@ fn idle_state(
   }
 }
 
+/// Helper `run_outcome` for run outcome.
 fn run_outcome(outcome: operation.RunOutcome) -> #(Status, String) {
   case outcome {
     operation.RunCompleted(_) -> #(Finished, "Finished")
@@ -442,6 +468,7 @@ fn run_outcome(outcome: operation.RunOutcome) -> #(Status, String) {
   }
 }
 
+/// Helper `structural_outcome` for structural outcome.
 fn structural_outcome(
   outcome: operation.StructuralOutcome,
 ) -> #(Status, String) {
@@ -453,6 +480,7 @@ fn structural_outcome(
   }
 }
 
+/// Helper `cell` for cell.
 fn cell(
   cells: List(snapshot_view.Cell),
   namespace: register.RegisterNs,
@@ -463,7 +491,9 @@ fn cell(
   |> result.map(fn(cell) { cell.value })
 }
 
+/// Extracts assistant text from content blocks.
 fn assistant_text(value: entry.Entry) -> Result(String, Nil) {
+  // Handle the `assistant_text` branch dispatch.
   case value {
     entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) -> {
       let text =
@@ -477,6 +507,8 @@ fn assistant_text(value: entry.Entry) -> Result(String, Nil) {
         |> string.join("\n")
         |> text_hygiene.single_line
         |> string.slice(0, 320)
+
+      // Handle the `assistant_text` branch dispatch.
       case text {
         "" -> Error(Nil)
         _ -> Ok(text)
@@ -486,6 +518,7 @@ fn assistant_text(value: entry.Entry) -> Result(String, Nil) {
   }
 }
 
+/// Collects pending approval requests.
 fn pending_approvals(
   cells: List(snapshot_view.Cell),
   records: List(approval.Review),
@@ -493,16 +526,20 @@ fn pending_approvals(
   current: Option(String),
 ) -> List(String) {
   list.filter_map(records, fn(review) {
+    // Handle the `pending_approvals` branch dispatch.
     use _ <- result.try(case review.status == approval.Pending {
       True -> Ok(Nil)
       False -> Error(Nil)
     })
+
     use fields <- result.try(
       cell(cells, register.FactCustom, "escalation/" <> review.id)
       |> result.try(object),
     )
     use scope <- result.try(list.key_find(fields, "scope"))
     use scope <- result.try(object(scope))
+
+    // Handle the `pending_approvals` branch dispatch.
     case list.key_find(scope, "strand"), list.key_find(scope, "operation") {
       Ok(json.String(owner)), Ok(json.String(operation))
         if owner == strand && Some(operation) == current
@@ -512,6 +549,7 @@ fn pending_approvals(
   })
 }
 
+/// Extracts fields from a JSON object value.
 fn object(
   value: json.JsonValue,
 ) -> Result(List(#(String, json.JsonValue)), Nil) {
@@ -521,6 +559,7 @@ fn object(
   }
 }
 
+/// Helper `has_held_input` for has held input.
 fn has_held_input(
   inputs: Option(List(snapshot_view.PendingInput)),
   strand: String,
@@ -531,14 +570,18 @@ fn has_held_input(
   }
 }
 
+/// Formats pending text from tool call arguments.
 fn pending_text(
   inputs: Option(List(snapshot_view.PendingInput)),
   strand: String,
 ) -> String {
+  // Handle the `pending_text` branch dispatch.
   case inputs {
     None -> "Pending input unknown"
     Some(inputs) -> {
       let count = list.count(inputs, fn(input) { input.strand == strand })
+
+      // Handle the `pending_text` branch dispatch.
       case count {
         0 -> "No pending input"
         _ -> int.to_string(count) <> " received, awaiting delivery"

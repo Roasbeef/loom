@@ -154,6 +154,7 @@ pub type Event {
 /// let fields = attempt.encode(attempt.Closed(attempt.Id(1)))
 /// ```
 pub fn encode(event: Event) -> List(#(String, json.JsonValue)) {
+  // Handle the `encode` branch dispatch.
   let #(Id(id), tag, fields) = case event {
     Started(id, expected) -> #(id, "attempt_started", [
       #("session", json.String(expected.session)),
@@ -189,9 +190,11 @@ pub fn encode(event: Event) -> List(#(String, json.JsonValue)) {
       #("reason", json.String(reason)),
     ])
   }
+
   [#("t", json.String(tag)), #("attempt", json.Int(id)), ..fields]
 }
 
+/// Helper `encode_selection` for encode selection.
 fn encode_selection(selection) {
   case selection {
     NoSelection -> []
@@ -221,17 +224,21 @@ fn encode_selection(selection) {
 ///   == Ok(attempt.Closed(attempt.Id(1)))
 /// ```
 pub fn decode(value: json.JsonValue) -> Result(Event, String) {
+  // Handle the `decode` branch dispatch.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("attempt event must be an object")
   })
+
   use id <- result.try(integer(fields, "attempt"))
   use <- bool.guard(id < 1, Error("attempt identity must be positive"))
   use tag <- result.try(text(fields, "t"))
   decode_tag(tag, Id(id), fields)
 }
 
+/// Helper `decode_tag` for decode tag.
 fn decode_tag(tag, id, fields) {
+  // Handle the `decode_tag` branch dispatch.
   case tag {
     "attempt_started" -> {
       use session <- result.try(identity(fields, "session"))
@@ -271,6 +278,7 @@ fn decode_tag(tag, id, fields) {
   }
 }
 
+/// Helper `decode_selection` for decode selection.
 fn decode_selection(kind, fields) {
   case kind {
     "snapshot_next" -> {
@@ -307,10 +315,12 @@ fn decode_selection(kind, fields) {
         False -> Error("unknown recorded evolution action")
       }
     "escalations_get" -> {
+      // Handle the `decode_selection` branch dispatch.
       use values <- result.try(case list.key_find(fields, "ids") {
         Ok(json.Array(values)) -> Ok(values)
         Ok(_) | Error(Nil) -> Error("missing exact decision selectors")
       })
+
       use <- bool.guard(
         values == [] || list.drop(values, 8) != [],
         Error("decision selector count exceeds bound"),
@@ -368,6 +378,7 @@ fn decode_selection(kind, fields) {
   }
 }
 
+/// Helper `identity` for identity.
 fn identity(fields, name) {
   use value <- result.try(text(fields, name))
   use <- bool.guard(

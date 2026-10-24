@@ -40,13 +40,16 @@ pub fn figure(amount: Float, evidence: usage_evidence.Evidence) -> String {
   words(amount, evidence, marker: "")
 }
 
-// The marker sits directly before the amount, after the rate basis and
-// coverage qualifiers, so the two public forms cannot drift apart.
+/// Formats an amount with evidence qualifiers and optional inline marker.
+///
+/// The marker sits directly before the amount, after the rate basis and
+/// coverage qualifiers, so the two public forms cannot drift apart.
 fn words(
   amount: Float,
   evidence: usage_evidence.Evidence,
   marker marker: String,
 ) -> String {
+  // Resolve the display format depending on provider evidence and pricing basis.
   case evidence {
     usage_evidence.NoProvider -> marker <> "$0.00"
     usage_evidence.Remote(_, usage_evidence.Unreported)
@@ -58,15 +61,19 @@ fn words(
       _,
       usage_evidence.Reported(_, usage_evidence.Priced(coverage, basis)),
     ) -> {
+      // Pick the rate basis prefix.
       let prefix = case basis {
         usage_evidence.ApiRates -> ""
         usage_evidence.ChatGptReferenceRates -> "API ref "
         usage_evidence.MixedRates -> "mixed rates "
       }
+
+      // Pick the coverage qualifier prefix.
       let coverage = case coverage {
         usage_evidence.Complete -> ""
         usage_evidence.Partial -> "partial "
       }
+
       prefix <> coverage <> marker <> "$" <> money(amount)
     }
   }

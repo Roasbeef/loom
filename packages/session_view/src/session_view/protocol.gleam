@@ -623,6 +623,7 @@ pub fn permissions(id: Int) -> String {
 /// protocol.permission_forget(13, remembered.ForgetEverything(None))
 /// ```
 pub fn permission_forget(id: Int, forget: remembered.Forget) -> String {
+  // Encode target grant or consent and optional expected sequence.
   let #(target, seq) = case forget {
     remembered.ForgetPermission(wire:, seq:) -> #(
       json.Object([#("kind", json.String("grant")), #("grant", wire)]),
@@ -640,6 +641,7 @@ pub fn permission_forget(id: Int, forget: remembered.Forget) -> String {
       seq,
     )
   }
+
   command(id, "permission_forget", case seq {
     Some(seq) -> [#("target", target), #("expected_seq", json.Int(seq))]
     None -> [#("target", target)]
@@ -814,6 +816,7 @@ pub fn compact(id: Int, strand: String) -> String {
   command(id, "compact", [#("strand", json.String(strand))])
 }
 
+/// Formats a client command into standard v2 wire JSON envelope text.
 fn command(id: Int, name: String, body: List(#(String, JsonValue))) -> String {
   json.Object([
     #("v", json.Int(2)),
@@ -845,6 +848,8 @@ pub fn decode_event(text: String) -> Result(Event, String) {
 @internal
 pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
   use event <- result.try(decode_version(text, 2))
+
+  // Filter for presentation snapshot events supported in correlated responses.
   case event {
     ModelsSnapshot(_)
     | SkillsSnapshot(_)
@@ -906,6 +911,8 @@ pub fn decode_v2_presentation(text: String) -> Result(Event, String) {
 pub fn decode_v2_pushed(text: String) -> Result(Event, String) {
   use fields <- result.try(envelope(text, 2))
   use name <- result.try(required_string(fields, "event"))
+
+  // Decode pushed event by event name.
   case name {
     "committed" -> decode_committed(fields)
     "usage_observation" -> {
@@ -924,6 +931,7 @@ fn decode_version(text: String, version: Int) -> Result(Event, String) {
   decode_body(name, body_of(fields))
 }
 
+/// Parses the JSON envelope and validates protocol version.
 fn envelope(
   text: String,
   version: Int,
@@ -933,10 +941,13 @@ fn envelope(
     |> result.map_error(fn(report) { report.expected }),
   )
   use fields <- result.try(object_fields(value, "event envelope"))
+
+  // Verify protocol version matches expected integer.
   use Nil <- result.try(case list.key_find(fields, "v") {
     Ok(json.Int(found)) if found == version -> Ok(Nil)
     _ -> Error("event envelope has the wrong protocol version")
   })
+
   Ok(fields)
 }
 
@@ -949,6 +960,7 @@ fn body_of(fields: List(#(String, JsonValue))) -> JsonValue {
   }
 }
 
+/// Decodes committed event fields into a Committed event record.
 fn decode_committed(
   fields: List(#(String, JsonValue)),
 ) -> Result(Event, String) {
@@ -958,7 +970,9 @@ fn decode_committed(
   Ok(Committed(strand:, seq:))
 }
 
+/// Dispatches event body decoding by event name.
 fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
+  // Match event name to appropriate body decoder.
   case name {
     "snapshot" -> decode_snapshot(body)
     "entry" -> result.map(decode_entry_record(body), EntryAdded)
@@ -990,6 +1004,7 @@ fn decode_body(name: String, body: JsonValue) -> Result(Event, String) {
 // the five fields is required: a partial return would restore a draft that
 // silently dropped what the operator typed, which is the loss the drain
 // exists to prevent (protocol-change/038).
+/// Decodes held input return body into HeldInputReturned event.
 fn decode_held_input_returned(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "held input return body"))
   use strand <- result.try(required_string(fields, "strand"))
@@ -1004,9 +1019,12 @@ fn decode_held_input_returned(body: JsonValue) -> Result(Event, String) {
 // rather than an error, for the reason an unknown event name does: a push
 // the terminal cannot read must not close its socket. A known subject with
 // a malformed field is an error, because it claims to name a block.
+/// Decodes block summary push events by subject kind.
 fn decode_block_summary(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "block_summary body"))
   use subject <- result.try(required_string(fields, "subject"))
+
+  // Decode block summary based on whether subject is block or live stream.
   case subject {
     "block" -> {
       use entry <- result.try(required_string(fields, "entry"))
@@ -1027,9 +1045,12 @@ fn decode_block_summary(body: JsonValue) -> Result(Event, String) {
   }
 }
 
+/// Decodes snapshot body by snapshot mode string.
 fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "snapshot body"))
   use mode <- result.try(required_string(fields, "mode"))
+
+  // Decode snapshot according to mode kind.
   case mode {
     "full" -> {
       use session <- result.try(required_string(fields, "session"))
@@ -1138,6 +1159,7 @@ fn decode_snapshot(body: JsonValue) -> Result(Event, String) {
   }
 }
 
+/// Decodes entries list from snapshot fields.
 fn decode_entries(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(EntryRecord), String) {
@@ -1148,6 +1170,7 @@ fn decode_entries(
   }
 }
 
+/// Decodes a single entry record from JSON value.
 fn decode_entry_record(value: JsonValue) -> Result(EntryRecord, String) {
   use fields <- result.try(object_fields(value, "entry body"))
   use strand <- result.try(required_string(fields, "strand"))
@@ -1159,6 +1182,7 @@ fn decode_entry_record(value: JsonValue) -> Result(EntryRecord, String) {
   Ok(EntryRecord(strand:, entry:))
 }
 
+/// Decodes strands list from snapshot fields.
 fn decode_strands(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(Strand), String) {
@@ -1169,10 +1193,13 @@ fn decode_strands(
   }
 }
 
+/// Decodes a single strand from JSON value.
 fn decode_strand(value: JsonValue) -> Result(Strand, String) {
   use fields <- result.try(object_fields(value, "strand"))
   use id <- result.try(required_string(fields, "id"))
   use name <- result.try(optional_string(fields, "name"))
+
+  // Extract optional live operation phase if present.
   use live_phase <- result.try(case list.key_find(fields, "live_op") {
     Error(Nil) -> Ok(None)
     Ok(value) -> {
@@ -1181,9 +1208,11 @@ fn decode_strand(value: JsonValue) -> Result(Strand, String) {
       Ok(Some(phase))
     }
   })
+
   Ok(Strand(id:, name:, live_phase:))
 }
 
+/// Decodes models list from snapshot fields.
 fn decode_models(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(ModelInfo), String) {
@@ -1194,6 +1223,7 @@ fn decode_models(
   }
 }
 
+/// Decodes a single model info record from JSON value.
 fn decode_model(value: JsonValue) -> Result(ModelInfo, String) {
   use fields <- result.try(object_fields(value, "model"))
   use name <- result.try(required_string(fields, "name"))
@@ -1204,6 +1234,7 @@ fn decode_model(value: JsonValue) -> Result(ModelInfo, String) {
   Ok(ModelInfo(name:, dialect:, model_id:, roles:, active:))
 }
 
+/// Decodes schedules list from snapshot fields.
 fn decode_schedules(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(ScheduleRow), String) {
@@ -1214,6 +1245,7 @@ fn decode_schedules(
   }
 }
 
+/// Decodes a single schedule row from JSON value.
 fn decode_schedule(value: JsonValue) -> Result(ScheduleRow, String) {
   use fields <- result.try(object_fields(value, "schedule"))
   use name <- result.try(required_string(fields, "name"))
@@ -1229,11 +1261,13 @@ fn decode_schedule(value: JsonValue) -> Result(ScheduleRow, String) {
     Ok(_) -> Error("wake must be a boolean")
     Error(Nil) -> Error("wake is required")
   })
+
   use fired <- result.try(required_int(fields, "fired"))
   use body <- result.try(required_string(fields, "body"))
   Ok(ScheduleRow(name:, target:, owner:, when:, wake:, fired:, body:))
 }
 
+/// Decodes a stream delta event body.
 fn decode_delta(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "stream_delta body"))
   use strand <- result.try(required_string(fields, "strand"))
@@ -1247,15 +1281,19 @@ fn decode_delta(body: JsonValue) -> Result(Event, String) {
   use text <- result.try(optional_string(fields, "text"))
   use tool <- result.try(optional_string(fields, "tool_name"))
   use _arguments <- result.try(optional_string(fields, "arguments_fragment"))
+
+  // Extract content string based on delta kind.
   let content = case kind {
     // Arguments are incremental JSON fragments and are not safe or useful to
     // render until the durable tool-call entry supplies a complete value.
     "tool_call" -> option.unwrap(tool, "tool")
     _ -> option.unwrap(text, "")
   }
+
   Ok(StreamDelta(strand:, operation:, generation:, kind:, text: content))
 }
 
+/// Decodes tool output event body into ToolOutput event.
 fn decode_tool_output(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "tool_output body"))
   use strand <- result.try(required_string(fields, "strand"))
@@ -1278,6 +1316,7 @@ fn decode_tool_output(body: JsonValue) -> Result(Event, String) {
   ))
 }
 
+/// Decodes operation transition event body.
 fn decode_operation(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "op_transition body"))
   use strand <- result.try(required_string(fields, "strand"))
@@ -1285,6 +1324,7 @@ fn decode_operation(body: JsonValue) -> Result(Event, String) {
   Ok(OperationChanged(strand:, phase:))
 }
 
+/// Decodes usage event body and optional sequence number.
 fn decode_usage(body: JsonValue, seq: Option(Int)) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "usage body"))
   use strand <- result.try(required_string(fields, "strand"))
@@ -1294,6 +1334,8 @@ fn decode_usage(body: JsonValue, seq: Option(Int)) -> Result(Event, String) {
     codec.decode_usage(value)
     |> result.map_error(fn(report) { report.expected }),
   )
+
+  // Extract optional last_usage payload if present.
   use last_usage <- result.try(case list.key_find(fields, "last_usage") {
     Error(Nil) -> Ok(Some(usage))
     Ok(json.Null) -> Ok(None)
@@ -1302,12 +1344,16 @@ fn decode_usage(body: JsonValue, seq: Option(Int)) -> Result(Event, String) {
       |> result.map(Some)
       |> result.map_error(fn(report) { report.expected })
   })
+
   Ok(UsageChanged(strand:, seq:, operation:, usage:, last_usage:))
 }
 
+/// Decodes escalation event body.
 fn decode_escalation(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "escalation body"))
   use status <- result.try(required_string(fields, "status"))
+
+  // Handle pending escalation or ignore other statuses.
   case status {
     "pending" -> {
       use id <- result.try(required_string(fields, "escalation_id"))
@@ -1331,6 +1377,7 @@ fn decode_escalation(body: JsonValue) -> Result(Event, String) {
 /// ```
 pub const nothing_to_compact_message = "there is nothing to compact"
 
+/// Decodes an error event body.
 fn decode_error(body: JsonValue) -> Result(Event, String) {
   use fields <- result.try(object_fields(body, "error body"))
   use code <- result.try(required_string(fields, "code"))
@@ -1338,6 +1385,7 @@ fn decode_error(body: JsonValue) -> Result(Event, String) {
   Ok(ServerError(code:, message:))
 }
 
+/// Validates that a JSON value is an object and returns its fields.
 fn object_fields(
   value: JsonValue,
   place: String,
@@ -1353,6 +1401,7 @@ fn object_fields(
   }
 }
 
+/// Extracts a required object field from key-value pairs.
 fn required_object(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1361,6 +1410,7 @@ fn required_object(
   object_fields(value, key)
 }
 
+/// Extracts a required raw JSON value from key-value pairs.
 fn required_value(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1369,6 +1419,7 @@ fn required_value(
   |> result.map_error(fn(_) { key <> " is required" })
 }
 
+/// Extracts a required string field from key-value pairs.
 fn required_string(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1380,6 +1431,7 @@ fn required_string(
   }
 }
 
+/// Extracts a required integer field from key-value pairs.
 fn required_int(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1391,6 +1443,7 @@ fn required_int(
   }
 }
 
+/// Extracts an optional integer field from key-value pairs.
 fn optional_int(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1402,6 +1455,7 @@ fn optional_int(
   }
 }
 
+/// Extracts an optional string field from key-value pairs.
 fn optional_string(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1413,6 +1467,7 @@ fn optional_string(
   }
 }
 
+/// Extracts an optional string field defaulting to empty string.
 fn defaulted_string(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1421,6 +1476,7 @@ fn defaulted_string(
   |> result.map(option.unwrap(_, ""))
 }
 
+/// Extracts a string array field from key-value pairs.
 fn string_array(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1451,6 +1507,7 @@ fn string_array(
 // The client wire nests tool-call bodies where the core durability codec
 // keeps them inline. This is the same normalization the server protocol uses
 // before asking the shared total decoder to interpret an entry.
+/// Normalizes nested tool calls in entry JSON to format expected by core codec.
 fn codec_entry(value: JsonValue) -> JsonValue {
   map_object_field(value, "message", codec_message)
   |> map_object_field("retainedTail", fn(tail) {
@@ -1466,6 +1523,7 @@ fn codec_entry(value: JsonValue) -> JsonValue {
   })
 }
 
+/// Normalizes message content blocks for core codec decoding.
 fn codec_message(value: JsonValue) -> JsonValue {
   map_object_field(value, "content", fn(content) {
     case content {
@@ -1480,6 +1538,7 @@ fn codec_message(value: JsonValue) -> JsonValue {
   })
 }
 
+/// Flattens toolCall block properties into the block itself.
 fn codec_block(value: JsonValue) -> JsonValue {
   case value {
     json.Object(fields) ->
@@ -1497,6 +1556,7 @@ fn codec_block(value: JsonValue) -> JsonValue {
   }
 }
 
+/// Applies a transformation function to a specific field in a JSON object.
 fn map_object_field(
   value: JsonValue,
   key: String,
@@ -1765,10 +1825,12 @@ pub fn skills(id: Int, offset: Int) -> String {
 /// // protocol.btw(1, "main", btw.Ask("Why this design?"))
 /// ```
 pub fn btw(id: Int, strand: String, action: btw.Action) -> String {
+  // Extract prompt text for question actions or empty string otherwise.
   let text = case action {
     btw.Ask(text) -> text
     _ -> ""
   }
+
   command(id, "btw", [
     #("strand", json.String(strand)),
     #("action", json.String(btw.action_name(action))),

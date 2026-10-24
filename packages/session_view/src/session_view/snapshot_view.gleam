@@ -202,6 +202,7 @@ pub fn decode(captured: snapshot.Captured) -> Result(View, String) {
   decode_view(fields, cells, usage)
 }
 
+/// Decodes and validates registered cells from captured snapshot metadata.
 fn captured_cells(captured: snapshot.Captured) {
   use fields <- result.try(object(captured.metadata))
   use raw_cells <- result.try(array(fields, "cells"))
@@ -218,6 +219,7 @@ fn captured_cells(captured: snapshot.Captured) {
   Ok(cells)
 }
 
+/// Decodes the complete View record from metadata fields, cells, and usage.
 fn decode_view(fields, cells, usage) {
   // The mutable server default is read from this same cut, never from a
   // separate config response which could race its attribution cell. The
@@ -230,6 +232,7 @@ fn decode_view(fields, cells, usage) {
     Ok(cell) -> Ok(cell.value)
     Error(Nil) -> field(fields, "host_run_settings")
   }
+
   use settings <- result.try(settings_value |> result.try(decode_settings))
   use raw_peers <- result.try(array(fields, "peers"))
   use <- bool.guard(
@@ -272,7 +275,9 @@ fn decode_view(fields, cells, usage) {
   ))
 }
 
+/// Decodes optional tool availability metadata from snapshot fields.
 fn decode_tools(fields) {
+  // Check if tool availability was provided in snapshot fields.
   case list.key_find(fields, "tool_availability") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(value) -> {
@@ -292,6 +297,8 @@ fn decode_tools(fields) {
       )
       use refusals <- result.try(decode_extension_refusals(fields))
       use reason <- result.try(field(fields, "code_mode_issue"))
+
+      // Format optional code mode diagnostic issue string.
       case reason {
         json.Null -> Ok(Some(ToolAvailability(registered, None, refusals)))
         json.String(reason) ->
@@ -302,7 +309,9 @@ fn decode_tools(fields) {
   }
 }
 
+/// Decodes optional pending input list from snapshot fields.
 fn decode_pending(fields) {
+  // Check if pending inputs are present in snapshot fields.
   case list.key_find(fields, "pending_inputs") {
     Error(Nil) -> Ok(None)
     Ok(_) -> {
@@ -322,6 +331,7 @@ fn decode_pending(fields) {
   }
 }
 
+/// Decodes a single pending input row from JSON.
 fn decode_pending_input(value) {
   use fields <- result.try(object(value))
   use id <- result.try(text(fields, "id"))
@@ -332,16 +342,22 @@ fn decode_pending_input(value) {
     id == "" || strand == "" || string.byte_size(content) > 512,
     Error("invalid pending input extent"),
   )
+
+  // Decode non-negative input revision number or default to 0.
   use revision <- result.try(case list.key_find(fields, "revision") {
     Ok(json.Int(value)) if value >= 0 -> Ok(value)
     Error(Nil) -> Ok(0)
     _ -> Error("invalid pending input revision")
   })
+
+  // Decode optional editability flag.
   use editing <- result.try(case list.key_find(fields, "editable") {
     Ok(json.Bool(True)) -> Ok(Editable)
     Ok(json.Bool(False)) | Error(Nil) -> Ok(ReadOnly)
     _ -> Error("invalid pending input editability")
   })
+
+  // Map kind string to typed input target variant.
   case kind {
     "steer" -> Ok(PendingInput(id, strand, Steer, content, revision, editing))
     "queue" -> Ok(PendingInput(id, strand, Queue, content, revision, editing))
@@ -463,6 +479,7 @@ pub fn decided(captured: snapshot.Captured) -> Result(List(Cell), String) {
   Ok(cells)
 }
 
+/// Decodes a register cell entry from a snapshot cell object.
 fn decode_cell(value) {
   use fields <- result.try(object(value))
   use namespace <- result.try(
@@ -478,9 +495,12 @@ fn decode_cell(value) {
   Ok(Cell(namespace, key, seq, value))
 }
 
+/// Ensures all captured cells have distinct namespace and key pairs.
 fn unique_cells(cells: List(Cell)) {
   list.try_fold(cells, dict.new(), fn(seen, cell) {
     let identity = #(cell.namespace, cell.key)
+
+    // Verify identity has not been seen before in this cut.
     case dict.has_key(seen, identity) {
       True -> Error("duplicate captured register")
       False -> Ok(dict.insert(seen, identity, Nil))
@@ -489,6 +509,7 @@ fn unique_cells(cells: List(Cell)) {
   |> result.replace(Nil)
 }
 
+/// Decodes a strand descriptor and state from configuration cells.
 fn decode_strand(cells: List(Cell), config: Cell) {
   use configuration <- result.try(
     machine_codec.decode_configuration(config.value)
@@ -520,7 +541,9 @@ fn decode_strand(cells: List(Cell), config: Cell) {
   ))
 }
 
+/// Decodes the operation phase string for the currently active operation.
 fn operation_phase(cells, current) {
+  // Match optional current operation ID to read its state.
   case current {
     None -> Ok(None)
     Some(id) -> {
@@ -537,6 +560,7 @@ fn operation_phase(cells, current) {
   }
 }
 
+/// Maps a machine operation state to its display phase name.
 fn phase_name(state) {
   case state {
     operation.CompactionState(..) -> "compacting"
@@ -554,7 +578,9 @@ fn phase_name(state) {
   }
 }
 
+/// Extracts the configuration origin record for a strand from custom cells.
 fn configuration_origin(cells, strand) {
+  // Look up custom origin cell for this strand.
   case find(cells, register.FactCustom, "client/config_origin/" <> strand) {
     Error(Nil) -> Ok(None)
     Ok(cell) -> {
@@ -565,6 +591,7 @@ fn configuration_origin(cells, strand) {
   }
 }
 
+/// Decodes shared run settings from a JSON object.
 fn decode_settings(value) {
   use fields <- result.try(object(value))
   use queue <- result.try(text(fields, "queue_mode"))
@@ -581,6 +608,7 @@ fn decode_settings(value) {
   Ok(RunSettings(queue, tools, author))
 }
 
+/// Decodes a peer presence record from a JSON object.
 fn decode_peer(value) {
   use fields <- result.try(object(value))
   use connection <- result.try(text(fields, "connection_id"))
@@ -596,6 +624,8 @@ fn decode_peer(value) {
     }),
   )
   use role <- result.try(text(fields, "role"))
+
+  // Map presence role string to snapshot Role variant.
   case role {
     "owner" -> Ok(Peer(connection, author, snapshot.Owner))
     "operator" -> Ok(Peer(connection, author, snapshot.Operator))
@@ -604,7 +634,9 @@ fn decode_peer(value) {
   }
 }
 
+/// Decodes an optional stream preview from metadata fields.
 fn decode_preview(fields) {
+  // Check if stream preview was included in metadata.
   case list.key_find(fields, "stream_preview") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(value) -> {
@@ -653,12 +685,15 @@ pub fn branch(view: View, window: snapshot.Window, strand: String) -> Branch {
         }
       }),
     )
+
+  // Look up the strand's current leaf entry to begin the ancestor walk.
   case dict.get(view.leaves, strand) {
     Error(Nil) -> Branch([], Some("strand is not present in the captured cut"))
     Ok(leaf) -> walk(entries, leaf, strand, [], dict.size(entries))
   }
 }
 
+/// Recursively walks entry parent pointers from leaf backwards.
 fn walk(
   entries: Dict(ids.EntryId, Entry),
   leaf: Option(ids.EntryId),
@@ -689,6 +724,7 @@ fn find(cells: List(Cell), namespace, key) {
   list.find(cells, fn(cell) { cell.namespace == namespace && cell.key == key })
 }
 
+/// Asserts that a JSON value is an object, returning its fields.
 fn object(value) {
   case value {
     json.Object(fields) -> Ok(fields)
@@ -705,8 +741,11 @@ fn field(fields, name) {
   list.key_find(fields, name) |> result.replace_error("missing metadata field")
 }
 
+/// Reads a required string field by name from metadata object fields.
 fn text(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Verify that the field value is a string.
   case value {
     json.String(text) -> Ok(text)
     json.Object(_)
@@ -718,8 +757,11 @@ fn text(fields, name) {
   }
 }
 
+/// Reads a required non-negative integer field by name from metadata fields.
 fn number(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Verify that the field value is a non-negative integer.
   case value {
     json.Int(number) if number >= 0 -> Ok(number)
     json.Int(_)
@@ -732,8 +774,11 @@ fn number(fields, name) {
   }
 }
 
+/// Reads a required array field by name from metadata object fields.
 fn array(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Verify that the field value is an array.
   case value {
     json.Array(items) -> Ok(items)
     json.Int(_)
@@ -765,6 +810,8 @@ pub fn has_result(view: View, strand: String, current: String) -> Bool {
     |> result.try(fn(cell) {
       machine_codec.decode_last_result(cell.value) |> result.replace_error(Nil)
     })
+
+  // Match operation identity against the recorded last result.
   case result {
     Ok(operation.RunLastResult(operation: id, ..))
     | Ok(operation.CompactionLastResult(operation: id, ..))
@@ -791,6 +838,8 @@ pub fn has_tool_result(
   let Branch(records:, ..) = branch(view, window, strand)
   list.any(records, fn(record) {
     let protocol.EntryRecord(entry:, ..) = record
+
+    // Check if entry contains a matching tool result call ID.
     case entry {
       MessageEntry(message: ToolResultMessage(tool_call_id:, ..), ..) ->
         tool_call_id == call_id
@@ -801,9 +850,11 @@ pub fn has_tool_result(
 
 // Older daemons omit the additive field. A present list must satisfy its wire
 // bounds before a host adopts any of the captured metadata.
+/// Decodes an optional list of extension refusal diagnostic strings.
 fn decode_extension_refusals(
   fields: List(#(String, json.JsonValue)),
 ) -> Result(List(String), String) {
+  // Check if extension refusals are present in metadata fields.
   case list.key_find(fields, "extension_refusals") {
     Error(Nil) -> Ok([])
     Ok(json.Array(values)) -> {
@@ -812,6 +863,7 @@ fn decode_extension_refusals(
         Error("too many extension refusals"),
       )
       list.try_map(values, fn(value) {
+        // Validate each refusal string extent.
         case value {
           json.String(reason) -> {
             use <- bool.guard(

@@ -102,6 +102,7 @@ pub fn apply(
   state: State(socket, recorder),
   event: attempt.Event,
 ) -> Result(#(State(socket, recorder), List(Change)), String) {
+  // Handle the `apply` branch dispatch.
   case event {
     attempt.Started(attempt.Id(id) as key, expected) -> {
       use <- bool.guard(
@@ -126,7 +127,9 @@ pub fn apply(
   }
 }
 
+/// Helper `adopt` for adopt.
 fn adopt(state: State(socket, recorder), id) {
+  // Handle the `adopt` branch dispatch.
   case state.candidate {
     Some(Lane(id: candidate, captured: Some(#(cut, view)), ..) as lane)
       if candidate == id
@@ -145,6 +148,7 @@ fn adopt(state: State(socket, recorder), id) {
   }
 }
 
+/// Helper `retire` for retire.
 fn retire(state: State(socket, recorder), id: attempt.Id) {
   let attempt.Id(value) = id
   use <- bool.guard(
@@ -163,6 +167,7 @@ fn retire(state: State(socket, recorder), id: attempt.Id) {
     }
     Some(_) | None -> []
   }
+
   Ok(#(
     State(
       ..state,
@@ -180,11 +185,15 @@ fn remove(lane, id) {
   }
 }
 
+/// Helper `advance` for advance.
 fn advance(state: State(socket, recorder), id: attempt.Id, event) {
+  // Handle the `advance` branch dispatch.
   case state.current, state.candidate {
     Some(Lane(id: found, ..) as lane), _ if found == id -> {
       use #(lane, updates) <- result.map(advance_lane(lane, event))
       let changes = list.map(updates, Update)
+
+      // Handle the `advance` branch dispatch.
       let changes = case event {
         attempt.Issued(
           _,
@@ -196,6 +205,7 @@ fn advance(state: State(socket, recorder), id: attempt.Id, event) {
         ) -> [RequestedLineage(entry), ..changes]
         _ -> changes
       }
+
       #(State(..state, current: Some(lane)), changes)
     }
     _, Some(Lane(id: found, ..) as lane) if found == id -> {
@@ -204,6 +214,8 @@ fn advance(state: State(socket, recorder), id: attempt.Id, event) {
     }
     _, _ -> {
       let attempt.Id(value) = id
+
+      // Handle the `advance` branch dispatch.
       case value <= state.latest {
         True -> Ok(#(state, []))
         False -> Error("traffic from an unknown recording attempt")
@@ -212,6 +224,7 @@ fn advance(state: State(socket, recorder), id: attempt.Id, event) {
   }
 }
 
+/// Helper `advance_lane` for advance lane.
 fn advance_lane(lane: Lane(socket, recorder), event) {
   case event {
     attempt.Issued(_, request) -> {
@@ -258,6 +271,7 @@ fn advance_lane(lane: Lane(socket, recorder), event) {
 
 // The credit this leaves the lane with is the caller's decision, because
 // only the caller knows whether the frame named a request.
+/// Processes received tool results or incoming messages.
 fn received(lane: Lane(socket, recorder), message, credit: Credit) {
   let #(channel, updates) =
     session_channel.receive(lane.channel, message, now: replay_now)
