@@ -26,6 +26,13 @@ The repairs below address concrete mistakes found by the final audit.
 | Client test limit | After formatting and compilation, `make check-client` reached the ledger tests before the jailed test process ended with `SIGXCPU` (`exit=-24`). There is no complete client-suite result from this run. |
 | Review | One independent report-only review found an inaccurate deployment copy-state comment. It was corrected and checked against the `facts.copy` encoder. Other false placement claims in the deployment render-budget helpers were corrected as well. |
 
+Integration then brought in main `3e258a2f3`, preserving its attach-file key
+lookup and pickglass behavior. The 269 changed client sources match that
+incoming main's code tokens except two formatter-removed trailing commas.
+The attach-file, authority-home and distribution-attach test modules passed,
+as did the integrated format, whole-tree lint, documentation and prelude
+gates. The lint totals remain zero errors and 2,515 warnings.
+
 No installation, daemon restart or hotpatch was performed. A hosted CI verdict
 for the final published head is still required before merge.
 

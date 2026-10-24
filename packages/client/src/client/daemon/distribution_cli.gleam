@@ -441,6 +441,7 @@ fn provision_ledger(
     Some(#(_, home)) -> authority_home.write_hint(output, home)
     None -> Ok(Nil)
   })
+
   Ok(provisioned(deployment, output, closing))
 }
 

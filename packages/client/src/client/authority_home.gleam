@@ -75,6 +75,8 @@ pub fn hinted_home(directory: String) -> Result(String, Nil) {
   use text <- result.try(
     simplifile.read(directory <> "/" <> hint_file) |> result.replace_error(Nil),
   )
+
+  // Accept only a trimmed absolute home path from the installation hint.
   case string.trim(text) {
     "/" <> _ as home -> Ok(home)
     _ -> Error(Nil)
