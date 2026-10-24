@@ -32,6 +32,12 @@ check-gleam: binaries ## Full gate for the Gleam packages only
 check-%: binaries ## Full gate for one package, e.g. make check-machine
 	@scripts/check.sh $*
 
+# Client assembly regressions exercise the real evolution plane and refuse a
+# missing seed instead of silently measuring an assembly without that plane.
+.PHONY: check-client
+check-client: binaries codemode-seed
+	@scripts/check.sh client
+
 # The gates a change can affect: the static gates, the changed packages and
 # every package that builds against or reads them, derived from the
 # gleam.toml path dependencies. Build machinery, a manifest, or a change
