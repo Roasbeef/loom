@@ -3354,6 +3354,9 @@ pub fn workspace_seam_with_access(
   let root = workspace_root
   let request_strand = strand
 
+  // The read callback travels with capability workers, not the host config.
+  let blob_root = config.blob_root
+
   // The schedule closures are the owner's. Taking them from the arms keeps
   // one reading of where `schedule.*` is answered, whichever way it is
   // reached: the extension bridge has no seam of its own and asks for the
@@ -3364,12 +3367,10 @@ pub fn workspace_seam_with_access(
   let reads =
     fs.exempting_blob_root(
       directory_access.widen(session_base, access),
-      config.blob_root,
+      blob_root,
     )
   workspace.Workspace(
-    fs_read: fn(path) {
-      read_in(filesystem, root, reads, config.blob_root, path)
-    },
+    fs_read: fn(path) { read_in(filesystem, root, reads, blob_root, path) },
     fs_list: fn(path) { list_in(filesystem, root, reads, path) },
     fs_write: fn(path, contents) {
       write_in(filesystem, root, writable, protected, path, contents)
