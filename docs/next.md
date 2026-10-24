@@ -1,5 +1,25 @@
 # Current handoff
 
+## CI feedback pilot and tracking
+
+[#1104](https://github.com/Roasbeef/loom/issues/1104) tracks faster test feedback
+and the progressive Dagger migration. The [measured plan](design-notes/ci-feedback-dagger.md)
+separates Linux fan-in (35m29s / 47m42s in two successful first attempts) from
+whole-workflow completion (96m32s / 142m08s). Existing caches work; macOS
+scheduling, duplicate non-client checks, and repeated standalone builds need
+separate treatment. No required gate or CI behavior changes in the first PR.
+
+Raw tests use the Gilgamesh login. After owner provisioning, Docker access and
+the optional pilot were verified there: 1,094 tests passed in 63.470 seconds,
+then all five checks were cached in 1.696 seconds. The [pilot guide](dagger-pilot.md)
+records Cloud isolation, provenance and the two unrelated baseline citation
+errors blocking this checkout's documentation gate. Keep this PR draft until
+required validation is resolved; no green full signoff is claimed. Next,
+remove a proven GitHub duplicate in a small PR, preserving test inventory and
+skip census, before expanding cache policy or cutting over Linux signoff.
+
+## Earlier profiling handoff
+
 This is a scoped profiling handoff, checked October 23, 2026 against
 `3cf6bdc09c281e39dd126d5b7daa6c9d7eb4308d` plus the local terminal optimization
 commits `4e8417fbf` and `0e7b74a2f`. It records this task's measurements and validation, not a fresh
