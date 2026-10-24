@@ -1,6 +1,6 @@
-//// The strand panel: the right-hand column, a tabbed panel of five panes,
-//// the Strands, Changes, Session, Trace and Notes tabs, with the advisor's pending
-//// nudges drawn under them.
+//// The strand panel: the right-hand column, a tabbed panel of six panes,
+//// the Strands, Changes, Session, Trace, Notes and Evolution tabs, with the
+//// advisor's pending nudges drawn under them.
 ////
 //// The panel is the page's last child (`view/shell`). It is an `aside` whose
 //// children retain the original four panes and nudge region in the same order, so
@@ -9,8 +9,11 @@
 //// the panes. The nudge card is not a pane: the tab rules hide a tab's
 //// siblings, and the card belongs to none of them, so it shows whichever
 //// tab is chosen — the queue is the advisor's, not a view of one pane's
-//// data — and Notes is appended after it, so the paths the panes hold
-//// (`component.strip_path`, `component.invite_path`) do not move. Its
+//// data — and Notes and then Evolution are appended after it, so the paths the
+//// panes hold (`component.strip_path`, `component.invite_path`) do not move.
+//// The Evolution pane is the operator's: an observer's page passes
+//// `element.none()` there, and the shell draws the tab only on a page that
+//// carries the `evolution` attribute (`view/shell`). Its
 //// visibility is the column's: the card is on screen while the panel is
 //// open except on Notes, is hidden with the column when the reader closes it, and below
 //// 980px the stylesheet hides it so the narrow row of cards is left alone
@@ -70,6 +73,7 @@ pub fn view(
   nudges: Element(message),
   commentary: Element(message),
   notes: Element(message),
+  evolution: Element(message),
 ) -> Element(message) {
   html.aside(
     [
@@ -105,6 +109,7 @@ pub fn view(
       trace,
       nudges,
       notes,
+      evolution,
     ],
   )
 }

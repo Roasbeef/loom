@@ -3384,6 +3384,7 @@ pub fn view(model: Model) -> Element(Msg) {
     element.none(),
     0,
     0,
+    None,
     "",
     list.length(listing.waiting(listing.entries(model.groups), model.activity)),
   )

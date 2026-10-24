@@ -75,6 +75,7 @@ import session_view/snapshot
 import session_view/turns
 import web_view/completion
 import web_view/component
+import web_view/evolution as evolving
 import web_view/image
 import web_view/invites
 import web_view/peer_links
@@ -83,6 +84,7 @@ import web_view/sessions
 import web_view/view/archiving
 import web_view/view/context_breakdown
 import web_view/view/controls
+import web_view/view/evolution as evolution_view
 import web_view/view/lane
 import web_view/view/memory as memory_view
 import web_view/view/peer_links as peer_links_view
@@ -217,6 +219,26 @@ pub type Msg(socket) {
   /// question and is sent through the shared step at once.
   Rejecting(id: String)
 
+  /// A change's button on the Evolution tab, with the change as the page drew
+  /// it: the candidate, the evidence and the generation. The page opens the
+  /// question and sends nothing (protocol-change/099).
+  AskingEvolve(armed: evolving.Armed)
+
+  /// The question's confirm, with the text of its reason field (empty for an
+  /// approval, which has none): the page sends the change that question armed
+  /// and nothing else, through the shared step like any other command.
+  ConfirmingEvolve(reason: String)
+
+  /// The question's way out: the page closes it and sends nothing.
+  CancellingEvolve
+
+  /// The Evolution tab's "Read again" button.
+  ReadingEvolution
+
+  /// The core card's button: the page asks the daemon for the component's
+  /// status. A core upgrade is never offered from a page.
+  ReadingCore
+
   /// A button of the owner's peer-link section (protocol-change/077). It
   /// carries what the server drew on the button, and the component checks it
   /// against its own board and sidebar list again before it acts. The section
@@ -295,6 +317,11 @@ pub fn update(
     ConfirmingApproval -> component.confirm_approval(model)
     CancellingApproval -> #(component.cancel_approval(model), effect.none())
     Rejecting(id:) -> component.reject_proposal(model, id)
+    AskingEvolve(armed:) -> #(component.ask_evolve(model, armed), effect.none())
+    ConfirmingEvolve(reason:) -> component.confirm_evolve(model, reason)
+    CancellingEvolve -> #(component.cancel_evolve(model), effect.none())
+    ReadingEvolution -> component.read_evolution(model)
+    ReadingCore -> component.read_core_status(model)
     Peering(press:) -> component.peering(model, press)
     Linking(strand:) -> component.linking(model, strand)
   }
@@ -308,7 +335,8 @@ pub fn update(
       model
         |> component.want_permissions
         |> component.want_proposals
-        |> component.want_memory,
+        |> component.want_memory
+        |> component.want_evolution,
     )
   let effects = effect.batch([effects, judged])
 
@@ -493,9 +521,21 @@ pub fn view(model: component.Model(socket)) -> Element(Msg(socket)) {
           )
         False -> element.none()
       },
+      evolution_view.view(
+        component.evolution_page(model),
+        evolution_view.Presses(
+          ask: AskingEvolve,
+          approve: ConfirmingEvolve(""),
+          submit: form_submit_text(ConfirmingEvolve),
+          keep: CancellingEvolve,
+          read: ReadingEvolution,
+          core: ReadingCore,
+        ),
+      ),
     ),
     component.needing(model),
     component.proposals_pending(model),
+    Some(component.evolution_waiting(model)),
     component.workspace_digest(model),
     component.waiting_count(model),
   )

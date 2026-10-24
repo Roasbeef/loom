@@ -57,6 +57,7 @@
 
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element.{type Element}
 import lustre/element/html
@@ -94,14 +95,17 @@ pub type Sidebar(message) {
 /// names. `needing` is how many strands wait on a decision, for the badge.
 /// `proposals` is how many proposed standing rules wait for the owner
 /// (protocol-change/086), the number on the Session tab, which is zero on every
-/// page but the owner's.
+/// page but the owner's. `evolution` is how many governed-evolution candidates
+/// wait for a person (protocol-change/099), the number on the Evolution tab,
+/// or `None` on a page that has no such tab, which carries no attribute and so
+/// draws no tab button.
 /// `workspace` is the workspace digest, or an empty string for none, in which
 /// case the frame carries no `workspace` attribute.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0, 0, "", 0)
+/// // shell.view(shell.Observer, heading, shell.Unlisted, [lane], panel, 0, 0, None, "", 0)
 /// ```
 pub fn view(
   audience: Audience,
@@ -111,12 +115,21 @@ pub fn view(
   panel: Element(message),
   needing: Int,
   proposals: Int,
+  evolution: Option(Int),
   workspace: String,
   waiting: Int,
 ) -> Element(message) {
   element.element(
     "loom-shell",
-    frame_attributes(audience, sidebar, needing, proposals, workspace, waiting),
+    frame_attributes(
+      audience,
+      sidebar,
+      needing,
+      proposals,
+      evolution,
+      workspace,
+      waiting,
+    ),
     [
       bar,
       sidebar_element(sidebar),
@@ -135,6 +148,7 @@ fn frame_attributes(
   sidebar: Sidebar(message),
   needing: Int,
   proposals: Int,
+  evolution: Option(Int),
   workspace: String,
   waiting: Int,
 ) -> List(attribute.Attribute(message)) {
@@ -147,7 +161,11 @@ fn frame_attributes(
     attribute.attribute("needing", int.to_string(needing)),
     ..proposals_fact(
       proposals,
-      list.append(waiting_fact(waiting), digest(workspace)),
+      list.flatten([
+        evolution_fact(evolution),
+        waiting_fact(waiting),
+        digest(workspace),
+      ]),
     )
   ]
   case audience {
@@ -188,6 +206,19 @@ fn proposals_fact(
   case proposals > 0 {
     True -> [attribute.attribute("proposals", int.to_string(proposals)), ..rest]
     False -> rest
+  }
+}
+
+// The `evolution` attribute, written on a page that has the Evolution tab and
+// carrying how many candidates wait, even when that is none: the attribute's
+// presence is what makes the shell draw the tab, so the observer's page, which
+// never has one, draws no button and no handler beneath the pane's path.
+fn evolution_fact(
+  evolution: Option(Int),
+) -> List(attribute.Attribute(message)) {
+  case evolution {
+    Some(count) -> [attribute.attribute("evolution", int.to_string(count))]
+    None -> []
   }
 }
 

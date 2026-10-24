@@ -170,7 +170,7 @@ fn page_of(
         [operator_page.Observed(component.Ticked)],
       ]),
     )
-    |> answering(wire, listed, 8)
+    |> answering(wire, listed, 12)
   let _ = page_fixture.sent(wire)
   #(model, wire)
 }

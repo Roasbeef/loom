@@ -165,6 +165,7 @@ import session_view/composer
 import session_view/connection_event
 import session_view/context_view
 import session_view/decisions
+import session_view/evolution
 import session_view/fold_budget
 import session_view/goal_view
 import session_view/history_view
@@ -208,6 +209,7 @@ import session_view/worktree_view
 import web_view/actions
 import web_view/creations
 import web_view/ending.{type Ending}
+import web_view/evolution as evolving
 import web_view/grants
 import web_view/image as web_image
 import web_view/invites
@@ -225,6 +227,7 @@ import web_view/view/commentary
 import web_view/view/context_breakdown
 import web_view/view/crumb
 import web_view/view/ended
+import web_view/view/evolution as evolution_view
 import web_view/view/expansion
 import web_view/view/heading
 import web_view/view/lane
@@ -405,6 +408,23 @@ pub const notes_search_path = "0\t3\t5\t2\t0"
 /// refusing both commands to anyone but its owner on its own account.
 /// `proposals_test` fails if the view moves the section.
 pub const proposals_path = "0\t3\t2\t7"
+
+/// The Lustre event path of the Evolution pane: the panel's seventh child,
+/// appended after Notes (`notes_path`) so that no path the socket admits moved
+/// (`view/panel`). Every handler beneath it is one of the pane's buttons, a
+/// question's confirm or its form's submit (`view/evolution`,
+/// protocol-change/099). The operator's socket admits them like any click or
+/// submit that is not an owner's control, a member operator's page offering
+/// them on this session's own rows only, and the daemon is the gate either
+/// way. An observer's page draws `element.none()` here and its socket admits
+/// no event beneath it. `evolution_page_test` fails if the view moves the pane.
+pub const evolution_path = "0\t3\t6"
+
+/// How soon after the present the page wakes for an evolution read or poll
+/// that the lane could not send yet, in milliseconds of the transport's clock.
+/// A past-due instant means the lane's command slot was busy, so waking at
+/// once would only repeat the same tick.
+pub const evolution_retry_ms = 250
 
 /// How long the peer links a page read stand before it reads them again, in
 /// milliseconds of the transport's clock. A link changes when the owner or a
@@ -1156,6 +1176,9 @@ type View(socket) {
     /// when it last wanted it and the approval being asked about
     /// (`web_view/proposals`).
     proposing: proposing.State,
+    /// What the page holds about the Evolution tab beyond the board itself: the
+    /// question that is open (`web_view/evolution`).
+    evolving: evolving.State,
     /// What the page refused to send, until the operator's next input.
     refusal: Option(String),
     /// How many composer submits were refused with the draft kept, by the
@@ -1488,6 +1511,7 @@ pub fn new(start: Start(socket)) -> Model(socket) {
       decided: Owed,
       holding: holding.new(),
       proposing: proposing.new(),
+      evolving: evolving.new(),
       refusal: None,
       refusals: 0,
       outcome: "",
@@ -4812,6 +4836,261 @@ fn pending_proposal(model: Model(socket), id: String) -> Bool {
   }
 }
 
+/// Whose rows this page may offer an evolution change on: every row on the
+/// daemon owner's page, whose authority the daemon derives from the principal,
+/// and this session's own rows on a member operator's. The daemon refuses what
+/// the page should not have offered, so this is the offer and not the gate.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.evolution_reach(model)
+/// ```
+pub fn evolution_reach(model: Model(socket)) -> evolving.Reach {
+  case model.view.reader {
+    DaemonOwner -> evolving.Everywhere
+    Participant -> evolving.OwnSession
+  }
+}
+
+/// Marks the evolution board as wanted and watched on an operator's page.
+///
+/// The first call owes the first read, which the shared step sends once the
+/// lane is ready (`surfaces.service_evolution_read`). Once a read has been
+/// sent the page is marked as watching, and the shared step reads again on the
+/// daemon's `evolution_changed` push and, as a backstop, whenever the board is
+/// `evolution.backstop_ms` old. A lost lane clears the read's clock, so the
+/// next call owes a read again.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.want_evolution(model)
+/// ```
+pub fn want_evolution(model: Model(socket)) -> Model(socket) {
+  let watching =
+    shared_set.evolution_watch(model.shared, session_model.WatchingEvolution)
+  case model.shared.evolution_read_ms, model.shared.evolution_refresh {
+    None, worktree_view.Settled ->
+      Model(
+        ..model,
+        shared: shared_set.evolution_refresh(watching, worktree_view.Requested),
+      )
+    _, _ -> Model(..model, shared: watching)
+  }
+}
+
+/// The evolution board as the daemon last gave it, or `None` while the page
+/// has not read it, or holds one for another session. A board is drawn only
+/// when its session is the attached one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.evolution_kept(model)
+/// ```
+pub fn evolution_kept(model: Model(socket)) -> Option(evolution.Board) {
+  case model.shared.evolution {
+    Some(board) if board.session == model.shared.session -> Some(board)
+    _ -> None
+  }
+}
+
+/// What the Evolution tab draws from: the board, the notice, the open
+/// question, whose rows the page offers a change on, the lane's tracker and
+/// the core card (the owner's alone).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.evolution_page(model)
+/// ```
+pub fn evolution_page(model: Model(socket)) -> evolution_view.Page {
+  evolution_view.Page(
+    board: evolution_kept(model),
+    notice: model.shared.evolution_notice,
+    state: model.view.evolving,
+    reach: evolution_reach(model),
+    tracker: model.shared.evolution_pending,
+    now: model.shared.stamp.transport_ms,
+    core: case model.view.reader {
+      DaemonOwner -> evolution_view.Card(model.shared.evolution_open)
+      Participant -> evolution_view.NoCard
+    },
+  )
+}
+
+/// What the page holds about the Evolution tab: the question that is open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.evolution_state(model)
+/// ```
+pub fn evolution_state(model: Model(socket)) -> evolving.State {
+  model.view.evolving
+}
+
+/// How many candidates and selections wait for a person, the number the
+/// frame's `evolution` attribute carries for the tab's badge: none while the
+/// page holds no board.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.evolution_waiting(model) == 0
+/// ```
+pub fn evolution_waiting(model: Model(socket)) -> Int {
+  case evolution_kept(model) {
+    Some(board) -> evolving.waiting(evolution_reach(model), board)
+    None -> 0
+  }
+}
+
+/// Opens the question for one change, which sends nothing. Only one question
+/// is open at a time, so asking another replaces it. A change the page's board
+/// does not offer now opens no question.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.ask_evolve(model, armed)
+/// ```
+pub fn ask_evolve(
+  model: Model(socket),
+  armed: evolving.Armed,
+) -> Model(socket) {
+  case offered_evolution(model, armed) {
+    Ok(offered) ->
+      Model(
+        ..model,
+        view: View(
+          ..model.view,
+          evolving: evolving.arm(model.view.evolving, offered),
+        ),
+      )
+    Error(Nil) -> model
+  }
+}
+
+/// Closes the question without sending anything.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.cancel_evolve(model)
+/// ```
+pub fn cancel_evolve(model: Model(socket)) -> Model(socket) {
+  Model(
+    ..model,
+    view: View(..model.view, evolving: evolving.disarm(model.view.evolving)),
+  )
+}
+
+/// Sends the change the open question armed, through the shared step like any
+/// other command, and closes the question. `reason` is what the question's
+/// field held, which an approval ignores.
+///
+/// The confirm looks the change up in the board the page holds now. A change
+/// the board no longer offers, because it moved while the question was open,
+/// sends nothing and says so, and the board is read again; the ids and the
+/// generation sent are always those the question showed. With no question open
+/// it does nothing, so a confirm the page did not draw changes nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.confirm_evolve(model, "selected from the web page")
+/// ```
+pub fn confirm_evolve(
+  model: Model(socket),
+  reason: String,
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.evolving.armed {
+    None -> #(model, effect.none())
+    Some(armed) ->
+      case offered_evolution(model, armed) {
+        Ok(offered) ->
+          commanded(
+            cancel_evolve(model),
+            msg.Evolve(request: evolving.request(offered, reason)),
+          )
+        Error(Nil) -> #(superseded_evolution(model), effect.none())
+      }
+  }
+}
+
+// The board moved past the question: nothing is sent, the question closes, the
+// words say why, and the board is read again.
+fn superseded_evolution(model: Model(socket)) -> Model(socket) {
+  let closed = cancel_evolve(model)
+  Model(
+    ..closed,
+    shared: closed.shared
+      |> shared_set.evolution_notice(
+        "The board changed since this was drawn, so nothing was sent.",
+      )
+      |> shared_set.evolution_refresh(worktree_view.Requested),
+  )
+}
+
+// The change as the page's board offers it now, or nothing when it does not.
+fn offered_evolution(
+  model: Model(socket),
+  armed: evolving.Armed,
+) -> Result(evolving.Armed, Nil) {
+  case evolution_kept(model) {
+    Some(board) ->
+      evolving.find_offer(
+        evolution_reach(model),
+        evolving.staging_of(model.shared.evolution_pending, board),
+        board,
+        armed,
+      )
+    None -> Error(Nil)
+  }
+}
+
+/// Reads the evolution board again, at once: the "Read again" button. The read
+/// is sent in the same message when the lane's command slot is free, and
+/// otherwise stays owed for the next one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.read_evolution(model)
+/// ```
+pub fn read_evolution(
+  model: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  let at = model.view.transport.now()
+  let asked =
+    Model(
+      ..model,
+      shared: model.shared
+        |> shared_set.evolution_notice("")
+        |> shared_set.evolution_refresh(worktree_view.Requested),
+    )
+  stepping(asked, [tick_at(at)], at)
+}
+
+/// Asks the daemon for the core component's status, which only the owner's
+/// page draws: the daemon refuses it to anyone else on its own account.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // component.read_core_status(model)
+/// ```
+pub fn read_core_status(
+  model: Model(socket),
+) -> #(Model(socket), Effect(Msg(socket))) {
+  case model.view.reader {
+    DaemonOwner -> commanded(model, msg.Evolve(request: evolution.CoreStatus))
+    Participant -> #(model, effect.none())
+  }
+}
+
 /// Runs one of the page's controls through the shared step's command arm.
 ///
 /// The goal's three buttons are `/goal pause`, `/goal resume` and
@@ -6752,7 +7031,7 @@ fn rearm(model: Model(socket), now: Int) -> Model(socket) {
       option.then(model.shared.channel, session_channel.next_due),
       earliest(
         surfaces.context_deferred_until(model.shared),
-        surfaces.btw_due(model.shared),
+        earliest(surfaces.btw_due(model.shared), evolution_wake(model, now)),
       ),
     )
   let armed = case model.view.timer, due {
@@ -6761,6 +7040,16 @@ fn rearm(model: Model(socket), now: Int) -> Model(socket) {
     Some(_), None | None, _ -> None
   }
   Model(..model, view: View(..model.view, armed:))
+}
+
+// When the Evolution tab next needs a tick: the earliest staging poll or
+// deadline, an owed read, or the instant a watched board goes stale. An instant
+// already past means the lane could not send what is due, so the page wakes
+// `evolution_retry_ms` from now instead of at once, and a busy lane costs a few
+// ticks a second at most.
+fn evolution_wake(model: Model(socket), now: Int) -> Option(Int) {
+  surfaces.evolution_due(model.shared)
+  |> option.map(fn(due) { int.max(due, now + evolution_retry_ms) })
 }
 
 // The sooner of two optional instants. The lane's reading and the context
@@ -7512,9 +7801,11 @@ pub fn view(model: Model(socket)) -> Element(Msg(socket)) {
       element.none(),
       element.none(),
       element.none(),
+      element.none(),
     ),
     needing(model),
     proposals_pending(model),
+    None,
     workspace_digest(model),
     0,
   )
@@ -7575,7 +7866,8 @@ pub fn switch(model: Model(socket)) -> Element(message) {
 /// owner's peer-link section (`peer_links_section`), likewise, and `proposals` the
 /// owner's review of proposed standing rules (`view/proposals`), likewise, and
 /// `memory` the owner's read-only overview of the daemon's memory
-/// (`view/memory`), likewise.
+/// (`view/memory`), likewise, and `evolution` the operator's governed-evolution
+/// tab (`view/evolution`), likewise.
 ///
 /// ## Examples
 ///
@@ -7594,6 +7886,7 @@ pub fn panel(
   peers: Element(message),
   proposals: Element(message),
   memory: Element(message),
+  evolution: Element(message),
 ) -> Element(message) {
   panel.view(
     strip.count(model.view.strip),
@@ -7638,6 +7931,7 @@ pub fn panel(
       fn(press) { observed(NotesPressed(strand(model), press)) },
       fn(query) { observed(NotesSearched(strand(model), query)) },
     ),
+    evolution,
   )
 }
 
