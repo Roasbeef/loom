@@ -393,7 +393,10 @@ fn authority_directory(parsed: Parsed) -> Result(String, String) {
             "no authority key is kept under "
             <> root
             <> ". It exists only for a deployment provisioned with a ledger "
-            <> "and without --drop-authority",
+            <> "and without --drop-authority, and only on the machine and "
+            <> "account that provisioned it. Run this there, or pass --home "
+            <> "with that account's home directory (and --passphrase-file "
+            <> "when there is no terminal). Do not copy the key elsewhere",
           )
         Ok(entries) ->
           case list.sort(entries, string.compare) {

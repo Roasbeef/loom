@@ -264,3 +264,29 @@ pub fn a_directory_that_holds_anything_is_refused_without_force_test() {
   assert mode_of(directory) == 0o755
   assert list.length(copy_of(deployed)) == 3
 }
+
+pub fn a_home_with_no_authority_key_names_where_the_key_lives_test() {
+  let deployed = deployment.provision("attach-no-key", deployment.plan_text)
+  let assert Error(reason) =
+    ledger_cli.run_with(
+      "attach-file",
+      [
+        "inspector",
+        "--node",
+        "inspector@127.0.0.1",
+        "--links",
+        "hub",
+        "--out",
+        deployed.base <> "/attach-no-key",
+        "--home",
+        deployed.base <> "/empty-home",
+      ],
+      fn(_) { deployment.nobody() },
+    )
+
+  // The sentence names the option that points at the right account and says
+  // why enrolling anywhere else cannot work.
+  assert string.contains(reason, "no authority key is kept under")
+  assert string.contains(reason, "--home")
+  assert string.contains(reason, "only on the machine")
+}
