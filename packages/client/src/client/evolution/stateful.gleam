@@ -2,14 +2,15 @@
 //// retirement capability. New source goes through the same compiler and seam;
 //// only the exact authored fixed-slot BEAM set travels to the trusted loader.
 ////
-//// The module holds no catalogue. Whatever must be read from it arrives as an
-//// `Authority`, two closures the orchestrator builds, so a later upgrade is
-//// approved on the orchestrator's side and the compiler receives only the
-//// candidate that approval returned.
+//// The module holds no catalogue and no `live` type. It attaches an upgrade
+//// path to a `Staged` generation, and that path takes the candidate it is
+//// handed. Approval and identity are checked by the orchestrator's wrapper
+//// (`machine/local.generation_of`) before the candidate arrives, so no upgrade
+//// reaches the compiler unchecked.
 
 import client/evolution/evaluate
-import client/evolution/live
 import client/evolution/record
+import client/evolution/staged.{type Staged, Staged}
 import client/evolution/store
 import client/extension/dispatch
 import client/extension/hosts
@@ -33,24 +34,8 @@ pub type Compiler =
   fn(record.Candidate, String, live_slots.Slot) ->
     Result(evaluate.Prepared, store.Refusal)
 
-/// The catalogue reads a stateful generation needs, supplied by the orchestrator.
-///
-/// `approved` is the staging check for a successor selection and answers the
-/// candidate to compile. It runs before any compilation, so no upgrade path
-/// reaches the compiler unchecked. `authorized` is the later recheck that a
-/// selection is still current, installed as the successor's `validate`.
-pub type Authority {
-  Authority(
-    /// Checks staging approval of a selection and answers its candidate.
-    approved: fn(record.Selection) -> Result(record.Candidate, store.Refusal),
-    /// Rechecks that a selection is still the current approved one.
-    authorized: fn(record.Selection) -> Result(Nil, store.Refusal),
-  )
-}
-
 type Context {
   Context(
-    authority: Authority,
     dispatch: dispatch.Config,
     hosting: hosts.Hosts,
     prepared: evaluate.Prepared,
@@ -66,21 +51,23 @@ type Context {
 
 /// Attaches live activation only when the immutable source explicitly opts in.
 ///
+/// A source without a live contract comes back unchanged. One with a contract
+/// comes back with an `Upgrade` and an inventory that reports live status.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// // stateful.attach(generation, authority, dispatch, hosting, prepared, compile)
+/// // stateful.attach(staged, dispatch, hosting, prepared, compile, at)
 /// ```
 ///
 pub fn attach(
-  generation: live.Generation,
-  authority: Authority,
+  generation: Staged,
   dispatch: dispatch.Config,
   hosting: hosts.Hosts,
   prepared: evaluate.Prepared,
   compile: Compiler,
   at: hosts.Coordinates,
-) -> Result(live.Generation, store.Refusal) {
+) -> Result(Staged, store.Refusal) {
   use contract <- result.try(contract(prepared))
   case contract {
     None -> Ok(generation)
@@ -89,7 +76,6 @@ pub fn attach(
       Ok(with_mode(
         generation,
         Context(
-          authority,
           dispatch,
           hosting,
           prepared,
@@ -106,15 +92,11 @@ pub fn attach(
   }
 }
 
-fn with_mode(generation: live.Generation, context: Context) -> live.Generation {
+fn with_mode(generation: Staged, context: Context) -> Staged {
   let baseline =
-    live.Generation(
-      ..generation,
-      mode: live.ReplacementOnly,
-      inventory: context.inventory,
-    )
+    Staged(..generation, upgrade: None, inventory: context.inventory)
   let inventory = context.inventory
-  live.Generation(
+  Staged(
     ..baseline,
     inventory: fn() {
       use native <- result.try(inventory())
@@ -137,17 +119,20 @@ fn with_mode(generation: live.Generation, context: Context) -> live.Generation {
         _ -> Ok(json.Object([#("native", native), #("live", live_status)]))
       }
     },
-    mode: live.Stateful(fn(selection) { prepare(baseline, context, selection) }),
+    upgrade: Some(
+      staged.Upgrade(prepare: fn(selection, candidate) {
+        prepare(baseline, context, selection, candidate)
+      }),
+    ),
   )
 }
 
 fn prepare(
-  current: live.Generation,
+  current: Staged,
   context: Context,
   selection: record.Selection,
-) -> Result(live.PreparedUpgrade, store.Refusal) {
-  use candidate <- result.try(context.authority.approved(selection))
-
+  candidate: record.Candidate,
+) -> Result(staged.PreparedStaged, store.Refusal) {
   // The candidate compiles into the namespace the running generation does not
   // occupy, so the two versions never share module names.
   let slot = case context.slot {
@@ -213,15 +198,11 @@ fn prepare(
     )
     |> result.map_error(store.Unavailable),
   )
-  let authorized = context.authority.authorized
-  let successor =
-    live.Generation(..current, selection:, tools:, validate: fn() {
-      authorized(selection)
-    })
+  let successor = Staged(..current, selection:, tools:)
   let next = Context(..context, prepared:, contract: target, slot:)
   Ok(
-    live.PreparedUpgrade(
-      generation: with_mode(successor, next),
+    staged.PreparedStaged(
+      successor: with_mode(successor, next),
       publish: fn() { publish(context, transition, payload) },
       abort: fn() {
         control(context, "__loom_live_abort", transition_payload(transition))

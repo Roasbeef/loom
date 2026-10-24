@@ -5499,6 +5499,37 @@ pub fn hook_coordinates(
   clock: Clock,
   environment: List(#(String, String)),
 ) -> extension_hosts.Coordinates {
+  hook_coordinates_at(
+    settings.workspace,
+    base_policy,
+    settings.demand,
+    environment,
+    seed,
+    clock,
+  )
+}
+
+/// `hook_coordinates` over the plain values it reads from `Settings`.
+///
+/// An executor builds hook coordinates for a scope it has no `Settings` for,
+/// so the builder takes the workspace, the assembled base policy, the
+/// enforcement demand and the environment directly. `hook_coordinates` is this
+/// function with the session's settings read out.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // serve.hook_coordinates_at(workspace, base, demand, env, seed, clock)
+/// ```
+///
+pub fn hook_coordinates_at(
+  workspace: String,
+  base_policy: policy.SandboxPolicy,
+  demand: exec.EnforcementDemand,
+  environment: List(#(String, String)),
+  seed: Int,
+  clock: Clock,
+) -> extension_hosts.Coordinates {
   let #(op_id, _generator) = ids.mint_op(ids.generator(clock, seed:))
   extension_hosts.Coordinates(
     // What makes this operation attribution-only also makes it the
@@ -5512,9 +5543,9 @@ pub fn hook_coordinates(
     // seam's reads, and a hook's are the session's rather than any one
     // strand's. The session's root strand is the honest name for that.
     strand: root_strand,
-    workspace: settings.workspace,
+    workspace:,
     base_policy:,
-    demand: settings.demand,
+    demand:,
     env: environment,
   )
 }
@@ -6687,7 +6718,12 @@ fn open_evolution(
       scratch:,
       logger:,
       open: fn(policy) {
-        evolution_plane(settings.helper_path, policy, scratch, clock)
+        evolution_machine_local.open_plane(
+          settings.helper_path,
+          policy,
+          scratch,
+          clock,
+        )
       },
     )
   let machine = evolution_machine_local.new(config)
@@ -6864,97 +6900,6 @@ fn open_evolution(
       announce,
     ),
   ))
-}
-
-// A native check runs on its own effect plane: a private broker over two
-// helpers (the persistent node and its nested `proc.run`), so a candidate's
-// processes never share a pool with the session's tools. The close task it
-// returns is the only way to retire that plane, and `machine/local.stage`
-// keeps it through every failed step.
-fn evolution_plane(
-  helper: String,
-  base: policy.SandboxPolicy,
-  scratch: String,
-  clock: Clock,
-) -> Result(evolution_machine_local.Plane, evolution_store.Refusal) {
-  use #(pool, broker_actor, service) <- result.try(
-    start_effect_plane(helper, base, scratch, 2, clock)
-    |> result.map_error(evolution_store.Unavailable),
-  )
-  Ok(evolution_machine_local.Plane(
-    broker: broker_actor,
-    inventory: fn() {
-      use snapshot <- result.try(
-        executor.snapshot(service, waiting: 1000)
-        |> result.map_error(string.inspect),
-      )
-      use pool <- result.try(snapshot.pool |> result.map_error(string.inspect))
-      Ok(
-        json.Object([
-          #("capacity", json.Int(pool.census.size)),
-          #("executions", json.Int(list.length(snapshot.live))),
-          #("borrowed", json.Int(pool.census.borrowed)),
-          #("unconfirmed", json.Int(pool.census.unconfirmed)),
-          #("spawned", json.Int(pool.census.spawned)),
-          #("retired", json.Int(pool.census.retired)),
-          #(
-            "helpers",
-            json.Array(
-              list.map(pool.helpers, fn(helper) {
-                json.Object([
-                  #("pid", json.String(string.inspect(helper.pid))),
-                  #("ordinal", json.Int(helper.ordinal)),
-                  #("custody", json.String(string.inspect(helper.custody))),
-                ])
-              }),
-            ),
-          ),
-        ]),
-      )
-    },
-    close: retire_effect_plane(broker_actor, pool, service),
-  ))
-}
-
-/// The retirement of an effect plane: stop its broker and close its executor,
-/// and, when the executor refuses, close the original pool directly.
-///
-/// An executor that refused its close keeps its frozen verdict and stays
-/// alive, so the second branch exists to remove it. Once the original pool
-/// proves retirement, the executor's empty ledger can go.
-///
-/// ## Examples
-///
-/// `retire_effect_plane(broker_actor, pool, service)`.
-fn retire_effect_plane(
-  broker_actor: Broker,
-  pool: Pool,
-  service: executor.Executor,
-) -> evolution_retirement.Task {
-  evolution_retirement.first(
-    fn() {
-      broker.stop(broker_actor)
-      executor.close(
-        service,
-        draining: executor.drain_ms,
-        helpers: executor.helpers_ms,
-      )
-      |> result.map_error(string.inspect)
-    },
-    fn() {
-      use Nil <- result.try(
-        exec.close_pool(pool, waiting: executor.helpers_ms)
-        |> result.map_error(string.inspect),
-      )
-
-      // The executor is still alive holding its frozen verdict, so it is
-      // unlinked and killed now that its pool is known to be retired.
-      let pid = executor.pid(service)
-      process.unlink(pid)
-      process.kill(pid)
-      Ok(Nil)
-    },
-  )
 }
 
 // Records that this session adopted a selection, as a write-once reserved
@@ -7416,7 +7361,7 @@ fn instance_retirement_body(instance: Instance) -> evolution_retirement.Task {
   // already closed the scope that owns the helpers.
   let pool = case instance.executor, instance.pool {
     Some(service), Some(pool) ->
-      retire_effect_plane(instance.broker, pool, service)
+      workspace_plane.retire_effect_plane(instance.broker, pool, service)
     _, _ -> evolution_retirement.done()
   }
 

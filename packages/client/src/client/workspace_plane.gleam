@@ -72,6 +72,7 @@ import client/catalog
 import client/codemode as codemode_wiring
 import client/contributions
 import client/directories
+import client/evolution/retirement
 import client/extension/installed
 import client/extension/record as extension_record
 import client/git_identity
@@ -1322,6 +1323,47 @@ pub fn start_effect_plane(
     no_retention,
   ))
   #(pool, broker_actor, service)
+}
+
+/// The retirement of an effect plane: stop its broker and close its executor,
+/// and, when the executor refuses, close the original pool directly.
+///
+/// An executor that refused its close keeps its frozen verdict and stays
+/// alive, so the second branch exists to remove it. Once the original pool
+/// proves retirement, the executor's empty ledger can go.
+///
+/// ## Examples
+///
+/// `retire_effect_plane(broker_actor, pool, service)`.
+pub fn retire_effect_plane(
+  broker_actor: Broker,
+  pool: Pool,
+  service: executor.Executor,
+) -> retirement.Task {
+  retirement.first(
+    fn() {
+      broker.stop(broker_actor)
+      executor.close(
+        service,
+        draining: executor.drain_ms,
+        helpers: executor.helpers_ms,
+      )
+      |> result.map_error(string.inspect)
+    },
+    fn() {
+      use Nil <- result.try(
+        exec.close_pool(pool, waiting: executor.helpers_ms)
+        |> result.map_error(string.inspect),
+      )
+
+      // The executor is still alive holding its frozen verdict, so it is
+      // unlinked and killed now that its pool is known to be retired.
+      let pid = executor.pid(service)
+      process.unlink(pid)
+      process.kill(pid)
+      Ok(Nil)
+    },
+  )
 }
 
 // A one-shot plane has no custodian to hand a resource to.

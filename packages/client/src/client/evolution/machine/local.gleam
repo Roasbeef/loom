@@ -17,6 +17,18 @@
 //// receive it per call from the authority half, so this machine can be built
 //// before the catalogue is opened with the identity it reports.
 ////
+//// Staging splits the same way. `stage_candidate` takes an approved
+//// `record.Candidate` and answers a `staged.Staged`: the plane, the compiled
+//// artifact, the satellite host and its declared tools, with no catalogue, no
+//// hook bus and no `live` type in it. `generation_of` is the orchestrator's
+//// half. It starts the hook bus over the staged value's `invoke`, builds the
+//// `live.Generation` whose `validate` and in-place upgrade apply the
+//// catalogue's approval and identity checks, and prepends the bus close to the
+//// staged value's `retire`. `stage` is the two in order, so a session in this
+//// VM behaves as it did when assembly was one function. `open_plane` is the
+//// plane opener a machine of this kind needs, moved here from `serve` so it
+//// depends on nothing of the daemon's settings.
+////
 //// The checks themselves hold no catalogue either. `evaluate_candidate` and
 //// `invoke_program` are wrappers that read the candidate, confirm its identity
 //// (`evaluate.current`), or its approval (`store.approved`, which includes the
@@ -25,10 +37,31 @@
 //// `record.Candidate` and nothing else. The wrappers are the orchestrator's
 //// half and the `_of` functions are what an executor can run over a candidate
 //// it was handed.
+////
+//// ## Flow
+////
+//// `new` → `stage` → `stage_candidate` → `assemble` → `generation_of` →
+//// `over_bus` → `mode_of`
+////
+//// 1. `new` builds the `machine.Machine` record over this module's functions.
+//// 2. `stage` checks the catalogue's approval, then runs the two halves below
+////    in order.
+//// 3. `stage_candidate` opens a dedicated plane through `open_plane`,
+////    compiles the candidate, and hands the prepared artifact to `assemble`.
+//// 4. `assemble` starts the satellite host and declares its tools, and answers
+////    a `staged.Staged` whose retirement stops the host and then the plane.
+//// 5. `generation_of` starts the hook bus over that value and answers a
+////    `live.Generation` through `over_bus`.
+//// 6. `over_bus` puts the catalogue's validation and the bus close in front of
+////    the value, and `mode_of` does the same for an in-place upgrade.
+//// 7. `evaluate_candidate` and `invoke_program` are the wrappers over
+////    `evaluate_candidate_of` and `invoke_program_of`, which run checks
+////    beside a generation without a catalogue.
 
 import broker/broker.{type Broker}
 import broker/egress
 import broker/exec
+import broker/executor
 import broker/policy
 import client/codemode
 import client/evolution/candidate
@@ -39,6 +72,7 @@ import client/evolution/machine.{type Machine}
 import client/evolution/program
 import client/evolution/record
 import client/evolution/retirement
+import client/evolution/staged.{type Staged, Staged}
 import client/evolution/stateful
 import client/evolution/store
 import client/extension/archive
@@ -47,20 +81,21 @@ import client/extension/hooks
 import client/extension/hosts
 import client/extension/install
 import client/extension/memory
+import client/workspace_plane
 import codemode/build
 import codemode/codemode as pipeline
 import codemode/compile
 import codemode/enforcement
 import codemode/identity
 import codemode/satellite
-import core/clock
+import core/clock.{type Clock}
 import core/ids
 import core/json
 import filepath
 import gleam/erlang/process
 import gleam/int
 import gleam/list
-import gleam/option.{Some}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import simplifile
@@ -139,12 +174,11 @@ pub fn new(config: Config) -> Machine {
 
 /// Prepares an approved candidate in a dedicated generation plane.
 ///
-/// The plane opens first and its close task is the cleanup witness for every
-/// later step. From the moment it exists, each refusal retires the plane
-/// through `failed`, either via `retiring` or after stopping what the step
-/// started. A failed stage therefore returns either the original refusal after
-/// a confirmed retirement or `CleanupUnconfirmed` carrying the retry. Success
-/// hands the witness to the returned generation's `retire`.
+/// This is `stage_candidate` followed by `generation_of`, the machine's half
+/// and the orchestrator's half, behind the catalogue's approval check. A failed
+/// stage returns either the original refusal after a confirmed retirement or
+/// `CleanupUnconfirmed` carrying the retry. Success hands the witness to the
+/// returned generation's `retire`.
 ///
 /// ## Examples
 ///
@@ -158,6 +192,29 @@ pub fn stage(
   selection: record.Selection,
 ) -> Result(live.Generation, store.Refusal) {
   use approved <- result.try(store.approved(catalogue, selection))
+  use staged <- result.try(stage_candidate(config, approved, selection))
+  generation_of(catalogue, config.logger, staged)
+}
+
+/// Prepares a candidate in a dedicated generation plane, reading no catalogue.
+///
+/// The plane opens first and its close task is the cleanup witness for every
+/// later step. From the moment it exists, each refusal retires the plane
+/// through `failed`, either via `retiring` or after stopping what the step
+/// started. The candidate is the whole input; the caller has already checked
+/// that `selection` is approved and that `candidate` is the candidate it names.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // local.stage_candidate(config, candidate, selection)
+/// ```
+///
+pub fn stage_candidate(
+  config: Config,
+  candidate: record.Candidate,
+  selection: record.Selection,
+) -> Result(Staged, store.Refusal) {
   let directory =
     config.scratch
     <> "/"
@@ -171,29 +228,30 @@ pub fn stage(
     codemode.Config(..config.host, broker: plane.broker, work_root: directory)
 
   use prepared <- result.try(
-    evaluate.prepare(approved, directory, compiler(config, host, base))
+    evaluate.prepare(candidate, directory, compiler(config, host, base))
     |> retiring(plane),
   )
-  assemble(config, catalogue, host, plane, selection, directory, prepared)
+  assemble(config, host, plane, selection, directory, prepared)
 }
 
-// Starts the satellite and its hook bus over a prepared artifact and wraps
-// them in a generation whose `retire` closes them before the plane.
+// Starts the satellite over a prepared artifact and wraps it, with its
+// declarations and the plane, in a staged value whose `retire` closes the host
+// before the plane.
 //
 // The steps are ordered by what each leaves running. Declarations start
-// nothing, the host starts one process, and the bus can fail only after that
-// process exists, so the bus failure alone stops the host before retiring the
-// plane. Once the generation exists, its own `retire` owns the host, the bus
-// and the plane, so an attach refusal retires through it.
+// nothing and the host starts one process. Once the staged value exists, its
+// own `retire` owns the host and the plane, so an attach refusal retires
+// through it. The hook bus is not started here: it belongs to the
+// orchestrator's half (`generation_of`), which starts it over the `invoke` this
+// value carries and closes it ahead of this value's `retire`.
 fn assemble(
   config: Config,
-  catalogue: store.Store,
   host: codemode.Config,
   plane: Plane,
   selection: record.Selection,
   directory: String,
   prepared: evaluate.Prepared,
-) -> Result(live.Generation, store.Refusal) {
+) -> Result(Staged, store.Refusal) {
   let name = address.new_address(config.namespace)
   let hosting = hosts.seam(name, clock: host.clock, margin_ms: 20_000)
   let memory =
@@ -246,38 +304,26 @@ fn assemble(
     |> retiring(plane),
   )
 
-  let subscribed =
-    hooks.Extension(
+  let invoker = hosts.invoker(hosting, at: config.at)
+  let extension = prepared.record.name
+  let staged =
+    Staged(
       name: prepared.record.name,
-      events: list.map(prepared.manifest.hooks, fn(hook) { hook.event }),
-      invoke: hosts.invoker(hosting, at: config.at),
-    )
-  use bus <- result.try(case hooks.start([subscribed], config.logger) {
-    Ok(bus) -> Ok(bus)
-    Error(error) -> {
-      stop_host(name, started.pid)
-      failed(plane, store.Unavailable(string.inspect(error)))
-    }
-  })
-
-  let generation =
-    live.Generation(
       selection:,
-      mode: live.ReplacementOnly,
-      inventory: plane.inventory,
       tools: declarations,
-      hooks: Some(bus),
-      validate: fn() {
-        store.authorized(catalogue, selection) |> result.replace(Nil)
+      events: list.map(prepared.manifest.hooks, fn(hook) { hook.event }),
+      invoke: fn(event, args, within) {
+        invoker(extension, event, args, within)
       },
+      inventory: plane.inventory,
       retire: retirement.sequence(
         retirement.repeat(fn() {
-          hooks.close(bus)
           stop_host(name, started.pid)
           Ok(Nil)
         }),
         plane.close,
       ),
+      upgrade: None,
     )
 
   // Every later selection owns a fresh execution identity and wall budget.
@@ -287,30 +333,108 @@ fn assemble(
     let build = compiler_for(host, base, demand)
     evaluate.prepare_slot(candidate, directory, build, slot)
   }
-  let authority =
-    stateful.Authority(
-      approved: fn(next) { store.approved(catalogue, next) },
-      authorized: fn(next) {
-        store.authorized(catalogue, next) |> result.replace(Nil)
-      },
-    )
-  stateful.attach(
-    generation,
-    authority,
-    dispatch,
-    hosting,
-    prepared,
-    compile,
-    config.at,
-  )
+  stateful.attach(staged, dispatch, hosting, prepared, compile, config.at)
   |> result.try_recover(fn(reason) {
-    failed(Plane(..plane, close: generation.retire), reason)
+    failed(Plane(..plane, close: staged.retire), reason)
   })
 }
 
+/// Starts the orchestrator's half of a staged generation.
+///
+/// The hook bus starts over the staged value's `invoke`, and the generation
+/// that comes back checks the catalogue where the machine does not. Its
+/// `validate` asks `store.authorized` for the selection. Its in-place upgrade,
+/// when the staged value has one, asks `store.approved` for the successor's
+/// candidate before the machine compiles anything, so no upgrade reaches the
+/// compiler unchecked. A successor reuses the predecessor's bus.
+///
+/// Retirement closes the bus first, then runs the staged value's own `retire`,
+/// which stops the host and then closes the plane. A bus that cannot start
+/// retires the staged value, host then plane, and surfaces its refusal, so the
+/// caller owes no cleanup either way.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // local.generation_of(catalogue, logger, staged)
+/// ```
+///
+pub fn generation_of(
+  catalogue: store.Store,
+  logger: Logger,
+  staged: Staged,
+) -> Result(live.Generation, store.Refusal) {
+  let invoke = staged.invoke
+  let subscribed =
+    hooks.Extension(
+      name: staged.name,
+      events: staged.events,
+      invoke: fn(_name, event, args, within) { invoke(event, args, within) },
+    )
+  use bus <- result.try(case hooks.start([subscribed], logger) {
+    Ok(bus) -> Ok(bus)
+    Error(error) ->
+      failed_task(staged.retire, store.Unavailable(string.inspect(error)))
+  })
+  Ok(over_bus(catalogue, bus, staged))
+}
+
+// The generation for a staged value over a bus that is already running. An
+// upgrade's successor comes back through here with the same bus, which is why
+// the bus is a parameter rather than started once per value.
+fn over_bus(
+  catalogue: store.Store,
+  bus: hooks.Bus,
+  staged: Staged,
+) -> live.Generation {
+  let selection = staged.selection
+  live.Generation(
+    selection:,
+    mode: mode_of(catalogue, bus, staged),
+    inventory: staged.inventory,
+    tools: staged.tools,
+    hooks: Some(bus),
+    validate: fn() {
+      store.authorized(catalogue, selection) |> result.replace(Nil)
+    },
+    retire: retirement.sequence(
+      retirement.repeat(fn() {
+        hooks.close(bus)
+        Ok(Nil)
+      }),
+      staged.retire,
+    ),
+  )
+}
+
+// Replacement-only unless the staged value carries an upgrade, in which case
+// the successor's approval is read here, before the machine sees it.
+fn mode_of(
+  catalogue: store.Store,
+  bus: hooks.Bus,
+  staged: Staged,
+) -> live.Mode {
+  case staged.upgrade {
+    None -> live.ReplacementOnly
+    Some(upgrade) -> {
+      let prepare = upgrade.prepare
+      live.Stateful(prepare: fn(selection) {
+        use candidate <- result.try(store.approved(catalogue, selection))
+        use prepared <- result.map(prepare(selection, candidate))
+        live.PreparedUpgrade(
+          generation: over_bus(catalogue, bus, prepared.successor),
+          publish: prepared.publish,
+          abort: prepared.abort,
+        )
+      })
+    }
+  }
+}
+
 // The three-step stop of an extension host: detach it from this process so its
-// exit is not ours, ask it to stop, and kill what remains. Both the bus-start
-// failure and the generation's retirement need exactly this order.
+// exit is not ours, ask it to stop, and kill what remains. A staged value's
+// retirement is the only caller, so a failed attach, a failed bus start and a
+// later retirement all stop the host in exactly this order.
 fn stop_host(name: address.Address(hosts.Message), pid: process.Pid) -> Nil {
   process.unlink(pid)
   hosts.stop(name, 20_000)
@@ -455,11 +579,91 @@ fn scoped_memory(door: memory.Door, version: String) -> memory.Door {
 }
 
 fn failed(plane: Plane, reason: store.Refusal) -> Result(a, store.Refusal) {
-  case retirement.perform(plane.close) {
+  failed_task(plane.close, reason)
+}
+
+// Performs a cleanup task and surfaces `reason` once it is confirmed, or the
+// unconfirmed cleanup with its retry when it is not.
+fn failed_task(
+  close: retirement.Task,
+  reason: store.Refusal,
+) -> Result(a, store.Refusal) {
+  case retirement.perform(close) {
     Ok(Nil) -> Error(reason)
     Error(cleanup) ->
       Error(store.CleanupUnconfirmed(cleanup.reason, cleanup.retry))
   }
+}
+
+/// Opens a dedicated effect plane for one check or generation.
+///
+/// A native check runs on its own effect plane: a private broker over two
+/// helpers (the persistent node and its nested `proc.run`), so a candidate's
+/// processes never share a pool with the session's tools. The close task it
+/// returns is the only way to retire that plane, and `stage_candidate` keeps it
+/// through every failed step.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // local.open_plane(helper, base, scratch, clock)
+/// ```
+///
+pub fn open_plane(
+  helper: String,
+  base: policy.SandboxPolicy,
+  scratch: String,
+  clock: Clock,
+) -> Result(Plane, store.Refusal) {
+  use #(pool, broker_actor, service) <- result.try(
+    workspace_plane.start_effect_plane(
+      helper:,
+      base_policy: base,
+      tmp_dir: scratch,
+      size: 2,
+      clock:,
+    )
+    |> result.map_error(store.Unavailable),
+  )
+  Ok(Plane(
+    broker: broker_actor,
+    inventory: fn() { plane_census(service) },
+    close: workspace_plane.retire_effect_plane(broker_actor, pool, service),
+  ))
+}
+
+// The bounded helper census of a plane's executor: its capacity, the
+// executions in flight and what its pool has spawned, borrowed and retired.
+fn plane_census(service: executor.Executor) -> Result(json.JsonValue, String) {
+  use snapshot <- result.try(
+    executor.snapshot(service, waiting: 1000)
+    |> result.map_error(string.inspect),
+  )
+  use pool_state <- result.try(
+    snapshot.pool |> result.map_error(string.inspect),
+  )
+  Ok(
+    json.Object([
+      #("capacity", json.Int(pool_state.census.size)),
+      #("executions", json.Int(list.length(snapshot.live))),
+      #("borrowed", json.Int(pool_state.census.borrowed)),
+      #("unconfirmed", json.Int(pool_state.census.unconfirmed)),
+      #("spawned", json.Int(pool_state.census.spawned)),
+      #("retired", json.Int(pool_state.census.retired)),
+      #(
+        "helpers",
+        json.Array(
+          list.map(pool_state.helpers, fn(helper) {
+            json.Object([
+              #("pid", json.String(string.inspect(helper.pid))),
+              #("ordinal", json.Int(helper.ordinal)),
+              #("custody", json.String(string.inspect(helper.custody))),
+            ])
+          }),
+        ),
+      ),
+    ]),
+  )
 }
 
 /// Reads a candidate from the catalogue and runs its tests behind the jail.
