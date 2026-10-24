@@ -3,10 +3,11 @@
 The production commits are e97af0e98 (linear turn merging), 857d2cdd9
 (workspace capture) and 7c005ccce (discarded header). Generated assets are
 8126a166a and the benchmark is 10ed5f88f. These private changes continue
-the optimization work collected in PR #1110. Their measurement base is
+the optimization work collected in PR #1110. The owner approved publishing
+this round in a separate follow-up PR after #1110 merges. Its measurement base is
 4510d43863cfccaa383b0f451f25d20132406262, after the earlier request-preparation
-fast paths. The integration owner rebases and validates the combined PR
-separately. The installed daemon and Pickglass viewer were left unchanged.
+fast paths. The integration owner will rebase onto post-#1110 main and validate the
+follow-up head separately. No post-rebase result is claimed here. The installed daemon and Pickglass viewer were left unchanged.
 
 ## Linear Anthropic turn merging
 
