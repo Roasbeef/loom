@@ -388,6 +388,7 @@ pub fn operator(instance: serve.Instance) -> gateway.ConnectionHandle {
         access.Owner,
         digest,
         None,
+        gateway.SocketDoor,
       ),
       fn() { Ok(#(principal, access.Owner)) },
       fn(_) { Nil },

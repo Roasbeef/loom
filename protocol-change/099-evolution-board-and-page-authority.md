@@ -262,3 +262,7 @@ wrappers in `client/serve`. A catalogue written before this change is read witho
 migration. A daemon rolled back to an earlier build reads the approval register's
 extra `via` field as it reads any unknown field of a JSON object, and shows the new
 selection entries to nobody, since only this board read them.
+
+## Addendum (2026-10-23)
+
+The door that admitted a connection decides `web`. An owner page opened with `loom ui` has no sign-in and holds the terminal's bearer, so the credential alone recorded it as `cli`. `gateway.Binding` now carries a `door` (`PageDoor` or `SocketDoor`) set by the listener, `evolution_via` returns `web` for a page door first, and a socket attachment can still claim `terminal` but never `web`.

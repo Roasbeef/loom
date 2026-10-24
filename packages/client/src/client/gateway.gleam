@@ -315,7 +315,25 @@ pub type Binding {
     /// the page makes as a terminal's. The daemon copies the fingerprint from
     /// the page's own record and never from a frame, as it does `digest`.
     signin: Option(String),
+    /// Which listener admitted the connection. The daemon sets it from the
+    /// route that built the binding and never from a frame. It is the only
+    /// thing that tells an owner page opened by `loom ui`, which has no sign-in
+    /// and holds the terminal's bearer, from a terminal or `loom evolution`
+    /// holding the same bearer.
+    door: Door,
   )
+}
+
+/// The listener a session attachment came in through, which decides the
+/// surface an evolution act is recorded as coming from (protocol-change/099,
+/// ruling 5). It is a type rather than a flag so a construction site names the
+/// listener it is.
+pub type Door {
+  /// The daemon's web page socket, including a page opened with `loom ui`.
+  PageDoor
+
+  /// The session socket that a terminal and `loom evolution` attach through.
+  SocketDoor
 }
 
 /// A connection addresses its original gateway process, never a replacement.
@@ -5433,26 +5451,33 @@ fn evolution_command(
   state
 }
 
-// The surface an evolution command came through, for the audit entry. A page is
-// known by its sign-in or by a browser credential, and the daemon reads both
-// from the binding. Every other attachment is a bearer, and a terminal and the
-// `loom evolution` command hold the same kind of bearer, so the terminal says
-// which it is in an optional `via` argument. That claim is audit text only: it
-// can name `terminal` or `cli`, never `web`, and nothing reads it for authority.
+// The surface an evolution command came through, for the audit entry. A page
+// is known first by the door that admitted it: an owner page opened by `loom
+// ui` has no sign-in and carries the terminal's bearer, so only the listener
+// can say it is a page. After that a sign-in or a browser credential also
+// marks a page, and the daemon reads all three from the binding. Every other
+// attachment is a bearer, and a terminal and the `loom evolution` command hold
+// the same kind of bearer, so the terminal says which it is in an optional
+// `via` argument. That claim is audit text only: it can name `terminal` or
+// `cli`, never `web`, and nothing reads it for authority.
 fn evolution_via(
   binding: Binding,
   arguments: JsonValue,
 ) -> evolution_store.Via {
   case
+    binding.door,
     binding.signin,
     access.credential_kind(binding.digest),
     tool.optional_string(arguments, "via")
   {
-    Some(_), _, _ | None, access.Browser, _ -> evolution_store.Web
-    None, access.Bearer, Ok(Some("terminal")) -> evolution_store.Terminal
-    None, access.Bearer, Ok(Some(_))
-    | None, access.Bearer, Ok(None)
-    | None, access.Bearer, Error(_)
+    PageDoor, _, _, _ -> evolution_store.Web
+    SocketDoor, Some(_), _, _ | SocketDoor, None, access.Browser, _ ->
+      evolution_store.Web
+    SocketDoor, None, access.Bearer, Ok(Some("terminal")) ->
+      evolution_store.Terminal
+    SocketDoor, None, access.Bearer, Ok(Some(_))
+    | SocketDoor, None, access.Bearer, Ok(None)
+    | SocketDoor, None, access.Bearer, Error(_)
     -> evolution_store.Cli
   }
 }

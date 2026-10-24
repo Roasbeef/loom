@@ -86,6 +86,7 @@ fn start_page(
         authority: access.Owner,
         digest:,
         signin: None,
+        door: gateway.PageDoor,
       ),
       check: fn() { Ok(#(alice(), access.Owner)) },
       ceiling: access.Operator,

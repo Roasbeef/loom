@@ -147,7 +147,10 @@ selection text is now an object (`store.event_from` still reads the old
 `reason: selection` shape). `control.for_principal` is the one place a page's
 authority is derived: an `Operator` whose principal is `OwnerPrincipal` reaches
 the door as `Owner` for everything but `core_upgrade` and `core_downgrade`, and
-`gateway.evolution_via` reads `web` from the sign-in. `control.announcing` wraps
+`gateway.evolution_via` reads `web` first from `Binding.door` (`PageDoor` for
+the `ui_socket` listener, `SocketDoor` for `session_socket`), so a `loom ui` page
+with no sign-in records `web`, then from the sign-in or a browser credential.
+`control.announcing` wraps
 a door so a committed mutation publishes `bus.EvolutionChanged`;
 `queue.start_notifying` publishes it when a staged request ends, and
 `queue.pending` lists the transition in flight for the board.
