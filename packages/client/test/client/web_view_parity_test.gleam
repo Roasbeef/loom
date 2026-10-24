@@ -40,6 +40,7 @@ import session_view/snapshot
 import session_view/snapshot_view
 import session_view/step as session_step
 import session_view/transcript_line.{type Line}
+import session_view/worktree_view
 import tui
 import tui/buffered
 import tui/connection
@@ -452,6 +453,12 @@ fn transfer() -> List(connection_event.Message) {
 // The terminal as it stands once attached: an attached peer whose lane has
 // no socket, so nothing it decides is written anywhere and what it keeps is
 // exactly the engine's state. Its clock reads zero, as the page's does.
+//
+// The operator's page wants the governed-evolution board from its first
+// message, and the terminal's `/evolution` overlay, which asks for it when it
+// opens, is a later change. The terminal here is therefore given the want the
+// overlay will make, so both lanes make the same read at the same moment, the
+// way `mirror_decided_read` does for the one read only the page makes.
 fn terminal() -> tui_model.Model {
   {
     let base =
@@ -461,6 +468,8 @@ fn terminal() -> tui_model.Model {
         ..base.shared,
         peer: session_model.Attached,
         stamp: msg.Stamp(now_ms: 0, transport_ms: 0),
+        evolution_refresh: worktree_view.Requested,
+        evolution_watch: session_model.WatchingEvolution,
         channel: Some(
           session_channel.replay(snapshot.Expected(
             "session",
@@ -584,14 +593,17 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
   // The first capture makes both hosts read the strand's notes, the
   // session's context, the advisor's pending nudges and the goal, one after
   // the other, each sent when the one before is answered. The script answers
-  // them by refusal, so the lane is free for the prompt. The page then asks
-  // for the session's decided approvals, request eight, which the terminal
-  // does not (`mirror_decided_read`); the script answers it as well.
+  // them by refusal, so the lane is free for the prompt. Both hosts then read
+  // the governed-evolution board, request eight, which the script answers with
+  // a board; and the page asks for the session's decided approvals, request
+  // nine, which the terminal does not (`mirror_decided_read`), and the script
+  // refuses that.
   let script =
     list.flatten([
       list.map(transfer(), Frame),
       [Tick],
-      list.map([4, 5, 6, 7, 8], fn(id) { Frame(refusal(id)) }),
+      list.map([4, 5, 6, 7], fn(id) { Frame(refusal(id)) }),
+      [Frame(board_reply(8)), Frame(refusal(9))],
       [Prompt("inspect the tree"), Deny("esc-1"), Tick],
     ])
   let #(terminal, page, _) =
@@ -624,6 +636,60 @@ pub fn one_script_leaves_both_hosts_in_one_engine_state_test() {
     })
     as "one command left the page while the prompt's reply is outstanding"
   assert string.contains(prompt, "\"cmd\":\"prompt\"")
+}
+
+// The daemon's answer to the evolution board read sent as request `id`: one
+// session with a candidate that has passing evidence and no approval.
+fn board_reply(id: Int) -> connection_event.Message {
+  reply(
+    id,
+    "snapshot",
+    json.Object([
+      #("mode", json.String("evolution")),
+      #("board", evolution_board()),
+    ]),
+  )
+}
+
+fn evolution_board() -> json.JsonValue {
+  json.Object([
+    #("version", json.Int(1)),
+    #("session", json.String("session")),
+    #(
+      "candidates",
+      json.Array([
+        json.Object([
+          #("candidate_id", json.String("3f9a0c2e1b7d")),
+          #("name", json.String("fmt_check")),
+          #("kind", json.String("extension")),
+          #(
+            "scope",
+            json.Object([
+              #("kind", json.String("session")),
+              #("session", json.String("session")),
+            ]),
+          ),
+          #("description", json.String("Runs the formatter.")),
+          #("identity_current", json.Bool(True)),
+          #("approval", json.Null),
+          #("selected", json.Null),
+          #(
+            "evidence",
+            json.Array([
+              json.Object([
+                #("evidence_id", json.String("5c2e")),
+                #("purpose", json.String("author_tests")),
+                #("verdict", json.String("passed")),
+                #("reason", json.String("")),
+                #("at_ms", json.Int(1000)),
+                #("identity_current", json.Bool(True)),
+              ]),
+            ]),
+          ),
+        ]),
+      ]),
+    ),
+  ])
 }
 
 // Whether the terminal has made the read the page makes for the decided
@@ -715,4 +781,48 @@ pub fn the_terminals_real_tick_runs_the_shared_steps_order_test() {
 
   assert by_step.captured != None as "the capture was drained"
   assert by_terminal == by_step
+}
+
+// The evolution surface is a lane concern, so the board frames change what
+// both hosts keep and nothing they draw. A board read, an
+// `evolution_changed` push and the read the push owes go through both hosts:
+// the lanes stay equal, both hold the board, and the transcript lines are
+// exactly those the terminal draws.
+pub fn the_evolution_frames_change_no_line_and_leave_the_lanes_equal_test() {
+  let wire = process.new_subject()
+  let page =
+    component.new(start())
+    |> operator_page.update(operator_page.Observed(component.Opened(wire)))
+  perform(page.1)
+  let push =
+    connection_event.Incoming(
+      "{\"v\":2,\"event\":\"evolution_changed\",\"body\":{}}",
+    )
+  let script =
+    list.flatten([
+      list.map(transfer(), Frame),
+      [Tick],
+      list.map([4, 5, 6, 7], fn(id) { Frame(refusal(id)) }),
+      [Frame(board_reply(8)), Frame(refusal(9))],
+      [Frame(push), Tick, Frame(board_reply(10)), Tick],
+    ])
+  let #(terminal, page, _) =
+    list.fold(script, #(terminal(), page.0, Owed), fn(hosts, step) {
+      let #(terminal, asked) =
+        mirror_decided_read(on_terminal(hosts.0, step), hosts.2)
+      let page = on_page(hosts.1, step)
+      let assert Some(web_lane) = component.lane(page)
+        as "the page holds a lane"
+      let assert Some(terminal_lane) = terminal.shared.channel
+        as "the terminal holds a lane"
+      assert session_channel.state(web_lane)
+        == session_channel.state(terminal_lane)
+      #(terminal, page, asked)
+    })
+
+  let assert Some(board) = component.evolution_kept(page)
+    as "the page keeps the board"
+  assert terminal.shared.evolution == Some(board)
+  assert component.lines(page) == projection.record_projection(terminal).0
+  assert pending(component.pending(page)) == pending(terminal.shared.approvals)
 }
