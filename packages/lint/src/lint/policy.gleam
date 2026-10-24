@@ -264,15 +264,18 @@ pub fn portable_packages() -> List(String) {
 }
 
 /// The packages whose R21 (`case-stanza`) and R22 (`function-doc`) censuses
-/// have been driven to zero and therefore gate at error level.
+/// are tracked as part of the R21/R22 literacy sweep.
 ///
 /// Data rather than a `case` for the same reason `portable_packages` is:
 /// each wave adds the packages it swept, and a regression in a swept package
-/// fails `make lint` immediately without waiting for the remaining packages.
+/// fails `make lint` immediately. Global promotion now gates these rules
+/// everywhere; this public list records the sweep and remains useful for census
+/// and policy tests.
 pub fn literate_packages() -> List(String) {
   [
     "broker",
     "cap",
+    "client",
     "codemode",
     "conformance",
     "core",
