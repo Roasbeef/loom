@@ -165,6 +165,7 @@ pub fn seal_all(
   records: List(protocol.EntryRecord),
   strands: List(protocol.Strand),
 ) -> List(Sealed) {
+  // Check if any turn groups were provided to seal.
   case groups {
     [] -> []
     [_, ..] -> {
@@ -172,10 +173,13 @@ pub fn seal_all(
         list.filter_map(groups, fn(group) {
           first_seq(group) |> result.map(fn(seq) { #(group, seq) })
         })
+
+      // Look up following turn sequence if available.
       let following = case after {
         [group, ..] -> option.from_result(first_seq(group))
         [] -> None
       }
+
       seal_each(located, following, places(records), records, strands, [])
     }
   }
@@ -204,6 +208,8 @@ pub fn older(
   source: Source,
 ) -> Result(List(Sealed), Nil) {
   let #(lead, opened) = turns.grouped(blocks, strands)
+
+  // Check if requested turn count is reached or source exhausted.
   case list.length(opened) >= wanted && opened != [], source {
     True, _ -> Ok(seal_all(opened, [], records, strands))
     False, Exhausted -> Ok(seal_all(headed(lead, opened), [], records, strands))
@@ -232,6 +238,8 @@ pub fn completed(
   source: Source,
 ) -> Result(Completion, Nil) {
   let #(_, opened) = turns.grouped(blocks, strands)
+
+  // Inspect latest opened turn or report partial status on exhausted input.
   case list.last(opened), source {
     Ok(newest), _ -> Ok(Whole(seal_all([newest], [], records, strands)))
     Error(Nil), Exhausted -> Ok(Partial)
@@ -274,17 +282,24 @@ pub fn steps(
   source: Source,
 ) -> Result(Steps, Nil) {
   let #(lead, opened) = turns.grouped(blocks, strands)
+
+  // Select newest opened turn or fall back to leading blocks.
   let #(turn, whole) = case list.last(opened) {
     Ok(newest) -> #(newest, True)
     Error(Nil) -> #(lead, False)
   }
+
+  // Filter orphan tool results if turn is not whole.
   let items = case whole {
     True -> work_items(turn, strands, expansion)
     False ->
       work_items(turn, strands, expansion)
       |> list.filter(fn(item) { !is_orphan(item) })
   }
+
   let full = fold_budget.item_rows(items) >= fold_budget.fold_rows
+
+  // Decide whether to return complete cut or partial steps.
   case whole, full, source {
     True, _, _ -> Ok(cut(items))
     False, True, _ | False, False, Exhausted -> Ok(early(items, worked_steps))
@@ -310,13 +325,16 @@ pub fn lead_end(
   opened: List(List(Block)),
   records: List(protocol.EntryRecord),
 ) -> Result(Anchor, Nil) {
+  // Check if any leading blocks exist.
   case lead {
     [] -> Error(Nil)
     [_, ..] -> {
+      // Find the following turn sequence if available.
       let next = case opened {
         [group, ..] -> option.from_result(first_seq(group))
         [] -> None
       }
+
       ending(lead, next, places(records))
     }
   }
@@ -378,7 +396,7 @@ pub fn latest_result(records: List(protocol.EntryRecord)) -> Int {
   }
 }
 
-// The turn's own divider, which is the one `Work` its pieces hold.
+/// The turn's own divider, which is the one `Work` its pieces hold.
 fn work_of(sealed: Sealed) -> Option(turns.Piece) {
   list.find(sealed.pieces, fn(piece) {
     case piece {
@@ -417,6 +435,7 @@ type Places {
   )
 }
 
+/// Builds the lookup maps of records by sequence and identity.
 fn places(records: List(protocol.EntryRecord)) -> Places {
   let entries = list.map(records, fn(record) { record.entry })
   Places(
@@ -434,9 +453,9 @@ fn first_seq(group: List(Block)) -> Result(Int, Nil) {
   }
 }
 
-// Closes each located turn, oldest first. A turn knows the sequence of the
-// turn after it, which is what tells it where it ends: the next one given, or
-// the first of the turns that follow and stay open.
+/// Closes each located turn, oldest first. A turn knows the sequence of the
+/// turn after it, which is what tells it where it ends: the next one given, or
+/// the first of the turns that follow and stay open.
 fn seal_each(
   located: List(#(List(Block), Int)),
   following: Option(Int),
@@ -445,24 +464,29 @@ fn seal_each(
   strands: List(protocol.Strand),
   done: List(Sealed),
 ) -> List(Sealed) {
+  // Walk located turn groups and seal each.
   case located {
     [] -> list.reverse(done)
     [#(group, first), ..rest] -> {
+      // Determine the boundary sequence for the following turn.
       let next = case rest {
         [#(_, seq), ..] -> Some(seq)
         [] -> following
       }
+
+      // Accumulate sealed turn if successful.
       let done = case sealed(group, first, next, places, records, strands) {
         Ok(turn) -> [turn, ..done]
         Error(Nil) -> done
       }
+
       seal_each(rest, following, places, records, strands, done)
     }
   }
 }
 
-// One turn closed: its pieces with the fold closed, its place among the
-// records, and what its records added to the boards.
+/// One turn closed: its pieces with the fold closed, its place among the
+/// records, and what its records added to the boards.
 fn sealed(
   group: List(Block),
   first: Int,
@@ -498,9 +522,9 @@ fn sealed(
   ))
 }
 
-// The divider of a turn whose input the window did not hold is keyed by the
-// window's start, which would key two such turns alike. A closed turn is keyed
-// by its first record, which never moves.
+/// The divider of a turn whose input the window did not hold is keyed by the
+/// window's start, which would key two such turns alike. A closed turn is keyed
+/// by its first record, which never moves.
 fn keyed_by(piece: turns.Piece, first: Int) -> turns.Piece {
   case piece {
     turns.Work(key: "work:window-start", worked:, items:, folding:, id:) ->
@@ -525,9 +549,9 @@ fn keyed_by(piece: turns.Piece, first: Int) -> turns.Piece {
   }
 }
 
-// About how many bytes of text a summary holds: the text of its pieces and of
-// the boards. It is a budget's measure and not an allocation's: it counts what
-// a long row can make large, and not the constant overhead of a record.
+/// About how many bytes of text a summary holds: the text of its pieces and of
+/// the boards. It is a budget's measure and not an allocation's: it counts what
+/// a long row can make large, and not the constant overhead of a record.
 fn bytes_of(
   pieces: List(turns.Piece),
   changes: changes_view.Board,
@@ -569,6 +593,7 @@ fn block_bytes(block: Block) -> Int {
   })
 }
 
+/// Estimates the total byte count of a rendered turn piece.
 fn piece_bytes(piece: turns.Piece) -> Int {
   case piece {
     turns.Plain(block:, ..) | turns.Commentary(block:, ..) -> block_bytes(block)
@@ -586,15 +611,16 @@ fn piece_bytes(piece: turns.Piece) -> Int {
   }
 }
 
-// The turn's last record. The turn after it has that record as its first's
-// parent, which is exact even when the record drew no block; when no turn
-// follows it is the newest record the window holds. A turn whose end cannot
-// be found that way ends at its last block.
+/// The turn's last record. The turn after it has that record as its first's
+/// parent, which is exact even when the record drew no block; when no turn
+/// follows it is the newest record the window holds. A turn whose end cannot
+/// be found that way ends at its last block.
 fn ending(
   group: List(Block),
   next: Option(Int),
   places: Places,
 ) -> Result(Anchor, Nil) {
+  // Resolve the successor entry to find the turn boundary.
   let successor = case next {
     Some(seq) ->
       dict.get(places.by_seq, seq)
@@ -604,6 +630,8 @@ fn ending(
       })
     None -> option.to_result(places.newest, Nil)
   }
+
+  // Return anchor for the successor or fall back to last block in group.
   case successor {
     Ok(last) -> Ok(anchor(last))
     Error(Nil) ->
@@ -618,8 +646,8 @@ fn anchor(held: Entry) -> Anchor {
   Anchor(id: ids.entry_id_to_string(held.id), seq: held.seq)
 }
 
-// What the turn costs the page, with the rows its fold may add capped at what
-// a read of the fold keeps, since that is the most the page ever holds of it.
+/// What the turn costs the page, with the rows its fold may add capped at what
+/// a read of the fold keeps, since that is the most the page ever holds of it.
 fn weighed(
   group: List(Block),
   strands: List(protocol.Strand),
@@ -633,7 +661,7 @@ fn weighed(
   )
 }
 
-// The items of a turn's divider, laid out as a settled turn's are.
+/// The items of a turn's divider, laid out as a settled turn's are.
 fn work_items(
   turn: List(Block),
   strands: List(protocol.Strand),
@@ -673,8 +701,8 @@ fn early(items: List(turns.Item), worked_steps: Int) -> Steps {
   Steps(items: kept, unread: int.max(0, worked_steps - count_steps(kept)))
 }
 
-// Whether an item is a tool result drawn on its own, because the call it
-// answers is outside what was read.
+/// Whether an item is a tool result drawn on its own, because the call it
+/// answers is outside what was read.
 fn is_orphan(item: turns.Item) -> Bool {
   case item {
     turns.Narrated(
@@ -691,6 +719,7 @@ fn is_orphan(item: turns.Item) -> Bool {
   }
 }
 
+/// Counts the number of tool step items in a list of turn items.
 fn count_steps(items: List(turns.Item)) -> Int {
   list.count(items, fn(item) {
     case item {

@@ -1323,6 +1323,7 @@ pub fn init(start: Start) -> #(Model, Effect(Msg)) {
 // no relayed session never arms it, so for the home it is two messages at start
 // and nothing after. The sidebar's orchestrator reads have a third, which a page
 // with no orchestrator never arms either.
+/// Initializes the server component message timer selector effects.
 fn wire() -> Effect(Msg) {
   use dispatch, timer <- server_component.select
   let relay_timer = process.new_subject()
@@ -2260,10 +2261,12 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
           effect.none(),
         )
         sessions.Declined(reason:) -> {
+          // Identify which session opening or resuming action was declined.
           let pressed = case model.opening, model.resuming {
             Some(session), _ | None, Some(session) -> Some(session)
             None, None -> None
           }
+
           #(
             Model(
               ..model,
@@ -2286,8 +2289,8 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-// Asks the daemon to end sign-ins in the component's own process, and hands the
-// answer back with the scope it was for. The registry call is bounded.
+/// Asks the daemon to end sign-ins in the component's own process, and hands the
+/// answer back with the scope it was for. The registry call is bounded.
 fn signing_out(
   ask: fn() -> signins.Answer,
   scope: SignOutScope,
@@ -2302,9 +2305,9 @@ fn asking_device(ask: fn() -> signins.Answer) -> Effect(Msg) {
   dispatch(DeviceAnswered(ask()))
 }
 
-// Starts the daemon's task that renames the page's principal and returns at
-// once; the task's answer arrives later as `NameAnswered`, dispatched from the
-// task's own process.
+/// Starts the daemon's task that renames the page's principal and returns at
+/// once; the task's answer arrives later as `NameAnswered`, dispatched from the
+/// task's own process.
 fn renaming_self(
   ask: fn(String, fn(names.Answer) -> Nil) -> Nil,
   name: String,
@@ -2326,9 +2329,9 @@ fn opening_admin(ask: fn(fn(sessions.Answer) -> Nil) -> Nil) -> Effect(Msg) {
   ask(fn(answer) { dispatch(AdminLinked(answer)) })
 }
 
-// Stop and Archive: asks the daemon from its own task, for a page that was
-// handed the capability and is connected, and while no other request is out. A
-// confirmation that is open on another row is closed by the press.
+/// Stop and Archive: asks the daemon from its own task, for a page that was
+/// handed the capability and is connected, and while no other request is out. A
+/// confirmation that is open on another row is closed by the press.
 fn start_action(
   model: Model,
   action: actions.Action,
@@ -2354,8 +2357,8 @@ fn start_action(
   }
 }
 
-// The action the sidebar's archive button means for a listed session, or none
-// for one the page does not list.
+/// The action the sidebar's archive button means for a listed session, or none
+/// for one the page does not list.
 fn sidebar_action(
   model: Model,
   session: String,
@@ -2396,9 +2399,9 @@ fn busy(model: Model, session: String) -> Busyness {
   }
 }
 
-// The first press of an action that asks twice: it opens that row's
-// confirmation and sends nothing. It replaces a confirmation open on another
-// row, and does nothing while a request is out.
+/// The first press of an action that asks twice: it opens that row's
+/// confirmation and sends nothing. It replaces a confirmation open on another
+/// row, and does nothing while a request is out.
 fn confirm_first(
   model: Model,
   action: actions.Action,
@@ -2407,6 +2410,8 @@ fn confirm_first(
   use <- bool.lazy_guard(opening_now(model, session), fn() {
     #(model, effect.none())
   })
+
+  // Check if management actions can be confirmed given current connection status.
   case model.start.manage, model.status, model.acting {
     Some(_), Connected, actions.Calm
     | Some(_), Connected, actions.Confirming(..)
@@ -2423,9 +2428,9 @@ fn confirm_first(
   }
 }
 
-// The second press: it asks the daemon, and only for the row that is confirming
-// this action. Any other press asks nothing, which is what makes a forged
-// confirmation harmless.
+/// The second press: it asks the daemon, and only for the row that is confirming
+/// this action. Any other press asks nothing, which is what makes a forged
+/// confirmation harmless.
 fn confirmed(
   model: Model,
   action: actions.Action,
@@ -2442,10 +2447,10 @@ fn confirmed(
   }
 }
 
-// A destination of the row's chooser was pressed: it opens that row's
-// confirmation for a move to it, and sends nothing. It acts only for the row
-// that is choosing and a destination that row was offered as eligible, which is
-// what makes a forged press harmless.
+/// A destination of the row's chooser was pressed: it opens that row's
+/// confirmation for a move to it, and sends nothing. It acts only for the row
+/// that is choosing and a destination that row was offered as eligible, which is
+/// what makes a forged press harmless.
 fn chosen(model: Model, session: String, to: String) -> #(Model, Effect(Msg)) {
   case model.start.manage, model.status, model.acting {
     Some(_), Connected, actions.Choosing(session: open, candidates:)
@@ -2466,8 +2471,8 @@ fn chosen(model: Model, session: String, to: String) -> #(Model, Effect(Msg)) {
   }
 }
 
-// The move confirmation's press: it asks the daemon to move, and only for the
-// row that is confirming a move, to the destination that confirmation names.
+/// The move confirmation's press: it asks the daemon to move, and only for the
+/// row that is confirming a move, to the destination that confirmation names.
 fn move_confirmed(model: Model, session: String) -> #(Model, Effect(Msg)) {
   case model.start.manage, model.status, model.acting {
     Some(ask),
@@ -2486,9 +2491,9 @@ fn move_confirmed(model: Model, session: String) -> #(Model, Effect(Msg)) {
   }
 }
 
-// A note about a session, placed beside its row. The place carries the
-// session's workspace and name as the page has them now, so that the note can
-// still be drawn, naming the session, after the row is gone.
+/// A note about a session, placed beside its row. The place carries the
+/// session's workspace and name as the page has them now, so that the note can
+/// still be drawn, naming the session, after the row is gone.
 fn beside(model: Model, session: String, said: notice.Notice) -> Note {
   let place =
     list.find_map(model.groups, fn(group) {
@@ -2505,8 +2510,8 @@ fn refusal(place: home_table.Place, words: String) -> Note {
   home_table.Note(place:, notice: notice.Refused(words))
 }
 
-// Starts the daemon's task for one action and returns at once; the answer
-// arrives later as `ActionAnswered`, dispatched from the task's own process.
+/// Starts the daemon's task for one action and returns at once; the answer
+/// arrives later as `ActionAnswered`, dispatched from the task's own process.
 fn managing(
   ask: fn(actions.Action, String, fn(actions.Answer) -> Nil) -> Nil,
   action: actions.Action,
@@ -2516,9 +2521,9 @@ fn managing(
   ask(action, session, fn(answer) { dispatch(ActionAnswered(answer)) })
 }
 
-// Starts a read of the list now, after an action changed it, without arming
-// the timer: the interval already running will fire on its own. The read is
-// numbered, so an older read still in flight is dropped when it answers.
+/// Starts a read of the list now, after an action changed it, without arming
+/// the timer: the interval already running will fire on its own. The read is
+/// numbered, so an older read still in flight is dropped when it answers.
 fn reading(model: Model) -> #(Model, Effect(Msg)) {
   let serial = model.reads + 1
   let model = Model(..model, reads: serial)
@@ -2529,8 +2534,8 @@ fn reading(model: Model) -> #(Model, Effect(Msg)) {
   #(model, effect)
 }
 
-// Starts the daemon's rename task and returns at once; the task's answer
-// arrives later as `RenameAnswered`, dispatched from the task's own process.
+/// Starts the daemon's rename task and returns at once; the task's answer
+/// arrives later as `RenameAnswered`, dispatched from the task's own process.
 fn renaming(
   rename: fn(String, String, fn(renames.Answer) -> Nil) -> Nil,
   session: String,
@@ -2540,7 +2545,7 @@ fn renaming(
   rename(session, name, fn(answer) { dispatch(RenameAnswered(answer)) })
 }
 
-// The groups with one session's name replaced.
+/// The groups with one session's name replaced.
 fn renamed(groups: List(Group), session: String, name: String) -> List(Group) {
   list.map(groups, fn(group) {
     sessions.Group(
@@ -2555,9 +2560,9 @@ fn renamed(groups: List(Group), session: String, name: String) -> List(Group) {
   })
 }
 
-// Starts the daemon's task and returns at once; the task's answer arrives
-// later as `Linked`, dispatched from the task's own process. Lustre's dispatch
-// sends to the runtime's mailbox, so it is safe to call from there.
+/// Starts the daemon's task and returns at once; the task's answer arrives
+/// later as `Linked`, dispatched from the task's own process. Lustre's dispatch
+/// sends to the runtime's mailbox, so it is safe to call from there.
 fn resuming(
   resume: fn(String, fn(sessions.Answer) -> Nil) -> Nil,
   session: String,
@@ -2566,10 +2571,10 @@ fn resuming(
   resume(session, fn(answer) { dispatch(Linked(answer)) })
 }
 
-// Opens the form with this machine chosen and starts the read of the
-// placements, numbered so that only the newest answer is kept. The cards stay as
-// they were but are marked as being checked, so a state from an earlier read is
-// never drawn as though it were current.
+/// Opens the form with this machine chosen and starts the read of the
+/// placements, numbered so that only the newest answer is kept. The cards stay as
+/// they were but are marked as being checked, so a state from an earlier read is
+/// never drawn as though it were current.
 fn reading_places(model: Model) -> #(Model, Effect(Msg)) {
   let serial = model.place_reads + 1
   #(
@@ -2589,7 +2594,9 @@ fn reading_places(model: Model) -> #(Model, Effect(Msg)) {
 // (the Code list opened), or a creation, which is asked of the daemon from its own
 // task as the old form's is. A page with no `Start.create`, or one not yet
 // connected, asks nothing.
+/// Handles interactions within the new session creation composer widget.
 fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
+  // Verify creation capability is available and page is connected.
   case model.start.create, model.status {
     Some(ask), Connected -> {
       let entries = listing.entries(model.groups)
@@ -2602,6 +2609,7 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
         )
       let model = Model(..model, compose:) |> after_agent(model.compose.agent)
 
+      // Translate composer update intent into home page side effects.
       case intent {
         composer.Stay -> #(model, effect.none())
         composer.ReadPlacements -> reading_cards(model)
@@ -2629,10 +2637,12 @@ fn composing(model: Model, message: composer.Msg) -> #(Model, Effect(Msg)) {
 // page opened. With another orchestrator as the agent they are what that
 // orchestrator last offered, and nothing until it has: a choice is then offered
 // by no list, so a start asks nothing.
+/// Evaluates selectable offers and choices presented by the composer.
 fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
   let agents = agent_rows(model)
   let here = model.start.machine
 
+  // Determine choices based on selected agent destination.
   case model.compose.agent {
     composer.Here ->
       composer.Offers(
@@ -2677,8 +2687,7 @@ fn offers(model: Model, entries: List(Entry)) -> composer.Offers {
 }
 
 // The Agent chip's rows: this daemon, then each orchestrator in configuration
-// order with what the page holds of it. A page with no orchestrator has the one
-// row.
+/// Renders candidate target machines offering session agent hosting.
 fn agent_rows(model: Model) -> List(composer.Candidate) {
   let here =
     composer.Candidate(
@@ -2714,9 +2723,9 @@ fn recents(model: Model, entries: List(Entry)) -> List(composer.Recent) {
   }
 }
 
-// After the agent changed, the code, profile and model choices are judged
-// against the new machine's offers and kept only where it offers them
-// (`composer.kept`). A message that left the agent as it was changes nothing.
+/// After the agent changed, the code, profile and model choices are judged
+/// against the new machine's offers and kept only where it offers them
+/// (`composer.kept`). A message that left the agent as it was changes nothing.
 fn after_agent(model: Model, before: composer.Agent) -> Model {
   case model.compose.agent == before {
     True -> model
@@ -2740,18 +2749,23 @@ fn names_of(model: Model) -> List(String) {
 // answer arrives as `OffersAnswered`, numbered by the read it answers. A name
 // the page does not hold is not asked, and a page with no orchestrators asks
 // nobody.
+/// Starts reading orchestrator available tool offers in the background.
 fn reading_offers(model: Model, names: List(String)) -> #(Model, Effect(Msg)) {
+  // Check if orchestrator client integration is configured.
   case model.start.orchestrators {
     None -> #(model, effect.none())
     Some(held) -> {
       let #(machines, asked) =
         list.fold(names, #(model.machines, []), fn(so_far, name) {
           let #(machines, asked) = so_far
+
+          // Ask each target machine for its latest offers.
           case orchestrators.ask_offers(machines, name) {
             #(machines, Ok(serial)) -> #(machines, [#(name, serial), ..asked])
             #(machines, Error(Nil)) -> #(machines, asked)
           }
         })
+
       let reads =
         list.map(asked, fn(each) {
           use dispatch <- effect.from
@@ -2767,8 +2781,7 @@ fn reading_offers(model: Model, names: List(String)) -> #(Model, Effect(Msg)) {
 
 // Starts the daemon's create on an orchestrator and returns at once; the answer
 // arrives as `Founded`. The composer judged the place and the roles against the
-// orchestrator's offers, and the daemon judges them again against a fresh read.
-// A page that has no orchestrators puts the words back on the form.
+/// Submits a request to create a session on a remote orchestrator.
 fn founding(
   model: Model,
   orchestrator: String,
@@ -2796,7 +2809,7 @@ fn founding(
   }
 }
 
-// What an orchestrator's answer to a create does to the page.
+/// Handles remote orchestrator response after session founding creation attempt.
 fn founded(
   model: Model,
   orchestrator: String,
@@ -2837,7 +2850,9 @@ fn founded(
 // ended. The interval is fixed and does not wait for the answers: a machine whose
 // read is still out is skipped (`orchestrators.begin_listing`), so a slow box is
 // asked one call at a time and a fast one is not held up by it.
+/// Initiates periodic refresh read of remote orchestrator session listings.
 fn side_reading(model: Model) -> #(Model, Effect(Msg)) {
+  // Verify orchestrator service capability and connection status.
   case model.start.orchestrators, model.status {
     Some(held), Connecting | Some(held), Connected -> {
       let #(machines, owed) = orchestrators.begin_listing(model.machines)
@@ -2846,6 +2861,8 @@ fn side_reading(model: Model) -> #(Model, Effect(Msg)) {
           use dispatch <- effect.from
           held.sessions(name, fn(read) { dispatch(SideListed(name, read)) })
         })
+
+      // Arm timer if sidebar timer subject is registered.
       let arming = case model.side_timer {
         Some(timer) -> [
           {
@@ -2863,8 +2880,7 @@ fn side_reading(model: Model) -> #(Model, Effect(Msg)) {
   }
 }
 
-// Marks the cards as being checked and starts the read of the placements. It
-// does what `reading_places` does for the old form, without opening that form.
+/// Marks placement cards as checking and initiates placement options query.
 fn reading_cards(model: Model) -> #(Model, Effect(Msg)) {
   let serial = model.place_reads + 1
   #(
@@ -2877,8 +2893,8 @@ fn reading_cards(model: Model) -> #(Model, Effect(Msg)) {
   )
 }
 
-// Starts the daemon's read of the placements and returns at once; the answer
-// arrives later as `PlacementsRead`, dispatched from the daemon's own task.
+/// Starts the daemon's read of the placements and returns at once; the answer
+/// arrives later as `PlacementsRead`, dispatched from the daemon's own task.
 fn placing(
   read: fn(fn(placements.Read) -> Nil) -> Nil,
   serial: Int,
@@ -2887,8 +2903,8 @@ fn placing(
   read(fn(answer) { dispatch(PlacementsRead(serial, answer)) })
 }
 
-// Where a registered creation asks for its session: an executor's workspace, or
-// the same name registered on the executors of a pool.
+/// Where a registered creation asks for its session: an executor's workspace, or
+/// the same name registered on the executors of a pool.
 fn registered_place(
   choice: placements.Choice,
   workspace: String,
@@ -2899,10 +2915,10 @@ fn registered_place(
   }
 }
 
-// Starts the daemon's creation task and returns at once; the answer arrives
-// later as `Created`, dispatched from the task's own process. `prompt` is the
-// session's first message: empty sends none, and anything else is sent to the new
-// session once it is open. The older forms carry none.
+/// Starts the daemon's creation task and returns at once; the answer arrives
+/// later as `Created`, dispatched from the task's own process. `prompt` is the
+/// session's first message: empty sends none, and anything else is sent to the new
+/// session once it is open. The older forms carry none.
 fn creating(
   ask: fn(
     creations.Place,
@@ -2938,6 +2954,7 @@ fn offered_roles(model: Model, roles: creations.Roles) -> Bool {
 // drew a select, so only a listed name can come from it. When it listed none
 // the form drew a text field, so any text that names a workspace can, and the
 // daemon decides whether the executor serves it.
+/// Verifies that a target workspace path is valid for the selected placement option.
 fn offered_workspace(
   model: Model,
   choice: placements.Choice,
@@ -2956,8 +2973,8 @@ fn offered(listed: List(String), chosen: Option(String)) -> Bool {
   }
 }
 
-// Starts the daemon's task that forgets one folder and returns at once; the list
-// that remains arrives later as `FoldersRead`, dispatched from the task.
+/// Starts the daemon's task that forgets one folder and returns at once; the list
+/// that remains arrives later as `FoldersRead`, dispatched from the task.
 fn forgetting(
   forget: fn(Int, fn(List(creations.Recent)) -> Nil) -> Nil,
   id: Int,
@@ -2966,10 +2983,10 @@ fn forgetting(
   forget(id, fn(rows) { dispatch(FoldersRead(rows)) })
 }
 
-// Where a refused creation's words are drawn: beside the workspace's heading
-// when the form was open under a group the page draws, in the section for
-// folders that hold no session when it was open there or for a typed path, and
-// under the page's heading otherwise.
+/// Where a refused creation's words are drawn: beside the workspace's heading
+/// when the form was open under a group the page draws, in the section for
+/// folders that hold no session when it was open there or for a typed path, and
+/// under the page's heading otherwise.
 fn refused_at(model: Model) -> home_table.Place {
   case create.open_for(model.creating), model.creating {
     Some(workspace), _ ->
@@ -2996,9 +3013,9 @@ type Outcome {
   Kept
 }
 
-// Where the form stands after a refusal: open again under the workspace it was
-// for, so the person can correct it, unless the session was made and kept,
-// which leaves nothing to correct.
+/// Where the form stands after a refusal: open again under the workspace it was
+/// for, so the person can correct it, unless the session was made and kept,
+/// which leaves nothing to correct.
 fn reopened(state: create.State, outcome: Outcome) -> create.State {
   case state, outcome {
     create.Waiting(_), Kept
@@ -3021,12 +3038,15 @@ fn reopened(state: create.State, outcome: Outcome) -> create.State {
 // the answer arrives later as `Observed`, dispatched from the daemon's task as
 // `Linked` is. A page with no running session asks nothing, and a page that
 // ended asks nothing more.
+/// Triggers background observation reads for active sessions across all groups.
 fn observing(model: Model) -> Effect(Msg) {
   let running =
     list.flat_map(model.groups, fn(group) { group.entries })
     |> list.filter(fn(entry) { entry.residency == Live })
     |> list.take(sessions.activity_limit)
     |> list.map(fn(entry) { entry.id })
+
+  // Request activity metrics if there are running sessions and page is connected.
   case running, model.status {
     [], _ | _, Ended(_) | _, Connecting -> effect.none()
     [_, ..], Connected -> {
@@ -3045,10 +3065,12 @@ fn asking(open: fn(String) -> sessions.Answer, session: String) -> Effect(Msg) {
 // Starts a numbered read of the orchestrator for the relayed session and
 // returns at once; the daemon's task delivers what it found as the message
 // `answer` builds. A page with no relayed session asks nothing.
+/// Initiates a numbered read of active relayed session from remote orchestrator.
 fn relay_reading(
   model: Model,
   answer: fn(Int, relayed.Read) -> Msg,
 ) -> #(Model, Effect(Msg)) {
+  // Check if session visit capability is configured and currently active.
   case model.start.visiting, model.pane {
     Some(visit), Relayed(_) -> {
       let serial = model.relay_reads + 1
@@ -3069,7 +3091,9 @@ fn relay_reading(
 
 // Arms the relay's timer for the next read, when the runtime has made it and
 // the page can still be served.
+/// Arms the periodic refresh timer for the active relayed session.
 fn relay_arming(model: Model) -> Effect(Msg) {
+  // Check timer subject and visiting connection status.
   case model.relay_timer, model.start.visiting, model.pane, model.status {
     Some(timer), Some(visit), Relayed(_), Connecting
     | Some(timer), Some(visit), Relayed(_), Connected
@@ -3082,8 +3106,8 @@ fn relay_arming(model: Model) -> Effect(Msg) {
   }
 }
 
-// What a read of the orchestrator changes: the relayed session's state takes it,
-// stamped with this daemon's clock.
+/// What a read of the orchestrator changes: the relayed session's state takes it,
+/// stamped with this daemon's clock.
 fn relay_heard(model: Model, read: relayed.Read) -> Model {
   case model.pane {
     Relayed(state) ->
@@ -3099,7 +3123,9 @@ fn relay_heard(model: Model, read: relayed.Read) -> Model {
 // principal's access is gone and the daemon would refuse. Otherwise the state
 // judges the press against the row it holds and says what the page owes the
 // daemon, which is asked from the daemon's own task.
+/// Handles user interactions on the relayed session interface pane.
 fn relaying(model: Model, press: relayed_session.Msg) -> #(Model, Effect(Msg)) {
+  // Validate visiting session availability.
   case model.start.visiting, model.pane, model.status {
     Some(visit), Relayed(state), Connecting
     | Some(visit), Relayed(state), Connected
@@ -3114,7 +3140,9 @@ fn relaying(model: Model, press: relayed_session.Msg) -> #(Model, Effect(Msg)) {
 
 // The daemon's call for what the page owes. Each answer comes back as the
 // message of its own kind.
+/// Dispatches actionable intents on the relayed session to the host daemon.
 fn relay_asking(visit: Visit, intent: relayed_session.Intent) -> Effect(Msg) {
+  // Execute corresponding daemon call for intent.
   case intent {
     relayed_session.Stay -> effect.none()
     relayed_session.SendReply(text:) -> {
@@ -3138,8 +3166,8 @@ fn relay_asking(visit: Visit, intent: relayed_session.Intent) -> Effect(Msg) {
   }
 }
 
-// Applies an answer to the relayed session's state and reads the orchestrator
-// again.
+/// Applies an answer to the relayed session's state and reads the orchestrator
+/// again.
 fn relay_after(
   model: Model,
   apply: fn(relayed_session.State) -> relayed_session.State,
@@ -3151,10 +3179,10 @@ fn relay_after(
   }
 }
 
-// Starts the timer's read, numbered. The daemon's task delivers the list,
-// which lands as `Refreshed`; the reads that follow it and the arming of the
-// timer wait for that answer, so the interval starts after the read, as it
-// did when the read was made here.
+/// Starts the timer's read, numbered. The daemon's task delivers the list,
+/// which lands as `Refreshed`; the reads that follow it and the arming of the
+/// timer wait for that answer, so the interval starts after the read, as it
+/// did when the read was made here.
 fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
   let serial = model.reads + 1
   let model = Model(..model, reads: serial)
@@ -3166,7 +3194,9 @@ fn refreshing(model: Model) -> #(Model, Effect(Msg)) {
 }
 
 // Arms the timer for the next read, when the runtime has made it.
+/// Arms the periodic refresh timer for local sessions list.
 fn arming(model: Model) -> Effect(Msg) {
+  // Verify timer subject is available.
   case model.timer {
     None -> effect.none()
     Some(timer) -> {
@@ -3182,7 +3212,9 @@ fn arming(model: Model) -> Effect(Msg) {
 // pace a session does, and the timer is armed for the next read. A read that
 // answered `Closed` asks nothing more and arms nothing: that page has ended,
 // so the read is its last.
+/// Handles following background queries after listing refresh answers.
 fn following(model: Model, listing: Listing) -> Effect(Msg) {
+  // Match listing state to trigger secondary reads.
   case listing {
     Closed(..) -> effect.none()
     Listed(_) | Unread ->
@@ -3191,11 +3223,15 @@ fn following(model: Model, listing: Listing) -> Effect(Msg) {
           use dispatch <- effect.from
           model.start.signins(fn(read) { dispatch(SigninsRead(read)) })
           model.start.who(fn(name) { dispatch(NameRead(name)) })
+
+          // Refresh folders list if available.
           case model.start.folders {
             Some(Folders(recent:, ..)) ->
               recent(fn(rows) { dispatch(FoldersRead(rows)) })
             None -> Nil
           }
+
+          // Refresh remote orchestrators if available.
           case model.start.elsewhere {
             Some(Elsewhere(groups:, ..)) -> {
               let serial = model.elsewhere_reads
@@ -3209,9 +3245,9 @@ fn following(model: Model, listing: Listing) -> Effect(Msg) {
   }
 }
 
-// What a read changes. A list replaces the groups, so a session that is gone
-// is gone from the page, and a closed page keeps the last list it drew with
-// the notice beside it, as a session's page keeps its last capture.
+/// What a read changes. A list replaces the groups, so a session that is gone
+/// is gone from the page, and a closed page keeps the last list it drew with
+/// the notice beside it, as a session's page keeps its last capture.
 fn answered(model: Model, listing: Listing) -> Model {
   case listing {
     Listed(entries:) ->
@@ -3259,6 +3295,13 @@ pub fn elsewhere_reads(model: Model) -> Int {
   model.elsewhere_reads
 }
 
+/// Returns the grouped sessions list currently held in model state.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert home.groups(model) == []
+/// ```
 pub fn groups(model: Model) -> List(Group) {
   model.groups
 }
@@ -3390,10 +3433,10 @@ pub fn view(model: Model) -> Element(Msg) {
   )
 }
 
-// The centre's second child, which is the one region the socket admits a click,
-// a submit and a typed search beneath: the composer for the owner while the pane
-// is the new session's, and the list otherwise. Both sit at `table_path`, so the
-// admission is the same for both and no path moves.
+/// The centre's second child, which is the one region the socket admits a click,
+/// a submit and a typed search beneath: the composer for the owner while the pane
+/// is the new session's, and the list otherwise. Both sit at `table_path`, so the
+/// admission is the same for both and no path moves.
 fn centre_body(model: Model) -> Element(Msg) {
   case model.pane, model.start.create {
     NewSession, Some(_) -> new_session.view(new_pane(model))
@@ -3416,8 +3459,8 @@ fn centre_body(model: Model) -> Element(Msg) {
   }
 }
 
-// What the relayed session's buttons send: the messages the page judges against
-// the row it holds before it asks the daemon for anything.
+/// What the relayed session's buttons send: the messages the page judges against
+/// the row it holds before it asks the daemon for anything.
 fn relayed_presses() -> relayed_view.Presses(Msg) {
   relayed_view.Presses(
     replied: fn(text) { Relaying(relayed_session.Replied(text)) },
@@ -3431,8 +3474,8 @@ fn relayed_presses() -> relayed_view.Presses(Msg) {
   )
 }
 
-// What the composer draws from: its state, the lists the page offers, the
-// target in force, the recent places and the sessions waiting on the person.
+/// What the composer draws from: its state, the lists the page offers, the
+/// target in force, the recent places and the sessions waiting on the person.
 fn new_pane(model: Model) -> new_session.Pane(Msg) {
   let entries = listing.entries(model.groups)
   let offered = offers(model, entries)
@@ -3479,8 +3522,8 @@ fn resume_offer(model: Model) -> Resume(Msg) {
   }
 }
 
-// What the table offers for renaming a row: a button on a page whose daemon
-// handed it the capability, and nothing otherwise.
+/// What the table offers for renaming a row: a button on a page whose daemon
+/// handed it the capability, and nothing otherwise.
 fn rename_offer(model: Model) -> home_table.Rename(Msg) {
   case model.start.rename {
     None -> home_table.Never
@@ -3498,8 +3541,8 @@ fn rename_offer(model: Model) -> home_table.Rename(Msg) {
   }
 }
 
-// What the table offers for acting on a row: the buttons on a page whose daemon
-// handed it the capability, and nothing otherwise.
+/// What the table offers for acting on a row: the buttons on a page whose daemon
+/// handed it the capability, and nothing otherwise.
 fn manage_offer(model: Model) -> home_table.Manage(Msg) {
   case model.start.manage {
     None ->
@@ -3526,9 +3569,9 @@ fn manage_offer(model: Model) -> home_table.Manage(Msg) {
   }
 }
 
-// What the sidebar offers for archiving a row: the quiet button and its
-// question on a page whose daemon handed it the same capability as the table's
-// buttons, and nothing otherwise.
+/// What the sidebar offers for archiving a row: the quiet button and its
+/// question on a page whose daemon handed it the same capability as the table's
+/// buttons, and nothing otherwise.
 fn archive_offer(model: Model) -> archiving.Archiving(Msg) {
   case model.start.manage {
     None -> archiving.Never
@@ -3549,11 +3592,14 @@ fn submitting(session: String) -> attribute.Attribute(Msg) {
   event.on("submit", written(session)) |> event.prevent_default
 }
 
+/// Decodes session rename submission from formData payload.
 fn written(session: String) -> decode.Decoder(Msg) {
   use fields <- decode.subfield(
     ["detail", "formData"],
     decode.list(form_field()),
   )
+
+  // Extract name text field from form submission.
   case fields {
     [#("text", name)] -> decode.success(Renaming(session, name))
     _ -> decode.failure(Renaming(session, ""), "rename form")
@@ -3582,25 +3628,28 @@ fn naming_submit() -> attribute.Attribute(Msg) {
   event.on("submit", named_text()) |> event.prevent_default
 }
 
+/// Decodes principal rename submission from formData payload.
 fn named_text() -> decode.Decoder(Msg) {
   use fields <- decode.subfield(
     ["detail", "formData"],
     decode.list(form_field()),
   )
+
+  // Extract name text field from form submission.
   case fields {
     [#("text", name)] -> decode.success(NameSubmitted(name))
     _ -> decode.failure(NameSubmitted(""), "name form")
   }
 }
 
-// What the sign-ins region offers for a device link: the control on a page the
-// daemon handed `Start.device`, and nothing otherwise. The one page that has
-// nothing and ought to say why is the owner's home that a bookmark resumed. The
-// page can tell it from the others by what the daemon handed it: the owner's
-// operating page has `Start.rename`, and a fresh one also has `Start.manage`,
-// which a resumed one lacks (`client/daemon/ui_socket.manage_for`). A member's
-// home and a read-only link have no `Start.rename`, and their rows are the same
-// as before.
+/// What the sign-ins region offers for a device link: the control on a page the
+/// daemon handed `Start.device`, and nothing otherwise. The one page that has
+/// nothing and ought to say why is the owner's home that a bookmark resumed. The
+/// page can tell it from the others by what the daemon handed it: the owner's
+/// operating page has `Start.rename`, and a fresh one also has `Start.manage`,
+/// which a resumed one lacks (`client/daemon/ui_socket.manage_for`). A member's
+/// home and a read-only link have no `Start.rename`, and their rows are the same
+/// as before.
 fn device_offer(model: Model) -> signins_view.Device(Msg) {
   case model.start.device {
     None ->
@@ -3628,8 +3677,8 @@ fn device_offer(model: Model) -> signins_view.Device(Msg) {
   }
 }
 
-// What the page offers for making a session: the owner's operating page has
-// `Start.create`, and every other page draws nothing.
+/// What the page offers for making a session: the owner's operating page has
+/// `Start.create`, and every other page draws nothing.
 fn create_offer(model: Model) -> Create(Msg) {
   case model.start.create {
     Some(_) ->
@@ -3652,11 +3701,11 @@ fn create_offer(model: Model) -> Create(Msg) {
   }
 }
 
-// What the page offers for folders that hold no session: the section on a page
-// that may create, with the remembered folders no group already shows, which are
-// the ones a person could not otherwise reach without typing them again. A page
-// that has read nothing yet draws nothing, so the control does not appear before
-// the page knows its standing.
+/// What the page offers for folders that hold no session: the section on a page
+/// that may create, with the remembered folders no group already shows, which are
+/// the ones a person could not otherwise reach without typing them again. A page
+/// that has read nothing yet draws nothing, so the control does not appear before
+/// the page knows its standing.
 fn folders_offer(model: Model) -> folders_view.Folders(Msg) {
   case model.start.create, model.status {
     Some(_), Connected ->
@@ -3670,10 +3719,10 @@ fn folders_offer(model: Model) -> folders_view.Folders(Msg) {
   }
 }
 
-// What the page offers for the other orchestrators' sessions: the group on a
-// page the daemon handed the capability, once it is connected, so the group does
-// not appear before the page knows its standing. A page with no such capability
-// draws nothing.
+/// What the page offers for the other orchestrators' sessions: the group on a
+/// page the daemon handed the capability, once it is connected, so the group does
+/// not appear before the page knows its standing. A page with no such capability
+/// draws nothing.
 fn elsewhere_offer(model: Model) -> elsewhere_view.Elsewhere(Msg) {
   case model.start.elsewhere, model.status {
     Some(_), Connected ->
@@ -3689,7 +3738,7 @@ fn elsewhere_offer(model: Model) -> elsewhere_view.Elsewhere(Msg) {
   }
 }
 
-// Whether the page holds a row of that session in that orchestrator's group.
+/// Returns whether a target session row is found in the named orchestrator group.
 fn holds_row(
   groups: List(elsewhere.Group),
   group: String,
@@ -3704,10 +3753,10 @@ fn holds_row(
   })
 }
 
-// The groups a first-page read gave, with the pages "Show more" fetched kept
-// where they still follow it. A group whose held rows extend past the new first
-// page and begin with exactly the rows the new page lists, in order, keeps its
-// tail and takes the fresh first rows; any other group is replaced.
+/// The groups a first-page read gave, with the pages "Show more" fetched kept
+/// where they still follow it. A group whose held rows extend past the new first
+/// page and begin with exactly the rows the new page lists, in order, keeps its
+/// tail and takes the fresh first rows; any other group is replaced.
 fn refreshed(
   held: List(elsewhere.Group),
   fresh: List(elsewhere.Group),
@@ -3721,10 +3770,12 @@ fn refreshed(
   })
 }
 
+/// Merges retained paged rows with fresh head items if prefixes match.
 fn kept(
   held: elsewhere.Hearing,
   fresh: elsewhere.Hearing,
 ) -> elsewhere.Hearing {
+  // Match hearing states of previous and fresh reads.
   case held, fresh {
     elsewhere.Answered(rows: before, more:), elsewhere.Answered(rows: first, ..)
     -> {
@@ -3733,6 +3784,8 @@ fn kept(
           row.session_id
         })
         == list.map(first, fn(row) { row.session_id })
+
+      // Append older trailing rows if first page matches identically.
       case same, first, list.drop(before, list.length(first)) {
         True, [_, ..], [_, ..] as tail ->
           elsewhere.Answered(rows: list.append(first, tail), more:)
@@ -3743,7 +3796,7 @@ fn kept(
   }
 }
 
-// The open detail, kept only if the replacement groups still hold its row.
+/// Retains opened detail state if session remains present in updated groups.
 fn still_there(
   model: Model,
   groups: List(elsewhere.Group),
@@ -3761,11 +3814,14 @@ fn still_there(
 // The identity the next page of a group follows: the last row the page holds,
 // when the group has more. A group that is silent, has no more, or is not held
 // has none to ask for.
+/// Determines cursor identity for fetching next page of group rows.
 fn next_cursor(
   groups: List(elsewhere.Group),
   group: String,
 ) -> Result(String, Nil) {
   use found <- result.try(list.find(groups, fn(each) { each.name == group }))
+
+  // Check if group has further pages available.
   case found.hearing {
     elsewhere.Answered(rows:, more: elsewhere.Further) ->
       list.last(rows) |> result.map(fn(row) { row.session_id })
@@ -3774,8 +3830,8 @@ fn next_cursor(
   }
 }
 
-// Joins the page that arrived onto the group it was asked for. A read that could
-// not ask, or that does not hold the group, leaves the rows alone.
+/// Joins the page that arrived onto the group it was asked for. A read that could
+/// not ask, or that does not hold the group, leaves the rows alone.
 fn joined(
   groups: List(elsewhere.Group),
   group: String,
@@ -3801,8 +3857,8 @@ fn joined(
   }
 }
 
-// Starts the daemon's read of one orchestrator's next page and returns at once;
-// the answer arrives later as `MoreRead`, dispatched from the daemon's task.
+/// Starts the daemon's read of one orchestrator's next page and returns at once;
+/// the answer arrives later as `MoreRead`, dispatched from the daemon's task.
 fn paging(
   next: fn(String, String, fn(elsewhere.Read) -> Nil) -> Nil,
   group: String,
@@ -3813,9 +3869,9 @@ fn paging(
   next(group, after, fn(read) { dispatch(MoreRead(group, serial, read)) })
 }
 
-// The sidebar's column, or the frame's word that there is none. The owner's page
-// always has one, since its "New session" button is where a session starts and a
-// daemon with no session yet is where a person starts the first.
+/// The sidebar's column, or the frame's word that there is none. The owner's page
+/// always has one, since its "New session" button is where a session starts and a
+/// daemon with no session yet is where a person starts the first.
 fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
   case model.groups, model.start.create {
     [], None -> shell.Unlisted
@@ -3836,6 +3892,7 @@ fn shell_sidebar(model: Model) -> shell.Sidebar(Msg) {
 // that has rows or has been found silent, with the words saying so when its list
 // is not current. A machine nothing was heard from, or that lists none, draws
 // nothing.
+/// Compiles sidebar relayed sessions sections for remote orchestrators.
 fn relayed_rows(model: Model) -> sidebar.Relayed(Msg) {
   let now = model.now
 
@@ -3844,6 +3901,7 @@ fn relayed_rows(model: Model) -> sidebar.Relayed(Msg) {
       let note =
         orchestrators.reach_words(machine.orchestrator, machine.reach, now)
 
+      // Omit machine if it lists no sessions and carries no reach notice.
       case machine.rows, note {
         [], "" -> Error(Nil)
         rows, _ ->
@@ -3858,9 +3916,9 @@ fn relayed_rows(model: Model) -> sidebar.Relayed(Msg) {
   )
 }
 
-// What the sidebar's top and foot offer: "New session" and the row menus'
-// "Rename, move or delete" on the page that may create and manage, and "Admin"
-// where the daemon handed the page the capability.
+/// What the sidebar's top and foot offer: "New session" and the row menus'
+/// "Rename, move or delete" on the page that may create and manage, and "Admin"
+/// where the daemon handed the page the capability.
 fn sidebar_page(model: Model) -> sidebar.Page(Msg) {
   sidebar.Page(
     doors: sidebar.RowsOpen,
@@ -3904,7 +3962,7 @@ fn account_panel(model: Model) -> home_bar.Panel {
   }
 }
 
-// The pill's colour follows the standing, as a session page's does.
+/// The pill's colour follows the standing, as a session page's does.
 fn status_tone(status: Status) -> heading.Tone {
   case status {
     Connecting -> heading.Pending
@@ -3913,6 +3971,7 @@ fn status_tone(status: Status) -> heading.Tone {
   }
 }
 
+/// Formats connection status label in words.
 fn status_words(status: Status) -> String {
   case status {
     Connecting -> "connecting"

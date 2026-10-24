@@ -155,13 +155,14 @@ fn heading() -> Element(message) {
   html.h2([attribute.class("home-heading")], [html.text("Deployment")])
 }
 
-// The heading, the summary, its notes, the machines and the chosen machine's
-// page. A standalone daemon that lists only itself is one card; anything else is
-// the groups, so a ledger member listed beside a standalone daemon is still seen.
+/// The heading, the summary, its notes, the machines and the chosen machine's
+/// page. A standalone daemon that lists only itself is one card; anything else is
+/// the groups, so a ledger member listed beside a standalone daemon is still seen.
 fn drawn(
   snapshot: Snapshot,
   section: Section(message),
 ) -> List(Element(message)) {
+  // Render standalone card or grouped deployment machines list.
   let body = case snapshot.distribution, snapshot.machines {
     Standalone, [only] if only.whose == This -> [
       standalone(snapshot, only, section),
@@ -179,6 +180,7 @@ fn drawn(
         pools(snapshot.pools),
       ])
   }
+
   list.flatten([
     [
       heading(),
@@ -192,8 +194,8 @@ fn drawn(
   ])
 }
 
-// The lines under the summary: the directory copy when it is unconfirmed and
-// what the daemon left out of the reply.
+/// The lines under the summary: the directory copy when it is unconfirmed and
+/// what the daemon left out of the reply.
 fn notes(snapshot: Snapshot) -> Element(message) {
   html.div(
     [attribute.class("admin-notes")],
@@ -224,8 +226,8 @@ fn notes(snapshot: Snapshot) -> Element(message) {
   )
 }
 
-// A daemon on its own: one card for this machine and the note that says why
-// there is nothing else to list.
+/// A daemon on its own: one card for this machine and the note that says why
+/// there is nothing else to list.
 fn standalone(
   snapshot: Snapshot,
   machine: Machine,
@@ -243,7 +245,7 @@ fn standalone(
   ])
 }
 
-// The machines of one group under its heading, or nothing for a group with none.
+/// The machines of one group under its heading, or nothing for a group with none.
 fn group(
   snapshot: Snapshot,
   group: Group,
@@ -253,6 +255,8 @@ fn group(
     list.filter(snapshot.machines, fn(machine) {
       machines.group_of(machine) == group
     })
+
+  // Render group heading and fleet list if non-empty.
   case members {
     [] -> []
     [_, ..] -> [
@@ -274,6 +278,7 @@ fn group(
   }
 }
 
+/// Returns the display title for a machine group category.
 fn group_words(group: Group) -> String {
   case group {
     OrchestratorGroup -> "Orchestrators"
@@ -282,22 +287,27 @@ fn group_words(group: Group) -> String {
   }
 }
 
-// One machine, as the button that opens its page: its name and state, the node
-// and anything else that names it, then the facts its group shows.
+/// One machine, as the button that opens its page: its name and state, the node
+/// and anything else that names it, then the facts its group shows.
 fn row(
   snapshot: Snapshot,
   machine: Machine,
   section: Section(message),
 ) -> Element(message) {
   let title = machines.title(snapshot, machine)
+
+  // Check if this machine is currently selected in view.
   let current = case section.chosen {
     Some(node) if node == machine.node -> [attribute.aria_current("true")]
     Some(_) | None -> []
   }
+
+  // Dim unlinked fleet machines.
   let quiet = case machine.here {
     Dialled(..) -> []
     NotLinkedFromHere -> [attribute.class("unlinked")]
   }
+
   html.li([attribute.class("admin-node"), ..quiet], [
     html.button(
       [
@@ -319,10 +329,10 @@ fn row(
   ])
 }
 
-// The quiet line under the name: what the name is when the title says ("This
-// machine" under a host name), the node string when it says something the name
-// does not, "this daemon" for the asking daemon, and the roles beyond the one
-// its group already says.
+/// The quiet line under the name: what the name is when the title says ("This
+/// machine" under a host name), the node string when it says something the name
+/// does not, "this daemon" for the asking daemon, and the roles beyond the one
+/// its group already says.
 fn subline(machine: Machine, title: machines.Title) -> Element(message) {
   let parts =
     list.flatten([
@@ -345,26 +355,30 @@ fn subline(machine: Machine, title: machines.Title) -> Element(message) {
         roles -> [html.span([], [html.text(string.join(roles, ", "))])]
       },
     ])
+
+  // Render subline span if any detail parts are present.
   case parts {
     [] -> element.none()
     _ -> html.span([attribute.class("admin-node-sub")], parts)
   }
 }
 
-// The roles a machine has beyond the one its group is named for: an
-// orchestrator that is also a directory member says so.
+/// The roles a machine has beyond the one its group is named for: an
+/// orchestrator that is also a directory member says so.
 fn extra_roles(machine: Machine) -> List(String) {
+  // Determine primary group role to filter out.
   let named = case machines.group_of(machine) {
     OrchestratorGroup -> machines.Orchestrator
     ExecutorGroup -> machines.Executor
     MemberGroup -> machines.Member
   }
+
   machine.roles
   |> list.filter(fn(role) { role != named })
   |> list.map(machines.role_words)
 }
 
-// The state pill, or the words for a machine the daemon does not dial.
+/// The state pill, or the words for a machine the daemon does not dial.
 fn state(machine: Machine) -> Element(message) {
   case machine.here {
     Dialled(findings: Findings(state:, ..)) ->
@@ -379,15 +393,16 @@ fn state(machine: Machine) -> Element(message) {
   }
 }
 
-// The facts the machine's group shows, each a label and a value, leaving out the
-// ones the machine did not state. An orchestrator says how it runs and what it
-// holds; an executor says what its machine provides and how full it is. Both say
-// when they last reported and, on a daemon with a ledger, their standing in it.
+/// The facts the machine's group shows, each a label and a value, leaving out the
+/// ones the machine did not state. An orchestrator says how it runs and what it
+/// holds; an executor says what its machine provides and how full it is. Both say
+/// when they last reported and, on a daemon with a ledger, their standing in it.
 fn facts(
   snapshot: Snapshot,
   machine: Machine,
   entries: List(Entry),
 ) -> Element(message) {
+  // Extract findings if machine is dialled.
   let found = case machine.here {
     Dialled(findings:) -> Some(findings)
     NotLinkedFromHere -> None
@@ -437,6 +452,7 @@ fn facts(
     ]
     MemberGroup -> [#("Build", option.then(found, machines.build_words))]
   }
+
   let stated =
     list.filter_map(
       list.append(own, [
@@ -450,15 +466,17 @@ fn facts(
         }
       },
     )
+
+  // Return fact elements or none if empty.
   case stated {
     [] -> element.none()
     _ -> html.span([attribute.class("admin-node-facts")], stated)
   }
 }
 
-// How many sessions this daemon's catalogue holds and how many of them run, for
-// the asking daemon when its report carries no orchestrator facts, as a daemon
-// without distribution's does.
+/// How many sessions this daemon's catalogue holds and how many of them run, for
+/// the asking daemon when its report carries no orchestrator facts, as a daemon
+/// without distribution's does.
 fn held_here(entries: List(Entry)) -> String {
   let running =
     list.count(entries, fn(entry) {
@@ -514,8 +532,8 @@ pub fn standing(ledgered: Ledgered) -> String {
   }
 }
 
-// How long ago the member reported its head to this daemon, or nothing when it
-// has not or the machine is not in the ledger.
+/// How long ago the member reported its head to this daemon, or nothing when it
+/// has not or the machine is not in the ledger.
 fn last_report(ledgered: Ledgered) -> Option(String) {
   case ledgered {
     Enrolled(standing: machines.Standing(age_ms: Some(age), ..)) ->
@@ -525,8 +543,8 @@ fn last_report(ledgered: Ledgered) -> Option(String) {
   }
 }
 
-// The pools under their heading: each pool's name, how many of its executors
-// could take a session now, and which executors it admits.
+/// The pools under their heading: each pool's name, how many of its executors
+/// could take a session now, and which executors it admits.
 fn pools(listed: List(Pool)) -> List(Element(message)) {
   case listed {
     [] -> []
@@ -549,16 +567,19 @@ fn pools(listed: List(Pool)) -> List(Element(message)) {
   }
 }
 
-// One pool. Its pill is ok when every executor could take a session, waiting
-// when some could, and down when none could.
+/// One pool. Its pill is ok when every executor could take a session, waiting
+/// when some could, and down when none could.
 fn pool_row(pool: Pool) -> Element(message) {
   let ready = list.length(pool.eligible)
   let all = list.length(pool.executors)
+
+  // Select pill tint according to ready executor ratio.
   let tint = case ready {
     0 -> machines.pill_class(machines.Down)
     _ if ready == all -> machines.pill_class(machines.Healthy)
     _ -> machines.pill_class(machines.Degraded)
   }
+
   html.li([attribute.class("admin-node")], [
     html.div([attribute.class("admin-node-pick")], [
       html.span([attribute.class("admin-node-head")], [

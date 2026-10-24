@@ -162,6 +162,7 @@ fn row(state: State, name: String) -> Strand {
   |> result.unwrap(Strand(name, [], None))
 }
 
+/// Helper `put` for put.
 fn put(state: State, strand: Strand) -> State {
   State(
     [
@@ -172,7 +173,9 @@ fn put(state: State, strand: Strand) -> State {
   )
 }
 
+/// Helper `observe_boundary` for observe boundary.
 fn observe_boundary(state: State, cell: snapshot_view.Cell) -> State {
+  // Handle the `observe_boundary` branch dispatch.
   case codec.decode_operation(cell.value) {
     Error(_) -> state
     Ok(meta) -> {
@@ -186,6 +189,8 @@ fn observe_boundary(state: State, cell: snapshot_view.Cell) -> State {
           })
         ]
         |> list.take(2)
+
+      // Handle the `observe_boundary` branch dispatch.
       case cell.key == id {
         True -> put(state, Strand(..strand, boundaries:))
         False -> state
@@ -194,11 +199,13 @@ fn observe_boundary(state: State, cell: snapshot_view.Cell) -> State {
   }
 }
 
+/// Helper `observe_result` for observe result.
 fn observe_result(
   state: State,
   cell: snapshot_view.Cell,
   entries: Dict(ids.EntryId, entry.Entry),
 ) {
+  // Handle the `observe_result` branch dispatch.
   case codec.decode_last_result(cell.value) {
     Ok(operation.RunLastResult(operation: op, leaf:, outcome:, final_assistant:)) -> {
       let strand = row(state, cell.key)
@@ -209,10 +216,13 @@ fn observe_result(
       use <- bool.guard(complete_for(strand.summary, id), state)
       let boundary =
         list.find(strand.boundaries, fn(value) { value.operation == id })
+
+      // Handle the `observe_result` branch dispatch.
       let #(coverage, history) = case boundary {
         Error(Nil) -> #(Unavailable, [])
         Ok(boundary) -> walk(entries, leaf, boundary.source, [], 2048)
       }
+
       let #(edits, tools, edit_count, edit_delta) = evidence(history)
       let summary =
         Summary(
@@ -242,6 +252,7 @@ fn complete_for(summary: Option(Summary), operation: String) -> Bool {
 
 // The source is exclusive. Deleting visited entries also makes a corrupt
 // cycle terminate as a partial window without inventing a second traversal.
+/// Helper `walk` for walk.
 fn walk(
   entries: Dict(ids.EntryId, entry.Entry),
   leaf: Option(ids.EntryId),
@@ -250,6 +261,8 @@ fn walk(
   remaining: Int,
 ) {
   use <- bool.guard(leaf == source, #(Complete, collected))
+
+  // Handle the `walk` branch dispatch.
   case leaf, remaining {
     None, _ -> #(Partial, collected)
     Some(_), 0 -> #(Partial, collected)
@@ -272,6 +285,7 @@ fn walk(
 // Unlike the compact transcript, evidence includes calls alongside prose.
 // A fresh assistant batch owns its call ids; a result cannot match an old
 // invocation merely because the provider reused its id in a later response.
+/// Renders evidence items for agent review.
 fn evidence(history) {
   let #(_, edits, tools, delta) =
     list.fold(history, #(dict.new(), [], [], None), collect)
@@ -283,6 +297,7 @@ fn evidence(history) {
   )
 }
 
+/// Helper `collect` for collect.
 fn collect(
   acc: #(
     Dict(String, #(ids.EntryId, message.ToolCall)),
@@ -293,6 +308,8 @@ fn collect(
   value: entry.Entry,
 ) {
   let #(pending, edits, tools, delta) = acc
+
+  // Handle the `collect` branch dispatch.
   case value {
     entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) -> {
       let calls =
@@ -311,6 +328,8 @@ fn collect(
     ) -> {
       let paired = dict.get(pending, tool_call_id)
       let pending = dict.delete(pending, tool_call_id)
+
+      // Handle the `collect` branch dispatch.
       case paired {
         Ok(#(source, call)) if call.name == tool_name -> {
           let paired =
@@ -336,8 +355,11 @@ fn collect(
   }
 }
 
+/// Helper `extract` for extract.
 fn extract(call: tool_activity.Call) {
   let invocation = call.invocation
+
+  // Handle the `extract` branch dispatch.
   let #(status, details) = case call.outcome {
     Some(message.ToolResultMessage(is_error: False, details:, ..)) -> #(
       Succeeded,
@@ -349,10 +371,14 @@ fn extract(call: tool_activity.Call) {
     )
     _ -> #(Failed, None)
   }
+
+  // Handle the `extract` branch dispatch.
   let path = case invocation.name, status {
     "fs_edit", Succeeded | "fs_write", Succeeded -> text_field(details, "path")
     _, _ -> None
   }
+
+  // Handle the `extract` branch dispatch.
   let #(command, exit_code) = case invocation.name {
     "bash" -> #(
       text_field(Some(invocation.arguments), "command"),
@@ -360,6 +386,7 @@ fn extract(call: tool_activity.Call) {
     )
     _ -> #(None, None)
   }
+
   #(
     path,
     ToolOutcome(
@@ -375,7 +402,9 @@ fn extract(call: tool_activity.Call) {
 
 // fs_edit emits headerless unified hunks. The counts describe recorded edit
 // operations, which may touch the same line twice; they are not a Git net diff.
+/// Helper `captured_delta` for captured delta.
 fn captured_delta(name, status, details) {
+  // Handle the `captured_delta` branch dispatch.
   case name, status, full_text_field(details, "diff") {
     "fs_edit", Succeeded, Some(patch) -> {
       let rows = string.split(patch, "\n")
@@ -417,6 +446,7 @@ pub fn edit_totals(summary: Summary) -> String {
   }
 }
 
+/// Helper `add_path` for add path.
 fn add_path(paths, path) {
   case path {
     None -> paths
@@ -430,6 +460,7 @@ fn add_path(paths, path) {
 }
 
 // Aggregate the bounded ancestry before discarding its display excerpts.
+/// Helper `add_delta` for add delta.
 fn add_delta(total, next) {
   case total, next {
     _, None -> total
@@ -467,11 +498,14 @@ fn int_field(value, key) {
   }
 }
 
+/// Extracts assistant text from content blocks.
 fn assistant_text(history: List(entry.Entry), final: Option(ids.EntryId)) {
   use id <- option.then(final)
   use value <- option.then(
     list.find(history, fn(value) { value.id == id }) |> option.from_result,
   )
+
+  // Handle the `assistant_text` branch dispatch.
   case value {
     entry.MessageEntry(message: message.AssistantMessage(content:, ..), ..) -> {
       let text =
@@ -518,6 +552,7 @@ pub fn brief(summary: Summary) -> String {
 /// // completion_summary.lines(summary)
 /// ```
 pub fn lines(summary: Summary) -> List(String) {
+  // Handle the `lines` branch dispatch.
   let coverage = case summary.coverage {
     Complete ->
       "Captured operation history complete; up to 32 edits and tool outcomes shown."
@@ -526,6 +561,7 @@ pub fn lines(summary: Summary) -> List(String) {
     Unavailable ->
       "Operation start was not observed; edit and tool evidence unavailable."
   }
+
   list.flatten([
     [brief(summary)],
     case summary.final_assistant {
@@ -542,18 +578,25 @@ pub fn lines(summary: Summary) -> List(String) {
   ])
 }
 
+/// Helper `tool_line` for tool line.
 fn tool_line(tool: ToolOutcome) {
+  // Handle the `tool_line` branch dispatch.
   let status = case tool.status {
     Succeeded -> "succeeded"
     Failed -> "failed"
   }
+
+  // Handle the `tool_line` branch dispatch.
   let exit = case tool.exit_code {
     Some(code) -> "; exit " <> int.to_string(code)
     None -> ""
   }
+
+  // Handle the `tool_line` branch dispatch.
   let command = case tool.command {
     Some(command) -> ": " <> command
     None -> ""
   }
+
   tool.name <> " " <> status <> exit <> command
 }

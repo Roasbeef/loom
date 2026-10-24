@@ -88,8 +88,8 @@ pub fn line(text: String, limit: Int) -> List(Element(message)) {
   |> list.map(inline_element)
 }
 
-// The inlines of the first block that has any, looking inside quotes, notes and
-// lists, and nothing for a table or a rule.
+/// The inlines of the first block that has any, looking inside quotes, notes and
+/// lists, and nothing for a table or a rule.
 fn opening(block: Block) -> Result(List(Inline), Nil) {
   case block {
     markdown.Paragraph(inlines:) | markdown.Heading(inlines:, ..) ->
@@ -116,7 +116,7 @@ fn opening(block: Block) -> Result(List(Inline), Nil) {
   }
 }
 
-// A hard break in a line that stays on one row is a space.
+/// A hard break in a line that stays on one row is a space.
 fn unbroken(inlines: List(Inline)) -> List(Inline) {
   list.map(inlines, fn(inline) {
     case inline {
@@ -145,9 +145,10 @@ fn clip(inlines: List(Inline), limit: Int) -> List(Inline) {
   }
 }
 
-// The spans that fit in `left` characters, and what is left of the budget. A
-// negative budget means the cut was made, so nothing after it is kept.
+/// The spans that fit in `left` characters, and what is left of the budget. A
+/// negative budget means the cut was made, so nothing after it is kept.
 fn clipped(inlines: List(Inline), left: Int) -> #(List(Inline), Int) {
+  // Return empty list once budget is exhausted, or process head and tail recursively.
   case inlines, left < 0 {
     [], _ | _, True -> #([], left)
     [first, ..rest], False -> {
@@ -158,10 +159,11 @@ fn clipped(inlines: List(Inline), left: Int) -> #(List(Inline), Int) {
   }
 }
 
-// One span against the budget: a text or code span is cut where the budget
-// ends, a span that wraps others is cut inside, and an atom is kept whole or
-// replaced by the ellipsis.
+/// One span against the budget: a text or code span is cut where the budget
+/// ends, a span that wraps others is cut inside, and an atom is kept whole or
+/// replaced by the ellipsis.
 fn clip_one(inline: Inline, left: Int) -> #(List(Inline), Int) {
+  // Measure and truncate individual inline spans according to remaining budget.
   case inline {
     markdown.Text(text:) -> cut_text(text, left, markdown.Text)
     markdown.Code(text:) -> cut_text(text, left, markdown.Code)
@@ -186,6 +188,8 @@ fn clip_one(inline: Inline, left: Int) -> #(List(Inline), Int) {
     | markdown.Task(..)
     | markdown.FootnoteRef(..) -> {
       let width = string.length(markdown.plain([inline]))
+
+      // Truncate inline element or replace with ellipsis if width exceeds remaining budget.
       case width <= left {
         True -> #([inline], left - width)
         False -> #([markdown.Text("…")], -1)
@@ -194,23 +198,28 @@ fn clip_one(inline: Inline, left: Int) -> #(List(Inline), Int) {
   }
 }
 
+/// Truncates text or code content when exceeding character budget.
 fn cut_text(
   text: String,
   left: Int,
   span: fn(String) -> Inline,
 ) -> #(List(Inline), Int) {
   let width = string.length(text)
+
+  // Preserve span text if within limit or cut at word boundary with ellipsis.
   case width <= left {
     True -> #([span(text)], left - width)
     False -> #([span(at_word(text, left) <> "…")], -1)
   }
 }
 
-// The first `left` characters of a text backed up to the end of the last whole
-// word, so the ellipsis follows a word and not half of one. A cut that lands on
-// a word's end and a text with no space in it keep every character.
+/// The first `left` characters of a text backed up to the end of the last whole
+/// word, so the ellipsis follows a word and not half of one. A cut that lands on
+/// a word's end and a text with no space in it keep every character.
 fn at_word(text: String, left: Int) -> String {
   let cut = string.slice(text, 0, left)
+
+  // Find last space boundary to avoid cutting words in half.
   case string.slice(text, left, 1), list.reverse(string.split(cut, " ")) {
     " ", _ -> cut
     _, [_partial, first, ..rest] ->
@@ -219,6 +228,7 @@ fn at_word(text: String, left: Int) -> String {
   }
 }
 
+/// Renders a markdown block structure into HTML Lustre elements.
 fn block_element(block: Block) -> Element(message) {
   case block {
     markdown.Paragraph(inlines:) ->
@@ -310,6 +320,7 @@ fn block_element(block: Block) -> Element(message) {
   }
 }
 
+/// Maps markdown alert kind to corresponding heading label.
 fn alert_title(kind: markdown.AlertKind) -> String {
   case kind {
     markdown.Note -> "Note"
@@ -337,6 +348,7 @@ fn body_cell(cell: markdown.Cell) -> Element(message) {
   html.td([align_class(cell.align)], list.map(cell.inlines, inline_element))
 }
 
+/// Returns CSS class corresponding to markdown heading level.
 fn level_class(level: markdown.Level) -> attribute.Attribute(message) {
   case level {
     markdown.H1 -> attribute.class("md-h1")
@@ -348,6 +360,7 @@ fn level_class(level: markdown.Level) -> attribute.Attribute(message) {
   }
 }
 
+/// Returns CSS alignment attribute for table cells.
 fn align_class(align: markdown.Align) -> attribute.Attribute(message) {
   case align {
     markdown.Unaligned -> attribute.none()
@@ -357,6 +370,7 @@ fn align_class(align: markdown.Align) -> attribute.Attribute(message) {
   }
 }
 
+/// Renders an individual inline markdown element into Lustre element.
 fn inline_element(inline: Inline) -> Element(message) {
   case inline {
     markdown.Text(text:) -> html.text(text)
@@ -392,11 +406,11 @@ fn inline_element(inline: Inline) -> Element(message) {
   }
 }
 
-// A link is `<loom-link>` with two text-only children: the label, and the
-// destination as hidden text. No attribute carries either (051), so the page
-// follows nothing until the browser element has validated the destination
-// and made the label clickable (`web_client/link_rule`). A destination it
-// refuses leaves the label as plain text.
+/// A link is `<loom-link>` with two text-only children: the label, and the
+/// destination as hidden text. No attribute carries either (051), so the page
+/// follows nothing until the browser element has validated the destination
+/// and made the label clickable (`web_client/link_rule`). A destination it
+/// refuses leaves the label as plain text.
 fn link(label: List(Inline), destination: String) -> Element(message) {
   element.element("loom-link", [], [
     html.span([attribute.class("ll-text")], list.map(label, inline_element)),

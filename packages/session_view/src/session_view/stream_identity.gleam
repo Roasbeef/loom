@@ -20,6 +20,8 @@ import gleam/option.{type Option, None}
 @internal
 pub fn response_entry(identity: String) -> Option(ids.EntryId) {
   let parsed = json.parse(identity)
+
+  // Parse response entry from generation or poll JSON tuple.
   case parsed {
     Ok(json.Array([
       json.String(kind),

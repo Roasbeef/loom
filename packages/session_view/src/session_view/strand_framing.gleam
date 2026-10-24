@@ -115,6 +115,8 @@ pub const transcript_foot =
 pub fn strip(text: String, sender: String) -> Framed {
   let message = unwrap(text, message_head(sender), message_foot, NoTrailer)
   let brief = unwrap(text, brief_head(sender), brief_foot, MayCarryTrailer)
+
+  // Return stripped message or brief, or fall back to unmodified text.
   case message, brief {
     Some(framed), _ | None, Some(framed) -> framed
     None, None -> Framed(body: text, trailer: None)
@@ -131,15 +133,19 @@ type Trailing {
 // suffix or, where the kind allows a trailer, the contract close as one.
 // Splitting on the exact strings, rather than counting characters, keeps
 // the cut on the boundaries the strings themselves define.
+/// Unwraps framing delimiters from text, optionally stripping trailers.
 fn unwrap(
   text: String,
   head: String,
   foot: String,
   trailing: Trailing,
 ) -> Option(Framed) {
+  // Verify text starts with the opening framing delimiter.
   case string.split_once(text, head) {
     Ok(#("", rest)) -> {
       let tail = "\n" <> foot
+
+      // Check for closing foot delimiter and allowed trailer content.
       case string.ends_with(rest, tail), trailing {
         True, _ -> Some(Framed(body: before_last(rest, tail), trailer: None))
         False, MayCarryTrailer ->
@@ -151,8 +157,7 @@ fn unwrap(
   }
 }
 
-// The trailer split: the text must end with the contract close, and the
-// split point is the last occurrence of the foot and the opening line.
+/// Splits trailing harness result contract block from framed prompt text.
 fn split_trailer(rest: String, marker: String) -> Option(Framed) {
   case string.ends_with(rest, contract_close) {
     False -> None

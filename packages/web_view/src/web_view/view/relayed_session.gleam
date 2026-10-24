@@ -140,7 +140,7 @@ fn waiting(state: State) -> Element(message) {
   ])
 }
 
-// The box answered, and its list does not hold the session.
+/// The box answered, and its list does not hold the session.
 fn absent(state: State) -> Element(message) {
   html.p([attribute.class("page-note")], [
     html.text(
@@ -150,8 +150,8 @@ fn absent(state: State) -> Element(message) {
   ])
 }
 
-// The line that says the box is not answering, and how old the page is. An empty
-// node otherwise, so the centre keeps its children.
+/// The line that says the box is not answering, and how old the page is. An empty
+/// node otherwise, so the centre keeps its children.
 fn reach(state: State) -> Element(message) {
   case state.reach {
     relayed_session.Answering -> element.none()
@@ -169,7 +169,7 @@ fn reach(state: State) -> Element(message) {
   }
 }
 
-// The name, where the session lives, what it is doing, and the controls.
+/// The name, where the session lives, what it is doing, and the controls.
 fn head(state: State, row: Row, presses: Presses(message)) -> Element(message) {
   html.header([attribute.class("relayed-head")], [
     html.h1([], [html.text(heading(row))]),
@@ -197,6 +197,7 @@ fn heading(row: Row) -> String {
   }
 }
 
+/// State class helper.
 fn state_class(activity: relayed.Activity) -> String {
   case activity {
     relayed.NeedsYou -> "relayed-state relayed-needs"
@@ -205,13 +206,15 @@ fn state_class(activity: relayed.Activity) -> String {
   }
 }
 
-// Stop while a strand runs or waits, and Archive always. Archive asks once more.
+/// Stop while a strand runs or waits, and Archive always. Archive asks once more.
 fn controls(
   state: State,
   row: Row,
   presses: Presses(message),
 ) -> Element(message) {
   let busy = state.acting == relayed_session.Busy
+
+  // Dispatch on controls state.
   let stop = case row.activity {
     relayed.Working | relayed.NeedsYou -> [
       html.button(
@@ -266,8 +269,8 @@ fn controls(
   })
 }
 
-// What the last press said, quiet for a success and in the danger colour for a
-// refusal. An empty node when there is none.
+/// What the last press said, quiet for a success and in the danger colour for a
+/// refusal. An empty node when there is none.
 fn notice(state: State) -> Element(message) {
   case state.notice {
     Some(relayed_session.Said(words:)) ->
@@ -280,9 +283,9 @@ fn notice(state: State) -> Element(message) {
   }
 }
 
-// The requests the session waits on, as the cards a local approval draws. A
-// request is keyed by its identity and revision, so a card the person is reading
-// keeps its place when another arrives, and a revised question is a new card.
+/// The requests the session waits on, as the cards a local approval draws. A
+/// request is keyed by its identity and revision, so a card the person is reading
+/// keeps its place when another arrives, and a revised question is a new card.
 fn needs(
   state: State,
   row: Row,
@@ -313,6 +316,7 @@ fn needs(
   }
 }
 
+/// More needs helper.
 fn more_needs(row: Row) -> Element(message) {
   case row.more_needs {
     0 -> element.none()
@@ -326,18 +330,20 @@ fn more_needs(row: Row) -> Element(message) {
   }
 }
 
-// One request: who asked and what for, the question, the exact action, the
-// access approving would add, and the buttons the box's ceiling lets the page
-// offer. Deny comes first so it is the first control a tab reaches.
+/// One request: who asked and what for, the question, the exact action, the
+/// access approving would add, and the buttons the box's ceiling lets the page
+/// offer. Deny comes first so it is the first control a tab reaches.
 fn card(
   state: State,
   need: Need,
   presses: Presses(message),
 ) -> Element(message) {
+  // Dispatch on card state.
   let asked = case need.tool {
     "" -> "this request"
     tool -> tool
   }
+
   let body = [
     html.p([attribute.class("approval-head")], [
       html.b([attribute.class("approval-strand")], [html.text(need.strand)]),
@@ -358,6 +364,7 @@ fn card(
   )
 }
 
+/// Outside helper.
 fn outside(need: Need) -> Element(message) {
   case need.outside {
     [] -> element.none()
@@ -369,14 +376,15 @@ fn outside(need: Need) -> Element(message) {
   }
 }
 
-// The buttons of a card the page may decide, with the arming delay every
-// approval row has, or the line that says the request is decided elsewhere.
+/// The buttons of a card the page may decide, with the arming delay every
+/// approval row has, or the line that says the request is decided elsewhere.
 fn actions(
   state: State,
   need: Need,
   asked: String,
   presses: Presses(message),
 ) -> Element(message) {
+  // Dispatch on actions state.
   case need.ability {
     relayed.ViewOnly ->
       html.p([attribute.class("approval-question")], [
@@ -401,6 +409,8 @@ fn actions(
       }
       let once =
         choose("approval-allow", "Allow " <> asked <> " once", relayed.Allow)
+
+      // Dispatch on actions state.
       let remembered = case need.remember {
         relayed.Rememberable -> [
           choose(
@@ -424,9 +434,9 @@ fn actions(
   }
 }
 
-// The newest page of the transcript between the framing every host draws around
-// another machine's working, with a line for older entries the page does not
-// hold and one for entries left out because they were too large to send.
+/// The newest page of the transcript between the framing every host draws around
+/// another machine's working, with a line for older entries the page does not
+/// hold and one for entries left out because they were too large to send.
 fn transcript(state: State) -> Element(message) {
   case state.history {
     None -> element.none()
@@ -450,7 +460,9 @@ fn transcript(state: State) -> Element(message) {
   }
 }
 
+/// Page body helper.
 fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
+  // Dispatch on page_body state.
   let older = case page.next {
     Some(_) -> [
       html.p([attribute.class("pane-empty")], [
@@ -459,6 +471,8 @@ fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
     ]
     None -> []
   }
+
+  // Dispatch on page_body state.
   let omitted = case page.omitted {
     0 -> []
     count -> [
@@ -469,6 +483,8 @@ fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
       ]),
     ]
   }
+
+  // Dispatch on page_body state.
   let entries = case remote_transcript.said(page) {
     [] -> [
       html.p([attribute.class("pane-empty")], [html.text("No entries yet.")]),
@@ -479,6 +495,7 @@ fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
   list.flatten([older, entries, omitted])
 }
 
+/// Entry helper.
 fn entry(said: remote_transcript.Said) -> Element(message) {
   html.div([attribute.class("peek-entry")], [
     html.span([attribute.class("peek-speaker")], [
@@ -488,9 +505,9 @@ fn entry(said: remote_transcript.Said) -> Element(message) {
   ])
 }
 
-// The reply form: one box and one button. The box is uncontrolled and keyed by
-// how many replies have landed, so a reply that landed leaves with an empty box
-// and a refused or unanswered one stays as the person typed it.
+/// The reply form: one box and one button. The box is uncontrolled and keyed by
+/// how many replies have landed, so a reply that landed leaves with an empty box
+/// and a refused or unanswered one stays as the person typed it.
 fn reply(state: State, presses: Presses(message)) -> Element(message) {
   let out = state.sending == relayed_session.Out
   let slot = "reply-" <> int.to_string(state.sent)
@@ -540,12 +557,14 @@ fn reply(state: State, presses: Presses(message)) -> Element(message) {
   ])
 }
 
+/// Submitted helper.
 fn submitted(replied: fn(String) -> message) -> decode.Decoder(message) {
   use listed <- decode.subfield(
     ["detail", "formData"],
     decode.list(form_field()),
   )
 
+  // Dispatch on submitted state.
   case reply_fields(listed) {
     Ok(text) -> decode.success(replied(text))
     Error(Nil) -> decode.failure(replied(""), "reply form")

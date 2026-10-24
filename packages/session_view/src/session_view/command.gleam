@@ -300,6 +300,8 @@ pub const default_profile = "default"
 /// Returns prefix-matched slash commands for an incomplete command word.
 pub fn suggestions(input: String) -> List(Suggestion) {
   let input = string.trim_start(input)
+
+  // Handle the `suggestions` branch dispatch.
   case input {
     // A command with a closed argument vocabulary keeps the palette open
     // past the space and offers the words themselves, so the operator
@@ -324,6 +326,7 @@ pub fn suggestions(input: String) -> List(Suggestion) {
   }
 }
 
+/// Helper `word_suggestions` for word suggestions.
 fn word_suggestions(input: String) -> List(Suggestion) {
   case string.starts_with(input, "/"), string.contains(input, " ") {
     True, False ->
@@ -368,6 +371,7 @@ pub const goal_words = [
   #("--budget", "set the token budget: /goal --budget 200000 <objective>"),
 ]
 
+/// Helper `goal_suggestions` for goal suggestions.
 fn goal_suggestions(partial: String) -> List(Suggestion) {
   goal_words
   |> list.filter(fn(word) { string.starts_with(word.0, partial) })
@@ -383,6 +387,7 @@ fn goal_suggestions(partial: String) -> List(Suggestion) {
   })
 }
 
+/// Helper `profile_suggestions` for profile suggestions.
 fn profile_suggestions(command: String, partial: String) -> List(Suggestion) {
   case string.starts_with(default_profile, string.trim(partial)) {
     True -> [
@@ -424,6 +429,7 @@ pub fn selected(
   })
 }
 
+/// Helper `all_suggestions` for all suggestions.
 fn all_suggestions() -> List(Suggestion) {
   [
     Suggestion("/help", "show the command reference", False),
@@ -505,6 +511,8 @@ fn option_map(value: Option(a), map: fn(a) -> b) -> Option(b) {
 ///
 pub fn parse(input: String) -> Command {
   let input = string.trim(input)
+
+  // Handle the `parse` branch dispatch.
   case input {
     "" -> Session(Empty)
     "/help" -> Surface(Help)
@@ -599,6 +607,7 @@ pub fn parse(input: String) -> Command {
 // profile; `default` is the default roles, and any other word is sent as a
 // profile name for the daemon to judge, since only the daemon knows which names
 // the configuration defines now.
+/// Helper `profile` for profile.
 fn profile(raw: String) -> Command {
   case string.trim(raw) {
     "" -> Session(ProfileShow)
@@ -611,6 +620,7 @@ fn profile(raw: String) -> Command {
 // common case is a schedule on the strand the operator is already
 // watching; a second word names another one, which is how a heartbeat a
 // parent set onto a subagent is reached.
+/// Helper `unschedule` for unschedule.
 fn unschedule(raw: String) -> Command {
   case words(raw) {
     [] -> Session(MissingArgument("unschedule"))
@@ -660,6 +670,7 @@ pub const objective_limit = 4000
 // issue 468" pins that objective and not a 468-token budget — so the budget
 // is carried by an explicit flag in the first position and nowhere else.
 // One rule, no escape hatch needed, and an objective may end in any number.
+/// Helper `goal` for goal.
 fn goal(raw: String) -> Command {
   case string.trim(raw) {
     "" -> Surface(GoalStatus)
@@ -698,6 +709,7 @@ fn goal(raw: String) -> Command {
 // The check command, bounded here so the operator is told the count without
 // a round trip. An argument of nothing but whitespace is the bare form: the
 // server reads an empty command as a clear, and so does this.
+/// Helper `checking` for checking.
 fn checking(command: String) -> Command {
   case command, string.length(command) > check_limit {
     "", _empty -> Session(GoalCheck(command: None))
@@ -717,6 +729,7 @@ fn pinning(objective: String, token_budget: Int) -> Command {
 
 // The flag's own argument is the next whitespace-separated word, and
 // everything after it is the objective verbatim.
+/// Helper `budgeted` for budgeted.
 fn budgeted(raw: String) -> Command {
   case string.split_once(string.trim_start(raw), " ") {
     // A budget with no objective pins nothing, and the word is still
@@ -729,6 +742,7 @@ fn budgeted(raw: String) -> Command {
   }
 }
 
+/// Helper `objective_for` for objective for.
 fn objective_for(word: String, objective: String) -> Command {
   case token_count(word), objective {
     Error(Nil), _ -> Session(GoalBudgetInvalid(word))
@@ -742,8 +756,11 @@ fn objective_for(word: String, objective: String) -> Command {
 // suffix: the abbreviation would have to be documented in two places and
 // argued about in one, and an explicit number in a command that pins a
 // spend is worth the keystrokes.
+/// Helper `token_count` for token count.
 fn token_count(word: String) -> Result(Int, Nil) {
   use count <- result.try(int.parse(string.replace(word, "_", "")))
+
+  // Handle the `token_count` branch dispatch.
   case count > 0 {
     True -> Ok(count)
     False -> Error(Nil)
@@ -757,6 +774,7 @@ fn words(raw: String) -> List(String) {
   |> list.filter(fn(word) { word != "" })
 }
 
+/// Helper `required_argument` for required argument.
 fn required_argument(
   name: String,
   raw: String,
@@ -847,6 +865,8 @@ pub fn suggestions_with_skills(
 ) -> List(Suggestion) {
   let built_in = suggestions(input)
   let word = string.trim_start(input)
+
+  // Handle the `suggestions_with_skills` branch dispatch.
   case string.starts_with(word, "/") && !string.contains(word, " ") {
     True ->
       list.append(

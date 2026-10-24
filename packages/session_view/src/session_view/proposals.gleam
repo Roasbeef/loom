@@ -194,21 +194,28 @@ pub type Decision {
 /// ```
 pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   use fields <- result.try(object(value, "board"))
+
+  // Extract the raw proposals array from the board JSON object.
   use raw <- result.try(case list.key_find(fields, "proposals") {
     Ok(json.Array(raw)) -> Ok(raw)
     Ok(_) | Error(Nil) -> Error("missing proposals")
   })
+
   use rows <- result.try(list.try_map(list.take(raw, row_limit), decode_row))
   use pending <- result.try(count(fields, "pending"))
   use limit <- result.try(count(fields, "limit"))
+
+  // Extract the omitted proposals count if present, default to zero.
   use omitted <- result.try(case list.key_find(fields, "omitted") {
     Error(Nil) -> Ok(0)
     Ok(json.Int(held)) if held >= 0 -> Ok(held)
     Ok(_) -> Error("invalid omitted count")
   })
+
   Ok(Board(proposals: rows, pending:, limit:, omitted:))
 }
 
+/// Decodes a single proposal JSON object into a Proposal record.
 fn decode_row(value: json.JsonValue) -> Result(Proposal, String) {
   use fields <- result.try(object(value, "proposal"))
   use id <- result.try(text(fields, "id"))
@@ -219,10 +226,13 @@ fn decode_row(value: json.JsonValue) -> Result(Proposal, String) {
   use new <- result.try(text_or_empty(fields, "new"))
   use rationale <- result.try(text_or_empty(fields, "rationale"))
   use source <- result.try(decode_source(fields))
+
+  // Extract non-negative created timestamp.
   use created_ms <- result.try(case list.key_find(fields, "created_ms") {
     Ok(json.Int(at)) if at >= 0 -> Ok(at)
     _ -> Error("invalid proposal time")
   })
+
   use state <- result.try(text(fields, "state"))
   Ok(
     Proposal(
@@ -250,19 +260,25 @@ fn decode_row(value: json.JsonValue) -> Result(Proposal, String) {
   )
 }
 
+/// Decodes the source field of a proposal into a Source record.
 fn decode_source(
   fields: List(#(String, json.JsonValue)),
 ) -> Result(Source, String) {
+  // Extract the source object from the fields.
   use source <- result.try(case list.key_find(fields, "source") {
     Ok(json.Object(source)) -> Ok(source)
     Ok(_) | Error(Nil) -> Error("missing proposal source")
   })
+
   use session <- result.try(text(source, "session"))
+
+  // Extract optional non-empty entry identifier.
   let entry = case list.key_find(source, "entry") {
     Ok(json.String(entry)) if entry != "" ->
       Some(text_hygiene.single_line(entry))
     _ -> None
   }
+
   Ok(Source(session: text_hygiene.single_line(session), entry:))
 }
 
@@ -360,10 +376,13 @@ pub fn kind_words(kind: Kind) -> String {
 /// assert proposals.headline("It failed twice.\nMore.", 40) == "It failed twice."
 /// ```
 pub fn headline(rationale: String, width: Int) -> String {
+  // Extract the first non-empty line of the rationale.
   let first = case string.split(string.trim(rationale), "\n") {
     [line, ..] -> string.trim(line)
     [] -> ""
   }
+
+  // Truncate headline to width if needed, or show fallback.
   case first {
     "" -> "(no rationale given)"
     _ ->
@@ -396,6 +415,8 @@ pub fn short_session(session: String) -> String {
 /// ```
 pub fn age(created_ms: Int, now_ms: Int) -> String {
   let seconds = int.max(0, now_ms - created_ms) / 1000
+
+  // Format elapsed time in seconds, minutes, hours, or days.
   case seconds {
     _ if seconds < 60 -> "just now"
     _ if seconds < 3600 -> int.to_string(seconds / 60) <> "m ago"
@@ -462,6 +483,7 @@ pub fn edit_lines(old: String, new: String) -> List(diff_view.Line) {
 // quadratic scan to redraw a proposal nobody would read differently. A
 // whole-file replacement shares nothing and falls out as the removed run and
 // the added run, which is what it is.
+/// Pairs removed and added diff lines by matching identical prefix and suffix lines.
 fn pair_lines(
   removed: diff_view.Line,
   added: diff_view.Line,
@@ -490,9 +512,9 @@ fn pair_lines(
   |> list.take(diff_view.max_lines)
 }
 
-// The lines two texts share from their start, in order, with what each text
-// has left once those lines are taken. The accumulator is reversed on the way
-// out so the caller reads the lines in the order the texts hold them.
+/// The lines two texts share from their start, in order, with what each text
+/// has left once those lines are taken. The accumulator is reversed on the way
+/// out so the caller reads the lines in the order the texts hold them.
 fn agreed(
   before: List(String),
   after: List(String),
@@ -576,6 +598,8 @@ pub fn edit_counts(old: String, new: String) -> String {
         _ -> total
       }
     })
+
+  // Format total additions and removals as a summary string.
   case counts {
     #(0, 0) -> "no change"
     #(0, removed) -> "-" <> int.to_string(removed)
@@ -694,6 +718,7 @@ pub fn refusal_words(code: String, message: String) -> String {
   }
 }
 
+/// Validates that a JSON value is an object and extracts its fields.
 fn object(
   value: json.JsonValue,
   what: String,
@@ -704,6 +729,7 @@ fn object(
   }
 }
 
+/// Extracts a required non-empty string field from key-value pairs.
 fn text(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -714,6 +740,7 @@ fn text(
   }
 }
 
+/// Extracts a required string field (which may be empty) from key-value pairs.
 fn text_or_empty(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -724,6 +751,7 @@ fn text_or_empty(
   }
 }
 
+/// Extracts a required non-negative integer count field from key-value pairs.
 fn count(
   fields: List(#(String, json.JsonValue)),
   name: String,

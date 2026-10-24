@@ -139,9 +139,12 @@ pub type Read {
 /// assert elsewhere.append(held, elsewhere.Silent) == held
 /// ```
 pub fn append(held: Hearing, next: Hearing) -> Hearing {
+  // Merge the subsequent page of rows onto the currently held hearing.
   case held, next {
     Answered(rows: before, ..), Answered(rows: after, more:) -> {
       let rows = list.append(before, after)
+
+      // Bound the accumulated rows to the maximum permitted display rows.
       case list.length(rows) >= max_rows {
         True -> Answered(rows: list.take(rows, max_rows), more: Last)
         False -> Answered(rows:, more:)

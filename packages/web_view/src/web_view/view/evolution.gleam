@@ -130,9 +130,9 @@ pub fn view(page: Page, presses: Presses(message)) -> Element(message) {
   )
 }
 
-// The title, how many wait for a person, and the button that reads the board
-// again. The count is the badge's number, said where the reader who pressed
-// the tab arrives.
+/// The title, how many wait for a person, and the button that reads the board
+/// again. The count is the badge's number, said where the reader who pressed
+/// the tab arrives.
 fn head(page: Page, presses: Presses(message)) -> Element(message) {
   html.div([attribute.class("evolution-head")], [
     html.h2([attribute.class("panel-title")], [
@@ -167,8 +167,8 @@ pub fn title(waiting: Int) -> String {
   }
 }
 
-// The last refusal or outcome, in the words the shared record kept. It is a
-// status for a screen reader, since a selection's outcome arrives on its own.
+/// The last refusal or outcome, in the words the shared record kept. It is a
+/// status for a screen reader, since a selection's outcome arrives on its own.
 fn notice(words: String) -> List(Element(message)) {
   case words {
     "" -> []
@@ -180,8 +180,8 @@ fn notice(words: String) -> List(Element(message)) {
   }
 }
 
-// A board that has not been read says so, unless a refusal has said why it has
-// not, since "reading" beside a refusal would contradict itself.
+/// A board that has not been read says so, unless a refusal has said why it has
+/// not, since "reading" beside a refusal would contradict itself.
 fn body(page: Page, presses: Presses(message)) -> List(Element(message)) {
   case page.board, page.notice {
     None, "" -> [quiet(evolution.loading_words)]
@@ -201,9 +201,9 @@ fn quiet(words: String) -> Element(message) {
   html.p([attribute.class("session-quiet")], [html.text(words)])
 }
 
-// The one line that says the board is not the whole of what the daemon sent:
-// rows this client could not read, and candidates the daemon left out to stay
-// within its bound.
+/// The one line that says the board is not the whole of what the daemon sent:
+/// rows this client could not read, and candidates the daemon left out to stay
+/// within its bound.
 fn unread(board: evolution.Board) -> List(Element(message)) {
   let lines =
     list.flatten([
@@ -225,8 +225,8 @@ fn unread(board: evolution.Board) -> List(Element(message)) {
 
 // --- what is live -----------------------------------------------------------
 
-// The generations the session runs now, one line each, or the sentence that
-// none is selected.
+/// The generations the session runs now, one line each, or the sentence that
+/// none is selected.
 fn live(board: evolution.Board) -> Element(message) {
   let running =
     list.filter(board.selections, fn(selection) {
@@ -248,14 +248,17 @@ fn live(board: evolution.Board) -> Element(message) {
   )
 }
 
+/// Live line helper.
 fn live_line(
   board: evolution.Board,
   selection: evolution.Selection,
 ) -> Element(message) {
+  // Dispatch on live_line state.
   let kind = case evolution.find(board, selection.candidate_id) {
     Ok(candidate) -> evolution.kind_words(candidate.kind)
     Error(Nil) -> "candidate"
   }
+
   html.li([attribute.class("evolution-line")], [
     html.span([attribute.class("evolution-name")], [html.text(selection.name)]),
     html.text(
@@ -275,9 +278,9 @@ fn heading(words: String) -> Element(message) {
 
 // --- the candidates ---------------------------------------------------------
 
-// One section for each kind a candidate can be, in the order extensions,
-// programs, prompts, and a last one for a kind this client cannot name, drawn
-// only when the board holds such a row.
+/// One section for each kind a candidate can be, in the order extensions,
+/// programs, prompts, and a last one for a kind this client cannot name, drawn
+/// only when the board holds such a row.
 fn groups(
   page: Page,
   board: evolution.Board,
@@ -303,12 +306,15 @@ fn groups(
         candidate.kind,
       )
     })
+
+  // Dispatch on groups state.
   case others {
     [] -> drawn
     _ -> list.append(drawn, [group(page, board, "Other", others, "", presses)])
   }
 }
 
+/// Group helper.
 fn group(
   page: Page,
   board: evolution.Board,
@@ -333,8 +339,8 @@ fn group(
   )
 }
 
-// One candidate: its facts, its evidence and approval, the staging line when a
-// selection of it is on its way, and what the reader can do about it.
+/// One candidate: its facts, its evidence and approval, the staging line when a
+/// selection of it is on its way, and what the reader can do about it.
 fn candidate(
   page: Page,
   board: evolution.Board,
@@ -363,8 +369,8 @@ fn candidate(
   )
 }
 
-// The class a candidate's standing gives its box: a closed set of literals, so
-// nothing the daemon names can choose one.
+/// The class a candidate's standing gives its box: a closed set of literals, so
+/// nothing the daemon names can choose one.
 fn standing_class(row: evolution.Candidate) -> attribute.Attribute(message) {
   case row.selected, row.approval {
     Some(_), _ -> attribute.class("evolution-selected")
@@ -373,6 +379,7 @@ fn standing_class(row: evolution.Candidate) -> attribute.Attribute(message) {
   }
 }
 
+/// Head line helper.
 fn head_line(
   board: evolution.Board,
   row: evolution.Candidate,
@@ -400,6 +407,7 @@ pub fn standing_words(
   board: evolution.Board,
   row: evolution.Candidate,
 ) -> String {
+  // Dispatch on standing_words state.
   case row.selected, row.approval {
     Some(chosen), _ -> {
       let liveness =
@@ -416,6 +424,7 @@ pub fn standing_words(
   }
 }
 
+/// Description helper.
 fn description(row: evolution.Candidate) -> List(Element(message)) {
   case row.description {
     "" -> []
@@ -425,18 +434,22 @@ fn description(row: evolution.Candidate) -> List(Element(message)) {
   }
 }
 
-// Where it applies, what kind it is, what it was proposed from, and whether
-// what was recorded about it was recorded under an evaluator the host no
-// longer runs.
+/// Where it applies, what kind it is, what it was proposed from, and whether
+/// what was recorded about it was recorded under an evaluator the host no
+/// longer runs.
 fn facts(board: evolution.Board, row: evolution.Candidate) -> Element(message) {
+  // Dispatch on facts state.
   let parent = case row.parent {
     Some(parent) -> [" · proposed from " <> evolution.short_id(parent)]
     None -> []
   }
+
+  // Dispatch on facts state.
   let identity = case row.identity {
     evolution.Current -> []
     evolution.Outdated -> [" · tested under an earlier evaluator"]
   }
+
   html.p([attribute.class("evolution-meta session-quiet")], [
     html.text(
       string.concat(
@@ -454,8 +467,8 @@ fn facts(board: evolution.Board, row: evolution.Candidate) -> Element(message) {
   ])
 }
 
-// The retained observations, newest first, one line each: why it was made,
-// what it found and when.
+/// The retained observations, newest first, one line each: why it was made,
+/// what it found and when.
 fn evidence(row: evolution.Candidate) -> List(Element(message)) {
   case row.evidence {
     [] -> [
@@ -485,10 +498,12 @@ fn evidence(row: evolution.Candidate) -> List(Element(message)) {
 /// // evolution_view.evidence_words(found)
 /// ```
 pub fn evidence_words(found: evolution.Evidence) -> String {
+  // Dispatch on evidence_words state.
   let older = case found.identity {
     evolution.Current -> ""
     evolution.Outdated -> " · earlier evaluator"
   }
+
   "evidence: "
   <> evolution.purpose_words(found.purpose)
   <> " · "
@@ -498,14 +513,18 @@ pub fn evidence_words(found: evolution.Evidence) -> String {
   <> older
 }
 
+/// Approval helper.
 fn approval(row: evolution.Candidate) -> List(Element(message)) {
+  // Dispatch on approval state.
   case row.approval {
     None -> []
     Some(approval) -> {
+      // Dispatch on approval state.
       let via = case evolution.surface_words(approval.via) {
         "" -> ""
         surface -> " · " <> surface
       }
+
       [
         html.p([attribute.class("evolution-approval")], [
           html.text(
@@ -525,10 +544,10 @@ fn stamp(milliseconds: Int) -> String {
 
 // --- a selection on its way -------------------------------------------------
 
-// The line a selection of this candidate draws while it is on its way and after
-// it settles, until the next board replaces it. The lane's tracker is the
-// source, and the board's own list covers a selection another attachment made,
-// or one the lane lost on a reconnect.
+/// The line a selection of this candidate draws while it is on its way and after
+/// it settles, until the next board replaces it. The lane's tracker is the
+/// source, and the board's own list covers a selection another attachment made,
+/// or one the lane lost on a reconnect.
 fn staging_line(
   page: Page,
   board: evolution.Board,
@@ -565,6 +584,8 @@ fn staging_words(words: String) -> Element(message) {
 /// ```
 pub fn stage_words(tracked: evolution_pending.Tracked, now: Int) -> String {
   let left = int.to_string(int.max(0, tracked.deadline_ms - now) / 1000)
+
+  // Dispatch on stage_words state.
   case tracked.stage {
     evolution_pending.Submitted -> "sending the request…"
     evolution_pending.Staging(_) -> "staging… (" <> left <> " s left)"
@@ -582,8 +603,8 @@ pub fn stage_words(tracked: evolution_pending.Tracked, now: Int) -> String {
 
 // --- the changes a row offers -----------------------------------------------
 
-// The buttons, or nothing when the row offers none. An open question replaces
-// the buttons of its own row in the same place.
+/// The buttons, or nothing when the row offers none. An open question replaces
+/// the buttons of its own row in the same place.
 fn actions(
   page: Page,
   offers: evolving.Offers,
@@ -593,6 +614,8 @@ fn actions(
     list.filter(evolving.all(offers), fn(armed) {
       !evolving.asking(page.state, armed)
     })
+
+  // Dispatch on actions state.
   case offered, open_question(page, offers) {
     [], _ | _, Some(_) -> element.none()
     _, None ->
@@ -603,6 +626,7 @@ fn actions(
   }
 }
 
+/// Action button helper.
 fn action_button(
   armed: evolving.Armed,
   presses: Presses(message),
@@ -617,7 +641,7 @@ fn action_button(
   )
 }
 
-// The closed set of classes a change's button may have.
+/// The closed set of classes a change's button may have.
 fn button_class(act: evolving.Act) -> String {
   case act {
     evolving.Approving -> "evolution-approve"
@@ -627,8 +651,8 @@ fn button_class(act: evolving.Act) -> String {
   }
 }
 
-// A button names what it will ask for: an approval, a selection as the next
-// generation, a revocation, or an earlier candidate to roll back to.
+/// A button names what it will ask for: an approval, a selection as the next
+/// generation, a revocation, or an earlier candidate to roll back to.
 fn button_label(armed: evolving.Armed) -> String {
   case armed.act {
     evolving.Approving -> evolving.approve_label
@@ -640,9 +664,9 @@ fn button_label(armed: evolving.Armed) -> String {
   }
 }
 
-// The open question of this row, when the change it armed is one of the row's
-// offers. A question whose change the board no longer offers is not drawn, and
-// the confirm refuses it too.
+/// The open question of this row, when the change it armed is one of the row's
+/// offers. A question whose change the board no longer offers is not drawn, and
+/// the confirm refuses it too.
 fn open_question(
   page: Page,
   offers: evolving.Offers,
@@ -657,6 +681,7 @@ fn open_question(
   }
 }
 
+/// Question helper.
 fn question(
   page: Page,
   offers: evolving.Offers,
@@ -668,8 +693,8 @@ fn question(
   }
 }
 
-// The question that replaces the buttons in place: what is being asked, in the
-// ids and the generation the page drew, and the way to confirm or go back.
+/// The question that replaces the buttons in place: what is being asked, in the
+/// ids and the generation the page drew, and the way to confirm or go back.
 fn ask(armed: evolving.Armed, presses: Presses(message)) -> Element(message) {
   html.div([attribute.class("evolution-ask"), attribute.role("group")], [
     html.p([attribute.class("evolution-ask-lead"), attribute.role("alert")], [
@@ -702,6 +727,7 @@ fn ask(armed: evolving.Armed, presses: Presses(message)) -> Element(message) {
   ])
 }
 
+/// Confirm button helper.
 fn confirm_button(
   label: String,
   kind: attribute.Attribute(message),
@@ -710,6 +736,7 @@ fn confirm_button(
   html.button([kind, attribute.class("share-make"), press], [html.text(label)])
 }
 
+/// Keep button helper.
 fn keep_button(presses: Presses(message)) -> Element(message) {
   html.button(
     [
@@ -721,6 +748,7 @@ fn keep_button(presses: Presses(message)) -> Element(message) {
   )
 }
 
+/// Reason field helper.
 fn reason_field(act: evolving.Act) -> Element(message) {
   html.label([attribute.class("evolution-reason")], [
     html.span([attribute.class("session-quiet")], [html.text("Reason")]),
@@ -735,6 +763,7 @@ fn reason_field(act: evolving.Act) -> Element(message) {
   ])
 }
 
+/// Confirm label helper.
 fn confirm_label(act: evolving.Act) -> String {
   case act {
     evolving.Approving -> evolving.approve_label
@@ -756,6 +785,8 @@ fn confirm_label(act: evolving.Act) -> String {
 pub fn question_words(armed: evolving.Armed) -> String {
   let target = armed.name <> " " <> evolution.short_id(armed.candidate_id)
   let evidence = evolution.short_id(armed.evidence_id)
+
+  // Dispatch on question_words state.
   case armed.act {
     evolving.Approving ->
       "Approve " <> target <> " on evidence " <> evidence <> "?"
@@ -789,7 +820,7 @@ fn replacing(generation: Int) -> String {
   }
 }
 
-// What the act does beyond the row, in fixed words.
+/// What the act does beyond the row, in fixed words.
 fn consequence(armed: evolving.Armed) -> String {
   case armed.act {
     evolving.Approving ->
@@ -803,8 +834,8 @@ fn consequence(armed: evolving.Armed) -> String {
 
 // --- what was decided -------------------------------------------------------
 
-// The audit journal, newest first. Each entry says when, what was decided, for
-// which candidate, by whom and from where, and the reason given.
+/// The audit journal, newest first. Each entry says when, what was decided, for
+/// which candidate, by whom and from where, and the reason given.
 fn history(board: evolution.Board) -> Element(message) {
   let shown = list.take(board.history, history_shown)
   let older =
@@ -844,14 +875,19 @@ fn history(board: evolution.Board) -> Element(message) {
 /// // evolution_view.event_words(entry)
 /// ```
 pub fn event_words(entry: evolution.Event) -> String {
+  // Dispatch on event_words state.
   let subject = case entry.name {
     "" -> evolution.short_id(entry.candidate_id)
     name -> name <> " " <> evolution.short_id(entry.candidate_id)
   }
+
+  // Dispatch on event_words state.
   let generation = case entry.generation {
     Some(generation) -> " as generation " <> int.to_string(generation)
     None -> ""
   }
+
+  // Dispatch on event_words state.
   let who = case entry.principal, evolution.surface_words(entry.via) {
     "", "" -> ""
     principal, "" -> " · " <> evolution.principal_words(principal)
@@ -865,6 +901,7 @@ pub fn event_words(entry: evolution.Event) -> String {
     "" -> ""
     reason -> " · \"" <> reason <> "\""
   }
+
   stamp(entry.at_ms)
   <> " · "
   <> evolution.decision_words(entry.decision)
@@ -877,9 +914,9 @@ pub fn event_words(entry: evolution.Event) -> String {
 
 // --- the core component -----------------------------------------------------
 
-// The card for the core component: read-only, because the daemon admits a core
-// upgrade to the native owner alone. It says what the last read found and where
-// upgrades are run.
+/// The card for the core component: read-only, because the daemon admits a core
+/// upgrade to the native owner alone. It says what the last read found and where
+/// upgrades are run.
 fn core_card(page: Page, presses: Presses(message)) -> List(Element(message)) {
   case page.core {
     NoCard -> []
@@ -926,13 +963,17 @@ pub fn core_status_words(opened: Option(evolution.Opened)) -> String {
   }
 }
 
+/// Core fields helper.
 fn core_fields(value: json.JsonValue) -> String {
+  // Dispatch on core_fields state.
   case value {
     json.Object(fields) -> {
       let component = field(fields, "component")
       let version = field(fields, "version")
       let digest = string.slice(field(fields, "digest"), 0, 8)
       let state = field(fields, "state_version")
+
+      // Dispatch on core_fields state.
       case component, version {
         "", "" -> "The core status could not be read."
         _, _ ->

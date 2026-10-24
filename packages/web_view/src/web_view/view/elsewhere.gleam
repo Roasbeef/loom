@@ -160,7 +160,7 @@ pub fn view(offer: Elsewhere(message)) -> Element(message) {
   }
 }
 
-// One orchestrator: its name and address as quiet text, then what it said.
+/// One orchestrator: its name and address as quiet text, then what it said.
 fn group(
   each: Group,
   open: Option(Detail),
@@ -206,8 +206,8 @@ fn group(
   ])
 }
 
-// One session and its button, and under them the detail when this is the row
-// whose button was pressed.
+/// One session and its button, and under them the detail when this is the row
+/// whose button was pressed.
 fn row(
   each: Group,
   listed: Row,
@@ -252,8 +252,8 @@ fn placed(executor: Option(String), workspace: String) -> String {
   }
 }
 
-// The launch that reaches the session where it lives, in the box that copies
-// exactly this shape and nothing else.
+/// The launch that reaches the session where it lives, in the box that copies
+/// exactly this shape and nothing else.
 fn detail(each: Group, listed: Row, close: message) -> Element(message) {
   html.div([attribute.class("home-card")], [
     html.p([attribute.class("home-card-fact")], [
@@ -282,7 +282,7 @@ fn detail(each: Group, listed: Row, close: message) -> Element(message) {
   ])
 }
 
-// "Show more" for one orchestrator, disabled while its next page is out.
+/// "Show more" for one orchestrator, disabled while its next page is out.
 fn more_button(
   key: String,
   asking: Option(String),

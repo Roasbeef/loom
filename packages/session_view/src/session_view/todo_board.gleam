@@ -118,6 +118,8 @@ pub fn remember(
   let #(boards, _) =
     list.fold(records, #(boards, set.new()), fn(acc, record) {
       let #(boards, seen) = acc
+
+      // Retain the first board observed for each distinct strand.
       case set.contains(seen, record.strand), newest([record]) {
         False, Some(board) -> #(
           dict.insert(boards, record.strand, board),
@@ -148,6 +150,8 @@ pub fn seed(
   notes: notes_view.Board,
 ) -> Dict(String, Board) {
   let found = list.find_map(notes.notes, notes_view.todo_board)
+
+  // Insert the board only if the strand lacks one and the cell parsed.
   case found, dict.has_key(boards, notes.strand) {
     Ok(board), False -> dict.insert(boards, notes.strand, board)
     Ok(_), True | Error(Nil), _ -> boards
@@ -202,11 +206,15 @@ pub fn call_summary(arguments: JsonValue) -> String {
       | json.Null -> None
     }
   }
+
+  // Derive the target description from task or phase fields.
   let target = case field("task"), field("phase") {
     Some(task), _ -> " " <> string.inspect(task)
     None, Some(phase) -> " phase " <> string.inspect(phase)
     None, None -> ""
   }
+
+  // Format the call summary with operation name or invalid argument marker.
   case field("op") {
     Some(op) -> "todo · " <> op <> target
     None -> "todo · " <> invalid_call

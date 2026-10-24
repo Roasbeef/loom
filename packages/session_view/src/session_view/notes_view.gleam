@@ -94,12 +94,14 @@ pub fn summary(note: Note) -> String {
   }
 }
 
-// The row has room for one clause after the count, and the active task is
-// the one that says what the agent is doing now. A board with no active
-// task has nothing better to name than its count.
+/// The row has room for one clause after the count, and the active task is
+/// the one that says what the agent is doing now. A board with no active
+/// task has nothing better to name than its count.
 fn progress(board: todo_list.Board) -> String {
   let #(closed, total) = todo_list.count(board)
   let done = int.to_string(closed) <> "/" <> int.to_string(total) <> " done"
+
+  // Format progress text depending on whether tasks exist and one is active.
   case board.phases, todo_list.active(board) {
     [], _ -> "no tasks"
     _, Some(#(_, task)) ->
@@ -108,8 +110,8 @@ fn progress(board: todo_list.Board) -> String {
   }
 }
 
-// Each phase is a heading carrying its own closed count, so a reader can
-// see which phases are finished without reading their tasks.
+/// Each phase is a heading carrying its own closed count, so a reader can
+/// see which phases are finished without reading their tasks.
 fn checklist(board: todo_list.Board) -> String {
   case board.phases {
     [] -> "No tasks."
@@ -124,6 +126,8 @@ fn checklist(board: todo_list.Board) -> String {
           <> int.to_string(closed)
           <> "/"
           <> int.to_string(total)
+
+        // Append task items under the heading if any tasks are present.
         case phase.tasks {
           [] -> heading
           tasks ->
@@ -134,9 +138,9 @@ fn checklist(board: todo_list.Board) -> String {
   }
 }
 
-// The glyphs are the pinned panel's, so a status reads the same in both
-// places, and each still reads on a terminal without color. Strikethrough
-// and bold stand in for the panel's struck and highlighted text.
+/// The glyphs are the pinned panel's, so a status reads the same in both
+/// places, and each still reads on a terminal without color. Strikethrough
+/// and bold stand in for the panel's struck and highlighted text.
 fn task_item(task: todo_list.Task) -> String {
   let text = escape(task.text)
   "- "
@@ -150,8 +154,8 @@ fn task_item(task: todo_list.Task) -> String {
   }
 }
 
-// Task text is written by the model, so every Markdown delimiter in it is
-// escaped: a stray `*` or `~~` must not restyle the rest of the row.
+/// Task text is written by the model, so every Markdown delimiter in it is
+/// escaped: a stray `*` or `~~` must not restyle the rest of the row.
 fn escape(value: String) -> String {
   value
   |> text_hygiene.single_line
@@ -180,9 +184,12 @@ pub fn historical(payload: String) -> String {
   payload
   |> string.split("\n")
   |> list.map(fn(line) {
+    // Split key and value on the separator; parse complete values as JSON.
     case string.split_once(line, " = ") {
       Ok(#(key, value)) -> {
         let heading = "### " <> field_label(key) <> "\n\n"
+
+        // Render readable JSON if well-formed, otherwise note incomplete excerpt.
         case json.parse(value) {
           Ok(_) -> heading <> readable(value)
           Error(_) -> heading <> "Incomplete historical excerpt:\n\n" <> line
@@ -194,8 +201,8 @@ pub fn historical(payload: String) -> String {
   |> string.join("\n\n")
 }
 
-// Some note tools accept a JSON document as a string value. Unwrap that
-// document once at the note boundary, rather than exposing escaped JSON.
+/// Some note tools accept a JSON document as a string value. Unwrap that
+/// document once at the note boundary, rather than exposing escaped JSON.
 fn note_value(value: json.JsonValue) -> json.JsonValue {
   case value {
     json.String(text) ->
@@ -207,6 +214,7 @@ fn note_value(value: json.JsonValue) -> json.JsonValue {
   }
 }
 
+/// Renders a JSON value into indented markdown bullet points up to depth 6.
 fn structured(value: json.JsonValue, depth: Int) -> String {
   case depth >= 6, value {
     True, _ -> json.to_string(value)
@@ -216,6 +224,8 @@ fn structured(value: json.JsonValue, depth: Int) -> String {
       |> list.map(fn(pair) {
         let label = "- **" <> field_label(pair.0) <> "**"
         let body = structured(pair.1, depth + 1)
+
+        // Indent compound values under label or format scalar inline.
         case pair.1 {
           json.Object(_) | json.Array(_) -> label <> "\n" <> indent(body)
           _ -> label <> ": " <> string.replace(body, "\n", "\n  ")
@@ -240,6 +250,7 @@ fn indent(text: String) -> String {
   "  " <> string.replace(text, "\n", "\n  ")
 }
 
+/// Converts an underscore key to a title-cased escaped Markdown label.
 fn field_label(key: String) -> String {
   let label = text_hygiene.single_line(key) |> string.replace("_", " ")
   let label =
@@ -318,6 +329,7 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   Ok(Board(strand, as_of, total, notes))
 }
 
+/// Decodes a single note JSON object into a Note record.
 fn note(value) {
   use fields <- result.try(object(value))
   use key <- result.try(text(fields, "key"))
@@ -328,6 +340,8 @@ fn note(value) {
     string.byte_size(content) > 4096,
     Error("oversized note excerpt"),
   )
+
+  // Check extent string for complete or excerpt note status.
   case extent {
     "complete" -> Ok(Note(key, seq, content, Complete))
     "excerpt" -> Ok(Note(key, seq, content, Excerpt))
@@ -353,16 +367,22 @@ fn field(fields, name) {
   list.key_find(fields, name) |> result.replace_error("missing notes field")
 }
 
+/// Extracts a string field from key-value pairs.
 fn text(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Ensure the found value is a JSON string.
   case value {
     json.String(text) -> Ok(text)
     _ -> Error("expected notes text")
   }
 }
 
+/// Extracts a non-negative integer number field from key-value pairs.
 fn number(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Ensure the found value is a non-negative integer.
   case value {
     json.Int(value) if value >= 0 -> Ok(value)
     _ -> Error("expected notes revision")

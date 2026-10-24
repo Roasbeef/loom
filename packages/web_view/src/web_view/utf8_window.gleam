@@ -30,6 +30,7 @@ pub fn prefix(text: String, limit: Int) -> String {
 /// assert utf8_window.window(<<"λx":utf8>>, 0, 2) == Ok("λ")
 /// ```
 pub fn window(bytes: BitArray, start: Int, end: Int) -> Result(String, Nil) {
+  // Check that the requested byte offsets fall within valid slice boundaries.
   case start >= 0 && end >= start && end <= bit_array.byte_size(bytes) {
     False -> Error(Nil)
     True -> {
@@ -41,8 +42,8 @@ pub fn window(bytes: BitArray, start: Int, end: Int) -> Result(String, Nil) {
   }
 }
 
-// A continuation byte cannot begin a codepoint. Walking back at most three
-// bytes finds the start without decoding any text outside this small window.
+/// A continuation byte cannot begin a codepoint. Walking back at most three
+/// bytes finds the start without decoding any text outside this small window.
 fn boundary(bytes: BitArray, at: Int, remaining: Int) -> Int {
   case at == 0 || remaining == 0 || at == bit_array.byte_size(bytes) {
     True -> at

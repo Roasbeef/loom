@@ -163,9 +163,9 @@ pub fn newest_entry(
   transcript_lines.newest_entry(records, strand)
 }
 
-// What both projections read of one capture: the strand's records, the
-// presentation a freshly attached terminal starts from, and the advisor's
-// board for that strand.
+/// What both projections read of one capture: the strand's records, the
+/// presentation a freshly attached terminal starts from, and the advisor's
+/// board for that strand.
 fn projected(
   cut: snapshot.Captured,
   view: snapshot_view.View,
@@ -182,8 +182,8 @@ fn projected(
   presented(branch.records, cut, view, strand)
 }
 
-// The presentation and the advisor's board for one strand's records, which
-// came either from one capture's window or from a branch the host kept.
+/// The presentation and the advisor's board for one strand's records, which
+/// came either from one capture's window or from a branch the host kept.
 fn presented(
   records: List(protocol.EntryRecord),
   cut: snapshot.Captured,

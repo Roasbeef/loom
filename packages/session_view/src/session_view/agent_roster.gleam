@@ -338,6 +338,8 @@ pub const stale_after_s = 60
 /// ```
 pub fn remote_row(agent: RemoteAgent) -> agent_view.Row {
   let place = agent.orchestrator
+
+  // Map remote standing to local agent view status.
   let status = case agent.standing {
     remote_agent.Starting -> agent_view.Waiting
     remote_agent.Running -> agent_view.Working
@@ -345,6 +347,8 @@ pub fn remote_row(agent: RemoteAgent) -> agent_view.Row {
     remote_agent.Completed -> agent_view.Finished
     remote_agent.Stopped | remote_agent.Refused -> agent_view.Failed
   }
+
+  // Derive activity description from remote summary or fallback status.
   let activity = case agent.summary, agent.standing {
     "", remote_agent.Starting -> "Starting on " <> place
     "", remote_agent.Running -> "Running on " <> place
@@ -354,10 +358,13 @@ pub fn remote_row(agent: RemoteAgent) -> agent_view.Row {
     "", remote_agent.Refused -> "Refused by " <> place
     summary, _ -> summary
   }
+
+  // Fall back to placeholder when remote model string is empty.
   let model = case agent.model {
     "" -> agent_view.model_unavailable
     model -> model
   }
+
   agent_view.Row(
     id: agent.id,
     name: text_hygiene.single_line(agent.id),
@@ -383,6 +390,7 @@ fn glance_strand(cell: snapshot_view.Cell) -> Result(String, Nil) {
   }
 }
 
+/// Documents `current_glance` helper.
 fn current_glance(
   glances: Dict(String, Glance),
   strand: String,
@@ -397,6 +405,7 @@ fn current_glance(
 // metadata cell in a capture. The roster re-anchors its clocks on it and
 // never hands it out: an instant from the daemon's clock means nothing
 // against a host's.
+/// Documents `started_at` helper.
 fn started_at(
   cells: List(snapshot_view.Cell),
   operation: String,
@@ -518,6 +527,8 @@ pub fn tick(roster: Roster, now_ms: Int) -> #(Roster, Repaint) {
     list.map(clocks, fn(clock) { elapsed_ms(clock, at) / 1000 })
   }
   let advanced = Roster(..roster, now_ms:)
+
+  // Check whether any second boundary elapsed for clocks repaint.
   case seconds(roster.now_ms) == seconds(now_ms) {
     True -> #(advanced, Unchanged)
     False -> #(advanced, Changed)
@@ -600,6 +611,7 @@ pub fn chips(
   Chips(listed:, advisor: advisor_line, settled:)
 }
 
+/// Documents `listed` helper.
 fn listed(row: agent_view.Row, active: String) -> Bool {
   case row.id == active, row.id, row.status {
     True, _, _ -> True
@@ -633,7 +645,9 @@ pub fn describe(roster: Roster, row: agent_view.Row) -> Line {
   line(roster, row)
 }
 
+/// Documents `line` helper.
 fn line(roster: Roster, row: agent_view.Row) -> Line {
+  // Look up glance for row operation if present.
   let current = case row.operation {
     Some(operation) -> current_glance(roster.glances, row.id, operation)
     None -> None
@@ -645,10 +659,13 @@ fn line(roster: Roster, row: agent_view.Row) -> Line {
     Some(seen) if seen.summary != "" -> seen.summary
     Some(_) | None -> shorten_names(row.activity)
   }
+
+  // Choose display title from glance or fallback row task.
   let title = case current {
     Some(seen) if seen.title != "" -> seen.title
     Some(_) | None -> row.task
   }
+
   let pushed =
     row.operation
     |> option.then(fn(operation) {
@@ -672,10 +689,13 @@ fn line(roster: Roster, row: agent_view.Row) -> Line {
       |> option.from_result
     None -> None
   }
+
+  // Override tokens count if remote agent provides token stats.
   let tokens = case remote {
     Some(agent) -> Some(agent.tokens) |> keep_if(fn(count) { count > 0 })
     None -> tokens
   }
+
   let age_s =
     remote
     |> option.then(fn(agent) { agent.age_ms })
@@ -738,6 +758,7 @@ pub fn short_name(name: String) -> String {
 // in `Waiting for sub:main/audit-1a2b…, sub:main/review-3c4d…`. On a line
 // that is the person's glance, each ID is cut to the slug the strip already
 // shows as that agent's name, so the waits read as names.
+/// Documents `shorten_names` helper.
 fn shorten_names(text: String) -> String {
   text
   |> string.split(" ")
@@ -837,6 +858,7 @@ fn pad2(value: Int) -> String {
 
 // Keeps an optional value only while it still satisfies the predicate, the
 // shape every "is this still about the current operation" check here takes.
+/// Documents `keep_if` helper.
 fn keep_if(value: Option(a), predicate: fn(a) -> Bool) -> Option(a) {
   case value {
     Some(inner) ->

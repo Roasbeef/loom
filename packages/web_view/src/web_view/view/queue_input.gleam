@@ -102,6 +102,7 @@ pub fn act(
     Cancel, Editing(delivery: Saving, ..) -> #(state, shared)
     Cancel, _ -> #(Closed, Shared(..shared, queue_request: queue_request.new()))
     Open(row), Closed -> {
+      // Verify queue availability before opening row input.
       case
         current(shared, row)
         && available(
@@ -184,6 +185,7 @@ pub fn act(
   }
 }
 
+/// Current helper.
 fn current(
   shared: Shared(s, r, a, b),
   row: snapshot_view.PendingInput,
@@ -199,6 +201,7 @@ fn current(
   })
 }
 
+/// Available helper.
 fn available(
   shared: Shared(s, r, a, b),
   owner: String,
@@ -304,6 +307,7 @@ pub fn view(
   row: snapshot_view.PendingInput,
   send: fn(Action) -> m,
 ) -> Element(m) {
+  // Dispatch on view state.
   let content = case state {
     Loading(selected, ..)
       if selected.id == row.id && selected.strand == row.strand
@@ -369,6 +373,7 @@ pub fn view(
       }),
     ]
   }
+
   html.div(
     [attribute.class("held")],
     list.append(content, [
@@ -385,6 +390,7 @@ fn button(label: String, action: Action, send: fn(Action) -> m) -> Element(m) {
   ])
 }
 
+/// Submitted helper.
 fn submitted(send: fn(Action) -> m) -> decode.Decoder(m) {
   use fields <- decode.subfield(
     ["detail", "formData"],
@@ -394,6 +400,8 @@ fn submitted(send: fn(Action) -> m) -> decode.Decoder(m) {
       decode.success(#(name, text))
     }),
   )
+
+  // Dispatch on submitted state.
   case fields {
     [#("text", text)] ->
       case string.byte_size(text) <= 32_000 {

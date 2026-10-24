@@ -210,9 +210,9 @@ pub fn view(
   )
 }
 
-// The output-speed figure. A measured rate is drawn like the other figures; no
-// rate is a dash in the quiet colour (`idle`), in the same slot, which the
-// stylesheet gives a fixed width so the figures beside it keep their places.
+/// The output-speed figure. A measured rate is drawn like the other figures; no
+/// rate is a dash in the quiet colour (`idle`), in the same slot, which the
+/// stylesheet gives a fixed width so the figures beside it keep their places.
 fn rate_figure(rate: Option(Int)) -> Element(message) {
   case rate {
     Some(tokens) ->
@@ -241,9 +241,9 @@ fn rate_figure(rate: Option(Int)) -> Element(message) {
   }
 }
 
-// The main strand's model as quiet text beside the name, or nothing while it
-// is unknown. The name is the catalogue's, which the owner wrote, and it is a
-// text node; the element has no handler and no colour of its own.
+/// The main strand's model as quiet text beside the name, or nothing while it
+/// is unknown. The name is the catalogue's, which the owner wrote, and it is a
+/// text node; the element has no handler and no colour of its own.
 fn model_element(model: Option(String)) -> Element(message) {
   case model {
     Some("") | None -> element.none()
@@ -334,11 +334,13 @@ pub fn tone_class(tone: Tone) -> String {
 /// assert heading.shorten_path("/srv/loom") == "/srv/loom"
 /// ```
 pub fn shorten_path(path: String) -> String {
+  // Dispatch on shorten_path state.
   let path = case path != "/" && string.ends_with(path, "/") {
     True -> string.drop_end(path, 1)
     False -> path
   }
 
+  // Dispatch on shorten_path state.
   case string.split(path, "/") {
     ["", "Users", _, ..rest] | ["", "home", _, ..rest] ->
       string.join(["~", ..rest], "/")
@@ -346,9 +348,9 @@ pub fn shorten_path(path: String) -> String {
   }
 }
 
-// The workspace's shortened path, or nothing when it is unknown or is only
-// the session's name again. The bar keeps the same children either way, so
-// the status keeps its place in the tree. The whole path is also the title.
+/// The workspace's shortened path, or nothing when it is unknown or is only
+/// the session's name again. The bar keeps the same children either way, so
+/// the status keeps its place in the tree. The whole path is also the title.
 fn workspace_element(
   workspace: Option(String),
   name: String,
@@ -380,11 +382,11 @@ fn number_element(number: String) -> Element(message) {
   html.span([attribute.class("num")], [html.text(number)])
 }
 
-// A figure's label and its number: `ctx ~41%` is the word `ctx` and the
-// emphasised `~41%`. The number is the last token and the label is everything
-// before it, because the cost words carry qualifiers ahead of the marker
-// (`API ref partial est $1.00`, `mixed rates est $2.10`) and only the amount
-// is emphasis. A figure with no space is all emphasis.
+/// A figure's label and its number: `ctx ~41%` is the word `ctx` and the
+/// emphasised `~41%`. The number is the last token and the label is everything
+/// before it, because the cost words carry qualifiers ahead of the marker
+/// (`API ref partial est $1.00`, `mixed rates est $2.10`) and only the amount
+/// is emphasis. A figure with no space is all emphasis.
 fn figure_words(words: String) -> List(Element(message)) {
   case list.reverse(string.split(words, " ")) {
     [number, last_label, ..earlier] -> [

@@ -70,19 +70,18 @@ pub fn block(language: Option(String), text: String) -> Element(message) {
   html.code(
     [],
     list.index_map(lines, fn(line, index) {
+      // Determine whether this line needs a trailing newline separator.
       let ending = case index == last {
         True -> ""
         False -> "\n"
       }
+
       line_element(language, line, ending)
     }),
   )
 }
 
-// One line as a span, memoized on the language and the line's text so a
-// delta to the block scans only the lines it changed. The newline is a plain
-// run after the tokens, so it merges into a last plain run and never makes a
-// text node of its own beside another.
+/// Renders one line as a span, memoized on the language and line text.
 fn line_element(
   language: Option(String),
   line: String,
@@ -93,6 +92,8 @@ fn line_element(
     element.ref(line),
     element.ref(ending),
   ])
+
+  // Append a trailing newline run when the line is not terminal.
   let parts = case ending {
     "" -> code_tokens.line(language, line)
     _ ->
@@ -100,6 +101,7 @@ fn line_element(
         CodePart(ending, CodePlain),
       ])
   }
+
   html.span([], list.map(merged(parts), token))
 }
 

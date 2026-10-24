@@ -121,6 +121,8 @@ pub type Words {
 pub fn of_call(call: tool_activity.Call) -> Words {
   let name = call.invocation.name
   let arguments = call.invocation.arguments
+
+  // Route tool name to its specialized word-formatting helper.
   case name {
     "bash" ->
       named("Ran", Mono, text_field(arguments, "command"), command)
@@ -168,6 +170,7 @@ pub fn of_call(call: tool_activity.Call) -> Words {
 ///   == Words("Running", Mono("make"), None)
 /// ```
 pub fn pending(words: Words) -> Words {
+  // Map completed past-tense verbs to active present-participle verbs.
   let verb = case words.verb {
     "Ran" -> "Running"
     "Read" -> "Reading"
@@ -186,6 +189,7 @@ pub fn pending(words: Words) -> Words {
     "Waited for" -> "Waiting for"
     other -> other
   }
+
   Words(..words, verb:)
 }
 
@@ -267,10 +271,12 @@ pub fn reasoning_of(
   lines: Option(Int),
   took_ms: Option(Int),
 ) -> Words {
+  // Select reasoning label based on raw or summarized provenance.
   let verb = case provenance {
     Raw -> "Reasoning"
     Summarized -> "Reasoning (summarized)"
   }
+
   let figures =
     list.append(
       case lines {
@@ -282,6 +288,8 @@ pub fn reasoning_of(
         None -> []
       },
     )
+
+  // Format figure text or unnamed subject if no figures exist.
   case figures {
     [] -> Words(verb, Unnamed, None)
     [_, ..] -> Words(verb, Figure(string.join(figures, " · ")), None)
@@ -316,10 +324,12 @@ pub fn worked_with_failures(
   files: Int,
   failed: Int,
 ) -> String {
+  // Format elapsed duration or fall back to plain worked label.
   let time = case duration_ms {
     Some(ms) -> "Worked " <> duration(ms)
     None -> "Worked"
   }
+
   [
     time,
     counted_or_none(steps, "step", "steps"),
@@ -387,6 +397,8 @@ pub fn spoken_breaks(text: String) -> String {
 /// ```
 pub fn failure_sentence(words: Words, engine: String) -> String {
   let step = step_noun(words.verb)
+
+  // Format friendly rejection sentence for engine validation errors.
   case string.trim(engine) {
     "invalid arguments: " <> reason ->
       step
@@ -397,8 +409,7 @@ pub fn failure_sentence(words: Words, engine: String) -> String {
   }
 }
 
-// The step as a sentence's subject: the verb's own noun for a tool the table
-// knows, and a neutral phrase for any other.
+/// Maps a step verb to a capitalized noun phrase for error sentences.
 fn step_noun(verb: String) -> String {
   case verb {
     "Edit" -> "The edit"
@@ -439,6 +450,8 @@ pub fn result_line(report: String) -> String {
     |> list.find(fn(line) { line != "" })
     |> result.unwrap("")
     |> string.replace("`", "")
+
+  // Strip Markdown heading or list markers from opening summary line.
   let bare = case line {
     "# " <> rest
     | "## " <> rest
@@ -448,6 +461,8 @@ pub fn result_line(report: String) -> String {
     | "* " <> rest -> string.trim(rest)
     _ -> line
   }
+
+  // Truncate at word boundary if summary exceeds character limit.
   case string.length(bare) > result_limit {
     True ->
       at_word(
@@ -459,10 +474,7 @@ pub fn result_line(report: String) -> String {
   }
 }
 
-// A cut line backed up to the end of its last whole word, so the ellipsis
-// follows a word and not half of one. A cut that ends at a word's end (the
-// next character is a space) and a cut with no space in it keep every
-// character.
+/// Trims a truncated string back to its last whole word boundary.
 fn at_word(cut: String, next: String) -> String {
   case next, list.reverse(string.split(cut, " ")) {
     " ", _ -> cut
@@ -484,6 +496,8 @@ fn at_word(cut: String, next: String) -> String {
 /// ```
 pub fn duration(ms: Int) -> String {
   let seconds = int.max(0, ms) / 1000
+
+  // Format duration into hours, minutes, and seconds units.
   case seconds >= 3600, seconds >= 60, seconds >= 1 {
     True, _, _ ->
       int.to_string(seconds / 3600)
@@ -506,11 +520,13 @@ pub fn duration(ms: Int) -> String {
 /// assert step_words.text(Words("Read", Mono("calc.py"), None)) == "Read calc.py"
 /// ```
 pub fn text(words: Words) -> String {
+  // Format subject text based on mono, prose, or figure presentation.
   let subject = case words.subject {
     Mono(text) | Prose(text) -> " " <> text
     Figure(text) -> " · " <> text
     Unnamed -> ""
   }
+
   words.verb <> subject <> change_text(words.change)
 }
 
@@ -556,9 +572,7 @@ pub fn first_call(program: String) -> Option(String) {
   |> option.from_result
 }
 
-// A call's verb, subject and the way the subject is clipped, or nothing when
-// the arguments do not carry the field. `or_name` turns nothing into the
-// generic words, so a malformed call still says which tool it was.
+/// Builds a named Words record if the target argument field is present.
 fn named(
   verb: String,
   tag: fn(String) -> Subject,
@@ -575,16 +589,18 @@ fn or_name(words: Option(Words), name: String, arguments: JsonValue) -> Words {
   }
 }
 
-// A tool this table does not list, or a listed one whose arguments lack the
-// field the words need: the tool's own name and what it was given.
+/// Formats fallback generic Words for unmapped or parameterless tool calls.
 fn generic(name: String, arguments: JsonValue) -> Words {
+  // Format non-empty arguments as a clipped mono string.
   let given = case arguments {
     json.Object([]) -> Unnamed
     _ -> Mono(clip(json.to_string(arguments)))
   }
+
   Words(clip(name), given, None)
 }
 
+/// Formats Words for grep and content search tool calls.
 fn searched(arguments: JsonValue) -> Words {
   case text_field(arguments, "pattern"), text_field(arguments, "path") {
     Some(pattern), Some(where) ->
@@ -598,13 +614,17 @@ fn searched(arguments: JsonValue) -> Words {
 // small diffs`, and `Remembering feedback: …` while it runs. A note names a
 // `kind` and a `title`; a call recorded before notes had a title has neither,
 // and keeps the words it always had.
+/// Formats Words for remember tool calls, displaying kind and title.
 fn remembered(arguments: JsonValue) -> Words {
+  // Check whether a non-empty memory title was supplied.
   case text_field(arguments, "title") |> option.map(string.trim) {
     Some(title) if title != "" -> {
+      // Format optional memory kind prefix if present.
       let kind = case text_field(arguments, "kind") |> option.map(string.trim) {
         Some(kind) if kind != "" -> clip_to(kind, remember_kind_limit) <> ": "
         _ -> ""
       }
+
       Words(
         "Remembered",
         Prose(kind <> clip_to(title, remember_title_limit)),
@@ -627,11 +647,14 @@ const remember_title_limit = 80
 // (`recall_view.hits`), so a result that recorded none, a failed call or a
 // call still running names only the query. A search with no query browses this
 // session's recent entries, and a read names the entry it fetched.
+/// Formats Words for history search calls with queries and hit counts.
 fn recalled(
   arguments: JsonValue,
   outcome: Option(message.AgentMessage),
 ) -> Words {
   let found = option.map(found_hits(outcome), list.length)
+
+  // Match history action (read vs search) to format description.
   case arguments, text_field(arguments, "action") {
     json.Object(_), Some("read") ->
       Words("Read history entry", read_target(arguments), None)
@@ -665,7 +688,7 @@ fn recalled(
 // The most characters of a query a history step keeps.
 const history_query_limit = 60
 
-// The hits a settled search recorded, from a result that did not fail.
+/// Extracts search hit records from a successful history search result.
 fn found_hits(
   outcome: Option(message.AgentMessage),
 ) -> Option(List(recall_view.Hit)) {
@@ -684,7 +707,7 @@ fn counted_hits(found: Option(Int), separator: String) -> String {
   }
 }
 
-// The entry a read fetched, in the short form its hits were shown in.
+/// Formats the target session and entry identifier for history reads.
 fn read_target(arguments: JsonValue) -> Subject {
   case text_field(arguments, "session"), text_field(arguments, "entry") {
     Some(session), Some(entry) ->
@@ -697,6 +720,7 @@ fn read_target(arguments: JsonValue) -> Subject {
   }
 }
 
+/// Formats Words for agent_wait calls, counting joined sub-agents.
 fn waited(arguments: JsonValue) -> Words {
   case arguments {
     json.Object(fields) ->
@@ -727,10 +751,13 @@ fn keyed(key: Option(String)) -> Subject {
 // `task_limit` characters. A call with no `op` is one the tool refuses,
 // so it reads `Todo · invalid arguments`; an `op` the tool does not know keeps
 // the op's own word, since the words are only the reader's gloss.
+/// Formats Words for todo board manipulation tool calls.
 fn todo_words(arguments: JsonValue) -> Words {
   let op = option.unwrap(text_field(arguments, "op"), "")
   let target = todo_target(arguments)
   let said = fn(verb) { Words("Todo", Figure(verb <> target), None) }
+
+  // Format todo operation verb and target summary.
   case op {
     "init" -> Words("Todo", Figure(planned(arguments)), None)
     "append" -> Words("Todo", Figure("added " <> planned(arguments)), None)
@@ -746,8 +773,7 @@ fn todo_words(arguments: JsonValue) -> Words {
   }
 }
 
-// What a `todo` op acted on, after its verb: `: Add modulo` for a task,
-// `: phase Setup` for a phase, and nothing for an op on the whole board.
+/// Extracts the targeted task or phase label from todo arguments.
 fn todo_target(arguments: JsonValue) -> String {
   case text_field(arguments, "task"), text_field(arguments, "phase") {
     Some(task), _ -> ": " <> clip_to(task, todo_task_limit)
@@ -759,8 +785,7 @@ fn todo_target(arguments: JsonValue) -> String {
 // The most characters of a task a todo step keeps.
 const todo_task_limit = 60
 
-// How many tasks a new or extended list holds: the items of every phase of
-// `phases`, or the call's own `items`.
+/// Counts the total number of planned tasks initialized or appended.
 fn planned(arguments: JsonValue) -> String {
   let items = fn(value: JsonValue) {
     case value {
@@ -772,6 +797,8 @@ fn planned(arguments: JsonValue) -> String {
       _ -> 0
     }
   }
+
+  // Sum task counts across phases or top-level items array.
   let total = case arguments {
     json.Object(fields) ->
       case list.key_find(fields, "phases") {
@@ -781,6 +808,8 @@ fn planned(arguments: JsonValue) -> String {
       }
     _ -> 0
   }
+
+  // Format total task count or fall back to generic list wording.
   case total {
     0 -> "list"
     _ -> counted(total, "task", "tasks")
@@ -794,8 +823,7 @@ fn program(arguments: JsonValue) -> Words {
   }
 }
 
-// The lines a successful edit's own result says it added and removed, counted
-// from the headerless unified hunks it reported.
+/// Calculates added and removed line counts from an edit unified diff result.
 fn changed(outcome: Option(message.AgentMessage)) -> Option(Change) {
   case outcome {
     Some(message.ToolResultMessage(
@@ -811,6 +839,7 @@ fn changed(outcome: Option(message.AgentMessage)) -> Option(Change) {
   }
 }
 
+/// Counts added and removed lines from unified diff text.
 fn counted_change(diff: String) -> Option(Change) {
   let #(added, removed) =
     string.split(diff, "\n")
@@ -822,19 +851,22 @@ fn counted_change(diff: String) -> Option(Change) {
         False, _ -> total
       }
     })
+
+  // Return Change record if any line was modified, else None.
   case added + removed {
     0 -> None
     _ -> Some(Change(added:, removed:))
   }
 }
 
-// A module the program imports from the capability prelude, as the name the
-// program calls it by and the name the prelude gives it: `import cap/fs` is
-// `#("fs", "fs")`, and `import cap/fs as files` is `#("files", "fs")`.
+/// Parses an imported capability module name and alias from an import statement.
 fn imported(line: String) -> Result(#(String, String), Nil) {
+  // Match capability import prefix.
   case string.trim(line) {
     "import cap/" <> rest -> {
       let #(module, after) = take_name(rest)
+
+      // Check for alias identifier or default to module name.
       case module, string.split_once(after, " as ") {
         "", _ -> Error(Nil)
         _, Ok(#(_, alias)) ->
@@ -849,8 +881,7 @@ fn imported(line: String) -> Result(#(String, String), Nil) {
   }
 }
 
-// The earliest call of an imported module on one line, as `module.name` and
-// the first string literal after it.
+/// Finds the earliest imported capability function call on a line of code.
 fn called(
   line: String,
   modules: List(#(String, String)),
@@ -862,7 +893,7 @@ fn called(
   |> result.map(fn(pair) { pair.1 })
 }
 
-// One module's first call on a line, with where on the line it stood.
+/// Locates a function call on a module and extracts its name and first argument.
 fn call_in(
   line: String,
   local: String,
@@ -907,10 +938,7 @@ fn name_ends(before: String) -> Bool {
   }
 }
 
-// The call's first argument, when it is a string literal: ` literal`. Only
-// the first argument is read, so a call whose first argument is a name or an
-// expression says no argument, and a later call on the same line is not
-// mistaken for this one's.
+/// Extracts a string literal argument from a function call argument list.
 fn argument(rest: String) -> String {
   case string.trim_start(string.drop_start(rest, 1)) {
     "\"" <> after ->
@@ -936,6 +964,7 @@ fn is_name(grapheme: String) -> Bool {
   )
 }
 
+/// Extracts an optional string field by name from a JSON value.
 fn text_field(value: JsonValue, name: String) -> Option(String) {
   case value {
     json.Object(fields) ->
@@ -954,12 +983,17 @@ fn text_field(value: JsonValue, name: String) -> Option(String) {
 // so a leading `cd <dir> &&` is dropped first (`without_cd`): an agent that
 // runs in a long worktree path starts nearly every command that way, and the
 // cut would otherwise end the summary right after `cd`.
+/// Formats a shell command for compact step display, stripping leading cd.
 fn command(text: String) -> String {
   let shown = without_cd(string.trim(text))
+
+  // Extract first line of command text.
   let #(line, more) = case string.split_once(shown, "\n") {
     Ok(#(first, _)) -> #(text_hygiene.single_line(first), True)
     Error(Nil) -> #(text_hygiene.single_line(shown), False)
   }
+
+  // Clip command length at word boundary with ellipsis if needed.
   case string.length(line) > command_limit {
     True ->
       at_word(
@@ -975,16 +1009,16 @@ fn command(text: String) -> String {
   }
 }
 
-// A command with its leading `cd <dir> &&` or `cd <dir> ;` removed, when a
-// command follows it. The directory is one word or one quoted string. A
-// command that is only a `cd`, or whose `cd` is joined by anything else (`||`,
-// a pipe), is returned whole: the summary then says what the text says.
+/// Strips leading cd commands and chaining operators from shell command text.
 fn without_cd(text: String) -> String {
+  // Match leading cd command invocation.
   case string.starts_with(text, "cd ") {
     False -> text
     True -> {
       let after = string.trim_start(string.drop_start(text, 3))
       let rest = string.trim_start(directory_end(after))
+
+      // Check for command chaining operators following directory argument.
       let remainder = case
         string.starts_with(rest, "&&"),
         string.starts_with(rest, ";")
@@ -993,6 +1027,8 @@ fn without_cd(text: String) -> String {
         False, True -> string.trim_start(string.drop_start(rest, 1))
         False, False -> ""
       }
+
+      // Return command remainder if chained, else original text.
       case remainder {
         "" -> text
         _ -> remainder
@@ -1001,10 +1037,7 @@ fn without_cd(text: String) -> String {
   }
 }
 
-// What follows the directory word of a `cd`: past a quoted string when the
-// word opens with a quote, and past the next space otherwise. A word holding
-// a shell operator, or an unclosed quote, leaves nothing, so the command stays
-// whole.
+/// Finds the remainder of command text following a directory argument.
 fn directory_end(after: String) -> String {
   case string.first(after) {
     Ok("'") -> past_quote(after, "'")
@@ -1033,8 +1066,11 @@ fn clip(text: String) -> String {
   clip_to(text, subject_limit)
 }
 
+/// Clips text to a single line and cuts at character limit with ellipsis.
 fn clip_to(text: String, limit: Int) -> String {
   let one_line = text_hygiene.single_line(text)
+
+  // Check if text exceeds character limit.
   case string.drop_start(one_line, limit) {
     "" -> one_line
     _ -> string.slice(one_line, 0, limit - 1) <> "…"
@@ -1045,6 +1081,7 @@ fn path(text: String) -> String {
   text_hygiene.fit_tail(text_hygiene.single_line(text), path_limit)
 }
 
+/// Formats a count with appropriate singular or plural noun.
 fn counted(count: Int, one: String, many: String) -> String {
   int.to_string(count)
   <> case count {

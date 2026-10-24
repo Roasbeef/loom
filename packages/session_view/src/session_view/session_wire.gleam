@@ -71,6 +71,8 @@ pub fn correlation(text: String) -> Correlation {
     use value <- result.try(
       json.parse(text) |> result.replace_error("invalid conversation JSON"),
     )
+
+    // Verify JSON value is an object before inspecting reply_to.
     case value {
       json.Object(fields) -> Ok(list.key_find(fields, "reply_to"))
       json.Int(_)
@@ -81,6 +83,8 @@ pub fn correlation(text: String) -> Correlation {
       | json.Null -> Error("conversation response is not an object")
     }
   }
+
+  // Check whether the response specifies an explicit request correlation.
   case named {
     Ok(Error(Nil)) -> NamesNoRequest
     Ok(Ok(_)) | Error(_) -> NamesARequest
@@ -166,6 +170,8 @@ pub fn decode(text: String, expected: Int) -> Result(Reply, String) {
   use value <- result.try(
     json.parse(text) |> result.replace_error("invalid conversation JSON"),
   )
+
+  // Verify that the response payload is a JSON object.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     json.Int(_)
@@ -175,6 +181,7 @@ pub fn decode(text: String, expected: Int) -> Result(Reply, String) {
     | json.Bool(_)
     | json.Null -> Error("conversation response is not an object")
   })
+
   use version <- result.try(field(fields, "v"))
   use <- bool.guard(
     version != json.Int(2),
@@ -192,9 +199,12 @@ pub fn decode(text: String, expected: Int) -> Result(Reply, String) {
   }
 }
 
+/// Decodes a correlated response payload according to its event name.
 fn correlated(fields, text) {
   use name <- result.try(field(fields, "event"))
   use body <- result.try(field(fields, "body"))
+
+  // Decode payload based on correlated event name.
   case name {
     json.String("snapshot_begin") -> Ok(Begin(body))
     json.String("snapshot_chunk") -> Ok(Chunk(body))
@@ -212,10 +222,14 @@ fn correlated(fields, text) {
   }
 }
 
+/// Decodes a mutation outcome status from the mutation reply body.
 fn mutation(body) {
+  // Match object shape of mutation outcome body.
   case body {
     json.Object(fields) -> {
       use status <- result.try(field(fields, "status"))
+
+      // Extract and validate the mutation outcome status string.
       case status {
         json.String("admitted") -> Ok(Mutation("admitted"))
         json.String("committed") -> Ok(Mutation("committed"))

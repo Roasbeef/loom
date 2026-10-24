@@ -130,6 +130,7 @@ pub fn interrupt_active(
 
 // The operation the last capture shows running on `strand`, which the held
 // interrupt names so that its settlement can be recognized.
+/// Helper `captured_operation` for captured operation.
 fn captured_operation(
   shared: Shared(socket, recorder, source, replay_source),
   strand: String,
@@ -332,11 +333,13 @@ pub fn load_strand(
 pub fn quit(
   shared: Shared(socket, recorder, source, replay_source),
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Handle the `quit` branch dispatch.
   let shared = case shared.channel {
     Some(channel) ->
       session_model.hold_channel(shared, session_channel.close(channel))
     None -> shared
   }
+
   shared_set.quit(shared, True)
 }
 
@@ -402,6 +405,7 @@ pub fn control(
   shared: Shared(socket, recorder, source, replay_source),
   command: command.Session,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Handle the `control` branch dispatch.
   case outbound.mutation_refusal(shared, command) {
     Some(reason) -> session_model.append_error(shared, reason)
     None -> {
@@ -475,6 +479,7 @@ pub fn submit(
   command: command.Session,
   delivery: operator.Delivery,
 ) -> Shared(socket, recorder, source, replay_source) {
+  // Handle the `submit` branch dispatch.
   case outbound.mutation_refusal(shared, command) {
     Some(reason) -> session_model.append_error(shared, reason)
     None -> {
@@ -488,6 +493,8 @@ pub fn submit(
           shared_set.pending_submission(shared, Some(ComposerSubmission))
         _, _ -> shared
       }
+
+      // Handle the `submit` branch dispatch.
       case composer.has_images(prepared.attachments) {
         True -> submit_with_images(prepared, draft, command)
         False -> dispatch(prepared, draft, command, delivery)
@@ -522,6 +529,7 @@ pub fn release_submission(
 // Consumes the draft now, unless the lane will consume it when it sends the
 // frame. The host empties its editor when it applies the fact; a prompt
 // also takes the attachments, which are the session's.
+/// Helper `take_draft` for take draft.
 fn take_draft(
   shared: Shared(socket, recorder, source, replay_source),
   taking: DraftTaking,
@@ -539,6 +547,7 @@ fn take_draft(
 // One session command, dispatched. `shared` is the state the submission
 // was admitted at; `cleared` has consumed the draft as a command and
 // `prompt_cleared` as a prompt, and the arm decides which it continues from.
+/// Helper `dispatch` for dispatch.
 fn dispatch(
   shared: Shared(socket, recorder, source, replay_source),
   draft: String,
@@ -548,6 +557,8 @@ fn dispatch(
   let expanded = composer.expand(draft, shared.attachments)
   let cleared = take_draft(shared, TakenByCommand)
   let prompt_cleared = take_draft(shared, TakenAsPrompt)
+
+  // Handle the `dispatch` branch dispatch.
   case command {
     command.BtwClose ->
       Shared(..cleared, btw: btw.State(..cleared.btw, visibility: btw.Hidden))
@@ -558,10 +569,13 @@ fn dispatch(
       |> session_model.invalidate_frame
     command.Btw(action) -> {
       let owner = session_model.queue_owner(cleared)
+
+      // Handle the `dispatch` branch dispatch.
       let side = case cleared.btw.owner == owner {
         True -> cleared.btw
         False -> btw.new()
       }
+
       let visible =
         Shared(
           ..cleared,
@@ -771,6 +785,7 @@ fn dispatch(
 // Liveness is not this client's question: `prompt` on a busy strand is held
 // by the daemon and drained when the run settles, so an image prompt goes
 // out and comes back `queued`.
+/// Helper `submit_with_images` for submit with images.
 fn submit_with_images(
   shared: Shared(socket, recorder, source, replay_source),
   draft: String,
@@ -815,6 +830,7 @@ fn submit_with_images(
   }
 }
 
+/// Helper `send_image_prompt` for send image prompt.
 fn send_image_prompt(
   shared: Shared(socket, recorder, source, replay_source),
   draft: String,
@@ -842,10 +858,12 @@ pub fn image_prompt_content(
   text: String,
   images: List(pasted_image.Image),
 ) -> List(message.UserBlock) {
+  // Handle the `image_prompt_content` branch dispatch.
   let text_blocks = case text {
     "" -> []
     _ -> [message.UserText(text, None)]
   }
+
   let image_blocks =
     list.map(images, fn(image) {
       let pasted_image.Image(data:, mime_type:, ..) = image
@@ -858,6 +876,7 @@ pub fn image_prompt_content(
 // entry that commits it retires the echo rather than drawing a second copy.
 // Only a live lane sends; a replay stops where the live client's own work
 // stopped, and the preview answers locally.
+/// Helper `send_prompt_content` for send prompt content.
 fn send_prompt_content(
   shared: Shared(socket, recorder, source, replay_source),
   content: List(message.UserBlock),
@@ -870,6 +889,8 @@ fn send_prompt_content(
       submitting: Some(shared.active_strand),
       notice: "image prompt sent to " <> shared.active_strand,
     )
+
+  // Handle the `send_prompt_content` branch dispatch.
   case shared.peer {
     Attached ->
       outbound.send_frame(
@@ -899,15 +920,18 @@ fn send_prompt_content(
   }
 }
 
+/// Helper `image_prompt_preview` for image prompt preview.
 fn image_prompt_preview(
   text: String,
   images: List(pasted_image.Image),
   details_expanded: Bool,
 ) -> String {
+  // Handle the `image_prompt_preview` branch dispatch.
   let text = case text {
     "" -> []
     _ -> [composer.transcript_text(text, details_expanded)]
   }
+
   let image_labels =
     list.map(images, fn(image) {
       let pasted_image.Image(filename:, mime_type:, byte_size:, ..) = image
@@ -925,6 +949,7 @@ fn image_prompt_preview(
 // An ordinary prompt: held and released after an interrupt, steered into a
 // running strand when the host asked for a steer, and otherwise a prompt,
 // which the daemon holds on a busy strand and runs when it settles.
+/// Helper `send_user_text` for send user text.
 fn send_user_text(
   cleared: Shared(socket, recorder, source, replay_source),
   text: String,
@@ -951,6 +976,7 @@ fn send_user_text(
 // priority and a release keeps that priority, which is what the operator asked
 // for (`protocol-change/033`). Only a legacy host without a gateway queue falls
 // back to the client-side hold.
+/// Helper `send_explicit_steer` for send explicit steer.
 fn send_explicit_steer(
   cleared: Shared(socket, recorder, source, replay_source),
   text: String,
@@ -959,6 +985,8 @@ fn send_explicit_steer(
   use <- bool.lazy_guard(before.channel != None, fn() {
     send_steer(cleared, text)
   })
+
+  // Handle the `send_explicit_steer` branch dispatch.
   case session_model.active_interrupt(before) {
     Some(strand) -> hold_or_send_interrupt(cleared, before, strand, text)
     None -> send_steer(cleared, text)
@@ -971,6 +999,7 @@ fn send_explicit_steer(
 // releases the whole batch, so it runs after the held input rather than
 // ahead of it as a steer would. A legacy host without a gateway queue keeps
 // the older client-side hold until the terminal transition.
+/// Helper `hold_or_send_interrupt` for hold or send interrupt.
 fn hold_or_send_interrupt(
   cleared: Shared(socket, recorder, source, replay_source),
   before: Shared(socket, recorder, source, replay_source),
@@ -980,6 +1009,8 @@ fn hold_or_send_interrupt(
   use <- bool.lazy_guard(before.channel != None, fn() {
     event_fold.send_prompt_to(cleared, strand, text)
   })
+
+  // Handle the `hold_or_send_interrupt` branch dispatch.
   case session_model.active_strand_live(before) {
     False ->
       event_fold.send_prompt_to(
@@ -988,11 +1019,13 @@ fn hold_or_send_interrupt(
         text,
       )
     True -> {
+      // Handle the `hold_or_send_interrupt` branch dispatch.
       let pending = case before.interrupt {
         Some(Interrupt(pending: Some(earlier), ..)) ->
           Some(earlier <> "\n\n" <> text)
         _ -> Some(text)
       }
+
       cleared
       |> shared_set.interrupt(
         Some(Interrupt(strand:, operation: None, pending:)),
@@ -1014,6 +1047,7 @@ fn send_prompt(
 // steer typed while a prompt is held retires the prompt's echo and the
 // operator watches their own line disappear, which is the symptom the echo
 // exists to prevent.
+/// Helper `send_steer` for send steer.
 fn send_steer(
   shared: Shared(socket, recorder, source, replay_source),
   text: String,
@@ -1037,6 +1071,7 @@ fn send_steer(
 
 // Both controls transfer input custody to the modern host queue. Older
 // recordings still account for their original in-operation interjections.
+/// Helper `send_follow_up` for send follow up.
 fn send_follow_up(
   shared: Shared(socket, recorder, source, replay_source),
   text: String,
@@ -1049,6 +1084,7 @@ fn send_follow_up(
   )
 }
 
+/// Helper `steering_submission` for steering submission.
 fn steering_submission(
   shared: Shared(socket, recorder, source, replay_source),
   text: String,

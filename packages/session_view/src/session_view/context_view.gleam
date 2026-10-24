@@ -171,6 +171,7 @@ pub fn new() -> State {
 /// // context_view.select(state, owner, "main")
 /// ```
 pub fn select(state: State, owner: String, strand: String) -> State {
+  // Handle the `select` branch dispatch.
   case state.owner == owner && state.strand == strand {
     True -> state
     False -> {
@@ -180,6 +181,7 @@ pub fn select(state: State, owner: String, strand: String) -> State {
         True -> invalidate(state).request
         False -> Requested
       }
+
       State(..new(), owner:, strand:, surface: state.surface, request:)
     }
   }
@@ -243,19 +245,27 @@ pub fn sent(state: State, id: Int) -> State {
 /// // context_view.receive(state, owner, event)
 /// ```
 pub fn receive(state: State, owner: String, event: Event) -> State {
+  // Handle the `receive` branch dispatch.
   let expected = case state.request {
     Awaiting(id) | RefreshAfter(id) -> Some(id)
     Idle | Requested | Unavailable -> None
   }
+
+  // Handle the `receive` branch dispatch.
   let actual = case event {
     Pending(id) | Failed(id, _) -> id
     Ready(board) -> board.request_id
   }
+
   use <- bool.guard(state.owner != owner || expected != Some(actual), state)
+
+  // Handle the `receive` branch dispatch.
   let next = case state.request {
     RefreshAfter(_) -> Requested
     Awaiting(_) | Idle | Requested | Unavailable -> Idle
   }
+
+  // Handle the `receive` branch dispatch.
   case event {
     Pending(_) -> state
     Failed(_, reason) ->
@@ -290,6 +300,8 @@ pub fn refused(state: State, id: Int, code: String, reason: String) -> State {
     state,
   )
   let changed = receive(state, state.owner, Failed(id, reason))
+
+  // Handle the `refused` branch dispatch.
   case code {
     "unsupported" | "unknown_command" -> State(..changed, request: Unavailable)
     _ -> changed
@@ -311,6 +323,8 @@ pub fn decode(value: json.JsonValue) -> Result(Event, String) {
   use fields <- result.try(object(value))
   use id <- result.try(number(fields, "request_id"))
   use status <- result.try(text(fields, "status"))
+
+  // Handle the `decode` branch dispatch.
   case status {
     "pending" -> Ok(Pending(id))
     "failed" -> result.map(text(fields, "message"), Failed(id, _))
@@ -319,6 +333,7 @@ pub fn decode(value: json.JsonValue) -> Result(Event, String) {
   }
 }
 
+/// Helper `decode_ready` for decode ready.
 fn decode_ready(fields, id) {
   use strand <- result.try(text(fields, "strand"))
   use as_of <- result.try(number(fields, "as_of"))
@@ -330,11 +345,14 @@ fn decode_ready(fields, id) {
   use reserve <- result.try(number(fields, "reserve_tokens"))
   use omitted <- result.try(number(fields, "items_omitted"))
   use total <- result.try(number(fields, "items_total"))
+
+  // Handle the `decode_ready` branch dispatch.
   use checkpoint <- result.try(case list.key_find(fields, "checkpoint_at") {
     Ok(json.Null) -> Ok(None)
     Ok(json.Int(value)) if value >= 0 -> Ok(Some(value))
     _ -> Error("invalid checkpoint threshold")
   })
+
   use categories <- result.try(
     rows(fields, "categories", fn(value) {
       use fields <- result.try(object(value))
@@ -429,6 +447,7 @@ pub fn footer(state: State) -> String {
 /// // context_view.lines(state)
 /// ```
 pub fn lines(state: State) -> List(String) {
+  // Handle the `lines` branch dispatch.
   case state.board {
     None -> [state.notice]
     Some(board) -> {
@@ -515,6 +534,7 @@ pub fn lines(state: State) -> List(String) {
   }
 }
 
+/// Helper `count` for count.
 fn count(value: Int) -> String {
   case value >= 1000 {
     True ->

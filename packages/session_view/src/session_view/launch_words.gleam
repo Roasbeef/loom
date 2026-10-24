@@ -34,10 +34,12 @@ pub const token_placeholder = "<owner token file on that host>"
 ///   == "loom --addr ws://10.0.0.4:7000 --session 0198c1aa --token-file <owner token file on that host>"
 /// ```
 pub fn launch_line(address: Option(String), session: String) -> String {
+  // Resolve the orchestrator address or fall back to the placeholder.
   let at = case address {
     Some(found) -> found
     None -> unknown_address
   }
+
   "loom --addr "
   <> at
   <> " --session "

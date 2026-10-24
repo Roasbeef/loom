@@ -538,6 +538,7 @@ pub fn default_target(offers: Offers, recent: List(Recent)) -> Option(Target) {
     list.find(recent, fn(each) { offered(offers, each.target) })
     |> result.map(fn(each) { each.target })
 
+  // Fall back to the first offered folder when no recent target matches.
   case from_recent, offers.folders {
     Ok(target), _ -> Some(target)
     Error(Nil), [first, ..] -> Some(Folder(first))
@@ -652,6 +653,8 @@ pub fn recents(entries: List(Entry), machine: String) -> List(Recent) {
   |> list.take(recent_limit)
   |> list.filter_map(fn(place) {
     let used = list.filter(tagged, fn(row) { row.0 == place })
+
+    // Construct a recent row with its session names when present.
     case used {
       [#(_, target, _), ..] ->
         Ok(Recent(target:, place:, names: list.map(used, fn(row) { row.2 })))
@@ -728,6 +731,7 @@ pub fn role_words(roles: creations.Roles) -> String {
 pub fn sentence(machine: String, target: Option(Target)) -> List(Piece) {
   let agent = [Plain("The agent runs on "), Named(machine), Plain(". ")]
 
+  // Build the summary sentence describing where commands will execute.
   case target {
     None -> [
       Plain("The agent runs on "),
@@ -817,7 +821,7 @@ const unnamed = "Name the workspace, or choose another."
 // each executor is current: this daemon's own when it is the agent, and the
 // agent orchestrator's when another one is. The Agent chip's opening owes a read
 // of every orchestrator, so a machine that came back or went away is drawn as it
-// now is.
+/// Toggles the specified chip open or shut, returning the next state and intent.
 fn toggled(state: State, chip: Chip) -> #(State, Intent) {
   case state.open {
     Showing(chip: open) if open == chip -> #(
@@ -836,10 +840,10 @@ fn toggled(state: State, chip: Chip) -> #(State, Intent) {
   }
 }
 
-// A row of the Agent chip's list, honoured only for a machine the page drew that
-// can be chosen. It closes the list. The code choice is not judged here, because
-// the lists it is judged against are the new machine's, which the caller builds
-// once the agent has changed (`kept`).
+/// A row of the Agent chip's list, honoured only for a machine the page drew that
+/// can be chosen. It closes the list. The code choice is not judged here, because
+/// the lists it is judged against are the new machine's, which the caller builds
+/// once the agent has changed (`kept`).
 fn chose_agent(state: State, offers: Offers, agent: Agent) -> State {
   case choosable(offers, agent) {
     True -> State(..state, agent:, open: Shut, search: "", refusal: None)
@@ -876,6 +880,7 @@ pub fn choosable(offers: Offers, agent: Agent) -> Bool {
 /// assert composer.kept(composer.State(..composer.new(), target: Some(composer.Folder("/w"))), offers).target == None
 /// ```
 pub fn kept(state: State, offers: Offers) -> State {
+  // Retain the current target if it remains offered by the updated environment.
   let target = case state.target {
     Some(OnExecutor(..) as target) | Some(InPool(..) as target) ->
       case offered(offers, target) {
@@ -884,6 +889,8 @@ pub fn kept(state: State, offers: Offers) -> State {
       }
     Some(Folder(_)) | Some(TypedFolder) | None -> None
   }
+
+  // Retain selected roles when still offered or fall back to defaults.
   let roles =
     creations.Roles(
       profile: kept_profile(offers, state.roles.profile),
@@ -896,11 +903,11 @@ pub fn kept(state: State, offers: Offers) -> State {
   State(..state, target:, roles:)
 }
 
-// The profile that stays chosen after a switch. A box has no profile named for the
-// default and a create must name one, so a switch to a box names its first listed
-// profile, which is the one the create sends, and the chip says so. This daemon's
-// default is the configuration's own, so a switch back keeps a profile only where
-// it is listed.
+/// The profile that stays chosen after a switch. A box has no profile named for the
+/// default and a create must name one, so a switch to a box names its first listed
+/// profile, which is the one the create sends, and the chip says so. This daemon's
+/// default is the configuration's own, so a switch back keeps a profile only where
+/// it is listed.
 fn kept_profile(offers: Offers, profile: Option(String)) -> Option(String) {
   case offers.agent, in_list(offers.profiles, profile), offers.profiles {
     _, True, _ if profile != None -> profile
@@ -909,8 +916,8 @@ fn kept_profile(offers: Offers, profile: Option(String)) -> Option(String) {
   }
 }
 
-// A row of the Code chip's list: honoured only for a target the page drew, and it
-// closes the list. A message for a target the page did not draw changes nothing.
+/// A row of the Code chip's list: honoured only for a target the page drew, and it
+/// closes the list. A message for a target the page did not draw changes nothing.
 fn chose_target(state: State, offers: Offers, target: Target) -> State {
   case offered(offers, target) {
     True ->
@@ -925,8 +932,8 @@ fn chose_target(state: State, offers: Offers, target: Target) -> State {
   }
 }
 
-// A profile of the Model chip's list: the default, or one the daemon's
-// configuration named. The list stays open, since a main model is chosen beside it.
+/// A profile of the Model chip's list: the default, or one the daemon's
+/// configuration named. The list stays open, since a main model is chosen beside it.
 fn chose_profile(
   state: State,
   offers: Offers,
@@ -943,7 +950,7 @@ fn chose_profile(
   }
 }
 
-// A main model of the Model chip's list, held as a profile is.
+/// A main model of the Model chip's list, held as a profile is.
 fn chose_model(state: State, offers: Offers, model: Option(String)) -> State {
   case in_list(offers.models, model) {
     True ->
@@ -956,8 +963,7 @@ fn chose_model(state: State, offers: Offers, model: Option(String)) -> State {
   }
 }
 
-// Search text applies only while the Code chip's list is open, is cut to the
-// bound on a character boundary and keeps no control character.
+/// Updates search text while the Code chip is showing.
 fn searched(state: State, text: String) -> State {
   case state.open {
     Showing(chip: CodeChip) -> State(..state, search: bounded(text))
@@ -965,10 +971,10 @@ fn searched(state: State, text: String) -> State {
   }
 }
 
-// The start of a session: nothing happens while one is out or when no target is
-// in force; the roles must still be ones the page offers; and the place must be
-// buildable from what the form sent. Otherwise the creation is asked for and
-// nothing else is held but the fact that it is out.
+/// The start of a session: nothing happens while one is out or when no target is
+/// in force; the roles must still be ones the page offers; and the place must be
+/// buildable from what the form sent. Otherwise the creation is asked for and
+/// nothing else is held but the fact that it is out.
 fn started(
   state: State,
   offers: Offers,
@@ -1004,8 +1010,8 @@ fn started(
   }
 }
 
-// What a start asks for: a session in this daemon's own catalogue, named from
-// the message's first line, or a session another orchestrator names itself.
+/// What a start asks for: a session in this daemon's own catalogue, named from
+/// the message's first line, or a session another orchestrator names itself.
 fn to_create(
   agent: Agent,
   place: creations.Place,
@@ -1025,9 +1031,9 @@ fn to_create(
   }
 }
 
-// Whether a workspace of a drawn executor or pool is one the page offers: a name
-// the daemon listed, or, where it listed none, a typed field or a name that could
-// be typed.
+/// Whether a workspace of a drawn executor or pool is one the page offers: a name
+/// the daemon listed, or, where it listed none, a typed field or a name that could
+/// be typed.
 fn workspace_offered(
   offers: Offers,
   choice: placements.Choice,
@@ -1041,7 +1047,7 @@ fn workspace_offered(
   }
 }
 
-// The target a catalogue row stands for.
+/// The target a catalogue row stands for.
 fn target_of(entry: Entry) -> Target {
   case entry.executor {
     Some(executor) -> OnExecutor(executor, Some(entry.workspace))
@@ -1049,7 +1055,7 @@ fn target_of(entry: Entry) -> Target {
   }
 }
 
-// A role is offered when it is the default or a name the configuration listed.
+/// A role is offered when it is the default or a name the configuration listed.
 fn in_list(listed: List(String), chosen: Option(String)) -> Bool {
   case chosen {
     None -> True
@@ -1057,8 +1063,8 @@ fn in_list(listed: List(String), chosen: Option(String)) -> Bool {
   }
 }
 
-// Search text cut to `search_limit` bytes on a character boundary, with controls
-// removed.
+/// Search text cut to `search_limit` bytes on a character boundary, with controls
+/// removed.
 fn bounded(text: String) -> String {
   let clean =
     string.to_utf_codepoints(text)
@@ -1068,7 +1074,7 @@ fn bounded(text: String) -> String {
   take_bytes(string.to_graphemes(clean), search_limit, "")
 }
 
-// Graphemes joined while they fit the byte bound.
+/// Graphemes joined while they fit the byte bound.
 fn take_bytes(graphemes: List(String), left: Int, kept: String) -> String {
   case graphemes {
     [] -> kept

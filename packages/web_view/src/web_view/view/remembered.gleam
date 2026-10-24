@@ -73,6 +73,7 @@ pub fn view(
   )
 }
 
+/// Body helper.
 fn body(
   board: Option(session.Board),
   state: remembered.State,
@@ -112,7 +113,7 @@ fn body(
   }
 }
 
-// One filesystem or network permission.
+/// One filesystem or network permission.
 fn permission_row(
   board: session.Board,
   permission: session.Permission,
@@ -129,7 +130,7 @@ fn permission_row(
   )
 }
 
-// One remembered command.
+/// One remembered command.
 fn consent_row(
   consent: session.Consent,
   state: remembered.State,
@@ -145,8 +146,8 @@ fn consent_row(
   )
 }
 
-// A row: what is kept, who allowed it and when, the note when the sign-in it
-// came from has ended, and its button or its question.
+/// A row: what is kept, who allowed it and when, the note when the sign-in it
+/// came from has ended, and its button or its question.
 fn row(
   what: String,
   provenance: session.Provenance,
@@ -189,7 +190,7 @@ fn row(
   ])
 }
 
-// The button under the list, which asks about everything.
+/// The button under the list, which asks about everything.
 fn everything(
   board: session.Board,
   total: Int,
@@ -197,6 +198,8 @@ fn everything(
   presses: Presses(message),
 ) -> Element(message) {
   let armed = remembered.forgetting_everything(board)
+
+  // Dispatch on everything state.
   case state.armed {
     Some(open) if open.key == armed.key ->
       question(
@@ -220,8 +223,8 @@ fn everything(
   }
 }
 
-// The question that replaces a button in place: the sentence, the confirm that
-// names the act, and the way out.
+/// The question that replaces a button in place: the sentence, the confirm that
+/// names the act, and the way out.
 fn question(
   words: String,
   confirm: String,
@@ -252,9 +255,10 @@ fn question(
   ])
 }
 
-// Who allowed it and when, in one quiet line: the daemon's words for the who
-// and the minute in UTC, which is all the wire carries.
+/// Who allowed it and when, in one quiet line: the daemon's words for the who
+/// and the minute in UTC, which is all the wire carries.
 fn who(provenance: session.Provenance) -> String {
+  // Dispatch on who state.
   case session.when(provenance) {
     Some(at) -> {
       let #(date, clock) = home_table.utc(at)

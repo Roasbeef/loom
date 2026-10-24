@@ -32,6 +32,7 @@ pub fn entry_reasons(
 ) -> Dict(String, String) {
   cells
   |> list.filter_map(fn(cell) {
+    // Handle the `entry_reasons` branch dispatch.
     use _ <- result.try(case cell.namespace {
       register.StrandLastResult -> Ok(Nil)
       register.FactCustom ->
@@ -41,9 +42,12 @@ pub fn entry_reasons(
         }
       _ -> Error(Nil)
     })
+
     use decoded <- result.try(
       codec.decode_last_result(cell.value) |> result.replace_error(Nil),
     )
+
+    // Handle the `entry_reasons` branch dispatch.
     case decoded {
       operation.RunLastResult(
         operation: id,
@@ -78,6 +82,7 @@ pub fn operation_reason(
 ) -> Option(String) {
   cells
   |> list.find_map(fn(cell) {
+    // Check if cell is the child-run fact for this operation.
     use _ <- result.try(
       case
         cell.namespace == register.FactCustom
@@ -87,16 +92,24 @@ pub fn operation_reason(
         False -> Error(Nil)
       },
     )
+
+    // Decode child-run metadata fields.
     use fields <- result.try(case cell.value {
       json.Object(fields) -> Ok(fields)
       _ -> Error(Nil)
     })
+
     use recorded <- result.try(list.key_find(fields, "strand"))
+
+    // Handle the `operation_reason` branch dispatch.
     use _ <- result.try(case recorded == json.String(strand) {
       True -> Ok(Nil)
       False -> Error(Nil)
     })
+
     use stop <- result.try(list.key_find(fields, "stop"))
+
+    // Handle the `operation_reason` branch dispatch.
     case stop {
       json.String("parent_finished") ->
         Ok("Stopped because the parent run ended.")

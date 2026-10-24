@@ -103,16 +103,20 @@ pub fn page_of(child: String, scanned: List(Entry), limit: Int) -> Page {
   let more = list.length(scanned) > limit
   let scanned = list.map(list.take(scanned, limit), without_reasoning)
   let #(kept, omitted, oldest, full) = take(scanned, [], 0, None, 0)
+
+  // Determine the next sequence cursor when more entries exist.
   let next = case more || full {
     True -> oldest
     False -> None
   }
+
   Page(child:, entries: kept, omitted:, next:)
 }
 
 // Walks the entries newest first. `kept` is built oldest first by prepending,
 // `oldest` is the sequence of the last entry taken or omitted, and the fourth
 // element says whether the walk stopped at the byte bound.
+/// Takes entries up to the page byte limit, returning kept records and pagination info.
 fn take(
   entries: List(Entry),
   kept: List(Entry),
@@ -120,10 +124,13 @@ fn take(
   oldest: Option(Int),
   bytes: Int,
 ) -> #(List(Entry), Int, Option(Int), Bool) {
+  // Traverse entries newest-first, packing entries within the byte bound.
   case entries {
     [] -> #(kept, omitted, oldest, False)
     [record, ..rest] -> {
       let size = encoded_bytes(record)
+
+      // Check whether this individual entry or accumulated size overflows.
       case size > page_bytes_limit, bytes + size > page_bytes_limit {
         True, _ -> take(rest, kept, omitted + 1, Some(record.seq), bytes)
         False, True -> #(kept, omitted, oldest, True)
@@ -157,6 +164,7 @@ pub fn without_reasoning(record: Entry) -> Entry {
   }
 }
 
+/// Strips thinking/reasoning blocks from an agent message's content.
 fn message_without_reasoning(
   sent: message.AgentMessage,
 ) -> message.AgentMessage {
@@ -216,7 +224,9 @@ pub fn decode(value: JsonValue) -> Result(Page, String) {
   decode_fields(fields)
 }
 
+/// Decodes the fields of a transcript page JSON object.
 fn decode_fields(fields: List(#(String, JsonValue))) -> Result(Page, String) {
+  // Validate the child strand name field.
   use child <- result.try(case list.key_find(fields, "child") {
     Ok(json.String(child)) if child != "" ->
       case string.byte_size(child) > 512 {
@@ -235,6 +245,7 @@ fn decode_fields(fields: List(#(String, JsonValue))) -> Result(Page, String) {
       }
     Ok(_) | Error(Nil) -> Error("the page's entries must be an array")
   })
+
   use entries <- result.try(
     list.try_map(items, fn(item) {
       codec.decode_entry(item)
@@ -260,6 +271,7 @@ fn decode_fields(fields: List(#(String, JsonValue))) -> Result(Page, String) {
   Page(child:, entries:, omitted:, next:)
 }
 
+/// Decodes a JSON value as an object field list, naming `place` on error.
 fn object(
   value: JsonValue,
   place: String,
@@ -325,10 +337,14 @@ pub fn decode_observation(value: JsonValue) -> Result(Event, String) {
     Error("the transcript observation is over its bound"),
   )
   use fields <- result.try(object(value, "a transcript observation"))
+
+  // Extract the request ID integer from the observation fields.
   use id <- result.try(case list.key_find(fields, "request_id") {
     Ok(json.Int(id)) -> Ok(id)
     Ok(_) | Error(Nil) -> Error("request_id must be an integer")
   })
+
+  // Decode the observation status variant and its corresponding payload.
   case list.key_find(fields, "status") {
     Ok(json.String("pending")) -> Ok(Pending(id))
     Ok(json.String("ready")) ->
@@ -417,6 +433,8 @@ pub fn receive(state: State, event: Event) -> State {
 /// ```
 pub fn lines(state: State) -> List(String) {
   let close = "/peek close"
+
+  // Render lines according to the current peek lifecycle state.
   case state {
     Closed -> []
     Loading(child:, orchestrator:, ..) -> [
@@ -511,6 +529,7 @@ pub fn speaker_word(speaker: Speaker) -> String {
   }
 }
 
+/// Converts one transcript entry into speaker-attributed display lines.
 fn entry_said(record: Entry) -> List(Said) {
   case record {
     entry.MessageEntry(message:, ..) -> message_said(message)
@@ -520,7 +539,9 @@ fn entry_said(record: Entry) -> List(Said) {
   }
 }
 
+/// Extracts speaker-attributed display text from an agent message.
 fn message_said(sent: message.AgentMessage) -> List(Said) {
+  // Match message variant to attribute speech to the proper speaker role.
   case sent {
     message.UserMessage(content:, origin:, ..) -> {
       let text =
@@ -542,6 +563,8 @@ fn message_said(sent: message.AgentMessage) -> List(Said) {
           strand_framing.strip(text, "^" <> strand).body
         Some(message.Origin(..)) | None -> text
       }
+
+      // Omit empty stripped prompt bodies from transcript display.
       case body {
         "" -> []
         body -> [said_as(Asked, body)]

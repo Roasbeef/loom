@@ -190,6 +190,8 @@ pub fn navigable(
   session: String,
 ) -> Element(message) {
   let boundary = boundary(top, load)
+
+  // Dispatch on navigable state.
   let top = case latest {
     None -> boundary
     Some(latest) ->
@@ -206,10 +208,13 @@ pub fn navigable(
         ),
       ])
   }
+
+  // Dispatch on navigable state.
   let endpoint = case latest {
     None -> "live"
     Some(_) -> "reading"
   }
+
   rows_at(
     pieces,
     live,
@@ -397,7 +402,7 @@ pub fn rows(
   rows_at(pieces, live, top, draw, replies, marks, folds, session, "live")
 }
 
-// The endpoint marker keeps the browser return visible on short pages.
+/// The endpoint marker keeps the browser return visible on short pages.
 fn rows_at(
   pieces: List(turns.Piece),
   live: List(live.Row),
@@ -448,12 +453,12 @@ fn rows_at(
   )
 }
 
-// The row key of the newest settled reasoning row in the lane, or nothing
-// when it holds none. Only that row may take an open live row's state when
-// the live block settles into it (`fold_row.Handoff`): a row that is older,
-// such as one Load older brings in, never is the block the live row became.
-// The key is the engine's identity for the row and is only compared here,
-// never drawn.
+/// The row key of the newest settled reasoning row in the lane, or nothing
+/// when it holds none. Only that row may take an open live row's state when
+/// the live block settles into it (`fold_row.Handoff`): a row that is older,
+/// such as one Load older brings in, never is the block the live row became.
+/// The key is the engine's identity for the row and is only compared here,
+/// never drawn.
 fn newest_thought(pieces: List(turns.Piece)) -> String {
   pieces
   |> list.flat_map(fn(piece) {
@@ -473,6 +478,7 @@ fn newest_thought(pieces: List(turns.Piece)) -> String {
   |> result.unwrap("")
 }
 
+/// Thought keys helper.
 fn thought_keys(block: transcript_lines.Block) -> List(String) {
   list.filter_map(block.rows, fn(row) {
     case row.1.speaker {
@@ -491,10 +497,10 @@ fn thought_keys(block: transcript_lines.Block) -> List(String) {
 /// strand key).
 pub const strand_key_marker = "strand-key"
 
-// The live region as the lane's last entry, or no entry while nothing is
-// streaming. Its key is a word, and a piece's key is a sequence, so the two
-// never collide. It is a row of the timeline like any other, in the hue of the
-// strand on screen, and its dot pulses: something is being written.
+/// The live region as the lane's last entry, or no entry while nothing is
+/// streaming. Its key is a word, and a piece's key is a sequence, so the two
+/// never collide. It is a row of the timeline like any other, in the hue of the
+/// strand on screen, and its dot pulses: something is being written.
 fn live_entry(
   rows: List(live.Row),
   draw: fn(Line) -> Element(message),
@@ -539,7 +545,7 @@ fn boundary(top: Top, load: message) -> Element(message) {
   html.div([attribute.class("lane-top")], [boundary_content(top, load)])
 }
 
-// Keeping this first child fixed preserves the admitted Load older path.
+/// Keeping this first child fixed preserves the admitted Load older path.
 fn boundary_content(top: Top, load: message) -> Element(message) {
   case top {
     Beginning ->
@@ -575,6 +581,7 @@ fn boundary_content(top: Top, load: message) -> Element(message) {
   }
 }
 
+/// Piece key helper.
 fn piece_key(piece: turns.Piece) -> String {
   case piece {
     turns.Plain(block:, ..)
@@ -591,10 +598,10 @@ fn piece_key(piece: turns.Piece) -> String {
   }
 }
 
-// One row of the timeline: the dot in the hue of the strand the piece belongs
-// to, and the piece. The dot is drawn for every piece so the line reads as one,
-// and is a control only where the piece belongs to another strand the page
-// lists. Its marker is the position of that strand's card, a number.
+/// One row of the timeline: the dot in the hue of the strand the piece belongs
+/// to, and the piece. The dot is drawn for every piece so the line reads as one,
+/// and is a control only where the piece belongs to another strand the page
+/// lists. Its marker is the position of that strand's card, a number.
 fn timeline_row(
   piece: turns.Piece,
   draw: fn(Line) -> Element(message),
@@ -616,10 +623,10 @@ fn timeline_row(
   ])
 }
 
-// The hue a piece's dot is drawn in and the card it focuses, if any. A piece
-// of the strand on screen is that strand's; a spawn and a result are the
-// child's; a nudge and the advisor's commentary are the advisor's; another
-// session's message is nobody's here.
+/// The hue a piece's dot is drawn in and the card it focuses, if any. A piece
+/// of the strand on screen is that strand's; a spawn and a result are the
+/// child's; a nudge and the advisor's commentary are the advisor's; another
+/// session's message is nobody's here.
 fn belongs_to(piece: turns.Piece, marks: Marks) -> #(turns.Hue, Option(Int)) {
   case piece {
     turns.Plain(..)
@@ -657,9 +664,9 @@ fn marker(target: Option(Int)) -> List(attribute.Attribute(message)) {
   }
 }
 
-// A strand's tag in a piece: a real button carrying the marker where the
-// strand can be focused, and plain text where it cannot, so the words read the
-// same either way.
+/// A strand's tag in a piece: a real button carrying the marker where the
+/// strand can be focused, and plain text where it cannot, so the words read the
+/// same either way.
 fn tag(label: String, target: Option(Int)) -> Element(message) {
   case target {
     Some(position) ->
@@ -675,6 +682,7 @@ fn tag(label: String, target: Option(Int)) -> Element(message) {
   }
 }
 
+/// Piece element helper.
 fn piece_element(
   piece: turns.Piece,
   draw: fn(Line) -> Element(message),
@@ -882,13 +890,15 @@ fn piece_element(
   }
 }
 
-// What a peer card's head calls the session that wrote to this one: the
-// catalogue's name when the page holds one, and otherwise the first eight
-// characters of its identity, as the sidebar abbreviates an unnamed session.
-// An observer's lane holds no catalogue, so it always abbreviates. Both are
-// drawn as text nodes.
+/// What a peer card's head calls the session that wrote to this one: the
+/// catalogue's name when the page holds one, and otherwise the first eight
+/// characters of its identity, as the sidebar abbreviates an unnamed session.
+/// An observer's lane holds no catalogue, so it always abbreviates. Both are
+/// drawn as text nodes.
 fn sender(replies: Replies(message), session: String) -> String {
   let abbreviated = string.slice(session, 0, 8)
+
+  // Dispatch on sender state.
   case replies {
     WithQueue(peer:, ..) -> sender(peer, session)
     NoReplies -> abbreviated
@@ -896,13 +906,13 @@ fn sender(replies: Replies(message), session: String) -> String {
   }
 }
 
-// The buttons of a peer card, or nothing on a lane that offers none. Reply is
-// a real button, labelled for what it does, and puts a draft in the composer
-// rather than sending anything: the operator reads it and sends it. Open is
-// drawn only when the page can open the session the peer's message names
-// (`Replies.open`), and asks the daemon for a page of it. The label is the
-// catalogue's name for the session, a text node, and the peer's own words
-// are the card's head and body, which are unchanged.
+/// The buttons of a peer card, or nothing on a lane that offers none. Reply is
+/// a real button, labelled for what it does, and puts a draft in the composer
+/// rather than sending anything: the operator reads it and sends it. Open is
+/// drawn only when the page can open the session the peer's message names
+/// (`Replies.open`), and asks the daemon for a page of it. The label is the
+/// catalogue's name for the session, a text node, and the peer's own words
+/// are the card's head and body, which are unchanged.
 fn peer_actions(
   replies: Replies(message),
   key: String,
@@ -927,6 +937,7 @@ fn peer_actions(
   }
 }
 
+/// Open button helper.
 fn open_button(
   destination: Option(Destination(message)),
 ) -> List(Element(message)) {
@@ -952,17 +963,19 @@ fn card_body(body: String) -> Element(message) {
   parsed_card_body(body)
 }
 
-// The words of a message another strand or session sent. One the composer
-// would shorten (a long paste, an injected note) is drawn as the line the
-// terminal shows for it, opened in place to the whole text; anything else is
-// its body. The opening is the page's own `<loom-expand>`, so it asks the
-// daemon for nothing: the piece holds the whole text (`turns.Peer`, `turns.Sibling`), and
-// the body is cut as every expansion is, since the closed form still sits in
-// the page. Both reach the page as text nodes through the Markdown view.
+/// The words of a message another strand or session sent. One the composer
+/// would shorten (a long paste, an injected note) is drawn as the line the
+/// terminal shows for it, opened in place to the whole text; anything else is
+/// its body. The opening is the page's own `<loom-expand>`, so it asks the
+/// daemon for nothing: the piece holds the whole text (`turns.Peer`, `turns.Sibling`), and
+/// the body is cut as every expansion is, since the closed form still sits in
+/// the page. Both reach the page as text nodes through the Markdown view.
 fn message_body(text: String) -> Element(message) {
   use <- element.memo([element.ref(text)])
   let shown =
     composer.without_expand_hint(composer.transcript_text(text, False))
+
+  // Dispatch on message_body state.
   case shown == text {
     True -> parsed_card_body(text)
     False ->
@@ -1005,13 +1018,13 @@ type Shown {
   Opened
 }
 
-// The divider of a settled turn's work: a button when the fold has a number to
-// be opened by, and plain words when it has none. Its marker, a fixed word,
-// is how `<loom-follow>` tells the press from any other click in the lane, so
-// the growth that follows is the reader's own and does not scroll the page past
-// the divider they pressed. The glyph is drawn by the stylesheet from the
-// button's state, so the button holds one text node and every click lands on
-// the button itself.
+/// The divider of a settled turn's work: a button when the fold has a number to
+/// be opened by, and plain words when it has none. Its marker, a fixed word,
+/// is how `<loom-follow>` tells the press from any other click in the lane, so
+/// the growth that follows is the reader's own and does not scroll the page past
+/// the divider they pressed. The glyph is drawn by the stylesheet from the
+/// button's state, so the button holds one text node and every click lands on
+/// the button itself.
 fn divider(
   worked: turns.Worked,
   id: Option(Int),
@@ -1019,6 +1032,8 @@ fn divider(
   shown: Shown,
 ) -> Element(message) {
   let words = html.text(turns.divider(worked))
+
+  // Dispatch on divider state.
   case id, folds {
     Some(id), Folds(toggle:, ..) ->
       html.button(
@@ -1036,8 +1051,8 @@ fn divider(
   }
 }
 
-// The line that says how many earlier steps of an opened fold are not
-// drawn, or nothing when every step is.
+/// The line that says how many earlier steps of an opened fold are not
+/// drawn, or nothing when every step is.
 fn hidden_line(hidden: Int) -> List(#(String, Element(message))) {
   case hidden {
     0 -> []
@@ -1055,11 +1070,11 @@ fn hidden_line(hidden: Int) -> List(#(String, Element(message))) {
   }
 }
 
-// A turn's items, keyed by their blocks and calls. The window drops its
-// oldest rows as new ones arrive, so a turn's first items leave while the
-// rest stay; keyed, the items that stay are matched to themselves and their
-// line memos hold, where unkeyed every item would be compared with its
-// neighbour and every line drawn again.
+/// A turn's items, keyed by their blocks and calls. The window drops its
+/// oldest rows as new ones arrive, so a turn's first items leave while the
+/// rest stay; keyed, the items that stay are matched to themselves and their
+/// line memos hold, where unkeyed every item would be compared with its
+/// neighbour and every line drawn again.
 fn work_items(
   items: List(turns.Item),
   draw: fn(Line) -> Element(message),
@@ -1067,26 +1082,29 @@ fn work_items(
   newest: String,
 ) -> List(#(String, Element(message))) {
   list.map(items, fn(item) {
+    // Dispatch on work_items state.
     let key = case item {
       turns.Narrated(block:, ..) -> block.key
       turns.Step(key:, ..) | turns.Memory(key:, ..) -> key
     }
+
     #(key, item_element(item, draw, session, newest))
   })
 }
 
-// One item of the fold, each a line with the rest behind it. A call's body is
-// its whole program and result when the page holds them, and the rows the
-// transcript draws under the call when it does not; the two say the same
-// thing, so only one is drawn. A foreground `code_mode` call is the exception:
-// it is a card (`view/program_card`) drawn from the call and its result, whose
-// text rows the terminal alone uses.
+/// One item of the fold, each a line with the rest behind it. A call's body is
+/// its whole program and result when the page holds them, and the rows the
+/// transcript draws under the call when it does not; the two say the same
+/// thing, so only one is drawn. A foreground `code_mode` call is the exception:
+/// it is a card (`view/program_card`) drawn from the call and its result, whose
+/// text rows the terminal alone uses.
 fn item_element(
   item: turns.Item,
   draw: fn(Line) -> Element(message),
   session: String,
   newest: String,
 ) -> Element(message) {
+  // Dispatch on item_element state.
   case item {
     turns.Narrated(block:, thoughts:, took:) ->
       block_element(block, thoughts, took, draw, NoFolds, session, newest)
@@ -1106,6 +1124,7 @@ fn item_element(
       result_source:,
       program:,
     ) -> {
+      // Dispatch on item_element state.
       let links = case result_source {
         None -> []
         Some(id) -> [tool_result.links(session, id)]
@@ -1122,10 +1141,12 @@ fn item_element(
             ..links
           ])
         None -> {
+          // Dispatch on item_element state.
           let rows = case full {
             [] -> detail
             [_, ..] -> full
           }
+
           fold_row.step(
             standing,
             words,
@@ -1141,6 +1162,7 @@ fn item_element(
   }
 }
 
+/// Standing text helper.
 fn standing_text(standing: turns.Standing) -> String {
   case standing {
     turns.Pending -> "running"
@@ -1149,12 +1171,12 @@ fn standing_text(standing: turns.Standing) -> String {
   }
 }
 
-// A block drawn as the transcript draws it, one line per row. The blank a
-// terminal places between tool groups is spacing here, so a spacer block
-// never reaches the lane. A reasoning row is a row of its own (`reasoning_row`;
-// the time is the response's, from the record before it to its own, not the
-// block's alone), opened to the full reasoning when the page holds it
-// (`thoughts`, by the row's key).
+/// A block drawn as the transcript draws it, one line per row. The blank a
+/// terminal places between tool groups is spacing here, so a spacer block
+/// never reaches the lane. A reasoning row is a row of its own (`reasoning_row`;
+/// the time is the response's, from the record before it to its own, not the
+/// block's alone), opened to the full reasoning when the page holds it
+/// (`thoughts`, by the row's key).
 fn block_element(
   block: transcript_lines.Block,
   thoughts: Dict(String, List(Line)),
@@ -1165,20 +1187,29 @@ fn block_element(
   newest: String,
 ) -> Element(message) {
   let counted = turns.reasoning_lines(block)
+
+  // Dispatch on block_element state.
   let thoughts = case dict.is_empty(thoughts) {
     True -> turns.reasoning_thoughts(block, expansion.capped)
     False -> thoughts
   }
+
   let rows =
     list.map(block.rows, fn(row) {
+      // Dispatch on block_element state.
       let heir = case row.0 == newest {
         True -> fold_row.Takes
         False -> fold_row.Declines
       }
+
       let known = option.from_result(dict.get(counted, row.0))
+
+      // Dispatch on block_element state.
       case row.1.speaker {
         transcript_line.ReasoningDigest -> {
           let held = result.unwrap(dict.get(thoughts, row.0), [])
+
+          // Dispatch on block_element state.
           case held {
             [first, ..] ->
               reasoning_row(
@@ -1240,33 +1271,38 @@ fn block_element(
   )
 }
 
-// A person's message. One the shared projection shortened (a long paste, an
-// injected message) is drawn as that row with a button after it, and as the
-// whole text, cut as every expansion is (`expansion.capped`), while the reader
-// has it open. The text is read from the entry the block was drawn from
-// (`turns.abridged`), so nothing is fetched and a sealed turn opens as a live
-// one does, and it reaches the page as text nodes like every line. Both
-// states sit in one `div.message` whose children are the text and then the
-// button, so the button keeps its place when it opens and the observer's
-// socket can name its path (`component.message_click`). A message that was not
-// shortened, or a lane with no handler to send, is its row alone.
+/// A person's message. One the shared projection shortened (a long paste, an
+/// injected message) is drawn as that row with a button after it, and as the
+/// whole text, cut as every expansion is (`expansion.capped`), while the reader
+/// has it open. The text is read from the entry the block was drawn from
+/// (`turns.abridged`), so nothing is fetched and a sealed turn opens as a live
+/// one does, and it reaches the page as text nodes like every line. Both
+/// states sit in one `div.message` whose children are the text and then the
+/// button, so the button keeps its place when it opens and the observer's
+/// socket can name its path (`component.message_click`). A message that was not
+/// shortened, or a lane with no handler to send, is its row alone.
 fn message_row(
   block: transcript_lines.Block,
   row: #(String, Line),
   draw: fn(Line) -> Element(message),
   folds: Folds(message),
 ) -> Element(message) {
+  // Dispatch on message_row state.
   case folds, turns.abridged(block) {
     Folds(expand:, expanded:, ..), Some(#(key, whole)) if key == row.0 -> {
+      // Check whether fold key is currently expanded.
       let shown = case list.contains(expanded, block.key) {
         True -> Opened
         False -> Closed
       }
+
+      // Dispatch on message_row state.
       let lines = case shown {
         Opened ->
           expansion.capped([transcript_line.Line(transcript_line.User, whole)])
         Closed -> [row.1]
       }
+
       html.div([attribute.class("message")], [
         html.div(
           [attribute.class("message-text")],
@@ -1293,20 +1329,20 @@ fn message_row(
   }
 }
 
-// Every settled reasoning block is drawn by this one function, whichever
-// speaker its row has: the digest the transcript keeps for a block (with the
-// whole text beside it when the page holds it), the whole text itself, or a
-// provider's summary. The row is the terminal's heading (`step_words`: the
-// verb, the line count when there is more to open, the time), then a preview
-// drawn by the caller, and behind the chevron the `body`. `text` is the
-// block's own text, which the line count is read from. An empty `body` means
-// the preview already says everything, so the row has no chevron and no count
-// of its own. A sealed turn keeps no full text, so its rows have an empty body
-// however long the block was; `known` is the block's line count read from the
-// response it was drawn from (`turns.reasoning_lines`), and a block of more
-// than one line says it, so a row beside an answer counts as a step in a fold
-// does. The text is the model's or the provider's and is drawn only as text
-// nodes.
+/// Every settled reasoning block is drawn by this one function, whichever
+/// speaker its row has: the digest the transcript keeps for a block (with the
+/// whole text beside it when the page holds it), the whole text itself, or a
+/// provider's summary. The row is the terminal's heading (`step_words`: the
+/// verb, the line count when there is more to open, the time), then a preview
+/// drawn by the caller, and behind the chevron the `body`. `text` is the
+/// block's own text, which the line count is read from. An empty `body` means
+/// the preview already says everything, so the row has no chevron and no count
+/// of its own. A sealed turn keeps no full text, so its rows have an empty body
+/// however long the block was; `known` is the block's line count read from the
+/// response it was drawn from (`turns.reasoning_lines`), and a block of more
+/// than one line says it, so a row beside an answer counts as a step in a fold
+/// does. The text is the model's or the provider's and is drawn only as text
+/// nodes.
 fn reasoning_row(
   provenance: step_words.Provenance,
   text: String,
@@ -1316,11 +1352,13 @@ fn reasoning_row(
   took: Option(Int),
   heir: fold_row.Handoff,
 ) -> Element(message) {
+  // Dispatch on reasoning_row state.
   let count = case body, known {
     [_, ..], _ -> Some(list.length(string.split(text, "\n")))
     [], Some(lines) if lines > 1 -> Some(lines)
     [], Some(_) | [], None -> None
   }
+
   fold_row.reasoning(
     step_words.reasoning_of(provenance, count, took),
     shown,
@@ -1329,13 +1367,13 @@ fn reasoning_row(
   )
 }
 
-// The one-line preview of a settled block, parsed once. A settled block's text
-// does not change, so the memo's one dependency is the text and a lane render
-// that finds it unchanged does no Markdown work for it. Only the preview is
-// memoized: the body's own line memos are leaves, and a memo around them
-// would drop their cache entries when it hit (see `rows`). Blankness belongs
-// inside the memo too: trimming unchanged reasoning can scan and allocate
-// from its whole text even when the preview's Markdown is already cached.
+/// The one-line preview of a settled block, parsed once. A settled block's text
+/// does not change, so the memo's one dependency is the text and a lane render
+/// that finds it unchanged does no Markdown work for it. Only the preview is
+/// memoized: the body's own line memos are leaves, and a memo around them
+/// would drop their cache entries when it hit (see `rows`). Blankness belongs
+/// inside the memo too: trimming unchanged reasoning can scan and allocate
+/// from its whole text even when the preview's Markdown is already cached.
 fn preview(text: String) -> List(Element(message)) {
   [
     element.memo([element.ref(text)], fn() {
@@ -1351,12 +1389,12 @@ fn preview(text: String) -> List(Element(message)) {
   ]
 }
 
-// The preview of a provider's summary: every non-blank line of it, uncut and
-// separated by line breaks, in a span the stylesheet wraps and clamps to a few
-// lines (`.preview.summary`). The terminal prints the whole summary above the
-// detail, and a reader should not have to open the row to read it. Each line
-// is provider text drawn as text nodes through `markdown_view.line`, and the
-// memo is keyed by the summary like `preview`.
+/// The preview of a provider's summary: every non-blank line of it, uncut and
+/// separated by line breaks, in a span the stylesheet wraps and clamps to a few
+/// lines (`.preview.summary`). The terminal prints the whole summary above the
+/// detail, and a reader should not have to open the row to read it. Each line
+/// is provider text drawn as text nodes through `markdown_view.line`, and the
+/// memo is keyed by the summary like `preview`.
 fn summary_preview(summary: String) -> List(Element(message)) {
   [
     element.memo([element.ref(summary)], fn() {
@@ -1378,18 +1416,18 @@ fn summary_preview(summary: String) -> List(Element(message)) {
   ]
 }
 
-// A summarized block's row text is the terminal's header line and the summary
-// beneath it; the summary is the text, and the header's words are the
-// heading's. The collapsed row shows the whole summary, wrapped and clamped
-// (`summary_preview`). When the page holds the block's own text (`held`, the
-// full form `turns` keeps by the row's key), the heading counts the lines of
-// the block the summary stands for and the time it took, and the chevron opens
-// two parts: the summary under a "Summary" label, a hairline, and the block's
-// own text under a "Full reasoning" label. The preview is hidden while the row
-// is open, so the summary is repeated in the body whenever there is a second
-// part to separate it from. A summary alone, with no text behind it, counts
-// and opens its own lines with no labels and no divider, since there is only
-// one part to read.
+/// A summarized block's row text is the terminal's header line and the summary
+/// beneath it; the summary is the text, and the header's words are the
+/// heading's. The collapsed row shows the whole summary, wrapped and clamped
+/// (`summary_preview`). When the page holds the block's own text (`held`, the
+/// full form `turns` keeps by the row's key), the heading counts the lines of
+/// the block the summary stands for and the time it took, and the chevron opens
+/// two parts: the summary under a "Summary" label, a hairline, and the block's
+/// own text under a "Full reasoning" label. The preview is hidden while the row
+/// is open, so the summary is repeated in the body whenever there is a second
+/// part to separate it from. A summary alone, with no text behind it, counts
+/// and opens its own lines with no labels and no divider, since there is only
+/// one part to read.
 fn summary_row(
   text: String,
   held: List(Line),
@@ -1398,12 +1436,16 @@ fn summary_row(
   heir: fold_row.Handoff,
   draw: fn(Line) -> Element(message),
 ) -> Element(message) {
+  // Dispatch on summary_row state.
   let summary = case string.split_once(text, "\n") {
     Ok(#(_, summary)) -> summary
     Error(Nil) -> text
   }
+
   let summary_lines = [transcript_line.Line(transcript_line.Reasoning, summary)]
   let drawn = fn(lines) { list.map(lines, fold_row.line_row(_, draw)) }
+
+  // Dispatch on summary_row state.
   case held, string.trim(summary) {
     [first, ..], "" ->
       reasoning_row(
@@ -1443,11 +1485,13 @@ fn summary_row(
   }
 }
 
-// The body of a block whose whole text is the row's text: the text itself
-// when it runs past the one line the preview shows, and nothing when it does
-// not, so a short block is not opened to what it already says.
+/// The body of a block whose whole text is the row's text: the text itself
+/// when it runs past the one line the preview shows, and nothing when it does
+/// not, so a short block is not opened to what it already says.
 fn more_of(text: String) -> List(Line) {
   let trimmed = string.trim(text)
+
+  // Expand block lines when text spans multiple lines or exceeds limit.
   case
     string.contains(trimmed, "\n")
     || string.length(trimmed) > step_words.result_limit
@@ -1457,16 +1501,16 @@ fn more_of(text: String) -> List(Line) {
   }
 }
 
-// A child's report under its who-line: nothing for an empty report, the text
-// alone for one short line, and otherwise the report's first line as the row
-// a reader scans, with the whole report in Markdown behind it. The line is the
-// report's own Markdown cut to one row, so its bold and code draw as they do
-// in the body, and a report whose breaks arrived as the characters `\n` is
-// read with real ones first (`step_words.spoken_breaks`), so no backslash is
-// drawn and the second line is behind the chevron.
-// Settled reports are unchanged while provider fragments arrive. Their
-// preview and body must both be built inside the memo, so those fragments
-// do not parse the report before Lustre can reuse it.
+/// A child's report under its who-line: nothing for an empty report, the text
+/// alone for one short line, and otherwise the report's first line as the row
+/// a reader scans, with the whole report in Markdown behind it. The line is the
+/// report's own Markdown cut to one row, so its bold and code draw as they do
+/// in the body, and a report whose breaks arrived as the characters `\n` is
+/// read with real ones first (`step_words.spoken_breaks`), so no backslash is
+/// drawn and the second line is behind the chevron.
+/// Settled reports are unchanged while provider fragments arrive. Their
+/// preview and body must both be built inside the memo, so those fragments
+/// do not parse the report before Lustre can reuse it.
 fn result_report(report: String) -> Element(message) {
   use <- element.memo([element.ref(report)])
   let report = step_words.spoken_breaks(report)
@@ -1482,12 +1526,12 @@ fn result_report(report: String) -> Element(message) {
   })
 }
 
-// The pictures of a row's images, or nothing: a strip of thumbnails after the
-// row's text. An image the page does not draw (a type outside the raster
-// four) keeps its position, so the pictures that are drawn are named by the
-// place their image holds in the row and not by how many came before. With no
-// session there is no address to draw, and none is. Build the row's address
-// key only after finding a picture to draw; most transcript rows have none.
+/// The pictures of a row's images, or nothing: a strip of thumbnails after the
+/// row's text. An image the page does not draw (a type outside the raster
+/// four) keeps its position, so the pictures that are drawn are named by the
+/// place their image holds in the row and not by how many came before. With no
+/// session there is no address to draw, and none is. Build the row's address
+/// key only after finding a picture to draw; most transcript rows have none.
 fn pictures(
   session: String,
   key: String,
@@ -1497,6 +1541,8 @@ fn pictures(
     images
     |> list.index_map(fn(picture, position) { #(picture, position) })
     |> list.filter(fn(entry) { image.drawn(entry.0) })
+
+  // Dispatch on pictures state.
   case session, drawn {
     "", _ | _, [] -> []
     _, _ -> {
@@ -1511,13 +1557,13 @@ fn pictures(
   }
 }
 
-// One picture: a thumbnail that is also the control that opens it. A
-// `<details>` is opened and closed by the browser, with no script and no
-// event the page hears, so the observer's page, which admits almost none,
-// can grow a picture on a click. The stylesheet draws the closed form small
-// and the open form at the width of the lane. The alternative text is fixed,
-// since the row's own text already says the type and nothing the session
-// wrote is a fit for an attribute.
+/// One picture: a thumbnail that is also the control that opens it. A
+/// `<details>` is opened and closed by the browser, with no script and no
+/// event the page hears, so the observer's page, which admits almost none,
+/// can grow a picture on a click. The stylesheet draws the closed form small
+/// and the open form at the width of the lane. The alternative text is fixed,
+/// since the row's own text already says the type and nothing the session
+/// wrote is a fit for an attribute.
 fn thumbnail(session: String, ref: String, position: Int) -> Element(message) {
   html.details([attribute.class("picture")], [
     html.summary([attribute.class("picture-summary")], [
@@ -1531,10 +1577,10 @@ fn thumbnail(session: String, ref: String, position: Int) -> Element(message) {
   ])
 }
 
-// A line is the shared projection's, which words a collapsed row with the
-// terminal's `Ctrl+G` hint. The page has no such key, so the hint is taken off
-// the row here, at the one place the page draws a line, and the rows the
-// reader opens are the chevron's.
+/// A line is the shared projection's, which words a collapsed row with the
+/// terminal's `Ctrl+G` hint. The page has no such key, so the hint is taken off
+/// the row here, at the one place the page draws a line, and the rows the
+/// reader opens are the chevron's.
 fn line_element(shown: Line) -> Element(message) {
   let line =
     transcript_line.Line(
@@ -1542,6 +1588,7 @@ fn line_element(shown: Line) -> Element(message) {
       text: composer.without_expand_hint(shown.text),
     )
 
+  // Dispatch on line_element state.
   case body_of(line.speaker) {
     // A patch is a diff, drawn in colour a line at a time by `view/diff`.
     Literal if line.speaker == transcript_line.ToolPatch ->
@@ -1584,9 +1631,9 @@ type Body {
   Literal
 }
 
-// The speakers whose text the terminal renders as Markdown
-// (`tui/render.speaker_rows`), so both hosts agree on which rows are
-// formatted. Everything else, tool output above all, stays preformatted.
+/// The speakers whose text the terminal renders as Markdown
+/// (`tui/render.speaker_rows`), so both hosts agree on which rows are
+/// formatted. Everything else, tool output above all, stays preformatted.
 fn body_of(speaker: transcript_line.Speaker) -> Body {
   case speaker {
     transcript_line.Assistant
@@ -1621,8 +1668,8 @@ fn body_of(speaker: transcript_line.Speaker) -> Body {
   }
 }
 
-// A class per speaker, which is the whole of a line's styling here as in the
-// terminal. The stylesheet decides what each looks like.
+/// A class per speaker, which is the whole of a line's styling here as in the
+/// terminal. The stylesheet decides what each looks like.
 fn speaker_class(
   speaker: transcript_line.Speaker,
 ) -> attribute.Attribute(message) {

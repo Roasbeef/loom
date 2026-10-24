@@ -172,16 +172,19 @@ pub fn within_bound(agents: List(RemoteAgent)) -> List(RemoteAgent) {
 
 // Walks the entries in order, adding each one's encoded bytes and the comma
 // before it, and stops before the one that would pass the bound. The two bytes
-// the walk starts from are the brackets of the array.
+/// Keeps as many remote agents as fit within the byte size limit.
 fn keep_within(
   agents: List(RemoteAgent),
   kept: List(RemoteAgent),
   bytes: Int,
 ) -> List(RemoteAgent) {
+  // Recursively accumulate agents until the byte limit is reached.
   case agents {
     [] -> list.reverse(kept)
     [agent, ..rest] -> {
       let size = string.byte_size(json.to_string(encode(agent))) + 1
+
+      // Stop accumulating once the serialized payload would exceed the budget.
       case bytes + size > list_bytes_limit {
         True -> list.reverse(kept)
         False -> keep_within(rest, [agent, ..kept], bytes + size)
@@ -228,6 +231,7 @@ pub fn decode_all(
 /// assert remote_agent.decode(remote_agent.encode(agent)) == Ok(agent)
 /// ```
 pub fn decode(value: JsonValue) -> Result(RemoteAgent, String) {
+  // Verify that the entry value is a JSON object.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     json.Array(..)
@@ -237,11 +241,15 @@ pub fn decode(value: JsonValue) -> Result(RemoteAgent, String) {
     | json.Bool(..)
     | json.Null -> Error("a remote child must be an object")
   })
+
   use id <- result.try(text(fields, "id", max_name_bytes))
+
+  // Refuse empty agent identifiers.
   use Nil <- result.try(case id {
     "" -> Error("remote_children.id must not be empty")
     _ -> Ok(Nil)
   })
+
   use parent <- result.try(text(fields, "parent", max_name_bytes))
   use orchestrator <- result.try(text(fields, "orchestrator", max_name_bytes))
   use standing <- result.try(standing_of(fields))
@@ -249,12 +257,15 @@ pub fn decode(value: JsonValue) -> Result(RemoteAgent, String) {
   use summary <- result.try(text(fields, "summary", max_text_bytes))
   use tokens <- result.try(count(fields, "tokens"))
   use model <- result.try(text(fields, "model", max_text_bytes))
+
+  // Decode optional non-negative age in milliseconds.
   use age_ms <- result.map(case list.key_find(fields, "age_ms") {
     Ok(json.Null) -> Ok(None)
     Ok(json.Int(age)) if age >= 0 -> Ok(Some(age))
     Ok(_) | Error(Nil) ->
       Error("remote_children.age_ms must be a nonnegative integer or null")
   })
+
   RemoteAgent(
     id:,
     parent:,
@@ -268,6 +279,7 @@ pub fn decode(value: JsonValue) -> Result(RemoteAgent, String) {
   )
 }
 
+/// Decodes the standing status variant from remote agent fields.
 fn standing_of(fields: List(#(String, JsonValue))) -> Result(Standing, String) {
   case list.key_find(fields, "standing") {
     Ok(json.String("starting")) -> Ok(Starting)
@@ -280,7 +292,7 @@ fn standing_of(fields: List(#(String, JsonValue))) -> Result(Standing, String) {
   }
 }
 
-// A string field within `bound` bytes.
+/// Decodes a string field within a byte bound from remote agent fields.
 fn text(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -297,6 +309,7 @@ fn text(
   }
 }
 
+/// Decodes a non-negative integer count field from remote agent fields.
 fn count(
   fields: List(#(String, JsonValue)),
   name: String,

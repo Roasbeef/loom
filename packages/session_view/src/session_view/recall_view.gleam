@@ -105,7 +105,9 @@ pub fn hits(details: JsonValue) -> Option(List(Hit)) {
   }
 }
 
+/// Decodes one search hit from its JSON object fields.
 fn hit(value: JsonValue) -> Result(Hit, Nil) {
+  // Decode the hit from an object shape or fail if malformed.
   case value {
     json.Object(fields) -> {
       use session <- result.try(text(fields, "session"))
@@ -153,12 +155,15 @@ pub fn count_text(count: Int) -> String {
 /// //   == ["019a3c1e · 7f2a91b4c0d1 · assistant · 2025-10-11 · deploy"]
 /// ```
 pub fn hit_rows(found: List(Hit), extent: notes_view.Extent) -> List(String) {
+  // Render all hits or the excerpt window depending on the requested extent.
   case extent {
     notes_view.Complete -> list.map(found, hit_row(_, complete_snippet))
     notes_view.Excerpt -> {
       let shown = list.take(found, excerpt_hits)
       let left_out = list.length(list.drop(found, excerpt_hits))
       let rows = list.map(shown, hit_row(_, excerpt_snippet))
+
+      // Append a trailing row when some hits were omitted from the excerpt.
       case left_out {
         0 -> rows
         _ ->
@@ -170,8 +175,7 @@ pub fn hit_rows(found: List(Hit), extent: notes_view.Extent) -> List(String) {
   }
 }
 
-// One hit as a row. The separators are the interpunct the other tool rows use,
-// and the snippet comes last because it is the only part whose length varies.
+/// Formats one search hit into an interpunct-separated row.
 fn hit_row(hit: Hit, snippet_limit: Int) -> String {
   string.join(
     [
@@ -254,11 +258,14 @@ pub fn call_summary(arguments: JsonValue) -> Option(String) {
   }
 }
 
+/// Summarizes a search call with its query and filters.
 fn search_summary(fields: List(#(String, JsonValue))) -> String {
+  // Extract the trimmed query string or fall back to recent entries.
   let subject = case text(fields, "query") |> result.map(string.trim) {
     Ok(query) if query != "" -> "\"" <> clipped(query, query_limit) <> "\""
     _ -> "recent entries"
   }
+
   let filters =
     [
       filter(fields, "kind", "kind "),
@@ -269,27 +276,32 @@ fn search_summary(fields: List(#(String, JsonValue))) -> String {
   string.join([tool_name <> " · " <> subject, ..filters], " · ")
 }
 
-// A filter the call carried, with its words, and nothing for one it did not.
-// A `before` is an entry identifier, shortened as a hit's own is.
+/// Formats one search filter argument when present in the call fields.
 fn filter(
   fields: List(#(String, JsonValue)),
   name: String,
   words: String,
 ) -> Result(String, Nil) {
   use value <- result.map(text(fields, name))
+
+  // Format entry identifiers shortened and generic filters clipped.
   case name {
     "before" -> words <> short_entry(value)
     _ -> words <> clipped(value, 24)
   }
 }
 
+/// Summarizes a read call naming session, entry, and context window.
 fn read_summary(fields: List(#(String, JsonValue))) -> Option(String) {
+  // Extract the session and entry identifiers required for reading.
   case text(fields, "session"), text(fields, "entry") {
     Ok(session), Ok(entry) -> {
+      // Format the around context window if one was requested.
       let around = case whole(fields, "around") {
         Ok(count) if count > 0 -> " · around " <> int.to_string(count)
         _ -> ""
       }
+
       Some(
         tool_name
         <> " · read "
@@ -316,6 +328,7 @@ fn read_summary(fields: List(#(String, JsonValue))) -> Option(String) {
 /// assert recall_view.utc_date(0) == "unknown date"
 /// ```
 pub fn utc_date(ms: Int) -> String {
+  // Non-positive millisecond timestamps represent an unknown epoch date.
   case ms > 0 {
     False -> "unknown date"
     True -> {
@@ -344,15 +357,21 @@ pub fn utc_date(ms: Int) -> String {
       // calendar year and are renumbered here.
       let shifted_month = { 5 * day_of_year + 2 } / 153
       let day = day_of_year - { 153 * shifted_month + 2 } / 5 + 1
+
+      // Adjust the shifted calendar month index back to conventional calendar months.
       let month = case shifted_month < 10 {
         True -> shifted_month + 3
         False -> shifted_month - 9
       }
+
       let year = year_of_era + era * 400
+
+      // Increment the calendar year for January and February in the shifted system.
       let year = case month <= 2 {
         True -> year + 1
         False -> year
       }
+
       int.to_string(year) <> "-" <> two_digits(month) <> "-" <> two_digits(day)
     }
   }
@@ -362,15 +381,18 @@ fn two_digits(n: Int) -> String {
   string.pad_start(int.to_string(n), to: 2, with: "0")
 }
 
-// Session text on one line, cut with an ellipsis when it runs past `limit`.
+/// Clips a string to a single line and cuts with an ellipsis at the limit.
 fn clipped(value: String, limit: Int) -> String {
   let one_line = text_hygiene.single_line(value)
+
+  // Clip if the string exceeds the maximum character limit.
   case string.drop_start(one_line, limit) {
     "" -> one_line
     _ -> string.slice(one_line, 0, limit - 1) <> "…"
   }
 }
 
+/// Reads a string field by name from a JSON object field list.
 fn text(
   fields: List(#(String, JsonValue)),
   name: String,

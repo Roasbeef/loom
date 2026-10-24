@@ -136,11 +136,13 @@ pub fn enroll(
   role: Role,
   links: String,
 ) -> Result(String, Nil) {
+  // Map the cluster role to its distribution CLI flag representation.
   use word <- result.try(case role {
     Executor -> Ok("executor")
     Orchestrator -> Ok("orchestrator")
     Member -> Error(Nil)
   })
+
   use name <- result.try(quote(name))
   use node <- result.try(quote(node))
   use links <- result.try(quote(links))

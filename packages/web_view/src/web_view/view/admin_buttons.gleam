@@ -84,6 +84,8 @@ pub fn plain(
   busy: Busy,
 ) -> Element(message) {
   let common = [attribute.type_("button"), attribute.class(class)]
+
+  // Disable button interactions when the target operation is occupied.
   case busy {
     Free | Spent(_) ->
       html.button([event.on_click(message), ..common], [html.text(label)])
@@ -108,6 +110,8 @@ pub fn granting(
   busy: Busy,
 ) -> Element(message) {
   let common = [attribute.type_("button"), attribute.class(class)]
+
+  // Render custom refusal title text when the granting allowance is spent.
   case busy {
     Spent(words:) ->
       html.button([event.on_click(message), attribute.title(words), ..common], [

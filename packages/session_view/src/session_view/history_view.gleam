@@ -174,20 +174,26 @@ pub fn capture(
   view: snapshot_view.View,
   strand: String,
 ) -> State {
+  // Reset state if switching to a different strand.
   let state = case state.strand == strand {
     True -> state
     False -> empty()
   }
+
+  // Only live capture updates the window.
   case state.mode {
     Reading -> state
     Live -> {
       let leaf = result.unwrap(dict.get(view.leaves, strand), None)
       let joins =
         leaf == state.leaf || newest(state.window) >= oldest(window) - 1
+
+      // Retain existing window if capture joins contiguous sequence history.
       let retained = case joins {
         True -> state.window
         False -> snapshot.empty()
       }
+
       let whole = merge(retained, window)
       let merged = bounded(whole, 600, 16 * 1024 * 1024)
 
@@ -206,6 +212,7 @@ pub fn capture(
         True -> int.min(state.before_seq, oldest(merged))
         False -> oldest(merged)
       }
+
       State(strand, Live, leaf, merged, before_seq, Quiet, state.scan)
     }
   }
@@ -379,6 +386,7 @@ pub fn scan(
   known: snapshot.Window,
   view: snapshot_view.View,
 ) -> State {
+  // Parse leaf entry id to begin scan or mark abandoned on parse failure.
   case ids.parse_entry_id(leaf) {
     Error(_) -> State(..state, scan: Abandoned)
     Ok(id) -> {
@@ -496,7 +504,7 @@ pub fn scan_readable(state: State, missing: Option(String)) -> Bool {
   }
 }
 
-// Whether the window holds the record `missing` names with no payload.
+/// Whether the window holds the record `missing` names with no payload.
 fn held_unloaded(window: snapshot.Window, missing: Option(String)) -> Bool {
   case missing {
     Some(parent) ->
@@ -606,6 +614,7 @@ pub fn accept(
   after: Int,
   view: snapshot_view.View,
 ) -> State {
+  // Accept incoming page if it matches pending request sequence.
   case state.request == Pending(before) {
     False -> state
     True -> {
@@ -650,10 +659,13 @@ pub fn accept(
 
       // A transfer may retain only its newest suffix. Revisit the evicted
       // prefix rather than skipping entries that never reached this view.
+
+      // Calculate next read boundary based on evicted prefix or after watermark.
       let next_before = case page.evicted_through {
         None -> after + 1
         Some(seq) -> seq + 1
       }
+
       State(..state, window:, leaf:, before_seq: next_before, request: Quiet)
     }
   }
@@ -680,6 +692,7 @@ pub fn accept_lineage(
   page: snapshot.Window,
   from: String,
 ) -> State {
+  // Match active lineage request against response source.
   case state.scan {
     Scanning(leaf:, window:, request: Out(asked), ..) if asked == from -> {
       let merged = merge(window, page)
@@ -701,8 +714,8 @@ pub fn accept_lineage(
   }
 }
 
-// The newest of `items` (newest first) that fit the bound, and where the ones
-// left out end, so the window says it was cut.
+/// The newest of `items` (newest first) that fit the bound, and where the ones
+/// left out end, so the window says it was cut.
 fn newest_within(
   items: List(snapshot.Item),
   records: Int,
@@ -711,6 +724,8 @@ fn newest_within(
   let #(kept, size, _count, left_out) =
     list.fold(items, #([], 0, 0, None), fn(acc, item) {
       let #(kept, size, count, left_out) = acc
+
+      // Check if item fits within count and byte allowance.
       case left_out, count < records && size + bytes(item) <= allowance {
         None, True -> #([item, ..kept], size + bytes(item), count + 1, None)
         None, False -> #(kept, size, count, Some(snapshot.sequence(item)))
@@ -720,6 +735,7 @@ fn newest_within(
   snapshot.Window(list.reverse(kept), size, left_out)
 }
 
+/// Merges two windows, deduplicating by sequence and ordering newest first.
 fn merge(first: snapshot.Window, second: snapshot.Window) {
   let by_seq =
     list.append(first.items, second.items)
@@ -752,12 +768,14 @@ fn oldest(window: snapshot.Window) {
   }
 }
 
-// Retain from the requested end in one pass. Oversized payloads remain the
-// decoder's explicit Unloaded descriptors rather than allocating a second copy.
+/// Retain from the requested end in one pass. Oversized payloads remain the
+/// decoder's explicit Unloaded descriptors rather than allocating a second copy.
 fn bounded(window: snapshot.Window, records: Int, allowance: Int) {
   let #(items, size, _) =
     list.fold(window.items, #([], 0, 0), fn(acc, item) {
       let #(items, size, count) = acc
+
+      // Accumulate items while count and byte size remain within bounds.
       case count < records && size + bytes(item) <= allowance {
         True -> #([item, ..items], size + bytes(item), count + 1)
         False -> #(items, size, records)

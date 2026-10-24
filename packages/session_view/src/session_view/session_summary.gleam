@@ -105,6 +105,7 @@ pub type Viewers {
 /// assert session_summary.jobs(option.None, "main") == session_summary.Unread
 /// ```
 pub fn jobs(board: Option(live_jobs.Board), strand: String) -> Jobs {
+  // Extract live jobs summary if the board matches the queried strand.
   case board {
     Some(board) if board.strand == strand -> {
       let lines = list.drop(live_jobs.lines(board), 1)
@@ -131,16 +132,21 @@ pub fn jobs(board: Option(live_jobs.Board), strand: String) -> Jobs {
 pub fn viewers(
   captured: Option(#(snapshot.Captured, snapshot_view.View)),
 ) -> Viewers {
+  // Return empty viewers if no snapshot is captured, or group peer viewers.
   case captured {
     None -> Viewers([], 0)
     Some(#(cut, view)) -> {
       let #(order, grouped) =
         list.fold(view.peers, #([], dict.new()), fn(seen, peer) {
           let #(order, grouped) = seen
+
+          // Determine whether this peer corresponds to the local attachment.
           let mine = case peer.connection_id == cut.attachment.connection_id {
             True -> You
             False -> Another
           }
+
+          // Group peer viewers by origin, adding new or updating existing.
           case dict.get(grouped, peer.origin) {
             Ok(viewer) -> #(
               order,
@@ -163,7 +169,7 @@ pub fn viewers(
   }
 }
 
-// A principal's first attachment as a viewer.
+/// Creates a initial Viewer record from the principal's first peer attachment.
 fn first(peer: snapshot_view.Peer, mine: Whose) -> Viewer {
   Viewer(
     name: text_hygiene.single_line(origin.display_label(peer.origin)),
@@ -173,7 +179,7 @@ fn first(peer: snapshot_view.Peer, mine: Whose) -> Viewer {
   )
 }
 
-// A further attachment of a principal already listed.
+/// Merges a subsequent peer attachment into an existing Viewer record.
 fn join(viewer: Viewer, peer: snapshot_view.Peer, mine: Whose) -> Viewer {
   Viewer(
     ..viewer,
@@ -189,6 +195,7 @@ fn join(viewer: Viewer, peer: snapshot_view.Peer, mine: Whose) -> Viewer {
   )
 }
 
+/// Formats a snapshot Role variant as its lowercase display string.
 fn role_word(role: snapshot.Role) -> String {
   case role {
     snapshot.Owner -> "owner"

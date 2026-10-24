@@ -130,9 +130,12 @@ pub fn clear(state: State) -> State {
 /// ```
 pub fn receive(state: State, strand: String, board: notes_view.Board) -> State {
   let previous = option_revision(state.board)
+
+  // Accept board update only if matching strand and revision is monotonic.
   case board.strand == strand && board.as_of >= previous {
     False -> state
     True -> {
+      // Preserve existing key selection if present in new notes list.
       let selected = case state.selected {
         Some(key) ->
           case list.any(board.notes, fn(note) { note.key == key }) {
@@ -141,9 +144,12 @@ pub fn receive(state: State, strand: String, board: notes_view.Board) -> State {
           }
         None -> None
       }
+
       let #(keys, next_key) =
         list.fold(board.notes, #(dict.new(), state.next_key), fn(done, note) {
           let #(keys, next_key) = done
+
+          // Assign or reuse stable integer index for note key.
           case dict.get(state.keys, note.key) {
             Ok(number) -> #(dict.insert(keys, note.key, number), next_key)
             Error(Nil) -> #(dict.insert(keys, note.key, next_key), next_key + 1)
@@ -152,14 +158,18 @@ pub fn receive(state: State, strand: String, board: notes_view.Board) -> State {
       let presentations =
         board.notes
         |> list.map(fn(note) {
+          // Render full markdown text or truncated excerpt depending on extent.
           let readable = case note.extent {
             notes_view.Complete -> notes_view.readable_note(note)
             notes_view.Excerpt -> note.text
           }
+
+          // Choose structured presentation if complete note extent.
           let representation = case note.extent == notes_view.Complete {
             True -> Structured
             False -> Literal
           }
+
           #(
             note.key,
             Presentation(
@@ -230,6 +240,7 @@ pub fn press(state: State, press: Press) -> State {
 /// assert notes.rows(notes.new()) == []
 /// ```
 pub fn rows(state: State) -> List(notes_view.Note) {
+  // Filter board notes by case-insensitive substring match on key or text.
   case state.board {
     None -> []
     Some(board) -> {
@@ -250,13 +261,17 @@ pub fn rows(state: State) -> List(notes_view.Note) {
 /// assert notes.selected(notes.new()) == Error(Nil)
 /// ```
 pub fn selected(state: State) -> Result(notes_view.Note, Nil) {
+  // Extract board if present on state.
   use board <- result.try(case state.board {
     Some(board) -> Ok(board)
     None -> Error(Nil)
   })
+
+  // Extract currently selected key if one is set.
   use key <- result.try(case state.selected {
     Some(key) -> Ok(key)
     None -> Error(Nil)
   })
+
   list.find(board.notes, fn(note) { note.key == key })
 }

@@ -46,10 +46,13 @@ import session_view/text_hygiene
 /// // strand_card.status_line(line) == "Working · code_mode"
 /// ```
 pub fn status_line(line: agent_roster.Line) -> String {
+  // Match agent roster status variant to format status line text.
   case line.status {
     agent_view.NeedsInput -> "Needs approval"
     agent_view.Working | agent_view.Waiting -> {
       let word = agent_view.label(line.status)
+
+      // Avoid duplicating the label word if already prefixed.
       case
         string.starts_with(string.lowercase(line.text), string.lowercase(word))
       {
@@ -86,10 +89,13 @@ pub fn status_line(line: agent_roster.Line) -> String {
 /// // strand_card.status_title(line) == "Working · bash · make check"
 /// ```
 pub fn status_title(line: agent_roster.Line) -> String {
+  // Format tooltip title text based on status and activity details.
   case line.status, line.text {
     _, "" -> status_line(line)
     agent_view.Working, text | agent_view.Waiting, text -> {
       let word = agent_view.label(line.status)
+
+      // Format combined label and text without duplicating the label word.
       let whole = case
         string.starts_with(string.lowercase(text), string.lowercase(word))
       {
@@ -106,12 +112,7 @@ pub fn status_title(line: agent_roster.Line) -> String {
 /// The most characters `status_title` keeps.
 pub const title_limit = 240
 
-// What a working strand is doing, in a person's words, or empty when the
-// engine's text adds nothing to the state word. The phases are the engine's:
-// `assistant` and `streaming` are the model generating, and `tool`,
-// `running tools` and `running` say only that something runs. A tool's
-// activity is `name · command`; the name is one word and the command is
-// everything after it, so a first part that is one word is the tool.
+/// Extracts a concise description of current activity from engine status text.
 fn doing(text: String) -> String {
   case text {
     "" | "tool" | "running tools" | "running" -> ""
@@ -179,6 +180,7 @@ pub fn task_words(title: String) -> Option(String) {
     string.lowercase(title) == string.lowercase(known)
   }
 
+  // Check whether the title is a placeholder or advisor feed header.
   case
     title == ""
     || placeholder(agent_view.task_unavailable)
@@ -197,15 +199,17 @@ pub const task_limit = 120
 // engine writes for the model and is no task.
 const advisor_feed_prefix = "[advisor feed"
 
-// The brief's first sentence, cut at `task_limit` characters. A sentence ends
-// at a full stop followed by a space, so `calc.py` and `v1.2` do not end one.
+/// Extracts the first sentence of a task brief, capped at task_limit characters.
 fn first_sentence(text: String) -> String {
   let one_line = text_hygiene.single_line(text)
+
+  // Split at sentence ending period-space delimiter.
   let sentence = case string.split_once(one_line, ". ") {
     Ok(#(first, _rest)) -> first <> "."
     Error(Nil) -> one_line
   }
 
+  // Truncate to task limit with an ellipsis if length exceeds bound.
   case string.length(sentence) > task_limit {
     True -> string.slice(sentence, 0, task_limit - 1) <> "…"
     False -> sentence

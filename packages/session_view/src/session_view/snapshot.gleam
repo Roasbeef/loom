@@ -231,6 +231,7 @@ pub fn begin_decided(
   begin_window(body, expected, previous, empty(), from_seq, ["decided"])
 }
 
+/// Begins decoding a snapshot transfer stream within the requested window.
 fn begin_window(body, expected, previous, window, from_seq, modes) {
   use fields <- result.try(object(body))
   use id <- result.try(text(fields, "snapshot_id"))
@@ -277,6 +278,8 @@ fn begin_window(body, expected, previous, window, from_seq, modes) {
       || next_seq < from_seq,
     Error("snapshot identity or cursor does not match this attempt"),
   )
+
+  // Check whether previous attachment identity changed on existing socket.
   use <- bool.guard(
     case previous {
       Some(prior) -> prior != attachment
@@ -284,6 +287,7 @@ fn begin_window(body, expected, previous, window, from_seq, modes) {
     },
     Error("attachment identity changed on an existing socket"),
   )
+
   use #(record_bytes, piece_bytes) <- result.try(declared_limits(fields, modes))
   Ok(Transfer(
     id,
@@ -300,6 +304,7 @@ fn begin_window(body, expected, previous, window, from_seq, modes) {
   ))
 }
 
+/// Validates declared snapshot record and fragment byte limits from JSON fields.
 fn declared_limits(fields, modes) {
   use record_bytes <- result.try(number(fields, "record_bytes_limit"))
   use fragment_bytes <- result.try(number(fields, "fragment_bytes_limit"))
@@ -370,18 +375,24 @@ pub fn chunk(
     transfer,
     Part(kind, id, seq, total, offset, []),
   ))
+
+  // Accumulate chunks in memory for metadata or small presentation parts.
   let chunks = case kind == "metadata" || total <= presentation_limit {
     True -> [bytes, ..part.chunks]
     False -> []
   }
+
   let part = Part(..part, offset: offset + bit_array.byte_size(bytes), chunks:)
   let transfer = Transfer(..transfer, index: transfer.index + 1)
+
+  // Complete part if all bytes have arrived, otherwise keep in-flight.
   case part.offset == part.total {
     False -> Ok(Transfer(..transfer, part: Some(part)))
     True -> complete_part(transfer, part)
   }
 }
 
+/// Validates chunk continuation against any in-progress transfer part.
 fn continuation(transfer: Transfer, incoming: Part) {
   case transfer.part {
     Some(part)
@@ -396,11 +407,14 @@ fn continuation(transfer: Transfer, incoming: Part) {
   }
 }
 
+/// Validates and initializes a new snapshot part at offset zero.
 fn new_part(transfer: Transfer, part: Part) {
   use <- bool.guard(
     part.offset != 0,
     Error("snapshot record starts after zero"),
   )
+
+  // Validate part kind, sequence ordering, and metadata prerequisites.
   case part.kind, part.seq, transfer.metadata {
     "metadata", None, None
       if part.id == "metadata" && part.total <= metadata_limit
@@ -424,7 +438,9 @@ fn new_part(transfer: Transfer, part: Part) {
   }
 }
 
+/// Completes an assembled snapshot part, committing metadata or entry records.
 fn complete_part(transfer: Transfer, part: Part) {
+  // Match completed part kind and sequence to update transfer state.
   case part.kind, part.seq {
     "metadata", None -> {
       use value <- result.try(decode_part(part))
@@ -446,7 +462,9 @@ fn complete_part(transfer: Transfer, part: Part) {
   }
 }
 
+/// Decodes an entry part into a loaded item or unloaded reference.
 fn decode_item(part: Part, seq: Int) {
+  // Keep large entry payloads unloaded to enforce presentation limits.
   case part.total > presentation_limit {
     True -> Ok(Unloaded(part.id, seq, part.total))
     False -> {
@@ -464,6 +482,7 @@ fn decode_item(part: Part, seq: Int) {
   }
 }
 
+/// Reassembles chunks of a completed part into parsed JSON.
 fn decode_part(part: Part) {
   use text <- result.try(
     part.chunks
@@ -507,15 +526,19 @@ pub fn finish(
   ))
 }
 
+/// Verifies that chunk snapshot ID and sequence index match transfer state.
 fn correlation(transfer: Transfer, fields) {
   use id <- result.try(text(fields, "snapshot_id"))
   use index <- result.try(number(fields, "index"))
+
+  // Validate correlation identity and index credit.
   case id == transfer.id && index == transfer.index {
     True -> Ok(Nil)
     False -> Error("snapshot credit or identity does not match")
   }
 }
 
+/// Adds an item to the window and trims if byte capacity is exceeded.
 fn retain(window: Window, item: Item) {
   trim(Window(
     [item, ..window.items],
@@ -524,6 +547,7 @@ fn retain(window: Window, item: Item) {
   ))
 }
 
+/// Recursively trims oldest window items until total bytes are within limit.
 fn trim(window: Window) {
   case window.bytes <= window_limit && list.drop(window.items, 100) == [] {
     True -> window
@@ -575,6 +599,7 @@ fn loaded_bytes(item) {
   }
 }
 
+/// Asserts that a JSON value is an object, returning its fields.
 fn object(value) {
   case value {
     json.Object(fields) -> Ok(fields)
@@ -591,8 +616,11 @@ fn field(fields, name) {
   list.key_find(fields, name) |> result.replace_error("missing snapshot field")
 }
 
+/// Reads a required string field by name from snapshot object fields.
 fn text(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Verify that the field value is a string.
   case value {
     json.String(text) -> Ok(text)
     json.Object(_)
@@ -604,8 +632,11 @@ fn text(fields, name) {
   }
 }
 
+/// Reads a required non-negative integer field by name from snapshot object fields.
 fn number(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Verify that the field value is a non-negative integer.
   case value {
     json.Int(number) if number >= 0 -> Ok(number)
     json.Int(_)
@@ -618,8 +649,11 @@ fn number(fields, name) {
   }
 }
 
+/// Reads an optional non-negative integer field by name from snapshot object fields.
 fn optional_number(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Verify that the field value is null or a non-negative integer.
   case value {
     json.Null -> Ok(None)
     json.Int(number) if number >= 0 -> Ok(Some(number))

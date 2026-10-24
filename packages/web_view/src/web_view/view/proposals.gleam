@@ -95,8 +95,8 @@ fn heading(board: Option(board_words.Board)) -> String {
   }
 }
 
-// The last refusal, in the words the shared record kept. It is an alert, so a
-// screen reader says it when it appears.
+/// The last refusal, in the words the shared record kept. It is an alert, so a
+/// screen reader says it when it appears.
 fn refusal(notice: String) -> List(Element(message)) {
   case notice {
     "" -> []
@@ -108,8 +108,8 @@ fn refusal(notice: String) -> List(Element(message)) {
   }
 }
 
-// A board that has not been read says so, unless a refusal has said why it
-// has not, since "reading" beside "forbidden" would contradict itself.
+/// A board that has not been read says so, unless a refusal has said why it
+/// has not, since "reading" beside "forbidden" would contradict itself.
 fn body(
   board: Option(board_words.Board),
   notice: String,
@@ -144,8 +144,8 @@ fn body(
   }
 }
 
-// The one line that says the daemon left older rows out of the board, or no
-// line when it left none.
+/// The one line that says the daemon left older rows out of the board, or no
+/// line when it left none.
 fn omitted(count: Int) -> List(Element(message)) {
   case board_words.omitted_words(count) {
     Some(words) -> [
@@ -155,8 +155,8 @@ fn omitted(count: Int) -> List(Element(message)) {
   }
 }
 
-// One proposal: its facts, the drawer that opens onto the edit, and what the
-// reader can do about it.
+/// One proposal: its facts, the drawer that opens onto the edit, and what the
+/// reader can do about it.
 fn row_view(
   row: board_words.Proposal,
   state: State,
@@ -178,8 +178,8 @@ fn row_view(
   ])
 }
 
-// The closed set of classes a state may give its row, each a literal, so no
-// state the daemon names can choose one.
+/// The closed set of classes a state may give its row, each a literal, so no
+/// state the daemon names can choose one.
 fn state_class(state: board_words.State) -> attribute.Attribute(message) {
   case state {
     board_words.Pending -> attribute.class("proposal-pending")
@@ -196,10 +196,11 @@ fn made(row: board_words.Proposal) -> String {
   date <> " " <> clock <> " UTC"
 }
 
-// The native drawer that opens onto the whole rationale, where it came from
-// and the edit, so the list stays one line a row and nothing about the drawer
-// needs the server.
+/// The native drawer that opens onto the whole rationale, where it came from
+/// and the edit, so the list stays one line a row and nothing about the drawer
+/// needs the server.
 fn drawer(row: board_words.Proposal) -> Element(message) {
+  // Dispatch on drawer state.
   let entry = case row.source.entry {
     Some(entry) -> [
       html.text(" · entry "),
@@ -207,6 +208,7 @@ fn drawer(row: board_words.Proposal) -> Element(message) {
     ]
     None -> []
   }
+
   html.details([attribute.class("proposal-drawer")], [
     html.summary([], [html.text("Review the change")]),
     html.p([attribute.class("proposal-source session-quiet")], [
@@ -225,9 +227,9 @@ fn drawer(row: board_words.Proposal) -> Element(message) {
   ])
 }
 
-// What the edit does, in the same words the terminal's review uses: the file
-// named short and the size of the change, with the complete path beside it
-// because a page has the room a terminal line does not.
+/// What the edit does, in the same words the terminal's review uses: the file
+/// named short and the size of the change, with the complete path beside it
+/// because a page has the room a terminal line does not.
 fn edit_words(row: board_words.Proposal) -> String {
   let size = board_words.change_counts(row)
 
@@ -238,6 +240,8 @@ fn edit_words(row: board_words.Proposal) -> String {
     True -> ""
     False -> " · " <> row.target
   }
+
+  // Dispatch on edit_words state.
   case row.old {
     "" -> "Adds a " <> board_words.kind_words(row.kind) <> " · " <> size <> path
     _ ->
@@ -249,8 +253,8 @@ fn edit_words(row: board_words.Proposal) -> String {
   }
 }
 
-// What follows the drawer: the buttons or the question for a pending row, and
-// for any other row the sentence about what became of it.
+/// What follows the drawer: the buttons or the question for a pending row, and
+/// for any other row the sentence about what became of it.
 fn ending(
   row: board_words.Proposal,
   state: State,
@@ -284,8 +288,8 @@ fn ending(
   }
 }
 
-// The question that replaces the buttons in place: the sentence, the confirm
-// that names the act, and the way out.
+/// The question that replaces the buttons in place: the sentence, the confirm
+/// that names the act, and the way out.
 fn question(
   row: board_words.Proposal,
   presses: Presses(message),
@@ -335,6 +339,7 @@ pub fn dock_cards(
   state: State,
   presses: Presses(message),
 ) -> List(#(String, Element(message))) {
+  // Dispatch on dock_cards state.
   case board {
     None -> []
     Some(board) -> {
@@ -346,6 +351,7 @@ pub fn dock_cards(
   }
 }
 
+/// Dock card helper.
 fn dock_card(
   row: board_words.Proposal,
   state: State,
@@ -367,6 +373,7 @@ fn dock_card(
   ])
 }
 
+/// Dock ending helper.
 fn dock_ending(
   row: board_words.Proposal,
   state: State,

@@ -63,7 +63,7 @@ pub fn view(state: remote_transcript.State) -> Option(Element(message)) {
   }
 }
 
-// The back link, the framing head, the body and the framing foot.
+/// The back link, the framing head, the body and the framing foot.
 fn framed(
   child: String,
   orchestrator: String,
@@ -88,9 +88,10 @@ fn framed(
   ])
 }
 
-// The entries oldest first, each its speaker and its words, with a line for
-// older entries the page does not hold and one for entries left out.
+/// The entries oldest first, each its speaker and its words, with a line for
+/// older entries the page does not hold and one for entries left out.
 fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
+  // Dispatch on page_body state.
   let older = case page.next {
     Some(_) -> [
       html.p([attribute.class("pane-empty")], [
@@ -99,6 +100,8 @@ fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
     ]
     None -> []
   }
+
+  // Dispatch on page_body state.
   let omitted = case page.omitted {
     0 -> []
     count -> [
@@ -109,15 +112,19 @@ fn page_body(page: remote_transcript.Page) -> List(Element(message)) {
       ]),
     ]
   }
+
+  // Dispatch on page_body state.
   let entries = case remote_transcript.said(page) {
     [] -> [
       html.p([attribute.class("pane-empty")], [html.text("No entries yet.")]),
     ]
     said -> list.map(said, entry)
   }
+
   list.flatten([older, entries, omitted])
 }
 
+/// Entry helper.
 fn entry(said: remote_transcript.Said) -> Element(message) {
   html.div([attribute.class("peek-entry")], [
     html.span([attribute.class("peek-speaker")], [

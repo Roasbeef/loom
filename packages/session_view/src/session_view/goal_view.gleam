@@ -223,6 +223,7 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   use word <- result.try(text(fields, "status"))
   use observed <- result.try(number(fields, "observed_at_ms"))
 
+  // Dispatch on the goal status word to parse either absent or pinned state.
   case word {
     // The absent cell, and the only board that carries nothing else.
     "none" -> Ok(NoGoal(observed_at_ms: observed))
@@ -231,6 +232,7 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   }
 }
 
+/// Decodes the detailed fields of a pinned goal observation.
 fn pinned(
   fields: List(#(String, json.JsonValue)),
   word: String,
@@ -283,14 +285,15 @@ fn pinned(
   ))
 }
 
-// The last check run, absent on every board written before the check existed
-// and on every goal whose check has not run. A present payload that is not a
-// well-formed run is a refusal, the discipline this decoder keeps for every
-// field it does read: a board this terminal cannot name is one it must not
-// describe to the operator.
+/// The last check run, absent on every board written before the check existed
+/// and on every goal whose check has not run. A present payload that is not a
+/// well-formed run is a refusal, the discipline this decoder keeps for every
+/// field it does read: a board this terminal cannot name is one it must not
+/// describe to the operator.
 fn check_run(
   fields: List(#(String, json.JsonValue)),
 ) -> Result(Option(CheckRun), String) {
+  // Decode optional check run if present in the board fields.
   case list.key_find(fields, "last_check") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
 
@@ -324,10 +327,10 @@ fn check_run(
   }
 }
 
-// The status word and its cause word as one status. The pairing is checked
-// rather than defaulted: a `paused` board with no cause would tell the
-// operator the harness is holding their goal and refuse to say why, and a
-// cause belonging to the other status means the two fields disagree.
+/// The status word and its cause word as one status. The pairing is checked
+/// rather than defaulted: a `paused` board with no cause would tell the
+/// operator the harness is holding their goal and refuse to say why, and a
+/// cause belonging to the other status means the two fields disagree.
 fn status(word: String, reason: Option(String)) -> Result(Status, String) {
   case word, reason {
     "active", None -> Ok(Active)
@@ -346,10 +349,10 @@ fn status(word: String, reason: Option(String)) -> Result(Status, String) {
   }
 }
 
-// A word outside the vocabulary is kept rather than refused, because the
-// board's `because` sentence already says what it means and a status word
-// this terminal *can* place is worth drawing. An unknown status word is a
-// different matter: there is nothing left to place it against.
+/// A word outside the vocabulary is kept rather than refused, because the
+/// board's `because` sentence already says what it means and a status word
+/// this terminal *can* place is worth drawing. An unknown status word is a
+/// different matter: there is nothing left to place it against.
 fn pause_cause(word: String) -> PauseCause {
   case word {
     "operator" -> ByOperator
@@ -360,6 +363,7 @@ fn pause_cause(word: String) -> PauseCause {
   }
 }
 
+/// Parses the reason string for a budget-limited goal into a LimitCause.
 fn limit_cause(word: String) -> LimitCause {
   case word {
     "token_budget" -> ByTokenBudget
@@ -469,13 +473,13 @@ pub fn lines(board: Board) -> List(String) {
   }
 }
 
-// The check and what it last did. Nothing is drawn for a goal with no check,
-// because a line saying so on every panel of every goal would be paid for by
-// the goals that have none — which is all of them until an operator pins one.
-//
-// The result is drawn whenever one is recorded, even when the command has
-// since changed: the run names its own command, so the operator reads what
-// actually ran rather than what is pinned now.
+/// The check and what it last did. Nothing is drawn for a goal with no check,
+/// because a line saying so on every panel of every goal would be paid for by
+/// the goals that have none — which is all of them until an operator pins one.
+///
+/// The result is drawn whenever one is recorded, even when the command has
+/// since changed: the run names its own command, so the operator reads what
+/// actually ran rather than what is pinned now.
 fn check_lines(
   command: Option(String),
   last: Option(CheckRun),
@@ -495,9 +499,9 @@ fn check_lines(
   }
 }
 
-// What the run produced, in the operator's terms. A passing check says so in
-// as many words, because "exit status 0" alone asks the reader to know a
-// shell convention.
+/// What the run produced, in the operator's terms. A passing check says so in
+/// as many words, because "exit status 0" alone asks the reader to know a
+/// shell convention.
 fn check_result(run: CheckRun) -> String {
   case run.status, run.not_finished {
     Some(0), _either -> "passed (exit status 0)"
@@ -510,6 +514,7 @@ fn check_result(run: CheckRun) -> String {
   }
 }
 
+/// Formats the single-line clipped output tail of a check execution.
 fn check_output(output: String) -> List(String) {
   case output {
     "" -> []
@@ -613,6 +618,8 @@ fn clipped_to(text: String, limit: Int) -> String {
 /// ```
 pub fn refusal(code: String, message: String) -> String {
   let reason = text_hygiene.single_line(message)
+
+  // Format known refusal reasons or print generic refusal with code.
   case code {
     "unsupported" | "code_unsupported" ->
       "/goal is unavailable on this session: "
@@ -632,6 +639,7 @@ fn age(stamp: Int, observed: Int) -> String {
   live_jobs.duration(observed - stamp)
 }
 
+/// Decodes a JSON object into its key-value pairs or returns an error.
 fn object(
   value: json.JsonValue,
 ) -> Result(List(#(String, json.JsonValue)), String) {
@@ -641,6 +649,7 @@ fn object(
   }
 }
 
+/// Decodes a mandatory string field from a JSON object.
 fn text(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -651,9 +660,9 @@ fn text(
   }
 }
 
-// A nullable field is always present and sometimes `null`, the cell's own
-// discipline. An absent field is read as null for the same reason: this
-// terminal must not refuse a board over a field that carries no goal state.
+/// A nullable field is always present and sometimes `null`, the cell's own
+/// discipline. An absent field is read as null for the same reason: this
+/// terminal must not refuse a board over a field that carries no goal state.
 fn nullable_text(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -664,10 +673,10 @@ fn nullable_text(
   }
 }
 
-// A nullable integer: the check's exit status, which a stopped run has none
-// of. Absent and null are the same answer, and a present value of the wrong
-// type reads as absent for the reason `nullable_text` gives — this terminal
-// must not refuse a board over a field that carries no goal state.
+/// A nullable integer: the check's exit status, which a stopped run has none
+/// of. Absent and null are the same answer, and a present value of the wrong
+/// type reads as absent for the reason `nullable_text` gives — this terminal
+/// must not refuse a board over a field that carries no goal state.
 fn nullable_number(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -678,9 +687,9 @@ fn nullable_number(
   }
 }
 
-// A string that may be absent and means the empty string when it is: a check
-// that printed nothing and a board that carried no output field are the same
-// thing to draw.
+/// A string that may be absent and means the empty string when it is: a check
+/// that printed nothing and a board that carried no output field are the same
+/// thing to draw.
 fn nullable_string(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -691,6 +700,7 @@ fn nullable_string(
   }
 }
 
+/// Decodes a mandatory integer field from a JSON object.
 fn number(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -701,8 +711,8 @@ fn number(
   }
 }
 
-// The one float on the board. A whole-numbered cost may arrive as an
-// integer, so both are accepted rather than refusing a zero cost.
+/// The one float on the board. A whole-numbered cost may arrive as an
+/// integer, so both are accepted rather than refusing a zero cost.
 fn cost(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -714,8 +724,8 @@ fn cost(
   }
 }
 
-// Older servers expose an estimate without the measurement that supports it.
-// The display keeps that uncertainty instead of inferring it from the number.
+/// Older servers expose an estimate without the measurement that supports it.
+/// The display keeps that uncertainty instead of inferring it from the number.
 fn decode_cost_evidence(
   fields: List(#(String, json.JsonValue)),
 ) -> Result(usage_evidence.Evidence, String) {

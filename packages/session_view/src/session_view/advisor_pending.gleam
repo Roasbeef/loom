@@ -86,10 +86,13 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   use strand <- result.try(text(fields, "strand"))
   use observed <- result.try(number(fields, "observed_at_ms"))
   use total <- result.try(number(fields, "total"))
+
+  // Extract the pending array of nudge entries.
   use raw <- result.try(case list.key_find(fields, "pending") {
     Ok(json.Array(rows)) -> Ok(rows)
     _ -> Error("missing advisor nudges")
   })
+
   use <- bool.guard(list.drop(raw, 64) != [], Error("too many advisor nudges"))
   use pending <- result.try(list.try_map(raw, nudge))
 
@@ -104,6 +107,7 @@ pub fn decode(value: json.JsonValue) -> Result(Board, String) {
   Ok(Board(strand:, observed_at_ms: observed, pending:, total:))
 }
 
+/// Decodes and validates a single advisor nudge text string.
 fn nudge(value: json.JsonValue) -> Result(String, String) {
   case value {
     json.String(text) ->
@@ -144,6 +148,7 @@ pub fn lines(board: Board) -> List(String) {
     <> ") · held for your next prompt to "
     <> text_hygiene.single_line(board.strand)
 
+  // Append overflow count when total exceeds visible nudges.
   case board.total - list.length(shown) {
     0 -> [heading, ..rows]
     more ->
@@ -153,6 +158,7 @@ pub fn lines(board: Board) -> List(String) {
   }
 }
 
+/// Extracts object key-value pairs from a json value.
 fn object(
   value: json.JsonValue,
 ) -> Result(List(#(String, json.JsonValue)), String) {

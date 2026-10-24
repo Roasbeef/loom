@@ -662,10 +662,10 @@ fn raw_node(value: JsonValue) -> Result(#(String, JsonValue), String) {
   #(node, value)
 }
 
-// The machines: the nodes the daemon dials, with the ledger's standing of each,
-// then the ledger's members that no node accounts for. The asking daemon comes
-// first, as the document lists it. `members` is `None` for a daemon that runs
-// without a ledger.
+/// The machines: the nodes the daemon dials, with the ledger's standing of each,
+/// then the ledger's members that no node accounts for. The asking daemon comes
+/// first, as the document lists it. `members` is `None` for a daemon that runs
+/// without a ledger.
 fn merge(
   self: String,
   nodes: List(Node),
@@ -707,6 +707,7 @@ fn merge(
   list.append(dialled, unlinked)
 }
 
+/// Resolves a machine's enrolled standing from optional ledger members list.
 fn standing_of(
   node: String,
   members: Option(List(#(String, Standing))),
@@ -721,9 +722,9 @@ fn standing_of(
   }
 }
 
-// The asking daemon's connection to a node: the link on the edge that joins the
-// two, which is the only edge whose link the daemon can observe. The asking
-// daemon has none to itself.
+/// The asking daemon's connection to a node: the link on the edge that joins the
+/// two, which is the only edge whose link the daemon can observe. The asking
+/// daemon has none to itself.
 fn link_of(self: String, node: String, edges: List(Edge)) -> Link {
   let joining =
     list.find(edges, fn(each) {
@@ -733,12 +734,15 @@ fn link_of(self: String, node: String, edges: List(Edge)) -> Link {
         || { each.from == node && each.to == self }
       }
     })
+
+  // Determine link connectivity status to the specified peer node.
   case node == self, joining {
     True, _ | False, Error(Nil) -> Unobserved
     False, Ok(Edge(link:, ..)) -> link
   }
 }
 
+/// Decodes directory sync status and members from JSON payload.
 fn directory(value: JsonValue) -> Result(Directory, String) {
   use _members <- result.map(required_list(value, "members", text))
   Directory(copy: case optional_text(value, "copy") {
@@ -748,6 +752,7 @@ fn directory(value: JsonValue) -> Result(Directory, String) {
   })
 }
 
+/// Decodes executor pool configuration and membership from JSON payload.
 fn pool(value: JsonValue) -> Result(Pool, String) {
   use name <- result.map(text_at(value, "name"))
   Pool(
@@ -757,6 +762,7 @@ fn pool(value: JsonValue) -> Result(Pool, String) {
   )
 }
 
+/// Decodes deployment membership ledger head sequence and self name.
 fn ledger(value: JsonValue) -> Result(Ledger, String) {
   use head <- result.try(field(value, "head"))
   use head_seq <- result.try(count_at(head, "seq"))
@@ -765,6 +771,7 @@ fn ledger(value: JsonValue) -> Result(Ledger, String) {
   Ledger(head_seq:, self_name:)
 }
 
+/// Decodes an individual ledger member standing record from JSON payload.
 fn member(value: JsonValue) -> Result(#(String, Standing), String) {
   use name <- result.try(text_at(value, "name"))
   use node <- result.try(text_at(value, "node"))
@@ -787,7 +794,7 @@ fn member(value: JsonValue) -> Result(#(String, Standing), String) {
   ))
 }
 
-// A pin is sixty-four lower-case hexadecimal digits, and nothing else is kept.
+/// A pin is sixty-four lower-case hexadecimal digits, and nothing else is kept.
 fn hex_pin(word: String) -> Option(String) {
   case
     string.drop_start(word, 64) == ""
@@ -807,6 +814,7 @@ type Node {
   Node(node: String, name: String, roles: List(Role), findings: Findings)
 }
 
+/// Decodes a machine node description and observed findings from JSON payload.
 fn node(value: JsonValue) -> Result(Node, String) {
   use node <- result.try(text_at(value, "node"))
   use name <- result.try(text_at(value, "name"))
@@ -838,6 +846,7 @@ fn node(value: JsonValue) -> Result(Node, String) {
   )
 }
 
+/// Decodes orchestrator operational facts and slot capacities from JSON payload.
 fn orchestrator_facts(value: JsonValue) -> Result(OrchestratorFacts, String) {
   use capacity <- result.try(count_at(value, "capacity"))
   use occupied <- result.try(count_at(value, "occupied"))
@@ -856,6 +865,7 @@ fn orchestrator_facts(value: JsonValue) -> Result(OrchestratorFacts, String) {
   )
 }
 
+/// Decodes executor operational facts, sandbox metrics, and limits from JSON payload.
 fn executor_facts(value: JsonValue) -> Result(ExecutorFacts, String) {
   use scopes <- result.try(field(value, "scopes"))
   use open <- result.try(count_at(scopes, "open"))
@@ -873,10 +883,13 @@ fn executor_facts(value: JsonValue) -> Result(ExecutorFacts, String) {
   )
 }
 
+/// Decodes cluster topology edge connection and relation between nodes.
 fn edge(value: JsonValue) -> Result(Edge, String) {
   use from <- result.try(text_at(value, "from"))
   use to <- result.try(text_at(value, "to"))
   use kind <- result.try(text_at(value, "kind"))
+
+  // Parse edge relationship classification.
   use relation <- result.map(case kind {
     "serves" ->
       Ok(Serves(sessions: optional_count(value, "sessions") |> option.unwrap(0)))
@@ -884,6 +897,7 @@ fn edge(value: JsonValue) -> Result(Edge, String) {
     "member" -> Ok(Members)
     _ -> Error("unknown relation")
   })
+
   Edge(from:, to:, relation:, link: case optional_text(value, "link") {
     Some("connected") -> Linked
     Some("none") -> Unlinked
@@ -891,15 +905,19 @@ fn edge(value: JsonValue) -> Result(Edge, String) {
   })
 }
 
+/// Decodes an in-flight session relocation record between cluster hosts.
 fn move(value: JsonValue) -> Result(Move, String) {
   use session <- result.try(text_at(value, "session_id"))
   use to <- result.try(text_at(value, "to"))
   use phase <- result.try(text_at(value, "phase"))
+
+  // Parse session move progression phase.
   use phase <- result.map(case phase {
     "running" -> Ok(Running)
     "waiting" -> Ok(Waiting)
     _ -> Error("unknown phase")
   })
+
   Move(
     session:,
     to:,
@@ -909,15 +927,19 @@ fn move(value: JsonValue) -> Result(Move, String) {
   )
 }
 
+/// Decodes an unclean scope execution lingering on an executor.
 fn unclean(value: JsonValue) -> Result(Unclean, String) {
   use session <- result.try(text_at(value, "session"))
   use state <- result.try(text_at(value, "state"))
+
+  // Parse unclean scope lifecycle state.
   use stuck <- result.map(case state {
     "closing" -> Ok(Closing)
     "unknown_cleanup" ->
       Ok(UnknownCleanup(count: optional_count(value, "count")))
     _ -> Error("unknown scope state")
   })
+
   Unclean(session:, stuck:)
 }
 
@@ -928,6 +950,7 @@ fn placed(value: JsonValue) -> Result(Placed, String) {
   Placed(executor_node:, resident:, saved:)
 }
 
+/// Parses string identifier into corresponding cluster Role enum.
 fn role_word(word: String) -> Result(Role, String) {
   case word {
     "orchestrator" -> Ok(Orchestrator)
@@ -937,8 +960,11 @@ fn role_word(word: String) -> Result(Role, String) {
   }
 }
 
+/// Decodes machine health state enum from specified JSON key.
 fn state_at(value: JsonValue, key: String) -> Result(State, String) {
   use word <- result.try(text_at(value, key))
+
+  // Map health keyword to State variant.
   case word {
     "ok" -> Ok(Healthy)
     "degraded" -> Ok(Degraded)
@@ -971,15 +997,17 @@ fn optional_count(value: JsonValue, key: String) -> Option(Int) {
   json_wire.optional_count_at(value, key)
 }
 
-// A list the document must have. Its entries must each decode, and it may not
-// outgrow `list_limit`, because the daemon bounds a reply and the page holds it
-// to the bound.
+/// A list the document must have. Its entries must each decode, and it may not
+/// outgrow `list_limit`, because the daemon bounds a reply and the page holds it
+/// to the bound.
 fn required_list(
   value: JsonValue,
   key: String,
   read: fn(JsonValue) -> Result(a, String),
 ) -> Result(List(a), String) {
   use found <- result.try(field(value, key))
+
+  // Verify found field is an array within bounded item limit.
   case found {
     json.Array(items) ->
       case list.drop(items, list_limit) == [] {
@@ -990,8 +1018,8 @@ fn required_list(
   }
 }
 
-// A list the document may leave out. Absent or malformed reads as none, a list
-// longer than the limit is cut, and an entry that does not decode is skipped.
+/// A list the document may leave out. Absent or malformed reads as none, a list
+/// longer than the limit is cut, and an entry that does not decode is skipped.
 fn optional_list(
   value: JsonValue,
   key: String,
@@ -1046,6 +1074,8 @@ pub fn summary_words(machines: List(Machine)) -> String {
     [] -> ["all ok"]
     _ -> needs
   }
+
+  // Format machine inventory summary phrase.
   case machines {
     [] -> "No machines"
     [_, ..] ->
@@ -1060,9 +1090,9 @@ pub fn summary_words(machines: List(Machine)) -> String {
   }
 }
 
-// The first reason a dialled machine gives for not being ok, as ": box: it runs
-// another build than this daemon", so the line says why and not only how many.
-// A machine that is ok, or that the daemon does not dial, gives none.
+/// The first reason a dialled machine gives for not being ok, as ": box: it runs
+/// another build than this daemon", so the line says why and not only how many.
+/// A machine that is ok, or that the daemon does not dial, gives none.
 fn first_reason(machines: List(Machine)) -> String {
   let found =
     list.find_map(machines, fn(machine) {
@@ -1076,6 +1106,8 @@ fn first_reason(machines: List(Machine)) -> String {
         Dialled(findings: Findings(reasons: [], why: None, ..)) -> Error(Nil)
       }
     })
+
+  // Render first unhealthy machine reason explanation.
   case found {
     Ok(#(name, reason)) -> ": " <> name <> ": " <> reason_words(reason)
     Error(Nil) -> ""
@@ -1151,6 +1183,8 @@ pub fn title(snapshot: Snapshot, machine: Machine) -> Title {
 /// ```
 pub fn build_words(found: Findings) -> Option(String) {
   let short = option.map(found.build_commit, string.slice(_, 0, 8))
+
+  // Format build version and short commit hash.
   case found.build_version, short {
     Some(version), Some(commit) -> Some(version <> " (" <> commit <> ")")
     Some(version), None -> Some(version)
@@ -1292,6 +1326,8 @@ pub fn reason_words(word: String) -> String {
 /// ```
 pub fn age_words(ms: Int) -> String {
   let seconds = int.max(ms, 0) / 1000
+
+  // Select coarse human-readable elapsed duration label.
   case seconds {
     _ if seconds < 5 -> "just now"
     _ if seconds < 60 -> int.to_string(seconds) <> " s ago"
@@ -1310,6 +1346,8 @@ pub fn age_words(ms: Int) -> String {
 /// ```
 pub fn uptime_words(ms: Int) -> String {
   let minutes = int.max(ms, 0) / 60_000
+
+  // Select coarse human-readable uptime duration label.
   case minutes {
     _ if minutes < 1 -> "under a minute"
     _ if minutes < 60 -> int.to_string(minutes) <> " min"

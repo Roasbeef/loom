@@ -61,6 +61,8 @@ pub type Paste {
 pub fn classify(text: String) -> Paste {
   let estimated_tokens = estimate_tokens(text)
   let line_count = list.length(string.split(text, "\n"))
+
+  // Decide whether paste should be compacted into an attachment.
   case
     estimated_tokens >= compact_token_threshold
     || line_count >= compact_line_threshold
@@ -79,6 +81,8 @@ pub fn classify(text: String) -> Paste {
 /// ```
 pub fn estimate_tokens(text: String) -> Int {
   let bytes = string.byte_size(text)
+
+  // Handle the `estimate_tokens` branch dispatch.
   case bytes == 0 {
     True -> 0
     False -> int.max(1, { bytes + 3 } / 4)
@@ -144,6 +148,7 @@ pub fn summary(attachments: List(Attachment)) -> Option(String) {
 /// ```
 @internal
 pub fn preview_lines(attachments: List(Attachment)) -> List(String) {
+  // Handle the `preview_lines` branch dispatch.
   case images(attachments) {
     [] ->
       case summary(attachments) {
@@ -163,15 +168,19 @@ pub fn preview_lines(attachments: List(Attachment)) -> List(String) {
           <> ". "
           <> attachment_summary(ImageAttachment(image))
         })
+
+      // Handle the `preview_lines` branch dispatch.
       let text = case text_token_total(attachments) {
         0 -> []
         tokens -> ["pasted ~" <> token_count(tokens) <> " tokens"]
       }
+
       list.append([heading, ..rows], text)
     }
   }
 }
 
+/// Helper `text_token_total` for text token total.
 fn text_token_total(attachments: List(Attachment)) -> Int {
   list.fold(attachments, 0, fn(total, attachment) {
     case attachment {
@@ -181,6 +190,7 @@ fn text_token_total(attachments: List(Attachment)) -> Int {
   })
 }
 
+/// Helper `attachment_summary` for attachment summary.
 fn attachment_summary(attachment: Attachment) -> String {
   case attachment {
     Attachment(estimated_tokens:, ..) ->
@@ -213,6 +223,8 @@ pub fn expand(input: String, attachments: List(Attachment)) -> String {
       }
     })
     |> string.join("\n\n")
+
+  // Handle the `expand` branch dispatch.
   case input, pasted {
     "", pasted -> pasted
     input, "" -> input
@@ -279,6 +291,7 @@ pub fn admit_attachment(
   attachments: List(Attachment),
   attachment: Attachment,
 ) -> Result(List(Attachment), String) {
+  // Handle the `admit_attachment` branch dispatch.
   case attachment {
     Attachment(..) -> Ok(list.append(attachments, [attachment]))
     ImageAttachment(pasted_image.Image(byte_size:, filename:, ..)) -> {
@@ -288,6 +301,8 @@ pub fn admit_attachment(
           let pasted_image.Image(byte_size:, ..) = image
           total + byte_size
         })
+
+      // Enforce image attachment count and byte budget limits.
       case
         list.drop(current_images, max_image_attachments - 1) != [],
         current_bytes + byte_size > max_image_attachment_bytes
@@ -386,15 +401,20 @@ pub fn memory_context_lines(text: String) -> Option(Int) {
 
 // The lines of `text`'s fenced body, when it begins with `lead` and carries
 // `fence`; the two together name one injector.
+/// Helper `fenced_lines` for fenced lines.
 fn fenced_lines(text: String, lead: String, fence: String) -> Result(Int, Nil) {
   use <- bool.guard(when: !string.starts_with(text, lead), return: Error(Nil))
+
+  // Handle the `fenced_lines` branch dispatch.
   case string.split_once(text, fence <> "\n") {
     Error(Nil) -> Error(Nil)
     Ok(#(_attribution, body)) -> {
+      // Handle the `fenced_lines` branch dispatch.
       let lines = case string.ends_with(body, "\n```") {
         True -> string.drop_end(body, 4)
         False -> body
       }
+
       Ok(list.length(string.split(lines, "\n")))
     }
   }
@@ -483,6 +503,8 @@ pub fn harness_injection_summary(text: String) -> Option(String) {
     when: !string.starts_with(text, harness_injection_prefix),
     return: None,
   )
+
+  // Handle the `harness_injection_summary` branch dispatch.
   case string.split_once(text, "\n") {
     Ok(#(first, _body)) -> Some(first)
     Error(Nil) -> None
@@ -518,6 +540,8 @@ pub fn harness_injection_summary(text: String) -> Option(String) {
 /// ```
 pub fn transcript_text(text: String, details_expanded: Bool) -> String {
   use <- bool.lazy_guard(when: details_expanded, return: fn() { text })
+
+  // Handle the `transcript_text` branch dispatch.
   case harness_injection_summary(text), memory_context_lines(text) {
     Some(attribution), _ -> attribution <> expand_hint
     None, Some(lines) -> memory_summary(lines) <> expand_hint
@@ -529,6 +553,7 @@ pub fn transcript_text(text: String, details_expanded: Bool) -> String {
 // its own first bytes and says roughly how many there are. `Inline` and
 // an image attachment both render whole — one is small by construction,
 // the other is not text.
+/// Helper `bounded_paste` for bounded paste.
 fn bounded_paste(text: String) -> String {
   case classify(text) {
     Compact(Attachment(estimated_tokens:, ..)) ->
@@ -540,14 +565,18 @@ fn bounded_paste(text: String) -> String {
   }
 }
 
+/// Helper `preview` for preview.
 fn preview(text: String, limit: Int) -> String {
   let one_line = text_hygiene.single_line(text)
+
+  // Handle the `preview` branch dispatch.
   case string.drop_start(one_line, limit) {
     "" -> one_line
     _ -> string.slice(one_line, 0, limit - 1) <> "…"
   }
 }
 
+/// Helper `token_count` for token count.
 fn token_count(value: Int) -> String {
   case value >= 1_000_000, value >= 1000 {
     True, _ -> int.to_string(value / 1_000_000) <> "m"

@@ -453,6 +453,8 @@ pub fn edges(
 ) -> Result(List(Edge), Nil) {
   let this = Edge(row.direction, row.session, row.strand)
   let other = Edge(opposite(row.direction), row.session, row.strand)
+
+  // Decide which directional edges to return based on the removal scope and presence of a partner.
   case removal, partner(board, row) {
     ThisWay, _ -> Ok([this])
     OtherWay, Some(_) -> Ok([other])

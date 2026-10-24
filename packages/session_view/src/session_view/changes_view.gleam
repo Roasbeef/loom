@@ -256,6 +256,8 @@ pub fn append(earlier: Board, later: Board) -> Board {
   let #(files, fresh) =
     list.fold(later.files, #(earlier.files, 0), fn(joined, next) {
       let #(files, fresh) = joined
+
+      // Handle the `append` branch dispatch.
       case list.any(files, fn(file) { file.path == next.path }) {
         True -> #(
           list.map(files, fn(file) {
@@ -283,6 +285,7 @@ pub fn append(earlier: Board, later: Board) -> Board {
 // One file's two stretches as one: the counts add, the later rows follow the
 // earlier ones within the file's own bound, and what the bound drops is
 // counted with what each stretch had already dropped.
+/// Helper `combined` for combined.
 fn combined(earlier: File, later: File) -> File {
   let rows = list.append(earlier.rows, later.rows)
   let held = list.take(rows, max_file_rows)
@@ -306,7 +309,9 @@ type Change {
 }
 
 // One successful `fs_edit` or `fs_write` as a change, or nothing.
+/// Helper `change` for change.
 fn change(call: tool_activity.Call) -> Result(Change, Nil) {
+  // Handle the `change` branch dispatch.
   case call.invocation.name, call.outcome {
     "fs_edit",
       Some(message.ToolResultMessage(
@@ -348,12 +353,15 @@ fn written_text(arguments: json.JsonValue) -> Result(String, Nil) {
 // with no number, so a bare run of `+` lines drew without the gutter or the
 // green an edit's hunk has. A final newline ends the last line and does not
 // begin another, so it adds no empty row, and a file with no line adds no hunk.
+/// Helper `all_added` for all added.
 fn all_added(content: String) -> String {
+  // Handle the `all_added` branch dispatch.
   let lines = case list.reverse(string.split(content, "\n")) {
     ["", ..rest] -> list.reverse(rest)
     all -> list.reverse(all)
   }
 
+  // Handle the `all_added` branch dispatch.
   case lines {
     [] -> ""
     [_, ..] ->
@@ -365,6 +373,7 @@ fn all_added(content: String) -> String {
   }
 }
 
+/// Extracts text field from a JSON object.
 fn text(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -377,11 +386,13 @@ fn text(
 
 // The paths in the order they were first changed, and each path's changes,
 // oldest first.
+/// Helper `group` for group.
 fn group(changes: List(Change)) -> #(List(String), Dict(String, List(Change))) {
   let #(order, grouped) =
     list.fold(changes, #([], dict.new()), fn(seen, change) {
       let #(order, grouped) = seen
 
+      // Handle the `group` branch dispatch.
       case dict.get(grouped, change.path) {
         Ok(earlier) -> #(
           order,
@@ -404,10 +415,13 @@ fn group(changes: List(Change)) -> #(List(String), Dict(String, List(Change))) {
 // the rows the file's bound keeps go through text hygiene. A diff can be as
 // large as a record is, and this runs each time the page projects, so nothing
 // proportional to the diff is done to a row that is not kept.
+/// Helper `file` for file.
 fn file(path: String, changes: List(Change)) -> File {
   let lines =
     list.flat_map(changes, fn(change) { string.split(change.diff, "\n") })
   let #(added, removed) = counts(lines)
+
+  // Handle the `file` branch dispatch.
   let origin = case list.all(changes, fn(change) { change.origin == Written }) {
     True -> Written
     False -> Edited
@@ -429,6 +443,7 @@ fn file(path: String, changes: List(Change)) -> File {
 // A line's kind, from its first characters. A line that begins `+++` or
 // `---` is an added or removed line like any other: the hunks are headerless,
 // so no file header can be mistaken for one.
+/// Helper `kind` for kind.
 fn kind(line: String) -> Kind {
   case string.starts_with(line, "@@"), string.first(line) {
     True, _ -> Hunk
@@ -438,6 +453,7 @@ fn kind(line: String) -> Kind {
   }
 }
 
+/// Helper `counts` for counts.
 fn counts(lines: List(String)) -> #(Int, Int) {
   list.fold(lines, #(0, 0), fn(total, line) {
     case kind(line) {
@@ -452,8 +468,11 @@ fn counts(lines: List(String)) -> #(Int, Int) {
 // Code points and not graphemes, because one base character with many
 // combining marks is a single grapheme: the cut bounds the row's bytes at four
 // times the limit whatever the line holds.
+/// Helper `clipped` for clipped.
 fn clipped(line: String) -> Row {
   let points = string.to_utf_codepoints(line)
+
+  // Handle the `clipped` branch dispatch.
   let text = case list.drop(points, max_row_characters) {
     [] -> line
     [_, ..] ->
@@ -466,7 +485,9 @@ fn clipped(line: String) -> Row {
 
 // Cuts the files' rows so that all of them together fit `budget`, taking
 // from the first file on, and records what each file lost.
+/// Helper `bound_rows` for bound rows.
 fn bound_rows(files: List(File), budget: Int) -> List(File) {
+  // Handle the `bound_rows` branch dispatch.
   case files {
     [] -> []
     [first, ..rest] -> {

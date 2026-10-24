@@ -97,9 +97,9 @@ pub fn fingerprint(data: String) -> String {
   <> sample(bytes, size - 32)
 }
 
-// Up to 32 bytes of the text from `at`, which is clamped into the data.
-// Base64 is ASCII, so a slice never splits a character; anything that is
-// not text samples as nothing.
+/// Up to 32 bytes of the text from `at`, which is clamped into the data.
+/// Base64 is ASCII, so a slice never splits a character; anything that is
+/// not text samples as nothing.
 fn sample(bytes: BitArray, at: Int) -> String {
   let size = bit_array.byte_size(bytes)
   let start = int.clamp(at, 0, int.max(0, size - 32))
@@ -125,7 +125,7 @@ pub fn dimensions(data: String) -> Option(#(Int, Int)) {
   }
 }
 
-// The three headers, by their signatures.
+/// Recognizes PNG, GIF, or JPEG headers by signature and reads dimensions.
 fn header(bytes: BitArray) -> Option(#(Int, Int)) {
   case bytes {
     <<
@@ -150,8 +150,7 @@ fn header(bytes: BitArray) -> Option(#(Int, Int)) {
   }
 }
 
-// A JPEG's size is in its start-of-frame segment, after any number of
-// others; each segment states its length, so the walk skips them whole.
+/// Reads JPEG dimensions from the start-of-frame segment by skipping markers.
 fn jpeg(bytes: BitArray) -> Option(#(Int, Int)) {
   case bytes {
     <<0xFF, 0xFF, rest:bits>> -> jpeg(<<0xFF, rest:bits>>)
@@ -197,6 +196,8 @@ fn positive(width: Int, height: Int) -> Option(#(Int, Int)) {
 /// ```
 pub fn byte_size(data: String) -> Int {
   let length = string.byte_size(data)
+
+  // Determine padding byte deduction based on trailing equals signs.
   let padding = case string.ends_with(data, "==") {
     True -> 2
     False ->
@@ -205,6 +206,7 @@ pub fn byte_size(data: String) -> Int {
         False -> 0
       }
   }
+
   int.max(0, length / 4 * 3 - padding)
 }
 
@@ -216,6 +218,7 @@ pub fn byte_size(data: String) -> Int {
 /// assert image_header.size_text(86_016) == "84 KB"
 /// ```
 pub fn size_text(bytes: Int) -> String {
+  // Select byte, kilobyte, or megabyte unit formatting.
   case bytes < 1024, bytes < 1024 * 1024 {
     True, _ -> int.to_string(bytes) <> " B"
     False, True -> int.to_string({ bytes + 512 } / 1024) <> " KB"
@@ -237,11 +240,13 @@ pub fn size_text(bytes: Int) -> String {
 ///   == "image 1 · image/png · 2 B"
 /// ```
 pub fn describe(position: Int, mime_type: String, data: String) -> String {
+  // Format pixel dimensions if recognized from the image header.
   let pixels = case dimensions(data) {
     Some(#(width, height)) ->
       " · " <> int.to_string(width) <> "×" <> int.to_string(height)
     None -> ""
   }
+
   "image "
   <> int.to_string(position)
   <> " · "

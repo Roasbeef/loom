@@ -205,6 +205,7 @@ pub fn fields(
   let names = list.filter(listed, fn(field) { field.0 == "prompt" })
   let rest = list.filter(listed, fn(field) { field.0 != "prompt" })
 
+  // Dispatch on fields state.
   case names, rest, needs {
     [#(_, name)], [], NameOnly -> Ok(#(name, composer.Nothing))
     [#(_, name)], [#("path", text)], NameAndPath ->
@@ -254,13 +255,15 @@ pub fn view(pane: Pane(message)) -> Element(message) {
   ])
 }
 
-// The phone's banner: the session that most needs the person, with a count of
-// the others. A press opens that session. The stylesheet draws it only on a
-// narrow window, where the sidebar is closed most of the time.
+/// The phone's banner: the session that most needs the person, with a count of
+/// the others. A press opens that session. The stylesheet draws it only on a
+/// narrow window, where the sidebar is closed most of the time.
 fn banner(pane: Pane(message)) -> Element(message) {
+  // Dispatch on banner state.
   case pane.waiting {
     [] -> element.none()
     [first, ..rest] -> {
+      // Dispatch on banner state.
       let others = case rest {
         [] -> ""
         _ -> " · and " <> count_words(list.length(rest)) <> " more need you"
@@ -305,8 +308,8 @@ fn count_words(count: Int) -> String {
   string.inspect(count)
 }
 
-// "Start again where you worked": one button for each recent place, which sets
-// the Code chip to it. Nothing is drawn for a daemon with no session yet.
+/// "Start again where you worked": one button for each recent place, which sets
+/// the Code chip to it. Nothing is drawn for a daemon with no session yet.
 fn recent(pane: Pane(message)) -> Element(message) {
   case pane.recent {
     [] -> element.none()
@@ -361,12 +364,14 @@ fn recent(pane: Pane(message)) -> Element(message) {
   }
 }
 
-// The one form: the name, the field the target needs, and Start. The form's
-// handler is built for the fields this tree draws, so the decoder refuses any
-// other set. A creation that is out disables the button and says so.
+/// The one form: the name, the field the target needs, and Start. The form's
+/// handler is built for the fields this tree draws, so the decoder refuses any
+/// other set. A creation that is out disables the button and says so.
 fn form(pane: Pane(message)) -> Element(message) {
   let needed = needs(pane.target)
   let working = pane.state.sending == composer.Out
+
+  // Dispatch on form state.
   let extra = case needed {
     NameOnly -> []
     NameAndPath -> [typed_field("path", "Folder path, for example ~/code/app")]
@@ -418,8 +423,8 @@ fn form(pane: Pane(message)) -> Element(message) {
   )
 }
 
-// A text field the target needs. It is uncontrolled and the server never writes
-// it back, so what the person typed is not echoed, even after a refusal.
+/// A text field the target needs. It is uncontrolled and the server never writes
+/// it back, so what the person typed is not echoed, even after a refusal.
 fn typed_field(name: String, placeholder: String) -> Element(message) {
   html.input([
     attribute.type_("text"),
@@ -432,8 +437,8 @@ fn typed_field(name: String, placeholder: String) -> Element(message) {
   ])
 }
 
-// The submit's decoder, for the fields this tree drew. A set of fields the form
-// was not drawn with fails to decode, so the runtime drops the event.
+/// The submit's decoder, for the fields this tree drew. A set of fields the form
+/// was not drawn with fails to decode, so the runtime drops the event.
 fn start_fields(
   needed: Needs,
   start: fn(String, Typed) -> message,
@@ -443,6 +448,7 @@ fn start_fields(
     decode.list(form_field()),
   )
 
+  // Dispatch on start_fields state.
   case fields(listed, needed) {
     Ok(#(name, typed)) -> decode.success(start(name, typed))
     Error(Nil) -> decode.failure(start("", composer.Nothing), "composer form")
@@ -455,10 +461,12 @@ fn form_field() -> decode.Decoder(#(String, String)) {
   decode.success(#(name, value))
 }
 
-// The three chips, each with its list while it is the open one. The scrim comes
-// first so the lists sit above it.
+/// The three chips, each with its list while it is the open one. The scrim comes
+/// first so the lists sit above it.
 fn chips(pane: Pane(message)) -> Element(message) {
   let open = pane.state.open
+
+  // Dispatch on chips state.
   let scrim = case open {
     composer.Showing(_) -> [
       html.button(
@@ -508,7 +516,7 @@ fn chips(pane: Pane(message)) -> Element(message) {
   )
 }
 
-// One chip: a button that says what it holds, and the list under it while open.
+/// One chip: a button that says what it holds, and the list under it while open.
 fn chip(
   pane: Pane(message),
   which: Chip,
@@ -550,11 +558,11 @@ fn expanded(open: composer.Open, which: Chip) -> String {
   }
 }
 
-// The Agent chip's list: this daemon, then each orchestrator it relays for. A row
-// that can be chosen is a button whose message names the machine the page drew.
-// A row that cannot yet, or at all, is text with its reason, so a press the page
-// would refuse is never offered. The note says what a switch does to the other
-// choices, which is what `composer.kept` does.
+/// The Agent chip's list: this daemon, then each orchestrator it relays for. A row
+/// that can be chosen is a button whose message names the machine the page drew.
+/// A row that cannot yet, or at all, is text with its reason, so a press the page
+/// would refuse is never offered. The note says what a switch does to the other
+/// choices, which is what `composer.kept` does.
 fn agent_list(pane: Pane(message)) -> Element(message) {
   html.div(
     [
@@ -578,7 +586,7 @@ fn agent_list(pane: Pane(message)) -> Element(message) {
   )
 }
 
-// One row of the Agent list. The machine in force is marked.
+/// One row of the Agent list. The machine in force is marked.
 fn agent_row(
   pane: Pane(message),
   candidate: composer.Candidate,
@@ -597,6 +605,7 @@ fn agent_row(
     ]
   }
 
+  // Dispatch on agent_row state.
   case candidate.standing {
     composer.Choosable(detail:) ->
       html.button(
@@ -643,9 +652,9 @@ fn agent_icon(agent: Agent) -> Icon {
   }
 }
 
-// The Model chip's list: the profiles, then the main models, each with the
-// configuration's own first. Both sections are always drawn so the person sees
-// what is configured, and a daemon with neither says so.
+/// The Model chip's list: the profiles, then the main models, each with the
+/// configuration's own first. Both sections are always drawn so the person sees
+/// what is configured, and a daemon with neither says so.
 fn model_list(pane: Pane(message)) -> Element(message) {
   let roles = pane.state.roles
   let presses = pane.presses
@@ -686,9 +695,9 @@ fn model_list(pane: Pane(message)) -> Element(message) {
   )
 }
 
-// The profile list's "Default" row. A box has no default profile, since a create
-// there must name one (`composer.kept`), so a box's list holds only the profiles it
-// offers.
+/// The profile list's "Default" row. A box has no default profile, since a create
+/// there must name one (`composer.kept`), so a box's list holds only the profiles it
+/// offers.
 fn default_profile(pane: Pane(message)) -> List(Element(message)) {
   case pane.state.agent, pane.offers.profiles {
     composer.Orchestrator(_), [_, ..] -> []
@@ -702,7 +711,7 @@ fn default_profile(pane: Pane(message)) -> List(Element(message)) {
   }
 }
 
-// A row of the Model list.
+/// A row of the Model list.
 fn choice(label: String, pick: Pick, press: message) -> Element(message) {
   html.button(
     [
@@ -729,9 +738,9 @@ fn section_head(title: String, gloss: String) -> Element(message) {
   ])
 }
 
-// The Code chip's list: a search field, then the sections in their fixed order.
-// Rows the search does not match are not drawn, nor are headings left with no
-// row. A search that matches nothing says so.
+/// The Code chip's list: a search field, then the sections in their fixed order.
+/// Rows the search does not match are not drawn, nor are headings left with no
+/// row. A search that matches nothing says so.
 fn code_list(pane: Pane(message)) -> Element(message) {
   let needle = string.lowercase(pane.state.search)
   let sections =
@@ -792,8 +801,8 @@ type Standing(message) {
   Unavailable(reason: String)
 }
 
-// The folders on the agent's machine: those the page drew, then the one that
-// asks for a typed path.
+/// The folders on the agent's machine: those the page drew, then the one that
+/// asks for a typed path.
 fn folder_section(
   pane: Pane(message),
   needle: String,
@@ -808,6 +817,8 @@ fn folder_section(
         standing: Pressable(composer.Folder(path)),
       )
     })
+
+  // Dispatch on folder_section state.
   let typed = case pane.offers.typing {
     composer.MayType -> [
       Row(
@@ -823,9 +834,9 @@ fn folder_section(
   section(pane, needle, "On " <> machine, "", list.append(folders, typed))
 }
 
-// The folders of this daemon, when another orchestrator is the agent: one
-// disabled row that says why they cannot be chosen, so a person who looks for
-// them finds the reason and the way back.
+/// The folders of this daemon, when another orchestrator is the agent: one
+/// disabled row that says why they cannot be chosen, so a person who looks for
+/// them finds the reason and the way back.
 fn other_folders(
   pane: Pane(message),
   needle: String,
@@ -849,8 +860,8 @@ fn other_folders(
   }
 }
 
-// An executor's section: the workspaces it reported, or a row that asks for a
-// name when it reported none, or the reason it cannot be used.
+/// An executor's section: the workspaces it reported, or a row that asks for a
+/// name when it reported none, or the reason it cannot be used.
 fn executor_section(
   pane: Pane(message),
   needle: String,
@@ -859,6 +870,8 @@ fn executor_section(
   let name = each.name
   let choice_ = placements.OnExecutor(name)
   let reported = placements.workspaces(pane.offers.cards, choice_)
+
+  // Dispatch on executor_section state.
   let rows = case each.report {
     Some(placements.Report(state: placements.Down, ..)) -> [
       Row(
@@ -874,14 +887,14 @@ fn executor_section(
   section(pane, needle, name, state_gloss(each.report), rows)
 }
 
-// A pool's section, as an executor's is, headed by what the pool picks from.
-//
-// The header promises only what the report carries. When the report names the
-// pool's executors, the header lists them. The remote box reports how many
-// machines can take a session and not which, so then the header counts them.
-// Before any report the header says only that the pool is a group. A pool whose
-// one executor is already drawn with the same workspaces adds no choice, so it
-// is not drawn at all.
+/// A pool's section, as an executor's is, headed by what the pool picks from.
+///
+/// The header promises only what the report carries. When the report names the
+/// pool's executors, the header lists them. The remote box reports how many
+/// machines can take a session and not which, so then the header counts them.
+/// Before any report the header says only that the pool is a group. A pool whose
+/// one executor is already drawn with the same workspaces adds no choice, so it
+/// is not drawn at all.
 fn pool_section(
   pane: Pane(message),
   needle: String,
@@ -890,6 +903,8 @@ fn pool_section(
   let name = each.name
   let reported =
     placements.workspaces(pane.offers.cards, placements.InPool(name))
+
+  // Dispatch on pool_section state.
   let rows = case each.report {
     Some(placements.PoolReport(eligible: [], ..)) -> [
       Row(
@@ -902,15 +917,16 @@ fn pool_section(
     Some(_) | None -> workspace_rows(reported, name, composer.InPool)
   }
 
+  // Dispatch on pool_section state.
   case repeats_executor(pane.offers.cards, each) {
     True -> []
     False -> section(pane, needle, pool_heading(each), "", rows)
   }
 }
 
-// Whether a pool is the single executor it names: the report lists one executor,
-// that executor answered, and the executor's own section offers the same
-// workspaces. Only then do the two sections offer the same rows.
+/// Whether a pool is the single executor it names: the report lists one executor,
+/// that executor answered, and the executor's own section offers the same
+/// workspaces. Only then do the two sections offer the same rows.
 fn repeats_executor(cards: placements.Cards, pool: placements.Pool) -> Bool {
   case pool.report {
     Some(placements.PoolReport(
@@ -925,7 +941,7 @@ fn repeats_executor(cards: placements.Cards, pool: placements.Pool) -> Bool {
   }
 }
 
-// The pool section's heading, from what the report holds.
+/// The pool section's heading, from what the report holds.
 fn pool_heading(pool: placements.Pool) -> String {
   case pool.report {
     Some(placements.PoolReport(executors: [_, ..] as names, ..)) ->
@@ -946,8 +962,8 @@ fn pool_heading(pool: placements.Pool) -> String {
   }
 }
 
-// The rows for a place's workspaces: one for each the daemon listed, or the one
-// row that asks for a name when it listed none.
+/// The rows for a place's workspaces: one for each the daemon listed, or the one
+/// row that asks for a name when it listed none.
 fn workspace_rows(
   reported: List(String),
   holder: String,
@@ -974,8 +990,8 @@ fn workspace_rows(
   }
 }
 
-// A section: its heading and the rows the search keeps, or nothing when the
-// search keeps none.
+/// A section: its heading and the rows the search keeps, or nothing when the
+/// search keeps none.
 fn section(
   pane: Pane(message),
   needle: String,
@@ -991,14 +1007,15 @@ fn section(
       || string.contains(string.lowercase(title), needle)
     })
 
+  // Dispatch on section state.
   case kept {
     [] -> []
     _ -> [section_head(title, gloss), ..list.map(kept, row(pane, _))]
   }
 }
 
-// One code row: a button that chooses its target, or a disabled row that says
-// why it cannot. The row of the target in force is marked.
+/// One code row: a button that chooses its target, or a disabled row that says
+/// why it cannot. The row of the target in force is marked.
 fn row(pane: Pane(message), shown: Row(message)) -> Element(message) {
   let body = [
     icon(shown.glyph),
@@ -1008,6 +1025,7 @@ fn row(pane: Pane(message), shown: Row(message)) -> Element(message) {
     ]),
   ]
 
+  // Dispatch on row state.
   case shown.standing {
     Pressable(target:) -> {
       let current = pick(pane.target, Some(target))
@@ -1086,7 +1104,7 @@ fn selected(pick: Pick) -> Bool {
   }
 }
 
-// The sentence under the chips, with the names it is about in heavier weight.
+/// The sentence under the chips, with the names it is about in heavier weight.
 fn summary(pane: Pane(message)) -> Element(message) {
   html.p(
     [attribute.class("sum")],
@@ -1104,9 +1122,9 @@ fn piece(piece: Piece) -> Element(message) {
   }
 }
 
-// After a creation whose session was kept and did not take its first message:
-// one plain line and a button that opens the session. The button's handler is the
-// page's own message; the ticket it opens is held in the state and never drawn.
+/// After a creation whose session was kept and did not take its first message:
+/// one plain line and a button that opens the session. The button's handler is the
+/// page's own message; the ticket it opens is held in the state and never drawn.
 fn unsent(pane: Pane(message)) -> Element(message) {
   case pane.state.unsent {
     Some(_) ->
@@ -1127,7 +1145,7 @@ fn unsent(pane: Pane(message)) -> Element(message) {
   }
 }
 
-// The words of a refused creation, under the sentence, in the danger colour.
+/// The words of a refused creation, under the sentence, in the danger colour.
 fn refusal(state: State) -> Element(message) {
   case state.refusal {
     Some(words) ->
@@ -1147,7 +1165,7 @@ fn code_title(code: listing.Code) -> String {
   }
 }
 
-// The glyph for a target: a folder, or a chip for a registered workspace.
+/// The glyph for a target: a folder, or a chip for a registered workspace.
 fn code_icon(target: Target) -> Icon {
   case target {
     composer.Folder(_) | composer.TypedFolder -> Folder
@@ -1171,7 +1189,7 @@ type Icon {
   Chevron
 }
 
-// An icon: an svg whose path is one of a few fixed outlines.
+/// An icon: an svg whose path is one of a few fixed outlines.
 fn icon(which: Icon) -> Element(message) {
   svg.svg(
     [
@@ -1183,7 +1201,7 @@ fn icon(which: Icon) -> Element(message) {
   )
 }
 
-// The outline of each icon, in a 16 by 16 box.
+/// The outline of each icon, in a 16 by 16 box.
 fn outline(which: Icon) -> String {
   case which {
     Laptop -> "M3 3.5h10v7H3zM1.5 12.5h13"

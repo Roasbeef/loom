@@ -259,14 +259,18 @@ pub fn ask_offers(
   machines: List(Machine),
   name: String,
 ) -> #(List(Machine), Result(Int, Nil)) {
+  // Locate the target orchestrator machine entry.
   case find(machines, name) {
     Error(Nil) -> #(machines, Error(Nil))
     Ok(held) -> {
       let serial = held.offer_reads + 1
+
+      // Retain existing offers or transition to Asking state.
       let offer = case held.offer {
         Offering(_) -> held.offer
         Asking | Refusing(_) -> Asking
       }
+
       let asked = Machine(..held, offer:, offer_reads: serial)
 
       #(replace(machines, asked), Ok(serial))
@@ -387,7 +391,7 @@ pub fn listing_heard(
   }
 }
 
-// When a list last answered, given how far the knowledge had got.
+/// When a list last answered, given how far the knowledge had got.
 fn seen(reach: Reach) -> Option(Int) {
   case reach {
     Unasked -> None
@@ -396,6 +400,7 @@ fn seen(reach: Reach) -> Option(Int) {
   }
 }
 
+/// Replaces the matching machine record by orchestrator identity.
 fn replace(machines: List(Machine), changed: Machine) -> List(Machine) {
   list.map(machines, fn(each) {
     case each.orchestrator == changed.orchestrator {
@@ -422,6 +427,7 @@ pub fn ordered(rows: List(Listed)) -> List(Listed) {
   })
 }
 
+/// Assigns a sorting priority rank for relayed activity states.
 fn rank(activity: relayed.Activity) -> Int {
   case activity {
     relayed.NeedsYou -> 0
@@ -479,6 +485,7 @@ pub fn busy_words(rows: List(Listed)) -> String {
   let needs = list.count(rows, fn(row) { row.activity == relayed.NeedsYou })
   let working = list.count(rows, fn(row) { row.activity == relayed.Working })
 
+  // Generate human-readable summary of active, working, and idle sessions.
   case list.length(rows), working, needs {
     0, _, _ -> "no sessions yet"
     total, 0, 0 -> int.to_string(total) <> " idle"
