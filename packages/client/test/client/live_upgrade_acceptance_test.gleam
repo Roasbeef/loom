@@ -109,8 +109,13 @@ fn exercise() {
     ])
   let #(Nil, observations) =
     peer.with_upgrade_script(script, fn(url) {
-      let assert Ok(instance) =
-        serve.open_instance(acceptance.settings(root, url), log.discard())
+      // Every evolution step is a code-mode program, so it takes a jailed
+      // build and node from the session's own helper pool. The overlap job
+      // below holds a pair of helpers for its whole run, so the pool is sized
+      // to keep those two evolution programs from queueing behind it.
+      let settings =
+        serve.Settings(..acceptance.settings(root, url), helper_pool_size: 4)
+      let assert Ok(instance) = serve.open_instance(settings, log.discard())
         as "production session starts"
       let socket = acceptance.operator(instance)
       let core = acceptance.request(socket, 900, "core_status", json.Object([]))

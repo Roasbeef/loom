@@ -10,6 +10,7 @@ import broker/internal/call
 import broker/token
 import client/catalog
 import client/codemode
+import client/evolution/capability
 import client/evolution/record
 import client/gateway
 import client/jobs
@@ -43,6 +44,7 @@ import runtime/api
 import simplifile
 import storage/access
 import support/evolution as fixture
+import support/evolution_programs as programs
 import support/extensions
 import support/internal/ffi_proc
 import support/provider_http as peer
@@ -66,7 +68,7 @@ pub type ReceiptMessage {
 ///
 /// `make e2e-evolution` enables this fixture and requires every prerequisite.
 pub fn evolution_author_approve_replace_rollback_test_() -> EunitTest {
-  Timeout(70, fn() {
+  Timeout(600, fn() {
     case native.getenv("LOOM_EVOLUTION_E2E") {
       Ok("1") -> exercise()
       Ok(_) | Error(Nil) ->
@@ -189,7 +191,14 @@ fn exercise() {
       assert api.session_id(instance.runtime) == original_session
         as "rollback keeps the original durable conversation identity"
       run(instance.runtime, "continue the same conversation")
+      let assert Some(cell) = instance.evolution_cell
+        as "a source session has an evolution cell"
+      assert result.is_ok(capability.borrow(cell))
+        as "programs can borrow the doors while the session is open"
       serve.close_instance(instance)
+      assert capability.borrow(cell)
+        == Error("Unavailable: the evolution plane is not open")
+        as "closing the session stops the cell on the path no custody owner covers"
       assert_departed(final_helpers)
       assert helpers() == before
         as "session retirement leaves no native helper behind"
@@ -243,106 +252,77 @@ pub fn author_script_with(
         )
       })
     })
-  let propose =
+  // One program captures the written directory and runs its author tests, the
+  // way a model using `cap/evolution` writes it. The result names the candidate
+  // and carries the retained evidence, exactly as the test door answers.
+  let evaluation =
     peer.ComputedExchange(
       peer.AwaitToolResult(
         "write-" <> suffix <> "-" <> int.to_string(list.length(files) - 1),
       ),
       fn(_) {
         peer.ReplyToolUse(
-          "propose-" <> suffix,
-          "evolution_propose",
-          json.Object([
-            #("directory", json.String(suffix)),
-            #("name", json.String("echo")),
-            #("kind", json.String("extension")),
-            #("test_entry", json.String("evolution_check")),
-            #(
-              "description",
-              json.String("Echo fresh inputs with an immutable version marker."),
-            ),
-            #("input_schema", json.String(json.to_string(fixture.schema()))),
-          ]),
-        )
-      },
-    )
-  let evaluation =
-    peer.ComputedExchange(
-      peer.AwaitToolResult("propose-" <> suffix),
-      fn(requests) {
-        let candidate = latest_result(requests)
-        peer.ReplyToolUse(
-          "test-" <> suffix,
-          "evolution_test",
-          json.Object([
-            #(
-              "candidate_id",
-              json.String(required_text(candidate, "candidate_id")),
-            ),
-          ]),
+          "author-" <> suffix,
+          programs.tool_name,
+          programs.arguments(programs.propose_and_test(
+            directory: suffix,
+            name: "echo",
+            kind: "extension",
+            test_entry: "evolution_check",
+            description: "Echo fresh inputs with an immutable version marker.",
+            schema: json.to_string(fixture.schema()),
+          )),
         )
       },
     )
   let settled =
-    peer.ComputedExchange(peer.AwaitToolResult("test-" <> suffix), fn(requests) {
-      let observed = latest_result(requests)
-      process.send(
-        authored,
-        Published(Authored(
-          required_text(observed, "candidate_id"),
-          required_text(observed, "evidence_id"),
-          required_text(observed, "evidence"),
-        )),
-      )
-      peer.ReplyText("author evidence retained " <> suffix)
-    })
-  list.append(writes, [propose, evaluation, settled])
+    peer.ComputedExchange(
+      peer.AwaitToolResult("author-" <> suffix),
+      fn(requests) {
+        let observed = latest_result(requests)
+        process.send(
+          authored,
+          Published(Authored(
+            required_text(observed, "candidate_id"),
+            required_text(observed, "evidence_id"),
+            required_text(observed, "evidence"),
+          )),
+        )
+        peer.ReplyText("author evidence retained " <> suffix)
+      },
+    )
+  list.append(writes, [evaluation, settled])
 }
 
+/// Discovers the single selected callable and calls it with a fresh input, in
+/// one program, then checks the discovered contract and the call's result.
 pub fn invoke_script(prompt: String, expected: String) -> List(peer.Exchange) {
+  let id = "invoke-" <> prompt
   [
     peer.ToolUseExchange(
       prompt,
-      "catalogue-" <> prompt,
-      "evolution_catalogue",
-      json.Object([]),
+      id,
+      programs.tool_name,
+      programs.arguments(programs.catalogue_and_invoke("fresh")),
     ),
-    peer.ComputedExchange(
-      peer.AwaitToolResult("catalogue-" <> prompt),
-      fn(requests) {
-        let catalogue = latest_result(requests)
-        let assert json.Array([active]) = field(catalogue, "active")
-          as "discovery yields the single currently published callable"
-        assert field(active, "schema") == fixture.schema()
-          as "the discovered contract belongs to the implementation being invoked"
-        peer.ReplyToolUse(
-          "invoke-" <> prompt,
-          "evolution_invoke",
-          json.Object([
-            #("candidate_id", field(active, "candidate_id")),
-            #("generation", field(active, "generation")),
-            #("tool", field(active, "name")),
-            #("arguments", json.Object([#("say", json.String("fresh"))])),
-          ]),
-        )
-      },
-    ),
-    peer.ToolResultExchange(
-      "invoke-" <> prompt,
-      expected,
-      "invocation verified " <> expected,
-    ),
+    peer.ComputedExchange(peer.AwaitToolResult(id), fn(requests) {
+      let outcome = latest_result(requests)
+      let assert json.Array([active]) = field(outcome, "active")
+        as "discovery yields the single currently published callable"
+      assert field(active, "schema") == fixture.schema()
+        as "the discovered contract belongs to the implementation being invoked"
+      assert string.contains(
+        json.to_string(field(outcome, "invoked")),
+        expected,
+      )
+        as "the invocation answered with the implementation's own marker"
+      peer.ReplyText("invocation verified " <> expected)
+    }),
   ]
 }
 
 fn latest_result(requests: List(peer.ObservedRequest)) -> json.JsonValue {
-  let assert Ok(request) = list.last(requests)
-    as "a computed answer receives the actual request it is answering"
-  let assert peer.SuccessfulToolResult(_, text) = request.latest
-    as "only a successful real tool result can advance this script"
-  let assert Ok(value) = json.parse(text)
-    as "the stable evolution door returns structured JSON"
-  value
+  programs.result_value(requests)
 }
 
 pub fn field(value: json.JsonValue, name: String) -> json.JsonValue {

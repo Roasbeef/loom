@@ -25,6 +25,7 @@ import host/bootstrap as native
 import runtime/api
 import simplifile
 import support/evolution_program as fixture
+import support/evolution_programs as programs
 import support/extensions
 import support/provider_http as peer
 import telemetry/log
@@ -364,33 +365,23 @@ fn author_script(
         ]),
       )
     }),
+    // One program captures the assembled directory and runs its author tests,
+    // returning the test result with the candidate and its retained evidence.
     peer.ComputedExchange(peer.AwaitToolResult("skill-write"), fn(_) {
       peer.ReplyToolUse(
-        "skill-propose",
-        "evolution_propose",
-        json.Object([
-          #("directory", json.String("skill")),
-          #("name", json.String("fresh_echo")),
-          #("kind", json.String("program")),
-          #("test_entry", json.String("author_checks")),
-          #(
-            "description",
-            json.String("Run an immutable native echo skill with fresh input."),
-          ),
-          #("input_schema", json.String(json.to_string(fixture.schema()))),
-        ]),
+        "skill-author",
+        programs.tool_name,
+        programs.arguments(programs.propose_and_test(
+          directory: "skill",
+          name: "fresh_echo",
+          kind: "program",
+          test_entry: "author_checks",
+          description: "Run an immutable native echo skill with fresh input.",
+          schema: json.to_string(fixture.schema()),
+        )),
       )
     }),
-    peer.ComputedExchange(peer.AwaitToolResult("skill-propose"), fn(requests) {
-      peer.ReplyToolUse(
-        "skill-test",
-        "evolution_test",
-        json.Object([
-          #("candidate_id", field(latest(requests), "candidate_id")),
-        ]),
-      )
-    }),
-    peer.ComputedExchange(peer.AwaitToolResult("skill-test"), fn(requests) {
+    peer.ComputedExchange(peer.AwaitToolResult("skill-author"), fn(requests) {
       let receipt = latest(requests)
       process.send(
         authored,
@@ -405,92 +396,54 @@ fn author_script(
   ]
 }
 
+// Discovery and the call are one program, as a model using `cap/evolution`
+// writes them. The returned object carries the discovered entries and the
+// invocation, so the script still checks what discovery advertised and what
+// the retained source answered.
 fn invoke_script(prompt: String, fresh: String) -> List(peer.Exchange) {
+  let id = "invoke-" <> fresh
   [
     peer.ToolUseExchange(
       prompt,
-      "catalogue-" <> fresh,
-      "evolution_catalogue",
-      json.Object([]),
+      id,
+      programs.tool_name,
+      programs.arguments(programs.catalogue_and_invoke(fresh)),
     ),
-    peer.ComputedExchange(
-      peer.AwaitToolResult("catalogue-" <> fresh),
-      fn(requests) {
-        let assert json.Array([active]) = field(latest(requests), "active")
-          as "only selected workspace skill is discovered"
-        assert field(active, "kind") == json.String("program")
-          && field(active, "schema") == fixture.schema()
-          && field(active, "generation") == json.Int(1)
-          && field(active, "origin_session")
-          == json.String("evolution-acceptance")
-          as "discovery binds the original author, version, kind and immutable schema"
-        peer.ReplyToolUse(
-          "invoke-" <> fresh,
-          "evolution_invoke",
-          json.Object([
-            #("candidate_id", field(active, "candidate_id")),
-            #("generation", field(active, "generation")),
-            #("tool", field(active, "name")),
-            #("arguments", json.Object([#("say", json.String(fresh))])),
-          ]),
-        )
-      },
-    ),
-    peer.ComputedExchange(
-      peer.AwaitToolResult("invoke-" <> fresh),
-      fn(requests) {
-        let execution = latest(requests)
-        assert field(execution, "status") == json.String("completed")
-          && field(execution, "value") == json.String("skill-v1:" <> fresh)
-          as "fresh JSON enters the real retained code-mode source and native process"
-        peer.ReplyText("fresh executable invocation verified")
-      },
-    ),
+    peer.ComputedExchange(peer.AwaitToolResult(id), fn(requests) {
+      let outcome = latest(requests)
+      let assert json.Array([active]) = field(outcome, "active")
+        as "only selected workspace skill is discovered"
+      assert field(active, "kind") == json.String("program")
+        && field(active, "schema") == fixture.schema()
+        && field(active, "generation") == json.Int(1)
+        && field(active, "origin_session")
+        == json.String("evolution-acceptance")
+        as "discovery binds the original author, version, kind and immutable schema"
+      let execution = field(outcome, "invoked")
+      assert field(execution, "status") == json.String("completed")
+        && field(execution, "value") == json.String("skill-v1:" <> fresh)
+        as "fresh JSON enters the real retained code-mode source and native process"
+      peer.ReplyText("fresh executable invocation verified")
+    }),
   ]
 }
 
 fn latest(requests: List(peer.ObservedRequest)) -> json.JsonValue {
-  let assert Ok(request) = list.last(requests)
-    as "actual observed request exists"
-  let assert peer.SuccessfulToolResult(_, text) = request.latest
-    as "real tool succeeds before script advances"
-  let assert Ok(value) = json.parse(text)
-    as "evolution tool receipt totally parses"
-  value
+  programs.result_value(requests)
 }
 
 fn protected_script() -> List(peer.Exchange) {
   [
     peer.ToolUseExchange(
       "probe protected source",
-      "protected-catalogue",
-      "evolution_catalogue",
-      json.Object([]),
-    ),
-    peer.ComputedExchange(
-      peer.AwaitToolResult("protected-catalogue"),
-      fn(requests) {
-        let assert json.Array([active]) = field(latest(requests), "active")
-          as "selected workspace skill is discovered"
-        peer.ReplyToolUse(
-          "protected-invoke",
-          "evolution_invoke",
-          json.Object([
-            #("candidate_id", field(active, "candidate_id")),
-            #("generation", field(active, "generation")),
-            #("tool", field(active, "name")),
-            #(
-              "arguments",
-              json.Object([#("say", json.String("probe-protected-source"))]),
-            ),
-          ]),
-        )
-      },
+      "protected-invoke",
+      programs.tool_name,
+      programs.arguments(programs.catalogue_and_invoke("probe-protected-source")),
     ),
     peer.ComputedExchange(
       peer.AwaitToolResult("protected-invoke"),
       fn(requests) {
-        let execution = latest(requests)
+        let execution = field(latest(requests), "invoked")
         assert field(execution, "status") == json.String("completed")
           && field(execution, "value") == json.String("protected source hidden")
           as "real protected-directory masking hides the existing nonempty source"
@@ -508,38 +461,21 @@ fn caller_policy_script(
   [
     peer.ToolUseExchange(
       prompt,
-      call_id <> "-catalogue",
-      "evolution_catalogue",
-      json.Object([]),
+      call_id <> "-invoke",
+      programs.tool_name,
+      programs.arguments(programs.catalogue_and_invoke("probe-caller-policy")),
     ),
     peer.ComputedExchange(
-      peer.AwaitToolResult(call_id <> "-catalogue"),
+      peer.AwaitToolResult(call_id <> "-invoke"),
       fn(requests) {
-        let assert json.Array([active]) = field(latest(requests), "active")
+        let outcome = latest(requests)
+        let assert json.Array([active]) = field(outcome, "active")
           as "the caller discovers the already-selected shared Workspace Program"
         assert field(active, "origin_session")
           == json.String("evolution-acceptance")
           && field(active, "generation") == json.Int(1)
           as "the same retained author version crosses the session boundary"
-        peer.ReplyToolUse(
-          call_id <> "-invoke",
-          "evolution_invoke",
-          json.Object([
-            #("candidate_id", field(active, "candidate_id")),
-            #("generation", field(active, "generation")),
-            #("tool", field(active, "name")),
-            #(
-              "arguments",
-              json.Object([#("say", json.String("probe-caller-policy"))]),
-            ),
-          ]),
-        )
-      },
-    ),
-    peer.ComputedExchange(
-      peer.AwaitToolResult(call_id <> "-invoke"),
-      fn(requests) {
-        let execution = latest(requests)
+        let execution = field(outcome, "invoked")
         assert field(execution, "status") == json.String("completed")
           && field(execution, "value") == json.String(expected)
           as "the saved source performs the public control and the exact caller-specific OS read"
