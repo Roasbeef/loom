@@ -1124,7 +1124,10 @@ starting until the next daemon starts.
   and `LOOM_COMPACTION_KEEP_RECENT` environment variables. See
   [compaction](architecture/compaction.md).
 - **Helper pool and disabled tools.** `LOOM_HELPER_POOL` and
-  `LOOM_DISABLE_TOOLS`, environment variables read by the daemon.
+  `LOOM_DISABLE_TOOLS`, environment variables read by the daemon. Governed
+  evolution has no tool to disable, so the reserved name `evolution` in
+  `LOOM_DISABLE_TOOLS` withholds `cap/evolution` from a source session's code
+  mode instead.
 - **Executor scope limit.** `LOOM_EXECUTOR_MAX_SCOPES`, an environment variable
   read by a daemon that serves `[workspaces.<name>]`: the most scopes the executor
   admits that are not cleanly closed, 16 when unset. An executor at its limit

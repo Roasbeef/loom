@@ -97,8 +97,9 @@ and the core upgrade (`control.Seam`) stay outside it.
 which runs on the caller's own process, and holds activation and close until
 every lease is returned or its holder has died (a `weft/state_machine`:
 `Open` admits leases, `Draining` postpones them behind a waiting replacement).
-Calls overlap, and the `waiting` argument bounds only admission. `hook` derives
-its door bypass list from `evolution_tool.names` and `model_door.names`. `hook`
+Calls overlap, and the `waiting` argument bounds only admission. `hook`
+leases every tool call except the subagent wait; the evolution operations run
+inside a leased `code_mode` call and take their own lease from the doors. `hook`
 stages a privately compiled jailed generation and publishes it after native
 retirement of the predecessor. `machine/local` retains failed cleanup capabilities;
 `retirement.Task` carries only the remaining native obligation, so successful
@@ -111,12 +112,22 @@ committed receipts from the durable selection before reporting failure.
 `retire_task` transfers an acknowledged failure's remaining task before HostDown.
 Missing native reports remain unconfirmed.
 
-The model sees stable `evolution_propose`, `evolution_test`,
-`evolution_inspect`, `evolution_catalogue`, `evolution_invoke` and
-`evolution_trace` doors, in a `Source` session only. `Settings.evolution_role`
+A model reaches evolution through `cap/evolution` in `code_mode` and nowhere
+else; no direct evolution tool exists, so none costs prompt bytes. A `Source`
+session has the six operations. `client/codemode.Config.evolution` is the one
+optional field that admits the module, renders its types, advertises the six
+names and installs their router arm, on the workspace seam only. Because the
+plane is opened after that configuration, the field holds a builder over a
+name, and `evolution/capability` registers the cell `open_evolution` fills with
+the finished doors; custody stops it with the live owner. `open_evolution`
+hands the machine `codemode.without_evolution(host)`, so candidates are
+vetted and run without the module. Each call runs under a `tool.Ctx` rebuilt
+from the request, with a source index folded from its capability slot and
+ordinal. `Settings.evolution_role`
 is `Source` or `Trial(profiles)`; a trial runs exactly its profiles, masks no
 evolution directory of its own, and assembles no evolution wiring, so it has no
-doors, catalogue or upgrade controller. Native
+doors, catalogue or upgrade controller, and its code mode does not admit the
+module. Native
 operator commands arrive through authenticated `protocol.Evolution` bindings;
 payload fields cannot choose authority or principal. Observers can read only.
 `loomd evolution` and the `loom evolution` forwarder reuse authenticated daemon

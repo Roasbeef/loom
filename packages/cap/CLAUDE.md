@@ -513,6 +513,18 @@ Raw `receive` publishes `default` readiness and cannot consume a typed service.
 Idle expiry is host-owned cancellation, so the program cannot rely on reporting
 a final result after an idle response. The original wall deadline always holds.
 
+## Governed evolution
+
+`cap/evolution` is the model's only route to governed evolution: `propose`,
+`test_candidate` and `compare` (the `evolution.test` capability), `inspect`,
+`catalogue`, `invoke` and `trace`, each a typed stub that returns the
+catalogue's JSON as a `report.Value`. It is a harness-only module, so no static
+allowlist admits it; `client/codemode.seam_allowlist` does, on a source session
+that owns the plane. `test` is a reserved word, hence `test_candidate`. A
+candidate program cannot import it. Its type surface is rendered into the
+`code_mode` description only where admitted, so keep the module's first
+paragraph short and complete.
+
 ## Durable code-mode notes
 
 The host-installed `cap/notes` data surface adds `put`, `get`, and `list`

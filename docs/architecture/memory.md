@@ -333,7 +333,7 @@ instructions win every conflict. A repository with no notes, or an index over
 
 Bodies are fetched on demand. A model that wants a note's full text calls
 `history_search` with `kind: note`. The store joins the history owner's
-sources through `client/serve.gleam:1244` (`with_memory_source`), so each note
+sources through `client/serve.gleam:1251` (`with_memory_source`), so each note
 is indexed under kind `note`, with its title, description and text as its
 words.
 

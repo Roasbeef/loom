@@ -13,6 +13,18 @@ code into its own VM. See
 [the evolution architecture](../../docs/architecture/evolution.md).
 
 
+## Governed evolution capability
+
+`codemode/evolution` is the harness half of `cap/evolution`, the only
+model-facing route to governed evolution. `routing(door, over:)` claims the six
+`evolution.*` names (`serviced_caps`) and passes each call's ordinal and decoded
+JSON arguments to a closure the host bound to one execution. The doors validate
+their own fields, so the router restates no schema; a refusal travels under
+`evolution_refused` with the catalogue's sentence. `tool_gate` gates each name on
+`code_mode`, `ceilings` bound admissions per execution, and `cap/evolution` is a
+harness-only module (`vet/policy.harness_only_cap_modules`), admitted per host by
+`client/codemode`. Candidates are vetted without it.
+
 ## Purpose
 
 Code mode: a model writes a *program*, not a tool call, and the program
