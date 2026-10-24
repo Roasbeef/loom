@@ -93,6 +93,9 @@ pub fn project(
           total,
           int.max(protected, current_count(list.reverse(messages), 0)),
         )
+
+      // A current turn over the limit cannot be trimmed without dropping
+      // images the model must see, so it is refused rather than projected.
       case active > limit {
         True ->
           Error(
