@@ -78,10 +78,15 @@ terminal-profiling handoff is preserved in
 
 ## Continued allocation follow-up
 
-The owner approved a separate follow-up PR after #1110 merges. The integration
-owner will rebase commits e97af0e98 through 2885a7e08 onto post-#1110 main,
-rerun affected gates and publish that PR. Do not add this wave to #1110 or
-delay its merge. No follow-up PR or post-rebase validation is claimed yet.
+The owner approved a separate follow-up PR. #1110 merged as
+141788049d93cfe97a427e350d75001bd88d091c; its merged tree matches its reviewed
+head 4e479fcc1. The seven follow-up commits are rebased on that main revision
+on codex/performance-followup, with source head 6feb3ef08 and only this later
+documentation update. Provider326, web1332, codemode90 and workspace41 pass
+again on the rebased source, as do affected lints and documentation checks.
+The whole-tree lint passes. Publication and hosted follow-up checks remain
+pending. #1110's hosted run was still finishing after its admin merge;
+its completed local gates are not represented as completed hosted CI.
 
 Three private changes form the follow-up: Anthropic merges consecutive tool
 results from the end so it copies each original block list once; code-mode
