@@ -357,6 +357,12 @@ this order:
 The name and signature already say what values move. A comment which stops at
 "starts a worker" or "returns a result" has not documented the API.
 
+Private helpers longer than `policy.function_doc_lines` (default 6 lines, where
+R18's short-helper census leaves off) also carry a `///` doc comment stating
+what the helper establishes so a reader does not have to reconstruct it from
+the body. Lint R22 (`function-doc`) checks `///` doc comments on public
+functions and on private helpers above that line threshold.
+
 ### Plain comments: the literate register
 
 Comment liberally, in a literate register. The reader of a Loom module
@@ -505,7 +511,14 @@ distinction R2 makes about nesting:
 Likewise `case` arms are a table. Twelve one-line arms dispatching a
 message type want no blank lines at all — but a comment giving the
 *reasoning* for an arm still wants one above it, which is the first rule
-arriving in the second place.
+arriving in the second place. By contrast, a `case` *statement* inside a
+multi-statement body (`case …`, `let x = case …`, `use x <- result.try(case …)`)
+is a stanza of its own: open it with a blank line and a `//` comment stating
+what the branch decides, and leave a blank line after its closing brace before
+the next statement. Lint R21 (`case-stanza`) checks both, and R11 weights
+statements that embed a `case` or a multi-statement closure as two steps
+(`Compound`) so a wall of branching closures cannot hide inside a small
+statement count.
 
 ### What the formatter decides, and what you do
 

@@ -13,16 +13,17 @@ quadratic JSON parser whose every unit test passed (`08cdbce`).
 A pure analysis over `glance`'s AST, plus four `glexer` token scans for
 the questions where a parser miss would be a policy hole rather than a
 missed suggestion, plus one line scan of a `gleam.toml` and one line
-classification of every source. Eleven of the twenty-one rules gate — R0, R2,
-R4, R6, R10, R13, R14, R15, R16, R19 and R20 — and each of their censuses must
-stay zero; the other ten report. See **Staging** below before wiring anything else to the exit
-code.
+classification of every source. Thirteen of the twenty-three rules gate — R0,
+R1, R2, R4, R6, R7, R10, R13, R14, R15, R16, R19 and R20 — and each of their
+censuses must stay zero; the other ten report. See **Staging** below before
+wiring anything else to the exit code.
 
-Three of the twenty-one are not questions about the AST at all. R10 and R11
-ask how the source was *laid out* — where the blank lines and comments
+Four of the twenty-three are not questions about the AST at all. R10, R11 and
+R21 ask how the source was *laid out* — where the blank lines and comments
 are — which `glance` throws away entirely, so `lint/layout` reads the tree
-for where each sibling begins and the file's own line table for what was
-written between them.
+for where each sibling begins and ends and the file's own line table for what
+was written between them. R22 lexes `///` doc-comment tokens from `glexer` and
+pairs them with function definitions.
 
 R19 and R20 are the only rules that read `test/`. Every other rule is about a
 package's `src/`, and `lint/cli` still lints a test source with them only under
@@ -78,7 +79,7 @@ wrote ourselves. Nothing here is a security control.
   LoneCallerArity | NakedBool | CommentStanza | DenseStanza |
   BroadClosureCapture | FlowSpine | TransitionTable | StateFirst |
   QualifiedDomainCall | FlowOrder | UnnamedHelper | StdoutSkip |
-  TestImportWall`, printed as `R0`..`R20`.
+  TestImportWall | CaseStanza | FunctionDoc`, printed as `R0`..`R22`.
   `error_by_default` is the staging decision as data — `[Unparseable,
   EagerFallback, NestingDepth, PanicInSource, PortablePurity,
   AssertWithoutMessage, CommentStanza, FlowSpine, TransitionTable,
@@ -106,7 +107,9 @@ wrote ourselves. Nothing here is a security control.
   (it does not). `assert_message` (R7, off for tests
   alongside `allow_panic` — `for_tests_like` is the one place that decides
   what a test source is exempt from), `lone_caller_arity` (R8's
-  threshold, 7) and `dense_stanza_run` (R11's, 8 statements).
+  threshold, 7), `dense_stanza_run` (R11's, 8 statements),
+  `unnamed_helper_lines` (R18's, 6 lines) and `function_doc_lines` (R22's, 6
+  lines).
   `counted_calls` is R5's table: the two counting calls it
   watches and, per call, the bounded question to suggest instead, because
   the advice for a string is not `list.drop`. `eager_combinators` is R1's
@@ -127,17 +130,18 @@ wrote ourselves. Nothing here is a security control.
   (`exported_eager_rows`, public functions only), and drops any keyed
   under its own path so a combinator called where it is defined is one
   finding rather than two.
-- `lint/layout.{Block, Step, Weight, blocks, offsets, findings}` — R10 and
-  R11, which are the only rules about how a file was *written* rather than
-  what it parses to. `blocks` walks the tree for every list of
+- `lint/layout.{Block, BlockArm, Step, StepShape, Weight, blocks, offsets,
+  findings}` — R10, R11 and R21, the rules about how a file was *written*
+  rather than what it parses to. `blocks` walks the tree for every list of
   siblings — `Statements` of a body, `Branches` of a `case`, `Variants` of
-  a custom type — and reports
-  where each one begins, in offsets; `offsets` is what
-  `source.line_map` resolves in one merged pass; `findings` then judges in
-  line numbers against `source.classify`'s table. `Weight` is the R11
-  narrowing as a type: a `use` binding carries a run across without
-  lengthening it, because a `use`-chained decoder is a table of fields and
-  not a paragraph of steps.
+  a custom type — and reports where each one begins and ends, in offsets;
+  `offsets` is what `source.line_map` resolves in one merged pass; `findings`
+  then judges in line numbers against `source.classify`'s table. `Weight` is
+  the R11 narrowing as a type: a flat `use` binding is `Binding` (weight 0),
+  carrying a run across without lengthening it, while a statement that embeds
+  a `case` or a multi-statement closure/block is `Compound` (weight 2) so
+  branching walls cannot hide inside a small statement count. `StepShape`
+  marks `CaseStep` statements for R21.
 - `lint/source.{line_starts, lines_of, line_of, keyword_offsets,
   Keywords, external_offsets, variant_offsets, LineKind, Lines, classify,
   kind_of, offset_of, line_map}` — byte offsets to lines, the four token
@@ -160,6 +164,13 @@ wrote ourselves. Nothing here is a security control.
   with the same `findings(module, code, lines, policy, own_path)` shape,
   wired side by side in `lint.check_with`. `state_first.step_names`,
   `qualified.loom_roots` and `qualified.allowed` are their tables as data.
+- `lint/function_doc.{findings, findings_with_doc}` — R22, `///` doc comments
+  on public functions (in any module with a `////` doc, or spanning more than
+  `policy.function_doc_lines` lines) and on referenced private helpers spanning
+  more than `policy.function_doc_lines` lines (default 6, where R18 leaves off).
+  Lexes `glexer`'s `CommentDoc` tokens so `///` inside a multi-line string is
+  never mistaken for documentation, and pairs top-level `@` attributes with
+  their function so `///` above `@internal` or `@deprecated` is recognized.
 - `lint/skip_stdout.findings(module)` — R19, the test-scoped per-file rule: a
   call to `gleam/io`'s `println` or `print` (through any alias or unqualified
   import, or `"SKIP …" |> io.println`) whose first argument is a string
@@ -438,14 +449,16 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   and silence arrive together; `runtime/supervisor.start` was ten `let`s
   in a wall and reads as three stanzas once broken. Counted in
   **statements, never lines**, for R2's reason: a thirty-line
-  `json.Object([…])` the formatter wrapped is one step. And a `use`
-  binding is weightless — it carries a run across without lengthening it —
-  because a `use`-chained decoder is a table of fields written down the
-  page and not a paragraph of steps. That narrowing is what took the
-  census from 57 to 17; `core/codec.decode_assistant_message` is nineteen
-  `use field <- result.try(…)` lines and is exactly right. One finding per
-  function, at the function, the way R2's is: what a reader does about it
-  is re-read the body and decide where its paragraphs are.
+  `json.Object([…])` the formatter wrapped is one `Ordinary` step (weight 1).
+  A flat `use` binding is `Binding` (weight 0) — it carries a run across
+  without lengthening it — because a `use`-chained decoder is a table of fields
+  written down the page and not a paragraph of steps. Conversely, a statement
+  (`let`, `use`, `assert`, or expression) that embeds a `case` dispatch or a
+  multi-statement closure/block is `Compound` (weight 2), so a wall of
+  branching closures (`client/mcp/http.gleam:adapt_transport`) cannot pass as a
+  short paragraph. One finding per function, at the function, the way R2's is:
+  what a reader does about it is re-read the body and decide where its
+  paragraphs are.
 - **R12 `broad-closure-capture`** — a closure which is returned, assigned,
   or stored in a constructor, and which uses an outer binding only as the
   direct container of field
@@ -556,13 +569,28 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   at the importing line in the file that wrote it with the chain from the
   test, never enters a forbidden module, and reads each module once. It
   replaced `check_imports` in `scripts/web_client_test.sh`. Census zero.
+- **R21 `case-stanza`** (`lint/layout`) — a `case` statement (`case …`,
+  `let x = case …`, or `use x <- f(case …)`) in a multi-statement body without
+  a `//` comment above it or welded to an adjacent statement without a blank
+  line between them, or a single-statement body whose `case` has at least one
+  multi-statement `{ … }` block arm and carries no `//` comment above the
+  `case` or any of its arms. A single-statement function whose `case` has only
+  flat one-expression arms (`finding.id`, `http.tag_fault`) is a dispatch table
+  and stays silent.
+- **R22 `function-doc`** (`lint/function_doc`) — a `pub fn` in a module with a
+  `////` doc (or spanning strictly more than `policy.function_doc_lines` lines),
+  or a referenced private `fn` spanning strictly more than
+  `policy.function_doc_lines` lines (default 6, complementing R18), with no
+  attached `///` doc comment above its definition or leading `@` attributes.
+  Entry points (`main`, and `*_test` under test policy) are exempt.
 - **R0 `unparseable`** — not a house rule. A file `glance` could not
   parse is reported, so a parse failure is never silence.
 
 ## Staging
 
 **R0, R1, R2, R4, R6, R7, R10, R13, R14, R15, R16, R19 and R20 gate; R3, R5,
-R8, R9, R11, R12, R17 and R18 warn.** `make lint` and `make check` fail on
+R8, R9, R11, R12, R17, R18, R21 and R22 warn.** `make lint` and `make check`
+fail on
 any of the thirteen. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
@@ -631,7 +659,7 @@ for the censuses this superseded):
 | R8 lone-caller-arity | 31, and moving | **stays a warning**; a shape, never a verdict |
 | R9 naked-bool | 231 | decidable; promotable once the sweep lands and the four irreducible sites are the census rather than 2% of it |
 | R10 comment-stanza | 0, swept from 1137 | **error level**; zero in `src/` and `test/` alike, and the sweep is formatter-verified |
-| R11 dense-stanza | 25 at threshold 8 | precise, but the threshold is a judgement; treat the number as a reading |
+| R11 dense-stanza | 132 at threshold 8 | precise (with `Compound` weight 2), but the threshold is a judgement; treat the number as a reading |
 | R12 broad-closure-capture | 119 | **stays a warning**; record width and closure lifetime are absent from the AST |
 | R13 flow-spine | 0, swept from 96 | **error level**; every module of 1000+ lines has a checked spine |
 | R14 transition-table | 0, nine tables | **error level**; zero by construction, and the gate is the rule's whole purpose |
@@ -641,6 +669,8 @@ for the censuses this superseded):
 | R18 unnamed-helper | 1327 | **stays a warning**; whether a name is a domain operation is judgement |
 | R19 stdout-skip | 0 | **error level**; replaced a guard that already failed the build, decidable from the call |
 | R20 test-import-wall | 0 | **error level**; same, decidable from the import graph |
+| R21 case-stanza | 7347 | decidable on the AST and line table; warns until swept |
+| R22 function-doc | 9196 | decidable on the AST and `CommentDoc` tokens; warns until swept |
 
 R13 to R18 arrived together for issue #593, and the argument for each tier
 is in `finding.error_by_default`. The four that gate were driven to zero in

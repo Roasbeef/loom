@@ -168,10 +168,13 @@ fn run(options: Options) -> Nil {
   // rules only (R19, R20) unless `--tests` asks for every rule: the other
   // rules keep the scope they were swept at, `src/`.
   let #(tests, sources) = list.partition(read, fn(source) { is_test(source.0) })
+
+  // Include `test/` sources in the main pass only when `--tests` was passed.
   let ruled = case options.include_tests {
     True -> read
     False -> sources
   }
+
   let combinators =
     list.flat_map(ruled, fn(source) {
       lint.exported_combinators(display(source.0), source.1)
@@ -187,10 +190,14 @@ fn run(options: Options) -> Nil {
       manifests_of(list.map(ruled, pair.first)),
       lint_manifest,
     ))
+
+  // Suppress per-finding lines under `--quiet` and print only the census and
+  // gating summary.
   case options.quiet {
     True -> Nil
     False -> print_findings(findings, options.limit)
   }
+
   print_census(findings, files)
   print_summary(findings, options.errors)
 }

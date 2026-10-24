@@ -69,6 +69,7 @@ import gleam/string
 import glexer/token
 import lint/finding.{type Finding, Finding}
 import lint/flow_order
+import lint/function_doc
 import lint/layout
 import lint/module_doc
 import lint/policy.{type Eager, type Policy}
@@ -169,6 +170,7 @@ pub fn check_with(
           qualified.findings(module, code, lines, policy, own),
           flow_order.findings(module, code, lines, policy, own),
           unnamed_helper.findings_with_doc(module, doc, lines, policy, own),
+          function_doc.findings_with_doc(module, code, doc, lines, policy, own),
         ])
       let all =
         found

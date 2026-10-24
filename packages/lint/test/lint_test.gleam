@@ -1430,6 +1430,359 @@ pub fn r11_does_not_count_a_wrapped_literal_test() {
   |> should.be_false
 }
 
+/// A statement that embeds a `case` or a multi-statement closure (`Compound`,
+/// weight 2) — including a `use` wrapping a `case` — is not a flat table row.
+/// This is the `client/mcp/http.gleam:adapt_transport` regression shape: seven
+/// statements that previously scored 6 (because `use` was weight 0 and every
+/// multi-statement closure was weight 1) now score 10 and fire R11.
+pub fn r11_weights_compound_case_and_closure_statements_test() {
+  module(
+    "fn adapt_transport(prepare_streaming) {
+  HttpTransport(prepare_streaming: fn(req, events) {
+    let ready = new_subject()
+    let provider_req = HttpRequest(req.method, req.url, req.headers, req.body)
+    let relay = spawn_unlinked(fn() {
+      let provider_events = new_subject()
+      case prepare_streaming(provider_req, provider_events) {
+        Error(reason) -> send(ready, Error(reason))
+        Ok(prepared) -> send(ready, Ok(prepared))
+      }
+    })
+    use prepared <- result.try(case receive(ready, 5000) {
+      Ok(outcome) -> outcome
+      Error(Nil) -> Error(\"timed out\")
+    })
+    let running = prepared.running
+    let begin = prepared.begin
+    Ok(PreparedHttp(running: RunningHttp(owner: running.owner, cancel: fn() {
+      cancel(running)
+      kill(relay)
+    }), begin:))
+  })
+}",
+  )
+  |> fired(finding.DenseStanza)
+  |> should.be_true
+}
+
+/// Breaking that same `adapt_transport` body into commented stanzas drops its
+/// longest run below the threshold.
+pub fn r11_accepts_compound_body_broken_into_stanzas_test() {
+  module(
+    "fn adapt_transport(prepare_streaming) {
+  HttpTransport(prepare_streaming: fn(req, events) {
+    let ready = new_subject()
+    let provider_req = HttpRequest(req.method, req.url, req.headers, req.body)
+
+    // Spawn a relay process that owns the provider inbox.
+    let relay = spawn_unlinked(fn() {
+      let provider_events = new_subject()
+      // Forward readiness before streaming events.
+      case prepare_streaming(provider_req, provider_events) {
+        Error(reason) -> send(ready, Error(reason))
+        Ok(prepared) -> send(ready, Ok(prepared))
+      }
+    })
+
+    // Wait for the relay to prepare the underlying stream.
+    use prepared <- result.try(case receive(ready, 5000) {
+      Ok(outcome) -> outcome
+      Error(Nil) -> Error(\"timed out\")
+    })
+
+    let running = prepared.running
+    let begin = prepared.begin
+    Ok(PreparedHttp(running: RunningHttp(owner: running.owner, cancel: fn() {
+      cancel(running)
+      kill(relay)
+    }), begin:))
+  })
+}",
+  )
+  |> fired(finding.DenseStanza)
+  |> should.be_false
+}
+
+/// A `use <- bool.lazy_guard` whose thunk is a single non-compound statement
+/// remains `Binding` (weight 0), so R11 never penalizes the lazy guard R1 asks
+/// for.
+pub fn r11_leaves_a_flat_lazy_guard_use_chain_weightless_test() {
+  module(
+    "fn validate(a, b, c, d, e, g, h, i, j) {
+  use <- bool.lazy_guard(when: a, return: fn() { Error(describe(a)) })
+  use <- bool.lazy_guard(when: b, return: fn() { Error(describe(b)) })
+  use <- bool.lazy_guard(when: c, return: fn() { Error(describe(c)) })
+  use <- bool.lazy_guard(when: d, return: fn() { Error(describe(d)) })
+  use <- bool.lazy_guard(when: e, return: fn() { Error(describe(e)) })
+  use <- bool.lazy_guard(when: g, return: fn() { Error(describe(g)) })
+  use <- bool.lazy_guard(when: h, return: fn() { Error(describe(h)) })
+  use <- bool.lazy_guard(when: i, return: fn() { Error(describe(i)) })
+  use <- bool.lazy_guard(when: j, return: fn() { Error(describe(j)) })
+  Ok(Nil)
+}",
+  )
+  |> fired(finding.DenseStanza)
+  |> should.be_false
+}
+
+// --- R21: case stanza commentary and separation ----------------------------
+
+/// A `case` statement in a multi-statement body without a `//` comment above it,
+/// and welded to the statement after it (`client/mcp/http.gleam:to_streamable_config`).
+pub fn r21_flags_an_uncommented_and_welded_case_stanza_test() {
+  let found =
+    "fn to_streamable_config(config) {
+  let auth = case config {
+    NoAuth -> 0
+    Bearer -> 1
+  }
+  Config(auth:)
+}
+"
+    |> findings
+    |> list.filter(fn(f) { f.rule == finding.CaseStanza })
+  let assert [only] = found as "one case-stanza finding"
+  should.equal(only.line, 2)
+  should.equal(only.function, "to_streamable_config")
+  should.be_true(string.contains(
+    only.detail,
+    "no `//` comment above it and is welded",
+  ))
+}
+
+/// A `case` statement separated by blank lines but still missing its `//` heading.
+pub fn r21_flags_a_separated_case_missing_its_comment_test() {
+  let found =
+    "fn f(x) {
+  let a = x + 1
+
+  let b = case a {
+    1 -> 2
+    _ -> 3
+  }
+
+  b + 1
+}
+"
+    |> findings
+    |> list.filter(fn(f) { f.rule == finding.CaseStanza })
+  let assert [only] = found as "one case-stanza finding"
+  should.equal(only.line, 4)
+  should.be_true(string.contains(only.detail, "state what the branch decides"))
+}
+
+/// A `case` statement with a `//` comment above it that is welded directly to
+/// the statement following its closing brace.
+pub fn r21_flags_a_commented_case_welded_to_the_next_statement_test() {
+  let found =
+    "fn f(x) {
+  // Decide the offset from `x`.
+  let b = case x {
+    1 -> 2
+    _ -> 3
+  }
+  b + 1
+}
+"
+    |> findings
+    |> list.filter(fn(f) { f.rule == finding.CaseStanza })
+  let assert [only] = found as "one case-stanza finding"
+  should.equal(only.line, 3)
+  should.be_true(string.contains(
+    only.detail,
+    "welded to the statement after it",
+  ))
+}
+
+/// A `use` wrapping a `case` (`use prepared <- result.try(case ...)`) is a `case`
+/// stanza too (`client/mcp/http.gleam:adapt_transport`).
+pub fn r21_flags_a_use_wrapping_a_case_test() {
+  module(
+    "fn f(ready) {
+  let x = 1
+  use prepared <- result.try(case receive(ready, 5000) {
+    Ok(outcome) -> outcome
+    Error(Nil) -> Error(\"timed out\")
+  })
+  Ok(#(x, prepared))
+}",
+  )
+  |> fired(finding.CaseStanza)
+  |> should.be_true
+}
+
+/// A single-statement function whose `case` has multi-statement `{ … }` block arms
+/// and no `//` comment above the `case` or any arm (`client/mcp/http.gleam:relay_events`).
+pub fn r21_flags_a_sole_case_with_block_arms_and_no_comment_test() {
+  "fn relay_events(source, target) {
+  case receive(source, 60_000) {
+    Error(Nil) -> Nil
+    Ok(chunk) -> {
+      send(target, chunk)
+      relay_events(source, target)
+    }
+  }
+}
+"
+  |> fired(finding.CaseStanza)
+  |> should.be_true
+}
+
+/// The same `case` stanzas with a `//` heading and blank-line separation are silent.
+pub fn r21_accepts_commented_and_separated_case_stanzas_test() {
+  module(
+    "fn f(ready) {
+  let x = 1
+
+  // Wait for the relay to publish the prepared request handle.
+  use prepared <- result.try(case receive(ready, 5000) {
+    Ok(outcome) -> outcome
+    Error(Nil) -> Error(\"timed out\")
+  })
+
+  Ok(#(x, prepared))
+}
+
+fn relay_events(source, target) {
+  // Forward chunks until the stream ends or times out.
+  case receive(source, 60_000) {
+    Error(Nil) -> Nil
+    Ok(chunk) -> {
+      send(target, chunk)
+      relay_events(source, target)
+    }
+  }
+}",
+  )
+  |> fired(finding.CaseStanza)
+  |> should.be_false
+}
+
+/// A single-statement function whose `case` has only flat one-expression arms is a
+/// dispatch table (`http.tag_fault`, `finding.id`) and needs no extra inner `//`.
+pub fn r21_leaves_a_sole_flat_case_dispatch_table_alone_test() {
+  "pub fn tag_fault(fault) {
+  case fault {
+    Malformed(reason) -> reason
+    Unavailable(reason) -> reason
+  }
+}
+"
+  |> fired(finding.CaseStanza)
+  |> should.be_false
+}
+
+// --- R22: function `///` doc comments ---------------------------------------
+
+/// A `pub fn` in a module with a `////` doc must carry a `///` doc comment.
+pub fn r22_flags_an_undocumented_public_function_test() {
+  let found =
+    "//// Module doc.
+
+pub fn seam(config) { config }
+"
+    |> findings
+    |> list.filter(fn(f) { f.rule == finding.FunctionDoc })
+  let assert [only] = found as "one function-doc finding"
+  should.equal(only.line, 3)
+  should.equal(only.function, "seam")
+  should.be_true(string.contains(
+    only.detail,
+    "public function `seam` has no `///` doc comment",
+  ))
+}
+
+/// A referenced private helper longer than `policy.function_doc_lines` (default 6)
+/// must carry a `///` doc comment (`client/mcp/http.gleam:to_streamable_config`).
+pub fn r22_flags_an_undocumented_long_private_helper_test() {
+  let found =
+    "//// Module doc.
+
+/// Entry point.
+pub fn seam(config) { to_streamable_config(config) }
+
+fn to_streamable_config(config) {
+  let a = config
+  let b = a
+  let c = b
+  let d = c
+  let e = d
+  e
+}
+"
+    |> findings
+    |> list.filter(fn(f) { f.rule == finding.FunctionDoc })
+  let assert [only] = found as "one function-doc finding"
+  should.equal(only.line, 6)
+  should.equal(only.function, "to_streamable_config")
+  should.be_true(string.contains(
+    only.detail,
+    "private function `to_streamable_config` spans 8 lines",
+  ))
+}
+
+/// Both public and long private functions are silent when preceded by `///` doc comments,
+/// including when `@internal` sits between the `///` comment and `pub fn`.
+pub fn r22_accepts_documented_functions_and_attributes_test() {
+  "//// Module doc.
+
+/// Public entry point.
+@internal
+pub fn seam(config) { to_streamable_config(config) }
+
+/// Translates `config` for the streamable transport.
+fn to_streamable_config(config) {
+  let a = config
+  let b = a
+  let c = b
+  let d = c
+  let e = d
+  e
+}
+"
+  |> fired(finding.FunctionDoc)
+  |> should.be_false
+}
+
+/// Neither a plain `//` comment, nor a detached `///` with a blank line below it,
+/// nor `///` inside a string literal counts as a `///` doc comment.
+pub fn r22_rejects_non_doc_comments_and_strings_test() {
+  let found =
+    "//// Module doc.
+const fake = \"
+/// not a doc comment
+\"
+pub fn a(x) { x }
+
+/// Detached doc comment.
+
+pub fn b(x) { x }
+
+// Ordinary comment, not a doc comment.
+pub fn c(x) { x }
+"
+    |> findings
+    |> list.filter(fn(f) { f.rule == finding.FunctionDoc })
+    |> list.map(fn(f) { f.function })
+  should.equal(found, ["a", "b", "c"])
+}
+
+/// Short private helpers (`<= policy.function_doc_lines`) are left to R18's census.
+pub fn r22_leaves_a_short_private_helper_alone_test() {
+  "//// Module doc.
+
+/// Public entry point.
+pub fn seam(x) { short(x) }
+
+fn short(x) {
+  let y = x + 1
+  y
+}
+"
+  |> fired(finding.FunctionDoc)
+  |> should.be_false
+}
+
 // --- R12: a closure retaining a record for its fields ----------------------
 
 /// The imported-hook composition regression from PR #411. Each installed

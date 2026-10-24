@@ -144,6 +144,15 @@ pub type Rule {
   /// at load on a Node without `CustomEvent`, so the tests may import only the
   /// decision modules that never touch it. The walk is transitive.
   TestImportWall
+
+  /// R21. A `case` statement in a multi-statement body (or a single-statement
+  /// `case` with block arms) that lacks a `//` comment above it or is welded
+  /// to an adjacent statement without a blank line between them.
+  CaseStanza
+
+  /// R22. A public function, or a private function longer than the policy
+  /// threshold, with no `///` doc comment above it.
+  FunctionDoc
 }
 
 /// Every rule, in report order.
@@ -170,6 +179,8 @@ pub fn rules() -> List(Rule) {
     UnnamedHelper,
     StdoutSkip,
     TestImportWall,
+    CaseStanza,
+    FunctionDoc,
   ]
 }
 
@@ -402,6 +413,8 @@ pub fn id(rule: Rule) -> String {
     UnnamedHelper -> "R18"
     StdoutSkip -> "R19"
     TestImportWall -> "R20"
+    CaseStanza -> "R21"
+    FunctionDoc -> "R22"
   }
 }
 
@@ -429,18 +442,24 @@ pub fn name(rule: Rule) -> String {
     UnnamedHelper -> "unnamed-helper"
     StdoutSkip -> "stdout-skip"
     TestImportWall -> "test-import-wall"
+    CaseStanza -> "case-stanza"
+    FunctionDoc -> "function-doc"
   }
 }
 
 /// Parse a rule identifier (`R1`, `r1`, or the rule's name). Total.
 pub fn parse(text: String) -> Result(Rule, Nil) {
   let wanted = string.lowercase(string.trim(text))
+
+  // Match either the short rule id (`r1`) or the kebab-case rule name.
   case find_rule(rules(), wanted) {
     [rule, ..] -> Ok(rule)
     [] -> Error(Nil)
   }
 }
 
+/// Returns the first rule in `candidates` whose short id or name matches
+/// `wanted`.
 fn find_rule(candidates: List(Rule), wanted: String) -> List(Rule) {
   case candidates {
     [] -> []
