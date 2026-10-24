@@ -819,6 +819,7 @@ fn plane_over(
               "the executor's evolution plane is not built yet",
             ),
           ),
+          evolution: None,
           children: fn(builder) {
             builder
             |> children.scratch

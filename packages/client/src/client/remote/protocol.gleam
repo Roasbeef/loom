@@ -605,6 +605,90 @@ pub type HostMessage(census) {
     incarnation: Int,
     reply: Subject(Result(CloseOutcome, Refusal)),
   )
+
+  /// Captures a candidate's source from `directory`, read-only and repeatable.
+  /// The scope's `incarnation` and `token` are checked before the plane is
+  /// asked. The orchestrator checks only the shape of `directory`; the
+  /// executor resolves it under its own workspace.
+  EvolutionSnapshot(
+    incarnation: Int,
+    token: BitArray,
+    coordinates: Coordinates,
+    directory: String,
+    reply: Subject(Result(archive.Tree, Refusal)),
+  )
+
+  /// Runs a candidate's author tests. A keyed call: admitted by
+  /// `coordinates.key` as a background execution is, so a re-send joins the
+  /// live check or reads the stored report, which is a JSON value.
+  EvolutionEvaluate(
+    incarnation: Int,
+    token: BitArray,
+    coordinates: Coordinates,
+    candidate: record.Candidate,
+    reply: Subject(ExecutionAnswer),
+  )
+
+  /// Builds and starts the approved `selection`.
+  EvolutionStage(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    selection: record.Selection,
+    candidate: record.Candidate,
+    reply: Subject(Result(Staged, Refusal)),
+  )
+
+  /// Runs a promoted tool or a program. A keyed call: admitted by
+  /// `coordinates.key` as a `Run` is, and answered with the tool's outcome.
+  EvolutionRun(
+    incarnation: Int,
+    token: BitArray,
+    coordinates: Coordinates,
+    target: Target,
+    args: JsonValue,
+    reply: Subject(RunAnswer),
+  )
+
+  /// Delivers a hook event to a generation's extension, within `within_ms`.
+  EvolutionHook(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    handle: Handle,
+    event: String,
+    payload: MsgPackValue,
+    within_ms: Int,
+    reply: Subject(Result(MsgPackValue, hooks.HookFailure)),
+  )
+
+  /// Moves an in-place upgrade one step.
+  EvolutionTransition(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    step: TransitionStep,
+    reply: Subject(Result(TransitionAnswer, Refusal)),
+  )
+
+  /// Stops and removes a generation. Retiring a handle the executor does not
+  /// hold answers `AllRetired`, so a retry after a lost reply is safe.
+  EvolutionRetire(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    handle: Handle,
+    reply: Subject(Result(CloseOutcome, Refusal)),
+  )
+
+  /// Asks a generation for its helper census. It changes nothing, so it has no
+  /// token: the scope must be open at `incarnation`, and no more.
+  EvolutionInventory(
+    session: String,
+    incarnation: Int,
+    handle: Handle,
+    reply: Subject(Result(JsonValue, Refusal)),
+  )
 }
 
 /// What the executor's workspace says to the session's owner port. One

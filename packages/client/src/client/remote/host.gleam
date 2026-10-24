@@ -79,11 +79,30 @@
 //// its own scope's services; the scope keeps answering with those tools failing
 //// until the session closes and reattaches.
 ////
+//// ## Evolution messages
+////
+//// Eight messages (protocol-change/098) carry a session's evolution work to
+//// the scope's `Evolution`, the plane's answer to them. Two are keyed calls:
+//// `EvolutionEvaluate` is admitted as a background execution is, and
+//// `EvolutionRun` as a `Run` is, so a re-send joins the live call or reads the
+//// stored answer and the check or the tool never runs twice. The other six
+//// change no row, and the host only judges them by the scope's fence and
+//// hands them on.
+////
+//// The fence comes first, whatever the plane can do. A request from a dead
+//// runtime must learn that it is dead (`StaleToken`, `StaleIncarnation`,
+//// `ScopeNotOpen`) even on a scope that could not have served it, and the
+//// plane must never see a request the scope's current runtime did not send.
+//// Only then does the host ask whether the plane has an `Evolution`, and a
+//// plane without one answers `NoEvolution`. A request that only reads
+//// (`EvolutionInventory`) is held to the scope's incarnation and no more,
+//// because it carries no attach token and changes nothing.
+////
 //// ## Flow
 ////
 //// `start` → `start_reporting` → `initialise` → `handle_event` → `handle_peer` →
-//// `attach`, `admit_call`, `stop_execution`, `fenced_lookup`, `close`,
-//// `summarized`
+//// `attach`, `admit_call`, `evolve`, `stop_execution`, `fenced_lookup`,
+//// `close`, `summarized`
 ////
 //// 1. `initialise` registers the name and opens the ledger, which turns every
 ////    row the previous VM left `Admitted` into `Unknown`.
@@ -110,6 +129,8 @@
 ////    returns the closure that asks it).
 
 import broker/internal/call
+import client/evolution/record
+import client/extension/hooks
 import client/internal/ffi_os
 import client/owner_services.{type ExecutionTerms, type OwnerServices}
 import client/remote/address.{type Address}
@@ -202,6 +223,27 @@ pub type Plane(census) {
     /// must not report `AllRetired` after an `Error`. Only this result is a
     /// retirement witness; a timeout or a `DOWN` never is.
     close: fn(fn() -> Result(Nil, String)) -> CloseOutcome,
+    /// The plane's evolution machine, or `None` when it has none, in which case
+    /// every evolution message for the scope is answered `NoEvolution`.
+    evolution: Option(Evolution),
+  )
+}
+
+/// What a plane can do for a session's evolution messages, as the host calls
+/// it. The two keyed calls return their answer and the host owns admission,
+/// waiters, cancellation and the commit; the plane answers the six others on
+/// the reply subjects they carry.
+pub type Evolution {
+  Evolution(
+    /// Runs a candidate's author tests and answers the report as JSON. It runs
+    /// in a process the host owns and may kill, as `Plane.run` does.
+    evaluate: fn(protocol.Coordinates, record.Candidate) -> JsonValue,
+    /// Runs a promoted tool or a program and answers its outcome, under the
+    /// same rule.
+    run: fn(protocol.Coordinates, protocol.Target, JsonValue) -> ToolOutcome,
+    /// Answers one of the six requests that change no call row. The host has
+    /// already checked the scope's fence; the plane never re-reads it.
+    serve: fn(protocol.EvolutionRequest) -> Nil,
   )
 }
 
@@ -654,6 +696,252 @@ fn handle_peer(
     }
     protocol.Close(session:, workspace:, incarnation:, reply:) ->
       close(state, session, workspace, incarnation, reply)
+    protocol.EvolutionEvaluate(
+      incarnation:,
+      token:,
+      coordinates:,
+      candidate:,
+      reply:,
+    ) ->
+      evolve_keyed(
+        state,
+        coordinates.key.session,
+        Writer(incarnation:, token:),
+        Admission(
+          key: coordinates.key,
+          incarnation:,
+          token:,
+          reply: ExecutionReply(reply),
+        ),
+        fn(evolution: Evolution) {
+          Work(
+            kind: Execution,
+            tool: protocol.evolution_tool_prefix <> "test",
+            reservation: state.config.execution_result_bytes,
+            task: fn(_plane: Plane(census)) {
+              fn() {
+                Ok(ProgramRan(evolution.evaluate(coordinates, candidate)))
+              }
+            },
+          )
+        },
+      )
+    protocol.EvolutionRun(
+      incarnation:,
+      token:,
+      coordinates:,
+      target:,
+      args:,
+      reply:,
+    ) ->
+      evolve_keyed(
+        state,
+        coordinates.key.session,
+        Writer(incarnation:, token:),
+        Admission(
+          key: coordinates.key,
+          incarnation:,
+          token:,
+          reply: RunReply(reply),
+        ),
+        fn(evolution: Evolution) {
+          Work(
+            kind: ToolCall,
+            tool: protocol.evolution_tool_prefix <> target_name(target),
+            reservation: state.config.max_result_bytes,
+            task: fn(_plane: Plane(census)) {
+              fn() { Ok(ToolRan(evolution.run(coordinates, target, args))) }
+            },
+          )
+        },
+      )
+    protocol.EvolutionSnapshot(
+      incarnation:,
+      token:,
+      coordinates:,
+      directory:,
+      reply:,
+    ) ->
+      evolve(
+        state,
+        coordinates.key.session,
+        Writer(incarnation:, token:),
+        fn(refusal) { process.send(reply, Error(refusal)) },
+        protocol.SnapshotRequest(coordinates:, directory:, reply:),
+      )
+    protocol.EvolutionStage(
+      session:,
+      incarnation:,
+      token:,
+      selection:,
+      candidate:,
+      reply:,
+    ) ->
+      evolve(
+        state,
+        session,
+        Writer(incarnation:, token:),
+        fn(refusal) { process.send(reply, Error(refusal)) },
+        protocol.StageRequest(selection:, candidate:, reply:),
+      )
+    protocol.EvolutionHook(
+      session:,
+      incarnation:,
+      token:,
+      handle:,
+      event:,
+      payload:,
+      within_ms:,
+      reply:,
+    ) ->
+      evolve(
+        state,
+        session,
+        Writer(incarnation:, token:),
+        // A hook has no refusal to carry. A scope that cannot be asked has no
+        // extension left to answer, which is what `Gone` says.
+        fn(_refusal) { process.send(reply, Error(hooks.Gone)) },
+        protocol.HookRequest(handle:, event:, payload:, within_ms:, reply:),
+      )
+    protocol.EvolutionTransition(session:, incarnation:, token:, step:, reply:) ->
+      evolve(
+        state,
+        session,
+        Writer(incarnation:, token:),
+        fn(refusal) { process.send(reply, Error(refusal)) },
+        protocol.TransitionRequest(step:, reply:),
+      )
+    protocol.EvolutionRetire(session:, incarnation:, token:, handle:, reply:) ->
+      evolve(
+        state,
+        session,
+        Writer(incarnation:, token:),
+        fn(refusal) { process.send(reply, Error(refusal)) },
+        protocol.RetireRequest(handle:, reply:),
+      )
+    protocol.EvolutionInventory(session:, incarnation:, handle:, reply:) ->
+      evolve(
+        state,
+        session,
+        Reader(incarnation:),
+        fn(refusal) { process.send(reply, Error(refusal)) },
+        protocol.InventoryRequest(handle:, reply:),
+      )
+  }
+}
+
+// --- evolution ----------------------------------------------------------------
+
+// How a request is held to the scope. A request that changes something is a
+// `Writer` and must carry the scope's incarnation and its current attach
+// token, as an admission must. A request that only reads is a `Reader`: it
+// carries no token, because a read against a scope a newer runtime took over
+// is still a true read, so it must only find the scope open at its own
+// incarnation.
+type Fence {
+  Writer(incarnation: Int, token: BitArray)
+  Reader(incarnation: Int)
+}
+
+// Applies the fence to a scope by the ledger's own check, so the refusal is the
+// one an admission would give and no message ordering can change it.
+fn fenced(
+  state: State(census),
+  session: String,
+  fence: Fence,
+) -> Result(Nil, Refusal) {
+  let judged = case fence {
+    Writer(incarnation:, token:) ->
+      exec_ledger.current(state.ledger, session, incarnation, token)
+    Reader(incarnation:) ->
+      exec_ledger.current_incarnation(state.ledger, session, incarnation)
+  }
+  result.map_error(judged, refusal_of)
+}
+
+// The scope's evolution plane, for a request that passed the fence. A scope
+// with no plane yet has nothing to ask, and a plane without an `Evolution`
+// answers `NoEvolution`: the fence has already told a stale request that it is
+// stale, so this refusal only ever reaches the current runtime.
+fn evolution_of(
+  state: State(census),
+  session: String,
+) -> Result(Evolution, Refusal) {
+  case dict.get(state.placements, session) {
+    Error(Nil) -> Error(no_plane())
+    Ok(Building(..)) -> Error(protocol.PlaneBuilding)
+    Ok(Ready(placement)) ->
+      option.to_result(placement.plane.evolution, no_evolution())
+  }
+}
+
+fn no_evolution() -> Refusal {
+  protocol.NoEvolution("the scope's workspace plane has no evolution machine")
+}
+
+// One of the six requests that change no call row. The fence is judged first,
+// then the plane is asked whether it has an `Evolution`, and only a request
+// that passed both reaches `serve`. A refusal is sent by `refuse`, which knows
+// the type of the subject the sender waits on.
+fn evolve(
+  state: State(census),
+  session: String,
+  fence: Fence,
+  refuse: fn(Refusal) -> Nil,
+  request: protocol.EvolutionRequest,
+) -> State(census) {
+  let ready = {
+    use Nil <- result.try(fenced(state, session, fence))
+    evolution_of(state, session)
+  }
+  case ready {
+    Ok(evolution) -> evolution.serve(request)
+    Error(refusal) -> refuse(refusal)
+  }
+  state
+}
+
+// One of the two keyed evolution calls. The fence and the plane's evolution
+// machine are judged before the key is admitted, so a refused request writes
+// no ledger row. A key whose scope has no plane, or whose plane is still being
+// built, is answered as `admit_call` answers a `Run` in that state: from the
+// ledger when it holds a row, and by refusing the missing plane when it does
+// not, because a stored answer needs no plane. `work` is given the evolution
+// machine only once the plane is `Ready` and holds one.
+fn evolve_keyed(
+  state: State(census),
+  session: String,
+  fence: Fence,
+  admission: Admission,
+  work: fn(Evolution) -> Work(census),
+) -> State(census) {
+  let key = admission.key
+  let reply = admission.reply
+  case fenced(state, session, fence), dict.get(state.placements, session) {
+    Error(refusal), _ -> {
+      deliver(reply, SettledRefused(refusal))
+      state
+    }
+    Ok(Nil), Error(Nil) -> answer_without_plane(state, key, reply, no_plane())
+    Ok(Nil), Ok(Building(..)) ->
+      answer_without_plane(state, key, reply, protocol.PlaneBuilding)
+    Ok(Nil), Ok(Ready(_placement)) ->
+      case evolution_of(state, session) {
+        Ok(evolution) -> admit_call(state, admission, work(evolution))
+        Error(refusal) -> {
+          deliver(reply, SettledRefused(refusal))
+          state
+        }
+      }
+  }
+}
+
+// The name a promoted tool's or a program's row is admitted under, after the
+// evolution prefix.
+fn target_name(target: protocol.Target) -> String {
+  case target {
+    protocol.Promoted(tool:, ..) -> tool
+    protocol.Program(..) -> "program"
   }
 }
 

@@ -11,6 +11,7 @@
 
 import broker/escalation
 import client/escalate
+import client/extension/archive
 import client/internal/ffi_os
 import client/owner_services.{type OwnerServices, OwnerServices}
 import client/remote/host
@@ -27,6 +28,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
+import gleam/result
 import gleam/string
 import machine/operation
 import runtime/effects.{type ToolOutcome, type ToolRun}
@@ -275,22 +277,21 @@ pub fn factory(
   fn(spec: host.AttachSpec) {
     process.send(probe.subject, Built(owner: spec.owner))
     process.call(probe.subject, 30_000, BuildGate(spec.session, _))
-    Ok(
-      host.Plane(
-        run: fn(run, _authority) { fake_tool(probe, spec.owner, asks, run) },
-        execute: fn(start) { fake_program(probe, start) },
-        abort_step: fn(op, step) {
-          process.send(probe.subject, Aborted(op, step))
-        },
-        census: "census-" <> int.to_string(spec.incarnation),
-        children: fn(builder) { builder },
-        close: fn(retire_children) {
-          process.send(probe.subject, Closed)
-          let _retired = retire_children()
-          close_outcome
-        },
-      ),
-    )
+    Ok(host.Plane(
+      run: fn(run, _authority) { fake_tool(probe, spec.owner, asks, run) },
+      execute: fn(start) { fake_program(probe, start) },
+      abort_step: fn(op, step) {
+        process.send(probe.subject, Aborted(op, step))
+      },
+      census: "census-" <> int.to_string(spec.incarnation),
+      children: fn(builder) { builder },
+      close: fn(retire_children) {
+        process.send(probe.subject, Closed)
+        let _retired = retire_children()
+        close_outcome
+      },
+      evolution: None,
+    ))
   }
 }
 
@@ -619,5 +620,138 @@ pub fn local_call(call_id: String) -> message.ToolCall {
     arguments: json.Null,
     thought_signature: None,
     namespace: None,
+  )
+}
+
+// --- evolution ------------------------------------------------------------------
+
+/// A plane factory whose plane also has an evolution machine, so the host
+/// answers the eight evolution messages instead of `NoEvolution`. The machine
+/// records every call it is asked, under `evolution:evaluate:<step>`,
+/// `evolution:run:<step>` or `evolution:serve:<request>`, so a test counts how
+/// many times the plane was reached and a refusal is shown to have left it
+/// alone. Its keyed calls wait on the probe's gate as the fake tool does.
+pub fn evolving_factory(probe: Probe) -> host.PlaneFactory(String) {
+  let built = factory(probe, AsksNothing, protocol.AllRetired)
+  fn(spec: host.AttachSpec) {
+    result.map(built(spec), fn(plane) {
+      host.Plane(..plane, evolution: Some(fake_evolution(probe)))
+    })
+  }
+}
+
+fn fake_evolution(probe: Probe) -> host.Evolution {
+  host.Evolution(
+    evaluate: fn(coordinates, _candidate) {
+      process.send(
+        probe.subject,
+        Ran(
+          pid: process.self(),
+          call: "evolution:evaluate:" <> coordinates.key.step,
+        ),
+      )
+      process.call(probe.subject, 30_000, Wait)
+      json.Object([#("verdict", json.String("passed"))])
+    },
+    run: fn(coordinates, _target, _args) {
+      process.send(
+        probe.subject,
+        Ran(pid: process.self(), call: "evolution:run:" <> coordinates.key.step),
+      )
+      process.call(probe.subject, 30_000, Wait)
+      evolution_outcome(coordinates.key.step)
+    },
+    serve: fn(request) {
+      process.send(
+        probe.subject,
+        Ran(pid: process.self(), call: "evolution:serve:" <> served(request)),
+      )
+      answer(request)
+    },
+  )
+}
+
+// The name a test sees for a request the fake plane served.
+fn served(request: protocol.EvolutionRequest) -> String {
+  case request {
+    protocol.SnapshotRequest(..) -> "snapshot"
+    protocol.StageRequest(..) -> "stage"
+    protocol.HookRequest(..) -> "hook"
+    protocol.TransitionRequest(..) -> "transition"
+    protocol.RetireRequest(..) -> "retire"
+    protocol.InventoryRequest(..) -> "inventory"
+  }
+}
+
+// The fake plane's answer to each request, the shortest success of its kind.
+fn answer(request: protocol.EvolutionRequest) -> Nil {
+  case request {
+    protocol.SnapshotRequest(reply:, ..) ->
+      process.send(
+        reply,
+        Ok(archive.Tree(root: "extension", files: [], commit: None)),
+      )
+    protocol.StageRequest(reply:, ..) ->
+      process.send(
+        reply,
+        Ok(
+          protocol.Staged(
+            handle: evolution_handle(),
+            name: "fake",
+            tools: [],
+            hooks: [],
+            activation: protocol.Replacement,
+            superseded: [],
+          ),
+        ),
+      )
+    protocol.HookRequest(reply:, ..) ->
+      process.send(reply, Ok(msgpack.NilValue))
+    protocol.TransitionRequest(reply:, ..) ->
+      process.send(reply, Ok(protocol.TransitionPublished))
+    protocol.RetireRequest(reply:, ..) ->
+      process.send(reply, Ok(protocol.AllRetired))
+    protocol.InventoryRequest(reply:, ..) -> process.send(reply, Ok(json.Null))
+  }
+}
+
+/// The handle the fake plane issues and every evolution test sends back.
+pub fn evolution_handle() -> protocol.Handle {
+  protocol.Handle(boot: <<1:size(128)>>, ordinal: 1)
+}
+
+/// The coordinates of an evolution call of `session` at `step`, under the
+/// operation `execution_terms` uses.
+pub fn evolution_coordinates(
+  session: String,
+  step: String,
+) -> protocol.Coordinates {
+  protocol.Coordinates(
+    key: protocol.Key(
+      session:,
+      op: ids.op_id_to_string(execution_terms().op_id),
+      step:,
+      source_index: 0,
+    ),
+    strand: "main",
+    grants: [],
+    authority: authority(),
+  )
+}
+
+/// The outcome the fake plane's `run` completes with for a call at `step`.
+pub fn evolution_outcome(step: String) -> ToolOutcome {
+  effects.ToolCompleted(
+    result: message.ToolResultMessage(
+      tool_call_id: step,
+      tool_name: "evolution_echo",
+      content: [message.ToolResultText(text: "echoed", text_signature: None)],
+      details: None,
+      usage: None,
+      added_tool_names: None,
+      is_error: False,
+      timestamp: 0,
+    ),
+    terminate: False,
   )
 }

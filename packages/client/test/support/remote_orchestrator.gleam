@@ -125,29 +125,28 @@ pub fn factory(
 ) -> host.PlaneFactory(RemoteCensus) {
   fn(spec: host.AttachSpec) {
     process.send(probe.subject, fixtures.Built(owner: spec.owner))
-    Ok(
-      host.Plane(
-        run: fn(run, _authority) {
-          process.send(
-            probe.subject,
-            fixtures.Ran(pid: process.self(), call: run.call.id),
-          )
-          effects.ToolCompleted(
-            result: fixtures.text_result(run, "ran:" <> run.call.name),
-            terminate: False,
-          )
-        },
-        census:,
-        children: fn(builder) { builder },
-        close: fn(retire_children) {
-          let _ = retire_children()
-          process.send(probe.subject, fixtures.Closed)
-          close_outcome
-        },
-        execute: fn(_start) { json.Null },
-        abort_step: fn(_op, _step) { Nil },
-      ),
-    )
+    Ok(host.Plane(
+      run: fn(run, _authority) {
+        process.send(
+          probe.subject,
+          fixtures.Ran(pid: process.self(), call: run.call.id),
+        )
+        effects.ToolCompleted(
+          result: fixtures.text_result(run, "ran:" <> run.call.name),
+          terminate: False,
+        )
+      },
+      census:,
+      children: fn(builder) { builder },
+      close: fn(retire_children) {
+        let _ = retire_children()
+        process.send(probe.subject, fixtures.Closed)
+        close_outcome
+      },
+      execute: fn(_start) { json.Null },
+      abort_step: fn(_op, _step) { Nil },
+      evolution: None,
+    ))
   }
 }
 
