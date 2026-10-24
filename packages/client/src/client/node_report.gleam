@@ -310,7 +310,9 @@ pub fn cut_reason(reason: String) -> String {
 
 // Keeps whole graphemes while they fit, so a multi-byte character is kept
 // entire or dropped entire and the result is still valid text.
+/// Encodes cut as part of the node report’s stable JSON shape.
 fn cut(text: String, bytes: Int) -> String {
+  // cut handles the string.byte_size(text) <= bytes outcomes before continuing the operation.
   case string.byte_size(text) <= bytes {
     True -> text
     False -> {
@@ -321,6 +323,8 @@ fn cut(text: String, bytes: Int) -> String {
           fn(state, grapheme) {
             let #(kept, used) = state
             let size = string.byte_size(grapheme)
+
+            // cut handles the used + size > bytes outcomes before continuing the operation.
             case used + size > bytes {
               True -> list.Stop(state)
               False -> list.Continue(#([grapheme, ..kept], used + size))
@@ -394,6 +398,7 @@ pub fn bare(
   )
 }
 
+/// Encodes present as part of the node report’s stable JSON shape.
 fn present(
   key: String,
   value: Option(a),
@@ -436,6 +441,7 @@ pub fn executor_json(facts: ExecutorFacts) -> JsonValue {
   )
 }
 
+/// Encodes worktrees json as part of the node report’s stable JSON shape.
 fn worktrees_json(facts: WorktreeFacts) -> JsonValue {
   json.Object([
     #("workspaces", strings_json(facts.workspaces)),
@@ -446,6 +452,7 @@ fn worktrees_json(facts: WorktreeFacts) -> JsonValue {
   ])
 }
 
+/// Encodes scopes json as part of the node report’s stable JSON shape.
 fn scopes_json(counts: ScopeCounts) -> JsonValue {
   json.Object([
     #("open", json.Int(counts.open)),
@@ -455,6 +462,7 @@ fn scopes_json(counts: ScopeCounts) -> JsonValue {
   ])
 }
 
+/// Encodes unclean json as part of the node report’s stable JSON shape.
 fn unclean_json(scope: UncleanScope) -> JsonValue {
   json.Object(
     list.flatten([
@@ -470,6 +478,7 @@ fn unclean_json(scope: UncleanScope) -> JsonValue {
   )
 }
 
+/// Encodes observed json as part of the node report’s stable JSON shape.
 fn observed_json(observed: executors.Observed) -> JsonValue {
   json.Object([
     #("platform", json.String(observed.platform)),
@@ -507,6 +516,7 @@ fn imports_word(imports: Imports) -> String {
   }
 }
 
+/// Encodes placement json as part of the node report’s stable JSON shape.
 fn placement_json(placement: Placement) -> JsonValue {
   json.Object([
     #("executor_node", json.String(placement.executor_node)),
@@ -572,6 +582,7 @@ pub fn directory_json(facts: DirectoryFacts) -> JsonValue {
   )
 }
 
+/// Encodes joining word as part of the node report’s stable JSON shape.
 fn joining_word(joining: member.Joining) -> String {
   case joining {
     member.Joined -> "joined"
@@ -587,6 +598,7 @@ fn copy_word(copy: Copy) -> String {
   }
 }
 
+/// Encodes membership json as part of the node report’s stable JSON shape.
 fn membership_json(membership: store.Membership) -> JsonValue {
   json.Object(
     list.flatten([
@@ -609,6 +621,7 @@ fn membership_json(membership: store.Membership) -> JsonValue {
   )
 }
 
+/// Encodes voting word as part of the node report’s stable JSON shape.
 fn voting_word(voting: ffi_khepri.Voting) -> String {
   case voting {
     ffi_khepri.Voter -> "voter"
@@ -699,6 +712,7 @@ pub fn decode_executor(value: JsonValue) -> Result(ExecutorFacts, String) {
   )
 }
 
+/// Decodes decode worktrees from node-report JSON with typed field errors.
 fn decode_worktrees(value: JsonValue) -> Result(WorktreeFacts, String) {
   use fields <- result.try(object(Ok(value), "worktrees"))
   use workspaces <- result.try(texts_of(fields, "workspaces", max_workspaces))
@@ -709,6 +723,7 @@ fn decode_worktrees(value: JsonValue) -> Result(WorktreeFacts, String) {
   WorktreeFacts(workspaces:, present:, kept:, branches_left:, unrecorded:)
 }
 
+/// Decodes decode scopes from node-report JSON with typed field errors.
 fn decode_scopes(value: JsonValue) -> Result(ScopeCounts, String) {
   use fields <- result.try(object(Ok(value), "scopes"))
   use open <- result.try(count_of(fields, "open"))
@@ -718,10 +733,13 @@ fn decode_scopes(value: JsonValue) -> Result(ScopeCounts, String) {
   ScopeCounts(open:, closing:, closed_clean:, closed_unknown:)
 }
 
+/// Decodes decode unclean from node-report JSON with typed field errors.
 fn decode_unclean(value: JsonValue) -> Result(UncleanScope, String) {
   use fields <- result.try(object(Ok(value), "unclean entry"))
   use session <- result.try(text_of(fields, "session"))
   use state <- result.try(text_of(fields, "state"))
+
+  // decode unclean handles the state outcomes before continuing the operation.
   case state {
     "closing" -> Ok(UncleanScope(session:, state: Closing))
     "unknown_cleanup" -> {
@@ -732,15 +750,19 @@ fn decode_unclean(value: JsonValue) -> Result(UncleanScope, String) {
   }
 }
 
+/// Decodes decode observed from node-report JSON with typed field errors.
 fn decode_observed(value: JsonValue) -> Result(executors.Observed, String) {
   use fields <- result.try(object(Ok(value), "observed"))
   use platform <- result.try(text_of(fields, "platform"))
   use word <- result.try(text_of(fields, "enforcement"))
+
+  // decode observed handles the the selected value outcomes before continuing the operation.
   use enforcement <- result.try(case word {
     "enforced" -> Ok(executors.Enforced)
     "degraded" -> Ok(executors.Degraded)
     _ -> Error("enforcement is not enforced or degraded")
   })
+
   use toolchains <- result.map(texts_of(fields, "toolchains", max_workspaces))
   executors.Observed(platform:, enforcement:, toolchains:)
 }
@@ -760,11 +782,14 @@ pub fn decode_orchestrator(
   use occupied <- result.try(count_of(fields, "occupied"))
   use resident <- result.try(count_of(fields, "resident"))
   use word <- result.try(text_of(fields, "imports"))
+
+  // decode orchestrator handles the the selected value outcomes before continuing the operation.
   use imports <- result.try(case word {
     "receiving" -> Ok(Receiving)
     "not_receiving" -> Ok(NotReceiving)
     _ -> Error("imports is not receiving or not_receiving")
   })
+
   use executor_nodes <- result.try(texts_of(
     fields,
     "executor_nodes",
@@ -788,6 +813,7 @@ pub fn decode_orchestrator(
   )
 }
 
+/// Decodes decode placement from node-report JSON with typed field errors.
 fn decode_placement(value: JsonValue) -> Result(Placement, String) {
   use fields <- result.try(object(Ok(value), "placement"))
   use executor_node <- result.try(text_of(fields, "executor_node"))
@@ -809,11 +835,14 @@ pub fn decode_move(value: JsonValue) -> Result(MoveFacts, String) {
   use op <- result.try(text_of(fields, "op"))
   use to_node <- result.try(text_of(fields, "to_node"))
   use word <- result.try(text_of(fields, "phase"))
+
+  // decode move handles the the selected value outcomes before continuing the operation.
   use phase <- result.try(case word {
     "running" -> Ok(Running)
     "waiting" -> Ok(Waiting)
     _ -> Error("phase is not running or waiting")
   })
+
   use stalled_ms <- result.try(optional_count(fields, "stalled_ms"))
   use reason <- result.map(optional_reason(fields, "reason"))
   MoveFacts(session:, op:, to_node:, phase:, stalled_ms:, reason:)
@@ -830,19 +859,25 @@ pub fn decode_directory(value: JsonValue) -> Result(DirectoryFacts, String) {
   use fields <- result.try(object(Ok(value), "directory"))
   use members <- result.try(texts_of(fields, "members", max_members))
   use word <- result.try(text_of(fields, "joining"))
+
+  // decode directory handles the the selected value outcomes before continuing the operation.
   use joining <- result.try(case word {
     "joined" -> Ok(member.Joined)
     "not_joined" -> Ok(member.NotJoined)
     "rejoining" -> Ok(member.Rejoining)
     _ -> Error("joining is not joined, not_joined or rejoining")
   })
+
   use applied_index <- result.try(count_of(fields, "applied_index"))
   use copy_text <- result.try(text_of(fields, "copy"))
+
+  // decode directory handles the the selected value outcomes before continuing the operation.
   use copy <- result.try(case copy_text {
     "current" -> Ok(Current)
     "unconfirmed" -> Ok(Unconfirmed)
     _ -> Error("copy is not current or unconfirmed")
   })
+
   use ra <- result.map(decode_ra(fields))
   DirectoryFacts(
     status: member.Status(members:, joining:, ra:, applied_index:),
@@ -852,6 +887,7 @@ pub fn decode_directory(value: JsonValue) -> Result(DirectoryFacts, String) {
 
 // A status holds either the cluster as the member sees it or the reason it
 // cannot say, and exactly one of the two is written.
+/// Decodes decode ra from node-report JSON with typed field errors.
 fn decode_ra(
   fields: List(#(String, JsonValue)),
 ) -> Result(Result(store.Membership, store.Unavailable), String) {
@@ -865,6 +901,7 @@ fn decode_ra(
   }
 }
 
+/// Decodes decode membership from node-report JSON with typed field errors.
 fn decode_membership(value: JsonValue) -> Result(store.Membership, String) {
   use fields <- result.try(object(Ok(value), "ra"))
   use members <- result.try(list_of(
@@ -878,12 +915,15 @@ fn decode_membership(value: JsonValue) -> Result(store.Membership, String) {
   store.Membership(members:, leader:, up:)
 }
 
+/// Decodes decode voter from node-report JSON with typed field errors.
 fn decode_voter(
   value: JsonValue,
 ) -> Result(#(String, ffi_khepri.Voting), String) {
   use fields <- result.try(object(Ok(value), "ra member"))
   use node <- result.try(text_of(fields, "node"))
   use word <- result.try(text_of(fields, "voting"))
+
+  // decode voter handles the word outcomes before continuing the operation.
   case word {
     "voter" -> Ok(#(node, ffi_khepri.Voter))
     "promoting" -> Ok(#(node, ffi_khepri.Promoting))
@@ -897,6 +937,7 @@ fn decode_voter(
 type Fields =
   List(#(String, JsonValue))
 
+/// Decodes object from node-report JSON with typed field errors.
 fn object(
   value: Result(JsonValue, Nil),
   place: String,
@@ -907,6 +948,7 @@ fn object(
   }
 }
 
+/// Decodes text of from node-report JSON with typed field errors.
 fn text_of(fields: Fields, key: String) -> Result(String, String) {
   case list.key_find(fields, key) {
     Ok(json.String(text)) ->
@@ -918,6 +960,7 @@ fn text_of(fields: Fields, key: String) -> Result(String, String) {
   }
 }
 
+/// Decodes optional text from node-report JSON with typed field errors.
 fn optional_text(
   fields: Fields,
   key: String,
@@ -928,6 +971,7 @@ fn optional_text(
   }
 }
 
+/// Decodes optional reason from node-report JSON with typed field errors.
 fn optional_reason(
   fields: Fields,
   key: String,
@@ -943,6 +987,7 @@ fn optional_reason(
   }
 }
 
+/// Decodes count of from node-report JSON with typed field errors.
 fn count_of(fields: Fields, key: String) -> Result(Int, String) {
   case list.key_find(fields, key) {
     Ok(json.Int(number)) if number >= 0 -> Ok(number)
@@ -958,6 +1003,7 @@ fn optional_count(fields: Fields, key: String) -> Result(Option(Int), String) {
   }
 }
 
+/// Decodes texts of from node-report JSON with typed field errors.
 fn texts_of(
   fields: Fields,
   key: String,
@@ -975,6 +1021,7 @@ fn texts_of(
   })
 }
 
+/// Decodes list of from node-report JSON with typed field errors.
 fn list_of(
   fields: Fields,
   key: String,
@@ -991,6 +1038,7 @@ fn list_of(
   }
 }
 
+/// Decodes field of from node-report JSON with typed field errors.
 fn field_of(
   fields: Fields,
   key: String,
@@ -1002,6 +1050,7 @@ fn field_of(
   }
 }
 
+/// Decodes optional of from node-report JSON with typed field errors.
 fn optional_of(
   fields: Fields,
   key: String,

@@ -163,6 +163,7 @@ pub fn decode(text: String) -> Result(Record, String) {
   |> result.map_error(describe_decode_error)
 }
 
+/// Builds the JSON dynamic decoder for parsing trusted hook records.
 fn record_decoder() -> Decoder(Record) {
   use label <- decode.field("label", decode.string)
   use origin <- decode.field("origin", decode.string)
@@ -174,6 +175,7 @@ fn record_decoder() -> Decoder(Record) {
 
 // The refusal names the record and the path the decoder walked, so an
 // operator can open the file and see the field it disagrees about.
+/// Formats JSON decoding failures into actionable diagnostic messages.
 fn describe_decode_error(error: json.DecodeError) -> String {
   case error {
     json.UnableToDecode(errors) ->
@@ -190,6 +192,7 @@ fn describe_decode_error(error: json.DecodeError) -> String {
   }
 }
 
+/// Extracts field path strings from dynamic decoding error records.
 fn fields(errors: List(decode.DecodeError)) -> List(String) {
   list.map(errors, fn(error) {
     let decode.DecodeError(expected:, found:, path:) = error
@@ -226,6 +229,7 @@ pub fn safe_name(label: String) -> String {
 
 // One grapheme at a time, so a multi-byte character collapses to one
 // dash rather than one per byte.
+/// Filters a single grapheme, preserving printable characters or replacing with spaces.
 fn sanitize_grapheme(grapheme: String) -> String {
   case string.to_utf_codepoints(grapheme) {
     [codepoint] ->
@@ -243,6 +247,7 @@ fn sanitize_grapheme(grapheme: String) -> String {
 // The kept set is ASCII letters, digits, `_` and `-` — the characters a
 // filename may carry on every file system this runs on, with no case
 // folding to surprise a case-insensitive volume.
+/// Decides whether a Unicode codepoint is kept during text sanitization.
 fn keeps(codepoint: UtfCodepoint) -> Bool {
   let code = string.utf_codepoint_to_int(codepoint)
   { code >= 0x61 && code <= 0x7A }
@@ -323,6 +328,7 @@ pub fn save(path: String, record: Record) -> Result(Nil, String) {
 // The directory a record path sits in: everything before the last
 // slash. A path with no slash has no directory to create and the
 // create is a no-op on an empty string, which simplifile accepts.
+/// Computes the directory portion of an absolute filesystem path.
 fn directory_of(path: String) -> String {
   case string.split_once(path, "/") {
     Error(Nil) -> path
@@ -335,6 +341,7 @@ fn directory_of(path: String) -> String {
   }
 }
 
+/// Drops the trailing element from a list of path segments.
 fn drop_last(items: List(String)) -> List(String) {
   case items {
     [] -> []
@@ -347,6 +354,7 @@ fn drop_last(items: List(String)) -> List(String) {
   }
 }
 
+/// Translates write failure error variants into descriptive reason text.
 fn describe_write(
   path: String,
   reason: String,

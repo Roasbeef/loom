@@ -260,14 +260,15 @@ pub fn summary(net: Net) -> String {
   }
 }
 
-// Which side of `cap/net.map_error`'s split a refusal belongs on.
-//
-// The question each arm answers is whether the policy would ever have
-// permitted this request. Everything it would not have permitted is a
-// denial however it was phrased — including a secret binding whose
-// variable is unset, which is an operator fact the extension cannot repair
-// and must not retry past. Everything else got as far as a socket and
-// failed there.
+/// Maps an egress refusal to its broker error code string, distinguishing
+/// deterministic policy denials from transport failures.
+///
+/// The question each arm answers is whether the policy would ever have
+/// permitted this request. Everything it would not have permitted is a
+/// denial however it was phrased — including a secret binding whose
+/// variable is unset, which is an operator fact the extension cannot repair
+/// and must not retry past. Everything else got as far as a socket and
+/// failed there.
 fn code_for(refusal: egress.Refusal) -> String {
   case refusal {
     egress.SchemeNotHttps(..)

@@ -57,6 +57,7 @@ pub fn supervised(
 ) -> ChildSpecification(Subject(Message)) {
   actor.new(Nil)
   |> actor.on_message(fn(state, message) {
+    // Dispatch incoming sweep requests to abort effects for the given operation.
     case message {
       AbortEffects(operation:) -> {
         sweep(operation)

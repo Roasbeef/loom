@@ -228,10 +228,12 @@ pub fn door(wiring: Wiring) -> Door {
       audience,
       idle_wake,
     ) {
+      // Determine initial stdin channel disposition based on the job audience.
       let stdin = case audience {
         jobs.CallerWaiting -> jobs.CloseStdin
         jobs.NotifyOwner | jobs.ProgramWatches -> jobs.KeepStdinOpen
       }
+
       jobs.start_job(
         name,
         strand:,
@@ -283,6 +285,8 @@ pub fn production(wiring: Wiring) -> Door {
   let name = wiring.name
   Door(..door(wiring), poll: fn(strand, id, wait_ms, cursors) {
     use id <- result.try(parse(id))
+
+    // Select immediate poll when non-blocking or await job completion within the clamped budget.
     case wait_ms <= 0 {
       True ->
         jobs.poll_job(name, strand:, id:, cursors:, waiting: ask_timeout_ms)
@@ -339,11 +343,12 @@ pub fn none() -> Door {
 // A wait with no budget is one question; a wait with one is a `weft/poll`
 // on the session's own clock, in the *caller's* process.
 //
-// In the caller's process is the load-bearing half. A model that asks to
-// block for thirty seconds on one job must not stop the actor answering
-// about any other, and an actor that performed the wait itself would do
-// exactly that — the same reason `client/agency`'s join loop runs where
-// it does rather than inside the Agency.
+/// Polls or blocks on job completion in the caller process.
+/// In the caller's process is the load-bearing half. A model that asks to
+/// block for thirty seconds on one job must not stop the actor answering
+/// about any other, and an actor that performed the wait itself would do
+/// exactly that — the same reason `client/agency`'s join loop runs where
+/// it does rather than inside the Agency.
 fn poll_for(
   wiring: Wiring,
   strand: String,

@@ -147,11 +147,13 @@ pub fn append(
   json.Object([#("applied", json.Int(applied)), #("head", head_json(head))])
 }
 
+/// Recursively offers signed lines to the ledger service until the list is exhausted.
 fn offer_all(
   service: Service,
   lines: List(String),
   applied: Int,
 ) -> Result(Int, Failure) {
+  // Offer next line or return count of applied lines.
   case lines {
     [] -> Ok(applied)
     [line, ..rest] -> {
@@ -159,6 +161,8 @@ fn offer_all(
         ledger_service.offer(service, bit_array.from_string(line), within_ms)
         |> result.replace_error(Unavailable("the ledger process did not answer")),
       )
+
+      // Handle service offer outcome.
       case offered {
         ledger_service.Accepted(..) -> offer_all(service, rest, applied + 1)
         ledger_service.AlreadyHeld -> offer_all(service, rest, applied)
@@ -214,6 +218,8 @@ pub fn fit_page(lines: List(String)) -> List(String) {
     list.fold(lines, #([], 0), fn(state, line) {
       let #(kept, bytes) = state
       let size = bit_array.byte_size(bit_array.from_string(line))
+
+      // Keep lines within maximum page byte boundary.
       case kept, bytes + size > max_page_bytes {
         [_, ..], True -> state
         _, _ -> #([line, ..kept], bytes + size)
@@ -238,13 +244,17 @@ pub fn status(handle: Handle) -> Result(JsonValue, Failure) {
   )
   let ledger = status.ledger
   let head = membership_ledger.head(ledger)
+
+  // Map membership status tag to string.
   let state = case membership_ledger.enrollment(ledger, handle.name) {
     membership_ledger.Enrolled(..) -> "ok"
     membership_ledger.Revoked -> "revoked"
     membership_ledger.NotEnrolled -> "not_enrolled"
   }
+
   let members =
     list.map(membership_ledger.members(ledger), fn(member) {
+      // Map reported status sequence for local or remote member.
       let reported = case member.node == handle.local {
         True -> [
           #("reported_seq", json.Int(head.seq)),
@@ -261,6 +271,7 @@ pub fn status(handle: Handle) -> Result(JsonValue, Failure) {
             Error(Nil) -> []
           }
       }
+
       json.Object(
         list.flatten([
           [
@@ -326,11 +337,14 @@ pub fn holdings(handle: Handle) -> Result(JsonValue, Failure) {
   ])
 }
 
+/// Serializes a node session holding answer to JSON.
 fn answer_json(answer: ledger_holdings.Answer) -> JsonValue {
   let who = [
     #("name", json.String(answer.name)),
     #("node", json.String(answer.node)),
   ]
+
+  // Encode held session details if present.
   case answer.held {
     None -> json.Object(who)
     Some(held) ->
@@ -365,10 +379,13 @@ fn head_json(head: membership_ledger.Head) -> JsonValue {
   ])
 }
 
+/// Serializes a rejected ledger entry refusal into JSON value.
 fn refusal_json(last: Option(ledger_service.Rejected)) -> JsonValue {
+  // Check whether a rejected entry record is present.
   case last {
     None -> json.Null
     Some(rejected) -> {
+      // Format fork details if refusal represents a chain fork.
       let forked = case rejected.refusal {
         membership_ledger.Fork(ours:, theirs:, ..) -> [
           #("ours", json.String(membership_entry.id_to_hex(ours))),
@@ -376,6 +393,7 @@ fn refusal_json(last: Option(ledger_service.Rejected)) -> JsonValue {
         ]
         _ -> []
       }
+
       json.Object(
         list.flatten([
           [
@@ -481,23 +499,31 @@ pub fn decode_status(value: JsonValue) -> Result(StatusView, String) {
   use fields <- result.try(object(Ok(value), "status"))
   use deployment <- result.try(string_of(fields, "deployment"))
   use state <- result.try(string_of(fields, "state"))
+
+  // Parse member standing string from status payload.
   use standing <- result.try(case state {
     "ok" -> Ok(Enrolled)
     "revoked" -> Ok(Revoked)
     "not_enrolled" -> Ok(NotEnrolled)
     _ -> Error("status.state is not a standing")
   })
+
   use head <- result.try(head_view(field(fields, "head")))
   use self_fields <- result.try(object(field(fields, "self"), "status.self"))
   use self_name <- result.try(string_of(self_fields, "name"))
+
+  // Decode array of member status records.
   use members <- result.try(case field(fields, "members") {
     Ok(json.Array(items)) -> list.try_map(items, member_view)
     _ -> Error("status.members is not an array")
   })
+
+  // Decode optional last rejection record.
   use last_refusal <- result.try(case field(fields, "last_refusal") {
     Ok(json.Null) -> Ok(None)
     other -> refusal_view(other) |> result.map(Some)
   })
+
   Ok(StatusView(
     deployment:,
     standing:,
@@ -517,6 +543,8 @@ pub fn decode_status(value: JsonValue) -> Result(StatusView, String) {
 /// ```
 pub fn decode_entries(value: JsonValue) -> Result(PageView, String) {
   use fields <- result.try(object(Ok(value), "entries"))
+
+  // Decode array of ledger lines from entries payload.
   use lines <- result.try(case list.key_find(fields, "lines") {
     Ok(json.Array(items)) ->
       list.try_map(items, fn(item) {
@@ -527,6 +555,7 @@ pub fn decode_entries(value: JsonValue) -> Result(PageView, String) {
       })
     _ -> Error("entries.lines is not an array")
   })
+
   use head_seq <- result.map(int_of(fields, "head_seq"))
   PageView(lines:, head_seq:)
 }
@@ -572,6 +601,8 @@ pub type AnswerView {
 /// ```
 pub fn decode_holdings(value: JsonValue) -> Result(List(AnswerView), String) {
   use fields <- result.try(object(Ok(value), "holdings"))
+
+  // Decode list of orchestrator holdings records.
   case field(fields, "orchestrators") {
     Ok(json.Array(items)) ->
       case list.drop(items, membership_ledger.max_active) == [] {
@@ -582,19 +613,26 @@ pub fn decode_holdings(value: JsonValue) -> Result(List(AnswerView), String) {
   }
 }
 
+/// Decodes a holdings answer view from json object.
 fn answer_view(value: JsonValue) -> Result(AnswerView, String) {
   use fields <- result.try(object(Ok(value), "holdings entry"))
   use name <- result.try(string_of(fields, "name"))
   use node <- result.try(string_of(fields, "node"))
+
+  // Decode optional held sessions record.
   use held <- result.map(case field(fields, "sessions") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(_) -> held_view(fields) |> result.map(Some)
   })
+
   AnswerView(name:, node:, held:)
 }
 
+/// Decodes placed session breakdown for an orchestrator node.
 fn held_view(fields: List(#(String, JsonValue))) -> Result(HeldView, String) {
   use sessions <- result.try(count_of(fields, "sessions"))
+
+  // Decode array of placed session counts by node.
   use placed <- result.map(case field(fields, "placed") {
     Ok(json.Array(items)) ->
       case list.drop(items, orchestrator_port.max_placed) == [] {
@@ -603,6 +641,7 @@ fn held_view(fields: List(#(String, JsonValue))) -> Result(HeldView, String) {
       }
     _ -> Error("holdings placed is not an array")
   })
+
   HeldView(sessions:, placed:)
 }
 
@@ -613,11 +652,14 @@ fn placed_view(value: JsonValue) -> Result(PlacedView, String) {
   PlacedView(node:, sessions:)
 }
 
+/// Reads a non-negative integer count from fields object.
 fn count_of(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(Int, String) {
   use number <- result.try(int_of(fields, key))
+
+  // Ensure count value is non-negative.
   case number >= 0 {
     True -> Ok(number)
     False -> Error(key <> " is a negative count")
@@ -638,6 +680,8 @@ pub fn pages(lines: List(String)) -> List(List(String)) {
     list.fold(lines, #([], [], 0, 0), fn(state, line) {
       let #(done, current, count, bytes) = state
       let size = bit_array.byte_size(bit_array.from_string(line))
+
+      // Roll current page when line or byte limit is reached.
       case
         count > 0
         && { count >= max_append_lines || bytes + size > max_page_bytes }
@@ -646,12 +690,15 @@ pub fn pages(lines: List(String)) -> List(List(String)) {
         False -> #(done, [line, ..current], count + 1, bytes + size)
       }
     })
+
+  // Finalize any remaining lines in current page accumulator.
   case current {
     [] -> list.reverse(done)
     _ -> list.reverse([list.reverse(current), ..done])
   }
 }
 
+/// Decodes a MemberView record from status member object.
 fn member_view(value: JsonValue) -> Result(MemberView, String) {
   use fields <- result.try(object(Ok(value), "status.members entry"))
   use name <- result.try(string_of(fields, "name"))
@@ -674,6 +721,7 @@ fn member_view(value: JsonValue) -> Result(MemberView, String) {
   )
 }
 
+/// Decodes a RefusalView record from rejected entry status json.
 fn refusal_view(value: Result(JsonValue, Nil)) -> Result(RefusalView, String) {
   use fields <- result.try(object(value, "status.last_refusal"))
   use step <- result.try(string_of(fields, "step"))
@@ -683,10 +731,13 @@ fn refusal_view(value: Result(JsonValue, Nil)) -> Result(RefusalView, String) {
   RefusalView(seq:, step:, ours:, theirs:)
 }
 
+/// Decodes a HeadView record from status head json.
 fn head_view(value: Result(JsonValue, Nil)) -> Result(HeadView, String) {
   use fields <- result.try(object(value, "head"))
   use seq <- result.try(int_of(fields, "seq"))
   use id <- result.try(string_of(fields, "id"))
+
+  // Validate sequence and hex identifier format.
   case seq >= 0 && is_hex_id(id) {
     True -> Ok(HeadView(seq:, id:))
     False -> Error("head is not a sequence number and a 64 character identity")
@@ -706,6 +757,7 @@ fn field(
   list.key_find(fields, key)
 }
 
+/// Unwraps a JSON object or reports an error naming the contextual place.
 fn object(
   value: Result(JsonValue, Nil),
   place: String,
@@ -716,6 +768,7 @@ fn object(
   }
 }
 
+/// Extracts a string field value by key from an object.
 fn string_of(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -726,6 +779,7 @@ fn string_of(
   }
 }
 
+/// Extracts an integer field value by key from an object.
 fn int_of(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -736,6 +790,7 @@ fn int_of(
   }
 }
 
+/// Extracts an optional integer field value by key from an object.
 fn optional_int(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -747,6 +802,7 @@ fn optional_int(
   }
 }
 
+/// Extracts an optional array of strings by key from an object.
 fn optional_strings(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -764,6 +820,7 @@ fn optional_strings(
   }
 }
 
+/// Extracts an optional string field value by key from an object.
 fn optional_string(
   fields: List(#(String, JsonValue)),
   key: String,

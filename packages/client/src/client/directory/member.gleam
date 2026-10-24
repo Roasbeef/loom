@@ -226,16 +226,21 @@ type State {
 /// ```
 pub fn start(config: Config) -> Result(Member, String) {
   use Nil <- result.try(store.start_system(config.directory))
+
+  // Determine current join status based on directory marker presence.
   let joining = case store.is_joined(config.directory) {
     True -> Joined
     False -> NotJoined
   }
+
+  // Restart local store server if already joined to the cluster.
   use Nil <- result.try(case joining {
     Joined ->
       store.restart(30_000)
       |> result.map_error(fn(refusal) { restart_refusal(config, refusal) })
     NotJoined | Rejoining -> Ok(Nil)
   })
+
   let started =
     actor.new_with_initialiser(1000, fn(inbox) {
       let state =
@@ -254,6 +259,8 @@ pub fn start(config: Config) -> Result(Member, String) {
     |> actor.on_message(handle)
     |> actor.periodic(every: tick_ms, sending: Tick)
     |> actor.start
+
+  // Check whether the member actor loop started successfully.
   case started {
     Ok(started) -> {
       log.info(config.logger, "daemon.directory_member", [
@@ -271,9 +278,7 @@ pub fn start(config: Config) -> Result(Member, String) {
   }
 }
 
-// The seats as of now. A configured list seats every node as a voter and has
-// no ledger to ask whether a node was ever named, so it names every node. A
-// ledger that does not answer seats no one.
+/// Resolves the current expected directory seats from static configuration or the active ledger.
 fn seats_of(members: Members) -> Seats {
   case members {
     Listed(nodes:) ->
@@ -290,12 +295,12 @@ fn nodes_of(members: Members) -> List(String) {
   list.map(seats_of(members).places, fn(place) { place.node })
 }
 
-// The message for a joined store that did not start. A store Ra has no record
-// of is not started at all, because starting it would create a second cluster,
-// and the way back depends on whether the cluster has other members to rejoin.
+/// Diagnoses why a previously joined store server could not restart and formats remediation steps.
 fn restart_refusal(config: Config, refusal: store.RestartRefusal) -> String {
   let marked =
     "the directory store in " <> config.directory <> " is marked joined but "
+
+  // Produce remediation instructions specific to the restart refusal mode.
   case refusal {
     store.CouldNotStart(reason:) -> marked <> "did not start: " <> reason
     store.NoServerRecord ->
@@ -342,6 +347,8 @@ pub fn status(member: Member) -> Status {
 /// ```
 pub fn status_within(member: Member, within_ms: Int) -> Status {
   let joining = process.call(member.inbox, waiting: 5000, sending: Asked)
+
+  // Query Ra membership if joined, or report explicit non-joined state.
   let ra = case joining {
     Joined -> store.membership_within(within_ms)
     NotJoined -> Error(store.Unavailable("this member has not joined"))
@@ -350,6 +357,7 @@ pub fn status_within(member: Member, within_ms: Int) -> Status {
         "this member was removed from the cluster and is joining it again",
       ))
   }
+
   Status(
     members: nodes_of(member.members),
     joining:,
@@ -358,6 +366,7 @@ pub fn status_within(member: Member, within_ms: Int) -> Status {
   )
 }
 
+/// Handles directory member actor messages, driving periodic peer linking, cluster joins, and reconciliations.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Tick -> {
@@ -373,14 +382,18 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // failure doubles the wait before the next attempt.
     Reached(name:, outcome:) -> {
       let connecting = list.filter(state.connecting, fn(held) { held != name })
+
+      // Clear or double backoff wait depending on connection result.
       let backoff = case outcome {
         Ok(Nil) -> dict.delete(state.backoff, name)
         Error(_) -> {
+          // Compute exponential backoff interval bounded by longest_wait_ms.
           let wait = case dict.get(state.backoff, name) {
             Ok(Backoff(wait_ms:, ..)) ->
               int.min(longest_wait_ms, int.max(tick_ms, wait_ms * 2))
             Error(Nil) -> tick_ms
           }
+
           dict.insert(
             state.backoff,
             name,
@@ -391,6 +404,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           )
         }
       }
+
       actor.continue(State(..state, connecting:, backoff:))
     }
 
@@ -415,10 +429,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Reconciled(pass: Planned(verdict:, outcome:)) -> {
       let now = Some(#(verdict, outcome))
       let repeated = state.decided == now && quiet(outcome)
+
+      // Suppress logging for repeated stable verdicts to prevent log noise.
       case repeated {
         True -> Nil
         False -> report(state.config.logger, verdict, outcome)
       }
+
       actor.continue(State(..state, reconciling: Idle, decided: now))
     }
 
@@ -447,6 +464,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 // The peers the seats name other than this node, for the nodes the pin table
 // lists. A node it does not list yet is skipped: the ledger entry that seats it
 // has not reached this node, and the next tick asks again.
+/// Returns peer distribution records for other seated cluster members.
 fn peers_of(state: State, places: List(Place)) -> List(Peer) {
   list.filter_map(places, fn(place) {
     case place.node == state.config.local {
@@ -458,17 +476,21 @@ fn peers_of(state: State, places: List(Place)) -> List(Peer) {
   })
 }
 
-// Starts a connection attempt for every other seated node that is not
-// connected, is not being connected, and is not waiting out a backoff.
+/// Maintains connectivity to all other cluster members, initiating background dials
+/// when links are disconnected and backoff has elapsed.
 fn keep_links(state: State, places: List(Place)) -> State {
   let visible = node.visible()
   let now = bootstrap.monotonic_time_ms()
   list.fold(peers_of(state, places), state, fn(state, peer) {
     let name = distribution.name(peer)
+
+    // Check if the peer connection attempt has exceeded backoff.
     let due = case dict.get(state.backoff, name) {
       Ok(Backoff(next_ms:, ..)) -> now >= next_ms
       Error(Nil) -> True
     }
+
+    // Skip dialing if peer is already connected, dialing in-flight, or cooling down.
     case
       list.contains(visible, distribution.node(peer))
       || list.contains(state.connecting, name)
@@ -494,9 +516,9 @@ fn keep_links(state: State, places: List(Place)) -> State {
   })
 }
 
-// Starts a join attempt when the store has not joined, none is running and the
-// ledger gives this node a seat. The seat decides what the join makes of it.
+/// Spawns a background task to join the Ra cluster if the node is unjoined and seated.
 fn try_join(state: State, places: List(Place)) -> State {
+  // Check whether join initiation is currently required and eligible.
   case state.joining, state.attempt, seats.seat_of(places, state.config.local) {
     Joined, _, _ -> state
     NotJoined, Running, _ | Rejoining, Running, _ -> state
@@ -521,19 +543,19 @@ fn try_join(state: State, places: List(Place)) -> State {
   }
 }
 
-// Joins through the first member, in seat order, whose store answers. A
-// member that cannot be reached, or whose store is not running, is skipped;
-// a join that starts and fails is reported, because the next tick tries again
-// from the start of the list.
+/// Attempts to join the directory cluster by contacting members in order until one responds.
 fn join_any(
   peers: List(Peer),
   directory: String,
   seat: store.Seat,
 ) -> Result(Nil, String) {
+  // Traverse candidate peers to find an active cluster member store.
   case peers {
     [] -> Error("no member's store answered")
     [peer, ..rest] -> {
       let _connected = distribution.connect(peer, connect_ms)
+
+      // Ensure the candidate peer runs an active directory store.
       case store.running_on(distribution.node(peer)) {
         False -> join_any(rest, directory, seat)
         True -> {
@@ -550,10 +572,9 @@ fn join_any(
   }
 }
 
-// Starts a reconciliation when the seats come from a ledger, the store has
-// joined and none is running. It runs in a task of its own because it asks Ra
-// and may issue a removal, and either can wait on a quorum.
+/// Schedules a background cluster reconciliation task if the node is joined and ledger-seated.
 fn reconcile(state: State, wanted: Seats) -> State {
+  // Check if conditions are met to run membership reconciliation.
   case state.config.members, state.joining, state.reconciling {
     Followed(..), Joined, Idle -> {
       let inbox = state.inbox
@@ -595,9 +616,13 @@ fn reconcile(state: State, wanted: Seats) -> State {
 // removal the plan names. A member that cannot read Ra's membership has no
 // verdict to give and reports it as not the leader, which does nothing and says
 // nothing.
+/// Performs a single pass of cluster membership reconciliation, resetting the local store
+/// if this node was removed or executing planned membership removals if leader.
 fn reconcile_once(wanted: Seats, config: Config, asked: List(Node)) -> Pass {
   let local = config.local
   let own = store.membership()
+
+  // Verify whether this node must reset and rejoin before planning leader actions.
   case rejoin_due(wanted, local, own, asked) {
     seats.Rejoin -> {
       log.warn(config.logger, "daemon.directory_not_a_member", [
@@ -610,6 +635,8 @@ fn reconcile_once(wanted: Seats, config: Config, asked: List(Node)) -> Pass {
         Error(_) -> Planned(seats.NotLeader, Ok(Nil))
         Ok(ra) -> {
           let verdict = seats.plan(wanted, ra, local)
+
+          // Execute member removal or record settled status according to the plan verdict.
           case verdict {
             seats.Remove(node: gone, ..) ->
               Planned(verdict, store.remove_member(gone))
@@ -623,9 +650,7 @@ fn reconcile_once(wanted: Seats, config: Config, asked: List(Node)) -> Pass {
   }
 }
 
-// Whether to reset, asking the peers only when this node's own view does not
-// settle the question. The first peer that gives an answer decides; one that
-// does not is skipped, and no answer at all is `Stay`.
+/// Determines whether this node was expelled from cluster membership and must reset its state.
 fn rejoin_due(
   wanted: Seats,
   local: String,
@@ -658,9 +683,7 @@ fn quiet(outcome: Result(Nil, String)) -> Bool {
   }
 }
 
-// Writes down what a reconciliation decided or did. `NotLeader` is the state of
-// every member but one and is not worth a line, and a leader the ledger no longer
-// seats has been cut off by the revoke that unseated it.
+/// Logs the outcome of a cluster reconciliation cycle when leadership decisions occurred.
 fn report(
   logger: Logger,
   verdict: Verdict,

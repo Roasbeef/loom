@@ -90,6 +90,7 @@ pub fn parse(text: String) -> Result(Source, String) {
     Error(refused(trimmed))
   })
 
+  // Distinguish scheme-qualified URLs from local filesystem paths.
   case string.contains(trimmed, "://") {
     False -> Ok(LocalPath(path: trimmed))
 
@@ -124,6 +125,7 @@ pub fn archive_url(
   source: Source,
   rev: Option(String),
 ) -> Result(String, String) {
+  // Resolve the single archive fetch URL according to source variant.
   case source {
     LocalPath(path:) ->
       Error(
@@ -187,6 +189,7 @@ pub fn archive_url(
 pub fn host(url: String) -> Result(String, String) {
   use rest <- or_bad_url(strip_prefix(url, https_scheme), url)
 
+  // Split the authority segment from any trailing URL path.
   let authority = case string.split_once(rest, "/") {
     Ok(#(before, _path)) -> before
 
@@ -199,6 +202,7 @@ pub fn host(url: String) -> Result(String, String) {
     )
   })
 
+  // Strip any trailing port specification from the authority segment.
   let name = case string.split_once(authority, ":") {
     Ok(#(before, _port)) -> before
 
@@ -266,13 +270,16 @@ fn is_refused_scheme(text: String) -> Bool {
   schemed || is_scp_form(lowered)
 }
 
+/// Determines whether the string represents an scp-style repository specifier.
 fn is_scp_form(text: String) -> Bool {
+  // Isolate the prefix before any path separator slash.
   let before_slash = case string.split_once(text, "/") {
     Ok(#(head, _rest)) -> head
 
     Error(Nil) -> text
   }
 
+  // Check for the user@host:path structure characteristic of scp syntax.
   case string.split_once(before_slash, "@") {
     Error(Nil) -> False
 
@@ -280,10 +287,12 @@ fn is_scp_form(text: String) -> Bool {
   }
 }
 
+/// Parses an https:// URL as either a GitHub repository or direct archive.
 fn parse_https(text: String) -> Result(Source, String) {
   use rest <- or_refused(strip_prefix(text, https_scheme), text)
   use name <- result.try(host(text))
 
+  // Dispatch between GitHub repository shorthand and direct tarball download.
   case name == github_host {
     True -> parse_github(rest, text)
 
@@ -291,6 +300,7 @@ fn parse_https(text: String) -> Result(Source, String) {
   }
 }
 
+/// Parses the path segments of a GitHub repository URL into owner and repo.
 fn parse_github(rest: String, text: String) -> Result(Source, String) {
   let segments =
     rest
@@ -299,6 +309,7 @@ fn parse_github(rest: String, text: String) -> Result(Source, String) {
     |> string.split("/")
     |> list.drop(1)
 
+  // Verify that the path consists of exactly two segments: owner and repo.
   case segments {
     [owner, repo] -> github_source(owner, repo, text)
 
@@ -306,6 +317,7 @@ fn parse_github(rest: String, text: String) -> Result(Source, String) {
   }
 }
 
+/// Validates and constructs a GitHub repository source from owner and repo strings.
 fn github_source(
   owner: String,
   repo: String,
@@ -321,6 +333,7 @@ fn github_source(
   Ok(GitHub(owner:, repo: name))
 }
 
+/// Parses and validates a direct tarball archive URL ending in .tar.gz or .tgz.
 fn parse_archive(text: String) -> Result(Source, String) {
   let path = drop_query(text)
   let tarball =
@@ -391,6 +404,7 @@ fn is_lower_alphanumeric(grapheme: String) -> Bool {
 
 // --- small shared helpers --------------------------------------------------
 
+/// Helper that returns an invalid URL error when prefix stripping fails.
 fn or_bad_url(
   stripped: Result(String, Nil),
   url: String,
@@ -403,6 +417,7 @@ fn or_bad_url(
   }
 }
 
+/// Helper that returns a source refused error when prefix stripping fails.
 fn or_refused(
   stripped: Result(String, Nil),
   text: String,
@@ -415,6 +430,7 @@ fn or_refused(
   }
 }
 
+/// Strips a case-insensitive prefix from a string if present.
 fn strip_prefix(text: String, prefix: String) -> Result(String, Nil) {
   case string.starts_with(string.lowercase(text), prefix) {
     True -> Ok(string.drop_start(text, string.length(prefix)))
@@ -423,6 +439,7 @@ fn strip_prefix(text: String, prefix: String) -> Result(String, Nil) {
   }
 }
 
+/// Drops a case-sensitive suffix from a string if present.
 fn drop_suffix(text: String, suffix: String) -> String {
   case string.ends_with(text, suffix) {
     True -> string.drop_end(text, string.length(suffix))
@@ -446,6 +463,7 @@ fn drop_query(text: String) -> String {
   }
 }
 
+/// Recursively trims all trailing forward slashes from a path string.
 fn trim_trailing_slashes(text: String) -> String {
   case string.ends_with(text, "/") {
     True -> trim_trailing_slashes(string.drop_end(text, 1))

@@ -330,6 +330,7 @@ pub fn local_facts(
 
 // A single-key operation behind the fence. The fence is a function of the
 // key alone, so every operation applies it before it reads anything.
+/// Adapts served to the owner service’s bounded local capability contract.
 fn served(
   operation: fn(String) -> Result(a, FactFault),
 ) -> fn(String) -> Result(a, FactFault) {
@@ -340,6 +341,7 @@ fn served(
 }
 
 // The fence itself: continue only when the key is under a served prefix.
+/// Formats fenced for bounded session-note presentation.
 fn fenced(
   key: String,
   continue: fn() -> Result(a, FactFault),
@@ -361,6 +363,7 @@ fn absent_unless(supplied: Result(a, Nil)) -> Result(a, FactFault) {
 // reads exactly as it did when the callers matched on `ApiError`. Every
 // variant is named so that a new one forces a decision here rather than
 // falling into `Failed`.
+/// Adapts fault to the owner service’s bounded local capability contract.
 fn fault(error: api.ApiError) -> FactFault {
   case error {
     api.FactConflict(..) -> Conflict

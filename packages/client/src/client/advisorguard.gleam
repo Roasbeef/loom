@@ -324,9 +324,10 @@ pub fn take_pending(guard: Guard) -> #(List(String), Guard) {
 
 // --- the decision ---------------------------------------------------------
 
-// Everything both emitting verdicts are held to, in the order the design
-// states it: empty text, then the duplicate ring, then the channel's own
-// rule.
+/// Decides whether proposed advice should be delivered, queued as a nudge, or dropped.
+/// Everything both emitting verdicts are held to, in the order the design
+/// states it: empty text, then the duplicate ring, then the channel's own
+/// rule.
 fn judge(
   guard: Guard,
   policy: Policy,
@@ -352,6 +353,7 @@ fn judge(
     return: fn() { #(Dropped(reason: duplicate_reason), guard) },
   )
 
+  // Dispatch on the delivery kind (nudge or block).
   case kind {
     AsNudge -> enqueue(guard, policy, text, fingerprint, Queued)
 
@@ -359,7 +361,8 @@ fn judge(
   }
 }
 
-// The cooldown, which is the whole of the block channel's rule.
+/// Evaluates block advice against the review cooldown window, downgrading to a nudge if within cooldown.
+/// The cooldown, which is the whole of the block channel's rule.
 fn judge_block(
   guard: Guard,
   policy: Policy,
@@ -390,11 +393,11 @@ fn judge_block(
   }
 }
 
-// The pending queue's two caps, and the one place advice joins it.
-//
-// `accepted` builds the decision for the accepted case, which is what
-// lets a nudge and a downgraded block share this path: they differ only
-// in what the advisor is told, never in what happens to the text.
+/// Enqueues advice into pending storage if both count and byte caps permit.
+/// The pending queue's two caps, and the one place advice joins it.
+/// `accepted` builds the decision for the accepted case, which is what
+/// lets a nudge and a downgraded block share this path: they differ only
+/// in what the advisor is told, never in what happens to the text.
 fn enqueue(
   guard: Guard,
   policy: Policy,
@@ -419,16 +422,20 @@ fn enqueue(
   }
 }
 
-// How many reviews have passed since the last delivered block, when that
-// is still inside the window. `None` means the block channel is open,
-// either because nothing has been delivered or because the window has
-// expired.
+/// Calculates elapsed reviews since the last delivered block, returning Some(elapsed) if still in cooldown.
+/// How many reviews have passed since the last delivered block, when that
+/// is still inside the window. `None` means the block channel is open,
+/// either because nothing has been delivered or because the window has
+/// expired.
 fn cooldown_elapsed(guard: Guard, policy: Policy) -> Option(Int) {
+  // Check if a block was delivered previously.
   case guard.last_block_review {
     None -> None
 
     Some(review) -> {
       let elapsed = guard.reviews - review
+
+      // Test whether elapsed reviews are strictly within the cooldown window.
       case elapsed < policy.block_cooldown_reviews {
         True -> Some(elapsed)
         False -> None
@@ -458,10 +465,11 @@ fn total_bytes(queue: List(String)) -> Int {
   list.fold(queue, 0, fn(sum, text) { sum + string.byte_size(text) })
 }
 
-// Newest first, trimmed to the ring. `list.take` is the trim rather than
-// a length check for R5's reason, and it also gives the degenerate ring
-// of zero the right answer: nothing is remembered and every repeat is
-// sayable again.
+/// Appends a fingerprint to the recent ring buffer bounded by policy.
+/// Newest first, trimmed to the ring. `list.take` is the trim rather than
+/// a length check for R5's reason, and it also gives the degenerate ring
+/// of zero the right answer: nothing is remembered and every repeat is
+/// sayable again.
 fn remember(
   recent: List(String),
   fingerprint: String,
@@ -472,6 +480,7 @@ fn remember(
 
 // --- the reasons the advisor reads ----------------------------------------
 
+/// Formats the explanation for why a block was downgraded to a nudge.
 fn downgrade_reason(elapsed: Int, policy: Policy) -> String {
   ago_phrase(elapsed)
   <> " and the cooldown is "
@@ -496,10 +505,11 @@ fn reviews_phrase(count: Int) -> String {
 
 // --- identity -------------------------------------------------------------
 
-// The form two pieces of advice are compared in: lowercased, with every
-// run of whitespace collapsed to one space and the ends trimmed. A model
-// asked twice about the same concern rarely produces the same bytes, and
-// case and wrapping are exactly the differences that carry no meaning.
+/// Normalizes advice text by lowercasing and collapsing whitespace runs.
+/// The form two pieces of advice are compared in: lowercased, with every
+/// run of whitespace collapsed to one space and the ends trimmed. A model
+/// asked twice about the same concern rarely produces the same bytes, and
+/// case and wrapping are exactly the differences that carry no meaning.
 fn normalize(text: String) -> String {
   text
   |> string.lowercase
@@ -511,9 +521,10 @@ fn normalize(text: String) -> String {
   |> string.join(with: " ")
 }
 
-// Whitespace is decided on the codepoint rather than on a list of escape
-// literals, so tabs, newlines, form feeds and the C0 controls a pasted
-// transcript can carry all collapse the same way.
+/// Maps whitespace codepoints to a single ASCII space or preserves the grapheme.
+/// Whitespace is decided on the codepoint rather than on a list of escape
+/// literals, so tabs, newlines, form feeds and the C0 controls a pasted
+/// transcript can carry all collapse the same way.
 fn space_or_self(grapheme: String) -> String {
   case string.to_utf_codepoints(grapheme) {
     [codepoint] ->
@@ -603,10 +614,11 @@ pub fn decode(value: JsonValue) -> Result(Guard, String) {
   Ok(Guard(reviews: counted, last_block_review:, recent:, pending: queued))
 }
 
-// `Null` is the shape a fact cell that was never written comes back as,
-// so the actor hands whatever it read straight here instead of branching
-// on absence before the call. Every other non-object is a writer that
-// stored something else under this key.
+/// Extracts object fields from a decoded JSON value or defaults to empty for null.
+/// `Null` is the shape a fact cell that was never written comes back as,
+/// so the actor hands whatever it read straight here instead of branching
+/// on absence before the call. Every other non-object is a writer that
+/// stored something else under this key.
 fn object_fields(
   value: JsonValue,
 ) -> Result(List(#(String, JsonValue)), String) {
@@ -628,6 +640,7 @@ fn object_fields(
   }
 }
 
+/// Decodes an optional integer field, returning 0 if missing.
 fn optional_int(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -639,6 +652,7 @@ fn optional_int(
   }
 }
 
+/// Decodes an optional review index from object fields.
 fn optional_review(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -651,6 +665,7 @@ fn optional_review(
   }
 }
 
+/// Decodes an optional list of string items from object fields.
 fn optional_strings(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -662,6 +677,7 @@ fn optional_strings(
   }
 }
 
+/// Validates and extracts a single string element from an array.
 fn string_item(item: JsonValue, key: String) -> Result(String, String) {
   case item {
     json.String(value:) -> Ok(value)
@@ -675,6 +691,7 @@ fn string_item(item: JsonValue, key: String) -> Result(String, String) {
   }
 }
 
+/// Verifies that an integer field value is non-negative.
 fn non_negative(value: Int, key: String) -> Result(Int, String) {
   case value >= 0 {
     True -> Ok(value)
@@ -689,12 +706,13 @@ fn non_negative(value: Int, key: String) -> Result(Int, String) {
   }
 }
 
-// The one cross-field check, and the reason the type is opaque. A block
-// recorded against a review the guard has not reached makes
-// `reviews - value` negative, and a negative elapsed is always below the
-// cooldown, so the block channel would stay shut for the rest of the
-// session. Refusing the cell costs one forgotten cooldown; accepting it
-// costs the feature.
+/// Validates that the recorded last block review does not exceed the current review count.
+/// The one cross-field check, and the reason the type is opaque. A block
+/// recorded against a review the guard has not reached makes
+/// `reviews - value` negative, and a negative elapsed is always below the
+/// cooldown, so the block channel would stay shut for the rest of the
+/// session. Refusing the cell costs one forgotten cooldown; accepting it
+/// costs the feature.
 fn check_last_block(
   review: Option(Int),
   counted: Int,
@@ -722,6 +740,7 @@ fn check_last_block(
   }
 }
 
+/// Builds a descriptive decoding error message for a mismatched JSON property type.
 fn field_error(key: String, expected: String, got: JsonValue) -> String {
   decode_where
   <> ": "

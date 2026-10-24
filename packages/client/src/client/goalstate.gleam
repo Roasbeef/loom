@@ -520,6 +520,8 @@ pub fn decode_status(
 // A status that carries no cause, refusing a reason that came with it: a
 // present reason on `active` is a writer that thinks the status means
 // something it does not.
+
+/// Rejects a persisted cause when the status has no cause-bearing state, keeping status and reason consistent.
 fn causeless(status: Status, reason: Option(String)) -> Result(Status, String) {
   case reason {
     None -> Ok(status)
@@ -535,6 +537,7 @@ fn causeless(status: Status, reason: Option(String)) -> Result(Status, String) {
   }
 }
 
+/// Maps a stored pause reason to its typed cause and rejects unknown reason strings.
 fn pause_cause(reason: Option(String)) -> Result(PauseCause, String) {
   case reason {
     Some("operator") -> Ok(ByOperator)
@@ -547,6 +550,7 @@ fn pause_cause(reason: Option(String)) -> Result(PauseCause, String) {
   }
 }
 
+/// Maps a stored budget-limit reason to the corresponding typed limit cause.
 fn limit_cause(reason: Option(String)) -> Result(LimitCause, String) {
   case reason {
     Some("token_budget") -> Ok(ByTokenBudget)
@@ -557,6 +561,7 @@ fn limit_cause(reason: Option(String)) -> Result(LimitCause, String) {
   }
 }
 
+/// Builds a location-specific decode error for a reason string not allowed by its status.
 fn bad_reason(status: String, word: String) -> String {
   decode_where
   <> ": "
@@ -619,10 +624,12 @@ pub fn encode(goal: Goal) -> JsonValue {
 /// ```
 ///
 pub fn encode_last_check(result: Option(CheckResult)) -> JsonValue {
+  // Choose whether an optional check result is represented as null or as a stored object.
   case result {
     None -> json.Null
 
     Some(CheckResult(command:, ending:, output:, ran_at_ms:)) -> {
+      // Choose whether an optional check result is represented as null or as a stored object.
       let #(status, not_finished) = case ending {
         Exited(status:) -> #(json.Int(status), json.Null)
         DidNotFinish(reason:) -> #(json.Null, json.String(reason))
@@ -657,6 +664,7 @@ pub fn encode_last_check(result: Option(CheckResult)) -> JsonValue {
 pub fn decode_last_check(
   payload: JsonValue,
 ) -> Result(Option(CheckResult), String) {
+  // Distinguish a missing check from a present check record before decoding it.
   case payload {
     json.Null -> Ok(None)
 
@@ -675,12 +683,15 @@ pub fn decode_last_check(
 // The ending, read from the pair of always-present-sometimes-null fields.
 // Exactly one of the two carries a value; both and neither are refusals,
 // for the reason `decode_last_check` states.
+
+/// Decodes check outcome fields into the typed ending, requiring a reason only for incomplete checks.
 fn decode_ending(
   fields: List(#(String, JsonValue)),
 ) -> Result(CheckEnding, String) {
   use status <- result.try(optional_status(fields))
   use reason <- result.try(optional_text(fields, "not_finished"))
 
+  // Select the typed check ending from its stored status and reason fields.
   case status, reason {
     Some(code), None -> Ok(Exited(status: code))
     None, Some(words) -> Ok(DidNotFinish(reason: words))
@@ -696,6 +707,8 @@ fn decode_ending(
 // The exit status, absent or null when the run produced none. Any integer
 // is accepted: a jailed process that was signalled reports 128 plus the
 // signal, and a helper's own failure code is not this decoder's to bound.
+
+/// Reads the optional process exit status, preserving absence and rejecting non-integer values.
 fn optional_status(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Int), String) {
@@ -709,6 +722,8 @@ fn optional_status(
 
 // The captured tail, which may legitimately be empty: a command that
 // printed nothing and exited zero is the commonest passing check there is.
+
+/// Reads check output as text, treating missing or null output as empty.
 fn check_output(fields: List(#(String, JsonValue))) -> Result(String, String) {
   case list.key_find(fields, "output") {
     Error(Nil) | Ok(json.Null) -> Ok("")
@@ -745,6 +760,7 @@ fn encode_optional(text: Option(String)) -> JsonValue {
 /// ```
 ///
 pub fn encode_phase(phase: Phase) -> JsonValue {
+  // Encode the active goal phase using the phase-specific persisted fields.
   let #(word, operation, since, deadline) = case phase {
     Idle -> #("idle", None, None, None)
     Checking(deadline_ms:) -> #("checking", None, None, Some(deadline_ms))
@@ -791,6 +807,7 @@ pub fn decode_phase(payload: JsonValue) -> Result(Phase, String) {
   use since <- result.try(optional_since_seq(fields))
   use deadline <- result.try(optional_deadline(fields))
 
+  // Choose the phase decoder from the persisted phase tag and required fields.
   case word, operation {
     "idle", None -> Ok(Idle)
     "ready_to_feed", None -> Ok(ReadyToFeed)
@@ -842,6 +859,8 @@ pub fn decode_phase(payload: JsonValue) -> Result(Phase, String) {
 // outside the checking state, a non-negative integer inside it. A present
 // value of the wrong type is an error rather than an absence, the
 // discipline every field in this codec keeps.
+
+/// Reads a nonnegative optional check deadline from the stored goal record.
 fn optional_deadline(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Int), String) {
@@ -858,6 +877,8 @@ fn optional_deadline(
 // continuing state, a non-negative integer inside it. A present value of
 // the wrong type is an error rather than an absence, the discipline every
 // field in this codec keeps.
+
+/// Reads the optional nonnegative sequence cursor for a woken primary run.
 fn optional_since_seq(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Int), String) {
@@ -874,6 +895,8 @@ fn optional_since_seq(
 // the other two. A present value that will not parse is an error rather
 // than an absence: the loop would otherwise read a corrupt phase as idle
 // and re-feed a goal whose verdict is genuinely owed.
+
+/// Decodes an optional operation identifier from the stored goal record.
 fn optional_operation(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(OpId), String) {
@@ -964,6 +987,8 @@ pub fn decode(payload: JsonValue) -> Result(Goal, String) {
 // existed and on every goal whose check has not run yet. Both read as
 // nothing recorded, which is what makes a cell with none decode as "no
 // check" rather than as a refusal (protocol 044 §8).
+
+/// Decodes the optional last-check record while preserving a missing value.
 fn optional_last_check(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(CheckResult), String) {
@@ -987,6 +1012,7 @@ type Counters {
   )
 }
 
+/// Decodes persisted usage counters and applies defaults to counters absent from older records.
 fn decode_counters(
   fields: List(#(String, JsonValue)),
 ) -> Result(Counters, String) {
@@ -1009,6 +1035,8 @@ fn decode_counters(
 
 // The status and its reason read together, because the pair is what
 // `decode_status` checks.
+
+/// Decodes status and its optional cause as one consistent stored state.
 fn decode_stored_status(
   fields: List(#(String, JsonValue)),
 ) -> Result(Status, String) {
@@ -1029,6 +1057,8 @@ fn required_phase(fields: List(#(String, JsonValue))) -> Result(Phase, String) {
 // Unlike the guard's decoder there is no `Null` case: this cell's
 // absence is never handed here — an absent cell is no goal, read before
 // the payload reaches this module — so `Null` is as wrong as a string.
+
+/// Requires the stored goal payload to be a JSON object and returns its fields.
 fn object_fields(
   payload: JsonValue,
 ) -> Result(List(#(String, JsonValue)), String) {
@@ -1052,6 +1082,8 @@ fn object_fields(
 // A required string. Absence is an error, not a default, because every
 // field this serves has no meaningful empty value: an objective nobody
 // wrote and a status word nobody chose are both corrupt cells.
+
+/// Reads a required nonempty string field and reports missing or wrong-shaped values.
 fn required_string(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1072,6 +1104,8 @@ fn required_string(
 
 // The budget, required and positive. v1 has no unbounded goals, so zero
 // is as wrong as a negative number and the refusal says so once.
+
+/// Reads a positive token budget, rejecting zero, negative, missing, and non-integer values.
 fn required_budget(fields: List(#(String, JsonValue))) -> Result(Int, String) {
   case list.key_find(fields, "token_budget") {
     Ok(json.Int(value:)) if value > 0 -> Ok(value)
@@ -1089,6 +1123,8 @@ fn required_budget(fields: List(#(String, JsonValue))) -> Result(Int, String) {
 // A required millisecond timestamp, which the pair `check_updated_after`
 // then orders. Zero is allowed: a caller may pin a goal before any clock
 // it trusts.
+
+/// Reads a required nonnegative millisecond field from persisted goal state.
 fn required_ms(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1113,6 +1149,8 @@ fn required_ms(
 // these counts something that only grows. A negative `tokens_used` would
 // make remaining-budget arithmetic lie; a negative bound count would be a
 // budget already spent before any continuation ran.
+
+/// Reads a nonnegative usage counter, defaulting an absent legacy field to zero.
 fn counter(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1137,6 +1175,8 @@ fn counter(
 // The cost, optional and a number either way on the wire: `0` and `0.0`
 // are the same recorded cost, the same tolerance `core/codec` gives the
 // usage row's own cost fields.
+
+/// Reads the optional numeric cost, accepting integer and floating encodings.
 fn optional_cost(fields: List(#(String, JsonValue))) -> Result(Float, String) {
   case list.key_find(fields, "cost_used") {
     Error(Nil) -> Ok(0.0)
@@ -1149,6 +1189,8 @@ fn optional_cost(fields: List(#(String, JsonValue))) -> Result(Float, String) {
 // A nullable string: the reviewer's note, which every goal predates, and
 // the status reason, which two of the four statuses do not carry. Null is
 // present and means `None`, the same value absence takes.
+
+/// Reads an optional text field while preserving absence and rejecting other JSON shapes.
 fn optional_text(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1161,6 +1203,7 @@ fn optional_text(
   }
 }
 
+/// Validates that a persisted update timestamp does not precede goal creation.
 fn check_updated_after(created: Int, updated: Int) -> Result(Nil, String) {
   case updated >= created {
     True -> Ok(Nil)
@@ -1175,6 +1218,7 @@ fn check_updated_after(created: Int, updated: Int) -> Result(Nil, String) {
   }
 }
 
+/// Formats a decode error with the field name, expected shape, and observed JSON value.
 fn field_error(key: String, expected: String, got: JsonValue) -> String {
   decode_where
   <> ": "
@@ -1187,6 +1231,8 @@ fn field_error(key: String, expected: String, got: JsonValue) -> String {
 
 // Historical goal cells carry a number without its measurement coverage.
 // A present malformed witness is refused rather than read as historical.
+
+/// Decodes cost provenance, using unknown evidence when older records omit it.
 fn optional_cost_evidence(
   fields: List(#(String, JsonValue)),
 ) -> Result(usage_evidence.Evidence, String) {

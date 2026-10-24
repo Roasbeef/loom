@@ -152,6 +152,7 @@ pub fn fingerprint(path: String) -> Result(String, Nil) {
   read(path) |> result.map(fn(pair) { pair.0 })
 }
 
+/// Builds an actor builder for config watcher.
 fn new(
   source: Source,
   notify: fn() -> Nil,
@@ -169,7 +170,9 @@ fn new(
   |> actor.on_message(handle)
 }
 
+/// Handles incoming timer tick or inspection probe.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Dispatch according to incoming message.
   case message {
     Tick -> actor.continue(observe(state))
     Probe(reply:) -> {
@@ -180,14 +183,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-// One read, judged. The text is read before the fingerprint is compared, but it
-// is checked only once two reads agree, so a file saved in pieces costs reads
-// and never a parse of a half-written document.
+/// Performs one observation pass on the configured file.
+///
+/// One read, judged. The text is read before the fingerprint is compared, but it
+/// is checked only once two reads agree, so a file saved in pieces costs reads
+/// and never a parse of a half-written document.
 fn observe(state: State) -> State {
+  // Read file from disk and compare fingerprint.
   case read(state.source.path) {
     Error(Nil) -> State(..state, seen: None)
     Ok(#(digest, text)) -> {
       let now = Some(digest)
+
+      // Settle change once two consecutive reads agree on new digest.
       case now == state.applied, now == state.seen {
         True, _ -> State(..state, seen: None)
         False, False -> State(..state, seen: now)
@@ -197,11 +205,15 @@ fn observe(state: State) -> State {
   }
 }
 
-// A text two reads agreed on. One that passes is now the session's, and the hub
-// is told; one that fails is remembered so it is logged once and not parsed on
-// every tick.
+/// Settles an agreed-upon configuration text and notifies the hub if valid.
+///
+/// A text two reads agreed on. One that passes is now the session's, and the hub
+/// is told; one that fails is remembered so it is logged once and not parsed on
+/// every tick.
 fn settle(state: State, digest: String, text: String) -> State {
   let path = field.text("path", state.source.path)
+
+  // Verify if content was already refused, or check text schema.
   case Some(digest) == state.refused, state.source.check(text) {
     True, _ -> State(..state, seen: None)
     False, Ok(Nil) -> {
@@ -216,7 +228,9 @@ fn settle(state: State, digest: String, text: String) -> State {
   }
 }
 
-// The bounded read: the size is asked of the file before a byte is read.
+/// Reads the file and computes its SHA-256 fingerprint if within limits.
+///
+/// The bounded read: the size is asked of the file before a byte is read.
 fn read(path: String) -> Result(#(String, String), Nil) {
   use info <- result.try(
     simplifile.file_info(path) |> result.replace_error(Nil),

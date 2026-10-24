@@ -39,14 +39,19 @@ pub fn trace_door(
       use source <- result.try(source(ctx))
       use target <- result.try(actual(ctx))
       use requested <- result.try(tool.optional_int(args, "limit"))
+
+      // Default to 12 turns if limit was omitted by caller.
       let limit = case requested {
         None -> 12
         Some(limit) -> limit
       }
+
+      // Verify that trace turn limit is within supported bounds.
       use Nil <- result.try(case limit > 0 && limit <= 32 {
         True -> Ok(Nil)
         False -> Error("Bounds: trace limit must be from one to thirty-two")
       })
+
       use brief <- result.try(trace.select(
         source,
         target,
@@ -54,6 +59,8 @@ pub fn trace_door(
       ))
       Ok(encode_brief(brief))
     }
+
+    // Convert brief extraction result to tool outcome.
     case result {
       Ok(value) -> tool.success(json.to_string(value))
       Error(reason) -> tool.failure(reason)
@@ -74,15 +81,18 @@ pub fn evaluation_request(
   args: json.JsonValue,
 ) -> Result(#(String, rollout.Limits), String) {
   use task_set <- result.try(tool.required_string(args, "taskset_id"))
+
+  // Parse and validate optional limit overrides against system ceilings.
   use limits <- result.try(case field(args, "limits") {
     Error(Nil) | Ok(json.Null) ->
       Ok(rollout.Limits(20, 20, 1_000_000, 2.0, 65_536, 120_000))
     Ok(value) -> limits(value)
   })
+
   Ok(#(task_set, limits))
 }
 
-// Encodes bounded source evidence without exposing excluded source content.
+/// Encodes bounded source evidence without exposing excluded source content.
 fn encode_brief(brief: trace.Brief) -> json.JsonValue {
   json.Object([
     #("scrubber", json.String(brief.scrubber)),
@@ -117,11 +127,14 @@ fn encode_brief(brief: trace.Brief) -> json.JsonValue {
   ])
 }
 
+/// Validates and decodes caller evaluation budget limits against ceilings.
 fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
+  // Ensure the limits payload is a structured JSON object.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("Bounds: rollout limits must be an object")
   })
+
   let names = [
     "trials",
     "turns",
@@ -130,6 +143,8 @@ fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
     "output_bytes",
     "wall_ms",
   ]
+
+  // Check that all required ceiling budget fields are provided.
   use Nil <- result.try(
     case
       list.length(fields) == 6
@@ -148,11 +163,15 @@ fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
   use tokens <- result.try(integer(value, "tokens"))
   use output_bytes <- result.try(integer(value, "output_bytes"))
   use wall_ms <- result.try(integer(value, "wall_ms"))
+
+  // Parse dollar budget as float or coerce from integer.
   use dollars <- result.try(case field(value, "dollars") {
     Ok(json.Float(dollars)) -> Ok(dollars)
     Ok(json.Int(dollars)) -> Ok(int_to_float(dollars))
     _ -> Error("Bounds: dollars requires a positive number")
   })
+
+  // Ensure all budget values remain strictly within native ceilings.
   case
     trials > 0
     && trials <= 20

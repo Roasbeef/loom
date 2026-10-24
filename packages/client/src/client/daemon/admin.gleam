@@ -84,10 +84,13 @@ pub fn peer_request(
     list.key_find(fields, "source_session")
     |> result.replace_error("missing source session"),
   )
+
+  // Validate that the source session field is a JSON string.
   use source <- result.try(case source {
     json.String(source) -> Ok(source)
     _ -> Error("invalid source session")
   })
+
   let request = access.raw_request(directory, command, source, fields)
   use _ <- result.try(
     protocol.decode(access.envelope(request, "validation-only"))
@@ -121,12 +124,14 @@ pub fn ledger_request(
   command: String,
   fields: List(#(String, JsonValue)),
 ) -> Result(Request, String) {
+  // Construct the raw request for either local host or over-network target.
   use request <- result.try(case where_ {
     ThisHost(directory) ->
       Ok(access.raw_request(directory, command, "", fields))
     OverNetwork(address, token_file) ->
       access.raw_remote_request(address, token_file, command, "", fields)
   })
+
   use _ <- result.try(
     protocol.decode(access.envelope(request, "validation-only"))
     |> result.replace_error("invalid or oversized ledger request"),

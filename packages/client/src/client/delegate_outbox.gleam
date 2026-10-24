@@ -216,10 +216,13 @@ pub fn mail_key(id: String) -> String {
 /// // delegate_outbox.queue_mail(runtime, delegate_outbox.Mail(id:, parent_strand: "main", child:, text: "done", state: delegate_outbox.Pending))
 /// ```
 pub fn queue_mail(runtime: api.Runtime, row: Mail) -> Result(Nil, String) {
+  // Validate text byte length against maximum allowed size before inserting.
   use Nil <- result.try(case string.byte_size(row.text) <= max_text_bytes {
     True -> Ok(Nil)
     False -> Error("the message is longer than a message may be")
   })
+
+  // Store mail row expecting no prior fact to detect duplicate message identity.
   case
     api.put_reserved_fact_expecting(
       runtime,
@@ -231,6 +234,8 @@ pub fn queue_mail(runtime: api.Runtime, row: Mail) -> Result(Nil, String) {
     Ok(_) -> Ok(Nil)
     Error(api.FactConflict(..)) -> {
       use found <- result.try(read_mail(runtime, mail_key(row.id)))
+
+      // Verify whether the conflict is an idempotent resend or a colliding message ID.
       case found {
         Some(held) if held.text == row.text && held.child == row.child -> Ok(Nil)
         Some(_) | None ->
@@ -283,6 +288,7 @@ pub fn settle_mail(
   |> result.map_error(string.inspect)
 }
 
+/// Reads and decodes a persisted mail row from the runtime store.
 fn read_mail(
   runtime: api.Runtime,
   key: String,
@@ -290,6 +296,8 @@ fn read_mail(
   use cell <- result.try(
     api.fact(runtime, key) |> result.map_error(string.inspect),
   )
+
+  // Branch on whether the fact exists in storage and decode into Mail record.
   case cell {
     None -> Ok(None)
     Some(value) -> decode_mail(value) |> result.map(Some)
@@ -322,6 +330,8 @@ pub fn unsent_glances(runtime: api.Runtime) -> Result(List(Unsent), String) {
     use operation <- result.try(
       ids.parse_op_id(seen.operation) |> result.replace_error(Nil),
     )
+
+    // Keep only glances newer than the acknowledged timestamp for this strand.
     case seen.at > acknowledged_at(runtime, strand) {
       True ->
         Ok(Unsent(
@@ -351,6 +361,7 @@ pub fn acknowledge(
   strand: String,
   at: Int,
 ) -> Result(Nil, String) {
+  // This branch resolves at acknowledged_at runtime strand before the operation continues.
   case at > acknowledged_at(runtime, strand) {
     False -> Ok(Nil)
     True ->
@@ -363,21 +374,27 @@ pub fn acknowledge(
   }
 }
 
+/// Retrieves the acknowledged progress timestamp recorded for the strand.
 fn acknowledged_at(runtime: api.Runtime, strand: String) -> Int {
+  // This branch resolves api fact runtime progress_prefix strand before the operation continues.
   case api.fact(runtime, progress_prefix <> strand) {
     Ok(Some(json.Object(fields))) ->
+      // This branch resolves list key_find fields at before the operation continues.
       case list.key_find(fields, "at") {
         Ok(json.Int(at)) -> at
         Ok(_) | Error(Nil) -> 0
       }
+
     Ok(Some(_)) | Ok(None) | Error(_) -> 0
   }
 }
 
+/// Loads and decodes lineage metadata for a child strand.
 fn lineage_of(
   runtime: api.Runtime,
   strand: String,
 ) -> Result(lineage.Lineage, Nil) {
+  // This branch resolves api fact runtime lineage register_key strand before the operation continues.
   case api.fact(runtime, lineage.register_key(strand)) {
     Ok(Some(value)) -> lineage.decode(value) |> result.replace_error(Nil)
     Ok(None) | Error(_) -> Error(Nil)
@@ -400,6 +417,8 @@ pub fn encode_mail(row: Mail) -> JsonValue {
     #("child", json.String(row.child.strand)),
     #("operation", json.String(ids.op_id_to_string(row.child.operation))),
     #("text", json.String(row.text)),
+
+    // This branch resolves row state before the operation continues.
     #("state", case row.state {
       Pending -> json.Object([#("kind", json.String("pending"))])
       Answered(receipt:) ->
@@ -450,9 +469,12 @@ pub fn decode_mail(value: JsonValue) -> Result(Mail, String) {
   ))
 }
 
+/// Decodes the mail lifecycle state from its JSON representation.
 fn decode_state(value: JsonValue) -> Result(State, String) {
   use fields <- result.try(object(value, "a mail state"))
   use kind <- result.try(text(fields, "kind"))
+
+  // Decode payload based on kind discriminator field.
   case kind {
     "pending" -> Ok(Pending)
     "answered" ->
@@ -465,20 +487,26 @@ fn decode_state(value: JsonValue) -> Result(State, String) {
   }
 }
 
+/// Decodes a JSON object and extracts its key-value fields.
 fn object(
   value: JsonValue,
   what: String,
 ) -> Result(List(#(String, JsonValue)), String) {
+  // This branch resolves value before the operation continues.
   case value {
     json.Object(fields) -> Ok(fields)
     other -> Error("expected " <> what <> ", got " <> json.to_string(other))
   }
 }
 
+/// Extracts a required text property from parsed JSON object fields.
 fn text(
   fields: List(#(String, JsonValue)),
   name: String,
 ) -> Result(String, String) {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case list.key_find(fields, name) {
     Ok(json.String(found)) -> Ok(found)
     Ok(_) -> Error("expected `" <> name <> "` to be text")
@@ -623,6 +651,8 @@ pub fn encode_question(row: Question) -> JsonValue {
     #("child", json.String(row.child.strand)),
     #("operation", json.String(ids.op_id_to_string(row.child.operation))),
     #("until", json.Int(row.until)),
+
+    // This branch resolves row sending before the operation continues.
     #("sending", case row.sending {
       NotAcknowledged -> json.String("unsent")
       Acknowledged -> json.String("sent")
@@ -651,12 +681,15 @@ pub fn decode_question(value: JsonValue) -> Result(Question, String) {
     |> result.map_error(fn(_) { "expected `operation` to be an operation id" }),
   )
   use until <- result.try(whole(fields, "until"))
+
+  // Decode acknowledgment sending state from string enum field.
   use sending <- result.try(case text(fields, "sending") {
     Ok("unsent") -> Ok(NotAcknowledged)
     Ok("sent") -> Ok(Acknowledged)
     Ok(other) -> Error("unknown sending state `" <> other <> "`")
     Error(reason) -> Error(reason)
   })
+
   Ok(Question(
     id:,
     seq:,
@@ -667,10 +700,12 @@ pub fn decode_question(value: JsonValue) -> Result(Question, String) {
   ))
 }
 
+/// Extracts a nonnegative integer field from parsed JSON object fields.
 fn whole(
   fields: List(#(String, JsonValue)),
   name: String,
 ) -> Result(Int, String) {
+  // This branch resolves list key_find fields name before the operation continues.
   case list.key_find(fields, name) {
     Ok(json.Int(found)) if found >= 0 -> Ok(found)
     Ok(_) -> Error("expected `" <> name <> "` to be a nonnegative integer")
@@ -761,6 +796,7 @@ pub fn announce(
 /// assert !delegate_outbox.answers(option.None, option.None)
 /// ```
 pub fn answers(link: Option(SpawnerLink), laptop: Option(Laptop)) -> Bool {
+  // This branch resolves link laptop before the operation continues.
   case link, laptop {
     Some(SpawnerLink(ceiling: Some(_), ..)), Some(found) -> found.connected()
     _, _ -> False

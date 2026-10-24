@@ -134,6 +134,7 @@ pub fn silent(_node: String) -> Result(Held, Nil) {
 /// // -> [#("hub", "loom@hub.example"), #("laptop", "loom@laptop.example")]
 /// ```
 pub fn targets(ledger: Ledger, local: String) -> List(#(String, String)) {
+  // Locate local node entry in membership ledger.
   case membership_ledger.member_at(ledger, local) {
     Error(Nil) -> []
     Ok(own) -> {
@@ -142,10 +143,13 @@ pub fn targets(ledger: Ledger, local: String) -> List(#(String, String)) {
         |> membership_ledger.peers
         |> list.filter(fn(peer) { peer.role == Orchestrator })
         |> list.map(fn(peer) { #(peer.name, peer.node) })
+
+      // Include self if local node functions as an orchestrator.
       let itself = case own.role {
         Orchestrator -> [#(own.name, own.node)]
         _ -> []
       }
+
       list.append(itself, peers)
       |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
     }
@@ -168,6 +172,8 @@ pub fn targets(ledger: Ledger, local: String) -> List(#(String, String)) {
 /// ```
 pub fn collect(ledger: Ledger, local: String, ask: Asker) -> List(Answer) {
   let asked = targets(ledger, local)
+
+  // Query session holdings concurrently across all target orchestrators.
   case asked {
     [] -> []
     _ -> {
@@ -184,6 +190,7 @@ pub fn collect(ledger: Ledger, local: String, ask: Asker) -> List(Answer) {
   }
 }
 
+/// Unwraps a completed task outcome into an optional Held response.
 fn heard(outcome: weft.Outcome(Held, Nil)) -> Option(Held) {
   case outcome {
     weft.Completed(value:, ..) -> Some(value)
@@ -209,6 +216,7 @@ fn heard(outcome: weft.Outcome(Held, Nil)) -> Option(Held) {
 /// ```
 pub fn over_distribution(membership: Membership, local: String) -> Asker {
   fn(peer_node) {
+    // Resolve destination address for local node or remote peer.
     use at <- result.try(case peer_node == local {
       True ->
         Ok(address.Address(node: node.self(), name: orchestrator_port.default()))
@@ -218,6 +226,7 @@ pub fn over_distribution(membership: Membership, local: String) -> Asker {
           orchestrators.plain(peer_node, peer_node),
         )
     })
+
     orchestrator_port.ask_holds(at, reply_ms)
   }
 }
@@ -324,6 +333,8 @@ pub fn placements(
 // empty. Each page's custody is read in one registry turn. After `pages_left`
 // pages the walk stops, and it is complete only if the next page is empty: a
 // page with registrations on it means the tally is short, which is unknown.
+
+/// Tallies session placement and residency across paged registry entries.
 fn count(
   registry: Manager(instance),
   after: String,
@@ -349,16 +360,20 @@ fn count(
             list.filter(views, fn(view) {
               !handed_away(custodies, view.registration.id)
             })
+
+          // Determine starting cursor for next page of registry entries.
           let next = case list.last(ids) {
             Ok(last) -> last
             Error(Nil) -> after
           }
+
           count(registry, next, add(tally, owned), pages_left - 1)
         }
       }
   }
 }
 
+/// Checks whether a session registration was moved away to another node.
 fn handed_away(
   custodies: List(#(String, catalogue.Custody)),
   id: String,
@@ -372,8 +387,10 @@ fn handed_away(
   }
 }
 
+/// Updates session tally with resident counts and executor placements from views.
 fn add(tally: Tally, owned: List(manager.View)) -> Tally {
   list.fold(owned, tally, fn(tally, view) {
+    // Count one toward resident tally if view indicates an active resident.
     let resident = case view.status {
       manager.Resident(..) -> 1
       manager.Reserved
@@ -383,6 +400,8 @@ fn add(tally: Tally, owned: List(manager.View)) -> Tally {
       | manager.Stopping(..)
       | manager.RecoveryBlocked(..) -> 0
     }
+
+    // Update per-executor tally with placement and residency counts.
     let placed = case view.registration.executor {
       "" -> tally.by_executor
       name ->
@@ -394,6 +413,7 @@ fn add(tally: Tally, owned: List(manager.View)) -> Tally {
           )
         })
     }
+
     Tally(sessions: tally.sessions + 1, by_executor: placed)
   })
 }
@@ -403,6 +423,8 @@ fn add(tally: Tally, owned: List(manager.View)) -> Tally {
 // the list is ordered by node. More nodes than the port carries is unknown, not
 // the first of them, because the operator's tool reads a node missing from the
 // list as a node with nothing placed on it.
+
+/// Groups executor session counts by node and validates count limits.
 fn placed_on(
   by_name: Dict(String, Counts),
   listed: List(Executor),
@@ -422,6 +444,8 @@ fn placed_on(
         )
       })
     })
+
+  // Ensure total number of placed nodes does not exceed wire limit.
   case dict.size(by_node) > orchestrator_port.max_placed {
     True -> Error(Nil)
     False ->

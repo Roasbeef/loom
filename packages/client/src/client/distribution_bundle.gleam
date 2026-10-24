@@ -124,6 +124,7 @@ pub type Bundle {
 /// assert string.contains(distribution_bundle.encode(bundle), "loom-distribution-bundle/1")
 /// ```
 pub fn encode(bundle: Bundle) -> String {
+  // Determine trust encoding representation based on static peers or signed ledger.
   let #(marker, trust_key, trust_value) = case bundle.trust {
     StaticPeers(peers) -> #(format, "peers", json.array(peers, peer_json))
     SignedLedger(lines) -> #(
@@ -132,6 +133,7 @@ pub fn encode(bundle: Bundle) -> String {
       json.array(lines, json.string),
     )
   }
+
   let fields =
     list.flatten([
       [
@@ -208,10 +210,12 @@ pub type Table {
 /// // -> [Table(["distribution"], "[distribution]\nnode = ..."), ..]
 /// ```
 pub fn config_tables(bundle: Bundle, files: CredentialFiles) -> List(Table) {
+  // Format optional listen port setting if specified.
   let port = case bundle.listen_port {
     Some(number) -> "listen_port = " <> int.to_string(number) <> "\n"
     None -> ""
   }
+
   let head =
     "[distribution]\n"
     <> "node = "
@@ -242,6 +246,7 @@ pub fn config_tables(bundle: Bundle, files: CredentialFiles) -> List(Table) {
       "ledger = " <> toml_string(ledger_path(files)) <> "\n",
     ]
   }
+
   let rows =
     list.map(bundle.executors, fn(row) {
       Table(
@@ -264,6 +269,8 @@ pub fn config_tables(bundle: Bundle, files: CredentialFiles) -> List(Table) {
           <> "\n",
       )
     })
+
+  // Format directory table if directory membership is defined.
   let directory = case bundle.directory {
     [] -> []
     members -> [
@@ -275,6 +282,7 @@ pub fn config_tables(bundle: Bundle, files: CredentialFiles) -> List(Table) {
       ),
     ]
   }
+
   list.flatten([
     [Table(["distribution"], string.concat([head, ..trust]))],
     rows,
@@ -345,6 +353,8 @@ pub fn toml_string(text: String) -> String {
 /// ```
 pub fn toml_key(name: String) -> String {
   let bare = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+
+  // Quote TOML key when it contains characters outside the bare identifier set.
   case
     name != "" && list.all(string.to_graphemes(name), string.contains(bare, _))
   {
@@ -355,6 +365,7 @@ pub fn toml_key(name: String) -> String {
 
 // --- encoding ----------------------------------------------------------------
 
+/// Serializes an optional configuration field into an object property list when present.
 fn present(
   key: String,
   value: Option(a),
@@ -401,20 +412,21 @@ const ledger_keys = [
   "cookie",
 ]
 
-// The marker decides which keys are allowed, so a `/2` document that still
-// lists `peers`, or a `/1` document that carries a `ledger`, is refused for
-// the key that does not belong. An unreadable marker falls back to the `/1`
-// keys, and `validate` then refuses it by name.
+/// Rejects unrecognized configuration keys in a bundle document based on format version.
 fn known_keys(present: Dict(String, Dynamic)) -> Result(Nil, String) {
   let marker =
     dict.get(present, "format")
     |> result.try(fn(value) {
       decode.run(value, decode.string) |> result.replace_error(Nil)
     })
+
+  // Select allowed key whitelist corresponding to bundle schema format.
   let keys = case marker == Ok(ledger_format) {
     True -> ledger_keys
     False -> static_keys
   }
+
+  // Reject the first unrecognized property key.
   case list.find(dict.keys(present), fn(key) { !list.contains(keys, key) }) {
     Error(Nil) -> Ok(Nil)
     Ok(unknown) ->
@@ -456,6 +468,7 @@ type Raw {
   )
 }
 
+/// Decodes a two-element record tuple from specified field names.
 fn pair_decoder(
   first: String,
   second: String,
@@ -465,9 +478,9 @@ fn pair_decoder(
   decode.success(#(one, two))
 }
 
-// The marker picks the key that says who is trusted. `known_keys` has already
-// refused the other one.
+/// Decodes raw trust fields choosing between signed ledger entries and peer pin arrays.
 fn raw_trust(marker: String) -> decode.Decoder(RawTrust) {
+  // Choose decoder based on bundle format version.
   case marker == ledger_format {
     True -> {
       use lines <- decode.field("ledger", decode.list(decode.string))
@@ -483,6 +496,7 @@ fn raw_trust(marker: String) -> decode.Decoder(RawTrust) {
   }
 }
 
+/// Decodes raw unverified bundle fields from JSON representation.
 fn raw_decoder() -> decode.Decoder(Raw) {
   use marker <- decode.field("format", decode.string)
   use name <- decode.field("name", decode.string)
@@ -538,6 +552,7 @@ fn raw_decoder() -> decode.Decoder(Raw) {
   ))
 }
 
+/// Formats JSON decoding errors into readable error descriptions.
 fn describe_json(error: json.DecodeError) -> String {
   case error {
     json.UnexpectedEndOfInput -> "the bundle is not complete JSON"
@@ -559,12 +574,9 @@ fn describe_json(error: json.DecodeError) -> String {
 
 // --- validation --------------------------------------------------------------
 
-// The order is the order an operator can act on: the marker says whether this
-// is a bundle at all, the node's own rules come next, then the trust, the role
-// tables and the directory, and the credentials last because they are the
-// costly check. `valid_trust` yields the node names the bundle trusts, which
-// the two tables after it are checked against.
+/// Validates raw bundle format markers, structural invariants, cryptographic credentials, and topology.
 fn validate(raw: Raw) -> Result(Bundle, String) {
+  // Confirm that the bundle format identifier is recognized.
   use Nil <- result.try(
     case raw.marker == format || raw.marker == ledger_format {
       True -> Ok(Nil)
@@ -580,6 +592,7 @@ fn validate(raw: Raw) -> Result(Bundle, String) {
         )
     },
   )
+
   use bundle <- result.try(assemble(raw))
   use Nil <- result.try(
     distribution_plan.check_node(node_of(bundle))
@@ -593,11 +606,14 @@ fn validate(raw: Raw) -> Result(Bundle, String) {
   Ok(bundle)
 }
 
+/// Assembles decoded raw bundle values into a strongly typed Bundle record.
 fn assemble(raw: Raw) -> Result(Bundle, String) {
   use role <- result.try(
     distribution_plan.role_from_word(raw.role)
     |> result.map_error(fn(reason) { "bundle " <> reason }),
   )
+
+  // Parse trust data into either signed ledger lines or validated static peer pins.
   use trust <- result.try(case raw.trust {
     RawLedger(lines) -> Ok(SignedLedger(lines))
     RawPeers(pairs) ->
@@ -610,6 +626,7 @@ fn assemble(raw: Raw) -> Result(Bundle, String) {
       })
       |> result.map(StaticPeers)
   })
+
   Ok(Bundle(
     name: raw.name,
     role:,
@@ -632,9 +649,7 @@ fn assemble(raw: Raw) -> Result(Bundle, String) {
   ))
 }
 
-// The plan's own node rules apply to a bundle unchanged, so the bundle is
-// seen as the node it was made from. Its `executors` field is the plan's list
-// of executor names, which the bundle carries as rows.
+/// Converts a bundle into a plan node representation for invariant validation.
 fn node_of(bundle: Bundle) -> distribution_plan.Node {
   distribution_plan.Node(
     name: bundle.name,
@@ -648,14 +663,9 @@ fn node_of(bundle: Bundle) -> distribution_plan.Node {
   )
 }
 
-// A bundle's directory is the `[directory] members` it will write, so it must
-// pass the daemon's own rules: this node among them, every other one a peer,
-// three to seven names, each once.
-//
-// A ledger bundle lists none. Its ledger gives each member a directory standing,
-// and the daemon derives the members from it, so a list beside the ledger would
-// be a second source that could disagree.
+/// Validates directory member configurations against cluster sizing and peer visibility rules.
 fn valid_directory(bundle: Bundle, peers: List(String)) -> Result(Nil, String) {
+  // Enforce directory membership rules for static vs ledger trust modes.
   case bundle.trust, bundle.directory {
     _, [] -> Ok(Nil)
     SignedLedger(_), [_, ..] ->
@@ -665,14 +675,20 @@ fn valid_directory(bundle: Bundle, peers: List(String)) -> Result(Nil, String) {
       )
     StaticPeers(_), members -> {
       let count = list.length(members)
+
+      // Ensure directory cluster membership size stays within 3 to 7 nodes.
       use Nil <- result.try(case count >= 3 && count <= 7 {
         True -> Ok(Nil)
         False -> Error("bundle directory must list between 3 and 7 nodes")
       })
+
+      // Ensure all listed member nodes are distinct.
       use Nil <- result.try(case list.unique(members) == members {
         True -> Ok(Nil)
         False -> Error("bundle directory lists a node twice")
       })
+
+      // Verify that the local node is included in the directory member list.
       use Nil <- result.try(case list.contains(members, bundle.erlang_node) {
         True -> Ok(Nil)
         False -> Error("bundle directory does not list this node")
@@ -692,11 +708,9 @@ fn valid_directory(bundle: Bundle, peers: List(String)) -> Result(Nil, String) {
   }
 }
 
-// Who the bundle trusts, as the node names it may connect to. A peer list is
-// judged by the daemon's own validator, with placeholder paths, so the bundle
-// cannot hold a configuration the daemon would refuse at start. A ledger is
-// replayed, which is the whole of its validation.
+/// Validates the bundle's trust definition and returns the list of trusted peer node names.
 fn valid_trust(bundle: Bundle) -> Result(List(String), String) {
+  // Validate trust configuration according to trust variant.
   case bundle.trust {
     StaticPeers(peers) -> {
       let placeholder =
@@ -720,11 +734,7 @@ fn valid_trust(bundle: Bundle) -> Result(List(String), String) {
   }
 }
 
-// Replays the ledger the way a node does at boot, with a verifier built from
-// the bundle's own CA, and then asks the three questions that tie it to this
-// bundle: the genesis names this CA, the node's own entry is active, and that
-// entry carries the node's role, its node name and the pin of its certificate.
-// Each refusal says which line or field, and never quotes a line.
+/// Replays and verifies signed ledger lines, checking authority continuity, node enrollment, and credentials.
 fn ledger_peers(
   bundle: Bundle,
   lines: List(String),
@@ -752,10 +762,14 @@ fn ledger_peers(
       <> membership_ledger.step(failure.refusal)
     }),
   )
+
+  // Verify that the replayed ledger authority matches the bundle CA authority pin.
   use Nil <- result.try(case membership_ledger.authority(ledger) == authority {
     True -> Ok(Nil)
     False -> Error("bundle ledger was not started for its ca")
   })
+
+  // Confirm that the node has an active enrollment entry in the ledger.
   use member <- result.try(
     case membership_ledger.enrollment(ledger, bundle.name) {
       membership_ledger.Enrolled(member:) -> Ok(member)
@@ -765,6 +779,8 @@ fn ledger_peers(
         Error("bundle ledger does not enroll " <> bundle.name)
     },
   )
+
+  // Check that the enrolled entry matches bundle role, Erlang node name, and certificate pin.
   use Nil <- result.try(
     case
       member.role == bundle.role
@@ -780,6 +796,7 @@ fn ledger_peers(
         )
     },
   )
+
   Ok(
     membership_ledger.pin_table(ledger, bundle.name)
     |> membership_ledger.peers
@@ -787,9 +804,7 @@ fn ledger_peers(
   )
 }
 
-// The plan's node rules already keep the other role's tables out. What is left
-// is that an orchestrator's executor rows name peers it trusts, which is the
-// rule `executors.from_document` applies to the file.
+/// Verifies that an orchestrator's configured executor nodes are recognized among trusted cluster peers.
 fn valid_role_tables(
   bundle: Bundle,
   nodes: List(String),
@@ -811,11 +826,12 @@ fn valid_role_tables(
   })
 }
 
-// The daemon's cookie rule, checked here so a bad cookie is found before it is
-// installed and not when the daemon refuses to start.
+/// Validates that the shared Erlang distribution cookie satisfies length and character bounds.
 fn valid_cookie(cookie: String) -> Result(Nil, String) {
   let allowed =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+
+  // Enforce cookie character set and byte size constraints.
   case
     string.byte_size(cookie) >= 16
     && string.byte_size(cookie) <= 128
@@ -829,6 +845,7 @@ fn valid_cookie(cookie: String) -> Result(Nil, String) {
   }
 }
 
+/// Cryptographically verifies that the CA, certificate, and private key chain together and match node identity.
 fn valid_credentials(bundle: Bundle) -> Result(Nil, String) {
   use names <- result.try(
     ffi_pki.inspect(bundle.ca, bundle.certificate, bundle.key)
@@ -851,6 +868,8 @@ fn valid_credentials(bundle: Bundle) -> Result(Nil, String) {
   // node name. The host has to be there too, or a peer's host name check
   // would refuse this node.
   let nodes = list.filter(names, string.contains(_, "@"))
+
+  // Ensure DNS names in certificate contain the expected Erlang node name and host.
   case nodes == [bundle.erlang_node], list.contains(names, bundle.host) {
     True, True -> Ok(Nil)
     False, _ ->

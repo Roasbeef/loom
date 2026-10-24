@@ -123,6 +123,7 @@ pub fn read_for_stored(
 
 // The action half of `read_for`, shared by the fused read and the stored
 // read so the two cannot disagree about what consent for one action means.
+/// Runs an operation under the authority associated with its action.
 fn with_action(
   opened: session.Session,
   standing: List(policy.Grant),
@@ -139,6 +140,8 @@ fn with_action(
     )
     |> result.map_error(fn(_) { "action permissions could not be read" }),
   )
+
+  // The selected permission action determines the authority lookup and update.
   case cell {
     None -> Ok(standing)
     Some(cell) -> {
@@ -154,6 +157,7 @@ fn with_action(
 
 // The session is the workspace authority. Within it, neither another tool
 // nor another strand may inherit consent to run the same arguments forever.
+/// Builds the stable key for a permission action.
 fn action_key(strand: String, tool_name: String, action: String) -> String {
   action_prefix
   <> escalate.action_digest(
@@ -284,6 +288,7 @@ pub fn remembering_action(
   approved: List(policy.Grant),
   provenance: Provenance,
 ) -> Result(api.ReservedFactChange, String) {
+  // The current remembered action determines whether the update is admitted.
   case approved {
     [policy.GrantLimit(policy.WallSeconds, 0)] -> {
       use action <- result.try(option.to_result(
@@ -354,6 +359,8 @@ pub fn read_stored(
     storage.get_register(opened.store, register.FactCustom, key)
     |> result.map_error(fn(_) { "session permissions could not be read" }),
   )
+
+  // The stored permission value determines the grants that can be reconstructed.
   case cell {
     None -> Ok([])
     Some(cell) -> decode(cell.value.payload)
@@ -373,6 +380,7 @@ pub fn decode(value: json.JsonValue) -> Result(List(policy.Grant), String) {
   Ok(list.unique(decoded))
 }
 
+/// Normalizes stored permission rows into validated grants.
 fn grants_from(value: json.JsonValue) -> Result(List(policy.Grant), String) {
   use value <- result.try(
     tool.optional_value(value, "grants")
@@ -380,10 +388,13 @@ fn grants_from(value: json.JsonValue) -> Result(List(policy.Grant), String) {
       option.to_result(value, "session permissions are missing grants")
     }),
   )
+
+  // The stored representation determines the normalized grant set.
   use encoded <- result.try(case value {
     json.Array(values) -> Ok(values)
     _ -> Error("session permissions must contain a grants array")
   })
+
   use decoded <- result.try(
     grants.decode_all(encoded)
     |> result.map_error(fn(_) { "session permission grant is malformed" }),
@@ -391,7 +402,9 @@ fn grants_from(value: json.JsonValue) -> Result(List(policy.Grant), String) {
   Ok(decoded)
 }
 
+/// Validates a permission action and its scope before storage.
 fn validate(grant: policy.Grant) -> Result(Nil, String) {
+  // The action and scope determine whether a permission grant is well formed.
   case grant {
     policy.GrantReadableRoot(path) | policy.GrantWritableRoot(path) -> {
       use <- bool.guard(
@@ -409,6 +422,7 @@ fn validate(grant: policy.Grant) -> Result(Nil, String) {
   }
 }
 
+/// Returns the canonical representation of a permission grant.
 fn canonical(path: String) -> Bool {
   string.starts_with(path, "/")
   && !list.any(string.split(path, "/"), fn(part) { part == "." || part == ".." })
@@ -434,6 +448,7 @@ pub fn revalidate(
   let filesystem = fs.real_filesystem()
   use _ <- result.try(
     list.try_map(values, fn(grant) {
+      // The current evidence determines whether a remembered grant remains usable.
       case grant {
         policy.GrantReadableRoot(path) | policy.GrantWritableRoot(path) -> {
           use current <- result.try(
@@ -486,10 +501,13 @@ pub fn remembering(
     api.fact_cell(runtime, key)
     |> result.map_error(fn(_) { "session permissions could not be read" }),
   )
+
+  // The existing grant state determines whether the permission may be remembered.
   use previous <- result.try(case cell {
     None -> Ok([])
     Some(cell) -> general_of(cell.value)
   })
+
   let kept =
     list.filter(previous, fn(row) { !list.contains(approved, row.grant) })
   let added =
@@ -507,6 +525,7 @@ pub fn remembering(
 
 // The general fact's payload: the union dispatch reads, the author the
 // earlier format kept, and a provenance row for each permission.
+/// Encodes general permission state for durable storage.
 fn encode_general(
   rows: List(Remembered),
   author: Option(message.Origin),
@@ -532,6 +551,7 @@ fn encode_general(
   ])
 }
 
+/// Extracts the authority that issued a provenance record.
 fn provenance_author(provenance: Provenance) -> Option(message.Origin) {
   case provenance {
     Approved(by:, ..) -> Some(by)
@@ -566,6 +586,7 @@ pub fn encode_provenance(provenance: Provenance) -> json.JsonValue {
   }
 }
 
+/// Encodes permission provenance through the selected authority path.
 fn encode_via(via: Via) -> json.JsonValue {
   case via {
     Login(fingerprint:) ->
@@ -592,10 +613,12 @@ fn encode_via(via: Via) -> json.JsonValue {
 /// ```
 pub fn decode_provenance(value: json.JsonValue) -> Provenance {
   let decoded = {
+    // The encoded provenance shape determines which authority source is represented.
     use fields <- result.try(case value {
       json.Object(fields) -> Ok(fields)
       _ -> Error(Nil)
     })
+
     use by <- result.try(
       origin.decode_field([
         #("origin", result.unwrap(list.key_find(fields, "by"), json.Null)),
@@ -603,17 +626,23 @@ pub fn decode_provenance(value: json.JsonValue) -> Provenance {
       |> result.replace_error(Nil)
       |> result.try(option.to_result(_, Nil)),
     )
+
+    // The encoded provenance shape determines which authority source is represented.
     use at_ms <- result.try(case list.key_find(fields, "at_ms") {
       Ok(json.Int(at)) if at >= 0 -> Ok(at)
       _ -> Error(Nil)
     })
+
+    // The encoded provenance shape determines which authority source is represented.
     case list.key_find(fields, "spawner") {
       Ok(json.String(spawner)) -> Ok(Spawner(spawner:, principal: by, at_ms:))
       _ -> {
+        // The encoded provenance shape determines which authority source is represented.
         use via <- result.map(case list.key_find(fields, "via") {
           Ok(json.Object(inner)) -> decode_via(inner)
           _ -> Error(Nil)
         })
+
         Approved(by:, via:, at_ms:)
       }
     }
@@ -621,6 +650,7 @@ pub fn decode_provenance(value: json.JsonValue) -> Provenance {
   result.unwrap(decoded, Unknown)
 }
 
+/// Decodes permission provenance from its selected authority path.
 fn decode_via(fields: List(#(String, json.JsonValue))) -> Result(Via, Nil) {
   case list.key_find(fields, "kind"), list.key_find(fields, "fingerprint") {
     Ok(json.String("login")), Ok(json.String(fingerprint)) ->
@@ -634,12 +664,16 @@ fn decode_via(fields: List(#(String, json.JsonValue))) -> Result(Via, Nil) {
 // The permissions of a general fact, each with the row that names it or
 // `Unknown` when no readable row does. A row for a permission the fact does not
 // hold is ignored: `grants` is the authority and the rows only annotate it.
+/// Resolves a general permission grant for the requested action.
 fn general_of(payload: json.JsonValue) -> Result(List(Remembered), String) {
   use granted <- result.try(decode(payload))
+
+  // The stored general grant determines the permission result for this action.
   let rows = case tool.optional_value(payload, "remembered") {
     Ok(Some(json.Array(rows))) -> rows
     Ok(Some(_)) | Ok(None) | Error(_) -> []
   }
+
   Ok(
     list.map(granted, fn(grant) {
       Remembered(grant:, provenance: provenance_for(grant, rows))
@@ -647,15 +681,18 @@ fn general_of(payload: json.JsonValue) -> Result(List(Remembered), String) {
   )
 }
 
+/// Resolves the permission provenance for the current caller.
 fn provenance_for(
   grant: policy.Grant,
   rows: List(json.JsonValue),
 ) -> Provenance {
   list.find_map(rows, fn(row) {
+    // The caller provenance determines which permission source applies.
     use fields <- result.try(case row {
       json.Object(fields) -> Ok(fields)
       _ -> Error(Nil)
     })
+
     use named <- result.try(list.key_find(fields, "grant"))
     use named <- result.try(grants.decode(named) |> result.replace_error(Nil))
     use <- bool.guard(named != grant, Error(Nil))
@@ -682,10 +719,13 @@ pub fn listing(runtime: api.Runtime) -> Result(Listing, String) {
     api.fact_cell(runtime, key)
     |> result.map_error(fn(_) { "session permissions could not be read" }),
   )
+
+  // The requested scope determines which remembered grants are listed.
   use general <- result.try(case cell {
     None -> Ok([])
     Some(cell) -> general_of(cell.value)
   })
+
   use actions <- result.map(action_cells(runtime))
   Listing(
     seq: option.map(cell, fn(cell) { cell.seq }),
@@ -694,6 +734,7 @@ pub fn listing(runtime: api.Runtime) -> Result(Listing, String) {
   )
 }
 
+/// Builds durable key-value rows for a permission action.
 fn action_cells(
   runtime: api.Runtime,
 ) -> Result(List(RememberedAction), String) {
@@ -762,6 +803,7 @@ pub fn forgetting(
   target: protocol.ForgetTarget,
   expected expected: Option(Seq),
 ) -> Result(List(api.ReservedFactEdit), Refusal) {
+  // The requested removal determines which stored grants are forgotten.
   case target {
     protocol.ForgetGrant(grant:) -> {
       use #(cell, rows) <- result.try(general_at(runtime, expected))
@@ -780,15 +822,19 @@ pub fn forgetting(
       use removals <- result.map(
         list.try_map(names, fn(name) { removal(runtime, name) }),
       )
+
+      // The requested removal determines which stored grants are forgotten.
       let general = case rows {
         [] -> []
         [_, ..] -> [general_edit(cell, [])]
       }
+
       list.append(general, list.flatten(removals))
     }
   }
 }
 
+/// Removes remembered permission state for one action.
 fn forget_action(
   runtime: api.Runtime,
   id: String,
@@ -803,6 +849,8 @@ fn forget_action(
     api.fact_cell(runtime, name)
     |> result.map_error(fn(_) { Failed("action permissions could not be read") }),
   )
+
+  // The action identity determines which remembered grant rows are removed.
   case cell {
     Some(cell) if cell.seq == seen ->
       Ok([api.ReservedFactRemove(key: name, expected: seen)])
@@ -812,6 +860,7 @@ fn forget_action(
 
 // The removal of one consent cell at the sequence it has now. A cell that has
 // gone since the names were listed has nothing left to remove.
+/// Determines whether the requested permission row can be removed.
 fn removal(
   runtime: api.Runtime,
   name: String,
@@ -820,6 +869,8 @@ fn removal(
     api.fact_cell(runtime, name)
     |> result.map_error(fn(_) { Failed("action permissions could not be read") }),
   )
+
+  // The stored permission row determines whether removal is authorized.
   case cell {
     Some(cell) -> [api.ReservedFactRemove(key: name, expected: cell.seq)]
     None -> []
@@ -829,12 +880,15 @@ fn removal(
 // The consent cell's key for an id the operator named. The id is the cell's
 // name under the prefix, which is lower-case hexadecimal; anything else cannot
 // name one, and a wire value must not be able to name another reserved cell.
+/// Returns the stable name of a permission action.
 fn action_name(id: String) -> Result(String, Refusal) {
   let hex = "0123456789abcdef"
   let valid =
     id != ""
     && string.byte_size(id) <= 128
     && list.all(string.to_graphemes(id), fn(char) { string.contains(hex, char) })
+
+  // The action variant determines its stable display name.
   case valid {
     True -> Ok(action_prefix <> id)
     False -> Error(Failed("that is not a remembered action"))
@@ -842,6 +896,7 @@ fn action_name(id: String) -> Result(String, Refusal) {
 }
 
 // The general fact as the operator saw it, or `Stale` when it has moved.
+/// Checks whether a general permission remains valid at the given time.
 fn general_at(
   runtime: api.Runtime,
   expected: Option(Seq),
@@ -856,6 +911,8 @@ fn general_at(
     option.map(cell, fn(cell) { cell.seq }) != expected,
     Error(Stale),
   )
+
+  // The current time and grant expiry determine whether general permission is active.
   case cell {
     None -> Ok(#(None, []))
     Some(found) ->
@@ -867,6 +924,7 @@ fn general_at(
 
 // Rewrites the general fact to the permissions that remain, guarded by the
 // sequence it was read at.
+/// Updates general permission state under the selected action.
 fn general_edit(
   cell: Option(api.FactCell),
   remaining: List(Remembered),
@@ -970,6 +1028,8 @@ pub fn withdraw_spawner_grants(
         Approved(..) | Unknown -> False
       }
     })
+
+  // The spawner identity determines which delegated grants are withdrawn.
   case withdrawn {
     [] -> Ok([])
     _ ->
@@ -995,6 +1055,8 @@ pub fn forgetting_for_spawner(
   grant: policy.Grant,
 ) -> Result(List(api.ReservedFactEdit), Refusal) {
   use #(cell, rows) <- result.try(general_now(runtime))
+
+  // The spawner identity determines which remembered grants can be removed.
   case list.find(rows, fn(row) { row.grant == grant }) {
     Ok(Remembered(provenance: Spawner(spawner: from, ..), ..))
       if from == spawner
@@ -1007,6 +1069,7 @@ pub fn forgetting_for_spawner(
 }
 
 // The general fact as it is now, with the rows it holds.
+/// Checks general permission state against the current clock.
 fn general_now(
   runtime: api.Runtime,
 ) -> Result(#(Option(api.FactCell), List(Remembered)), Refusal) {
@@ -1016,6 +1079,8 @@ fn general_now(
       Failed("session permissions could not be read")
     }),
   )
+
+  // The current time determines whether an unexpired general grant is usable.
   case cell {
     None -> Ok(#(None, []))
     Some(found) ->

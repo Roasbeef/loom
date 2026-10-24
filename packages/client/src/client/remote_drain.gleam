@@ -129,9 +129,12 @@ pub fn pass(
   logger: Logger,
 ) -> fn() -> Backlog {
   fn() {
+    // This match resolves runtime() before the surrounding protocol step continues.
+    // This match resolves runtime() before the enclosing validation continues.
     case runtime() {
       Error(Nil) -> owed
       Ok(open) ->
+        // This match resolves remote_child.all(open) before the surrounding protocol step continues.
         case remote_child.all(open) {
           Error(reason) -> {
             log.warn(logger, "remote_drain.unreadable", [
@@ -152,7 +155,10 @@ pub fn pass(
   }
 }
 
+/// Owed if either keeps this client operation’s decoding or state decision in one place.
 fn owed_if_either(first: Backlog, second: Backlog) -> Backlog {
+  // This match resolves first, second before the surrounding protocol step continues.
+  // This match resolves first, second before the enclosing validation continues.
   case first, second {
     Clear, Clear -> Clear
     Owed(_), _ | _, Owed(_) -> owed
@@ -167,6 +173,7 @@ fn owed_if_either(first: Backlog, second: Backlog) -> Backlog {
 // deadline, sends the box nothing more to say. An orchestrator that a stub names
 // and the roster no longer lists is voted for as well, so a vote is never
 // withheld from a child that may still be running.
+/// Vote keeps this client operation’s decoding or state decision in one place.
 fn vote(reach: Reach, kept: List(Kept), time: Clock) -> Nil {
   let #(now, _clock) = clock.read(time)
   let holding =
@@ -177,6 +184,8 @@ fn vote(reach: Reach, kept: List(Kept), time: Clock) -> Nil {
   list.append(reach.orchestrators, holding)
   |> list.unique
   |> list.each(fn(name) {
+    // This match resolves list.contains(holding, name) before the surrounding protocol step continues.
+    // This match resolves list.contains(holding, name) before the enclosing validation continues.
     case list.contains(holding, name) {
       True -> reach.keep(name, remote_reach.Hold)
       False -> reach.keep(name, remote_reach.Drop)
@@ -190,6 +199,7 @@ fn vote(reach: Reach, kept: List(Kept), time: Clock) -> Nil {
 // the orchestrators that did not answer, which the join step skips as well. The
 // stub list was read once by `pass`, which owes `Owed` when it cannot be read:
 // the stubs may exist, and the next pass reads again.
+/// Spawn pass keeps this client operation’s decoding or state decision in one place.
 fn spawn_pass(
   runtime: api.Runtime,
   reach: Reach,
@@ -210,6 +220,7 @@ fn spawn_pass(
 // and marks the orchestrator silent for the rest of the pass. A store that would
 // not take the record leaves the stub pending too, since the answer is not lost,
 // only unrecorded, and asking again returns it.
+/// Attempt spawn keeps this client operation’s decoding or state decision in one place.
 fn attempt_spawn(
   runtime: api.Runtime,
   reach: Reach,
@@ -220,6 +231,9 @@ fn attempt_spawn(
 ) -> #(Backlog, List(String)) {
   let silent = so_far.1
   let stub = entry.stub
+
+  // This match resolves list.contains(silent, stub.orchestrator) before the surrounding protocol step continues.
+  // This match resolves list.contains(silent, stub.orchestrator) before the enclosing validation continues.
   case list.contains(silent, stub.orchestrator) {
     True -> #(owed, silent)
     False ->
@@ -268,6 +282,7 @@ fn attempt_spawn(
 // What the pass owes after one write to a stub: `if_written` when the store took
 // it, and `Owed` when it did not, since the report the write carried is not lost
 // and asking again returns it.
+/// Recorded keeps this client operation’s decoding or state decision in one place.
 fn recorded(
   stored: Result(remote_child.Stub, String),
   logger: Logger,
@@ -275,6 +290,8 @@ fn recorded(
   entry: Kept,
   if_written: Backlog,
 ) -> Backlog {
+  // This match resolves stored before the surrounding protocol step continues.
+  // This match resolves stored before the enclosing validation continues.
   case stored {
     Ok(_) -> {
       log.info(logger, event, where(entry))
@@ -299,6 +316,7 @@ fn recorded(
 // next pass asks after it. The orchestrators the spawn step found silent are not
 // asked again. A pass that leaves any child running is `Owed`, which is what
 // keeps the drainer ticking while a child runs and stops it when none does.
+/// Join pass keeps this client operation’s decoding or state decision in one place.
 fn join_pass(
   runtime: api.Runtime,
   reach: Reach,
@@ -320,9 +338,13 @@ fn join_pass(
 // deadline has not passed. A `Requested` stub is the spawn step's, and a child
 // past its deadline needs no asking: its slot is free by the clock and
 // `agent_wait` reads its outcome.
+/// Running keeps this client operation’s decoding or state decision in one place.
 fn running(entry: Kept, now: Int) -> Result(#(Kept, Handle), Nil) {
+  // This match resolves entry.stub.state before the surrounding protocol step continues.
+  // This match resolves entry.stub.state before the enclosing validation continues.
   case entry.stub.state {
     remote_child.Spawned(placed:) ->
+      // This match resolves remote_child.is_live(entry.stub, now) before the surrounding protocol step continues.
       case remote_child.is_live(entry.stub, now) {
         True -> Ok(#(entry, placed.handle))
         False -> Error(Nil)
@@ -331,6 +353,7 @@ fn running(entry: Kept, now: Int) -> Result(#(Kept, Handle), Nil) {
     // A child that finished and whose orchestrator still holds mail it sent is
     // asked about again, to learn when the mail has been delivered.
     remote_child.Settled(placed:, ..) ->
+      // This match resolves remote_child.owes_mail(entry.stub, now) before the surrounding protocol step continues.
       case remote_child.owes_mail(entry.stub, now) {
         True -> Ok(#(entry, placed.handle))
         False -> Error(Nil)
@@ -342,6 +365,7 @@ fn running(entry: Kept, now: Int) -> Result(#(Kept, Handle), Nil) {
 // The running children grouped by the orchestrator they run on and the parent
 // strand that asked, because a `Join` names one parent and the receiver judges
 // the handles against it.
+/// By parent keeps this client operation’s decoding or state decision in one place.
 fn by_parent(
   children: List(#(Kept, Handle)),
 ) -> List(#(#(String, String), List(#(Kept, Handle)))) {
@@ -355,6 +379,7 @@ fn by_parent(
 // and leaves its children owed. A refusal is definitive: the orchestrator will
 // not report these children, and their deadlines release the slots, so it is
 // logged and not retried within the pass.
+/// Join group keeps this client operation’s decoding or state decision in one place.
 fn join_group(
   runtime: api.Runtime,
   reach: Reach,
@@ -364,6 +389,9 @@ fn join_group(
 ) -> #(Backlog, List(String)) {
   let #(#(orchestrator, strand), children) = group
   let #(backlog, silent) = so_far
+
+  // This match resolves list.contains(silent, orchestrator) before the surrounding protocol step continues.
+  // This match resolves list.contains(silent, orchestrator) before the enclosing validation continues.
   case list.contains(silent, orchestrator) {
     True -> #(owed, silent)
     False ->
@@ -399,6 +427,7 @@ fn join_group(
 // reported it pending, said nothing of it, or the settling could not be
 // recorded. The step is a compare-and-set, so a wait that settled the same child
 // first leaves this write agreeing with it.
+/// Settle all keeps this client operation’s decoding or state decision in one place.
 fn settle_all(
   runtime: api.Runtime,
   logger: Logger,
@@ -407,6 +436,9 @@ fn settle_all(
 ) -> Backlog {
   list.fold(children, Clear, fn(backlog, child) {
     let #(entry, handle) = child
+
+    // This match resolves finished(joined, handle) before the surrounding protocol step continues.
+    // This match resolves finished(joined, handle) before the enclosing validation continues.
     case finished(joined, handle) {
       // A finished child whose orchestrator still holds mail it sent keeps the
       // pass owed, so the next pass asks again and the connection stays up.
@@ -424,6 +456,7 @@ fn settle_all(
             logger,
             "remote_drain.settled",
             entry,
+            // This match resolves undelivered > 0 before the surrounding protocol step continues.
             case undelivered > 0 {
               True -> owed
               False -> Clear
@@ -437,11 +470,14 @@ fn settle_all(
 
 // The outcome, the cost and the count of undelivered messages a join reports for
 // one handle, when it reports that child finished.
+/// Finished keeps this client operation’s decoding or state decision in one place.
 fn finished(
   joined: List(Joined),
   handle: Handle,
 ) -> Result(#(Outcome, ChildUsage, Int), Nil) {
   list.find_map(joined, fn(entry) {
+    // This match resolves entry before the surrounding protocol step continues.
+    // This match resolves entry before the enclosing validation continues.
     case entry {
       remote_spawn.Ready(handle: found, outcome:, usage:, owed:, ..)
         if found == handle
@@ -457,12 +493,15 @@ fn finished(
 // rows it answered. The orchestrators the earlier steps found silent are not
 // asked again, and one that goes silent here is passed on. A row that cannot be
 // read leaves the pass owed: the rows may exist, and the next pass reads again.
+/// Send pass keeps this client operation’s decoding or state decision in one place.
 fn send_pass(
   runtime: api.Runtime,
   reach: Reach,
   logger: Logger,
   silent: List(String),
 ) -> #(Backlog, List(String)) {
+  // This match resolves remote_send.all(runtime) before the surrounding protocol step continues.
+  // This match resolves remote_send.all(runtime) before the enclosing validation continues.
   case remote_send.all(runtime) {
     Error(reason) -> {
       log.warn(logger, "remote_drain.sends_unreadable", [
@@ -483,6 +522,7 @@ fn send_pass(
 // and marks the orchestrator silent for the rest of the pass. A row that cannot
 // be removed stays, and the next pass sends again and is answered from the
 // receipt.
+/// Attempt send keeps this client operation’s decoding or state decision in one place.
 fn attempt_send(
   runtime: api.Runtime,
   reach: Reach,
@@ -491,6 +531,9 @@ fn attempt_send(
   so_far: #(Backlog, List(String)),
 ) -> #(Backlog, List(String)) {
   let #(backlog, silent) = so_far
+
+  // This match resolves list.contains(silent, row.orchestrator) before the surrounding protocol step continues.
+  // This match resolves list.contains(silent, row.orchestrator) before the enclosing validation continues.
   case list.contains(silent, row.orchestrator) {
     True -> #(owed, silent)
     False ->
@@ -519,12 +562,15 @@ fn attempt_send(
   }
 }
 
+/// Settled send keeps this client operation’s decoding or state decision in one place.
 fn settled_send(
   runtime: api.Runtime,
   logger: Logger,
   row: remote_send.Row,
   backlog: Backlog,
 ) -> Backlog {
+  // This match resolves remote_send.settle(runtime, row.id) before the surrounding protocol step continues.
+  // This match resolves remote_send.settle(runtime, row.id) before the enclosing validation continues.
   case remote_send.settle(runtime, row.id) {
     Ok(Nil) -> {
       log.info(logger, "remote_drain.sent", [
@@ -543,6 +589,7 @@ fn settled_send(
   }
 }
 
+/// Where keeps this client operation’s decoding or state decision in one place.
 fn where(entry: Kept) -> List(field.Field) {
   [
     field.text("orchestrator", entry.stub.orchestrator),

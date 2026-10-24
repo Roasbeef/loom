@@ -174,6 +174,7 @@ pub fn capped(
   authority: access.Authority,
   ceiling: access.Role,
 ) -> access.Authority {
+  // This branch resolves authority ceiling before the operation continues.
   case authority, ceiling {
     _, access.Observer -> access.Participant(access.Observer)
     access.Participant(access.Observer), access.Operator ->
@@ -202,6 +203,7 @@ pub fn while_open(
   open: fn() -> Result(Nil, Nil),
 ) -> fn() -> Result(answer, String) {
   fn() {
+    // This branch resolves open before the operation continues.
     case open() {
       Ok(Nil) -> check()
       Error(Nil) -> Error(ending.reason(ending.PageEnded))
@@ -246,6 +248,8 @@ pub fn start(
     |> actor.on_message(handle)
     |> actor.unlinked
     |> actor.start
+
+  // Branch on whether the actor process started successfully or failed early.
   case started {
     Ok(_) -> Nil
 
@@ -258,10 +262,9 @@ pub fn start(
   }
 }
 
-// Attaches in the relay's own process, so the pid the gateway monitors as
-// the attachment's socket is the relay's. The binding and every later check
-// carry the capped role.
+/// Performs the initial gateway attachment in the relay process and transitions to State.
 fn attached(state: State) -> actor.Next(State, Message) {
+  // Branch on whether the relay is in initial Waiting state or already running.
   case state {
     State(..) -> actor.continue(state)
     Waiting(attach:, self:, component:, inbox:, opened:, ended:) -> {
@@ -282,6 +285,8 @@ fn attached(state: State) -> actor.Next(State, Message) {
           fn(reply) { process.send(self, Flush(reply)) },
           process.self(),
         )
+
+      // Branch on gateway attach success to install monitors or close the lane.
       case connection {
         // The gateway refused the attach. The page is told the ending, not
         // the gateway's words, both through `opened`, which the component
@@ -354,7 +359,9 @@ pub fn pid(relay: Relay) -> Result(process.Pid, Nil) {
   process.subject_owner(relay.subject)
 }
 
+/// Handles inbound messages from websocket, component, and gateway monitors.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // This branch resolves state message before the operation continues.
   case state, message {
     _, Attaching -> attached(state)
 
@@ -376,6 +383,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       Transmit(frame:)
     -> {
       let started = bootstrap.monotonic_time_ms()
+
+      // Transmit the request frame to the gateway and route the reply to inbox.
       case gateway.connection_request(connection, frame) {
         Ok(reply) -> {
           process.send(inbox, connection_event.Incoming(reply))
@@ -435,25 +444,18 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-// Why the gateway ended the attachment. It ended it because the attachment's
-// `check` refused, and the gateway does not say what the check said, so the
-// relay asks again. A UI session that is gone answers with the page's own
-// ending, and any other refusal (a credential that no longer authenticates,
-// a membership that is gone) is a revoked access. A check that still passes
-// with a different capped authority is a role change, also revoked access.
-// One that passes with the authority the attach held means the gateway closed
-// for a reason of its own (its snapshot reader failed and the incarnation is
-// stopping), or the request failed for another reason, and `unchanged` says
-// which the caller saw. The check reads the page's authorization and changes
-// nothing, and this runs once, as the relay ends.
+/// Diagnoses gateway termination cause by probing current authorization status.
 fn diagnosed(state: State, unchanged unchanged: Ending) -> Ending {
+  // This branch resolves state before the operation continues.
   case state {
     Waiting(..) -> unchanged
     State(check:, held:, ceiling:, ..) ->
+      // This branch resolves check before the operation continues.
       case check() {
         Error(reason) ->
           ending.from_reason(reason, otherwise: ending.AccessRevoked)
         Ok(#(_, current)) ->
+          // This branch resolves capped current ceiling held before the operation continues.
           case capped(current, ceiling) == held {
             True -> unchanged
             False -> ending.AccessRevoked
@@ -462,9 +464,9 @@ fn diagnosed(state: State, unchanged unchanged: Ending) -> Ending {
   }
 }
 
-// The relay's last message to the page, in the reason string the session
-// engine carries and the page's component reads back as the same ending.
+/// Terminates the relay actor, notifies the page inbox, and logs the closure reason.
 fn end(state: State, why: Ending, cause: String) -> actor.Next(State, Message) {
+  // Branch on relay lifecycle state to perform gateway detach if running.
   case state {
     Waiting(..) -> actor.stop()
     State(connection:, inbox:, ended:, session_id:, connection_id:, ..) -> {

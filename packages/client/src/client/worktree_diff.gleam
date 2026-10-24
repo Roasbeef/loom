@@ -273,6 +273,7 @@ pub fn capture_since(wiring: Wiring, start: Start) -> Result(Board, Error) {
   capture_status(capture, start, observed_at_ms)
 }
 
+/// Establishes new capture for the caller, keeping its validation and result policy at this boundary.
 fn new_capture(wiring: Wiring) -> #(Int, Capture) {
   let #(observed_at_ms, next_clock) = clock.read(wiring.clock)
   let #(op_id, _) = ids.mint_op(ids.generator(next_clock, wiring.entropy()))
@@ -311,6 +312,8 @@ pub fn starting_revision(wiring: Wiring) -> Start {
     use Nil <- result.try(complete(head))
     comparison(head)
   }
+
+  // Decide how to handle observed {.
   case observed {
     Ok(#(Head, revision)) -> Revision(revision)
     Ok(#(Unborn, _)) -> Empty
@@ -320,6 +323,7 @@ pub fn starting_revision(wiring: Wiring) -> Start {
   }
 }
 
+/// Establishes capture status for the caller, keeping its validation and result policy at this boundary.
 fn capture_status(
   capture: Capture,
   start: Start,
@@ -351,6 +355,7 @@ fn capture_status(
   }
 }
 
+/// Establishes capture repository for the caller, keeping its validation and result policy at this boundary.
 fn capture_repository(
   capture: Capture,
   status: Output,
@@ -402,6 +407,8 @@ fn capture_repository(
 // still prevents subsequent file reads from running beyond the observation.
 // On failure, reserve both possible calls' full stdout/stderr allowances because
 // an error does not return their partially consumed capture accounting.
+
+/// Establishes capture committed for the caller, keeping its validation and result policy at this boundary.
 fn capture_committed(
   capture: Capture,
   start: Start,
@@ -441,6 +448,7 @@ fn capture_committed(
   }
 }
 
+/// Establishes committed patch for the caller, keeping its validation and result policy at this boundary.
 fn committed_patch(
   capture: Capture,
   start: Start,
@@ -462,18 +470,23 @@ fn committed_patch(
   ))
   use Nil <- result.try(successful(output))
   use patch <- result.try(patch_text(output.stdout, output.extent))
+
+  // Decide how to handle let message =  patch {.
   let message = case patch {
     "" -> "No commits since session start"
     _ -> "Commits since session start · latest 24 at most"
   }
+
   Ok(#(capture, Committed(message, patch, output.extent)))
 }
 
+/// Establishes commit range for the caller, keeping its validation and result policy at this boundary.
 fn commit_range(
   capture: Capture,
   start: Start,
   head: String,
 ) -> Result(#(Capture, String), Error) {
+  // Decide how to handle start {.
   case start {
     Empty -> Ok(#(capture, head))
     Unavailable(reason) -> Error(Refused(reason))
@@ -499,6 +512,8 @@ fn commit_range(
 // `.blobs/` now. The exclude stays for workspaces an earlier release used,
 // whose old store is still on disk and would otherwise list every artifact
 // as an untracked file.
+
+/// Establishes capture untracked for the caller, keeping its validation and result policy at this boundary.
 fn capture_untracked(capture: Capture, prefix: String) {
   use #(capture, output) <- result.try(run_git(
     capture,
@@ -520,6 +535,8 @@ fn capture_untracked(capture: Capture, prefix: String) {
   use text <- result.try(
     bit_array.to_string(output.stdout) |> result.replace_error(InvalidOutput),
   )
+
+  // Decide how to handle text {.
   case text {
     "" -> Ok(#(capture, []))
     _ -> {
@@ -535,11 +552,15 @@ fn capture_untracked(capture: Capture, prefix: String) {
   }
 }
 
+/// Establishes comparison for the caller, keeping its validation and result policy at this boundary.
 fn comparison(output: Output) -> Result(#(Repository, String), Error) {
+  // Decide how to handle output.code {.
   case output.code {
     1 -> Ok(#(Unborn, ""))
     0 -> {
       use revision <- result.try(line_value(output.stdout))
+
+      // Decide how to handle valid_revision(revision) {.
       case valid_revision(revision) {
         True -> Ok(#(Head, revision))
         False -> Error(InvalidOutput)
@@ -565,6 +586,8 @@ fn valid_revision(revision: String) -> Bool {
 // from that census, counted in `omitted` and marked `Limited` like a
 // byte-bound one. Discarding the files already read would turn the large
 // workspace this bound exists for into a failed observation.
+
+/// Establishes capture files for the caller, keeping its validation and result policy at this boundary.
 fn capture_files(
   capture: Capture,
   identities: List(Identity),
@@ -595,6 +618,8 @@ fn capture_files(
 // execution failure, often a degraded one because the jail had not finished
 // reporting; the clock, not the settlement's wording, attributes it to the
 // deadline. An execution failure before the deadline is a real failure.
+
+/// Establishes unreached for the caller, keeping its validation and result policy at this boundary.
 fn unreached(capture: Capture, error: Error) -> Bool {
   case error {
     Deadline -> True
@@ -604,6 +629,7 @@ fn unreached(capture: Capture, error: Error) -> Bool {
   }
 }
 
+/// Establishes capture file for the caller, keeping its validation and result policy at this boundary.
 fn capture_file(
   capture: Capture,
   identity: Identity,
@@ -631,6 +657,8 @@ fn capture_file(
     Ok(#(capture, empty)),
   )
   let addition = repository == Unborn || identity.index_status == "?"
+
+  // Decide how to handle let arguments =  addition {.
   let arguments = case addition {
     True ->
       list.append(diff_arguments(), [
@@ -638,16 +666,22 @@ fn capture_file(
       ])
     False -> list.append(diff_arguments(), [revision, "--", identity.path])
   }
+
   use #(capture, output) <- result.try(run_git(
     capture,
     arguments,
     patch_byte_limit,
   ))
+
+  // Decide how to handle use Nil <- result.try( output.code, addition {.
   use Nil <- result.try(case output.code, addition {
     0, _ | 1, True -> Ok(Nil)
     code, _ -> Error(GitFailed(code, diagnostic(output.stderr)))
   })
+
   use patch <- result.try(patch_text(output.stdout, output.extent))
+
+  // Decide how to handle let kind =  patch {.
   let kind = case patch {
     "" -> NoNetChange
     _ ->
@@ -656,9 +690,11 @@ fn capture_file(
         False -> Text
       }
   }
+
   Ok(#(capture, File(..empty, patch:, kind:, extent: output.extent)))
 }
 
+/// Establishes diff arguments for the caller, keeping its validation and result policy at this boundary.
 fn diff_arguments() -> List(String) {
   [
     "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames",
@@ -698,6 +734,7 @@ pub fn observation_limits(
   )
 }
 
+/// Establishes run git for the caller, keeping its validation and result policy at this boundary.
 fn run_git(
   capture: Capture,
   arguments: List(String),
@@ -774,6 +811,8 @@ fn run_git(
 // reaches the broker, which refuses the reservation; that refusal is the
 // capture's own deadline, not a policy decision, and a patch call meeting
 // it must omit its file like one the guard refused.
+
+/// Establishes clearance error for the caller, keeping its validation and result policy at this boundary.
 fn clearance_error(refusal: broker.Refusal) -> Error {
   case refusal {
     broker.BudgetRefused(budget.DeadlinePassed(_)) -> Deadline
@@ -787,7 +826,9 @@ fn clearance_error(refusal: broker.Refusal) -> Error {
   }
 }
 
+/// Establishes settled for the caller, keeping its validation and result policy at this boundary.
 fn settled(collected: tool.Collected) -> Result(Output, Error) {
+  // Decide how to handle collected.outcome {.
   case collected.outcome {
     broker.CallFailed(failure) ->
       Error(ExecutionFailed(string.inspect(failure)))
@@ -796,6 +837,8 @@ fn settled(collected: tool.Collected) -> Result(Output, Error) {
         report.cancelled || report.timed_out,
         Error(ExecutionFailed("Git did not complete before cancellation")),
       )
+
+      // Decide how to handle let extent =.
       let extent = case
         collected.stdout_truncated
         || collected.stderr_truncated
@@ -805,6 +848,7 @@ fn settled(collected: tool.Collected) -> Result(Output, Error) {
         True -> Limited
         False -> Complete
       }
+
       Ok(Output(report.code, collected.stdout, collected.stderr, extent))
     }
   }
@@ -839,6 +883,7 @@ pub fn read_policy(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
   )
 }
 
+/// Establishes git environment for the caller, keeping its validation and result policy at this boundary.
 fn git_environment(
   environment: List(#(String, String)),
   allowed: List(String),
@@ -884,6 +929,7 @@ pub fn decode_status(
   })
 }
 
+/// Establishes parse status for the caller, keeping its validation and result policy at this boundary.
 fn parse_status(
   bytes: BitArray,
   prefix: String,
@@ -891,6 +937,8 @@ fn parse_status(
   use text <- result.try(
     bit_array.to_string(bytes) |> result.replace_error(InvalidOutput),
   )
+
+  // Decide how to handle text {.
   case text {
     "" -> Ok([])
     _ -> {
@@ -903,7 +951,9 @@ fn parse_status(
   }
 }
 
+/// Establishes status identity for the caller, keeping its validation and result policy at this boundary.
 fn status_identity(record: String, prefix: String) -> Result(Identity, Error) {
+  // Decide how to handle bit_array.from_string(record) {.
   case bit_array.from_string(record) {
     <<index:8, working:8, 32:8, raw_path:bits>> -> {
       use path <- result.try(
@@ -932,6 +982,7 @@ fn status_identity(record: String, prefix: String) -> Result(Identity, Error) {
   }
 }
 
+/// Establishes status character for the caller, keeping its validation and result policy at this boundary.
 fn status_character(byte: Int) -> Result(String, Error) {
   case byte {
     32 -> Ok(" ")
@@ -945,6 +996,7 @@ fn status_character(byte: Int) -> Result(String, Error) {
   }
 }
 
+/// Establishes valid path for the caller, keeping its validation and result policy at this boundary.
 fn valid_path(path: String) -> Bool {
   path != ""
   && !string.starts_with(path, "/")
@@ -953,16 +1005,20 @@ fn valid_path(path: String) -> Bool {
   })
 }
 
+/// Establishes line value for the caller, keeping its validation and result policy at this boundary.
 fn line_value(bytes: BitArray) -> Result(String, Error) {
   use text <- result.try(
     bit_array.to_string(bytes) |> result.replace_error(InvalidOutput),
   )
+
+  // Decide how to handle string.ends_with(text, "\n") {.
   case string.ends_with(text, "\n") {
     True -> Ok(string.drop_end(text, 1))
     False -> Error(InvalidOutput)
   }
 }
 
+/// Establishes patch text for the caller, keeping its validation and result policy at this boundary.
 fn patch_text(bytes: BitArray, extent: Extent) -> Result(String, Error) {
   case extent {
     Complete ->
@@ -971,6 +1027,7 @@ fn patch_text(bytes: BitArray, extent: Extent) -> Result(String, Error) {
   }
 }
 
+/// Establishes utf8 prefix for the caller, keeping its validation and result policy at this boundary.
 fn utf8_prefix(
   bytes: BitArray,
   size: Int,
@@ -1007,7 +1064,9 @@ fn diagnostic(bytes: BitArray) -> String {
   |> string.slice(0, 512)
 }
 
+/// Establishes fit board for the caller, keeping its validation and result policy at this boundary.
 fn fit_board(board: Board, files: List(File)) -> Board {
+  // Decide how to handle files {.
   case files {
     [] -> board_extent(board)
     [file, ..rest] -> {
@@ -1018,6 +1077,8 @@ fn fit_board(board: Board, files: List(File)) -> Board {
           omitted: board.omitted - 1,
         )
         |> board_extent
+
+      // Decide how to handle transfer.encoded_size(to_json(candidate), board_byte_limit) {.
       case transfer.encoded_size(to_json(candidate), board_byte_limit) {
         Ok(_) -> fit_board(candidate, rest)
         Error(_) -> Board(..board, extent: Limited)
@@ -1026,6 +1087,7 @@ fn fit_board(board: Board, files: List(File)) -> Board {
   }
 }
 
+/// Establishes board extent for the caller, keeping its validation and result policy at this boundary.
 fn board_extent(board: Board) -> Board {
   let limited =
     board.omitted > 0
@@ -1071,6 +1133,7 @@ pub fn to_json(board: Board) -> json.JsonValue {
   ])
 }
 
+/// Establishes file json for the caller, keeping its validation and result policy at this boundary.
 fn file_json(file: File) -> json.JsonValue {
   json.Object([
     #("path", json.String(file.path)),
@@ -1152,11 +1215,14 @@ pub fn peer_observation(wiring: Wiring) -> json.JsonValue {
       4096,
     ))
     use Nil <- result.try(complete(branch))
+
+    // Decide how to handle use branch <- result.try( branch.code, branch.stdout, branch.stderr {.
     use branch <- result.try(case branch.code, branch.stdout, branch.stderr {
       0, stdout, _ -> line_value(stdout)
       1, <<>>, <<>> -> Ok("")
       code, _, stderr -> Error(GitFailed(code, diagnostic(stderr)))
     })
+
     Ok(
       json.Object([
         #("repository_root", json.String(root)),

@@ -456,12 +456,14 @@ pub fn close(owner: Live, waiting: Int) -> Result(Nil, store.Refusal) {
 // Every tool-shaped call goes through here. The lease is returned after the
 // work, and a holder that dies instead is found by the owner's monitor, so
 // the work itself needs no cleanup path.
+/// Runs caller work while holding a generation lease, then returns that lease to the owner.
 fn leased(
   owner: Live,
   waiting: Int,
   refused: fn(Denial) -> a,
   work: fn(Granted) -> a,
 ) -> a {
+  // The lease result decides whether to refuse the call or run it under custody.
   case lease(owner, waiting) {
     Error(denial) -> refused(denial)
     Ok(granted) -> {
@@ -476,9 +478,12 @@ fn leased(
 // it. A grant that crosses the caller's timeout is returned here rather than
 // held until the caller exits, and a request still queued behind a
 // replacement is refused as expired when its turn comes.
+/// Requests a bounded lease and returns a grant that crosses the caller timeout to the owner.
 fn lease(owner: Live, waiting: Int) -> Result(Granted, Denial) {
   let id = reference.new()
   let #(now, _) = clock.read(owner.clock)
+
+  // A timeout returns the outstanding request instead of leaving its grant unowned.
   case
     call.try_call(owner.subject, waiting:, sending: fn(reply) {
       Lease(id, process.self(), now + waiting, reply)
@@ -506,6 +511,7 @@ fn usable(granted: Granted) -> Option(Generation) {
 // One notice at a time, in arrival order, each under its own lease. A notice
 // that cannot be admitted, or whose generation no longer validates, is
 // dropped, as it was when the owner ran notices inline.
+/// Processes one notice at a time under a lease so replacement cannot overtake active hook work.
 fn notify(
   runner: Live,
   message: Notification,
@@ -518,10 +524,12 @@ fn notify(
         Error(Expired) | Error(Retained) | Error(Silent) ->
           actor.continue(runner)
         Ok(granted) -> {
+          // The notice is either stopped, dropped, or run under a validated generation lease.
           case granted.validation {
             Ok(Nil) -> work(granted.active)
             Error(_) -> Nil
           }
+
           process.send(runner.subject, Release(granted.id))
           actor.continue(runner)
         }
@@ -529,11 +537,13 @@ fn notify(
   }
 }
 
+/// Applies lease, replacement, retirement, and recovery messages to the owner state machine.
 fn handle(
   phase: Phase,
   state: State,
   message: Message,
 ) -> sm.Next(Phase, State, Message) {
+  // Dispatch each owner message to the transition that preserves its custody rules.
   case message {
     Lease(id, holder, expires, reply) ->
       leasing(phase, state, id, holder, expires, reply)
@@ -544,10 +554,12 @@ fn handle(
       released(state, remaining)
     }
     Abandoned(down) -> {
+      // Dispatch each owner message to the transition that preserves its custody rules.
       let monitor = case down {
         process.ProcessDown(monitor:, ..) | process.PortDown(monitor:, ..) ->
           monitor
       }
+
       released(
         state,
         list.filter(state.leases, fn(held) { held.monitor != monitor }),
@@ -561,11 +573,13 @@ fn handle(
       })
     Close(reply) -> replacing(state, fn(state) { closing(state, reply) })
     Catalogue(reply) -> {
+      // Dispatch each owner message to the transition that preserves its custody rules.
       let answer = case state.held, state.pending {
         [], [] -> Ok(state.active)
         _, [_, ..] | [_, ..], [] ->
           Error(cleanup_refusal("generation custody remains", state.held))
       }
+
       process.send(reply, answer)
       sm.keep(state)
     }
@@ -587,6 +601,7 @@ fn handle(
 // revalidates the active generation, because the lease promises the caller a
 // generation that is still approved, and it monitors the holder so that a
 // caller which dies mid-call cannot keep a replacement waiting forever.
+/// Admits leases only while open and postpones them while a replacement drains existing calls.
 fn leasing(
   phase: Phase,
   state: State,
@@ -595,10 +610,13 @@ fn leasing(
   expires: Int,
   reply: Subject(Result(Granted, Denial)),
 ) -> sm.Next(Phase, State, Message) {
+  // Only an open phase admits a lease; draining postpones requests until replacement settles.
   case phase {
     Draining -> sm.keep(state) |> sm.postpone
     Open -> {
       let #(next, validation) = validate_active(state)
+
+      // Only an open phase admits a lease; draining postpones requests until replacement settles.
       let admission = case
         expired(next.config.clock, expires),
         next.held,
@@ -608,6 +626,8 @@ fn leasing(
         False, [], [] -> Ok(Granted(id:, active: next.active, validation:))
         False, _, _ -> Error(Retained)
       }
+
+      // Only an open phase admits a lease; draining postpones requests until replacement settles.
       let admitted = case admission {
         Ok(_) ->
           State(..next, leases: [
@@ -616,6 +636,7 @@ fn leasing(
           ])
         Error(_) -> next
       }
+
       process.send(reply, admission)
       sm.keep(admitted)
     }
@@ -626,11 +647,14 @@ fn leasing(
 // `Open` when the ledger empties is the moment postponed activations and
 // leases replay, in the order they arrived; from `Open` it is not a state
 // change, so it replays nothing.
+/// Updates the lease ledger and reopens the machine when the final holder leaves.
 fn released(
   state: State,
   leases: List(Held),
 ) -> sm.Next(Phase, State, Message) {
   let next = State(..state, leases:)
+
+  // This branch resolves the released operation while preserving generation custody.
   case leases {
     [] -> sm.transition(to: Open, data: next)
     [_, ..] -> sm.keep(next)
@@ -640,6 +664,7 @@ fn released(
 // A replacement or retirement must not overlap a call that holds a
 // generation. With leases outstanding the message is postponed and the
 // machine starts to drain; otherwise it runs at once.
+/// Waits for every active lease before starting a generation replacement or retirement.
 fn replacing(
   state: State,
   replace: fn(State) -> sm.Next(Phase, State, Message),
@@ -650,6 +675,7 @@ fn replacing(
   }
 }
 
+/// Retires active and pending generations, stopping only after cleanup is confirmed.
 fn closing(
   state: State,
   reply: Subject(Result(Nil, store.Refusal)),
@@ -676,7 +702,10 @@ fn closing(
     _, [_, ..] | [_, ..], [] ->
       Error(cleanup_refusal("native retirement did not confirm", unconfirmed))
   }
+
   process.send(reply, answer)
+
+  // This branch resolves the closing operation while preserving generation custody.
   case answer {
     Ok(Nil) -> sm.stop()
     Error(_) ->
@@ -684,6 +713,7 @@ fn closing(
   }
 }
 
+/// Stages a replacement only when custody is clean and the request has not expired.
 fn changing(
   state: State,
   transition: Transition,
@@ -721,6 +751,7 @@ fn changing(
   }
 }
 
+/// Checks a staged generation deadline before retiring its predecessor or discarding it.
 fn staged(
   state: State,
   transition: Transition,
@@ -737,15 +768,19 @@ fn staged(
   }
 }
 
+/// Retires the predecessor before committing the staged generation and records failed cleanup.
 fn retiring(
   state: State,
   transition: Transition,
   candidate: Generation,
 ) -> #(State, Result(record.Selection, store.Refusal)) {
+  // This branch resolves the retiring operation while preserving generation custody.
   let retired = case state.active {
     None -> Ok(Nil)
     Some(previous) -> retirement.perform(previous.retire)
   }
+
+  // This branch resolves the retiring operation while preserving generation custody.
   case retired {
     Error(failed) -> {
       let held =
@@ -774,6 +809,7 @@ fn retiring(
   }
 }
 
+/// Publishes a successfully committed selection or recovers the previous generation on failure.
 fn committed(
   state: State,
   transition: Transition,
@@ -793,6 +829,7 @@ fn committed(
   }
 }
 
+/// Completes adoption after central selection commits, retaining the candidate if audit fails.
 fn published(
   state: State,
   _transition: Transition,
@@ -811,6 +848,7 @@ fn published(
   }
 }
 
+/// Discards a prepared generation while preserving any cleanup refusal in owner custody.
 fn discard(
   state: State,
   candidate: Generation,
@@ -821,11 +859,13 @@ fn discard(
 
 // Internal generation custody stays in `held`; only a foreign refusal belongs
 // in `pending`. Removing the prepared successor must preserve that distinction.
+/// Removes a prepared generation and records any failed retirement as held custody.
 fn discard_owned(
   state: State,
   candidate: Generation,
   reason: store.Refusal,
 ) -> #(State, Result(record.Selection, store.Refusal)) {
+  // This branch resolves the discard_owned operation while preserving generation custody.
   case retirement.perform(candidate.retire) {
     Ok(Nil) -> #(state, Error(reason))
     Error(cleanup) -> {
@@ -835,6 +875,7 @@ fn discard_owned(
   }
 }
 
+/// Dispatches a tool call only when an active approved generation exists.
 fn invoked(
   active: Option(Generation),
   id: String,
@@ -849,6 +890,7 @@ fn invoked(
   }
 }
 
+/// Checks the discovered candidate identity and generation before resolving its declared tool.
 fn invoke_exact(
   current: Generation,
   id: String,
@@ -872,6 +914,7 @@ fn invoke_exact(
   }
 }
 
+/// Tests whether the configured clock has reached a request deadline.
 fn expired(clock: Clock, deadline: Int) -> Bool {
   let #(now, _) = clock.read(clock)
   now >= deadline
@@ -879,6 +922,7 @@ fn expired(clock: Clock, deadline: Int) -> Bool {
 
 // Both hook phases use the same captured value as the callable. The generic
 // invocation wrapper never reacquires the owner while this callback runs.
+/// Runs a declared tool directly or routes it through the active generation hooks.
 fn promoted_call(
   current: Generation,
   declared: Tool,
@@ -898,6 +942,7 @@ fn promoted_call(
   }
 }
 
+/// Applies the hook verdict before execution and folds tool output after an allowed call.
 fn gated_call(
   bus: hooks.Bus,
   declared: Tool,
@@ -905,12 +950,15 @@ fn gated_call(
   args: JsonValue,
   verdict: hooks.Verdict,
 ) -> ToolOutcome {
+  // A blocking hook refuses before execution; an allowed call folds the result afterward.
   case verdict {
     hooks.Block(extension:, reason:) ->
       tool.failure(extension <> " blocked " <> declared.name <> ": " <> reason)
     hooks.Allow -> {
       let outcome = declared.run(ctx, args)
       let reply = tool.to_result_message(outcome, "evolution", declared.name, 0)
+
+      // A blocking hook refuses before execution; an allowed call folds the result afterward.
       case hooks.fold_tool_result(bus, reply) {
         message.ToolResultMessage(content:, ..) ->
           tool.ToolOutcome(..outcome, content:)
@@ -922,6 +970,7 @@ fn gated_call(
   }
 }
 
+/// Combines held generation retirement tasks into one refusal carrying cleanup authority.
 fn cleanup_refusal(reason: String, held: List(Generation)) -> store.Refusal {
   let task =
     list.fold(held, retirement.done(), fn(task, generation) {
@@ -939,6 +988,7 @@ fn cleanup_refusal(reason: String, held: List(Generation)) -> store.Refusal {
 /// ```
 ///
 pub fn retain(owner: Live, refusal: store.Refusal) -> Nil {
+  // This branch resolves the cleanup_refusal operation while preserving generation custody.
   case refusal {
     store.CleanupUnconfirmed(_, retire) -> {
       let _ =
@@ -965,6 +1015,7 @@ pub fn recover(owner: Live, waiting: Int) -> Result(Nil, store.Refusal) {
   |> result.flatten
 }
 
+/// Moves cleanup authority from a refusal into pending owner custody.
 fn retained_refusal(state: State, refusal: store.Refusal) -> State {
   case refusal {
     store.CleanupUnconfirmed(_, retire) ->
@@ -973,6 +1024,7 @@ fn retained_refusal(state: State, refusal: store.Refusal) -> State {
   }
 }
 
+/// Restores the active generation only when no other generation custody remains.
 fn recovered(state: State) -> #(State, Result(Nil, store.Refusal)) {
   case state.active, state.held, state.pending {
     Some(_), _, _ -> #(state, Ok(Nil))
@@ -995,6 +1047,7 @@ fn active_list(active: Option(Generation)) -> List(Generation) {
   }
 }
 
+/// Attempts to restore the prior generation after discarding a failed successor.
 fn recover_previous(
   discarded: #(State, Result(record.Selection, store.Refusal)),
 ) -> #(State, Result(record.Selection, store.Refusal)) {
@@ -1026,10 +1079,12 @@ pub fn evaluate(
 // A failed piece of leased work may carry a cleanup witness. The owner keeps
 // it before the caller learns of the failure, so that no later allocation is
 // admitted on the strength of a reply that has not yet been read.
+/// Keeps refusal cleanup authority in the owner before returning the original outcome.
 fn retained(
   owner: Live,
   outcome: Result(a, store.Refusal),
 ) -> Result(a, store.Refusal) {
+  // Successful work leaves custody unchanged; a refusal is retained before being returned.
   case outcome {
     Ok(_) -> outcome
     Error(error) -> {
@@ -1039,11 +1094,15 @@ fn retained(
   }
 }
 
+/// Revalidates the current generation and retains cleanup authority when validation fails.
 fn validate_active(state: State) -> #(State, Result(Nil, store.Refusal)) {
+  // No active generation needs no validation; a failed check retains its cleanup witness.
   case state.active {
     None -> #(state, Ok(Nil))
     Some(current) -> {
       let checked = current.validate()
+
+      // No active generation needs no validation; a failed check retains its cleanup witness.
       case checked {
         Error(error) -> #(retained_refusal(state, error), checked)
         Ok(_) -> #(state, checked)
@@ -1122,6 +1181,7 @@ pub fn execute(
       }
     },
     fn(granted) {
+      // No active generation needs no validation; a failed check retains its cleanup witness.
       case execute_with(usable(granted), name, ctx, args, work) {
         Ok(outcome) -> outcome
         Error(error) -> {
@@ -1134,6 +1194,7 @@ pub fn execute(
   )
 }
 
+/// Runs work directly without hooks, or applies the captured hook gate and result fold.
 fn execute_with(
   active: Option(Generation),
   name: String,
@@ -1144,6 +1205,7 @@ fn execute_with(
   case option.then(active, fn(current) { current.hooks }) {
     None -> work()
     Some(bus) -> {
+      // Without hooks the work runs directly; otherwise the hook gate controls execution and folding.
       case hooks.gate(bus, ctx.op_id, name, args, ctx.source_index) {
         hooks.Block(extension:, reason:) ->
           Ok(tool.failure(extension <> " blocked " <> name <> ": " <> reason))
@@ -1151,6 +1213,8 @@ fn execute_with(
           use outcome <- result.try(work())
           let reply =
             tool.to_result_message(outcome, "evolution", name, ctx.source_index)
+
+          // Without hooks the work runs directly; otherwise the hook gate controls execution and folding.
           case hooks.fold_tool_result(bus, reply) {
             message.ToolResultMessage(content:, ..) ->
               Ok(tool.ToolOutcome(..outcome, content:))
@@ -1164,19 +1228,25 @@ fn execute_with(
   }
 }
 
+/// Commits a prepared stateful upgrade and retains its generation if reconciliation fails.
 fn in_place(
   state: State,
   transition: Transition,
   prepared: Result(PreparedUpgrade, store.Refusal),
 ) -> #(State, Result(record.Selection, store.Refusal)) {
+  // A preparation failure retains its cleanup authority; a prepared upgrade follows commit reconciliation.
   case prepared {
     Error(reason) -> #(retained_refusal(state, reason), Error(reason))
     Ok(prepared) -> {
       let committed = transition.commit()
+
+      // A preparation failure retains its cleanup authority; a prepared upgrade follows commit reconciliation.
       let state = case committed {
         Ok(_) -> state
         Error(reason) -> retained_refusal(state, reason)
       }
+
+      // A preparation failure retains its cleanup authority; a prepared upgrade follows commit reconciliation.
       case committed_in_place(transition, committed) {
         Ok(Error(reason)) -> {
           case prepared.abort() {
@@ -1203,14 +1273,18 @@ fn in_place(
   }
 }
 
+/// Reconciles an uncertain commit acknowledgement before reporting the selection result.
 fn committed_in_place(
   transition: Transition,
   committed: Result(record.Selection, store.Refusal),
 ) -> Result(Result(record.Selection, store.Refusal), store.Refusal) {
+  // A lost commit acknowledgement is reconciled before deciding whether publication succeeded.
   case committed {
     Ok(selection) -> Ok(Ok(selection))
     Error(reason) -> {
       use receipt <- result.try(transition.reconcile())
+
+      // A lost commit acknowledgement is reconciled before deciding whether publication succeeded.
       case receipt {
         Some(selection) -> Ok(Ok(selection))
         None -> Ok(Error(reason))
@@ -1219,6 +1293,7 @@ fn committed_in_place(
   }
 }
 
+/// Publishes and adopts a committed upgrade, retaining it if publication cannot complete.
 fn publish_in_place(
   state: State,
   prepared: PreparedUpgrade,
@@ -1228,6 +1303,8 @@ fn publish_in_place(
     use Nil <- result.try(prepared.publish())
     state.config.adopt(selection)
   }
+
+  // Publication failure retains the prepared generation; success adopts the selection.
   case published {
     Error(reason) -> #(
       retained_refusal(

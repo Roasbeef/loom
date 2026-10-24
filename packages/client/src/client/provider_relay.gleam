@@ -410,6 +410,13 @@ pub fn prepare(
 /// ```gleam
 /// // prepare_preview(surface, request, fn() { callback })
 /// ```
+/// Prepare preview preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// prepare_preview(...)
+/// ```
 @internal
 pub fn prepare_preview(surface, spec, observe: fn() -> ObservationCallback) {
   prepare_observed(
@@ -421,6 +428,7 @@ pub fn prepare_preview(surface, spec, observe: fn() -> ObservationCallback) {
   )
 }
 
+/// Repeated observer keeps this client operation’s decoding or state decision in one place.
 fn repeated_observer(
   observe: fn(stream.StreamEvent) -> Nil,
 ) -> ObservationCallback {
@@ -432,7 +440,10 @@ fn repeated_observer(
 
 // Project before building any wrapper. Retaining both facades of an inner
 // prepared surface doubles its closure graph at every observation layer.
+/// Preparation keeps this client operation’s decoding or state decision in one place.
 fn preparation(surface: effects.ProviderSurface) {
+  // This match resolves surface before the surrounding protocol step continues.
+  // This match resolves surface before the enclosing validation continues.
   case surface {
     effects.PreparedProviderSurface(prepare:, ..) -> prepare
     effects.ProviderSurface(request:, ..) -> fn(spec) {
@@ -448,6 +459,13 @@ fn preparation(surface: effects.ProviderSurface) {
 ///
 /// ```gleam
 /// // provider_relay.observing(surface, fn(spec) { observer(spec) })
+/// ```
+/// Observing preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// observing(...)
 /// ```
 @internal
 pub fn observing(
@@ -469,6 +487,13 @@ pub fn observing(
 /// ```gleam
 /// // provider_relay.previewing(surface, fn(spec) { observer(spec) })
 /// ```
+/// Previewing preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// previewing(...)
+/// ```
 @internal
 pub fn previewing(
   surface: effects.ProviderSurface,
@@ -477,6 +502,7 @@ pub fn previewing(
   observed_surface(surface, observe, PreviewObservation)
 }
 
+/// Observed surface keeps this client operation’s decoding or state decision in one place.
 fn observed_surface(surface, observe, mode) {
   let inner_prepare = preparation(surface)
   let timeout_ms = effects.provider_timeout_ms(surface)
@@ -496,11 +522,15 @@ fn observed_surface(surface, observe, mode) {
   )
 }
 
+/// Prepare observed keeps this client operation’s decoding or state decision in one place.
 fn prepare_observed(prepare, timeout_ms, spec, observe, mode) {
   let consumer = process.self()
   let outer = process.new_subject()
   let startup =
     Startup(prepare:, timeout_ms:, spec:, observe:, mode:, consumer:, outer:)
+
+  // This match resolves start_guard(startup) before the surrounding protocol step continues.
+  // This match resolves start_guard(startup) before the enclosing validation continues.
   case start_guard(startup) {
     Ok(started) -> published(started, outer, consumer)
 
@@ -527,6 +557,7 @@ fn prepare_observed(prepare, timeout_ms, spec, observe, mode) {
 // its consumer, so `start`'s timeout is the old start bound rather than a
 // deadline over the provider's startup: everything that can block waits for
 // the permit, in the machine's first state.
+/// Start guard keeps this client operation’s decoding or state decision in one place.
 fn start_guard(
   startup: Startup,
 ) -> Result(
@@ -556,6 +587,7 @@ fn start_guard(
 }
 
 // Wraps a started guard in the public custodian and the prepared handle.
+/// Published keeps this client operation’s decoding or state decision in one place.
 fn published(
   started: sm.Started(#(Subject(Control), Subject(BeginPermit))),
   outer: Subject(stream.StreamEvent),
@@ -578,6 +610,7 @@ fn published(
 // after invoking this callback. Waiting for the guard's acknowledgement keeps
 // that return equivalent to the old contract: an immediate cancellation can
 // already reach the adopted inner stream.
+/// Begin guard keeps this client operation’s decoding or state decision in one place.
 fn begin_guard(
   begin: Subject(BeginPermit),
   owner: custodian.Custodian,
@@ -595,6 +628,7 @@ fn begin_guard(
   Nil
 }
 
+/// Failed prepared keeps this client operation’s decoding or state decision in one place.
 fn failed_prepared(
   outer: Subject(stream.StreamEvent),
   reason: String,
@@ -621,6 +655,8 @@ fn failed_prepared(
 /// forwarding loop whose only job was to notice it was stale, and a deadline
 /// that had to be scheduled at three separate call sites.
 fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
+  // This match resolves phase, data, message before the surrounding protocol step continues.
+  // This match resolves phase, data, message before the enclosing validation continues.
   case phase, data, message {
     // The custodian is published, so the observer and the inner stream can be
     // started and adopted under it.
@@ -865,6 +901,7 @@ fn handle(phase: Phase, data: Data, message: Msg) -> sm.Next(Phase, Data, Msg) {
 }
 
 // Brings up the observer under a granted permit.
+/// Admit keeps this client operation’s decoding or state decision in one place.
 fn admit(
   startup: Startup,
   control: Subject(Control),
@@ -879,6 +916,9 @@ fn admit(
   // observer before it reaches the caller.
   let #(observer_pid, observer) =
     start_observer(startup.observe, process.self())
+
+  // This match resolves custodian.adopt_leaf(owner, observer_pid, fn() before the surrounding protocol step continues.
+  // This match resolves custodian.adopt_leaf(owner, observer_pid, fn() before the enclosing validation continues.
   case custodian.adopt_leaf(owner, observer_pid, fn() { Nil }) {
     False -> {
       // Rejection leaves startup with the guard. Stopping normally drops the
@@ -908,6 +948,7 @@ fn admit(
 // preparation and adoption, before any path can call `begin`, because an
 // owner watched only after it exited reports `noproc` — which proves death
 // and cannot prove clean drain.
+/// Open inner keeps this client operation’s decoding or state decision in one place.
 fn open_inner(
   startup: Startup,
   control: Subject(Control),
@@ -949,6 +990,8 @@ fn open_inner(
       drain,
     )
 
+  // This match resolves custodian.adopt(owner, inner.owner, inner.cancel) before the surrounding protocol step continues.
+  // This match resolves custodian.adopt(owner, inner.owner, inner.cancel) before the enclosing validation continues.
   case custodian.adopt(owner, inner.owner, inner.cancel) {
     False -> {
       process.send(acknowledged, Nil)
@@ -985,6 +1028,7 @@ fn open_inner(
 // exist only because the permit arrived, which is why this selector replaces
 // the parked one rather than being built beside it. The permit's own subject
 // is not carried over: one is granted per prepared stream.
+/// Relay selector keeps this client operation’s decoding or state decision in one place.
 fn relay_selector(
   inner: stream.StreamHandle,
   control: Subject(Control),
@@ -1006,10 +1050,13 @@ fn relay_selector(
   |> select_drain(drain)
 }
 
+/// Select drain keeps this client operation’s decoding or state decision in one place.
 fn select_drain(
   selector: process.Selector(Msg),
   drain: Drain,
 ) -> process.Selector(Msg) {
+  // This match resolves drain before the surrounding protocol step continues.
+  // This match resolves drain before the enclosing validation continues.
   case drain {
     WatchingInner(monitor:) ->
       process.select_specific_monitor(selector, monitor, fn(down) {
@@ -1025,7 +1072,10 @@ fn select_drain(
 // Installs the original drain monitor, or records that there is nothing to
 // wait for. `stream.watch_drain` answers `Drained` for an ownerless handle
 // without waiting, and so does this.
+/// Watch inner keeps this client operation’s decoding or state decision in one place.
 fn watch_inner(inner: stream.StreamHandle) -> Drain {
+  // This match resolves inner.owner before the surrounding protocol step continues.
+  // This match resolves inner.owner before the enclosing validation continues.
   case inner.owner {
     Some(owner) -> WatchingInner(monitor: process.monitor(owner))
     None -> InnerAlreadyRetired(proof: InnerDrained)
@@ -1035,9 +1085,13 @@ fn watch_inner(inner: stream.StreamHandle) -> Drain {
 // A transitive owner speaks for work beneath it. Only its normal Down permits
 // this relay to retire normally; otherwise the relay must preserve the lost
 // proof as an abnormal exit for its own custodian.
+/// Drain proof keeps this client operation’s decoding or state decision in one place.
 fn drain_proof(down: process.Down) -> DrainProof {
+  // This match resolves down before the surrounding protocol step continues.
+  // This match resolves down before the enclosing validation continues.
   case down {
     process.ProcessDown(reason:, ..) ->
+      // This match resolves reason before the surrounding protocol step continues.
       case reason {
         process.Normal -> InnerDrained
         process.Killed | process.Abnormal(_) -> InnerProofLost
@@ -1046,6 +1100,7 @@ fn drain_proof(down: process.Down) -> DrainProof {
   }
 }
 
+/// Start observer keeps this client operation’s decoding or state decision in one place.
 fn start_observer(
   observe: fn() -> ObservationCallback,
   creator: Pid,
@@ -1061,6 +1116,7 @@ fn start_observer(
   #(observer, Observer(control:, monitor: process.monitor(observer)))
 }
 
+/// Observer loop keeps this client operation’s decoding or state decision in one place.
 fn observer_loop(
   control: Subject(ObserverMessage),
   observe: ObservationCallback,
@@ -1071,6 +1127,9 @@ fn observer_loop(
     |> process.select_map(control, ObserverCommand)
     |> process.select_specific_monitor(creator_monitor, ObserverCreatorDown)
     |> process.selector_receive_forever()
+
+  // This match resolves event before the surrounding protocol step continues.
+  // This match resolves event before the enclosing validation continues.
   case event {
     ObserverCommand(Observe(event, acknowledged:)) -> {
       let ObservationCallback(next) = observe
@@ -1102,6 +1161,8 @@ fn observer_loop(
 /// asynchronous work, and an owner that exited while the stream was still
 /// forwarding has already delivered its only `Down`.
 fn entered(_from: Phase, to: Phase, data: Data) -> sm.Enter(Phase, Data, Msg) {
+  // This match resolves to, data before the surrounding protocol step continues.
+  // This match resolves to, data before the enclosing validation continues.
   case to, data {
     Forwarding, Relaying(relay:) ->
       sm.keep(data)
@@ -1137,7 +1198,10 @@ fn entered(_from: Phase, to: Phase, data: Data) -> sm.Enter(Phase, Data, Msg) {
   }
 }
 
+/// Already retired keeps this client operation’s decoding or state decision in one place.
 fn already_retired(relay: Relay) -> sm.Enter(Phase, Data, Msg) {
+  // This match resolves relay.drain before the surrounding protocol step continues.
+  // This match resolves relay.drain before the enclosing validation continues.
   case relay.drain {
     WatchingInner(..) -> sm.keep(Relaying(relay))
     InnerAlreadyRetired(proof:) ->
@@ -1151,12 +1215,18 @@ fn already_retired(relay: Relay) -> sm.Enter(Phase, Data, Msg) {
 // to protect: weft replays a postponed event only on a change of state, and
 // the change of state that would replay it is exactly the one that would void
 // the cancellation grace.
+/// Observe keeps this client operation’s decoding or state decision in one place.
 fn observe(relay: Relay, event: stream.StreamEvent, phase: Phase) -> Relay {
+  // This match resolves phase, relay.mode, event before the surrounding protocol step continues.
+  // This match resolves phase, relay.mode, event before the enclosing validation continues.
   case phase, relay.mode, event {
     Forwarding, PreviewObservation, stream.Delta(..) ->
       process.send(relay.outer, event)
     _, _, _ -> Nil
   }
+
+  // This match resolves relay.mode, relay.observation, event before the surrounding protocol step continues.
+  // This match resolves relay.mode, relay.observation, event before the enclosing validation continues.
   case relay.mode, relay.observation, event {
     PreviewObservation, Observing(..), stream.Delta(..) -> relay
     _, _, _ -> queue_observation(relay, event)
@@ -1165,7 +1235,10 @@ fn observe(relay: Relay, event: stream.StreamEvent, phase: Phase) -> Relay {
 
 // Only the legacy blocking mode queues deltas. Preview mode retains at most
 // its one outstanding observation and the terminal that follows it.
+/// Queue observation keeps this client operation’s decoding or state decision in one place.
 fn queue_observation(relay: Relay, event: stream.StreamEvent) -> Relay {
+  // This match resolves relay.observation before the surrounding protocol step continues.
+  // This match resolves relay.observation before the enclosing validation continues.
   case relay.observation {
     Idle -> {
       process.send(
@@ -1187,7 +1260,10 @@ fn queue_observation(relay: Relay, event: stream.StreamEvent) -> Relay {
 }
 
 // Dispatches the next queued event, or leaves the observer idle.
+/// Advance keeps this client operation’s decoding or state decision in one place.
 fn advance(relay: Relay, queued: List(stream.StreamEvent)) -> Relay {
+  // This match resolves queued before the surrounding protocol step continues.
+  // This match resolves queued before the enclosing validation continues.
   case queued {
     [] -> Relay(..relay, observation: Idle)
     [next, ..rest] -> {
@@ -1201,7 +1277,10 @@ fn advance(relay: Relay, queued: List(stream.StreamEvent)) -> Relay {
 }
 
 // The observer finished an event the guard is still forwarding.
+/// Forwarded keeps this client operation’s decoding or state decision in one place.
 fn forwarded(relay: Relay) -> sm.Next(Phase, Data, Msg) {
+  // This match resolves relay.observation before the surrounding protocol step continues.
+  // This match resolves relay.observation before the enclosing validation continues.
   case relay.observation {
     // Unreachable: an acknowledgement answers an observation, and one is
     // outstanding for as long as the guard can be told about it.
@@ -1214,11 +1293,14 @@ fn forwarded(relay: Relay) -> sm.Next(Phase, Data, Msg) {
 // Decide liveness and event shape together. Besides keeping the state
 // transition visible in one place, this prevents another liveness check from
 // enclosing the entire event protocol and hiding its terminal arm.
+/// Forward observed keeps this client operation’s decoding or state decision in one place.
 fn forward_observed(
   relay: Relay,
   event: stream.StreamEvent,
   queued: List(stream.StreamEvent),
 ) -> sm.Next(Phase, Data, Msg) {
+  // This match resolves consumer_liveness(relay.consumer), event before the surrounding protocol step continues.
+  // This match resolves consumer_liveness(relay.consumer), event before the enclosing validation continues.
   case consumer_liveness(relay.consumer), event {
     ConsumerGone, stream.Delta(..)
     | ConsumerGone, stream.Settled(..)
@@ -1226,10 +1308,12 @@ fn forward_observed(
     -> abandon(relay)
 
     ConsumerAlive, stream.Delta(..) -> {
+      // This match resolves relay.mode before the surrounding protocol step continues.
       case relay.mode {
         BlockingObservation -> process.send(relay.outer, event)
         PreviewObservation -> Nil
       }
+
       keep_forwarding(advance(relay, queued))
     }
 
@@ -1250,7 +1334,10 @@ fn forward_observed(
 // into `Cancelling`: the grace is that state's own timeout, and re-entering
 // the state would restart it, which is the whole of what a flood of late
 // deltas would otherwise buy the inner owner.
+/// Cancelling observed keeps this client operation’s decoding or state decision in one place.
 fn cancelling_observed(relay: Relay) -> sm.Next(Phase, Data, Msg) {
+  // This match resolves relay.observation before the surrounding protocol step continues.
+  // This match resolves relay.observation before the enclosing validation continues.
   case relay.observation {
     // Unreachable, for the reason `forwarded` gives.
     Idle -> sm.keep(Relaying(relay))
@@ -1259,11 +1346,14 @@ fn cancelling_observed(relay: Relay) -> sm.Next(Phase, Data, Msg) {
   }
 }
 
+/// Cancelling event keeps this client operation’s decoding or state decision in one place.
 fn cancelling_event(
   relay: Relay,
   event: stream.StreamEvent,
   queued: List(stream.StreamEvent),
 ) -> sm.Next(Phase, Data, Msg) {
+  // This match resolves event before the surrounding protocol step continues.
+  // This match resolves event before the enclosing validation continues.
   case event {
     // A delta after cancellation is observed and discarded: the consumer is
     // owed one terminal, and this is not it.
@@ -1283,7 +1373,10 @@ fn cancelling_event(
 // The old loop measured the same interval: an unbounded receive while an
 // observation was outstanding, and the request timeout on the receive that
 // followed it.
+/// Keep forwarding keeps this client operation’s decoding or state decision in one place.
 fn keep_forwarding(relay: Relay) -> sm.Next(Phase, Data, Msg) {
+  // This match resolves relay.observation before the surrounding protocol step continues.
+  // This match resolves relay.observation before the enclosing validation continues.
   case relay.observation {
     Idle ->
       sm.keep(Relaying(relay))
@@ -1298,6 +1391,7 @@ fn keep_forwarding(relay: Relay) -> sm.Next(Phase, Data, Msg) {
 
 // The relay's own worker failed. The inner owner is cancelled and the guard
 // waits, bounded, for the proof that it stopped.
+/// Fail and drain keeps this client operation’s decoding or state decision in one place.
 fn fail_and_drain(relay: Relay) -> sm.Next(Phase, Data, Msg) {
   stream.cancel(relay.inner)
   sm.transition(to: ProvingFailure, data: Relaying(relay))
@@ -1305,12 +1399,14 @@ fn fail_and_drain(relay: Relay) -> sm.Next(Phase, Data, Msg) {
 
 // Nobody is left to tell. The inner owner is cancelled and the guard waits
 // for its exit, emitting nothing at all.
+/// Abandon keeps this client operation’s decoding or state decision in one place.
 fn abandon(relay: Relay) -> sm.Next(Phase, Data, Msg) {
   stream.cancel(relay.inner)
   sm.transition(to: Proving, data: Relaying(relay))
 }
 
 // Cancellation crossed this boundary and was never acknowledged.
+/// Unconfirmed keeps this client operation’s decoding or state decision in one place.
 fn unconfirmed(relay: Relay) -> sm.Next(Phase, Data, Msg) {
   process.send(
     relay.outer,
@@ -1331,6 +1427,7 @@ fn unconfirmed(relay: Relay) -> sm.Next(Phase, Data, Msg) {
 // Retiring normally here would let the outer custodian certify a subtree
 // whose transitive owner died abnormally, so the guard carries the loss into
 // its own exit reason instead.
+/// Lost proof keeps this client operation’s decoding or state decision in one place.
 fn lost_proof() -> sm.Next(Phase, Data, Msg) {
   sm.stop_abnormal("the inner provider owner exited without proof of drain")
 }
@@ -1341,7 +1438,10 @@ fn lost_proof() -> sm.Next(Phase, Data, Msg) {
 // drain wait, asked again on the far side of it: the consumer may have died
 // while the subtree was retiring, and a wrapper must not be the thing that
 // keeps its answer alive.
+/// Deliver keeps this client operation’s decoding or state decision in one place.
 fn deliver(relay: Relay, event: stream.StreamEvent) -> Nil {
+  // This match resolves consumer_liveness(relay.consumer) before the surrounding protocol step continues.
+  // This match resolves consumer_liveness(relay.consumer) before the enclosing validation continues.
   case consumer_liveness(relay.consumer) {
     ConsumerAlive ->
       process.send(relay.outer, stream.contextual_event(event, relay.context))
@@ -1349,7 +1449,10 @@ fn deliver(relay: Relay, event: stream.StreamEvent) -> Nil {
   }
 }
 
+/// Consumer liveness keeps this client operation’s decoding or state decision in one place.
 fn consumer_liveness(consumer: Pid) -> ConsumerLiveness {
+  // This match resolves process.is_alive(consumer) before the surrounding protocol step continues.
+  // This match resolves process.is_alive(consumer) before the enclosing validation continues.
   case process.is_alive(consumer) {
     True -> ConsumerAlive
     False -> ConsumerGone

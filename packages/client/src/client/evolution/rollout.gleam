@@ -220,6 +220,8 @@ pub fn evaluate(
     prompt.candidate_profile(candidate) |> result.map_error(store.Bounds),
   )
   let #(_, provider, model_id, profile_api, _, _, _) = profile.fields(profile)
+
+  // Verify that candidate profile matches rollout target coordinates.
   use Nil <- result.try(
     case
       provider == target.provider
@@ -276,9 +278,12 @@ pub fn evaluate(
       verdict,
       json.to_string(observation),
     )
+
+  // Check if unconfirmed cleanup needs to be surfaced.
   case state.cleanup {
     None -> retained
     Some(#(reason, close)) -> {
+      // Combine recorded reason with cleanup diagnostic.
       let reason = case retained {
         Ok(evidence) ->
           reason
@@ -289,14 +294,18 @@ pub fn evaluate(
           <> "; partial evidence did not commit: "
           <> bounded(store.describe(error))
       }
+
       Error(store.CleanupUnconfirmed(reason, close))
     }
   }
 }
 
+/// Validates task collection bounds and trial limits ceilings.
 fn validate(tasks: List(Task), limits: Limits) -> Result(Nil, String) {
   let task_bytes =
     tasks |> list.map(task_json) |> json.Array |> json.to_string |> bytes
+
+  // Verify tasks are non-empty and within budget limits.
   case
     tasks != []
     && list.length(tasks) <= 10
@@ -325,6 +334,7 @@ fn validate(tasks: List(Task), limits: Limits) -> Result(Nil, String) {
 }
 
 // Each arm retires native execution before independent fixture scoring begins.
+/// Runs a single trial arm against the target model and records progress.
 fn run_trial(
   state: State,
   callbacks: Callbacks,
@@ -333,6 +343,7 @@ fn run_trial(
   task: Task,
   profile: Option(Profile),
 ) -> State {
+  // Check whether execution is stopped or budget limit is met.
   case state.stop, state.trials >= state.limits.trials {
     Some(_), _ -> state
     None, True -> State(..state, stop: Some("aggregate trial budget exhausted"))
@@ -340,6 +351,8 @@ fn run_trial(
       let #(trial_started, clock) = clock.read(state.clock)
       let state = State(..state, clock:)
       let #(allowance, state) = allowance(state)
+
+      // Verify trial allowance availability before opening trial.
       case allowance {
         Error(reason) -> State(..state, stop: Some(reason))
         Ok(allowance) ->
@@ -375,11 +388,13 @@ fn run_trial(
   }
 }
 
+/// Opens runtime environment for a trial and handles execution lifecycle.
 fn open_trial(
   state: State,
   callbacks: Callbacks,
   request: TrialRequest,
 ) -> State {
+  // Attempt to open isolated trial runtime.
   let state = case callbacks.open(request) {
     Error(reason) ->
       State(
@@ -388,12 +403,17 @@ fn open_trial(
       )
     Ok(trial) -> {
       let state = drive(state, trial, request)
+
+      // Perform runtime retirement cleanup.
       case retirement.perform(trial.close) {
         Ok(Nil) -> {
+          // Score trial outcome if trial did not halt early.
           let state = case state.stop {
             None -> score(state, trial, request)
             Some(_) -> state
           }
+
+          // Execute private fixture cleanup task.
           case trial.cleanup() {
             Ok(Nil) -> state
             Error(reason) ->
@@ -427,17 +447,24 @@ fn open_trial(
       }
     }
   }
+
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
+
+  // Check whether cumulative wall clock budget has expired.
   let state = case now >= state.started + state.limits.wall_ms {
     True -> State(..state, stop: Some("aggregate wall budget exhausted"))
     False -> state
   }
+
   retain_trial(state, request, now)
 }
 
+/// Steps trial execution loop until finished or interrupted.
 fn drive(state: State, trial: Trial, request: TrialRequest) -> State {
   let #(available, state) = allowance(state)
+
+  // Check remaining allowance before stepping trial.
   case available {
     Error(reason) -> State(..state, stop: Some(reason))
     Ok(available) -> {
@@ -450,18 +477,21 @@ fn drive(state: State, trial: Trial, request: TrialRequest) -> State {
   }
 }
 
+/// Records resource consumption and checks output bounds for completed trial step.
 fn accept_step(
   state: State,
   trial: Trial,
   request: TrialRequest,
   step: Step,
 ) -> State {
+  // Verify model target matches requested model scope.
   let target_matches = case request.target {
     model.ForResolved(target) ->
       step.target
       == record.ModelScope(target.provider, target.model_id, request.api)
     model.ForRole(..) -> False
   }
+
   let expected =
     option.map(request.profile, fn(profile) { profile.fields(profile).0 })
   let used =
@@ -488,6 +518,8 @@ fn accept_step(
         step.composition_digests,
       ),
     )
+
+  // Validate step metrics stay within native limits and admission bounds.
   case
     !target_matches
     || step.profile_id != expected
@@ -509,6 +541,8 @@ fn accept_step(
     False -> {
       let #(now, clock) = clock.read(state.clock)
       let state = State(..state, clock:)
+
+      // Evaluate step progress and loop or terminate trial.
       case within(state, now), step.progress {
         False, _ ->
           State(..state, stop: Some("aggregate rollout budget exhausted"))
@@ -520,6 +554,7 @@ fn accept_step(
   }
 }
 
+/// Evaluates criteria scoring function on finished trial.
 fn score(state: State, trial: Trial, request: TrialRequest) -> State {
   case state.tools > 0 {
     False ->
@@ -538,6 +573,7 @@ fn score(state: State, trial: Trial, request: TrialRequest) -> State {
   }
 }
 
+/// Adds report entry for completed trial to state history.
 fn retain_trial(state: State, request: TrialRequest, now: Int) -> State {
   let report =
     json.Object([
@@ -581,6 +617,7 @@ fn retain_trial(state: State, request: TrialRequest, now: Int) -> State {
   State(..state, reports: [report, ..state.reports])
 }
 
+/// Checks if cumulative resource usage remains strictly within limits.
 fn within(state: State, now: Int) -> Bool {
   state.turns <= state.limits.turns
   && state.tokens + state.unreported_tokens <= state.limits.tokens
@@ -589,6 +626,7 @@ fn within(state: State, now: Int) -> Bool {
   && now < state.started + state.limits.wall_ms
 }
 
+/// Calculates remaining resource allowance for subsequent trial runs.
 fn allowance(state: State) -> #(Result(Allowance, String), State) {
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
@@ -600,6 +638,8 @@ fn allowance(state: State) -> #(Result(Allowance, String), State) {
       output_bytes: state.limits.output_bytes - state.output_bytes,
       deadline_ms: state.started + state.limits.wall_ms,
     )
+
+  // Determine if positive allowance remains across all budget metrics.
   let result = case
     state.trials <= state.limits.trials
     && left.turns > 0
@@ -611,9 +651,11 @@ fn allowance(state: State) -> #(Result(Allowance, String), State) {
     True -> Ok(left)
     False -> Error("aggregate rollout budget exhausted")
   }
+
   #(result, state)
 }
 
+/// Evaluates candidate trial reports to determine overall rollout verdict.
 fn verdict(state: State, mode: Mode, expected: Int) -> record.Verdict {
   case mode, state.stop, list.length(state.reports) == expected {
     ScriptedLifecycle, _, _ ->
@@ -632,6 +674,7 @@ fn verdict(state: State, mode: Mode, expected: Int) -> record.Verdict {
 }
 
 // Only candidate-arm failures decide adoption; baseline failures remain evidence.
+/// Checks if report indicates candidate arm failure.
 fn candidate_failed(report: json.JsonValue) -> Bool {
   case report {
     json.Object(fields) ->
@@ -646,6 +689,7 @@ fn candidate_failed(report: json.JsonValue) -> Bool {
   }
 }
 
+/// Constructs detailed observation JSON report for the rollout evaluation.
 fn observation(
   state: State,
   mode: Mode,
@@ -706,6 +750,7 @@ fn observation(
   ])
 }
 
+/// Serializes a task specification into JSON format.
 fn task_json(task: Task) -> json.JsonValue {
   json.Object([
     #("id", json.String(task.id)),

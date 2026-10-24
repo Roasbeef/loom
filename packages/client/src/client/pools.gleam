@@ -109,6 +109,7 @@ pub fn parse(text: String) -> Result(List(Pool), String) {
 pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Pool), String) {
+  // The configuration document determines whether the pool plan is valid.
   case dict.get(document, "pools") {
     Error(Nil) -> Ok([])
     Ok(tom.Table(tables)) -> {
@@ -128,8 +129,11 @@ pub fn from_document(
 // checked for its name's shape here and against the ledger when the daemon
 // starts (`ledger_reference.audit_names`). A document with no `[distribution]`
 // table has no ledger, and every member must be written.
+/// Extracts peer names from a decoded pool declaration.
 fn peers_of(document: Dict(String, tom.Toml)) -> Result(Peers, String) {
   use found <- result.map(distribution.from_document(document))
+
+  // The pool declaration determines its member peer names.
   case found {
     Some(settings) -> ledger_reference.peers(settings)
     None -> ledger_reference.Pinned([])
@@ -215,22 +219,28 @@ pub fn requirements(pool: Pool) -> String {
       "enforcement " <> executors.enforcement_word(value)
     })
     |> option.to_result(Nil)
+
+  // The executor and pool fields determine the resource requirements.
   let toolchains = case pool.toolchains {
     [] -> Error(Nil)
     names -> Ok("toolchains " <> string.join(names, ", "))
   }
+
+  // The executor and pool fields determine the resource requirements.
   case result.values([platform, enforcement, toolchains]) {
     [] -> "no requirements"
     stated -> string.join(stated, ", ")
   }
 }
 
+/// Decodes and validates one executor-pool row.
 fn row(
   name: String,
   value: tom.Toml,
   configured: List(Executor),
   peers: Peers,
 ) -> Result(Pool, String) {
+  // The stored row shape determines whether a pool entry can be decoded.
   use Nil <- result.try(case catalogue.is_pool_name(name) {
     True -> Ok(Nil)
     False ->
@@ -241,6 +251,8 @@ fn row(
         <> "starting with a letter, at most 32 characters",
       )
   })
+
+  // The stored row shape determines whether a pool entry can be decoded.
   case value {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
@@ -275,6 +287,7 @@ fn row(
 
 // The members are the pool's whole purpose, so an empty list, a name twice and
 // a name that is not a configured executor are each refused by the key.
+/// Resolves the members of an executor pool from its declaration.
 fn members(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -282,6 +295,8 @@ fn members(
   peers: Peers,
 ) -> Result(List(String), String) {
   let key = place <> ".executors"
+
+  // The plan and directory records determine the pool membership set.
   case dict.get(fields, "executors") {
     Ok(tom.Array([_, ..] as items)) -> {
       use names <- result.try(
@@ -292,12 +307,15 @@ fn members(
           }
         }),
       )
+
+      // The plan and directory records determine the pool membership set.
       use Nil <- result.try(
         case list.length(list.unique(names)) == list.length(names) {
           True -> Ok(Nil)
           False -> Error(key <> " names an executor twice")
         },
       )
+
       use Nil <- result.map(
         list.try_each(names, fn(name) {
           case executors.find(configured, name), peers {
@@ -334,6 +352,7 @@ fn members(
   }
 }
 
+/// Returns the configuration keys recognized for this pool format.
 fn known_keys(
   present: List(String),
   allowed: List(String),

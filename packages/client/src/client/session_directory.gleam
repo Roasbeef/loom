@@ -229,6 +229,8 @@ pub fn none() -> Directory {
 }
 
 // The reach of a daemon with no way to connect: an endpoint nobody answers.
+
+/// Establishes cannot reach for the caller, keeping its validation and result policy at this boundary.
 fn cannot_reach(
   _orchestrator: Orchestrator,
   session: String,
@@ -464,6 +466,8 @@ fn by_node_or_named(listed: List(Orchestrator), node: String) -> Orchestrator {
 // configuration that was current when it was written, so one naming an
 // orchestrator that is no longer listed still redirects, by name alone: the
 // refusal carries a name and no address, and the client is told to ask there.
+
+/// Establishes configured or named for the caller, keeping its validation and result policy at this boundary.
 fn configured_or_named(
   asked: List(Orchestrator),
   name: String,
@@ -612,6 +616,8 @@ pub fn courier_over(membership: Membership) -> Courier {
 // zipping them with the list restores configuration order. Anything other than
 // an answer is silence: a task that crashed or was cut off told the lookup
 // nothing, and treating it as "not held" would let a fault read as proof.
+
+/// Establishes fan out for the caller, keeping its validation and result policy at this boundary.
 fn fan_out(
   asked: List(Orchestrator),
   session: String,
@@ -672,6 +678,8 @@ pub fn decide(replies: List(Reply)) -> Result(Owner, Miss) {
 }
 
 // The orchestrator the first tombstone in the replies names.
+
+/// Establishes first tombstone for the caller, keeping its validation and result policy at this boundary.
 fn first_tombstone(replies: List(Reply)) -> Option(String) {
   list.find_map(replies, fn(reply) {
     case reply.1 {
@@ -683,6 +691,8 @@ fn first_tombstone(replies: List(Reply)) -> Option(String) {
 }
 
 // The names of the orchestrators that gave no answer, in the order asked.
+
+/// Establishes silent for the caller, keeping its validation and result policy at this boundary.
 fn silent(replies: List(Reply)) -> List(String) {
   list.filter_map(replies, fn(reply) {
     case reply {

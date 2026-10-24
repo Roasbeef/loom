@@ -75,6 +75,7 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
           live.fold(
             owner,
             fn(generation) {
+              // Collect injected startup messages from active evolution extension hooks.
               let added = case generation {
                 Some(active) ->
                   case active.hooks {
@@ -84,6 +85,7 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
                   }
                 None -> []
               }
+
               json.Array(list.map(
                 list.append(baseline, added),
                 codec.encode_message,
@@ -113,6 +115,7 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
           live.fold(
             owner,
             fn(generation) {
+              // Gather compaction notes contributed by registered extension hooks.
               let added = case generation {
                 Some(active) ->
                   case active.hooks {
@@ -121,11 +124,14 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
                   }
                 None -> []
               }
+
               json.Array(list.map(list.append(baseline, added), json.String))
             },
             json.Array(list.map(baseline, json.String)),
             60_000,
           )
+
+        // Extract valid text notes from the JSON array payload, falling back to baseline.
         case encoded {
           json.Array(items) ->
             list.filter_map(items, fn(item) {
@@ -143,6 +149,7 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
           live.fold(
             owner,
             fn(generation) {
+              // Allow active evolution hooks to inspect or transform the prompt context.
               let folded = case generation {
                 None -> baseline
                 Some(active) ->
@@ -151,6 +158,7 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
                     Some(bus) -> hooks.fold_context(bus, operation, baseline)
                   }
               }
+
               json.Array(list.map(folded, codec.encode_message))
             },
             json.Array(list.map(baseline, codec.encode_message)),
@@ -162,6 +170,8 @@ pub fn wire(built: effects.Effects, owner: live.Live) -> effects.Effects {
   )
 }
 
+/// Executes a tool run through evolution extension hooks, allowing installed extensions
+/// to inspect, allow, or block the tool invocation.
 fn run_with(
   generation: Option(live.Generation),
   request: effects.ToolRun,
@@ -189,6 +199,8 @@ fn run_with(
   }
 }
 
+/// Applies an extension gate verdict, either refusing the tool run with the blocking
+/// reason or proceeding with execution and post-processing the result.
 fn gated(
   bus: hooks.Bus,
   request: effects.ToolRun,
@@ -212,6 +224,7 @@ fn gated(
   }
 }
 
+/// Decodes a JSON array into a list of agent messages, defaulting to `fallback` on error.
 fn decode_messages(
   value: json.JsonValue,
   fallback: List(AgentMessage),
@@ -224,6 +237,7 @@ fn decode_messages(
   }
 }
 
+/// Dispatches a synchronous notification event to the active evolution bus if present.
 fn notify(generation: Option(live.Generation), event: hooks.Event) -> Nil {
   case generation {
     None -> Nil

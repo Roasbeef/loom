@@ -529,6 +529,7 @@ pub fn parse(text: String) -> Result(List(Schedule), String) {
 pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Schedule), String) {
+  // Decide how to handle use tables <- result.try( dict.get(document, "schedule") {.
   use tables <- result.try(case dict.get(document, "schedule") {
     Error(Nil) -> Ok([])
     Ok(tom.ArrayOfTables(tables)) -> Ok(tables)
@@ -538,6 +539,7 @@ pub fn from_document(
         <> "name, a timing (every, cron or at), and body",
       )
   })
+
   use Nil <- result.try(bounded_count(list.length(tables)))
   use parsed <- result.try(
     tables
@@ -548,6 +550,7 @@ pub fn from_document(
   Ok(parsed)
 }
 
+/// Establishes parse schedule for the caller, keeping its validation and result policy at this boundary.
 fn parse_schedule(
   position: Int,
   fields: Dict(String, tom.Toml),
@@ -580,11 +583,15 @@ fn parse_schedule(
 // The name is a durable key segment (`fired_key`) and it is quoted
 // inside the injected fence — the same two reasons, and the same
 // characters, `client/rules.rule_name` refuses.
+
+/// Establishes schedule name for the caller, keeping its validation and result policy at this boundary.
 fn schedule_name(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(String, String) {
   use name <- result.try(bounded_string(fields, place, "name", max_name_length))
+
+  // Decide how to handle name_breaks_key(name), name_breaks_fence(name) {.
   case name_breaks_key(name), name_breaks_fence(name) {
     True, _ ->
       Error(
@@ -619,6 +626,8 @@ fn name_breaks_fence(name: String) -> Bool {
 // themselves contain `/` (a spawned subagent's name does) — so, unlike
 // `name`, no character is refused here, only the length and emptiness a
 // strand address always owes.
+
+/// Establishes schedule target for the caller, keeping its validation and result policy at this boundary.
 fn schedule_target(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -647,12 +656,15 @@ fn schedule_target(
 // named two timings" and "your cron expression has a bad hour field" are
 // different mistakes and an operator reading the second before the first
 // would fix the wrong thing.
+
+/// Establishes schedule timing for the caller, keeping its validation and result policy at this boundary.
 fn schedule_timing(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Timing, String) {
   use named <- result.try(one_timing_key(fields, place))
 
+  // Decide how to handle named {.
   case named {
     EveryKey -> {
       use Nil <- result.try(refuse_cron_only_keys(fields, place, "every"))
@@ -686,6 +698,8 @@ fn schedule_timing(
 // `utc_offset` beside either is a mistake about what the key does, and
 // silently ignoring it would leave an operator believing a schedule
 // fires at a local time it will not.
+
+/// Establishes refuse cron only keys for the caller, keeping its validation and result policy at this boundary.
 fn refuse_cron_only_keys(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -712,6 +726,8 @@ fn refuse_cron_only_keys(
 // RFC3339 and from the offsets a clock displays, and because a signed
 // number of hours cannot say `+05:30` at all — which India, Iran and
 // Nepal all need.
+
+/// Establishes cron utc offset for the caller, keeping its validation and result policy at this boundary.
 fn cron_utc_offset(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -760,6 +776,8 @@ const timing_keys = [
 // over three `dict.has_key` results crossed with each other: three
 // booleans crossed are eight arms saying three things, and the message a
 // reader gets is better for naming exactly the keys they wrote.
+
+/// Establishes one timing key for the caller, keeping its validation and result policy at this boundary.
 fn one_timing_key(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -770,6 +788,7 @@ fn one_timing_key(
       dict.has_key(fields, key)
     })
 
+  // Decide how to handle named {.
   case named {
     [#(_key, only)] -> Ok(only)
 
@@ -804,6 +823,8 @@ fn spelled(keys: List(#(String, TimingKey))) -> List(String) {
 // message is prefixed with the place so an operator reading it knows
 // which table to edit, and otherwise passed through untouched — this
 // module has nothing to add about an hour field.
+
+/// Establishes cron expression for the caller, keeping its validation and result policy at this boundary.
 fn cron_expression(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -818,6 +839,7 @@ fn cron_expression(
   |> result.map_error(fn(reason) { place <> ".cron: " <> reason })
 }
 
+/// Establishes interval seconds for the caller, keeping its validation and result policy at this boundary.
 fn interval_seconds(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -835,7 +857,10 @@ fn interval_seconds(
 // other unit, no negative or zero duration, and never below
 // `min_interval_s`. The digit scan is bounded by `max_every_length`
 // having already refused anything longer.
+
+/// Establishes parse every for the caller, keeping its validation and result policy at this boundary.
 fn parse_every(text: String, place: String) -> Result(Int, String) {
+  // Decide how to handle string.ends_with(text, "s") {.
   case string.ends_with(text, "s") {
     False ->
       Error(
@@ -845,6 +870,8 @@ fn parse_every(text: String, place: String) -> Result(Int, String) {
       )
     True -> {
       let digits = string.drop_end(text, 1)
+
+      // Decide how to handle all_digits(digits) {.
       case all_digits(digits) {
         False ->
           Error(
@@ -858,6 +885,7 @@ fn parse_every(text: String, place: String) -> Result(Int, String) {
   }
 }
 
+/// Establishes parsed every seconds for the caller, keeping its validation and result policy at this boundary.
 fn parsed_every_seconds(
   parsed: Result(Int, Nil),
   place: String,
@@ -907,6 +935,8 @@ fn is_digit(grapheme: String) -> Bool {
 // `every` or `cron`. A one-shot's occurrence count is 1 by construction,
 // so either one here is a contradiction worth naming rather than
 // silently ignoring.
+
+/// Establishes refuse recurring only keys for the caller, keeping its validation and result policy at this boundary.
 fn refuse_recurring_only_keys(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -935,6 +965,8 @@ fn refuse_recurring_only_keys(
 // Both bounds, always, whichever the operator states or not — a
 // recurring schedule's expiry is never optional (see the module doc),
 // and `every` and `cron` are held to the identical pair.
+
+/// Establishes recurring expiry for the caller, keeping its validation and result policy at this boundary.
 fn recurring_expiry(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -959,6 +991,7 @@ fn recurring_expiry(
   ))
 }
 
+/// Establishes one shot at for the caller, keeping its validation and result policy at this boundary.
 fn one_shot_at(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -969,7 +1002,10 @@ fn one_shot_at(
 
 // `at` is a quoted string, not TOML's own bare datetime literal — see
 // the module doc's "Parsing an RFC3339 `at`" section for why.
+
+/// Establishes parse at for the caller, keeping its validation and result policy at this boundary.
 fn parse_at(text: String, place: String) -> Result(Int, String) {
+  // Decide how to handle timestamp.parse_rfc3339(text) {.
   case timestamp.parse_rfc3339(text) {
     Error(Nil) ->
       Error(
@@ -989,6 +1025,8 @@ fn parse_at(text: String, place: String) -> Result(Int, String) {
 // has already been shown in the worked example and in every comment
 // above. The key is optional and its absence is the milder of the two
 // states, so a config that never mentions waking never gets it.
+
+/// Establishes schedule wake for the caller, keeping its validation and result policy at this boundary.
 fn schedule_wake(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1004,6 +1042,8 @@ fn schedule_wake(
 // Duplicate names are refused rather than resolved, because the name is
 // the fired-mark's key segment: two schedules sharing one would let one
 // schedule's occurrences collide with the other's.
+
+/// Establishes unique names for the caller, keeping its validation and result policy at this boundary.
 fn unique_names(
   remaining: List(Schedule),
   seen: List(String),
@@ -1025,6 +1065,7 @@ fn unique_names(
   }
 }
 
+/// Establishes bounded string for the caller, keeping its validation and result policy at this boundary.
 fn bounded_string(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1051,6 +1092,7 @@ fn bounded_string(
   }
 }
 
+/// Establishes bounded int for the caller, keeping its validation and result policy at this boundary.
 fn bounded_int(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1085,6 +1127,7 @@ fn too_long(text: String, limit: Int) -> Bool {
   string.drop_start(text, limit) != ""
 }
 
+/// Establishes bounded count for the caller, keeping its validation and result policy at this boundary.
 fn bounded_count(count: Int) -> Result(Nil, String) {
   case count > max_schedules {
     False -> Ok(Nil)
@@ -1102,6 +1145,8 @@ fn bounded_count(count: Int) -> Result(Nil, String) {
 // The catalogue's and the rule store's strictness helper, restated
 // rather than imported: this parser answers about a different set of
 // keys and must not depend on either's private surface.
+
+/// Establishes known keys for the caller, keeping its validation and result policy at this boundary.
 fn known_keys(
   present: List(String),
   allowed: List(String),
@@ -1122,6 +1167,7 @@ fn known_keys(
   }
 }
 
+/// Establishes describe parse error for the caller, keeping its validation and result policy at this boundary.
 fn describe_parse_error(error: tom.ParseError) -> String {
   case error {
     tom.Unexpected(got:, expected:) ->
@@ -1646,6 +1692,8 @@ pub fn cron_late(
 
 // The verdict once the preceding occurrence is known: it has to have
 // been *owed* before its absence means anything.
+
+/// Establishes preceding lateness for the caller, keeping its validation and result policy at this boundary.
 fn preceding_lateness(
   occurrences: List(Int),
   preceding: Int,
@@ -1834,6 +1882,7 @@ fn attribution(origin: Origin) -> String {
 /// ```
 ///
 pub fn injection(schedule: Schedule, late: Lateness, origin: Origin) -> String {
+  // Decide how to handle let late_line =  late {.
   let late_line = case late {
     Late ->
       "This fire is late: the scheduled window for this occurrence has "
@@ -1856,6 +1905,7 @@ pub fn injection(schedule: Schedule, late: Lateness, origin: Origin) -> String {
     Late -> " (late)"
     OnTime -> ""
   }
+
   "[loom] scheduled heartbeat \""
   <> schedule.name
   <> "\""
@@ -2066,6 +2116,8 @@ fn stored_wake(wake: Wake) -> Bool {
 // so a stored expansion of them would be a second, unvalidated way for
 // an `Expression` to come into being; and the text is what an operator
 // or a model wrote, which is what a listing has to echo back.
+
+/// Establishes timing fields for the caller, keeping its validation and result policy at this boundary.
 fn timing_fields(timing: Timing) -> List(#(String, JsonValue)) {
   case timing {
     Interval(seconds:, expiry:) -> [
@@ -2137,6 +2189,8 @@ pub fn decode(value: JsonValue) -> Result(Schedule, Nil) {
 // cell that could decode as the operator's would fire with the
 // operator's attribution and be uncancellable through the door that
 // created it.
+
+/// Establishes owner field for the caller, keeping its validation and result policy at this boundary.
 fn owner_field(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -2162,6 +2216,7 @@ type StoredTiming {
   StoredAt(at: Int)
 }
 
+/// Establishes decode timing for the caller, keeping its validation and result policy at this boundary.
 fn decode_timing(fields: List(#(String, JsonValue))) -> Result(Timing, Nil) {
   let named =
     [
@@ -2186,10 +2241,13 @@ fn decode_timing(fields: List(#(String, JsonValue))) -> Result(Timing, Nil) {
 // drops the cell exactly as an out-of-bounds interval does, and the
 // schedule stops firing rather than running on a value nothing would
 // admit today.
+
+/// Establishes stored timing for the caller, keeping its validation and result policy at this boundary.
 fn stored_timing(
   fields: List(#(String, JsonValue)),
   stored: StoredTiming,
 ) -> Result(Timing, Nil) {
+  // Decide how to handle stored {.
   case stored {
     StoredAt(at:) -> Ok(OneShot(at:))
 
@@ -2217,6 +2275,8 @@ fn stored_timing(
 // zero says. A field that is present but not an integer is refused
 // rather than defaulted, because a cell nothing in this build could have
 // written is not a schedule that runs today.
+
+/// Establishes stored utc offset for the caller, keeping its validation and result policy at this boundary.
 fn stored_utc_offset(fields: List(#(String, JsonValue))) -> Result(Int, Nil) {
   case field(fields, "utc_offset_s") {
     Error(Nil) -> Ok(0)
@@ -2231,6 +2291,7 @@ fn stored_expiry(fields: List(#(String, JsonValue))) -> Result(Expiry, Nil) {
   Ok(Expiry(max_fires:, expires_after_s:))
 }
 
+/// Establishes object fields for the caller, keeping its validation and result policy at this boundary.
 fn object_fields(value: JsonValue) -> Result(List(#(String, JsonValue)), Nil) {
   case value {
     json.Object(fields:) -> Ok(fields)
@@ -2250,6 +2311,7 @@ fn field(
   list.key_find(fields, key)
 }
 
+/// Establishes string field for the caller, keeping its validation and result policy at this boundary.
 fn string_field(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -2260,6 +2322,7 @@ fn string_field(
   }
 }
 
+/// Establishes int field for the caller, keeping its validation and result policy at this boundary.
 fn int_field(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -2270,6 +2333,7 @@ fn int_field(
   }
 }
 
+/// Establishes wake field for the caller, keeping its validation and result policy at this boundary.
 fn wake_field(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -2316,6 +2380,7 @@ pub fn build(
   Ok(Schedule(name:, target:, owner:, timing:, wake:, body:))
 }
 
+/// Establishes checked name for the caller, keeping its validation and result policy at this boundary.
 fn checked_name(name: String) -> Result(Nil, String) {
   case name == "", too_long(name, max_name_length) {
     True, _ -> Error("name must not be empty")
@@ -2329,6 +2394,7 @@ fn checked_name(name: String) -> Result(Nil, String) {
   }
 }
 
+/// Establishes checked name characters for the caller, keeping its validation and result policy at this boundary.
 fn checked_name_characters(name: String) -> Result(Nil, String) {
   case name_breaks_key(name), name_breaks_fence(name) {
     True, _ ->
@@ -2345,6 +2411,7 @@ fn checked_name_characters(name: String) -> Result(Nil, String) {
   }
 }
 
+/// Establishes checked target for the caller, keeping its validation and result policy at this boundary.
 fn checked_target(target: String) -> Result(Nil, String) {
   case target == "", too_long(target, max_target_length) {
     True, _ -> Error("target must not be empty")
@@ -2363,6 +2430,8 @@ fn checked_target(target: String) -> Result(Nil, String) {
 // `decode` reaches this constructor too, and a cell claiming a
 // pathological owner is exactly the value a re-validating decoder is
 // for.
+
+/// Establishes checked owner for the caller, keeping its validation and result policy at this boundary.
 fn checked_owner(owner: Owner) -> Result(Nil, String) {
   case owner {
     OperatorOwned -> Ok(Nil)
@@ -2380,6 +2449,7 @@ fn checked_owner(owner: Owner) -> Result(Nil, String) {
   }
 }
 
+/// Establishes checked body for the caller, keeping its validation and result policy at this boundary.
 fn checked_body(body: String) -> Result(Nil, String) {
   case body == "", too_long(body, max_body_length) {
     True, _ -> Error("body must not be empty")
@@ -2393,6 +2463,7 @@ fn checked_body(body: String) -> Result(Nil, String) {
   }
 }
 
+/// Establishes checked timing for the caller, keeping its validation and result policy at this boundary.
 fn checked_timing(timing: Timing) -> Result(Nil, String) {
   case timing {
     OneShot(..) -> Ok(Nil)
@@ -2416,6 +2487,7 @@ fn checked_timing(timing: Timing) -> Result(Nil, String) {
   }
 }
 
+/// Establishes checked interval for the caller, keeping its validation and result policy at this boundary.
 fn checked_interval(seconds: Int) -> Result(Nil, String) {
   case seconds < min_interval_s, seconds > max_interval_s {
     True, _ ->
@@ -2441,6 +2513,8 @@ fn checked_interval(seconds: Int) -> Result(Nil, String) {
 // because `decode` and the model-facing door both reach this
 // constructor with a number that never passed through that parser — a
 // cell an older build wrote, a bound a later build narrowed.
+
+/// Establishes checked utc offset for the caller, keeping its validation and result policy at this boundary.
 fn checked_utc_offset(offset_s: Int) -> Result(Nil, String) {
   case offset_s < min_utc_offset_s || offset_s > max_utc_offset_s {
     True ->
@@ -2459,6 +2533,7 @@ fn checked_utc_offset(offset_s: Int) -> Result(Nil, String) {
   }
 }
 
+/// Establishes checked expiry for the caller, keeping its validation and result policy at this boundary.
 fn checked_expiry(expiry: Expiry) -> Result(Nil, String) {
   case
     expiry.max_fires < 1 || expiry.max_fires > max_max_fires,
@@ -2517,12 +2592,15 @@ pub fn policy_from_document(
   }
 }
 
+/// Establishes policy table for the caller, keeping its validation and result policy at this boundary.
 fn policy_table(fields: Dict(String, tom.Toml)) -> Result(Policy, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
     ["model_created"],
     "the [schedules] table",
   ))
+
+  // Decide how to handle dict.get(fields, "model_created") {.
   case dict.get(fields, "model_created") {
     Error(Nil) -> Ok(default_policy)
     Ok(tom.String("off")) -> Ok(ModelSchedulesOff)
@@ -2599,6 +2677,7 @@ pub fn wake_under(policy: Policy, requested requested: Wake) -> Wake {
 /// ```
 ///
 pub fn parse_instant(text: String) -> Result(Int, String) {
+  // Decide how to handle timestamp.parse_rfc3339(text) {.
   case timestamp.parse_rfc3339(text) {
     Error(Nil) ->
       Error(
@@ -2729,6 +2808,8 @@ pub fn parse_utc_offset(text: String) -> Result(Int, String) {
   use sign <- result.try(offset_sign(text))
   use #(hours, minutes) <- result.try(offset_digits(text))
   let seconds = sign * { hours * 3600 + minutes * 60 }
+
+  // Decide how to handle seconds < min_utc_offset_s || seconds > max_utc_offset_s {.
   case seconds < min_utc_offset_s || seconds > max_utc_offset_s {
     True ->
       Error(
@@ -2748,6 +2829,8 @@ pub fn parse_utc_offset(text: String) -> Result(Int, String) {
 // half the world would read it as east and half as "the local time is
 // two hours", and a schedule shifted the wrong way by four hours is a
 // heartbeat that fires in the middle of the night.
+
+/// Establishes offset sign for the caller, keeping its validation and result policy at this boundary.
 fn offset_sign(text: String) -> Result(Int, String) {
   case string.starts_with(text, "+"), string.starts_with(text, "-") {
     True, _west -> Ok(1)
@@ -2767,10 +2850,14 @@ fn offset_sign(text: String) -> Result(Int, String) {
 // `24:00` is admitted by these rules and refused by the range check in
 // `parse_utc_offset`, which is the honest division: this function knows
 // the shape, that one knows what a clock offset may be.
+
+/// Establishes offset digits for the caller, keeping its validation and result policy at this boundary.
 fn offset_digits(text: String) -> Result(#(Int, Int), String) {
   use #(hours, minutes) <- result.try(offset_halves(text))
   use hour <- result.try(clock_field(hours))
   use minute <- result.try(clock_field(minutes))
+
+  // Decide how to handle minute < 60 {.
   case minute < 60 {
     True -> Ok(#(hour, minute))
     False -> Error(malformed_offset())
@@ -2788,6 +2875,8 @@ fn offset_halves(text: String) -> Result(#(String, String), String) {
 
 // One two-digit clock field. The length check is what refuses `+2:00`
 // and `+02:5`, which `int.parse` alone would happily accept.
+
+/// Establishes clock field for the caller, keeping its validation and result policy at this boundary.
 fn clock_field(text: String) -> Result(Int, String) {
   case string.length(text) == 2, int.parse(text) {
     True, Ok(value) -> Ok(value)
@@ -2824,6 +2913,7 @@ fn malformed_offset() -> String {
 /// ```
 ///
 pub fn render_utc_offset(offset_s: Int) -> String {
+  // Decide how to handle offset_s == 0 {.
   case offset_s == 0 {
     True -> "UTC"
     False -> {

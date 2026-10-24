@@ -46,12 +46,14 @@ pub const usage =
 /// // loomd peer send SOURCE main TARGET reviewer --message-id review-1 --text finding
 /// ```
 pub fn main(arguments: List(String)) -> Nil {
+  // Parse the CLI arguments into a peer Command.
   case parse(arguments) {
     Error(reason) -> {
       io.println(json.to_string(error_json("usage", reason)))
       ffi_os.halt(2)
     }
     Ok(command) -> {
+      // Execute the parsed peer CLI command.
       case run(command) {
         Ok(value) -> {
           io.println(json.to_string(value))
@@ -81,10 +83,13 @@ pub fn main(arguments: List(String)) -> Nil {
 /// ```
 @internal
 pub fn parse(arguments: List(String)) -> Result(Command, String) {
+  // Extract the optional state directory override flag before parsing command words.
   let #(directory, arguments) = case arguments {
     ["--state-dir", directory, ..rest] -> #(directory, rest)
     rest -> #("", rest)
   }
+
+  // Parse the peer command verb and positional/named arguments.
   let parsed = case arguments {
     ["inspect", source, strand] ->
       Ok(
@@ -140,6 +145,7 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
       )
     _ -> Error(usage)
   }
+
   use #(name, source, strand, target, wake, message_id, extra) <- result.try(
     parsed,
   )
@@ -181,14 +187,17 @@ pub fn exchange(
   epoch: String,
   command: Command,
 ) -> Result(JsonValue, String) {
+  // Choose inspection pagination or standard admin exchange.
   let reply = case command.name {
     "peers.inspect" -> inspect_pages(address, token, epoch, command)
     _ -> admin.exchange(address, token, epoch, command.request)
   }
+
   reply
   |> result.map(fn(reply) { success(command, reply) })
 }
 
+/// Fetches the first page of peer inspection and recursively follows remaining pages.
 fn inspect_pages(
   address: String,
   token: String,
@@ -211,6 +220,7 @@ fn inspect_pages(
   )
 }
 
+/// Paginates through subsequent pages of peer links until all entries are collected.
 fn follow_pages(
   address: String,
   token: String,
@@ -221,8 +231,10 @@ fn follow_pages(
   outgoing: List(JsonValue),
   incoming: List(JsonValue),
 ) -> Result(JsonValue, String) {
+  // Check whether pagination has completed or another cursor follows.
   case next {
     json.Null ->
+      // Extract the original response envelope fields and assemble all pages.
       case first {
         json.Object(fields) ->
           Ok(
@@ -250,6 +262,8 @@ fn follow_pages(
       use page_outgoing <- result.try(array_field(page, "outgoing"))
       use page_incoming <- result.try(array_field(page, "incoming"))
       use page_next <- result.try(cursor_field(page))
+
+      // Validate session and strand coordinates match the current command.
       use Nil <- result.try(
         case field(page, "source_session"), field(page, "source_strand") {
           Ok(json.String(source)), Ok(json.String(strand))
@@ -259,12 +273,16 @@ fn follow_pages(
           _, _ -> Error("invalid peer inspection coordinates; outcome unknown")
         },
       )
+
+      // Verify cursor strictly advances and contains rows.
       use Nil <- result.try(case page_next {
         json.Null -> Ok(Nil)
         json.String(next_cursor) -> {
           let has_rows =
             list.is_empty(page_outgoing) == False
             || list.is_empty(page_incoming) == False
+
+          // Compare next cursor against current cursor.
           case string.compare(next_cursor, cursor) == order.Gt && has_rows {
             True -> Ok(Nil)
             False -> Error("invalid peer inspection cursor; outcome unknown")
@@ -272,6 +290,7 @@ fn follow_pages(
         }
         _ -> Error("invalid peer inspection cursor; outcome unknown")
       })
+
       follow_pages(
         address,
         token,
@@ -294,6 +313,7 @@ fn array_field(value, key) {
   }
 }
 
+/// Decodes the pagination cursor from a peer inspection JSON object.
 fn cursor_field(value) {
   case field(value, "next") {
     Ok(json.Null) -> Ok(json.Null)
@@ -309,6 +329,7 @@ fn endpoint(session, strand) {
   ])
 }
 
+/// Returns common identity JSON fields identifying the command coordinates.
 fn identity(command: Command) {
   [
     #("command", json.String(command.name)),
@@ -319,11 +340,14 @@ fn identity(command: Command) {
   ]
 }
 
+/// Wraps a successful JSON response with metadata and partial indication.
 fn success(command: Command, reply: JsonValue) {
+  // Check if unlinking resulted in a pending recipient grant revocation.
   let partial = case command.name, field(reply, "recipient_grant") {
     "peers.unlink", Ok(json.String(_)) -> True
     _, _ -> False
   }
+
   json.Object([
     #("ok", json.Bool(True)),
     #("partial", json.Bool(partial)),
@@ -339,6 +363,7 @@ fn field(value, key) {
   }
 }
 
+/// Encodes a failed command response with refusal code and reason.
 fn failure(command, reason) {
   json.Object([
     #("ok", json.Bool(False)),
@@ -354,6 +379,7 @@ fn failure(command, reason) {
   ])
 }
 
+/// Formats a generic error payload with error code and description.
 fn error_json(code, reason) {
   json.Object([
     #("ok", json.Bool(False)),
@@ -362,6 +388,13 @@ fn error_json(code, reason) {
   ])
 }
 
+/// Checks whether an error string represents an unconfirmed network or process outcome.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert peer_cli.unknown_outcome("timeout: outcome unknown") == True
+/// ```
 @internal
 pub fn unknown_outcome(reason: String) -> Bool {
   string.contains(reason, "outcome unknown")

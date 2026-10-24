@@ -507,32 +507,37 @@ pub fn handle(
   config: Config(instance),
   request: Request(mist.Connection),
 ) -> Response(mist.ResponseData) {
+  // This branch resolves request path_segments request before the operation continues.
   case request.path_segments(request) {
     ["v2", "control"] -> authenticated(config, request, None)
     ["v2", "sessions", id, "ws"] -> authenticated(config, request, Some(id))
     ["v2", "claim"] -> claim_route(config, request)
     [] | ["ui", ..] ->
+      // This branch resolves config ui before the operation continues.
       case config.ui {
         Some(ui) -> web_view(config, ui, request)
         None -> plain(404, "unknown endpoint")
       }
+
     _ -> plain(404, "unknown endpoint")
   }
 }
 
-// The web view's routes, in the order protocol-change/051 checks them: the
-// host first, then the check that belongs to the route, then the cookie and
-// the credential behind it. Every response carries the view's headers except
-// the socket's upgrade, which carries mist's.
-//
-// The host check is where the page's origin is decided, once, and the
-// decision is handed to every handler below (protocol-change/052). A `Host`
-// that is neither loopback nor one of the owner's listed origins is refused
-// here, which is the DNS rebinding defence; no forwarded header is read.
+/// The web view's routes, in the order protocol-change/051 checks them: the
+/// host first, then the check that belongs to the route, then the cookie and
+/// the credential behind it. Every response carries the view's headers except
+/// the socket's upgrade, which carries mist's.
+///
+/// The host check is where the page's origin is decided, once, and the
+/// decision is handed to every handler below (protocol-change/052). A `Host`
+/// that is neither loopback nor one of the owner's listed origins is refused
+/// here, which is the DNS rebinding defence; no forwarded header is read.
 fn web_view(config: Config(instance), ui: Ui(instance), request) {
+  // This branch resolves ui_http page_origin request ui origins before the operation continues.
   case ui_http.page_origin(request, ui.origins) {
     Error(Nil) -> ui_http.refused(plain(403, "forbidden host"))
     Ok(origin) ->
+      // This branch resolves ui_http route request before the operation continues.
       case ui_http.route(request) {
         ui_http.Socket(key, id, nonce) ->
           web_socket(config, ui, request, origin, key, id, nonce)
@@ -604,6 +609,8 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
               web_document(config, ui, request, origin, route),
               origin,
             )
+
+          // Inject specialized CSP headers for iframe assets such as Mermaid diagrams.
           case route {
             ui_http.Asset(ui_http.MermaidFrame) ->
               response.set_header(
@@ -618,10 +625,10 @@ fn web_view(config: Config(instance), ui: Ui(instance), request) {
   }
 }
 
-// The page's socket: this origin, then a nonce in the query, then the
-// page's grant under its key, then that nonce against the grant's, then the
-// same resident-session resolution a terminal's socket uses, with the
-// membership role capped by the page's ceiling.
+/// The page's socket: this origin, then a nonce in the query, then the
+/// page's grant under its key, then that nonce against the grant's, then the
+/// same resident-session resolution a terminal's socket uses, with the
+/// membership role capped by the page's ceiling.
 fn web_socket(
   config: Config(instance),
   ui: Ui(instance),
@@ -632,6 +639,7 @@ fn web_socket(
   nonce: Option(String),
 ) {
   let checked = {
+    // Verify that the request origin matches the expected web view page origin.
     use Nil <- result.try(case ui_http.origin_matches(request, origin) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden origin"))
@@ -660,8 +668,11 @@ fn web_socket(
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden page"))
     })
+
     Ok(#(state, ui_sessions.grant(page), cookie))
   }
+
+  // Branch on whether origin and credential admission checks succeeded.
   case checked {
     Error(response) -> ui_http.secured(response, origin)
     Ok(#(state, grant, cookie)) -> {
@@ -689,11 +700,11 @@ fn web_socket(
   }
 }
 
-// The home's socket (protocol-change/065): the same checks as a session's
-// socket, in the same order, against a grant of the `Home` scope. There is no
-// session to resolve, so the checks end with the credential, and the upgrade
-// is handed the principal it authenticated, under an observer-class permit,
-// since the home takes only clicks and never a prompt.
+/// The home's socket (protocol-change/065): the same checks as a session's
+/// socket, in the same order, against a grant of the `Home` scope. There is no
+/// session to resolve, so the checks end with the credential, and the upgrade
+/// is handed the principal it authenticated, under an observer-class permit,
+/// since the home takes only clicks and never a prompt.
 fn home_socket(
   config: Config(instance),
   ui: Ui(instance),
@@ -704,10 +715,12 @@ fn home_socket(
   visit: Option(Visit),
 ) {
   let checked = {
+    // Verify that the request origin matches the expected web view page origin.
     use Nil <- result.try(case ui_http.origin_matches(request, origin) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden origin"))
     })
+
     use nonce <- result.try(
       option.to_result(nonce, Nil)
       |> result.map_error(fn(_) { plain(403, "forbidden page") }),
@@ -725,12 +738,17 @@ fn home_socket(
       principal,
       ui_sessions.grant(page).ceiling,
     ))
+
+    // Compare provided session nonce against the registered page authorization.
     use Nil <- result.try(case ui_sessions.admits(page, nonce) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden page"))
     })
+
     Ok(#(state, ui_sessions.grant(page), cookie, principal))
   }
+
+  // Branch on whether origin and credential admission checks succeeded.
   case checked {
     Error(response) -> ui_http.secured(response, origin)
     Ok(#(state, grant, cookie, principal)) ->
@@ -752,17 +770,20 @@ fn home_socket(
   }
 }
 
-// What a relayed session's page needs beyond a home's (protocol-change/094): the
-// page is the owner's operating page, and the orchestrator is one the daemon is
-// configured with. A refusal is the plain status, because nothing here is a
-// state of the person's page that a document could advise on. A page that visits
-// nothing needs nothing.
+/// What a relayed session's page needs beyond a home's (protocol-change/094): the
+/// page is the owner's operating page, and the orchestrator is one the daemon is
+/// configured with. A refusal is the plain status, because nothing here is a
+/// state of the person's page that a document could advise on. A page that visits
+/// nothing needs nothing.
 fn admitted_visit(
   config: Config(instance),
   visit: Option(Visit),
   principal: access.Principal,
   ceiling: access.Role,
 ) -> Result(Nil, Response(mist.ResponseData)) {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case visit {
     None -> Ok(Nil)
     Some(Visit(orchestrator:, ..)) ->
@@ -784,9 +805,9 @@ fn admitted_visit(
   }
 }
 
-// Reserves the permit and hands the home's attachment to the upgrade, which
-// takes custody of it in the socket's process. The release here follows the
-// upgrade's own barrier exactly as `resident_upgrade`'s does.
+/// Reserves the permit and hands the home's attachment to the upgrade, which
+/// takes custody of it in the socket's process. The release here follows the
+/// upgrade's own barrier exactly as `resident_upgrade`'s does.
 fn home_upgrade(
   config: Config(instance),
   ui: Ui(instance),
@@ -797,7 +818,10 @@ fn home_upgrade(
   open: fn() -> Result(Int, Nil),
   visit: Option(Visit),
 ) {
+  // This branch resolves the input state before the operation continues.
   let grant = seen.grant
+
+  // Acquire an observer-class permit to bound concurrent home page sessions.
   case
     upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
       root.acquire(config.daemon, root.Observer, within: 1000)
@@ -871,10 +895,10 @@ fn home_upgrade(
   }
 }
 
-// The admin page's socket (protocol-change/065, the fifth pull request): the
-// home's checks in the home's order, against a grant of the `Admin` scope, and
-// then one more that no other page has: the principal the credential
-// authenticates as must be the daemon's owner (`admin_grant`).
+/// The admin page's socket (protocol-change/065, the fifth pull request): the
+/// home's checks in the home's order, against a grant of the `Admin` scope, and
+/// then one more that no other page has: the principal the credential
+/// authenticates as must be the daemon's owner (`admin_grant`).
 fn admin_socket(
   config: Config(instance),
   ui: Ui(instance),
@@ -884,10 +908,12 @@ fn admin_socket(
   nonce: Option(String),
 ) {
   let checked = {
+    // Verify that the request origin matches the expected web view page origin.
     use Nil <- result.try(case ui_http.origin_matches(request, origin) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden origin"))
     })
+
     use nonce <- result.try(
       option.to_result(nonce, Nil)
       |> result.map_error(fn(_) { plain(403, "forbidden page") }),
@@ -899,12 +925,17 @@ fn admin_socket(
       origin,
       key,
     ))
+
+    // Compare provided session nonce against the registered page authorization.
     use Nil <- result.try(case ui_sessions.admits(page, nonce) {
       True -> Ok(Nil)
       False -> Error(plain(403, "forbidden page"))
     })
+
     Ok(#(state, ui_sessions.grant(page), cookie, principal))
   }
+
+  // Branch on whether origin and credential admission checks succeeded.
   case checked {
     Error(response) -> ui_http.secured(response, origin)
     Ok(#(state, grant, cookie, principal)) ->
@@ -921,8 +952,8 @@ fn admin_socket(
   }
 }
 
-// Reserves the permit and hands the admin page's attachment to the upgrade,
-// which takes custody of it in the socket's process, as `home_upgrade` does.
+/// Reserves the permit and hands the admin page's attachment to the upgrade,
+/// which takes custody of it in the socket's process, as `home_upgrade` does.
 fn admin_upgrade(
   config: Config(instance),
   ui: Ui(instance),
@@ -933,6 +964,7 @@ fn admin_upgrade(
   login: Option(ui_sessions.Issuer),
   open: fn() -> Result(Int, Nil),
 ) {
+  // Acquire an observer-class permit to bound concurrent admin page sessions.
   case
     upgrade_log.timed(upgrade_log.Page, "acquire", fn() {
       root.acquire(config.daemon, root.Observer, within: 1000)
@@ -971,9 +1003,9 @@ fn admin_upgrade(
   }
 }
 
-// What the other orchestrators list, for a page that draws it: the first page of
-// each, or the page after `after` of the one `orchestrator` names. A read that
-// could not be made is `Unread`.
+/// What the other orchestrators list, for a page that draws it: the first page of
+/// each, or the page after `after` of the one `orchestrator` names. A read that
+/// could not be made is `Unread`.
 fn heard_elsewhere(
   config: Config(instance),
   orchestrator: Option(String),
@@ -989,11 +1021,11 @@ fn heard_elsewhere(
   |> result.unwrap(page_elsewhere.Unread)
 }
 
-// The deployment read the Admin page's machines list draws, made as the
-// `deployment.status` control command makes it (`deployment_status`) and read
-// back through the page's own total decoder. A key that names nothing, a reply
-// the decoder refuses and a read that failed are all `Unread`, and the page
-// keeps what it has.
+/// The deployment read the Admin page's machines list draws, made as the
+/// `deployment.status` control command makes it (`deployment_status`) and read
+/// back through the page's own total decoder. A key that names nothing, a reply
+/// the decoder refuses and a read that failed are all `Unread`, and the page
+/// keeps what it has.
 fn admin_deployment(
   config: Config(instance),
   node: Option(String),
@@ -1002,6 +1034,8 @@ fn admin_deployment(
     use #(_, body) <- result.try(
       deployment_status(config, node) |> result.replace_error(Nil),
     )
+
+    // Decode deployment overview or detailed node status based on query parameter.
     case node {
       None ->
         machines.decode_overview(body)
@@ -1016,6 +1050,7 @@ fn admin_deployment(
   result.unwrap(read, machines.Unread)
 }
 
+/// Serves static web assets, session pages, and image attachments for the web view.
 fn web_document(
   config: Config(instance),
   ui: Ui(instance),
@@ -1023,6 +1058,7 @@ fn web_document(
   origin: ui_http.PageOrigin,
   route: ui_http.Route,
 ) {
+  // This branch resolves route before the operation continues.
   case route {
     ui_http.Unknown
     | ui_http.Socket(..)
@@ -1054,9 +1090,11 @@ fn web_document(
     // A keyed page is reached only by a navigation from this origin or from
     // outside any page, so no other page can put it in front of the person.
     ui_http.Page(key, id) ->
+      // This branch resolves ui_http navigation_allowed request before the operation continues.
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden navigation")
         True ->
+          // This branch resolves page_grant config ui request origin key id before the operation continues.
           case page_grant(config, ui, request, origin, key, id) {
             Error(response) -> response
             Ok(_) -> document(200, "text/html; charset=utf-8", page.shell(id))
@@ -1070,6 +1108,7 @@ fn web_document(
     // still a member. The page's component then says whether it drew an image
     // at that row and place; the bytes are the daemon's to check (`picture`).
     ui_http.Image(key, id, ref, position) ->
+      // This branch resolves ui_http navigation_allowed request before the operation continues.
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden fetch")
         True -> image_of(config, ui, request, origin, key, id, ref, position)
@@ -1078,6 +1117,7 @@ fn web_document(
     // Every explicit result read repeats the page's current authorization and
     // resolves its immutable identity within this session, before reading bytes.
     ui_http.ResultPage(key, id, ref, index) ->
+      // This branch resolves ui_http navigation_allowed request before the operation continues.
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden fetch")
         True ->
@@ -1085,6 +1125,7 @@ fn web_document(
       }
 
     ui_http.ResultDownload(key, id, ref) ->
+      // This branch resolves ui_http navigation_allowed request before the operation continues.
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden fetch")
         True -> result_of(config, ui, request, origin, key, id, ref, None)
@@ -1094,9 +1135,11 @@ fn web_document(
     // from this origin or from outside any page, and a cookie under the key
     // that names a live page of the `Home` scope.
     ui_http.HomePage(key) ->
+      // This branch resolves ui_http navigation_allowed request before the operation continues.
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden navigation")
         True ->
+          // This branch resolves home_grant config ui request origin key before the operation continues.
           case home_grant(config, ui, request, origin, key) {
             Error(response) -> response
             Ok(_) ->
@@ -1108,6 +1151,7 @@ fn web_document(
     // home's two rules, and the two more every relayed request makes: the page is
     // the owner's operating page, and the orchestrator is a configured one.
     ui_http.RelayedPage(key, orchestrator, session) ->
+      // This branch resolves ui_http navigation_allowed request before the operation continues.
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden navigation")
         True ->
@@ -1125,9 +1169,11 @@ fn web_document(
     // or from outside any page, and a cookie under the key that names a live
     // page of the `Admin` scope whose credential is still the owner's.
     ui_http.AdminPage(key) ->
+      // This branch resolves ui_http navigation_allowed request before the operation continues.
       case ui_http.navigation_allowed(request) {
         False -> plain(403, "forbidden navigation")
         True ->
+          // This branch resolves admin_grant config ui request origin key before the operation continues.
           case admin_grant(config, ui, request, origin, key) {
             Error(response) -> response
             Ok(_) ->
@@ -1141,8 +1187,8 @@ fn web_document(
   }
 }
 
-// The relayed session page's document, after its navigation check: the home's
-// grant, and then the two more every relayed request makes.
+/// The relayed session page's document, after its navigation check: the home's
+/// grant, and then the two more every relayed request makes.
 fn relayed_document(
   config: Config(instance),
   ui: Ui(instance),
@@ -1151,6 +1197,9 @@ fn relayed_document(
   key: String,
   visit: Visit,
 ) {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case home_grant(config, ui, request, origin, key) {
     Error(response) -> response
     Ok(#(_, held, _, principal)) ->
@@ -1169,15 +1218,15 @@ fn relayed_document(
   }
 }
 
-// A ticket link, `GET` with the ticket in its query. A link opened from outside
-// any page (`none`) or from this origin redeems at once, as it always has. Any
-// other link, which is how a phone's camera, a QR scanner or a chat app opens
-// one (`cross-site`, or no `Sec-Fetch-Site` at all), is not redeemed and not
-// refused: it is answered with a confirmation that says what signing in will
-// do and holds one button. That keeps the exchange's defence, since another
-// page can still put the confirmation in front of the person but cannot finish
-// the exchange without the person pressing a button on this origin that names
-// what it does, and loading the confirmation spends nothing.
+/// A ticket link, `GET` with the ticket in its query. A link opened from outside
+/// any page (`none`) or from this origin redeems at once, as it always has. Any
+/// other link, which is how a phone's camera, a QR scanner or a chat app opens
+/// one (`cross-site`, or no `Sec-Fetch-Site` at all), is not redeemed and not
+/// refused: it is answered with a confirmation that says what signing in will
+/// do and holds one button. That keeps the exchange's defence, since another
+/// page can still put the confirmation in front of the person but cannot finish
+/// the exchange without the person pressing a button on this origin that names
+/// what it does, and loading the confirmation spends nothing.
 fn offered_exchange(
   config: Config(instance),
   ui: Ui(instance),
@@ -1186,6 +1235,7 @@ fn offered_exchange(
   exchange: ui_sessions.Exchange,
   ticket: String,
 ) {
+  // This branch resolves ui_http exchange_allowed request before the operation continues.
   case ui_http.exchange_allowed(request) {
     True ->
       ui_http.secured(
@@ -1196,26 +1246,29 @@ fn offered_exchange(
   }
 }
 
-// The confirmation for a ticket that is still live, or the exchange's own
-// "link expired" answer for one that is not, so a dead link does not offer a
-// button that cannot work. The preview leaves the ticket in the table. The
-// document is the one answer under `OwnForms`, and like every `/ui` answer it
-// carries `Referrer-Policy: no-referrer`, so neither its stylesheet fetch nor
-// its form's post tells anyone the address that holds the ticket, and
-// `Cache-Control: no-store`, so the ticket in its body is not kept on disk.
+/// The confirmation for a ticket that is still live, or the exchange's own
+/// "link expired" answer for one that is not, so a dead link does not offer a
+/// button that cannot work. The preview leaves the ticket in the table. The
+/// document is the one answer under `OwnForms`, and like every `/ui` answer it
+/// carries `Referrer-Policy: no-referrer`, so neither its stylesheet fetch nor
+/// its form's post tells anyone the address that holds the ticket, and
+/// `Cache-Control: no-store`, so the ticket in its body is not kept on disk.
 fn confirm_exchange(
   ui: Ui(instance),
   origin: ui_http.PageOrigin,
   exchange: ui_sessions.Exchange,
   ticket: String,
 ) {
+  // Preview ticket validity before rendering confirmation document.
   case ui_sessions.preview(ui.sessions, ticket) {
     Error(Nil) -> ui_http.secured(expired_link(exchange), origin)
     Ok(remember) -> {
+      // Determine sign-in persistence notice from remember configuration.
       let staying = case remember {
         ui_sessions.Remembered -> page.StaysSignedIn
         ui_sessions.Forgotten -> page.ForThisPage
       }
+
       document(
         200,
         "text/html; charset=utf-8",
@@ -1231,13 +1284,13 @@ fn confirm_exchange(
   }
 }
 
-// The press on a confirmation: a `POST` to the exchange's own address, with the
-// ticket as the form's one field. It is held to the rules the login's resume
-// is: this origin's own page as the sender, so a form another page posts and a
-// program that says nothing of its origin are both refused, and a declared,
-// bounded URL-encoded body. Only then is the body read and the ticket redeemed,
-// by the same function the `GET` uses, so the cookie, its `__Secure-` name on a
-// listed origin and any login are set exactly as they would be there.
+/// The press on a confirmation: a `POST` to the exchange's own address, with the
+/// ticket as the form's one field. It is held to the rules the login's resume
+/// is: this origin's own page as the sender, so a form another page posts and a
+/// program that says nothing of its origin are both refused, and a declared,
+/// bounded URL-encoded body. Only then is the body read and the ticket redeemed,
+/// by the same function the `GET` uses, so the cookie, its `__Secure-` name on a
+/// listed origin and any login are set exactly as they would be there.
 fn confirmed_exchange(
   config: Config(instance),
   ui: Ui(instance),
@@ -1245,6 +1298,7 @@ fn confirmed_exchange(
   origin: ui_http.PageOrigin,
   exchange: ui_sessions.Exchange,
 ) {
+  // Assert same-origin POST and declared form payload bounds before reading body.
   let answer = case
     ui_http.same_origin_post(request),
     ui_http.form_declared(request)
@@ -1259,21 +1313,24 @@ fn confirmed_exchange(
         )
         ui_http.posted_ticket(body.body)
       }
+
+      // Redeem ticket if posted form payload parsed successfully.
       case posted {
         Error(Nil) -> plain(400, "bad request")
         Ok(ticket) -> redeem_ticket(config, ui, origin, exchange, ticket)
       }
     }
   }
+
   ui_http.secured(answer, origin)
 }
 
-// One redemption, whichever way the ticket arrived. A ticket presented at
-// another exchange than its own, another session's or another scope's, is
-// spent without a UI session. A redeemed one adds a page and leaves the
-// principal's others open (the oldest ends only at `ui_sessions.max_pages`),
-// and hands this tab the new page's key, in the cookie's path, and its nonce,
-// in the body, never in a redirect.
+/// One redemption, whichever way the ticket arrived. A ticket presented at
+/// another exchange than its own, another session's or another scope's, is
+/// spent without a UI session. A redeemed one adds a page and leaves the
+/// principal's others open (the oldest ends only at `ui_sessions.max_pages`),
+/// and hands this tab the new page's key, in the cookie's path, and its nonce,
+/// in the body, never in a redirect.
 fn redeem_ticket(
   config: Config(instance),
   ui: Ui(instance),
@@ -1281,22 +1338,26 @@ fn redeem_ticket(
   exchange: ui_sessions.Exchange,
   ticket: String,
 ) {
+  // This branch resolves ui_sessions redeem ui sessions ticket exchange before the operation continues.
   case ui_sessions.redeem(ui.sessions, ticket, exchange) {
     Error(ui_sessions.UnknownTicket) -> expired_link(exchange)
     Error(ui_sessions.OtherScope) ->
+      // This branch resolves exchange before the operation continues.
       case exchange {
         ui_sessions.SessionExchange(_) ->
           plain(403, "ticket names another session")
         ui_sessions.HomeExchange | ui_sessions.AdminExchange ->
           plain(403, "ticket names another page")
       }
+
     Ok(redeemed) ->
       entered(config, ui, origin, redeemed, landing(exchange, redeemed.key))
   }
 }
 
-// The keyed page a redeemed ticket moves the tab to.
+/// The keyed page a redeemed ticket moves the tab to.
 fn landing(exchange: ui_sessions.Exchange, key: String) -> String {
+  // This branch resolves exchange before the operation continues.
   case exchange {
     ui_sessions.SessionExchange(id) -> page.session_path(key, id)
     ui_sessions.HomeExchange -> page.home_path(key)
@@ -1304,8 +1365,9 @@ fn landing(exchange: ui_sessions.Exchange, key: String) -> String {
   }
 }
 
-// The answer to a ticket that is not live, in the words of the page it was for.
+/// The answer to a ticket that is not live, in the words of the page it was for.
 fn expired_link(exchange: ui_sessions.Exchange) {
+  // This branch resolves exchange before the operation continues.
   case exchange {
     ui_sessions.SessionExchange(id) -> refused_page(401, ending.LinkExpired, id)
     ui_sessions.HomeExchange -> refused_home(401, ending.LinkExpired)
@@ -1313,8 +1375,9 @@ fn expired_link(exchange: ui_sessions.Exchange) {
   }
 }
 
-// What the confirmation names the exchange as.
+/// What the confirmation names the exchange as.
 fn opening(exchange: ui_sessions.Exchange) -> page.Opening {
+  // This branch resolves exchange before the operation continues.
   case exchange {
     ui_sessions.SessionExchange(id) -> page.OpensSession(id)
     ui_sessions.HomeExchange -> page.OpensHome
@@ -1322,10 +1385,11 @@ fn opening(exchange: ui_sessions.Exchange) -> page.Opening {
   }
 }
 
-// The fixed resume page, for a visit to the bookmark. It is a navigation from
-// outside any page or from this origin, as every keyed page is, and its key is
-// the shape a login key has, so no other path under `/ui/l` is a page.
+/// The fixed resume page, for a visit to the bookmark. It is a navigation from
+/// outside any page or from this origin, as every keyed page is, and its key is
+/// the shape a login key has, so no other path under `/ui/l` is a page.
 fn login_page(request, key: String) {
+  // This branch resolves ui_http navigation_allowed request login_key key before the operation continues.
   case ui_http.navigation_allowed(request), login_key(key) {
     False, _ -> plain(403, "forbidden navigation")
     True, False -> plain(404, "unknown endpoint")
@@ -1339,13 +1403,13 @@ fn login_key(key: String) -> Bool {
   login.is_key(key)
 }
 
-// The resume, a `POST` to the bookmark. The checks run in the order 065 gives:
-// the host was checked by the router, then this origin's own page as the sender,
-// the form's declared size and type, a control-class parser permit (which a
-// daemon that is not serving refuses), the body, and the login itself, which is
-// verified from the cookies and the posted nonce before the catalogue is asked
-// anything. Every refusal of the login is the same `401` with a fixed document
-// that echoes nothing.
+/// The resume, a `POST` to the bookmark. The checks run in the order 065 gives:
+/// the host was checked by the router, then this origin's own page as the sender,
+/// the form's declared size and type, a control-class parser permit (which a
+/// daemon that is not serving refuses), the body, and the login itself, which is
+/// verified from the cookies and the posted nonce before the catalogue is asked
+/// anything. Every refusal of the login is the same `401` with a fixed document
+/// that echoes nothing.
 fn login_resume(
   config: Config(instance),
   ui: Ui(instance),
@@ -1353,6 +1417,9 @@ fn login_resume(
   origin: ui_http.PageOrigin,
   key,
 ) {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case
     ui_http.same_origin_post(request),
     login_key(key),
@@ -1380,6 +1447,7 @@ fn login_resume(
   }
 }
 
+/// Renders the HTML document following a resumed session authentication exchange.
 fn resumed_page(
   config: Config(instance),
   ui: Ui(instance),
@@ -1387,9 +1455,13 @@ fn resumed_page(
   origin: ui_http.PageOrigin,
   key,
 ) {
+  // This branch resolves mist read_body request max_body_limit ui_http max_form_bytes before the operation continues.
   case mist.read_body(request, max_body_limit: ui_http.max_form_bytes) {
     Error(_) -> plain(400, "bad request")
     Ok(body) ->
+      // This branch resolves the input state before the operation continues.
+
+      // This branch resolves the input state before the operation continues.
       case ui_http.posted_nonce(body.body), ready(config, upgrade_log.Page) {
         Error(Nil), _ -> plain(400, "bad request")
         Ok(_), Error(_) -> plain(503, "daemon not ready")
@@ -1421,38 +1493,43 @@ fn document_refused() {
 // The fixed claim form, for a person who opens the address. It is a navigation
 // from outside any page or from this origin, as the resume page is, and it
 // holds nothing the request said.
+/// Claim page keeps this client decision explicit for its callers.
 fn claim_page(request) {
+  // This branch resolves ui_http navigation_allowed request before the operation continues.
   case ui_http.navigation_allowed(request) {
     False -> plain(403, "forbidden navigation")
     True -> document(200, "text/html; charset=utf-8", page.claim_page(None))
   }
 }
 
-// The browser claim, a `POST` from the claim form (protocol-change/065, PR 9).
-// The checks run cheapest first: the host was checked by the router, then this
-// origin's own page as the sender (the claim's one secret is typed by a person,
-// so no other page may post it on their behalf and a program that says nothing
-// of its origin is refused too), the form's declared size and type, then the
-// body, which is at most 1 KiB, and the token's shape. Only a value that is a
-// claim token takes a reservation, one per claim as `/v2/claim` takes it, so a
-// second post for a claim already in flight is refused and nothing a stranger
-// can post without a claim-shaped value costs the daemon a place. The answer to
-// a refusal that a person can correct is the form again with fixed words above
-// it, which needs the policy that lets the form post, so this handler secures
-// its own answers.
+/// The browser claim, a `POST` from the claim form (protocol-change/065, PR 9).
+/// The checks run cheapest first: the host was checked by the router, then this
+/// origin's own page as the sender (the claim's one secret is typed by a person,
+/// so no other page may post it on their behalf and a program that says nothing
+/// of its origin is refused too), the form's declared size and type, then the
+/// body, which is at most 1 KiB, and the token's shape. Only a value that is a
+/// claim token takes a reservation, one per claim as `/v2/claim` takes it, so a
+/// second post for a claim already in flight is refused and nothing a stranger
+/// can post without a claim-shaped value costs the daemon a place. The answer to
+/// a refusal that a person can correct is the form again with fixed words above
+/// it, which needs the policy that lets the form post, so this handler secures
+/// its own answers.
 fn claim_submit(
   config: Config(instance),
   ui: Ui(instance),
   request,
   origin: ui_http.PageOrigin,
 ) {
+  // This branch resolves ui_http same_origin_post request ui_http form_declared request before the operation continues.
   case ui_http.same_origin_post(request), ui_http.form_declared(request) {
     False, _ -> ui_http.secured(plain(403, "forbidden sender"), origin)
     True, False -> ui_http.secured(plain(400, "bad request"), origin)
     True, True ->
+      // This branch resolves mist read_body request max_body_limit ui_http max_form_bytes before the operation continues.
       case mist.read_body(request, max_body_limit: ui_http.max_form_bytes) {
         Error(_) -> ui_http.secured(plain(400, "bad request"), origin)
         Ok(body) ->
+          // This branch resolves ui_http posted_claim body body before the operation continues.
           case ui_http.posted_claim(body.body) {
             Error(Nil) -> ui_http.secured(plain(400, "bad request"), origin)
             Ok(#(typed, name)) ->
@@ -1462,11 +1539,11 @@ fn claim_submit(
   }
 }
 
-// The token's shape is checked before anything is looked up or reserved, so a
-// bearer, a login or a stray word typed into the field is refused having asked
-// the daemon nothing. A token that has the shape is hashed here and dropped:
-// only its hash goes further, and nothing the person typed is written to a log
-// or drawn back.
+/// The token's shape is checked before anything is looked up or reserved, so a
+/// bearer, a login or a stray word typed into the field is refused having asked
+/// the daemon nothing. A token that has the shape is hashed here and dropped:
+/// only its hash goes further, and nothing the person typed is written to a log
+/// or drawn back.
 fn reserve_claim(
   config: Config(instance),
   ui: Ui(instance),
@@ -1474,13 +1551,17 @@ fn reserve_claim(
   typed: String,
   name: Option(String),
 ) {
+  // Validate token shape before deriving claim hash digest.
   let hashed = case claim.validate_token(typed) {
     Ok(Nil) -> access.claim_digest(claim.digest(typed))
     Error(_) -> Error(catalogue.Invalid("not a claim token"))
   }
+
+  // Branch on hashed claim validation result before acquiring root permit.
   case hashed {
     Error(_) -> claim_refused(origin, 400, page.NotAClaim)
     Ok(presented) ->
+      // This branch resolves root acquire_claim config daemon presented within 1000 before the operation continues.
       case root.acquire_claim(config.daemon, presented, within: 1000) {
         Error(root.ClaimInFlight) -> claim_refused(origin, 409, page.ClaimBusy)
         Error(root.NotAdmitted(reason)) -> {
@@ -1496,6 +1577,7 @@ fn reserve_claim(
   }
 }
 
+/// Redeems an invite claim token and establishes initial member enrollment credentials.
 fn redeem_claim(
   config: Config(instance),
   ui: Ui(instance),
@@ -1503,6 +1585,9 @@ fn redeem_claim(
   presented: access.ClaimDigest,
   name: Option(String),
 ) {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case ready(config, upgrade_log.Page) {
     Error(_) -> ui_http.secured(plain(503, "daemon not ready"), origin)
     Ok(state) ->
@@ -1521,12 +1606,12 @@ fn redeem_claim(
   }
 }
 
-// What a claim that bound opens: a `Home` page of the principal at `Operator`
-// ceiling, `Fresh` since the person was handed the claim a moment ago, and the
-// login the claim bound, attached to the page it opened so the home marks "this
-// browser". The ticket is minted and redeemed in this one request and is never
-// seen by the browser. A claim that bound and then found the table gone is
-// spent with a login nobody holds; the owner rotates, as for a lost reply.
+/// What a claim that bound opens: a `Home` page of the principal at `Operator`
+/// ceiling, `Fresh` since the person was handed the claim a moment ago, and the
+/// login the claim bound, attached to the page it opened so the home marks "this
+/// browser". The ticket is minted and redeemed in this one request and is never
+/// seen by the browser. A claim that bound and then found the table gone is
+/// spent with a login nobody holds; the owner rotates, as for a lost reply.
 fn claim_opened(
   ui: Ui(instance),
   origin: ui_http.PageOrigin,
@@ -1549,6 +1634,8 @@ fn claim_opened(
     ui_sessions.redeem(ui.sessions, issued.ticket, ui_sessions.HomeExchange)
     |> result.replace_error(Nil)
   }
+
+  // Branch on redemption success to establish new browser login session.
   case redeemed {
     Error(Nil) -> ui_http.secured(plain(503, "daemon not ready"), origin)
     Ok(redeemed) -> {
@@ -1570,9 +1657,10 @@ fn claim_opened(
   }
 }
 
-// A claim that bound nothing, in the words for its reason. Each is the form
-// again so the person can correct it.
+/// A claim that bound nothing, in the words for its reason. Each is the form
+/// again so the person can correct it.
 fn claim_unbound(origin: ui_http.PageOrigin, refusal: manager.ClaimError) {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     manager.ClaimRefused(access.UnknownClaim) ->
       claim_refused(origin, 404, page.ClaimUnknown)
@@ -1587,6 +1675,7 @@ fn claim_unbound(origin: ui_http.PageOrigin, refusal: manager.ClaimError) {
   }
 }
 
+/// Generates an HTTP response rendering a claim redemption refusal notification.
 fn claim_refused(
   origin: ui_http.PageOrigin,
   status: Int,
@@ -1600,18 +1689,19 @@ fn claim_refused(
   |> ui_http.secured_for(origin, page.OwnForms)
 }
 
-// What a verified login mints. A login narrowed to one session mints a page of
-// that session and never a home, because a home's asks (its sign-ins, "sign out
-// everywhere", a device link) are the principal's and not the session's; any
-// other login mints a home, as a `Resumed` one. The page opens at the login's
-// ceiling and is an ordinary eight-hour page: the ticket is minted and redeemed
-// in this one request and is never seen by the browser.
+/// What a verified login mints. A login narrowed to one session mints a page of
+/// that session and never a home, because a home's asks (its sign-ins, "sign out
+/// everywhere", a device link) are the principal's and not the session's; any
+/// other login mints a home, as a `Resumed` one. The page opens at the login's
+/// ceiling and is an ordinary eight-hour page: the ticket is minted and redeemed
+/// in this one request and is never seen by the browser.
 fn resume_exchange(
   config: Config(instance),
   ui: Ui(instance),
   origin: ui_http.PageOrigin,
   resumed: ui_login.Resumed,
 ) {
+  // Map login ceiling permissions to corresponding access authority level.
   let ceiling = case resumed.allowance.ceiling {
     login.Observer -> access.Observer
     login.Operator -> access.Operator
@@ -1652,19 +1742,21 @@ fn resume_exchange(
     ui_sessions.redeem(ui.sessions, issued.ticket, exchange)
     |> result.replace_error(Nil)
   }
+
+  // Branch on resumed session ticket redemption result to navigate to destination.
   case redeemed {
     Error(Nil) -> plain(503, "daemon not ready")
     Ok(redeemed) -> entered(config, ui, origin, redeemed, address(redeemed.key))
   }
 }
 
-// The exchange page for a redeemed ticket: the keyed address to move to and
-// the page's nonce in the body, and the cookie scoped to the page's key. An
-// exchange whose ticket was `Remembered` also sets a browser login, in the same
-// response: its token is a second cookie, scoped to the login's own key, and its
-// nonce is a second value in the body, which the enter script keeps. This is
-// the one function that builds a redeemed ticket's response, so it is the one
-// place a login is set (protocol-change/065, PR 8).
+/// The exchange page for a redeemed ticket: the keyed address to move to and
+/// the page's nonce in the body, and the cookie scoped to the page's key. An
+/// exchange whose ticket was `Remembered` also sets a browser login, in the same
+/// response: its token is a second cookie, scoped to the login's own key, and its
+/// nonce is a second value in the body, which the enter script keeps. This is
+/// the one function that builds a redeemed ticket's response, so it is the one
+/// place a login is set (protocol-change/065, PR 8).
 fn entered(
   config: Config(instance),
   ui: Ui(instance),
@@ -1672,20 +1764,22 @@ fn entered(
   redeemed: ui_sessions.Redeemed,
   next: String,
 ) {
+  // Mint persistent browser login credential when the grant requests persistence.
   let minted = case redeemed.grant.remember {
     ui_sessions.Remembered -> remembered(config, ui, redeemed)
     ui_sessions.Forgotten -> Ok(option.None)
   }
+
   enter_response(origin, redeemed, next, minted)
 }
 
-// The response itself, from the redeemed ticket and the login to set with it,
-// if any. A device link exists to set a login, so one whose login cannot be set
-// (`Error`) opens no page at all. Opening it without would leave a page with no
-// login and no parent, whose own device link would then start a family of
-// thirty fresh days past the one the link came from. The browser claim reaches
-// here with the login its claim bound, so it too sets its login in the one place
-// a login is set.
+/// The response itself, from the redeemed ticket and the login to set with it,
+/// if any. A device link exists to set a login, so one whose login cannot be set
+/// (`Error`) opens no page at all. Opening it without would leave a page with no
+/// login and no parent, whose own device link would then start a family of
+/// thirty fresh days past the one the link came from. The browser claim reaches
+/// here with the login its claim bound, so it too sets its login in the one place
+/// a login is set.
 fn enter_response(
   origin: ui_http.PageOrigin,
   redeemed: ui_sessions.Redeemed,
@@ -1693,6 +1787,8 @@ fn enter_response(
   minted: Result(Option(ui_login.Minted), Nil),
 ) {
   let page_cookie = ui_http.set_cookie(redeemed.cookie, redeemed.key, origin)
+
+  // Branch on minted login status to issue credentials or render entry redirection.
   case minted {
     Error(Nil) -> refused_home(401, ending.LinkExpired)
     Ok(option.None) ->
@@ -1721,21 +1817,24 @@ fn enter_response(
   }
 }
 
-// The login a remembered exchange sets, written to the catalogue and attached to
-// the page the exchange opened. A ticket with no issuing login is a person's
-// own `loom ui`: when the daemon is not ready or the row is refused, the page
-// still opens with none, and the person can run `loom ui` again. A ticket
-// minted under a login is a device link, which never opens without one, so the
-// same failures, and a parent whose time has run out, are an `Error`.
+/// The login a remembered exchange sets, written to the catalogue and attached to
+/// the page the exchange opened. A ticket with no issuing login is a person's
+/// own `loom ui`: when the daemon is not ready or the row is refused, the page
+/// still opens with none, and the person can run `loom ui` again. A ticket
+/// minted under a login is a device link, which never opens without one, so the
+/// same failures, and a parent whose time has run out, are an `Error`.
 fn remembered(
   config: Config(instance),
   ui: Ui(instance),
   redeemed: ui_sessions.Redeemed,
 ) -> Result(Option(ui_login.Minted), Nil) {
+  // Determine fallback when no login credential was requested.
   let none = case redeemed.login {
     option.None -> Ok(option.None)
     option.Some(_) -> Error(Nil)
   }
+
+  // Branch on daemon readiness before registering persistent browser login.
   case ready(config, upgrade_log.Page) {
     Error(_) -> none
     Ok(state) ->
@@ -1757,17 +1856,17 @@ fn remembered(
   }
 }
 
-// The cookie's UI session, re-authorized from scratch: it must be live, be
-// the one the path's page key names, name this session, and its minting
-// credential must still authenticate and still be a member. The answer
-// carries the readiness the socket's upgrade reuses, the UI session, and the
-// cookie, which the socket keeps checking.
-//
-// A browser sends every `loom_ui` cookie whose path covers the request, and
-// a longer path sorts first, so a server on another loopback port that knows
-// the key could plant one that shadows the real cookie. Every value is
-// therefore tried, and the one whose UI session is live under this key wins;
-// a planted value names no UI session and is passed over.
+/// The cookie's UI session, re-authorized from scratch: it must be live, be
+/// the one the path's page key names, name this session, and its minting
+/// credential must still authenticate and still be a member. The answer
+/// carries the readiness the socket's upgrade reuses, the UI session, and the
+/// cookie, which the socket keeps checking.
+///
+/// A browser sends every `loom_ui` cookie whose path covers the request, and
+/// a longer path sorts first, so a server on another loopback port that knows
+/// the key could plant one that shadows the real cookie. Every value is
+/// therefore tried, and the one whose UI session is live under this key wins;
+/// a planted value names no UI session and is passed over.
 fn page_grant(
   config: Config(instance),
   ui: Ui(instance),
@@ -1781,10 +1880,13 @@ fn page_grant(
     |> result.map_error(fn(_) { refused_page(401, ending.PageEnded, id) }),
   )
   let grant = ui_sessions.grant(page)
+
+  // Verify that the retrieved grant matches the requested session scope.
   use Nil <- result.try(case grant.scope == ui_sessions.Session(id) {
     True -> Ok(Nil)
     False -> Error(refused_page(403, ending.PageEnded, id))
   })
+
   use state <- result.try(
     ready(config, upgrade_log.Page)
     |> result.map_error(fn(_) { refused_page(503, ending.DaemonNotReady, id) }),
@@ -1804,9 +1906,9 @@ fn page_grant(
   Ok(#(state, page, cookie))
 }
 
-// The cookie value whose UI session is live under `key`, with that session,
-// which is what both kinds of page start from. A planted value that names no
-// UI session under the key is passed over.
+/// The cookie value whose UI session is live under `key`, with that session,
+/// which is what both kinds of page start from. A planted value that names no
+/// UI session under the key is passed over.
 fn keyed_page(
   ui: Ui(instance),
   request,
@@ -1816,6 +1918,8 @@ fn keyed_page(
   ui_http.session_cookies(request, origin)
   |> list.find_map(fn(cookie) {
     use page <- result.try(ui_sessions.lookup(ui.sessions, cookie))
+
+    // Confirm that the candidate session page key matches the requested route key.
     case ui_sessions.keyed(page, key) {
       True -> Ok(#(cookie, page))
       False -> Error(Nil)
@@ -1823,12 +1927,12 @@ fn keyed_page(
   })
 }
 
-// A home page's `page_grant` (protocol-change/065): the cookie names a live
-// UI session under this key, whose scope is `Home`, and its credential still
-// authenticates. There is no session to hold a membership in, so that check
-// does not exist; what the home then shows is read with the same credential
-// digest on every refresh. The answer carries the readiness the socket's
-// upgrade reuses, the UI session, the cookie and the principal.
+/// A home page's `page_grant` (protocol-change/065): the cookie names a live
+/// UI session under this key, whose scope is `Home`, and its credential still
+/// authenticates. There is no session to hold a membership in, so that check
+/// does not exist; what the home then shows is read with the same credential
+/// digest on every refresh. The answer carries the readiness the socket's
+/// upgrade reuses, the UI session, the cookie and the principal.
 fn home_grant(
   config: Config(instance),
   ui: Ui(instance),
@@ -1841,11 +1945,14 @@ fn home_grant(
     |> result.map_error(fn(_) { refused_home(401, ending.PageEnded) }),
   )
   let grant = ui_sessions.grant(page)
+
+  // Verify that the grant represents a Home scope page.
   use Nil <- result.try(case grant.scope {
     ui_sessions.Home -> Ok(Nil)
     ui_sessions.Session(_) | ui_sessions.Admin ->
       Error(refused_home(403, ending.PageEnded))
   })
+
   use state <- result.try(
     ready(config, upgrade_log.Page)
     |> result.map_error(fn(_) { refused_home(503, ending.DaemonNotReady) }),
@@ -1859,13 +1966,13 @@ fn home_grant(
   #(state, page, cookie, principal)
 }
 
-// An admin page's `page_grant`: the cookie names a live UI session under this
-// key whose scope is `Admin`, its credential still authenticates, and the
-// principal it authenticates as is the daemon's owner. The last is checked here
-// as well as when a ticket is minted, because the admin page is the one page
-// that changes who may see what, so no earlier check is trusted to stay true:
-// a credential that was the owner's when the page was opened and is not now ends
-// the page at its next request. The answer is `home_grant`'s.
+/// An admin page's `page_grant`: the cookie names a live UI session under this
+/// key whose scope is `Admin`, its credential still authenticates, and the
+/// principal it authenticates as is the daemon's owner. The last is checked here
+/// as well as when a ticket is minted, because the admin page is the one page
+/// that changes who may see what, so no earlier check is trusted to stay true:
+/// a credential that was the owner's when the page was opened and is not now ends
+/// the page at its next request. The answer is `home_grant`'s.
 fn admin_grant(
   config: Config(instance),
   ui: Ui(instance),
@@ -1878,11 +1985,14 @@ fn admin_grant(
     |> result.map_error(fn(_) { refused_admin(401, ending.PageEnded) }),
   )
   let grant = ui_sessions.grant(page)
+
+  // Verify that the grant represents an Admin scope page.
   use Nil <- result.try(case grant.scope {
     ui_sessions.Admin -> Ok(Nil)
     ui_sessions.Session(_) | ui_sessions.Home ->
       Error(refused_admin(403, ending.PageEnded))
   })
+
   use state <- result.try(
     ready(config, upgrade_log.Page)
     |> result.map_error(fn(_) { refused_admin(503, ending.DaemonNotReady) }),
@@ -1893,17 +2003,20 @@ fn admin_grant(
     })
     |> result.map_error(fn(_) { refused_admin(401, ending.AccessRevoked) }),
   )
+
+  // Assert that authenticated principal is the daemon owner.
   use Nil <- result.map(case principal.kind {
     access.OwnerPrincipal -> Ok(Nil)
     access.MemberPrincipal -> Error(refused_admin(403, ending.AccessRevoked))
   })
+
   #(state, page, cookie, principal)
 }
 
-// The page's image at a row's name and position, for a request that already
-// passed the fetch-site check: the page grant, then the reader the page's
-// socket registered under its cookie. A page whose socket has not opened has
-// no reader and so no image.
+/// The page's image at a row's name and position, for a request that already
+/// passed the fetch-site check: the page grant, then the reader the page's
+/// socket registered under its cookie. A page whose socket has not opened has
+/// no reader and so no image.
 fn image_of(
   config: Config(instance),
   ui: Ui(instance),
@@ -1927,15 +2040,17 @@ fn image_of(
     |> result.map(fn(read) { picture(read(ref, position)) })
     |> result.map_error(fn(_) { plain(404, "unknown image") })
   }
+
+  // Branch on whether image resolution produced a valid response.
   case found {
     Ok(answer) | Error(answer) -> answer
   }
 }
 
-// The result identity is resolved only through this session's concrete store.
-// The resident is resolved without opening or attaching another session. The
-// grant is checked again after a bounded read, so expiry while reading cannot
-// deliver result bytes after the handler's final authorization check.
+/// The result identity is resolved only through this session's concrete store.
+/// The resident is resolved without opening or attaching another session. The
+/// grant is checked again after a bounded read, so expiry while reading cannot
+/// deliver result bytes after the handler's final authorization check.
 fn result_of(
   config: Config(instance),
   ui: Ui(instance),
@@ -1964,6 +2079,8 @@ fn result_of(
       ui_result.descriptor(reader, ref)
       |> result.map_error(fn(_) { plain(404, "result unavailable") }),
     )
+
+    // Render paginated HTML document or raw binary download according to index parameter.
     use answer <- result.try(case index {
       Some(index) -> {
         use #(text, pages) <- result.map(
@@ -1992,20 +2109,23 @@ fn result_of(
         |> response.set_body(mist.Bytes(bytes))
       }
     })
+
     use _ <- result.map(page_grant(config, ui, request, origin, key, id))
     answer
   }
+
+  // Branch on result read outcome to return rendered response or error status.
   case found {
     Ok(answer) | Error(answer) -> answer
   }
 }
 
-// The answer for one image the page drew, or the refusal for one it did not
-// or one the daemon will not send. `image.serve` is the check: a raster type,
-// bytes that decode, at most the terminal's limit and a magic number that
-// says the declared type. The type is the served one and the response is
-// already `nosniff`, so the browser draws what was checked and nothing it
-// might sniff from the bytes.
+/// The answer for one image the page drew, or the refusal for one it did not
+/// or one the daemon will not send. `image.serve` is the check: a raster type,
+/// bytes that decode, at most the terminal's limit and a magic number that
+/// says the declared type. The type is the served one and the response is
+/// already `nosniff`, so the browser draws what was checked and nothing it
+/// might sniff from the bytes.
 fn picture(found: Result(transcript_image.Image, Nil)) {
   let served = {
     use held <- result.try(
@@ -2014,6 +2134,7 @@ fn picture(found: Result(transcript_image.Image, Nil)) {
     use image.Served(mime_type:, bytes:) <- result.map(
       image.serve(held)
       |> result.map_error(fn(refusal) {
+        // This branch resolves refusal before the operation continues.
         case refusal {
           image.NotAnImage -> plain(415, "not a supported image")
           image.TooLarge -> plain(413, "image too large")
@@ -2025,24 +2146,28 @@ fn picture(found: Result(transcript_image.Image, Nil)) {
     |> response.set_header("content-disposition", "inline")
     |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(bytes)))
   }
+
+  // Return the verified image response or the mapped error response.
   case served {
     Ok(answer) | Error(answer) -> answer
   }
 }
 
-// The answer to a page request that cannot be served: the status the check
-// chose, and a document that says which ending it is and what to do, in the
-// fixed words of `web_view/ending`. The page's socket is refused by the same
-// checks and its browser reads only that the handshake failed, so the body
-// matters to a person who reloads or opens the address; a script never
-// reads it. The path's session identity is drawn only if it parses as a
-// canonical identity, because it is otherwise whatever the address said and
-// the advice would repeat it as a command to run.
+/// The answer to a page request that cannot be served: the status the check
+/// chose, and a document that says which ending it is and what to do, in the
+/// fixed words of `web_view/ending`. The page's socket is refused by the same
+/// checks and its browser reads only that the handshake failed, so the body
+/// matters to a person who reloads or opens the address; a script never
+/// reads it. The path's session identity is drawn only if it parses as a
+/// canonical identity, because it is otherwise whatever the address said and
+/// the advice would repeat it as a command to run.
 fn refused_page(status: Int, reason: Ending, id: String) {
+  // Parse session id safely to avoid echoing invalid input in the refusal page.
   let session = case ids.parse_session_id(id) {
     Ok(parsed) -> ids.session_id_to_string(parsed)
     Error(_) -> "<id>"
   }
+
   document(status, "text/html; charset=utf-8", page.refusal(reason, session))
 }
 
@@ -2064,6 +2189,7 @@ fn document(status: Int, content_type: String, body: String) {
   |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
 }
 
+/// Authenticates request bearer tokens and validates root readiness before handling.
 fn authenticated(config: Config(instance), request, target) {
   // A root which has fenced readiness cannot create another control or session
   // attachment, even when a previously read credential remains valid.
@@ -2071,6 +2197,7 @@ fn authenticated(config: Config(instance), request, target) {
     None -> upgrade_log.Control
     Some(_) -> upgrade_log.Session
   }
+
   let ready = ready(config, route)
   let identity = {
     use state <- result.try(ready)
@@ -2083,9 +2210,12 @@ fn authenticated(config: Config(instance), request, target) {
     )
     Ok(#(state, digest, principal))
   }
+
+  // Branch on authenticated caller identity and dispatch to control or session upgrade.
   case identity {
     Error(_) -> plain(401, "unauthorized or unavailable")
     Ok(#(state, digest, principal)) ->
+      // This branch resolves target before the operation continues.
       case target {
         None -> control_upgrade(config, request, state, digest, principal)
         Some(id) ->
@@ -2102,19 +2232,23 @@ fn authenticated(config: Config(instance), request, target) {
   }
 }
 
-// The bearer reader for `/v2/control` and the session attach. A credential
-// the daemon or `loom claim` draws is exactly 64 lowercase hex characters, so
-// any other presented string is refused here, before it is hashed and before
-// the catalogue is read. `access.credential_digest` is the shape check, since
-// a credential and its digest have the same 64-character shape. This narrows
-// what reaches the catalogue; the `Bearer` kind in the lookup is what decides
-// which row can match (protocol-change/065).
+/// The bearer reader for `/v2/control` and the session attach. A credential
+/// the daemon or `loom claim` draws is exactly 64 lowercase hex characters, so
+/// any other presented string is refused here, before it is hashed and before
+/// the catalogue is read. `access.credential_digest` is the shape check, since
+/// a credential and its digest have the same 64-character shape. This narrows
+/// what reaches the catalogue; the `Bearer` kind in the lookup is what decides
+/// which row can match (protocol-change/065).
 fn credential(request) {
   use header <- result.try(
     request.get_header(request, "authorization")
     |> result.replace_error("unauthorized"),
   )
+
+  // This branch resolves the input state before the operation continues.
   use token <- result.try(string.drop_start(header, 7) |> nonempty)
+
+  // Validate bearer token hex format and non-empty length before deriving digest.
   case
     string.starts_with(header, "Bearer ") && string.byte_size(header) <= 4096
   {
@@ -2135,18 +2269,20 @@ fn credential(request) {
   }
 }
 
+/// Nonempty keeps this client decision explicit for its callers.
 fn nonempty(value) {
+  // This branch resolves value before the operation continues.
   case value {
     "" -> Error("unauthorized")
     _ -> Ok(value)
   }
 }
 
-// Resolves one resident session for an authenticated upgrade and hands the
-// attachment to `upgrade`. A terminal socket carries the principal's
-// membership role; the web view's socket carries that role capped by the
-// page's ceiling and by Operator, and is admitted with that role's parser
-// permit.
+/// Resolves one resident session for an authenticated upgrade and hands the
+/// attachment to `upgrade`. A terminal socket carries the principal's
+/// membership role; the web view's socket carries that role capped by the
+/// page's ceiling and by Operator, and is admitted with that role's parser
+/// permit.
 fn resident_upgrade(
   config: Config(instance),
   request,
@@ -2157,6 +2293,7 @@ fn resident_upgrade(
   upgrade: fn(Request(mist.Connection), Attachment(instance)) ->
     Response(mist.ResponseData),
 ) {
+  // Determine audit route based on membership or web view role.
   let route = case role {
     MembershipRole -> upgrade_log.Session
     PageRole(..) -> upgrade_log.Page
@@ -2184,13 +2321,18 @@ fn resident_upgrade(
     )
     Ok(#(principal, authority, incarnation, instance, view.registration))
   }
+
+  // Branch on session resolution to acquire permit or refuse unavailable upgrade.
   case target {
     Error(_) -> plain(409, "session unavailable")
     Ok(#(principal, membership, incarnation, instance, registration)) -> {
+      // Determine effective authority level based on role and ceiling restrictions.
       let authority = case role {
         MembershipRole -> membership
         PageRole(ceiling:) -> ui_relay.capped(membership, ceiling)
       }
+
+      // Map authority and role to connection classification for admission limits.
       let class = case authority, role {
         access.Participant(access.Observer), _ -> root.Observer
         access.Owner, MembershipRole
@@ -2200,6 +2342,8 @@ fn resident_upgrade(
         | access.Participant(access.Operator), PageRole(..)
         -> root.PageOperator
       }
+
+      // Acquire class-based permit from root before proceeding with attachment.
       case
         upgrade_log.timed(route, "acquire", fn() {
           root.acquire(config.daemon, class, within: 1000)
@@ -2249,10 +2393,11 @@ fn resident_upgrade(
   }
 }
 
-// A session that is not resident answers 409, which a browser reports as a
-// bare failed socket. The status is what says why, and a page whose session
-// was stopped stays refused until something opens it again.
+/// A session that is not resident answers 409, which a browser reports as a
+/// bare failed socket. The status is what says why, and a page whose session
+/// was stopped stays refused until something opens it again.
 fn resident(route: upgrade_log.Route, status) {
+  // Translate manager status into incarnation identifier or refusal explanation.
   let refusal = case status {
     manager.Resident(incarnation) -> Ok(incarnation)
     manager.Reserved -> Error("session is reserved")
@@ -2262,6 +2407,8 @@ fn resident(route: upgrade_log.Route, status) {
     manager.Stopping(_) -> Error("session is stopping")
     manager.RecoveryBlocked(_) -> Error("session recovery is blocked")
   }
+
+  // Log audit failure and return unavailable status if session is not resident.
   case refusal {
     Ok(incarnation) -> Ok(incarnation)
     Error(reason) -> {
@@ -2271,9 +2418,9 @@ fn resident(route: upgrade_log.Route, status) {
   }
 }
 
-// The root's readiness, timed and, when the daemon is the one refusing,
-// written down. Every refusal here is the daemon's own: a root that is
-// starting, stopping, fenced or slow to answer.
+/// The root's readiness, timed and, when the daemon is the one refusing,
+/// written down. Every refusal here is the daemon's own: a root that is
+/// starting, stopping, fenced or slow to answer.
 fn ready(config: Config(instance), route: upgrade_log.Route) {
   upgrade_log.timed(route, "ready", fn() {
     root.ready(config.daemon, within: 1000)
@@ -2284,27 +2431,33 @@ fn ready(config: Config(instance), route: upgrade_log.Route) {
   })
 }
 
-// One registry question, timed and, when the registry could not answer it,
-// written down. A credential or membership the catalogue does not hold is the
-// caller's and is passed through unrecorded.
+/// One registry question, timed and, when the registry could not answer it,
+/// written down. A credential or membership the catalogue does not hold is the
+/// caller's and is passed through unrecorded.
 fn asked(
   route: upgrade_log.Route,
   step: String,
   question: fn() -> Result(answer, manager.Error),
 ) -> Result(answer, manager.Error) {
   let answer = upgrade_log.timed(route, step, question)
+
+  // Log internal registry refusal when operation error warrants audit.
   case answer {
     Ok(_) -> Nil
     Error(error) ->
+      // This branch resolves registry_refusal error before the operation continues.
       case registry_refusal(error) {
         Some(reason) -> upgrade_log.refused(route, step, reason)
         None -> Nil
       }
   }
+
   answer
 }
 
+/// Translates registry manager errors into user-facing refusal descriptions.
 fn registry_refusal(error: manager.Error) -> Option(String) {
+  // This branch resolves error before the operation continues.
   case error {
     manager.Catalogue(catalogue.Missing) -> None
     manager.Catalogue(_) -> Some("catalogue failed")
@@ -2323,6 +2476,7 @@ fn registry_refusal(error: manager.Error) -> Option(String) {
   }
 }
 
+/// Upgrades inbound HTTP requests to authenticated control WebSocket connections.
 fn control_upgrade(
   config: Config(instance),
   request,
@@ -2335,6 +2489,8 @@ fn control_upgrade(
   // there is nothing to re-read, and reading it here rather than per frame
   // keeps the hello's shape built from one value.
   let hello_identity = build_identity.current()
+
+  // Acquire a control-class permit from root before establishing WebSocket connection.
   case root.acquire(config.daemon, root.Control, within: 1000) {
     Error(reason) -> plain(503, reason)
     Ok(permit) -> {
@@ -2364,6 +2520,7 @@ fn control_upgrade(
             #(Nil, Some(process.new_selector() |> process.select(signals)))
           },
           handler: fn(_, message, socket) {
+            // Dispatch inbound WebSocket frames or control signals.
             case message {
               mist.Custom(Admit) ->
                 admit(config.daemon, upgrade_log.Control, permit, settled, fn() {
@@ -2422,6 +2579,7 @@ fn control_upgrade(
                   KeepServing -> Nil
                   DrainDaemon -> root.request_shutdown(config.daemon)
                 }
+
                 next
               }
               mist.Binary(_) | mist.Closed | mist.Shutdown -> mist.stop()
@@ -2449,21 +2607,24 @@ fn control_upgrade(
         mist.Bytes(_) | mist.Chunked | mist.File(..) | mist.ServerSentEvents ->
           Nil
       }
+
       root.release(config.daemon, permit)
       response
     }
   }
 }
 
-// The `hello` names the web view only when the daemon serves it, so a
-// client can tell a daemon started with `--ui` from one that was not. When
-// the owner listed `https` origins they are named too (protocol-change/052),
-// normalized as a browser writes them, so `loom ui --device` can build a link
-// on one of them. The hello is sent only after the control endpoint has
-// authenticated the connection.
+/// The `hello` names the web view only when the daemon serves it, so a
+/// client can tell a daemon started with `--ui` from one that was not. When
+/// the owner listed `https` origins they are named too (protocol-change/052),
+/// normalized as a browser writes them, so `loom ui --device` can build a link
+/// on one of them. The hello is sent only after the control endpoint has
+/// authenticated the connection.
 fn hello_view(config: Config(instance)) -> List(#(String, JsonValue)) {
+  // Check if UI is configured to advertise the web view path and origin endpoints.
   case config.ui {
     Some(ui) -> {
+      // Include configured origins list if any are specified.
       let origins = case ui.origins {
         [] -> []
         listed -> [
@@ -2477,6 +2638,7 @@ fn hello_view(config: Config(instance)) -> List(#(String, JsonValue)) {
           ),
         ]
       }
+
       [#("ui", json.Object([#("path", json.String(page.prefix)), ..origins]))]
     }
     None -> []
@@ -2497,19 +2659,19 @@ type ClaimSignal {
   ClaimIdle
 }
 
-// `/v2/claim` (protocol-change/053). The route redeems a claim token for the
-// credential digest the invitee's client drew, and nothing else: it carries
-// one command, `credentials.claim`, over one short-lived socket.
-//
-// The upgrade's checks run in this order. The header must be exactly
-// `Bearer loomclaim_<64 hex>`; a bearer, or anything else, is 401 before the
-// daemon is asked anything. The claim row must exist and not be void, also
-// 401 otherwise. That lookup only filters: the command decides expiry and
-// binding. Then the root admits at most one reservation per claim digest, so
-// a second upgrade for the same claim is 409 while the first is open. A
-// spent claim is public from then on, sitting in a chat log, and passes the
-// filter; the per-digest bound and the idle close are what keep such a token
-// from holding control permits open.
+/// `/v2/claim` (protocol-change/053). The route redeems a claim token for the
+/// credential digest the invitee's client drew, and nothing else: it carries
+/// one command, `credentials.claim`, over one short-lived socket.
+///
+/// The upgrade's checks run in this order. The header must be exactly
+/// `Bearer loomclaim_<64 hex>`; a bearer, or anything else, is 401 before the
+/// daemon is asked anything. The claim row must exist and not be void, also
+/// 401 otherwise. That lookup only filters: the command decides expiry and
+/// binding. Then the root admits at most one reservation per claim digest, so
+/// a second upgrade for the same claim is 409 while the first is open. A
+/// spent claim is public from then on, sitting in a chat log, and passes the
+/// filter; the per-digest bound and the idle close are what keep such a token
+/// from holding control permits open.
 fn claim_route(config: Config(instance), request) {
   let admitted = {
     use presented <- result.try(claim_header(request))
@@ -2517,17 +2679,23 @@ fn claim_route(config: Config(instance), request) {
       root.ready(config.daemon, within: 1000)
       |> result.map_error(fn(_) { plain(503, "daemon unavailable") }),
     )
+
+    // Check if the presented claim token digest is registered in the catalogue.
     use Nil <- result.try(case manager.claim_known(state.registry, presented) {
       Ok(Nil) -> Ok(Nil)
       Error(manager.Catalogue(catalogue.Missing)) ->
         Error(plain(401, "unauthorized"))
       Error(_) -> Error(plain(503, "daemon unavailable"))
     })
+
     Ok(#(state, presented))
   }
+
+  // Branch on claim admission before acquiring reservation permit.
   case admitted {
     Error(response) -> response
     Ok(#(state, presented)) ->
+      // This branch resolves root acquire_claim config daemon presented within 1000 before the operation continues.
       case root.acquire_claim(config.daemon, presented, within: 1000) {
         Error(root.ClaimInFlight) -> plain(409, "claim already in use")
         Error(root.NotAdmitted(reason)) -> plain(503, reason)
@@ -2536,8 +2704,8 @@ fn claim_route(config: Config(instance), request) {
   }
 }
 
-// The token is hashed here and never kept: from this line on the daemon holds
-// only the claim's digest, as it does for bearers.
+/// The token is hashed here and never kept: from this line on the daemon holds
+/// only the claim's digest, as it does for bearers.
 fn claim_header(
   request,
 ) -> Result(access.ClaimDigest, Response(mist.ResponseData)) {
@@ -2546,10 +2714,13 @@ fn claim_header(
     request.get_header(request, "authorization")
     |> result.replace_error(unauthorized),
   )
+
+  // Extract bearer token from the authorization header.
   use token <- result.try(case string.split_once(header, "Bearer ") {
     Ok(#("", token)) -> Ok(token)
     Ok(_) | Error(Nil) -> Error(unauthorized)
   })
+
   use Nil <- result.try(
     claim.validate_token(token) |> result.replace_error(unauthorized),
   )
@@ -2557,6 +2728,7 @@ fn claim_header(
   |> result.replace_error(unauthorized)
 }
 
+/// Handles the WebSocket upgrade for browser claim submission and token redemption.
 fn claim_socket(
   config: Config(instance),
   request,
@@ -2581,6 +2753,7 @@ fn claim_socket(
         #(Nil, Some(process.new_selector() |> process.select(signals)))
       },
       handler: fn(_, message, socket) {
+        // This branch resolves message before the operation continues.
         case message {
           mist.Custom(AdmitClaim) ->
             admit(config.daemon, upgrade_log.Claim, permit, settled, fn() {
@@ -2608,6 +2781,8 @@ fn claim_socket(
       },
       on_close: fn(_) { Nil },
     )
+
+  // Wait for permit custody transfer to complete before releasing parent reservation.
   case response.body {
     mist.Websocket -> {
       let _ = process.receive(settled, within: 5000)
@@ -2615,18 +2790,22 @@ fn claim_socket(
     }
     mist.Bytes(_) | mist.Chunked | mist.File(..) | mist.ServerSentEvents -> Nil
   }
+
   root.release(config.daemon, permit)
   response
 }
 
-// Decodes the one command, redeems the claim in one serialized registry
-// dispatch, and encodes the answer. Refusals carry a fixed code and message
-// and never the digest the client sent.
+/// Decodes the one command, redeems the claim in one serialized registry
+/// dispatch, and encodes the answer. Refusals carry a fixed code and message
+/// and never the digest the client sent.
 fn claim_reply(
   state: root.Ready(instance),
   presented: access.ClaimDigest,
   frame: String,
 ) {
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
   case protocol.decode_claim(frame) {
     Error(fault) -> refusal(fault)
     Ok(protocol.ClaimRequest(id:, credential:, name:)) ->
@@ -2655,6 +2834,7 @@ fn claim_reply(
   }
 }
 
+/// Serializes claimed enrollment details and credential fingerprint into JSON.
 fn claimed_json(claimed: access.Claimed, fingerprint: String) -> JsonValue {
   json.Object([
     #("principal_id", json.String(claimed.principal.id)),
@@ -2674,14 +2854,18 @@ fn claimed_json(claimed: access.Claimed, fingerprint: String) -> JsonValue {
   ])
 }
 
+/// Role text keeps this client decision explicit for its callers.
 fn role_text(role: access.Role) -> String {
+  // This branch resolves role before the operation continues.
   case role {
     access.Operator -> "operator"
     access.Observer -> "observer"
   }
 }
 
+/// Translates claim failure categories into stable protocol error codes.
 fn claim_error_code(error: manager.ClaimError) -> String {
+  // This branch resolves error before the operation continues.
   case error {
     manager.ClaimRefused(access.UnknownClaim) -> "not_found"
     manager.ClaimRefused(access.ExpiredClaim) -> "expired"
@@ -2692,10 +2876,10 @@ fn claim_error_code(error: manager.ClaimError) -> String {
   }
 }
 
-// Takes the reserved permit in a socket's first handler turn and then writes
-// whatever the caller had waiting. `process.self()` is still the websocket
-// process here, so the permit's new owner and the PID the root monitors are
-// the ones the initializer would have named.
+/// Takes the reserved permit in a socket's first handler turn and then writes
+/// whatever the caller had waiting. `process.self()` is still the websocket
+/// process here, so the permit's new owner and the PID the root monitors are
+/// the ones the initializer would have named.
 fn admit(
   daemon,
   route: upgrade_log.Route,
@@ -2708,6 +2892,8 @@ fn admit(
   // Custody is decided either way now, so the waiting HTTP process is released
   // before anything is written to the socket.
   process.send(settled, Nil)
+
+  // Verify that root custody transfer succeeded before continuing.
   case transferred {
     // A failed transfer must not leave an unaccounted active socket actor. A
     // stop from a handler turn is terminal, and the root keeps its charge
@@ -2720,10 +2906,13 @@ fn admit(
   }
 }
 
+/// Delivers an encoded JSON message over the control WebSocket connection.
 fn send(socket, frame) {
+  // This branch resolves frame before the operation continues.
   case frame {
     Error(_) -> mist.stop()
     Ok(text) ->
+      // This branch resolves mist send_text_frame socket text before the operation continues.
       case mist.send_text_frame(socket, text) {
         Ok(Nil) -> mist.continue(Nil)
         Error(_) -> mist.stop()
@@ -2731,12 +2920,14 @@ fn send(socket, frame) {
   }
 }
 
+/// Processes inbound control WebSocket frames and dispatches administrative commands.
 fn control(
   config: Config(instance),
   state: root.Ready(instance),
   digest,
   frame,
 ) {
+  // Decode the inbound control frame from its wire JSON representation.
   case protocol.decode(frame) {
     Error(fault) -> #(refusal(fault), KeepServing)
     Ok(request) -> {
@@ -2757,6 +2948,8 @@ fn control(
         )
         dispatch(config, state, digest, principal, request.id, request.command)
       }
+
+      // Branch on command dispatch outcome to format event response.
       case outcome {
         Ok(#(event, body)) -> {
           // Which commands drain the daemon after their acknowledgement is
@@ -2808,6 +3001,7 @@ fn control(
             | protocol.AbandonMove(..)
             | protocol.DeleteSession(..) -> KeepServing
           }
+
           #(protocol.event(Some(request.id), event, body), after)
         }
         Error(Refused(code:, message:, detail:)) -> #(
@@ -2819,9 +3013,10 @@ fn control(
   }
 }
 
-// Existing sockets may inspect cleanup while the root refuses new attachment.
-// Every mutation still requires accepting admission, including durable defaults.
+/// Existing sockets may inspect cleanup while the root refuses new attachment.
+/// Every mutation still requires accepting admission, including durable defaults.
 fn control_use(command: protocol.Command) {
+  // This branch resolves command before the operation continues.
   case command {
     protocol.Status
     | protocol.ListPrincipals(_)
@@ -2873,9 +3068,9 @@ fn refusal(fault: protocol.Fault) {
   refusal_with(fault, [])
 }
 
-// A refusal frame with more members than the code and the words. The two
-// redirect codes of protocol-change/078 name where the session lives, and every
-// other refusal passes an empty list.
+/// A refusal frame with more members than the code and the words. The two
+/// redirect codes of protocol-change/078 name where the session lives, and every
+/// other refusal passes an empty list.
 fn refusal_with(fault: protocol.Fault, detail: List(#(String, JsonValue))) {
   protocol.event(
     fault.reply_to,
@@ -2888,14 +3083,18 @@ fn refusal_with(fault: protocol.Fault, detail: List(#(String, JsonValue))) {
   )
 }
 
+/// Owner keeps this client decision explicit for its callers.
 fn owner(principal: access.Principal) {
+  // This branch resolves principal kind before the operation continues.
   case principal.kind {
     access.OwnerPrincipal -> Ok(Nil)
     access.MemberPrincipal -> Error("forbidden")
   }
 }
 
+/// Epoch keeps this client decision explicit for its callers.
 fn epoch(state: root.Ready(instance), supplied) {
+  // This branch resolves supplied state epoch before the operation continues.
   case supplied == state.epoch {
     True -> Ok(Nil)
     False -> Error("stale_epoch")
@@ -2913,8 +3112,8 @@ fn mint_link(ui: Ui(instance), grant: ui_sessions.Grant) {
   ui_sessions.mint(ui.sessions, grant) |> result.replace_error("unavailable")
 }
 
-// The `ui.link` reply: the exchange address the browser is sent to, and how
-// long its ticket lasts.
+/// The `ui.link` reply: the exchange address the browser is sent to, and how
+/// long its ticket lasts.
 fn link_reply(
   path: String,
   issued: ui_sessions.Issued,
@@ -2928,8 +3127,8 @@ fn link_reply(
   )
 }
 
-// Startup diagnostics follow the same epoch and membership checks as every
-// operation read. Other control refusals retain their fixed public wording.
+/// Startup diagnostics follow the same epoch and membership checks as every
+/// operation read. Other control refusals retain their fixed public wording.
 fn dispatch(
   config: Config(instance),
   state: root.Ready(instance),
@@ -2938,6 +3137,7 @@ fn dispatch(
   reply_to: Int,
   command: protocol.Command,
 ) -> Result(#(String, JsonValue), Refused) {
+  // This branch resolves command before the operation continues.
   case command {
     protocol.GetOperation(id, operation, supplied) -> {
       use Nil <- result.try(
@@ -2948,6 +3148,7 @@ fn dispatch(
       )
       manager.operation(state.registry, id, operation)
       |> result.map_error(fn(error) {
+        // This branch resolves error before the operation continues.
         case error {
           manager.StartFailed(reason) -> Refused("start_failed", reason, [])
           other -> control_refusal(error_code(other))
@@ -2995,10 +3196,10 @@ fn dispatch(
   }
 }
 
-// The `ledger.*` owner commands (protocol-change/086). A member principal is
-// refused as for every owner command, and a daemon with no ledger answers
-// `not_found`. A line the ledger refuses is `ledger_invalid` and the message is
-// the step, which is all a client needs to tell a forged line from a stale one.
+/// The `ledger.*` owner commands (protocol-change/086). A member principal is
+/// refused as for every owner command, and a daemon with no ledger answers
+/// `not_found`. A line the ledger refuses is `ledger_invalid` and the message is
+/// the step, which is all a client needs to tell a forged line from a stale one.
 fn ledger_command(
   config: Config(instance),
   principal: access.Principal,
@@ -3009,6 +3210,8 @@ fn ledger_command(
     option.to_result(config.ledger, Nil)
     |> result.map_error(fn(_) { control_refusal("not_found") }),
   )
+
+  // This branch resolves command before the operation continues.
   case command {
     protocol.LedgerAppend(lines) ->
       ledger_control.append(handle, lines)
@@ -3033,7 +3236,9 @@ fn ledger_command(
 /// The message is the step (protocol-change/086).
 pub const ledger_invalid_code = "ledger_invalid"
 
+/// Ledger refusal keeps this client decision explicit for its callers.
 fn ledger_refusal(failure: ledger_control.Failure) -> Refused {
+  // This branch resolves failure before the operation continues.
   case failure {
     ledger_control.Invalid(step:) -> Refused(ledger_invalid_code, step, [])
     ledger_control.Unavailable(reason:) -> Refused("unavailable", reason, [])
@@ -3060,48 +3265,54 @@ pub const not_owner_code = "not_owner"
 /// be asked (protocol-change/078, phase 3).
 pub const owner_unreachable_code = "owner_unreachable"
 
-// The refusal for a session this daemon does not hold. Only the owner principal
-// is redirected: a member's standing on the session is the owning daemon's to
-// judge, and this one cannot vouch for it. A miss that no orchestrator explains
-// stays `not_found`, and so does a directory that says the session is here after
-// all, which can only be a creation that landed between the two reads and which
-// the client's retry finds.
+/// The refusal for a session this daemon does not hold. Only the owner principal
+/// is redirected: a member's standing on the session is the owning daemon's to
+/// judge, and this one cannot vouch for it. A miss that no orchestrator explains
+/// stays `not_found`, and so does a directory that says the session is here after
+/// all, which can only be a creation that landed between the two reads and which
+/// the client's retry finds.
 fn redirected(
   config: Config(instance),
   principal: access.Principal,
   id: String,
   refused: Refused,
 ) -> Refused {
+  // This branch resolves refused code principal kind before the operation continues.
   case refused.code, principal.kind {
     "not_found", access.OwnerPrincipal ->
+      // This branch resolves config directory lookup id before the operation continues.
       case config.directory.lookup(id) {
         Ok(session_directory.Elsewhere(owner)) -> not_owner(owner)
         Error(session_directory.Unreachable(names)) -> owner_unreachable(names)
         Error(session_directory.Unavailable(reason:)) -> no_quorum(reason)
         Ok(session_directory.Here) | Error(session_directory.Unknown) -> refused
       }
+
     code, access.OwnerPrincipal if code == not_owner_code ->
       tombstoned(config, principal, id, refused)
     _, _ -> refused
   }
 }
 
-// The refusal for a session this daemon handed to another orchestrator. Only the
-// owner is told where it went, as for any redirect, and the answer comes from
-// the daemon's own tombstone: the directory answers a session it holds a
-// tombstone for without asking a peer. Anything else is left as it was.
+/// The refusal for a session this daemon handed to another orchestrator. Only the
+/// owner is told where it went, as for any redirect, and the answer comes from
+/// the daemon's own tombstone: the directory answers a session it holds a
+/// tombstone for without asking a peer. Anything else is left as it was.
 fn tombstoned(
   config: Config(instance),
   principal: access.Principal,
   id: String,
   refused: Refused,
 ) -> Refused {
+  // This branch resolves refused code principal kind before the operation continues.
   case refused.code, principal.kind {
     code, access.OwnerPrincipal if code == not_owner_code ->
+      // This branch resolves config directory lookup id before the operation continues.
       case config.directory.lookup(id) {
         Ok(session_directory.Elsewhere(owner)) -> not_owner(owner)
         Ok(session_directory.Here) | Error(_) -> refused
       }
+
     _, _ -> refused
   }
 }
@@ -3111,15 +3322,17 @@ fn tombstoned(
 /// orchestrator the session is going to and the move.
 pub const moving_code = "moving"
 
-// A session whose move is in flight cannot be opened, and the refusal says where
-// it is going and which move it is, so a client can wait and then ask again.
+/// A session whose move is in flight cannot be opened, and the refusal says where
+/// it is going and which move it is, so a client can wait and then ask again.
 fn in_flight(
   state: root.Ready(instance),
   id: String,
   refused: Refused,
 ) -> Refused {
+  // This branch resolves refused code before the operation continues.
   case refused.code {
     code if code == moving_code ->
+      // This branch resolves manager custody state registry id before the operation continues.
       case manager.custody(state.registry, id) {
         Ok(catalogue.Moving(op:, to:)) ->
           Refused(
@@ -3132,15 +3345,19 @@ fn in_flight(
           )
         Ok(_) | Error(_) -> refused
       }
+
     _ -> refused
   }
 }
 
+/// Formulates a refusal response redirecting requests to the current cluster owner.
 fn not_owner(owner: orchestrators.Orchestrator) -> Refused {
+  // This branch resolves owner address before the operation continues.
   let address = case owner.address {
     Some(address) -> [#("address", json.String(address))]
     None -> []
   }
+
   Refused(not_owner_code, "this session is owned by another orchestrator", [
     #("orchestrator", json.String(owner.name)),
     ..address
@@ -3151,15 +3368,16 @@ fn not_owner(owner: orchestrators.Orchestrator) -> Refused {
 /// be read or could not commit in time (protocol-change/083).
 pub const no_quorum_code = "no_quorum"
 
-// The `deployment.status` read. The daemon connects only to the nodes of its own
-// configuration: the request's `node` key is resolved against that configuration
-// before anything is dialled, so an unknown key is `not_found` and connects to
-// nobody. The daemon is an orchestrator, and a directory member as well when it
-// stands in the cluster.
+/// The `deployment.status` read. The daemon connects only to the nodes of its own
+/// configuration: the request's `node` key is resolved against that configuration
+/// before anything is dialled, so an unknown key is `not_found` and connects to
+/// nobody. The daemon is an orchestrator, and a directory member as well when it
+/// stands in the cluster.
 fn deployment_status(
   config: Config(instance),
   node: Option(String),
 ) -> Result(#(String, JsonValue), String) {
+  // This branch resolves config directory standing before the operation continues.
   let roles = case config.directory.standing {
     session_directory.Member(..) -> [
       deployment.OrchestratorRole,
@@ -3167,6 +3385,7 @@ fn deployment_status(
     ]
     session_directory.NotMember -> [deployment.OrchestratorRole]
   }
+
   deployment.status(
     config.deployment,
     roles,
@@ -3186,21 +3405,24 @@ fn deployment_status(
   })
 }
 
-// The whole-deployment read says whether this daemon runs with distribution,
-// and the machine's host name when the daemon could read it (protocol-change/085,
-// the addendum of 2026-10-19). Without distribution the daemon's node name is one
-// the BEAM made up, which the Admin page does not show, and the page draws one
-// card for this machine, titled by the host name. A read that names one node is
-// about that node and carries nothing about the asking daemon.
+/// The whole-deployment read says whether this daemon runs with distribution,
+/// and the machine's host name when the daemon could read it (protocol-change/085,
+/// the addendum of 2026-10-19). Without distribution the daemon's node name is one
+/// the BEAM made up, which the Admin page does not show, and the page draws one
+/// card for this machine, titled by the host name. A read that names one node is
+/// about that node and carries nothing about the asking daemon.
 fn with_footing(
   body: JsonValue,
   node: Option(String),
   reach: deployment.Reach,
 ) -> JsonValue {
+  // This branch resolves reach host before the operation continues.
   let host = case reach.host {
     Some(name) -> [#("host", json.String(name))]
     None -> []
   }
+
+  // This branch resolves body node before the operation continues.
   case body, node {
     json.Object(fields), None ->
       json.Object(
@@ -3219,23 +3441,26 @@ fn with_footing(
   }
 }
 
-// A daemon that runs from a membership ledger adds the ledger's own status to
-// the whole-deployment read, so that one command shows whether a change has
-// reached the members (protocol-change/086, phase 2). It is the body of
-// `ledger.status`, which is bounded by the ledger's member limit. A read that
-// names one node, and a ledger that does not answer, add nothing: the member is
-// optional, and an absent one reads as unknown.
+/// A daemon that runs from a membership ledger adds the ledger's own status to
+/// the whole-deployment read, so that one command shows whether a change has
+/// reached the members (protocol-change/086, phase 2). It is the body of
+/// `ledger.status`, which is bounded by the ledger's member limit. A read that
+/// names one node, and a ledger that does not answer, add nothing: the member is
+/// optional, and an absent one reads as unknown.
 fn with_ledger(
   body: JsonValue,
   node: Option(String),
   handle: Option(ledger_control.Handle),
 ) -> JsonValue {
+  // This branch resolves body node handle before the operation continues.
   case body, node, handle {
     json.Object(fields), None, Some(handle) ->
+      // This branch resolves ledger_control status handle before the operation continues.
       case ledger_control.status(handle) {
         Ok(status) -> json.Object(list.append(fields, [#("ledger", status)]))
         Error(_) -> body
       }
+
     _, _, _ -> body
   }
 }
@@ -3244,6 +3469,7 @@ fn no_quorum(reason: String) -> Refused {
   Refused(no_quorum_code, "the session directory cannot answer: " <> reason, [])
 }
 
+/// Formulates a refusal response indicating the remote cluster owner is unreachable.
 fn owner_unreachable(names: List(String)) -> Refused {
   Refused(
     owner_unreachable_code,
@@ -3278,15 +3504,15 @@ pub const pool_unknown_code = "pool_unknown"
 /// looked up, so `unknown_profile` would blame the name for the file.
 pub const unusable_configuration_code = "unusable_configuration"
 
-// A refused creation's code and message. An unknown profile, an unknown model,
-// an unusable configuration, an unknown executor and an unknown pool are the
-// refusals that say more than "request refused": the owner who mistyped a name
-// needs the names that exist, the owner whose file does not parse needs the key
-// it names, and the owner who named an executor or a pool needs to know it is
-// the configuration that lacks it. The caller is the owner because
-// `create_session` checks that first. The message is worded again here, from
-// the same check, rather than carried out of `create_session`, so that
-// function's error stays the single code the home page's creation shares.
+/// A refused creation's code and message. An unknown profile, an unknown model,
+/// an unusable configuration, an unknown executor and an unknown pool are the
+/// refusals that say more than "request refused": the owner who mistyped a name
+/// needs the names that exist, the owner whose file does not parse needs the key
+/// it names, and the owner who named an executor or a pool needs to know it is
+/// the configuration that lacks it. The caller is the owner because
+/// `create_session` checks that first. The message is worded again here, from
+/// the same check, rather than carried out of `create_session`, so that
+/// function's error stays the single code the home page's creation shares.
 fn choice_refusal(
   config: Config(instance),
   configuration: String,
@@ -3294,12 +3520,16 @@ fn choice_refusal(
   model: Option(String),
   code: String,
 ) -> Refused {
+  // This branch resolves code before the operation continues.
   case code {
     "unknown_profile" | "unknown_model" | "unusable_configuration" -> {
+      // This branch resolves configuration before the operation continues.
       let canonical = case configuration {
         "" -> ""
         path -> bootstrap.canonical_path(path) |> result.unwrap(path)
       }
+
+      // This branch resolves the input state before the operation continues.
       let words = case
         profiles.check_choice(
           profiles.effective(canonical, config.domain_configuration),
@@ -3310,6 +3540,7 @@ fn choice_refusal(
         Error(refusal) -> profiles.refusal_message(refusal)
         Ok(Nil) -> "request refused"
       }
+
       Refused(code, words, [])
     }
 
@@ -3327,6 +3558,7 @@ fn choice_refusal(
   }
 }
 
+/// Dispatches control commands across session, placement, and peer management domains.
 fn dispatch_class(
   config: Config(instance),
   state: root.Ready(instance),
@@ -3696,6 +3928,7 @@ fn dispatch_class(
         option.Some(protocol.Forget) -> ui_sessions.Forgotten
         option.Some(protocol.Remember) | option.None -> ui_sessions.Remembered
       }
+
       use issued <- result.map(mint_link(
         ui,
         ui_sessions.Grant(
@@ -3773,6 +4006,8 @@ fn dispatch_class(
         protocol.event(Some(reply_to), "sessions.activity", body)
         |> result.replace_error("metadata_too_large"),
       )
+
+      // This branch resolves string byte_size frame 60_000 before the operation continues.
       case string.byte_size(frame) <= 60_000 {
         True -> Ok(#("sessions.activity", body))
         False -> Error("metadata_too_large")
@@ -3917,6 +4152,7 @@ fn dispatch_class(
         "", "" -> config.movers.forget(registration.id)
         _, _ -> Nil
       }
+
       Ok(#(
         "sessions.delete",
         json.Object([
@@ -3935,6 +4171,8 @@ fn dispatch_class(
     }
     protocol.DirectoryStatus -> {
       use Nil <- result.try(owner(principal))
+
+      // This branch resolves config directory standing before the operation continues.
       case config.directory.standing {
         session_directory.NotMember -> Error("not_found")
         session_directory.Member(status:) ->
@@ -3978,27 +4216,29 @@ fn dispatch_class(
   }
 }
 
-// A session this daemon imported cannot be handed on, or deleted, until the
-// orchestrator it came from has retired the move that brought it here. Until
-// then that orchestrator still holds the session as `moving`, and its mover may
-// yet ask this one to activate it. Beginning a move here replaces the `imported`
-// row with `moving`, and a move that is then abandoned deletes that row, so the
-// activation of the first move would be refused for a conflict and the source
-// would abandon its move as well: both sides resident. A delete removes the row
-// outright, so the source's retry finds nothing, sends the file again and
-// imports it afresh, and the delete is undone. The origin's port answers `Moved`
-// only after its own row says so, and a retired source never holds the session
-// again under that move, so one answer decides and there is no race to lose. The
-// ask runs here, outside the registry's turn, because it crosses the network.
-// Silence, an origin this daemon no longer lists, and any other answer say the
-// session is not settled yet, and the caller refuses in the words of its own
-// command: the owner asks again later.
+/// A session this daemon imported cannot be handed on, or deleted, until the
+/// orchestrator it came from has retired the move that brought it here. Until
+/// then that orchestrator still holds the session as `moving`, and its mover may
+/// yet ask this one to activate it. Beginning a move here replaces the `imported`
+/// row with `moving`, and a move that is then abandoned deletes that row, so the
+/// activation of the first move would be refused for a conflict and the source
+/// would abandon its move as well: both sides resident. A delete removes the row
+/// outright, so the source's retry finds nothing, sends the file again and
+/// imports it afresh, and the delete is undone. The origin's port answers `Moved`
+/// only after its own row says so, and a retired source never holds the session
+/// again under that move, so one answer decides and there is no race to lose. The
+/// ask runs here, outside the registry's turn, because it crosses the network.
+/// Silence, an origin this daemon no longer lists, and any other answer say the
+/// session is not settled yet, and the caller refuses in the words of its own
+/// command: the owner asks again later.
 fn inbound_settled(
   config: Config(instance),
   registry: manager.Manager(instance),
   id: String,
 ) -> Result(Nil, Unsettled) {
   let movers = config.movers
+
+  // This branch resolves config directory ownership before the operation continues.
   case config.directory.ownership {
     // On a directory member the origin's retry cannot undo anything here: it
     // abandons only by a compare-and-set that expects its own moving record,
@@ -4009,23 +4249,29 @@ fn inbound_settled(
   }
 }
 
+/// Verifies whether an inbound session move has settled by inspecting active movers.
 fn inbound_settled_by_rows(
   movers: session_movers.Control,
   registry: manager.Manager(instance),
   id: String,
 ) -> Result(Nil, Unsettled) {
+  // This branch resolves manager custody registry id before the operation continues.
   case manager.custody(registry, id) {
     Ok(catalogue.Imported(from:, ..)) ->
+      // This branch resolves orchestrators find roster rows movers orchestrators from before the operation continues.
       case orchestrators.find(roster.rows(movers.orchestrators), from) {
         Ok(origin) ->
+          // This branch resolves movers holds origin id before the operation continues.
           case movers.holds(origin, id) {
             Ok(orchestrator_port.Moved(..)) -> Ok(Nil)
             Ok(orchestrator_port.Owned)
             | Ok(orchestrator_port.NotOwned)
             | Error(Nil) -> Error(Unsettled)
           }
+
         Error(Nil) -> Error(Unsettled)
       }
+
     Ok(catalogue.Resident)
     | Ok(catalogue.Moving(..))
     | Ok(catalogue.Moved(..))
@@ -4033,12 +4279,12 @@ fn inbound_settled_by_rows(
   }
 }
 
-// A delete of a remote session on a directory member (protocol-change/083).
-// The deletion mark is written in the registry turn that finds no slot open,
-// then the record is deleted on the condition that it names this daemon as
-// serving, then the registration, the mark and the file go, and the deleted
-// registration is returned. A local session, or a daemon that is not a member,
-// is `Ok(None)` with nothing done, and the ordinary delete runs.
+/// A delete of a remote session on a directory member (protocol-change/083).
+/// The deletion mark is written in the registry turn that finds no slot open,
+/// then the record is deleted on the condition that it names this daemon as
+/// serving, then the registration, the mark and the file go, and the deleted
+/// registration is returned. A local session, or a daemon that is not a member,
+/// is `Ok(None)` with nothing done, and the ordinary delete runs.
 fn deleted_through_directory(
   config: Config(instance),
   state: root.Ready(instance),
@@ -4046,6 +4292,7 @@ fn deleted_through_directory(
   supplied: String,
   id: String,
 ) -> Result(Option(catalogue.Registration), String) {
+  // This branch resolves config directory ownership manager get state registry id before the operation continues.
   case config.directory.ownership, manager.get(state.registry, id) {
     Some(ownership), Ok(manager.View(registration:, ..))
       if registration.executor != "" || registration.pool != ""
@@ -4067,7 +4314,9 @@ fn deleted_through_directory(
   }
 }
 
+/// Maps session deletion refusal causes to protocol error string identifiers.
 fn deletion_code(refusal: deletion.Refusal) -> String {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     deletion.Moving -> "moving"
     deletion.NotOwner -> not_owner_code
@@ -4172,12 +4421,12 @@ pub fn no_moves() -> Moves {
   )
 }
 
-// The orchestrators a session could move to. The session's executor is the one
-// its registration names, resolved to the node this daemon's configuration gives
-// that name; the deployment is then read as `deployment.status` reads it and the
-// orchestrators it lists are judged against that node. A session that names no
-// executor has nowhere to go (`movable` refuses it in the registry too), so the
-// read is not made for it.
+/// The orchestrators a session could move to. The session's executor is the one
+/// its registration names, resolved to the node this daemon's configuration gives
+/// that name; the deployment is then read as `deployment.status` reads it and the
+/// orchestrators it lists are judged against that node. A session that names no
+/// executor has nowhere to go (`movable` refuses it in the registry too), so the
+/// read is not made for it.
 fn move_candidates_for(
   config: Config(instance),
   registry: manager.Manager(instance),
@@ -4186,6 +4435,8 @@ fn move_candidates_for(
   use view <- result.try(
     manager.get(registry, id) |> result.map_error(Unreadable),
   )
+
+  // This branch resolves view registration executor before the operation continues.
   use executor <- result.try(case view.registration.executor {
     "" ->
       Error(
@@ -4197,6 +4448,12 @@ fn move_candidates_for(
       executors.find(roster.rows(config.executors), name)
       |> result.replace_error(Unanswered)
   })
+
+  // This branch resolves the input state before the operation continues.
+
+  // This branch resolves the input state before the operation continues.
+
+  // Deployment status decides which candidate can host this move.
   let roles = case config.directory.standing {
     session_directory.Member(..) -> [
       deployment.OrchestratorRole,
@@ -4204,6 +4461,8 @@ fn move_candidates_for(
     ]
     session_directory.NotMember -> [deployment.OrchestratorRole]
   }
+
+  // Deployment status decides which candidate can host this move.
   case
     deployment.status(
       config.deployment,
@@ -4267,6 +4526,8 @@ pub fn move_session(
     )
     |> result.map_error(Declined),
   )
+
+  // This branch resolves custody before the operation continues.
   case custody {
     catalogue.Moving(op:, to: heading) -> {
       config.movers.begin(catalogue.Pending(session: id, op:, to: heading))
@@ -4296,10 +4557,13 @@ pub fn abandon_move(
   registry: manager.Manager(instance),
   id: String,
 ) -> Result(String, MoveRefusal) {
+  // This branch resolves config directory ownership before the operation continues.
   use Nil <- result.try(case config.directory.ownership {
     Some(_) -> Ok(Nil)
     None -> Error(NotAMember)
   })
+
+  // This branch resolves manager custody registry id before the operation continues.
   case manager.custody(registry, id) {
     Ok(catalogue.Moving(op:, ..)) -> {
       config.movers.abandon(id)
@@ -4322,6 +4586,7 @@ pub fn abandon_move(
 ///   == server.orchestrator_unknown_code
 /// ```
 pub fn move_refusal_code(refusal: MoveRefusal) -> String {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     UnknownDestination -> orchestrator_unknown_code
     Declined(error:) -> admin_error_code(error)
@@ -4379,18 +4644,24 @@ pub fn create_session(
       bootstrap.canonical_directory(request.workspace)
       |> result.replace_error("invalid_workspace")
     executor, "" ->
+      // This branch resolves executors find roster rows config executors executor before the operation continues.
       case executors.find(roster.rows(config.executors), executor) {
         Ok(_) -> Ok(request.workspace)
         Error(Nil) -> Error(executor_unknown_code)
       }
+
     "", pool ->
+      // This branch resolves pools find config pools pool before the operation continues.
       case pools.find(config.pools, pool) {
         Ok(_) -> Ok(request.workspace)
         Error(Nil) -> Error(pool_unknown_code)
       }
+
     _, _ -> Error("bad_request")
   })
+
   use configuration <- result.try(
+    // This branch resolves request configuration before the operation continues.
     case request.configuration {
       // Absence is a registration choice, not the daemon's current path.
       // Canonicalizing it would replace inherited defaults with a directory.
@@ -4411,6 +4682,7 @@ pub fn create_session(
       request.model,
     )
     |> result.map_error(fn(refusal) {
+      // This branch resolves refusal before the operation continues.
       case refusal {
         profiles.UnknownProfile(_) -> unknown_profile_code
         profiles.UnknownModel(_) -> unknown_model_code
@@ -4451,15 +4723,16 @@ pub fn create_session(
     }
     _, _ -> Nil
   }
+
   created
 }
 
-// A remote session created on a directory member is recorded before it can be
-// served (protocol-change/083): the registration is reserved without opening
-// it, the record names this daemon, and only then does `create_scoped` find
-// the reservation by its request key and open it. A creation refused for no
-// quorum keeps its reservation, and a retry under the same key repeats the
-// record write, which accepts a record that already names this daemon.
+/// A remote session created on a directory member is recorded before it can be
+/// served (protocol-change/083): the registration is reserved without opening
+/// it, the record names this daemon, and only then does `create_scoped` find
+/// the reservation by its request key and open it. A creation refused for no
+/// quorum keeps its reservation, and a retry under the same key repeats the
+/// record write, which accepts a record that already names this daemon.
 fn recorded(
   config: Config(instance),
   registry: manager.Manager(instance),
@@ -4467,6 +4740,7 @@ fn recorded(
   request: manager.Creation,
   scope: domain.Scope,
 ) -> Result(Nil, String) {
+  // This branch resolves request executor request pool config directory ownership before the operation continues.
   case request.executor, request.pool, config.directory.ownership {
     "", "", _ | _, _, None -> Ok(Nil)
     _, _, Some(ownership) -> {
@@ -4481,6 +4755,8 @@ fn recorded(
         )
         |> result.map_error(error_code),
       )
+
+      // This branch resolves ownership create reserved id before the operation continues.
       case ownership.create(reserved.id) {
         Ok(Nil) -> Ok(Nil)
         Error(store.NoQuorum(_)) -> Error(no_quorum_code)
@@ -4490,7 +4766,9 @@ fn recorded(
   }
 }
 
+/// Operator keeps this client decision explicit for its callers.
 fn operator(authority) {
+  // This branch resolves authority before the operation continues.
   case authority {
     access.Owner | access.Participant(access.Operator) -> Ok(Nil)
     access.Participant(access.Observer) -> Error("forbidden")
@@ -4503,13 +4781,14 @@ type Issued {
   Issued(token: String, ttl_ms: Int)
 }
 
-// Turns the requested enrollment into what the catalogue stores. A claim is
-// drawn here, from the same entropy source as every other daemon secret, and
-// only its digest leaves this function for the registry; its expiry is a
-// wall-clock instant so that it means the same thing after a restart.
+/// Turns the requested enrollment into what the catalogue stores. A claim is
+/// drawn here, from the same entropy source as every other daemon secret, and
+/// only its digest leaves this function for the registry; its expiry is a
+/// wall-clock instant so that it means the same thing after a restart.
 fn enrollment(
   requested: protocol.Enrollment,
 ) -> Result(#(access.Enrollment, Option(Issued)), String) {
+  // This branch resolves requested before the operation continues.
   case requested {
     protocol.EnrollDigest(credential:) ->
       Ok(#(access.DigestEnrollment(credential), None))
@@ -4546,10 +4825,10 @@ pub fn claim_enrollment(
   Ok(#(access.ClaimEnrollment(digest, expires_at_ms), issued))
 }
 
-// Only an explicitly successful invitation or rotation returns a claim, and
-// no reply returns a bearer (protocol-change/053 rule 5). Refusals use fixed
-// codes and never stringify a request or durable error, so a claim minted for
-// a refused mutation is dropped here and exists nowhere else.
+/// Only an explicitly successful invitation or rotation returns a claim, and
+/// no reply returns a bearer (protocol-change/053 rule 5). Refusals use fixed
+/// codes and never stringify a request or durable error, so a claim minted for
+/// a refused mutation is dropped here and exists nowhere else.
 fn admin_result(
   state: root.Ready(instance),
   digest,
@@ -4566,6 +4845,8 @@ fn admin_result(
     #("principal_id", json.String(principal.id)),
     #("name", json.String(principal.display_name)),
   ]
+
+  // This branch resolves issued before the operation continues.
   let fields = case issued {
     None -> fields
     Some(Issued(token:, ttl_ms:)) ->
@@ -4574,13 +4855,15 @@ fn admin_result(
         #("expires_in_ms", json.Int(ttl_ms)),
       ])
   }
+
   Ok(#(event, json.Object(fields)))
 }
 
-// A refused rename's code. A name the catalogue's display-name rule refuses is
-// `invalid_name`, as a refused claim's is, and every other refusal is the
-// administration's own.
+/// A refused rename's code. A name the catalogue's display-name rule refuses is
+/// `invalid_name`, as a refused claim's is, and every other refusal is the
+/// administration's own.
 fn rename_error_code(error) {
+  // This branch resolves error before the operation continues.
   case error {
     manager.AdminMetadata(catalogue.Invalid(_)) -> "invalid_name"
     manager.IsolationRequired
@@ -4597,7 +4880,9 @@ fn rename_error_code(error) {
   }
 }
 
+/// Maps administrative operation errors to stable error codes.
 fn admin_error_code(error) {
+  // This branch resolves error before the operation continues.
   case error {
     manager.IsolationRequired -> "isolation_required"
     manager.AdminForbidden -> "forbidden"
@@ -4613,29 +4898,31 @@ fn admin_error_code(error) {
   }
 }
 
-// The move a session is in, if any, as members of its view
-// (protocol-change/078, phase 5). A session that is not moving and has not moved
-// carries neither, so its view is byte for byte what a daemon without moves
-// sends. `moving` names the move and where it goes, and `moved` names where the
-// session went; a session that is moving is also still stopped and `saved`.
+/// The move a session is in, if any, as members of its view
+/// (protocol-change/078, phase 5). A session that is not moving and has not moved
+/// carries neither, so its view is byte for byte what a daemon without moves
+/// sends. `moving` names the move and where it goes, and `moved` names where the
+/// session went; a session that is moving is also still stopped and `saved`.
 fn with_custody(
   state: root.Ready(instance),
   id: String,
   body: JsonValue,
 ) -> JsonValue {
+  // This branch resolves manager custody state registry id before the operation continues.
   case manager.custody(state.registry, id) {
     Ok(custody) -> with_custody_members(body, custody)
     Error(_) -> body
   }
 }
 
-// The members one custody adds to a record, which `sessions.get` and
-// `sessions.list` share so the two cannot word a move differently. A resident
-// session, and one this catalogue imported, add none.
+/// The members one custody adds to a record, which `sessions.get` and
+/// `sessions.list` share so the two cannot word a move differently. A resident
+/// session, and one this catalogue imported, add none.
 fn with_custody_members(
   body: JsonValue,
   custody: catalogue.Custody,
 ) -> JsonValue {
+  // This branch resolves body before the operation continues.
   case body {
     json.Object(fields) ->
       json.Object(list.append(fields, custody_members(custody)))
@@ -4643,7 +4930,9 @@ fn with_custody_members(
   }
 }
 
+/// Serializes cluster custody metadata into JSON property fields.
 fn custody_members(custody: catalogue.Custody) -> List(#(String, JsonValue)) {
+  // This branch resolves custody before the operation continues.
   case custody {
     catalogue.Moving(op:, to:) -> [
       #(
@@ -4658,13 +4947,14 @@ fn custody_members(custody: catalogue.Custody) -> List(#(String, JsonValue)) {
   }
 }
 
-// The encoder of a `sessions.list` record: the plain view, with the move
-// members of the custody read for its page. A session with no entry in
-// `custodies` is encoded as a plain view.
+/// The encoder of a `sessions.list` record: the plain view, with the move
+/// members of the custody read for its page. A session with no entry in
+/// `custodies` is encoded as a plain view.
 fn listed_json(
   custodies: List(#(String, catalogue.Custody)),
 ) -> fn(manager.View) -> JsonValue {
   fn(view: manager.View) {
+    // This branch resolves list key_find custodies view registration id before the operation continues.
     case list.key_find(custodies, view.registration.id) {
       Ok(custody) -> with_custody_members(view_json(view), custody)
       Error(Nil) -> view_json(view)
@@ -4672,11 +4962,13 @@ fn listed_json(
   }
 }
 
+/// Returns a session view augmented with owner-specific placement details.
 fn owner_view(
   state: root.Ready(instance),
   principal: access.Principal,
   view: manager.View,
 ) {
+  // This branch resolves principal kind before the operation continues.
   case principal.kind {
     access.MemberPrincipal -> Ok(view_json(view))
     access.OwnerPrincipal -> {
@@ -4699,14 +4991,18 @@ fn owner_view(
   }
 }
 
+/// Scope text keeps this client decision explicit for its callers.
 fn scope_text(scope) {
+  // This branch resolves scope before the operation continues.
   case scope {
     domain.WorkspacePrivate -> "workspace_private"
     domain.SessionOnly -> "session_only"
   }
 }
 
+/// Asserts that expected and actual catalogue revisions match.
 fn check_revision(expected, actual) {
+  // This branch resolves expected before the operation continues.
   case expected {
     None -> Ok(Nil)
     Some(value) if value == actual -> Ok(Nil)
@@ -4714,15 +5010,18 @@ fn check_revision(expected, actual) {
   }
 }
 
+/// Encodes a paginated slice of session views into a JSON response payload.
 fn page_body(
   views: List(manager.View),
   revision,
   encode: fn(manager.View) -> JsonValue,
 ) {
+  // This branch resolves list last views before the operation continues.
   let continuation = case list.last(views) {
     Ok(view) -> json.String(view.registration.id)
     Error(Nil) -> json.Null
   }
+
   json.Object([
     #("revision", json.Int(revision)),
     #("sessions", json.Array(list.map(views, encode))),
@@ -4730,18 +5029,21 @@ fn page_body(
   ])
 }
 
-// Stop on an authorized record boundary; the next request resumes after the
-// final emitted ID. The reserve covers envelope, revision, and continuation.
+/// Stop on an authorized record boundary; the next request resumes after the
+/// final emitted ID. The reserve covers envelope, revision, and continuation.
 fn page_prefix(
   views: List(manager.View),
   remaining: Int,
   accumulated,
   encode: fn(manager.View) -> JsonValue,
 ) {
+  // This branch resolves views before the operation continues.
   case views {
     [] -> Ok(list.reverse(accumulated))
     [view, ..rest] -> {
       let bytes = encode(view) |> json.to_string |> string.byte_size
+
+      // This branch resolves bytes remaining accumulated before the operation continues.
       case bytes <= remaining, accumulated {
         True, _ ->
           page_prefix(
@@ -4771,11 +5073,15 @@ fn bounded_rows(
   bounded_rows_loop(rows, 60_000, [], remainder)
 }
 
+/// Recursively accumulates encoded JSON rows up to the byte budget limit.
 fn bounded_rows_loop(rows, remaining, accumulated, remainder) {
+  // This branch resolves rows before the operation continues.
   case rows {
     [] -> Ok(#(list.reverse(accumulated), remainder))
     [#(_, value) as row, ..rest] -> {
       let bytes = json.to_string(value) |> string.byte_size
+
+      // This branch resolves bytes remaining accumulated before the operation continues.
       case bytes <= remaining, accumulated {
         True, _ ->
           bounded_rows_loop(
@@ -4793,21 +5099,25 @@ fn bounded_rows_loop(rows, remaining, accumulated, remainder) {
 
 // `next` appears only when another page follows, and names the last row of
 // this one.
+/// Next field keeps this client decision explicit for its callers.
 fn next_field(rows: List(#(String, JsonValue)), remainder: access.Remainder) {
+  // This branch resolves remainder list last rows before the operation continues.
   case remainder, list.last(rows) {
     access.Remaining, Ok(#(id, _)) -> [#("next", json.String(id))]
     access.Remaining, Error(Nil) | access.Exhausted, _ -> []
   }
 }
 
-// One principal as the owner's listing shows it. The credential is a fingerprint
-// and a lifetime, never a bearer or a claim: neither is stored in a form this
-// function could read.
+/// One principal as the owner's listing shows it. The credential is a fingerprint
+/// and a lifetime, never a bearer or a claim: neither is stored in a form this
+/// function could read.
 fn listing_json(row: access.Listing) -> JsonValue {
+  // This branch resolves row principal kind before the operation continues.
   let kind = case row.principal.kind {
     access.OwnerPrincipal -> "owner"
     access.MemberPrincipal -> "member"
   }
+
   json.Object([
     #("principal_id", json.String(row.principal.id)),
     #("name", json.String(row.principal.display_name)),
@@ -4817,9 +5127,9 @@ fn listing_json(row: access.Listing) -> JsonValue {
   ])
 }
 
-// One browser login as its principal's sign-in list shows it. The fingerprint
-// identifies the login and authenticates nothing; the token is in the browser and
-// on no row.
+/// One browser login as its principal's sign-in list shows it. The fingerprint
+/// identifies the login and authenticates nothing; the token is in the browser and
+/// on no row.
 fn signin_json(row: access.Signin) -> JsonValue {
   json.Object(
     list.flatten([
@@ -4827,14 +5137,20 @@ fn signin_json(row: access.Signin) -> JsonValue {
         #("fingerprint", json.String(row.fingerprint)),
         #("issued_at_ms", json.Int(row.issued_at_ms)),
       ],
+
+      // This branch resolves row last_resumed_ms before the operation continues.
       case row.last_resumed_ms {
         Some(at) -> [#("last_resumed_ms", json.Int(at))]
         None -> []
       },
+
+      // This branch resolves row expires_at_ms before the operation continues.
       case row.expires_at_ms {
         Some(at) -> [#("expires_at_ms", json.Int(at))]
         None -> []
       },
+
+      // This branch resolves row issued_by before the operation continues.
       case row.issued_by {
         Some(parent) -> [#("issued_by", json.String(parent))]
         None -> []
@@ -4843,7 +5159,9 @@ fn signin_json(row: access.Signin) -> JsonValue {
   )
 }
 
+/// Serializes credential activity and claim timestamp status into JSON.
 fn credential_json(summary: access.CredentialSummary) -> JsonValue {
+  // This branch resolves summary before the operation continues.
   case summary {
     access.CredentialActive(fingerprint:, claimed_at_ms: None) ->
       json.Object([
@@ -4867,11 +5185,14 @@ fn credential_json(summary: access.CredentialSummary) -> JsonValue {
   }
 }
 
+/// Serializes session membership entry details into JSON format.
 fn membership_json(row: access.MembershipEntry) -> JsonValue {
+  // This branch resolves row role before the operation continues.
   let role = case row.role {
     access.Operator -> "operator"
     access.Observer -> "observer"
   }
+
   json.Object([
     #("session_id", json.String(row.session_id)),
     #("name", json.String(row.name)),
@@ -4879,6 +5200,7 @@ fn membership_json(row: access.MembershipEntry) -> JsonValue {
   ])
 }
 
+/// Serializes member principal information into JSON format.
 fn member_json(row: access.SessionMember) -> JsonValue {
   json.Object([
     #("principal_id", json.String(row.principal_id)),
@@ -4887,6 +5209,13 @@ fn member_json(row: access.SessionMember) -> JsonValue {
   ])
 }
 
+/// Serializes a session registration view into its external JSON representation.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // server.view_json(view)
+/// ```
 pub fn view_json(view: manager.View) -> JsonValue {
   json.Object([
     #("session_id", json.String(view.registration.id)),
@@ -4901,11 +5230,11 @@ pub fn view_json(view: manager.View) -> JsonValue {
   ])
 }
 
-// The optional `executor` and `pool` of `protocol-change/078`. A local session
-// omits both fields, so its frame is byte-for-byte what a daemon without
-// executors sent, and a client that does not know them reads the rest as before.
-// A session in a pool has no executor until its first open chooses one, so it
-// carries the pool alone until then.
+/// The optional `executor` and `pool` of `protocol-change/078`. A local session
+/// omits both fields, so its frame is byte-for-byte what a daemon without
+/// executors sent, and a client that does not know them reads the rest as before.
+/// A session in a pool has no executor until its first open chooses one, so it
+/// carries the pool alone until then.
 fn placement_fields(
   registration: catalogue.Registration,
 ) -> List(#(String, JsonValue)) {
@@ -4915,7 +5244,9 @@ fn placement_fields(
   )
 }
 
+/// Named keeps this client decision explicit for its callers.
 fn named(key: String, name: String) -> List(#(String, JsonValue)) {
+  // This branch resolves name before the operation continues.
   case name {
     "" -> []
     present -> [#(key, json.String(present))]
@@ -4925,14 +5256,18 @@ fn named(key: String, name: String) -> List(#(String, JsonValue)) {
 // The optional `subtitle` of `protocol-change/067`. A session with none omits
 // the field, so a frame for it is byte-for-byte what an older daemon sent, and
 // a client that does not know the field reads the rest as before.
+/// Subtitle field keeps this client decision explicit for its callers.
 fn subtitle_field(subtitle: Option(String)) -> List(#(String, JsonValue)) {
+  // This branch resolves subtitle before the operation continues.
   case subtitle {
     Some(text) -> [#("subtitle", json.String(text))]
     None -> []
   }
 }
 
+/// Serializes session runtime lifecycle status into JSON property representations.
 fn status_json(status) {
+  // This branch resolves status before the operation continues.
   case status {
     // Distinct from `saved` because the two differ in what a client may do
     // with the row: a reservation has no database and only a create retry
@@ -4975,7 +5310,9 @@ fn status_json(status) {
   }
 }
 
+/// Maps internal manager lifecycle errors to stable protocol error codes.
 fn error_code(error) {
+  // This branch resolves error before the operation continues.
   case error {
     manager.StaleOperation -> "stale_operation"
     manager.StartFailed(..) -> "start_failed"
@@ -5008,16 +5345,16 @@ const activity_deadline_ms = 2000
 /// fit the 60,000-byte reply.
 const activity_row_bytes = 2400
 
-// One row per resident identity, in request order. Resolution goes through
-// the registry, which answers only for running slots, so a saved session is
-// never opened and its database is never read: it is simply left out, which
-// is what "inactive" means to the client.
-//
-// The residents are then asked concurrently, from this control socket's
-// process and not the registry's, so a slow Agency holds up neither the
-// registry nor the other residents. The run's deadline kills and joins any
-// worker still waiting, and every outcome other than an answer becomes an
-// `unknown` row rather than a failed reply.
+/// One row per resident identity, in request order. Resolution goes through
+/// the registry, which answers only for running slots, so a saved session is
+/// never opened and its database is never read: it is simply left out, which
+/// is what "inactive" means to the client.
+///
+/// The residents are then asked concurrently, from this control socket's
+/// process and not the registry's, so a slow Agency holds up neither the
+/// registry nor the other residents. The run's deadline kills and joins any
+/// worker still waiting, and every outcome other than an answer becomes an
+/// `unknown` row rather than a failed reply.
 fn activity(
   config: Config(instance),
   registry: manager.Manager(instance),
@@ -5034,6 +5371,7 @@ fn activity(
   let outcomes =
     residents
     |> list.map(fn(pair) {
+      // This branch resolves pair 1 before the operation continues.
       case pair.1 {
         Some(peer_mail.Endpoint(call:, ..)) -> fn() { call(peer_mail.Overview) }
         None -> fn() { Error(peer_mail.Refused("peer_service_unavailable")) }
@@ -5044,6 +5382,8 @@ fn activity(
     |> weft.start
   list.map2(residents, outcomes, fn(pair, outcome) {
     let #(id, _) = pair
+
+    // This branch resolves outcome before the operation continues.
     case outcome {
       weft.Completed(value: json.Object(fields), ..) ->
         bounded_row(json.Object([#("session_id", json.String(id)), ..fields]))
@@ -5084,11 +5424,11 @@ pub fn home_activity(
   }
 }
 
-// The identities among `ids` the credential holds a membership in, at any role,
-// in their order. The owner holds every session in the catalogue. An identity
-// the credential does not hold is dropped exactly as one the registry has never
-// heard of is, so `activity` leaves both out the same way and a reply never
-// tells a session that is not the caller's from one that is not running.
+/// The identities among `ids` the credential holds a membership in, at any role,
+/// in their order. The owner holds every session in the catalogue. An identity
+/// the credential does not hold is dropped exactly as one the registry has never
+/// heard of is, so `activity` leaves both out the same way and a reply never
+/// tells a session that is not the caller's from one that is not running.
 fn held(
   registry: manager.Manager(instance),
   digest: access.Digest,
@@ -5127,21 +5467,25 @@ pub fn activity_states(
   |> list.filter_map(state_of)
 }
 
-// The session and the state a reply row names, when it names a state the page
-// knows. The row's count of pending approvals tells a failed run from an
-// escalation, as both are `needs_you` (`listed_sessions.activity_from`); a row
-// that carries no count is taken at its word.
+/// The session and the state a reply row names, when it names a state the page
+/// knows. The row's count of pending approvals tells a failed run from an
+/// escalation, as both are `needs_you` (`listed_sessions.activity_from`); a row
+/// that carries no count is taken at its word.
 fn state_of(
   row: JsonValue,
 ) -> Result(#(String, listed_sessions.Activity), Nil) {
+  // This branch resolves row before the operation continues.
   case row {
     json.Object(fields) -> {
       use id <- result.try(text_field(fields, "session_id"))
       use state <- result.try(text_field(fields, "state"))
+
+      // This branch resolves list key_find fields approvals before the operation continues.
       let approvals = case list.key_find(fields, "approvals") {
         Ok(json.Int(count)) -> count
         Ok(_) | Error(Nil) -> 1
       }
+
       use doing <- result.map(listed_sessions.activity_from(state, approvals))
       #(id, doing)
     }
@@ -5154,17 +5498,21 @@ fn state_of(
   }
 }
 
+/// Extracts a string property value from parsed JSON object fields.
 fn text_field(
   fields: List(#(String, JsonValue)),
   name: String,
 ) -> Result(String, Nil) {
+  // This branch resolves list key_find fields name before the operation continues.
   case list.key_find(fields, name) {
     Ok(json.String(value)) -> Ok(value)
     Ok(_) | Error(Nil) -> Error(Nil)
   }
 }
 
+/// Bounded row keeps this client decision explicit for its callers.
 fn bounded_row(row: JsonValue) -> Result(JsonValue, Nil) {
+  // This branch resolves string byte_size json to_string row activity_row_bytes before the operation continues.
   case string.byte_size(json.to_string(row)) <= activity_row_bytes {
     True -> Ok(row)
     False -> Error(Nil)
@@ -5178,11 +5526,11 @@ fn unknown_row(id: String) -> JsonValue {
   ])
 }
 
-// The daemon's peer lookups, which the control commands and an owner's web
-// page share so that both resolve a session the same way. A session resident
-// here resolves to its Agency, and one a configured orchestrator owns resolves
-// to that orchestrator's port (`peers.routed`); discovery is the catalogue's,
-// here or on the owner (`peers.described`).
+/// The daemon's peer lookups, which the control commands and an owner's web
+/// page share so that both resolve a session the same way. A session resident
+/// here resolves to its Agency, and one a configured orchestrator owns resolves
+/// to that orchestrator's port (`peers.routed`); discovery is the catalogue's,
+/// here or on the owner (`peers.described`).
 fn peer_directory(
   config: Config(instance),
   registry: manager.Manager(instance),
@@ -5230,10 +5578,12 @@ pub type Standing {
 /// ```
 @internal
 pub fn standing(registry: manager.Manager(instance), id: String) -> Standing {
+  // This branch resolves manager visibility registry id before the operation continues.
   case manager.visibility(registry, id) {
     Error(_) -> Unheld
     Ok(catalogue.Archived) -> Archived
     Ok(catalogue.Active) ->
+      // This branch resolves manager custody registry id before the operation continues.
       case manager.custody(registry, id) {
         Ok(catalogue.Moved(..)) -> Handed
         Ok(_) | Error(_) -> Unopened
@@ -5262,9 +5612,11 @@ pub fn local_peer(
   project: fn(instance) -> Result(peer_mail.Endpoint, peer_mail.Failure),
 ) -> fn(String) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
   fn(id) {
+    // This branch resolves manager resolve registry id before the operation continues.
     case manager.resolve(registry, id) {
       Ok(resident) -> project(resident)
       Error(error) ->
+        // This branch resolves standing registry id before the operation continues.
         case standing(registry, id) {
           Unopened | Handed -> Error(peer_mail.NotOpen)
           Archived -> Error(peer_mail.Refused("session_archived"))
@@ -5293,6 +5645,8 @@ pub fn local_description(
     use view <- result.try(
       manager.get(registry, id) |> result.map_error(error_code),
     )
+
+    // This branch resolves manager custody registry id before the operation continues.
     case manager.custody(registry, id) {
       Ok(catalogue.Moved(..)) -> Error("moved")
       Ok(_) | Error(_) -> Ok(view_json(view))
@@ -5300,21 +5654,23 @@ pub fn local_description(
   }
 }
 
-// The recipient of a link. A lookup bounds one connection at a second and a
-// half, and the first TLS handshake to a loaded orchestrator can take longer:
-// the lookup then finds the owner silent although only its first connection is
-// still being made, and the handshake goes on in the background. A send has its
-// outbox to retry from and a client's `sessions.get` can ask again, but a link
-// is one operator command with nothing behind it. So a link that finds the owner
-// silent waits once, bounded, for the connections to settle
-// (`Directory.settle`), and asks again; an owner that is truly down is still
-// unreachable, a few seconds later.
+/// The recipient of a link. A lookup bounds one connection at a second and a
+/// half, and the first TLS handshake to a loaded orchestrator can take longer:
+/// the lookup then finds the owner silent although only its first connection is
+/// still being made, and the handshake goes on in the background. A send has its
+/// outbox to retry from and a client's `sessions.get` can ask again, but a link
+/// is one operator command with nothing behind it. So a link that finds the owner
+/// silent waits once, bounded, for the connections to settle
+/// (`Directory.settle`), and asks again; an owner that is truly down is still
+/// unreachable, a few seconds later.
 fn link_target(
   config: Config(instance),
   registry: manager.Manager(instance),
   target: String,
 ) -> Result(peer_mail.Endpoint, peer_mail.Failure) {
   let directory = peer_directory(config, registry)
+
+  // This branch resolves directory resolve target before the operation continues.
   case directory.resolve(target) {
     Error(peer_mail.Unreachable) -> {
       config.directory.settle()
@@ -5324,6 +5680,7 @@ fn link_target(
   }
 }
 
+/// Resolves a local or remote peer communication endpoint from the session registry.
 fn peer_endpoint(
   config: Config(instance),
   registry: manager.Manager(instance),
@@ -5340,7 +5697,9 @@ fn peer_endpoint(
 // node name of a standalone daemon is one the BEAM made up (`nonode@nohost`) and
 // the admin page never draws it either (`machines.Standalone`). A host the daemon
 // could not read is "this machine".
+/// Page machine keeps this client decision explicit for its callers.
 fn page_machine(reach: deployment.Reach) -> String {
+  // This branch resolves reach footing before the operation continues.
   case reach.footing {
     deployment.Distributed -> reach.self_name
     deployment.Standalone -> option.unwrap(reach.host, "this machine")

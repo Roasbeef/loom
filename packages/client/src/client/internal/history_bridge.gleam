@@ -85,6 +85,7 @@ pub fn counted(seam: tool.History, logger: Logger) -> tool.History {
   )
 }
 
+/// Emits audit metrics for memory search results before returning the answer.
 fn noted(
   logger: Logger,
   scope: String,

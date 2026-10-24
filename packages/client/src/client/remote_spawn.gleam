@@ -354,6 +354,7 @@ pub fn agent_request(
   request: Request,
   terms: Terms,
 ) -> Result(agent.SpawnRequest, SpawnRefusal) {
+  // This match resolves request.within_ms before the enclosing validation continues.
   use within_ms <- result.try(case request.within_ms {
     None -> Ok(terms.default_within_ms)
     Some(asked) if asked <= 0 ->
@@ -362,14 +363,18 @@ pub fn agent_request(
       Error(InvalidArgument(reason: over_cap(asked, terms.max_within_ms)))
     Some(asked) -> Ok(asked)
   })
+
+  // This match resolves request.tools before the enclosing validation continues.
   use Nil <- result.try(case request.tools {
     None -> Ok(Nil)
     Some(names) ->
+      // This match resolves list.find(names, fn(name) before the surrounding protocol step continues.
       case list.find(names, fn(name) { !list.contains(terms.ceiling, name) }) {
         Ok(outside) -> Error(ToolOutsideCeiling(tool: outside))
         Error(Nil) -> Ok(Nil)
       }
   })
+
   Ok(agent.SpawnRequest(
     purpose: request.purpose,
     brief: request.brief,
@@ -378,6 +383,7 @@ pub fn agent_request(
     within_ms: Some(within_ms),
     result_schema: request.result_schema,
     context: agent.Fresh,
+    // This match resolves request.detach before the enclosing validation continues.
     detach: case request.detach {
       Attached -> False
       Detached -> True
@@ -440,6 +446,8 @@ pub fn refusal_of(
   fan_out fan_out: Int,
   session_strands session_strands: Int,
 ) -> SpawnRefusal {
+  // This match resolves refusal before the surrounding protocol step continues.
+  // This match resolves refusal before the enclosing validation continues.
   case refusal {
     agent.DepthCapReached(depth:) -> CapReached(cap: MaxDepth, limit: depth)
     agent.FanOutCapReached(cap:, ..) if cap == fan_out ->
@@ -477,6 +485,8 @@ pub fn refusal_of(
 ///   == "the cap `fan_out` is 8 and was reached"
 /// ```
 pub fn describe_refusal(refusal: SpawnRefusal) -> String {
+  // This match resolves refusal before the surrounding protocol step continues.
+  // This match resolves refusal before the enclosing validation continues.
   case refusal {
     UnknownSpawner(node:) ->
       "it has no spawner configured for this machine (`" <> node <> "`)"
@@ -501,7 +511,10 @@ pub fn describe_refusal(refusal: SpawnRefusal) -> String {
 }
 
 // The configuration key a cap is, which is how the refusal names it.
+/// Cap name keeps this client operation’s decoding or state decision in one place.
 fn cap_name(cap: Cap) -> String {
+  // This match resolves cap before the surrounding protocol step continues.
+  // This match resolves cap before the enclosing validation continues.
   case cap {
     MaxDepth -> "max_depth"
     FanOut -> "fan_out"

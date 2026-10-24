@@ -250,9 +250,9 @@ pub fn with_worktrees(
   }
 }
 
-// The ledger lists only scopes that block a reopen, so the two states below
-// are the whole of it. An open or cleanly closed scope would be a fault in the
-// summary, and a report does not carry a state it has no word for.
+/// The ledger lists only scopes that block a reopen, so the two states below
+/// are the whole of it. An open or cleanly closed scope would be a fault in the
+/// summary, and a report does not carry a state it has no word for.
 fn unclean_scope(
   scope: exec_ledger.UncleanScope,
 ) -> Result(node_report.UncleanScope, Nil) {

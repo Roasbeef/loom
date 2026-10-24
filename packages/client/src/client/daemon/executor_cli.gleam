@@ -114,6 +114,7 @@ Example:
 /// // loomd executor release 7f3a9c1e --state-dir /var/lib/loom
 /// ```
 pub fn main(arguments: List(String)) -> Nil {
+  // Run executor CLI command and print output or report error.
   case run(arguments) {
     Ok(text) -> io.println(text)
     Error(reason) -> {
@@ -153,17 +154,23 @@ type Sweep {
   )
 }
 
+/// Sweeps unused executor worktrees according to flags.
 fn settle_worktrees(flags: List(String)) -> Result(String, String) {
   use asked <- result.try(sweep_flags(flags, Sweep(None, None, None, [])))
   use path <- result.try(option.to_result(
     asked.config,
     "--worktrees needs --config, the executor's loom.toml\n" <> usage,
   ))
+
+  // Parse daemon config from state directory or default.
   use config <- result.try(case asked.state_dir {
     None -> daemon.parse([])
     Some(directory) -> daemon.parse(["--state-dir", directory])
   })
+
   let ledger_path = config.state_root <> "/exec-ledger.db"
+
+  // Ensure ledger database exists on disk.
   use Nil <- result.try(case bootstrap.path_exists(ledger_path) {
     True -> Ok(Nil)
     False ->
@@ -172,6 +179,7 @@ fn settle_worktrees(flags: List(String)) -> Result(String, String) {
         <> " does not exist; --state-dir must be the executor daemon's state directory",
       )
   })
+
   use text <- result.try(
     simplifile.read(path)
     |> result.map_error(fn(error) {
@@ -191,10 +199,13 @@ fn settle_worktrees(flags: List(String)) -> Result(String, String) {
   // Construct the executor machine plane and sweep target worktrees.
   let #(config, _paths, _fence) = claimed
   use Nil <- result.try(migrated(ledger_path))
+
+  // Set helper flags if configured.
   let helper = case asked.helper {
     Some(found) -> ["--helper", found]
     None -> []
   }
+
   use machine <- result.try(executor_plane.machine(
     list.append(["--config", path], helper),
     path,
@@ -207,9 +218,11 @@ fn settle_worktrees(flags: List(String)) -> Result(String, String) {
   result.map(swept, sweep_report(_, ledger_path))
 }
 
-// The sole opener of the ledger migrates it to the current version, which a
-// file the daemon has not run on since an upgrade needs before the worktree
-// records can be read.
+/// Opens and migrates the execution ledger to current version.
+///
+/// The sole opener of the ledger migrates it to the current version, which a
+/// file the daemon has not run on since an upgrade needs before the worktree
+/// records can be read.
 fn migrated(ledger_path: String) -> Result(Nil, String) {
   use ledger <- result.try(
     exec_ledger.open(ledger_path)
@@ -221,6 +234,7 @@ fn migrated(ledger_path: String) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+/// Parses flags for the worktree sweep command.
 fn sweep_flags(flags: List(String), asked: Sweep) -> Result(Sweep, String) {
   case flags {
     [] -> Ok(asked)
@@ -236,7 +250,9 @@ fn sweep_flags(flags: List(String), asked: Sweep) -> Result(Sweep, String) {
   }
 }
 
-// One line for each tree, then what the operator may do next.
+/// Formats the summary report of swept and kept worktrees.
+///
+/// One line for each tree, then what the operator may do next.
 fn sweep_report(swept: List(worktrees.Swept), ledger_path: String) -> String {
   let lines =
     list.map(swept, fn(each) {
@@ -273,12 +289,15 @@ fn sweep_report(swept: List(worktrees.Swept), ledger_path: String) -> String {
   )
 }
 
+/// Releases a session scope in the execution ledger.
 fn release(session: String, flags: List(String)) -> Result(String, String) {
+  // Parse daemon config from flags.
   use config <- result.try(case flags {
     [] -> daemon.parse([])
     ["--state-dir", directory] -> daemon.parse(["--state-dir", directory])
     _ -> Error(usage)
   })
+
   let ledger_path = config.state_root <> "/exec-ledger.db"
 
   // The check comes before the reservation, because taking it creates the state
@@ -291,6 +310,7 @@ fn release(session: String, flags: List(String)) -> Result(String, String) {
         <> " does not exist; --state-dir must be the executor daemon's state directory",
       )
   })
+
   use claimed <- result.try(
     daemon.claim_endpoint(config)
     |> result.map_error(fn(reason) {
@@ -313,7 +333,9 @@ fn release(session: String, flags: List(String)) -> Result(String, String) {
   result.map(released, fn(done) { described(session, ledger_path, done) })
 }
 
-// The sentence for a release the ledger refused, naming the rule.
+/// Formats refusal message for ledger release error.
+///
+/// The sentence for a release the ledger refused, naming the rule.
 fn refusal(session: String, error: exec_ledger.Error) -> String {
   case error {
     exec_ledger.NoSuchScope -> "the ledger has no scope for session " <> session
@@ -330,12 +352,15 @@ fn refusal(session: String, error: exec_ledger.Error) -> String {
   }
 }
 
-// What the release changed, for the operator and for the shell history.
+/// Describes changes made after successful scope release.
+///
+/// What the release changed, for the operator and for the shell history.
 fn described(
   session: String,
   ledger_path: String,
   released: exec_ledger.Released,
 ) -> String {
+  // Format previous state description string.
   let was = case released.was {
     exec_ledger.Closing -> "closing, with its close never finished"
     exec_ledger.Closed(exec_ledger.UnknownCleanup(count:)) ->
@@ -344,6 +369,7 @@ fn described(
       <> " children it could not prove gone"
     exec_ledger.Closed(exec_ledger.AllRetired) | exec_ledger.Open -> "closed"
   }
+
   "released the scope of session "
   <> session
   <> " (workspace "

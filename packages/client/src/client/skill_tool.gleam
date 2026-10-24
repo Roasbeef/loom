@@ -22,12 +22,15 @@ pub fn tools(catalogue: skill.Catalogue) -> List(tool.Tool) {
   let available =
     skill.entries(catalogue)
     |> list.filter(fn(entry) { entry.model_invocation == skill.ModelSelectable })
+
+  // Decide how to handle available {.
   case available {
     [] -> []
     _ -> [definition(catalogue, available)]
   }
 }
 
+/// Establishes definition for the caller, keeping its validation and result policy at this boundary.
 fn definition(
   catalogue: skill.Catalogue,
   available: List(skill.Skill),
@@ -72,10 +75,13 @@ fn definition(
   )
 }
 
+/// Establishes load for the caller, keeping its validation and result policy at this boundary.
 fn load(catalogue: skill.Catalogue, args: json.JsonValue) -> tool.ToolOutcome {
   use name <- tool.with_arg(tool.required_string(args, "name"))
   use arguments <- tool.with_arg(tool.required_string(args, "arguments"))
   use entry <- tool.or_outcome(skill.lookup(catalogue, name), tool.failure)
+
+  // Decide how to handle entry.model_invocation {.
   case entry.model_invocation {
     skill.ModelSelectable -> {
       use text <- tool.or_outcome(skill.expand(entry, arguments), tool.failure)

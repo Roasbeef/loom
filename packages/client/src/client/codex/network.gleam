@@ -39,6 +39,7 @@ pub fn fetch(
   fetch_adopted(ledger, http.httpc_transport(), request, limit)
 }
 
+/// Fetches an HTTP request adopted into the provided ledger.
 fn fetch_adopted(
   ledger: weft.Ledger,
   transport: http.Transport,
@@ -50,6 +51,8 @@ fn fetch_adopted(
     transport.prepare_streaming(request, events)
     |> result.replace_error("request_transport_failed"),
   )
+
+  // Adopt the streaming request worker into the ledger before starting.
   use Nil <- result.try(
     case
       weft.adopt(
@@ -62,6 +65,7 @@ fn fetch_adopted(
       weft.Refused -> Error("request_cancelled")
     },
   )
+
   prepared.begin()
   let answer =
     collect(
@@ -96,6 +100,8 @@ pub fn fetch_with(
     ])
     |> weft.deadline(30_000)
     |> weft.start
+
+  // Map task execution outcome into HTTP response or error code.
   case outcomes {
     [weft.Completed(_, response)] -> Ok(response)
     [weft.Failed(_, code)] -> Error(code)
@@ -109,6 +115,7 @@ pub fn fetch_with(
   }
 }
 
+/// Collects streaming HTTP response chunks until completion or deadline.
 fn collect(
   events: process.Subject(http.HttpEvent),
   status: Option(Int),
@@ -123,6 +130,8 @@ fn collect(
     )
     |> result.replace_error("request_transport_failed"),
   )
+
+  // Dispatch according to streaming HTTP transport event.
   case event {
     http.ResponseStatus(code, _) ->
       case status {
@@ -148,10 +157,12 @@ fn collect(
           }
       }
     http.ResponseEnd -> {
+      // Verify that status was received before ending response.
       use code <- result.try(case status {
         Some(code) -> Ok(code)
         None -> Error("invalid_http_response")
       })
+
       use body <- result.try(
         bit_array.to_string(bytes)
         |> result.replace_error("invalid_http_response"),

@@ -258,6 +258,8 @@ pub fn run(
   // reads one document and exits, and a pipeline that waits on more
   // input would hang against an open pipe.
   broker.stdin(ctx.broker, call, bit_array.from_string(input), True)
+
+  // Collect broker events until execution settles or cancel on wait timeout.
   case tool.collect_events(events, waiting: wait_ms) {
     Ok(collected) -> Ok(settled(collected))
     Error(Nil) -> {
@@ -267,11 +269,13 @@ pub fn run(
   }
 }
 
-// The derived requirements for a hook process: the session base's own
-// roots, mounts and network posture, asked for the way the bash tool
-// asks — intersection with the base can never widen past the base —
-// with the wall mirroring the handler's timeout and the output cap
-// holding a chatty hook at one megabyte.
+/// Builds a confined broker execution specification for running a hook handler.
+///
+/// The derived requirements for a hook process: the session base's own
+/// roots, mounts and network posture, asked for the way the bash tool
+/// asks — intersection with the base can never widen past the base —
+/// with the wall mirroring the handler's timeout and the output cap
+/// holding a chatty hook at one megabyte.
 fn call_spec(
   ctx: Context,
   command: Command,
@@ -326,11 +330,14 @@ fn argv(command: Command) -> List(String) {
 
 // Renders a settlement as the outcome the event mapping reads. A
 // cancelled or timed-out run reports no text at all — the contract
-// discards a timed-out hook's output, and a decision read out of a
-// half-written stdout would be worse than no decision. A failed
-// clearance keeps exit 1 and the broker's bounded refusal text. Enforcement
-// entries explain a degraded refusal without exposing the hook's decision.
+/// Evaluates collected broker process events to determine hook execution outcome and legibility.
+///
+/// discards a timed-out hook's output, and a decision read out of a
+/// half-written stdout would be worse than no decision. A failed
+/// clearance keeps exit 1 and the broker's bounded refusal text. Enforcement
+/// entries explain a degraded refusal without exposing the hook's decision.
 fn settled(collected: tool.Collected) -> Outcome {
+  // Translate the broker execution outcome into exit codes and stream captures.
   case collected.outcome {
     broker.CallFailed(exec.DegradedExecution(result))
       if result.cancelled || result.timed_out
@@ -386,6 +393,7 @@ fn settled(collected: tool.Collected) -> Outcome {
         WallCancelled, Whole -> Discarded
         WallCancelled, Clipped -> Discarded
       }
+
       Outcome(
         code: result.code,
         stdout: case legibility {
@@ -418,9 +426,11 @@ fn text(bytes: BitArray) -> String {
 
 // `use x <- f(...)` over a Result with an error type that differs
 // arm-to-arm does not exist in the stdlib's `result.try`, and a local
-// `or_*` combinator is the house shape for it. The broker's refusal is
-// carried verbatim: a sentence the caller could reword is a sentence
-// the operator would not recognize.
+/// Chains a fallible broker call into a run error outcome.
+///
+/// `or_*` combinator is the house shape for it. The broker's refusal is
+/// carried verbatim: a sentence the caller could reword is a sentence
+/// the operator would not recognize.
 fn result_try(
   step: Result(a, broker.Refusal),
   next: fn(a) -> Result(b, RunError),
@@ -431,8 +441,10 @@ fn result_try(
   }
 }
 
-// The enforcement report belongs to the refusal, not to the hook's stdout.
-// Even a degraded run that printed a decision remains failed and unreadable.
+/// Formats execution failure diagnostics and enforcement degradation notes.
+///
+/// The enforcement report belongs to the refusal, not to the hook's stdout.
+/// Even a degraded run that printed a decision remains failed and unreadable.
 fn hook_failure_text(failure: exec.ExecFailure) -> String {
   case failure {
     exec.DegradedExecution(result) ->

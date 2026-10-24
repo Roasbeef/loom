@@ -68,9 +68,11 @@ pub fn from_catalogue(
   }
 }
 
-// Reads catalogue pages from `after` until `gathered` holds `limit + 1` rows or
-// the catalogue ends. `gathered` is in identity order. The extra row is dropped
-// from the answer and only decides `more`.
+/// Reads catalogue pages until the limit is reached or the catalogue ends.
+///
+/// Reads catalogue pages from `after` until `gathered` holds `limit + 1` rows or
+/// the catalogue ends. `gathered` is in identity order. The extra row is dropped
+/// from the answer and only decides `more`.
 fn walk(
   registry: Manager(instance),
   known: List(Executor),
@@ -79,6 +81,7 @@ fn walk(
   pages_left: Int,
   gathered: List(Row),
 ) -> Result(Page, Nil) {
+  // Stop when page limit is exhausted or continue gathering records.
   case pages_left, gathered {
     0, [] -> Error(Nil)
     0, [_, ..] -> Ok(Page(rows: list.take(gathered, limit), more: Further))
@@ -86,6 +89,8 @@ fn walk(
       use #(_revision, views) <- result.try(
         manager.page(registry, after:) |> result.replace_error(Nil),
       )
+
+      // Check if more views remain in the current catalogue page.
       case list.last(views) {
         Error(Nil) -> Ok(Page(rows: list.take(gathered, limit), more: Last))
         Ok(last) -> {
@@ -99,6 +104,8 @@ fn walk(
             })
             |> list.map(row_of(known, _))
           let so_far = list.append(gathered, kept)
+
+          // Return accumulated page when limit is met, otherwise walk next page.
           case list.drop(so_far, limit) != [] {
             True -> Ok(Page(rows: list.take(so_far, limit), more: Further))
             False ->
@@ -117,9 +124,11 @@ fn walk(
   }
 }
 
-// Whether this catalogue is the one that serves the session now. A session that
-// is moving or has moved is also listed by, or is about to be the business of,
-// another orchestrator.
+/// Checks whether the session is currently resident or imported here.
+///
+/// Whether this catalogue is the one that serves the session now. A session that
+/// is moving or has moved is also listed by, or is about to be the business of,
+/// another orchestrator.
 fn served_here(
   custodies: List(#(String, catalogue.Custody)),
   id: String,
@@ -130,9 +139,11 @@ fn served_here(
   }
 }
 
-// One registration and its live status as a row. The empty text of a catalogue
-// column is "none", and the executor's node comes from this daemon's own table,
-// so a key it does not list leaves the node out.
+/// Maps a manager session view into a listed session row.
+///
+/// One registration and its live status as a row. The empty text of a catalogue
+/// column is "none", and the executor's node comes from this daemon's own table,
+/// so a key it does not list leaves the node out.
 fn row_of(known: List(Executor), view: manager.View) -> Row {
   let registration = view.registration
   Row(
@@ -158,6 +169,7 @@ fn named(name: String) -> Option(String) {
   }
 }
 
+/// Converts manager status to listed session status enum.
 fn status_of(status: manager.Status) -> listed_sessions.ListedStatus {
   case status {
     manager.Reserved -> listed_sessions.Reserved

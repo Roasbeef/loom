@@ -90,10 +90,13 @@ pub fn start(
   |> result.map_error(string.inspect)
 }
 
+/// Handles cell messages, either replying with the stored evolution door handle
+/// or shutting down the actor loop upon custody release.
 fn handle(
   door: evolution_tool.Door,
   message: Message,
 ) -> actor.Next(evolution_tool.Door, Message) {
+  // Dispatch incoming requests between lending the door reference and stopping.
   case message {
     Borrow(reply) -> {
       process.send(reply, door)
@@ -174,11 +177,8 @@ pub fn door_over(
   }
 }
 
-// One operation: borrow, run on the caller, word the answer. The door is the
-// same function the operator-facing catalogue uses, so its own argument
-// validation and refusal sentences reach the program unchanged. The context it
-// runs under is the execution's own, with the source index replaced by one
-// that is unique to this call (`call_index`).
+/// Builds a code-mode evolution operation that borrows the cell door, adjusts the
+/// call index to keep concurrent tool invocations isolated, and translates the outcome.
 fn operation(
   name: address.Address(Message),
   ctx: tool.Ctx,
@@ -240,6 +240,8 @@ pub fn outcome(outcome: tool.ToolOutcome) -> codemode_evolution.Outcome {
       }
     })
     |> string.join("\n")
+
+  // Map the tool outcome to either an error text string or structured result details.
   case outcome.is_error, outcome.details {
     True, _ -> Error(text)
     False, Some(details) -> Ok(details)

@@ -99,9 +99,10 @@ fn queued(cell: snapshot.Cell) -> Result(List(String), Error) {
   |> result.map_error(Malformed)
 }
 
-// The board names the strand the queue drains into rather than one a caller
-// chose. There is one advisor per session and one primary it advises, so a
-// strand parameter could only be right or wrong.
+/// Formats the observed pending advisor queue and timestamp as a JSON board object.
+/// The board names the strand the queue drains into rather than one a caller
+/// chose. There is one advisor per session and one primary it advises, so a
+/// strand parameter could only be right or wrong.
 fn board(pending: List(String), now: Int) -> JsonValue {
   json.Object([
     #("strand", json.String(advisor.primary)),

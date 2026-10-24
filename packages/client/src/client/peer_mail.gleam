@@ -379,6 +379,7 @@ fn digest(value: JsonValue) -> String {
   blob.ref_for(<<json.to_string(value):utf8>>)
 }
 
+/// Builds the stable key used to find a persisted peer grant.
 fn grant_key(grant: Grant) -> String {
   grant_prefix
   <> digest(
@@ -390,6 +391,7 @@ fn grant_key(grant: Grant) -> String {
   )
 }
 
+/// Encodes one peer grant for the durable authority store.
 fn grant_value(grant: Grant) -> JsonValue {
   json.Object([
     #("source_session", json.String(grant.source_session)),
@@ -399,6 +401,7 @@ fn grant_value(grant: Grant) -> JsonValue {
   ])
 }
 
+/// Encodes one authorized outgoing peer link for storage.
 fn link_value(source: String, session: String, target: String) -> JsonValue {
   json.Object([
     #("source_strand", json.String(source)),
@@ -407,6 +410,7 @@ fn link_value(source: String, session: String, target: String) -> JsonValue {
   ])
 }
 
+/// Reads the authorized outgoing links available to the caller.
 fn outgoing_links(
   runtime: api.Runtime,
   source: String,
@@ -450,6 +454,7 @@ pub fn handle_with(
   defaults: Defaults,
   command: Command,
 ) -> Result(JsonValue, String) {
+  // The incoming peer message determines its state transition and reply.
   case command {
     History(strand, before, limit) ->
       message_inspection.history(runtime.session, strand, before, limit)
@@ -501,6 +506,8 @@ pub fn handle_with(
       let value = link_value(source, session, target)
       let key = link_prefix <> digest(value)
       use links <- result.try(outgoing_links(runtime, source))
+
+      // The incoming peer message determines its state transition and reply.
       use Nil <- result.try(case list.any(links, fn(pair) { pair.0 == key }) {
         True -> Ok(Nil)
         False ->
@@ -509,6 +516,7 @@ pub fn handle_with(
             False -> Error("peer roster exceeds the 64-link bound")
           }
       })
+
       put_clearing(
         runtime,
         key,
@@ -608,6 +616,7 @@ pub fn handle_with(
   }
 }
 
+/// Delivers a message through the resolved peer route and records failure details.
 fn deliver(
   runtime: api.Runtime,
   clock: clock.Clock,
@@ -617,6 +626,7 @@ fn deliver(
   id: String,
   body: String,
 ) -> Result(JsonValue, String) {
+  // The route and receipt state determine whether durable delivery can proceed.
   use Nil <- result.try(
     case
       string.byte_size(id) > 0
@@ -627,6 +637,7 @@ fn deliver(
       False -> Error("message id or body exceeds its bound")
     },
   )
+
   let key = grant_key(Grant(source.session, source.strand, target, BusyOnly))
   use cell <- result.try(
     api.fact_cell(runtime, key) |> result.map_error(string.inspect),
@@ -636,9 +647,13 @@ fn deliver(
   // no grant asks the default, so an explicit grant's wake permission
   // overrides the policy's and an explicit unlink (a grant that is gone, and a
   // denial in its place) is never read as an invitation.
+
+  // The route and receipt state determine whether durable delivery can proceed.
   use #(grant, guards) <- result.try(case cell {
     Some(cell) -> {
       use grant <- result.try(decode_grant(cell.value))
+
+      // The route and receipt state determine whether durable delivery can proceed.
       use Nil <- result.try(
         case
           grant.source_session == source.session
@@ -649,6 +664,7 @@ fn deliver(
           False -> Error("peer grant identity mismatch")
         },
       )
+
       Ok(#(grant, [tx.Expect(register.FactCustom, key, Some(cell.seq))]))
     }
     None -> {
@@ -659,6 +675,8 @@ fn deliver(
         source.strand,
         target,
       ))
+
+      // The route and receipt state determine whether durable delivery can proceed.
       case implicit {
         Some(wake) ->
           Ok(
@@ -683,6 +701,7 @@ fn deliver(
       }
     }
   })
+
   let request =
     json.Object([
       #("source_session", json.String(source.session)),
@@ -701,6 +720,8 @@ fn deliver(
   use existing <- result.try(
     api.fact(runtime, receipt_key) |> result.map_error(string.inspect),
   )
+
+  // The route and receipt state determine whether durable delivery can proceed.
   case existing {
     Some(existing) -> same_receipt(existing, request)
     None -> {
@@ -716,6 +737,8 @@ fn deliver(
           origin: Some(peer_origin),
         )
       let mark = api.GuardedMark(receipt_key, receipt, guards)
+
+      // The route and receipt state determine whether durable delivery can proceed.
       let accepted = case grant.wake {
         BusyOnly ->
           api.steer_marking(api.on_strand(runtime, target), payload, mark)
@@ -724,6 +747,8 @@ fn deliver(
           api.send_to_strand_marking(runtime, target, payload, mark)
           |> result.replace(Nil)
       }
+
+      // The route and receipt state determine whether durable delivery can proceed.
       case accepted {
         Ok(Nil) -> {
           api.nudge(api.on_strand(runtime, target))
@@ -745,6 +770,7 @@ fn deliver(
   }
 }
 
+/// Checks whether two admission receipts describe the same durable request.
 fn same_receipt(
   receipt: JsonValue,
   request: JsonValue,
@@ -756,6 +782,7 @@ fn same_receipt(
   }
 }
 
+/// Builds the bounded peer roster from activity and authorized exports.
 fn roster(
   runtime: api.Runtime,
   defaults: Defaults,
@@ -776,6 +803,8 @@ fn roster(
 
   // A default link is one more row of the same shape, so a model reads it as it
   // reads a grant, and an explicit grant for the pair has already answered.
+
+  // The requested scope determines which peer and activity records are exposed.
   use implicit <- result.try(
     case
       list.any(explicit, fn(grant) { grant.target_strand == default_strand })
@@ -784,11 +813,14 @@ fn roster(
       False -> implicit_wake(runtime, defaults, source, strand, default_strand)
     },
   )
+
+  // The requested scope determines which peer and activity records are exposed.
   let targets = case implicit {
     Some(wake) ->
       list.append(explicit, [Grant(source, strand, default_strand, wake)])
     None -> explicit
   }
+
   use rows <- result.try(
     list.try_map(targets, fn(grant) {
       use state <- result.try(
@@ -803,6 +835,8 @@ fn roster(
         api.fact(runtime, lineage.register_key(grant.target_strand))
         |> result.map_error(string.inspect),
       )
+
+      // The requested scope determines which peer and activity records are exposed.
       let parent = case cell {
         Some(value) ->
           case lineage.decode(value) {
@@ -811,6 +845,7 @@ fn roster(
           }
         None -> json.Null
       }
+
       use observed <- result.try(activity(runtime, grant.target_strand))
       Ok(
         json.Object([
@@ -862,6 +897,7 @@ fn own_session(runtime: api.Runtime) -> String {
 //
 // The caller has already found no grant for the pair. The answer is the
 // policy's wake permission, or `None`.
+/// Determines whether the current recipient activity permits a wake.
 fn implicit_wake(
   runtime: api.Runtime,
   defaults: Defaults,
@@ -870,6 +906,8 @@ fn implicit_wake(
   target_strand: String,
 ) -> Result(Option(Wake), String) {
   let own = own_session(runtime)
+
+  // The recipient activity and granted wake policy determine whether delivery may start work.
   case defaults.policy.links {
     NoDefaultLinks -> Ok(None)
     SameOwner ->
@@ -881,6 +919,8 @@ fn implicit_wake(
             denial_key(source_session, source_strand, own, target_strand),
           ))
           let held = defaults.eligible()
+
+          // The recipient activity and granted wake policy determine whether delivery may start work.
           case
             !denied
             && list.contains(held, source_session)
@@ -898,6 +938,7 @@ fn default_pair(source_strand: String, target_strand: String) -> Bool {
   source_strand == default_strand && target_strand == default_strand
 }
 
+/// Builds the stable identity for a peer delivery denial.
 fn denial_key(
   source_session: String,
   source_strand: String,
@@ -928,6 +969,7 @@ type Denial {
 
 // The denial an explicit decision about this pair clears or records, or none
 // when the pair is not one a default link could join.
+/// Resolves a denial record for the requested peer operation.
 fn denial_for(
   source_session: String,
   source_strand: String,
@@ -951,6 +993,7 @@ fn denial_for(
 
 // Writes an explicit cell and, in the same transaction, removes the denial
 // that would otherwise outlive the owner's decision to link the pair again.
+/// Persists a peer value while clearing a stale denial atomically.
 fn put_clearing(
   runtime: api.Runtime,
   key: String,
@@ -966,6 +1009,8 @@ fn put_clearing(
       value:,
       expected: option.map(cell, fn(held) { held.seq }),
     ))
+
+  // The put clearing state determines which branch is valid for this peer operation.
   use clearing <- result.try(case denial {
     None -> Ok([])
     Some(Denial(key: denial_key, ..)) -> {
@@ -978,6 +1023,7 @@ fn put_clearing(
       })
     }
   })
+
   api.edit_reserved_facts(runtime, [write, ..clearing])
   |> result.replace(json.Null)
   |> result.map_error(string.inspect)
@@ -987,6 +1033,7 @@ fn put_clearing(
 // that stops a default link from bringing the pair back. The denial is written
 // even when the cell is already gone, because removing a pair that exists only
 // as a default link is exactly what the owner may ask for.
+/// Deletes a peer value and records a denial if deletion is refused.
 fn delete_denying(
   runtime: api.Runtime,
   key: String,
@@ -995,10 +1042,14 @@ fn delete_denying(
   use cell <- result.try(
     api.fact_cell(runtime, key) |> result.map_error(string.inspect),
   )
+
+  // The delete denying state determines which branch is valid for this peer operation.
   let removal = case cell {
     Some(held) -> [api.ReservedFactRemove(key, held.seq)]
     None -> []
   }
+
+  // The delete denying state determines which branch is valid for this peer operation.
   use recording <- result.try(case denial {
     None -> Ok([])
     Some(Denial(key: denial_key, value:)) -> {
@@ -1014,6 +1065,7 @@ fn delete_denying(
       ])
     }
   })
+
   api.edit_reserved_facts(runtime, list.append(recording, removal))
   |> result.replace(json.Null)
   |> result.map_error(string.inspect)
@@ -1033,6 +1085,7 @@ fn recorded_link(explicit: List(#(String, JsonValue)), id: String) -> Bool {
 // links' bound. The recipient's own denial is not consulted here: a pair the
 // owner unlinked is denied on both sides, so this side's copy is the one that
 // decides what the roster lists.
+/// Projects authorized outgoing links from the current peer catalogue.
 fn implicit_links(
   runtime: api.Runtime,
   defaults: Defaults,
@@ -1040,10 +1093,14 @@ fn implicit_links(
   explicit: List(#(String, JsonValue)),
 ) -> Result(List(JsonValue), String) {
   let own = own_session(runtime)
+
+  // The catalogue state determines which authorized outgoing links can be projected.
   case defaults.policy.links, source_strand == default_strand {
     NoDefaultLinks, _ | SameOwner, False -> Ok([])
     SameOwner, True -> {
       let held = defaults.eligible()
+
+      // The catalogue state determines which authorized outgoing links can be projected.
       case list.contains(held, own) {
         False -> Ok([])
         True -> {
@@ -1081,6 +1138,7 @@ fn implicit_links(
 
 // The default links that reach this session's `target` strand, as rows of the
 // same shape as a recorded grant with `default: true`.
+/// Projects the grants implied by the caller and current peer authority.
 fn implicit_grants(
   runtime: api.Runtime,
   defaults: Defaults,
@@ -1088,10 +1146,14 @@ fn implicit_grants(
   explicit: List(Grant),
 ) -> Result(List(JsonValue), String) {
   let own = own_session(runtime)
+
+  // The available authority determines which peer grants can be reconstructed.
   case defaults.policy.links, target == default_strand {
     NoDefaultLinks, _ | SameOwner, False -> Ok([])
     SameOwner, True -> {
       let held = defaults.eligible()
+
+      // The available authority determines which peer grants can be reconstructed.
       case list.contains(held, own) {
         False -> Ok([])
         True -> {
@@ -1131,19 +1193,24 @@ fn implicit_grants(
   }
 }
 
+/// Decodes one persisted peer grant and validates its fields.
 fn decode_grant(value: JsonValue) -> Result(Grant, String) {
   use source_session <- result.try(text(value, "source_session"))
   use source_strand <- result.try(text(value, "source_strand"))
   use target_strand <- result.try(text(value, "target_strand"))
   use wake <- result.try(text(value, "wake"))
+
+  // The decode grant state determines which branch is valid for this peer operation.
   use wake <- result.try(case wake {
     "busy_only" -> Ok(BusyOnly)
     "may_wake" -> Ok(MayWake)
     _ -> Error("invalid peer wake permission")
   })
+
   Ok(Grant(source_session:, source_strand:, target_strand:, wake:))
 }
 
+/// Reads a required field from a peer result value.
 fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   case value {
     json.Object(fields) ->
@@ -1153,14 +1220,18 @@ fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   }
 }
 
+/// Extracts text from a structured peer value.
 fn text(value: JsonValue, key: String) -> Result(String, String) {
   use value <- result.try(field(value, key))
+
+  // The value shape determines whether it can be represented as text.
   case value {
     json.String(value) -> Ok(value)
     _ -> Error("expected peer text field " <> key)
   }
 }
 
+/// Decodes host-observed peer activity into the public activity record.
 fn activity(runtime: api.Runtime, strand: String) -> Result(JsonValue, String) {
   use state <- result.try(
     session.strand_state(runtime.session, strand)
@@ -1215,6 +1286,7 @@ fn activity(runtime: api.Runtime, strand: String) -> Result(JsonValue, String) {
 // read here is a single register, one entry, or one prefix listing, so the
 // Agency actor answering it is held for a fixed number of store calls
 // rather than a walk over the conversation.
+/// Builds a bounded human-readable overview of peer activity.
 fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
   use states <- result.try(strand_operations(runtime))
   use escalations <- result.try(
@@ -1232,11 +1304,14 @@ fn overview(runtime: api.Runtime) -> Result(JsonValue, String) {
   let last = option.map(last, fn(cell) { cell.value })
   let #(doing, approvals, working) = standing_from(states, escalations, last)
   let state = doing_word(doing)
+
+  // The overview state determines which branch is valid for this peer operation.
   let model = case configuration {
     Some(cell) ->
       json.String(glance.clip(cell.value.model.model_id, overview_model_bytes))
     None -> json.Null
   }
+
   let base = [
     #("state", json.String(state)),
     #("strands", json.Int(list.length(states))),
@@ -1291,6 +1366,7 @@ pub fn standing(runtime: api.Runtime) -> Result(#(Doing, Int), String) {
 // failed main run asks for the operator only once main has stopped: a main
 // already running its next operation has moved past the failure. The figures
 // are the doing, the pending approvals and the strands with a run.
+/// Converts an observed strand state into its stable standing description.
 fn standing_from(
   states: List(#(String, Option(OpId))),
   escalations: List(escalation.Escalation),
@@ -1299,12 +1375,16 @@ fn standing_from(
   let approvals =
     list.count(escalations, fn(record) { record.status == escalation.Pending })
   let working = list.count(states, fn(pair) { option.is_some(pair.1) })
+
+  // The standing from state determines which branch is valid for this peer operation.
   let main_running = case list.key_find(states, "main") {
     Ok(Some(_)) -> True
     Ok(None) | Error(Nil) -> False
   }
 
   // Determine whether terminal failure requires user intervention.
+
+  // The standing from state determines which branch is valid for this peer operation.
   let failed = case last {
     Some(operation.RunLastResult(outcome: operation.RunFailed(_), ..)) -> True
     Some(operation.RunLastResult(..))
@@ -1312,14 +1392,18 @@ fn standing_from(
     | Some(operation.NavigationLastResult(..))
     | None -> False
   }
+
+  // The standing from state determines which branch is valid for this peer operation.
   let doing = case approvals > 0 || { failed && !main_running }, working > 0 {
     True, _ -> NeedsAnswer
     False, True -> Running
     False, False -> Resting
   }
+
   #(doing, approvals, working)
 }
 
+/// Renders the current operation state as a concise word.
 fn doing_word(state: Doing) -> String {
   case state {
     NeedsAnswer -> "needs_you"
@@ -1330,6 +1414,7 @@ fn doing_word(state: Doing) -> String {
 
 // Every strand's current operation, from one listing of the strand-state
 // namespace rather than one read per strand name.
+/// Lists the operations currently attributed to the strand.
 fn strand_operations(
   runtime: api.Runtime,
 ) -> Result(List(#(String, Option(OpId))), String) {
@@ -1349,6 +1434,7 @@ fn strand_operations(
 // glance describes one operation and is shown only while that operation is
 // its strand's current one, so a cell left behind by a finished task is
 // dropped here rather than reported as present work.
+/// Builds the bounded set of current peer activity summaries.
 fn current_glances(
   runtime: api.Runtime,
   states: List(#(String, Option(OpId))),
@@ -1370,6 +1456,8 @@ fn current_glances(
   |> list.filter_map(fn(pair) {
     use strand <- result.try(glance.strand_of(pair.0))
     use cell <- result.try(glance.decode(pair.1) |> result.replace_error(Nil))
+
+    // The current glances state determines which branch is valid for this peer operation.
     case dict.get(current, strand) == Ok(cell.operation) {
       True -> Ok(#(strand, cell))
       False -> Error(Nil)
@@ -1381,6 +1469,7 @@ fn current_glances(
   |> Ok
 }
 
+/// Renders one peer activity summary as a text line.
 fn glance_line(pair: #(String, glance.Glance)) -> JsonValue {
   let #(strand, cell) = pair
   json.Object([
@@ -1390,6 +1479,7 @@ fn glance_line(pair: #(String, glance.Glance)) -> JsonValue {
   ])
 }
 
+/// Extracts the latest terminal outcome from the strand activity.
 fn last_outcome(last: Option(operation.LastResult)) -> JsonValue {
   case last {
     Some(operation.RunLastResult(outcome: operation.RunCompleted(_), ..)) ->
@@ -1410,6 +1500,7 @@ fn last_outcome(last: Option(operation.LastResult)) -> JsonValue {
 // The final assistant text of main's last run. `LastResult` holds only the
 // entry id, so this is one point read of that entry; a run with no final
 // answer, or an entry with no text, reports null.
+/// Selects the final assistant message from the materialized history.
 fn final_message(
   runtime: api.Runtime,
   last: Option(operation.LastResult),
@@ -1429,6 +1520,7 @@ fn final_message(
   }
 }
 
+/// Extracts assistant text from a materialized peer entry.
 fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
   case writer.get_entries(runtime.tree.writer, [id]) {
     Error(_) -> ""
@@ -1455,6 +1547,7 @@ fn assistant_text(runtime: api.Runtime, id: EntryId) -> String {
 // several times over, so the encoded row is measured. An oversized row sheds
 // its oldest glance first, then the final message. What remains is counts,
 // fixed names, and a model clipped to 64 bytes, which fits even escaped.
+/// Trims overview text to fit its declared output bound.
 fn fit_overview(
   base: List(#(String, JsonValue)),
   message: JsonValue,
@@ -1468,6 +1561,8 @@ fn fit_overview(
       ]),
     )
   let fits = string.byte_size(json.to_string(row)) <= overview_row_bytes
+
+  // The fit overview state determines which branch is valid for this peer operation.
   case fits, glances, message {
     True, _, _ -> row
     False, [_, ..], _ ->
@@ -1480,6 +1575,7 @@ fn fit_overview(
 // Admission history survives operation cleanup. A receipt's stored request
 // owns authorization; neither an opaque key nor an input argument grants read
 // access to another recipient. Sender calls arrive only from the peer router.
+/// Builds the durable key for an admitted outgoing peer request.
 fn receipt_key(
   source_session: String,
   source_strand: String,
@@ -1495,6 +1591,7 @@ fn receipt_key(
   )
 }
 
+/// Decodes a durable receipt for the outgoing peer request.
 fn receipt(
   runtime: api.Runtime,
   source_session: String,
@@ -1506,6 +1603,8 @@ fn receipt(
     api.fact(runtime, receipt_key(source_session, source_strand, id))
     |> result.map_error(string.inspect),
   )
+
+  // The receipt state determines which branch is valid for this peer operation.
   case found {
     None -> Ok(json.Null)
     Some(value) -> {
@@ -1522,6 +1621,8 @@ fn receipt(
           None -> True
           Some(own) -> target == own
         }
+
+      // The receipt state determines which branch is valid for this peer operation.
       case permitted {
         True -> message_inspection.bounded(value)
         False -> Ok(json.Null)
@@ -1530,6 +1631,7 @@ fn receipt(
   }
 }
 
+/// Reads retained delivery receipts from the caller-owned receipt store.
 fn received(
   runtime: api.Runtime,
   strand: String,
@@ -1565,10 +1667,13 @@ fn received(
   let scanned = rows |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
   let window = list.take(scanned, limit)
   let page = list.filter(window, fn(row) { row.1 == strand })
+
+  // The received state determines which branch is valid for this peer operation.
   let next = case list.last(window), list.length(scanned) > limit {
     Ok(row), True -> json.String(row.0)
     _, _ -> json.Null
   }
+
   message_inspection.bounded(
     json.Object([
       #(

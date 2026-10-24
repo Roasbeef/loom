@@ -469,6 +469,7 @@ type Collecting {
   )
 }
 
+/// Initializes a new Collecting state record under the given limits.
 fn initial(caps: Caps) -> Collecting {
   Collecting(
     caps: caps,
@@ -549,6 +550,7 @@ fn relative_path(
 ) -> Result(#(Collecting, String), ArchiveError) {
   use components <- result.try(path_components(raw))
 
+  // Decompose path components into root and relative tail.
   case components {
     [] ->
       Error(IllegalPath(path: raw, reason: "it names no path component at all"))
@@ -686,6 +688,7 @@ const digest_tag = "loom-ext-tree-v1"
 
 const blob_prefix = "sha256-"
 
+/// Inflates gzip compressed archive bytes up to the configured total cap.
 fn inflate(gzipped: BitArray, caps: Caps) -> Result(BitArray, ArchiveError) {
   case ffi_zlib.inflate_gzip(gzipped, caps.max_total_bytes) {
     Ok(bytes) -> Ok(bytes)
@@ -715,6 +718,7 @@ fn read_entries(
   )
 }
 
+/// Reads a tar entry block starting from the specified byte offset.
 fn read_from(
   data: BitArray,
   offset: Int,
@@ -733,6 +737,7 @@ fn read_from(
     offset,
   )
 
+  // Check if current block represents a tar EOF zero-block.
   case block == zero_block() {
     True -> read_end_marker(data, offset, reading)
 
@@ -752,6 +757,7 @@ fn read_end_marker(
     offset,
   )
 
+  // Check if the second trailer block is also all zeroes.
   case second == zero_block() {
     True -> Ok(reading)
 
@@ -759,6 +765,7 @@ fn read_end_marker(
   }
 }
 
+/// Parses one tar header block and advances parser according to entry type.
 fn read_header(
   data: BitArray,
   offset: Int,
@@ -774,6 +781,7 @@ fn read_header(
 
   let reading = Reading(..reading, collecting: counted)
 
+  // Inspect tar entry typeflag byte.
   case header.kind {
     // '0' and NUL are both a regular file; the NUL spelling predates
     // ustar and is still what some writers emit.
@@ -789,6 +797,7 @@ fn read_header(
   }
 }
 
+/// Reads and stores a regular file entry from the archive byte stream.
 fn read_regular(
   data: BitArray,
   offset: Int,
@@ -819,6 +828,7 @@ fn read_regular(
   )
 }
 
+/// Reads and records directory structure from the archive stream.
 fn read_directory(
   data: BitArray,
   offset: Int,
@@ -912,6 +922,7 @@ fn read_pax_global(
   )
 }
 
+/// Slices and parses the extended attributes body of a pax header block.
 fn read_pax_body(
   data: BitArray,
   offset: Int,
@@ -956,6 +967,7 @@ type Header {
   Header(name: String, size: Int, kind: Int)
 }
 
+/// Decodes and validates ustar header fields and checksum.
 fn parse_header(block: BitArray, at: Int) -> Result(Header, ArchiveError) {
   use name <- or_malformed(field_string(block, 0, 100), at, "name")
 
@@ -1004,6 +1016,7 @@ fn header_checksum(block: BitArray) -> Int {
   }
 }
 
+/// Computes unsigned byte sum over a bit array slice.
 fn byte_sum(bytes: BitArray, total: Int) -> Int {
   case bytes {
     <<value:int-size(8), rest:bits>> -> byte_sum(rest, total + value)
@@ -1022,6 +1035,7 @@ fn join_prefix(prefix: String, name: String) -> String {
   }
 }
 
+/// Reads a fixed-width null-terminated string from header block.
 fn field_string(block: BitArray, at: Int, take: Int) -> Result(String, Nil) {
   use field <- result.try(bit_array.slice(from: block, at:, take:))
 
@@ -1054,6 +1068,7 @@ fn field_octal(block: BitArray, at: Int, take: Int) -> Result(Int, Nil) {
   })
 }
 
+/// Reads a single byte value from header block.
 fn field_byte(block: BitArray, at: Int) -> Result(Int, Nil) {
   case bit_array.slice(from: block, at:, take: 1) {
     Ok(<<value:int-size(8)>>) -> Ok(value)
@@ -1064,6 +1079,7 @@ fn field_byte(block: BitArray, at: Int) -> Result(Int, Nil) {
   }
 }
 
+/// Converts a bit array of bytes into an integer list.
 fn byte_list(bytes: BitArray, acc: List(Int)) -> List(Int) {
   case bytes {
     <<value:int-size(8), rest:bits>> -> byte_list(rest, [value, ..acc])
@@ -1155,6 +1171,7 @@ fn pax_length(
     take: 1,
   ))
 
+  // Match ASCII space delimiter or decimal digits.
   case byte {
     <<0x20:int-size(8)>> if index > 0 -> Ok(#(value, index))
 
@@ -1175,6 +1192,7 @@ fn pax_length(
 fn admit_root(path: String, root: String) -> Result(Nil, ArchiveError) {
   use info <- result.try(link_info(path))
 
+  // Verify root path exists and represents a directory.
   case simplifile.file_info_type(info) {
     simplifile.Directory -> Ok(Nil)
 
@@ -1189,6 +1207,7 @@ fn admit_root(path: String, root: String) -> Result(Nil, ArchiveError) {
   }
 }
 
+/// Traverses a filesystem directory recursively and collects regular files.
 fn walk_directory(
   directory: String,
   prefix: String,
@@ -1211,6 +1230,7 @@ fn walk_directory(
   })
 }
 
+/// Classifies a filesystem entry and dispatches directory or file processing.
 fn walk_entry(
   path: String,
   relative: String,
@@ -1224,6 +1244,7 @@ fn walk_entry(
 
   use info <- result.try(link_info(path))
 
+  // Dispatch according to filesystem entry type.
   case simplifile.file_info_type(info) {
     simplifile.Directory -> {
       use state <- result.try(admit_directory(state, relative))
@@ -1250,6 +1271,7 @@ fn link_info(path: String) -> Result(simplifile.FileInfo, ArchiveError) {
   })
 }
 
+/// Reads a regular filesystem file and admits its contents into state.
 fn walk_file(
   path: String,
   relative: String,
@@ -1294,6 +1316,7 @@ fn walk_file(
 
 // --- small shared helpers --------------------------------------------------
 
+/// Helper that maps slice lookup failure to truncated archive error.
 fn or_truncated(
   sliced: Result(a, Nil),
   at: Int,
@@ -1306,6 +1329,7 @@ fn or_truncated(
   }
 }
 
+/// Helper that maps field decoding failure to malformed header error.
 fn or_malformed(
   parsed: Result(a, Nil),
   at: Int,
@@ -1329,6 +1353,7 @@ fn padded(size: Int) -> Int {
   { size + block_bytes - 1 } / block_bytes * block_bytes
 }
 
+/// Removes trailing slashes from path string.
 fn trim_trailing_slashes(path: String) -> String {
   case string.ends_with(path, "/") {
     True -> trim_trailing_slashes(string.drop_end(path, 1))

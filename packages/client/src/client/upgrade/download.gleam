@@ -15,6 +15,7 @@ import weft
 /// ## Examples
 /// `fetch("https://github.com/path", 65536)` refuses oversized responses.
 pub fn fetch(url: String, limit: Int) -> Result(BitArray, String) {
+  // Resolve the current branch using the protocol state and preserve its failure boundary.
   case
     weft.new_prepared([
       weft.managed(fn(ledger) { follow(url, limit, 5, ledger) }),
@@ -30,11 +31,15 @@ pub fn fetch(url: String, limit: Int) -> Result(BitArray, String) {
   }
 }
 
+/// Establishes follow for the caller, keeping its validation and result policy at this boundary.
 fn follow(url, limit, remaining, ledger) {
   use parsed <- result.try(
     uri.parse(url) |> result.replace_error("invalid release URL"),
   )
+
+  // Require a verified HTTPS destination before opening the release connection.
   use host <- result.try(
+    // Decide how to handle the branch input.
     case
       parsed.scheme,
       parsed.host,
@@ -48,15 +53,23 @@ fn follow(url, limit, remaining, ledger) {
         Error("release transport requires verified HTTPS on port 443")
     },
   )
+
   use connection <- result.try(native.open(host, 443))
+
+  // Decide how to handle let response =.
+
+  // Validate this branch before continuing, preserving the owning operation’s failure boundary.
   let response = case
     weft.adopt(ledger, connection, fn() { native.close(connection) })
   {
     weft.Adopted -> request(connection, parsed, limit)
     weft.Refused -> Error("release download cancelled before admission")
   }
+
   native.close(connection)
   use response <- result.try(response)
+
+  // Decide how to handle response {.
   case response {
     Body(bytes) -> Ok(bytes)
     Redirect(location) -> {
@@ -78,17 +91,24 @@ type Response {
   Redirect(String)
 }
 
+/// Establishes request for the caller, keeping its validation and result policy at this boundary.
 fn request(connection, parsed: uri.Uri, limit) {
+  // Decide how to handle let path =  parsed.path {.
   let path = case parsed.path {
     "" -> "/"
     other -> other
   }
+
+  // Decide how to handle let path =  parsed.query {.
   let path = case parsed.query {
     None -> path
     Some(query) -> path <> "?" <> query
   }
+
   use stream <- result.try(native.request(connection, path))
   use #(completion, code, fields) <- result.try(headers(connection, stream, 8))
+
+  // Decide how to handle code {.
   case code {
     200 -> body(connection, stream, completion, limit, []) |> result.map(Body)
     301 | 302 | 303 | 307 | 308 ->
@@ -99,12 +119,15 @@ fn request(connection, parsed: uri.Uri, limit) {
   }
 }
 
+/// Establishes headers for the caller, keeping its validation and result policy at this boundary.
 fn headers(connection, stream, remaining) {
   use <- bool.guard(
     remaining <= 0,
     Error("too many informational release responses"),
   )
   use event <- result.try(native.receive(connection, stream))
+
+  // Decide how to handle event {.
   case event {
     native.Headers(completion, code, fields) -> Ok(#(completion, code, fields))
     native.Inform -> headers(connection, stream, remaining - 1)
@@ -113,11 +136,15 @@ fn headers(connection, stream, remaining) {
   }
 }
 
+/// Establishes body for the caller, keeping its validation and result policy at this boundary.
 fn body(connection, stream, completion, remaining, chunks) {
+  // Decide how to handle completion {.
   case completion {
     native.Finished -> Ok(bit_array.concat(list.reverse(chunks)))
     native.More -> {
       use event <- result.try(native.receive(connection, stream))
+
+      // Decide how to handle event {.
       case event {
         native.Data(completion, bytes) -> {
           use <- bool.guard(

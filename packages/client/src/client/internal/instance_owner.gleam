@@ -174,6 +174,7 @@ pub fn start(
   result.map(outcome, fn(publication) { Owner(run:, publication:) })
 }
 
+/// Initializes instance owner custody, registers with ledger, and starts the state machine.
 fn prepare(
   ledger: weft.Ledger,
   builder: Pid,
@@ -299,6 +300,7 @@ pub fn close(owner: Owner, within_ms within_ms: Int) -> CloseOutcome {
   result.unwrap(outcome, StillClosing)
 }
 
+/// Coordinates boundary cleanup registration, closing sequence, and failure transitions.
 fn handle(
   phase: Phase,
   book: Book,
@@ -306,6 +308,7 @@ fn handle(
 ) -> sm.Step(Phase, Book, Message, sm.Postponable) {
   case phase, message {
     Filling, Publish(part, cleanup, reply) -> {
+      // Reject duplicate publication attempts for the same instance boundary part.
       case dict.has_key(book.cleanups, part) {
         True -> {
           process.send(reply, Error("instance boundary was already published"))
@@ -365,6 +368,7 @@ fn handle(
   }
 }
 
+/// Emits failure notifications and enters the terminal Blocked phase.
 fn block(
   book: Book,
   failure: Failure,
@@ -373,6 +377,7 @@ fn block(
   sm.transition(Blocked(failure), book)
 }
 
+/// Executes registered boundary cleanup callbacks in reverse architectural order.
 fn clean(
   cleanups: Dict(Part, fn() -> Result(Nil, String)),
 ) -> Result(Nil, Failure) {

@@ -73,6 +73,8 @@ pub type Probes {
 /// ```
 pub fn resolve(probes: Probes) -> Result(String, String) {
   use found <- result.map(probes.find("git"))
+
+  // Resolve xcrun target on Darwin when hitting the shim or accept found binary.
   case probes.platform {
     Darwin if found == xcode_shim -> result.unwrap(probes.xcrun(), found)
     Darwin | OtherPlatform -> found
@@ -130,16 +132,20 @@ pub fn tool_path(path: String, git: String) -> String {
 /// // host_git.resolve(host_git.host_probes())
 /// ```
 pub fn host_probes() -> Probes {
+  // Map OS platform tuple to internal Platform enum variant.
   let platform = case ffi_os.platform() {
     #("darwin", _) -> Darwin
     #(_, _) -> OtherPlatform
   }
+
   Probes(platform:, find: bootstrap.find_executable, xcrun: xcrun_find)
 }
 
-// The absolute `xcrun` path keeps a model-influenced `PATH` from choosing what
-// answers. The answer must be an absolute path to an executable file; anything
-// else is treated as a failed query, and the caller keeps the shim path.
+/// Probes for the concrete Git binary path using xcrun on Darwin hosts.
+///
+/// The absolute `xcrun` path keeps a model-influenced `PATH` from choosing what
+/// answers. The answer must be an absolute path to an executable file; anything
+/// else is treated as a failed query, and the caller keeps the shim path.
 fn xcrun_find() -> Result(String, Nil) {
   use #(code, output) <- result.try(
     ffi_os.run_capture("/usr/bin/xcrun", ["--find", "git"], 5000)

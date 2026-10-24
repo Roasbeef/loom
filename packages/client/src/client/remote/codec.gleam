@@ -35,6 +35,7 @@ import runtime/effects.{type ToolOutcome, ToolCompleted, ToolFailed}
 /// assert codec.decode_outcome(bytes) == Ok(effects.ToolFailed(reason: "no"))
 /// ```
 pub fn encode_outcome(outcome: ToolOutcome) -> BitArray {
+  // This match resolves outcome before the enclosing validation continues.
   let envelope = case outcome {
     ToolCompleted(result:, terminate:) ->
       json.Object([
@@ -48,6 +49,7 @@ pub fn encode_outcome(outcome: ToolOutcome) -> BitArray {
         #("reason", json.String(reason)),
       ])
   }
+
   bit_array.from_string(json.to_string(envelope))
 }
 
@@ -101,6 +103,9 @@ pub fn decode_stored(bytes: BitArray) -> Result(Stored, CorruptionReport) {
   use value <- result.try(json.parse(text))
   use fields <- result.try(object_fields(value, where))
   use kind <- result.try(string_field(fields, "kind", where))
+
+  // This match resolves kind before the surrounding protocol step continues.
+  // This match resolves kind before the enclosing validation continues.
   case kind {
     "completed" -> {
       use message <- result.try(field(fields, "result", where))
@@ -141,6 +146,9 @@ pub fn decode_outcome(
   bytes: BitArray,
 ) -> Result(ToolOutcome, CorruptionReport) {
   use stored <- result.try(decode_stored(bytes))
+
+  // This match resolves stored before the surrounding protocol step continues.
+  // This match resolves stored before the enclosing validation continues.
   case stored {
     StoredOutcome(outcome:) -> Ok(outcome)
     StoredExecution(..) ->
@@ -153,10 +161,13 @@ pub fn decode_outcome(
   }
 }
 
+/// Object fields keeps this client operation’s decoding or state decision in one place.
 fn object_fields(
   value: JsonValue,
   where: String,
 ) -> Result(List(#(String, JsonValue)), CorruptionReport) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) -> Ok(fields)
     json.Array(..)
@@ -168,11 +179,14 @@ fn object_fields(
   }
 }
 
+/// Field keeps this client operation’s decoding or state decision in one place.
 fn field(
   fields: List(#(String, JsonValue)),
   name: String,
   where: String,
 ) -> Result(JsonValue, CorruptionReport) {
+  // This match resolves list.key_find(fields, name) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, name) before the enclosing validation continues.
   case list.key_find(fields, name) {
     Ok(value) -> Ok(value)
     Error(Nil) ->
@@ -185,12 +199,16 @@ fn field(
   }
 }
 
+/// String field keeps this client operation’s decoding or state decision in one place.
 fn string_field(
   fields: List(#(String, JsonValue)),
   name: String,
   where: String,
 ) -> Result(String, CorruptionReport) {
   use value <- result.try(field(fields, name, where))
+
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.String(text) -> Ok(text)
     json.Object(..)
@@ -202,12 +220,16 @@ fn string_field(
   }
 }
 
+/// Bool field keeps this client operation’s decoding or state decision in one place.
 fn bool_field(
   fields: List(#(String, JsonValue)),
   name: String,
   where: String,
 ) -> Result(Bool, CorruptionReport) {
   use value <- result.try(field(fields, name, where))
+
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Bool(flag) -> Ok(flag)
     json.Object(..)
@@ -219,6 +241,7 @@ fn bool_field(
   }
 }
 
+/// Wrong shape keeps this client operation’s decoding or state decision in one place.
 fn wrong_shape(
   where: String,
   name: String,

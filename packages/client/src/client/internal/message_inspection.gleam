@@ -49,10 +49,13 @@ pub fn inbox(
     |> list.filter(fn(item) { string.compare(item.0, after) == order.Gt })
     |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
   let selected = eligible |> list.take(limit) |> list.map(fn(item) { item.0 })
+
+  // Construct pagination continuation cursor if more eligible items remain.
   let next = case list.length(eligible) > limit, list.last(selected) {
     True, Ok(id) -> json.String(id)
     _, _ -> json.Null
   }
+
   inspect(tree, strand, selected, next)
 }
 
@@ -73,18 +76,24 @@ pub fn inbox_get(
 ) -> Result(JsonValue, String) {
   use first <- result.try(capture(tree, strand, []))
   use candidates <- result.try(owned(first, strand))
+
+  // Determine whether the target entry is currently owned in pending queues.
   let selected = case list.key_find(candidates, id) {
     Ok(_) -> [id]
     Error(Nil) -> []
   }
+
   use cut <- result.try(capture(tree, strand, selected))
   use current <- result.try(owned(cut, strand))
+
+  // Return the pending row if still queued or fall back to immutable transcript lookup.
   case list.key_find(current, id), selected {
     Ok(queue), [_] -> pending_row(cut, id, queue) |> result.try(bounded)
     _, _ -> transcript_get(tree, cut, strand, id)
   }
 }
 
+/// Decodes and formats one pending input entry as a JSON row object.
 fn pending_row(
   cut: snapshot.Cut,
   id: String,
@@ -103,6 +112,7 @@ fn pending_row(
   )
 }
 
+/// Captures consistent snapshot state and builds inbox page rows for selected messages.
 fn inspect(
   tree: session.Session,
   strand: String,
@@ -130,6 +140,7 @@ fn inspect(
   )
 }
 
+/// Captures required strand and operation registers in a point-in-time snapshot cut.
 fn capture(
   tree: session.Session,
   strand: String,
@@ -158,6 +169,7 @@ fn capture(
   |> result.map_error(string.inspect)
 }
 
+/// Extracts all entry IDs and queue tags owned by a strand and its active operation.
 fn owned(
   cut: snapshot.Cut,
   strand: String,
@@ -167,6 +179,8 @@ fn owned(
     codec.decode_strand_state(payload) |> result.map_error(string.inspect),
   )
   let next = tagged(state.pending_next_run, "next_run")
+
+  // Traverse active operation state to collect running and cancelled inbox entries.
   case state.current_operation {
     None -> Ok(next)
     Some(id) -> {
@@ -183,9 +197,12 @@ fn owned(
   }
 }
 
+/// Collects steer, follow-up, and cancelled input identifiers from an operation run state.
 fn run_inputs(state: operation.OperationState) -> List(#(String, String)) {
+  // Extract inputs across active run states while ignoring navigation and compaction.
   case state {
     operation.RunState(inbox:, control:, ..) -> {
+      // Gather drained steering and follow-up inputs if cancellation was requested.
       let cancelled = case control {
         operation.Running -> []
         operation.CancelRequested(drained_steer:, drained_follow_up:, ..) ->
@@ -194,6 +211,7 @@ fn run_inputs(state: operation.OperationState) -> List(#(String, String)) {
             tagged(drained_follow_up, "cancelled_follow_up"),
           )
       }
+
       list.flatten([
         tagged(inbox.steer, "steer"),
         tagged(inbox.follow_up, "follow_up"),
@@ -208,6 +226,7 @@ fn tagged(ids: List(ids.EntryId), queue: String) -> List(#(String, String)) {
   list.map(ids, fn(id) { #(ids.entry_id_to_string(id), queue) })
 }
 
+/// Locates a specific register cell in a snapshot cut and returns its raw JSON payload.
 fn cell(
   cut: snapshot.Cut,
   namespace: register.RegisterNs,
@@ -248,9 +267,11 @@ pub fn valid_limit(limit: Int, maximum: Int) -> Result(Nil, String) {
   }
 }
 
-// The captured leaf is the ownership boundary for immutable history. Looking
-// up an arbitrary entry first supplies only its sequence; its payload is never
-// returned unless the caller's branch index proves membership at that leaf.
+/// Retrieves a historical transcript entry if verified on the strand branch.
+///
+/// The captured leaf is the ownership boundary for immutable history. Looking
+/// up an arbitrary entry first supplies only its sequence; its payload is never
+/// returned unless the caller's branch index proves membership at that leaf.
 fn transcript_get(
   tree: session.Session,
   cut: snapshot.Cut,
@@ -261,6 +282,8 @@ fn transcript_get(
     ids.parse_entry_id(text) |> result.map_error(string.inspect),
   )
   use leaf <- result.try(leaf(cut, strand))
+
+  // Verify that the strand currently has an initialized branch leaf.
   case leaf {
     None -> Ok(json.Null)
     Some(leaf) -> {
@@ -268,6 +291,8 @@ fn transcript_get(
         storage.get_entries(tree.store, [id])
         |> result.map_error(string.inspect),
       )
+
+      // Ensure the entry identity exists in persistent storage.
       case dict.get(entries, id) {
         Error(Nil) -> Ok(json.Null)
         Ok(found) -> {
@@ -279,6 +304,8 @@ fn transcript_get(
             storage.scan_branch(tree.store, query)
             |> result.map_error(string.inspect),
           )
+
+          // Confirm the scanned branch record matches the requested user message entry.
           case own {
             [
               entry.MessageEntry(
@@ -313,6 +340,8 @@ pub fn history(
   limit: Int,
 ) -> Result(JsonValue, String) {
   use Nil <- result.try(valid_limit(limit, 64))
+
+  // Validate that the before pagination cursor is nonnegative.
   use Nil <- result.try(case before >= 0 {
     True -> Ok(Nil)
     False -> Error("history cursor must be nonnegative")
@@ -321,6 +350,8 @@ pub fn history(
   // Capture tree branch and determine the current strand leaf.
   use cut <- result.try(capture(tree, strand, []))
   use leaf <- result.try(leaf(cut, strand))
+
+  // Return empty page if the strand has no leaf or scan its branch messages.
   case leaf {
     None -> Ok(json.Object([#("items", json.Array([])), #("next", json.Null)]))
     Some(leaf) -> {
@@ -328,10 +359,13 @@ pub fn history(
         storage.branch_scan(leaf)
         |> storage.branch_kind(storage.Message)
         |> storage.branch_limit(limit + 1)
+
+      // Set query scan cursor if a non-zero before sequence boundary was provided.
       let query = case before {
         0 -> query
         _ -> storage.branch_cursor(query, before)
       }
+
       use scanned <- result.try(
         storage.scan_branch(tree.store, query)
         |> result.map_error(string.inspect),
@@ -347,15 +381,19 @@ pub fn history(
             _ -> Error(Nil)
           }
         })
+
+      // Emit pagination next cursor if additional scanned records exceed the page limit.
       let next = case list.length(scanned) > limit, list.last(page) {
         True, Ok(record) -> json.Int(record.seq)
         _, _ -> json.Null
       }
+
       bounded(json.Object([#("items", json.Array(rows)), #("next", next)]))
     }
   }
 }
 
+/// Decodes the branch leaf entry identity of a strand from a snapshot cut.
 fn leaf(
   cut: snapshot.Cut,
   strand: String,
@@ -365,6 +403,7 @@ fn leaf(
   |> result.map_error(string.inspect)
 }
 
+/// Formats a committed history entry into standardized materialized row JSON.
 fn history_row(record: entry.Entry) -> JsonValue {
   json.Object([
     #("id", json.String(ids.entry_id_to_string(record.id))),

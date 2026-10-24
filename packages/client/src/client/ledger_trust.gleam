@@ -74,6 +74,7 @@ pub fn observer(local: String, logger: Logger) -> Observer {
   fn(observation: Observation) { observe(local, logger, observation) }
 }
 
+/// Handles membership ledger observations and updates node trust and peering accordingly.
 fn observe(local: String, logger: Logger, observation: Observation) -> Nil {
   case observation {
     ledger_service.Loaded(ledger:) -> publish(ledger, local)
@@ -233,6 +234,8 @@ fn connected() -> List(String) {
 
 // Ends the connections to these nodes. Only nodes that are connected are
 // looked at, so no name from the ledger becomes an atom here.
+
+/// Disconnects nodes that are no longer trusted by the membership ledger.
 fn disconnect(logger: Logger, cause: String, names: List(String)) -> Nil {
   ffi_nodes.connected()
   |> list.filter(fn(connected: Node) {
@@ -247,6 +250,7 @@ fn disconnect(logger: Logger, cause: String, names: List(String)) -> Nil {
   })
 }
 
+/// Emits a warning log if this node's own membership status was revoked.
 fn note_self_revoked(
   logger: Logger,
   previous: Ledger,
@@ -308,9 +312,11 @@ pub fn dialing(membership: distribution.Membership, local: String) -> Dialing {
   )
 }
 
+/// Spawns an asynchronous connection attempt to a named cluster peer.
 fn attempt(membership: distribution.Membership, name: String) -> Nil {
   let _ =
     process.spawn_unlinked(fn() {
+      // Connect to the peer if resolved from membership.
       case distribution.peer(membership, name) {
         Ok(peer) -> {
           let _ = distribution.connect(peer, 5000)

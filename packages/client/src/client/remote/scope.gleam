@@ -98,6 +98,8 @@ pub type Scope {
 /// // scope.read(opened) == Ok(None) for a session that never attached
 /// ```
 pub fn read(opened: Session) -> Result(Option(Scope), String) {
+  // This match resolves storage.get_register(opened.store, register.FactCustom, key) before the surrounding protocol step continues.
+  // This match resolves storage.get_register(opened.store, register.FactCustom, key) before the enclosing validation continues.
   case storage.get_register(opened.store, register.FactCustom, key) {
     Error(error) ->
       Error("the remote scope record is unreadable: " <> string.inspect(error))
@@ -121,6 +123,8 @@ pub fn read(opened: Session) -> Result(Option(Scope), String) {
 ///   == 4
 /// ```
 pub fn attach_at(found: Option(Scope)) -> Int {
+  // This match resolves found before the surrounding protocol step continues.
+  // This match resolves found before the enclosing validation continues.
   case found {
     None -> 1
     Some(Scope(incarnation:, closed: Some(protocol.AllRetired), ..))
@@ -246,22 +250,27 @@ pub fn write_at(
 // opening creates a missing file. A mover that read the cell of a session whose
 // file had already been set aside would otherwise conjure an empty session in
 // its place.
+/// Open at keeps this client operation’s decoding or state decision in one place.
 fn open_at(
   path: String,
   owner: String,
   clock: Clock,
 ) -> Result(Session, String) {
+  // This match resolves simplifile.is_file(path) before the enclosing validation continues.
   use Nil <- result.try(case simplifile.is_file(path) {
     Ok(True) -> Ok(Nil)
     Ok(False) | Error(_) -> Error("there is no session file at " <> path)
   })
+
   session.open_sqlite(path:, owner:, lease_ttl_ms: file_lease_ttl_ms, clock:)
   |> result.map_error(fn(error) {
     "the session file " <> path <> " did not open: " <> string.inspect(error)
   })
 }
 
+/// Encode keeps this client operation’s decoding or state decision in one place.
 fn encode(scope: Scope) -> JsonValue {
+  // This match resolves scope.closed before the enclosing validation continues.
   let closed = case scope.closed {
     None -> [#("closed", json.Null)]
     Some(protocol.AllRetired) -> [#("closed", json.String("all_retired"))]
@@ -270,10 +279,13 @@ fn encode(scope: Scope) -> JsonValue {
       #("unknown_children", json.Int(count)),
     ]
   }
+
+  // This match resolves scope.executor before the enclosing validation continues.
   let executor = case scope.executor {
     None -> []
     Some(name) -> [#("executor", json.String(name))]
   }
+
   json.Object(
     list.flatten([
       [#("incarnation", json.Int(scope.incarnation))],
@@ -283,13 +295,18 @@ fn encode(scope: Scope) -> JsonValue {
   )
 }
 
+/// Decode keeps this client operation’s decoding or state decision in one place.
 fn decode(payload: JsonValue) -> Result(Scope, String) {
+  // This match resolves payload before the surrounding protocol step continues.
+  // This match resolves payload before the enclosing validation continues.
   case payload {
     json.Object(fields) -> {
+      // This match validates the input shape before constructing its result.
       use incarnation <- result.try(case list.key_find(fields, "incarnation") {
         Ok(json.Int(incarnation)) if incarnation >= 1 -> Ok(incarnation)
         _ -> Error("incarnation is not a positive integer")
       })
+
       use closed <- result.try(closure(fields))
       use executor <- result.map(named_executor(fields))
       Scope(incarnation:, closed:, executor:)
@@ -305,12 +322,16 @@ fn decode(payload: JsonValue) -> Result(Scope, String) {
 // as no executor. A field that is present has to be a name the configuration
 // could have given, so a damaged cell is an error and never a different
 // executor.
+/// Named executor keeps this client operation’s decoding or state decision in one place.
 fn named_executor(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
+  // This match resolves list.key_find(fields, "executor") before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, "executor") before the enclosing validation continues.
   case list.key_find(fields, "executor") {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(json.String(name)) ->
+      // This match resolves catalogue.is_executor_name(name) before the surrounding protocol step continues.
       case catalogue.is_executor_name(name) {
         True -> Ok(Some(name))
         False -> Error("executor is not an executor name")
@@ -319,13 +340,17 @@ fn named_executor(
   }
 }
 
+/// Closure keeps this client operation’s decoding or state decision in one place.
 fn closure(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(CloseOutcome), String) {
+  // This match resolves list.key_find(fields, "closed") before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, "closed") before the enclosing validation continues.
   case list.key_find(fields, "closed") {
     Ok(json.Null) | Error(Nil) -> Ok(None)
     Ok(json.String("all_retired")) -> Ok(Some(protocol.AllRetired))
     Ok(json.String("unknown")) ->
+      // This match resolves list.key_find(fields, "unknown_children") before the surrounding protocol step continues.
       case list.key_find(fields, "unknown_children") {
         Ok(json.Int(count)) if count >= 0 ->
           Ok(Some(protocol.UnknownCleanup(count:)))

@@ -105,13 +105,13 @@ pub fn restart(
   |> result.replace_error(NotReopened)
 }
 
-// Asks the registry to stop the session, then reads it until the stop is over.
-// `stop_session` marks the slot closing in the turn that answers it, and a
-// closing slot never reopens, so a session seen resident or opening here is a
-// new incarnation that a client's own open started after the drain
-// (`ui_socket.drained` reads it the same way). The stop that was asked for has
-// completed, and waiting on for `Saved` would only run out the clock. A status
-// that cannot end without another request ends the wait at once.
+/// Asks the registry to stop the session, then reads it until the stop is over.
+/// `stop_session` marks the slot closing in the turn that answers it, and a
+/// closing slot never reopens, so a session seen resident or opening here is a
+/// new incarnation that a client's own open started after the drain
+/// (`ui_socket.drained` reads it the same way). The stop that was asked for has
+/// completed, and waiting on for `Saved` would only run out the clock. A status
+/// that cannot end without another request ends the wait at once.
 fn stopped(
   registry: manager.Manager(instance),
   id: String,

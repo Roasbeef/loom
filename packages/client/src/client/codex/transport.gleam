@@ -46,6 +46,7 @@ pub fn command(
   events: Subject(control.ControlEvent),
 ) -> Result(http.PreparedRequest, String) {
   prepare_with(events, fn(ledger) {
+    // Dispatch the control action execution result.
     case profile.execute(profile_name, action, events, ledger) {
       Ok(Nil) -> Ok(Nil)
       Error(code) -> {
@@ -56,6 +57,7 @@ pub fn command(
   })
 }
 
+/// Prepares a streaming request with default authentication and transport.
 fn prepare_streaming(
   profile_name: String,
   request: http.HttpRequest,
@@ -88,6 +90,7 @@ pub fn prepare_streaming_with(
 ) -> Result(http.PreparedRequest, String) {
   use Nil <- result.try(validate_request(request))
   prepare_with(events, fn(ledger) {
+    // Check authorization before attempting inference request.
     case authorize(profile_name, ledger) {
       Error(code) -> {
         // This local terminal proves no inference request was admitted. The
@@ -159,8 +162,10 @@ pub fn prepare_with(
   }
 }
 
-// The uncredentialed relative boundary is checked before parking. The only
-// authenticated request this task can construct targets the public Responses API.
+/// Prepares and monitors an authenticated request to the Responses API.
+///
+/// The uncredentialed relative boundary is checked before parking. The only
+/// authenticated request this task can construct targets the public Responses API.
 fn authenticated_request(
   ledger: weft.Ledger,
   inference: http.Transport,
@@ -174,6 +179,8 @@ fn authenticated_request(
       url: "https://api.openai.com/v1/responses",
       headers: [#("authorization", "Bearer " <> bearer), ..request.headers],
     )
+
+  // Prepare streaming request and adopt worker into ledger.
   case inference.prepare_streaming(authenticated, events) {
     Error(_) -> {
       process.send(events, http.RequestFailed("subscription transport failed"))
@@ -215,8 +222,10 @@ pub fn validate_request(request: http.HttpRequest) -> Result(Nil, String) {
   }
 }
 
-// Only locally defined error codes reach this JSON boundary. Escaping remains
-// structural so a future code addition cannot introduce an invalid response.
+/// Encodes a structured JSON error body for authorization failures.
+///
+/// Only locally defined error codes reach this JSON boundary. Escaping remains
+/// structural so a future code addition cannot introduce an invalid response.
 fn error_body(code: String) -> BitArray {
   json.object([
     #(

@@ -227,6 +227,8 @@ pub fn start(
   served: List(Workspace),
 ) -> Result(Worktrees, String) {
   let wanted = list.filter(served, is_worktree)
+
+  // Decide how to handle wanted {.
   case wanted {
     [] -> Ok(Worktrees(config:, git: None, gates: []))
     _ -> {
@@ -262,6 +264,7 @@ pub fn start(
 /// // worktrees.stop(worktrees)
 /// ```
 pub fn stop(worktrees: Worktrees) -> Nil {
+  // Decide how to handle worktrees.git {.
   case worktrees.git {
     Some(git) -> {
       let _drained = worktree_git.stop(git)
@@ -389,6 +392,8 @@ pub fn close(
     use spec <- result.try(spec_of(worktrees, workspace, session))
     through(worktrees, workspace.name, fn(env) {
       use recorded <- result.try(recorded(env, session))
+
+      // Decide how to handle recorded {.
       case recorded {
         Some(row)
           if row.state == exec_ledger.Present || row.state == exec_ledger.Kept
@@ -397,6 +402,8 @@ pub fn close(
       }
     })
   }
+
+  // Decide how to handle settled {.
   case settled {
     Ok(closed) -> closed
     Error(reason) -> {
@@ -438,10 +445,13 @@ pub fn sweep(
       })
       |> list.try_map(fn(row) {
         use spec <- result.try(spec_of(worktrees, workspace, row.session))
+
+        // Decide how to handle let force =  list.contains(forced, row.session) {.
         let force = case list.contains(forced, row.session) {
           True -> Forced
           False -> Careful
         }
+
         use closed <- result.map(settle(env, spec, row, force))
         Swept(
           session: row.session,
@@ -486,6 +496,8 @@ pub fn unrecorded(worktrees: Worktrees, served: List(Workspace)) -> Int {
         }),
       )
     })
+
+  // Decide how to handle counted {.
   case counted {
     Ok(each) -> int.sum(each)
     Error(_reason) -> 0
@@ -496,6 +508,8 @@ pub fn unrecorded(worktrees: Worktrees, served: List(Workspace)) -> Int {
 
 // Starts the gate of one workspace. Its preparation is the workspace's
 // reconciliation, and it runs ahead of the gate's first job.
+
+/// Establishes gate for for the caller, keeping its validation and result policy at this boundary.
 fn gate_for(
   config: Config,
   git: Git,
@@ -520,7 +534,10 @@ fn gate_for(
 // One job at a time. A job arriving at a gate that has not reconciled runs the
 // preparation first; if that fails the job is refused with its reason and the
 // gate stays unreconciled, so the next attach tries again.
+
+/// Establishes run job for the caller, keeping its validation and result policy at this boundary.
 fn run_job(phase: Phase, job: Job) -> actor.Next(Phase, Job) {
+  // Decide how to handle phase {.
   case phase {
     Reconciled -> {
       job.work()
@@ -543,6 +560,8 @@ fn run_job(phase: Phase, job: Job) -> actor.Next(Phase, Job) {
 // Runs `work` in the workspace's gate and waits for its answer. The answer
 // travels on a subject only this call holds. A gate that does not answer within
 // `gate_within_ms` is reported, and its job may still finish later.
+
+/// Establishes through for the caller, keeping its validation and result policy at this boundary.
 fn through(
   worktrees: Worktrees,
   workspace: String,
@@ -569,6 +588,8 @@ fn through(
       refuse: fn(reason) { process.send(reply, Error(reason)) },
     ),
   )
+
+  // Decide how to handle process.receive(reply, gate_within_ms) {.
   case process.receive(reply, gate_within_ms) {
     Ok(answer) -> answer
     Error(Nil) -> Error("the worktree gate did not answer in time")
@@ -576,6 +597,8 @@ fn through(
 }
 
 // Opens the job's ledger connection and closes it when the job is over.
+
+/// Establishes with env for the caller, keeping its validation and result policy at this boundary.
 fn with_env(
   config: Config,
   git: Git,
@@ -586,6 +609,7 @@ fn with_env(
   })
 }
 
+/// Establishes with ledger for the caller, keeping its validation and result policy at this boundary.
 fn with_ledger(
   path: String,
   work: fn(Ledger) -> Result(a, String),
@@ -611,8 +635,12 @@ fn ledger_fault(error: exec_ledger.Error) -> String {
 // A worktree workspace's repository has to be a primary checkout. The shared
 // object store, refs and hooks this module writes through are `<root>/.git`, and
 // a linked worktree's `.git` is a file that points somewhere else.
+
+/// Establishes checked for the caller, keeping its validation and result policy at this boundary.
 fn checked(workspace: Workspace) -> Result(Nil, String) {
   let place = "workspaces." <> workspace.name
+
+  // Decide how to handle use Nil <- result.try( safe_component(workspace.name) {.
   use Nil <- result.try(case safe_component(workspace.name) {
     True -> Ok(Nil)
     False ->
@@ -622,10 +650,13 @@ fn checked(workspace: Workspace) -> Result(Nil, String) {
         <> "letters, digits, _, - and ., not starting with a dot",
       )
   })
+
   use root <- result.try(
     canonical_root(workspace)
     |> result.map_error(fn(reason) { place <> ".root " <> reason }),
   )
+
+  // Decide how to handle simplifile.is_directory(root <> "/.git") {.
   case simplifile.is_directory(root <> "/.git") {
     Ok(True) -> Ok(Nil)
     Ok(False) | Error(_) ->
@@ -647,20 +678,26 @@ fn canonical_root(workspace: Workspace) -> Result(String, String) {
 // The names and paths of one session's tree, judged before anything touches
 // the disk. The session id arrives from a peer, so it is checked as a path
 // component, and the base is the configured one, never the peer's.
+
+/// Establishes spec of for the caller, keeping its validation and result policy at this boundary.
 fn spec_of(
   worktrees: Worktrees,
   workspace: Workspace,
   session: String,
 ) -> Result(Spec, String) {
+  // Decide how to handle use base <- result.try( workspace.mode {.
   use base <- result.try(case workspace.mode {
     workspaces.Worktree(base:) -> Ok(base)
     workspaces.Shared ->
       Error("the workspace " <> workspace.name <> " is not in worktree mode")
   })
+
+  // Decide how to handle use Nil <- result.try( safe_component(session) {.
   use Nil <- result.try(case safe_component(session) {
     True -> Ok(Nil)
     False -> Error("the session name is not usable as a directory name")
   })
+
   use root <- result.try(
     canonical_root(workspace)
     |> result.map_error(fn(reason) {
@@ -681,12 +718,16 @@ fn spec_of(
 
 // --- opening a tree -------------------------------------------------------------
 
+/// Establishes opened for the caller, keeping its validation and result policy at this boundary.
 fn opened(env: Env, spec: Spec) -> Result(Tree, String) {
   use recorded <- result.try(recorded(env, spec.session))
+
+  // Decide how to handle use Nil <- result.try( recorded {.
   use Nil <- result.try(case recorded {
     None -> create(env, spec)
     Some(row) -> reopen(env, spec, row)
   })
+
   Ok(Tree(path: spec.path, branch: spec.branch))
 }
 
@@ -699,6 +740,7 @@ fn workspace_rows(env: Env, workspace: String) -> Result(List(Row), String) {
   |> result.map_error(ledger_fault)
 }
 
+/// Establishes record for the caller, keeping its validation and result policy at this boundary.
 fn record(
   env: Env,
   spec: Spec,
@@ -719,6 +761,8 @@ fn record(
 
 // The first attach of a session. The record comes first, so a crash between it
 // and the command leaves a row that names the directory to look at.
+
+/// Establishes create for the caller, keeping its validation and result policy at this boundary.
 fn create(env: Env, spec: Spec) -> Result(Nil, String) {
   // A first attach has no record, so a directory at the path is not ours: the
   // ledger may have been reset while trees remained. The `Creating` record
@@ -732,6 +776,7 @@ fn create(env: Env, spec: Spec) -> Result(Nil, String) {
         <> "; move it away or restore the executor's ledger",
       )
   })
+
   use Nil <- result.try(record(env, spec, exec_ledger.Creating))
   use Nil <- result.try(parent_directory(spec))
   add(env, spec, ["worktree", "add", spec.path, "-b", spec.branch, spec.base])
@@ -740,6 +785,8 @@ fn create(env: Env, spec: Spec) -> Result(Nil, String) {
 // A session whose tree was recorded. A tree on disk is adopted after Git
 // repairs its links, which also covers a state root that moved. A tree that is
 // not on disk, or was removed, is recreated from the session's branch.
+
+/// Establishes reopen for the caller, keeping its validation and result policy at this boundary.
 fn reopen(env: Env, spec: Spec, row: Row) -> Result(Nil, String) {
   case row.state, disk_of(spec.path) {
     exec_ledger.Present, OnDisk | exec_ledger.Kept, OnDisk ->
@@ -765,6 +812,8 @@ fn reopen(env: Env, spec: Spec, row: Row) -> Result(Nil, String) {
 // settles it, and the session then opens as if the record had been tidy. A rule
 // that left the record where it was would be the same refusal again, so that
 // case is the error it is.
+
+/// Establishes interrupted for the caller, keeping its validation and result policy at this boundary.
 fn interrupted(
   env: Env,
   spec: Spec,
@@ -773,6 +822,8 @@ fn interrupted(
 ) -> Result(Nil, String) {
   use Nil <- result.try(reconcile_state(env, spec, row.state, disk))
   use settled <- result.try(recorded(env, spec.session))
+
+  // Decide how to handle settled {.
   case settled {
     Some(next) if next.state != row.state -> reopen(env, spec, next)
     Some(_) | None ->
@@ -780,10 +831,13 @@ fn interrupted(
   }
 }
 
+/// Establishes adopt for the caller, keeping its validation and result policy at this boundary.
 fn adopt(env: Env, spec: Spec, row: Row) -> Result(Nil, String) {
   use _repaired <- result.try(
     git_ok(env, spec.root, writing(spec), ["worktree", "repair", spec.path]),
   )
+
+  // Decide how to handle row.state {.
   case row.state {
     exec_ledger.Kept -> record(env, spec, exec_ledger.Present)
     exec_ledger.Present
@@ -797,6 +851,8 @@ fn adopt(env: Env, spec: Spec, row: Row) -> Result(Nil, String) {
 // the session finds its commits, and if it was deleted the tree starts again
 // from the base. Pruning first drops Git's record of the vanished directory,
 // without which Git refuses to check the branch out a second time.
+
+/// Establishes recreate for the caller, keeping its validation and result policy at this boundary.
 fn recreate(env: Env, spec: Spec) -> Result(Nil, String) {
   use Nil <- result.try(record(env, spec, exec_ledger.Creating))
   use Nil <- result.try(parent_directory(spec))
@@ -804,6 +860,8 @@ fn recreate(env: Env, spec: Spec) -> Result(Nil, String) {
     git_ok(env, spec.root, writing(spec), ["worktree", "prune"]),
   )
   use exists <- result.try(branch_exists(env, spec))
+
+  // Decide how to handle exists {.
   case exists {
     True -> add(env, spec, ["worktree", "add", spec.path, spec.branch])
     False -> {
@@ -822,7 +880,10 @@ fn recreate(env: Env, spec: Spec) -> Result(Nil, String) {
 // When it fails the directory the `Creating` record names is deleted, Git's
 // registration pruned and the record closed as `Removed`, whatever state the
 // failure left the disk in.
+
+/// Establishes add for the caller, keeping its validation and result policy at this boundary.
 fn add(env: Env, spec: Spec, arguments: List(String)) -> Result(Nil, String) {
+  // Decide how to handle git_ok(env, spec.root, writing(spec), arguments) {.
   case git_ok(env, spec.root, writing(spec), arguments) {
     Ok(_output) -> record(env, spec, exec_ledger.Present)
     Error(reason) -> {
@@ -832,6 +893,7 @@ fn add(env: Env, spec: Spec, arguments: List(String)) -> Result(Nil, String) {
   }
 }
 
+/// Establishes undo for the caller, keeping its validation and result policy at this boundary.
 fn undo(env: Env, spec: Spec) -> Result(Nil, String) {
   use Nil <- result.try(parent_directory(spec))
   use Nil <- result.try(forget_directory(spec))
@@ -841,6 +903,7 @@ fn undo(env: Env, spec: Spec) -> Result(Nil, String) {
   record(env, spec, exec_ledger.Removed)
 }
 
+/// Establishes branch exists for the caller, keeping its validation and result policy at this boundary.
 fn branch_exists(env: Env, spec: Spec) -> Result(Bool, String) {
   use output <- result.map(
     git_run(env, spec.root, [], [
@@ -871,6 +934,8 @@ fn ensure_directories(workspace_directory: String) -> Result(Nil, String) {
 // Deletes the directory a record names. It is deleted only when it is exactly
 // the path the layout gives this session, so a damaged row cannot send the
 // deletion anywhere else.
+
+/// Establishes forget directory for the caller, keeping its validation and result policy at this boundary.
 fn forget_directory(spec: Spec) -> Result(Nil, String) {
   case simplifile.delete(spec.path) {
     Ok(Nil) | Error(simplifile.Enoent) -> Ok(Nil)
@@ -887,6 +952,8 @@ fn forget_directory(spec: Spec) -> Result(Nil, String) {
 // --- closing a tree -------------------------------------------------------------
 
 // Removes the tree, or leaves it, and writes the record that says which.
+
+/// Establishes settle for the caller, keeping its validation and result policy at this boundary.
 fn settle(
   env: Env,
   spec: Spec,
@@ -905,12 +972,14 @@ fn settle(
   }
 }
 
+/// Establishes keep for the caller, keeping its validation and result policy at this boundary.
 fn keep(
   env: Env,
   spec: Spec,
   row: Row,
   reason: String,
 ) -> Result(Closed, String) {
+  // Decide how to handle use Nil <- result.map( row.state {.
   use Nil <- result.map(case row.state {
     exec_ledger.Kept -> Ok(Nil)
     exec_ledger.Present
@@ -918,6 +987,7 @@ fn keep(
     | exec_ledger.Removing
     | exec_ledger.Removed -> record(env, spec, exec_ledger.Kept)
   })
+
   Kept(reason)
 }
 
@@ -925,6 +995,8 @@ fn keep(
 // The status excludes Loom's own `.codemode` directory, which every code-mode
 // session leaves untracked, and a detached HEAD is work too: its commits are
 // held by no branch.
+
+/// Establishes holds work for the caller, keeping its validation and result policy at this boundary.
 fn holds_work(env: Env, spec: Spec) -> Result(Option(String), String) {
   use status <- result.try(
     git_ok(env, spec.path, [], [
@@ -932,11 +1004,15 @@ fn holds_work(env: Env, spec: Spec) -> Result(Option(String), String) {
       ":(exclude).codemode",
     ]),
   )
+
+  // Decide how to handle string.trim(status.stdout) {.
   case string.trim(status.stdout) {
     "" -> {
       use head <- result.map(
         git_run(env, spec.path, [], ["symbolic-ref", "--quiet", "HEAD"]),
       )
+
+      // Decide how to handle head.code {.
       case head.code {
         0 -> None
         _ -> Some("its HEAD is detached, so its commits belong to no branch")
@@ -949,8 +1025,12 @@ fn holds_work(env: Env, spec: Spec) -> Result(Option(String), String) {
 // `removing` is written first so that a crash during the command is finished by
 // the next start. A failed command puts the record back to `Present` when the
 // directory is still there, because then the tree is as it was.
+
+/// Establishes remove for the caller, keeping its validation and result policy at this boundary.
 fn remove(env: Env, spec: Spec, force: Force) -> Result(Closed, String) {
   use Nil <- result.try(record(env, spec, exec_ledger.Removing))
+
+  // Decide how to handle the branch input.
   case
     git_ok(env, spec.root, writing(spec), [
       "worktree", "remove", "--force", spec.path,
@@ -982,6 +1062,8 @@ fn remove(env: Env, spec: Spec, force: Force) -> Result(Closed, String) {
 // preparation, so no session of the workspace is admitted before it ends, and
 // a failure is refused to the session that triggered it and tried again at the
 // next attach. A directory with no record is not touched here or anywhere.
+
+/// Establishes reconcile for the caller, keeping its validation and result policy at this boundary.
 fn reconcile(
   env: Env,
   workspace: Workspace,
@@ -1008,6 +1090,7 @@ fn workspace_directory(env: Env, workspace: Workspace) -> String {
   env.config.state_root <> "/" <> directory_name <> "/" <> workspace.name
 }
 
+/// Establishes report for the caller, keeping its validation and result policy at this boundary.
 fn report(env: Env, workspace: String, done: Int, total: Int) -> Nil {
   case done % reconcile_report_every == 0 {
     True ->
@@ -1020,6 +1103,7 @@ fn report(env: Env, workspace: String, done: Int, total: Int) -> Nil {
   }
 }
 
+/// Establishes reconcile row for the caller, keeping its validation and result policy at this boundary.
 fn reconcile_row(
   env: Env,
   workspace: Workspace,
@@ -1028,6 +1112,8 @@ fn reconcile_row(
 ) -> Result(Nil, String) {
   let state_root = env.config.state_root
   let expected = tree_path(state_root, workspace.name, row.session)
+
+  // Decide how to handle row.path == expected && safe_component(row.session) {.
   case row.path == expected && safe_component(row.session) {
     False -> {
       log.warn(env.config.logger, "executor.worktree_record_skipped", [
@@ -1060,6 +1146,8 @@ fn base_of(workspace: Workspace) -> String {
 }
 
 // The rules of protocol-change/095, one arm for each state of the record.
+
+/// Establishes reconcile state for the caller, keeping its validation and result policy at this boundary.
 fn reconcile_state(
   env: Env,
   spec: Spec,
@@ -1071,6 +1159,8 @@ fn reconcile_state(
     // Git lists it, or whatever is on disk is a half-made leftover.
     exec_ledger.Creating, _ -> {
       use listed <- result.try(is_listed(env, spec))
+
+      // Decide how to handle disk, listed {.
       case disk, listed {
         OnDisk, True -> record(env, spec, exec_ledger.Present)
         OnDisk, False | Absent, True | Absent, False -> undo(env, spec)
@@ -1104,6 +1194,8 @@ fn reconcile_state(
 }
 
 // Whether `git worktree list` registers the tree's path.
+
+/// Establishes is listed for the caller, keeping its validation and result policy at this boundary.
 fn is_listed(env: Env, spec: Spec) -> Result(Bool, String) {
   use output <- result.map(
     git_ok(env, spec.root, [], ["worktree", "list", "--porcelain"]),
@@ -1122,16 +1214,19 @@ fn writing(spec: Spec) -> List(String) {
   [spec.root <> "/.git", spec.parent]
 }
 
+/// Establishes git run for the caller, keeping its validation and result policy at this boundary.
 fn git_run(
   env: Env,
   directory: String,
   writable: List(String),
   arguments: List(String),
 ) -> Result(Output, String) {
+  // Decide how to handle let within =  writable {.
   let within = case writable {
     [] -> worktree_git.query_within_ms
     _ -> worktree_git.checkout_within_ms
   }
+
   worktree_git.run(
     env.git,
     worktree_git.Run(directory:, writable:, arguments:),
@@ -1141,6 +1236,8 @@ fn git_run(
 
 // Git that must exit zero. A failure answers Git's own message, cut to what the
 // wire carries.
+
+/// Establishes git ok for the caller, keeping its validation and result policy at this boundary.
 fn git_ok(
   env: Env,
   directory: String,
@@ -1148,13 +1245,17 @@ fn git_ok(
   arguments: List(String),
 ) -> Result(Output, String) {
   use output <- result.try(git_run(env, directory, writable, arguments))
+
+  // Decide how to handle output.code {.
   case output.code {
     0 -> Ok(output)
     code -> {
+      // Decide how to handle let said =  string.trim(output.stderr) {.
       let said = case string.trim(output.stderr) {
         "" -> output.stdout
         message -> message
       }
+
       Error(worktree_git.printable(
         "git "
           <> string.join(list.take(arguments, 2), " ")

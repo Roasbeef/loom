@@ -207,6 +207,7 @@ Example:
 /// // loomd distribution provision plan.toml out
 /// ```
 pub fn main(arguments: List(String)) -> Nil {
+  // Run distribution command and print output or exit with error.
   case run(arguments) {
     Ok("") -> Nil
     Ok(text) -> io.println(text)
@@ -250,6 +251,7 @@ pub fn run(arguments: List(String)) -> Result(String, String) {
 /// assert result.is_error(distribution_cli.write_options(["options"]))
 /// ```
 pub fn write_options(arguments: List(String)) -> Result(Nil, String) {
+  // Parse options arguments.
   case arguments {
     ["options", config, output] -> {
       use config <- result.try(bootstrap.absolute_path(config))
@@ -264,10 +266,13 @@ pub fn write_options(arguments: List(String)) -> Result(Nil, String) {
         distribution.parse(text)
         |> result.map_error(fn(reason) { config <> ": " <> reason }),
       )
+
+      // Extract distribution settings or error.
       use settings <- result.try(case found {
         Some(settings) -> Ok(settings)
         None -> Error(config <> " has no [distribution] table")
       })
+
       use Nil <- result.try(
         simplifile.write(output, distribution.tls_options(settings))
         |> result.map_error(fn(error) {
@@ -287,17 +292,23 @@ pub fn write_options(arguments: List(String)) -> Result(Nil, String) {
 
 // --- init --------------------------------------------------------------------
 
+/// Initializes an example distribution plan on disk.
 fn init(arguments: List(String)) -> Result(String, String) {
+  // Determine target plan file path.
   use path <- result.try(case arguments {
     [] -> Ok("distribution-plan.toml")
     [path] -> Ok(path)
     _ -> Error(usage)
   })
+
   use path <- result.try(bootstrap.absolute_path(path))
+
+  // Check if target file already exists.
   use Nil <- result.try(case bootstrap.path_exists(path) {
     True -> Error(path <> " already exists; init never overwrites a plan")
     False -> Ok(Nil)
   })
+
   use Nil <- result.try(
     simplifile.write(path, distribution_plan.example)
     |> result.map_error(fn(error) {
@@ -315,13 +326,17 @@ fn init(arguments: List(String)) -> Result(String, String) {
 
 // --- provision ---------------------------------------------------------------
 
+/// Provisions cluster bundles from a distribution plan.
 fn provision(arguments: List(String)) -> Result(String, String) {
   use parsed <- result.try(parse_flags(arguments))
   use parsed <- result.try(check_provision_home(parsed))
+
+  // Extract plan and output directory arguments.
   use #(plan_path, output) <- result.try(case parsed.positional {
     [plan, output] -> Ok(#(plan, output))
     _ -> Error(usage)
   })
+
   use plan_path <- result.try(bootstrap.absolute_path(plan_path))
   use output <- result.try(bootstrap.absolute_path(output))
   use format <- result.try(distribution_plan.format_of(plan_path))
@@ -335,12 +350,15 @@ fn provision(arguments: List(String)) -> Result(String, String) {
     distribution_plan.parse(text, format)
     |> result.map_error(fn(reason) { plan_path <> ": " <> reason }),
   )
+
+  // Provision according to static or ledger mode.
   case parsed.mode {
     StaticMode -> provision_static(plan, output, parsed)
     LedgerMode -> provision_ledger(plan, output, parsed)
   }
 }
 
+/// Provisions a static deployment and writes bundles to output.
 fn provision_static(
   plan: distribution_plan.Plan,
   output: String,
@@ -362,6 +380,12 @@ const static_closing =
 // the passphrase are checked before a key exists, and the sealed key is written
 // before the bundles: a sealed key with no bundles is clutter, and bundles
 // whose ledger can never be extended are the worse failure.
+/// Provisions a ledger-backed deployment and seals authority key.
+///
+/// Ledger mode. The order leaves nothing half done. The output directory and
+/// the passphrase are checked before a key exists, and the sealed key is written
+/// before the bundles: a sealed key with no bundles is clutter, and bundles
+/// whose ledger can never be extended are the worse failure.
 fn provision_ledger(
   plan: distribution_plan.Plan,
   output: String,
@@ -371,30 +395,39 @@ fn provision_ledger(
     output,
     parsed.overwrite,
   ))
+
+  // Read passphrase and resolve home directory if keeping authority.
   use sealing <- result.try(case parsed.custody {
     DropAuthority -> Ok(None)
     KeepAuthority -> {
       use passphrase <- result.try(read_passphrase(parsed.passphrase_file))
+
+      // Resolve home directory path from flag or environment.
       use home <- result.try(case parsed.home {
         Some(home) -> bootstrap.absolute_path(home)
         None ->
           bootstrap.getenv("HOME")
           |> result.replace_error("HOME is unset; pass --home DIR")
       })
+
       Ok(Some(#(passphrase, home)))
     }
   })
+
   use made <- result.try(distribution_provision.provision_ledger(
     plan,
     timestamp.system_time(),
   ))
   let deployment = made.deployment
+
+  // Seal authority key if requested or report dropped key.
   use closing <- result.try(case sealing {
     None -> Ok(dropped_closing)
     Some(#(passphrase, home)) ->
       keep_authority(home, made, passphrase)
       |> result.map(kept_closing)
   })
+
   use _written <- result.try(distribution_provision.write(
     deployment,
     output,
@@ -414,6 +447,7 @@ fn provision_ledger(
 const dropped_closing =
   "The authority key was discarded. This ledger can never be extended."
 
+/// Formats notice when authority key is retained in local directory.
 fn kept_closing(directory: String) -> String {
   "The authority key is sealed in "
   <> directory
@@ -423,7 +457,10 @@ fn kept_closing(directory: String) -> String {
 }
 
 // Seals the key and keeps the certificate and the operator's copy of the
-// ledger beside it. Returns the directory.
+/// Seals the authority key and writes certificate and ledger.
+///
+/// Seals the key and keeps the certificate and the operator's copy of the
+/// ledger beside it. Returns the directory.
 fn keep_authority(
   home: String,
   provisioned: distribution_provision.Provisioned,
@@ -446,9 +483,11 @@ fn keep_authority(
   |> result.map_error(authority_key.describe)
 }
 
+/// Reads passphrase from file or prompts interactively.
 fn read_passphrase(
   file: Option(String),
 ) -> Result(authority_key.Passphrase, String) {
+  // Read passphrase from file or terminal prompt.
   case file {
     Some(path) -> {
       use path <- result.try(bootstrap.absolute_path(path))
@@ -461,6 +500,7 @@ fn read_passphrase(
   }
 }
 
+/// Formats summary output for provisioned cluster deployment.
 fn provisioned(
   deployment: distribution_provision.Deployment,
   output: String,
@@ -510,16 +550,22 @@ fn provisioned(
 
 // --- show --------------------------------------------------------------------
 
+/// Renders the nodes of a system configuration.
 fn show(arguments: List(String)) -> Result(String, String) {
+  // Extract show target argument.
   use target <- result.try(case arguments {
     [target] -> Ok(target)
     _ -> Error(usage)
   })
+
   use target <- result.try(bootstrap.absolute_path(target))
+
+  // Resolve path to system JSON file.
   let path = case string.ends_with(target, ".json") {
     True -> target
     False -> target <> "/" <> distribution_provision.system_file
   }
+
   use text <- result.try(
     simplifile.read(path)
     |> result.map_error(fn(error) {
@@ -535,8 +581,11 @@ fn show(arguments: List(String)) -> Result(String, String) {
 
 // --- install -----------------------------------------------------------------
 
+/// Installs a distribution bundle on the current host.
 fn install(arguments: List(String)) -> Result(String, String) {
   use parsed <- result.try(parse_flags(arguments))
+
+  // Verify install options are valid for installation mode.
   use Nil <- result.try(
     case parsed.mode, parsed.custody, parsed.passphrase_file {
       LedgerMode, KeepAuthority, None -> Ok(Nil)
@@ -546,23 +595,29 @@ fn install(arguments: List(String)) -> Result(String, String) {
         )
     },
   )
+
+  // Extract bundle path argument.
   use bundle_path <- result.try(case parsed.positional {
     [path] -> Ok(path)
     _ -> Error(usage)
   })
+
   use bundle_path <- result.try(bootstrap.absolute_path(bundle_path))
 
-  // Resolve installation directories and read the bundle source.
+  // Resolve home directory path.
   use home <- result.try(case parsed.home {
     Some(home) -> bootstrap.absolute_path(home)
     None ->
       bootstrap.getenv("HOME")
       |> result.replace_error("HOME is unset; pass --home DIR")
   })
+
+  // Resolve daemon configuration path.
   use config <- result.try(case parsed.config {
     Some(config) -> bootstrap.absolute_path(config)
     None -> Ok(distribution_install.default_config(home))
   })
+
   use text <- result.try(
     simplifile.read(bundle_path)
     |> result.map_error(fn(error) {
@@ -587,6 +642,7 @@ fn install(arguments: List(String)) -> Result(String, String) {
   Ok(installed_text(installed))
 }
 
+/// Formats summary report for installed bundle.
 fn installed_text(installed: distribution_install.Installed) -> String {
   let bundle = installed.bundle
   let steps =
@@ -621,8 +677,10 @@ fn installed_text(installed: distribution_install.Installed) -> String {
   )
 }
 
-// A ledger bundle is a snapshot. The node trusts what it says until it meets a
-// peer that holds more, so the operator is told how old it is.
+/// Formats ledger snapshot lines if present.
+///
+/// A ledger bundle is a snapshot. The node trusts what it says until it meets a
+/// peer that holds more, so the operator is told how old it is.
 fn snapshot_lines(
   snapshot: Option(distribution_install.Snapshot),
 ) -> List(String) {
@@ -639,6 +697,7 @@ fn snapshot_lines(
   }
 }
 
+/// Returns display word for an installation step outcome.
 fn outcome_word(outcome: distribution_install.Outcome) -> String {
   case outcome {
     distribution_install.Created -> "created"
@@ -676,8 +735,10 @@ type Parsed {
   )
 }
 
-// The flags may come before, between or after the positional words, as they do
-// in every other `loomd` command.
+/// Parses command line flags into a Parsed record.
+///
+/// The flags may come before, between or after the positional words, as they do
+/// in every other `loomd` command.
 fn parse_flags(arguments: List(String)) -> Result(Parsed, String) {
   use parsed <- result.try(parse_flags_loop(
     arguments,
@@ -686,9 +747,11 @@ fn parse_flags(arguments: List(String)) -> Result(Parsed, String) {
   check_ledger_flags(parsed)
 }
 
-// The flags that shape a ledger mean nothing in static mode. A request to drop a
-// key that static mode never keeps, or to read a passphrase for a key that is
-// not kept, is a mistake to name and not a flag to ignore.
+/// Checks compatibility between ledger flags and selected mode.
+///
+/// The flags that shape a ledger mean nothing in static mode. A request to drop a
+/// key that static mode never keeps, or to read a passphrase for a key that is
+/// not kept, is a mistake to name and not a flag to ignore.
 fn check_ledger_flags(parsed: Parsed) -> Result(Parsed, String) {
   case parsed.mode, parsed.custody, parsed.passphrase_file {
     StaticMode, DropAuthority, _ ->
@@ -706,10 +769,12 @@ fn check_ledger_flags(parsed: Parsed) -> Result(Parsed, String) {
   }
 }
 
-// `--home` is `install`'s flag too, so `parse_flags` cannot refuse it. In
-// `provision` only ledger mode reads it, to place the sealed key. Static mode
-// writes nothing under a home directory, so the flag would be accepted and
-// silently do nothing.
+/// Checks that --home is not supplied in static mode.
+///
+/// `--home` is `install`'s flag too, so `parse_flags` cannot refuse it. In
+/// `provision` only ledger mode reads it, to place the sealed key. Static mode
+/// writes nothing under a home directory, so the flag would be accepted and
+/// silently do nothing.
 fn check_provision_home(parsed: Parsed) -> Result(Parsed, String) {
   case parsed.mode, parsed.home {
     StaticMode, Some(_) ->
@@ -718,6 +783,7 @@ fn check_provision_home(parsed: Parsed) -> Result(Parsed, String) {
   }
 }
 
+/// Recursive loop parsing flags and positional arguments.
 fn parse_flags_loop(
   arguments: List(String),
   parsed: Parsed,

@@ -283,6 +283,8 @@ pub fn start_with(
     |> actor.on_message(handle)
     |> actor.periodic(every: every_ms, sending: Tick)
     |> actor.start
+
+  // Decide how to handle started {.
   case started {
     Ok(started) -> {
       let inbox = started.data
@@ -325,6 +327,7 @@ pub fn resume(
   list.length(pending)
 }
 
+/// Establishes handle for the caller, keeping its validation and result policy at this boundary.
 fn handle(
   state: State(instance),
   message: Message,
@@ -431,11 +434,13 @@ fn handle(
             State(..state, entries: dict.delete(state.entries, move.session)),
           )
         Stalled(reason:) -> {
+          // Decide how to handle let since =  dict.get(state.entries, move.session) {.
           let since = case dict.get(state.entries, move.session) {
             Ok(Entry(stalled_since: Some(since), ..)) -> Some(since)
             Ok(Entry(stalled_since: None, ..)) | Error(Nil) ->
               Some(bootstrap.monotonic_time_ms())
           }
+
           actor.continue(after_run(state, move, since, Some(reason)))
         }
         Deferred(reason:) ->
@@ -449,6 +454,8 @@ fn handle(
 // through `session_mover.give_up`, which expects the moving record, so it fails
 // if the receiver already took the session and the move finishes instead. The
 // request is spent by that run. Otherwise the move waits to run again.
+
+/// Establishes after run for the caller, keeping its validation and result policy at this boundary.
 fn after_run(
   state: State(instance),
   move: catalogue.Pending,
@@ -472,6 +479,7 @@ fn after_run(
   }
 }
 
+/// Establishes waiting for the caller, keeping its validation and result policy at this boundary.
 fn waiting(
   state: State(instance),
   move: catalogue.Pending,
@@ -498,6 +506,8 @@ fn waiting(
 // the same moves agree. The destination is named by its node when this daemon
 // lists the orchestrator, and by the configured name otherwise, since a move
 // resumed after the configuration changed can name one that is gone.
+
+/// Establishes move facts for the caller, keeping its validation and result policy at this boundary.
 fn move_facts(state: State(instance), now: Int) -> List(MoveFacts) {
   let listed = roster.rows(state.environment.orchestrators)
   state.entries
@@ -525,6 +535,8 @@ fn move_facts(state: State(instance), now: Int) -> List(MoveFacts) {
 // Whether a member should give a move up: it has stalled for long enough while
 // the store answered, and the receiver has seeded the store, so it decides by
 // the record and an abandon cannot race a receiver that never writes it.
+
+/// Establishes overdue for the caller, keeping its validation and result policy at this boundary.
 fn overdue(state: State(instance), entry: Entry, now: Int) -> Bool {
   case state.environment.authority, entry.stalled_since {
     session_mover.Recorded(ownership:), Some(since) ->
@@ -548,7 +560,10 @@ fn overdue(state: State(instance), entry: Entry, now: Int) -> Bool {
 // written only when a request is not yet covered, and the pass reports the
 // request count it started with, so a creation during the pass is covered by
 // the next one.
+
+/// Establishes sweep for the caller, keeping its validation and result policy at this boundary.
 fn sweep(state: State(instance)) -> State(instance) {
+  // Decide how to handle state.sweep {.
   case state.sweep {
     Sweeping -> state
     Resting -> {
@@ -560,6 +575,8 @@ fn sweep(state: State(instance)) -> State(instance) {
         weft.new([
           fn() {
             upkeep.every_tick()
+
+            // Decide how to handle let covered =  uncovered {.
             let covered = case uncovered {
               True ->
                 upkeep.cover()
@@ -567,6 +584,7 @@ fn sweep(state: State(instance)) -> State(instance) {
                 |> option.from_result
               False -> None
             }
+
             process.send(inbox, Swept(covered:))
             Ok(Nil)
           },
@@ -588,6 +606,8 @@ fn start_giving_up(state: State(instance), entry: Entry) -> State(instance) {
 // Starts the mover of one move in a run linked to this actor. The run drives the
 // move inside a run of its own, so a mover that crashes is a stalled move and the
 // report is still sent; the actor never waits for a message that cannot come.
+
+/// Establishes run mover for the caller, keeping its validation and result policy at this boundary.
 fn run_mover(
   state: State(instance),
   entry: Entry,
@@ -599,6 +619,9 @@ fn run_mover(
   let _witness =
     weft.new([
       fn() {
+        // Decide how to handle let outcome =.
+
+        // Validate this branch before continuing, preserving the owning operation’s failure boundary.
         let outcome = case
           weft.new([fn() { Ok(step(environment, move)) }])
           |> weft.start
@@ -613,6 +636,7 @@ fn run_mover(
           | []
           | [_, _, ..] -> Stalled("the mover crashed")
         }
+
         process.send(inbox, Ended(move:, outcome:))
         Ok(Nil)
       },

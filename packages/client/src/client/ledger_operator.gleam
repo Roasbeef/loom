@@ -119,6 +119,7 @@ pub type Enrollment {
 /// ledger_operator.check_enrollment(request) // -> Ok(Nil)
 /// ```
 pub fn check_enrollment(request: Enrollment) -> Result(Nil, String) {
+  // Validate node name structure.
   use Nil <- result.try(case catalogue.is_executor_name(request.name) {
     True -> Ok(Nil)
     False ->
@@ -128,12 +129,17 @@ pub fn check_enrollment(request: Enrollment) -> Result(Nil, String) {
         <> "starting with a letter, at most 32 characters",
       )
   })
+
   use Nil <- result.try(distribution.check_node_name("--node", request.node))
+
+  // Validate port range when an explicit port is supplied.
   use Nil <- result.try(case request.listen_port {
     Some(port) if port < 1 || port > 65_535 ->
       Error("--port must be 1 through 65535")
     _ -> Ok(Nil)
   })
+
+  // Ensure role link constraints are satisfied.
   use Nil <- result.try(case request.role, request.links {
     Executor, [] ->
       Error(
@@ -156,6 +162,8 @@ pub fn check_enrollment(request: Enrollment) -> Result(Nil, String) {
       Error("--workspace belongs to an executor, and this node is a tool")
     _, _ -> Ok(Nil)
   })
+
+  // Verify tool role link requirements.
   use Nil <- result.try(case request.role, request.links, request.directory {
     Tool, [], _ ->
       Error(
@@ -167,6 +175,7 @@ pub fn check_enrollment(request: Enrollment) -> Result(Nil, String) {
       Error(request.name <> " is a tool, which cannot join the directory")
     _, _, _ -> Ok(Nil)
   })
+
   list.try_each(request.workspaces, fn(workspace) {
     case
       catalogue.is_workspace_name(workspace.name),
@@ -212,6 +221,7 @@ pub fn enroll(
   pin: BitArray,
   time: String,
 ) -> Result(Entry, String) {
+  // Ensure the requested name is not already taken by an active member.
   use Nil <- result.try(case membership_ledger.member(ledger, request.name) {
     Ok(_) ->
       Error(
@@ -221,6 +231,7 @@ pub fn enroll(
       )
     Error(Nil) -> Ok(Nil)
   })
+
   use Nil <- result.try(check_links_are_daemons(ledger, request))
   let member =
     Member(
@@ -246,6 +257,8 @@ pub fn enroll(
 
 // A tool lists the daemon it attaches to, and nothing lists a tool. A daemon
 // that listed one would treat a node that runs no Loom as a peer to dial.
+
+/// Validates that all links in an enrollment point to active daemons.
 fn check_links_are_daemons(
   ledger: Ledger,
   request: Enrollment,
@@ -283,6 +296,8 @@ pub fn renew(
     membership_ledger.member(ledger, name)
     |> result.map_error(fn(_) { not_a_member(ledger, name) }),
   )
+
+  // Disallow certificate renewal for tool roles.
   use Nil <- result.try(case current.role {
     Tool ->
       Error(
@@ -292,6 +307,7 @@ pub fn renew(
       )
     Orchestrator | Executor -> Ok(Nil)
   })
+
   let member = Member(..current, pin:)
   use entry <- result.map(preflight(
     ledger,
@@ -319,6 +335,8 @@ pub fn revoke(
     membership_ledger.member(ledger, name)
     |> result.map_error(fn(_) { not_a_member(ledger, name) }),
   )
+
+  // Verify revocation reason string length and character bounds.
   use Nil <- result.try(
     case string.byte_size(reason) <= 200 && !has_control(reason) {
       True -> Ok(Nil)
@@ -326,6 +344,7 @@ pub fn revoke(
         Error("--reason must be at most 200 bytes with no control character")
     },
   )
+
   preflight(
     ledger,
     entry_after(ledger, time, Revoke(name: name, pin: current.pin, reason:)),
@@ -346,6 +365,7 @@ fn not_a_member(ledger: Ledger, name: String) -> String {
   }
 }
 
+/// Constructs a new entry sequencing after the current ledger head.
 fn entry_after(
   ledger: Ledger,
   time: String,
@@ -418,6 +438,8 @@ pub fn describe(refusal: membership_ledger.Refusal) -> String {
 pub fn check_voters(before: Ledger, after: Ledger) -> Result(Nil, String) {
   let held = voters(before)
   let left = voters(after)
+
+  // Compare voter count changes against cluster quorum invariants.
   case int.compare(left, held) {
     order.Eq -> Ok(Nil)
     order.Gt ->
@@ -484,6 +506,7 @@ pub fn concerns(before: Ledger, after: Ledger) -> List(Concern) {
   })
 }
 
+/// Gathers orphan and network partition concerns arising from membership topology.
 fn all_concerns(ledger: Ledger) -> List(Concern) {
   let members = membership_ledger.members(ledger)
   let orphans =
@@ -492,11 +515,14 @@ fn all_concerns(ledger: Ledger) -> List(Concern) {
         membership_ledger.pin_table(ledger, member.name)
         |> membership_ledger.peers
         |> list.filter(fn(peer) { peer.role == Orchestrator })
+
+      // Detect executors without any linked orchestrators.
       case member.role, users {
         Executor, [] -> Ok(Orphaned(member.name))
         _, _ -> Error(Nil)
       }
     })
+
   let groups =
     components(ledger, list.map(members, fn(member) { member.name }), [])
     |> list.map(fn(group) { list.sort(set.to_list(group), string.compare) })
@@ -516,6 +542,7 @@ fn all_concerns(ledger: Ledger) -> List(Concern) {
       Cut(list.sort(list.flatten(others), string.compare)),
     ]
   }
+
   list.append(orphans, cut)
 }
 
@@ -527,11 +554,14 @@ fn first_of(names: List(String)) -> String {
 }
 
 // The groups of names that reach one another by links, each as a set.
+
+/// Finds connected network graph components among members.
 fn components(
   ledger: Ledger,
   names: List(String),
   found: List(set.Set(String)),
 ) -> List(set.Set(String)) {
+  // Partition remaining member names into connected components.
   case names {
     [] -> list.reverse(found)
     [name, ..rest] -> {
@@ -547,6 +577,8 @@ fn components(
 
 // The names reachable from a frontier by links, in the sense of the pin table
 // (either end lists the other, or both are in the directory).
+
+/// Explores all members reachable from a seed frontier.
 fn reach(
   ledger: Ledger,
   frontier: List(String),
@@ -643,6 +675,7 @@ pub fn strandings(
   }
 }
 
+/// Identifies sessions owned by a member in holdings answers.
 fn owned(member: Member, answers: List(AnswerView)) -> List(Stranding) {
   case list.find(answers, fn(answer) { answer.name == member.name }) {
     Ok(AnswerView(held: Some(held), ..)) ->
@@ -658,6 +691,8 @@ fn owned(member: Member, answers: List(AnswerView)) -> List(Stranding) {
 
 // The orchestrators linked to the executor are the ones that could have placed
 // a session on it, so they are the ones whose silence matters.
+
+/// Identifies sessions placed on an executor member across orchestrator answers.
 fn placed(
   ledger: Ledger,
   member: Member,
@@ -671,6 +706,8 @@ fn placed(
   let #(by, silent, total) =
     list.fold(users, #([], [], 0), fn(seen, user) {
       let #(by, silent, total) = seen
+
+      // Check whether orchestrator answered with holding report.
       case list.find(answers, fn(answer) { answer.name == user }) {
         Ok(AnswerView(held: Some(held), ..)) ->
           case on_node(held, member.node) {
@@ -696,6 +733,7 @@ fn placed(
   ])
 }
 
+/// Sums session counts placed on a given node.
 fn on_node(held: HeldView, node: String) -> Int {
   list.fold(held.placed, 0, fn(sum, placed) {
     case placed.node == node {

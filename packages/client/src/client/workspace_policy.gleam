@@ -278,6 +278,8 @@ pub fn tool_environment(
   let #(passed, unset) =
     list.fold(tools.env, #([], []), fn(state, name) {
       let #(found, missing) = state
+
+      // Decide how to handle reading(name) {.
       case reading(name) {
         Ok(value) -> #([#(name, value), ..found], missing)
         Error(Nil) -> #(found, [name, ..missing])
@@ -457,7 +459,10 @@ fn masked(path: String, protected: List(String)) -> Bool {
 // the base-policy pipe and neither is handed a logger, and threading one
 // through two `admitting_*` steps to carry a boot-time note would be a
 // wider change than the note is worth.
+
+/// Establishes dropped for mask for the caller, keeping its validation and result policy at this boundary.
 fn dropped_for_mask(path: String, protected: List(String)) -> Bool {
+  // Decide how to handle masked(path, protected) {.
   case masked(path, protected) {
     False -> False
     True -> {
@@ -573,6 +578,8 @@ pub fn path_dependencies(workspace: String) -> List(String) {
 }
 
 // The `packages/<name>` directories of a monorepo checkout, or nothing.
+
+/// Establishes package directories for the caller, keeping its validation and result policy at this boundary.
 fn package_directories(workspace: String) -> List(String) {
   let root = workspace <> "/packages"
   simplifile.read_directory(root)
@@ -584,6 +591,8 @@ fn package_directories(workspace: String) -> List(String) {
 // The path dependencies of one manifest, absolute. Relative paths
 // resolve against the manifest's own directory, which is how the Gleam
 // compiler reads them.
+
+/// Establishes manifest paths for the caller, keeping its validation and result policy at this boundary.
 fn manifest_paths(manifest: String) -> List(String) {
   let directory = filepath.directory_name(manifest)
   let parsed = {
@@ -601,6 +610,8 @@ fn manifest_paths(manifest: String) -> List(String) {
 
 // The `path` value of every dependency in one table. A dependency stated
 // as a bare version string carries no path and contributes nothing.
+
+/// Establishes dependency paths for the caller, keeping its validation and result policy at this boundary.
 fn dependency_paths(
   document: Dict(String, tom.Toml),
   table: String,
@@ -710,6 +721,8 @@ pub fn merging_mounts(base: policy.SandboxPolicy) -> policy.SandboxPolicy {
 // assembly chain produced survives the merge and the encoding stays
 // deterministic. A base carries a handful of mounts, so the quadratic
 // scan costs nothing worth avoiding.
+
+/// Establishes merged mounts for the caller, keeping its validation and result policy at this boundary.
 fn merged_mounts(mounts: List(policy.Mount)) -> List(policy.Mount) {
   mounts
   |> list.fold([], fn(kept: List(policy.Mount), mount) {
@@ -730,19 +743,25 @@ fn merged_mounts(mounts: List(policy.Mount)) -> List(policy.Mount) {
 // Two entries for one region become the entry neither step would object
 // to: read-only if either side is read-only, required if either side is
 // required.
+
+/// Establishes merged mount for the caller, keeping its validation and result policy at this boundary.
 fn merged_mount(kept: policy.Mount, later: policy.Mount) -> policy.Mount {
+  // Decide how to handle let access =  kept.access, later.access {.
   let access = case kept.access, later.access {
     policy.MountReadWrite, policy.MountReadWrite -> policy.MountReadWrite
     policy.MountReadWrite, policy.MountReadOnly -> policy.MountReadOnly
     policy.MountReadOnly, policy.MountReadWrite -> policy.MountReadOnly
     policy.MountReadOnly, policy.MountReadOnly -> policy.MountReadOnly
   }
+
+  // Decide how to handle let requirement =  kept.requirement, later.requirement {.
   let requirement = case kept.requirement, later.requirement {
     policy.MountRequired, policy.MountRequired -> policy.MountRequired
     policy.MountRequired, policy.MountOptional -> policy.MountRequired
     policy.MountOptional, policy.MountRequired -> policy.MountRequired
     policy.MountOptional, policy.MountOptional -> policy.MountOptional
   }
+
   policy.Mount(path: kept.path, access:, requirement:)
 }
 
@@ -794,8 +813,12 @@ fn gitdir_line(text: String) -> Result(String, Nil) {
 // segments, since a writable root is compared by prefix and `a/b/../c`
 // would cover nothing. Relative paths resolve against the file's own
 // directory, which is how git reads them.
+
+/// Establishes absolute path for the caller, keeping its validation and result policy at this boundary.
 fn absolute_path(path: String, against base: String) -> Result(String, Nil) {
   let trimmed = string.trim(path)
+
+  // Decide how to handle filepath.is_absolute(trimmed) {.
   case filepath.is_absolute(trimmed) {
     True -> filepath.expand(trimmed)
     False -> filepath.expand(filepath.join(base, trimmed))
@@ -869,6 +892,8 @@ pub fn session_toolchain(
 // The two masks for an owner's files, or none when the workspace has no
 // owner beside it. The index is masked first and the memory store second,
 // the order the composition has always applied them in.
+
+/// Establishes protecting owner files for the caller, keeping its validation and result policy at this boundary.
 fn protecting_owner_files(
   base: policy.SandboxPolicy,
   files: Option(OwnerFiles),
@@ -949,6 +974,8 @@ pub fn allowing_imported_hook_env(
 // Keep the discovered Loom toolchain first, then operator and host tools,
 // then system fallbacks. Putting system launchers ahead of the operator's
 // installed Git and Python made an explicit PATH addition ineffective.
+
+/// Establishes extending path for the caller, keeping its validation and result policy at this boundary.
 fn extending_path(
   environment: List(#(String, String)),
   extra: List(String),
@@ -957,6 +984,7 @@ fn extending_path(
     [] -> environment
     dirs ->
       list.map(environment, fn(pair) {
+        // Decide how to handle pair {.
         case pair {
           #("PATH", value) -> {
             let current = string.split(value, ":")
@@ -981,6 +1009,8 @@ fn extending_path(
 // emulator for satellites, without development applications such as `eunit`.
 // Keep it in `current` ahead of `/usr/local/bin` as a fallback while letting
 // the operator's and host's full OTP installation in `dirs` precede it.
+
+/// Establishes is erts bin for the caller, keeping its validation and result policy at this boundary.
 fn is_erts_bin(path: String) -> Bool {
   filepath.base_name(path) == "bin"
   && string.starts_with(
@@ -1107,10 +1137,13 @@ pub fn prepare_directories(
   use Nil <- result.try(create_directories(directories))
 
   ignore_directory(workspace <> "/" <> codemode_wiring.work_directory)
+
+  // Decide how to handle policy.covers(root: workspace, path: blob_root) {.
   case policy.covers(root: workspace, path: blob_root) {
     True -> ignore_directory(blob_root)
     False -> Nil
   }
+
   Ok(Nil)
 }
 
@@ -1127,8 +1160,12 @@ pub const ignore_everything =
 // ignored: the file keeps `git status` tidy and nothing reads it, so a
 // directory left unwritable by an earlier container run must not cost the
 // session its boot.
+
+/// Establishes ignore directory for the caller, keeping its validation and result policy at this boundary.
 fn ignore_directory(directory: String) -> Nil {
   let path = directory <> "/.gitignore"
+
+  // Decide how to handle simplifile.is_file(path) {.
   case simplifile.is_file(path) {
     Ok(True) -> Nil
     Ok(False) | Error(_) -> {
@@ -1386,6 +1423,8 @@ pub fn protecting_state_root(
 // The masked entries `client/daemon/root.directories` and the startup
 // that follows it have certainly created by the time any session policy
 // is built, so masking them costs no existence question.
+
+/// Establishes established masks for the caller, keeping its validation and result policy at this boundary.
 fn established_masks(state_root: String) -> List(String) {
   [
     // The daemon's owner credential in plaintext. A jailed process that
@@ -1440,6 +1479,8 @@ fn established_masks(state_root: String) -> List(String) {
 // exists for the window before that: `protecting` cannot hand the jail a
 // path which neither exists nor has a writable parent, because the jail
 // refuses such a mask and the refusal takes the whole session with it.
+
+/// Establishes lazy masks for the caller, keeping its validation and result policy at this boundary.
 fn lazy_masks(state_root: String) -> List(String) {
   list.flatten([
     // The catalogue runs in WAL mode, so a write to `-wal` is the same
@@ -1511,6 +1552,8 @@ fn sqlite_side_files(path: String) -> List(String) {
 // created yet, under a read-only parent, is unmasked until it appears,
 // and a session that began before it appeared keeps the policy it
 // booted with.
+
+/// Establishes protecting for the caller, keeping its validation and result policy at this boundary.
 fn protecting(
   base: policy.SandboxPolicy,
   always always: List(String),
@@ -1598,13 +1641,16 @@ pub const helper_probe_ms = 15_000
 /// ```
 ///
 pub fn degraded(pool: Pool) -> Bool {
+  // Decide how to handle exec.checkout(pool, waiting: helper_probe_ms) {.
   case exec.checkout(pool, waiting: helper_probe_ms) {
     Error(_unavailable) -> True
     Ok(helper) -> {
+      // Decide how to handle let answer =  exec.await_ready(helper, waiting: helper_probe_ms) {.
       let answer = case exec.await_ready(helper, waiting: helper_probe_ms) {
         Ok(features) -> list.contains(features, "degraded")
         Error(_dead) -> True
       }
+
       exec.checkin(pool, helper)
       answer
     }
@@ -1777,6 +1823,8 @@ pub fn base_policy_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
 // code-mode satellite unable to open `.`. The operator learns about it
 // from the first tool call, having been told nothing at boot, so the
 // value is judged once instead.
+
+/// Establishes masked workspace fault for the caller, keeping its validation and result policy at this boundary.
 fn masked_workspace_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
   let shadowed =
     list.flat_map(base.protected, fn(entry) {
@@ -1787,6 +1835,8 @@ fn masked_workspace_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
         }
       })
     })
+
+  // Decide how to handle shadowed {.
   case shadowed {
     [] -> Ok(Nil)
     [#(entry, root), ..] ->
@@ -1803,6 +1853,7 @@ fn masked_workspace_fault(base: policy.SandboxPolicy) -> Result(Nil, String) {
   }
 }
 
+/// Establishes policy fault text for the caller, keeping its validation and result policy at this boundary.
 fn policy_fault_text(error: policy.PolicyError) -> String {
   case error {
     policy.RelativePath(path:) ->

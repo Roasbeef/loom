@@ -377,6 +377,7 @@ pub fn decode(
     Jailed -> jailed_body(document, surroundings)
     Profile -> profile_body(document, surroundings)
   })
+
   Ok(Manifest(
     name:,
     version:,
@@ -425,9 +426,11 @@ type Body {
   )
 }
 
-// A jailed extension keeps every rule it had, and refuses the two tables
-// a profile carries by name: an `[lsp]` here would install and never
-// start a server, since the jailed tier's approval covers no profile.
+/// Decodes the tables declaring code execution for a jailed extension.
+///
+/// A jailed extension keeps every rule it had, and refuses the two tables
+/// a profile carries by name: an `[lsp]` here would install and never
+/// start a server, since the jailed tier's approval covers no profile.
 fn jailed_body(
   document: Dict(String, tom.Toml),
   surroundings: Surroundings,
@@ -450,10 +453,12 @@ fn jailed_body(
   Ok(Body(tools:, hooks:, net:, lsp: [], checks: []))
 }
 
-// A profile extension runs no code, so the three tables that would make
-// it run some are refused by name before anything else is read. Nothing
-// here vets or compiles, and a table the install ignored would be a tool
-// the model is never offered or a host nothing ever reaches.
+/// Decodes the tables declaring language server profiles and check fixtures.
+///
+/// A profile extension runs no code, so the three tables that would make
+/// it run some are refused by name before anything else is read. Nothing
+/// here vets or compiles, and a table the install ignored would be a tool
+/// the model is never offered or a host nothing ever reaches.
 fn profile_body(
   document: Dict(String, tom.Toml),
   surroundings: Surroundings,
@@ -470,6 +475,7 @@ fn runs_no_code(table: String) -> String {
   "a profile extension runs no code; " <> table <> " is not allowed"
 }
 
+/// Asserts that a forbidden table key is absent from the parsed manifest.
 fn absent(
   document: Dict(String, tom.Toml),
   key: String,
@@ -483,19 +489,25 @@ fn absent(
 
 // --- [lsp] -----------------------------------------------------------------
 
-// Handed to the one profile decoder `loom.toml` uses, with the refusal
-// `client/catalog` gives for an `[lsp]` that is not a table, so a profile
-// copied between the two files is judged by the same rules in the same
-// words.
+/// Decodes the [lsp] table into configured language server profiles.
+///
+/// Handed to the one profile decoder `loom.toml` uses, with the refusal
+/// `client/catalog` gives for an `[lsp]` that is not a table, so a profile
+/// copied between the two files is judged by the same rules in the same
+/// words.
 fn profiles_of(
   document: Dict(String, tom.Toml),
 ) -> Result(List(LspServer), String) {
+  // Extract the raw lsp table entries dictionary from the document.
   use tables <- result.try(case dict.get(document, "lsp") {
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) -> Ok(entries)
     Ok(_other) -> Error("lsp must be a table of [lsp.<name>] entries")
     Error(Nil) -> Ok(dict.new())
   })
+
   use servers <- result.try(profile.decode_servers(tables))
+
+  // Enforce that at least one profile server is declared.
   case servers {
     [] -> Error("a profile extension declares at least one [lsp.<name>]")
     [_, ..] -> Ok(servers)
@@ -504,8 +516,10 @@ fn profiles_of(
 
 // --- [[check]] -------------------------------------------------------------
 
-// Checks are numbered from one in the refusals, since a check has no name
-// of its own and an author counts tables from the top of the file.
+/// Decodes all [[check]] entries validating profile servers with test fixtures.
+///
+/// Checks are numbered from one in the refusals, since a check has no name
+/// of its own and an author counts tables from the top of the file.
 fn checks_of(
   document: Dict(String, tom.Toml),
   servers: List(LspServer),
@@ -525,6 +539,7 @@ fn checks_of(
   })
 }
 
+/// Decodes and validates one [[check]] entry.
 fn check_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -553,6 +568,7 @@ fn check_of(
         <> ")",
       )
   })
+
   use fixture <- result.try(fixture_field(fields, place, surroundings))
   use query <- result.try(query_field(fields, place))
   use symbol <- result.try(required(fields, place, "symbol"))
@@ -566,25 +582,33 @@ fn check_of(
       Error(place <> ".line needs a path: a line is a position in one file")
     None, None | Some(_path), _ -> Ok(Nil)
   })
+
   use expect <- result.try(sites_of(fields, place))
   Ok(Check(server:, fixture:, query:, symbol:, path:, line:, expect:))
 }
 
-// The fixture is a directory of the extension's own tree, and the next
-// step copies it into a scratch workspace, so it must hold something: a
-// fixture that names nothing is a check that proves nothing.
+/// Resolves and validates the fixture directory path within the extension tree.
+///
+/// The fixture is a directory of the extension's own tree, and the next
+/// step copies it into a scratch workspace, so it must hold something: a
+/// fixture that names nothing is a check that proves nothing.
 fn fixture_field(
   fields: Dict(String, tom.Toml),
   place: String,
   surroundings: Surroundings,
 ) -> Result(String, String) {
   let at = place <> ".fixture"
+
+  // Use the explicit fixture path if given, or fall back to default.
   use written <- result.try(case dict.get(fields, "fixture") {
     Error(Nil) -> Ok(default_fixture)
     Ok(_present) -> required(fields, place, "fixture")
   })
+
   use fixture <- result.try(relative_path(at, written, "the extension's tree"))
   let beneath = fixture <> "/"
+
+  // Ensure that the fixture path actually contains files in the tree.
   case
     list.any(surroundings.files, fn(file) {
       string.starts_with(file.0, beneath)
@@ -601,11 +625,14 @@ fn fixture_field(
   }
 }
 
+/// Decodes and validates the check query kind string into a domain variant.
 fn query_field(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(CheckQuery, String) {
   use query <- result.try(required(fields, place, "query"))
+
+  // Match against supported LSP check query operations.
   case query {
     "definition" -> Ok(Definition)
     "references" -> Ok(References)
@@ -619,10 +646,12 @@ fn query_field(
   }
 }
 
+/// Extracts an optional fixture relative file path for an LSP check.
 fn optional_path(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Option(String), String) {
+  // Extract and validate the path field if present in the table.
   case dict.get(fields, "path") {
     Error(Nil) -> Ok(None)
     Ok(_present) -> {
@@ -633,6 +662,7 @@ fn optional_path(
   }
 }
 
+/// Extracts an optional 1-based line number for an LSP check.
 fn optional_line(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -648,23 +678,30 @@ fn optional_line(
   }
 }
 
-// The answer is compared with `expect` as a set, and an empty set is what
-// a server that answers nothing produces, so an empty `expect` would pass
-// against a server that is not running.
+/// Decodes and validates the list of expected path:line sites in an LSP check.
+///
+/// The answer is compared with `expect` as a set, and an empty set is what
+/// a server that answers nothing produces, so an empty `expect` would pass
+/// against a server that is not running.
 fn sites_of(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(List(Site), String) {
   use written <- result.try(string_list(fields, place, "expect"))
+
+  // Require at least one expected site entry.
   use Nil <- result.try(case written {
     [] -> Error(place <> ".expect must list at least one path:line site")
     [_, ..] -> Ok(Nil)
   })
+
   list.try_map(written, fn(site) { site_of(place <> ".expect", site) })
 }
 
-// `path:line`, split at the last colon so that the line is always the
-// final field. The path meets the same rule a check's `path` does.
+/// Parses a path:line string into a Site record, splitting at the last colon.
+///
+/// `path:line`, split at the last colon so that the line is always the
+/// final field. The path meets the same rule a check's `path` does.
 fn site_of(at: String, written: String) -> Result(Site, String) {
   let malformed =
     at
@@ -677,14 +714,18 @@ fn site_of(at: String, written: String) -> Result(Site, String) {
   use line <- result.try(
     int.parse(line_text) |> result.replace_error(malformed),
   )
+
+  // Enforce positive 1-based line numbers.
   use Nil <- result.try(case line >= 1 {
     True -> Ok(Nil)
     False -> Error(at <> " entry \"" <> written <> "\" has a line below 1")
   })
+
   use path <- result.try(relative_path(at <> " path", path, "the fixture"))
   Ok(Site(path:, line:))
 }
 
+/// Splits a string at its last colon separator.
 fn last_colon(written: String) -> Result(#(String, String), Nil) {
   case list.reverse(string.split(written, ":")) {
     [line, first, ..rest] ->
@@ -693,10 +734,12 @@ fn last_colon(written: String) -> Result(#(String, String), Nil) {
   }
 }
 
-// A path inside the extension's tree or its fixture: relative, and with
-// no empty, `.` or `..` component. `..` would reach outside the directory
-// the path is judged against; the other two are spellings a server never
-// answers with, so a site written that way could never match.
+/// Validates that a path is relative with no empty, dot, or dot-dot components.
+///
+/// A path inside the extension's tree or its fixture: relative, and with
+/// no empty, `.` or `..` component. `..` would reach outside the directory
+/// the path is judged against; the other two are spellings a server never
+/// answers with, so a site written that way could never match.
 fn relative_path(
   at: String,
   written: String,
@@ -705,6 +748,8 @@ fn relative_path(
   let odd = fn(component) {
     component == "" || component == "." || component == ".."
   }
+
+  // Check for leading slashes and illegitimate path components.
   case
     string.starts_with(written, "/"),
     list.any(string.split(written, "/"), odd)
@@ -772,17 +817,19 @@ pub fn is_legal_env(name: String) -> Bool {
   }
 }
 
-// --- [[tool]] --------------------------------------------------------------
-
+/// Decodes and validates all [[tool]] table declarations in the manifest.
 fn tools_of(
   document: Dict(String, tom.Toml),
   surroundings: Surroundings,
 ) -> Result(List(Tool), String) {
   use entries <- result.try(array_of_tables(document, "tool"))
+
+  // Require at least one tool declaration.
   use Nil <- result.try(case entries {
     [] -> Error("an extension registers at least one [[tool]]")
     [_, ..] -> Ok(Nil)
   })
+
   use tools <- result.try(
     list.try_map(entries, fn(fields) { tool_of(fields, surroundings) }),
   )
@@ -790,6 +837,7 @@ fn tools_of(
   |> result.replace(tools)
 }
 
+/// Decodes and validates a single [[tool]] table declaration.
 fn tool_of(
   fields: Dict(String, tom.Toml),
   surroundings: Surroundings,
@@ -821,15 +869,18 @@ fn tool_of(
   ))
 }
 
-// The schema is rendered to the model verbatim, so a path that resolves
-// to nothing would put an extension in the registry with no arguments the
-// model could ever get right. Checked here, once, rather than at every
-// dispatch.
+/// Validates that a tool's JSON schema file exists in schemas/ and is valid JSON.
+///
+/// The schema is rendered to the model verbatim, so a path that resolves
+/// to nothing would put an extension in the registry with no arguments the
+/// model could ever get right. Checked here, once, rather than at every
+/// dispatch.
 fn schema_exists(
   path: String,
   place: String,
   surroundings: Surroundings,
 ) -> Result(Nil, String) {
+  // Ensure schema path sits under schemas/ and does not escape with dot-dot.
   use Nil <- result.try(
     case
       string.starts_with(path, schema_directory) && !string.contains(path, "..")
@@ -839,6 +890,7 @@ fn schema_exists(
         Error(place <> ".parameters must be a path under " <> schema_directory)
     },
   )
+
   use text <- result.try(
     list.key_find(surroundings.files, path)
     |> result.map_error(fn(_nil) {
@@ -857,6 +909,7 @@ fn schema_exists(
   })
 }
 
+/// Verifies that a tool's entry module exists among authored package source modules.
 fn module_exists(
   entry: String,
   place: String,
@@ -874,8 +927,7 @@ fn module_exists(
   }
 }
 
-// --- [[hook]] --------------------------------------------------------------
-
+/// Decodes all [[hook]] table declarations from the manifest.
 fn hooks_of(
   document: Dict(String, tom.Toml),
   surroundings: Surroundings,
@@ -884,6 +936,7 @@ fn hooks_of(
   list.try_map(entries, fn(fields) { hook_of(fields, surroundings) })
 }
 
+/// Decodes and validates a single [[hook]] table declaration.
 fn hook_of(
   fields: Dict(String, tom.Toml),
   surroundings: Surroundings,
@@ -894,6 +947,8 @@ fn hook_of(
     "[[hook]]",
   ))
   use event <- result.try(required(fields, "[[hook]]", "event"))
+
+  // Ensure the hook event name is recognized.
   use Nil <- result.try(case list.contains(hook_events, event) {
     True -> Ok(Nil)
     False ->
@@ -904,13 +959,13 @@ fn hook_of(
         <> string.join(hook_events, ", "),
       )
   })
+
   use entry <- result.try(required(fields, "[[hook]] " <> event, "entry"))
   use Nil <- result.try(module_exists(entry, "[[hook]] " <> event, surroundings))
   Ok(Hook(event:, entry:))
 }
 
-// --- [net] -----------------------------------------------------------------
-
+/// Decodes the [net] table from the manifest if present.
 fn net_of(document: Dict(String, tom.Toml)) -> Result(Net, String) {
   case dict.get(document, "net") {
     Error(Nil) -> Ok(no_net())
@@ -919,6 +974,7 @@ fn net_of(document: Dict(String, tom.Toml)) -> Result(Net, String) {
   }
 }
 
+/// Decodes and validates the fields of the [net] network policy table.
 fn net_fields(fields: Dict(String, tom.Toml)) -> Result(Net, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
@@ -943,10 +999,12 @@ fn net_fields(fields: Dict(String, tom.Toml)) -> Result(Net, String) {
   Ok(Net(hosts:, methods:, max_response_bytes:, requests_per_call:, secrets:))
 }
 
-// A method `broker/egress` cannot name is refused here rather than
-// dropped later. Dropping narrows, which is the safe direction, but it
-// narrows *silently*: the policy would permit nothing while the record
-// and the boot log both went on quoting the list the author wrote.
+/// Validates that declared HTTP methods are recognized by the egress broker.
+///
+/// A method `broker/egress` cannot name is refused here rather than
+/// dropped later. Dropping narrows, which is the safe direction, but it
+/// narrows *silently*: the policy would permit nothing while the record
+/// and the boot log both went on quoting the list the author wrote.
 fn known_methods(methods: List(String)) -> Result(Nil, String) {
   case list.filter(methods, fn(name) { !list.contains(http_methods, name) }) {
     [] -> Ok(Nil)
@@ -960,6 +1018,7 @@ fn known_methods(methods: List(String)) -> Result(Nil, String) {
   }
 }
 
+/// Decodes all [[net.secret]] environment variable bindings for network requests.
 fn secrets_of(
   fields: Dict(String, tom.Toml),
   hosts: List(String),
@@ -968,6 +1027,7 @@ fn secrets_of(
   list.try_map(entries, fn(entry) { secret_of(entry, hosts) })
 }
 
+/// Decodes and validates a single [[net.secret]] binding table.
 fn secret_of(
   fields: Dict(String, tom.Toml),
   hosts: List(String),
@@ -978,6 +1038,8 @@ fn secret_of(
     "[[net.secret]]",
   ))
   use env <- result.try(required(fields, "[[net.secret]]", "env"))
+
+  // Enforce legal environment variable naming grammar.
   use Nil <- result.try(case is_legal_env(env) {
     True -> Ok(Nil)
     False ->
@@ -987,6 +1049,7 @@ fn secret_of(
         <> ", which is not an environment variable name ([A-Z_][A-Z0-9_]*)",
       )
   })
+
   use host <- result.try(required(fields, "[[net.secret]] " <> env, "host"))
 
   // A binding for a host the policy does not reach is a key that could
@@ -1003,14 +1066,18 @@ fn secret_of(
         <> ", which is not in [net].hosts",
       )
   })
+
   use header <- result.try(required(fields, "[[net.secret]] " <> env, "header"))
   Ok(Secret(env:, host:, header:))
 }
 
 // --- field readers ---------------------------------------------------------
 
+/// Decodes the tier string field from [extension].
 fn tier_field(fields: Dict(String, tom.Toml)) -> Result(Tier, String) {
   use tier <- result.try(required(fields, "[extension]", "tier"))
+
+  // Map tier name to domain type variant.
   case tier {
     "jailed" -> Ok(Jailed)
     "profile" -> Ok(Profile)
@@ -1027,12 +1094,15 @@ fn tier_field(fields: Dict(String, tom.Toml)) -> Result(Tier, String) {
   }
 }
 
+/// Decodes and validates a required identifier name field.
 fn name_field(
   fields: Dict(String, tom.Toml),
   place: String,
   key: String,
 ) -> Result(String, String) {
   use name <- result.try(required(fields, place, key))
+
+  // Verify that the identifier matches legal extension/tool name grammar.
   case is_legal_name(name) {
     True -> Ok(name)
     False ->
@@ -1047,6 +1117,7 @@ fn name_field(
   }
 }
 
+/// Decodes a required non-empty string field from a TOML table.
 fn required(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1063,6 +1134,7 @@ fn required(
   }
 }
 
+/// Decodes a positive integer field from a TOML table.
 fn positive_int(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1079,6 +1151,7 @@ fn positive_int(
   }
 }
 
+/// Decodes an array of non-empty strings from a TOML table.
 fn string_list(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1100,9 +1173,11 @@ fn string_list(
   }
 }
 
-// `[[x]]` reaches `tom` as an `ArrayOfTables`; the same table written
-// inline reaches it as an `Array` of tables. Both are the author writing
-// a list of tables, so both are read.
+/// Decodes an array of tables from either an ArrayOfTables or Array of Table values.
+///
+/// `[[x]]` reaches `tom` as an `ArrayOfTables`; the same table written
+/// inline reaches it as an `Array` of tables. Both are the author writing
+/// a list of tables, so both are read.
 fn array_of_tables(
   document: Dict(String, tom.Toml),
   key: String,
@@ -1121,6 +1196,7 @@ fn array_of_tables(
   }
 }
 
+/// Extracts a named table from a document, erroring if absent or not a table.
 fn table(
   document: Dict(String, tom.Toml),
   key: String,
@@ -1132,6 +1208,7 @@ fn table(
   }
 }
 
+/// Verifies that all present keys belong to the allowed set for this section.
 fn known_keys(
   present: List(String),
   allowed: List(String),
@@ -1157,6 +1234,7 @@ fn unique(names: List(String), what: String) -> Result(Nil, String) {
   }
 }
 
+/// Formats a TOML parse error into a readable diagnostic sentence.
 fn parse_reason(error: tom.ParseError) -> String {
   case error {
     tom.Unexpected(got:, expected:) ->

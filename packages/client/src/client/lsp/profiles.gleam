@@ -184,6 +184,8 @@ pub fn describe_conflict(conflict: Conflict) -> String {
 // with each other candidate. A pair that shares a name and an extension
 // is reported once, as the name, since that is the collision an operator
 // has to resolve first.
+
+/// Evaluates conflicting extension or server name claims between candidates.
 fn conflicts(
   candidate: #(String, LspServer),
   configured: List(LspServer),
@@ -223,6 +225,8 @@ fn conflicts(
 
 // The first of `server`'s extensions `other` also claims, in `server`'s
 // own order.
+
+/// Identifies the first shared file extension claimed by both server configurations.
 fn shared_extension(
   server: LspServer,
   other: LspServer,

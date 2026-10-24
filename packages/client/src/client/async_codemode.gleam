@@ -62,6 +62,7 @@ pub fn seam(
   )
 }
 
+/// Launches a local background code-mode program under execution service supervision.
 fn launch(
   config: codemode.Config,
   service: address.Address(async_runs.Message),
@@ -94,6 +95,8 @@ fn launch(
     )
   let custody = api.AsyncCustody(request.strand, request.op_id, id, api.Owned)
   let execution_agency = agency.async_seam(agents, custody)
+
+  // Determine surface capability wiring based on configuration.
   let surface = case config.surface {
     codemode.Workspace -> codemode.Workspace
     codemode.Orchestration(spawn_ceiling:, ..) ->
@@ -123,8 +126,9 @@ fn launch(
   })
 }
 
-// One interaction with an execution the strand owns, in the service's terms.
-// A join is a check that waits; every other interaction answers at once.
+/// Routes an interaction request (check, join, cancel, send) to the execution service.
+/// One interaction with an execution the strand owns, in the service's terms.
+/// A join is a check that waits; every other interaction answers at once.
 fn interact(
   service: address.Address(async_runs.Message),
   strand: String,
@@ -132,6 +136,7 @@ fn interact(
   interaction: tool.Interaction,
   within: Int,
 ) -> Result(json.JsonValue, String) {
+  // Map tool interaction type to async_runs action and wait timeout.
   let #(action, wait) = case interaction {
     tool.Check -> #(async_runs.Check, 0)
     tool.Join -> #(async_runs.Check, int.max(0, within))
@@ -139,6 +144,7 @@ fn interact(
     tool.Send(value) -> #(async_runs.Send(value), 0)
     tool.SendTo(endpoint, value) -> #(async_runs.SendTo(endpoint, value), 0)
   }
+
   async_runs.interact(service, strand, handle, action, wait)
 }
 
@@ -179,6 +185,7 @@ pub fn remote(
   )
 }
 
+/// Launches a remote background execution across a host link to an executor node.
 fn launch_remote(
   service: address.Address(async_runs.Message),
   clock: clock.Clock,
@@ -218,6 +225,8 @@ fn launch_remote(
   // claimed, so a start re-sent after a partition carries what is left.
   async_runs.launch_fallible(service, record, fn() {
     let #(sent_at, _) = clock.read(clock)
+
+    // Await execution result or map failure reasons from the executor link.
     case start(key, terms, deadline_ms - sent_at) {
       protocol.ExecutionFinished(value:) -> Ok(value)
       protocol.ExecutionLost ->
@@ -234,14 +243,16 @@ fn launch_remote(
   })
 }
 
-// Where an execution's record stands. A record that cannot be read is taken
-// as live, because the two things the answer decides, stopping the program and
-// discarding its stored value, are both wrong to do on a guess; the next pass
-// asks again.
+/// Reconciles execution standing status from runtime state for owner port queries.
+/// A record that cannot be read is taken
+/// as live, because the two things the answer decides, stopping the program and
+/// discarding its stored value, are both wrong to do on a guess; the next pass
+/// asks again.
 fn standing(
   runtime: fn() -> Result(api.Runtime, Nil),
   key: protocol.Key,
 ) -> owner_port.Standing {
+  // Extract execution identifier from key if present.
   let read = case protocol.execution_id(key) {
     // A tool call's key names no execution, so there is no record to want.
     Error(Nil) -> Ok(None)
@@ -250,6 +261,8 @@ fn standing(
       async_runs.record(live, id)
     }
   }
+
+  // Translate recorded execution phase into standing status.
   case read {
     Error(_unreadable) -> owner_port.RecordLive
     Ok(None) -> owner_port.RecordClosed
@@ -335,6 +348,7 @@ pub const serviced_caps = [
   "execution.progress", "execution.delivery",
 ]
 
+/// Builds a capability router serving execution input, readiness, and progress requests.
 fn input_router(
   service: address.Address(async_runs.Message),
   strand: String,
@@ -342,10 +356,13 @@ fn input_router(
   fallback: satellite.CapRouter,
 ) -> satellite.CapRouter {
   fn(request: satellite.CapRequest) {
+    // Dispatch on capability identifier.
     case request.cap {
       "execution.receive" -> {
         use after <- result.try(args.int(request.args, "after"))
         use within <- result.try(args.int(request.args, "within_ms"))
+
+        // Validate receive wait parameters.
         case
           after >= 0
           && within >= 0
@@ -379,6 +396,8 @@ fn input_router(
       "execution.ready" -> {
         use endpoints <- result.try(args.string_array(request.args, "endpoints"))
         use idle <- result.try(args.int(request.args, "idle_within_ms"))
+
+        // Validate idle interval bounds.
         case idle >= 1 && idle <= 300_000 {
           False ->
             Error(satellite.CapDenial(
@@ -392,6 +411,8 @@ fn input_router(
       "execution.receive_enveloped" -> {
         use after <- result.try(args.int(request.args, "after"))
         use within <- result.try(args.int(request.args, "within_ms"))
+
+        // Validate enveloped receive wait bounds.
         case
           after >= 0
           && within >= 0
@@ -426,12 +447,15 @@ fn input_router(
         use sequence <- result.try(args.int(request.args, "sequence"))
         use endpoint <- result.try(args.string(request.args, "endpoint"))
         use delivered <- result.try(args.bool(request.args, "delivered"))
+
+        // Map delivery boolean outcome.
         use outcome <- result.try(case delivered {
           True -> Ok(async_runs.Delivered)
           False ->
             args.string(request.args, "reason")
             |> result.map(async_runs.Rejected)
         })
+
         served(
           service,
           strand,
@@ -445,6 +469,7 @@ fn input_router(
   }
 }
 
+/// Serves an async execution interaction immediately through a capability plan.
 fn served(
   service: address.Address(async_runs.Message),
   strand: String,
@@ -462,6 +487,7 @@ fn served(
   )
 }
 
+/// Encodes a JSON value as an equivalent MsgPack value.
 fn json_value(value: json.JsonValue) -> msgpack.MsgPackValue {
   case value {
     json.Null -> msgpack.NilValue

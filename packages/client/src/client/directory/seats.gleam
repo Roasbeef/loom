@@ -198,6 +198,7 @@ pub fn seat_of(places: List(Place), node: String) -> Result(Seat, Nil) {
 /// // -> Settled(missing: [], foreign: [])
 /// ```
 pub fn plan(wanted: Seats, ra: Membership, local: String) -> Verdict {
+  // Check leadership status and local seating before planning cluster changes.
   case ra.leader == Some(local), seat_of(wanted.places, local) {
     False, _ -> NotLeader
     True, Error(Nil) -> NotSeated
@@ -208,6 +209,8 @@ pub fn plan(wanted: Seats, ra: Membership, local: String) -> Verdict {
       let reachable = fn(node: String) {
         node == local || list.contains(replicating, node)
       }
+
+      // Find the first membership removal that preserves quorum among remaining voters.
       case list.find(due, fn(one) { safe(one, voters, reachable) }) {
         Ok(#(node, why, _)) -> Remove(node, why)
         Error(Nil) ->
@@ -255,8 +258,8 @@ pub fn rejoin(
   }
 }
 
-// The Ra members the ledger wants gone, learners before voters. The third
-// element is whether Ra counts the member toward the majority.
+/// Computes the list of Ra cluster members that must be removed according to the desired
+/// seat configuration, prioritizing learners before voting members.
 fn removals(
   wanted: Seats,
   ra: Membership,
@@ -265,6 +268,8 @@ fn removals(
   ra.members
   |> list.filter_map(fn(held) {
     let #(node, voting) = held
+
+    // Filter out the local node from removal candidates.
     case node == local {
       True -> Error(Nil)
       False ->
@@ -288,8 +293,7 @@ fn removals(
   })
 }
 
-// Whether the seat is the one the member holds. A member Ra is promoting is on
-// its way to a voter's seat, and counts as one.
+/// Checks whether a member's current Ra voting standing matches the desired seat type.
 fn seat_matches(seat: Seat, voting: ffi_khepri.Voting) -> Bool {
   case seat, voting {
     Voter, ffi_khepri.Voter | Voter, ffi_khepri.Promoting -> True
@@ -306,6 +310,7 @@ fn counts(voting: ffi_khepri.Voting) -> Bool {
   voting == ffi_khepri.Voter
 }
 
+/// Extracts all member node names that currently hold full voting rights in the Ra cluster.
 fn voting(ra: Membership) -> List(String) {
   list.filter_map(ra.members, fn(held) {
     case held.1 {
@@ -315,15 +320,13 @@ fn voting(ra: Membership) -> List(String) {
   })
 }
 
-// A removal is safe when it takes no vote away, or when a majority of the
-// voters that remain are reachable and there is at least one. Ra applies the
-// new configuration as soon as the change is appended, so the majority it needs
-// to commit is the majority of the voters left.
+/// Verifies that removing a given member preserves a quorum of reachable voters.
 fn safe(
   one: #(String, Why, ffi_khepri.Voting),
   voters: List(String),
   reachable: fn(String) -> Bool,
 ) -> Bool {
+  // Non-voters can always be removed safely without impacting voting majority.
   case counts(one.2) {
     False -> True
     True -> {
@@ -335,6 +338,7 @@ fn safe(
   }
 }
 
+/// Finds desired member places that have not yet been enrolled in the Ra cluster.
 fn missing(wanted: Seats, ra: Membership) -> List(String) {
   wanted.places
   |> list.filter(fn(place) {
@@ -343,10 +347,13 @@ fn missing(wanted: Seats, ra: Membership) -> List(String) {
   |> list.map(fn(place) { place.node })
 }
 
+/// Finds members currently enrolled in Ra that are neither local nor known to the ledger.
 fn foreign(wanted: Seats, ra: Membership, local: String) -> List(String) {
   ra.members
   |> list.filter_map(fn(held) {
     let #(node, _) = held
+
+    // Detect unrecognized nodes present in Ra membership.
     case
       node != local
       && !wanted.named(node)

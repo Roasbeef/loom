@@ -168,6 +168,8 @@ pub fn verified(root: Root, name: String) -> Result(Verified, String) {
 pub fn remove(root: Root, name: String) -> Result(Nil, String) {
   use Nil <- result.try(named_extension(name))
   let directory = record.directory(root, name)
+
+  // Delete the extension directory if it exists on disk.
   case simplifile.is_directory(directory) {
     Ok(True) ->
       simplifile.delete(directory)
@@ -246,6 +248,7 @@ pub fn summarise(discovered: Discovered) -> String {
   }
 }
 
+/// Renders a human-readable summary of the extension's declared capabilities.
 fn contents(decoded: Manifest) -> String {
   case decoded.tier {
     manifest.Jailed ->
@@ -264,6 +267,7 @@ fn contents(decoded: Manifest) -> String {
 
 // --- the four checks ------------------------------------------------------
 
+/// Verifies an installed extension by validating its record, tree, and artifacts.
 fn check(root: Root, name: String) -> Result(Verified, String) {
   use text <- result.try(
     simplifile.read(from: record.file(root, name))
@@ -278,16 +282,21 @@ fn check(root: Root, name: String) -> Result(Verified, String) {
   use files <- result.try(text_of(tree))
   use decoded <- result.try(remanifest(files))
   use Nil <- result.try(tier_matches(decoded, written))
+
+  // Verify the artifact according to whether the tier is jailed or profile.
   use artifact <- result.try(case written.tier {
     manifest.Jailed -> jailed(root, name, written, files)
     manifest.Profile -> profiled(written, decoded)
   })
+
   Ok(Verified(record: written, manifest: decoded, artifact:, tree:))
 }
 
-// The jailed tier's last three checks: the source still vets, the seam
-// is the one approved, and the bytes that run are the ones built. Answers
-// the artifact's directory.
+/// Performs the three post-install verification checks for a jailed extension.
+///
+/// The jailed tier's last three checks: the source still vets, the seam
+/// is the one approved, and the bytes that run are the ones built. Answers
+/// the artifact's directory.
 fn jailed(
   root: Root,
   name: String,
@@ -301,11 +310,13 @@ fn jailed(
   Ok(artifact)
 }
 
-// A profile's approval is its profiles, so the one check left is that
-// the manifest still says what the record approved. The digest already
-// refuses an edited manifest; this refuses the other half, a record whose
-// profiles were edited to grant something the manifest never asked for. A
-// profile has no artifact, so the directory answered is empty.
+/// Verifies that a profile extension's manifest matches what was recorded at approval.
+///
+/// A profile's approval is its profiles, so the one check left is that
+/// the manifest still says what the record approved. The digest already
+/// refuses an edited manifest; this refuses the other half, a record whose
+/// profiles were edited to grant something the manifest never asked for. A
+/// profile has no artifact, so the directory answered is empty.
 fn profiled(written: Record, decoded: Manifest) -> Result(String, String) {
   case decoded.lsp == written.lsp {
     True -> Ok("")
@@ -317,9 +328,11 @@ fn profiled(written: Record, decoded: Manifest) -> Result(String, String) {
   }
 }
 
-// The tier decides which checks run, so it has to be the one the tree
-// itself declares. Without this, a record edited to say `profile` would
-// skip the vetting and the artifact check of a tree that is jailed code.
+/// Verifies that the manifest tier matches the tier in the install record.
+///
+/// The tier decides which checks run, so it has to be the one the tree
+/// itself declares. Without this, a record edited to say `profile` would
+/// skip the vetting and the artifact check of a tree that is jailed code.
 fn tier_matches(decoded: Manifest, written: Record) -> Result(Nil, String) {
   case decoded.tier == written.tier {
     True -> Ok(Nil)
@@ -331,13 +344,16 @@ fn tier_matches(decoded: Manifest, written: Record) -> Result(Nil, String) {
   }
 }
 
-// The bytes that actually run. Re-vetting the source says nothing about
-// them: an artifact is copied into place beside the source and a dispatch
-// loads the artifact, so a swapped `.beam` would sail past every other
-// check here. Recomputed with `build.fingerprint_directory`, the same
-// function the build used, so the two cannot drift into disagreeing about
-// what the address is.
+/// Verifies that the installed compiled bytecode artifact matches the record manifest hash.
+///
+/// The bytes that actually run. Re-vetting the source says nothing about
+/// them: an artifact is copied into place beside the source and a dispatch
+/// loads the artifact, so a swapped `.beam` would sail past every other
+/// check here. Recomputed with `build.fingerprint_directory`, the same
+/// function the build used, so the two cannot drift into disagreeing about
+/// what the address is.
 fn artifact_matches(artifact: String, written: Record) -> Result(Nil, String) {
+  // Verify that the entry module BEAM file exists in the artifact directory.
   use Nil <- result.try(
     case
       simplifile.is_file(artifact <> "/" <> compile.entry_module <> ".beam")
@@ -351,12 +367,15 @@ fn artifact_matches(artifact: String, written: Record) -> Result(Nil, String) {
         )
     },
   )
+
   use address <- result.try(
     build.fingerprint_directory(artifact)
     |> result.map_error(fn(_error) {
       "the installed artifact is unreadable at " <> artifact
     }),
   )
+
+  // Verify that the artifact directory fingerprint matches the recorded hash.
   case address == written.manifest_hash {
     True -> Ok(Nil)
     False ->
@@ -367,9 +386,11 @@ fn artifact_matches(artifact: String, written: Record) -> Result(Nil, String) {
   }
 }
 
-// The directory name is the extension's identity on disk, so a record
-// naming something else is a record that was moved — which would let one
-// approval stand in for another.
+/// Verifies that the extension directory matches the record name.
+///
+/// The directory name is the extension's identity on disk, so a record
+/// naming something else is a record that was moved — which would let one
+/// approval stand in for another.
 fn named(written: Record, name: String) -> Result(Nil, String) {
   case written.name == name {
     True -> Ok(Nil)
@@ -389,11 +410,13 @@ fn read_tree(root: Root, name: String) -> Result(archive.Tree, String) {
   })
 }
 
-// Every file, or a refusal naming the one that is not text. Dropping a
-// file here would mean it reached the tree without being vetted and
-// without being refused — the exact hole the install's own reader closes,
-// and it has to be closed identically on both sides or a tree that
-// installed would refuse itself at the next load.
+/// Extracts all file paths and text contents from an archive tree.
+///
+/// Every file, or a refusal naming the one that is not text. Dropping a
+/// file here would mean it reached the tree without being vetted and
+/// without being refused — the exact hole the install's own reader closes,
+/// and it has to be closed identically on both sides or a tree that
+/// installed would refuse itself at the next load.
 fn text_of(tree: archive.Tree) -> Result(List(#(String, String)), String) {
   list.try_map(tree.files, fn(file) {
     case bit_array.to_string(file.bytes) {
@@ -408,6 +431,7 @@ fn text_of(tree: archive.Tree) -> Result(List(#(String, String)), String) {
   })
 }
 
+/// Verifies that the archive tree digest matches the recorded source digest.
 fn digest_matches(tree: archive.Tree, written: Record) -> Result(Nil, String) {
   case archive.digest(tree) == written.tree_digest {
     True -> Ok(Nil)
@@ -419,6 +443,7 @@ fn digest_matches(tree: archive.Tree, written: Record) -> Result(Nil, String) {
   }
 }
 
+/// Decodes the extension manifest from the installed file list.
 fn remanifest(files: List(#(String, String))) -> Result(Manifest, String) {
   use text <- result.try(
     list.key_find(files, "extension.toml")
@@ -432,6 +457,7 @@ fn remanifest(files: List(#(String, String))) -> Result(Manifest, String) {
   )
 }
 
+/// Vets all package source files against the extension seam security policy.
 fn revet(files: List(#(String, String))) -> Result(Nil, String) {
   package.vet_package(files, vet_policy.for_seam(vet_policy.ExtensionSeam))
   |> result.replace(Nil)
@@ -441,10 +467,12 @@ fn revet(files: List(#(String, String))) -> Result(Nil, String) {
   })
 }
 
-// The seam the approval was given against, compared with the seam this
-// server has. A widened seam is not a reason to refuse silently *or* to
-// widen an old approval: it is a question, and this is where it gets
-// asked.
+/// Verifies that the server extension capability allowlist matches the recorded allowlist.
+///
+/// The seam the approval was given against, compared with the seam this
+/// server has. A widened seam is not a reason to refuse silently *or* to
+/// widen an old approval: it is a question, and this is where it gets
+/// asked.
 fn allowlist_matches(written: Record) -> Result(Nil, String) {
   case list.sort(written.allowlist, string.compare) == current_allowlist() {
     True -> Ok(Nil)

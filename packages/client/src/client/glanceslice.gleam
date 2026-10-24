@@ -174,6 +174,8 @@ pub fn request(material: Material) -> String {
 /// ```
 pub fn parse(answer: String, title: Title) -> Result(Reply, Nil) {
   let lines = string.split(answer, on: "\n")
+
+  // Parse title and summary lines based on whether a prior title was provided.
   case title {
     Untitled -> {
       use named <- result.try(labelled(lines, "title", glance.max_title_bytes))
@@ -203,9 +205,11 @@ fn fenced(heading: String, body: String) -> String {
   }
 }
 
-// An operation that has made no calls yet is still worth a line: it tells
-// the model the agent is at the start of its task, which is itself what
-// the "now" line should say.
+/// Formats recent tool call invocations into the prompt slice context section.
+///
+/// An operation that has made no calls yet is still worth a line: it tells
+/// the model the agent is at the start of its task, which is itself what
+/// the "now" line should say.
 fn calls_section(calls: List(String)) -> String {
   case calls {
     [] -> "It has made no tool calls yet."
@@ -216,12 +220,15 @@ fn calls_section(calls: List(String)) -> String {
   }
 }
 
+/// Generates the prompt instruction asking for a brief summary and optional title.
 fn instruction(title: Title) -> String {
   let now =
     "NOW: one line under 70 characters, starting with a present participle, "
     <> "saying what the agent is doing right now. Name the concrete files and "
     <> "functions when there are any, as in "
     <> "\"Reading fundeeProcessOpenChannel in manager.go\"."
+
+  // Render format requirements tailored to whether an existing title was supplied.
   case title {
     Untitled ->
       "Answer with exactly these two lines and nothing else:\n"
@@ -238,6 +245,7 @@ fn instruction(title: Title) -> String {
 
 // --- reading the branch ---------------------------------------------------
 
+/// Extracts plain user text contents from an immutable history entry row.
 fn user_texts(row: Entry) -> List(String) {
   case row {
     entry.MessageEntry(message: message.UserMessage(content:, ..), ..) ->
@@ -255,10 +263,12 @@ fn user_texts(row: Entry) -> List(String) {
   }
 }
 
-// One rendered line per call, in the message's own source order. The
-// arguments are the model's JSON exactly as it was stored, so a path or a
-// function name the "now" line should mention survives the cut when it
-// sits near the front, which is where tool schemas put it.
+/// Formats bounded tool invocations with names and JSON arguments from an entry.
+///
+/// One rendered line per call, in the message's own source order. The
+/// arguments are the model's JSON exactly as it was stored, so a path or a
+/// function name the "now" line should mention survives the cut when it
+/// sits near the front, which is where tool schemas put it.
 fn tool_calls(row: Entry) -> List(String) {
   assistant_blocks(row)
   |> list.filter_map(fn(block) {
@@ -273,10 +283,12 @@ fn tool_calls(row: Entry) -> List(String) {
   })
 }
 
-// The visible text of one assistant message, when it has any. Thinking is
-// never shown: it is the model's scratch space, it may be redacted, and a
-// summary of what the agent is doing should come from what it did and
-// said rather than from what it considered.
+/// Extracts non-empty visible text blocks from an assistant entry, ignoring thinking.
+///
+/// The visible text of one assistant message, when it has any. Thinking is
+/// never shown: it is the model's scratch space, it may be redacted, and a
+/// summary of what the agent is doing should come from what it did and
+/// said rather than from what it considered.
 fn assistant_text(row: Entry) -> Result(String, Nil) {
   let text =
     assistant_blocks(row)
@@ -289,12 +301,15 @@ fn assistant_text(row: Entry) -> Result(String, Nil) {
     })
     |> string.join("\n")
     |> string.trim
+
+  // Return text if non-empty or fail when no visible assistant words exist.
   case text {
     "" -> Error(Nil)
     _ -> Ok(text)
   }
 }
 
+/// Unpacks assistant message blocks from a historical entry row.
 fn assistant_blocks(row: Entry) -> List(message.AssistantBlock) {
   case row {
     entry.MessageEntry(message: settled, ..) -> blocks_of(settled)
@@ -304,6 +319,7 @@ fn assistant_blocks(row: Entry) -> List(message.AssistantBlock) {
   }
 }
 
+/// Extracts assistant block items from a settled agent message record.
 fn blocks_of(settled: AgentMessage) -> List(message.AssistantBlock) {
   case settled {
     message.AssistantMessage(content:, ..) -> content
@@ -316,8 +332,10 @@ fn blocks_of(settled: AgentMessage) -> List(message.AssistantBlock) {
 // --- reading the answer -----------------------------------------------------
 
 // The first line carrying `label`, with its markup and quoting removed and
-// its value clipped to `bound`. A label with nothing after it is not an
-// answer, so an empty value keeps looking rather than succeeding blank.
+/// Extracts a labelled key-value line from model output and clips within byte bounds.
+///
+/// its value clipped to `bound`. A label with nothing after it is not an
+/// answer, so an empty value keeps looking rather than succeeding blank.
 fn labelled(
   lines: List(String),
   label: String,
@@ -325,6 +343,8 @@ fn labelled(
 ) -> Result(String, Nil) {
   list.find_map(lines, fn(line) {
     use value <- result.try(value_after(line, label))
+
+    // Reject empty clipped values to keep searching subsequent lines.
     case glance.clip(value, bound) {
       "" -> Error(Nil)
       clipped -> Ok(clipped)
@@ -332,12 +352,14 @@ fn labelled(
   })
 }
 
-// The first unlabelled line that reads as the line the request asked for,
-// cleaned the way a labelled value is. The request asks for a line that
-// starts with a present participle, and holding the bare line to that is
-// what keeps a refusal or a preamble ("Sure, here it is:") from becoming
-// the operator's summary. A `TITLE:` line is skipped rather than taken, so
-// a model that restates the title first cannot have it read as the line.
+/// Finds the first unlabelled participle line matching single-line response requirements.
+///
+/// The first unlabelled line that reads as the line the request asked for,
+/// cleaned the way a labelled value is. The request asks for a line that
+/// starts with a present participle, and holding the bare line to that is
+/// what keeps a refusal or a preamble ("Sure, here it is:") from becoming
+/// the operator's summary. A `TITLE:` line is skipped rather than taken, so
+/// a model that restates the title first cannot have it read as the line.
 fn unlabelled(lines: List(String), bound: Int) -> Result(String, Nil) {
   list.find_map(lines, fn(line) {
     use <- bool.guard(
@@ -350,6 +372,8 @@ fn unlabelled(lines: List(String), bound: Int) -> Result(String, Nil) {
       |> trim_trailing_periods
       |> strip(quoting)
     let first = string.split(value, on: " ") |> list.first |> result.unwrap("")
+
+    // Verify that the initial token is a present participle ending in 'ing'.
     case string.ends_with(string.lowercase(first), "ing") {
       False -> Error(Nil)
       True -> Ok(glance.clip(value, bound))
@@ -357,9 +381,12 @@ fn unlabelled(lines: List(String), bound: Int) -> Result(String, Nil) {
   })
 }
 
+/// Extracts and strips trailing content following a designated case-insensitive label prefix.
 fn value_after(line: String, label: String) -> Result(String, Nil) {
   let bare = strip(line, "*#->`_ \t")
   let prefix = string.slice(bare, 0, string.length(label) + 1)
+
+  // Verify prefix matches target label before stripping delimiters.
   case string.lowercase(prefix) == label <> ":" {
     False -> Error(Nil)
     True ->
@@ -377,7 +404,7 @@ fn value_after(line: String, label: String) -> Result(String, Nil) {
 // `` `Reading x`. ``.
 const quoting = "*`\"'_ \t"
 
-// Drops every leading and trailing grapheme found in `set`.
+/// Drops every leading and trailing grapheme found in `set`.
 fn strip(text: String, set: String) -> String {
   let unwanted = string.to_graphemes(set)
   text

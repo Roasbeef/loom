@@ -96,6 +96,7 @@ pub const install_step = "ext-install"
 /// ```
 ///
 pub fn main(arguments: List(String)) -> Nil {
+  // Execute CLI command and handle top-level dispatch result.
   case dispatch(arguments) {
     Ok(lines) -> list.each(lines, io.println)
     Error(reason) -> {
@@ -150,6 +151,7 @@ type Effort {
   AcceptDegraded
 }
 
+/// Constructs default empty CLI flags structure.
 fn no_flags() -> Flags {
   Flags(
     positional: None,
@@ -161,6 +163,7 @@ fn no_flags() -> Flags {
   )
 }
 
+/// Recursively parses command-line arguments into flags record.
 fn parse(arguments: List(String), flags: Flags) -> Result(Flags, String) {
   case arguments {
     [] -> Ok(flags)
@@ -179,6 +182,7 @@ fn parse(arguments: List(String), flags: Flags) -> Result(Flags, String) {
 // Anything left is either a stray flag — refused, because a mistyped
 // `--rev` silently read as a source is the worst kind of quiet — or the
 // one positional argument the verb takes.
+/// Processes a single token as either a flag or a positional argument.
 fn word_or_flag(
   word: String,
   rest: List(String),
@@ -218,6 +222,7 @@ fn required(flags: Flags, what: String) -> Result(String, String) {
 // The root every verb works against. `--home` names the directory that
 // *holds* `.loom`, exactly as `HOME` does, so `--home /tmp/x` installs to
 // `/tmp/x/.loom/extensions` and a test needs no environment at all.
+/// Determines canonical extensions root from flags or environment home.
 fn root_of(flags: Flags) -> Result(record.Root, String) {
   case flags.home {
     // Resolved rather than taken as typed. `install` runs its build from
@@ -247,6 +252,7 @@ fn state_root_of(root: record.Root) -> String {
   filepath.directory_name(record.path(root))
 }
 
+/// Resolves a path to absolute coordinates relative to working directory.
 fn absolute(path: String) -> Result(String, String) {
   case string.starts_with(path, "/") {
     True -> Ok(path)
@@ -261,6 +267,7 @@ fn absolute(path: String) -> Result(String, String) {
   }
 }
 
+/// Resolves relative path against current working directory.
 fn use_working_directory(path: String) -> Result(String, Nil) {
   use here <- result.map(result.replace_error(
     simplifile.current_directory(),
@@ -271,6 +278,7 @@ fn use_working_directory(path: String) -> Result(String, Nil) {
 
 // --- install ---------------------------------------------------------------
 
+/// Handles the `loom ext install` command.
 fn install_command(arguments: List(String)) -> Result(List(String), String) {
   use flags <- result.try(parse(arguments, no_flags()))
   use text <- result.try(required(flags, "a source"))
@@ -295,12 +303,14 @@ fn install_command(arguments: List(String)) -> Result(List(String), String) {
 // of jails running under an operator's shell. A plane that will not
 // start is the build being unavailable, and the install says so under
 // its `compile:` layer.
+/// Constructs build callback that starts isolated build plane on demand.
 fn on_demand_build(
   flags: Flags,
   root: record.Root,
   workspace: String,
 ) -> install.Build {
   fn(build_root) {
+    // Attempt starting build plane in isolated temporary environment.
     case
       serve.start_build_plane(
         helper: flags.helper,
@@ -330,6 +340,7 @@ fn on_demand_build(
   }
 }
 
+/// Formats successful install lines or returns installation refusal error.
 fn reported(
   outcome: Result(install.Installed, install.Failure),
 ) -> Result(List(String), String) {
@@ -370,6 +381,8 @@ pub fn installed_lines(done: install.Installed) -> List(String) {
     "  digest: " <> done.record.tree_digest,
     "  where:  " <> done.directory,
   ]
+
+  // Format installation report lines according to extension tier.
   case done.record.tier {
     manifest.Jailed ->
       list.flatten([
@@ -388,6 +401,7 @@ pub fn installed_lines(done: install.Installed) -> List(String) {
   }
 }
 
+/// Assembles extension installation configuration with caps and build hooks.
 fn config(build: install.Build, root: record.Root) -> install.Config {
   install.Config(
     root:,
@@ -407,6 +421,7 @@ fn config(build: install.Build, root: record.Root) -> install.Config {
 // install path and the extension path share one HTTP surface and one set
 // of caps, so there is one place where "may this request be made" is
 // answered.
+/// Downloads remote extension archive bytes over HTTP.
 fn fetch(url: String, max_bytes: Int) -> Result(BitArray, String) {
   use host <- result.try(source.host(url))
   let policy =
@@ -415,13 +430,12 @@ fn fetch(url: String, max_bytes: Int) -> Result(BitArray, String) {
     egress.request(
       policy,
       egress.Request(method: egress.Get, url:, headers: [], body: <<>>),
-      // No credential reaches a public archive fetch, and the policy
-      // binds none — so the resolver is asked nothing and can answer
-      // nothing.
       secrets: fn(_name) { Error(Nil) },
     )
     |> result.map_error(egress.describe),
   )
+
+  // Ensure download response status is HTTP 200 OK.
   case response.status {
     200 -> Ok(response.body)
     other ->
@@ -479,6 +493,7 @@ pub fn build_for(
 // An install belongs to no run, so it mints an operation of its own. The
 // budget is the build's: one effect at a time, and a deadline the build
 // timeout cannot outlive.
+/// Generates fresh unique execution identity for an extension install build.
 fn install_identity() -> identity.ExecIdentity {
   let now = ffi_os.system_time_ms()
   let #(op_id, _generator) =
@@ -505,15 +520,19 @@ fn demand(flags: Flags) -> EnforcementDemand {
 
 // --- list, remove, verify --------------------------------------------------
 
+/// Handles the `loom ext list` command.
 fn list_command(arguments: List(String)) -> Result(List(String), String) {
   use flags <- result.try(parse(arguments, no_flags()))
   use root <- result.try(root_of(flags))
+
+  // Discover installed extensions under root directory.
   case installed.discover(root) {
     [] -> Ok(["no extensions installed under " <> record.path(root)])
     entries -> Ok(list.map(entries, installed.summarise))
   }
 }
 
+/// Handles the `loom ext remove` command.
 fn remove_command(arguments: List(String)) -> Result(List(String), String) {
   use flags <- result.try(parse(arguments, no_flags()))
   use name <- result.try(named(flags))
@@ -522,10 +541,13 @@ fn remove_command(arguments: List(String)) -> Result(List(String), String) {
   Ok(["removed " <> name])
 }
 
+/// Handles the `loom ext verify` command.
 fn verify_command(arguments: List(String)) -> Result(List(String), String) {
   use flags <- result.try(parse(arguments, no_flags()))
   use name <- result.try(named(flags))
   use root <- result.try(root_of(flags))
+
+  // Verify extension integrity and load capability descriptors.
   case installed.one(root, name) {
     installed.Ready(record: written, manifest: decoded, artifact:) ->
       Ok([
@@ -551,6 +573,7 @@ fn verify_command(arguments: List(String)) -> Result(List(String), String) {
 // like `verify`'s. A run with a failed check is an exit-1 answer whose
 // text is the whole report: the operator needs every line, the passing
 // ones included, to see what the profile got wrong.
+/// Handles the `loom ext check` command.
 fn check_command(arguments: List(String)) -> Result(List(String), String) {
   use flags <- result.try(parse(arguments, no_flags()))
   use name <- result.try(named(flags))
@@ -559,6 +582,8 @@ fn check_command(arguments: List(String)) -> Result(List(String), String) {
     check.run(root, name, check_setup(flags))
     |> result.map_error(fn(reason) { "check refused: " <> reason }),
   )
+
+  // Check whether any check assertions failed.
   case check.failed(report) {
     0 -> Ok(check.lines(report))
     failed ->
@@ -579,6 +604,7 @@ fn check_command(arguments: List(String)) -> Result(List(String), String) {
 // process environment for `PATH` and a profile's `env` names, and the
 // daemon's own places for its `~/` and `<cache>/` roots. The demand is
 // the operator's, spelled as `install` spells it.
+/// Configures setup dependencies for running extension checks.
 fn check_setup(flags: Flags) -> check.Setup {
   check.Setup(
     helper: flags.helper,
@@ -596,6 +622,7 @@ fn check_setup(flags: Flags) -> check.Setup {
 // because it is also the jail's scratch directory: a helper spawned
 // against a directory that is not there refuses before an install can
 // say anything more useful.
+/// Ensures staging scratch directory exists under extensions root.
 fn staging_root(root: record.Root) -> Result(Nil, String) {
   simplifile.create_directory_all(staging_path(root))
   |> result.map_error(fn(error) {

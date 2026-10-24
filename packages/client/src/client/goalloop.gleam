@@ -482,9 +482,12 @@ pub fn defers_the_refeed(goal: Goal, event: Event) -> Bool {
 // token budget while the verdict was owed must stop where it stands, not at
 // the next tick, and the wrap-up it sends is the same one-shot it would have
 // sent from any other occasion. Only the feed waits.
+
+/// Records an advisor result and either resumes normal evaluation or leaves the feed deferred until its scheduled re-offer.
 fn after_review(goal: Goal, observed: Observed) -> #(Goal, Action) {
   let recorded = record(goal, observed)
 
+  // The advisor result may defer refeeding only when the scheduled tick will retry it.
   case defers_the_refeed(goal, observed.event) {
     False -> decide(recorded, observed)
 
@@ -585,6 +588,7 @@ pub fn progress_of(entries: List(Entry)) -> Progress {
   }
 }
 
+/// Classifies transcript entries as progress only when they contain tool output or a genuine operator turn.
 fn did_work(the_entry: Entry) -> Bool {
   case the_entry {
     entry.MessageEntry(message: message.ToolResultMessage(..), ..) -> True
@@ -601,6 +605,8 @@ fn did_work(the_entry: Entry) -> Bool {
 // An operator turn is a user message that is not one of the harness's
 // own frames. `advisorslice` answers `False` for every message that is
 // not a user message, so an assistant turn falls out here as it should.
+
+/// Distinguishes operator-authored user messages from the harness frames that must not reset goal progress.
 fn operator_turn(user: message.AgentMessage) -> Bool {
   case user {
     message.UserMessage(..) ->
@@ -620,6 +626,8 @@ fn operator_turn(user: message.AgentMessage) -> Bool {
 // Each arm is one notification's bookkeeping; `relevel` is the same
 // bookkeeping derived from the store, which is what repairs a
 // notification that never arrived.
+
+/// Applies the current observed event to goal bookkeeping; level reads use the same transition logic to repair missed notices.
 fn record(goal: Goal, observed: Observed) -> Goal {
   case observed.event {
     Level -> relevel(goal, observed)
@@ -641,6 +649,8 @@ fn record(goal: Goal, observed: Observed) -> Goal {
 // The level read. The two phases that name a run are the two places a
 // lost notification hides, and each is detected the same way: the store
 // no longer shows that run open.
+
+/// Reconstructs the goal phase from live primary and advisor state so missed terminal events cannot strand the loop.
 fn relevel(goal: Goal, observed: Observed) -> Goal {
   case goal.phase {
     Idle | goalstate.ReadyToFeed -> goal
@@ -688,9 +698,12 @@ fn woken_finished(goal: Goal, observed: Observed) -> Goal {
 // counts from. Without this reset the cap is a lifetime cap: the count
 // only ever rose, so a resume after a trip tripped again on its first
 // evaluation.
+
+/// Resets progress bounds only when a newly opened primary run belongs to an outside caller.
 fn started(goal: Goal, operation: OpId, origin: Origin, now_ms: Int) -> Goal {
   let overtaken = check_overtaken(goal, now_ms)
 
+  // Reset continuation counters only when the primary run came from outside this goal loop.
   case harness_opened(goal, operation, origin) {
     True -> overtaken
 
@@ -715,6 +728,8 @@ fn started(goal: Goal, operation: OpId, origin: Origin, now_ms: Int) -> Goal {
 // deadline the phase no longer carries and is inert; the actor cancels the run
 // itself when it sees the phase move, so the jail does not keep working on an
 // answer nobody will read.
+
+/// Discards check evidence when the primary has resumed, because that evidence predates the work now underway.
 fn check_overtaken(goal: Goal, now_ms: Int) -> Goal {
   case goal.phase {
     goalstate.Checking(..) | goalstate.ReadyToFeed ->
@@ -732,6 +747,8 @@ fn check_overtaken(goal: Goal, now_ms: Int) -> Goal {
 // a dead one has forgotten its heap and still reads `Continuing(woken)` from
 // the cell — without it a restart mid-continuation would read the loop's own
 // run as the operator arriving and forgive the cap.
+
+/// Identifies the loop-owned run using both its origin and the persisted continuation phase.
 fn harness_opened(goal: Goal, operation: OpId, origin: Origin) -> Bool {
   case origin {
     Harness -> True
@@ -750,6 +767,8 @@ fn harness_opened(goal: Goal, operation: OpId, origin: Origin) -> Bool {
 // A run ending on the primary matters to the loop only when it is the
 // run the loop opened: that is the stretch the zero-progress predicate
 // is about.
+
+/// Applies an end notification only to the primary run that this goal loop woke.
 fn ended(goal: Goal, operation: OpId, observed: Observed) -> Goal {
   case goal.phase {
     Continuing(woken:, ..) if woken == operation ->
@@ -765,18 +784,23 @@ fn ended(goal: Goal, operation: OpId, observed: Observed) -> Goal {
 
 // The woken run is over. Its stretch either did work, which clears the
 // count, or it did not, which moves the goal one step toward the pause.
+
+/// Returns the phase to idle and updates zero-progress accounting from the completed stretch.
 fn woken_run_ended(goal: Goal, observed: Observed) -> Goal {
   let returned = Goal(..goal, phase: Idle, updated_ms: observed.now_ms)
 
+  // Clear the zero-progress count for work, and count a stretch that made no progress.
   case observed.progress {
     Progressed -> Goal(..returned, zero_progress: 0)
     Stalled -> stalled(returned)
   }
 }
 
+/// Counts a stalled stretch and pauses an active goal once the zero-progress threshold is reached.
 fn stalled(goal: Goal) -> Goal {
   let counted = Goal(..goal, zero_progress: goal.zero_progress + 1)
 
+  // Pause only an active goal at the threshold; retain evidence for states already stopped.
   case counted.zero_progress >= zero_progress_limit, counted.status {
     True, Active -> Goal(..counted, status: Paused(by: ByZeroProgress))
 
@@ -792,6 +816,8 @@ fn stalled(goal: Goal) -> Goal {
 // feed was abandoned: the phase returns to idle so the next evaluation
 // offers it again, bounded so a provider that never answers pauses the
 // goal rather than being paid to refuse it forever.
+
+/// Treats the end of the currently awaited advisor run as an unanswered feed, ignoring unrelated endings.
 fn reviewed(goal: Goal, operation: OpId, observed: Observed) -> Goal {
   case goal.phase {
     goalstate.AwaitingVerdict(feed:) if feed == operation ->
@@ -829,6 +855,9 @@ pub fn check_did_not_finish(timeout_ms: Int) -> String {
 // does not name the command, and a goal whose check was changed mid-run has
 // already had its phase reset by that command, so this arm cannot be reached
 // with the wrong one.
+
+/// Records an expired check as missing evidence and returns the goal to the
+/// ready-to-feed phase, using the command currently attached to the goal.
 fn check_abandoned(goal: Goal, observed: Observed) -> Goal {
   let result =
     goalstate.CheckResult(
@@ -858,6 +887,8 @@ fn check_abandoned(goal: Goal, observed: Observed) -> Goal {
 // happens is the operator replacing the command while one runs — so the result
 // must name the command the goal carries now, or the reviewer is shown output
 // from a command nobody is asking about under the label of one that is.
+
+/// Accepts a check result only when its recorded deadline and command still match the goal state.
 fn checked(
   goal: Goal,
   deadline_ms: Int,
@@ -880,6 +911,7 @@ fn checked(
   }
 }
 
+/// Counts an unanswered feed and pauses an active goal at the configured reviewer-failure limit.
 fn unanswered(goal: Goal, now_ms: Int) -> Goal {
   let counted =
     Goal(
@@ -889,6 +921,7 @@ fn unanswered(goal: Goal, now_ms: Int) -> Goal {
       updated_ms: now_ms,
     )
 
+  // Pause only an active goal once unanswered reviewer feeds reach their limit.
   case counted.unanswered_feeds >= unanswered_feed_limit, counted.status {
     True, Active -> Goal(..counted, status: Paused(by: ByUnresponsiveReviewer))
 
@@ -900,6 +933,8 @@ fn unanswered(goal: Goal, now_ms: Int) -> Goal {
 // somebody else opened is the operator changing their mind about their
 // own work, not about the goal, and the phase is what makes the
 // difference readable rather than inferred.
+
+/// Pauses the goal only when the abort belongs to its own continuation run.
 fn aborted(goal: Goal, operation: OpId, now_ms: Int) -> Goal {
   case goal.phase {
     Continuing(woken:, ..) if woken == operation -> hold_for_abort(goal, now_ms)
@@ -912,6 +947,7 @@ fn aborted(goal: Goal, operation: OpId, now_ms: Int) -> Goal {
   }
 }
 
+/// Moves an active goal to the abort pause while leaving already terminal or operator-paused states unchanged.
 fn hold_for_abort(goal: Goal, now_ms: Int) -> Goal {
   case goal.status {
     Active ->
@@ -947,6 +983,8 @@ fn running(goal: Goal, observed: Observed) -> #(Goal, Action) {
 // What the level says to do with a goal that is running and inside its
 // bounds. The two phases that name a run have already been relevelled,
 // so a phase that still names one names a run that is genuinely open.
+
+/// Waits for outstanding work or offers a check/feed only when the phase and primary level permit it.
 fn await(goal: Goal, observed: Observed) -> #(Goal, Action) {
   case goal.phase, observed.primary {
     goalstate.AwaitingVerdict(..), _either | Continuing(..), _other -> #(
@@ -976,6 +1014,8 @@ fn await(goal: Goal, observed: Observed) -> #(Goal, Action) {
 // The occasion: an Active goal, nothing owed, and neither strand busy.
 // This is the one arm that must never rest, because resting here is the
 // stall — an idle primary has no next occasion to be woken at.
+
+/// Chooses whether the active goal can offer a reviewer feed, based on whether either participant is busy.
 fn offer(goal: Goal, observed: Observed) -> #(Goal, Action) {
   case observed.primary, observed.advisor {
     // The primary is working. The feed's occasion is its run end, which
@@ -1001,6 +1041,8 @@ fn offer(goal: Goal, observed: Observed) -> #(Goal, Action) {
 // `ReadyToFeed` is what keeps the pair from looping: the check moves the
 // phase, and the evaluation that reads the moved phase feeds rather than
 // checking again.
+
+/// Runs a configured check before the feed, then offers the reviewer once that check is complete.
 fn checked_or_fed(goal: Goal, observed: Observed) -> #(Goal, Action) {
   case goal.phase, goal.check {
     goalstate.Idle, Some(command) -> #(
@@ -1048,6 +1090,8 @@ fn checked_or_fed(goal: Goal, observed: Observed) -> #(Goal, Action) {
 // would have one event that left it stopped with nothing scheduled —
 // the exact shape the rework removes — and the only thing preventing it
 // would be the caller's own refusal, one module away from the invariant.
+
+/// Routes a verdict for the currently awaited feed into settlement and sends stale verdicts back through evaluation.
 fn answer_feed(
   goal: Goal,
   answer: Answer,
@@ -1067,12 +1111,14 @@ fn answer_feed(
   }
 }
 
+/// Resets unanswered-feed accounting and turns a valid reviewer answer into completion or bounded continuation.
 fn settle(goal: Goal, answer: Answer, observed: Observed) -> #(Goal, Action) {
   // The feed was answered, whichever word answered it, so the
   // unanswered count starts again from zero.
   let answered =
     Goal(..goal, phase: Idle, unanswered_feeds: 0, updated_ms: observed.now_ms)
 
+  // A completed verdict ends the goal, while a continuation verdict must pass the bounds before waking.
   case answer {
     Completed(text:) -> #(
       Goal(..answered, status: Complete, reviewer_note: Some(text)),
@@ -1086,6 +1132,8 @@ fn settle(goal: Goal, answer: Answer, observed: Observed) -> #(Goal, Action) {
 // A `continue` the bounds allow. The count rises before the wake rather
 // than after it, so a crash between the cell write and the send costs
 // one continuation of headroom rather than an uncounted turn.
+
+/// Checks goal bounds before waking the primary for another continuation.
 fn continue_work(goal: Goal, text: String, now_ms: Int) -> #(Goal, Action) {
   case bound(goal) {
     Some(cause) -> stop(goal, cause, now_ms)
@@ -1103,6 +1151,8 @@ fn continue_work(goal: Goal, text: String, now_ms: Int) -> #(Goal, Action) {
 // states them. The zero-progress predicate is not here: it is measured
 // on a stretch of work, so it moves the status where the stretch ends
 // rather than being re-derived on every evaluation.
+
+/// Returns the first active token or continuation limit reached by the goal.
 fn bound(goal: Goal) -> Option(LimitCause) {
   case
     goal.tokens_used >= goal.token_budget,

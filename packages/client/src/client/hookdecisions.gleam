@@ -74,6 +74,8 @@ pub const output_cap = 10_000
 ///
 pub fn classify(stdout: String) -> Stdout {
   let trimmed = string.trim(stdout)
+
+  // Categorize stdout text into silent, parsed JSON, or unstructured plain output.
   case trimmed {
     "" -> Silent
     "{" <> _ ->
@@ -145,14 +147,18 @@ pub fn tool_permission(
   }
 }
 
-// The JSON arm of a `PreToolUse` decision. `deny` wins, `ask`
-// escalates, `allow` with an `updatedInput` rewrites, and a bare
-// `allow` is the same as silence.
+/// Translates decoded JSON decision fields into a PreToolUse ToolPermission verdict.
+///
+/// The JSON arm of a `PreToolUse` decision. `deny` wins, `ask`
+/// escalates, `allow` with an `updatedInput` rewrites, and a bare
+/// `allow` is the same as silence.
 fn permission_of(
   fields: List(#(String, JsonValue)),
   stderr: String,
 ) -> ToolPermission {
   let specific = specific_fields("PreToolUse", fields)
+
+  // Check explicit permission decisions like deny, ask, or allow with input rewriting.
   case string_field(specific, "permissionDecision") {
     Some("deny") ->
       deny(
@@ -220,9 +226,12 @@ pub fn tool_feedback(
   }
 }
 
+/// Decodes post-tool-use handler decision fields into structured ToolFeedback.
 fn feedback_of(fields: List(#(String, JsonValue))) -> ToolFeedback {
   let specific = specific_fields("PostToolUse", fields)
   let context = string_field(specific, "additionalContext")
+
+  // Inspect output rewrites, blocking feedback reasons, or supplementary context.
   case updated_input_named(specific, "updatedToolOutput") {
     Some(replacement) -> Rewritten(replacement)
     None ->
@@ -279,9 +288,12 @@ pub fn continuation(
   }
 }
 
+/// Decodes stop event handler outputs to determine whether conversation continues.
 fn continuation_of(fields: List(#(String, JsonValue))) -> Continuation {
   let specific = specific_fields("Stop", fields)
   let reason = string_field(fields, "reason")
+
+  // Evaluate stop handler decision to continue with reasons or permit completion.
   case string_field(fields, "decision") {
     Some("block") ->
       Continue(reason |> option.unwrap("the stop hook blocked the stop"))
@@ -346,6 +358,7 @@ pub fn context_injection(
   }
 }
 
+/// Inspects exit codes and stdout payloads to resolve prompt blocking decisions.
 fn blocking_decision(
   blocking: PromptBlocking,
   code: Int,
@@ -368,10 +381,12 @@ fn blocking_decision(
   }
 }
 
-// The fields a decision reads from: the hook's `hookSpecificOutput`
-// when it named this event, the top-level fields otherwise. The
-// contract treats the nested object as the richer override, so the
-// reader looks there first and falls back to the top level.
+/// Resolves event-specific overrides from hookSpecificOutput falling back to top level.
+///
+/// The fields a decision reads from: the hook's `hookSpecificOutput`
+/// when it named this event, the top-level fields otherwise. The
+/// contract treats the nested object as the richer override, so the
+/// reader looks there first and falls back to the top level.
 fn specific_fields(
   event: String,
   fields: List(#(String, JsonValue)),
@@ -382,12 +397,15 @@ fn specific_fields(
   }
 }
 
+/// Resolves context injection strings from structured fields or raw stdout text.
 fn injected_of(
   event: String,
   fields: List(#(String, JsonValue)),
   stdout: String,
 ) -> ContextInjection {
   let specific = specific_fields(event, fields)
+
+  // Extract explicit additionalContext field or fall back to unstructured stdout text.
   case string_field(specific, "additionalContext") {
     Some(text) -> injected(text)
     None ->
@@ -436,6 +454,7 @@ pub fn updated_input(fields: List(#(String, JsonValue))) -> Option(JsonValue) {
   updated_input_named(fields, "updatedInput")
 }
 
+/// Extracts an optional JSON object field representing an updated tool payload.
 fn updated_input_named(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -446,8 +465,10 @@ fn updated_input_named(
   }
 }
 
-// The reason a blocking decision carries, by the contract's order: the
-// JSON's reason when the object made one, the stderr text otherwise.
+/// Extracts a human-readable blocking reason from JSON fields or process stderr text.
+///
+/// The reason a blocking decision carries, by the contract's order: the
+/// JSON's reason when the object made one, the stderr text otherwise.
 fn reason_for_block(stderr: String, stdout: String) -> String {
   case classify(stdout) {
     Json(fields) ->

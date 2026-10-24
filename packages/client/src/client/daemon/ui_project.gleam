@@ -63,8 +63,11 @@ pub fn locate(workspace: String) -> Option(String) {
   // the daemon's own directory. Only a path on this host has a disk to read.
   use <- bool.guard(!string.starts_with(workspace, "/"), None)
   let marker = filepath.join(workspace, ".git")
+
+  // Inspect .git to determine if workspace is a root repository or worktree pointer file.
   case simplifile.file_info(marker) {
     Ok(info) ->
+      // This branch resolves simplifile file_info_type info before the operation continues.
       case simplifile.file_info_type(info) {
         simplifile.Directory -> Some(workspace)
         simplifile.File ->
@@ -73,16 +76,19 @@ pub fn locate(workspace: String) -> Option(String) {
           |> option.from_result
         simplifile.Symlink | simplifile.Other -> None
       }
+
     Error(_) -> None
   }
 }
 
-// The text of a small regular file. The size is checked before anything is
-// read, so a huge or sparse file, or a link to one, costs a stat.
+/// Reads the text content of a regular file up to the pointer size ceiling.
 fn small_text(path: String) -> Result(String, Nil) {
+  // This branch resolves the input state before the operation continues.
   use info <- result.try(
     simplifile.file_info(path) |> result.replace_error(Nil),
   )
+
+  // Verify file regular type and bounded size before reading content.
   case
     simplifile.file_info_type(info) == simplifile.File
     && info.size <= pointer_limit
@@ -95,17 +101,14 @@ fn small_text(path: String) -> Result(String, Nil) {
   }
 }
 
-// The repository a pointer leads to, once its backlink confirms `workspace`.
-// The pointer names the worktree's own directory inside the repository,
-// `<common>/worktrees/<name>`, so the common directory is two levels up. A
-// common directory called `.git` belongs to the checkout beside it, whose
-// directory is the project; any other (a bare repository) is the project
-// itself.
+/// Resolves the canonical repository root by inspecting worktree metadata and backlink verification.
 fn repository(text: String, workspace: String) -> Result(String, Nil) {
+  // Parse the gitdir header from the pointer file content.
   case string.split(string.trim(text), "gitdir:") {
     ["", rest] -> {
       let named = string.trim(rest)
       use gitdir <- result.try(
+        // This branch resolves filepath is_absolute named before the operation continues.
         case filepath.is_absolute(named) {
           True -> named
           False -> filepath.join(workspace, named)
@@ -116,15 +119,22 @@ fn repository(text: String, workspace: String) -> Result(String, Nil) {
       // Verify the worktree pointer path and ensure directory presence.
       let worktrees = filepath.directory_name(gitdir)
       let common = filepath.directory_name(worktrees)
+
+      // Assert that parent directory is named worktrees.
       use _ <- result.try(case filepath.base_name(worktrees) {
         "worktrees" -> Ok(Nil)
         _ -> Error(Nil)
       })
+
+      // Confirm that the common git directory exists on disk.
       use _ <- result.try(case simplifile.is_directory(common) {
         Ok(True) -> Ok(Nil)
         Ok(False) | Error(_) -> Error(Nil)
       })
+
       use _ <- result.map(registered(gitdir, workspace))
+
+      // Return repository directory or parent directory if inside a .git container.
       case filepath.base_name(common) {
         ".git" -> filepath.directory_name(common)
         _ -> common
@@ -134,9 +144,11 @@ fn repository(text: String, workspace: String) -> Result(String, Nil) {
   }
 }
 
-// Whether the repository's record of the worktree names this workspace's `.git`.
+/// Verifies that the repository worktree backlink matches the current workspace marker.
 fn registered(gitdir: String, workspace: String) -> Result(Nil, Nil) {
   use backlink <- result.try(small_text(filepath.join(gitdir, "gitdir")))
+
+  // Compare the trimmed backlink content with the workspace .git path.
   case string.trim(backlink) == filepath.join(workspace, ".git") {
     True -> Ok(Nil)
     False -> Error(Nil)

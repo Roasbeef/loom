@@ -383,6 +383,7 @@ pub fn with_source(config: Config, path: String) -> Config {
         "history source has no absolute path: " <> string.inspect(error)
       })
   }
+
   Config(..config, pull: fn(index) {
     use path <- result.try(source)
     use Nil <- result.try(config.pull(index))
@@ -527,6 +528,7 @@ pub fn seam_with_logger(
   history_bridge.counted(holder_seam(name, timeout_ms), logger)
 }
 
+/// Builds a History tool seam that forwards read, search, and recent calls to an actor address.
 fn holder_seam(
   name: address.Address(Message),
   timeout_ms: Int,
@@ -549,7 +551,9 @@ fn holder_seam(
   )
 }
 
-// A search and a browse are refused in the same vocabulary.
+/// Maps nested search hit results into tool-level hits or standardized refusals.
+///
+/// A search and a browse are refused in the same vocabulary.
 fn hits_answer(
   answer: Result(Result(List(history_tool.Hit), String), String),
 ) -> Result(List(history_tool.Hit), history_tool.Refusal) {
@@ -604,7 +608,9 @@ pub fn supervised_commit_pull(
 
 // --- internals -------------------------------------------------------------
 
+/// Dispatches incoming actor requests against the persistent search index.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Route protocol messages against the opened index or return unavailable errors.
   case message, state.index {
     Pull, Some(index) -> {
       // A hint's pull is best effort: a failed sync leaves the durable
@@ -653,6 +659,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Reads entries surrounding a specific entry identifier from the SQLite session database.
 fn read_entry(
   index: Search,
   session: SessionId,
@@ -662,6 +669,8 @@ fn read_entry(
   use source <- result.try(
     search.source(index, session) |> result.map_error(describe_search_error),
   )
+
+  // Verify that an active source database path is registered for the session.
   use path <- result.try(case source {
     Some(path) -> Ok(path)
     None ->
@@ -669,6 +678,7 @@ fn read_entry(
         "no registered source for this session; reopen it to enable exact reads",
       )
   })
+
   sqlite.read_entries_around(path:, session:, entry:, around:)
   |> result.map(list.map(_, codec.encode_entry))
   |> result.map_error(fn(error) { string.inspect(error) })
@@ -680,12 +690,15 @@ const unavailable_index =
   <> "corrupt index is safe: the restart recreates it and a sync "
   <> "rebuilds the rows."
 
+/// Executes a repository-wide or session-scoped full-text search against the index.
 fn query(
   state: State,
   index: Search,
   query: history_tool.Query,
 ) -> Result(List(history_tool.Hit), String) {
   let wanted = history_bridge.index_query(query)
+
+  // Select repository-wide search or restrict query matching to the current session.
   let found = case query.scope {
     history_tool.Repository -> search.query(index, wanted)
 
@@ -700,11 +713,13 @@ fn query(
         query: wanted,
       )
   }
+
   found
   |> result.map(list.map(_, tool_hit))
   |> result.map_error(describe_search_error)
 }
 
+/// Fetches the most recent indexed entries within the current session up to limit.
 fn recent(
   state: State,
   index: Search,
@@ -719,17 +734,20 @@ fn tool_hit(hit: search.Hit) -> history_tool.Hit {
   history_bridge.tool_hit(hit)
 }
 
-// One question to the holder, degrading an absent or wedged holder to an
-// in-band refusal rather than to the caller's death. Sent and selected
-// by hand, watching the callee's monitor — the pattern
-// `client/scratch.ask` and `client/escalate.borrow` use, and for the
-// same reason: `process.call` exits its *caller*, and this runs inside a
-// live tool call.
+/// Sends a bounded query message to the history actor without crashing the caller on failure.
+///
+/// One question to the holder, degrading an absent or wedged holder to an
+/// in-band refusal rather than to the caller's death. Sent and selected
+/// by hand, watching the callee's monitor — the pattern
+/// `client/scratch.ask` and `client/escalate.borrow` use, and for the
+/// same reason: `process.call` exits its *caller*, and this runs inside a
+/// live tool call.
 fn ask(
   name: address.Address(Message),
   timeout_ms: Int,
   message: fn(Subject(answer)) -> Message,
 ) -> Result(answer, String) {
+  // Resolve registered subject from actor address before issuing request.
   case address.lookup(name) {
     Error(Nil) -> Error(no_holder)
     Ok(subject) -> {
@@ -747,6 +765,7 @@ const no_holder = "this host runs no history index"
 
 const wedged = "the history index did not answer in time"
 
+/// Formats search error variants into descriptive error messages.
 fn describe_search_error(error: SearchError) -> String {
   case error {
     search.IndexFault(message:) -> message

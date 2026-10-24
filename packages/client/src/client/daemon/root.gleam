@@ -419,10 +419,13 @@ pub fn start_listener(
     )
     listener.ready(transport, within: deadline - bootstrap.monotonic_time_ms())
   }
+
+  // Request shutdown if listener failed readiness probe.
   case outcome {
     Error(_) -> request_shutdown(root)
     Ok(_) -> Nil
   }
+
   outcome
 }
 
@@ -469,23 +472,26 @@ pub fn message_limit(class: ConnectionClass) -> Int {
   }
 }
 
-// Session delivery can overlap two 1MiB metadata cuts, two bounded 2MiB
-// encodings, two 190KiB fragments and 40KiB replies, plus descriptor/presence
-// identifiers and one 24KiB ephemeral slot. The 8MiB allowance rounds this
-// retained payload upward; it does not claim to measure JSON-term heap size.
-//
-// An operator connection is also charged for the peak of one page submit that
-// carries images (protocol-change/051, the addendum on images). A submit of
-// the page's 12 MiB frame is held at once as the frame, the Lustre event's
-// string, the parsed images, their decoded bytes and their canonical
-// re-encoding: five copies, about 60 MiB, so the class is charged 64 MiB. The
-// figure is `operator_peak`, charged to `PageOperator` alone; a terminal
-// operator keeps its 40 MiB.
+/// Session delivery can overlap two 1MiB metadata cuts, two bounded 2MiB
+/// encodings, two 190KiB fragments and 40KiB replies, plus descriptor/presence
+/// identifiers and one 24KiB ephemeral slot. The 8MiB allowance rounds this
+/// retained payload upward; it does not claim to measure JSON-term heap size.
+///
+/// An operator connection is also charged for the peak of one page submit that
+/// carries images (protocol-change/051, the addendum on images). A submit of
+/// the page's 12 MiB frame is held at once as the frame, the Lustre event's
+/// string, the parsed images, their decoded bytes and their canonical
+/// re-encoding: five copies, about 60 MiB, so the class is charged 64 MiB. The
+/// figure is `operator_peak`, charged to `PageOperator` alone; a terminal
+/// operator keeps its 40 MiB.
 fn connection_charge(class: ConnectionClass) -> Int {
+  // Determine delivery buffer charge for connection class.
   let delivery = case class {
     Control | Claim(_) -> 0
     Observer | Operator | PageOperator -> 8_388_608
   }
+
+  // Calculate total connection memory footprint charge.
   case class {
     PageOperator -> operator_peak
     Control | Observer | Operator | Claim(_) -> message_limit(class) + delivery
@@ -529,6 +535,8 @@ pub fn acquire(
     exchange(root, within, fn(reply) {
       Acquire(http_owner, identity, class, reply)
     })
+
+  // Return permit on successful admission or release slot on failure.
   case result {
     Ok(permit) -> Ok(permit)
     Error(reason) -> {
@@ -560,6 +568,8 @@ pub fn acquire_claim(
 ) -> Result(Permit, AdmissionRefusal) {
   let http_owner = process.self()
   let identity = reference.new()
+
+  // Attempt to acquire claim reservation slot from root supervisor.
   let answer = case
     call.try_call(
       root.commands,
@@ -571,6 +581,8 @@ pub fn acquire_claim(
     Error(call.NoReply) -> Error(NotAdmitted("daemon root request timed out"))
     Error(call.CalleeGone) -> Error(NotAdmitted("daemon root is unavailable"))
   }
+
+  // Handle acquired permit or clean up reservation on refusal.
   case answer {
     Ok(permit) -> Ok(permit)
     Error(refusal) -> {
@@ -602,6 +614,8 @@ pub fn transfer(
   within within: Int,
 ) -> Result(Nil, String) {
   let websocket = process.self()
+
+  // Exchange connection upgrade transfer command with supervisor.
   case
     exchange(root, within, fn(reply) { Transfer(permit, websocket, reply) })
   {
@@ -642,11 +656,14 @@ pub fn shutdown(
   let deadline = bootstrap.monotonic_time_ms() + int.max(within, 0)
   let watch = process.monitor(root.pid)
   let outcome = exchange(root, within, Stop)
+
+  // Await exit signal from root supervisor or report timeout.
   let answer = case outcome {
     Error(error) -> Error(error)
     Ok(Nil) ->
       process.new_selector()
       |> process.select_specific_monitor(watch, fn(down) {
+        // Evaluate supervisor exit status.
         case down.reason {
           process.Normal -> Ok(Nil)
           process.Killed | process.Abnormal(_) ->
@@ -660,16 +677,17 @@ pub fn shutdown(
       |> result.replace_error("daemon root retirement timed out")
       |> result.flatten
   }
+
   process.demonitor_process(watch)
   answer
 }
 
-// Every question put to the root is a monitored call with a budget, so a root
-// that dies mid-answer is reported rather than exiting the asker. The two ways
-// to get no reply stay distinct as `call.CallFault` values rather than as error
-// text a reader elsewhere has to recognize: a branch that turned on the exact
-// wording of a message produced here is how a caller's timeout came to request
-// the daemon's shutdown.
+/// Every question put to the root is a monitored call with a budget, so a root
+/// that dies mid-answer is reported rather than exiting the asker. The two ways
+/// to get no reply stay distinct as `call.CallFault` values rather than as error
+/// text a reader elsewhere has to recognize: a branch that turned on the exact
+/// wording of a message produced here is how a caller's timeout came to request
+/// the daemon's shutdown.
 fn exchange(
   root: Root(instance),
   within: Int,
@@ -684,14 +702,17 @@ fn exchange(
   }
 }
 
+/// State machine message handler for the root daemon supervisor.
 fn handle(
   phase: Phase,
   book: Book(instance),
   message: Message(instance),
 ) -> sm.Next(Phase, Book(instance), Message(instance)) {
+  // Dispatch root supervisor messages based on command type.
   case message {
     Readiness(reply) -> readiness(phase, book, reply)
     ControlState(use_for, reply) -> {
+      // Evaluate control state access permissions against active phase.
       let answer = case phase, use_for {
         Serving, _ | Stopping, ControlRead -> ready_value(book.stage)
         Stopping, ControlMutation
@@ -702,6 +723,7 @@ fn handle(
         | Closed, _
         -> Error("daemon control is unavailable")
       }
+
       process.send(reply, answer)
       sm.keep(book)
     }
@@ -750,11 +772,13 @@ fn handle(
   }
 }
 
+/// Resolves daemon endpoint coordinates and status for readiness probes.
 fn readiness(
   phase: Phase,
   book: Book(instance),
   reply: Subject(Result(Ready(instance), String)),
 ) -> sm.Next(Phase, Book(instance), Message(instance)) {
+  // Answer readiness probe based on current supervisor phase.
   case phase {
     Dormant -> {
       process.send(book.commands, Advance)
@@ -776,6 +800,7 @@ fn readiness(
   }
 }
 
+/// Returns structured daemon coordinates when root state machine is Serving.
 fn ready_value(stage: Stage(instance)) {
   case stage {
     Live(running) ->
@@ -795,12 +820,12 @@ fn ready_value(stage: Stage(instance)) {
   }
 }
 
-// This is the one door the owner credential leaves the root through, so the
-// pairs are written out rather than collapsed: a new `Phase` that should also
-// serve it, or a new `Stage` that must not, then arrives with a compiler
-// prompt instead of silently inheriting whichever side a catch-all picked.
-// Only a serving root holding a live registry serves it; everything else fails
-// closed.
+/// This is the one door the owner credential leaves the root through, so the
+/// pairs are written out rather than collapsed: a new `Phase` that should also
+/// serve it, or a new `Stage` that must not, then arrives with a compiler
+/// prompt instead of silently inheriting whichever side a catch-all picked.
+/// Only a serving root holding a live registry serves it; everything else fails
+/// closed.
 fn credential_for(phase: Phase, stage: Stage(instance)) {
   case phase, stage {
     Serving, Live(running) -> Ok(running.identity.credential)
@@ -827,15 +852,15 @@ fn credential_for(phase: Phase, stage: Stage(instance)) {
   }
 }
 
-// Each turn commits its acquired handle into Book before advancing. Cancel or
-// caller DOWN can run between stages; no admission capability escapes early.
-//
-// `advance` runs only in phase `Starting`, so the stages it can actually
-// observe are the startup ladder `Empty` through `Authenticated`. `Live` is
-// written by `start_registry`, which transitions to `Serving` in the same
-// turn, and `WitnessedClosed` only by `witness_gone`, which cannot run before
-// `Live` — so the last two arms are unreachable and record what the ordering
-// would have to become for them to fire, rather than an ordering that exists.
+/// Each turn commits its acquired handle into Book before advancing. Cancel or
+/// caller DOWN can run between stages; no admission capability escapes early.
+///
+/// `advance` runs only in phase `Starting`, so the stages it can actually
+/// observe are the startup ladder `Empty` through `Authenticated`. `Live` is
+/// written by `start_registry`, which transitions to `Serving` in the same
+/// turn, and `WitnessedClosed` only by `witness_gone`, which cannot run before
+/// `Live` — so the last two arms are unreachable and record what the ordering
+/// would have to become for them to fire, rather than an ordering that exists.
 fn advance(
   book: Book(instance),
 ) -> sm.Next(Phase, Book(instance), Message(instance)) {
@@ -887,8 +912,11 @@ fn progress(book: Book(instance)) {
   sm.keep(book)
 }
 
+/// Initializes the session manager registry under root lifetime supervision.
 fn start_registry(book: Book(instance), identity: Identity) {
   let epoch = random_hex()
+
+  // Start the background session manager registry worker.
   case
     lifetime.start(
       identity.store.catalogue,
@@ -918,11 +946,14 @@ fn start_registry(book: Book(instance), identity: Identity) {
   }
 }
 
+/// Validates capacity limits and resolves root runtime directories.
 fn directories(config: Config) {
+  // Ensure daemon connection capacity limit is positive.
   use Nil <- result.try(case config.capacity > 0 {
     True -> Ok(Nil)
     False -> Error("daemon capacity must be positive")
   })
+
   use absolute <- result.try(bootstrap.absolute_path(config.state_root))
   use Nil <- result.try(bootstrap.ensure_private_directory(absolute))
   use root <- result.try(bootstrap.canonical_directory(absolute))
@@ -973,13 +1004,16 @@ fn directories(config: Config) {
   Ok(paths)
 }
 
-// The directory is already canonical and private. Existing lock/catalogue
-// entries must not redirect their identity outside that directory via a link.
+/// The directory is already canonical and private. Existing lock/catalogue
+/// entries must not redirect their identity outside that directory via a link.
 fn unaliased_file(path: String) {
+  // Check whether file path exists before verifying canonical target.
   case bootstrap.path_exists(path) {
     False -> Ok(Nil)
     True -> {
       use canonical <- result.try(bootstrap.canonical_path(path))
+
+      // Enforce that path is not aliased through a symbolic link.
       case canonical == path {
         True -> Ok(Nil)
         False -> Error("daemon metadata path must not be a symbolic link")
@@ -988,6 +1022,7 @@ fn unaliased_file(path: String) {
   }
 }
 
+/// Authenticates owner token credentials for administrative commands.
 fn authenticate_owner(store: Store, display_name: String) {
   use credential <- result.try(owner_token(store))
   use digest <- result.try(
@@ -1014,8 +1049,11 @@ fn authenticate_owner(store: Store, display_name: String) {
   Ok(Identity(store, owner, credential))
 }
 
+/// Loads the persistent daemon owner token from the state root directory.
 fn owner_token(store: Store) {
   let path = store.lease.paths.token
+
+  // Load token from disk if present or mint fresh token in catalogue.
   case bootstrap.path_exists(path) {
     True -> read_token(path)
     False ->
@@ -1034,12 +1072,15 @@ fn owner_token(store: Store) {
   }
 }
 
+/// Reads and validates token contents from the specified path.
 fn read_token(path: String) {
   use bytes <- result.try(bootstrap.read_private_bounded(path, 64))
   use credential <- result.try(
     bit_array.to_string(bytes)
     |> result.replace_error("owner credential file is not UTF-8"),
   )
+
+  // Validate 256-bit token digest format.
   case access.credential_digest(credential) {
     Ok(_) -> Ok(credential)
     Error(_) -> Error("owner credential file is not a canonical 256-bit token")
@@ -1050,9 +1091,9 @@ fn random_hex() {
   token.production_entropy()(32) |> bit_array.base16_encode |> string.lowercase
 }
 
-// This bounded map accounts for connection payload, not transitive effects.
-// Each entry has one exact owner monitor and disappears only by a matched
-// cancellation before upgrade or by that owner's actual DOWN afterwards.
+/// This bounded map accounts for connection payload, not transitive effects.
+/// Each entry has one exact owner monitor and disappears only by a matched
+/// cancellation before upgrade or by that owner's actual DOWN afterwards.
 fn acquire_slot(
   phase: Phase,
   book: Book(instance),
@@ -1072,8 +1113,8 @@ fn acquire_slot(
   reserve(book, owner, identity, class, answer, reply)
 }
 
-// The typed twin of `acquire_slot`, for the one caller that must tell a claim
-// already in flight (409) from a daemon that is not admitting (503).
+/// The typed twin of `acquire_slot`, for the one caller that must tell a claim
+/// already in flight (409) from a daemon that is not admitting (503).
 fn acquire_claim_slot(
   phase: Phase,
   book: Book(instance),
@@ -1087,6 +1128,7 @@ fn acquire_claim_slot(
   reserve(book, owner, identity, class, answer, reply)
 }
 
+/// Evaluates connection admission limits and allocates connection slots.
 fn reserve(
   book: Book(instance),
   owner: process.Pid,
@@ -1095,6 +1137,7 @@ fn reserve(
   answer: Result(Nil, refusal),
   reply: Subject(Result(Permit, refusal)),
 ) {
+  // Send reservation result to client and retain root state.
   case answer {
     Error(refusal) -> {
       process.send(reply, Error(refusal))
@@ -1108,14 +1151,14 @@ fn reserve(
   }
 }
 
-// Refusal happens before parser activation. Custody and phase checks do
-// not spend capacity, and the two configured ceilings remain independent.
-//
-// A claim's reservation is also keyed by its digest. The allocation already
-// lives from the HTTP request until the socket process's DOWN, so finding an
-// allocation of the same class is the whole of "one upgrade in flight per
-// claim": no second table and no second monitor. The check sits here, where
-// every reservation passes, so no entry point can admit a second one.
+/// Refusal happens before parser activation. Custody and phase checks do
+/// not spend capacity, and the two configured ceilings remain independent.
+///
+/// A claim's reservation is also keyed by its digest. The allocation already
+/// lives from the HTTP request until the socket process's DOWN, so finding an
+/// allocation of the same class is the whole of "one upgrade in flight per
+/// claim": no second table and no second monitor. The check sits here, where
+/// every reservation passes, so no entry point can admit a second one.
 fn admission(
   phase: Phase,
   book: Book(instance),
@@ -1136,8 +1179,8 @@ fn admission(
   }
 }
 
-// The allocation map is bounded by the configured connection ceiling, so this
-// walk is bounded too.
+/// The allocation map is bounded by the configured connection ceiling, so this
+/// walk is bounded too.
 fn claim_in_flight(book: Book(instance), class: ConnectionClass) -> Bool {
   case class {
     Claim(_) ->
@@ -1147,8 +1190,11 @@ fn claim_in_flight(book: Book(instance), class: ConnectionClass) -> Bool {
   }
 }
 
+/// Determines whether another connection can be admitted under limits.
 fn available_connection(book: Book(instance), class: ConnectionClass) {
   let ceilings = book.config.connection_limits
+
+  // Verify active allocations against connection count and memory ceilings.
   case dict.size(book.allocations) >= ceilings.connections {
     True -> Error(limits.count_refusal(ceilings))
     False ->
@@ -1162,6 +1208,7 @@ fn available_connection(book: Book(instance), class: ConnectionClass) {
   }
 }
 
+/// Records a newly admitted connection allocation in root state.
 fn add_allocation(
   book: Book(instance),
   owner: process.Pid,
@@ -1187,6 +1234,7 @@ fn add_allocation(
   )
 }
 
+/// Removes a terminated connection allocation from root state.
 fn remove_allocation(
   book: Book(instance),
   owner: process.Pid,
@@ -1201,6 +1249,7 @@ fn remove_allocation(
   )
 }
 
+/// Transfers connection custody from HTTP upgrade to WebSocket session.
 fn transfer_slot(
   phase: Phase,
   book: Book(instance),
@@ -1208,6 +1257,7 @@ fn transfer_slot(
   websocket: process.Pid,
   reply: Subject(Result(Nil, String)),
 ) {
+  // Permit connection transfer only when root is in Serving phase.
   case phase {
     Serving -> transfer_serving(book, permit, websocket, reply)
     Dormant | Starting | Stopping | Refused(_) | RecoveryBlocked(_) | Closed -> {
@@ -1217,12 +1267,14 @@ fn transfer_slot(
   }
 }
 
+/// Applies connection slot transfer while root is in Serving phase.
 fn transfer_serving(
   book: Book(instance),
   permit: Permit,
   websocket: process.Pid,
   reply: Subject(Result(Nil, String)),
 ) {
+  // Check whether websocket connection is already admitted or awaiting upgrade.
   case dict.get(book.allocations, websocket) {
     Ok(Allocation(identity:, phase: WebsocketAdmitted, ..))
       if identity == permit.identity
@@ -1238,17 +1290,20 @@ fn transfer_serving(
   }
 }
 
+/// Validates reservation ownership during connection upgrade transfer.
 fn transfer_reserved(
   book: Book(instance),
   permit: Permit,
   websocket: process.Pid,
   reply: Subject(Result(Nil, String)),
 ) {
+  // Verify that HTTP reservation matches permit identity and state.
   case dict.get(book.allocations, permit.http_owner) {
     Ok(allocation)
       if allocation.identity == permit.identity
       && allocation.phase == HttpReserved
     -> {
+      // Ensure the HTTP owner process remains alive during transfer.
       case process.is_alive(permit.http_owner) {
         False -> {
           process.send(
@@ -1282,7 +1337,9 @@ fn transfer_reserved(
   }
 }
 
+/// Releases an unupgraded reservation slot after HTTP exchange ends.
 fn release_reserved(phase: Phase, book: Book(instance), permit: Permit) {
+  // Release reservation allocation when permit matches active state.
   case phase, dict.get(book.allocations, permit.http_owner) {
     Stopping, _ | RecoveryBlocked(_), _ -> sm.keep(book)
     _, Ok(allocation)
@@ -1296,12 +1353,14 @@ fn release_reserved(phase: Phase, book: Book(instance), permit: Permit) {
   }
 }
 
+/// Cleans up allocation tracking when connection upgrade is aborted.
 fn abort_transfer(
   phase: Phase,
   book: Book(instance),
   permit: Permit,
   websocket: process.Pid,
 ) {
+  // Check allocation state of aborted websocket connection.
   case dict.get(book.allocations, websocket) {
     Ok(Allocation(identity:, phase: WebsocketAdmitted, ..))
       if identity == permit.identity
@@ -1316,15 +1375,19 @@ fn abort_transfer(
   }
 }
 
+/// Handles termination signal from an active connection owner process.
 fn connection_gone(
   phase: Phase,
   book: Book(instance),
   owner: process.Pid,
   watch: process.Monitor,
 ) {
+  // Clean up departed connection allocation if monitor matches.
   case dict.get(book.allocations, owner) {
     Ok(allocation) if allocation.watch == watch -> {
       let book = remove_allocation(book, owner, allocation)
+
+      // Advance shutdown draining if stopping, otherwise keep state.
       case phase {
         Stopping -> finish_draining(book) |> sm.with_selector(book.selector)
         Dormant
@@ -1345,8 +1408,8 @@ fn cancel_connections(book: Book(instance)) {
   list.each(dict.keys(book.allocations), process.kill)
 }
 
-// Existing control sockets can query drain status until the session witness
-// retires. Session ingress is cancelled as soon as aggregate shutdown begins.
+/// Existing control sockets can query drain status until the session witness
+/// retires. Session ingress is cancelled as soon as aggregate shutdown begins.
 fn cancel_session_connections(book: Book(instance)) {
   dict.each(book.allocations, fn(owner, allocation) {
     case allocation.class {
@@ -1356,7 +1419,9 @@ fn cancel_session_connections(book: Book(instance)) {
   })
 }
 
+/// Starts the Mist listener under root supervision.
 fn start_listener_owned(phase: Phase, book: Book(instance), builder, reply) {
+  // Start HTTP listener only when supervisor is in Serving phase without listener.
   case phase, book.listener {
     Serving, None ->
       case listener.prepare(process.self(), builder) {
@@ -1386,10 +1451,14 @@ fn start_listener_owned(phase: Phase, book: Book(instance), builder, reply) {
   }
 }
 
+/// Handles exit signal from the supervised HTTP listener process.
 fn listener_gone(phase: Phase, book: Book(instance), reason) {
+  // Differentiate normal listener stop from abnormal failure.
   case reason {
     process.Normal -> {
       let book = Book(..book, listener: None)
+
+      // Progress draining or initiate stop upon clean listener termination.
       case phase {
         Stopping -> finish_draining(book)
         Serving -> stop(phase, book, process.new_subject())
@@ -1409,26 +1478,33 @@ fn finish_draining(book: Book(instance)) {
   }
 }
 
+/// Coordinates shutdown sequence when all connections and listeners drain.
 fn finish_lifetime(book: Book(instance)) {
+  // Complete lifetime shutdown when stage is closed and resources are empty.
   case book.stage, dict.size(book.allocations), book.listener {
     WitnessedClosed(identity), 0, None -> close_store(book, identity.store)
     WitnessedClosed(_), _, listener -> {
       cancel_connections(book)
+
+      // Close active transport listener if bound.
       case listener {
         Some(transport) -> listener.close(transport)
         None -> Nil
       }
+
       sm.transition(Stopping, book)
     }
     _, _, _ -> sm.transition(Stopping, book)
   }
 }
 
+/// Initiates orderly root supervisor shutdown and resource draining.
 fn stop(
   phase: Phase,
   book: Book(instance),
   reply: Subject(Result(Nil, String)),
 ) -> sm.Next(Phase, Book(instance), Message(instance)) {
+  // Execute stop transition according to supervisor phase.
   case phase {
     RecoveryBlocked(reason) -> {
       process.send(reply, Error(reason))
@@ -1451,6 +1527,7 @@ fn stop(
   }
 }
 
+/// Cancels background lifetime workers during supervisor shutdown.
 fn cancel_lifetime(stage: Stage(instance)) {
   case stage {
     Live(running) -> lifetime.shutdown(running.lifetime)
@@ -1463,15 +1540,16 @@ fn cancel_lifetime(stage: Stage(instance)) {
   }
 }
 
-// The root owns the task but never waits inside its receive loop. Keeping the
-// report subject until AllDelivered also prevents early lock release if the
-// original lifetime happens to retire while the task is still unwinding.
+/// The root owns the task but never waits inside its receive loop. Keeping the
+/// report subject until AllDelivered also prevents early lock release if the
+/// original lifetime happens to retire while the task is still unwinding.
 fn start_returning(book: Book(instance)) -> Book(instance) {
   let reports = process.new_subject()
   let stage = book.stage
   let _relay =
     weft.new_prepared([
       weft.task(fn() {
+        // Drain held session handles if lifetime is live.
         case stage {
           Live(running) ->
             manager.drain_held(lifetime.registry(running.lifetime))
@@ -1482,6 +1560,7 @@ fn start_returning(book: Book(instance)) -> Book(instance) {
           | Authenticated(_)
           | WitnessedClosed(_) -> Nil
         }
+
         Ok(Nil)
       }),
     ])
@@ -1494,6 +1573,7 @@ fn start_returning(book: Book(instance)) -> Book(instance) {
   )
 }
 
+/// Records that a supervised session has completed shutdown.
 fn returned(phase: Phase, book: Book(instance), report: weft.Pulled(Nil, Nil)) {
   case report {
     weft.PulledOutcome(_) | weft.NotYet -> sm.keep(book)
@@ -1503,12 +1583,17 @@ fn returned(phase: Phase, book: Book(instance), report: weft.Pulled(Nil, Nil)) {
   }
 }
 
+/// Finalizes shutdown once all managed sessions have exited.
 fn finish_returning(phase: Phase, book: Book(instance)) {
+  // Deselect returns channel when draining tasks finish.
   let selector = case book.returns {
     Some(reports) -> process.deselect(book.selector, reports)
     None -> book.selector
   }
+
   let book = Book(..book, returns: None, selector:)
+
+  // Cancel remaining connections and advance draining if stopping.
   case phase {
     Stopping -> {
       // Socket writes were given their bounded opportunity. Custody shutdown
@@ -1522,21 +1607,27 @@ fn finish_returning(phase: Phase, book: Book(instance)) {
   }
 }
 
+/// Transitions root to RecoveryBlocked phase and stops listener.
 fn block(book: Book(instance), reason: String) {
   cancel_connections(book)
   cancel_lifetime(book.stage)
+
+  // Close active listener when blocking recovery.
   case book.listener {
     Some(transport) -> listener.close(transport)
     None -> Nil
   }
+
   sm.transition(RecoveryBlocked(reason), book)
 }
 
+/// Handles exit signal from the supervised root lifetime witness.
 fn witness_gone(
   phase: Phase,
   book: Book(instance),
   reason: process.ExitReason,
 ) {
+  // React to lifetime witness termination signal.
   case phase, reason, book.stage {
     RecoveryBlocked(_), _, _ -> sm.keep(book)
     _, process.Normal, Live(running) -> {
@@ -1550,9 +1641,10 @@ fn witness_gone(
   }
 }
 
-// Before registry admission, a partial startup has no instance effects. Once
-// Live, only the original normal witness event may call close_store.
+/// Before registry admission, a partial startup has no instance effects. Once
+/// Live, only the original normal witness event may call close_store.
 fn close_unstarted(book: Book(instance)) {
+  // Release locks and clean up resources for unstarted supervisor stages.
   case book.stage {
     Empty | Directory(_) -> closed(book)
     Locked(lease) -> {
@@ -1566,7 +1658,9 @@ fn close_unstarted(book: Book(instance)) {
   }
 }
 
+/// Closes durable catalogue and database connections.
 fn close_store(book: Book(instance), store: Store) {
+  // Close catalogue connection and release directory lock lease.
   case catalogue.close(store.catalogue) {
     Error(_) -> block(book, "daemon catalogue close was not confirmed")
     Ok(Nil) -> {

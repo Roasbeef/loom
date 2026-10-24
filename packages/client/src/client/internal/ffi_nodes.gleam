@@ -70,6 +70,8 @@ fn monitor_nodes(on: Bool, options: List(MonitorOption)) -> Dynamic
 /// ```
 pub fn watch() -> Result(Nil, Nil) {
   let answer = decode.run(monitor_nodes(True, [NodeType(All)]), atom.decoder())
+
+  // Inspect the monitor registration result atom to confirm subscription.
   case answer {
     Ok(word) ->
       case atom.to_string(word) {
@@ -171,6 +173,7 @@ fn is_alive() -> Bool
 /// ffi_nodes.allow(["loom@hub.example"]) // -> Ok(Nil)
 /// ```
 pub fn allow(names: List(String)) -> Result(Nil, Nil) {
+  // Check distributed node availability and whitelist emptiness before modifying kernel rules.
   case is_alive(), names {
     False, _ | _, [] -> Ok(Nil)
     True, _ -> {
@@ -179,6 +182,8 @@ pub fn allow(names: List(String)) -> Result(Nil, Nil) {
           net_kernel_allow(list.map(names, atom.create)),
           atom.decoder(),
         )
+
+      // Verify that net_kernel accepted the node allowlist configuration.
       case result.map(answer, atom.to_string) {
         Ok("ok") -> Ok(Nil)
         _ -> Error(Nil)

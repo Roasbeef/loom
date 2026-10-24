@@ -74,6 +74,8 @@ pub fn seed(
     ownership.migrated(ownership.node)
     |> result.map_error(fn(unavailable) { unavailable.reason }),
   )
+
+  // Skip migration if this node has already recorded its completion marker.
   case done {
     True -> Ok(AlreadyDone)
     False -> {
@@ -119,6 +121,8 @@ type Outcome {
   Conflicted(session: String)
 }
 
+/// Seeds directory ownership for a single session based on its registration custody state,
+/// handling resident sessions, in-flight imports, and pending moves.
 fn seed_one(
   ownership: Ownership,
   listed: List(Orchestrator),
@@ -126,6 +130,8 @@ fn seed_one(
   custody: catalogue.Custody,
 ) -> Result(Outcome, String) {
   let id = registration.id
+
+  // Match the registry custody variant to determine the appropriate directory record state.
   case custody {
     catalogue.Moved(..) -> Ok(Skipped)
     catalogue.Resident -> serving(ownership, id)
@@ -136,6 +142,8 @@ fn seed_one(
           if held == op && to == ownership.node
         -> {
           use from_node <- result.try(node_of(listed, from))
+
+          // Verify the source node recorded in the directory matches the expected peer.
           case owner == from_node {
             True -> activated(ownership, id, op, from_node)
             False -> Ok(Conflicted(id))
@@ -145,6 +153,8 @@ fn seed_one(
       }
     catalogue.Moving(op:, to:) -> {
       use to_node <- result.try(node_of(listed, to))
+
+      // Write a moving seed record pointing to the destination orchestrator node.
       case ownership.seed_moving(id, op, to_node) {
         Ok(Nil) -> Ok(Written)
         Error(Mismatch(Some(found))) if found.owner == to_node -> Ok(Skipped)
@@ -161,6 +171,7 @@ fn serving(ownership: Ownership, id: String) -> Result(Outcome, String) {
   }
 }
 
+/// Swaps an imported moving record into the serving state for the current node.
 fn activated(
   ownership: Ownership,
   id: String,
@@ -173,9 +184,8 @@ fn activated(
   }
 }
 
-// A refusal of a seeding write: a record this daemon already holds in any state
-// is a repeat, one held by another daemon is a conflict, and no quorum stops the
-// run so the next one repeats it.
+/// Evaluates a store write refusal, treating existing records owned by this node as
+/// idempotent successes while logging conflicts if owned by other daemons.
 fn mine_or_conflict(
   ownership: Ownership,
   id: String,
@@ -189,9 +199,7 @@ fn mine_or_conflict(
   }
 }
 
-// The node of an orchestrator a custody row names. A row naming an
-// orchestrator this daemon no longer lists cannot be seeded, and the run stops
-// with the reason so an operator can restore the row.
+/// Looks up the Erlang node name for an orchestrator identifier from the configuration.
 fn node_of(listed: List(Orchestrator), name: String) -> Result(String, String) {
   orchestrators.find(listed, name)
   |> result.map(fn(found) { found.node })
@@ -227,8 +235,8 @@ pub fn cover_local(
   Ok(list.count(written, fn(outcome) { outcome == Written }))
 }
 
-// One local session: a record already in this member's copy is left alone,
-// whoever it names, and an absent one is written.
+/// Ensures an owner record exists for a local session, preserving any existing record
+/// or writing a new local ownership record.
 fn cover_one(
   ownership: Ownership,
   logger: Logger,
@@ -238,6 +246,8 @@ fn cover_one(
     ownership.read(id)
     |> result.map_error(fn(unavailable) { unavailable.reason }),
   )
+
+  // Check whether an owner record already exists for the local session.
   case held {
     Some(Record(owner:, ..)) if owner == ownership.node -> Ok(Skipped)
     Some(_) -> {

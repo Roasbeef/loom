@@ -115,6 +115,7 @@ pub fn door_over_capture_model(
   )
 }
 
+/// Handles candidate proposal capture, validating arguments, directory paths, and persistence.
 fn propose(
   lookup: fn(tool.Ctx) -> Result(store.Store, store.Refusal),
   origin: fn(tool.Ctx) -> record.Origin,
@@ -133,12 +134,15 @@ fn propose(
   use kind <- result.try(
     tool.required_string(args, "kind") |> result.map_error(store.Authority),
   )
+
+  // Parse and validate the declared artifact category.
   use kind <- result.try(case kind {
     "extension" -> Ok(record.Extension)
     "program" -> Ok(record.Program)
     "prompt" -> Ok(record.Prompt)
     _ -> Error(store.Authority("CoreChangeRequired: unknown artifact boundary"))
   })
+
   use test_entry <- result.try(
     tool.optional_string(args, "test_entry")
     |> result.map_error(store.Authority),
@@ -152,6 +156,8 @@ fn propose(
     |> result.map_error(store.Authority),
   )
   let provenance = origin(ctx)
+
+  // Scope candidate persistence by target model, session, or workspace.
   use #(store, scope) <- result.try(case kind {
     record.Prompt -> {
       use target <- result.try(current_model(ctx))
@@ -161,6 +167,7 @@ fn propose(
     record.Extension -> Ok(#(store, record.Session(provenance.session_id)))
     record.Program -> Ok(#(store, record.Workspace(provenance.workspace)))
   })
+
   let proposal =
     candidate.Proposal(
       directory:,
@@ -184,6 +191,7 @@ fn propose(
   Ok(proposal_json(candidate))
 }
 
+/// Runs author tests or paired rollout trials for a submitted candidate.
 fn test_candidate(
   lookup: fn(tool.Ctx) -> Result(store.Store, store.Refusal),
   evaluate: fn(tool.Ctx, store.Store, record.CandidateId, value.JsonValue) ->
@@ -202,6 +210,7 @@ fn test_candidate(
   |> result.map_error(store.Bounds)
 }
 
+/// Inspects raw base64 envelopes of stored candidate files or retained test evidence.
 fn inspect(
   lookup: fn(tool.Ctx) -> Result(store.Store, store.Refusal),
   ctx: tool.Ctx,
@@ -212,6 +221,8 @@ fn inspect(
     tool.optional_string(args, "evidence_id")
     |> result.map_error(store.Authority),
   )
+
+  // Branch between reading specific evaluation evidence or inspecting candidate records.
   case evidence_id {
     Some(id) -> {
       use id <- result.try(
@@ -238,6 +249,7 @@ fn inspect(
   }
 }
 
+/// Paginates through discovered candidates and active tool capabilities for agent consumption.
 fn catalogue(
   lookup: fn(tool.Ctx) -> Result(store.Store, store.Refusal),
   ctx: tool.Ctx,
@@ -269,11 +281,13 @@ pub fn catalogue_values(
   use candidates <- result.try(store.catalogue(catalogue))
   use entries <- result.try(
     list.try_map(candidates, fn(candidate) {
+      // Lookup the active selection record for session or workspace scoped candidates.
       use selected <- result.try(case candidate.scope {
         record.ExactModel(_) -> Ok(None)
         record.Session(_) | record.Workspace(_) ->
           store.selected(catalogue, candidate.scope, candidate.name)
       })
+
       Ok(case selected {
         Some(selection) ->
           value.Object([
@@ -348,15 +362,19 @@ pub fn catalogue_page(
   )
 }
 
+/// Retrieves advertised callable tool entries for candidates that are currently selected.
 fn active_entries(
   catalogue: store.Store,
   candidate: record.Candidate,
 ) -> Result(List(value.JsonValue), store.Refusal) {
+  // Query active selection for candidates with session or workspace scope.
   use selected <- result.try(case candidate.scope {
     record.ExactModel(_) -> Ok(None)
     record.Session(_) | record.Workspace(_) ->
       store.selected(catalogue, candidate.scope, candidate.name)
   })
+
+  // Verify that the candidate matches the active selection before advertising callables.
   case selected {
     None -> Ok([])
     Some(selection) ->
@@ -367,6 +385,7 @@ fn active_entries(
   }
 }
 
+/// Verifies approval authorization before advertising candidate callable entries.
 fn advertised(
   catalogue: store.Store,
   candidate: record.Candidate,
@@ -380,10 +399,12 @@ fn advertised(
   }
 }
 
+/// Builds callable tool schemas and parameter descriptors for active program or extension candidates.
 fn callable_entries(
   candidate: record.Candidate,
   generation: Int,
 ) -> Result(List(value.JsonValue), store.Refusal) {
+  // Construct callable descriptors appropriate for the candidate artifact kind.
   case candidate.kind {
     record.Prompt -> Ok([])
     record.Program -> {
@@ -437,6 +458,8 @@ fn callable_entries(
             declared.description,
             schema,
           )
+
+        // Ensure the serialized descriptor fits within the tool discovery budget.
         case string.byte_size(value.to_string(descriptor)) <= 23_549 {
           True -> Ok(descriptor)
           False ->
@@ -449,6 +472,7 @@ fn callable_entries(
   }
 }
 
+/// Formats an individual callable tool declaration into its JSON discovery schema.
 fn callable_json(
   candidate: record.Candidate,
   generation: Int,
@@ -465,6 +489,7 @@ fn callable_json(
   ])
 }
 
+/// Serializes candidate identification, kind, and scope into a catalogue summary object.
 fn catalogue_json(candidate: record.Candidate) -> value.JsonValue {
   value.Object([
     #("candidate_id", value.String(record.id_string(candidate.id))),
@@ -481,6 +506,7 @@ fn catalogue_json(candidate: record.Candidate) -> value.JsonValue {
   ])
 }
 
+/// Encodes retained candidate evaluation evidence into its JSON representation.
 fn evidence_json(evidence: record.Evidence) -> value.JsonValue {
   value.Object([
     #("candidate_id", value.String(record.id_string(evidence.candidate_id))),
@@ -489,6 +515,7 @@ fn evidence_json(evidence: record.Evidence) -> value.JsonValue {
   ])
 }
 
+/// Encodes candidate proposal details, identity hashes, and origin metadata into JSON.
 fn proposal_json(candidate: record.Candidate) -> value.JsonValue {
   value.Object([
     #("candidate_id", value.String(record.id_string(candidate.id))),
@@ -521,6 +548,7 @@ fn proposal_json(candidate: record.Candidate) -> value.JsonValue {
   ])
 }
 
+/// Serializes candidate identity, name, and encoded envelope into JSON.
 fn candidate_json(candidate: record.Candidate) -> value.JsonValue {
   value.Object([
     #("candidate_id", value.String(record.id_string(candidate.id))),
@@ -529,6 +557,7 @@ fn candidate_json(candidate: record.Candidate) -> value.JsonValue {
   ])
 }
 
+/// Extracts and validates the required candidate_id argument from a tool request.
 fn request_id(
   args: value.JsonValue,
 ) -> Result(record.CandidateId, store.Refusal) {
@@ -546,6 +575,7 @@ fn option_text(text: Option(String)) -> String {
   }
 }
 
+/// Converts an evolution operation result into a standard ToolOutcome response.
 fn outcome(
   result: Result(value.JsonValue, store.Refusal),
   failed: fn(store.Refusal) -> tool.ToolOutcome,

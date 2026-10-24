@@ -47,6 +47,8 @@ pub fn decode(
   use document <- result.try(
     tom.parse(text) |> result.replace_error("invalid extension TOML"),
   )
+
+  // Look up the optional [live] table in the parsed extension manifest.
   case dict.get(document, "live") {
     Error(Nil) -> Ok(None)
     Ok(tom.Table(fields)) | Ok(tom.InlineTable(fields)) -> {
@@ -57,6 +59,7 @@ pub fn decode(
   }
 }
 
+/// Parses and validates all fields of the [live] contract table.
 fn fields_contract(
   fields: Dict(String, tom.Toml),
   modules: List(String),
@@ -79,15 +82,21 @@ fn fields_contract(
     }),
   )
   use entry <- result.try(text_field(fields, "entry"))
+
+  // Ensure the entry module exists in the package.
   use Nil <- result.try(case list.contains(modules, entry) {
     True -> Ok(Nil)
     False -> Error("[live].entry must name a shipped authored module")
   })
+
   use migration <- result.try(text_field(fields, "migration"))
+
+  // Ensure the migration module exists in the package.
   use Nil <- result.try(case list.contains(modules, migration) {
     True -> Ok(Nil)
     False -> Error("[live].migration must name a shipped authored module")
   })
+
   use boundary <- result.try(text_field(fields, "boundary"))
   use state_version <- result.try(text_field(fields, "state_version"))
   use accepts <- result.try(accepted_versions(fields))
@@ -108,6 +117,7 @@ fn fields_contract(
   ))
 }
 
+/// Extracts and validates a non-empty string field bounded to 128 bytes.
 fn text_field(
   fields: Dict(String, tom.Toml),
   key: String,
@@ -123,13 +133,16 @@ fn text_field(
   }
 }
 
+/// Extracts and validates the list of accepted prior state version identifiers.
 fn accepted_versions(
   fields: Dict(String, tom.Toml),
 ) -> Result(List(String), String) {
+  // Retrieve the accepts array from the contract fields.
   use values <- result.try(case dict.get(fields, "accepts") {
     Ok(tom.Array(values)) if values != [] -> Ok(values)
     _ -> Error("[live].accepts must contain at least one state version")
   })
+
   use versions <- result.try(
     list.try_map(values, fn(value) {
       case value {
@@ -143,12 +156,15 @@ fn accepted_versions(
       }
     }),
   )
+
+  // Enforce the bound of at most 16 unique versions.
   case list.length(versions) <= 16 && list.unique(versions) == versions {
     True -> Ok(versions)
     False -> Error("[live].accepts must contain at most 16 distinct versions")
   }
 }
 
+/// Extracts an integer field and validates that it falls within positive bounds.
 fn bounded_int(
   fields: Dict(String, tom.Toml),
   key: String,
@@ -173,10 +189,13 @@ pub fn compatible(
   target: Contract,
   state_version: String,
 ) -> Result(Nil, String) {
+  // Verify that both contracts share identical actor message boundaries.
   use Nil <- result.try(case current.boundary == target.boundary {
     True -> Ok(Nil)
     False -> Error("live message boundary is incompatible")
   })
+
+  // Verify that the target migration accepts the currently running state version.
   case list.contains(target.accepts, state_version) {
     True -> Ok(Nil)
     False -> Error("live migration does not accept the current state version")
@@ -200,6 +219,8 @@ pub fn vet(
     |> result.replace_error("extension.toml absent"),
   )
   use contract <- result.try(decode(text, package.module_names(vetted)))
+
+  // If a live contract is declared, vet the migration module's purity.
   case contract {
     None -> Ok(Nil)
     Some(contract) -> migration.check(vetted, contract.migration)

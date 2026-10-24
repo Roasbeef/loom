@@ -80,11 +80,12 @@ pub fn seam(wiring: advisor.Wiring) -> Seam {
   )
 }
 
-// One bounded call over the wiring's registered address, the same
-// monitored send-and-select the `advise` seam takes: a dead or timed-out
-// actor is an answer the operator reads, never the caller's exit. The
-// registry resolves a restarted actor under the same name, which is the
-// restart-safety the wiring exists for.
+/// Dispatches one bounded synchronous call to the goal advisor actor.
+/// One bounded call over the wiring's registered address, the same
+/// monitored send-and-select the `advise` seam takes: a dead or timed-out
+/// actor is an answer the operator reads, never the caller's exit. The
+/// registry resolves a restarted actor under the same name, which is the
+/// restart-safety the wiring exists for.
 fn call(
   named: address.Address(advisor.Message),
   build: fn(Subject(Result(answer, String))) -> advisor.Message,

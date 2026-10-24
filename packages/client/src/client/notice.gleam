@@ -187,12 +187,16 @@ pub fn deliver(
 ) -> Result(Delivered, String) {
   let mark = api.Mark(key: key(work), value: json.Null)
   let message = harness_message(runtime, text)
+
+  // deliver handles the the selected value outcomes before continuing the operation.
   let admitted = case may_wake(owner) {
     False -> steer_only(runtime, owner, message, mark)
     True ->
       api.send_to_strand_marking(runtime, to: owner, message:, mark:)
       |> result.replace(Delivered)
   }
+
+  // deliver handles the admitted outcomes before continuing the operation.
   case admitted {
     Ok(delivered) -> Ok(delivered)
     Error(api.FactConflict(_)) -> Ok(AlreadyDelivered)
@@ -203,6 +207,7 @@ pub fn deliver(
 // A notice to a subagent: onto its open run, or nowhere. The steer is
 // quiet by design, so the doorbell is rung here, as `client/peer_mail`
 // rings it after the same call.
+/// Coordinates steer only with the notice delivery and idle-state policy.
 fn steer_only(
   runtime: Runtime,
   owner: String,
@@ -210,6 +215,8 @@ fn steer_only(
   mark: api.Mark,
 ) -> Result(Delivered, api.ApiError) {
   let target = api.on_strand(runtime, owner)
+
+  // steer only handles the api.steer_marking(target, message, mark:) outcomes before continuing the operation.
   case api.steer_marking(target, message, mark:) {
     Ok(_entry) -> {
       api.nudge(target)
@@ -249,11 +256,14 @@ pub fn deliver_to_remote_child(
   work: Work,
   text: String,
 ) -> Result(Delivered, String) {
+  // deliver to remote child handles the remote_parent(runtime, owner) outcomes before continuing the operation.
   case remote_parent(runtime, owner) {
     NotRemote -> deliver(runtime, owner, work, text)
     Remote -> {
       let mark = api.Mark(key: key(work), value: json.Null)
       let message = harness_message(runtime, text)
+
+      // deliver to remote child handles the api.send_to_strand_marking(runtime, to: owner, message:, mark:) outcomes before continuing the operation.
       case api.send_to_strand_marking(runtime, to: owner, message:, mark:) {
         Ok(_delivery) -> Ok(Delivered)
         Error(api.FactConflict(_)) -> Ok(AlreadyDelivered)
@@ -277,6 +287,7 @@ type Parentage {
 // Reads the parent edge from the lineage cell, the same cell runtime admission
 // reads to choose the deadline. A strand with no readable cell is not a child of
 // a remote parent, and gets no wake.
+/// Coordinates remote parent with the notice delivery and idle-state policy.
 fn remote_parent(runtime: Runtime, strand: String) -> Parentage {
   let parent =
     api.fact(runtime, lineage.register_key(strand))
@@ -286,6 +297,8 @@ fn remote_parent(runtime: Runtime, strand: String) -> Parentage {
       lineage.decode(value) |> result.replace_error(Nil)
     })
     |> result.map(fn(cell) { cell.parent })
+
+  // remote parent handles the result.map(parent, string.starts_with(_, api.parent_reference_prefix)) outcomes before continuing the operation.
   case result.map(parent, string.starts_with(_, api.parent_reference_prefix)) {
     Ok(True) -> Remote
     Ok(False) | Error(Nil) -> NotRemote
@@ -307,6 +320,8 @@ pub fn activity(runtime: Runtime, strand: String) -> Result(Activity, String) {
     session.strand_state(runtime.session, strand)
     |> result.map_error(string.inspect),
   )
+
+  // activity handles the cell outcomes before continuing the operation.
   case cell {
     Some(cell) ->
       case cell.value.current_operation {
@@ -338,6 +353,8 @@ pub fn beat(
 ) -> Result(Nil, String) {
   use <- bool.guard(when: !may_wake(strand), return: Ok(Nil))
   let target = api.on_strand(runtime, strand)
+
+  // beat handles the api.prompt(target, [harness_message(runtime, text)]) outcomes before continuing the operation.
   case api.prompt(target, [harness_message(runtime, text)]) {
     Ok(_operation) -> Ok(Nil)
     Error(api.AcceptRejected(reason: acceptance.StrandBusy)) -> Ok(Nil)
@@ -396,11 +413,14 @@ pub fn sample(
   interval_ms interval_ms: Int,
   lines lines: fn() -> List(String),
 ) -> IdleClock {
+  // sample handles the strand_activity(owner) outcomes before continuing the operation.
   case strand_activity(owner) {
     Error(_unreadable) -> idle
 
     Ok(activity) -> {
       let #(idle, due) = observe(idle, owner, activity, now:, interval_ms:)
+
+      // sample handles the due outcomes before continuing the operation.
       case due {
         Due -> {
           let _woken = wake(owner, heartbeat_text(interval_ms, lines()))
@@ -449,6 +469,7 @@ pub fn sample_runtime(
 // existing ones is true: this is neither a human nor a peer. The text's
 // own `[loom]` first line is what names it, on the standing agreement a
 // scheduled injection already relies on.
+/// Coordinates harness message with the notice delivery and idle-state policy.
 fn harness_message(runtime: Runtime, text: String) -> AgentMessage {
   let #(now, _clock) = clock.read(runtime.effects.clock)
   message.UserMessage(
@@ -508,6 +529,8 @@ pub fn observe(
   interval_ms interval_ms: Int,
 ) -> #(IdleClock, Due) {
   let quiet = clock.quiet_since
+
+  // observe handles the activity, dict.get(quiet, strand) outcomes before continuing the operation.
   case activity, dict.get(quiet, strand) {
     Busy, _since -> #(IdleClock(dict.delete(quiet, strand)), NotDue)
     Idle, Error(Nil) -> #(IdleClock(dict.insert(quiet, strand, now)), NotDue)

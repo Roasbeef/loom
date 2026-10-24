@@ -142,6 +142,7 @@ pub fn over_owner_serving(
 // The Agency of a workspace whose owner is elsewhere. The one operation which
 // is a question rather than an act, whether a strand holds a tool, goes to the
 // owner. The rest are what the owner's own router answers, so they refuse.
+/// Routes stand in across the owner-backed code-mode capability boundary.
 fn stand_in(owner: OwnerServices) -> agent.Agency {
   agent.Agency(
     spawn: fn(_caller, _request) { Error(agent.AgencyUnavailable) },
@@ -162,6 +163,7 @@ fn stand_in(owner: OwnerServices) -> agent.Agency {
 // every other name is the execution's own. A denial from the owner, or from an
 // owner that cannot be reached, travels to the program as the in-band error a
 // router's refusal would have been.
+/// Routes sent to across the owner-backed code-mode capability boundary.
 fn sent_to(
   owner: OwnerServices,
   answered_here: List(String),
@@ -188,6 +190,7 @@ fn sent_to(
 
 // Where a capability is answered from this node: an MCP server this node runs
 // itself is the workspace's, and everything else is as `cap_placement` says.
+/// Handles placed in the bounded per-strand notes projection.
 fn placed(
   cap: String,
   answered_here: List(String),
@@ -210,6 +213,7 @@ fn placed(
 // The plain data the owner is sent. The strand, operation and step are the
 // dispatching tool call's, filled in by the tool shell and never read from
 // the program's arguments, so a program cannot name the strand it acts as.
+/// Routes call for across the owner-backed code-mode capability boundary.
 fn call_for(
   request: codemode_tool.Request,
   call: satellite.CapRequest,
@@ -333,6 +337,7 @@ fn execution_of(call: OwnerCapCall) -> String {
 // on every call, because a cancel, an abort or the deadline can close it while
 // the program runs on, and a closed execution must not spawn, read input or
 // write a note.
+/// Routes answer background across the owner-backed code-mode capability boundary.
 fn answer_background(
   background: Background,
   wiring: peers.Wiring,
@@ -355,6 +360,7 @@ fn answer_background(
 // or running, and it names the call that launched it. A record an earlier build
 // wrote has no launching call, and the owner cannot attribute a workflow step
 // without one.
+/// Routes bound across the owner-backed code-mode capability boundary.
 fn bound(
   background: Background,
   call: OwnerCapCall,
@@ -367,6 +373,8 @@ fn bound(
     )
     async_runs.record(live, id)
   }
+
+  // bound handles the read outcomes before continuing the operation.
   case read {
     Error(reason) -> Error(unknown_execution(reason))
     Ok(None) -> Error(unknown_execution("there is no such execution"))
@@ -374,18 +382,23 @@ fn bound(
   }
 }
 
+/// Routes bound to across the owner-backed code-mode capability boundary.
 fn bound_to(
   record: async_execution.Execution,
   call: OwnerCapCall,
   id: String,
 ) -> Result(async_codemode.Launching, CapDenial) {
   let ours = record.strand == call.strand && record.operation == call.op_id
+
+  // bound to handles the the selected value outcomes before continuing the operation.
   let open = case record.phase {
     async_execution.Starting | async_execution.Running -> True
     async_execution.Draining
     | async_execution.Finished(_)
     | async_execution.Lost(_) -> False
   }
+
+  // bound to handles the ours, open, record.launch outcomes before continuing the operation.
   case ours, open, record.launch {
     False, _, _ -> Error(unknown_execution("the execution is not this call's"))
     True, False, _ ->

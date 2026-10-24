@@ -215,6 +215,8 @@ pub fn stub_key(digest: String) -> String {
 /// assert remote_child.is_live(stub_in_state(remote_child.Requested), 1000)
 /// ```
 pub fn is_live(stub: Stub, now: Int) -> Bool {
+  // This match resolves stub.state before the surrounding protocol step continues.
+  // This match resolves stub.state before the enclosing validation continues.
   case stub.state {
     Requested -> True
     Spawned(placed:) -> placed.deadline_ms > now
@@ -252,6 +254,7 @@ pub fn admit(
   key: String,
   stub: Stub,
 ) -> Result(Admission, String) {
+  // This branch resolves the admit decision before the operation proceeds.
   case
     api.put_reserved_fact_expecting(runtime, key, encode(stub), expected: None)
   {
@@ -261,6 +264,9 @@ pub fn admit(
     }
     Error(api.FactConflict(..)) -> {
       use found <- result.try(read(runtime, key))
+
+      // This match resolves found before the surrounding protocol step continues.
+      // This match resolves found before the enclosing validation continues.
       case found {
         Some(#(existing, _seq)) -> Ok(Existing(existing))
         None -> Error("the remote child stub moved under the write")
@@ -333,6 +339,8 @@ pub fn kept_of(cells: List(#(String, JsonValue))) -> List(Kept) {
 pub fn holders(kept: List(Kept)) -> List(String) {
   kept
   |> list.filter_map(fn(entry) {
+    // This match resolves entry.stub.state before the surrounding protocol step continues.
+    // This match resolves entry.stub.state before the enclosing validation continues.
     case entry.stub.state {
       Requested | Spawned(..) | Settled(..) -> Ok(entry.stub.orchestrator)
       Refused(..) -> Error(Nil)
@@ -358,6 +366,8 @@ pub fn holders(kept: List(Kept)) -> List(String) {
 pub fn usage_by_orchestrator(kept: List(Kept)) -> List(#(String, ChildUsage)) {
   kept
   |> list.filter_map(fn(entry) {
+    // This match resolves entry.stub.state before the surrounding protocol step continues.
+    // This match resolves entry.stub.state before the enclosing validation continues.
     case entry.stub.state {
       Settled(usage:, ..) -> Ok(#(entry.stub.orchestrator, usage))
       Requested | Spawned(..) | Refused(..) -> Error(Nil)
@@ -390,6 +400,7 @@ pub fn settled_tokens(kept: List(Kept)) -> Int {
   |> list.fold(0, fn(total, pair) { total + pair.1.input + pair.1.output })
 }
 
+/// No usage keeps this client operation’s decoding or state decision in one place.
 fn no_usage() -> ChildUsage {
   remote_spawn.ChildUsage(
     input: 0,
@@ -400,6 +411,7 @@ fn no_usage() -> ChildUsage {
   )
 }
 
+/// Add usage keeps this client operation’s decoding or state decision in one place.
 fn add_usage(total: ChildUsage, more: ChildUsage) -> ChildUsage {
   remote_spawn.ChildUsage(
     input: total.input + more.input,
@@ -438,10 +450,13 @@ pub fn agents(kept: List(Kept), now: Int) -> List(RemoteAgent) {
   |> remote_agent.within_bound
 }
 
+/// Agent of keeps this client operation’s decoding or state decision in one place.
 fn agent_of(stub: Stub, now: Int) -> RemoteAgent {
+  // This match resolves stub.state before the enclosing validation continues.
   let standing = case stub.state {
     Requested -> remote_agent.Starting
     Spawned(..) ->
+      // This match resolves is_live(stub, now) before the surrounding protocol step continues.
       case is_live(stub, now) {
         True -> remote_agent.Running
         False -> remote_agent.Expired
@@ -450,29 +465,37 @@ fn agent_of(stub: Stub, now: Int) -> RemoteAgent {
     Settled(..) -> remote_agent.Stopped
     Refused(..) -> remote_agent.Refused
   }
+
+  // This match resolves stub.state before the enclosing validation continues.
   let model = case stub.state {
     Spawned(placed:) | Settled(placed:, ..) -> placed.model
     Requested | Refused(..) -> ""
   }
+
+  // This match resolves stub.glance before the enclosing validation continues.
   let title = case stub.glance {
     Some(seen) if seen.title != "" -> seen.title
     Some(_) | None -> stub.request.purpose
   }
+
   remote_agent.RemoteAgent(
     id: stub.name,
     parent: stub.strand,
     orchestrator: stub.orchestrator,
     standing:,
     title: glance.clip(title, remote_agent.max_text_bytes),
+    // This match resolves stub.glance before the enclosing validation continues.
     summary: case stub.glance {
       Some(seen) -> glance.clip(seen.summary, remote_agent.max_text_bytes)
       None -> ""
     },
+    // This match resolves stub.glance before the enclosing validation continues.
     tokens: case stub.glance {
       Some(seen) -> int.max(0, seen.tokens)
       None -> 0
     },
     model: glance.clip(model, remote_agent.max_text_bytes),
+    // This match resolves stub.glance, stub.glance_seen_ms before the enclosing validation continues.
     age_ms: case stub.glance, stub.glance_seen_ms {
       Some(_), seen if seen > 0 -> Some(int.max(0, now - seen))
       Some(_), _ | None, _ -> None
@@ -509,11 +532,14 @@ pub fn history_reader(
         "no child of this session is named " <> child
       }),
     )
+
+    // This match resolves entry.stub.state before the enclosing validation continues.
     use handle <- result.try(case entry.stub.state {
       Spawned(placed:) | Settled(placed:, ..) -> Ok(placed.handle)
       Requested -> Error("the child has not started yet")
       Refused(..) -> Error("the spawn was refused, so there is no transcript")
     })
+
     reach.history(
       entry.stub.orchestrator,
       parent_of(entry.stub, reach.session),
@@ -523,6 +549,8 @@ pub fn history_reader(
     )
     |> result.map(remote_transcript.encode)
     |> result.map_error(fn(failure) {
+      // This match resolves failure before the surrounding protocol step continues.
+      // This match resolves failure before the enclosing validation continues.
       case failure {
         peer_mail.Refused(reason) ->
           entry.stub.orchestrator <> " refused: " <> reason
@@ -600,6 +628,8 @@ pub fn progressed(
   now: Int,
 ) -> Result(Stub, String) {
   advance_with(runtime, key, fn(stub) {
+    // This match resolves stub.glance before the surrounding protocol step continues.
+    // This match resolves stub.glance before the enclosing validation continues.
     case stub.glance {
       Some(held) if held.at >= glance.at -> None
       Some(_) | None ->
@@ -647,6 +677,8 @@ pub fn spawned(
     |> result.map_error(describe),
   )
   advance(runtime, key, fn(state) {
+    // This match resolves state before the surrounding protocol step continues.
+    // This match resolves state before the enclosing validation continues.
     case state {
       Requested | Refused(..) -> Some(Spawned(placed))
       Spawned(..) | Settled(..) -> None
@@ -673,6 +705,8 @@ pub fn refused(
   reason: String,
 ) -> Result(Stub, String) {
   advance(runtime, key, fn(state) {
+    // This match resolves state before the surrounding protocol step continues.
+    // This match resolves state before the enclosing validation continues.
     case state {
       Requested -> Some(Refused(reason))
       Spawned(..) | Settled(..) | Refused(..) -> None
@@ -696,7 +730,10 @@ pub fn refused(
 // and clearing on its settle would take the card away before its operator could
 // read it, and answer the approval `unknown_escalation`. The card clears when the box sends the decided
 // state, or when the laptop's own decision files the record the box answered.
+/// Clear requests keeps this client operation’s decoding or state decision in one place.
 fn clear_requests(runtime: api.Runtime, stub: Stub) -> Stub {
+  // This match resolves stub.state before the surrounding protocol step continues.
+  // This match resolves stub.state before the enclosing validation continues.
   case stub.state {
     Refused(..) -> {
       let _ =
@@ -723,6 +760,8 @@ pub fn settled(
   owed: Int,
 ) -> Result(Stub, String) {
   advance_with(runtime, key, fn(stub) {
+    // This match resolves stub.state before the surrounding protocol step continues.
+    // This match resolves stub.state before the enclosing validation continues.
     case stub.state {
       Spawned(placed) ->
         Some(Stub(..stub, owed:, state: Settled(placed:, outcome:, usage:)))
@@ -750,6 +789,8 @@ pub const owing_grace_ms = 3_600_000
 /// assert remote_child.needs_link(stub_in_state(remote_child.Requested), 1000)
 /// ```
 pub fn needs_link(stub: Stub, now: Int) -> Bool {
+  // This match resolves is_live(stub, now) before the surrounding protocol step continues.
+  // This match resolves is_live(stub, now) before the enclosing validation continues.
   case is_live(stub, now) {
     True -> True
     False -> owes_mail(stub, now)
@@ -765,6 +806,8 @@ pub fn needs_link(stub: Stub, now: Int) -> Bool {
 /// assert !remote_child.owes_mail(stub_in_state(remote_child.Requested), 1000)
 /// ```
 pub fn owes_mail(stub: Stub, now: Int) -> Bool {
+  // This match resolves stub.state before the surrounding protocol step continues.
+  // This match resolves stub.state before the enclosing validation continues.
   case stub.state {
     Settled(placed:, ..) ->
       stub.owed > 0 && now < placed.deadline_ms + owing_grace_ms
@@ -778,6 +821,7 @@ pub fn owes_mail(stub: Stub, now: Int) -> Bool {
 // stub that is no longer where the step starts is returned unchanged. A lost
 // race re-reads and decides again, so the loser of two writers that heard the
 // same answer ends by agreeing with the winner.
+/// Advance keeps this client operation’s decoding or state decision in one place.
 fn advance(
   runtime: api.Runtime,
   key: String,
@@ -791,6 +835,7 @@ fn advance(
 // A step that may change any part of the stub, as a single compare-and-set. The
 // step is given the stub as read and returns the stub to write, or `None` when
 // it does not apply to where the stub stands.
+/// Advance with keeps this client operation’s decoding or state decision in one place.
 fn advance_with(
   runtime: api.Runtime,
   key: String,
@@ -799,6 +844,7 @@ fn advance_with(
   advance_attempts(runtime, key, next, step_attempts)
 }
 
+/// Advance attempts keeps this client operation’s decoding or state decision in one place.
 fn advance_attempts(
   runtime: api.Runtime,
   key: String,
@@ -806,9 +852,13 @@ fn advance_attempts(
   attempts: Int,
 ) -> Result(Stub, String) {
   use found <- result.try(read(runtime, key))
+
+  // This match resolves found before the surrounding protocol step continues.
+  // This match resolves found before the enclosing validation continues.
   case found {
     None -> Error("the remote child stub is missing")
     Some(#(stub, seq)) ->
+      // This match resolves next(stub) before the surrounding protocol step continues.
       case next(stub) {
         None -> Ok(stub)
         Some(moved) -> store(runtime, key, moved, seq, next, attempts)
@@ -818,6 +868,7 @@ fn advance_attempts(
 
 // The write half of a step. Losing the compare-and-set re-enters the step with
 // one attempt fewer, and the re-read decides whether the step still applies.
+/// Store keeps this client operation’s decoding or state decision in one place.
 fn store(
   runtime: api.Runtime,
   key: String,
@@ -826,6 +877,7 @@ fn store(
   next: fn(Stub) -> Option(Stub),
   attempts: Int,
 ) -> Result(Stub, String) {
+  // This branch resolves the store decision before the operation proceeds.
   case
     api.put_reserved_fact_expecting(
       runtime,
@@ -848,6 +900,7 @@ fn store(
 // after the write that changed it, so a gateway that reads the stubs on hearing
 // it finds the change. The event carries nothing: the stubs are the truth. A
 // lost publication leaves a client's strip stale until the next change.
+/// Changed keeps this client operation’s decoding or state decision in one place.
 fn changed(runtime: api.Runtime) -> Nil {
   bus.publish(
     bus.start(),
@@ -856,6 +909,7 @@ fn changed(runtime: api.Runtime) -> Nil {
   )
 }
 
+/// Read keeps this client operation’s decoding or state decision in one place.
 fn read(
   runtime: api.Runtime,
   key: String,
@@ -863,6 +917,9 @@ fn read(
   use cell <- result.try(
     api.fact_cell(runtime, key) |> result.map_error(describe),
   )
+
+  // This match resolves cell before the surrounding protocol step continues.
+  // This match resolves cell before the enclosing validation continues.
   case cell {
     None -> Ok(None)
     Some(api.FactCell(value:, seq:)) ->
@@ -874,6 +931,7 @@ fn read(
 // parent strand to a child that has no strand here, so that addressing, waiting
 // and the roster see it as the parent's descendant, and `orchestrator` marks it
 // as a cell nothing may ask the local strand registers about.
+/// Lineage cell keeps this client operation’s decoding or state decision in one place.
 fn lineage_cell(stub: Stub, placed: Placed) -> lineage.Lineage {
   lineage.Lineage(
     strand: placed.handle.strand,
@@ -896,6 +954,7 @@ fn lineage_cell(stub: Stub, placed: Placed) -> lineage.Lineage {
 
 // The step id the lineage ledger records for this call site, which carries a
 // code-mode program's ordinal the same way a local spawn's does.
+/// Minting step keeps this client operation’s decoding or state decision in one place.
 fn minting_step(stub: Stub) -> String {
   agent.minting_step(agent.Caller(
     strand: stub.strand,
@@ -908,7 +967,10 @@ fn minting_step(stub: Stub) -> String {
 
 // --- the codec --------------------------------------------------------------
 
+/// Describe keeps this client operation’s decoding or state decision in one place.
 fn describe(error: api.ApiError) -> String {
+  // This match resolves error before the surrounding protocol step continues.
+  // This match resolves error before the enclosing validation continues.
   case error {
     api.ReadFailed(reason:) -> reason
     api.FactConflict(key:) -> "the fact `" <> key <> "` moved under the write"
@@ -951,7 +1013,10 @@ pub fn encode(stub: Stub) -> JsonValue {
   ))
 }
 
+/// Encode state keeps this client operation’s decoding or state decision in one place.
 fn encode_state(state: State) -> List(#(String, JsonValue)) {
+  // This match resolves state before the surrounding protocol step continues.
+  // This match resolves state before the enclosing validation continues.
   case state {
     Requested -> [#("state", json.String("requested"))]
     Spawned(placed:) -> [
@@ -971,11 +1036,14 @@ fn encode_state(state: State) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Encode site keeps this client operation’s decoding or state decision in one place.
 fn encode_site(site: remote_spawn.CallSite) -> JsonValue {
   json.Object([
     #("operation", json.String(ids.op_id_to_string(site.operation))),
     #("stepId", json.String(site.step_id)),
     #("sourceIndex", json.Int(site.source_index)),
+
+    // This match resolves site.minter before the enclosing validation continues.
     #("minter", case site.minter {
       agent.ToolCall -> json.Object([#("kind", json.String("tool"))])
       agent.Program(ordinal:) ->
@@ -987,6 +1055,7 @@ fn encode_site(site: remote_spawn.CallSite) -> JsonValue {
   ])
 }
 
+/// Encode request keeps this client operation’s decoding or state decision in one place.
 fn encode_request(request: remote_spawn.Request) -> JsonValue {
   json.Object([
     #("purpose", json.String(request.purpose)),
@@ -1002,6 +1071,7 @@ fn encode_request(request: remote_spawn.Request) -> JsonValue {
   ])
 }
 
+/// Encode placed keeps this client operation’s decoding or state decision in one place.
 fn encode_placed(placed: Placed) -> JsonValue {
   json.Object([
     #("strand", json.String(placed.handle.strand)),
@@ -1013,7 +1083,9 @@ fn encode_placed(placed: Placed) -> JsonValue {
   ])
 }
 
+/// Encode outcome keeps this client operation’s decoding or state decision in one place.
 fn encode_outcome(outcome: Outcome) -> JsonValue {
+  // This match resolves outcome before the enclosing validation continues.
   json.Object(case outcome {
     agent.Completed -> [#("kind", json.String("completed"))]
     agent.Failed(reason:) -> [
@@ -1028,6 +1100,7 @@ fn encode_outcome(outcome: Outcome) -> JsonValue {
   })
 }
 
+/// Encode usage keeps this client operation’s decoding or state decision in one place.
 fn encode_usage(usage: ChildUsage) -> JsonValue {
   json.Object([
     #("input", json.Int(usage.input)),
@@ -1038,11 +1111,15 @@ fn encode_usage(usage: ChildUsage) -> JsonValue {
   ])
 }
 
+/// Strings keeps this client operation’s decoding or state decision in one place.
 fn strings(values: List(String)) -> JsonValue {
   json.Array(list.map(values, json.String))
 }
 
+/// Optional keeps this client operation’s decoding or state decision in one place.
 fn optional(value: Option(a), render: fn(a) -> JsonValue) -> JsonValue {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     Some(present) -> render(present)
     None -> json.Null
@@ -1074,14 +1151,19 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
       glance.decode(value) |> result.map_error(corruption.describe)
     }),
   )
+
+  // This match resolves list.key_find(fields, "glanceSeenMs") before the enclosing validation continues.
   use glance_seen_ms <- result.try(case list.key_find(fields, "glanceSeenMs") {
     Error(Nil) -> Ok(0)
     Ok(found) -> expect_number(found)
   })
+
+  // This match resolves list.key_find(fields, "owed") before the enclosing validation continues.
   use owed <- result.try(case list.key_find(fields, "owed") {
     Error(Nil) -> Ok(0)
     Ok(found) -> expect_number(found)
   })
+
   use state <- result.try(decode_state(fields))
   Ok(Stub(
     orchestrator:,
@@ -1098,8 +1180,12 @@ pub fn decode(value: JsonValue) -> Result(Stub, String) {
   ))
 }
 
+/// Decode state keeps this client operation’s decoding or state decision in one place.
 fn decode_state(fields: List(#(String, JsonValue))) -> Result(State, String) {
   use word <- result.try(text(fields, "state"))
+
+  // This match resolves word before the surrounding protocol step continues.
+  // This match resolves word before the enclosing validation continues.
   case word {
     "requested" -> Ok(Requested)
     "spawned" -> {
@@ -1125,6 +1211,7 @@ fn decode_state(fields: List(#(String, JsonValue))) -> Result(State, String) {
   }
 }
 
+/// Decode site keeps this client operation’s decoding or state decision in one place.
 fn decode_site(value: JsonValue) -> Result(remote_spawn.CallSite, String) {
   use fields <- result.try(object(value, "a call site"))
   use operation <- result.try(operation_id(fields, "operation"))
@@ -1138,10 +1225,14 @@ fn decode_site(value: JsonValue) -> Result(remote_spawn.CallSite, String) {
   Ok(remote_spawn.CallSite(operation:, step_id:, source_index:, minter:))
 }
 
+/// Decode minter keeps this client operation’s decoding or state decision in one place.
 fn decode_minter(
   fields: List(#(String, JsonValue)),
 ) -> Result(agent.Minter, String) {
   use kind <- result.try(text(fields, "kind"))
+
+  // This match resolves kind before the surrounding protocol step continues.
+  // This match resolves kind before the enclosing validation continues.
   case kind {
     "tool" -> Ok(agent.ToolCall)
     "program" -> number(fields, "ordinal") |> result.map(agent.Program)
@@ -1149,6 +1240,7 @@ fn decode_minter(
   }
 }
 
+/// Decode request keeps this client operation’s decoding or state decision in one place.
 fn decode_request(value: JsonValue) -> Result(remote_spawn.Request, String) {
   use fields <- result.try(object(value, "a spawn request"))
   use purpose <- result.try(text(fields, "purpose"))
@@ -1161,11 +1253,14 @@ fn decode_request(value: JsonValue) -> Result(remote_spawn.Request, String) {
     "resultSchema",
     agent.parse_result_schema,
   ))
+
+  // This match resolves list.key_find(fields, "detach") before the enclosing validation continues.
   use detach <- result.try(case list.key_find(fields, "detach") {
     Ok(json.Bool(True)) -> Ok(remote_spawn.Detached)
     Ok(json.Bool(False)) -> Ok(remote_spawn.Attached)
     Ok(_) | Error(Nil) -> Error("expected `detach` to be a boolean")
   })
+
   Ok(remote_spawn.Request(
     purpose:,
     brief:,
@@ -1177,6 +1272,7 @@ fn decode_request(value: JsonValue) -> Result(remote_spawn.Request, String) {
   ))
 }
 
+/// Decode placed keeps this client operation’s decoding or state decision in one place.
 fn decode_placed(value: JsonValue) -> Result(Placed, String) {
   use fields <- result.try(object(value, "a placed child"))
   use strand <- result.try(text(fields, "strand"))
@@ -1194,9 +1290,13 @@ fn decode_placed(value: JsonValue) -> Result(Placed, String) {
   ))
 }
 
+/// Decode outcome keeps this client operation’s decoding or state decision in one place.
 fn decode_outcome(value: JsonValue) -> Result(Outcome, String) {
   use fields <- result.try(object(value, "an outcome"))
   use kind <- result.try(text(fields, "kind"))
+
+  // This match resolves kind before the surrounding protocol step continues.
+  // This match resolves kind before the enclosing validation continues.
   case kind {
     "completed" -> Ok(agent.Completed)
     "failed" -> text(fields, "reason") |> result.map(agent.Failed)
@@ -1209,30 +1309,38 @@ fn decode_outcome(value: JsonValue) -> Result(Outcome, String) {
   }
 }
 
+/// Decode usage keeps this client operation’s decoding or state decision in one place.
 fn decode_usage(value: JsonValue) -> Result(ChildUsage, String) {
   use fields <- result.try(object(value, "a usage"))
   use input <- result.try(number(fields, "input"))
   use output <- result.try(number(fields, "output"))
   use cache_read <- result.try(number(fields, "cacheRead"))
   use cache_write <- result.try(number(fields, "cacheWrite"))
+
+  // This match resolves list.key_find(fields, "cost") before the enclosing validation continues.
   use cost <- result.try(case list.key_find(fields, "cost") {
     Ok(json.Float(cost)) -> Ok(cost)
     Ok(json.Int(cost)) -> Ok(int.to_float(cost))
     Ok(_) | Error(Nil) -> Error("expected `cost` to be a number")
   })
+
   Ok(remote_spawn.ChildUsage(input:, output:, cache_read:, cache_write:, cost:))
 }
 
+/// Object keeps this client operation’s decoding or state decision in one place.
 fn object(
   value: JsonValue,
   what: String,
 ) -> Result(List(#(String, JsonValue)), String) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) -> Ok(fields)
     other -> Error("expected " <> what <> ", got " <> json.to_string(other))
   }
 }
 
+/// Member keeps this client operation’s decoding or state decision in one place.
 fn member(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -1241,6 +1349,7 @@ fn member(
   |> result.map_error(fn(_) { "missing `" <> name <> "`" })
 }
 
+/// Text keeps this client operation’s decoding or state decision in one place.
 fn text(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -1248,6 +1357,7 @@ fn text(
   member(fields, name) |> result.try(expect_text)
 }
 
+/// Number keeps this client operation’s decoding or state decision in one place.
 fn number(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -1255,6 +1365,7 @@ fn number(
   member(fields, name) |> result.try(expect_number)
 }
 
+/// Texts keeps this client operation’s decoding or state decision in one place.
 fn texts(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -1262,6 +1373,7 @@ fn texts(
   member(fields, name) |> result.try(expect_texts)
 }
 
+/// Operation id keeps this client operation’s decoding or state decision in one place.
 fn operation_id(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -1271,21 +1383,30 @@ fn operation_id(
   |> result.map_error(fn(report) { corruption.describe(report) })
 }
 
+/// Expect text keeps this client operation’s decoding or state decision in one place.
 fn expect_text(value: JsonValue) -> Result(String, String) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.String(text) -> Ok(text)
     other -> Error("expected text, got " <> json.to_string(other))
   }
 }
 
+/// Expect number keeps this client operation’s decoding or state decision in one place.
 fn expect_number(value: JsonValue) -> Result(Int, String) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Int(number) -> Ok(number)
     other -> Error("expected an integer, got " <> json.to_string(other))
   }
 }
 
+/// Expect texts keeps this client operation’s decoding or state decision in one place.
 fn expect_texts(value: JsonValue) -> Result(List(String), String) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Array(items) -> list.try_map(items, expect_text)
     other -> Error("expected a list of text, got " <> json.to_string(other))
@@ -1293,11 +1414,14 @@ fn expect_texts(value: JsonValue) -> Result(List(String), String) {
 }
 
 // A member that may be null or absent, decoded when it is present.
+/// Maybe keeps this client operation’s decoding or state decision in one place.
 fn maybe(
   fields: List(#(String, JsonValue)),
   name: String,
   read_one: fn(JsonValue) -> Result(a, String),
 ) -> Result(Option(a), String) {
+  // This match resolves list.key_find(fields, name) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, name) before the enclosing validation continues.
   case list.key_find(fields, name) {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(present) -> read_one(present) |> result.map(Some)

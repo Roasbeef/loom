@@ -111,9 +111,13 @@ pub fn read(
   orchestrator: String,
   session: String,
 ) -> relayed.Read {
+  // This branch resolves top_relay all_sessions relay orchestrator before the operation continues.
   case top_relay.all_sessions(relay, orchestrator) {
     Error(failure) -> relayed.Unreached(top_relay.describe(failure))
     Ok(rows) ->
+      // This branch resolves the input state before the operation continues.
+
+      // This branch resolves the input state before the operation continues.
       case list.find(rows, fn(row) { row.session_id == session }) {
         Error(Nil) ->
           relayed.Heard(row: None, history: relayed.Unreadable(why: ""))
@@ -126,6 +130,7 @@ pub fn read(
   }
 }
 
+/// Fetches remote transcript history for a session through the top relay.
 fn history(
   relay: Relay,
   orchestrator: String,
@@ -163,7 +168,9 @@ pub fn row_of(orchestrator: String, row: remote_top.Row) -> relayed.Row {
   )
 }
 
+/// Converts remote placement descriptions into UI listing code representations.
 fn code_of(placement: remote_top.Placement) -> listing.Code {
+  // This branch resolves placement before the operation continues.
   case placement {
     remote_top.Folder(path:) -> listing.Folder(path:)
     remote_top.Workspace(executor:, name:) ->
@@ -172,9 +179,9 @@ fn code_of(placement: remote_top.Placement) -> listing.Code {
   }
 }
 
-// The box does not list an archived session, so `Archived` is not sent; it reads
-// as quiet if one arrives.
+/// Maps remote session activity states to relayed page activity markers.
 fn activity_of(activity: remote_top.Activity) -> relayed.Activity {
+  // This branch resolves activity before the operation continues.
   case activity {
     remote_top.NeedsYou -> relayed.NeedsYou
     remote_top.Working -> relayed.Working
@@ -183,7 +190,9 @@ fn activity_of(activity: remote_top.Activity) -> relayed.Activity {
 }
 
 // The grants a request wants and the part of them the box's ceiling admitted.
+/// Wanted keeps this client decision explicit for its callers.
 fn wanted(record: EscalationRecord) -> List(policy.Grant) {
+  // This branch resolves record denial before the operation continues.
   case record.denial {
     Some(denial) -> denial.wanted
     None -> []
@@ -194,14 +203,14 @@ fn admitted(record: EscalationRecord) -> List(policy.Grant) {
   option.unwrap(record.admitted, [])
 }
 
-// The request as the terminal's approval card holds it: the same review the
-// local card is drawn from, so the words, the 16 KiB bound and the
-// rememberable rule are the ones a local request has.
+/// Constructs a client approval review record from an escalation record.
 fn review_of(
   orchestrator: String,
   record: EscalationRecord,
 ) -> approval.Review {
   let allowed = admitted(record)
+
+  // Determine approval permission based on captured action digest and admitted grants.
   let permission = case record.action, allowed {
     "", _ -> approval.Unavailable("approval has no captured action digest")
     _, [] ->
@@ -211,6 +220,7 @@ fn review_of(
     action, grants ->
       approval.Exact(action, list.map(grants, protocol.encode_grant))
   }
+
   let outside =
     wanted(record)
     |> list.filter(fn(grant) { !list.contains(allowed, grant) })
@@ -244,6 +254,7 @@ pub fn need_of(orchestrator: String, record: EscalationRecord) -> relayed.Need {
     approval.outside_lines(review)
     |> list.map(string.drop_start(_, 2))
 
+  // Format presentation review card or render approval error view.
   case approval.presentation(review) {
     Ok(shown) ->
       relayed.Need(
@@ -256,11 +267,13 @@ pub fn need_of(orchestrator: String, record: EscalationRecord) -> relayed.Need {
         authority: list.map(shown.authority, string.drop_start(_, 2)),
         outside:,
         ability: relayed.Decidable,
+        // This branch resolves approval rememberable review before the operation continues.
         remember: case approval.rememberable(review) {
           Ok(Nil) -> relayed.Rememberable
           Error(_) -> relayed.OnceOnly
         },
       )
+
     Error(reason) ->
       relayed.Need(
         escalation: record.escalation_id,
@@ -279,7 +292,9 @@ pub fn need_of(orchestrator: String, record: EscalationRecord) -> relayed.Need {
 
 // A failure as the outcome of a press: a refusal when nothing happened, and an
 // unknown outcome when the box may have done it.
+/// Outcome of keeps this client decision explicit for its callers.
 fn outcome_of(failure: Failure) -> relayed.Outcome {
+  // This branch resolves top_relay outcome_unknown failure before the operation continues.
   case top_relay.outcome_unknown(failure) {
     True -> relayed.Unknown(why: top_relay.describe(failure))
     False -> relayed.Refusal(why: top_relay.describe(failure))
@@ -302,6 +317,7 @@ pub fn send(
   message_id: String,
   text: String,
 ) -> relayed.Outcome {
+  // This branch resolves top_relay send relay orchestrator session message_id text before the operation continues.
   case top_relay.send(relay, orchestrator, session, message_id, text) {
     Ok(_) -> relayed.Done
     Error(failure) -> outcome_of(failure)
@@ -320,6 +336,7 @@ pub fn stop(
   orchestrator: String,
   session: String,
 ) -> relayed.Outcome {
+  // This branch resolves top_relay stop relay orchestrator session before the operation continues.
   case top_relay.stop(relay, orchestrator, session) {
     Ok(Nil) -> relayed.Done
     Error(failure) -> outcome_of(failure)
@@ -338,6 +355,7 @@ pub fn archive(
   orchestrator: String,
   session: String,
 ) -> relayed.Outcome {
+  // This branch resolves top_relay archive relay orchestrator session before the operation continues.
   case top_relay.archive(relay, orchestrator, session) {
     Ok(Nil) -> relayed.Done
     Error(failure) -> outcome_of(failure)
@@ -365,9 +383,13 @@ pub fn decide(
   seq: Int,
   choice: relayed.Choice,
 ) -> relayed.Outcome {
+  // This branch resolves pending relay orchestrator session escalation seq before the operation continues.
   case pending(relay, orchestrator, session, escalation, seq) {
     Error(outcome) -> outcome
     Ok(record) ->
+      // This branch resolves the input state before the operation continues.
+
+      // This branch resolves the input state before the operation continues.
       case decision(orchestrator, record, choice) {
         Error(why) -> relayed.Refusal(why:)
         Ok(chosen) ->
@@ -392,7 +414,7 @@ pub fn decide(
   }
 }
 
-// The request the page named, in a fresh read of the box's list.
+/// Retrieves the matching pending escalation record from a fresh session listing.
 fn pending(
   relay: Relay,
   orchestrator: String,
@@ -419,17 +441,18 @@ fn pending(
   ))
 }
 
-// What the person chose, as the decision the box judges. Approving carries the
-// grants the ceiling admitted and the action digest the card was drawn with.
+/// Constructs a remote escalation decision from user choice selection.
 fn decision(
   orchestrator: String,
   record: EscalationRecord,
   choice: relayed.Choice,
 ) -> Result(remote_escalation.Decision, String) {
+  // This branch resolves choice before the operation continues.
   case choice {
     relayed.Deny -> Ok(remote_escalation.Deny)
     relayed.Allow -> approving(record, remote_escalation.Once)
     relayed.AllowForSession ->
+      // This branch resolves approval rememberable review_of orchestrator record before the operation continues.
       case approval.rememberable(review_of(orchestrator, record)) {
         Ok(Nil) -> approving(record, remote_escalation.Session)
         Error(reason) -> Error(reason)
@@ -437,10 +460,12 @@ fn decision(
   }
 }
 
+/// Formulates an Approve decision verifying that an action digest was recorded.
 fn approving(
   record: EscalationRecord,
   scope: remote_escalation.Scope,
 ) -> Result(remote_escalation.Decision, String) {
+  // This branch resolves record action admitted record before the operation continues.
   case record.action, admitted(record) {
     "", _ -> Error("the request carries no action digest to approve")
     _, [] -> Error(remote_escalation.outside_the_ceiling)
@@ -467,14 +492,18 @@ pub fn judge(
   model: Option(String),
 ) -> Result(Nil, CreateRefusal) {
   use Nil <- result.try(placed(offers, placement))
+
+  // Verify that the requested profile is present in orchestrator offers.
   use Nil <- result.try(case list.contains(offers.profiles, profile) {
     True -> Ok(Nil)
     False -> Error(NotOffered(remote_top.OfferedProfile, profile))
   })
 
+  // Validate model selection against advertised orchestrator models.
   case model {
     None -> Ok(Nil)
     Some(key) ->
+      // This branch resolves list contains offers models key before the operation continues.
       case list.contains(offers.models, key) {
         True -> Ok(Nil)
         False -> Error(NotOffered(remote_top.OfferedModel, key))
@@ -482,22 +511,29 @@ pub fn judge(
   }
 }
 
+/// Validates that placement configuration is supported by the orchestrator offers.
 fn placed(
   offers: remote_top.Offers,
   placement: remote_top.Placement,
 ) -> Result(Nil, CreateRefusal) {
+  // This branch resolves placement before the operation continues.
   case placement {
     remote_top.Folder(path:) ->
+      // This branch resolves list any offers folders fn offer offer path path before the operation continues.
       case list.any(offers.folders, fn(offer) { offer.path == path }) {
         True -> Ok(Nil)
         False -> Error(NotOffered(remote_top.OfferedFolder, path))
       }
+
     remote_top.Workspace(executor:, name:) ->
+      // This branch resolves list find offers executors fn offer offer name executor before the operation continues.
       case list.find(offers.executors, fn(offer) { offer.name == executor }) {
         Error(Nil) -> Error(NotOffered(remote_top.OfferedExecutor, executor))
         Ok(offer) -> named(offer.workspaces, name, remote_top.OfferedExecutor)
       }
+
     remote_top.Pooled(pool:, name:) ->
+      // This branch resolves list find offers pools fn offer offer name pool before the operation continues.
       case list.find(offers.pools, fn(offer) { offer.name == pool }) {
         Error(Nil) -> Error(NotOffered(remote_top.OfferedPool, pool))
         Ok(offer) -> named(offer.workspaces, name, remote_top.OfferedPool)
@@ -505,16 +541,17 @@ fn placed(
   }
 }
 
-// A workspace name must be one the machine registered, unless it registered none
-// and the page asks for a name.
+/// Validates that workspace name exists in machine offers unless none were registered.
 fn named(
   workspaces: List(String),
   name: String,
   what: remote_top.Offered,
 ) -> Result(Nil, CreateRefusal) {
+  // This branch resolves workspaces before the operation continues.
   case workspaces {
     [] -> Ok(Nil)
     listed ->
+      // This branch resolves list contains listed name before the operation continues.
       case list.contains(listed, name) {
         True -> Ok(Nil)
         False -> Error(NotOffered(what, name))
@@ -547,11 +584,14 @@ pub fn create(
   use offers <- result.try(
     top_relay.placements(relay, orchestrator) |> result.map_error(Failed),
   )
+
+  // Resolve requested profile or fallback to the first offered profile.
   use profile <- result.try(case profile, offers.profiles {
     Some(chosen), _ -> Ok(chosen)
     None, [first, ..] -> Ok(first)
     None, [] -> Error(NoProfile)
   })
+
   use Nil <- result.try(judge(offers, placement, profile, model))
 
   top_relay.create(relay, orchestrator, request_id, placement, profile, model)
@@ -570,6 +610,7 @@ pub fn create(
 /// // ui_top.offers(relay, "box")
 /// ```
 pub fn offers(relay: Relay, orchestrator: String) -> orchestrators.OffersRead {
+  // This branch resolves top_relay placements relay orchestrator before the operation continues.
   case top_relay.placements(relay, orchestrator) {
     Ok(offered) -> orchestrators.Offered(offers: offers_of(offered))
     Error(failure) -> orchestrators.Withheld(why: top_relay.describe(failure))
@@ -604,10 +645,12 @@ pub fn offers_of(offered: remote_top.Offers) -> orchestrators.Offers {
   )
 }
 
+/// Builds placement card summary representation for an executor offer.
 fn executor_card(offer: remote_top.ExecutorOffer) -> placements.Executor {
   placements.Executor(
     name: offer.name,
     report: Some(placements.Report(
+      // This branch resolves offer state before the operation continues.
       state: case offer.state {
         remote_top.Ready -> placements.Ready
         remote_top.Degraded -> placements.Degraded
@@ -624,6 +667,7 @@ fn executor_card(offer: remote_top.ExecutorOffer) -> placements.Executor {
   )
 }
 
+/// Builds placement card summary representation for a pool offer.
 fn pool_card(offer: remote_top.PoolOffer) -> placements.Pool {
   placements.Pool(
     name: offer.name,
@@ -647,6 +691,7 @@ fn pool_card(offer: remote_top.PoolOffer) -> placements.Pool {
 /// // ui_top.listing(relay, "box")
 /// ```
 pub fn listing(relay: Relay, orchestrator: String) -> orchestrators.ListRead {
+  // This branch resolves top_relay sessions relay orchestrator remote_top max_rows before the operation continues.
   case top_relay.sessions(relay, orchestrator, "", remote_top.max_rows) {
     Ok(page) -> orchestrators.Heard(rows: list.filter_map(page.rows, listed_of))
     Error(failure) -> orchestrators.Missed(why: top_relay.describe(failure))
@@ -662,6 +707,7 @@ pub fn listing(relay: Relay, orchestrator: String) -> orchestrators.ListRead {
 /// // ui_top.listed_of(row)
 /// ```
 pub fn listed_of(row: remote_top.Row) -> Result(orchestrators.Listed, Nil) {
+  // This branch resolves row activity canonical row session_id before the operation continues.
   case row.activity, canonical(row.session_id) {
     remote_top.Archived, _ | _, False -> Error(Nil)
     _, True ->
@@ -676,7 +722,9 @@ pub fn listed_of(row: remote_top.Row) -> Result(orchestrators.Listed, Nil) {
 }
 
 // Whether an identity is a session identity in the text the daemon writes it in.
+/// Canonical keeps this client decision explicit for its callers.
 fn canonical(identity: String) -> Bool {
+  // This branch resolves ids parse_session_id identity before the operation continues.
   case ids.parse_session_id(identity) {
     Ok(parsed) -> ids.session_id_to_string(parsed) == identity
     Error(_) -> False
@@ -708,6 +756,7 @@ pub fn found(
   roles: creations.Roles,
   prompt: String,
 ) -> orchestrators.Founding {
+  // This branch resolves made relay orchestrator request_id place roles before the operation continues.
   case made(relay, orchestrator, request_id, place, roles) {
     Error(why) -> orchestrators.Refused(why:)
     Ok(session) ->
@@ -715,8 +764,7 @@ pub fn found(
   }
 }
 
-// The create, as the identity of the session it made or the words saying why it
-// made none. The identity is checked here because the page builds a link from it.
+/// Creates a remote session after validating placement parameters.
 fn made(
   relay: Relay,
   orchestrator: String,
@@ -742,6 +790,7 @@ fn made(
     |> result.map_error(refusal_words),
   )
 
+  // Validate that returned session identity complies with canonical syntax.
   case canonical(session) {
     True -> Ok(session)
     False ->
@@ -752,9 +801,7 @@ fn made(
   }
 }
 
-// The first message of a session that was made: none to send, delivered, or not
-// delivered, which leaves the session for the person to open and check, since the
-// message may have arrived.
+/// Delivers optional initial message after session creation has completed.
 fn first_message(
   relay: Relay,
   orchestrator: String,
@@ -762,9 +809,11 @@ fn first_message(
   message_id: String,
   prompt: String,
 ) -> orchestrators.Founding {
+  // This branch resolves prompt before the operation continues.
   case prompt {
     "" -> orchestrators.Founded(session:)
     text ->
+      // This branch resolves send relay orchestrator session message_id text before the operation continues.
       case send(relay, orchestrator, session, message_id, text) {
         relayed.Done -> orchestrators.Founded(session:)
         relayed.Refusal(_) | relayed.Unknown(_) ->
@@ -773,9 +822,9 @@ fn first_message(
   }
 }
 
-// The placement a page's place asks for. A typed folder is the one place a page can
-// name that only the daemon serving it can judge.
+/// Maps UI place configurations to backend remote placement requests.
 fn placement_of(place: creations.Place) -> Result(remote_top.Placement, Nil) {
+  // This branch resolves place before the operation continues.
   case place {
     creations.Drawn(path) -> Ok(remote_top.Folder(path:))
     creations.Registered(executor, workspace) ->
@@ -795,6 +844,7 @@ fn placement_of(place: creations.Place) -> Result(remote_top.Placement, Nil) {
 ///   == "The orchestrator offers no profile to start a session with."
 /// ```
 pub fn refusal_words(refusal: CreateRefusal) -> String {
+  // This branch resolves refusal before the operation continues.
   case refusal {
     NotOffered(what:, name:) ->
       remote_top.describe_refusal(remote_top.NotOffered(what:, name:))

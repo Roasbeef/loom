@@ -232,6 +232,7 @@ pub type Reach {
 
 // The report of a daemon that has been given no way to read itself: who it is
 // and which build, with no orchestrator, executor or directory facts.
+/// Builds the refusal record for deployment work that produced no report.
 fn unreported(self: String) -> fn() -> NodeReport {
   fn() {
     let identity = build_identity.current()
@@ -355,6 +356,7 @@ pub fn reporting(reach: Reach, own: fn() -> NodeReport) -> Reach {
 // A fault of the connection layer reduced to the three words a client shows.
 // Only a late handshake and an unreachable peer are connection outcomes; every
 // other fault means this daemon could not try, which is `unavailable`.
+/// Extracts the diagnostic explanation from a deployment outcome.
 fn why_of(fault: distribution.Fault) -> Why {
   case fault {
     distribution.TimedOut -> TimedOut
@@ -618,11 +620,13 @@ pub fn probe(reach: Reach, targets: List(Target)) -> List(Probed) {
 // then one connect-and-ask for each target. Putting the daemon's own report
 // first lets the outcomes be split without a lookup, and the daemon's slow
 // sources then cost only their own facts.
+/// Dials the selected members concurrently and collects their bounded reports.
 fn fan_out(
   reach: Reach,
   targets: List(Target),
   reading: Reading,
 ) -> #(Option(NodeReport), List(Probed)) {
+  // With no targets and no self read, the fan-out has no work to start.
   case targets, reading {
     [], WithoutSelf -> #(None, [])
     _, _ -> {
@@ -631,20 +635,26 @@ fn fan_out(
           let node = target.node
           fn() { learn(reach, node) }
         })
+
+      // Only `WithSelf` prepends the asking daemon’s own report task.
       let tasks = case reading {
         WithSelf -> [fn() { Ok(reach.own()) }, ..asks]
         WithoutSelf -> asks
       }
+
       let outcomes =
         tasks
         |> weft.new
         |> weft.limit(list.length(tasks))
         |> weft.deadline(deadline_ms)
         |> weft.start
+
+      // Split the optional self result from the peer results in matching order.
       let #(own, rest) = case reading, outcomes {
         WithSelf, [first, ..rest] -> #(report_of(first), rest)
         WithSelf, [] | WithoutSelf, _ -> #(None, outcomes)
       }
+
       #(
         own,
         list.map2(targets, rest, fn(target, outcome) {
@@ -659,6 +669,7 @@ fn fan_out(
 // report is as good as down for the asking daemon, which can say nothing of it.
 // The ask says why it got none: a port that is gone (nothing registered there, or
 // it ended) is `silent`, and one that did not answer in time is a `timeout`.
+/// Dials one node and asks it for its bounded deployment report.
 fn learn(reach: Reach, node: String) -> Result(NodeReport, Why) {
   use Nil <- result.try(reach.dial(node, connect_ms))
   reach.ask(node, report_ms)
@@ -670,6 +681,7 @@ fn learn(reach: Reach, node: String) -> Result(NodeReport, Why) {
   })
 }
 
+/// Extracts a report only from a completed probe; other outcomes contribute none.
 fn report_of(outcome: weft.Outcome(NodeReport, Why)) -> Option(NodeReport) {
   case outcome {
     weft.Completed(value:, ..) -> Some(value)
@@ -684,6 +696,7 @@ fn report_of(outcome: weft.Outcome(NodeReport, Why)) -> Option(NodeReport) {
 
 // A task that returns `Error(why)` is a `Failed` outcome carrying `why`, so the
 // reason a connection gave comes through the run unchanged.
+/// Converts a peer probe result into the deployment observation form.
 fn probed_of(target: Target, outcome: weft.Outcome(NodeReport, Why)) -> Probed {
   case outcome {
     weft.Completed(value:, ..) ->
@@ -734,6 +747,7 @@ pub fn classify(asker: Node, node: Node) -> List(Reason) {
 
 // Whether one reason holds of a node, from its report. `DirectoryQuorumLost`
 // never holds of one node alone, so `quorum` states it instead.
+/// Tests whether a classified reason holds for the asking daemon and this node.
 fn applies(reason: Reason, asker: Node, node: Node) -> Bool {
   case node.report {
     None -> False
@@ -775,6 +789,7 @@ fn applies(reason: Reason, asker: Node, node: Node) -> Bool {
   }
 }
 
+/// Evaluates an executor-fact predicate only when the report contains executor data.
 fn executor_holds(
   report: NodeReport,
   holds: fn(node_report.ExecutorFacts) -> Bool,
@@ -785,6 +800,7 @@ fn executor_holds(
   }
 }
 
+/// Evaluates a directory-fact predicate only when the report contains directory data.
 fn directory_holds(
   report: NodeReport,
   holds: fn(node_report.DirectoryFacts) -> Bool,
@@ -822,6 +838,7 @@ pub fn free_scopes(facts: node_report.ExecutorFacts) -> Int {
 /// // deployment.quorum(asker, nodes) == [deployment.DirectoryQuorumLost]
 /// ```
 pub fn quorum(asker: Node, nodes: List(Node)) -> List(Reason) {
+  // The voter count and reachability determine whether the cluster retains a majority.
   let voters = case
     asker.report |> option.then(fn(report) { report.directory })
   {
@@ -838,14 +855,19 @@ pub fn quorum(asker: Node, nodes: List(Node)) -> List(Reason) {
       }
     None -> []
   }
+
   let lost =
     list.count(voters, fn(voter) {
       case list.find(nodes, fn(each) { each.node == voter }) {
         Ok(Node(health: Down(_), ..)) -> voter != asker.node
+
         Ok(_) | Error(Nil) -> False
       }
     })
+
   let majority = list.length(voters) / 2 + 1
+
+  // The voter count and reachability determine whether the cluster retains a majority.
   case voters {
     [] -> []
     [_, ..] ->
@@ -859,6 +881,7 @@ pub fn quorum(asker: Node, nodes: List(Node)) -> List(Reason) {
 // Gives each answering node the reasons `classify` finds, and the asking daemon
 // its own: the reasons that concern a directory member, and the quorum, which
 // only the asking daemon can state.
+/// Adds classified reasons to each observed node and quorum findings to the asker.
 fn judged(asker: Node, nodes: List(Node)) -> #(Node, List(Node)) {
   let reasoned = fn(node: Node, extra: List(Reason)) {
     case node.health {
@@ -881,6 +904,7 @@ fn judged(asker: Node, nodes: List(Node)) -> #(Node, List(Node)) {
 // The asking daemon and every target, judged. The directory members are the
 // nodes the asking daemon's own cluster view lists and the nodes whose own report
 // says they are members.
+/// Collects member observations needed to assess the deployment.
 fn survey(
   reach: Reach,
   roles: List(Role),
@@ -903,11 +927,15 @@ fn survey(
 
 // The nodes known to be directory members: those the asking daemon's cluster
 // view lists, and those whose own report carries directory facts.
+
+/// Collects the asking daemon’s member list and peers that report directory facts.
 fn member_nodes(own: Option(NodeReport), probed: List(Probed)) -> List(String) {
+  // Keep the asking daemon’s own membership list as the base for the union.
   let listed = case own |> option.then(fn(report) { report.directory }) {
     Some(facts) -> facts.status.members
     None -> []
   }
+
   let reporting =
     list.filter_map(probed, fn(found) {
       case found.report |> option.then(fn(report) { report.directory }) {
@@ -918,12 +946,16 @@ fn member_nodes(own: Option(NodeReport), probed: List(Probed)) -> List(String) {
   list.append(listed, reporting)
 }
 
+/// Builds a node from its probe and marks directory members with `MemberRole`.
 fn node_of(found: Probed, members: List(String)) -> Node {
   let target = found.target
+
+  // The resolved member set determines the role assigned to this peer.
   let member = case list.contains(members, target.node) {
     True -> [MemberRole]
     False -> []
   }
+
   Node(
     node: target.node,
     name: target.name,
@@ -1083,6 +1115,8 @@ pub fn status(
   node: Option(String),
 ) -> Result(Snapshot, Nil) {
   let configured = targets(orchestrators, executors)
+
+  // The optional node selects a whole deployment view or a focused node snapshot.
   case node {
     None -> {
       let #(asker, nodes) = survey(reach, roles, configured, WithSelf)
@@ -1164,6 +1198,7 @@ pub fn candidates(
 // that did not answer is silent, one that answered without an orchestrator
 // report cannot be judged, and one that reported states what it accepts and the
 // executors it serves.
+/// Projects an orchestrator node’s health and report into move-candidate facts.
 fn offered(node: Node) -> move_candidates.Facts {
   case node.health, node.report |> option.then(fn(r) { r.orchestrator }) {
     Down(_), _ -> move_candidates.Silent
@@ -1191,6 +1226,7 @@ fn edges_of(asker: Node, nodes: List(Node)) -> List(Edge) {
   ])
 }
 
+/// Constructs the edge from the asking daemon to one of its peers.
 fn own_edge(asker: Node, node: Node) -> Edge {
   Edge(
     from: asker.node,
@@ -1208,24 +1244,30 @@ fn own_edge(asker: Node, node: Node) -> Edge {
 
 // The sessions an orchestrator says it has placed on an executor, resident or
 // saved, or none when it says nothing of that executor.
+/// Returns the reported resident and saved session count on an executor, or zero.
 fn placed_on(report: Option(NodeReport), executor: String) -> Int {
   case report |> option.then(fn(found) { found.orchestrator }) {
     Some(facts) ->
       list.find(facts.placements, fn(each) { each.executor_node == executor })
       |> result.map(fn(each) { each.resident + each.saved })
       |> result.unwrap(0)
+
     None -> 0
   }
 }
 
-// The asking daemon's directory members, one edge each from the asking daemon,
-// so that the link it observed is the edge's. Only members the reply lists are
-// drawn.
+/// Projects the asking daemon’s observed links to directory members.
+///
+/// Each listed member contributes one edge from the asking daemon, using the
+/// link it observed. Only endpoints in the current directory membership are kept.
 fn member_edges(asker: Node, nodes: List(Node)) -> List(Edge) {
+  // The asking daemon’s directory report is the authority for cross-member links.
   let membership = case asker.report |> option.then(fn(r) { r.directory }) {
     Some(facts) -> option.from_result(facts.status.ra)
     None -> None
   }
+
+  // Without current membership facts there is no supported peer-edge set.
   case membership {
     None -> []
     Some(found) ->
@@ -1336,6 +1378,7 @@ fn registered_names(entry: ExecutorEntry) -> List(String) {
 // The names every named executor registered, in the first one's order. A first
 // open lands on whichever eligible executor takes it, so only a name all of them
 // serve is certain to be found; with no eligible executor nothing is offered.
+/// Finds workspace names registered by every eligible executor.
 fn shared_names(
   executors: List(ExecutorEntry),
   eligible: List(String),
@@ -1347,6 +1390,8 @@ fn shared_names(
         False -> Error(Nil)
       }
     })
+
+  // Keep the first list’s order while requiring every other eligible list to contain each name.
   case lists {
     [] -> []
     [first, ..rest] ->
@@ -1358,6 +1403,7 @@ fn shared_names(
 
 // The state a card for an executor shows: full when it would refuse the next
 // attach, degraded when it answered with any other reason.
+/// Maps node health to the state shown on an executor card.
 fn page_state(health: Health) -> page.State {
   case health {
     Reachable -> page.Ready
@@ -1371,6 +1417,7 @@ fn page_state(health: Health) -> page.State {
 }
 
 // The words saying an executor's census contradicts its declaration, if it does.
+/// Reports a mismatch between an executor declaration and observed configuration.
 fn contradiction_of(
   declared: Option(Executor),
   facts: node_report.ExecutorFacts,
@@ -1389,6 +1436,7 @@ fn contradiction_of(
 // among executors, and an overview asks every executor, so a miss cannot happen
 // from `status`; a caller that built `nodes` by hand and left one out gets
 // `unavailable`, not an invented `ok`.
+/// Builds executor and pool placement summaries from configured peers and reports.
 fn placements(
   executors: List(Executor),
   pools: List(Pool),
@@ -1472,6 +1520,8 @@ pub fn verdict(nodes: List(Node)) -> Verdict {
   let #(down, answered) = list.partition(nodes, is_down)
   let #(ok, impaired) =
     list.partition(answered, fn(node) { node.health == Reachable })
+
+  // Reachability and per-node reasons determine whether the configured set is whole, degraded, or lost.
   case ok, impaired, down {
     _, [], [] -> Whole
     [], [], [_, ..] -> Lost
@@ -1570,13 +1620,17 @@ pub fn to_json(snapshot: Snapshot, as_of_ms: Int) -> JsonValue {
   fit([Complete, Trimmed, Skeleton, Bare], snapshot, as_of_ms)
 }
 
-// The first level whose rendering fits, or the last when none does.
+/// Tries the supplied detail levels in order, returning the first body within
+/// `max_reply_bytes`; if none fits, the last level is rendered as the fallback.
 fn fit(levels: List(Level), snapshot: Snapshot, as_of_ms: Int) -> JsonValue {
+  // Detail levels run from fullest to bare; exhaustion selects the bare fallback.
   case levels {
     [] -> render(snapshot, as_of_ms, Bare)
     [last] -> render(snapshot, as_of_ms, last)
     [level, ..lower] -> {
       let body = render(snapshot, as_of_ms, level)
+
+      // Keep this rendering only when its encoded body fits the terminal frame budget.
       case string.byte_size(json.to_string(body)) <= max_reply_bytes {
         True -> body
         False -> fit(lower, snapshot, as_of_ms)
@@ -1587,6 +1641,7 @@ fn fit(levels: List(Level), snapshot: Snapshot, as_of_ms: Int) -> JsonValue {
 
 // The verdict on the configured nodes, with the asking daemon's own impairment
 // folded in so that `state` and `reasons` cannot disagree.
+/// Folds the asking daemon’s health into the verdict from the reported nodes.
 fn overall(snapshot: Snapshot) -> Verdict {
   case snapshot {
     Overview(self:, others:, ..) ->
@@ -1598,11 +1653,14 @@ fn overall(snapshot: Snapshot) -> Verdict {
   }
 }
 
+/// Renders a bounded deployment result with its status and diagnostics.
 fn render(snapshot: Snapshot, as_of_ms: Int, level: Level) -> JsonValue {
+  // Overview replies include the asker and brief node details; selected replies use long details.
   let #(self, nodes, detail) = case snapshot {
     Overview(self:, others:, ..) -> #(self.node, [self, ..others], Brief)
     Selected(self:, nodes:) -> #(self, nodes, Long)
   }
+
   let head = [
     #("as_of_ms", json.Int(as_of_ms)),
     #("self", json.String(self)),
@@ -1625,6 +1683,8 @@ fn render(snapshot: Snapshot, as_of_ms: Int, level: Level) -> JsonValue {
       ),
     ),
   ]
+
+  // Selected replies add truncation metadata; overviews include topology sections retained by the level.
   case snapshot {
     Selected(..) -> json.Object(list.append(head, more(nodes, level)))
     Overview(self: asker, others:, edges:, placements:) ->
@@ -1648,6 +1708,7 @@ fn render(snapshot: Snapshot, as_of_ms: Int, level: Level) -> JsonValue {
 }
 
 // The long lists of the nodes that a lower level cut short, by name.
+/// Names per-node lists truncated by the selected detail level.
 fn more(nodes: List(Node), level: Level) -> List(#(String, JsonValue)) {
   let lengths =
     list.flat_map(nodes, fn(node) {
@@ -1677,6 +1738,8 @@ fn more(nodes: List(Node), level: Level) -> List(#(String, JsonValue)) {
     |> list.filter(fn(found) { found.1 > entries(level) })
     |> list.map(fn(found) { found.0 })
     |> list.unique
+
+  // Include the names of the per-node lists that exceeded this level’s entry cap.
   case cut {
     [] -> []
     names -> [#("more", json.Array(list.map(names, json.String)))]
@@ -1684,32 +1747,42 @@ fn more(nodes: List(Node), level: Level) -> List(#(String, JsonValue)) {
 }
 
 // How many entries of a long list the level keeps.
+/// Returns the per-list entry cap for each response detail level.
 fn entries(level: Level) -> Int {
   case level {
     Complete -> 1_000_000
+
     Trimmed -> trimmed_entries
+
     Skeleton | Bare -> 0
   }
 }
 
 // What an overview dropped to fit, so that a client knows to ask for one node.
+/// Names detail omitted at this response level so clients know what was cut.
 fn omitted(asker: Node, level: Level) -> List(#(String, JsonValue)) {
+  // The trimmed level omits moves only when the asking node reported any.
   let moves = case asker_moves(asker) {
     [] -> []
     [_, ..] -> ["moves"]
   }
+
+  // Each detail level defines which response sections it leaves out.
   let words = case level {
     Complete -> []
     Trimmed -> moves
     Skeleton -> list.append(moves, ["node_facts", "declared", "pools"])
     Bare -> list.append(moves, ["node_facts", "edges", "placements", "serves"])
   }
+
+  // Emit `omitted` only when this rendering actually drops a section.
   case words {
     [] -> []
     _ -> [#("omitted", json.Array(list.map(words, json.String)))]
   }
 }
 
+/// Returns the moves advertised by the asking node’s orchestrator report.
 fn asker_moves(asker: Node) -> List(node_report.MoveFacts) {
   case asker.report |> option.then(fn(report) { report.orchestrator }) {
     Some(facts) -> facts.moves
@@ -1717,12 +1790,15 @@ fn asker_moves(asker: Node) -> List(node_report.MoveFacts) {
   }
 }
 
+/// Includes move facts only for detail levels that display the move list.
 fn moves_member(
   asker: Node,
   others: List(Node),
   level: Level,
 ) -> List(#(String, JsonValue)) {
   let moves = asker_moves(asker)
+
+  // Full detail keeps moves; compact levels omit a nonempty move list.
   case level, moves {
     Complete, _ | Trimmed, [] | Skeleton, [] | Bare, [] -> [
       #("moves", json.Array(list.map(moves, move_json(_, others)))),
@@ -1731,6 +1807,7 @@ fn moves_member(
   }
 }
 
+/// Encodes one deployment node as structured JSON.
 fn node_json(
   node: Node,
   asker: String,
@@ -1778,6 +1855,7 @@ fn node_json(
 // What a node said of itself, in the members the reply states. A number is
 // stated as the node gave it, and the node's clock is used only for its own
 // uptime, the difference of two readings of one clock.
+/// Encodes the shared fields of a deployment report.
 fn report_fields(
   node: Node,
   report: NodeReport,
@@ -1808,6 +1886,7 @@ fn report_fields(
   ])
 }
 
+/// Encodes an orchestrator observation as structured JSON.
 fn orchestrator_json(
   facts: node_report.OrchestratorFacts,
   detail: Detail,
@@ -1863,6 +1942,7 @@ fn imports_word(imports: node_report.Imports) -> String {
   }
 }
 
+/// Encodes an executor observation as structured JSON.
 fn executor_json(
   node: Node,
   facts: node_report.ExecutorFacts,
@@ -1927,6 +2007,7 @@ fn executor_json(
 
 // The executor's ledger figures, platform and census, which an overview that
 // must be small does without.
+/// Encodes the machine facts attached to a deployment observation.
 fn machine_facts(
   node: Node,
   facts: node_report.ExecutorFacts,
@@ -1957,6 +2038,7 @@ fn machine_facts(
   ])
 }
 
+/// Encodes one topology edge as structured JSON.
 fn edge_json(edge: Edge) -> JsonValue {
   json.Object(
     list.flatten([
@@ -1996,6 +2078,7 @@ fn name_of(nodes: List(Node), node: String) -> String {
 // The configured orchestrators, in the shape the Admin page lists them: what
 // the asking daemon found of each, whether it accepts sessions moved to it, and
 // the executors it configures, named as the asking daemon names them.
+/// Encodes the orchestrator collection for a deployment report.
 fn orchestrators_json(others: List(Node), level: Level) -> JsonValue {
   json.Array(
     list.filter_map(others, fn(node) {
@@ -2037,6 +2120,7 @@ fn orchestrators_json(others: List(Node), level: Level) -> JsonValue {
   )
 }
 
+/// Encodes validated placements for the deployment response.
 fn placements_json(placements: Placements, level: Level) -> JsonValue {
   json.Object([
     #(
@@ -2055,6 +2139,7 @@ fn placements_json(placements: Placements, level: Level) -> JsonValue {
 // The state an executor's card shows: `ready`, `degraded`, `full` or `down`. An
 // executor that answered states its free scope count, and one whose census
 // disagrees with its declaration says how.
+/// Encodes an executor card with declared configuration and observed report facts.
 fn executor_entry(entry: ExecutorEntry, level: Level) -> JsonValue {
   let executor = entry.executor
   let facts = entry.report |> option.then(fn(report) { report.executor })
@@ -2085,6 +2170,7 @@ fn executor_entry(entry: ExecutorEntry, level: Level) -> JsonValue {
 
 // Only what the operator declared is stated. An executor that declares
 // nothing about its machine has an empty `toolchains` list and no other member.
+/// Encodes the declared executor configuration as JSON.
 fn declared_json(executor: Executor) -> JsonValue {
   json.Object(
     list.flatten([
@@ -2105,6 +2191,7 @@ fn declared_json(executor: Executor) -> JsonValue {
   )
 }
 
+/// Encodes the bounded pool summary for a deployment report.
 fn pool_json(entry: PoolEntry) -> JsonValue {
   json.Object([
     #("name", json.String(entry.name)),
@@ -2136,6 +2223,7 @@ fn directory_member(asker: Node) -> List(#(String, JsonValue)) {
 pub fn directory_json(facts: node_report.DirectoryFacts) -> JsonValue {
   json.Object(
     list.append(directory_status_fields(facts.status), [
+      // This field preserves the report’s explicit Current or Unconfirmed copy observation.
       #(
         "copy",
         json.String(case facts.copy {
@@ -2160,13 +2248,16 @@ pub fn directory_status_json(status: member.Status) -> JsonValue {
   json.Object(directory_status_fields(status))
 }
 
+/// Encodes the authoritative directory status fields in the response.
 fn directory_status_fields(
   status: member.Status,
 ) -> List(#(String, JsonValue)) {
+  // The observed directory status determines which fields can be represented.
   let #(ra_members, leader, ra_error) = case status.ra {
     Ok(store.Membership(members:, leader:, ..)) -> #(members, leader, None)
     Error(store.Unavailable(reason:)) -> #([], None, Some(reason))
   }
+
   list.flatten([
     [
       #("members", json.Array(list.map(status.members, json.String))),
@@ -2210,6 +2301,7 @@ fn directory_status_fields(
 // One move, with the destination named as the asking daemon names it. The reason
 // was cut to a fixed length where the move recorded it. The top-level `moves` and
 // an orchestrator's own list spell a move this one way.
+/// Encodes the validated member move and its resulting status.
 fn move_json(move: node_report.MoveFacts, nodes: List(Node)) -> JsonValue {
   json.Object(
     list.flatten([

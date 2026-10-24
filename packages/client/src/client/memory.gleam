@@ -159,6 +159,7 @@ pub fn store_beside(session_path: String) -> String {
   beside(session_path, memory_file)
 }
 
+/// Resolves the beside path without changing the session path supplied by the caller.
 fn beside(session_path: String, file: String) -> String {
   case list.reverse(string.split(session_path, "/")) {
     [_leaf, ..rest] if rest != [] ->
@@ -251,6 +252,8 @@ pub fn open(
     session.open_sqlite_owned(path:, owner:, lease_ttl_ms:, clock:)
     |> result.map_error(open_fault),
   )
+
+  // open handles the session.ensure_id(opened, generator) outcomes before continuing the operation.
   case session.ensure_id(opened, generator) {
     Ok(#(id, generator)) ->
       Ok(Opened(session: opened, id:, generator:, retire:))
@@ -263,6 +266,7 @@ pub fn open(
   }
 }
 
+/// Checks the memory store and translates store failures at the client boundary.
 fn open_fault(error: session.OpenError) -> MemoryFault {
   case error {
     session.SqliteOpenFailed(error: sqlite.LeaseHeld(owner:, ..)) ->
@@ -326,6 +330,7 @@ pub fn probe(path: String) -> Result(Nil, String) {
   }
 }
 
+/// Checks the memory store and translates store failures at the client boundary.
 fn readable_store(path: String) -> Result(Nil, String) {
   sqlite.generation(path:)
   |> result.replace(Nil)
@@ -389,15 +394,19 @@ pub const legacy_title_chars = 60
 /// ```
 ///
 pub fn note_of(item: Entry) -> Result(StoredNote, Nil) {
+  // note of handles the item outcomes before continuing the operation.
   case item {
     entry.CustomEntry(ts:, custom_type:, data: Some(json.Object(fields)), ..)
       if custom_type == remember.note_type
     -> {
       use text <- result.map(text_field(fields, "text"))
+
+      // note of handles the the selected value outcomes before continuing the operation.
       let title = case text_field(fields, "title") {
         Ok(title) -> one_line(title)
         Error(Nil) -> string.slice(one_line(text), 0, legacy_title_chars)
       }
+
       let kind =
         text_field(fields, "kind")
         |> result.try(remember.kind_named)
@@ -417,6 +426,7 @@ pub fn note_of(item: Entry) -> Result(StoredNote, Nil) {
 
 // Folds newlines, carriage returns and tabs to single spaces, so a field
 // decoded from the store can never occupy a second line of the index.
+/// Converts the one line representation while preserving the note-store field contract.
 fn one_line(text: String) -> String {
   text
   |> string.split("\n")
@@ -427,6 +437,7 @@ fn one_line(text: String) -> String {
   |> string.trim
 }
 
+/// Converts the text field representation while preserving the note-store field contract.
 fn text_field(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -456,6 +467,7 @@ pub fn cell(
   }
 }
 
+/// Converts the commit fault representation while preserving the note-store field contract.
 fn commit_fault(error: tx.CommitError) -> MemoryFault {
   case error {
     tx.LeaseLost(held_by:) ->
@@ -509,6 +521,7 @@ pub fn remember_seam(
 
 // Opens, runs, and closes — whatever `run` answers. A door that left the
 // lease held on its own error path would refuse every later note.
+/// Bounds with open through the memory store’s validated path.
 fn with_open(
   path: String,
   owner: String,
@@ -534,6 +547,7 @@ fn note_refusal(fault: MemoryFault) -> remember.Refusal {
   }
 }
 
+/// Writes write note through the memory store’s validated path.
 fn write_note(
   opened: Opened,
   note: remember.Note,
@@ -596,12 +610,15 @@ fn write_note(
         ],
       ),
     )
+
+  // write note handles the committed outcomes before continuing the operation.
   case committed {
     Ok(_result) -> Ok(Nil)
     Error(error) -> Error(note_refusal(commit_fault(error)))
   }
 }
 
+/// Bounds note within caps through the memory store’s validated path.
 fn note_within_caps(scrubbed: String) -> Result(Nil, remember.Refusal) {
   case remember.says_something(scrubbed) {
     False -> Error(remember.NothingToRemember)
@@ -630,8 +647,11 @@ fn under_ceiling(count: Int) -> Result(Nil, remember.Refusal) {
   }
 }
 
+/// Bounds note count through the memory store’s validated path.
 fn note_count(opened: Opened) -> Result(#(Int, Option(Seq)), MemoryFault) {
   use found <- result.map(cell(opened, note_count_key))
+
+  // note count handles the found outcomes before continuing the operation.
   case found {
     Some(#(json.Int(count), seq)) -> #(count, Some(seq))
 
@@ -677,6 +697,7 @@ pub fn write_notes_index(opened: Opened, path: String) -> Result(Nil, String) {
 
 // The warning is the only trace of a stale index, so it says what the
 // owner loses and what repairs it.
+/// Writes publish notes index through the memory store’s validated path.
 fn publish_notes_index(opened: Opened, path: String, logger: Logger) -> Nil {
   case write_notes_index(opened, path) {
     Ok(Nil) -> Nil
@@ -701,6 +722,7 @@ fn newest_notes(opened: Opened) -> Result(List(StoredNote), MemoryFault) {
   }
 }
 
+/// Reads newest notes query through the memory store’s validated path.
 fn newest_notes_query() -> storage.EntryScan {
   storage.entry_scan()
   |> storage.entry_kind(storage.Custom)
@@ -733,6 +755,8 @@ pub fn read_note_entries(path: String) -> Result(List(Entry), String) {
   use #(identity, _parent) <- result.try(
     sqlite.identity(path:) |> result.map_error(string.inspect),
   )
+
+  // read note entries handles the identity outcomes before continuing the operation.
   case identity {
     None -> Ok([])
     Some(text) -> {
@@ -794,11 +818,14 @@ pub fn rebuild_notes_index(
 // The caller retains the lease until this result returns, including the
 // rename. Reading through its opened store keeps publication inside the same
 // ownership interval as the snapshot that produced it.
+/// Writes rebuild opened index through the memory store’s validated path.
 fn rebuild_opened_index(opened: Opened, path: String) -> Result(Nil, String) {
   use found <- result.try(
     newest_notes(opened) |> result.map_error(string.inspect),
   )
   let body = render_notes_index(found)
+
+  // rebuild opened index handles the simplifile.read(path) outcomes before continuing the operation.
   case simplifile.read(path) {
     Ok(current) if current == body -> Ok(Nil)
 
@@ -810,6 +837,7 @@ fn rebuild_opened_index(opened: Opened, path: String) -> Result(Nil, String) {
 
 // A temporary file beside the destination keeps the rename on one filesystem
 // and leaves readers with either the old or the new complete index.
+/// Writes write atomically through the memory store’s validated path.
 fn write_atomically(path: String, body: String) -> Result(Nil, String) {
   let temp = path <> "." <> int.to_string(int.random(1_000_000_000)) <> ".tmp"
   let written =
@@ -840,6 +868,8 @@ fn write_atomically(path: String, body: String) -> Result(Nil, String) {
 ///
 pub fn render_notes_index(stored: List(StoredNote)) -> String {
   let lines = list.map(stored, notes_line)
+
+  // render notes index handles the take_bounded(lines, max_index_bytes, []) outcomes before continuing the operation.
   case take_bounded(lines, max_index_bytes, []) {
     #(kept, False) -> string.join(kept, "\n")
 
@@ -851,6 +881,8 @@ pub fn render_notes_index(stored: List(StoredNote)) -> String {
       let reserve = notes.byte_size(more_notes(remember.max_notes)) + 1
       let #(kept, _truncated) =
         take_bounded(lines, max_index_bytes - reserve, [])
+
+      // render notes index handles the list.length(lines) - list.length(kept) outcomes before continuing the operation.
       case list.length(lines) - list.length(kept) {
         0 -> string.join(kept, "\n")
         dropped -> string.join(list.append(kept, [more_notes(dropped)]), "\n")
@@ -859,11 +891,14 @@ pub fn render_notes_index(stored: List(StoredNote)) -> String {
   }
 }
 
+/// Formats notes line for bounded session-note presentation.
 fn notes_line(note: StoredNote) -> String {
+  // notes line handles the the selected value outcomes before continuing the operation.
   let described = case note.description {
     "" -> note.title
     description -> note.title <> ": " <> description
   }
+
   field.scrub_text(
     "- ("
     <> remember.kind_name(note.kind)
@@ -890,15 +925,19 @@ fn utc_date(at_ms: Int) -> String {
 // In the order given, taking whole lines while they fit. `remaining` counts
 // the newline each line costs when joined. The same arithmetic
 // `client/notes` uses, and reached through it rather than restated.
+/// Bounds take bounded through the memory store’s validated path.
 fn take_bounded(
   lines: List(String),
   remaining: Int,
   taken: List(String),
 ) -> #(List(String), Bool) {
+  // take bounded handles the lines outcomes before continuing the operation.
   case lines {
     [] -> #(list.reverse(taken), False)
     [line, ..rest] -> {
       let cost = notes.byte_size(line) + 1
+
+      // take bounded handles the cost <= remaining outcomes before continuing the operation.
       case cost <= remaining {
         True -> take_bounded(rest, remaining - cost, [line, ..taken])
         False -> stop(line, remaining, taken)
@@ -909,6 +948,7 @@ fn take_bounded(
 
 // One oversized row must still say something: an index that was nothing
 // but a truncation notice would be strictly worse than no index at all.
+/// Bounds stop through the memory store’s validated path.
 fn stop(
   line: String,
   remaining: Int,
@@ -976,6 +1016,7 @@ pub fn notes_reader(path: String, logger: Logger) -> fn() -> Option(String) {
   )
 }
 
+/// Builds refusing reader for the client boundary without widening its stored state.
 fn refusing_reader(
   path: String,
   bounds: Bounds,
@@ -985,6 +1026,7 @@ fn refusing_reader(
   effect: String,
 ) -> fn() -> Option(String) {
   fn() {
+    // refusing reader handles the sidecar(path, bounds) outcomes before continuing the operation.
     case sidecar(path, bounds) {
       Absent -> None
       Body(text:) -> Some(text)
@@ -1025,6 +1067,7 @@ type Bounds {
 const notes_bounds =
   Bounds(refuse_above: max_notes_sidecar_bytes, clip_to: max_index_bytes)
 
+/// Formats sidecar for bounded session-note presentation.
 fn sidecar(path: String, bounds: Bounds) -> Sidecar {
   // The size question is asked first and answered by one `stat`, so the
   // refusal below costs no read at all. An unstattable file is treated
@@ -1039,6 +1082,7 @@ fn sidecar(path: String, bounds: Bounds) -> Sidecar {
   }
 }
 
+/// Reads read within through the memory store’s validated path.
 fn read_within(path: String, bounds: Bounds) -> Sidecar {
   case simplifile.read(path) {
     Error(_unreadable) -> Absent
@@ -1094,7 +1138,9 @@ fn injected(body: Option(String), clock: Clock) -> List(AgentMessage) {
   }
 }
 
+/// Formats non empty injection for bounded session-note presentation.
 fn non_empty_injection(body: String, clock: Clock) -> List(AgentMessage) {
+  // non empty injection handles the string.trim(body) outcomes before continuing the operation.
   case string.trim(body) {
     "" -> []
     text -> {

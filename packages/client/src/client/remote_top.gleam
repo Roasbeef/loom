@@ -192,6 +192,8 @@ pub type Refusal {
 ///   == "the orchestrator already holds 8 of your sessions (max_sessions)"
 /// ```
 pub fn describe_refusal(refusal: Refusal) -> String {
+  // This match resolves refusal before the surrounding protocol step continues.
+  // This match resolves refusal before the enclosing validation continues.
   case refusal {
     UnknownSpawner(node:) ->
       "this orchestrator has no [spawners.<name>] for the node " <> node
@@ -219,7 +221,10 @@ pub fn describe_refusal(refusal: Refusal) -> String {
   }
 }
 
+/// Offered word keeps this client operation’s decoding or state decision in one place.
 fn offered_word(what: Offered) -> String {
+  // This match resolves what before the surrounding protocol step continues.
+  // This match resolves what before the enclosing validation continues.
   case what {
     OfferedFolder -> "the folder"
     OfferedExecutor -> "the executor"
@@ -241,6 +246,8 @@ fn offered_word(what: Offered) -> String {
 /// assert !remote_top.retryable(remote_top.NotRelayed)
 /// ```
 pub fn retryable(refusal: Refusal) -> Bool {
+  // This match resolves refusal before the surrounding protocol step continues.
+  // This match resolves refusal before the enclosing validation continues.
   case refusal {
     NotYetOpen(..) | StoreFailure(..) -> True
     UnknownSpawner(..)
@@ -436,6 +443,8 @@ pub fn fits(text: String) -> Bool {
 /// assert remote_top.clip("work") == "work"
 /// ```
 pub fn clip(text: String) -> String {
+  // This match resolves fits(text) before the surrounding protocol step continues.
+  // This match resolves fits(text) before the enclosing validation continues.
   case fits(text) {
     True -> text
     False -> string.drop_end(text, string.byte_size(text) - max_text_bytes)
@@ -493,7 +502,10 @@ pub fn encode_offers(offers: Offers) -> JsonValue {
   ])
 }
 
+/// State word keeps this client operation’s decoding or state decision in one place.
 fn state_word(state: ExecutorState) -> String {
+  // This match resolves state before the surrounding protocol step continues.
+  // This match resolves state before the enclosing validation continues.
   case state {
     Ready -> "ready"
     Degraded -> "degraded"
@@ -502,7 +514,10 @@ fn state_word(state: ExecutorState) -> String {
   }
 }
 
+/// State of keeps this client operation’s decoding or state decision in one place.
 fn state_of(word: String) -> Result(ExecutorState, String) {
+  // This match resolves word before the surrounding protocol step continues.
+  // This match resolves word before the enclosing validation continues.
   case word {
     "ready" -> Ok(Ready)
     "degraded" -> Ok(Degraded)
@@ -558,6 +573,9 @@ pub fn decode_offers(value: JsonValue) -> Result(Offers, String) {
   use profiles <- result.try(texts_of(fields, "profiles", max_offers))
   use models <- result.try(texts_of(fields, "models", max_offers))
   let offers = Offers(folders:, executors:, pools:, profiles:, models:)
+
+  // This match resolves entries(offers) <= max_offers before the surrounding protocol step continues.
+  // This match resolves entries(offers) <= max_offers before the enclosing validation continues.
   case entries(offers) <= max_offers {
     True -> Ok(offers)
     False -> Error("offers hold too many entries")
@@ -659,16 +677,21 @@ pub fn fit_requests(
   #(kept, list.length(pending) - list.length(kept))
 }
 
+/// Keep keeps this client operation’s decoding or state decision in one place.
 fn keep(
   candidates: List(EscalationRecord),
   used: Int,
   kept: List(EscalationRecord),
 ) -> List(EscalationRecord) {
+  // This match resolves candidates before the surrounding protocol step continues.
+  // This match resolves candidates before the enclosing validation continues.
   case candidates {
     [] -> list.reverse(kept)
     [next, ..rest] -> {
       // One byte for the comma that separates a request from the next.
       let used = used + request_bytes(next) + 1
+
+      // This match resolves used <= max_row_bytes before the surrounding protocol step continues.
       case used <= max_row_bytes {
         True -> keep(rest, used, [next, ..kept])
         False -> list.reverse(kept)
@@ -689,6 +712,9 @@ fn keep(
 /// ```
 pub fn page_of(rows: List(Row), more: More) -> SessionsPage {
   let #(kept, cut) = take_rows(rows, 0, [])
+
+  // This match resolves cut, more before the surrounding protocol step continues.
+  // This match resolves cut, more before the enclosing validation continues.
   case cut, more {
     True, _ | _, Further -> SessionsPage(rows: kept, more: Further)
     False, Last -> SessionsPage(rows: kept, more: Last)
@@ -698,17 +724,22 @@ pub fn page_of(rows: List(Row), more: More) -> SessionsPage {
 // Rows in order while they fit. The byte count is of the rows alone; the page
 // object around them is small and `max_page_bytes` leaves it room by being
 // compared against a figure that includes a comma for each row.
+/// Take rows keeps this client operation’s decoding or state decision in one place.
 fn take_rows(
   rows: List(Row),
   used: Int,
   kept: List(Row),
 ) -> #(List(Row), Bool) {
+  // This match resolves rows before the surrounding protocol step continues.
+  // This match resolves rows before the enclosing validation continues.
   case rows {
     [] -> #(list.reverse(kept), False)
     [next, ..rest] -> {
       let size = string.byte_size(json.to_string(encode_row(next))) + 1
       let fits =
         list.length(kept) < max_rows && used + size + 64 <= max_page_bytes
+
+      // This match resolves fits before the surrounding protocol step continues.
       case fits {
         True -> take_rows(rest, used + size, [next, ..kept])
         False -> #(list.reverse(kept), True)
@@ -731,7 +762,10 @@ pub fn encode_page(page: SessionsPage) -> JsonValue {
   ])
 }
 
+/// More word keeps this client operation’s decoding or state decision in one place.
 fn more_word(more: More) -> String {
+  // This match resolves more before the surrounding protocol step continues.
+  // This match resolves more before the enclosing validation continues.
   case more {
     Last -> "last"
     Further -> "further"
@@ -762,7 +796,10 @@ pub fn encode_row(row: Row) -> JsonValue {
   ])
 }
 
+/// Activity word keeps this client operation’s decoding or state decision in one place.
 fn activity_word(activity: Activity) -> String {
+  // This match resolves activity before the surrounding protocol step continues.
+  // This match resolves activity before the enclosing validation continues.
   case activity {
     NeedsYou -> "needs_you"
     Working -> "working"
@@ -771,7 +808,10 @@ fn activity_word(activity: Activity) -> String {
   }
 }
 
+/// Activity of keeps this client operation’s decoding or state decision in one place.
 fn activity_of(word: String) -> Result(Activity, String) {
+  // This match resolves word before the surrounding protocol step continues.
+  // This match resolves word before the enclosing validation continues.
   case word {
     "needs_you" -> Ok(NeedsYou)
     "working" -> Ok(Working)
@@ -784,7 +824,10 @@ fn activity_of(word: String) -> Result(Activity, String) {
 // A placement whose texts are cut to what the laptop accepts. A row is
 // information, and a path too long to send is shown cut and not allowed to make
 // the whole page unreadable.
+/// Clipped keeps this client operation’s decoding or state decision in one place.
 fn clipped(placement: Placement) -> Placement {
+  // This match resolves placement before the surrounding protocol step continues.
+  // This match resolves placement before the enclosing validation continues.
   case placement {
     Folder(path:) -> Folder(path: clip(path))
     Workspace(executor:, name:) ->
@@ -802,6 +845,8 @@ fn clipped(placement: Placement) -> Placement {
 /// // == {"kind": "folder", "path": "/srv/work"}
 /// ```
 pub fn encode_placement(placement: Placement) -> JsonValue {
+  // This match resolves placement before the surrounding protocol step continues.
+  // This match resolves placement before the enclosing validation continues.
   case placement {
     Folder(path:) ->
       json.Object([
@@ -834,6 +879,9 @@ pub fn encode_placement(placement: Placement) -> JsonValue {
 pub fn decode_placement(value: JsonValue) -> Result(Placement, String) {
   use fields <- result.try(object(value, "placement"))
   use kind <- result.try(text_of(fields, "kind"))
+
+  // This match resolves kind before the surrounding protocol step continues.
+  // This match resolves kind before the enclosing validation continues.
   case kind {
     "folder" -> text_of(fields, "path") |> result.map(Folder)
     "workspace" -> {
@@ -864,20 +912,27 @@ pub fn decode_placement(value: JsonValue) -> Result(Placement, String) {
 ///   == Ok(remote_top.empty_page())
 /// ```
 pub fn decode_page(value: JsonValue) -> Result(SessionsPage, String) {
+  // This branch enforces the decode page boundary before the next operation.
   use Nil <- result.try(
+    // This match resolves string.byte_size(json.to_string(value)) <= max_page_bytes before the surrounding protocol step continues.
+    // This match resolves string.byte_size(json.to_string(value)) <= max_page_bytes before the enclosing validation continues.
     case string.byte_size(json.to_string(value)) <= max_page_bytes {
       True -> Ok(Nil)
       False -> Error("page is larger than a page may be")
     },
   )
+
   use fields <- result.try(object(value, "page"))
   use rows <- result.try(list_of(fields, "rows", max_rows, decode_row))
   use word <- result.try(text_of(fields, "more"))
+
+  // This match resolves word before the enclosing validation continues.
   use more <- result.map(case word {
     "last" -> Ok(Last)
     "further" -> Ok(Further)
     _ -> Error("more is not a known word")
   })
+
   SessionsPage(rows:, more:)
 }
 
@@ -893,10 +948,13 @@ pub fn decode_row(value: JsonValue) -> Result(Row, String) {
   use session_id <- result.try(text_of(fields, "session_id"))
   use request_id <- result.try(text_of(fields, "request_id"))
   use name <- result.try(text_of(fields, "name"))
+
+  // This match resolves list.key_find(fields, "placement") before the enclosing validation continues.
   use placement <- result.try(case list.key_find(fields, "placement") {
     Ok(found) -> decode_placement(found)
     Error(Nil) -> Error("placement is missing")
   })
+
   use word <- result.try(text_of(fields, "activity"))
   use activity <- result.try(activity_of(word))
   use updated_at <- result.try(count_of(fields, "updated_at"))
@@ -931,16 +989,23 @@ pub fn decode_row(value: JsonValue) -> Result(Row, String) {
 type Fields =
   List(#(String, JsonValue))
 
+/// Object keeps this client operation’s decoding or state decision in one place.
 fn object(value: JsonValue, place: String) -> Result(Fields, String) {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error(place <> " is not an object")
   }
 }
 
+/// Text of keeps this client operation’s decoding or state decision in one place.
 fn text_of(fields: Fields, key: String) -> Result(String, String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Ok(json.String(text)) ->
+      // This match resolves string.byte_size(text) <= max_text_bytes before the surrounding protocol step continues.
       case string.byte_size(text) <= max_text_bytes {
         True -> Ok(text)
         False -> Error(key <> " is longer than a page allows")
@@ -949,7 +1014,10 @@ fn text_of(fields: Fields, key: String) -> Result(String, String) {
   }
 }
 
+/// Count of keeps this client operation’s decoding or state decision in one place.
 fn count_of(fields: Fields, key: String) -> Result(Int, String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Ok(json.Int(number)) if number >= 0 -> Ok(number)
     Ok(json.Int(_)) -> Error(key <> " is a negative count")
@@ -957,21 +1025,28 @@ fn count_of(fields: Fields, key: String) -> Result(Int, String) {
   }
 }
 
+/// Optional count keeps this client operation’s decoding or state decision in one place.
 fn optional_count(fields: Fields, key: String) -> Result(Option(Int), String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Error(Nil) | Ok(json.Null) -> Ok(None)
     Ok(_) -> count_of(fields, key) |> result.map(Some)
   }
 }
 
+/// Texts of keeps this client operation’s decoding or state decision in one place.
 fn texts_of(
   fields: Fields,
   key: String,
   most: Int,
 ) -> Result(List(String), String) {
   list_of(fields, key, most, fn(item) {
+    // This match resolves item before the surrounding protocol step continues.
+    // This match resolves item before the enclosing validation continues.
     case item {
       json.String(text) ->
+        // This match resolves string.byte_size(text) <= max_text_bytes before the surrounding protocol step continues.
         case string.byte_size(text) <= max_text_bytes {
           True -> Ok(text)
           False -> Error(key <> " holds text longer than a page allows")
@@ -981,14 +1056,18 @@ fn texts_of(
   })
 }
 
+/// List of keeps this client operation’s decoding or state decision in one place.
 fn list_of(
   fields: Fields,
   key: String,
   most: Int,
   item: fn(JsonValue) -> Result(a, String),
 ) -> Result(List(a), String) {
+  // This match resolves list.key_find(fields, key) before the surrounding protocol step continues.
+  // This match resolves list.key_find(fields, key) before the enclosing validation continues.
   case list.key_find(fields, key) {
     Ok(json.Array(items)) ->
+      // This match resolves list.drop(items, most) before the surrounding protocol step continues.
       case list.drop(items, most) {
         [] -> list.try_map(items, item)
         [_, ..] -> Error(key <> " holds too many entries")
@@ -997,11 +1076,15 @@ fn list_of(
   }
 }
 
+/// Strings keeps this client operation’s decoding or state decision in one place.
 fn strings(items: List(String)) -> JsonValue {
   json.Array(list.map(items, json.String))
 }
 
+/// Optional int keeps this client operation’s decoding or state decision in one place.
 fn optional_int(value: Option(Int)) -> JsonValue {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     Some(number) -> json.Int(number)
     None -> json.Null

@@ -67,29 +67,34 @@ pub const max_origins = 16
 /// ```
 pub fn parse(entry: String) -> Result(Origin, String) {
   let lowered = string.lowercase(entry)
+
+  // Parse protocol scheme prefix and dispatch to authority validation.
   let parsed = case lowered {
     "https://" <> rest -> authority(rest)
     "http://" <> _ ->
       Error("must use https; the proxy terminates TLS for the view")
     _ -> Error("is not an origin of the form https://host[:port]")
   }
+
   result.map_error(parsed, fn(reason) {
     key <> " entry \"" <> entry <> "\" " <> reason
   })
 }
 
-// The part after `https://`: one optional trailing slash is dropped, and
-// anything that would make the entry more than an origin is refused before
-// the host and port are read.
+/// Parses and validates the authority segment following the https scheme prefix.
 fn authority(rest: String) -> Result(Origin, String) {
+  // Strip single trailing slash if present.
   let rest = case string.ends_with(rest, "/") {
     True -> string.drop_end(rest, 1)
     False -> rest
   }
+
   let extra =
     list.find(["/", "?", "#", "@", "\\", " ", "%"], fn(mark) {
       string.contains(rest, mark)
     })
+
+  // Ensure no forbidden delimiter characters appear in the authority string.
   case extra, rest {
     Ok(_), _ -> Error("must have no user information, path or query")
     Error(Nil), "" -> Error("names no host")
@@ -97,32 +102,38 @@ fn authority(rest: String) -> Result(Origin, String) {
   }
 }
 
-// Splits the host from the port, then checks each.
+/// Splits authority into host and port components and validates both.
 fn host_and_port(rest: String) -> Result(Origin, String) {
   use #(host, suffix) <- result.try(
     split_host(rest) |> result.replace_error("has an unclosed IPv6 bracket"),
   )
+
+  // Validate syntax and label rules for the extracted host.
   use Nil <- result.try(case valid_host(host) {
     True -> Ok(Nil)
     False -> Error("has an invalid host")
   })
+
   use port <- result.try(
     port_of(suffix) |> result.replace_error("has an invalid port"),
   )
+
+  // Reject loopback hosts as they do not require origin allowlisting.
   case loopback(host) {
     True -> Error("names a loopback host, which the view admits without a list")
     False -> Ok(Origin(host:, port:))
   }
 }
 
-// A bracketed IPv6 literal carries colons of its own, so its port is whatever
-// follows the closing bracket. Any other host ends at its first colon.
+/// Splits a raw authority string into host and port suffix, handling IPv6 bracket syntax.
 fn split_host(rest: String) -> Result(#(String, String), Nil) {
+  // This branch resolves string starts_with rest before the operation continues.
   case string.starts_with(rest, "[") {
     True ->
       string.split_once(rest, "]")
       |> result.map(fn(parts) { #(parts.0 <> "]", parts.1) })
     False ->
+      // This branch resolves string split_once rest before the operation continues.
       case string.split_once(rest, ":") {
         Ok(#(name, port)) -> Ok(#(name, ":" <> port))
         Error(Nil) -> Ok(#(rest, ""))
@@ -130,12 +141,12 @@ fn split_host(rest: String) -> Result(#(String, String), Nil) {
   }
 }
 
-// A host is a bracketed IPv6 literal of hexadecimal digits, colons and dots,
-// or a DNS name or IPv4 literal: dot-separated labels of letters, digits and
-// hyphens, none empty and none starting or ending with a hyphen.
+/// Validates an IPv6 literal or dot-separated DNS hostname.
 fn valid_host(host: String) -> Bool {
+  // This branch resolves host before the operation continues.
   case host {
     "[" <> inner ->
+      // This branch resolves string ends_with inner before the operation continues.
       case string.ends_with(inner, "]") {
         False -> False
         True -> {
@@ -143,12 +154,14 @@ fn valid_host(host: String) -> Bool {
           inner != "" && only(inner, "0123456789abcdef:.")
         }
       }
+
     _ ->
       string.byte_size(host) <= 253
       && list.all(string.split(host, "."), valid_label)
   }
 }
 
+/// Validates an individual DNS label according to RFC length and character restrictions.
 fn valid_label(label: String) -> Bool {
   label != ""
   && string.byte_size(label) <= 63
@@ -163,14 +176,13 @@ fn only(text: String, allowed: String) -> Bool {
   })
 }
 
-// The port after the host: none, or one to five digits naming 1 to 65535.
-// Port 443 is the `https` default, which a browser leaves out of `Origin`
-// and `Host`, so it is stored as no port at all. The digits are checked
-// before `int.parse`, which would accept a sign.
+/// Parses and validates port suffix digits, defaulting 443 to standard HTTPS omission.
 fn port_of(suffix: String) -> Result(Option(Int), Nil) {
+  // Branch on whether port suffix is empty or contains colon-prefixed digits.
   case suffix {
     "" -> Ok(None)
     ":" <> digits -> {
+      // Validate numeric port digit syntax and length bounds.
       use Nil <- result.try(
         case
           digits != ""
@@ -181,7 +193,10 @@ fn port_of(suffix: String) -> Result(Option(Int), Nil) {
           False -> Error(Nil)
         },
       )
+
       use port <- result.try(int.parse(digits))
+
+      // Ensure port sits within valid 1-65535 range, treating 443 as default None.
       case port {
         443 -> Ok(None)
         _ if port >= 1 && port <= 65_535 -> Ok(Some(port))
@@ -227,7 +242,9 @@ pub fn host(origin: Origin) -> String {
   authority_of(origin)
 }
 
+/// Authority of keeps this client decision explicit for its callers.
 fn authority_of(origin: Origin) -> String {
+  // This branch resolves origin port before the operation continues.
   case origin.port {
     None -> origin.host
     Some(port) -> origin.host <> ":" <> int.to_string(port)
@@ -265,6 +282,7 @@ pub fn names_host(origin: Origin, header: String) -> Bool {
 pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Origin), String) {
+  // This branch resolves dict get document daemon before the operation continues.
   case dict.get(document, "daemon") {
     Ok(tom.Table(fields)) -> from_fields(fields)
     Ok(_) | Error(Nil) -> Ok([])
@@ -282,6 +300,7 @@ pub fn from_document(
 pub fn from_fields(
   fields: Dict(String, tom.Toml),
 ) -> Result(List(Origin), String) {
+  // This branch resolves dict get fields key before the operation continues.
   case dict.get(fields, key) {
     Error(Nil) -> Ok([])
     Ok(tom.Array(items)) -> entries(items)
@@ -289,7 +308,9 @@ pub fn from_fields(
   }
 }
 
+/// Validates array length ceiling and parses individual TOML origin string items.
 fn entries(items: List(tom.Toml)) -> Result(List(Origin), String) {
+  // Enforce configured maximum origin entries limit.
   use Nil <- result.try(case list.drop(items, max_origins) == [] {
     True -> Ok(Nil)
     False ->
@@ -301,7 +322,9 @@ fn entries(items: List(tom.Toml)) -> Result(List(Origin), String) {
         <> " origins",
       )
   })
+
   list.try_map(items, fn(item) {
+    // This branch resolves item before the operation continues.
     case item {
       tom.String(entry) -> parse(entry)
       _ -> Error("daemon." <> key <> " entries must be strings")

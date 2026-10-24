@@ -156,6 +156,7 @@ pub fn authorization_url(
   attempt: Attempt,
   redirect_uri: String,
 ) -> String {
+  // Configure registration parameters based on client_id presence.
   let registration = case attempt.client_id {
     None -> [
       #("client_id", "dynamic_agent_client"),
@@ -163,10 +164,13 @@ pub fn authorization_url(
     ]
     Some(client_id) -> [#("client_id", client_id)]
   }
+
+  // Add ID token hint if previously granted.
   let hint = case binding.grant {
     None -> []
     Some(grant) -> [#("id_token_hint", grant.id_token)]
   }
+
   let challenge =
     crypto.hash(crypto.Sha256, bit_array.from_string(attempt.verifier))
     |> base64url
@@ -228,6 +232,8 @@ pub fn callback(attempt: Attempt, query: String) -> Result(Callback, String) {
     return: Error("authorization_denied"),
   )
   use code <- result.try(unique(fields, "code"))
+
+  // Extract and validate client_id from callback query.
   use client_id <- result.try(
     case
       attempt.client_id,
@@ -244,9 +250,11 @@ pub fn callback(attempt: Attempt, query: String) -> Result(Callback, String) {
         Error("invalid_callback")
     },
   )
+
   Ok(Callback(code, client_id))
 }
 
+/// Finds a single non-empty query parameter in fields list.
 fn unique(
   fields: List(#(String, String)),
   name: String,
@@ -261,6 +269,7 @@ fn unique(
   }
 }
 
+/// Validates client ID format and length constraints.
 fn valid_client(value: String) -> Result(String, String) {
   case
     value != "dynamic_agent_client"
@@ -324,6 +333,7 @@ pub fn login(
       weft.Refused -> Error("request_cancelled")
     },
   )
+
   listener.begin(owner)
   use bound <- result.try(listener.ready(owner, within: 5000))
   let authority = "127.0.0.1:" <> int.to_string(bound.port)
@@ -344,6 +354,7 @@ pub fn login(
   exchange(binding, attempt, redirect_uri, received, services)
 }
 
+/// Handles incoming browser HTTP request on local loopback server.
 fn handle_browser(
   request: request.Request(mist.Connection),
   messages: Subject(BrowserMessage),
@@ -351,6 +362,8 @@ fn handle_browser(
 ) -> response.Response(mist.ResponseData) {
   let authority = process.new_subject()
   process.send(messages, CheckAuthority(request.headers, authority))
+
+  // Verify Host header authority before processing request.
   case process.receive(authority, 1000) {
     Ok(Ok(Nil)) -> handle_verified_browser(request, messages, attempt)
     Ok(Error(Nil)) -> page(400, "This sign-in host could not be verified.")
@@ -360,15 +373,22 @@ fn handle_browser(
 
 // The attempt owner validates the exact bound authority before the listener
 // exposes the private issuer redirect or consumes a callback.
+/// Handles verified browser requests for start and callback routes.
+///
+/// The attempt owner validates the exact bound authority before the listener
+/// exposes the private issuer redirect or consumes a callback.
 fn handle_verified_browser(
   request: request.Request(mist.Connection),
   messages: Subject(BrowserMessage),
   attempt: Attempt,
 ) -> response.Response(mist.ResponseData) {
+  // Route browser request by method and path.
   case request.method, request.path {
     gleam_http.Get, "/auth/start" -> {
       let reply = process.new_subject()
       process.send(messages, Start(reply))
+
+      // Await start authorization URL.
       case process.receive(reply, 1000) {
         Ok(url) ->
           response.new(302)
@@ -382,6 +402,8 @@ fn handle_verified_browser(
     }
     gleam_http.Get, "/auth/callback" -> {
       let result = callback(attempt, option.unwrap(request.query, ""))
+
+      // Check callback verification result.
       case result {
         Ok(_) | Error("authorization_denied") -> {
           process.send(messages, Returned(result))
@@ -404,6 +426,7 @@ fn page(status: Int, text: String) -> response.Response(mist.ResponseData) {
   |> response.set_body(mist.Bytes(bytes_tree.from_string(text)))
 }
 
+/// Awaits browser callback or authority validation messages.
 fn await_browser(
   messages: Subject(BrowserMessage),
   authorization_url: String,
@@ -417,14 +440,18 @@ fn await_browser(
     )
     |> result.replace_error("login_cancelled"),
   )
+
+  // Dispatch message received from browser handler.
   case message {
     CheckAuthority(headers, reply) -> {
+      // Check that incoming Host header matches bound authority.
       let checked = case
         list.filter(headers, fn(header) { string.lowercase(header.0) == "host" })
       {
         [#(_, received)] if received == authority -> Ok(Nil)
         _ -> Error(Nil)
       }
+
       process.send(reply, checked)
       await_browser(messages, authorization_url, authority, deadline)
     }
@@ -436,6 +463,7 @@ fn await_browser(
   }
 }
 
+/// Exchanges authorization code for tokens and accepts credential binding.
 fn exchange(
   binding: Binding,
   attempt: Attempt,
@@ -483,6 +511,7 @@ pub fn refresh(
   binding: Binding,
   services: Services,
 ) -> Result(Binding, String) {
+  // Validate that client_id, subject, and grant exist for refresh.
   use #(client_id, subject, previous) <- result.try(
     case binding.client_id, binding.subject, binding.grant {
       Some(client_id), Some(subject), Some(grant) ->
@@ -490,6 +519,7 @@ pub fn refresh(
       _, _, _ -> Error("not_logged_in")
     },
   )
+
   use refresh <- result.try(option.to_result(
     previous.refresh,
     "reauthorization_required",
@@ -503,6 +533,8 @@ pub fn refresh(
     ],
     services,
   ))
+
+  // Verify refreshed ID token if present or keep previous.
   use id_token <- result.try(case token.id_token {
     None -> Ok(previous.id_token)
     Some(value) -> {
@@ -515,6 +547,7 @@ pub fn refresh(
       Ok(value)
     }
   })
+
   credentials.accept(
     binding,
     client_id,
@@ -523,6 +556,7 @@ pub fn refresh(
   )
 }
 
+/// Executes an OAuth token endpoint request.
 fn token_request(
   fields: List(#(String, String)),
   services: Services,
@@ -531,10 +565,13 @@ fn token_request(
     form_request("https://auth.openai.com/api/accounts/oauth/token", fields),
     65_536,
   ))
+
+  // Check HTTP response status code.
   use Nil <- result.try(case response.status {
     200 -> Ok(Nil)
     _ -> Error(token_error(response.body))
   })
+
   use token <- result.try(
     json.parse(response.body, token_decoder())
     |> result.replace_error("invalid_token_response"),
@@ -550,6 +587,7 @@ fn token_request(
   Ok(token)
 }
 
+/// Parses error code from token endpoint error response.
 fn token_error(body: String) -> String {
   let decoder = {
     use error <- decode.field(
@@ -563,6 +601,8 @@ fn token_error(body: String) -> String {
     )
     decode.success(error)
   }
+
+  // Map parsed OAuth error code to diagnostic message.
   case json.parse(body, decoder) {
     Ok("invalid_grant")
     | Ok("invalid_refresh_token")
@@ -575,6 +615,7 @@ fn token_error(body: String) -> String {
   }
 }
 
+/// Decoder for Token response payload.
 fn token_decoder() -> decode.Decoder(Token) {
   use access <- decode.field("access_token", decode.string)
   use refresh <- decode.optional_field(
@@ -600,6 +641,7 @@ fn token_decoder() -> decode.Decoder(Token) {
   ))
 }
 
+/// Converts a received Token into a Grant record.
 fn grant(token: Token, id_token: String, now: Int) -> Grant {
   Grant(
     token.access,
@@ -619,6 +661,8 @@ fn grant(token: Token, id_token: String, now: Int) -> Grant {
 /// ```
 pub fn revoke(binding: Binding, services: Services) -> Result(Nil, String) {
   let refresh = option.then(binding.grant, fn(grant) { grant.refresh })
+
+  // Check whether refresh token is available for revocation.
   case binding.client_id, refresh {
     Some(client_id), Some(refresh) -> {
       use response <- result.try(services.fetch(
@@ -629,6 +673,8 @@ pub fn revoke(binding: Binding, services: Services) -> Result(Nil, String) {
         ]),
         4096,
       ))
+
+      // Check HTTP status of revocation response.
       case response.status {
         200 -> Ok(Nil)
         _ -> Error("revocation_unconfirmed")
@@ -638,6 +684,7 @@ pub fn revoke(binding: Binding, services: Services) -> Result(Nil, String) {
   }
 }
 
+/// Constructs an application/x-www-form-urlencoded POST request.
 fn form_request(
   url: String,
   fields: List(#(String, String)),

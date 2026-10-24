@@ -257,6 +257,8 @@ pub fn record(
   )
 }
 
+/// Compiles and runs candidate author tests within a confined sandbox, validating
+/// extension manifest declarations, module integrity, and recording the execution verdict.
 fn tested(
   candidate: record.Candidate,
   directory: String,
@@ -269,10 +271,14 @@ fn tested(
     live_contract.vet(candidate.files, vetted)
     |> result.map_error(store.TestFailed),
   )
+
+  // Ensure an author test entry module is explicitly configured for the candidate.
   use entry <- result.try(case candidate.test_entry {
     Some(entry) -> Ok(entry)
     None -> Error(store.TestFailed("candidate has no author test entry"))
   })
+
+  // Confirm that the designated test entry point exists among vetted package modules.
   use Nil <- result.try(
     case list.contains(package.module_names(vetted), entry) {
       True -> Ok(Nil)
@@ -301,10 +307,13 @@ fn tested(
       manifest_hash: products.manifest_hash,
     )),
   )
+
+  // Classify candidate author evaluation as passed or failed based on runner outcome.
   let verdict = case observed.outcome {
     satellite.Completed(_) -> record.Passed
     satellite.Errored(_, _) -> record.Failed
   }
+
   let observation =
     json.to_string(
       json.object([
@@ -332,9 +341,12 @@ pub fn test_source(entry: String) -> String {
   <> " as candidate_tests\n\npub fn main() -> Nil {\n  runtime.run(candidate_tests.main)\n}\n"
 }
 
+/// Decodes and validates the extension manifest from candidate files, ensuring the
+/// candidate is an extension and contains a well-formed extension.toml specification.
 fn decode_manifest(
   candidate: record.Candidate,
 ) -> Result(manifest.Manifest, store.Refusal) {
+  // Restrict evaluation to candidates explicitly declared as extension packages.
   use Nil <- result.try(case candidate.kind {
     record.Extension -> Ok(Nil)
     record.Program | record.Prompt ->
@@ -342,6 +354,7 @@ fn decode_manifest(
         "extension evaluator requires an extension candidate",
       ))
   })
+
   use text <- result.try(
     list.key_find(candidate.files, "extension.toml")
     |> result.replace_error(store.TestFailed("extension.toml absent")),
@@ -356,6 +369,7 @@ fn decode_manifest(
   |> result.map_error(store.TestFailed)
 }
 
+/// Vets candidate package source files against the extension capability seam policy.
 fn vet(
   candidate: record.Candidate,
 ) -> Result(package.VettedPackage, store.Refusal) {
@@ -397,6 +411,7 @@ fn materialize(
   list.try_each(files, fn(file) { write(root <> "/" <> file.0, file.1) })
 }
 
+/// Writes text content to disk at `path`, creating intermediate parent directories as needed.
 fn write(path: String, text: String) -> Result(Nil, store.Refusal) {
   let parts = string.split(path, "/")
   let parent = string.join(list.take(parts, list.length(parts) - 1), "/")
@@ -416,6 +431,8 @@ fn compile_error(error: compile.CompileError) -> store.Refusal {
   store.TestFailed(string.inspect(error))
 }
 
+/// Prepares the filesystem tree for building an extension candidate, configuring live
+/// reload contracts if defined or applying standard offline package preparation.
 fn prepare_build(
   candidate: record.Candidate,
   root: String,
@@ -431,6 +448,8 @@ fn prepare_build(
     live_contract.decode(text, package.module_names(vetted))
     |> result.map_error(install.Manifest),
   )
+
+  // Configure either a live hot-reloadable slot contract or a standard static install.
   case contract {
     None -> install.prepare(root, decoded, vetted)
     Some(contract) -> install.prepare_live(root, vetted, contract, slot)

@@ -34,6 +34,8 @@ pub fn descriptor(
     |> result.replace_error(Nil),
   )
   use found <- result.try(list.first(rows))
+
+  // Verify that the retrieved lineage row matches the requested entry identity.
   case found.id == id {
     True -> snapshot.validate_descriptor(found) |> result.replace_error(Nil)
     False -> Error(Nil)
@@ -59,6 +61,8 @@ pub fn page(
       { found.byte_length + tool_result.page_bytes - 1 }
         / tool_result.page_bytes,
     )
+
+  // Check that the requested page index sits strictly within the computed page range.
   case index >= 0 && index < pages {
     False -> Error(Nil)
     True -> {
@@ -96,8 +100,8 @@ pub fn download(
   chunks(reader, found, 0, bootstrap.monotonic_time_ms() + 5000, [])
 }
 
-// Only a complete record leaves the handler. A failed, short, oversized or
-// late fragment refuses the download rather than serving a partial JSON file.
+/// Recursively streams snapshot fragments within the allotted deadline, ensuring
+/// only complete records reach the caller without partial truncations.
 fn chunks(
   reader: snapshot.Reader,
   found: snapshot.Descriptor,
@@ -106,6 +110,8 @@ fn chunks(
   kept: List(bytes_tree.BytesTree),
 ) -> Result(bytes_tree.BytesTree, Nil) {
   let remaining = deadline - bootstrap.monotonic_time_ms()
+
+  // Terminate when the entire descriptor has been accumulated or deadline expires.
   case offset == found.byte_length, remaining > 0 {
     True, True -> Ok(bytes_tree.concat(list.reverse(kept)))
     _, False -> Error(Nil)
@@ -114,7 +120,11 @@ fn chunks(
         reader.fragment(found, offset, int.min(remaining, 1000))
         |> result.replace_error(Nil),
       )
+
+      // This branch resolves the input state before the operation continues.
       let size = bit_array.byte_size(bytes)
+
+      // Enforce fragment size limits and ensure reading does not overrun total descriptor length.
       case
         size > 0
         && size <= snapshot.fragment_bytes_limit

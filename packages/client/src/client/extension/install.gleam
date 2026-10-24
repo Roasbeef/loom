@@ -248,14 +248,18 @@ pub fn run(
   rev rev: Option(String),
 ) -> Result(Installed, Failure) {
   use fetched <- result.try(acquire(config, from, rev))
+
+  // Dispatch between the jailed compile pipeline and the declarative profile pipeline.
   case declared_tier(fetched) {
     manifest.Jailed -> jailed(config, from, rev, fetched)
     manifest.Profile -> profiled(config, from, rev, fetched)
   }
 }
 
-// The jailed pipeline, exactly as it was before profiles existed: prune,
-// decode, vet, then build inside the staging directory.
+/// Runs the jailed extension install pipeline: vetting, compilation, and recording.
+///
+/// The jailed pipeline, exactly as it was before profiles existed: prune,
+/// decode, vet, then build inside the staging directory.
 fn jailed(
   config: Config,
   from: Source,
@@ -282,11 +286,13 @@ fn jailed(
   })
 }
 
-// The profile pipeline: decode, prune to what the manifest needs, and
-// record. The manifest is decoded against the whole fetched tree's text,
-// because a `[[check]]`'s fixture has to exist before the prune can know
-// to keep it; the prune keeps every file the decode relied on, so the
-// installed tree decodes to the same manifest at every load.
+/// Runs the profile extension install pipeline: pruning to required files and recording.
+///
+/// The profile pipeline: decode, prune to what the manifest needs, and
+/// record. The manifest is decoded against the whole fetched tree's text,
+/// because a `[[check]]`'s fixture has to exist before the prune can know
+/// to keep it; the prune keeps every file the decode relied on, so the
+/// installed tree decodes to the same manifest at every load.
 fn profiled(
   config: Config,
   from: Source,
@@ -307,10 +313,12 @@ fn profiled(
   })
 }
 
-// Only a manifest that parses and names `tier = "profile"` takes the
-// profile pipeline. Anything else, a missing or unreadable manifest
-// included, takes the jailed one, whose own steps refuse it with the
-// layer and the words they always used.
+/// Inspects the fetched tree to read the declared execution tier.
+///
+/// Only a manifest that parses and names `tier = "profile"` takes the
+/// profile pipeline. Anything else, a missing or unreadable manifest
+/// included, takes the jailed one, whose own steps refuse it with the
+/// layer and the words they always used.
 fn declared_tier(tree: Tree) -> manifest.Tier {
   let named =
     list.find(tree.files, fn(file) { file.path == manifest_file })
@@ -318,6 +326,8 @@ fn declared_tier(tree: Tree) -> manifest.Tier {
     |> result.try(fn(text) {
       manifest.declared_tier(text) |> result.replace_error(Nil)
     })
+
+  // Select profile only if explicitly declared, defaulting to jailed execution.
   case named {
     Ok(manifest.Profile) -> manifest.Profile
     Ok(manifest.Jailed) | Error(Nil) -> manifest.Jailed
@@ -362,6 +372,7 @@ pub fn describe(failure: Failure) -> String {
 /// ```
 ///
 pub fn enforcement_line(report: Report) -> String {
+  // Describe what the sandbox kernel enforced during compilation.
   case report {
     enforcement.Unreported(reason:) ->
       "the jailed build made NO enforcement report: " <> reason
@@ -416,6 +427,7 @@ pub fn allowlist() -> List(String) {
 
 // --- step 1: the tree -----------------------------------------------------
 
+/// Acquires the extension archive tree either locally or via HTTP fetch.
 fn acquire(
   config: Config,
   from: Source,
@@ -429,6 +441,7 @@ fn acquire(
   }
 }
 
+/// Fetches and extracts the remote archive from its resolved URL.
 fn fetched(
   config: Config,
   from: Source,
@@ -444,19 +457,21 @@ fn fetched(
   |> result.map_error(fn(error) { Extract(archive.describe(error)) })
 }
 
-// The archive, narrowed to what an install keeps.
-//
-// This is the *first* thing done to a fetched tree, and everything after
-// it — the UTF-8 decode, the manifest, the vetting, the digest recorded
-// in the record, the bytes written under the extension's `src/` — sees
-// only what survived. A repository carries tests, a `.gitignore`,
-// `.github/`, docs, Gleam's resolved `manifest.toml` and a `build/`
-// directory, and none of that is part of what an operator approves; the
-// record's digest therefore describes the installed tree, which is also
-// the tree `installed.discover` re-reads.
-//
-// `Tree.root` and `Tree.commit` are carried through untouched: neither is
-// part of the digest, and the commit is the pin.
+/// Prunes an archive tree to the subset of files permitted in an install.
+///
+/// The archive, narrowed to what an install keeps.
+///
+/// This is the *first* thing done to a fetched tree, and everything after
+/// it — the UTF-8 decode, the manifest, the vetting, the digest recorded
+/// in the record, the bytes written under the extension's `src/` — sees
+/// only what survived. A repository carries tests, a `.gitignore`,
+/// `.github/`, docs, Gleam's resolved `manifest.toml` and a `build/`
+/// directory, and none of that is part of what an operator approves; the
+/// record's digest therefore describes the installed tree, which is also
+/// the tree `installed.discover` re-reads.
+///
+/// `Tree.root` and `Tree.commit` are carried through untouched: neither is
+/// part of the digest, and the commit is the pin.
 fn installed_tree(tree: Tree) -> Result(Tree, Failure) {
   use kept <- result.try(
     package.installed_subset(
@@ -474,15 +489,17 @@ fn installed_tree(tree: Tree) -> Result(Tree, Failure) {
   )
 }
 
-// The tree as text, or a refusal naming the file that is not.
-//
-// Dropping one was the wrong direction, and pruning has already happened:
-// every file left here is one the install keeps and stages, so a
-// `src/nif.so` or a `schema/x.bin` that is not text would land under the
-// installed extension having passed no rule at all. Refusing it means
-// every file that reaches the staged tree is one `vet_package` judged. A
-// binary the *repository* carries — a screenshot under `docs/` — was
-// pruned a step earlier and never reaches this.
+/// Decodes all files in the tree as UTF-8 text, refusing any binary files.
+///
+/// The tree as text, or a refusal naming the file that is not.
+///
+/// Dropping one was the wrong direction, and pruning has already happened:
+/// every file left here is one the install keeps and stages, so a
+/// `src/nif.so` or a `schema/x.bin` that is not text would land under the
+/// installed extension having passed no rule at all. Refusing it means
+/// every file that reaches the staged tree is one `vet_package` judged. A
+/// binary the *repository* carries — a screenshot under `docs/` — was
+/// pruned a step earlier and never reaches this.
 fn text_files(tree: Tree) -> Result(List(#(String, String)), Failure) {
   list.try_map(tree.files, fn(file) {
     case bit_array.to_string(file.bytes) {
@@ -508,14 +525,16 @@ fn readable_files(tree: Tree) -> List(#(String, String)) {
   })
 }
 
-// A profile's installed tree: its manifest, its `README*` and
-// `LICENSE*` files at the root, and every file under a fixture one of its
-// checks names. The record's digest is over exactly this, and discovery
-// re-reads exactly this.
-//
-// The README and licence rule is for root-level *files*: a path holding a
-// `/` is inside a directory, and `README-assets/` or `LICENSES/` is a
-// directory of anything, which a prefix match would keep whole.
+/// Prunes the fetched tree down to manifest, root docs, and check fixtures.
+///
+/// A profile's installed tree: its manifest, its `README*` and
+/// `LICENSE*` files at the root, and every file under a fixture one of its
+/// checks names. The record's digest is over exactly this, and discovery
+/// re-reads exactly this.
+///
+/// The README and licence rule is for root-level *files*: a path holding a
+/// `/` is inside a directory, and `README-assets/` or `LICENSES/` is a
+/// directory of anything, which a prefix match would keep whole.
 fn profile_tree(tree: Tree, decoded: Manifest) -> Tree {
   let fixtures =
     list.map(decoded.checks, fn(check) { check.fixture <> "/" }) |> list.unique
@@ -531,6 +550,7 @@ fn profile_tree(tree: Tree, decoded: Manifest) -> Tree {
 
 // --- step 2: the manifest -------------------------------------------------
 
+/// Reads and decodes extension.toml from the installed file list.
 fn read_manifest(files: List(#(String, String))) -> Result(Manifest, Failure) {
   use text <- result.try(
     list.key_find(files, manifest_file)
@@ -565,10 +585,12 @@ fn vet_source(
 
 // --- steps 4 to 6: staging, the build, the record -------------------------
 
-// Everything from here writes to disk, so it all happens under one
-// staging directory that is removed on every path out but the last.
-// `artifact` is the tier's own step between writing the tree and writing
-// the record: the jailed build, or nothing at all for a profile.
+/// Runs the build inside a temporary staging directory before atomic promotion.
+///
+/// Everything from here writes to disk, so it all happens under one
+/// staging directory that is removed on every path out but the last.
+/// `artifact` is the tier's own step between writing the tree and writing
+/// the record: the jailed build, or nothing at all for a profile.
 fn stage(
   config: Config,
   from: Source,
@@ -583,6 +605,8 @@ fn stage(
   // same name racing, where both pass here and the rename decides.
   use Nil <- result.try(untaken(config.root, decoded.name))
   let staging = record.staging(config.root, token(config))
+
+  // Execute the build and record step within staging, rolling back on failure.
   case build_and_record(config, from, rev, tree, decoded, artifact, staging) {
     Ok(installed) -> Ok(installed)
     Error(failure) -> {
@@ -592,6 +616,7 @@ fn stage(
   }
 }
 
+/// Writes sources, runs compilation artifact step, and writes the approval record.
 fn build_and_record(
   config: Config,
   from: Source,
@@ -616,6 +641,7 @@ fn build_and_record(
     manifest.Jailed -> allowlist()
     manifest.Profile -> []
   }
+
   let written =
     record.for_install(
       decoded,
@@ -633,12 +659,14 @@ fn build_and_record(
   Ok(Installed(record: written, manifest: decoded, directory:, enforcement:))
 }
 
-// The revision the record pins. An archive that carried one wins — a
-// code host's tarball names the commit its `--rev` resolved to, which is
-// what makes a branch install content-addressed — then the operator's own
-// `--rev`. With neither, a local path and a fetched archive are different
-// facts and read differently: one has no revision to have, and the other
-// is pinned by its URL alone.
+/// Resolves the revision string to record based on commit and source origin.
+///
+/// The revision the record pins. An archive that carried one wins — a
+/// code host's tarball names the commit its `--rev` resolved to, which is
+/// what makes a branch install content-addressed — then the operator's own
+/// `--rev`. With neither, a local path and a fetched archive are different
+/// facts and read differently: one has no revision to have, and the other
+/// is pinned by its URL alone.
 fn revision(from: Source, tree: Tree, rev: Option(String)) -> String {
   case tree.commit, rev, from {
     Some(commit), _, _ -> commit
@@ -661,6 +689,7 @@ type Compiled {
   Compiled(manifest_hash: String, artifact: String, enforcement: Report)
 }
 
+/// Compiles the vetted source in the staging directory and copies the artifact.
 fn compiled(
   config: Config,
   decoded: Manifest,
@@ -669,11 +698,14 @@ fn compiled(
   staging: String,
 ) -> Result(Compiled, Failure) {
   let build_root = staging <> "/build"
+
+  // Prepare either live runtime entry or standard vetted extension entry.
   use Nil <- result.try(case live {
     None -> prepare(build_root, decoded, vetted)
     Some(contract) ->
       prepare_live(build_root, vetted, contract, live_slots.First)
   })
+
   let compile.Built(result: built, enforcement:) = config.build(build_root)
   use products <- result.try(
     result.map_error(built, fn(error) { Compile(compile_reason(error)) }),
@@ -788,21 +820,25 @@ pub fn entry_source(
   <> "\n    ],\n  )\n}\n"
 }
 
-// One `#(name, module.function…)` row of a served table.
-//
-// A tool's entry is the function itself; a hook's is *called*, because
-// `on_event` returns the `ext/hook.Hook` that holds the closure and a
-// `Hook` is not something a Gleam constant can hold.
+/// Renders a single tool or hook dispatch table registration entry.
+///
+/// One `#(name, module.function…)` row of a served table.
+///
+/// A tool's entry is the function itself; a hook's is *called*, because
+/// `on_event` returns the `ext/hook.Hook` that holds the closure and a
+/// `Hook` is not something a Gleam constant can hold.
 fn registration(
   aliases: List(#(String, String)),
   name: String,
   module: String,
   function: String,
 ) -> String {
+  // Append call parens when registering hook callbacks.
   let called = case function == hook_function {
     True -> "()"
     False -> ""
   }
+
   "      #(\""
   <> name
   <> "\", "
@@ -833,6 +869,7 @@ fn alias(index: Int) -> String {
   "ext_entry_" <> int.to_string(index)
 }
 
+/// Renders compiler errors into human-readable install failure explanations.
 fn compile_reason(error: compile.CompileError) -> String {
   case error {
     compile.WorkspaceSetupFailed(reason:) -> reason
@@ -862,10 +899,12 @@ fn write_record(staging: String, written: Record) -> Result(Nil, Failure) {
   )
 }
 
-// The one step that is not undoable, and it is last. A name already
-// taken is a refusal rather than an overwrite: replacing an install is
-// `remove` then `install`, so an operator never loses a working
-// extension to a failed reinstall.
+/// Atomically promotes the staging directory to the final install location.
+///
+/// The one step that is not undoable, and it is last. A name already
+/// taken is a refusal rather than an overwrite: replacing an install is
+/// `remove` then `install`, so an operator never loses a working
+/// extension to a failed reinstall.
 fn promote(
   root: Root,
   name: String,
@@ -882,9 +921,11 @@ fn promote(
   })
 }
 
-// A name already taken is a refusal rather than an overwrite: replacing
-// an install is `remove` then `install`, so an operator never loses a
-// working extension to a failed reinstall.
+/// Checks that an extension name is not already installed on disk.
+///
+/// A name already taken is a refusal rather than an overwrite: replacing
+/// an install is `remove` then `install`, so an operator never loses a
+/// working extension to a failed reinstall.
 fn untaken(root: Root, name: String) -> Result(Nil, Failure) {
   case simplifile.is_directory(record.directory(root, name)) {
     Ok(False) | Error(_absent) -> Ok(Nil)
@@ -895,6 +936,7 @@ fn untaken(root: Root, name: String) -> Result(Nil, Failure) {
   }
 }
 
+/// Copies the compiled BEAM directory into the staged artifact location.
 fn copy_artifact(beam_dir: String, into: String) -> Result(Nil, Failure) {
   use Nil <- result.try(fresh(into))
   simplifile.copy_directory(at: beam_dir, to: into)
@@ -906,6 +948,7 @@ fn copy_artifact(beam_dir: String, into: String) -> Result(Nil, Failure) {
   })
 }
 
+/// Ensures a directory exists freshly on the filesystem.
 fn fresh(directory: String) -> Result(Nil, Failure) {
   simplifile.create_directory_all(directory)
   |> result.map_error(fn(error) {
@@ -918,6 +961,7 @@ fn fresh(directory: String) -> Result(Nil, Failure) {
   })
 }
 
+/// Writes raw bit array bytes to a file path, creating parent directories.
 fn write_bytes(path: String, bytes: BitArray) -> Result(Nil, Failure) {
   use Nil <- result.try(fresh(directory_of(path)))
   simplifile.write_bits(to: path, bits: bytes)
@@ -928,6 +972,7 @@ fn write_bytes(path: String, bytes: BitArray) -> Result(Nil, Failure) {
   })
 }
 
+/// Writes string contents to a file path, creating parent directories.
 fn write(path: String, contents: String) -> Result(Nil, Failure) {
   use Nil <- result.try(fresh(directory_of(path)))
   simplifile.write(to: path, contents: contents)
@@ -938,6 +983,7 @@ fn write(path: String, contents: String) -> Result(Nil, Failure) {
   })
 }
 
+/// Extracts the parent directory path from a file path string.
 fn directory_of(path: String) -> String {
   case string.split(path, "/") {
     [] -> "."

@@ -203,6 +203,7 @@ pub fn capped_gateway_summarizer(
   bound_gateway_summarizer(gateway, target, timeout_ms, Some(max_output_tokens))
 }
 
+/// Builds a summarizer driven by a provider gateway with a timeout and token limit.
 fn bound_gateway_summarizer(
   gateway: provider_gateway.Gateway,
   target: RequestTarget,
@@ -227,6 +228,8 @@ fn bound_gateway_summarizer(
     // an observation of the real exit rather than a `noproc` guess.
     let drain_witness = stream.watch_drain(handle)
     begin()
+
+    // Await the terminal result within the configured timeout.
     case stream.await_terminal(handle, within: timeout_ms) {
       Error(Nil) -> {
         stream.cancel(handle)
@@ -273,8 +276,9 @@ fn bound_gateway_summarizer(
   })
 }
 
-// Drain orders the terminal publication before owner exit. A local timeout
-// may therefore retain the gateway's report even though it refuses the answer.
+/// Recovers request accounting from a terminal stream handle or defaults to unknown.
+/// Drain orders the terminal publication before owner exit. A local timeout
+/// may therefore retain the gateway's report even though it refuses the answer.
 fn timeout_accounting(
   handle: stream.StreamHandle,
 ) -> accounting.RequestAccounting {
@@ -290,7 +294,8 @@ fn unknown_accounting() -> accounting.RequestAccounting {
   accounting.from_usage(accounting.unknown_usage(usage_evidence.Other))
 }
 
-// The settled response owns context usage, independently of fallback totals.
+/// Extracts context usage from a settled message or falls back to unknown accounting.
+/// The settled response owns context usage, independently of fallback totals.
 fn final_usage(settled: AgentMessage) -> Usage {
   case settled {
     message.AssistantMessage(usage:, ..) -> usage
@@ -300,6 +305,7 @@ fn final_usage(settled: AgentMessage) -> Usage {
   }
 }
 
+/// Wraps prompt text in a single user message block.
 fn user(text: String) -> AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],
@@ -308,6 +314,7 @@ fn user(text: String) -> AgentMessage {
   )
 }
 
+/// Joins all assistant text blocks from a settled message into a single string.
 fn settled_text(settled: AgentMessage) -> String {
   case settled {
     message.AssistantMessage(content:, ..) ->

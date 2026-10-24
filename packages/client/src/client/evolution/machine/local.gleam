@@ -244,6 +244,7 @@ pub fn stage_candidate(
 // through it. The hook bus is not started here: it belongs to the
 // orchestrator's half (`generation_of`), which starts it over the `invoke` this
 // value carries and closes it ahead of this value's `retire`.
+/// Stages an extension selection into a prepared environment with dedicated plane.
 fn assemble(
   config: Config,
   host: codemode.Config,
@@ -369,17 +370,21 @@ pub fn generation_of(
       events: staged.events,
       invoke: fn(_name, event, args, within) { invoke(event, args, within) },
     )
+
+  // Start hook event bus for the staged generation extension.
   use bus <- result.try(case hooks.start([subscribed], logger) {
     Ok(bus) -> Ok(bus)
     Error(error) ->
       failed_task(staged.retire, store.Unavailable(string.inspect(error)))
   })
+
   Ok(over_bus(catalogue, bus, staged))
 }
 
 // The generation for a staged value over a bus that is already running. An
 // upgrade's successor comes back through here with the same bus, which is why
 // the bus is a parameter rather than started once per value.
+/// Wraps a staged candidate into a generation over an active hook event bus.
 fn over_bus(
   catalogue: store.Store,
   bus: hooks.Bus,
@@ -407,11 +412,13 @@ fn over_bus(
 
 // Replacement-only unless the staged value carries an upgrade, in which case
 // the successor's approval is read here, before the machine sees it.
+/// Derives live upgrade mode based on whether staged candidate carries an upgrade recipe.
 fn mode_of(
   catalogue: store.Store,
   bus: hooks.Bus,
   staged: Staged,
 ) -> live.Mode {
+  // Inspect whether candidate staged an in-place upgrade path.
   case staged.upgrade {
     None -> live.ReplacementOnly
     Some(upgrade) -> {
@@ -447,6 +454,7 @@ fn retiring(
   result.try_recover(attempt, fn(reason) { failed(plane, reason) })
 }
 
+/// Constructs an extension compiler with configured demand settings.
 fn compiler(
   config: Config,
   host: codemode.Config,
@@ -455,6 +463,7 @@ fn compiler(
   compiler_for(host, base, config.at.demand)
 }
 
+/// Constructs an extension compiler builder for a specific sandbox base and demand.
 fn compiler_for(
   host: codemode.Config,
   base: policy.SandboxPolicy,
@@ -563,6 +572,7 @@ pub fn node_identity(
   )
 }
 
+/// Scopes a memory door with a candidate-specific version namespace prefix.
 fn scoped_memory(door: memory.Door, version: String) -> memory.Door {
   let remember = door.remember
   let recall = door.recall
@@ -582,6 +592,7 @@ fn failed(plane: Plane, reason: store.Refusal) -> Result(a, store.Refusal) {
 
 // Performs a cleanup task and surfaces `reason` once it is confirmed, or the
 // unconfirmed cleanup with its retry when it is not.
+/// Performs cleanup task on error and preserves unconfirmed failure details.
 fn failed_task(
   close: retirement.Task,
   reason: store.Refusal,
@@ -632,6 +643,7 @@ pub fn open_plane(
 
 // The bounded helper census of a plane's executor: its capacity, the
 // executions in flight and what its pool has spawned, borrowed and retired.
+/// Captures a point-in-time census of effect plane executor pool state.
 fn plane_census(service: executor.Executor) -> Result(json.JsonValue, String) {
   use snapshot <- result.try(
     executor.snapshot(service, waiting: 1000)
@@ -718,6 +730,8 @@ pub fn evaluate_candidate_of(
   let plane = cleaning(opened, directory)
   let host =
     codemode.Config(..config.host, broker: plane.broker, work_root: directory)
+
+  // Dispatch candidate evaluation tests according to artifact kind.
   case candidate.kind {
     record.Program ->
       program.test_with(
@@ -745,6 +759,7 @@ pub fn evaluate_candidate_of(
   }
 }
 
+/// Runs candidate test suite under jailed satellite and records observation detail.
 fn run_tests(
   config: Config,
   host: codemode.Config,
@@ -827,6 +842,7 @@ pub fn snapshot(
 
 // Native retirement precedes removal of immutable staging and worker paths.
 // Files left by a failed witness remain available to the custodian's retry.
+/// Attaches cleanup task that removes worker scratch directory after plane closure.
 fn cleaning(plane: Plane, directory: String) -> Plane {
   Plane(
     ..plane,
@@ -858,10 +874,13 @@ pub fn invoke_program(
   input: json.JsonValue,
 ) -> Result(tool.ToolOutcome, store.Refusal) {
   use candidate <- result.try(store.authorized(catalogue, selection))
+
+  // Validate that the selection targets an executable skill program.
   use Nil <- result.try(case candidate.kind {
     record.Program -> Ok(Nil)
     record.Extension | record.Prompt -> Error(store.Authority("not a program"))
   })
+
   invoke_program_of(config, candidate, ctx, input)
 }
 
@@ -919,6 +938,7 @@ pub fn invoke_program_of(
   result.map(ran, program.outcome)
 }
 
+/// Executes a skill program within an isolated compilation and satellite environment.
 fn private_program(
   config: Config,
   host: codemode.Config,
@@ -980,7 +1000,9 @@ fn private_program(
   ))
 }
 
+/// Converts enforcement report into codemode tool report presentation.
 fn program_report(report: enforcement.Report) -> codemode_tool.Report {
+  // Map enforcement report variant to codemode report.
   case report {
     enforcement.Unreported(reason:) -> codemode_tool.Unreported(reason:)
     enforcement.Reported(entries: _, degraded:) -> {
@@ -992,6 +1014,7 @@ fn program_report(report: enforcement.Report) -> codemode_tool.Report {
 
 // The compiler gets a deterministic disposable home, after seed preparation.
 // Rebar needs HOME even for offline builds; it must never be the operator's.
+/// Builds a private compiler builder isolated in custom home directory.
 fn private_builder(
   host: codemode.Config,
   base: policy.SandboxPolicy,
@@ -1003,6 +1026,8 @@ fn private_builder(
   let toolchain_path = host.toolchain_path
   fn(phase, directory, generated) {
     let home = directory <> "/.build-home"
+
+    // Prepare temporary compiler home directory.
     case codemode.prepare_root(home) {
       Error(reason) ->
         compile.Built(

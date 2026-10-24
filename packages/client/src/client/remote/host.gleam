@@ -538,12 +538,15 @@ pub fn supervised(config: Config(census)) {
 /// assert !host.cancels_run(process.Abnormal(lost))
 /// ```
 pub fn cancels_run(reason: ExitReason) -> Bool {
+  // This match resolves reason before the surrounding protocol step continues.
+  // This match resolves reason before the enclosing validation continues.
   case reason {
     process.Normal | process.Killed -> True
     process.Abnormal(_) -> !call.is_disconnection(reason)
   }
 }
 
+/// Builder keeps this client operation’s decoding or state decision in one place.
 fn builder(config: Config(census)) {
   actor.new_with_initialiser(10_000, fn(inbox) { initialise(config, inbox) })
   |> actor.on_message(handle_event)
@@ -552,6 +555,7 @@ fn builder(config: Config(census)) {
 // Registers the host's name and opens the ledger. Registering first means a
 // second host in the same VM fails before it can open the ledger and turn the
 // first host's live calls into unknown ones.
+/// Initialise keeps this client operation’s decoding or state decision in one place.
 fn initialise(
   config: Config(census),
   inbox: Subject(Event(census)),
@@ -591,23 +595,29 @@ fn initialise(
 }
 
 // Applies one event, then listens for exactly the jobs that are live now.
+/// Handle event keeps this client operation’s decoding or state decision in one place.
 fn handle_event(
   state: State(census),
   event: Event(census),
 ) -> actor.Next(State(census), Event(census)) {
+  // This match resolves event before the enclosing validation continues.
   let state = case event {
     FromPeer(message) -> handle_peer(state, message)
     JobFinished(job:, pulled:) -> job_finished(state, job, pulled)
     CallerDown(down:) -> caller_down(state, down)
     Summarize(reply:) -> summarized(state, reply)
   }
+
   actor.continue(state) |> actor.with_selector(selector_for(state))
 }
 
+/// Handle peer keeps this client operation’s decoding or state decision in one place.
 fn handle_peer(
   state: State(census),
   message: HostMessage(census),
 ) -> State(census) {
+  // This match resolves message before the surrounding protocol step continues.
+  // This match resolves message before the enclosing validation continues.
   case message {
     protocol.Attach(
       version:,
@@ -618,6 +628,7 @@ fn handle_peer(
       owner_port:,
       reply:,
     ) ->
+      // This match resolves version == protocol.version before the surrounding protocol step continues.
       case version == protocol.version {
         True ->
           attach(
@@ -845,17 +856,20 @@ type Fence {
 
 // Applies the fence to a scope by the ledger's own check, so the refusal is the
 // one an admission would give and no message ordering can change it.
+/// Fenced keeps this client operation’s decoding or state decision in one place.
 fn fenced(
   state: State(census),
   session: String,
   fence: Fence,
 ) -> Result(Nil, Refusal) {
+  // This match resolves fence before the enclosing validation continues.
   let judged = case fence {
     Writer(incarnation:, token:) ->
       exec_ledger.current(state.ledger, session, incarnation, token)
     Reader(incarnation:) ->
       exec_ledger.current_incarnation(state.ledger, session, incarnation)
   }
+
   result.map_error(judged, refusal_of)
 }
 
@@ -863,10 +877,13 @@ fn fenced(
 // with no plane yet has nothing to ask, and a plane without an `Evolution`
 // answers `NoEvolution`: the fence has already told a stale request that it is
 // stale, so this refusal only ever reaches the current runtime.
+/// Evolution of keeps this client operation’s decoding or state decision in one place.
 fn evolution_of(
   state: State(census),
   session: String,
 ) -> Result(Evolution, Refusal) {
+  // This match resolves dict.get(state.placements, session) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.placements, session) before the enclosing validation continues.
   case dict.get(state.placements, session) {
     Error(Nil) -> Error(no_plane())
     Ok(Building(..)) -> Error(protocol.PlaneBuilding)
@@ -875,6 +892,7 @@ fn evolution_of(
   }
 }
 
+/// No evolution keeps this client operation’s decoding or state decision in one place.
 fn no_evolution() -> Refusal {
   protocol.NoEvolution("the scope's workspace plane has no evolution machine")
 }
@@ -883,6 +901,7 @@ fn no_evolution() -> Refusal {
 // then the plane is asked whether it has an `Evolution`, and only a request
 // that passed both reaches `serve`. A refusal is sent by `refuse`, which knows
 // the type of the subject the sender waits on.
+/// Evolve keeps this client operation’s decoding or state decision in one place.
 fn evolve(
   state: State(census),
   session: String,
@@ -894,10 +913,14 @@ fn evolve(
     use Nil <- result.try(fenced(state, session, fence))
     evolution_of(state, session)
   }
+
+  // This match resolves ready before the surrounding protocol step continues.
+  // This match resolves ready before the enclosing validation continues.
   case ready {
     Ok(evolution) -> evolution.serve(request)
     Error(refusal) -> refuse(refusal)
   }
+
   state
 }
 
@@ -908,6 +931,7 @@ fn evolve(
 // ledger when it holds a row, and by refusing the missing plane when it does
 // not, because a stored answer needs no plane. `work` is given the evolution
 // machine only once the plane is `Ready` and holds one.
+/// Evolve keyed keeps this client operation’s decoding or state decision in one place.
 fn evolve_keyed(
   state: State(census),
   session: String,
@@ -917,6 +941,9 @@ fn evolve_keyed(
 ) -> State(census) {
   let key = admission.key
   let reply = admission.reply
+
+  // This match resolves fenced(state, session, fence), dict.get(state.placements, session) before the surrounding protocol step continues.
+  // This match resolves fenced(state, session, fence), dict.get(state.placements, session) before the enclosing validation continues.
   case fenced(state, session, fence), dict.get(state.placements, session) {
     Error(refusal), _ -> {
       deliver(reply, SettledRefused(refusal))
@@ -926,6 +953,7 @@ fn evolve_keyed(
     Ok(Nil), Ok(Building(..)) ->
       answer_without_plane(state, key, reply, protocol.PlaneBuilding)
     Ok(Nil), Ok(Ready(_placement)) ->
+      // This match resolves evolution_of(state, session) before the surrounding protocol step continues.
       case evolution_of(state, session) {
         Ok(evolution) -> admit_call(state, admission, work(evolution))
         Error(refusal) -> {
@@ -938,7 +966,10 @@ fn evolve_keyed(
 
 // The name a promoted tool's or a program's row is admitted under, after the
 // evolution prefix.
+/// Target name keeps this client operation’s decoding or state decision in one place.
 fn target_name(target: protocol.Target) -> String {
+  // This match resolves target before the surrounding protocol step continues.
+  // This match resolves target before the enclosing validation continues.
   case target {
     protocol.Promoted(tool:, ..) -> tool
     protocol.Program(..) -> "program"
@@ -951,12 +982,15 @@ fn target_name(target: protocol.Target) -> String {
 // whether this created, rebound or reopened the scope, and the answer decides
 // whether a plane is built or only re-pointed. A scope that is still being
 // built is refused before the ledger is asked, so the refusal changes no row.
+/// Attach keeps this client operation’s decoding or state decision in one place.
 fn attach(
   state: State(census),
   binding: Binding,
   token: BitArray,
   reply: Subject(Result(protocol.Attached(census), Refusal)),
 ) -> State(census) {
+  // This match resolves dict.get(state.placements, binding.session) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.placements, binding.session) before the enclosing validation continues.
   case dict.get(state.placements, binding.session) {
     Ok(Building(..)) -> {
       process.send(reply, Error(protocol.PlaneBuilding))
@@ -972,6 +1006,8 @@ fn attach(
           token,
           state.config.limits,
         )
+
+      // This match resolves attached before the surrounding protocol step continues.
       case attached {
         Error(error) -> {
           process.send(reply, Error(refusal_of(error)))
@@ -994,6 +1030,7 @@ fn attach(
 // The session's background executions that are still running, by key. A read
 // that fails answers none: the orchestrator's reconciler asks again on its next
 // pass, and an attach must not fail because a listing did.
+/// Running executions keeps this client operation’s decoding or state decision in one place.
 fn running_executions(state: State(census), session: String) -> List(Key) {
   exec_ledger.admitted(state.ledger, session, protocol.execution_tool)
   |> result.map(list.map(_, from_ledger))
@@ -1004,6 +1041,7 @@ fn running_executions(state: State(census), session: String) -> List(Key) {
 // owner link, and answers at once; the plane keeps the MCP plan it was built
 // with, which is fixed for its incarnation. Every other case starts a build,
 // retiring a stale link first, and the answer is sent when the build lands.
+/// Place keeps this client operation’s decoding or state decision in one place.
 fn place(
   state: State(census),
   binding: Binding,
@@ -1011,6 +1049,8 @@ fn place(
   unacked: protocol.Unacked,
   reply: Subject(Result(protocol.Attached(census), Refusal)),
 ) -> State(census) {
+  // This match resolves how, dict.get(state.placements, binding.session) before the surrounding protocol step continues.
+  // This match resolves how, dict.get(state.placements, binding.session) before the enclosing validation continues.
   case how, dict.get(state.placements, binding.session) {
     exec_ledger.Rebound, Ok(Ready(placement)) -> {
       owner_link.replace(placement.link, binding.owner_port)
@@ -1056,6 +1096,7 @@ fn place(
 // version check, so the owner speaks this version, and `Attach` itself keeps
 // the shape every version shares (`protocol.version`). An owner that does not
 // send it fails the build, and the next attach builds again.
+/// Build plane keeps this client operation’s decoding or state decision in one place.
 fn build_plane(
   state: State(census),
   binding: Binding,
@@ -1063,6 +1104,9 @@ fn build_plane(
   reply: Subject(Result(protocol.Attached(census), Refusal)),
 ) -> State(census) {
   let session = binding.session
+
+  // This match resolves owner_link.start(binding.owner_port) before the surrounding protocol step continues.
+  // This match resolves owner_link.start(binding.owner_port) before the enclosing validation continues.
   case owner_link.start(binding.owner_port) {
     Error(reason) -> {
       process.send(reply, Error(protocol.NoPlane(reason)))
@@ -1111,6 +1155,7 @@ fn build_plane(
 // The build landed. A plane whose children start becomes the scope's, and the
 // attach it was started for is answered; any other ending leaves the scope open
 // in the ledger and without a plane, so the next attach builds again.
+/// Plane built keeps this client operation’s decoding or state decision in one place.
 fn plane_built(
   state: State(census),
   session: String,
@@ -1119,9 +1164,12 @@ fn plane_built(
   reply: Subject(Result(protocol.Attached(census), Refusal)),
   built: Result(Plane(census), PlaneFailure),
 ) -> State(census) {
+  // This match resolves built before the surrounding protocol step continues.
+  // This match resolves built before the enclosing validation continues.
   case built {
     Error(failure) -> build_failed(state, session, link, reply, failure)
     Ok(plane) ->
+      // This match resolves start_children(plane) before the surrounding protocol step continues.
       case start_children(plane) {
         Ok(children) -> {
           let placement = Placement(plane:, link:, children:)
@@ -1149,6 +1197,7 @@ fn plane_built(
 // reply is sent, and not kept with the census: a rebound attach answers from a
 // plane built long ago, and the orchestrator rebases its deadlines on this
 // reading as though it were current.
+/// Attached reply keeps this client operation’s decoding or state decision in one place.
 fn attached_reply(
   state: State(census),
   census: census,
@@ -1164,13 +1213,17 @@ fn attached_reply(
 // The refusal a failed build is answered with. A worktree that could not be
 // made is its own refusal, so the orchestrator can tell the operator which
 // Git message to read and does not mistake it for a missing workspace.
+/// Refusal of failure keeps this client operation’s decoding or state decision in one place.
 fn refusal_of_failure(failure: PlaneFailure) -> Refusal {
+  // This match resolves failure before the surrounding protocol step continues.
+  // This match resolves failure before the enclosing validation continues.
   case failure {
     NoPlaneBuilt(reason:) -> protocol.NoPlane(reason)
     WorktreeNotMade(reason:) -> protocol.WorktreeFailed(reason)
   }
 }
 
+/// Build failed keeps this client operation’s decoding or state decision in one place.
 fn build_failed(
   state: State(census),
   session: String,
@@ -1190,12 +1243,16 @@ fn build_failed(
 // would receive that signal and die. The owner has no link to the host. It
 // watches the host instead and returns when the host is gone, which ends the
 // supervisor and its children with it.
+/// Start children keeps this client operation’s decoding or state decision in one place.
 fn start_children(plane: Plane(census)) -> Result(Pid, String) {
   let host = process.self()
   let started = process.new_subject()
   let _owner =
     process.spawn_unlinked(fn() {
       let supervisor = sup.new(sup.OneForOne) |> plane.children |> sup.start
+
+      // This match resolves supervisor before the surrounding protocol step continues.
+      // This match resolves supervisor before the enclosing validation continues.
       case supervisor {
         Ok(running) -> {
           process.send(started, Ok(running.pid))
@@ -1211,6 +1268,9 @@ fn start_children(plane: Plane(census)) -> Result(Pid, String) {
           )
       }
     })
+
+  // This match resolves process.receive(started, children_grace_ms) before the surrounding protocol step continues.
+  // This match resolves process.receive(started, children_grace_ms) before the enclosing validation continues.
   case process.receive(started, children_grace_ms) {
     Ok(outcome) -> outcome
     Error(Nil) -> Error("the workspace's services did not start in time")
@@ -1218,6 +1278,7 @@ fn start_children(plane: Plane(census)) -> Result(Pid, String) {
 }
 
 // Returns when the host process is gone.
+/// Wait for host keeps this client operation’s decoding or state decision in one place.
 fn wait_for_host(host: Pid) -> Nil {
   let watch = process.monitor(host)
   process.new_selector()
@@ -1227,9 +1288,12 @@ fn wait_for_host(host: Pid) -> Nil {
 
 // Stops a scope's supervisor and its children, and answers `Ok` only when the
 // supervisor has been seen to go. A monitor taken first cannot miss the exit.
+/// Retire children keeps this client operation’s decoding or state decision in one place.
 fn retire_children(children: Pid) -> Result(Nil, String) {
   let watch = process.monitor(children)
   let asked = ffi_os.terminate_supervisor(children, children_grace_ms)
+
+  // This match resolves asked before the enclosing validation continues.
   let outcome = case asked {
     Ok(Nil) ->
       process.new_selector()
@@ -1239,6 +1303,7 @@ fn retire_children(children: Pid) -> Result(Nil, String) {
       |> result.map(fn(_reason) { Nil })
     Error(Nil) -> Error("the scope's services did not acknowledge shutdown")
   }
+
   process.demonitor_process(watch)
   outcome
 }
@@ -1252,6 +1317,7 @@ const children_grace_ms = 5000
 // ledger's answer, not the request, decides what happens. A scope with no plane
 // in this VM still answers a key the ledger holds a row for
 // (`answer_without_plane`), before it refuses for the missing plane.
+/// Admit call keeps this client operation’s decoding or state decision in one place.
 fn admit_call(
   state: State(census),
   admission: Admission,
@@ -1259,6 +1325,9 @@ fn admit_call(
 ) -> State(census) {
   let key = admission.key
   let reply = admission.reply
+
+  // This match resolves dict.get(state.placements, key.session), reply_owner(reply) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.placements, key.session), reply_owner(reply) before the enclosing validation continues.
   case dict.get(state.placements, key.session), reply_owner(reply) {
     Error(Nil), _ -> answer_without_plane(state, key, reply, no_plane())
     Ok(Building(..)), _ ->
@@ -1283,6 +1352,8 @@ fn admit_call(
           work.reservation,
           state.config.limits,
         )
+
+      // This match resolves admitted before the surrounding protocol step continues.
       case admitted {
         Error(error) -> {
           deliver(reply, SettledRefused(refusal_of(error)))
@@ -1312,12 +1383,15 @@ fn admit_call(
 // for lack of a workspace would tell the model it did not. A key with a stored
 // outcome or a lost one is answered as the ledger has it. Only a key with no row
 // is refused for the missing plane, because for that key nothing started.
+/// Answer without plane keeps this client operation’s decoding or state decision in one place.
 fn answer_without_plane(
   state: State(census),
   key: Key,
   reply: Reply,
   refusal: Refusal,
 ) -> State(census) {
+  // This match resolves exec_ledger.query(state.ledger, to_ledger(key)) before the surrounding protocol step continues.
+  // This match resolves exec_ledger.query(state.ledger, to_ledger(key)) before the enclosing validation continues.
   case exec_ledger.query(state.ledger, to_ledger(key)) {
     Ok(exec_ledger.Missing) -> {
       deliver(reply, SettledRefused(refusal))
@@ -1336,6 +1410,7 @@ fn answer_without_plane(
     // An admitted row with no live run in this VM can only follow a failed
     // write, as in `join_run`, and its outcome is lost.
     Ok(exec_ledger.Found(exec_ledger.Admitted)) ->
+      // This match resolves dict.get(state.live, key) before the surrounding protocol step continues.
       case dict.get(state.live, key) {
         Ok(_live) -> {
           deliver(reply, SettledRefused(refusal))
@@ -1354,6 +1429,7 @@ fn answer_without_plane(
   }
 }
 
+/// No plane keeps this client operation’s decoding or state decision in one place.
 fn no_plane() -> Refusal {
   protocol.NoPlane("the scope has no workspace plane; attach first")
 }
@@ -1361,6 +1437,7 @@ fn no_plane() -> Refusal {
 // Starts admitted work as a weft run. The run's cancel signal is the host's
 // only handle on it: killing the signal makes the scope kill the worker, and
 // the worker's death is what the plane's broker watches to stop a helper.
+/// Start call keeps this client operation’s decoding or state decision in one place.
 fn start_call(
   state: State(census),
   key: Key,
@@ -1382,7 +1459,10 @@ fn start_call(
 // Joins a call that is already running. A row that says `Admitted` with no live
 // run behind it can only follow a failed write, and the honest answer is that
 // the outcome is lost.
+/// Join run keeps this client operation’s decoding or state decision in one place.
 fn join_run(state: State(census), key: Key, reply: Reply) -> State(census) {
+  // This match resolves dict.get(state.live, key) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.live, key) before the enclosing validation continues.
   case dict.get(state.live, key) {
     Ok(_live) -> add_waiter(state, key, reply)
     Error(Nil) -> {
@@ -1395,7 +1475,10 @@ fn join_run(state: State(census), key: Key, reply: Reply) -> State(census) {
 
 // Watches the process that owns `reply` and records it as a waiter. The owner
 // was checked before admission, so the monitor always has a process to watch.
+/// Add waiter keeps this client operation’s decoding or state decision in one place.
 fn add_waiter(state: State(census), key: Key, reply: Reply) -> State(census) {
+  // This match resolves dict.get(state.live, key), reply_owner(reply) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.live, key), reply_owner(reply) before the enclosing validation continues.
   case dict.get(state.live, key), reply_owner(reply) {
     Ok(live), Ok(owner) -> {
       let watch = process.monitor(owner)
@@ -1410,7 +1493,10 @@ fn add_waiter(state: State(census), key: Key, reply: Reply) -> State(census) {
   }
 }
 
+/// Reply owner keeps this client operation’s decoding or state decision in one place.
 fn reply_owner(reply: Reply) -> Result(Pid, Nil) {
+  // This match resolves reply before the surrounding protocol step continues.
+  // This match resolves reply before the enclosing validation continues.
   case reply {
     RunReply(reply:) -> process.subject_owner(reply)
     ExecutionReply(reply:) -> process.subject_owner(reply)
@@ -1421,14 +1507,20 @@ fn reply_owner(reply: Reply) -> Result(Pid, Nil) {
 // gets a `RunAnswer` and an execution's an `ExecutionAnswer`; stored bytes that
 // do not decode as the kind the waiter asked for are a fault, never a
 // different result.
+/// Deliver keeps this client operation’s decoding or state decision in one place.
 fn deliver(reply: Reply, settled: Settled) -> Nil {
+  // This match resolves reply before the surrounding protocol step continues.
+  // This match resolves reply before the enclosing validation continues.
   case reply {
     RunReply(reply:) -> process.send(reply, run_answer(settled))
     ExecutionReply(reply:) -> process.send(reply, execution_answer(settled))
   }
 }
 
+/// Run answer keeps this client operation’s decoding or state decision in one place.
 fn run_answer(settled: Settled) -> RunAnswer {
+  // This match resolves settled before the surrounding protocol step continues.
+  // This match resolves settled before the enclosing validation continues.
   case settled {
     SettledFresh(fresh: FreshOutcome(outcome:)) -> protocol.RunFinished(outcome)
     SettledFresh(fresh: FreshValue(..)) ->
@@ -1439,12 +1531,16 @@ fn run_answer(settled: Settled) -> RunAnswer {
   }
 }
 
+/// Execution answer keeps this client operation’s decoding or state decision in one place.
 fn execution_answer(settled: Settled) -> ExecutionAnswer {
+  // This match resolves settled before the surrounding protocol step continues.
+  // This match resolves settled before the enclosing validation continues.
   case settled {
     SettledFresh(fresh: FreshValue(value:)) -> protocol.ExecutionFinished(value)
     SettledFresh(fresh: FreshOutcome(..)) ->
       protocol.ExecutionRefused(damaged("an execution value"))
     SettledStored(stored:) ->
+      // This match resolves codec.decode_stored(stored) before the surrounding protocol step continues.
       case codec.decode_stored(stored) {
         Ok(codec.StoredExecution(value:)) -> protocol.ExecutionFinished(value)
         Ok(codec.StoredOutcome(..)) ->
@@ -1465,6 +1561,7 @@ fn execution_answer(settled: Settled) -> ExecutionAnswer {
 // refusal for another incarnation, changes nothing. There is no reply, because
 // the orchestrator's reconciler sends a stop again for a row it still sees
 // running.
+/// Stop execution keeps this client operation’s decoding or state decision in one place.
 fn stop_execution(
   state: State(census),
   key: Key,
@@ -1477,6 +1574,9 @@ fn stop_execution(
       incarnation,
       protocol.execution_tool,
     )
+
+  // This match resolves stopped, dict.get(state.live, key) before the surrounding protocol step continues.
+  // This match resolves stopped, dict.get(state.live, key) before the enclosing validation continues.
   case stopped, dict.get(state.live, key) {
     Ok(exec_ledger.Stopped), Ok(live) -> {
       let state = answer_waiters(state, key, live, SettledLost)
@@ -1492,6 +1592,7 @@ fn stop_execution(
 
 // Starts one task as a weft run that reports to a fresh sink, and returns the
 // bookkeeping the host needs to hear it and to cancel it.
+/// Start job keeps this client operation’s decoding or state decision in one place.
 fn start_job(
   state: State(census),
   task: fn() -> Result(JobResult(census), Nil),
@@ -1513,11 +1614,14 @@ fn start_job(
 
 // --- results ------------------------------------------------------------------
 
+/// Job finished keeps this client operation’s decoding or state decision in one place.
 fn job_finished(
   state: State(census),
   id: Int,
   pulled: weft.Pulled(JobResult(census), Nil),
 ) -> State(census) {
+  // This match resolves dict.get(state.jobs, id), pulled before the surrounding protocol step continues.
+  // This match resolves dict.get(state.jobs, id), pulled before the enclosing validation continues.
   case dict.get(state.jobs, id), pulled {
     Error(Nil), _ -> state
     Ok(tracked), weft.PulledOutcome(outcome:) ->
@@ -1532,14 +1636,18 @@ fn job_finished(
 // One task's account. Only a completed task carries a result; every other
 // ending means the work stopped without one, and the host cannot say what it
 // did.
+/// Settle job keeps this client operation’s decoding or state decision in one place.
 fn settle_job(
   state: State(census),
   id: Int,
   tracked: Tracked(census),
   outcome: weft.Outcome(JobResult(census), Nil),
 ) -> State(census) {
+  // This match resolves outcome before the surrounding protocol step continues.
+  // This match resolves outcome before the enclosing validation continues.
   case outcome {
     weft.Completed(index: _, value: ToolRan(outcome: finished)) ->
+      // This match resolves tracked.job before the surrounding protocol step continues.
       case tracked.job {
         RunJob(key:) ->
           run_finished(
@@ -1554,6 +1662,7 @@ fn settle_job(
         CloseJob(..) | BuildJob(..) -> job_lost(state, id, tracked)
       }
     weft.Completed(index: _, value: ProgramRan(value:)) ->
+      // This match resolves tracked.job before the surrounding protocol step continues.
       case tracked.job {
         RunJob(key:) ->
           run_finished(
@@ -1565,6 +1674,7 @@ fn settle_job(
         CloseJob(..) | BuildJob(..) -> job_lost(state, id, tracked)
       }
     weft.Completed(index: _, value: ScopeClosed(outcome: closed)) ->
+      // This match resolves tracked.job before the surrounding protocol step continues.
       case tracked.job {
         CloseJob(session:, workspace:, incarnation:, link:, reply:) ->
           finish_closed(
@@ -1579,6 +1689,7 @@ fn settle_job(
         RunJob(..) | BuildJob(..) -> job_lost(state, id, tracked)
       }
     weft.Completed(index: _, value: PlaneBuilt(built:)) ->
+      // This match resolves tracked.job before the surrounding protocol step continues.
       case tracked.job {
         BuildJob(session:, link:, unacked:, reply:) ->
           plane_built(state, session, link, unacked, reply, built)
@@ -1594,7 +1705,10 @@ fn settle_job(
 }
 
 // The relay is over, so the signal that could still cancel it is spent.
+/// Drop job keeps this client operation’s decoding or state decision in one place.
 fn drop_job(state: State(census), id: Int) -> State(census) {
+  // This match resolves dict.get(state.jobs, id) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.jobs, id) before the enclosing validation continues.
   case dict.get(state.jobs, id) {
     Ok(tracked) -> {
       weft.cancel(tracked.cancel)
@@ -1617,7 +1731,10 @@ type Fresh {
 }
 
 // The bytes the ledger stores for a result.
+/// Encode fresh keeps this client operation’s decoding or state decision in one place.
 fn encode_fresh(fresh: Fresh) -> BitArray {
+  // This match resolves fresh before the surrounding protocol step continues.
+  // This match resolves fresh before the enclosing validation continues.
   case fresh {
     FreshOutcome(outcome:) -> codec.encode_outcome(outcome)
     FreshValue(value:) -> codec.encode_execution(value)
@@ -1627,12 +1744,15 @@ fn encode_fresh(fresh: Fresh) -> BitArray {
 // A call ended with a result. The row is made terminal before any waiter hears
 // of it, so a reply never promises what the ledger does not hold. A result for
 // a call that was cancelled meanwhile has no live entry and is dropped.
+/// Run finished keeps this client operation’s decoding or state decision in one place.
 fn run_finished(
   state: State(census),
   id: Int,
   key: Key,
   finished: Finished,
 ) -> State(census) {
+  // This match resolves dict.get(state.live, key) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.live, key) before the enclosing validation continues.
   case dict.get(state.live, key) {
     Ok(live) if live.job == id -> {
       let settled = commit_outcome(state, key, finished)
@@ -1646,16 +1766,22 @@ fn run_finished(
 // reservation is replaced by one of its own kind that says so and fits, which
 // is stored in its place; a ledger that cannot take even that leaves the call
 // lost.
+/// Commit outcome keeps this client operation’s decoding or state decision in one place.
 fn commit_outcome(
   state: State(census),
   key: Key,
   finished: Finished,
 ) -> Settled {
   let stored = encode_fresh(finished.fresh)
+
+  // This match resolves exec_ledger.finish(state.ledger, to_ledger(key), stored) before the surrounding protocol step continues.
+  // This match resolves exec_ledger.finish(state.ledger, to_ledger(key), stored) before the enclosing validation continues.
   case exec_ledger.finish(state.ledger, to_ledger(key), stored) {
     Ok(Nil) -> SettledFresh(finished.fresh)
     Error(exec_ledger.OutcomeTooLarge(reserved:, size:)) -> {
       let replaced = finished.oversized(reserved, size)
+
+      // This branch resolves the commit outcome decision before the operation proceeds.
       case
         exec_ledger.finish(state.ledger, to_ledger(key), encode_fresh(replaced))
       {
@@ -1668,6 +1794,7 @@ fn commit_outcome(
 }
 
 // A tool outcome too large for its reservation, as the failure stored instead.
+/// Oversized outcome keeps this client operation’s decoding or state decision in one place.
 fn oversized_outcome(reserved: Int, size: Int) -> Fresh {
   FreshOutcome(
     ToolFailed(reason: too_large("the tool's result", reserved, size)),
@@ -1677,6 +1804,7 @@ fn oversized_outcome(reserved: Int, size: Int) -> Fresh {
 // An execution value too large for its reservation, as the errored value
 // stored instead. It has the shape `execution_value` gives a program that
 // returned an error, so a reader of the record sees an ordinary failed run.
+/// Oversized value keeps this client operation’s decoding or state decision in one place.
 fn oversized_value(reserved: Int, size: Int) -> Fresh {
   FreshValue(
     json.Object([
@@ -1690,6 +1818,7 @@ fn oversized_value(reserved: Int, size: Int) -> Fresh {
   )
 }
 
+/// Too large keeps this client operation’s decoding or state decision in one place.
 fn too_large(what: String, reserved: Int, size: Int) -> String {
   what
   <> " is "
@@ -1699,6 +1828,7 @@ fn too_large(what: String, reserved: Int, size: Int) -> String {
   <> " for it"
 }
 
+/// Lose keeps this client operation’s decoding or state decision in one place.
 fn lose(state: State(census), key: Key) -> Settled {
   let _marked = exec_ledger.mark_unknown(state.ledger, to_ledger(key))
   SettledLost
@@ -1706,13 +1836,17 @@ fn lose(state: State(census), key: Key) -> Settled {
 
 // A job ended without a result. For a call that is still live, that makes its
 // outcome lost; for a call already settled or cancelled it changes nothing.
+/// Job lost keeps this client operation’s decoding or state decision in one place.
 fn job_lost(
   state: State(census),
   id: Int,
   tracked: Tracked(census),
 ) -> State(census) {
+  // This match resolves tracked.job before the surrounding protocol step continues.
+  // This match resolves tracked.job before the enclosing validation continues.
   case tracked.job {
     RunJob(key:) ->
+      // This match resolves dict.get(state.live, key) before the surrounding protocol step continues.
       case dict.get(state.live, key) {
         Ok(live) if live.job == id ->
           answer_waiters(state, key, live, lose(state, key))
@@ -1743,6 +1877,7 @@ fn job_lost(
 }
 
 // Sends one answer to every waiter, stops watching them, and forgets the call.
+/// Answer waiters keeps this client operation’s decoding or state decision in one place.
 fn answer_waiters(
   state: State(census),
   key: Key,
@@ -1762,9 +1897,13 @@ fn answer_waiters(
 
 // A watched caller exited. It is no longer a waiter whatever the reason; the
 // reason decides whether its call stops with it.
+/// Caller down keeps this client operation’s decoding or state decision in one place.
 fn caller_down(state: State(census), down: Down) -> State(census) {
+  // This match resolves down before the surrounding protocol step continues.
+  // This match resolves down before the enclosing validation continues.
   case down {
     process.ProcessDown(monitor:, reason:, pid: _) ->
+      // This match resolves dict.get(state.watches, monitor) before the surrounding protocol step continues.
       case dict.get(state.watches, monitor) {
         Error(Nil) -> state
         Ok(key) -> waiter_gone(state, key, monitor, reason)
@@ -1773,6 +1912,7 @@ fn caller_down(state: State(census), down: Down) -> State(census) {
   }
 }
 
+/// Waiter gone keeps this client operation’s decoding or state decision in one place.
 fn waiter_gone(
   state: State(census),
   key: Key,
@@ -1780,6 +1920,9 @@ fn waiter_gone(
   reason: ExitReason,
 ) -> State(census) {
   let watches = dict.delete(state.watches, monitor)
+
+  // This match resolves dict.get(state.live, key) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.live, key) before the enclosing validation continues.
   case dict.get(state.live, key) {
     Error(Nil) -> State(..state, watches:)
     Ok(live) -> {
@@ -1788,6 +1931,8 @@ fn waiter_gone(
       let live = Live(..live, waiters:)
       let state =
         State(..state, watches:, live: dict.insert(state.live, key, live))
+
+      // This match resolves waiters, cancels_run(reason) before the surrounding protocol step continues.
       case waiters, cancels_run(reason) {
         [], True -> cancel_run(state, key, live)
         _, _ -> state
@@ -1798,6 +1943,7 @@ fn waiter_gone(
 
 // Stops a call nobody is waiting for. The row becomes `Unknown` first, so no
 // later request can start it again, then the run is halted.
+/// Cancel run keeps this client operation’s decoding or state decision in one place.
 fn cancel_run(state: State(census), key: Key, live: Live) -> State(census) {
   let _marked = exec_ledger.mark_unknown(state.ledger, to_ledger(key))
   halt(state, key, live)
@@ -1807,16 +1953,23 @@ fn cancel_run(state: State(census), key: Key, live: Live) -> State(census) {
 // lost. A background program also has its broker step aborted, because its
 // satellite and jailed calls run under that step and are not children of the
 // worker, as a local execution service aborts the step when it stops one.
+/// Halt keeps this client operation’s decoding or state decision in one place.
 fn halt(state: State(census), key: Key, live: Live) -> State(census) {
+  // This match resolves dict.get(state.jobs, live.job) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.jobs, live.job) before the enclosing validation continues.
   case dict.get(state.jobs, live.job) {
     Ok(tracked) -> weft.cancel(tracked.cancel)
     Error(Nil) -> Nil
   }
+
+  // This match resolves live.kind, dict.get(state.placements, key.session) before the surrounding protocol step continues.
+  // This match resolves live.kind, dict.get(state.placements, key.session) before the enclosing validation continues.
   case live.kind, dict.get(state.placements, key.session) {
     Execution, Ok(Ready(placement)) ->
       placement.plane.abort_step(key.op, key.step)
     Execution, Ok(Building(..)) | Execution, Error(Nil) | ToolCall, _ -> Nil
   }
+
   State(..state, live: dict.delete(state.live, key))
 }
 
@@ -1827,6 +1980,7 @@ fn halt(state: State(census), key: Key, live: Live) -> State(census) {
 // the outcome is lost, and the plane retires its children off the host's own
 // process so other sessions keep being served. A repeat of a close that has
 // finished answers the stored outcome and does no work.
+/// Close keeps this client operation’s decoding or state decision in one place.
 fn close(
   state: State(census),
   session: String,
@@ -1834,6 +1988,8 @@ fn close(
   incarnation: Int,
   reply: Subject(Result(CloseOutcome, Refusal)),
 ) -> State(census) {
+  // This match resolves dict.get(state.placements, session) before the surrounding protocol step continues.
+  // This match resolves dict.get(state.placements, session) before the enclosing validation continues.
   case dict.get(state.placements, session) {
     Ok(Building(..)) -> {
       process.send(reply, Error(protocol.PlaneBuilding))
@@ -1846,6 +2002,7 @@ fn close(
 
 // The ledger half of a close, then the plane's: the fence first, so nothing is
 // admitted from here on.
+/// Close scope keeps this client operation’s decoding or state decision in one place.
 fn close_scope(
   state: State(census),
   session: String,
@@ -1853,6 +2010,8 @@ fn close_scope(
   incarnation: Int,
   reply: Subject(Result(CloseOutcome, Refusal)),
 ) -> State(census) {
+  // This match resolves exec_ledger.begin_close(state.ledger, session, workspace, incarnation) before the surrounding protocol step continues.
+  // This match resolves exec_ledger.begin_close(state.ledger, session, workspace, incarnation) before the enclosing validation continues.
   case exec_ledger.begin_close(state.ledger, session, workspace, incarnation) {
     // A scope that already ended at this incarnation answers what it stored.
     // The orchestrator asks again when a reply was lost or the host went
@@ -1870,6 +2029,8 @@ fn close_scope(
     }
     Ok(Nil) -> {
       let state = cancel_session(state, session)
+
+      // This match resolves dict.get(state.placements, session) before the surrounding protocol step continues.
       case dict.get(state.placements, session) {
         Ok(Ready(placement)) -> {
           let state =
@@ -1893,6 +2054,7 @@ fn close_scope(
   }
 }
 
+/// Start close keeps this client operation’s decoding or state decision in one place.
 fn start_close(
   state: State(census),
   placement: Placement(census),
@@ -1917,8 +2079,11 @@ fn start_close(
 
 // Cancels every live call of a session, telling its waiters the outcome is
 // lost, because the scope is going away under them.
+/// Cancel session keeps this client operation’s decoding or state decision in one place.
 fn cancel_session(state: State(census), session: String) -> State(census) {
   dict.fold(state.live, state, fn(state, key, live) {
+    // This match resolves key.session == session before the surrounding protocol step continues.
+    // This match resolves key.session == session before the enclosing validation continues.
     case key.session == session {
       True -> {
         let state = answer_waiters(state, key, live, SettledLost)
@@ -1929,6 +2094,7 @@ fn cancel_session(state: State(census), session: String) -> State(census) {
   })
 }
 
+/// Finish closed keeps this client operation’s decoding or state decision in one place.
 fn finish_closed(
   state: State(census),
   session: String,
@@ -1949,6 +2115,7 @@ fn finish_closed(
   )
 }
 
+/// Finish closed without link keeps this client operation’s decoding or state decision in one place.
 fn finish_closed_without_link(
   state: State(census),
   session: String,
@@ -1965,16 +2132,23 @@ fn finish_closed_without_link(
       incarnation,
       to_ledger_close(outcome),
     )
+
+  // This match resolves recorded before the surrounding protocol step continues.
+  // This match resolves recorded before the enclosing validation continues.
   case recorded {
     Ok(Nil) -> process.send(reply, Ok(outcome))
     Error(error) -> process.send(reply, Error(refusal_of(error)))
   }
+
   state
 }
 
 // --- queries ------------------------------------------------------------------
 
+/// Lookup keeps this client operation’s decoding or state decision in one place.
 fn lookup(state: State(census), key: Key) -> Result(protocol.Lookup, Refusal) {
+  // This match resolves exec_ledger.query(state.ledger, to_ledger(key)) before the surrounding protocol step continues.
+  // This match resolves exec_ledger.query(state.ledger, to_ledger(key)) before the enclosing validation continues.
   case exec_ledger.query(state.ledger, to_ledger(key)) {
     Ok(exec_ledger.Missing) -> Ok(protocol.Missing)
     Ok(exec_ledger.Found(found)) -> lookup_of(found)
@@ -1984,7 +2158,10 @@ fn lookup(state: State(census), key: Key) -> Result(protocol.Lookup, Refusal) {
 
 // What a row says, in the protocol's words. A stored outcome that no longer
 // decodes is a fault, never a different result.
+/// Lookup of keeps this client operation’s decoding or state decision in one place.
 fn lookup_of(found: exec_ledger.CallState) -> Result(protocol.Lookup, Refusal) {
+  // This match resolves found before the surrounding protocol step continues.
+  // This match resolves found before the enclosing validation continues.
   case found {
     exec_ledger.Admitted -> Ok(protocol.Admitted)
     exec_ledger.Unknown -> Ok(protocol.Unknown)
@@ -1998,6 +2175,7 @@ fn lookup_of(found: exec_ledger.CallState) -> Result(protocol.Lookup, Refusal) {
     // the answer names it, so recovery of a tool call never reads a program's
     // value as its outcome.
     exec_ledger.Terminal(stored) ->
+      // This match resolves codec.decode_stored(stored) before the surrounding protocol step continues.
       case codec.decode_stored(stored) {
         Ok(codec.StoredOutcome(outcome:)) -> Ok(protocol.Terminal(outcome))
         Ok(codec.StoredExecution(value:)) -> Ok(protocol.Executed(value))
@@ -2010,6 +2188,7 @@ fn lookup_of(found: exec_ledger.CallState) -> Result(protocol.Lookup, Refusal) {
 // `lookup` reports it. A key without one is fenced in the ledger's own
 // transaction, so a `Run` that is still in flight from a dead runtime finds the
 // key taken and the answer given here stays true.
+/// Fenced lookup keeps this client operation’s decoding or state decision in one place.
 fn fenced_lookup(
   state: State(census),
   key: Key,
@@ -2017,6 +2196,8 @@ fn fenced_lookup(
 ) -> Result(protocol.Lookup, Refusal) {
   let outcome =
     codec.encode_outcome(ToolFailed(reason: protocol.did_not_run_text))
+
+  // This branch resolves the fenced lookup decision before the operation proceeds.
   case
     exec_ledger.query_or_fence(
       state.ledger,
@@ -2031,6 +2212,7 @@ fn fenced_lookup(
   }
 }
 
+/// Unacked keeps this client operation’s decoding or state decision in one place.
 fn unacked(
   state: State(census),
   session: String,
@@ -2048,13 +2230,17 @@ fn unacked(
 
 // The answer a stored outcome stands for. Bytes that no longer decode are
 // reported as a fault and never as a different result.
+/// Stored answer keeps this client operation’s decoding or state decision in one place.
 fn stored_answer(stored: BitArray) -> RunAnswer {
+  // This match resolves codec.decode_outcome(stored) before the surrounding protocol step continues.
+  // This match resolves codec.decode_outcome(stored) before the enclosing validation continues.
   case codec.decode_outcome(stored) {
     Ok(outcome) -> protocol.RunFinished(outcome)
     Error(report) -> protocol.RunRefused(damaged(report.expected))
   }
 }
 
+/// Damaged keeps this client operation’s decoding or state decision in one place.
 fn damaged(detail: String) -> Refusal {
   protocol.ExecutorFault("a stored outcome is damaged: expected " <> detail)
 }
@@ -2066,14 +2252,17 @@ fn damaged(detail: String) -> Refusal {
 // file again. The reads are four short statements, so the turn is brief; an
 // admission waits for them and no longer. A ledger that cannot be read sends
 // `Error(Nil)`, which the asker must not mistake for an empty ledger.
+/// Summarized keeps this client operation’s decoding or state decision in one place.
 fn summarized(
   state: State(census),
   reply: Subject(Result(Snapshot(census), Nil)),
 ) -> State(census) {
+  // This match resolves exec_ledger.summary(state.ledger) before the enclosing validation continues.
   let snapshot = case exec_ledger.summary(state.ledger) {
     Ok(summary) -> Ok(Snapshot(ledger: summary, census: state.census))
     Error(_) -> Error(Nil)
   }
+
   process.send(reply, snapshot)
   state
 }
@@ -2081,6 +2270,7 @@ fn summarized(
 // The closure `Reporting` carries. It sends on the host's own subject and
 // waits on a subject of its own, so a late answer after the deadline lands in
 // a mailbox nobody reads and the next question is not confused by it.
+/// Summarizer keeps this client operation’s decoding or state decision in one place.
 fn summarizer(
   inbox: Subject(Event(census)),
 ) -> fn(Int) -> Result(Snapshot(census), Nil) {
@@ -2095,6 +2285,7 @@ fn summarizer(
 
 // Everything the host listens to: its name, every monitor it holds, and the
 // sink of each live job.
+/// Selector for keeps this client operation’s decoding or state decision in one place.
 fn selector_for(state: State(census)) -> Selector(Event(census)) {
   let base =
     process.new_selector()
@@ -2110,6 +2301,7 @@ fn selector_for(state: State(census)) -> Selector(Event(census)) {
 
 // --- the ledger's vocabulary ---------------------------------------------------
 
+/// To ledger keeps this client operation’s decoding or state decision in one place.
 fn to_ledger(key: Key) -> exec_ledger.Key {
   exec_ledger.Key(
     session: key.session,
@@ -2119,6 +2311,7 @@ fn to_ledger(key: Key) -> exec_ledger.Key {
   )
 }
 
+/// From ledger keeps this client operation’s decoding or state decision in one place.
 fn from_ledger(key: exec_ledger.Key) -> Key {
   protocol.Key(
     session: key.session,
@@ -2128,14 +2321,20 @@ fn from_ledger(key: exec_ledger.Key) -> Key {
   )
 }
 
+/// To ledger close keeps this client operation’s decoding or state decision in one place.
 fn to_ledger_close(outcome: CloseOutcome) -> exec_ledger.CloseOutcome {
+  // This match resolves outcome before the surrounding protocol step continues.
+  // This match resolves outcome before the enclosing validation continues.
   case outcome {
     protocol.AllRetired -> exec_ledger.AllRetired
     protocol.UnknownCleanup(count:) -> exec_ledger.UnknownCleanup(count:)
   }
 }
 
+/// From ledger close keeps this client operation’s decoding or state decision in one place.
 fn from_ledger_close(outcome: exec_ledger.CloseOutcome) -> CloseOutcome {
+  // This match resolves outcome before the surrounding protocol step continues.
+  // This match resolves outcome before the enclosing validation continues.
   case outcome {
     exec_ledger.AllRetired -> protocol.AllRetired
     exec_ledger.UnknownCleanup(count:) -> protocol.UnknownCleanup(count:)
@@ -2144,7 +2343,10 @@ fn from_ledger_close(outcome: exec_ledger.CloseOutcome) -> CloseOutcome {
 
 // Every ledger error is named, so a new one fails to compile here and gets a
 // wire meaning on purpose.
+/// Refusal of keeps this client operation’s decoding or state decision in one place.
 fn refusal_of(error: exec_ledger.Error) -> Refusal {
+  // This match resolves error before the surrounding protocol step continues.
+  // This match resolves error before the enclosing validation continues.
   case error {
     exec_ledger.Invalid(reason:) -> protocol.Invalid(reason)
     exec_ledger.Unsupported ->

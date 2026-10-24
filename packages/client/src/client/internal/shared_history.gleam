@@ -295,6 +295,8 @@ pub fn seam(shared: Shared, current: ids.SessionId) -> tool.History {
         exchange(shared, Read(current, session, entry, around, _))
         |> result.map_error(tool.IndexUnavailable),
       )
+
+      // Start the shared actor only when its startup state and configuration permit it.
       case reply {
         Entries(answer) -> answer
         Hits(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
@@ -303,6 +305,7 @@ pub fn seam(shared: Shared, current: ids.SessionId) -> tool.History {
   )
 }
 
+/// Requests bounded search hits from the shared history actor and returns its typed refusal on failure.
 fn hits(
   shared: Shared,
   request: fn(process.Subject(Reply)) -> Message,
@@ -311,6 +314,8 @@ fn hits(
     exchange(shared, request)
     |> result.map_error(tool.IndexUnavailable),
   )
+
+  // Return actor search results or preserve the actor typed refusal.
   case reply {
     Hits(answer) -> answer
     Entries(_) -> Error(tool.IndexUnavailable("history reply type mismatch"))
@@ -324,6 +329,7 @@ fn exchange(shared: Shared, request) {
   })
 }
 
+/// Stops the shared-history actor and waits for its monitored termination before releasing custody.
 fn retire(shared: Shared) {
   let monitor = process.monitor(shared.pid)
   let refused = process.new_subject()
@@ -343,6 +349,7 @@ fn retire(shared: Shared) {
   answer |> result.unwrap(Error("history retirement remains unconfirmed"))
 }
 
+/// Dispatches one actor message to the lifecycle or active history job transition.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Stop(reply) -> stop(state, reply)
@@ -372,6 +379,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 }
 
 // Native resources enter actor state before the next initialization message.
+
+/// Advances startup or the active history job by one actor transition.
 fn step(state: State) -> actor.Next(State, Message) {
   case state.phase {
     Opening(reply) ->
@@ -448,6 +457,7 @@ fn drain(state: State, refusal: tool.Refusal) -> State {
   State(..state, waiting: [])
 }
 
+/// Obtains the configured history sources and enforces the source-count ceiling.
 fn authorized(config: Config) {
   use sources <- result.try(config.sources())
   use <- bool.guard(
@@ -462,6 +472,7 @@ fn member(sources, id) {
   |> result.replace_error("session is outside the current history domain")
 }
 
+/// Records a pending session hint without retaining unbounded identifiers before authorization.
 fn hint(state: State, id: ids.SessionId) {
   case state.phase {
     Parked | Opening(_) | Initializing(_) | StartupFailed(_) | Blocked(_) ->
@@ -486,7 +497,9 @@ fn hint(state: State, id: ids.SessionId) {
   }
 }
 
+/// Moves one pending session hint into the actor next work item.
 fn next_hint(state: State) {
+  // Take one pending session hint for work, or keep the actor idle when none remain.
   case dict.to_list(state.pending) {
     [] -> actor.continue(state)
     [#(id, _), ..] -> {
@@ -495,6 +508,8 @@ fn next_hint(state: State) {
         use sources <- result.try(authorized(state.config))
         member(sources, id)
       }
+
+      // Choose the next pending session hint or remain idle when none remain.
       case source {
         Error(_) -> advance(state)
         Ok(source) -> begin_job(state, Background, [source])
@@ -503,14 +518,20 @@ fn next_hint(state: State) {
   }
 }
 
+/// Validates and queues a history request or returns the corresponding refusal to its caller.
 fn admit(state: State, request: Request) {
+  // Choose the next pending session hint or remain idle when none remain.
   case state.phase {
     Ready -> {
       let permitted = {
         use sources <- result.try(authorized(state.config))
+
+        // Validate and route this request according to actor phase and request kind.
         case request {
           SearchRequest(current, lookup, _, _) -> {
             use item <- result.try(member(sources, current))
+
+            // Dispatch a request according to actor phase and request kind.
             case lookup {
               Matching(tool.Query(scope: tool.Repository, ..)) -> Ok(sources)
               Matching(tool.Query(scope: tool.ThisSession, ..)) | Newest ->
@@ -524,6 +545,8 @@ fn admit(state: State, request: Request) {
           Background -> Ok([])
         }
       }
+
+      // Dispatch a request according to actor phase and request kind.
       case permitted {
         Ok(sources) -> begin_job(state, request, sources)
 
@@ -564,6 +587,7 @@ fn admit(state: State, request: Request) {
   }
 }
 
+/// Retains a request only while the bounded waiting queue has capacity.
 fn hold(state: State, request: Request) -> actor.Next(State, Message) {
   // Room for one more is a question about the first `waiting_limit - 1`
   // elements, so it is answered by dropping them rather than by measuring
@@ -587,6 +611,7 @@ fn hold(state: State, request: Request) -> actor.Next(State, Message) {
   }
 }
 
+/// Creates the active history job after its sources have passed authorization.
 fn begin_job(state: State, request: Request, sources: List(Source)) {
   let job =
     Job(
@@ -600,6 +625,7 @@ fn begin_job(state: State, request: Request, sources: List(Source)) {
   advance(State(..state, phase: Busy(job)))
 }
 
+/// Delivers a typed refusal to the matching request kind; background work has no caller to answer.
 fn refuse(request: Request, refusal: tool.Refusal) {
   case request {
     Background -> Nil
@@ -615,6 +641,7 @@ fn refuse_job(request: Request, reason: String) {
   refuse(request, tool.IndexRefused(reason))
 }
 
+/// Advances the current source, record page, or fragment stage of a history job.
 fn work(state: State, job: Job) {
   case job.stage {
     NextSource ->
@@ -680,8 +707,10 @@ fn with_source(state: State, job: Job, next) {
   }
 }
 
+/// Uses one authorized source to find the requested entry or search page.
 fn describe_source(state: State, job: Job, cut: source.Cut) {
   with_source(state, job, fn(opened) {
+    // Choose the entry lookup or search path from the request and current index state.
     case job.request, state.index {
       EntryRequest(_, _, id, around, _), _ ->
         case entry_window(opened, cut, id, around) {
@@ -703,6 +732,8 @@ fn describe_source(state: State, job: Job, cut: source.Cut) {
           ))
           #(plan, descriptors)
         }
+
+        // Distinguish entry lookup from search and select the corresponding bounded operation.
         case loaded {
           Error(reason) -> fail_job(state, job, reason)
           Ok(#(plan, [])) -> {
@@ -711,6 +742,8 @@ fn describe_source(state: State, job: Job, cut: source.Cut) {
               search.commit_batch(index, plan, [], requested: 1)
               |> result.map_error(string.inspect)
             }
+
+            // Distinguish entry lookup from search and select the corresponding bounded operation.
             case committed {
               Ok(search.Advanced(..)) -> close_source_and_continue(state, job)
               Ok(search.Stale) ->
@@ -719,12 +752,14 @@ fn describe_source(state: State, job: Job, cut: source.Cut) {
             }
           }
           Ok(#(plan, [first, ..rest] as descriptors)) -> {
+            // Distinguish entry lookup from search and select the corresponding bounded operation.
             let completeness = case
               list.length(descriptors) == state.config.batch_entries
             {
               True -> Partial
               False -> job.completeness
             }
+
             read_next(
               state,
               Job(..job, completeness:),
@@ -744,6 +779,8 @@ fn describe_source(state: State, job: Job, cut: source.Cut) {
 // the first descriptor and the rest, which is the shape `Fragment` walks. The
 // width is clamped the way the per-session holder's storage read clamps it, so
 // both paths answer the same window for the same request.
+
+/// Builds a bounded descriptor window around the requested entry identifier.
 fn entry_window(
   opened: source.Source,
   cut: source.Cut,
@@ -752,6 +789,8 @@ fn entry_window(
 ) -> Result(#(snapshot.Descriptor, List(snapshot.Descriptor)), String) {
   let width = int.clamp(around, min: 0, max: sqlite.max_around)
   use centre <- result.try(source.entry(opened, cut, id))
+
+  // Select the bounded neighbor window around the requested history entry.
   use #(before, after) <- result.map(case width {
     0 -> Ok(#([], []))
     _ -> {
@@ -760,12 +799,15 @@ fn entry_window(
       #(before, after)
     }
   })
+
+  // Choose the descriptors surrounding the requested entry within the configured bounds.
   case before {
     [] -> #(centre, after)
     [first, ..rest] -> #(first, list.append(rest, [centre, ..after]))
   }
 }
 
+/// Schedules the next fragment read while carrying forward the page cursor and remaining bound.
 fn read_next(state, job: Job, cut, descriptor, remaining, plan) {
   advance(
     State(
@@ -777,6 +819,7 @@ fn read_next(state, job: Job, cut, descriptor, remaining, plan) {
   )
 }
 
+/// Reads a bounded fragment and accumulates it into the current history entry result.
 fn read_fragment(
   state: State,
   job: Job,
@@ -788,12 +831,15 @@ fn read_fragment(
   fragments,
 ) {
   with_source(state, job, fn(opened) {
+    // Choose whether to publish a finished record or request its next fragment.
     case source.fragment(opened, descriptor, offset) {
       Error(reason) -> fail_job(state, job, reason)
       Ok(bytes) -> {
         let amount = bit_array.byte_size(bytes)
         let offset = offset + amount
         let fragments = [bytes, ..fragments]
+
+        // Validate fragment continuation before publishing the next part of a record.
         case offset == descriptor.byte_length {
           True ->
             publish_record(
@@ -836,6 +882,7 @@ fn read_fragment(
   })
 }
 
+/// Publishes a completed descriptor or fragment page and advances the remaining request.
 fn publish_record(
   state: State,
   job: Job,
@@ -860,12 +907,16 @@ fn publish_record(
       codec.decode_entry(value) |> result.map_error(string.inspect),
     )
     use Nil <- result.try(validate_source(state, cut))
+
+    // Select the publication and continuation path from request kind and remaining descriptors.
     case entry.id == descriptor.id && entry.seq == descriptor.seq {
       True -> Ok(entry)
       False -> Error("history entry does not match its descriptor")
     }
   }
   use entry <- or_job(decoded, state, job)
+
+  // Select the publication and continuation path from request kind and remaining descriptors.
   case job.request, plan, state.index {
     EntryRequest(current, target, _, _, reply), _, _ -> {
       let permitted = {
@@ -876,6 +927,8 @@ fn publish_record(
       }
       use Nil <- or_job(permitted, state, job)
       let gathered = [codec.encode_entry(entry), ..job.gathered]
+
+      // Choose whether to publish an entry fragment or complete its record page.
       case remaining {
         // Each neighbour is read, validated and authorized like the requested
         // entry, one fragment at a time, so a window costs more mailbox turns
@@ -883,6 +936,7 @@ fn publish_record(
         [next, ..rest] ->
           read_next(state, Job(..job, gathered:), cut, next, rest, None)
         [] ->
+          // Choose whether to publish an entry fragment or complete its record page.
           case close_source(state) {
             Error(reason) -> {
               refuse_job(job.request, reason)
@@ -902,6 +956,8 @@ fn publish_record(
         state,
         job,
       )
+
+      // Choose whether to publish an entry fragment or complete its record page.
       case committed {
         search.Stale ->
           fail_job(state, job, "history index changed during refresh")
@@ -927,22 +983,29 @@ fn publish_record(
 
 // Only successful publication schedules another background page. Refused or
 // expired work therefore cannot retry itself forever.
+
+/// Marks a completed source page and updates pending work for that session.
 fn finish_record_page(state: State, job: Job, session: ids.SessionId) {
+  // Choose whether to publish an entry fragment or complete its record page.
   let state = case job.completeness, job.request {
     Partial, Background ->
       State(..state, pending: dict.insert(state.pending, session, Nil))
     _, _ -> state
   }
+
   close_source_and_continue(state, job)
 }
 
 // Fallible storage steps preserve the same owned cleanup path on refusal.
+
+/// Continues a job on success or routes a source error through its refusal and cleanup path.
 fn or_job(
   value: Result(a, String),
   state: State,
   job: Job,
   next: fn(a) -> actor.Next(State, Message),
 ) -> actor.Next(State, Message) {
+  // Update pending session state only when the request/page combination requires it.
   case value {
     Ok(value) -> next(value)
     Error(reason) -> fail_job(state, job, reason)
@@ -950,11 +1013,15 @@ fn or_job(
 }
 
 // Appends may advance high-water; rewrite, truncation or reassignment refuses.
+
+/// Requires the active source handle and authorizes the source set before a job proceeds.
 fn validate_source(state: State, cut: source.Cut) -> Result(Nil, String) {
+  // Require the active source to remain authorized and bound to its recorded path.
   use opened <- result.try(case state.source {
     Some(opened) -> Ok(opened)
     None -> Error("history source custody was lost")
   })
+
   use sources <- result.try(authorized(state.config))
   use selected <- result.try(member(sources, cut.session))
   use <- bool.guard(
@@ -973,7 +1040,9 @@ fn validate_source(state: State, cut: source.Cut) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+/// Closes the active source and clears it from actor state only after close succeeds.
 fn close_source(state: State) {
+  // Require an open source before the job may perform source-backed work.
   case state.source {
     None -> Ok(state)
     Some(opened) -> {
@@ -983,7 +1052,9 @@ fn close_source(state: State) {
   }
 }
 
+/// Closes the active source before advancing, blocking the actor if retirement is unconfirmed.
 fn close_source_and_continue(state, job: Job) {
+  // Advance only after source retirement succeeds; otherwise retain blocked custody.
   case close_source(state) {
     Error(reason) -> {
       refuse_job(job.request, reason)
@@ -994,8 +1065,11 @@ fn close_source_and_continue(state, job: Job) {
   }
 }
 
+/// Refuses the active request, retires its source, and either advances or blocks on cleanup failure.
 fn fail_job(state: State, job: Job, reason: String) {
   refuse_job(job.request, reason)
+
+  // Retire the active source or preserve the no-source state.
   case close_source(state) {
     Error(close_reason) ->
       block(state, "history source retirement unconfirmed: " <> close_reason)
@@ -1003,7 +1077,9 @@ fn fail_job(state: State, job: Job, reason: String) {
   }
 }
 
+/// Completes the active request according to its kind, including not-found handling for entries.
 fn finish_job(state: State, job: Job) {
+  // Choose whether cleanup succeeded before advancing the actor.
   case job.request {
     Background -> advance(State(..state, phase: Ready))
     EntryRequest(_, _, _, _, _) ->
@@ -1018,12 +1094,17 @@ fn finish_job(state: State, job: Job) {
             "history refresh is incomplete; committed progress is retained",
           ),
         )
+
+        // Choose the recovery state from the source retirement result.
         use index <- result.try(case state.index {
           Some(index) -> Ok(index)
           None -> Error("history index custody was lost")
         })
+
+        // Complete the active request according to its request variant and result state.
         case lookup {
           Matching(query) ->
+            // Complete the request according to its request variant and current result.
             case query.scope {
               tool.ThisSession ->
                 search.query_authorized(
@@ -1040,6 +1121,7 @@ fn finish_job(state: State, job: Job) {
                 )
               }
             }
+
           Newest -> search.recent_in_session(index, session: current, limit:)
         }
         |> result.map_error(string.inspect)
@@ -1051,7 +1133,9 @@ fn finish_job(state: State, job: Job) {
   }
 }
 
+/// Answers the stop request only after the active source and job have been safely retired.
 fn stop(state: State, reply: process.Subject(String)) {
+  // Complete the request according to its request variant and current result.
   case state.phase {
     Blocked(reason) -> {
       process.send(reply, reason)
@@ -1063,6 +1147,8 @@ fn stop(state: State, reply: process.Subject(String)) {
       let state = drain(state, tool.IndexUnavailable("the index owner retired"))
       let closed = {
         use state <- result.try(close_source(state))
+
+        // Release active source custody before acknowledging actor shutdown.
         case state.index {
           None -> Ok(state)
           Some(index) -> {
@@ -1073,6 +1159,8 @@ fn stop(state: State, reply: process.Subject(String)) {
           }
         }
       }
+
+      // Retire active work before acknowledging actor shutdown.
       case closed {
         Ok(_) -> actor.stop()
         Error(reason) -> {

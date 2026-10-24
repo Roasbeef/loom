@@ -75,10 +75,13 @@ pub fn keep(
 ) -> Result(Nil, String) {
   let placed = remote_escalation.placed(orchestrator, record)
   let encoded = protocol.encode_escalation(placed)
+
+  // This match resolves string.byte_size(json.to_string(encoded)) before the enclosing validation continues.
   use Nil <- result.try(case string.byte_size(json.to_string(encoded)) {
     size if size <= max_record_bytes -> Ok(Nil)
     _ -> Error("the request is larger than a request may be")
   })
+
   keep_loop(
     runtime,
     remote_escalation.key(orchestrator, record.escalation_id),
@@ -88,6 +91,7 @@ pub fn keep(
   )
 }
 
+/// Keep loop keeps this client operation’s decoding or state decision in one place.
 fn keep_loop(
   runtime: api.Runtime,
   key: String,
@@ -98,9 +102,12 @@ fn keep_loop(
   use cell <- result.try(
     api.fact_cell(runtime, key) |> result.map_error(string.inspect),
   )
+
+  // This match resolves cell before the enclosing validation continues.
   let newer = case cell {
     None -> True
     Some(held) ->
+      // This match resolves protocol.decode_escalation(held.value) before the surrounding protocol step continues.
       case protocol.decode_escalation(held.value) {
         Ok(filed) -> record.seq > filed.seq
 
@@ -109,6 +116,9 @@ fn keep_loop(
         Error(_) -> True
       }
   }
+
+  // This match resolves newer before the surrounding protocol step continues.
+  // This match resolves newer before the enclosing validation continues.
   case newer {
     False -> Ok(Nil)
     True ->
@@ -150,6 +160,8 @@ pub fn clear(
   )
   let ours =
     list.filter(cells, fn(cell) {
+      // This match resolves protocol.decode_escalation(cell.1) before the surrounding protocol step continues.
+      // This match resolves protocol.decode_escalation(cell.1) before the enclosing validation continues.
       case protocol.decode_escalation(cell.1) {
         Ok(record) -> record.strand == child
         Error(_) -> False
@@ -180,6 +192,9 @@ pub fn find(
     api.fact_cell(runtime, "remote-escalation/" <> client_id)
     |> result.map_error(string.inspect),
   )
+
+  // This match resolves cell before the surrounding protocol step continues.
+  // This match resolves cell before the enclosing validation continues.
   case cell {
     None -> Ok(None)
     Some(held) -> protocol.decode_escalation(held.value) |> result.map(Some)

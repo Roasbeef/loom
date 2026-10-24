@@ -726,6 +726,7 @@ pub fn policy_from_document(
   }
 }
 
+/// Reads the `[jobs]` table and rejects values outside the jobs policy schema.
 fn policy_table(fields: Dict(String, tom.Toml)) -> Result(JobsPolicy, String) {
   use Nil <- result.try(
     known_keys(dict.keys(fields), ["max_wall", "heartbeat_s"]),
@@ -739,6 +740,8 @@ fn policy_table(fields: Dict(String, tom.Toml)) -> Result(JobsPolicy, String) {
 // seconds, and zero rather than a separate switch for "off": an operator
 // who wants no heartbeat has one number to write, and a negative one is a
 // typo worth refusing rather than a second spelling of zero.
+
+/// Parses the optional heartbeat interval and enforces its documented bounds.
 fn heartbeat(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   case dict.get(fields, "heartbeat_s") {
     Error(Nil) -> Ok(notice.default_heartbeat_ms)
@@ -753,6 +756,7 @@ fn heartbeat(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   }
 }
 
+/// Parses the maximum wall time and validates it against the host ceiling.
 fn max_wall(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   case dict.get(fields, "max_wall") {
     Error(Nil) -> Ok(default_policy.max_wall_ms)
@@ -775,6 +779,7 @@ fn max_wall(fields: Dict(String, tom.Toml)) -> Result(Int, String) {
   }
 }
 
+/// Returns the supported keys so unknown jobs settings can be rejected.
 fn known_keys(
   present: List(String),
   allowed: List(String),
@@ -1136,6 +1141,8 @@ pub fn await_completion(
       WatchOne(strand:, id:, cursors:, reply_with: reply)
     }),
   )
+
+  // The witness match chooses the job lifecycle response for this event.
   case witness {
     None -> Ok(polled)
     Some(witness) -> {
@@ -1262,6 +1269,8 @@ pub fn await_job(
         }
       },
     )
+
+  // The verdict match chooses the job lifecycle response for this event.
   case verdict {
     poll.Answer(polled) -> Ok(polled)
     poll.Failure(refusal) -> Error(refusal)
@@ -1280,12 +1289,16 @@ pub fn await_job(
 // in-band refusal rather than to the caller's death. `process.call` exits
 // its caller on a timeout or a dead callee, and every caller here is a
 // strand effect process holding a verdict the model is meant to read.
+
+/// Makes a bounded actor request and distinguishes timeout, actor loss, and a reply.
 fn ask(
   name: address.Address(Message),
   timeout_ms: Int,
   build: fn(Subject(Result(answer, Refusal))) -> Message,
 ) -> Result(answer, Refusal) {
   let absent = Unavailable(reason: "the session runs no background jobs actor")
+
+  // The address.lookup(name) match chooses the job lifecycle response for this event.
   case address.lookup(name) {
     Error(Nil) -> Error(absent)
     Ok(subject) -> {
@@ -1299,6 +1312,8 @@ fn ask(
         |> process.select_map(reply, Answered)
         |> process.select_specific_monitor(monitor, ActorDied)
       process.send(subject, build(reply))
+
+      // The process.selector_receive(selector, timeout_ms) match chooses the job lifecycle response for this event.
       let answer = case process.selector_receive(selector, timeout_ms) {
         Ok(Answered(answer:)) -> answer
         Ok(ActorDied(..)) ->
@@ -1306,6 +1321,7 @@ fn ask(
         Error(Nil) ->
           Error(Unavailable(reason: "the jobs actor did not answer in time"))
       }
+
       process.demonitor_process(monitor)
       answer
     }
@@ -1320,7 +1336,9 @@ type Asked(answer) {
 
 // --- the actor ------------------------------------------------------------
 
+/// Dispatches one actor message while preserving actor state and runner custody.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // The message match chooses the job lifecycle response for this event.
   case message {
     Reap -> actor.continue(reap(state))
 
@@ -1395,6 +1413,8 @@ fn resume(state: State) -> actor.Next(State, Message) {
 // with the custody would leave that message unselectable, and an
 // unselectable message is never removed: it is scanned past by every
 // receive the actor makes for the rest of the session.
+
+/// Builds the actor selector from the actor subject and each outstanding runner.
 fn selector(state: State) -> Selector(Message) {
   let live =
     dict.fold(
@@ -1416,6 +1436,8 @@ fn selector(state: State) -> Selector(Message) {
 // specific monitor rather than every `Down`, because the actor's own
 // `ask_runner` monitors runners on its way through a poll, and a stray
 // `Down` from one of those must never read as a caller leaving.
+
+/// Watches one live runner and returns the next bounded output update.
 fn watching(
   built: Selector(Message),
   id: JobId,
@@ -1430,6 +1452,7 @@ fn watching(
   }
 }
 
+/// Turns a runner outcome into the actor’s settlement message.
 fn reporting(
   built: Selector(Message),
   id: JobId,
@@ -1453,6 +1476,8 @@ fn reporting(
 // somehow collided with a live one loses rather than overwriting it. That
 // cannot happen from one generator, and the claim is what makes the
 // sentence true rather than probable.
+
+/// Checks admission limits and starts the job’s durable admission sequence.
 fn admit(
   state: State,
   strand: String,
@@ -1461,6 +1486,7 @@ fn admit(
   caller: Pid,
   reply_with: Subject(Result(Started, Refusal)),
 ) -> actor.Next(State, Message) {
+  // The admitted(state, strand, operation, request, caller, reply_with) match chooses the job lifecycle response for this event.
   case admitted(state, strand, operation, request, caller, reply_with) {
     Error(refusal) -> {
       process.send(reply_with, Error(refusal))
@@ -1470,6 +1496,7 @@ fn admit(
   }
 }
 
+/// Completes admission by fixing identity and deadline before the runner starts.
 fn admitted(
   state: State,
   strand: String,
@@ -1542,6 +1569,8 @@ fn admitted(
 // here, at admission, so a caller that dies at any point after this line
 // is seen: there is no window in which the job is attended by a process
 // nobody is watching.
+
+/// Constructs the selector entry used to receive one runner notification.
 fn listening(audience: Audience, caller: Pid) -> Listener {
   case audience {
     NotifyOwner -> Owner
@@ -1553,12 +1582,16 @@ fn listening(audience: Audience, caller: Pid) -> Listener {
 // "Are there this many or more" needs only the elements up to the bound
 // rather than a full walk to count them — lint R5, and the idiom
 // `client/scheduleseam.room_for_one_more` uses for its own ceiling.
+
+/// Enforces the per-strand live-job ceiling before admitting a job.
 fn room_for_one_more(state: State, strand: String) -> Result(Nil, Refusal) {
   let live =
     dict.values(state.jobs)
     |> list.filter(fn(held) {
       held.record.owner == strand && !jobstate.is_terminal(held.record.state)
     })
+
+  // The list.drop(live, max_jobs_per_strand - 1) match chooses the job lifecycle response for this event.
   case list.drop(live, max_jobs_per_strand - 1) {
     [] -> Ok(Nil)
     [_at_the_limit, ..] -> Error(CeilingReached(limit: max_jobs_per_strand))
@@ -1594,6 +1627,8 @@ fn room_for_one_more(state: State, strand: String) -> Result(Nil, Refusal) {
 // capture was made. Meeting the base instead dropped a wall grant the
 // approval flow had just minted: an operator approves thirty seconds for
 // an auto-mode `bash` call, and the job was still given the base's one.
+
+/// Computes the job wall allowed by both request and host policy.
 fn granted_wall(
   wiring: Wiring,
   running_under: SandboxPolicy,
@@ -1627,8 +1662,12 @@ fn meet_wall(ours: Int, theirs: Int) -> Int {
 // on. Reaching for the generator rather than for entropy directly is the
 // tree's rule about identity being injected, and it is what makes a
 // simulated session's job ids reproducible.
+
+/// Allocates a job identity while returning the advanced identifier generator.
 fn mint(generator: ids.Generator) -> Result(#(JobId, ids.Generator), Refusal) {
   let #(minted, generator) = ids.mint_entry(generator)
+
+  // The jobstate.parse_job_id(ids.entry_id_to_string(minted)) match chooses the job lifecycle response for this event.
   case jobstate.parse_job_id(ids.entry_id_to_string(minted)) {
     Ok(id) -> Ok(#(id, generator))
 
@@ -1664,6 +1703,8 @@ fn claim(facts: FactAccess, record: JobRecord) -> Result(Nil, Refusal) {
 // longer the session's and the answer is to reopen, never to retry. So
 // nothing here retries anything — every commit in this module is made
 // once and its failure is reported.
+
+/// Maps a fact-store refusal to the public job refusal domain.
 fn commit_refused(fault: FactFault) -> Refusal {
   case fault {
     owner_services.Conflict ->
@@ -1701,6 +1742,8 @@ fn commit_refused(fault: FactFault) -> Refusal {
 // caller's budget on a congested pool. Its expiry kills the worker, whose
 // death the broker's relay sees and answers with the cancel ladder, so
 // even a wedged clearance cannot leave a jailed process behind.
+
+/// Starts the supervised per-job runner and establishes its actor channels.
 fn spawn_runner(
   state: State,
   record: JobRecord,
@@ -1723,15 +1766,20 @@ fn spawn_runner(
   // A session-lifetime job keeps its scope until execution ends. Clearance
   // retains its own finite waiting budget; owner death and session shutdown
   // still cancel the scope and the broker's monitored execution.
+
+  // The wall_ms match chooses the job lifecycle response for this event.
   let run = case wall_ms {
     0 -> run
     _finite -> weft.deadline(run, backstop)
   }
+
   weft.start_relayed(run, to: reports)
 }
 
 // Everything one runner does, in one process: clear, publish, fold,
 // promote, report.
+
+/// Clears the broker call in the runner process and reports its settlement to the actor.
 fn run(
   wiring: Wiring,
   record: JobRecord,
@@ -1743,6 +1791,8 @@ fn run(
   let asks = process.new_subject()
   let #(now, _clock) = clock.read(wiring.clock)
   let spec = call_spec(wiring, record, now, custody_operation)
+
+  // The wiring.clear_call(spec, events) match chooses the job lifecycle response for this event.
   case wiring.clear_call(spec, events) {
     Error(refusal) -> {
       process.send(home, Clearance(id: record.id, outcome: Error(refusal)))
@@ -1759,10 +1809,13 @@ fn run(
       // Closed before anything else can reach the process, exactly as a
       // foreground call closes it, so a command that reads stdin sees end
       // of file rather than a pipe held open for the whole wall.
+
+      // The stdin match chooses the job lifecycle response for this event.
       case stdin {
         CloseStdin -> call.stdin(<<>>, True)
         KeepStdinOpen -> Nil
       }
+
       process.send(home, Clearance(id: record.id, outcome: Ok(control)))
       fold(
         Runner(
@@ -1813,6 +1866,7 @@ type Wake {
   FromActor(ask: Ask)
 }
 
+/// Consumes broker events and actor asks until the runner reaches settlement.
 fn fold(runner: Runner) -> Result(Settlement, RunnerFault) {
   let #(now, _clock) = clock.read(runner.wiring.clock)
   let selector =
@@ -1825,11 +1879,15 @@ fn fold(runner: Runner) -> Result(Settlement, RunnerFault) {
   // zero timeout would spin the phase change against a settlement already
   // sitting in the mailbox.
   let window = int.max(runner.until - now, 0) + 1
+
+  // The runner.phase, runner.until match chooses the job lifecycle response for this event.
   let wake = case runner.phase, runner.until {
     Streaming, 0 -> Ok(process.selector_receive_forever(selector))
     Streaming, _finite | Draining, _deadline ->
       process.selector_receive(selector, window)
   }
+
+  // The wake match chooses the job lifecycle response for this event.
   case wake {
     Ok(FromCall(broker.CallOutput(stream:, data:, total_bytes: _, truncated: _))) ->
       fold(absorb(runner, stream, data))
@@ -1859,22 +1917,29 @@ fn fold(runner: Runner) -> Result(Settlement, RunnerFault) {
 // missing spill ref than killed. The stream is only marked staged when a
 // write actually landed, so promotion never reads a file that is not
 // there.
+
+/// Keeps an output chunk in the bounded tail and stages it for spill promotion.
 fn absorb(
   runner: Runner,
   stream: framing.OutputStream,
   data: BitArray,
 ) -> Runner {
+  // The stream match chooses the job lifecycle response for this event.
   let streams = case stream {
     framing.Stdout ->
       Streams(..runner.streams, stdout: tail.push(runner.streams.stdout, data))
     framing.Stderr ->
       Streams(..runner.streams, stderr: tail.push(runner.streams.stderr, data))
   }
+
   let path = staging_path(root: runner.wiring.blob_root, id: runner.id, stream:)
+
+  // The runner.wiring.spill.append(path, data) match chooses the job lifecycle response for this event.
   let staged = case runner.wiring.spill.append(path, data) {
     Error(_unwritable) -> runner.staged
     Ok(Nil) -> remembering(runner.staged, stream)
   }
+
   Runner(..runner, streams:, staged:)
 }
 
@@ -1885,6 +1950,8 @@ fn absorb(
 // `tail -f` emitting a line at a time turns into tens of thousands of
 // entries over an hour — each one paid for again by the `list.contains`
 // that promotion does.
+
+/// Tracks each staged stream once, regardless of its number of chunks.
 fn remembering(
   staged: List(framing.OutputStream),
   stream: framing.OutputStream,
@@ -1903,6 +1970,8 @@ fn remembering(
 // seconds reading `Draining(ByDeadline)` rather than `Running`, and the
 // cause is carried in the final report as well so the record is right
 // even if the two messages arrive out of order.
+
+/// Moves the runner through deadline grace and reports when the grace expires.
 fn expired(runner: Runner, now: Int) -> Result(Settlement, RunnerFault) {
   case runner.phase {
     Streaming -> {
@@ -1934,6 +2003,8 @@ fn expired(runner: Runner, now: Int) -> Result(Settlement, RunnerFault) {
 // actor must not read a file for every job that ends. Its result rides
 // back inside the weft outcome, which is what lets the terminal fact
 // carry the refs in the same commit as the terminal state.
+
+/// Promotes staged output and packages the final runner settlement.
 fn finish(
   runner: Runner,
   outcome: broker.CallOutcome,
@@ -1953,14 +2024,9 @@ fn promote(runner: Runner) -> JobSpill {
   )
 }
 
-// One stream's staging file, read whole, written to its content address,
-// and unlinked.
-//
-// Unlinked last and unconditionally: a staging file that outlived its job
-// is bytes nothing will ever read again, and the next boot's sweep would
-// have to remove it anyway. A promotion that failed at any step answers
-// `None`, which the record's own doc distinguishes from "nothing to read"
-// only by the helper's byte counts beside it.
+/// Promotes one output staging file to content-addressed storage and unlinks it.
+/// A failed promotion returns `None`; the byte counts distinguish that from
+/// a stream that produced no bytes.
 fn promote_stream(
   runner: Runner,
   stream: framing.OutputStream,
@@ -1975,25 +2041,9 @@ fn promote_stream(
   option.from_result(stored)
 }
 
-// The clearance one job asks for, built exactly the way `tools/bash`
-// builds a foreground one and differing in three places, each of them the
-// design's own decision.
-//
-// The step id is the job's own key rather than the model batch's turn, so
-// each job opens its own ledger at a cap of one — `docs/adr/005`'s second
-// addendum.
-//
-// The wall is the job's rather than `bash`'s ten-minute clamp, and the
-// same number reaches the token, the relay, the helper's timer and the
-// ledger because all four read this one record. That is also why
-// `granted_wall` meets a *default* against the policy the job runs under
-// before it ever becomes a deadline: `response` below is `RefuseNarrowed`,
-// so a wall that policy does not grant is refused here rather than quietly
-// clamped.
-//
-// And no escalation grants are carried: the approval that admitted the
-// starting call bound to that call's arguments, and a detached job has no
-// later call to spend a grant on.
+/// Builds the detached job's clearance from the same policy inputs as `bash`.
+/// The job owns its ledger identity and wall deadline, and carries no grants
+/// from the starting call because detached work cannot spend them later.
 fn call_spec(
   wiring: Wiring,
   record: JobRecord,
@@ -2005,10 +2055,13 @@ fn call_spec(
       bash.requirements(wiring.workspace),
       wiring.base_policy,
     )
+
+  // The record.deadline_ms match chooses the job lifecycle response for this event.
   let wall_ms = case record.deadline_ms {
     0 -> 0
     _finite -> int.max(record.deadline_ms - now, 1)
   }
+
   let wall_s = { wall_ms + 999 } / 1000
 
   // The shell asks for every root the session base already grants, the
@@ -2064,6 +2117,8 @@ fn call_spec(
 // appear in a listing for the rest of the session. A delete that fails
 // leaves the cell `Starting` for the next boot's sweep, which is the
 // honest fallback.
+
+/// Records the outcome after the runner has left its supervised execution.
 fn cleared(
   state: State,
   id: JobId,
@@ -2105,6 +2160,8 @@ fn cleared(
 // record `Draining` and nothing to cancel. This is where that job's
 // ladder finally starts: the acceptance the state machine already accepts
 // as an ordinary race arrives, and the cancel goes out with it.
+
+/// Returns the admitted job result only after durable admission is established.
 fn accepted(
   state: State,
   held: Held,
@@ -2147,6 +2204,8 @@ fn keep(state: State, held: Held) -> actor.Next(State, Message) {
 // The wall is derived rather than carried because the record is the one
 // place it lives: the token, the relay, the helper's timer and the ledger
 // all read the same two instants, and so does the caller's answer.
+
+/// Projects the public start receipt from the admitted job record.
 fn started_of(record: JobRecord) -> Started {
   Started(
     id: record.id,
@@ -2158,6 +2217,7 @@ fn started_of(record: JobRecord) -> Started {
   )
 }
 
+/// Answers a waiting starter with the job’s final admission status.
 fn answer_starter(held: Held, answer: Result(Started, Refusal)) -> Nil {
   case held.custody {
     Dispatching(reply_with:, ..) -> process.send(reply_with, answer)
@@ -2170,6 +2230,8 @@ fn answer_starter(held: Held, answer: Result(Started, Refusal)) -> Nil {
 // The deadline notice. Idempotent by construction — `Draining` absorbs a
 // second stop request and keeps the first cause — so a job an owner
 // killed a moment before its wall expired stays attributed to the owner.
+
+/// Records the wall deadline and begins the bounded cancellation grace.
 fn deadline_passed(state: State, id: JobId) -> State {
   case dict.get(state.jobs, id) {
     Error(Nil) -> state
@@ -2188,6 +2250,8 @@ fn deadline_passed(state: State, id: JobId) -> State {
 // out, because that is what makes the account checkable. They collapse
 // into three answers: a settlement the helper reported, a refusal that
 // left nothing running, and every way of losing custody without either.
+
+/// Routes the runner’s final report into settlement processing.
 fn reported(
   state: State,
   id: JobId,
@@ -2225,6 +2289,8 @@ fn reported(
 // deleted outright, this ledger is the only thing left holding the
 // channel. A job with no custody to take one from is left alone: it is
 // either already here or was never a runner's.
+
+/// Retains the custody needed until the runner’s terminal report arrives.
 fn awaiting_last_word(state: State, id: JobId) -> State {
   case dict.get(state.jobs, id) {
     Error(Nil) -> state
@@ -2241,6 +2307,7 @@ fn said_last_word(state: State, id: JobId) -> State {
   State(..state, last_words: dict.delete(state.last_words, id))
 }
 
+/// Converts the runner outcome into an actor-side durable settlement.
 fn settle(
   state: State,
   id: JobId,
@@ -2274,6 +2341,7 @@ fn settle(
   }
 }
 
+/// Marks a job terminal only after its supervised runner has exited.
 fn settled(
   state: State,
   id: JobId,
@@ -2304,10 +2372,14 @@ fn state_of(state: State, id: JobId) -> Option(JobState) {
 // observed wins; a record already `Draining` keeps the cause that put it
 // there; and an exit reporting `cancelled` under neither is the
 // operation's own abort having reached the helper.
+
+/// Commits the runner outcome and its stop attribution to actor state.
 fn record_settlement(state: State, id: JobId, settlement: Settlement) -> State {
+  // The dict.get(state.jobs, id) match chooses the job lifecycle response for this event.
   case dict.get(state.jobs, id) {
     Error(Nil) -> state
     Ok(held) -> {
+      // The attribution(held.record.state, settlement) match chooses the job lifecycle response for this event.
       let state = case attribution(held.record.state, settlement) {
         None -> state
         Some(cause) -> apply(state, held, jobstate.KillRequested(by: cause))
@@ -2319,6 +2391,8 @@ fn record_settlement(state: State, id: JobId, settlement: Settlement) -> State {
       // is what takes its reply subject away.
       answer_starter(held, Ok(started_of(held.record)))
       let state = detach(state, id, Detached(streams: settlement.streams))
+
+      // The settlement.outcome match chooses the job lifecycle response for this event.
       case settlement.outcome {
         broker.CallExited(result:) ->
           commit(
@@ -2342,6 +2416,7 @@ fn record_settlement(state: State, id: JobId, settlement: Settlement) -> State {
   }
 }
 
+/// Removes the starter reply custody while retaining the completed job record.
 fn detach(state: State, id: JobId, custody: Custody) -> State {
   case dict.get(state.jobs, id) {
     Error(Nil) -> state
@@ -2352,6 +2427,8 @@ fn detach(state: State, id: JobId, custody: Custody) -> State {
 
 // Who stopped a job, when the settlement is the first thing to say it was
 // stopped at all.
+
+/// Chooses the stop cause evidenced by runner and durable job state.
 fn attribution(state: JobState, settlement: Settlement) -> Option(KillCause) {
   case settlement.stopped_by, state, settlement.outcome {
     // The runner watched its own deadline pass, which is the one cause a
@@ -2378,6 +2455,7 @@ fn attribution(state: JobState, settlement: Settlement) -> Option(KillCause) {
   }
 }
 
+/// Records runner loss, notifies the owner, and resumes the actor selector.
 fn lost(
   state: State,
   id: JobId,
@@ -2389,7 +2467,9 @@ fn lost(
   resume(state)
 }
 
+/// Marks a missing runner as lost and releases any waiting starter.
 fn record_loss(state: State, id: JobId, reason: jobstate.LossReason) -> State {
+  // The dict.get(state.jobs, id) match chooses the job lifecycle response for this event.
   case dict.get(state.jobs, id) {
     Error(Nil) -> state
     Ok(held) -> {
@@ -2434,6 +2514,8 @@ fn no_streams() -> Streams {
 
 // One event applied in memory only. Used where a durable write would be
 // wasted because a second event is about to land in the same handler.
+
+/// Applies one job event to the actor’s in-memory record.
 fn apply(state: State, held: Held, event: jobstate.JobEvent) -> State {
   case jobstate.step(held.record, event) {
     Error(_illegal) -> state
@@ -2453,6 +2535,8 @@ fn apply(state: State, held: Held, event: jobstate.JobEvent) -> State {
 // with the record's, and every path into this function has already
 // checked the one thing it can — that the record is not terminal — so a
 // refusal here is a race that resolved the other way.
+
+/// Applies and persists one job event before announcing its result.
 fn commit(
   state: State,
   id: JobId,
@@ -2465,11 +2549,15 @@ fn commit(
       case jobstate.step(held.record, event) {
         Error(_illegal) -> state
         Ok(stepped) -> {
+          // The spill match chooses the job lifecycle response for this event.
           let record = case spill {
             None -> stepped
             Some(spill) -> jobstate.JobRecord(..stepped, spill:)
           }
+
           let _written = persist(state, record)
+
+          // The jobstate.is_terminal(record.state) match chooses the job lifecycle response for this event.
           let completion = case jobstate.is_terminal(record.state) {
             True -> {
               stop_completion(held.completion)
@@ -2477,6 +2565,7 @@ fn commit(
             }
             False -> held.completion
           }
+
           State(
             ..state,
             jobs: dict.insert(
@@ -2490,6 +2579,7 @@ fn commit(
   }
 }
 
+/// Persists the state transition represented by one job event.
 fn commit_event(
   state: State,
   id: JobId,
@@ -2506,6 +2596,8 @@ fn commit_event(
 // can name it, and every write here is made from the actor's own single
 // thread of control. What a CAS would defend against is a second writer,
 // and there is not one.
+
+/// Writes the current job record through the durable fact boundary.
 fn persist(state: State, record: JobRecord) -> Result(Nil, Refusal) {
   state.wiring.owner.facts.put_blind(
     jobstate.job_key(record.id),
@@ -2524,6 +2616,8 @@ fn discard(state: State, id: JobId) -> Result(Nil, Refusal) {
 // A job the asking strand does not own is `NotFound`, and so is one that
 // does not exist. See the refusal's own doc for why the two are one
 // answer.
+
+/// Checks that the requesting strand owns the named job.
 fn owned(state: State, strand: String, id: JobId) -> Result(Held, Refusal) {
   case dict.get(state.jobs, id) {
     Error(Nil) -> Error(NotFound(id: jobstate.job_id_to_string(id)))
@@ -2537,6 +2631,8 @@ fn owned(state: State, strand: String, id: JobId) -> Result(Held, Refusal) {
 
 // Only an owning strand can create or learn the completion witness. One
 // linked weft actor serves every waiter and retains no caller information.
+
+/// Waits for one owned runner while preserving bounded stream cursors.
 fn watch_one(
   state: State,
   strand: String,
@@ -2546,6 +2642,8 @@ fn watch_one(
   let answer = {
     use held <- result.try(owned(state, strand, id))
     use polled <- result.try(polled(state, strand, id, cursors))
+
+    // The jobstate.is_terminal(held.record.state), held.completion match chooses the job lifecycle response for this event.
     use completion <- result.try(
       case jobstate.is_terminal(held.record.state), held.completion {
         True, _witness -> Ok(None)
@@ -2561,8 +2659,11 @@ fn watch_one(
           ))
       },
     )
+
     Ok(#(held, polled, completion))
   }
+
+  // The answer match chooses the job lifecycle response for this event.
   case answer {
     Error(refusal) -> #(state, Error(refusal))
     Ok(#(held, polled, completion)) -> {
@@ -2583,6 +2684,7 @@ fn stop_completion(witness: Option(Subject(Nil))) -> Nil {
   Nil
 }
 
+/// Reads the current bounded stream tails for one job.
 fn polled(
   state: State,
   strand: String,
@@ -2612,6 +2714,8 @@ fn polled(
 // other job's poll would wait behind it. A runner that cannot answer is
 // reported as having printed nothing since the cursor, which is true of
 // what this actor knows.
+
+/// Projects the runner’s retained stdout and stderr streams.
 fn streams_of(custody: Custody) -> Streams {
   case custody {
     Detached(streams:) -> streams
@@ -2626,6 +2730,7 @@ fn streams_of(custody: Custody) -> Streams {
   }
 }
 
+/// Sends a bounded request to the job’s runner process.
 fn ask_runner(control: Control) -> Result(Streams, Nil) {
   use runner <- result.try(process.subject_owner(control.asks))
   let reply = process.new_subject()
@@ -2644,6 +2749,8 @@ fn ask_runner(control: Control) -> Result(Streams, Nil) {
 
 // Only admitted live records become rows. The fold visits the actor's existing
 // dictionary but holds at most four records; it never queries durable history.
+
+/// Builds the requesting strand’s live-job view at the supplied time.
 fn live_board(
   records: Dict(JobId, Held),
   strand: String,
@@ -2683,24 +2790,30 @@ pub fn live_board_of(
 
 // One record's contribution: a live job of the strand counts, and becomes a
 // row only while the bound has room.
+
+/// Projects one live job into its public board row.
 fn live_step(
   acc: #(Int, List(JsonValue)),
   record: JobRecord,
   strand: String,
   now: Int,
 ) -> #(Int, List(JsonValue)) {
+  // The record.owner == strand && !jobstate.is_terminal(record.state) match chooses the job lifecycle response for this event.
   case record.owner == strand && !jobstate.is_terminal(record.state) {
     False -> acc
     True -> {
+      // The acc.0 < max_jobs_per_strand match chooses the job lifecycle response for this event.
       let rows = case acc.0 < max_jobs_per_strand {
         True -> [live_row(record, now), ..acc.1]
         False -> acc.1
       }
+
       #(acc.0 + 1, rows)
     }
   }
 }
 
+/// Builds the live-job board from the actor’s current job records.
 fn board_of(
   strand: String,
   now: Int,
@@ -2716,13 +2829,16 @@ fn board_of(
   ])
 }
 
+/// Projects one held job into its live listing representation.
 fn live_row(record: JobRecord, now: Int) -> JsonValue {
+  // The record.state match chooses the job lifecycle response for this event.
   let phase = case record.state {
     jobstate.Starting -> "starting"
     jobstate.Running -> "running"
     jobstate.Draining(..) -> "draining"
     jobstate.Exited(..) | jobstate.Killed(..) | jobstate.Lost(..) -> "terminal"
   }
+
   json.Object([
     #("id", json.String(jobstate.job_id_to_string(record.id))),
     #("state", json.String(phase)),
@@ -2735,9 +2851,12 @@ fn live_row(record: JobRecord, now: Int) -> JsonValue {
 
 // Stop before joining an arbitrarily large argv. Each grapheme is admitted
 // only while its bytes fit, so terminal display gets a UTF-8-safe prefix.
+
+/// Builds the bounded command excerpt shown in a job listing.
 fn command_excerpt(argv: List(String)) -> String {
   argv
   |> list.fold_until(#(512, []), fn(acc, arg) {
+    // The acc.0 <= 0 match chooses the job lifecycle response for this event.
     case acc.0 <= 0 {
       True -> list.Stop(acc)
       False -> {
@@ -2753,6 +2872,8 @@ fn command_excerpt(argv: List(String)) -> String {
               False -> list.Stop(#(0, acc.1))
             }
           })
+
+        // The remaining > 0 match chooses the job lifecycle response for this event.
         case remaining > 0 {
           True -> list.Continue(#(remaining - 1, [" ", ..parts]))
           False -> list.Stop(#(remaining, parts))
@@ -2766,6 +2887,7 @@ fn command_excerpt(argv: List(String)) -> String {
   |> string.trim_end
 }
 
+/// Returns the visible job listing subject to ownership and time bounds.
 fn listing(state: State, strand: String) -> List(Listed) {
   let #(now, _clock) = clock.read(state.wiring.clock)
   dict.values(state.jobs)
@@ -2795,12 +2917,15 @@ fn listing(state: State, strand: String) -> List(Listed) {
 // are idempotent — the broker's cancel by contract, the machine's
 // `Draining` by construction — so the order costs nothing and buys the
 // ladder a head start.
+
+/// Checks ownership and requests cancellation with the supplied cause.
 fn requested_kill(
   state: State,
   strand: String,
   id: JobId,
   reply_with: Subject(Result(Nil, Refusal)),
 ) -> actor.Next(State, Message) {
+  // The owned(state, strand, id) match chooses the job lifecycle response for this event.
   case owned(state, strand, id) {
     Error(refusal) -> {
       process.send(reply_with, Error(refusal))
@@ -2823,6 +2948,7 @@ fn requested_kill(
   }
 }
 
+/// Sends the cancellation request to the supervised runner.
 fn cancel(custody: Custody) -> Nil {
   case custody {
     Attached(control:, ..) -> control.cancel()
@@ -2834,6 +2960,7 @@ fn cancel(custody: Custody) -> Nil {
   }
 }
 
+/// Writes bounded input to the owned job’s runner stdin.
 fn write_to_stdin(
   state: State,
   strand: String,
@@ -2842,6 +2969,8 @@ fn write_to_stdin(
   end: StdinEnd,
 ) -> Result(Nil, Refusal) {
   use held <- result.try(owned(state, strand, id))
+
+  // The held.custody match chooses the job lifecycle response for this event.
   case held.custody {
     Attached(control:, ..) -> {
       control.stdin(data, closes(end))
@@ -2887,6 +3016,8 @@ fn closes(end: StdinEnd) -> Bool {
 // be told the job never existed rather than that it was lost. Every record
 // the sweep decoded is therefore held detached, with two empty tails,
 // which is exactly what a job whose runner is gone has left to show.
+
+/// Reconciles live records after runner ownership has been lost.
 fn reap(state: State) -> State {
   // A store that is not there at all means the session is not open yet
   // (or is already going), and the sweep is skipped whole. A store which is
@@ -2900,6 +3031,8 @@ fn reap(state: State) -> State {
 }
 
 // The rest of the restart sweep, once the store has said what it holds.
+
+/// Removes a reaped runner and commits its terminal loss state.
 fn reaped(state: State, swept: List(Swept)) -> State {
   // This incarnation owns no job, so every staging file the store holds
   // belongs to one that is gone.
@@ -2945,6 +3078,8 @@ type Fate {
 // Every one of these is terminal — the sweep either found it so or made it
 // so — which is what keeps them out of `room_for_one_more`'s count and
 // makes them answerable from `state.jobs` alone.
+
+/// Keeps the actor’s durable record synchronized with a completed transition.
 fn remember(jobs: Dict(JobId, Held), record: JobRecord) -> Dict(JobId, Held) {
   dict.insert(
     jobs,
@@ -2966,11 +3101,15 @@ fn remember(jobs: Dict(JobId, Held), record: JobRecord) -> Dict(JobId, Held) {
 // A record whose `Lost` could not be written is dropped rather than kept,
 // because holding it would answer a poll with a state the store does not
 // carry — and the next boot's sweep will meet the same cell and try again.
+
+/// Marks records from the prior actor incarnation as lost before serving requests.
 fn sweep(facts: FactAccess) -> Result(List(Swept), FactFault) {
   use cells <- result.try(facts.list(jobstate.key_prefix))
   Ok(
     list.filter_map(cells, fn(cell) {
       let #(_key, payload) = cell
+
+      // The jobstate.decode(payload) match chooses the job lifecycle response for this event.
       case jobstate.decode(payload) {
         Error(_corrupt) -> Error(Nil)
         Ok(record) ->
@@ -2981,10 +3120,12 @@ fn sweep(facts: FactAccess) -> Result(List(Swept), FactFault) {
             // `Draining(BySessionStop)`, and this sweep is what turns it
             // lost; the stop was chosen, so the reopen wakes nobody.
             False -> {
+              // The stopped_on_purpose(Some(record.state)) match chooses the job lifecycle response for this event.
               let fate = case stopped_on_purpose(Some(record.state)) {
                 True -> Heard
                 False -> Unheard
               }
+
               reap_one(facts, record)
               |> result.map(fn(lost) { Swept(record: lost, fate:) })
             }
@@ -2994,6 +3135,7 @@ fn sweep(facts: FactAccess) -> Result(List(Swept), FactFault) {
   )
 }
 
+/// Reconciles one persisted job record found during restart sweep.
 fn reap_one(facts: FactAccess, record: JobRecord) -> Result(JobRecord, Nil) {
   use lost <- result.try(
     jobstate.step(record, jobstate.RunnerLost(reason: jobstate.VmRestart))
@@ -3004,6 +3146,7 @@ fn reap_one(facts: FactAccess, record: JobRecord) -> Result(JobRecord, Nil) {
   |> result.replace_error(Nil)
 }
 
+/// Removes staging files that no live job record owns.
 fn unlink_orphans(state: State) -> Result(Nil, String) {
   use paths <- result.try(state.wiring.spill.staged())
   list.each(paths, fn(path) {
@@ -3020,6 +3163,8 @@ fn unlink_orphans(state: State) -> Result(Nil, String) {
 // is still live, and from now on its owner is told when it ends; or it
 // has already ended, silently because a caller was waiting, and that
 // caller is told so and renders the end itself.
+
+/// Releases an owned terminal job and its retained resources.
 fn released(
   state: State,
   strand: String,
@@ -3040,6 +3185,8 @@ fn released(
 // owner exactly as a release would send it. A job that had already ended
 // is left as it is, because its end was either rendered by the caller or
 // lost with it, and a notice now would be about something long settled.
+
+/// Releases a starter whose caller disappeared before admission completed.
 fn caller_left(state: State, id: JobId) -> State {
   case dict.get(state.jobs, id) {
     Error(Nil) -> state
@@ -3057,7 +3204,10 @@ fn caller_left(state: State, id: JobId) -> State {
 // to `Program`, the listener that announces nothing, because whether its
 // end is announced was decided when it ended. A job with no caller claim
 // is left alone, so a program's job stays the program's.
+
+/// Rebuilds the selector after the actor’s live runner set changes.
 fn relisten(state: State, held: Held, to listener: Listener) -> State {
+  // The held.listener match chooses the job lifecycle response for this event.
   case held.listener {
     Caller(monitor:) -> {
       process.demonitor_process(monitor)
@@ -3077,6 +3227,8 @@ fn relisten(state: State, held: Held, to listener: Listener) -> State {
 // Called after the terminal commit from the actor's own settlement paths,
 // and never from the session-stop drain: a job the stop ended is news to
 // nobody, and the strand it would wake is closing.
+
+/// Sends an owner notification when the visible job state changes.
 fn announce(state: State, id: JobId, was: Option(JobState)) -> Nil {
   case dict.get(state.jobs, id), stopped_on_purpose(was) {
     Error(Nil), _chosen | Ok(_held), True -> Nil
@@ -3091,6 +3243,8 @@ fn announce(state: State, id: JobId, was: Option(JobState)) -> Nil {
 // Whether a job was being stopped at somebody's request: its owner's
 // kill, an operator's abort, or the session's own stop. The deadline is
 // the one cause nobody asked for, so its end is news.
+
+/// Distinguishes an intentional stop from an unexpected runner loss.
 fn stopped_on_purpose(state: Option(JobState)) -> Bool {
   case state {
     Some(jobstate.Draining(by: jobstate.ByOwner))
@@ -3111,7 +3265,10 @@ fn stopped_on_purpose(state: Option(JobState)) -> Bool {
 // that fails is dropped: the record is terminal and a poll reads it, and
 // the heartbeat is not what finds it, since a terminal job is not live
 // work. `docs/design-notes/async-completion-wake.md` weighs the window.
+
+/// Delivers a job-state notification to its owning strand.
 fn tell(state: State, record: JobRecord, streams: Streams) -> Nil {
+  // The worth_telling(record.state) match chooses the job lifecycle response for this event.
   case worth_telling(record.state) {
     True -> {
       let work = notice.Job(id: jobstate.job_id_to_string(record.id))
@@ -3130,6 +3287,8 @@ fn tell(state: State, record: JobRecord, streams: Streams) -> Nil {
 // Whether a job's end is something its owner does not already know. A
 // kill the owner asked for, an operator's abort and a session stop are all
 // ends somebody chose, and waking the owner about an abort would undo it.
+
+/// Filters transitions that do not change the owner-visible job status.
 fn worth_telling(state: JobState) -> Bool {
   case state {
     jobstate.Exited(..) -> True
@@ -3153,6 +3312,8 @@ const notice_tail_bytes = 2048
 
 // The completion notice's text. Its first line names it completely, on
 // the agreement a client's collapsed view of a `[loom]` message rests on.
+
+/// Renders the terminal result text shown to the job owner.
 fn completion_text(record: JobRecord, streams: Streams) -> String {
   let id = jobstate.job_id_to_string(record.id)
   let command = list.last(record.spec.argv) |> result.unwrap("")
@@ -3174,6 +3335,8 @@ fn completion_text(record: JobRecord, streams: Streams) -> String {
 // A timeout is finite-job policy, not proof that a watcher crashed. An
 // explicit new invocation lets the operator authorize the longer lifetime;
 // this notice never restarts an arbitrary shell command automatically.
+
+/// Explains the timeout state and the next action available to the owner.
 fn timeout_guidance(state: JobState) -> String {
   case state {
     jobstate.Killed(by: jobstate.ByDeadline, ..) ->
@@ -3190,6 +3353,8 @@ fn timeout_guidance(state: JobState) -> String {
 // How long the job ran, from the helper's own report. A lost job has no
 // report, and a duration guessed from the notice's own clock would read as
 // one, so it gets no line at all.
+
+/// Renders the command execution summary line.
 fn ran_line(state: JobState) -> String {
   case state {
     jobstate.Exited(result:) | jobstate.Killed(result:, ..) ->
@@ -3201,6 +3366,7 @@ fn ran_line(state: JobState) -> String {
   }
 }
 
+/// Chooses the user-facing phrase for the job’s terminal outcome.
 fn ended_phrase(state: JobState) -> String {
   case state {
     jobstate.Exited(result:) ->
@@ -3225,8 +3391,12 @@ fn ended_phrase(state: JobState) -> String {
 
 // One stream's last output, fenced, or nothing for a stream that printed
 // nothing.
+
+/// Quotes a command argument for safe display in job output.
 fn quoted(name: String, stream: Tail) -> String {
   let retained = tail.since(stream, 0).bytes
+
+  // The bit_array.byte_size(retained) match chooses the job lifecycle response for this event.
   case bit_array.byte_size(retained) {
     0 -> ""
     _size ->
@@ -3243,6 +3413,8 @@ fn quoted(name: String, stream: Tail) -> String {
 // The last `limit` bytes as text. A cut can land inside a character, so up
 // to three leading bytes are dropped to reach a boundary; output that is
 // not text at all is summarized rather than pasted into a transcript.
+
+/// Returns the final text fragment retained in a bounded stream tail.
 fn last_text(bytes: BitArray, limit: Int) -> String {
   let size = bit_array.byte_size(bytes)
   let start = int.max(size - limit, 0)
@@ -3251,6 +3423,7 @@ fn last_text(bytes: BitArray, limit: Int) -> String {
   |> result.unwrap("")
 }
 
+/// Decodes a bounded byte fragment as UTF-8 without failing the listing.
 fn utf8_from(bytes: BitArray, skipped: Int) -> String {
   case bit_array.to_string(bytes), skipped < 3 {
     Ok(text), _room -> text
@@ -3277,6 +3450,8 @@ fn utf8_from(bytes: BitArray, skipped: Int) -> String {
 // A job a caller is waiting on counts as live work too. Its owner is busy
 // by definition while the caller waits, so it never produces a beat on
 // its own, and listing it alongside the owner's other jobs is the truth.
+
+/// Runs the actor’s periodic heartbeat and reconciles expired jobs.
 fn beat(state: State) -> State {
   let interval = state.wiring.policy.heartbeat_ms
   use <- bool.guard(when: interval <= 0, return: state)
@@ -3303,6 +3478,8 @@ fn beat(state: State) -> State {
 // loud one: an owner whose only live work is a watcher is never woken,
 // and one that is woken is told about exactly the work it asked to hear
 // about.
+
+/// Finds the owner notification target for a live job.
 fn wakeful_by_owner(jobs: Dict(JobId, Held)) -> Dict(String, List(JobRecord)) {
   dict.fold(jobs, dict.new(), fn(owners, _id, held) {
     case jobstate.is_terminal(held.record.state), held.idle_wake {
@@ -3315,6 +3492,7 @@ fn wakeful_by_owner(jobs: Dict(JobId, Held)) -> Dict(String, List(JobRecord)) {
   })
 }
 
+/// Renders one heartbeat update for the owner.
 fn heartbeat_line(record: JobRecord, now: Int) -> String {
   "job "
   <> jobstate.job_id_to_string(record.id)
@@ -3344,9 +3522,12 @@ fn heartbeat_line(record: JobRecord, now: Int) -> String {
 // not settled when the grace runs out keeps its durable
 // `Draining(BySessionStop)`, and the next boot's sweep turns that into
 // `Lost(VmRestart)` — which is the truth, because nobody watched it end.
+
+/// Requests session shutdown for every remaining live runner.
 fn stop_every_job(state: State) -> State {
   let state =
     dict.fold(state.jobs, state, fn(carried, id, held) {
+      // The jobstate.is_terminal(held.record.state) match chooses the job lifecycle response for this event.
       case jobstate.is_terminal(held.record.state) {
         True -> carried
         False -> {
@@ -3364,11 +3545,14 @@ fn stop_every_job(state: State) -> State {
   drain(state, now + stop_grace_ms)
 }
 
+/// Stops new work and waits for each owned runner to settle.
 fn drain(state: State, until: Int) -> State {
   use <- bool.guard(when: !any_live(state), return: state)
   let #(now, _clock) = clock.read(state.wiring.clock)
   let window = until - now
   use <- bool.guard(when: window <= 0, return: state)
+
+  // The process.selector_receive(selector(state), window) match chooses the job lifecycle response for this event.
   case process.selector_receive(selector(state), window) {
     Error(Nil) -> state
 
@@ -3419,6 +3603,8 @@ fn any_live(state: State) -> Bool {
 // A settlement during the drain, applied for its durable effect only:
 // `actor.Next` cannot be built here, so the two report handlers are
 // re-entered for their state and their commits.
+
+/// Completes shutdown once every runner has reported its terminal state.
 fn drained(
   state: State,
   id: JobId,
@@ -3454,11 +3640,14 @@ fn drained(
 // A clearance that returned while the session was stopping. The job was
 // already asked to stop, so the controls are taken only to cancel with
 // them.
+
+/// Reconciles clearance results while the actor is draining.
 fn drained_clearance(
   state: State,
   id: JobId,
   outcome: Result(Control, broker.Refusal),
 ) -> State {
+  // The dict.get(state.jobs, id), outcome match chooses the job lifecycle response for this event.
   case dict.get(state.jobs, id), outcome {
     Error(Nil), _outcome -> state
 
@@ -3478,6 +3667,8 @@ fn drained_clearance(
         Error(Unavailable(reason: "this session is stopping")),
       )
       control.cancel()
+
+      // The held.custody match chooses the job lifecycle response for this event.
       case held.custody {
         Dispatching(reports:, ..) ->
           State(
@@ -3500,6 +3691,8 @@ fn drained_clearance(
 // meet are exactly the ones a foreground `bash` can, so the wording is
 // `tools/tool.refusal_outcome`'s vocabulary rather than a second account
 // of the same failures.
+
+/// Renders a stable user-facing explanation for a job refusal.
 fn refusal_text(refusal: broker.Refusal) -> String {
   case refusal {
     broker.PolicyRefused(denial:) ->

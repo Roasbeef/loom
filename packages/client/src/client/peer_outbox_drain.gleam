@@ -287,6 +287,7 @@ pub fn ring(name: address.Address(Message)) -> Nil {
 
 // The machine `start` and `supervised` both describe. It begins `Waiting`, so
 // that `entered`'s first call arms the pass that runs at session open.
+/// Creates the outbox drain state from its configured dependencies.
 fn builder(
   options: Options,
   name: address.Address(Message),
@@ -305,6 +306,7 @@ fn builder(
 // Arms or cancels the timeout on each way into a phase. The first call has
 // both phases equal, which no later transition does, and that is the pass at
 // session open.
+/// Starts a drain pass and records the next due time.
 fn entered(
   from: Phase,
   to: Phase,
@@ -340,6 +342,7 @@ fn entered(
 // A `Tick` runs a pass in either phase, so a wake that arrives after the
 // machine has gone idle still delivers whatever is owed. A `Queued` message
 // only matters to an idle machine.
+/// Applies one drain control message to the running outbox owner.
 fn handle(
   phase: Phase,
   data: State,
@@ -357,12 +360,15 @@ fn handle(
 // the interval the pace calls for; a pass that leaves none moves to `Idle`, and
 // `entered` cancels the timeout. Both ways into `Idle` and `Waiting` start from
 // the fixed interval, because `entered` arms it.
+/// Updates drain scheduling after a delivery pass completes.
 fn after_pass(
   phase: Phase,
   data: State,
   backlog: Backlog,
 ) -> sm.Next(Phase, State, Message) {
   let fresh = State(..data, interval_ms: retry_interval_ms)
+
+  // The pass outcome determines whether the drain retries or schedules another check.
   case phase, backlog {
     Waiting, Owed(Quick) -> rearmed(fresh)
     Waiting, Owed(Slow) ->
@@ -379,6 +385,7 @@ fn after_pass(
 }
 
 // Arms the one timeout for the interval the state holds.
+/// Rearms the outbox timer after a scheduled retry.
 fn rearmed(data: State) -> sm.Next(Phase, State, Message) {
   sm.keep(data)
   |> sm.with_named_timeout(
@@ -392,7 +399,9 @@ fn rearmed(data: State) -> sm.Next(Phase, State, Message) {
 // refuses any that have waited past the hour before it does, so expiry needs
 // no timer of its own. A read that fails is `Owed(Quick)`: the rows may exist,
 // and the next pass reads again.
+/// Starts a pass for rows whose retry time has arrived.
 fn due_pass(wiring: peers.Wiring, logger: Logger) -> Backlog {
+  // The due-row state determines which outbox entries can be attempted now.
   case wiring.own.call(peer_mail.OutboxDue) {
     Ok(json.Array(items)) ->
       drain_rows(
@@ -429,6 +438,7 @@ fn due_pass(wiring: peers.Wiring, logger: Logger) -> Backlog {
 // seconds. If the owner opens the session between two rows, the skipped ones
 // wait for the next pass. The row that was asked has said what the pass found,
 // so a skipped row adds nothing to it.
+/// Claims due rows and delivers each through the authorized peer route.
 fn drain_rows(
   wiring: peers.Wiring,
   logger: Logger,
@@ -445,6 +455,8 @@ fn drain_rows(
         False -> {
           let outcome = peers.resend(wiring, row)
           report(logger, row, outcome)
+
+          // The claimed rows determine which delivery attempts are run in this pass.
           let waiting = case outcome {
             peer_outbox.Unanswered | peer_outbox.NotOpen -> [
               row.session,
@@ -452,6 +464,7 @@ fn drain_rows(
             ]
             peer_outbox.Receipt(..) | peer_outbox.Rejected(..) -> waiting
           }
+
           drain_rows(wiring, logger, rest, waiting, [outcome, ..found])
         }
       }
@@ -463,6 +476,7 @@ fn drain_rows(
 // interval, because it may be back by the next pass. Failing that, a recipient
 // that is saved calls for the backed-off one, because only its owner's
 // decision ends the wait. Nothing owed leaves nothing to wait for.
+/// Projects the pending outbox backlog from the drain state.
 fn backlog_of(found: List(peer_outbox.Outcome)) -> Backlog {
   case
     list.contains(found, peer_outbox.Unanswered),
@@ -476,6 +490,7 @@ fn backlog_of(found: List(peer_outbox.Outcome)) -> Backlog {
 
 // The log line for an attempt that ended a row. A row that stays pending says
 // nothing: it is attempted again.
+/// Builds the public status report for the running drain.
 fn report(
   logger: Logger,
   row: peer_outbox.Row,
@@ -493,6 +508,7 @@ fn report(
   }
 }
 
+/// Describes where the outbox drain is currently operating.
 fn where(row: peer_outbox.Row) -> List(field.Field) {
   [
     field.text("session", row.session),

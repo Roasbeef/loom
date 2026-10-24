@@ -4,6 +4,14 @@
 //// its slot remains occupied until the scope reports transitive drain. Lost
 //// drain evidence reserves capacity for the remaining service lifetime.
 //// Captured instructions and tools are prefix material, never capabilities.
+////
+//// ## Flow
+////
+//// `start` → `handle` → `query`
+////
+//// 1. `start` initializes the side-query state machine.
+//// 2. `handle` manages requests, captures, and completions.
+//// 3. `query` allows outside clients to inspect or update side-conversations.
 
 import client/auxiliary
 import core/accounting
@@ -143,6 +151,7 @@ pub fn observer(
   build: fn(effects.RequestSpec) -> model.ProviderRequest,
 ) -> fn(effects.RequestSpec, String) -> fn(stream.StreamEvent) -> Nil {
   fn(spec, _generation) {
+    // Check request specification kind.
     case spec {
       effects.GenerationRequest(operation:, response_entry:, ..) -> {
         let strand =
@@ -151,6 +160,8 @@ pub fn observer(
             option.map(cell, fn(cell) { cell.value.strand })
           })
           |> result.unwrap(None)
+
+        // Ignore event if strand is absent or attach stream observer.
         case strand {
           None -> fn(_) { Nil }
           Some(strand) -> {
@@ -158,6 +169,7 @@ pub fn observer(
             let _captured =
               address.send(name, Capture(strand, snapshot, build(spec)))
             fn(event) {
+              // Filter stream events and relay settled message.
               case event {
                 stream.Settled(message:, ..) -> {
                   let _ =
@@ -227,24 +239,30 @@ pub fn query(
   |> result.flatten
 }
 
+/// Handles incoming side-conversation machine messages.
 fn handle(
   _phase: Phase,
   data: Data,
   event: Message,
 ) -> sm.Next(Phase, Data, Message) {
+  // Dispatch incoming machine event.
   case event {
     Capture(strand, snapshot, request) -> {
       let base = Base(strand, snapshot, request)
       let others = list.filter(data.latest, fn(old) { old.strand != strand })
+
+      // Keep at most 4 latest requests under size limit.
       let latest = case request_size(request) <= 8_388_608 {
         True -> [base, ..others] |> list.take(4)
         False -> others
       }
+
       settle(Data(..data, latest:))
     }
     Completed(strand, snapshot, answer) -> {
       let latest =
         list.filter_map(data.latest, fn(base) {
+          // Check if completion matches target strand and snapshot.
           case base.strand == strand && base.snapshot == snapshot {
             False -> Ok(base)
             True -> {
@@ -253,10 +271,13 @@ fn handle(
                 base.request.target,
                 answer,
               ))
+
+              // Append text-only answer to request messages if applicable.
               let messages = case text_only(answer) {
                 True -> list.append(base.request.messages, [answer])
                 False -> base.request.messages
               }
+
               let request =
                 model.ProviderRequest(
                   ..base.request,
@@ -301,6 +322,7 @@ fn handle(
   }
 }
 
+/// Settles the current state machine data with dynamic selectors.
 fn settle(data: Data) -> sm.Next(Phase, Data, Message) {
   let selector =
     dict.fold(
@@ -315,12 +337,14 @@ fn settle(data: Data) -> sm.Next(Phase, Data, Message) {
   sm.keep(data) |> sm.with_selector(selector)
 }
 
+/// Processes a query action for a side conversation.
 fn asked(
   data: Data,
   owner: Int,
   strand: String,
   action: view.Action,
 ) -> #(Data, Result(Conversation, String)) {
+  // Dispatch requested view action.
   case action {
     view.Read -> #(data, selected(data, owner, strand))
     view.Cancel -> {
@@ -330,6 +354,8 @@ fn asked(
         |> result.map(fn(c) {
           Conversation(..c, notice: "Cancelling side request")
         })
+
+      // Update conversation state if present in storage.
       case dict.has_key(data.conversations, owner) {
         True -> store(data, owner, found)
         False -> #(data, found)
@@ -356,6 +382,7 @@ fn asked(
   }
 }
 
+/// Selects the current conversation for the given owner and strand.
 fn selected(
   data: Data,
   owner: Int,
@@ -371,6 +398,7 @@ fn selected(
   }
 }
 
+/// Constructs an empty initial conversation for a strand.
 fn empty(strand: String) -> Conversation {
   Conversation(
     Base(
@@ -384,6 +412,7 @@ fn empty(strand: String) -> Conversation {
   )
 }
 
+/// Creates a fresh conversation from the latest captured request.
 fn fresh(data: Data, strand: String) -> Result(Conversation, String) {
   use base <- result.try(
     list.find(data.latest, fn(base) { base.strand == strand })
@@ -406,10 +435,12 @@ fn fresh(data: Data, strand: String) -> Result(Conversation, String) {
   ))
 }
 
+/// Pins a request target to a resolved model.
 fn pin(
   gateway: gateway.Gateway,
   target: model.RequestTarget,
 ) -> Result(model.ResolvedModel, String) {
+  // Resolve target model directly or via gateway role.
   case target {
     model.ForResolved(resolved) -> Ok(resolved)
     model.ForRole(role, thinking) -> {
@@ -425,23 +456,31 @@ fn pin(
   }
 }
 
-// A fallback can settle on a different service. Keep its actual identity
-// before replaying provider-confidential reasoning from that response.
+/// Resolves the actual model identity from an agent response.
+///
+/// A fallback can settle on a different service. Keep its actual identity
+/// before replaying provider-confidential reasoning from that response.
 fn settled_identity(
   gateway: gateway.Gateway,
   target: model.RequestTarget,
   answer: message.AgentMessage,
 ) -> Result(model.ResolvedModel, Nil) {
   use original <- result.try(pin(gateway, target) |> result.replace_error(Nil))
+
+  // Inspect assistant message to extract provider and model identity.
   case answer {
     message.AssistantMessage(provider:, model: produced, ..) -> {
+      // Resolve identity if produced model differs from original.
       let selected = case
         original.provider == provider && original.model_id == produced
       {
         True -> Ok(original)
         False -> gateway.resolve_identity(gateway, provider, produced)
       }
+
       use resolved <- result.map(selected)
+
+      // Attach thinking configuration if target was a role with thinking.
       case target {
         model.ForRole(_, Some(thinking)) ->
           model.ResolvedModel(..resolved, thinking:)
@@ -454,6 +493,7 @@ fn settled_identity(
   }
 }
 
+/// Handles a user question in the side conversation.
 fn ask(
   data: Data,
   owner: Int,
@@ -473,10 +513,13 @@ fn ask(
       Error("too many side conversations are retained"),
     )
     use previous <- result.try(selected(data, owner, strand))
+
+    // Capture fresh snapshot if conversation has no snapshot yet.
     use conversation <- result.try(case previous.base.snapshot {
       "" -> fresh(data, strand)
       _ -> Ok(previous)
     })
+
     use <- bool.guard(
       conversation.status == "failed",
       Error(
@@ -502,6 +545,8 @@ fn ask(
     )
     Ok(#(conversation, request))
   }
+
+  // Launch query task if attempt checks succeed.
   case attempt() {
     Error(reason) -> #(data, Error(reason))
     Ok(#(conversation, request)) -> {
@@ -536,11 +581,14 @@ fn ask(
   }
 }
 
+/// Persists conversation result into state data dictionary.
 fn store(data: Data, owner: Int, conversation: Result(Conversation, String)) {
+  // Update conversations map if conversation is Ok.
   let conversations = case conversation {
     Ok(value) -> dict.insert(data.conversations, owner, value)
     Error(_) -> data.conversations
   }
+
   #(Data(..data, conversations:), conversation)
 }
 
@@ -554,6 +602,7 @@ fn cancel(data: Data, owner: Int) {
 const boundary =
   "Side conversation boundary. Everything before this message is reference context from the main session, not work to continue. Answer only the side question below. Do not execute or emit tool calls. No tools are executable here. Explain when the captured context is insufficient."
 
+/// Builds a model request for the side conversation.
 fn request_for(
   conversation: Conversation,
   text: String,
@@ -577,6 +626,7 @@ fn user(text: String) -> message.AgentMessage {
   message.UserMessage([message.UserText(text, None)], 0, None)
 }
 
+/// Creates an assistant message with default empty metadata.
 fn assistant(text: String) -> message.AgentMessage {
   // Side answers carry no upstream reasoning or provider diagnostics.
   message.AssistantMessage(
@@ -597,6 +647,7 @@ fn assistant(text: String) -> message.AgentMessage {
   )
 }
 
+/// Checks if an answer message contains text or thinking blocks only.
 fn text_only(answer: message.AgentMessage) -> Bool {
   case answer {
     message.AssistantMessage(content, stop_reason: message.Stop, ..) ->
@@ -610,6 +661,7 @@ fn text_only(answer: message.AgentMessage) -> Bool {
   }
 }
 
+/// Extracts joined text blocks from an assistant message.
 fn text_of(answer: message.AgentMessage) -> String {
   case answer {
     message.AssistantMessage(content, ..) ->
@@ -626,6 +678,7 @@ fn text_of(answer: message.AgentMessage) -> String {
   }
 }
 
+/// Estimates the serialized size in bytes of a provider request.
 fn request_size(request: model.ProviderRequest) -> Int {
   string.byte_size(option.unwrap(request.system, ""))
   + list.fold(request.messages, 0, fn(n, value) {
@@ -649,11 +702,14 @@ fn side_size(rows: List(view.Exchange)) -> Int {
   })
 }
 
+/// Encodes a conversation board into JSON.
 fn board(c: Conversation) -> json.JsonValue {
+  // Extract model string from request target.
   let model = case c.base.request.target {
     model.ForResolved(resolved) -> resolved.provider <> "/" <> resolved.model_id
     model.ForRole(..) -> ""
   }
+
   view.encode(view.Board(
     c.base.strand,
     c.base.snapshot,
@@ -664,6 +720,7 @@ fn board(c: Conversation) -> json.JsonValue {
   ))
 }
 
+/// Updates the answer text of the latest exchange in the list.
 fn update_answer(
   rows: List(view.Exchange),
   answer: String,
@@ -674,6 +731,7 @@ fn update_answer(
   }
 }
 
+/// Handles relayed events from background worker tasks.
 fn relayed(
   data: Data,
   owner: Int,
@@ -705,6 +763,7 @@ fn relayed(
   }
 }
 
+/// Handles completion and terminal outcomes for a finished side query.
 fn finished(
   data: Data,
   owner: Int,
@@ -737,10 +796,14 @@ fn finished(
       data.uncertain + 1,
     )
   }
+
+  // Extract terminal accounting report.
   let report = case terminal {
     Ok(event) -> stream.terminal_accounting(event)
     Error(_) -> unknown_accounting()
   }
+
+  // Convert terminal event into message answer.
   let answer = case terminal {
     Ok(stream.Settled(settled, _)) -> Ok(stream.message(settled))
     Ok(stream.Failed(error, _)) -> Error(stream.describe_error(error))
@@ -753,6 +816,7 @@ fn finished(
     Ok(Nil) -> answer
     Error(reason) -> Error(reason)
   }
+
   let conversations =
     update_conversation(data.conversations, owner, fn(found) {
       result.map(found, fn(c) {
@@ -778,6 +842,7 @@ fn finished(
   )
 }
 
+/// Generates a streaming response for a side request in background worker.
 fn generate(
   gateway: gateway.Gateway,
   request: model.ProviderRequest,
@@ -810,6 +875,8 @@ fn generate(
     collector
     |> result.map_error(fn(_) { "side stream collector could not start" }),
   )
+
+  // Adopt the collector before permitting it to begin, so cancellation owns it.
   use Nil <- result.try(
     case
       weft.adopt_leaf(ledger, started.pid, fn() { process.kill(started.pid) })
@@ -818,14 +885,17 @@ fn generate(
       weft.Refused -> Error("side request was cancelled")
     },
   )
+
   process.send(started.data, Begin)
   process.receive(reply, within: 75_000)
   |> result.replace_error("side stream collector did not answer")
   |> result.flatten
 }
 
-// Provider events are process-bound subjects. Preparation belongs to the
-// collector that receives them, and its begin permit follows managed adoption.
+/// Begins stream event collection after adopting handle into ledger.
+///
+/// Provider events are process-bound subjects. Preparation belongs to the
+/// collector that receives them, and its begin permit follows managed adoption.
 fn begin_collection(
   data: Collection,
 ) -> sm.Next(CollectPhase, Collection, CollectMessage) {
@@ -835,10 +905,14 @@ fn begin_collection(
       data.request,
     )
   let handle = prepared.handle
+
+  // Adopt streaming handle into ledger.
   let adopted = case handle.owner {
     None -> weft.Adopted
     Some(pid) -> weft.adopt(data.ledger, pid, fn() { stream.cancel(handle) })
   }
+
+  // Transition to receiving state or fail if adoption was refused.
   case adopted {
     weft.Refused -> {
       process.send(
@@ -858,11 +932,13 @@ fn begin_collection(
   }
 }
 
+/// Collects incoming streaming events and emits preview updates.
 fn collect(
   phase: CollectPhase,
   data: Collection,
   event: CollectMessage,
 ) -> sm.Next(CollectPhase, Collection, CollectMessage) {
+  // Handle event in collection phase.
   case phase, event {
     Parked, Begin -> begin_collection(data)
     Parked, Event(_) | Parked, Expired | Receiving(_), Begin -> sm.keep(data)
@@ -874,10 +950,13 @@ fn collect(
         unknown_accounting(),
       )
     Receiving(handle), Event(stream.Delta(delta)) -> {
+      // Accumulate text delta.
       let text = case delta {
         stream.TextDelta(_, text) -> data.text <> text
         stream.ThinkingDelta(..) | stream.ToolCallDelta(..) -> data.text
       }
+
+      // Check if size or event limit exceeded.
       case string.byte_size(text) > 32_768 || data.events >= 8192 {
         True ->
           end_collection(
@@ -888,6 +967,8 @@ fn collect(
           )
         False -> {
           let count = string.byte_size(text)
+
+          // Emit preview update if enough new bytes arrived.
           let previewed = case count >= data.previewed + 1024 {
             True -> {
               process.send(data.inbox, Preview(data.owner, text))
@@ -895,6 +976,7 @@ fn collect(
             }
             False -> data.previewed
           }
+
           sm.keep(
             Collection(..data, text:, events: data.events + 1, previewed:),
           )
@@ -906,6 +988,8 @@ fn collect(
     Receiving(handle), Event(stream.Settled(settled, report)) -> {
       let answer = stream.message(settled)
       let text = text_of(answer)
+
+      // Validate text only output within limits.
       let result = case
         text_only(answer)
         && string.byte_size(text) <= 32_768
@@ -917,6 +1001,8 @@ fn collect(
             "side answer was empty, too large, or requested tools; nothing was executed",
           )
       }
+
+      // Finish collection with settled message or report failure.
       case result {
         Ok(_) ->
           finish_collection(handle, data, stream.Settled(settled, report))
@@ -926,16 +1012,19 @@ fn collect(
   }
 }
 
+/// Ends collection with failure report.
 fn end_collection(
   handle: stream.StreamHandle,
   data: Collection,
   answer: Result(message.AgentMessage, String),
   report: accounting.RequestAccounting,
 ) -> sm.Next(CollectPhase, Collection, CollectMessage) {
+  // Format error reason message.
   let reason = case answer {
     Error(reason) -> reason
     Ok(_) -> "side stream stopped"
   }
+
   finish_collection(
     handle,
     data,
@@ -943,6 +1032,7 @@ fn end_collection(
   )
 }
 
+/// Completes collection and cancels stream handle.
 fn finish_collection(
   handle: stream.StreamHandle,
   data: Collection,
@@ -957,6 +1047,7 @@ fn unknown_accounting() -> accounting.RequestAccounting {
   accounting.from_usage(accounting.unknown_usage(usage_evidence.Other))
 }
 
+/// Updates conversation in storage dictionary with callback.
 fn update_conversation(
   conversations: Dict(Int, Conversation),
   owner: Int,

@@ -241,6 +241,8 @@ pub fn services(link: Link, clock: Clock) -> OwnerServices {
 pub fn mcp_plan(link: Link) -> Result(protocol.McpPlan, String) {
   ask(link, record_wait_ms, protocol.AskMcpPlan)
   |> result.map_error(fn(fault) {
+    // This match resolves fault before the surrounding protocol step continues.
+    // This match resolves fault before the enclosing validation continues.
     case fault {
       call.NoReply -> "the session's owner did not send its MCP plan"
       call.CalleeGone -> "the session's owner is gone"
@@ -253,6 +255,7 @@ pub fn mcp_plan(link: Link) -> Result(protocol.McpPlan, String) {
 // digest of the launching call's coordinates, which this side has, so the
 // model is told the handle it can check or cancel instead of waiting for a
 // notice that may or may not come.
+/// Launch unanswered keeps this client operation’s decoding or state decision in one place.
 fn launch_unanswered(terms: ExecutionTerms) -> String {
   let handle =
     agent.call_site_digest(agent.Caller(
@@ -293,7 +296,10 @@ type Exhausted {
 // A receive waits no longer than the owner would let it wait with the link up:
 // the owner refuses a longer one, so a longer wait here would only end at the
 // satellite's call timeout with an error instead of "no input yet".
+/// Patience keeps this client operation’s decoding or state decision in one place.
 fn patience(call: OwnerCapCall) -> Patience {
+  // This match resolves call.cap before the surrounding protocol step continues.
+  // This match resolves call.cap before the enclosing validation continues.
   case call.cap {
     "execution.receive" | "execution.receive_enveloped" ->
       WaitsFor(
@@ -317,8 +323,17 @@ fn patience(call: OwnerCapCall) -> Patience {
 /// ```gleam
 /// // owner_link.link_cut_wait_ms(call) == 30_000
 /// ```
+/// Link cut wait ms preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// link_cut_wait_ms(...)
+/// ```
 @internal
 pub fn link_cut_wait_ms(call: OwnerCapCall) -> Int {
+  // This match resolves patience(call) before the surrounding protocol step continues.
+  // This match resolves patience(call) before the enclosing validation continues.
   case patience(call) {
     Immediate -> 0
     WaitsFor(ms:, exhausted: _) -> ms
@@ -327,7 +342,10 @@ pub fn link_cut_wait_ms(call: OwnerCapCall) -> Int {
 
 // One owner-bound capability call, waiting out a cut link when the call allows
 // it (see "Waiting out a link cut" above).
+/// Capability keeps this client operation’s decoding or state decision in one place.
 fn capability(link: Link, call: OwnerCapCall) -> Result(CapOutcome, CapDenial) {
+  // This match resolves patience(call) before the surrounding protocol step continues.
+  // This match resolves patience(call) before the enclosing validation continues.
   case patience(call) {
     Immediate ->
       ask(link, capability_wait_ms, protocol.Capability(call, _))
@@ -343,6 +361,7 @@ type Sent(reply) {
   Gone
 }
 
+/// Patiently keeps this client operation’s decoding or state decision in one place.
 fn patiently(
   link: Link,
   call: OwnerCapCall,
@@ -353,9 +372,12 @@ fn patiently(
   // pointed it at a new port while the old one's node was unreachable.
   let polled =
     poll.until(within:, every: link_poll_ms, attempt: fn() {
+      // This match resolves current(link) before the surrounding protocol step continues.
+      // This match resolves current(link) before the enclosing validation continues.
       case current(link) {
         Error(_cell_gone) -> poll.Fail(Nil)
         Ok(port) ->
+          // This match resolves send_once(port, protocol.Capability(call, _)) before the surrounding protocol step continues.
           case send_once(port, protocol.Capability(call, _)) {
             Answered(reply:) -> poll.Done(reply)
             Disconnected -> poll.Retry
@@ -363,6 +385,9 @@ fn patiently(
           }
       }
     })
+
+  // This match resolves polled, exhausted before the surrounding protocol step continues.
+  // This match resolves polled, exhausted before the enclosing validation continues.
   case polled, exhausted {
     poll.Answered(value:), _ -> value
     poll.Expired, NoInputYet -> Ok(framing.CapOk(msgpack.NilValue))
@@ -373,13 +398,17 @@ fn patiently(
 // One monitored send to `port`, telling a node that is not connected apart from
 // a port that is gone. A reply that takes longer than the capability budget is
 // treated as a port that is gone: the owner is connected and did not answer.
+/// Send once keeps this client operation’s decoding or state decision in one place.
 fn send_once(
   port: Subject(OwnerMessage),
   sending: fn(Subject(reply)) -> OwnerMessage,
 ) -> Sent(reply) {
+  // This match resolves call.try_call_watching(port, waiting: capability_wait_ms, sending:) before the surrounding protocol step continues.
+  // This match resolves call.try_call_watching(port, waiting: capability_wait_ms, sending:) before the enclosing validation continues.
   case call.try_call_watching(port, waiting: capability_wait_ms, sending:) {
     Ok(reply) -> Answered(reply)
     Error(call.CalleeDown(reason:)) ->
+      // This match resolves call.is_disconnection(reason) before the surrounding protocol step continues.
       case call.is_disconnection(reason) {
         True -> Disconnected
         False -> Gone
@@ -389,6 +418,7 @@ fn send_once(
 }
 
 // Asks the owner to decide a refusal, giving it the call's remaining time.
+/// Decide keeps this client operation’s decoding or state decision in one place.
 fn decide(
   link: Link,
   clock: Clock,
@@ -410,13 +440,17 @@ fn decide(
 // The tail observer for one run. The owner port is read once, as
 // `OwnerServices.output` documents, and a tail is a cast that a dead port or a
 // dropped connection loses without a word.
+/// Tail to keeps this client operation’s decoding or state decision in one place.
 fn tail_to(link: Link, run: effects.ToolRun) -> fn(tool.OutputTail) -> Nil {
+  // This match resolves current(link) before the surrounding protocol step continues.
+  // This match resolves current(link) before the enclosing validation continues.
   case current(link) {
     Ok(port) -> fn(tail) { process.send(port, protocol.Tail(run, tail)) }
     Error(call.CalleeGone) | Error(call.NoReply) -> fn(_tail) { Nil }
   }
 }
 
+/// Denial keeps this client operation’s decoding or state decision in one place.
 fn denial() -> satellite.CapDenial {
   satellite.CapDenial(
     code: unavailable_code,
@@ -425,6 +459,7 @@ fn denial() -> satellite.CapDenial {
 }
 
 // A fact operation's answer, or the fault an unreachable owner stands for.
+/// Fact answer keeps this client operation’s decoding or state decision in one place.
 fn fact_answer(
   asked: Result(Result(a, owner_services.FactFault), call.CallFault),
 ) -> Result(a, owner_services.FactFault) {
@@ -434,6 +469,7 @@ fn fact_answer(
 }
 
 // One monitored request to the current owner port.
+/// Ask keeps this client operation’s decoding or state decision in one place.
 fn ask(
   link: Link,
   waiting: Int,
@@ -443,14 +479,18 @@ fn ask(
   call.try_call(port, waiting:, sending:)
 }
 
+/// Current keeps this client operation’s decoding or state decision in one place.
 fn current(link: Link) -> Result(Subject(OwnerMessage), call.CallFault) {
   call.try_call(link.cell, waiting: cell_wait_ms, sending: Current)
 }
 
+/// Hold keeps this client operation’s decoding or state decision in one place.
 fn hold(
   port: Subject(OwnerMessage),
   message: Message,
 ) -> actor.Next(Subject(OwnerMessage), Message) {
+  // This match resolves message before the surrounding protocol step continues.
+  // This match resolves message before the enclosing validation continues.
   case message {
     Current(reply:) -> {
       process.send(reply, port)

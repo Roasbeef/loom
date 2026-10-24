@@ -124,10 +124,13 @@ pub type ServeError {
 /// saying it.
 @internal
 pub fn serve(config: Config) -> Result(Server, ServeError) {
+  // Decide how to handle use token <- result.try( config.auth {.
   use token <- result.try(case config.auth {
     BearerAuth(token:) -> Ok(token)
     LocalAuth(token_path:) -> {
       let token = mint_token(config.entropy)
+
+      // Decide how to handle write_token_file(token_path, token) {.
       case write_token_file(token_path, token) {
         Ok(Nil) -> Ok(token)
         Error(reason) -> Error(TokenFileFailed(reason:))
@@ -147,6 +150,8 @@ pub fn serve(config: Config) -> Result(Server, ServeError) {
       process.send(ports, port)
     })
     |> mist.start
+
+  // Decide how to handle started {.
   case started {
     Error(error) -> Error(ListenFailed(error:))
     Ok(actor.Started(pid:, ..)) -> {
@@ -155,6 +160,8 @@ pub fn serve(config: Config) -> Result(Server, ServeError) {
       // without taking the owner down with it (the same pattern the
       // runtime supervisor uses).
       process.unlink(pid)
+
+      // Decide how to handle process.receive(ports, within: 5000) {.
       case process.receive(ports, within: 5000) {
         Ok(port) -> Ok(Server(supervisor: pid, port:, token:))
         Error(Nil) ->
@@ -199,7 +206,9 @@ pub fn mint_token(entropy: fn() -> Int) -> String {
   |> string.concat
 }
 
+/// Establishes take hex for the caller, keeping its validation and result policy at this boundary.
 fn take_hex(seeds: List(Int), accumulator: List(String)) -> List(String) {
+  // Decide how to handle seeds {.
   case seeds {
     [] -> accumulator
     [seed, ..rest] -> {
@@ -223,12 +232,16 @@ fn take_hex(seeds: List(Int), accumulator: List(String)) -> List(String) {
 // reading through it, so a symlink race on the well-known token path is
 // refused the same way a plain TOCTOU is: the destination's contents
 // never influence what gets written.
+
+/// Establishes write token file for the caller, keeping its validation and result policy at this boundary.
 fn write_token_file(
   path: String,
   token: String,
 ) -> Result(Nil, simplifile.FileError) {
   let temp_path =
     path <> ".tmp-" <> int.to_string(ffi_os.unique_positive_integer())
+
+  // Decide how to handle the branch input.
   case
     ffi_file.create_exclusive_private_file(
       temp_path,
@@ -256,6 +269,7 @@ fn write_token_file(
 
 // --- routing ---------------------------------------------------------------
 
+/// Establishes route for the caller, keeping its validation and result policy at this boundary.
 fn route(
   request: Request(Connection),
   gateway: Gateway,
@@ -281,6 +295,8 @@ const bearer_prefix = "Bearer "
 // differing byte and turns response latency into an oracle on the
 // secret. The `starts_with` check ahead of it only branches on the
 // scheme name, which is public, never on the token.
+
+/// Establishes authorized for the caller, keeping its validation and result policy at this boundary.
 fn authorized(request: Request(Connection), token: String) -> Bool {
   case request.get_header(request, "authorization") {
     Error(Nil) -> False
@@ -325,6 +341,7 @@ type SocketEvent {
   Outbound(frame: String)
 }
 
+/// Establishes upgrade for the caller, keeping its validation and result policy at this boundary.
 fn upgrade(
   request: Request(Connection),
   gateway: Gateway,

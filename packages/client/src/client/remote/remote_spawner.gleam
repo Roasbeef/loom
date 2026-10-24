@@ -201,8 +201,11 @@ pub fn over_distribution(
       })
     },
     keep: fn(name, vote) {
+      // This match resolves dict.get(keepers, name) before the surrounding protocol step continues.
+      // This match resolves dict.get(keepers, name) before the enclosing validation continues.
       case dict.get(keepers, name) {
         Ok(keeper) ->
+          // This match resolves vote before the surrounding protocol step continues.
           case vote {
             remote_reach.Hold -> link_keeper.hold(keeper, session)
             remote_reach.Drop -> link_keeper.drop(keeper, session)
@@ -241,12 +244,16 @@ pub fn laptop_over(membership: Membership, node: String) -> Laptop {
   }
   delegate_outbox.Laptop(
     connected: fn() {
+      // This match resolves distribution.peer(membership, node) before the surrounding protocol step continues.
+      // This match resolves distribution.peer(membership, node) before the enclosing validation continues.
       case distribution.peer(membership, node) {
         Ok(peer) -> distribution.is_connected(peer)
         Error(_) -> False
       }
     },
     mail: fn(parent, child, message_id, text) {
+      // This match resolves at() before the surrounding protocol step continues.
+      // This match resolves at() before the enclosing validation continues.
       case at() {
         Ok(port) ->
           orchestrator_port.ask_mail(
@@ -261,6 +268,8 @@ pub fn laptop_over(membership: Membership, node: String) -> Laptop {
       }
     },
     progress: fn(parent, child, glance) {
+      // This match resolves at() before the surrounding protocol step continues.
+      // This match resolves at() before the enclosing validation continues.
       case at() {
         Ok(port) ->
           orchestrator_port.ask_progress(port, parent, child, glance, child_ms)
@@ -268,6 +277,8 @@ pub fn laptop_over(membership: Membership, node: String) -> Laptop {
       }
     },
     escalation: fn(parent, child, record) {
+      // This match resolves at() before the surrounding protocol step continues.
+      // This match resolves at() before the enclosing validation continues.
       case at() {
         Ok(port) ->
           orchestrator_port.ask_escalation(
@@ -326,6 +337,8 @@ pub fn release_over(
 pub fn release_answer(
   heard: Result(Result(Int, SpawnRefusal), Nil),
 ) -> Result(Int, Failure) {
+  // This match resolves heard before the surrounding protocol step continues.
+  // This match resolves heard before the enclosing validation continues.
   case heard {
     Ok(Error(remote_spawn.StoreFailure(..))) -> Error(peer_mail.Unreachable)
     other -> answer(other)
@@ -335,6 +348,7 @@ pub fn release_answer(
 // Connects to the pinned peer of a configured orchestrator, so that the port is
 // reached on a connection that exists. Every way of not reaching the node is
 // silence, and a name that is not configured is the one definitive refusal.
+/// Reached keeps this client operation’s decoding or state decision in one place.
 fn reached(
   membership: Membership,
   configured: Roster(Orchestrator),
@@ -369,10 +383,19 @@ fn reached(
 /// assert remote_spawner.answer(Ok(Error(remote_spawn.NotYetOpen("slow"))))
 ///   == Error(peer_mail.Unreachable)
 /// ```
+/// Answer preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// answer(...)
+/// ```
 @internal
 pub fn answer(
   heard: Result(Result(a, SpawnRefusal), Nil),
 ) -> Result(a, Failure) {
+  // This match resolves heard before the surrounding protocol step continues.
+  // This match resolves heard before the enclosing validation continues.
   case heard {
     Ok(Ok(value)) -> Ok(value)
     Ok(Error(remote_spawn.NotYetOpen(..))) -> Error(peer_mail.Unreachable)

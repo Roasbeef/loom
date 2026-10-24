@@ -48,6 +48,8 @@ pub fn door(facts: FactAccess) -> directory.Door {
         ctx,
         Some(path),
       ))
+
+      // Decide how to handle canonical == path {.
       case canonical == path {
         True -> Ok(path)
         False ->
@@ -67,6 +69,8 @@ fn key(strand: String) -> String {
 // An absent store is told apart from a failed read because the first means
 // the session is starting up or going away, and the second that a cell exists
 // which could not be read.
+
+/// Establishes read failed for the caller, keeping its validation and result policy at this boundary.
 fn read_failed(fault: FactFault) -> String {
   case fault {
     owner_services.StoreAbsent -> "working directory store is unavailable"
@@ -78,6 +82,7 @@ fn read_failed(fault: FactFault) -> String {
   }
 }
 
+/// Establishes read for the caller, keeping its validation and result policy at this boundary.
 fn read(
   facts: FactAccess,
   strand: String,
@@ -86,6 +91,8 @@ fn read(
   use cell <- result.try(
     facts.cell(key(strand)) |> result.map_error(read_failed),
   )
+
+  // Decide how to handle cell {.
   case cell {
     None ->
       fs.resolve_readable(
@@ -105,6 +112,7 @@ fn read(
   }
 }
 
+/// Establishes write for the caller, keeping its validation and result policy at this boundary.
 fn write(
   facts: FactAccess,
   strand: String,
@@ -147,9 +155,12 @@ pub fn over_code_mode(
       )
     let inner = wrap(request, router)
     fn(call: satellite.CapRequest) {
+      // Decide how to handle call.cap {.
       case call.cap {
         "proc.run" -> {
           use cwd <- result.try(process_directory(scope, default, call.args))
+
+          // Decide how to handle let args =  call.args {.
           let args = case call.args {
             m.MapValue(fields) ->
               m.MapValue(
@@ -162,6 +173,7 @@ pub fn over_code_mode(
               )
             _ -> call.args
           }
+
           inner(satellite.CapRequest(..call, cwd:, args:))
         }
         _ -> inner(call)
@@ -170,16 +182,20 @@ pub fn over_code_mode(
   })
 }
 
+/// Establishes process directory for the caller, keeping its validation and result policy at this boundary.
 fn process_directory(
   scope: ProcessScope,
   default: Result(String, String),
   args: m.MsgPackValue,
 ) -> Result(String, satellite.CapDenial) {
+  // Decide how to handle let selected =  args {.
   let selected = case args {
     m.MapValue(fields) ->
       list.key_find(fields, m.StringValue("cwd")) |> result.unwrap(m.NilValue)
     _ -> m.NilValue
   }
+
+  // Decide how to handle let answer =  selected {.
   let answer = case selected {
     m.NilValue -> remembered_directory(scope, default)
     m.StringValue("") -> Error("proc.run cwd must not be empty")
@@ -194,12 +210,14 @@ fn process_directory(
       }
     _ -> Error("proc.run cwd must be a directory string")
   }
+
   answer
   |> result.map_error(fn(message) {
     satellite.CapDenial("invalid_cwd", message)
   })
 }
 
+/// Establishes remembered directory for the caller, keeping its validation and result policy at this boundary.
 fn remembered_directory(
   scope: ProcessScope,
   default: Result(String, String),
@@ -213,6 +231,7 @@ fn remembered_directory(
   Ok(canonical)
 }
 
+/// Establishes checked directory for the caller, keeping its validation and result policy at this boundary.
 fn checked_directory(
   scope: ProcessScope,
   path: String,

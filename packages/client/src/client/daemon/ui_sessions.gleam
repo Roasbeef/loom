@@ -547,6 +547,7 @@ pub fn mint(sessions: Sessions, grant: Grant) -> Result(Issued, Nil) {
   ask_mint(sessions, grant, None, None, Brief)
 }
 
+/// Mints a ticket for a grant with specified validity bounds and login association.
 fn ask_mint(
   sessions: Sessions,
   grant: Grant,
@@ -836,7 +837,7 @@ pub fn lookup(sessions: Sessions, cookie: String) -> Result(Page, Nil) {
   lookup_until(sessions, cookie) |> result.map(pair.first)
 }
 
-// The live UI session a cookie names, with the deadline it ends at.
+/// Looks up a live page and its expiry deadline by session cookie.
 fn lookup_until(
   sessions: Sessions,
   cookie: String,
@@ -958,6 +959,8 @@ pub fn open_until(
 ) -> fn() -> Result(Int, Nil) {
   fn() {
     use #(current, until) <- result.try(lookup_until(sessions, cookie))
+
+    // Check that the currently held grant matches the expected grant parameter.
     case current.grant == grant {
       True -> Ok(until)
       False -> Error(Nil)
@@ -991,15 +994,21 @@ pub fn sweep(sessions: Sessions) -> Nil {
   process.send(sessions.subject, Sweep)
 }
 
+/// Handles table mutations, redemptions, queries, and periodic sweep operations.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let now = state.settings.now()
+
+  // Dispatch on inbound session actor protocol messages.
   case message {
     Mint(grant:, until:, login:, life:, reply:) -> {
       let ticket = secret(state.settings)
+
+      // Determine ticket lifetime based on whether life is Brief or Device.
       let lasts = case life {
         Brief -> state.settings.ticket_ms
         Device -> state.settings.device_ms
       }
+
       let entry =
         Entry(value: Ticket(grant, until, login), expires_at: now + lasts)
       process.send(reply, Issued(ticket, lasts))
@@ -1022,12 +1031,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       let tickets = dict.delete(state.tickets, key)
       let wall = state.settings.wall()
 
-      // Whether a live ticket belongs at this exchange. A guard cannot call a
-      // function, so the answer is made before the arms that read it.
+      // Verify that ticket scope matches the current exchange.
       let belongs = case found {
         Ok(Ticket(grant:, ..)) -> at_exchange(grant.scope, exchange)
         Error(Nil) -> True
       }
+
+      // Branch on ticket lookup validity and exchange affinity.
       case found {
         Error(Nil) -> {
           process.send(reply, Error(UnknownTicket))
@@ -1067,10 +1077,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 
         Ok(Ticket(grant:, until:, login:)) -> {
           let lasts = lifetime(state.settings, grant.scope)
+
+          // Compute session expiration bounded by optional until timestamp.
           let ends = case until {
             Some(bound) -> int.min(bound, now + lasts)
             None -> now + lasts
           }
+
           let cookie = secret(state.settings)
           let key = secret(state.settings)
           let nonce = secret(state.settings)
@@ -1082,6 +1095,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
             Remembered -> None
             Forgotten -> login
           }
+
           let entry =
             Entry(
               value: Page(
@@ -1132,6 +1146,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // attachment would let a later message change which login a page is.
     Attach(cookie:, login:, reply:) -> {
       let key = digest(cookie)
+
+      // Attach login only if session is currently live and has unassigned login.
       case live_until(state.sessions, key, now) {
         Ok(#(Page(login: None, ..) as page, ends)) -> {
           process.send(reply, Nil)
@@ -1153,10 +1169,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
       }
     }
     LoginOf(cookie:, reply:) -> {
+      // Retrieve associated login issuer from active session if present.
       let found = case live(state.sessions, digest(cookie), now) {
         Ok(page) -> page.login
         Error(Nil) -> None
       }
+
       process.send(reply, found)
       actor.continue(state)
     }
@@ -1166,6 +1184,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // that ended in between has no place to leave one.
     Register(cookie:, images:) -> {
       let key = digest(cookie)
+
+      // Associate image reader only with currently live session entries.
       case live(state.sessions, key, now) {
         Ok(_) ->
           actor.continue(
@@ -1179,10 +1199,13 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // never handed out before the sweep removes it.
     Read(cookie:, reply:) -> {
       let key = digest(cookie)
+
+      // Find registered reader only if session is live in storage.
       let found = case live(state.sessions, key, now) {
         Ok(_) -> dict.get(state.readers, key)
         Error(Nil) -> Error(Nil)
       }
+
       process.send(reply, found)
       actor.continue(state)
     }
@@ -1198,6 +1221,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Reserve(allowance: Invitations, credential:, reply:) -> {
       let recent =
         recent_instants(state.invites, credential, now, invite_window_ms)
+
+      // Enforce rate limit on recent invitations.
       case list.drop(recent, invite_limit - 1) {
         [held, ..] -> {
           process.send(
@@ -1221,6 +1246,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Reserve(allowance: Creations, credential:, reply:) -> {
       let recent =
         recent_instants(state.creations, credential, now, creation_window_ms)
+
+      // Enforce rate limit on recent session creations.
       case list.drop(recent, creation_limit - 1) {
         [held, ..] -> {
           process.send(
@@ -1247,6 +1274,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     Reserve(allowance: WorktreeReads, credential:, reply:) -> {
       let recent =
         recent_instants(state.reads, credential, now, worktree_read_window_ms)
+
+      // Enforce rate limit on recent worktree read requests.
       case list.drop(recent, worktree_read_limit - 1) {
         [held, ..] -> {
           process.send(
@@ -1268,16 +1297,19 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     }
 
     Release(credential:) -> {
+      // Remove the newest invitation timestamp from credential record.
       let held = case
         recent_instants(state.invites, credential, now, invite_window_ms)
       {
         [] -> state.invites
         [_newest, ..older] ->
+          // This branch resolves older before the operation continues.
           case older {
             [] -> dict.delete(state.invites, credential)
             [_, ..] -> dict.insert(state.invites, credential, older)
           }
       }
+
       actor.continue(State(..state, invites: held))
     }
 
@@ -1309,25 +1341,28 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-// How long a page of this scope lives from its exchange. An admin page lives
-// `admin_ms` unless the table's own page lifetime is shorter.
+/// How long a page of this scope lives from its exchange. An admin page lives
+/// `admin_ms` unless the table's own page lifetime is shorter.
 fn lifetime(settings: Settings, scope: Scope) -> Int {
+  // This branch resolves scope before the operation continues.
   case scope {
     Admin -> int.min(admin_ms, settings.session_ms)
     Home | Session(_) -> settings.session_ms
   }
 }
 
-// The instants of a credential's invitations or creations that are still inside
-// the window, newest first. A table is read with its own window.
-// The wall-clock Unix time, in milliseconds, of an instant on the actor's
-// monotonic clock. The two clocks cannot be compared, so the instant is carried
-// over as how far it is from the monotonic clock now, added to the wall clock
-// now.
+/// The wall-clock Unix time, in milliseconds, of an instant on the actor's
+/// monotonic clock. The two clocks cannot be compared, so the instant is carried
+/// over as how far it is from the monotonic clock now, added to the wall clock
+/// now.
 fn frees_at(settings: Settings, instant: Int) -> Int {
   settings.wall() + { instant - settings.now() }
 }
 
+/// Filters timestamps within the sliding rate limit window for a credential.
+///
+/// The instants of a credential's invitations or creations that are still inside
+/// the window, newest first. A table is read with its own window.
 fn recent_instants(
   table: Dict(String, List(Int)),
   credential: String,
@@ -1339,12 +1374,7 @@ fn recent_instants(
   |> list.filter(fn(at) { at > now - window })
 }
 
-// The table with room for one more of `grant`'s pages: unchanged while the
-// principal holds fewer than `max_pages` live ones of the same scope (a
-// principal's home is counted apart from each session, and each session
-// apart from the others), and otherwise without the
-// oldest, so the new page makes `max_pages`. An expired page is not counted
-// even before the sweep removes it, so a place frees at its deadline.
+/// Evicts older sessions for the principal to keep concurrent page counts within max_pages.
 fn with_room(
   sessions: Dict(String, Entry(Page)),
   grant: Grant,
@@ -1370,10 +1400,9 @@ fn with_room(
   dict.drop(sessions, list.map(list.take(held, surplus), pair.first))
 }
 
-// Whether a ticket of `scope` is honoured at `exchange`: the session's own
-// ticket at its exchange, a home's at the home's and an admin page's at the
-// admin exchange, and no other pairing.
+/// Verifies whether the grant scope matches the target redemption exchange.
 fn at_exchange(scope: Scope, exchange: Exchange) -> Bool {
+  // This branch resolves scope exchange before the operation continues.
   case scope, exchange {
     Session(id), SessionExchange(wanted) -> id == wanted
     Home, HomeExchange | Admin, AdminExchange -> True
@@ -1389,29 +1418,34 @@ fn at_exchange(scope: Scope, exchange: Exchange) -> Bool {
 
 // An entry is honoured strictly before its deadline, and the check is made
 // on every read, so the sweep is never what enforces expiry.
+/// Live keeps this client decision explicit for its callers.
 fn live(table: Dict(String, Entry(value)), key: String, now: Int) {
+  // This branch resolves dict get table key before the operation continues.
   case dict.get(table, key) {
     Ok(entry) if entry.expires_at > now -> Ok(entry.value)
     Ok(_) | Error(Nil) -> Error(Nil)
   }
 }
 
-// A live UI session and the instant it ends.
+/// Looks up a live page entry and its expiration deadline.
 fn live_until(
   table: Dict(String, Entry(Page)),
   key: String,
   now: Int,
 ) -> Result(#(Page, Int), Nil) {
+  // This branch resolves dict get table key before the operation continues.
   case dict.get(table, key) {
     Ok(entry) if entry.expires_at > now -> Ok(#(entry.value, entry.expires_at))
     Ok(_) | Error(Nil) -> Error(Nil)
   }
 }
 
+/// Computes sha256 hex digest of a secret token value.
 fn secret(settings: Settings) -> String {
   settings.entropy(32) |> bit_array.base16_encode |> string.lowercase
 }
 
+/// Digest keeps this client decision explicit for its callers.
 fn digest(value: String) -> String {
   value
   |> bit_array.from_string

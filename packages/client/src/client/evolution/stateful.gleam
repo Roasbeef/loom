@@ -69,6 +69,8 @@ pub fn attach(
   at: hosts.Coordinates,
 ) -> Result(Staged, store.Refusal) {
   use contract <- result.try(contract(prepared))
+
+  // Inspect whether candidate declares a live contract.
   case contract {
     None -> Ok(generation)
     Some(contract) -> {
@@ -92,6 +94,7 @@ pub fn attach(
   }
 }
 
+/// Configures live status inventory and upgrade preparation hooks on staged instance.
 fn with_mode(generation: Staged, context: Context) -> Staged {
   let baseline =
     Staged(..generation, upgrade: None, inventory: context.inventory)
@@ -113,6 +116,8 @@ fn with_mode(generation: Staged, context: Context) -> Staged {
             },
           ),
         )
+
+      // Merge live status entry into native inventory representation.
       case native {
         json.Object(fields) ->
           Ok(json.Object(list.append(fields, [#("live", live_status)])))
@@ -127,6 +132,7 @@ fn with_mode(generation: Staged, context: Context) -> Staged {
   )
 }
 
+/// Prepares upgrade successor candidate in alternate slot directory.
 fn prepare(
   current: Staged,
   context: Context,
@@ -139,6 +145,7 @@ fn prepare(
     live_slots.First -> live_slots.Second
     live_slots.Second -> live_slots.First
   }
+
   let directory =
     context.root <> "/live-" <> int.to_string(selection.generation)
   use prepared <- result.try(context.compile(candidate, directory, slot))
@@ -146,6 +153,8 @@ fn prepare(
   // A stateful generation may only be replaced by one that declares a
   // contract compatible with the running state version.
   use declared <- result.try(contract(prepared))
+
+  // Ensure replacement candidate declares an explicit live contract.
   use target <- result.try(case declared {
     Some(contract) -> Ok(contract)
     None ->
@@ -153,6 +162,7 @@ fn prepare(
         "stateful component requires an explicit compatible live contract",
       ))
   })
+
   use Nil <- result.try(
     live_contract.compatible(
       context.contract,
@@ -214,6 +224,7 @@ fn prepare(
   )
 }
 
+/// Publishes migration transition with retry on unconfirmed delivery.
 fn publish(
   context: Context,
   transition: String,
@@ -228,6 +239,7 @@ fn publish(
   }
 }
 
+/// Executes one live publication attempt checking commit status.
 fn publish_once(
   context: Context,
   transition: String,
@@ -241,21 +253,28 @@ fn publish_once(
   let committed =
     status_text(status, "last") == Ok(transition)
     && status_text(status, "last_status") == Ok("committed")
+
+  // Check if transition has already committed on the component.
   case committed {
     True -> Ok(Nil)
     False -> {
       let pending = status_text(status, "pending") == Ok(transition)
+
+      // Prepare transition payload if not already marked pending.
       use Nil <- result.try(case pending {
         True -> Ok(Nil)
         False ->
           control(context, "__loom_live_prepare", payload)
           |> result.replace(Nil)
       })
+
       use result <- result.try(control(
         context,
         "__loom_live_commit",
         transition_payload(transition),
       ))
+
+      // Verify whether commit completed successfully on component.
       case
         status_text(result, "last") == Ok(transition)
         && status_text(result, "last_status") == Ok("committed")
@@ -270,6 +289,7 @@ fn publish_once(
   }
 }
 
+/// Dispatches a control hook event to the live extension component.
 fn control(
   context: Context,
   event: String,
@@ -286,6 +306,7 @@ fn control(
   |> result.map_error(fn(error) { store.Unavailable(string.inspect(error)) })
 }
 
+/// Decodes the live contract specification from extension manifest.
 fn contract(
   prepared: evaluate.Prepared,
 ) -> Result(Option(live_contract.Contract), store.Refusal) {
@@ -297,6 +318,7 @@ fn contract(
   |> result.map_error(store.Bounds)
 }
 
+/// Normalizes source and test module path names from candidate files.
 fn module_names(prepared: evaluate.Prepared) -> List(String) {
   prepared.candidate.files
   |> list.map(fn(file) {
@@ -308,6 +330,7 @@ fn module_names(prepared: evaluate.Prepared) -> List(String) {
   |> package.module_names_of
 }
 
+/// Compiles and packages extension beam modules and atom tables for live slot.
 fn compiled(
   prepared: evaluate.Prepared,
   slot: live_slots.Slot,
@@ -317,6 +340,8 @@ fn compiled(
       let name = live_slots.module(slot, module) |> string.replace("/", "@")
       #(name, prepared.artifact <> "/" <> name <> ".beam")
     })
+
+  // Ensure module count remains within the sixteen module limit.
   use Nil <- result.try(case list.is_empty(list.drop(paths, 16)) {
     True -> Ok(Nil)
     False -> Error(store.Bounds("live module set exceeds sixteen modules"))
@@ -332,6 +357,8 @@ fn compiled(
       })
     }),
   )
+
+  // Validate total compiled byte size across modules.
   use Nil <- result.try(
     case
       list.fold(sizes, 0, fn(total, size) { total + size }) <= 2_097_152
@@ -344,6 +371,7 @@ fn compiled(
         ))
     },
   )
+
   use captured <- result.try(
     list.try_map(paths, fn(file) {
       use bytes <- result.try(
@@ -370,6 +398,8 @@ fn compiled(
     }),
   )
   let atoms = list.flat_map(captured, fn(module) { module.1 }) |> list.unique
+
+  // Validate unique atom count and byte size within safety bounds.
   use Nil <- result.try(
     case
       list.is_empty(list.drop(atoms, 4096))
@@ -385,9 +415,11 @@ fn compiled(
         ))
     },
   )
+
   Ok(#(list.map(captured, fn(module) { module.0 }), atoms))
 }
 
+/// Constructs control message payload for a live slot transition.
 fn control_payload(
   context: Context,
   target: live_contract.Contract,
@@ -398,10 +430,13 @@ fn control_payload(
   let named = fn(module) {
     live_slots.module(slot, module) |> string.replace("/", "@")
   }
+
+  // Format target slot letter designation.
   let slot = case slot {
     live_slots.First -> "a"
     live_slots.Second -> "b"
   }
+
   msgpack.MapValue([
     #(msgpack.StringValue("transition"), msgpack.StringValue(transition)),
     #(
@@ -430,13 +465,17 @@ fn transition_payload(transition: String) -> msgpack.MsgPackValue {
   ])
 }
 
+/// Extracts text value by key from a msgpack map.
 fn status_text(
   value: msgpack.MsgPackValue,
   key: String,
 ) -> Result(String, Nil) {
+  // Match against msgpack map structure.
   case value {
     msgpack.MapValue(fields) -> {
       use value <- result.try(list.key_find(fields, msgpack.StringValue(key)))
+
+      // Extract string text primitive from field value.
       case value {
         msgpack.StringValue(text) -> Ok(text)
         _ -> Error(Nil)
