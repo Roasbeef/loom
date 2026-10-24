@@ -1019,3 +1019,71 @@ pub fn the_pane_is_the_panels_seventh_child_and_every_handler_is_a_press_test() 
     != []
   assert component.peers_path == "0\t3\t2\t6"
 }
+
+// The catalogue is daemon-wide, so the owner reads another session's
+// candidates here, but a change to one would run through this session's queue
+// and live owner. The page lists such a row and offers nothing on it, and its
+// approval does not count toward the tab's badge.
+pub fn a_candidate_of_another_session_is_listed_and_offered_nothing_test() {
+  let elsewhere =
+    candidate(
+      "5555aaaa-other",
+      "other_tool",
+      "extension",
+      json.Object([#("kind", text("session")), #("session", text("B"))]),
+      json.Null,
+      approval("e-other"),
+      json.Null,
+      [evidence("e-other", "passed")],
+    )
+  let #(model, wire) = owner(Listed(board_of([elsewhere], [])))
+  let html = drawn(model)
+  assert string.contains(html, "other_tool")
+  assert string.contains(html, "session B")
+  assert count(html, "Select as generation") == 0
+  assert count(html, "Revoke</button>") == 0
+  assert component.evolution_waiting(model) == 0
+  let armed =
+    evolving.Armed(
+      act: evolving.Selecting,
+      candidate_id: "5555aaaa-other",
+      name: "other_tool",
+      evidence_id: "e-other",
+      expected_generation: 0,
+    )
+  let asked = send(model, [operator_page.AskingEvolve(armed)])
+  assert component.evolution_state(asked).armed == None
+  let _ = send(asked, [operator_page.ConfirmingEvolve("")])
+  assert evolutions(page_fixture.sent(wire)) == []
+}
+
+// The lane holds one command at a time. A confirm that meets a busy lane sends
+// nothing, says so, and leaves the question open, so the person presses the
+// confirm again once the lane is free instead of finding the row as it was.
+pub fn a_confirm_that_meets_a_busy_lane_keeps_its_question_test() {
+  let #(model, wire) = owner(Listed(full()))
+  let armed = approving(model, fresh_id)
+  let asked = send(model, [operator_page.AskingEvolve(armed)])
+
+  // A read of the core status is out and unanswered, so the slot is taken.
+  let busy = send(asked, [operator_page.ReadingCore])
+  let assert [read] = evolutions(page_fixture.sent(wire))
+  let refused = send(busy, [operator_page.ConfirmingEvolve("")])
+  assert evolutions(page_fixture.sent(wire)) == []
+  assert component.evolution_state(refused).armed == Some(armed)
+  assert string.contains(drawn(refused), "The session is busy")
+
+  // The read is answered, the slot is free, and the same confirm sends.
+  let freed =
+    send(refused, [
+      operator_page.Observed(
+        component.Arrived([
+          answer(page_fixture.request_id(read), core_status()),
+        ]),
+      ),
+      operator_page.ConfirmingEvolve(""),
+    ])
+  let assert [frame] = evolutions(page_fixture.sent(wire))
+  assert string.contains(frame, "\"action\":\"approve\"")
+  assert component.evolution_state(freed).armed == None
+}

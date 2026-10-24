@@ -124,7 +124,7 @@ pub fn view(page: Page, presses: Presses(message)) -> Element(message) {
       attribute.aria_label("Evolution"),
     ],
     [
-      head(page.board, presses),
+      head(page, presses),
       ..list.append(notice(page.notice), body(page, presses))
     ],
   )
@@ -133,14 +133,11 @@ pub fn view(page: Page, presses: Presses(message)) -> Element(message) {
 // The title, how many wait for a person, and the button that reads the board
 // again. The count is the badge's number, said where the reader who pressed
 // the tab arrives.
-fn head(
-  board: Option(evolution.Board),
-  presses: Presses(message),
-) -> Element(message) {
+fn head(page: Page, presses: Presses(message)) -> Element(message) {
   html.div([attribute.class("evolution-head")], [
     html.h2([attribute.class("panel-title")], [
-      html.text(case board {
-        Some(board) -> title(evolution.awaiting_approval(board))
+      html.text(case page.board {
+        Some(board) -> title(evolving.waiting(page.reach, board))
         None -> "Evolution"
       }),
     ]),

@@ -5010,13 +5010,37 @@ pub fn confirm_evolve(
     None -> #(model, effect.none())
     Some(armed) ->
       case offered_evolution(model, armed) {
-        Ok(offered) ->
-          commanded(
-            cancel_evolve(model),
-            msg.Evolve(request: evolving.request(offered, reason)),
-          )
+        Ok(offered) -> {
+          let #(sent, effects) =
+            commanded(
+              cancel_evolve(model),
+              msg.Evolve(request: evolving.request(offered, reason)),
+            )
+          #(retained_evolution(sent, offered), effects)
+        }
         Error(Nil) -> #(superseded_evolution(model), effect.none())
       }
+  }
+}
+
+// A change the lane refused, because its command slot was busy or the
+// attachment may not make it, leaves words in the notice, since a change that
+// is sent clears the notice first. The question stays open, so the person
+// presses the confirm again instead of finding the row as it was.
+fn retained_evolution(
+  sent: Model(socket),
+  offered: evolving.Armed,
+) -> Model(socket) {
+  case sent.shared.evolution_notice {
+    "" -> sent
+    _ ->
+      Model(
+        ..sent,
+        view: View(
+          ..sent.view,
+          evolving: evolving.arm(sent.view.evolving, offered),
+        ),
+      )
   }
 }
 

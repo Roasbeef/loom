@@ -179,6 +179,13 @@ pub fn asking(state: State, armed: Armed) -> Bool {
 
 /// Whether the page may offer a change on this candidate at all.
 ///
+/// A candidate scoped to another session is never offered a change from this
+/// page, whoever reads it: a selection of it would be made through this
+/// session's queue and live owner, and it belongs to the other session's. The
+/// owner reads those rows because the catalogue is daemon-wide, and changes
+/// them from that session's own page or the terminal. A workspace or an exact
+/// model row is the owner's, and a member operator's page is offered neither.
+///
 /// ## Examples
 ///
 /// ```gleam
@@ -189,9 +196,15 @@ pub fn within(
   board: evolution.Board,
   candidate: evolution.Candidate,
 ) -> Bool {
-  case reach {
-    Everywhere -> True
-    OwnSession -> candidate.scope == evolution.SessionScope(board.session)
+  case candidate.scope, reach {
+    evolution.SessionScope(session:), _ -> session == board.session
+    evolution.WorkspaceScope(..), Everywhere
+    | evolution.ModelScope(..), Everywhere
+    -> True
+    evolution.WorkspaceScope(..), OwnSession
+    | evolution.ModelScope(..), OwnSession
+    | evolution.UnknownScope(..), _
+    -> False
   }
 }
 
