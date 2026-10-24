@@ -1838,13 +1838,16 @@ page pass `None`.
 `web_view/evolution` is the page's part. `offers(reach, staging, board,
 candidate)` is the single rule for what a row may offer, built on
 `session_view/evolution`'s `approval_target`, `selection_target` and
-`rollback_choices`: `Everywhere` on the owner's page (this session's rows and
-the owner's workspace and model rows), `OwnSession` on a member operator's (the
-store's own confinement; the daemon is the gate), nothing for a kind the client
-cannot name, nothing on a row scoped to another session (the catalogue is
-daemon-wide, so the owner reads those rows, but a change to one would run
-through this session's queue and live owner), and no selection or rollback while
-one is staging. A confirm that meets a busy lane sends nothing and keeps its
+`rollback_choices`, split in two by `Reach`. `decides` (approve and revoke) is
+`Everywhere` for the owner, on every listed row, another session's included,
+which is what the daemon lets the owner do (`store.owner`), and this session's
+rows only for a member operator. `selects` (select and rollback) is this
+session's rows for both readers, plus the owner's workspace and model rows on
+the owner's page, because a session-scoped selection runs through this session's
+queue and live owner. A kind or scope the client cannot name offers nothing,
+and no selection or rollback is offered while one is staging. History and
+approval lines draw a principal through `session_view/evolution.principal_words`
+(the first fourteen characters), as the terminal overlay will. one is staging. A confirm that meets a busy lane sends nothing and keeps its
 question open (`retained_evolution`).
 `Armed` is a change as drawn. `component.ask_evolve` and `confirm_evolve` both
 call `find_offer` against the board held now, so a forged `AskingEvolve`, or a
@@ -1870,8 +1873,8 @@ and `EventHandlerNotFound` cases, the `staging…` row from a queued reply and i
 redraw from a later status, and the stale-board refusal. `stylesheet_test` pins
 the tab rules and that no evolution rule draws a bar or a shadow. Adding the
 board read makes the operator page ask one more read than before, so
-`proposals_page_test` and `remembered_page_test` answer twelve rounds, not
-eight.
+the fixtures that drain the wire answer `page_fixture.read_rounds` rounds of
+reads, one number for all of them.
 
 ## Side questions (protocol 087)
 

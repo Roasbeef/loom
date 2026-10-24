@@ -464,6 +464,14 @@ pub fn remote_escalation(
   ])
 }
 
+/// How many rounds of reads a test answers before it gives up on the wire
+/// going quiet. Each round answers the reads on the wire, and the answers free
+/// the next reads, since the lane holds one command at a time; an operator's
+/// page makes about a dozen. A fixture that stopped early would leave a read
+/// in flight and a later command refused as busy, so every test that drains
+/// the wire uses this one number, and a new read raises it here.
+pub const read_rounds = 12
+
 /// What a page is started with: session `A`, and a transport whose socket
 /// is the test's subject and whose clock reads zero.
 ///
@@ -699,7 +707,7 @@ pub fn refuse_reads(
   wire: Wire,
   arrived: fn(List(connection_event.Message)) -> message,
 ) -> model {
-  refusing(page, update, wire, arrived, 8)
+  refusing(page, update, wire, arrived, read_rounds)
 }
 
 // One round: the reads on the wire are refused, and the round repeats for

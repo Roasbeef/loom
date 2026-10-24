@@ -376,7 +376,7 @@ fn page_of(start: component.Start(page_fixture.Wire), listed: Reply) {
         [operator_page.Observed(component.Ticked)],
       ]),
     )
-    |> answering(wire, listed, 12)
+    |> answering(wire, listed, page_fixture.read_rounds)
   let _ = page_fixture.sent(wire)
   #(model, wire)
 }
@@ -487,7 +487,8 @@ pub fn the_owners_page_reads_the_board_on_open_and_after_a_push_test() {
         [operator_page.Observed(component.Ticked)],
       ]),
     )
-  let #(model, asked) = answering_logged(model, wire, Listed(full()), 12, [])
+  let #(model, asked) =
+    answering_logged(model, wire, Listed(full()), page_fixture.read_rounds, [])
   let _ = page_fixture.sent(wire)
   let boards = list.filter(asked, fn(frame) { is_evolution(frame, "board") })
   assert list.length(boards) == 1
@@ -632,6 +633,34 @@ pub fn hostile_text_is_only_ever_text_test() {
   assert !string.contains(html, "<b>name")
   assert string.contains(html, "&lt;script&gt;")
   assert !string.contains(html, "onmouseover=\"x")
+}
+
+// An owner's principal is a long digest. The approval line and the history
+// draw it cut, so a row does not run to four lines.
+pub fn a_long_principal_is_cut_on_the_approval_and_the_history_test() {
+  let long =
+    "owner-2d927c35c48e817d2424885de1166ca9e4f01871137ed1795fa7378d8783d036"
+  let by =
+    json.Object([
+      #("evidence_id", text("e-live")),
+      #("by", text(long)),
+      #("via", text("web")),
+    ])
+  let row =
+    candidate(
+      live_id,
+      "fmt_check",
+      "extension",
+      session_scope(),
+      json.Null,
+      by,
+      chosen(3, "e-live"),
+      [evidence("e-live", "passed")],
+    )
+  let #(model, _) = owner(Listed(board_of([row], [])))
+  let html = drawn(model)
+  assert string.contains(html, "approved by owner-2d927c35… · web")
+  assert !string.contains(html, long)
 }
 
 pub fn the_page_has_no_accent_bar_and_no_shadow_test() {
@@ -1020,37 +1049,82 @@ pub fn the_pane_is_the_panels_seventh_child_and_every_handler_is_a_press_test() 
   assert component.peers_path == "0\t3\t2\t6"
 }
 
+// Another session's candidate, scoped to session B.
+fn elsewhere(approved: json.JsonValue) -> json.JsonValue {
+  candidate(
+    "5555aaaa-other",
+    "other_tool",
+    "extension",
+    json.Object([#("kind", text("session")), #("session", text("B"))]),
+    json.Null,
+    approved,
+    json.Null,
+    [evidence("e-other", "passed")],
+  )
+}
+
+fn selecting_other() -> evolving.Armed {
+  evolving.Armed(
+    act: evolving.Selecting,
+    candidate_id: "5555aaaa-other",
+    name: "other_tool",
+    evidence_id: "e-other",
+    expected_generation: 0,
+  )
+}
+
 // The catalogue is daemon-wide, so the owner reads another session's
-// candidates here, but a change to one would run through this session's queue
-// and live owner. The page lists such a row and offers nothing on it, and its
-// approval does not count toward the tab's badge.
-pub fn a_candidate_of_another_session_is_listed_and_offered_nothing_test() {
-  let elsewhere =
-    candidate(
-      "5555aaaa-other",
-      "other_tool",
-      "extension",
-      json.Object([#("kind", text("session")), #("session", text("B"))]),
-      json.Null,
-      approval("e-other"),
-      json.Null,
-      [evidence("e-other", "passed")],
-    )
-  let #(model, wire) = owner(Listed(board_of([elsewhere], [])))
+// candidates here. An approval is a catalogue write, which the daemon lets the
+// owner make on any row, so the page offers the owner to approve and to revoke
+// them. A selection would run through this session's queue and live owner, so
+// it is offered on this session's rows alone: a forged one opens no question and
+// sends nothing.
+pub fn the_owner_may_decide_on_another_sessions_row_but_not_select_it_test() {
+  let #(model, wire) =
+    owner(Listed(board_of([elsewhere(approval("e-other"))], [])))
   let html = drawn(model)
   assert string.contains(html, "other_tool")
   assert string.contains(html, "session B")
+  assert count(html, "Revoke</button>") == 1
   assert count(html, "Select as generation") == 0
+  let asked = send(model, [operator_page.AskingEvolve(selecting_other())])
+  assert component.evolution_state(asked).armed == None
+  let _ = send(asked, [operator_page.ConfirmingEvolve("")])
+  assert evolutions(page_fixture.sent(wire)) == []
+
+  // An unapproved one offers the owner an approval, which the badge counts and
+  // which sends the drawn ids.
+  let #(fresh, wire) = owner(Listed(board_of([elsewhere(json.Null)], [])))
+  assert count(drawn(fresh), "Approve</button>") == 1
+  assert component.evolution_waiting(fresh) == 1
+  let armed = approving(fresh, "5555aaaa-other")
+  let _ =
+    send(fresh, [
+      operator_page.AskingEvolve(armed),
+      operator_page.ConfirmingEvolve(""),
+    ])
+  let assert [frame] = evolutions(page_fixture.sent(wire))
+  assert string.contains(frame, "\"action\":\"approve\"")
+  assert string.contains(frame, "\"candidate_id\":\"5555aaaa-other\"")
+}
+
+// A member operator's page is offered this session's rows only, for deciding
+// as well as for selecting.
+pub fn a_member_is_offered_nothing_on_another_sessions_row_test() {
+  let #(model, wire) = member(Listed(board_of([elsewhere(json.Null)], [])))
+  let html = drawn(model)
+  assert string.contains(html, "other_tool")
+  assert count(html, "Approve</button>") == 0
   assert count(html, "Revoke</button>") == 0
   assert component.evolution_waiting(model) == 0
-  let armed =
-    evolving.Armed(
-      act: evolving.Selecting,
-      candidate_id: "5555aaaa-other",
-      name: "other_tool",
-      evidence_id: "e-other",
-      expected_generation: 0,
+  let owners =
+    evolving.offers(
+      evolving.Everywhere,
+      evolving.Settled,
+      kept(model),
+      row(model, "5555aaaa-other"),
     )
+  let assert Some(armed) = owners.approve
   let asked = send(model, [operator_page.AskingEvolve(armed)])
   assert component.evolution_state(asked).armed == None
   let _ = send(asked, [operator_page.ConfirmingEvolve("")])

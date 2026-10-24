@@ -508,7 +508,9 @@ fn approval(row: evolution.Candidate) -> List(Element(message)) {
       }
       [
         html.p([attribute.class("evolution-approval")], [
-          html.text("approved by " <> approval.by <> via),
+          html.text(
+            "approved by " <> evolution.principal_words(approval.by) <> via,
+          ),
         ]),
       ]
     }
@@ -852,10 +854,13 @@ pub fn event_words(entry: evolution.Event) -> String {
   }
   let who = case entry.principal, evolution.surface_words(entry.via) {
     "", "" -> ""
-    principal, "" -> " · " <> principal
+    principal, "" -> " · " <> evolution.principal_words(principal)
     "", surface -> " · " <> surface
-    principal, surface -> " · " <> principal <> " · " <> surface
+    principal, surface ->
+      " · " <> evolution.principal_words(principal) <> " · " <> surface
   }
+
+  // The reason the person gave, quoted, ends the line.
   let reason = case entry.reason {
     "" -> ""
     reason -> " · \"" <> reason <> "\""

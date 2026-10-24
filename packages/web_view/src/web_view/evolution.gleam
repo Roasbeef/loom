@@ -177,21 +177,47 @@ pub fn asking(state: State, armed: Armed) -> Bool {
   state.armed == Some(armed)
 }
 
-/// Whether the page may offer a change on this candidate at all.
+/// Whether the page may offer to approve or revoke this candidate.
 ///
-/// A candidate scoped to another session is never offered a change from this
-/// page, whoever reads it: a selection of it would be made through this
-/// session's queue and live owner, and it belongs to the other session's. The
-/// owner reads those rows because the catalogue is daemon-wide, and changes
-/// them from that session's own page or the terminal. A workspace or an exact
-/// model row is the owner's, and a member operator's page is offered neither.
+/// An approval is a catalogue write and binds nothing by itself, so the owner
+/// may decide on every row the board lists, another session's included, which is
+/// what the daemon lets the owner do (`store.owner`). A member operator may
+/// decide only on this session's own rows, and neither reader is offered a row
+/// of a scope this client cannot name.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert evolving.within(evolving.Everywhere, board, candidate)
+/// assert evolving.decides(evolving.Everywhere, board, candidate)
 /// ```
-pub fn within(
+pub fn decides(
+  reach: Reach,
+  board: evolution.Board,
+  candidate: evolution.Candidate,
+) -> Bool {
+  case candidate.scope, reach {
+    evolution.UnknownScope(..), _ -> False
+    evolution.SessionScope(session:), OwnSession -> session == board.session
+    evolution.WorkspaceScope(..), OwnSession
+    | evolution.ModelScope(..), OwnSession
+    -> False
+    _, Everywhere -> True
+  }
+}
+
+/// Whether the page may offer to select this candidate or roll back to it.
+///
+/// A session-scoped selection runs through this session's queue and live owner,
+/// so it is offered on this session's own rows alone, to the owner and to a
+/// member operator alike. A workspace or an exact-model selection is catalogue
+/// level and is the owner's, and a member operator's page is offered neither.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert evolving.selects(evolving.Everywhere, board, candidate)
+/// ```
+pub fn selects(
   reach: Reach,
   board: evolution.Board,
   candidate: evolution.Candidate,
@@ -246,16 +272,26 @@ pub fn offers(
   board: evolution.Board,
   candidate: evolution.Candidate,
 ) -> Offers {
-  case within(reach, board, candidate) {
-    False -> Offers(approve: None, select: None, revoke: None, rollbacks: [])
-    True ->
-      Offers(
-        approve: approval_offer(candidate),
-        select: selection_offer(staging, board, candidate),
-        revoke: revocation_offer(candidate),
-        rollbacks: rollback_offers(staging, board, candidate),
-      )
-  }
+  let deciding = decides(reach, board, candidate)
+  let selecting = selects(reach, board, candidate)
+  Offers(
+    approve: case deciding {
+      True -> approval_offer(candidate)
+      False -> None
+    },
+    select: case selecting {
+      True -> selection_offer(staging, board, candidate)
+      False -> None
+    },
+    revoke: case deciding {
+      True -> revocation_offer(candidate)
+      False -> None
+    },
+    rollbacks: case selecting {
+      True -> rollback_offers(staging, board, candidate)
+      False -> []
+    },
+  )
 }
 
 fn approval_offer(candidate: evolution.Candidate) -> Option(Armed) {
@@ -449,7 +485,7 @@ pub fn reason_for(act: Act, text: String) -> String {
 pub fn waiting(reach: Reach, board: evolution.Board) -> Int {
   let approvable =
     list.count(board.candidates, fn(candidate) {
-      within(reach, board, candidate)
+      decides(reach, board, candidate)
       && evolution.approval_target(candidate) != Error(Nil)
     })
   approvable + list.length(board.pending)

@@ -2134,12 +2134,16 @@ would try to trick the person into approving:
   board is `Shared.evolution`, read with the `board` action when the page opens
   and on the daemon's `evolution_changed` push, with a 60 second backstop, and
   drawn only when its session is the attached one. The tab is the owner's and a
-  member operator's: the owner's page is offered this session's own rows and the
-  workspace and model rows that are the owner's, with owner authority derived by
-  the gateway from the principal's kind, and a member operator's page is offered
-  this session's own rows only, which is the store's rule. A row scoped to
-  another session is listed, because the catalogue is daemon-wide, and offered
-  nothing: a change to it would run through this session's queue and live owner. The daemon
+  member operator's. The page splits what it offers in two. Deciding (approve and
+  revoke) is a catalogue write, which the daemon lets the owner make on any row,
+  so the owner's page is offered it on every row the board lists, another
+  session's included, with owner authority derived by the gateway from the
+  principal's kind. Selecting and rolling back are offered on this session's own
+  rows, and on the owner's workspace and model rows on the owner's page alone,
+  because a session-scoped selection runs through this session's queue and live
+  owner and a row of another session belongs to that session's own. A member
+  operator's page is offered this session's own rows only, for both, which is
+  the store's rule. The daemon
   refuses what a page should not have offered, so the offer is a convenience
   and never the gate. An observer's page draws no tab, no pane and no `evolution`
   attribute on `<loom-shell>`, and its socket drops every event beneath the
