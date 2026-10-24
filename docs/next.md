@@ -76,6 +76,17 @@ fixture is not a claim about full prepare or transport cost. The earlier
 terminal-profiling handoff is preserved in
 [next-2026-10-24-before-web-sqlite-performance.md](next-2026-10-24-before-web-sqlite-performance.md).
 
+## Continued allocation follow-up
+
+Three private changes continue the same PR: Anthropic merges consecutive tool
+results from the end so it copies each original block list once; code-mode
+workspace readers capture the blob-root string rather than their host Config;
+and expandable rows no longer construct an unused flat header. Normal and
+frozen-prefix request order, cache markers, filesystem policy and rendered DOM
+retain their existing behavior. The [round report](review/continued-performance-2026-10-24.md)
+records the actual production measurements and their limits. These changes
+add no public API, dependency, FFI, process or cache.
+
 ## Rulings already made
 
 Each of these is settled. Re-open one only with new evidence, and record the

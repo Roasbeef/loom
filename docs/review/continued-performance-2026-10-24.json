@@ -1,0 +1,78 @@
+{
+  "base": "4510d43863cfccaa383b0f451f25d20132406262",
+  "fold_row": [
+    {
+      "scenario": "reasoning",
+      "words": {
+        "before": {
+          "unchanged": 72323255,
+          "first_paint": 27040710
+        },
+        "candidate": {
+          "unchanged": 71938455,
+          "first_paint": 26990059
+        }
+      },
+      "identical_html_handlers": true,
+      "delta_percent": {
+        "unchanged": -0.5320556990970609,
+        "first_paint": -0.18731386860773996
+      }
+    },
+    {
+      "scenario": "answers",
+      "words": {
+        "before": {
+          "unchanged": 53123938,
+          "first_paint": 39596789
+        },
+        "candidate": {
+          "unchanged": 53115691,
+          "first_paint": 39568911
+        }
+      },
+      "identical_html_handlers": true,
+      "delta_percent": {
+        "unchanged": -0.015524075041274238,
+        "first_paint": -0.07040469872443444
+      }
+    },
+    {
+      "scenario": "siblings",
+      "words": {
+        "before": {
+          "unchanged": 10922030,
+          "first_paint": 1572955
+        },
+        "candidate": {
+          "unchanged": 10922030,
+          "first_paint": 1572960
+        }
+      },
+      "identical_html_handlers": true,
+      "delta_percent": {
+        "unchanged": 0.0,
+        "first_paint": 0.00031787304786214484
+      }
+    }
+  ],
+  "workspace": {
+    "units": "flattened words, eight bytes per word",
+    "baseline": {
+      "ordinary_config": 162,
+      "padded_config": 61602,
+      "ordinary_read": 273,
+      "padded_read": 61713,
+      "ordinary_copied_workspace": 561,
+      "padded_copied_workspace": 62001
+    },
+    "candidate": {
+      "ordinary_config": 162,
+      "padded_config": 61602,
+      "ordinary_read": 119,
+      "padded_read": 119,
+      "ordinary_copied_workspace": 407,
+      "padded_copied_workspace": 407
+    }
+  }
+}
