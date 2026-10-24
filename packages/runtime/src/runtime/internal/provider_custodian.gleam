@@ -289,8 +289,8 @@ pub fn prepare(
   }
 }
 
-// Project without calling the surface: both variants still cross their first
-// provider instruction only after the parked worker receives its begin permit.
+/// Projects preparation without calling the surface. Both variants cross their
+/// first provider instruction only after the worker receives its begin permit.
 fn preparation(
   surface: effects.ProviderSurface,
 ) -> fn(effects.RequestSpec) -> stream.PreparedStream {

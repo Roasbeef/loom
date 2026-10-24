@@ -83,13 +83,83 @@ figures describe reachable terms and their flattened copy cost; they are not
 physical retained heap, unique off-heap binary bytes or RSS. The live daemon
 has not received either fix. An installed RSS reduction remains unmeasured.
 
-A remaining source candidate is serve.catalogue_facts: the returned lookup
-captures the whole Catalog although model lookup reads only models. Unused
-profile/MCP/LSP configuration can therefore enter provider and compaction-hook
-closures. This is a reachable copy path, but its cost has not been measured and
-it is not claimed as the cause of the daemon's large heaps. The next fixture
-should vary unused profiles while measuring actual Runtime.effects, before
-considering a models-only projection.
+## Second round: configuration and parked preparation
+
+At the owner's request the loop continued from the first round at 4231f7cf2.
+The paired module experiments keep the previous fixes and use the same OTP 29,
+eight-byte-word host. Candidate implementation commits are 1bd9f39e9 and
+7c466fead; 23acc9315 repairs references shifted by the source change.
+
+The model-facts lookup now projects model entries before constructing its
+callback. Previously it captured the complete Catalog even though lookup reads
+only models. Real owned assemblies keep their Gateway and models fixed while
+varying valid unused named profiles. They measure actual Runtime.effects and
+also verify known-model admission, missing-model fallback, adapter identity,
+orderly custody retirement and lease release.
+
+| Unused profiles | Effects words before | Effects words after |
+| --- | ---: | ---: |
+| 0 | 39,231 | 39,112 |
+| 64 | 48,121 | 39,112 |
+| 256 | 75,001 | 39,112 |
+
+The unused table is 1,270 words at 64 profiles and 5,110 at 256. Its previous
+contribution is exactly seven times those sizes. The 256-profile fixture removes
+287,112 bytes of flattened terms; the ordinary fixture removes only 952 bytes.
+Neither figure is a claim about installed daemon RSS or its actual catalogue.
+The regression fails for its intended size assertion on the unfixed source,
+then passes after projection; all 55 focused assembly/wiring tests pass.
+
+The private provider custodian now stores preparation and timeout in Startup
+rather than the entire surface. A prepared surface's unused compatibility
+request callback no longer travels into its parked worker. Legacy requests
+retain their original deferred semantics, and the first provider instruction
+still follows Begin. A native EUnit fixture identifies exactly the newly linked
+worker, excluding the public custodian, and inspects that disposed fixture's
+parked state without a production FFI bridge.
+
+| Parked worker flattened words | Before | After |
+| --- | ---: | ---: |
+| Ordinary prepared surface | 113 | 101 |
+| Compatibility request closure padded by 8,192 words | 8,305 | 101 |
+
+Both new native tests pass, including deferred preparation, terminal delivery,
+normal worker exit and full-subtree drain. The thirteen existing startup,
+recovery and cancellation tests pass. The complete runtime package gate passes
+210 tests. These are copied-term improvements for pending requests, not idle
+whole-daemon retention figures. The complete client gate at 23acc9315 also
+passes with exit zero: 5,317 EUnit tests in 631.16 seconds. Its prerequisite
+skip diagnostics remain separate from executed acceptance. Client lint passes
+with zero errors and 7,795 warnings; the runtime helper gained its explanatory
+doc comment after lint identified it, then runtime lint passed.
+
+## Fresh live metadata during the second round
+
+The existing authenticated viewer still targets laptop@100.75.241.68, PID 1513.
+A complete 692-process census showed roughly 593 MiB of process memory,
+222 MiB of binary memory and 1.08 GiB RSS. Values vary with ongoing work: a
+later pass showed 565 MiB of process memory and 1.03 GiB RSS. These are fresh
+baseline readings, not a matched comparison against the uninstalled patch.
+The largest three listed processes stayed around 26/24/24 MiB with empty
+mailboxes. The largest pinned process had 21 links, a 64-byte stack and no
+ownership label; its parent was <0.6937.0>. Its bounded binary-reference probe
+was refused for exceeding 50,000 references. No partial byte figure was read,
+and no binary contents, state, dictionary or forced GC was requested.
+
+The viewer was subsequently closed with explicit owner approval to release the
+single enrolled inspector identity for CLI use, then reopened. CLI snapshot
+`daemon-loop2-before.pgcap` records 889,064,418 total bytes, 598,902,840 process
+bytes and 233,485,144 binary bytes. A new 20-second, eight-process 100 Hz sample
+captures 13,152 samples: 501 running/runnable and 12,651 waiting, with two targets
+exiting during collection. Its selected active samples include Lustre diff and
+cache work; widths remain shares of samples, not CPU time. A broad allocation
+pattern was refused at the 5,000-function budget. The narrowed five-module
+probe matched 625 functions and read all 189 called functions over 5.12 seconds:
+3,471,823 allocated words, or 27,774,584 bytes. The stepping closure accounts for
+17,119,096 of those selected bytes, while UUID formatting accounts for 722,176.
+These scopes exclude other functions and native allocations. The raw CLI logs,
+Speedscope JSON and capture files are under `/private/tmp/loom-profile-20261024`.
+Neither capture represents an installed candidate or a matched live after run.
 
 ## Validation and limits
 
