@@ -161,6 +161,110 @@ These scopes exclude other functions and native allocations. The raw CLI logs,
 Speedscope JSON and capture files are under `/private/tmp/loom-profile-20261024`.
 Neither capture represents an installed candidate or a matched live after run.
 
+## No-decision rendering pass
+
+Commit 583e95841 keeps the original pieces when no decisions need placement,
+rather than rebuilding their list spine. Nonempty decisions use the existing
+placement logic. Three paired answer-page trials on OTP 29 with one scheduler
+preserve identical HTML hashes and two-byte unchanged patches.
+
+| 1,000 unchanged answer-page renders, median | Before | After |
+| --- | ---: | ---: |
+| VM CPU, ms | 363 | 363 |
+| Wall time, microseconds | 426,926 | 430,235 |
+| Reductions | 47,502,564 | 43,591,625 |
+| Cumulative heap words | 78,020,664 | 72,008,764 |
+
+Reductions fall 8.24% and allocation falls 7.71%; CPU is neutral. First paint
+(30 iterations) is essentially flat: 142 to 144 ms CPU and 40,275,650 to
+40,094,111 allocated words. All 683 session-view and 1,330 web-view BEAM tests
+pass, as does session-view lint. Independent adversarial review found no issue.
+An extra full JavaScript run has 603 passes and 78 failures on both baseline
+and candidate, with exactly the same failing test identities. That extra suite
+is not reported green, and no test is removed or skipped to mask it. Raw paired
+trials are `/private/tmp/web-decisions-{baseline,candidate}-{1,2,3}.log`.
+
+## Closed peer-link controls
+
+Commit ab5ddee31 changes the peer-link section to enumerate sidebar candidates
+only when rendering
+an open picker, and filters existing links only in that picker. Action
+validation retains its original live-catalogue lookup. Independent review
+caught an initial guard on the shared helper that ignored a second valid
+selection while Configuring; a real action regression fails on that draft
+and passes with the render-only guard. It verifies catalogue-authoritative
+names, replacement selection, default wake/direction options and the submitted
+Link request. Matching handler-key hashes alone could not prove this behavior.
+
+The fixture drives real page messages for Resting, Choosing, Configuring,
+Removing and Withheld. The small case lists three submitted sessions; the
+scaled case submits 128 live entries and obeys the production bound of 100
+listed sessions. This is a scaling fixture, not a census of the live sidebar.
+Three alternating paired trials differ only in the two peer-rendering modules,
+whose baseline source hashes match 583e95841. All other modules, including the
+no-decision fast path, stay identical. Source and BEAM hashes are retained in
+`/private/tmp/web-peers-{baseline,candidate}-sha256.log`.
+
+| 1,000 unchanged renders, median | Reductions before/after | Allocated words before/after | CPU ms before/after |
+| --- | ---: | ---: | ---: |
+| 3 listed, Resting | 10,977,074 / 10,925,485 | 18,065,019 / 18,027,019 | 69 / 70 |
+| 100 listed, Resting | 14,656,314 / 12,859,979 | 20,673,019 / 19,048,750 | 54 / 50 |
+| 100 listed, Configuring | 15,572,250 / 13,976,618 | 22,256,490 / 20,633,495 | 64 / 66 |
+
+Ordinary three-session work changes negligibly. With 100 listed sessions,
+reductions fall 12.25% while Resting and 10.25% while Configuring; allocated
+words fall 7.86% and 7.29%. CPU improvement is not consistent across states.
+First-paint allocation changes are small (5,105,862 to 5,052,170 words Resting;
+5,303,330 to 5,156,985 Configuring), with neutral/noisy CPU timing. All paired
+visible-HTML and handler-key hashes match, and unchanged patches remain two
+bytes. The JSON report includes all repeated trial values, not just medians.
+These remain cumulative-allocation figures, not retained heap or RSS.
+
+The final web gate passes all 1,332 tests with exit zero in 34.38 seconds.
+The new action regression and fifteen other peer tests pass. Final format,
+lint (zero errors, 182 warnings), asset checking and its self-test all pass.
+A single blank-line lint repair after the full gate preserves executable code
+MD5; the final focused tests pass on that source. Source, BEAM and equivalence
+witnesses are in `/private/tmp/web-peers-final-style-sha256.log` and
+`/private/tmp/web-peers-style-code-equivalence.log`. Commit 3f6a8bd3d refreshes
+only the stylesheet's source digests; its body is unchanged. The full terminal
+consumer gate at source head 3f6a8bd3d also passes: all 1,603 tests, exit zero,
+19.66 seconds. The latest documentation gate reports zero errors and 231
+existing warnings before the documentation commit. Hosted CI and Linux signoff
+remain unverified.
+
+## Remaining retention candidates
+
+A real ordinary assembly with 23 built-in tools retains its full executable
+registry twice in the service supervisor restart term: 15,340 words per
+registry versus 133 words for its names. Earlier name projection could remove
+30,414 flattened words (243,312 bytes), about 8.08% of that fixture's restart
+term. It would require an options/interface decision; fetching the registry
+through an existing holder instead changes teardown dependencies. Neither
+change is included for this modest ordinary saving.
+
+The same fixture has 39,112-word Effects, including a 33,396-word provider
+surface. Each Effects graph reaches four 8,035-word Provider records, including
+7,363-word rendered definitions. Four active service child specifications
+(agency, escalation, async runs and hub) each retain one Effects. The supervisor
+also keeps its original specifications, giving eight Effects and 32 Provider
+occurrences in the flattened restart term. Rendered definitions therefore
+account for 235,616 words (about 1.80 MiB) of a roughly 2.87 MiB flattened term.
+These runtime-bearing services perform real operations that the existing
+fact-only handle cannot supply. Removing them requires a separate ownership
+change, not replacing a type and hoping behavior stays equivalent. This does
+not establish their physical unique heap or their contribution to the live
+26 MiB supervisor. Fixture scripts and logs are retained as
+`/private/tmp/loom-ordinary-{registry-spec,provider}*`.
+
+Schema packing was measured but withheld: all 24 definitions of the complete
+code-mode/evolution fixture round-trip, but rebuilding 100 full sets costs
+82 ms CPU and 5,211,019 reductions. Arbitrary accepted schemas still need
+semantic preservation, and another decoding layer is not justified by a
+flattened graph alone. The UUID nibble-format experiment was also discarded:
+repeated matched rendering trials reduced words and reductions but increased
+CPU. Neither experiment is shipped.
+
 ## Validation and limits
 
 Independent Astra review found no actionable issue in the rendering, gateway,

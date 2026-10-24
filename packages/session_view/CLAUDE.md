@@ -401,7 +401,9 @@ for a host with no surfaces.
   record's own scope when the page read `escalations_decided`, whose answer
   arrives as `LookedUp(records, [])`). `turns.with_decisions` places each as a
   `turns.Decided` piece by the register sequence that committed it, which
-  storage numbers from the same counter as transcript entries.
+  storage numbers from the same counter as transcript entries. With no
+  decisions to place it preserves the existing pieces and list spine, avoiding
+  a full transcript traversal on every render.
 - `approval.wants(tool)`: the fixed words for what a request asks to do
   (`run a command`), shared by the cards.
 - `approval.Review.remote`: a child's request on another orchestrator

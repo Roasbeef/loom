@@ -125,7 +125,10 @@ page keys and nonces, and the relay into the session's gateway.
   `peers_refresh_ms` (15 s) and on a focus change, and a `Changed` answer reads at
   once. `view/peer_links` draws every name and strand as a text node; the
   section is `element.none()` on a page without the capability. Member and
-  observer pages never read a board.
+  observer pages never read a board. Rendering enumerates and filters candidate
+  sessions only while the picker is `Choosing`. Action validation still uses
+  the current sidebar candidates when `Configuring` accepts a replacement
+  selection, including multiple picker events in one transport batch.
 - **Allowing for the session, and what it kept** (protocol-change/073).
   Owner only: `component.may_remember` (the owner's `Standing.reader`) gates the
   session button, the list, `want_permissions`, `ask_forget` and the click; a

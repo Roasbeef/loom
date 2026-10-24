@@ -830,5 +830,513 @@
       "padded_after": 101,
       "padding_words": 8192
     }
+  },
+  "no_decision_pass": {
+    "commit": "583e95841",
+    "trials": 3,
+    "schedulers": 1,
+    "unchanged_1000_medians": {
+      "cpu_ms": [
+        363,
+        363
+      ],
+      "wall_us": [
+        426926,
+        430235
+      ],
+      "reductions": [
+        47502564,
+        43591625
+      ],
+      "cumulative_words": [
+        78020664,
+        72008764
+      ]
+    },
+    "html": "identical hashes in all paired trials",
+    "unchanged_patch_bytes": 2,
+    "beam_tests": {
+      "session_view": 683,
+      "web_view": 1330
+    },
+    "javascript_baseline_and_candidate": {
+      "passed": 603,
+      "failed": 78,
+      "failure_identities": "identical"
+    },
+    "base": "07d6f11c0",
+    "tui_consumer_gate": {
+      "head": "3f6a8bd3d",
+      "passed": 1603,
+      "exit": 0,
+      "elapsed_seconds": 19.66
+    }
+  },
+  "peer_controls": {
+    "base": "583e95841",
+    "variant": "render-only candidate enumeration plus picker-only link filtering",
+    "method": "alternate three disposable-VM trials with only two module BEAM overrides; all other modules identical",
+    "otp": "29",
+    "schedulers": 1,
+    "submitted_to_listed": {
+      "3": 3,
+      "128": 100
+    },
+    "paired_trials": {
+      "3-resting": {
+        "before": {
+          "unchanged": {
+            "median": {
+              "reductions": 10977074,
+              "wall_us": 85828,
+              "cpu_ms": 69,
+              "allocated_words": 18065019
+            },
+            "trials": [
+              {
+                "reductions": 10977074,
+                "wall_us": 85457,
+                "cpu_ms": 69,
+                "allocated_words": 18065019
+              },
+              {
+                "reductions": 10977074,
+                "wall_us": 85828,
+                "cpu_ms": 69,
+                "allocated_words": 18065019
+              },
+              {
+                "reductions": 10977074,
+                "wall_us": 88702,
+                "cpu_ms": 70,
+                "allocated_words": 18065019
+              }
+            ]
+          },
+          "first_paint": {
+            "median": {
+              "reductions": 1352335,
+              "wall_us": 19991,
+              "cpu_ms": 18,
+              "allocated_words": 1891529
+            },
+            "trials": [
+              {
+                "reductions": 1352335,
+                "wall_us": 19764,
+                "cpu_ms": 18,
+                "allocated_words": 1891529
+              },
+              {
+                "reductions": 1352335,
+                "wall_us": 21426,
+                "cpu_ms": 18,
+                "allocated_words": 1891529
+              },
+              {
+                "reductions": 1352335,
+                "wall_us": 19991,
+                "cpu_ms": 17,
+                "allocated_words": 1891529
+              }
+            ]
+          },
+          "witnesses": [
+            [
+              "d5083d4141e6bb680c5082944a5ad69ab60775ee76b800c80e856949729a0502",
+              "0bc543027a8697a595fc38b8b148867db3e314f8e00a5af09ba5543afddbe9e8"
+            ],
+            [
+              "d5083d4141e6bb680c5082944a5ad69ab60775ee76b800c80e856949729a0502",
+              "0bc543027a8697a595fc38b8b148867db3e314f8e00a5af09ba5543afddbe9e8"
+            ],
+            [
+              "d5083d4141e6bb680c5082944a5ad69ab60775ee76b800c80e856949729a0502",
+              "0bc543027a8697a595fc38b8b148867db3e314f8e00a5af09ba5543afddbe9e8"
+            ]
+          ]
+        },
+        "after": {
+          "unchanged": {
+            "median": {
+              "reductions": 10925485,
+              "wall_us": 88150,
+              "cpu_ms": 70,
+              "allocated_words": 18027019
+            },
+            "trials": [
+              {
+                "reductions": 10925485,
+                "wall_us": 88150,
+                "cpu_ms": 70,
+                "allocated_words": 18027019
+              },
+              {
+                "reductions": 10925485,
+                "wall_us": 88706,
+                "cpu_ms": 70,
+                "allocated_words": 18027019
+              },
+              {
+                "reductions": 10925485,
+                "wall_us": 87319,
+                "cpu_ms": 69,
+                "allocated_words": 18027019
+              }
+            ]
+          },
+          "first_paint": {
+            "median": {
+              "reductions": 1348790,
+              "wall_us": 19683,
+              "cpu_ms": 18,
+              "allocated_words": 1890433
+            },
+            "trials": [
+              {
+                "reductions": 1348790,
+                "wall_us": 19683,
+                "cpu_ms": 17,
+                "allocated_words": 1890433
+              },
+              {
+                "reductions": 1348790,
+                "wall_us": 22331,
+                "cpu_ms": 20,
+                "allocated_words": 1890433
+              },
+              {
+                "reductions": 1348790,
+                "wall_us": 19571,
+                "cpu_ms": 18,
+                "allocated_words": 1890433
+              }
+            ]
+          },
+          "witnesses": [
+            [
+              "d5083d4141e6bb680c5082944a5ad69ab60775ee76b800c80e856949729a0502",
+              "0bc543027a8697a595fc38b8b148867db3e314f8e00a5af09ba5543afddbe9e8"
+            ],
+            [
+              "d5083d4141e6bb680c5082944a5ad69ab60775ee76b800c80e856949729a0502",
+              "0bc543027a8697a595fc38b8b148867db3e314f8e00a5af09ba5543afddbe9e8"
+            ],
+            [
+              "d5083d4141e6bb680c5082944a5ad69ab60775ee76b800c80e856949729a0502",
+              "0bc543027a8697a595fc38b8b148867db3e314f8e00a5af09ba5543afddbe9e8"
+            ]
+          ]
+        },
+        "witnesses_identical": true
+      },
+      "128-resting": {
+        "before": {
+          "unchanged": {
+            "median": {
+              "reductions": 14656314,
+              "wall_us": 75174,
+              "cpu_ms": 54,
+              "allocated_words": 20673019
+            },
+            "trials": [
+              {
+                "reductions": 14656314,
+                "wall_us": 75174,
+                "cpu_ms": 54,
+                "allocated_words": 20673019
+              },
+              {
+                "reductions": 14656314,
+                "wall_us": 74775,
+                "cpu_ms": 53,
+                "allocated_words": 20673019
+              },
+              {
+                "reductions": 14656314,
+                "wall_us": 75342,
+                "cpu_ms": 55,
+                "allocated_words": 20673019
+              }
+            ]
+          },
+          "first_paint": {
+            "median": {
+              "reductions": 3592363,
+              "wall_us": 37499,
+              "cpu_ms": 31,
+              "allocated_words": 5105862
+            },
+            "trials": [
+              {
+                "reductions": 3592363,
+                "wall_us": 37499,
+                "cpu_ms": 31,
+                "allocated_words": 5105862
+              },
+              {
+                "reductions": 3592363,
+                "wall_us": 37399,
+                "cpu_ms": 31,
+                "allocated_words": 5105862
+              },
+              {
+                "reductions": 3592395,
+                "wall_us": 38913,
+                "cpu_ms": 33,
+                "allocated_words": 5105862
+              }
+            ]
+          },
+          "witnesses": [
+            [
+              "906cbf8da304a3cc1da51adcd0e6f5a9d2737d284773af2a0205557bf079aa2a",
+              "6e085c8c1e0714828e5bf2854455c329db84d92a38d8e707bec95f595029cacd"
+            ],
+            [
+              "906cbf8da304a3cc1da51adcd0e6f5a9d2737d284773af2a0205557bf079aa2a",
+              "6e085c8c1e0714828e5bf2854455c329db84d92a38d8e707bec95f595029cacd"
+            ],
+            [
+              "906cbf8da304a3cc1da51adcd0e6f5a9d2737d284773af2a0205557bf079aa2a",
+              "6e085c8c1e0714828e5bf2854455c329db84d92a38d8e707bec95f595029cacd"
+            ]
+          ]
+        },
+        "after": {
+          "unchanged": {
+            "median": {
+              "reductions": 12859979,
+              "wall_us": 68041,
+              "cpu_ms": 50,
+              "allocated_words": 19048750
+            },
+            "trials": [
+              {
+                "reductions": 12859979,
+                "wall_us": 68041,
+                "cpu_ms": 50,
+                "allocated_words": 19048750
+              },
+              {
+                "reductions": 12859979,
+                "wall_us": 67579,
+                "cpu_ms": 49,
+                "allocated_words": 19048750
+              },
+              {
+                "reductions": 12860087,
+                "wall_us": 69955,
+                "cpu_ms": 54,
+                "allocated_words": 19048750
+              }
+            ]
+          },
+          "first_paint": {
+            "median": {
+              "reductions": 3532810,
+              "wall_us": 38030,
+              "cpu_ms": 33,
+              "allocated_words": 5052170
+            },
+            "trials": [
+              {
+                "reductions": 3532778,
+                "wall_us": 36940,
+                "cpu_ms": 31,
+                "allocated_words": 5052170
+              },
+              {
+                "reductions": 3532810,
+                "wall_us": 38030,
+                "cpu_ms": 33,
+                "allocated_words": 5052170
+              },
+              {
+                "reductions": 3532894,
+                "wall_us": 39261,
+                "cpu_ms": 34,
+                "allocated_words": 5052170
+              }
+            ]
+          },
+          "witnesses": [
+            [
+              "906cbf8da304a3cc1da51adcd0e6f5a9d2737d284773af2a0205557bf079aa2a",
+              "6e085c8c1e0714828e5bf2854455c329db84d92a38d8e707bec95f595029cacd"
+            ],
+            [
+              "906cbf8da304a3cc1da51adcd0e6f5a9d2737d284773af2a0205557bf079aa2a",
+              "6e085c8c1e0714828e5bf2854455c329db84d92a38d8e707bec95f595029cacd"
+            ],
+            [
+              "906cbf8da304a3cc1da51adcd0e6f5a9d2737d284773af2a0205557bf079aa2a",
+              "6e085c8c1e0714828e5bf2854455c329db84d92a38d8e707bec95f595029cacd"
+            ]
+          ]
+        },
+        "witnesses_identical": true
+      },
+      "128-configuring": {
+        "before": {
+          "unchanged": {
+            "median": {
+              "reductions": 15572250,
+              "wall_us": 86046,
+              "cpu_ms": 64,
+              "allocated_words": 22256490
+            },
+            "trials": [
+              {
+                "reductions": 15572250,
+                "wall_us": 86046,
+                "cpu_ms": 65,
+                "allocated_words": 22256490
+              },
+              {
+                "reductions": 15572262,
+                "wall_us": 86249,
+                "cpu_ms": 64,
+                "allocated_words": 22256490
+              },
+              {
+                "reductions": 15572226,
+                "wall_us": 84735,
+                "cpu_ms": 62,
+                "allocated_words": 22256490
+              }
+            ]
+          },
+          "first_paint": {
+            "median": {
+              "reductions": 3651614,
+              "wall_us": 36913,
+              "cpu_ms": 31,
+              "allocated_words": 5303330
+            },
+            "trials": [
+              {
+                "reductions": 3651614,
+                "wall_us": 36913,
+                "cpu_ms": 31,
+                "allocated_words": 5303330
+              },
+              {
+                "reductions": 3651614,
+                "wall_us": 37575,
+                "cpu_ms": 31,
+                "allocated_words": 5303330
+              },
+              {
+                "reductions": 3651614,
+                "wall_us": 36534,
+                "cpu_ms": 30,
+                "allocated_words": 5303330
+              }
+            ]
+          },
+          "witnesses": [
+            [
+              "9a8b1cd34c615b99712cc261417c73e13a704829db8c63839c94a2b1957e78b6",
+              "6044bec49f56f60def10b603ebdfc64f6f9e2ed394da0b1091fb4756184707e3"
+            ],
+            [
+              "9a8b1cd34c615b99712cc261417c73e13a704829db8c63839c94a2b1957e78b6",
+              "6044bec49f56f60def10b603ebdfc64f6f9e2ed394da0b1091fb4756184707e3"
+            ],
+            [
+              "9a8b1cd34c615b99712cc261417c73e13a704829db8c63839c94a2b1957e78b6",
+              "6044bec49f56f60def10b603ebdfc64f6f9e2ed394da0b1091fb4756184707e3"
+            ]
+          ]
+        },
+        "after": {
+          "unchanged": {
+            "median": {
+              "reductions": 13976618,
+              "wall_us": 84993,
+              "cpu_ms": 66,
+              "allocated_words": 20633495
+            },
+            "trials": [
+              {
+                "reductions": 13976618,
+                "wall_us": 84993,
+                "cpu_ms": 66,
+                "allocated_words": 20633495
+              },
+              {
+                "reductions": 13976470,
+                "wall_us": 87139,
+                "cpu_ms": 67,
+                "allocated_words": 20633495
+              },
+              {
+                "reductions": 13976690,
+                "wall_us": 84398,
+                "cpu_ms": 64,
+                "allocated_words": 20633495
+              }
+            ]
+          },
+          "first_paint": {
+            "median": {
+              "reductions": 3509849,
+              "wall_us": 36951,
+              "cpu_ms": 31,
+              "allocated_words": 5156985
+            },
+            "trials": [
+              {
+                "reductions": 3509925,
+                "wall_us": 37114,
+                "cpu_ms": 31,
+                "allocated_words": 5156985
+              },
+              {
+                "reductions": 3509689,
+                "wall_us": 36951,
+                "cpu_ms": 31,
+                "allocated_words": 5156985
+              },
+              {
+                "reductions": 3509849,
+                "wall_us": 36702,
+                "cpu_ms": 31,
+                "allocated_words": 5156985
+              }
+            ]
+          },
+          "witnesses": [
+            [
+              "9a8b1cd34c615b99712cc261417c73e13a704829db8c63839c94a2b1957e78b6",
+              "6044bec49f56f60def10b603ebdfc64f6f9e2ed394da0b1091fb4756184707e3"
+            ],
+            [
+              "9a8b1cd34c615b99712cc261417c73e13a704829db8c63839c94a2b1957e78b6",
+              "6044bec49f56f60def10b603ebdfc64f6f9e2ed394da0b1091fb4756184707e3"
+            ],
+            [
+              "9a8b1cd34c615b99712cc261417c73e13a704829db8c63839c94a2b1957e78b6",
+              "6044bec49f56f60def10b603ebdfc64f6f9e2ed394da0b1091fb4756184707e3"
+            ]
+          ]
+        },
+        "witnesses_identical": true
+      }
+    },
+    "commit": "ab5ddee31",
+    "generated_digest_commit": "3f6a8bd3d",
+    "validation": {
+      "web_view_passed": 1332,
+      "web_view_seconds": 34.38,
+      "focused_passed": 16,
+      "lint_errors": 0,
+      "lint_warnings": 182,
+      "format_exit": 0,
+      "asset_check_exit": 0,
+      "asset_selftest_exit": 0,
+      "final_whitespace": "executable code MD5 unchanged"
+    }
   }
 }
