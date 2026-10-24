@@ -4,8 +4,9 @@
 protocol-change/078 (`remote/protocol`, version 4 to 5), the execution ledger's
 use, the census, the owner port's fact fence, and the evolution catalogue's
 scope key · **Raised by**: the owner, after PR #824 landed evolution for a local
-workspace only · **Implemented**: not yet; plan in
-`docs/design-notes/remote-evolution.md`
+workspace only · **Implemented**: slice 3 messages at protocol version 5 (PR #1092): the
+vocabulary, the census field and the refusing host arms; the executor plane and
+the orchestrator machine follow. Plan in `docs/design-notes/remote-evolution.md`
 
 ## Problem
 
@@ -334,3 +335,210 @@ in a release: `v0.3.2` (2026-10-12) is the latest tag, it contains no
 `client/evolution` and the release notes do not mention it, so no operator holds
 a retained candidate. A later prelude addition resets the catalogue the same
 way, and this note is where that cost is recorded.
+
+## Addendum (slice 3 step 3, as built), 2026-10-23
+
+PR #1092 landed the version 5 vocabulary in `remote/protocol`, the census field
+in `remote/remote_census`, two read functions in `storage/exec_ledger`, and host
+arms that fence every evolution message and refuse it with `NoEvolution` because
+no plane yet carries an evolution machine. The executor plane and the
+orchestrator machine are steps 4 and 5. This addendum records the shapes as
+they were built. It does not edit the text above. Where the code and an earlier
+sentence disagree, the code is what shipped and this section is the correction.
+The status stays PROPOSED until step 5 lands.
+
+### What this addendum supersedes
+
+1. The Implemented line in the header, which read "not yet". The line now
+   reflects slice 3 as merged.
+2. The sentence in the first addendum, "The node vocabulary above is
+   unchanged". It was true of the capability-call route, which adds no message,
+   and is false of the vocabulary as built. The table in "Node vocabulary
+   (protocol version 5)" differs from the code in the rows listed below.
+3. The plain-data list in "Node vocabulary", which names `ToolRun`,
+   `ToolOutcome`, `record.Selection`, `record.Evidence` and `archive.Tree`. No
+   evolution message carries `ToolRun` or `record.Evidence`. The messages carry
+   `record.Selection`, `record.Candidate`, `archive.Tree`, `JsonValue`,
+   `MsgPackValue`, `tool.Described`, `wiring.Authority` and `hooks.HookFailure`,
+   and the census carries `record.Identity`.
+4. The sentence "Every message that acts on a scope carries `incarnation` and
+   `token` and is admitted only when both equal the scope's, exactly as `Run`
+   is". Only `EvolutionEvaluate` and `EvolutionRun` are admitted, because only
+   they write a ledger row. The other six are fenced by a read of the same
+   comparison that writes nothing, and `EvolutionInventory` carries no token.
+5. The `EvolutionSnapshot` row, in its field order and in "answered
+   `Snapshotted(tree)`".
+6. The `EvolutionEvaluate` row, in its fields, its answer, and the claim that it
+   is admitted "exactly as `EvolutionRun` is".
+7. The `EvolutionStage` row, in its `artifact` field and in the `Staged` reply.
+8. The `EvolutionRun` row, in its fields and its authority.
+9. The `EvolutionHook` row's `remaining_ms`, and the sentence under "Recovery
+   and custody" that the orchestrator rebases it on the executor's clock.
+10. The `EvolutionTransition` row's `artifact` field and the `Prepared` reply.
+11. The `EvolutionRetire` row's "refused `Stale`".
+12. The `EvolutionTrial` and `EvolutionCore` rows, which are not in version 5.
+13. Two sentences of "Where each part runs on the executor": the one that says
+    `executor_plane` builds a `machine.local` and the one that gives
+    `Plane.evolution` and the census field their shapes.
+14. The first two bullets of "Impact", which count constructors, reply types and
+    refusals and describe host admission.
+
+The seam table and the `machine.remote(hands)` sentence are not superseded.
+They describe the orchestrator side, which is step 5, and that step amends them
+if it changes them.
+
+### The messages as built
+
+There are eight `HostMessage` constructors where the proposal listed ten. The
+trial and core messages are left to the slices that serve them, under their own
+version bumps, so the table splits in two: this one, and a later one for those
+slices.
+
+| Message | Fields | Answer |
+|---|---|---|
+| `EvolutionSnapshot` | `incarnation, token, coordinates, directory, reply` | `Result(archive.Tree, Refusal)`. There is no `Snapshotted` constructor. The session is `coordinates.key.session`, so the message carries no separate session field that could disagree with the key. |
+| `EvolutionEvaluate` | `incarnation, token, coordinates, candidate: record.Candidate, reply: Subject(ExecutionAnswer)` | `ExecutionFinished(report)`, where `report` is the check's report as a JSON value. The executor keeps nothing, and the orchestrator turns the report into evidence and records it. There is no `artifact` field. |
+| `EvolutionStage` | `session, incarnation, token, selection, candidate, reply` | `Result(Staged, Refusal)`. |
+| `EvolutionRun` | `incarnation, token, coordinates, target: Target, args: JsonValue, reply: Subject(RunAnswer)` | The `RunAnswer` a `Run` gives. The call key is `coordinates.key`. |
+| `EvolutionHook` | `session, incarnation, token, handle, event, payload, within_ms, reply` | `Result(MsgPackValue, hooks.HookFailure)`. |
+| `EvolutionTransition` | `session, incarnation, token, step, reply` | `Result(TransitionAnswer, Refusal)`. |
+| `EvolutionRetire` | `session, incarnation, token, handle, reply` | `Result(CloseOutcome, Refusal)`. |
+| `EvolutionInventory` | `session, incarnation, handle, reply` | `Result(JsonValue, Refusal)`. |
+
+`EvolutionStage` returns `Staged(handle, name, tools: List(tool.Described),
+hooks: List(String), activation: Activation, superseded: List(Handle))`, with
+`Activation = Replacement | InPlace`. The proposal's `declarations` is split
+into these fields because the orchestrator builds the hook bus from `name` and
+`hooks`, builds each tool's run closure from `tools`, and chooses the
+`live.Generation` mode from `activation`. A generation that did not opt in to
+in-place upgrade is `Replacement`, and sending it through the stateful path
+would be refused by the executor.
+
+`EvolutionRun` runs a `Target`, which is `Promoted(handle, tool: String)` or
+`Program(candidate: record.Candidate)`. A program is compiled for each call and
+never staged. The ledger tool column is `evolution:<tool>` for a promoted tool
+and `evolution:program` for a program.
+
+`EvolutionEvaluate` is admitted as a background execution is, not as a `Run`
+is: kind `Execution`, reservation `execution_result_bytes`, tool column
+`evolution:test`. A re-send with the same key joins the live check or reads the
+stored report. Because the row's kind is `Execution`, `running_executions`
+excludes it from `Unacked.executions`. `EvolutionRun` is admitted as a `Run`
+is: kind `ToolCall`, reservation `max_result_bytes`. Both go through
+`admit_call`, so the reconciler, acknowledgement and tombstone rules apply
+unchanged.
+
+`EvolutionHook` carries `within_ms`, the duration the hook bus already passes.
+The executor uses it unchanged, because it is a remaining duration and not a
+deadline. The sentence about rebasing it on the executor's clock is withdrawn.
+
+`EvolutionTransition` carries a `TransitionStep`, which is
+`Prepare(handle, selection, candidate)`, `Publish(handle, successor)` or
+`Abort(handle, successor)`. The answer is a `TransitionAnswer`:
+`TransitionPrepared(Prepared(successor, tools: List(tool.Described)))`,
+`TransitionPublished`, which a repeated publish answers again, or
+`TransitionAborted`, which is also the answer for a successor the plane does not
+hold. The semantics of the three steps in the table above are unchanged.
+
+`EvolutionRetire` is refused `StaleToken` or `StaleIncarnation` when its fence
+fails. There is no `Stale` refusal. A handle the executor does not hold answers
+`AllRetired`, so a retry after a lost reply is safe.
+
+### Coordinates and authority
+
+`Coordinates(key, strand, authority)` carries the call's ledger key, the strand
+that dispatched it, and the door call's stored `wiring.Authority`. It is built
+by `protocol.coordinates_of(session, ctx, authority)`. An earlier form of the
+type also carried a `grants` list copied from the context. That field is
+removed, so `authority` is the only carrier of grants.
+
+The removal settles a design question the review of #1092 raised. The context
+holds only the grants of consumed escalation approvals, and the session's
+standing network grants are folded into its base policy, which does not cross
+the node boundary. An authority built from the context would therefore drop the
+standing grants from a remote check. The authority is instead read from the
+session's store, as `surface` reads it for a `Run` (`read_authority`), and step
+5 obtains it the same way before it calls `coordinates_of`. The executor
+revalidates it against its own filesystem before widening the call's policy, as
+it does for a `Run`.
+
+### The fence as built
+
+The host judges every evolution message against the scope before it reaches the
+plane. A `Writer` fence requires the scope's incarnation and current attach
+token, and a `Reader` fence requires only that the scope is open at the
+incarnation. `EvolutionEvaluate` and `EvolutionRun` are fenced by admission.
+`EvolutionSnapshot`, `EvolutionStage`, `EvolutionHook`, `EvolutionTransition`
+and `EvolutionRetire` are fenced by `exec_ledger.current`, which makes
+`admit`'s check as a read and writes no row. `EvolutionInventory` is a `Reader`
+and is fenced by `exec_ledger.current_incarnation`, because it changes nothing
+and a read against a scope that a newer runtime of the same incarnation took
+over is still a true read. The two reads are the only additions to
+`storage/exec_ledger`, and neither changes the schema. They answer `admit`'s
+refusals (`NoSuchScope`, `ScopeNotOpen`, `StaleIncarnation`, `StaleToken`), but
+they do not validate a negative incarnation or an empty token first, so a
+malformed request answers a stale refusal where `admit` would answer `Invalid`.
+Peers built from one source do not send such a request.
+
+The fence is judged in the host's turn, and a scope's close is also a host turn,
+so the fence and the call into the plane are atomic with respect to `Close` and
+`Attach`. What the host cannot order is the plane's own work after `serve`
+returns. A scope close retires the evolution plane through custody, from a
+different process than the one that served the request. Step 4 must therefore
+make the plane's retirement terminal: after `retire_all`, the plane refuses
+every later request and cancels or awaits a stage in flight before it answers.
+The refusal after retirement belongs to the plane, not the host.
+
+A hook that is refused by the fence is answered `hooks.Gone`, because a hook
+has no refusal to carry and a scope that cannot be asked has no extension left
+to answer. The only transient refusal, `PlaneBuilding`, occurs for a scope whose
+plane is being built at a new incarnation, and the generation the hook names no
+longer exists at that incarnation, so `Gone` is the true answer.
+
+### The plane and the census as built
+
+`Plane` gains `evolution: Option(host.Evolution)`, where `Evolution(evaluate,
+run, serve)` is what the host calls. `evaluate` and `run` return their answers
+and run in a process the host owns and may kill, so the host keeps admission,
+waiters, cancellation and the commit. `serve` takes an `EvolutionRequest`, which
+has one constructor for each of the six requests that write no call row, and
+answers on the reply subject the request carries. `None` answers every
+evolution message `NoEvolution(reason)`. This is a fourth refusal beside
+`UnknownHandle`, `AlreadyPublished` and `StaleGeneration(serving)`. In this
+change every plane is built with `None`.
+
+The census field is `evolution: EvolutionCensus`, which is not an `Option`. It
+is the two-variant type `Compiles(identity: record.Identity)` or
+`Uncompiled(reason: String)`. It is computed when the scope's plane is built,
+because the identity depends on the scope's seed, and a rebound attach reuses
+it. The orchestrator opens the catalogue with the identity when the variant is
+`Compiles`.
+
+`executor_plane` will build a `machine/local.Config` and call the catalogue-free
+core of `machine/local`, not a `machine.local`, which is an orchestrator-side
+value. That is step 4.
+
+A generation handle is `Handle(boot: BitArray, ordinal: Int)`, where `boot` is
+sixteen random bytes drawn when the scope's evolution actor starts. It is the
+concrete form of the proposal's rule that a handle is unique per executor boot.
+
+### Impact, as built
+
+- `remote/protocol`: version 5. Eight `HostMessage` constructors, one closed
+  step type (`TransitionStep`), the reply types `Staged`, `Prepared` and
+  `TransitionAnswer`, and the existing `ExecutionAnswer` and `RunAnswer` for the
+  two keyed calls. Four new refusals: `UnknownHandle`, `AlreadyPublished`,
+  `StaleGeneration(serving)` and `NoEvolution(reason)`. One census field. The
+  module now imports `client/extension/hooks` to name `hooks.HookFailure`. That
+  module is the hook bus and not a plain-data module, and moving the failure
+  type to a leaf module is left open.
+- `remote/host`: an `evolution` field on `Plane`. `EvolutionEvaluate` and
+  `EvolutionRun` go through `admit_call`. The other six go through
+  `exec_ledger.current`, or `current_incarnation` for `EvolutionInventory`. No
+  schema change.
+- The version 4 to 5 step changes the census an `Attached` carries as well as
+  adding messages. A version 4 attach is refused `VersionMismatch(supported: 5)`
+  and the host stays up. `Attach` keeps its version 2 arity.
+- Unchanged: `executor_plane`, `evolution/machine`, `serve`, `system_prompt`,
+  `owner_services`, `evolution/store` and the P model. These belong to steps 4
+  and 5 and later slices.
