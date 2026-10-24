@@ -56,6 +56,7 @@ import session_view/commands
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
+import session_view/evolution
 import session_view/history_view
 import session_view/model.{Attached, OverlaySubmission, Shared} as session_model
 import session_view/msg
@@ -710,13 +711,28 @@ fn update_evolution_review(
     evolution_panel.Refresh -> side_surfaces.open_evolution(model)
     evolution_panel.Act(request:, next:) ->
       Model(
-        ..model,
+        shared: forget_core_page(model.shared, request),
         view: model.view
           |> view_set.overlay(EvolutionReview(next))
           |> view_set.toggle_repaint,
       )
       |> tui_model.run_shared(surfaces.evolve(_, request))
       |> tui_model.invalidate_frame
+  }
+}
+
+// A core status read again clears the page from the last read, so the card
+// says it is reading and does not draw the old status while the new one is in
+// flight.
+fn forget_core_page(shared, request: evolution.Request) {
+  case request {
+    evolution.CoreStatus -> shared_set.evolution_open(shared, None)
+    evolution.Approve(..)
+    | evolution.Revoke(..)
+    | evolution.Select(..)
+    | evolution.Rollback(..)
+    | evolution.Inspect(..)
+    | evolution.ReadEvidence(..) -> shared
   }
 }
 

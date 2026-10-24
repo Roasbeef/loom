@@ -351,9 +351,9 @@ call list in both needs a new wire record (section 10).
 | Key | Today | Concept B |
 |---|---|---|
 | `←` on an empty composer | session picker (`tui/interaction.gleam:1376`) | unchanged |
-| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1656`) | unchanged; lands on `main` when another strand is focused |
-| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1609`) | toggle the drawer, which replaces the rail |
-| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1551`) | open Strands: full body, or focus the docked drawer |
+| `↓` on an empty composer | into the strip (`down_from_composer` at `tui/interaction.gleam:1672`) | unchanged; lands on `main` when another strand is focused |
+| `Shift+Tab` | toggle the rail (`tui/interaction.gleam:1625`) | toggle the drawer, which replaces the rail |
+| `Ctrl+O`, `F2` | open `/agents` (`open_agents` at `tui/interaction.gleam:1567`) | open Strands: full body, or focus the docked drawer |
 | `Ctrl+T` | unbound | timeline cursor (new) |
 | `Ctrl+G` | details everywhere | unchanged |
 | `Ctrl+D` | changes navigator focus | focus the drawer on Changes |

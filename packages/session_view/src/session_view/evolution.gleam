@@ -920,7 +920,7 @@ pub fn action_word(request: Request) -> String {
 /// `request_id` the lane minted and the deadline it keeps, so the daemon
 /// waits exactly as long as the lane polls. Every other request ignores them.
 /// A terminal's `via` claim goes only with the four changes, because only they
-/// write an audit entry, and a read refuses a field it does not know.
+/// write an audit entry, so only they have a use for it.
 ///
 /// ## Examples
 ///
@@ -965,8 +965,9 @@ pub fn arguments(
 
 // Whether a request is one the daemon writes an audit entry for, and so reads
 // `via` from. The gateway hands every action's arguments to its door as they
-// came, and the readers (`inspect`, `evidence`, `core_status`) refuse a field
-// they do not know, so a claim sent with one is refused as a bad request.
+// came. Only the four changes record `via` in an audit entry, and
+// `core_status` is the one reader with an exact shape (it accepts only an
+// optional `request_id`), so a claim sent with it is refused.
 type Recording {
   Records
   Silent

@@ -3585,7 +3585,8 @@ job and refuses a second with `Busy:`. The reason a change carries is a fixed
 sentence naming the terminal (`select_reason`, `revoke_reason`,
 `rollback_reason`); the command line gives a longer one. The core card is
 read-only: `c` sends `CoreStatus` and draws the daemon's status, and a core
-upgrade stays on `loom evolution core_upgrade`. The footer badge is
+upgrade stays on `loom evolution core_upgrade`. There is no `d` key that shows the raw request: the request id is minted only
+after `y`, so there is no complete request to show beforehand. The footer badge is
 `input_frame.Status.evolution` (`evolution N · /evolution`, the candidates
 awaiting approval plus the selections staging); it shows only after a board was
 read for this session, which the daemon's `evolution_changed` push or one open

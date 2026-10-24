@@ -263,7 +263,8 @@ pub fn update(
     Listing(selected:) -> listing_key(key, state, facts, selected, area)
     Reading(id:) -> reading_key(key, state, facts, id, area)
     Rolling(id:, selected:) -> rolling_key(key, state, facts, id, selected)
-    Confirming(id:, question:) -> confirming_key(key, state, id, question)
+    Confirming(id:, question:) ->
+      confirming_key(key, state, facts, id, question)
     Core -> core_key(key)
   }
 }
@@ -461,13 +462,14 @@ fn pick_rollback(
 fn confirming_key(
   key: keys.Key,
   state: State,
+  facts: Facts,
   id: String,
   question: evolution.Request,
 ) -> Action {
-  case key {
-    keys.Char("y") ->
+  case key, open_candidate(facts, id) {
+    keys.Char("y"), Ok(_) ->
       Act(question, State(place: Reading(id), scroll: state.scroll))
-    _ -> Continue(State(place: Reading(id), scroll: state.scroll))
+    _, _ -> Continue(State(place: Reading(id), scroll: state.scroll))
   }
 }
 
@@ -522,18 +524,6 @@ fn rollback_choices(facts: Facts, id: String) -> List(evolution.Candidate) {
       }
     _, _, _ -> []
   }
-}
-
-/// The place a change leaves the reader once it is sent: back on the
-/// candidate, whose row the reply redraws with its new state.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // evolution_panel.after_change(state, "3f9a")
-/// ```
-pub fn after_change(state: State, id: String) -> State {
-  State(place: Reading(id), scroll: state.scroll)
 }
 
 // The candidates in the order the list draws them: extensions, programs,

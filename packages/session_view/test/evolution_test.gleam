@@ -544,8 +544,9 @@ pub fn a_terminal_names_itself_and_a_page_does_not_test() {
   assert list.key_find(fields, "via") == Ok(text("terminal"))
 }
 
-// A read refuses a field it does not know, and the live daemon refused a
-// `core_status` that carried the claim, so the claim goes only with a change.
+// Only the four changes record `via` in an audit entry, and `core_status`
+// accepts only an optional `request_id`: the live daemon refused one that
+// carried the claim. So the claim goes only with a change.
 pub fn a_terminals_claim_goes_only_with_a_change_test() {
   let claimed = fn(request) {
     let assert json.Object(fields) =
