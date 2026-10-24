@@ -1167,6 +1167,50 @@ pub fn scope(ledger: Ledger, session: String) -> Result(Option(Scope), Error) {
   find_scope(ledger.connection, session)
 }
 
+/// Checks that `incarnation` and `token` are the scope's current ones, without
+/// admitting anything. It is `admit`'s check as a read, for a request that
+/// needs the fence but has no call row, such as a message to the scope's
+/// evolution plane. The answers are `admit`'s: `NoSuchScope`, `ScopeNotOpen`,
+/// `StaleIncarnation` and `StaleToken`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.current(ledger, "s", 0, token)
+/// ```
+pub fn current(
+  ledger: Ledger,
+  session: String,
+  incarnation: Int,
+  token: BitArray,
+) -> Result(Nil, Error) {
+  use scope <- result.try(open_scope(ledger, session))
+  require_current(scope, incarnation, token)
+}
+
+/// Checks that the scope is open at `incarnation`, ignoring the attach token.
+/// A request that changes nothing is judged by this: a read against a scope
+/// that a newer runtime of the same incarnation took over is still a true read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // exec_ledger.current_incarnation(ledger, "s", 0)
+/// ```
+pub fn current_incarnation(
+  ledger: Ledger,
+  session: String,
+  incarnation: Int,
+) -> Result(Nil, Error) {
+  use scope <- result.try(open_scope(ledger, session))
+  require_incarnation(scope, incarnation)
+}
+
+fn open_scope(ledger: Ledger, session: String) -> Result(Scope, Error) {
+  use found <- result.try(find_scope(ledger.connection, session))
+  option.to_result(found, NoSuchScope)
+}
+
 /// Opens a second connection to a ledger the host already opened, for the
 /// executor's workspace plane to read and write worktree records from its own
 /// process.
@@ -1709,14 +1753,21 @@ fn require_current(
   incarnation: Int,
   token: BitArray,
 ) -> Result(Nil, Error) {
+  use Nil <- result.try(require_incarnation(scope, incarnation))
+  case token == scope.token {
+    True -> Ok(Nil)
+    False -> Error(StaleToken)
+  }
+}
+
+// The same check without the token, for a request that changes nothing and so
+// has no attach to be fenced against: the scope must be open and at this
+// incarnation.
+fn require_incarnation(scope: Scope, incarnation: Int) -> Result(Nil, Error) {
   case scope.state {
     Open ->
       case incarnation == scope.incarnation {
-        True ->
-          case token == scope.token {
-            True -> Ok(Nil)
-            False -> Error(StaleToken)
-          }
+        True -> Ok(Nil)
         False -> Error(StaleIncarnation(scope.incarnation))
       }
     Closing | Closed(_) -> Error(ScopeNotOpen(scope.state))

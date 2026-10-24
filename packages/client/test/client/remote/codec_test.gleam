@@ -7,6 +7,7 @@ import core/json
 import core/message
 import gleam/bit_array
 import gleam/option.{None, Some}
+import gleam/result
 import runtime/effects.{ToolCompleted, ToolFailed}
 
 fn result_message() -> message.AgentMessage {
@@ -84,4 +85,19 @@ pub fn an_execution_key_names_its_execution_and_a_call_key_none_test() {
   assert protocol.execution_id(key) == Ok("ab12")
   assert protocol.execution_id(protocol.Key(..key, step: "turn-1:tools"))
     == Error(Nil)
+}
+
+pub fn an_evaluation_report_round_trips_through_an_execution_row_test() {
+  // `EvolutionEvaluate` stores its report as an execution value (verdict,
+  // reason and observation), so the host's stored row reads back as that exact
+  // report and as the execution kind, never as a tool outcome.
+  let report =
+    json.Object([
+      #("verdict", json.String("failed")),
+      #("reason", json.String("the author tests did not pass")),
+      #("observation", json.String("{\"passed\":0,\"failed\":2}")),
+    ])
+  assert codec.decode_stored(codec.encode_execution(report))
+    == Ok(codec.StoredExecution(report))
+  assert result.is_error(codec.decode_outcome(codec.encode_execution(report)))
 }

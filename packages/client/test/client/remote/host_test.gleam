@@ -6,6 +6,9 @@
 //// abort stops the call while a lost connection does not. The fake tool counts
 //// its runs, and that count is the number every test of idempotence reads.
 
+import client/evolution/record
+import client/evolution/record_test
+import client/extension/hooks
 import client/internal/ffi_os
 import client/internal/ffi_remote
 import client/remote/address.{type Address}
@@ -13,6 +16,8 @@ import client/remote/host
 import client/remote/protocol.{
   type HostMessage, type Key, type Refusal, type RunAnswer,
 }
+import core/json
+import core/msgpack
 import gleam/bit_array
 import gleam/erlang/atom
 import gleam/erlang/node
@@ -20,6 +25,7 @@ import gleam/erlang/process.{type Pid, type Subject}
 import gleam/int
 import gleam/list
 import gleam/option
+import gleam/string
 import runtime/effects.{type ToolRun}
 import sqlight
 import storage/exec_ledger
@@ -1023,4 +1029,458 @@ pub fn a_host_that_is_gone_does_not_answer_the_report_test() {
   stop(rig)
   assert fixtures.eventually(fn() { !process.is_alive(rig.pid) })
   assert summarize(200) == Error(Nil)
+}
+
+pub fn a_version_4_attach_is_refused_and_the_host_stays_up_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let path = fixtures.scratch("host") <> "/ledger.db"
+  let text =
+    "remote_test_host_v4_" <> int.to_string(ffi_os.unique_positive_integer())
+  let rig =
+    start_config(
+      path,
+      probe,
+      host.Config(
+        ..fixtures.host_config(
+          path,
+          fixtures.factory(probe, fixtures.AsksNothing, protocol.AllRetired),
+        ),
+        name: ffi_remote.fixed_name(text),
+      ),
+    )
+  let reply: Subject(Result(protocol.Attached(String), Refusal)) =
+    process.new_subject()
+
+  // The step to version 5 added the evolution messages and a census field and
+  // kept `Attach`'s shape, so an executor of the previous release is refused by
+  // value. Version 4's `Attach` as its build sends it, built by hand.
+  let version_4 = #(
+    atom.create("attach"),
+    4,
+    "s1",
+    "/work",
+    0,
+    token(1),
+    fixtures.plan_port(),
+    reply,
+  )
+  ffi_remote.send(
+    to: node.self(),
+    name: ffi_remote.fixed_name(text),
+    message: version_4,
+  )
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the host answers a version 4 attach"
+  assert answer == Error(protocol.VersionMismatch(supported: protocol.version))
+  assert protocol.version == 5
+  assert process.is_alive(rig.pid)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  stop(rig)
+}
+
+// --- evolution messages ---------------------------------------------------------
+
+// What a sender of an evolution message heard. `Answered` is any success;
+// `HookGone` is the one way a hook, which carries no refusal, hears that its
+// scope cannot be asked.
+type Heard {
+  Answered
+  Refused(refusal: Refusal)
+  HookGone
+}
+
+// A request sent and its answer still to be read. The name says which message
+// it was, so a failed comparison names the arm.
+type Pending {
+  Pending(name: String, hear: fn() -> Heard)
+}
+
+fn evolving_rig(gate: fixtures.Gate) -> Rig {
+  let probe = fixtures.probe(gate)
+  let path = fixtures.scratch("host") <> "/ledger.db"
+  start_at(path, probe, fixtures.evolving_factory(probe))
+}
+
+fn hear_result(reply: Subject(Result(a, Refusal))) -> Heard {
+  case process.receive(reply, 5000) {
+    Ok(Ok(_answer)) -> Answered
+    Ok(Error(refusal)) -> Refused(refusal)
+    Error(Nil) -> Refused(protocol.Unreachable("no answer in five seconds"))
+  }
+}
+
+fn hear_run(reply: Subject(RunAnswer)) -> Heard {
+  case process.receive(reply, 5000) {
+    Ok(protocol.RunFinished(_outcome)) -> Answered
+    Ok(protocol.RunRefused(refusal:)) -> Refused(refusal)
+    Ok(protocol.RunLost) -> Refused(protocol.ExecutorFault("the run was lost"))
+    Error(Nil) -> Refused(protocol.Unreachable("no answer in five seconds"))
+  }
+}
+
+fn hear_execution(reply: Subject(protocol.ExecutionAnswer)) -> Heard {
+  case process.receive(reply, 5000) {
+    Ok(protocol.ExecutionFinished(_value)) -> Answered
+    Ok(protocol.ExecutionRefused(refusal:)) -> Refused(refusal)
+    Ok(protocol.ExecutionLost) ->
+      Refused(protocol.ExecutorFault("the check was lost"))
+    Error(Nil) -> Refused(protocol.Unreachable("no answer in five seconds"))
+  }
+}
+
+fn hear_hook(
+  reply: Subject(Result(msgpack.MsgPackValue, hooks.HookFailure)),
+) -> Heard {
+  case process.receive(reply, 5000) {
+    Ok(Ok(_value)) -> Answered
+    Ok(Error(hooks.Gone)) -> HookGone
+    Ok(Error(_failure)) | Error(Nil) ->
+      Refused(protocol.Unreachable("an unexpected hook answer"))
+  }
+}
+
+fn selection() -> record.Selection {
+  let candidate = record_test.candidate()
+  record.Selection(
+    candidate.id,
+    record.evidence_placeholder(),
+    candidate.scope,
+    candidate.name,
+    1,
+  )
+}
+
+// Sends each of the eight evolution messages for session `s1` under the given
+// fence and returns one `Pending` for each. The keyed pair is sent under the
+// steps `check` and `tool`, so a test can ask the ledger about each.
+fn send_evolution(
+  rig: Rig,
+  incarnation: Int,
+  attach_token: BitArray,
+) -> List(Pending) {
+  let candidate = record_test.candidate()
+  let handle = fixtures.evolution_handle()
+  let snapshot = process.new_subject()
+  let evaluate = process.new_subject()
+  let stage = process.new_subject()
+  let run = process.new_subject()
+  let hook = process.new_subject()
+  let transition = process.new_subject()
+  let retire = process.new_subject()
+  let inventory = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.EvolutionSnapshot(
+      incarnation:,
+      token: attach_token,
+      coordinates: fixtures.evolution_coordinates("s1", "snapshot"),
+      directory: "extension",
+      reply: snapshot,
+    ),
+  )
+  address.deliver(
+    rig.address,
+    protocol.EvolutionEvaluate(
+      incarnation:,
+      token: attach_token,
+      coordinates: fixtures.evolution_coordinates("s1", "check"),
+      candidate:,
+      reply: evaluate,
+    ),
+  )
+  address.deliver(
+    rig.address,
+    protocol.EvolutionStage(
+      session: "s1",
+      incarnation:,
+      token: attach_token,
+      selection: selection(),
+      candidate:,
+      reply: stage,
+    ),
+  )
+  address.deliver(
+    rig.address,
+    protocol.EvolutionRun(
+      incarnation:,
+      token: attach_token,
+      coordinates: fixtures.evolution_coordinates("s1", "tool"),
+      target: protocol.Promoted(handle:, tool: "evolution_echo"),
+      args: json.Object([]),
+      reply: run,
+    ),
+  )
+  address.deliver(
+    rig.address,
+    protocol.EvolutionHook(
+      session: "s1",
+      incarnation:,
+      token: attach_token,
+      handle:,
+      event: "tool_call",
+      payload: msgpack.NilValue,
+      within_ms: 1000,
+      reply: hook,
+    ),
+  )
+  address.deliver(
+    rig.address,
+    protocol.EvolutionTransition(
+      session: "s1",
+      incarnation:,
+      token: attach_token,
+      step: protocol.Publish(handle:, successor: handle),
+      reply: transition,
+    ),
+  )
+  address.deliver(
+    rig.address,
+    protocol.EvolutionRetire(
+      session: "s1",
+      incarnation:,
+      token: attach_token,
+      handle:,
+      reply: retire,
+    ),
+  )
+  address.deliver(
+    rig.address,
+    protocol.EvolutionInventory(
+      session: "s1",
+      incarnation:,
+      handle:,
+      reply: inventory,
+    ),
+  )
+  [
+    Pending("snapshot", fn() { hear_result(snapshot) }),
+    Pending("evaluate", fn() { hear_execution(evaluate) }),
+    Pending("stage", fn() { hear_result(stage) }),
+    Pending("run", fn() { hear_run(run) }),
+    Pending("hook", fn() { hear_hook(hook) }),
+    Pending("transition", fn() { hear_result(transition) }),
+    Pending("retire", fn() { hear_result(retire) }),
+    Pending("inventory", fn() { hear_result(inventory) }),
+  ]
+}
+
+fn heard_all(pending: List(Pending)) -> List(#(String, Heard)) {
+  list.map(pending, fn(entry) { #(entry.name, entry.hear()) })
+}
+
+// What every arm should have heard when its fence refused with `refusal`: the
+// refusal, except that a hook hears `Gone`.
+fn all_refused(refusal: Refusal) -> List(#(String, Heard)) {
+  [
+    #("snapshot", Refused(refusal)),
+    #("evaluate", Refused(refusal)),
+    #("stage", Refused(refusal)),
+    #("run", Refused(refusal)),
+    #("hook", HookGone),
+    #("transition", Refused(refusal)),
+    #("retire", Refused(refusal)),
+    #("inventory", Refused(refusal)),
+  ]
+}
+
+fn no_evolution_text() -> String {
+  "the scope's workspace plane has no evolution machine"
+}
+
+pub fn a_plane_without_evolution_refuses_every_evolution_message_test() {
+  let rig = rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+
+  // The fence passes, so the only thing left to refuse is the plane.
+  assert heard_all(send_evolution(rig, 0, token(1)))
+    == all_refused(protocol.NoEvolution(no_evolution_text()))
+  assert fixtures.runs(rig.probe) == []
+
+  // The fence passed and the plane was refused, so the keyed pair is the path
+  // most worth proving wrote no row.
+  assert lookup(rig, fixtures.evolution_coordinates("s1", "check").key)
+    == Ok(protocol.Missing)
+  assert lookup(rig, fixtures.evolution_coordinates("s1", "tool").key)
+    == Ok(protocol.Missing)
+  stop(rig)
+}
+
+pub fn evolution_messages_from_a_stale_token_are_refused_before_the_plane_is_asked_test() {
+  let rig = evolving_rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let assert Ok(_rebound) = attach(rig, 0, token(2))
+
+  // The first runtime's messages arrive late. Each changes something, so each
+  // is refused by the token. The inventory is the one that does not: it reads,
+  // it carries no token, and a read of a scope at the right incarnation is true
+  // whichever runtime asks.
+  let heard = heard_all(send_evolution(rig, 0, token(1)))
+  assert heard
+    == list.map(all_refused(protocol.StaleToken), fn(entry) {
+      case entry.0 {
+        "inventory" -> #("inventory", Answered)
+        _ -> entry
+      }
+    })
+
+  // The plane reached only the inventory, and the refused keyed calls wrote no
+  // row.
+  assert fixtures.runs(rig.probe) |> list.map(fn(entry) { entry.1 })
+    == ["evolution:serve:inventory"]
+  assert lookup(rig, fixtures.evolution_coordinates("s1", "check").key)
+    == Ok(protocol.Missing)
+  assert lookup(rig, fixtures.evolution_coordinates("s1", "tool").key)
+    == Ok(protocol.Missing)
+  stop(rig)
+}
+
+pub fn evolution_messages_from_a_stale_incarnation_are_refused_test() {
+  let rig = evolving_rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+
+  // Even a read is held to the scope's incarnation.
+  assert heard_all(send_evolution(rig, 1, token(1)))
+    == all_refused(protocol.StaleIncarnation(0))
+  assert fixtures.runs(rig.probe) == []
+  stop(rig)
+}
+
+pub fn evolution_messages_for_a_scope_that_is_not_open_are_refused_test() {
+  let rig = evolving_rig(fixtures.Open)
+
+  // No attach has created the scope.
+  assert heard_all(send_evolution(rig, 0, token(1)))
+    == all_refused(protocol.NoSuchScope)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  assert close(rig, 0) == Ok(protocol.AllRetired)
+
+  // A closed scope admits nothing, whatever the plane could have done.
+  assert heard_all(send_evolution(rig, 0, token(1)))
+    == all_refused(protocol.ScopeNotOpen)
+  assert fixtures.runs(rig.probe) == []
+  stop(rig)
+}
+
+pub fn a_current_evolution_message_reaches_the_plane_test() {
+  let rig = evolving_rig(fixtures.Open)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  assert heard_all(send_evolution(rig, 0, token(1)))
+    == [
+      #("snapshot", Answered),
+      #("evaluate", Answered),
+      #("stage", Answered),
+      #("run", Answered),
+      #("hook", Answered),
+      #("transition", Answered),
+      #("retire", Answered),
+      #("inventory", Answered),
+    ]
+  assert fixtures.runs(rig.probe)
+    |> list.map(fn(entry) { entry.1 })
+    |> list.sort(string.compare)
+    == [
+      "evolution:evaluate:check",
+      "evolution:run:tool",
+      "evolution:serve:hook",
+      "evolution:serve:inventory",
+      "evolution:serve:retire",
+      "evolution:serve:snapshot",
+      "evolution:serve:stage",
+      "evolution:serve:transition",
+    ]
+
+  // The two keyed calls left terminal rows under their own keys, so a re-send
+  // after a lost reply reads them instead of running again.
+  assert lookup(rig, fixtures.evolution_coordinates("s1", "tool").key)
+    == Ok(protocol.Terminal(fixtures.evolution_outcome("tool")))
+  assert lookup(rig, fixtures.evolution_coordinates("s1", "check").key)
+    == Ok(protocol.Executed(json.Object([#("verdict", json.String("passed"))])))
+  stop(rig)
+}
+
+pub fn a_duplicate_evolution_run_while_live_joins_it_and_runs_once_test() {
+  let rig = evolving_rig(fixtures.Held)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let coordinates = fixtures.evolution_coordinates("s1", "tool")
+  let first = send_evolution_run(rig, coordinates)
+  assert fixtures.eventually(fn() {
+    fixtures.run_count(rig.probe, "evolution:run:tool") == 1
+  })
+
+  // The orchestrator's re-send after a reconnect: a waiter on the live run.
+  let second = send_evolution_run(rig, coordinates)
+  fixtures.release(rig.probe)
+  let expected = protocol.RunFinished(fixtures.evolution_outcome("tool"))
+  assert heard(first) == expected
+  assert heard(second) == expected
+  assert fixtures.run_count(rig.probe, "evolution:run:tool") == 1
+  stop(rig)
+}
+
+pub fn a_duplicate_evolution_evaluate_while_live_joins_it_and_runs_once_test() {
+  let rig = evolving_rig(fixtures.Held)
+  let assert Ok(_attached) = attach(rig, 0, token(1))
+  let coordinates = fixtures.evolution_coordinates("s1", "check")
+  let first = send_evolution_evaluate(rig, coordinates)
+  assert fixtures.eventually(fn() {
+    fixtures.run_count(rig.probe, "evolution:evaluate:check") == 1
+  })
+  let second = send_evolution_evaluate(rig, coordinates)
+  fixtures.release(rig.probe)
+  let expected =
+    protocol.ExecutionFinished(
+      json.Object([#("verdict", json.String("passed"))]),
+    )
+  assert process.receive(first, 5000) == Ok(expected)
+  assert process.receive(second, 5000) == Ok(expected)
+  assert fixtures.run_count(rig.probe, "evolution:evaluate:check") == 1
+  stop(rig)
+}
+
+fn send_evolution_run(
+  rig: Rig,
+  coordinates: protocol.Coordinates,
+) -> Subject(RunAnswer) {
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.EvolutionRun(
+      incarnation: 0,
+      token: token(1),
+      coordinates:,
+      target: protocol.Promoted(
+        handle: fixtures.evolution_handle(),
+        tool: "evolution_echo",
+      ),
+      args: json.Object([]),
+      reply:,
+    ),
+  )
+  reply
+}
+
+fn send_evolution_evaluate(
+  rig: Rig,
+  coordinates: protocol.Coordinates,
+) -> Subject(protocol.ExecutionAnswer) {
+  let reply = process.new_subject()
+  address.deliver(
+    rig.address,
+    protocol.EvolutionEvaluate(
+      incarnation: 0,
+      token: token(1),
+      coordinates:,
+      candidate: record_test.candidate(),
+      reply:,
+    ),
+  )
+  reply
+}
+
+fn lookup(rig: Rig, key: Key) -> Result(protocol.Lookup, Refusal) {
+  let reply = process.new_subject()
+  address.deliver(rig.address, protocol.Query(key, reply))
+  let assert Ok(answer) = process.receive(reply, 5000)
+    as "the host answers a query"
+  answer
 }

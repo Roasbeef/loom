@@ -840,6 +840,11 @@ or close; there is no transaction, lease or authorization cache.
   how an external index (WP-K search) learns its cursors are invalid;
   `generation` reads it without taking the lease, and never conjures a file
   that does not exist.
+- **`current` is the admission check as a read.** `exec_ledger.current` and
+  `current_incarnation` apply `admit`'s scope, incarnation and token
+  comparison without a call row, for requests that need the fence and insert
+  nothing (the host's evolution arms). They share `require_current` with
+  `admit`, so the refusals and their order cannot drift apart.
 - **The execution ledger decides in the transaction that writes.** Every
   `exec_ledger` write runs in `BEGIN IMMEDIATE`, and `admit` compares the
   request's incarnation and attach token **by value** against the stored scope

@@ -63,6 +63,9 @@
 
 import broker/framing.{type CapOutcome}
 import client/escalate
+import client/evolution/record
+import client/extension/archive
+import client/extension/hooks
 import client/notice
 import client/owner_services.{
   type ExecutionTerms, type FactFault, type OwnerCapCall,
@@ -71,6 +74,7 @@ import client/wiring.{type Authority}
 import codemode/satellite.{type CapDenial}
 import core/ids.{type OpId, type Seq}
 import core/json.{type JsonValue}
+import core/msgpack.{type MsgPackValue}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/option.{type Option}
@@ -102,6 +106,20 @@ import tools/tool
 /// two shapes, and every executor must upgrade with its orchestrators, because
 /// the host refuses the other version at the first attach.
 ///
+/// Version 5 added the remote evolution vocabulary of protocol-change/098: eight
+/// `HostMessage` constructors (`EvolutionSnapshot`, `EvolutionEvaluate`,
+/// `EvolutionStage`, `EvolutionRun`, `EvolutionHook`, `EvolutionTransition`,
+/// `EvolutionRetire` and `EvolutionInventory`), the plain-data types they
+/// carry (`Coordinates`, `Handle`, `Staged`, `Prepared`, `TransitionStep`,
+/// `TransitionAnswer`, `Target`, `Activation` and `EvolutionRequest`), the four
+/// refusals `UnknownHandle`, `AlreadyPublished`, `StaleGeneration` and
+/// `NoEvolution`, and the census field `RemoteCensus.evolution`, which says
+/// whether the executor can compile candidates and under which identity. The
+/// step from 4 changes the shape of the census an `Attached` carries as well as
+/// adding messages, so every executor must upgrade with its orchestrators.
+/// Trials and core upgrades are not in this version; they come with the
+/// changes that serve them, under their own bumps.
+///
 /// `Attach` must keep the shape it had in version 2. It is the first
 /// message a peer of any version sends, and the host matches the term it
 /// receives against this module's constructors: an `Attach` of another arity
@@ -110,12 +128,19 @@ import tools/tool
 /// travels in a message sent after the version check has passed, as the MCP
 /// plan does. Every other message may change shape, because a peer of another
 /// version never gets past the attach to send it.
-pub const version = 4
+pub const version = 5
 
 /// The name an execution's ledger row is admitted under, in the column a tool
 /// call's row holds its tool name in. No tool is named this, so a row is known
 /// to be an execution's without reading its step.
 pub const execution_tool = "execution"
+
+/// The prefix of the name an evolution call's ledger row is admitted under:
+/// `evolution:test` for a candidate's check, `evolution:<tool>` for a promoted
+/// tool and `evolution:program` for a program. No tool is named with the
+/// prefix, so the row is known to be evolution's, and it is never an
+/// execution's (`execution_tool`).
+pub const evolution_tool_prefix = "evolution:"
 
 /// The most bytes of Git's message a `WorktreeFailed` carries.
 pub const max_worktree_reason = 512
@@ -233,6 +258,24 @@ pub type Refusal {
   /// undone, so the next attach starts clean.
   WorktreeFailed(reason: String)
 
+  /// The generation handle names nothing the executor holds: it never issued
+  /// it, or the executor restarted since, so the handle belongs to a previous
+  /// boot.
+  UnknownHandle
+
+  /// The successor was already published, so it can no longer be aborted. The
+  /// caller's generation is the new one.
+  AlreadyPublished
+
+  /// The executor already serves a generation of the selection that is newer
+  /// than the one asked for, or one that was superseded. `serving` is the
+  /// executor's.
+  StaleGeneration(serving: Int)
+
+  /// The scope has no evolution plane, so it can neither compile nor serve a
+  /// candidate. `reason` says why, in the words the census carries.
+  NoEvolution(reason: String)
+
   /// An argument was outside its domain.
   Invalid(reason: String)
 
@@ -324,6 +367,156 @@ pub type McpPlan {
   )
 }
 
+/// What a tool call's door knows about the call, as far as the executor needs
+/// it to run evolution work on the session's behalf. It is the `Key` the
+/// ledger files the call under, the strand that dispatched it, and the stored
+/// `Authority` (directory additions and standing grants) the executor
+/// revalidates against its own filesystem before widening the call's policy.
+/// The authority is the only carrier of grants.
+/// Nothing machine-local crosses: the executor supplies its own workspace,
+/// base policy, environment and clock when it rebuilds the context.
+/// `coordinates_of` is the one place the two are related.
+pub type Coordinates {
+  Coordinates(
+    /// The call's ledger key: session, operation, step and source index.
+    key: Key,
+    /// The strand whose driver dispatched the call.
+    strand: String,
+    /// The directory additions and standing grants the call runs under.
+    authority: Authority,
+  )
+}
+
+/// Names one generation the executor staged. `boot` is sixteen strong random
+/// bytes drawn each time the scope's evolution actor starts, so a handle that
+/// outlives an executor restart can never name a generation of the next boot;
+/// `ordinal` counts the actor's stages. A handle is an opaque token the
+/// orchestrator stores and sends back, and it is never reused.
+pub type Handle {
+  Handle(boot: BitArray, ordinal: Int)
+}
+
+/// How a staged generation takes over from its predecessor. The orchestrator
+/// builds the matching `live.Generation` mode from it, because a plain
+/// extension sent through the stateful path would be refused by the executor.
+pub type Activation {
+  /// The predecessor is retired and the successor staged from nothing.
+  Replacement
+
+  /// The generation's live contract opts in to `Prepare`, `Publish` and
+  /// `Abort`: a compatible successor can take over its state in place.
+  InPlace
+}
+
+/// What a successful stage tells the orchestrator, which is everything it needs
+/// to build a `live.Generation` over messages.
+pub type Staged {
+  Staged(
+    /// The generation's handle, sent back with every later message about it.
+    handle: Handle,
+    /// The extension's manifest name. Every hook refusal is attributed to it.
+    name: String,
+    /// The tools the generation serves, as declarations. The run closures are
+    /// built on the orchestrator and send `EvolutionRun`.
+    tools: List(tool.Described),
+    /// The hook events the manifest declared. The orchestrator's bus skips an
+    /// undeclared event before any message is sent.
+    hooks: List(String),
+    /// Whether the generation admits an in-place successor.
+    activation: Activation,
+    /// The handles of generations this stage superseded. They are already
+    /// stopped; the orchestrator retires each so a failed stop is retried
+    /// under custody.
+    superseded: List(Handle),
+  )
+}
+
+/// What a successful `Prepare` tells the orchestrator: the successor's handle
+/// and the declarations of the tools it will serve once published.
+pub type Prepared {
+  Prepared(successor: Handle, tools: List(tool.Described))
+}
+
+/// One step of an in-place upgrade. `Prepare` builds the successor beside the
+/// serving generation; `Publish` makes it the serving one; `Abort` discards it.
+pub type TransitionStep {
+  /// Builds `candidate` as the successor of `handle`, under `selection`.
+  Prepare(
+    handle: Handle,
+    selection: record.Selection,
+    candidate: record.Candidate,
+  )
+
+  /// Makes `successor` the serving generation in place of `handle`.
+  Publish(handle: Handle, successor: Handle)
+
+  /// Discards the unpublished `successor` of `handle`.
+  Abort(handle: Handle, successor: Handle)
+}
+
+/// How the executor answered a `TransitionStep`.
+pub type TransitionAnswer {
+  /// The successor is built and waits to be published or aborted.
+  TransitionPrepared(prepared: Prepared)
+
+  /// The successor now serves. Answered again for a repeated `Publish`.
+  TransitionPublished
+
+  /// The successor is discarded, or never existed.
+  TransitionAborted
+}
+
+/// What an `EvolutionRun` runs.
+pub type Target {
+  /// A tool of a staged generation, by name.
+  Promoted(handle: Handle, tool: String)
+
+  /// A program candidate, which is compiled for each call and never staged.
+  Program(candidate: record.Candidate)
+}
+
+/// The six evolution requests that change no call row, as the host hands them
+/// to the plane once the scope's fence has passed. Each carries the message's
+/// fields without the fence (incarnation and token) and the subject its answer
+/// goes to. `EvolutionEvaluate` and `EvolutionRun` are not here: they are
+/// keyed calls, and the host admits them as it admits a `Run`.
+pub type EvolutionRequest {
+  /// Captures a candidate's source from `directory` of the workspace.
+  SnapshotRequest(
+    coordinates: Coordinates,
+    directory: String,
+    reply: Subject(Result(archive.Tree, Refusal)),
+  )
+
+  /// Builds and starts one approved selection.
+  StageRequest(
+    selection: record.Selection,
+    candidate: record.Candidate,
+    reply: Subject(Result(Staged, Refusal)),
+  )
+
+  /// Delivers one hook event to a generation's extension.
+  HookRequest(
+    handle: Handle,
+    event: String,
+    payload: MsgPackValue,
+    within_ms: Int,
+    reply: Subject(Result(MsgPackValue, hooks.HookFailure)),
+  )
+
+  /// Moves an in-place upgrade one step.
+  TransitionRequest(
+    step: TransitionStep,
+    reply: Subject(Result(TransitionAnswer, Refusal)),
+  )
+
+  /// Stops and removes one generation.
+  RetireRequest(handle: Handle, reply: Subject(Result(CloseOutcome, Refusal)))
+
+  /// Asks a generation for its helper census.
+  InventoryRequest(handle: Handle, reply: Subject(Result(JsonValue, Refusal)))
+}
+
 /// What an orchestrator says to the executor's host.
 ///
 /// `census` is the type of the workspace plane's startup census, which only the
@@ -409,6 +602,90 @@ pub type HostMessage(census) {
     workspace: String,
     incarnation: Int,
     reply: Subject(Result(CloseOutcome, Refusal)),
+  )
+
+  /// Captures a candidate's source from `directory`, read-only and repeatable.
+  /// The scope's `incarnation` and `token` are checked before the plane is
+  /// asked. The orchestrator checks only the shape of `directory`; the
+  /// executor resolves it under its own workspace.
+  EvolutionSnapshot(
+    incarnation: Int,
+    token: BitArray,
+    coordinates: Coordinates,
+    directory: String,
+    reply: Subject(Result(archive.Tree, Refusal)),
+  )
+
+  /// Runs a candidate's author tests. A keyed call: admitted by
+  /// `coordinates.key` as a background execution is, so a re-send joins the
+  /// live check or reads the stored report, which is a JSON value.
+  EvolutionEvaluate(
+    incarnation: Int,
+    token: BitArray,
+    coordinates: Coordinates,
+    candidate: record.Candidate,
+    reply: Subject(ExecutionAnswer),
+  )
+
+  /// Builds and starts the approved `selection`.
+  EvolutionStage(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    selection: record.Selection,
+    candidate: record.Candidate,
+    reply: Subject(Result(Staged, Refusal)),
+  )
+
+  /// Runs a promoted tool or a program. A keyed call: admitted by
+  /// `coordinates.key` as a `Run` is, and answered with the tool's outcome.
+  EvolutionRun(
+    incarnation: Int,
+    token: BitArray,
+    coordinates: Coordinates,
+    target: Target,
+    args: JsonValue,
+    reply: Subject(RunAnswer),
+  )
+
+  /// Delivers a hook event to a generation's extension, within `within_ms`.
+  EvolutionHook(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    handle: Handle,
+    event: String,
+    payload: MsgPackValue,
+    within_ms: Int,
+    reply: Subject(Result(MsgPackValue, hooks.HookFailure)),
+  )
+
+  /// Moves an in-place upgrade one step.
+  EvolutionTransition(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    step: TransitionStep,
+    reply: Subject(Result(TransitionAnswer, Refusal)),
+  )
+
+  /// Stops and removes a generation. Retiring a handle the executor does not
+  /// hold answers `AllRetired`, so a retry after a lost reply is safe.
+  EvolutionRetire(
+    session: String,
+    incarnation: Int,
+    token: BitArray,
+    handle: Handle,
+    reply: Subject(Result(CloseOutcome, Refusal)),
+  )
+
+  /// Asks a generation for its helper census. It changes nothing, so it has no
+  /// token: the scope must be open at `incarnation`, and no more.
+  EvolutionInventory(
+    session: String,
+    incarnation: Int,
+    handle: Handle,
+    reply: Subject(Result(JsonValue, Refusal)),
   )
 }
 
@@ -521,6 +798,42 @@ pub fn key_of(session: String, run: ToolRun) -> Key {
   )
 }
 
+/// The coordinates of one door call: its key, strand and the authority it runs
+/// under, and nothing else. The context's closures and its machine-local
+/// fields (workspace, base policy, environment, clock, blob root) stay on the
+/// orchestrator, because the executor rebuilds them from its own machine and
+/// revalidates the authority against its own filesystem.
+///
+/// `authority` is the door call's stored authority, read from the session's
+/// store as `surface` reads it for a `Run` (`read_authority`), and not derived
+/// from `ctx`. The context holds only the grants of consumed escalation
+/// approvals, because the standing network grants were folded into its base
+/// policy, which does not cross; building the authority from the context would
+/// drop them from a remote check.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // protocol.coordinates_of("session-1", ctx, authority).key.step
+/// //   == ctx.step_id
+/// ```
+pub fn coordinates_of(
+  session: String,
+  ctx: tool.Ctx,
+  authority: Authority,
+) -> Coordinates {
+  Coordinates(
+    key: Key(
+      session:,
+      op: ids.op_id_to_string(ctx.op_id),
+      step: ctx.step_id,
+      source_index: ctx.source_index,
+    ),
+    strand: ctx.strand,
+    authority:,
+  )
+}
+
 /// The ledger key of a background execution: the launching operation, the
 /// execution's own step `async/<id>`, and source index 0, since the step alone
 /// names one execution.
@@ -598,6 +911,16 @@ pub fn describe(refusal: Refusal) -> String {
       "the executor is still preparing this session's workspace; try again shortly"
     WorktreeFailed(reason:) ->
       "the executor could not make this session's Git worktree: " <> reason
+    UnknownHandle -> "the executor holds no generation with that handle"
+    AlreadyPublished ->
+      "the executor already published that successor, so it cannot be aborted"
+    StaleGeneration(serving:) ->
+      "the executor already serves generation "
+      <> int.to_string(serving)
+      <> " of this selection"
+    NoEvolution(reason:) ->
+      "the executor cannot build evolution candidates for this session: "
+      <> reason
     Invalid(reason:) -> "the executor refused the request: " <> reason
     ExecutorFault(reason:) -> "the executor failed: " <> reason
     Unreachable(reason:) -> "the executor could not be reached: " <> reason

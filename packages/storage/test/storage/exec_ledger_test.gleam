@@ -217,6 +217,38 @@ pub fn admission_needs_a_scope_that_is_open_test() {
     == Error(exec_ledger.ScopeNotOpen(Closed(AllRetired)))
 }
 
+pub fn current_is_the_admission_check_without_a_row_test() {
+  let file = path("current")
+  let ledger = open_at(file)
+  assert exec_ledger.current(ledger, "s", 0, token(1))
+    == Error(exec_ledger.NoSuchScope)
+  assert exec_ledger.current_incarnation(ledger, "s", 0)
+    == Error(exec_ledger.NoSuchScope)
+  attached(ledger)
+  assert exec_ledger.current(ledger, "s", 0, token(1)) == Ok(Nil)
+  assert exec_ledger.current(ledger, "s", 0, token(2))
+    == Error(exec_ledger.StaleToken)
+  assert exec_ledger.current(ledger, "s", 1, token(1))
+    == Error(exec_ledger.StaleIncarnation(0))
+
+  // The incarnation-only read ignores the token.
+  assert exec_ledger.current_incarnation(ledger, "s", 0) == Ok(Nil)
+  assert exec_ledger.current_incarnation(ledger, "s", 1)
+    == Error(exec_ledger.StaleIncarnation(0))
+
+  // A closing scope and a closed one are both not open.
+  assert exec_ledger.begin_close(ledger, "s", "/work", 0) == Ok(Nil)
+  assert exec_ledger.current(ledger, "s", 0, token(1))
+    == Error(exec_ledger.ScopeNotOpen(Closing))
+  assert exec_ledger.current_incarnation(ledger, "s", 0)
+    == Error(exec_ledger.ScopeNotOpen(Closing))
+  assert exec_ledger.finish_close(ledger, "s", "/work", 0, AllRetired)
+    == Ok(Nil)
+  assert exec_ledger.current(ledger, "s", 0, token(1))
+    == Error(exec_ledger.ScopeNotOpen(Closed(AllRetired)))
+  assert count(file, "SELECT count(*) FROM call") == 0
+}
+
 pub fn a_closing_scope_still_settles_the_calls_it_cancels_test() {
   let ledger = open_at(path("closing-settles"))
   attached(ledger)

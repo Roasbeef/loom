@@ -11,6 +11,7 @@
 import broker/exec
 import client/catalog
 import client/codemode
+import client/evolution/record
 import client/executor_plane
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
@@ -406,9 +407,30 @@ pub fn the_census_is_plain_data_with_no_function_values_test() {
   // A shared workspace has no branch to report.
   assert census.branch == None
 
+  // The evolution plane is not built on the executor yet, and the census says
+  // so in words an operator can act on.
+  assert census.evolution
+    == remote_census.Uncompiled(
+      "the executor's evolution plane is not built yet",
+    )
+
   // And the term survives the trip a distribution connection gives it.
   assert wire_round_trip(census) == census
   stop(rig)
+}
+
+pub fn an_evolution_census_that_compiles_is_plain_data_too_test() {
+  // The variant the executor reports once it can compile candidates carries a
+  // record of three strings, so it holds no function value and survives the
+  // trip a distribution connection gives it.
+  let compiles =
+    remote_census.Compiles(record.Identity(
+      build: "build-1",
+      seam: "seam-1",
+      evaluator: "evaluator-1",
+    ))
+  assert function_values(compiles) == 0
+  assert wire_round_trip(compiles) == compiles
 }
 
 pub fn a_maximum_size_file_read_fits_the_reservation_test() {
