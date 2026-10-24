@@ -38,9 +38,23 @@ const unserved_keys = [
   "an/ordinary/fact", "",
 ]
 
-pub fn only_the_two_reserved_namespaces_are_served_test() {
+pub fn only_the_three_reserved_namespaces_are_served_test() {
   assert owner_services.served_prefixes()
-    == ["client/working_directory/", "job/"]
+    == ["client/working_directory/", "job/", "ext/"]
+}
+
+pub fn the_extension_memory_namespace_is_served_the_same_way_test() {
+  // `ext/` is where an extension's `remember` writes. A key under it reaches
+  // the store, which is absent here, and a near miss does not.
+  let facts = unbound()
+  let key = "ext/web-search/last"
+  assert facts.cell(key) == Error(owner_services.StoreAbsent)
+  assert facts.put_blind(key, json.Null) == Error(owner_services.StoreAbsent)
+  assert facts.list("ext/") == Error(owner_services.StoreAbsent)
+  assert facts.cell("extension/x")
+    == Error(owner_services.NotServed(key: "extension/x"))
+  assert facts.put_blind("agent/x", json.Null)
+    == Error(owner_services.NotServed(key: "agent/x"))
 }
 
 pub fn every_operation_refuses_a_key_outside_the_served_prefixes_test() {

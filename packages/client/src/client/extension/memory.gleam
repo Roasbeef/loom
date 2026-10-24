@@ -12,6 +12,11 @@
 //// `tools/schedule` — the seam owns the wire and the vocabulary, and the
 //// host owns everything durable.
 ////
+//// Two doors build the same `Door`. `door` writes through a live runtime in
+//// this VM, which is what `client/serve` wires. `over_facts` writes through
+//// the owner's fact access, which is what an executor has: no runtime, but the
+//// owner port's five fact operations, of which `ext/` is a served prefix.
+////
 //// # The subtree is composed here and named nowhere else
 ////
 //// A `Cell` carries the extension's name and the leaf key, and `key`
@@ -70,6 +75,7 @@
 //// `fs.write` in a loop.
 
 import client/agency
+import client/owner_services.{type FactAccess}
 import core/corruption
 import core/json
 import gleam/option.{type Option, None, Some}
@@ -208,6 +214,46 @@ pub fn for_session(config: agency.Config) -> Door {
   door(Wiring(runtime: fn() { agency.borrow_runtime(config) }))
 }
 
+/// The memory door over a fact access that is not a live runtime in this VM.
+///
+/// An executor holds no session runtime. What it holds is the owner's fact
+/// access, which answers the same five operations over the owner port, and
+/// `ext/` is one of the prefixes that access serves
+/// (`owner_services.served_prefixes`). The door composes the same key
+/// (`key`) and applies the same parse as `door`, so a cell written from an
+/// executor is the cell an orchestrator-side extension would write, and the
+/// subtree is still the extension's name alone.
+///
+/// A remember is a blind overwrite (`put_blind`), for the reason `door`
+/// gives: the extension is the only writer of its own subtree. A recall
+/// reads the cell and renders its value back to text. A store that cannot
+/// be reached is an in-band `Unavailable`, as it is for `door`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // memory.over_facts(spec.owner.facts)
+/// //   .remember(memory.Cell("web-search", "last"), "{\"q\":\"loom\"}")
+/// ```
+///
+pub fn over_facts(facts: FactAccess) -> Door {
+  // Each closure holds the one function it calls, not the whole access, so a
+  // door copied into a satellite's dispatch carries no more than it uses.
+  let put_blind = facts.put_blind
+  let read = facts.cell
+  Door(
+    remember: fn(cell, value) {
+      use parsed <- result.try(parse(value))
+      put_blind(key(cell), parsed)
+      |> result.map_error(unreachable)
+    },
+    recall: fn(cell) {
+      use found <- result.try(read(key(cell)) |> result.map_error(unreachable))
+      Ok(option.map(found, fn(cell) { json.to_string(cell.value) }))
+    },
+  )
+}
+
 // --- the two arms ----------------------------------------------------------
 
 /// Writes a JSON value into the extension's reserved memory cell.
@@ -222,17 +268,23 @@ fn remember(
   cell: Cell,
   value: String,
 ) -> Result(Nil, Refusal) {
-  use parsed <- result.try(
-    json.parse(value)
-    |> result.map_error(fn(report) {
-      NotJson(
-        reason: "the value is not a JSON document: "
-        <> corruption.describe(report),
-      )
-    }),
-  )
+  use parsed <- result.try(parse(value))
   api.put_reserved_fact(runtime, key(cell), parsed)
   |> result.map_error(unavailable)
+}
+
+/// Parses a remembered value as a JSON document.
+///
+/// The parse is shared by the two doors that write a cell, so a document is
+/// refused in the same words whichever side of the wire stores it.
+fn parse(value: String) -> Result(json.JsonValue, Refusal) {
+  json.parse(value)
+  |> result.map_error(fn(report) {
+    NotJson(
+      reason: "the value is not a JSON document: "
+      <> corruption.describe(report),
+    )
+  })
 }
 
 /// Reads the current value of the extension's reserved memory cell.
@@ -273,4 +325,26 @@ fn with_runtime(
 
 fn unavailable(error: api.ApiError) -> Refusal {
   Unavailable(reason: string.inspect(error))
+}
+
+/// A fact access that failed, worded for the extension that asked.
+///
+/// A lost race cannot happen to a blind write or a read, so the remaining
+/// cases are reasons the store could not be used, and the extension reads them
+/// as one refusal.
+fn unreachable(fault: owner_services.FactFault) -> Refusal {
+  // Every fault is `Unavailable`; only the sentence differs.
+  case fault {
+    owner_services.StoreAbsent ->
+      Unavailable(
+        reason: "this session's store is not available to read or write",
+      )
+    owner_services.Conflict ->
+      Unavailable(reason: "the cell moved while it was being written")
+    owner_services.LeaseStolen(..) ->
+      Unavailable(reason: "this session's writer lease is gone")
+    owner_services.Failed(detail:) -> Unavailable(reason: detail)
+    owner_services.NotServed(key:) ->
+      Unavailable(reason: "the owner does not serve the key " <> key)
+  }
 }
