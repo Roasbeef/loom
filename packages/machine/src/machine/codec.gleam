@@ -139,6 +139,7 @@ fn encode_model(model: ModelIdentity) -> JsonValue {
   ])
 }
 
+/// Decodes a model identity JSON object into provider and model ID fields.
 fn decode_model(value: JsonValue) -> Result(ModelIdentity, CorruptionReport) {
   let where = "machine/codec.model"
   use fields <- result.try(fields_of(value, where))
@@ -147,6 +148,7 @@ fn decode_model(value: JsonValue) -> Result(ModelIdentity, CorruptionReport) {
   Ok(ModelIdentity(provider:, model_id:))
 }
 
+/// Serializes a thinking level variant into its wire representation.
 fn thinking_level_to_string(level: ThinkingLevel) -> String {
   case level {
     ThinkingOff -> "off"
@@ -159,6 +161,7 @@ fn thinking_level_to_string(level: ThinkingLevel) -> String {
   }
 }
 
+/// Parses a thinking level wire string into a thinking level variant.
 fn parse_thinking_level(
   text: String,
   where: String,
@@ -220,6 +223,8 @@ pub fn decode_strand_state(
   let where = "machine/codec.strand_state"
   use fields <- result.try(fields_of(value, where))
   use current_value <- result.try(require(fields, "currentOperationId", where))
+
+  // Decode the optional current operation identifier.
   use current_operation <- result.try(case current_value {
     json.Null -> Ok(None)
     json.String(text) -> result.map(ids.parse_op_id(text), Some)
@@ -231,6 +236,7 @@ pub fn decode_strand_state(
         context: json.to_string(other),
       ))
   })
+
   use pending_value <- result.try(require_array(fields, "pendingNextRun", where))
   use pending_next_run <- result.try(list.try_map(
     pending_value,
@@ -251,6 +257,7 @@ pub fn decode_strand_state(
 /// ```
 ///
 pub fn encode_operation(operation: Operation) -> JsonValue {
+  // Encode the operation intent according to its specific variant.
   let intent = case operation.intent {
     RunIntent(prompt_entries:) ->
       json.Object([
@@ -274,6 +281,7 @@ pub fn encode_operation(operation: Operation) -> JsonValue {
         #("customInstructions", option.map(custom_instructions, json.String)),
       ])
   }
+
   json.Object([
     #("operationId", json.String(ids.op_id_to_string(operation.id))),
     #("strand", json.String(operation.strand)),
@@ -307,12 +315,15 @@ pub fn decode_operation(
   Ok(Operation(id:, strand: strand_name, source_leaf:, started_at:, intent:))
 }
 
+/// Decodes an operation intent JSON object according to its kind discriminant.
 fn decode_intent(
   value: JsonValue,
 ) -> Result(OperationIntent, CorruptionReport) {
   let where = "machine/codec.operation.intent"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "kind", where))
+
+  // Dispatch decoding based on the intent kind discriminant.
   case kind {
     "run" -> {
       use prompts <- result.try(require_array(fields, "promptEntryIds", where))
@@ -376,6 +387,8 @@ pub fn decode_control(value: JsonValue) -> Result(Control, CorruptionReport) {
   let where = "machine/codec.control"
   use fields <- result.try(fields_of(value, where))
   use status <- result.try(require_string(fields, "status", where))
+
+  // Dispatch decoding based on the control status string.
   case status {
     "running" -> Ok(Running)
     "cancel_requested" -> {
@@ -427,6 +440,7 @@ pub fn decode_operation_error(
   Ok(OperationError(code:, message: message_text, details:))
 }
 
+/// Encodes failure provenance into a tagged JSON representation.
 fn encode_provenance(provenance: FailureProvenance) -> JsonValue {
   case provenance {
     ResponseProvenance(entry:) ->
@@ -444,12 +458,15 @@ fn encode_provenance(provenance: FailureProvenance) -> JsonValue {
   }
 }
 
+/// Decodes a failure provenance JSON object by inspecting its kind discriminant.
 fn decode_provenance(
   value: JsonValue,
 ) -> Result(FailureProvenance, CorruptionReport) {
   let where = "machine/codec.provenance"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "kind", where))
+
+  // Dispatch provenance decoding across response, configuration, and structural kinds.
   case kind {
     "response" -> {
       use entry <- result.try(require_entry_id(fields, "entryId", where))
@@ -472,6 +489,7 @@ fn decode_provenance(
 
 // --- run settings ---------------------------------------------------------
 
+/// Serializes run settings into a JSON object of configuration parameters.
 fn encode_settings(settings: RunSettings) -> JsonValue {
   json.Object([
     #("compaction", encode_compaction_settings(settings.compaction)),
@@ -487,6 +505,7 @@ fn encode_settings(settings: RunSettings) -> JsonValue {
   ])
 }
 
+/// Decodes a run settings JSON object into structured configuration fields.
 fn decode_settings(value: JsonValue) -> Result(RunSettings, CorruptionReport) {
   let where = "machine/codec.settings"
   use fields <- result.try(fields_of(value, where))
@@ -501,6 +520,8 @@ fn decode_settings(value: JsonValue) -> Result(RunSettings, CorruptionReport) {
     "toolExecution",
     where,
   ))
+
+  // Parse the tool execution mode text into its typed variant.
   use tool_execution <- result.try(case execution_text {
     "sequential" -> Ok(Sequential)
     "parallel" -> Ok(Parallel)
@@ -512,6 +533,7 @@ fn decode_settings(value: JsonValue) -> Result(RunSettings, CorruptionReport) {
         context: other,
       ))
   })
+
   Ok(RunSettings(compaction:, steering_mode:, follow_up_mode:, tool_execution:))
 }
 
@@ -547,6 +569,7 @@ fn queue_mode_to_string(mode: QueueMode) -> String {
   }
 }
 
+/// Parses a queue mode discriminant string into a typed queue mode.
 fn parse_queue_mode(
   text: String,
   where: String,
@@ -567,11 +590,14 @@ fn parse_queue_mode(
 // `maxAttempts` is an integer for a bounded budget and the string
 // `"unbounded"` otherwise, so an old reader that expects an integer fails
 // loudly on a recording it cannot honour rather than silently capping it.
+/// Encodes a normalized retry policy into its JSON object representation.
 fn encode_retry(retry: NormalizedRetryPolicy) -> JsonValue {
+  // Encode retry attempt budget into an integer or unbounded string.
   let attempts = case retry.attempts {
     Bounded(max_attempts:) -> json.Int(max_attempts)
     Unbounded -> json.String("unbounded")
   }
+
   json.Object([
     #("maxAttempts", attempts),
     #("baseDelayMs", json.Int(retry.base_delay_ms)),
@@ -582,6 +608,7 @@ fn encode_retry(retry: NormalizedRetryPolicy) -> JsonValue {
 // Recordings written before the delay cap existed carry no `maxDelayMs`.
 // They are read as uncapped: the exponential ladder they were captured
 // under is the ladder they resume, which is what a durable policy means.
+/// Decodes a normalized retry policy from a JSON object.
 fn decode_retry(
   value: JsonValue,
 ) -> Result(NormalizedRetryPolicy, CorruptionReport) {
@@ -589,10 +616,13 @@ fn decode_retry(
   use fields <- result.try(fields_of(value, where))
   use attempts <- result.try(decode_retry_budget(fields, where))
   use base_delay_ms <- result.try(require_int(fields, "baseDelayMs", where))
+
+  // Decode the optional max delay ceiling, defaulting to uncapped.
   use max_delay_ms <- result.try(case get(fields, "maxDelayMs") {
     Ok(_) -> require_int(fields, "maxDelayMs", where)
     Error(Nil) -> Ok(uncapped_delay_ms)
   })
+
   Ok(NormalizedRetryPolicy(attempts:, base_delay_ms:, max_delay_ms:))
 }
 
@@ -600,11 +630,14 @@ fn decode_retry(
 /// which is past the point where the ladder saturates anyway.
 const uncapped_delay_ms = 1_073_741_824
 
+/// Decodes the retry attempt budget from fields into bounded or unbounded.
 fn decode_retry_budget(
   fields: Fields,
   where: String,
 ) -> Result(RetryBudget, CorruptionReport) {
   use value <- result.try(require(fields, "maxAttempts", where))
+
+  // Distinguish bounded integer attempt counts from unbounded strings.
   case value {
     json.Int(max_attempts) -> Ok(Bounded(max_attempts:))
     json.String("unbounded") -> Ok(Unbounded)
@@ -673,6 +706,8 @@ pub fn decode_state(
   use kind <- result.try(require_string(fields, "kind", where))
   use control_value <- result.try(require(fields, "control", where))
   use control <- result.try(decode_control(control_value))
+
+  // Dispatch operation state decoding across run, compaction, and navigation kinds.
   case kind {
     "run" -> {
       use settings_value <- result.try(require(fields, "settings", where))
@@ -717,6 +752,7 @@ pub fn decode_state(
   }
 }
 
+/// Serializes the operation inbox queues into a JSON object of entry ID arrays.
 fn encode_inbox(inbox: Inbox) -> JsonValue {
   json.Object([
     #("steer", json.Array(list.map(inbox.steer, encode_entry_id))),
@@ -725,6 +761,7 @@ fn encode_inbox(inbox: Inbox) -> JsonValue {
   ])
 }
 
+/// Decodes an inbox JSON object containing steer, follow_up, and writes entry IDs.
 fn decode_inbox(value: JsonValue) -> Result(Inbox, CorruptionReport) {
   let where = "machine/codec.inbox"
   use fields <- result.try(fields_of(value, where))
@@ -737,6 +774,7 @@ fn decode_inbox(value: JsonValue) -> Result(Inbox, CorruptionReport) {
   Ok(Inbox(steer:, follow_up:, writes:))
 }
 
+/// Serializes a run phase into its tagged JSON representation.
 fn encode_phase(phase: RunPhase) -> JsonValue {
   case phase {
     Starting -> json.Object([#("kind", json.String("starting"))])
@@ -779,10 +817,13 @@ fn encode_phase(phase: RunPhase) -> JsonValue {
   }
 }
 
+/// Decodes a run phase JSON object according to its kind discriminant.
 fn decode_phase(value: JsonValue) -> Result(RunPhase, CorruptionReport) {
   let where = "machine/codec.phase"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "kind", where))
+
+  // Dispatch run phase decoding across starting, checkpoint, and execution phases.
   case kind {
     "starting" -> Ok(Starting)
     "checkpoint" -> {
@@ -802,6 +843,8 @@ fn decode_phase(value: JsonValue) -> Result(RunPhase, CorruptionReport) {
     }
     "compaction" -> {
       use reason_text <- result.try(require_string(fields, "reason", where))
+
+      // Decode the compaction trigger reason.
       use reason <- result.try(case reason_text {
         "threshold" -> Ok(ThresholdReason)
         "overflow" -> Ok(OverflowReason)
@@ -813,6 +856,7 @@ fn decode_phase(value: JsonValue) -> Result(RunPhase, CorruptionReport) {
             context: other,
           ))
       })
+
       use structural_value <- result.try(require(fields, "structural", where))
       use structural <- result.try(decode_structural(structural_value))
       use resume_value <- result.try(require(fields, "resumeAfter", where))
@@ -841,7 +885,9 @@ fn decode_phase(value: JsonValue) -> Result(RunPhase, CorruptionReport) {
   }
 }
 
+/// Encodes a checkpoint phase including continuation and skip inbox flags.
 fn encode_checkpoint(checkpoint: CheckpointPhase) -> JsonValue {
+  // Serialize the checkpoint continuation variant.
   let continuation = case checkpoint.continuation {
     NeedAssistant(overflow_recovery_used:) ->
       json.Object([
@@ -854,6 +900,7 @@ fn encode_checkpoint(checkpoint: CheckpointPhase) -> JsonValue {
         #("includeFinalAssistant", json.Bool(include_final_assistant)),
       ])
   }
+
   object_of([
     #("continuation", Some(continuation)),
     #("triggerEntryId", Some(encode_entry_id(checkpoint.trigger))),
@@ -865,6 +912,7 @@ fn encode_checkpoint(checkpoint: CheckpointPhase) -> JsonValue {
   ])
 }
 
+/// Decodes a checkpoint phase JSON object into continuation and flags.
 fn decode_checkpoint(
   value: JsonValue,
 ) -> Result(CheckpointPhase, CorruptionReport) {
@@ -887,12 +935,15 @@ fn decode_checkpoint(
   ))
 }
 
+/// Decodes continuation requirements from a continuation JSON object.
 fn decode_continuation(
   value: JsonValue,
 ) -> Result(Continuation, CorruptionReport) {
   let where = "machine/codec.continuation"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "kind", where))
+
+  // Dispatch continuation decoding across assistant need and completion states.
   case kind {
     "need_assistant" -> {
       use overflow_recovery_used <- result.try(require_bool(
@@ -920,6 +971,7 @@ fn decode_continuation(
   }
 }
 
+/// Serializes a model generation context into a JSON object.
 fn encode_generation_context(context: GenerationContext) -> JsonValue {
   json.Object([
     #("stepId", json.String(context.step_id)),
@@ -931,6 +983,7 @@ fn encode_generation_context(context: GenerationContext) -> JsonValue {
   ])
 }
 
+/// Decodes a model generation context JSON object into its structured fields.
 fn decode_generation_context(
   value: JsonValue,
 ) -> Result(GenerationContext, CorruptionReport) {
@@ -958,6 +1011,7 @@ fn decode_generation_context(
   ))
 }
 
+/// Serializes a model generation status variant into a tagged JSON representation.
 fn encode_generation(generation: Generation) -> JsonValue {
   case generation {
     GenerationReady(context:, next_attempt:) ->
@@ -996,12 +1050,15 @@ fn encode_generation(generation: Generation) -> JsonValue {
   }
 }
 
+/// Decodes a model generation JSON object into ready, effect pending, or retry states.
 fn decode_generation(value: JsonValue) -> Result(Generation, CorruptionReport) {
   let where = "machine/codec.generation"
   use fields <- result.try(fields_of(value, where))
   use status <- result.try(require_string(fields, "status", where))
   use context_value <- result.try(require(fields, "context", where))
   use context <- result.try(decode_generation_context(context_value))
+
+  // Dispatch generation decoding based on generation status.
   case status {
     "ready" -> {
       use next_attempt <- result.try(require_int(fields, "nextAttempt", where))
@@ -1061,6 +1118,7 @@ fn decode_generation(value: JsonValue) -> Result(Generation, CorruptionReport) {
   }
 }
 
+/// Serializes a tool execution batch into a JSON object.
 fn encode_batch(batch: ToolBatch) -> JsonValue {
   json.Object([
     #("assistantEntryId", encode_entry_id(batch.assistant_entry)),
@@ -1070,6 +1128,7 @@ fn encode_batch(batch: ToolBatch) -> JsonValue {
   ])
 }
 
+/// Decodes a tool execution batch JSON object.
 fn decode_batch(value: JsonValue) -> Result(ToolBatch, CorruptionReport) {
   let where = "machine/codec.batch"
   use fields <- result.try(fields_of(value, where))
@@ -1086,6 +1145,7 @@ fn decode_batch(value: JsonValue) -> Result(ToolBatch, CorruptionReport) {
   Ok(ToolBatch(assistant_entry:, configuration:, turn_id:, calls:))
 }
 
+/// Serializes a tool call state variant into a tagged JSON representation.
 fn encode_call(call: ToolCallState) -> JsonValue {
   case call {
     CallPlanned(source_index:, result_entry:) ->
@@ -1121,6 +1181,7 @@ fn encode_call(call: ToolCallState) -> JsonValue {
   }
 }
 
+/// Decodes a tool call state JSON object across planned, pending, and completed states.
 fn decode_call(value: JsonValue) -> Result(ToolCallState, CorruptionReport) {
   let where = "machine/codec.call"
   use fields <- result.try(fields_of(value, where))
@@ -1131,10 +1192,14 @@ fn decode_call(value: JsonValue) -> Result(ToolCallState, CorruptionReport) {
     "resultEntryId",
     where,
   ))
+
+  // Dispatch tool call decoding based on call status.
   case status {
     "planned" -> Ok(CallPlanned(source_index:, result_entry:))
     "effect_pending" -> {
       use replay_text <- result.try(require_string(fields, "replay", where))
+
+      // Decode the tool effect replay safety policy.
       use replay <- result.try(case replay_text {
         "never" -> Ok(ReplayNever)
         "safe" -> Ok(ReplaySafe)
@@ -1146,6 +1211,7 @@ fn decode_call(value: JsonValue) -> Result(ToolCallState, CorruptionReport) {
             context: other,
           ))
       })
+
       Ok(CallEffectPending(source_index:, result_entry:, replay:))
     }
     "outcome_ready" -> {
@@ -1166,6 +1232,7 @@ fn decode_call(value: JsonValue) -> Result(ToolCallState, CorruptionReport) {
   }
 }
 
+/// Serializes a deferred generation state variant into a JSON object.
 fn encode_deferred(deferred: DeferredState) -> JsonValue {
   case deferred {
     DeferredSuspended(
@@ -1205,6 +1272,7 @@ fn encode_deferred(deferred: DeferredState) -> JsonValue {
   }
 }
 
+/// Decodes a deferred generation state JSON object into suspended or effect pending.
 fn decode_deferred(
   value: JsonValue,
 ) -> Result(DeferredState, CorruptionReport) {
@@ -1221,6 +1289,8 @@ fn decode_deferred(
   use configuration_value <- result.try(require(fields, "configuration", where))
   use configuration <- result.try(decode_configuration(configuration_value))
   use stream_options <- result.try(require(fields, "streamOptions", where))
+
+  // Dispatch deferred state decoding based on status.
   case status {
     "suspended" ->
       Ok(DeferredSuspended(
@@ -1257,6 +1327,7 @@ fn decode_deferred(
   }
 }
 
+/// Serializes summary generation context into a JSON object.
 fn encode_summary_context(context: SummaryContext) -> JsonValue {
   json.Object([
     #("taskId", json.String(context.task_id)),
@@ -1276,6 +1347,7 @@ fn encode_summary_context(context: SummaryContext) -> JsonValue {
   ])
 }
 
+/// Decodes summary generation context from a JSON object.
 fn decode_summary_context(
   value: JsonValue,
 ) -> Result(SummaryContext, CorruptionReport) {
@@ -1288,6 +1360,8 @@ fn decode_summary_context(
     where,
   ))
   use kind_text <- result.try(require_string(fields, "kind", where))
+
+  // Decode the summary context kind.
   use kind <- result.try(case kind_text {
     "compaction" -> Ok(CompactionSummary)
     "branch_summary" -> Ok(BranchSummary)
@@ -1299,12 +1373,15 @@ fn decode_summary_context(
         context: other,
       ))
   })
+
   use configuration_value <- result.try(require(fields, "configuration", where))
   use configuration <- result.try(decode_configuration(configuration_value))
   use stream_options <- result.try(require(fields, "streamOptions", where))
   use retry_value <- result.try(require(fields, "retryPolicy", where))
   use retry <- result.try(decode_retry(retry_value))
   use reason_text <- result.try(require_string(fields, "reason", where))
+
+  // Decode the summary trigger reason.
   use reason <- result.try(case reason_text {
     "manual" -> Ok(ManualSummary)
     "threshold" -> Ok(ThresholdSummary)
@@ -1317,6 +1394,7 @@ fn decode_summary_context(
         context: other,
       ))
   })
+
   Ok(SummaryContext(
     task_id:,
     result_entry:,
@@ -1328,6 +1406,7 @@ fn decode_summary_context(
   ))
 }
 
+/// Serializes a summary generation state variant into a JSON object.
 fn encode_summary_generation(generation: SummaryGeneration) -> JsonValue {
   case generation {
     SummaryReady(context:, next_attempt:) ->
@@ -1372,6 +1451,7 @@ fn encode_summary_generation(generation: SummaryGeneration) -> JsonValue {
   }
 }
 
+/// Decodes summary generation state from a JSON object into ready, pending, or retry states.
 fn decode_summary_generation(
   value: JsonValue,
 ) -> Result(SummaryGeneration, CorruptionReport) {
@@ -1380,6 +1460,8 @@ fn decode_summary_generation(
   use status <- result.try(require_string(fields, "status", where))
   use context_value <- result.try(require(fields, "context", where))
   use context <- result.try(decode_summary_context(context_value))
+
+  // Dispatch summary generation decoding based on status.
   case status {
     "ready" -> {
       use next_attempt <- result.try(require_int(fields, "nextAttempt", where))
@@ -1387,6 +1469,8 @@ fn decode_summary_generation(
     }
     "effect_pending" -> {
       use attempt <- result.try(require_int(fields, "attempt", where))
+
+      // Decode the optional underlying summary request if present.
       use request <- result.try(case get(fields, "request") {
         Error(Nil) -> Ok(None)
         Ok(request_value) -> {
@@ -1400,6 +1484,7 @@ fn decode_summary_generation(
           Ok(Some(SummaryRequest(index:, usage:)))
         }
       })
+
       use usage_values <- result.try(require_array(fields, "usageIds", where))
       use usage_ids <- result.try(
         list.try_map(usage_values, fn(item) {
@@ -1429,6 +1514,7 @@ fn decode_summary_generation(
   }
 }
 
+/// Serializes a structural decision state into a JSON object.
 fn encode_structural(structural: StructuralDecision) -> JsonValue {
   case structural {
     Deciding(task_id:) ->
@@ -1445,6 +1531,7 @@ fn encode_structural(structural: StructuralDecision) -> JsonValue {
   }
 }
 
+/// Decodes structural decision state from a JSON object into deciding or generating.
 fn decode_structural(
   value: JsonValue,
 ) -> Result(StructuralDecision, CorruptionReport) {
@@ -1452,6 +1539,8 @@ fn decode_structural(
   use fields <- result.try(fields_of(value, where))
   use task_id <- result.try(require_string(fields, "taskId", where))
   use status <- result.try(require_string(fields, "status", where))
+
+  // Dispatch structural decision decoding based on decision status.
   case status {
     "deciding" -> Ok(Deciding(task_id:))
     "generating" -> {
@@ -1469,6 +1558,7 @@ fn decode_structural(
   }
 }
 
+/// Serializes a navigation state into an unsummarized or summarized JSON object.
 fn encode_navigation(navigation: Navigation) -> JsonValue {
   case navigation {
     UnsummarizedNavigation(target:, label:) ->
@@ -1488,11 +1578,14 @@ fn encode_navigation(navigation: Navigation) -> JsonValue {
   }
 }
 
+/// Decodes navigation state from a JSON object into unsummarized or summarized variants.
 fn decode_navigation(value: JsonValue) -> Result(Navigation, CorruptionReport) {
   let where = "machine/codec.navigation"
   use fields <- result.try(fields_of(value, where))
   use summarize <- result.try(require_bool(fields, "summarize", where))
   use label <- result.try(optional_string(fields, "label", where))
+
+  // Dispatch navigation decoding between direct and summarized forms.
   case summarize {
     False -> {
       use target_value <- result.try(require(fields, "targetId", where))
@@ -1522,8 +1615,10 @@ fn decode_navigation(value: JsonValue) -> Result(Navigation, CorruptionReport) {
 
 /// Encodes a `LastResult` (the `strand.last_result` payload).
 pub fn encode_last_result(result: LastResult) -> JsonValue {
+  // Dispatch encoding across run, compaction, and navigation last-results.
   case result {
     RunLastResult(operation:, leaf:, outcome:, final_assistant:) -> {
+      // Format the outcome, error, and completion discriminant strings.
       let #(outcome_text, error, completion) = case outcome {
         RunCompleted(completion: CompletedByAssistant) -> #(
           "completed",
@@ -1538,6 +1633,7 @@ pub fn encode_last_result(result: LastResult) -> JsonValue {
         RunFailed(error:) -> #("failed", Some(error), None)
         RunAborted -> #("aborted", None, None)
       }
+
       object_of([
         #("kind", Some(json.String("run"))),
         #("operationId", Some(json.String(ids.op_id_to_string(operation)))),
@@ -1573,6 +1669,7 @@ pub fn encode_last_result(result: LastResult) -> JsonValue {
   }
 }
 
+/// Formats a structural outcome into its outcome string and optional error payload.
 fn encode_structural_outcome(
   outcome: StructuralOutcome,
 ) -> #(String, Option(OperationError)) {
@@ -1596,10 +1693,14 @@ pub fn decode_last_result(
   use leaf_value <- result.try(require(fields, "leafId", where))
   use leaf <- result.try(decode_optional_entry_id(leaf_value, where))
   use outcome_text <- result.try(require_string(fields, "outcome", where))
+
+  // Decode the optional operation error field if present.
   use error <- result.try(case get(fields, "error") {
     Error(Nil) -> Ok(None)
     Ok(error_value) -> result.map(decode_operation_error(error_value), Some)
   })
+
+  // Dispatch last-result decoding based on kind.
   case kind {
     "run" -> {
       use final_assistant <- result.try(optional_entry_id(
@@ -1612,6 +1713,8 @@ pub fn decode_last_result(
         "runCompletion",
         where,
       ))
+
+      // Reconstruct the typed run outcome from text, error, and completion discriminants.
       use outcome <- result.try(case outcome_text, error, completion {
         "completed", None, Some("assistant") ->
           Ok(RunCompleted(completion: CompletedByAssistant))
@@ -1627,6 +1730,7 @@ pub fn decode_last_result(
             context: outcome_text,
           ))
       })
+
       Ok(RunLastResult(operation:, leaf:, outcome:, final_assistant:))
     }
     "compaction" -> {
@@ -1662,6 +1766,7 @@ pub fn decode_last_result(
   }
 }
 
+/// Parses a structural outcome string and optional error into a typed outcome variant.
 fn decode_structural_outcome(
   outcome_text: String,
   error: Option(OperationError),
@@ -1702,12 +1807,15 @@ pub fn encode_pending_entry(pending: PendingEntry) -> JsonValue {
 }
 
 /// Decodes a `PendingEntry`. Total.
+/// Decodes a pending entry JSON object into message or custom pending payloads.
 pub fn decode_pending_entry(
   value: JsonValue,
 ) -> Result(PendingEntry, CorruptionReport) {
   let where = "machine/codec.pending_entry"
   use fields <- result.try(fields_of(value, where))
   use entry_type <- result.try(require_string(fields, "type", where))
+
+  // Dispatch pending entry decoding across message and custom types.
   case entry_type {
     "message" -> {
       use payload <- result.try(require(fields, "payload", where))
@@ -1767,12 +1875,15 @@ pub fn encode_preparation(preparation: StructuralPreparation) -> JsonValue {
 }
 
 /// Decodes a `StructuralPreparation`. Total.
+/// Decodes a structural preparation JSON object into compaction or branch summary shapes.
 pub fn decode_preparation(
   value: JsonValue,
 ) -> Result(StructuralPreparation, CorruptionReport) {
   let where = "machine/codec.preparation"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "kind", where))
+
+  // Dispatch preparation decoding across compaction and branch summary kinds.
   case kind {
     "compaction" -> {
       use summarize_value <- result.try(require_array(
@@ -1845,6 +1956,7 @@ fn encode_messages(messages: List(AgentMessage)) -> JsonValue {
   json.Array(list.map(messages, core_codec.encode_message))
 }
 
+/// Serializes file operations into a JSON object containing read, written, and edited lists.
 fn encode_file_ops(file_ops: FileOperations) -> JsonValue {
   json.Object([
     #("read", json.Array(list.map(file_ops.read, json.String))),
@@ -1853,6 +1965,7 @@ fn encode_file_ops(file_ops: FileOperations) -> JsonValue {
   ])
 }
 
+/// Decodes file operations from a JSON object into lists of paths.
 fn decode_file_ops(
   value: JsonValue,
 ) -> Result(FileOperations, CorruptionReport) {
@@ -1897,6 +2010,7 @@ fn object_of(pairs: List(#(String, Option(JsonValue)))) -> JsonValue {
   )
 }
 
+/// Extracts object key-value pairs or reports a corruption error.
 fn fields_of(
   value: JsonValue,
   where: String,
@@ -1913,6 +2027,7 @@ fn fields_of(
   }
 }
 
+/// Looks up an optional named field in a list of key-value fields.
 fn get(fields: Fields, name: String) -> Result(JsonValue, Nil) {
   list.find_map(fields, fn(field) {
     case field {
@@ -1922,6 +2037,7 @@ fn get(fields: Fields, name: String) -> Result(JsonValue, Nil) {
   })
 }
 
+/// Retrieves a required field from object fields or reports corruption on absence.
 fn require(
   fields: Fields,
   name: String,
@@ -1946,6 +2062,7 @@ fn optional_json(fields: Fields, name: String) -> Option(JsonValue) {
   }
 }
 
+/// Unwraps a JSON string value or reports corruption if the value is not a string.
 fn as_string(
   value: JsonValue,
   where: String,
@@ -1962,12 +2079,15 @@ fn as_string(
   }
 }
 
+/// Extracts a required string field from object fields.
 fn require_string(
   fields: Fields,
   name: String,
   where: String,
 ) -> Result(String, CorruptionReport) {
   use value <- result.try(require(fields, name, where))
+
+  // Ensure the value is a JSON string.
   case value {
     json.String(value:) -> Ok(value)
     other ->
@@ -1980,6 +2100,7 @@ fn require_string(
   }
 }
 
+/// Extracts an optional string field from object fields if present.
 fn optional_string(
   fields: Fields,
   name: String,
@@ -1999,12 +2120,15 @@ fn optional_string(
   }
 }
 
+/// Extracts a required integer field from object fields.
 fn require_int(
   fields: Fields,
   name: String,
   where: String,
 ) -> Result(Int, CorruptionReport) {
   use value <- result.try(require(fields, name, where))
+
+  // Ensure the value is a JSON integer.
   case value {
     json.Int(value:) -> Ok(value)
     other ->
@@ -2017,12 +2141,15 @@ fn require_int(
   }
 }
 
+/// Extracts a required boolean field from object fields.
 fn require_bool(
   fields: Fields,
   name: String,
   where: String,
 ) -> Result(Bool, CorruptionReport) {
   use value <- result.try(require(fields, name, where))
+
+  // Ensure the value is a JSON boolean.
   case value {
     json.Bool(value:) -> Ok(value)
     other ->
@@ -2035,12 +2162,15 @@ fn require_bool(
   }
 }
 
+/// Extracts a required array field from object fields.
 fn require_array(
   fields: Fields,
   name: String,
   where: String,
 ) -> Result(List(JsonValue), CorruptionReport) {
   use value <- result.try(require(fields, name, where))
+
+  // Ensure the value is a JSON array.
   case value {
     json.Array(items:) -> Ok(items)
     other ->
@@ -2064,6 +2194,7 @@ fn encode_optional_entry_id(id: Option(EntryId)) -> JsonValue {
   }
 }
 
+/// Decodes an entry ID from a JSON string value.
 fn decode_entry_id_value(
   value: JsonValue,
 ) -> Result(EntryId, CorruptionReport) {
@@ -2072,6 +2203,7 @@ fn decode_entry_id_value(
   ids.parse_entry_id(text)
 }
 
+/// Decodes an optional entry ID from a nullable or string JSON value.
 fn decode_optional_entry_id(
   value: JsonValue,
   where: String,
@@ -2089,6 +2221,7 @@ fn decode_optional_entry_id(
   }
 }
 
+/// Extracts a required entry ID field from object fields.
 fn require_entry_id(
   fields: Fields,
   name: String,
@@ -2098,6 +2231,7 @@ fn require_entry_id(
   ids.parse_entry_id(text)
 }
 
+/// Extracts an optional entry ID field from object fields.
 fn optional_entry_id(
   fields: Fields,
   name: String,
@@ -2117,6 +2251,7 @@ fn optional_entry_id(
   }
 }
 
+/// Extracts a required usage ID field from object fields.
 fn require_usage_id(
   fields: Fields,
   name: String,

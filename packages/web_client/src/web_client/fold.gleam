@@ -88,11 +88,14 @@ fn announce() -> Effect(Msg) {
   event.emit(toggled_event, json.null())
 }
 
+/// Renders the fold toggle button and body.
 fn view(model: Model) -> Element(Msg) {
+  // Determine disclosure glyph and expanded state from fold model.
   let #(glyph, expanded) = case model {
     Closed -> #("▸", False)
     Opened -> #("▾", True)
   }
+
   element.fragment([
     html.button(
       [

@@ -231,21 +231,18 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-// The state after a change to what is held, and the form's value for it: the
-// images as one field, or no field at all when none is held.
+/// Updates model attachment state and synchronizes form values.
 fn changed(model: Model, state: State) -> #(Model, Effect(Msg)) {
+  // Compute serialized form value and presence marker for attachment state.
   let #(value, holding) = case attach_rule.value(state) {
     Ok(text) -> #(component.set_form_value(text), "yes")
     Error(Nil) -> #(component.clear_form_value(), "no")
   }
+
   #(Model(..model, state:), effect.batch([value, telling(holding)]))
 }
 
-// Tells the composer's editor whether images are held, in its `attached`
-// attribute, because an image alone is a message the daemon accepts and the
-// editor decides whether the send buttons can be pressed. The attribute is
-// the editor's own input (`web_client/composer`), set from outside it as the
-// server sets `returned`, so neither element imports the other.
+/// Sets composer element attached attribute to inform send readiness.
 fn telling(holding: String) -> Effect(Msg) {
   use _, root <- effect.after_paint
   let told = {
@@ -259,6 +256,7 @@ fn telling(holding: String) -> Effect(Msg) {
   result.unwrap(told, or: Nil)
 }
 
+/// Transforms DOM file objects into rule candidate descriptors.
 fn candidates(files: List(ffi_dom.File)) -> List(Candidate(ffi_dom.File)) {
   list.map(files, fn(file) {
     attach_rule.Candidate(
@@ -270,8 +268,7 @@ fn candidates(files: List(ffi_dom.File)) -> List(Candidate(ffi_dom.File)) {
   })
 }
 
-// One read per accepted file. Each answers in its own message, numbered by
-// the state's number for the file, so the reads finish in any order.
+/// Initiates asynchronous base64 data URL reads for accepted candidate files.
 fn reading(reads: List(#(Int, ffi_dom.File))) -> Effect(Msg) {
   effect.batch(
     list.map(reads, fn(read) {
@@ -284,7 +281,7 @@ fn reading(reads: List(#(Int, ffi_dom.File))) -> Effect(Msg) {
   )
 }
 
-// Opens the file picker, which is the button's click on the hidden input.
+/// Triggers a programmatic click on the hidden file input element.
 fn picking() -> Effect(Msg) {
   use _, root <- effect.after_paint
   let opened = {
@@ -297,8 +294,7 @@ fn picking() -> Effect(Msg) {
   result.unwrap(opened, or: Nil)
 }
 
-// Empties the file input after a choice, so choosing the same file again
-// raises `change` again.
+/// Clears the file input value so subsequent identical selections fire change events.
 fn clearing() -> Effect(Msg) {
   use _, root <- effect.after_paint
   let cleared = {
@@ -311,11 +307,7 @@ fn clearing() -> Effect(Msg) {
   result.unwrap(cleared, or: Nil)
 }
 
-// Listens on the composer's form for a paste and for a file drag. A paste
-// that holds image files attaches them and is cancelled, and any other is left
-// alone. A drag is cancelled only when it carries files, which is what lets a
-// drop land and keeps the browser from navigating to the file. The listeners
-// are handed back so `unlistening` can end them.
+/// Binds paste and drag-drop event listeners to the enclosing form.
 fn listening() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let started = {
@@ -329,6 +321,7 @@ fn listening() -> Effect(Msg) {
     }
     let heard = [
       on(form, "paste", fn(event) {
+        // Dispatch pasted images or ignore non-image paste contents.
         case list.filter(ffi_dom.clipboard_files(event), is_image) {
           [] -> Nil
           files -> {
@@ -368,8 +361,7 @@ fn listening() -> Effect(Msg) {
   result.unwrap(started, or: Nil)
 }
 
-// Where a leave went: inside the form when the element the pointer moved to
-// is in it, and beyond it when that is another element or nothing at all.
+/// Determines whether a drag leave destination remains within or exits form bounds.
 fn towards(
   form: ffi_dom.Element,
   target: Result(ffi_dom.Element, Nil),
@@ -384,9 +376,9 @@ fn towards(
   }
 }
 
-// Cancels a drag event that carries files and then runs `next`, and leaves
-// any other drag alone and runs nothing.
+/// Prevents default event action when drag data transfer carries files.
 fn when_files(event: Dynamic, types: List(String), next: fn() -> Nil) -> Nil {
+  // Cancel default drag behavior when event transfer includes files.
   case drop_rule.carries_files(types) {
     True -> {
       ffi_dom.prevent_default(event)
@@ -403,7 +395,9 @@ fn is_image(file: ffi_dom.File) -> Bool {
   attach_rule.is_image(ffi_dom.file_type(file))
 }
 
+/// Removes form paste and drag event listeners on disconnection.
 fn unlistening(listening: Option(Listeners)) -> Effect(Msg) {
+  // Remove registered form event listeners.
   case listening {
     None -> effect.none()
     Some(Listeners(heard:)) -> {
@@ -415,6 +409,7 @@ fn unlistening(listening: Option(Listeners)) -> Effect(Msg) {
   }
 }
 
+/// Renders the attachment control bar, chips list, and drop overlay.
 fn view(model: Model) -> Element(Msg) {
   let state = model.state
   element.fragment([
@@ -446,9 +441,7 @@ fn view(model: Model) -> Element(Msg) {
   ])
 }
 
-// The drop state: a tinted overlay on the whole composer box, with a hint.
-// It is the stylesheet's to place over the form, and it takes no pointer
-// events, so it never becomes a target the drag has to enter and leave.
+/// Renders drop target overlay hint when dragging images over composer.
 fn drop_hint(model: Model) -> Element(Msg) {
   case drop_rule.surface(model.dragging, drop_rule.places(model.state)) {
     drop_rule.Inviting ->
@@ -464,6 +457,7 @@ fn chosen() -> decode.Decoder(Msg) {
   decode.success(Chosen(ffi_dom.file_list(files)))
 }
 
+/// Renders the collection of held and loading attachment chips.
 fn chips(state: State) -> Element(Msg) {
   case state.held, state.reading {
     [], [] -> element.none()
@@ -487,6 +481,7 @@ fn chips(state: State) -> Element(Msg) {
   }
 }
 
+/// Renders a single attachment chip with file name and remove action.
 fn chip(image: attach_rule.Held) -> Element(Msg) {
   let label = attach_rule.label(image.name)
   html.li([attribute.class("attachment")], [
@@ -505,6 +500,7 @@ fn chip(image: attach_rule.Held) -> Element(Msg) {
   ])
 }
 
+/// Renders warning notice text when validation rejects an attachment.
 fn notice(state: State) -> Element(Msg) {
   case state.notice {
     "" -> element.none()

@@ -104,8 +104,7 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-// The model with a new state, and the effects that publish it when it is not
-// the state it already had, followed by `extra`.
+/// Updates the model state and publishes changes when modified.
 fn shown(
   model: Model,
   state: State,
@@ -117,6 +116,7 @@ fn shown(
   }
 }
 
+/// Emits component pseudo-state and attribute updates for visibility.
 fn publish(state: State) -> Effect(Msg) {
   effect.batch([
     case state {
@@ -127,11 +127,12 @@ fn publish(state: State) -> Effect(Msg) {
   ])
 }
 
-// The line's `aria-expanded`, which the server drew as `false` and never draws
-// again, so its diff cannot overwrite what this writes.
+/// Updates the toggle button aria-expanded attribute after paint.
 fn expand(state: State) -> Effect(Msg) {
   use _, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
+
+  // Update button aria-expanded attribute when toggle target is present.
   case ffi_dom.query_selector(host, "[data-saved=toggle]") {
     Ok(button) ->
       ffi_dom.set_attribute(button, "aria-expanded", saved_rule.expanded(state))

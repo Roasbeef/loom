@@ -223,6 +223,7 @@ pub fn tool(proposals: Proposals) -> Tool {
 // The sentence offering a configuration edit, naming the file, or nothing for a
 // session with no file. The path is fixed for the session, so the description
 // stays one byte string for the life of the session's cached prefix.
+/// Formats the prompt description sentence referencing the editable session configuration file.
 fn configuration_sentence(configuration: Option(String)) -> String {
   case configuration {
     Some(path) ->
@@ -281,6 +282,8 @@ pub fn submission(args: JsonValue) -> Result(Submission, String) {
   use Nil <- result.try(clean("new", new))
   use Nil <- result.try(clean("old", old))
   use Nil <- result.try(clean("rationale", rationale))
+
+  // Validate the optional entry ID when specified.
   use source_entry <- result.try(case source {
     option.None -> Ok(option.None)
     Some(text) ->
@@ -288,6 +291,7 @@ pub fn submission(args: JsonValue) -> Result(Submission, String) {
       |> result.map(fn(_id) { Some(text) })
       |> result.replace_error("`source_entry` is not an entry id")
   })
+
   Ok(Submission(target:, old:, new:, rationale:, source_entry:))
 }
 
@@ -295,6 +299,7 @@ pub fn submission(args: JsonValue) -> Result(Submission, String) {
 // and does not name the prompt's fence. Control characters serve no purpose
 // in a rule, and each inflates to six bytes when a cell is JSON-escaped, which
 // is how a bounded field becomes an oversized stored row.
+/// Checks that proposal text contains no forbidden control characters or system fence markers.
 fn clean(field: String, text: String) -> Result(Nil, String) {
   case first_control(text), closes_fence(text) {
     Some(code), _ ->
@@ -395,6 +400,7 @@ pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
   )
 }
 
+/// Maps a proposal refusal reason to its stable machine error code.
 fn code(refusal: Refusal) -> String {
   case refusal {
     Invalid(..) -> "proposal_invalid"
@@ -404,6 +410,7 @@ fn code(refusal: Refusal) -> String {
   }
 }
 
+/// Formats a human-readable diagnostic description of a proposal refusal.
 fn describe(refusal: Refusal) -> String {
   case refusal {
     Invalid(reason:) -> "that proposal cannot apply: " <> reason

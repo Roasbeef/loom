@@ -160,8 +160,7 @@ pub fn start() -> Plane {
   Plane(broker: started, service:, pool:, op:, ledger: process.new_subject())
 }
 
-// A call whose payload is held until cancelled, under the policy a tool run
-// would get. Each call is its own step, so no call's budget is another's.
+/// Builds a broker CallSpec held until cancelled with best-effort demand.
 fn call_spec(op: ids.OpId, step: Int) -> broker.CallSpec {
   let base = policy.workspace_default("/work")
   broker.CallSpec(
@@ -193,6 +192,8 @@ fn call_spec(op: ids.OpId, step: Int) -> broker.CallSpec {
 pub fn begin(plane: Plane, ctl: Control) -> Option(Execution) {
   let step = control.bump(ctl, "plane:call")
   let events = process.new_subject()
+
+  // Submit the call spec to the broker for clearance.
   case
     broker.clear_call(
       plane.broker,
@@ -207,10 +208,13 @@ pub fn begin(plane: Plane, ctl: Control) -> Option(Execution) {
     }
     Ok(handle) -> {
       process.send(plane.ledger, Started)
+
+      // Look up relay PID for the cleared execution handle.
       case broker.relay_pid(plane.broker, handle, waiting: 1000) {
         Ok(pid) -> process.send(plane.ledger, Relay(pid:))
         Error(Nil) -> Nil
       }
+
       control.mark(ctl, "effect-plane-execution")
       Some(Execution(handle:, events:))
     }
@@ -228,6 +232,8 @@ pub fn begin(plane: Plane, ctl: Control) -> Option(Execution) {
 ///
 pub fn finish(plane: Plane, execution: Execution) -> Nil {
   broker.cancel(plane.broker, execution.handle)
+
+  // Wait to observe the execution settlement event.
   case hear_settlement(execution.events, settlement_wait_ms) {
     False ->
       process.send(
@@ -240,6 +246,8 @@ pub fn finish(plane: Plane, execution: Execution) -> Nil {
       )
     True -> {
       process.send(plane.ledger, Heard)
+
+      // Check if any additional events arrive after settlement.
       case process.receive(execution.events, 30) {
         Ok(_event) ->
           process.send(
@@ -255,8 +263,7 @@ pub fn finish(plane: Plane, execution: Execution) -> Nil {
   }
 }
 
-// Reads events until the settlement, which is the last thing an execution
-// sends. False when none arrives within `within` milliseconds.
+/// Reads events until the settlement event arrives or timeout elapses.
 fn hear_settlement(events: Subject(broker.CallEvent), within: Int) -> Bool {
   case process.receive(events, within) {
     Ok(broker.CallSettled(..)) -> True
@@ -310,6 +317,7 @@ pub fn verify(plane: Plane) -> Observation {
     [_, ..] -> #(started, [])
     [] -> books_disagree(plane, heard)
   }
+
   Observation(executions:, violations: list.flatten([orphans, settled, faults]))
 }
 
@@ -320,22 +328,26 @@ fn drain(ledger: Subject(Entry), seen: List(Entry)) -> List(Entry) {
   }
 }
 
-// Waits for the killed tree's executions to unwind: the executor holds no
-// row, nothing is borrowed from the pool, and every relay is dead. The
-// answer names what was left when the wait ran out.
+/// Waits for all in-flight executions and helpers in the plane to unwind.
 fn await_unwound(plane: Plane, relays: List(Pid)) -> Result(Nil, String) {
   let left = fn() {
+    // Snapshot executor live rows.
     let rows = case executor.snapshot(plane.service, waiting: 1000) {
       Ok(books) -> list.length(books.live)
       Error(executor.Unreachable) -> 0
     }
+
+    // Query pool census for borrowed helpers.
     let borrowed = case exec.pool_census(plane.pool, waiting: 1000) {
       Ok(census) -> census.borrowed
       Error(_refusal) -> 0
     }
+
     let relays_alive = list.count(relays, process.is_alive)
     #(rows, borrowed, relays_alive)
   }
+
+  // Poll until rows, borrowed helpers, and relays all drop to zero.
   case
     poll.until(within: unwind_ms, every: 10, attempt: fn() {
       case left() {
@@ -361,18 +373,16 @@ fn await_unwound(plane: Plane, relays: List(Pid)) -> Result(Nil, String) {
   }
 }
 
-// The service's books against what the callers heard: every execution it
-// started is one it completed, failed or lost, and no more callers heard a
-// settlement than there were executions. Also how many executions the service
-// started, which is the figure to report: the ledger can miss an execution
-// whose effect process was killed between its clearance and its ledger line,
-// and the service cannot.
+/// Compares the service snapshot counts with the number of heard settlements.
 fn books_disagree(plane: Plane, heard: Int) -> #(Int, List(String)) {
+  // Query the executor snapshot to compare started and settled counts.
   case executor.snapshot(plane.service, waiting: 1000) {
     Error(executor.Unreachable) -> #(heard, [])
     Ok(snapshot) -> {
       let metrics = snapshot.metrics
       let settled = metrics.completed + metrics.failed + metrics.lost
+
+      // Check whether started executions equal settled executions.
       let unsettled = case metrics.started == settled {
         True -> []
         False -> [
@@ -382,6 +392,8 @@ fn books_disagree(plane: Plane, heard: Int) -> #(Int, List(String)) {
           <> int.to_string(settled),
         ]
       }
+
+      // Check whether more callers heard settlements than executions started.
       let overheard = case heard > metrics.started {
         True -> [
           "effects/one-settlement: "
@@ -392,6 +404,7 @@ fn books_disagree(plane: Plane, heard: Int) -> #(Int, List(String)) {
         ]
         False -> []
       }
+
       #(metrics.started, list.append(unsettled, overheard))
     }
   }

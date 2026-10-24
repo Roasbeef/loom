@@ -271,18 +271,30 @@ pub fn portable_packages() -> List(String) {
 /// fails `make lint` immediately without waiting for the remaining packages.
 pub fn literate_packages() -> List(String) {
   [
+    "broker",
+    "cap",
+    "codemode",
+    "conformance",
+    "core",
     "events",
     "executor",
     "ext",
     "harness",
     "host",
     "lint",
+    "lsp",
+    "machine",
     "mcp",
     "prompt",
+    "provider",
+    "runtime",
     "session",
     "statem",
     "statem_parallel",
+    "storage",
     "telemetry",
+    "tools",
+    "web_client",
     "web_mermaid",
   ]
 }

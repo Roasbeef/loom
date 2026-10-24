@@ -129,13 +129,15 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-// A verdict as an effect: closing removes `open` from the disclosure, which is
-// the only thing the browser reads to draw it open.
+/// Applies dismiss verdict by closing open details disclosure elements.
 fn apply(verdict: Verdict) -> Effect(Msg) {
+  // Dispatch effect based on dismissal verdict.
   case verdict {
     dismiss_rule.Keep -> effect.none()
     dismiss_rule.Close -> {
       use _, root <- effect.after_paint
+
+      // Remove open attribute from nearest disclosure element.
       case disclosure_of(ffi_dom.host(ffi_dom.as_element(root))) {
         Ok(disclosure) -> ffi_dom.remove_attribute(disclosure, "open")
         Error(Nil) -> Nil
@@ -151,9 +153,7 @@ fn disclosure_of(host: ffi_dom.Element) -> Result(ffi_dom.Element, Nil) {
   ffi_dom.query_selector(figures, "details[data-dismiss]")
 }
 
-// Listens for `click` on the document, which hears a press wherever it lands,
-// reduced to the marks of the nodes it passed through before it is dispatched,
-// and for `keydown` in the capture phase, which is decided where it is heard.
+/// Attaches document listeners for click outside and escape capture.
 fn listen() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
@@ -168,11 +168,11 @@ fn listen() -> Effect(Msg) {
   dispatch(Listening(Listeners(click:, key:)))
 }
 
-// One keydown, in the capture phase. Only an Escape that finds the panel open
-// is touched: it closes the panel and is stopped and cancelled, so the shell's
-// Escape never runs for it.
+/// Intercepts Escape keypress in capture phase to dismiss open disclosure.
 fn escaped(host: ffi_dom.Element, event: Dynamic) -> Nil {
   let key = decode.run(event, decode.at(["key"], decode.string))
+
+  // Check key identity and current disclosure open state.
   case key, disclosure_of(host) {
     Ok(key), Ok(disclosure) ->
       case dismiss_rule.on_key(key, showing(disclosure)) {
@@ -194,6 +194,7 @@ fn showing(disclosure: ffi_dom.Element) -> dismiss_rule.Disclosure {
   }
 }
 
+/// Extracts dismiss mark attributes from event composed path nodes.
 fn marks_of(event: Dynamic) -> List(dismiss_rule.Mark) {
   ffi_dom.composed_path(event)
   |> list.filter_map(fn(node) {
@@ -202,8 +203,9 @@ fn marks_of(event: Dynamic) -> List(dismiss_rule.Mark) {
   })
 }
 
-// Removes the document's listeners, if a pair is in place.
+/// Cleans up document click and keydown listeners.
 fn stop(listeners: Option(Listeners)) -> Effect(Msg) {
+  // Remove document event listeners when active.
   case listeners {
     None -> effect.none()
     Some(Listeners(click:, key:)) -> {

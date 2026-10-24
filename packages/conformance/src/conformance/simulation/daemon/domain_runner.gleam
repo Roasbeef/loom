@@ -85,10 +85,12 @@ const overlap_key = "overlapping-domain@/simulation/domain-retirement"
 /// domain_runner.plan(0) == Script(LastSession, 1)
 /// ```
 pub fn plan(seed: Int) -> Script {
+  // Choose the target session from the seed.
   let target = case int.bitwise_and(seed, 1) {
     0 -> LastSession
     _ -> SavedPeer
   }
+
   Script(
     target:,
     retries: 1 + int.bitwise_and(int.bitwise_shift_right(seed, 1), 1),
@@ -146,6 +148,8 @@ pub fn observe(
         built(barrier),
       ),
     ))
+
+  // Inspect the startup outcome of the test harness.
   let outcome = case started {
     Error(reason) -> Error(Failure("domain/start", reason))
     Ok(daemon) -> {
@@ -155,6 +159,8 @@ pub fn observe(
       // already waiting. Cleanup runs even when admission is the failed check.
       let released = release(barrier)
       let stopped = harness.stop(daemon)
+
+      // Check released and stopped outcomes against observed.
       case released, stopped, observed {
         Error(reason), _, _ -> Error(Failure("domain/release", reason))
         Ok(Nil), Error(reason), _ -> Error(Failure("domain/stop", reason))
@@ -162,15 +168,16 @@ pub fn observe(
       }
     }
   }
+
   control.stop(barrier.control)
   vclock.stop(clock)
   outcome
 }
 
-// One claim chooses the named first retirement. Later replacement cleanup is
-// ordinary cleanup, so finalization never needs an unbounded release loop.
+/// Builds the cleanup callback that waits on the release barrier.
 fn cleanup(barrier: Barrier) -> fn() -> Result(Nil, String) {
   fn() {
+    // Claim the first retirement key or proceed without hold.
     case control.claim(barrier.control, retirement_key) {
       False -> Ok(Nil)
       True -> {
@@ -190,14 +197,15 @@ fn cleanup(barrier: Barrier) -> fn() -> Result(Nil, String) {
   }
 }
 
-// This records an overlap at the actual build boundary, so the final check
-// cannot miss a premature build that happened between two registry reads.
+/// Returns a build-observation callback to check for premature rebuilds.
 fn built(barrier: Barrier) -> fn() -> Nil {
   fn() {
     // Capture release before publishing the build observation. Reading it
     // afterwards could let an intervening release hide a premature build.
     let released = control.read(barrier.control, released_key)
     let count = control.bump(barrier.control, builds_key)
+
+    // Check for build overlap before cleanup release.
     case count > 1 && released == 0 {
       True -> {
         let _ = control.bump(barrier.control, overlap_key)
@@ -210,7 +218,7 @@ fn built(barrier: Barrier) -> fn() -> Nil {
 
 // Taking retirement_key first disarms cleanup if an earlier setup step failed.
 // If cleanup already owns that key, it must publish exactly one release subject.
-// release_key makes the normal path and the unconditional finalizer idempotent.
+/// Releases the domain barrier hold cleanly and idempotently.
 fn release(barrier: Barrier) -> Result(Nil, String) {
   case control.claim(barrier.control, release_key) {
     False -> Ok(Nil)
@@ -231,6 +239,7 @@ fn release(barrier: Barrier) -> Result(Nil, String) {
   }
 }
 
+/// Executes the scenario body, asserting expected states and absence of overlap.
 fn body(
   daemon: harness.Harness,
   barrier: Barrier,
@@ -247,6 +256,8 @@ fn body(
       Ok(control.read(barrier.control, held_key) == 1)
     }),
   )
+
+  // Select the target session id based on the script plan.
   let id = case script.target {
     LastSession -> last.id
     SavedPeer -> peer.id
@@ -288,6 +299,7 @@ fn created(daemon: harness.Harness, key: String, seed: Int) {
   |> result.map_error(Failure("domain/create", _))
 }
 
+/// Stops a session and waits until it settles in the Saved state.
 fn stop_saved(daemon: harness.Harness, id: String) {
   use _ <- result.try(
     manager.stop_session(harness.registry(daemon), id)
@@ -301,7 +313,9 @@ fn stop_saved(daemon: harness.Harness, id: String) {
   })
 }
 
+/// Manages barrier release or domain census check prior to session open.
 fn before_open(daemon, barrier, schedule) {
+  // Dispatch on the retirement schedule variant.
   case schedule {
     DuringRetirement -> Ok(Nil)
     AfterRetirement -> {
@@ -313,6 +327,7 @@ fn before_open(daemon, barrier, schedule) {
   }
 }
 
+/// Invokes admission and confirms that the session enters the Opening state.
 fn opened(daemon, id) {
   case harness.admission(daemon, id) {
     Ok(manager.Opening(operation)) -> Ok(operation)
@@ -324,6 +339,7 @@ fn opened(daemon, id) {
   }
 }
 
+/// Retries session admission multiple times to verify identical operation identity.
 fn retries(daemon, id, operation, remaining) {
   list.try_each(list.repeat(Nil, remaining), fn(_) {
     let answer = harness.admission(daemon, id)
@@ -338,6 +354,7 @@ fn retries(daemon, id, operation, remaining) {
   })
 }
 
+/// Verifies that open session stays parked during held retirement.
 fn waiting(
   daemon: harness.Harness,
   barrier: Barrier,
@@ -345,6 +362,7 @@ fn waiting(
   operation: String,
   schedule: Schedule,
 ) {
+  // Verify status during retirement or skip for baseline.
   case schedule {
     AfterRetirement -> Ok(Nil)
     DuringRetirement -> {
@@ -372,6 +390,7 @@ fn waiting(
   }
 }
 
+/// Awaits until all sessions and domain registrations are completely retired.
 fn empty(daemon) {
   await("domain/retirement", fn() {
     manager.summary(harness.registry(daemon))
@@ -382,7 +401,7 @@ fn empty(daemon) {
   })
 }
 
-// These are observation backstops over real actors, not simulated deadlines.
+/// Polls an observation predicate until it succeeds or times out.
 fn await(check: String, observe: fn() -> Result(Bool, String)) {
   case
     poll.until(within: settle_ms, every: 1, attempt: fn() {
@@ -399,6 +418,7 @@ fn await(check: String, observe: fn() -> Result(Bool, String)) {
   }
 }
 
+/// Asserts that a boolean predicate holds or returns a Failure violation.
 fn require(
   holds: fn() -> Bool,
   check: String,

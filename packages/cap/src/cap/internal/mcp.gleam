@@ -55,6 +55,8 @@ pub fn invoke(
       mcp.ResultMalformed(reason: "bad mcp result: " <> reason)
     }),
   )
+
+  // Report tool execution failure or return the successful tool result.
   case is_error {
     False -> Ok(tool_result)
 
@@ -85,22 +87,18 @@ pub fn invoke_typed(
   decoder: mcp_codec.Decoder(a),
 ) -> Result(a, mcp.McpError) {
   use tool_result <- result.try(invoke(server, tool, arguments))
+
+  // Decode structured content from tool result if present.
   let decoded = case tool_result.structured {
     None -> Error(mcp.DecodeError([], "missing structured content"))
     Some(value) -> mcp_codec.decode(value, decoder)
   }
+
   decoded
   |> result.map_error(fn(error) { mcp.ResultSchemaMismatch(error, tool_result) })
 }
 
-// The harness's own refusal name for a server that is not running, not
-// configured on this host, or whose client has gone reads back as the
-// variant that means the same thing; every other in-band refusal travels
-// as `McpDenied` with its code verbatim, so a code neither side has
-// learned yet is carried rather than folded into a category. The two
-// packages share no dependency — they are the ends of one wire, not
-// peers — so this side restates the name, exactly as `cap/strand`
-// restates the orchestration codes, and `client/mcp` pins its half.
+/// Maps low-level channel errors into domain MCP errors.
 fn map_error(error: CallError) -> mcp.McpError {
   case error {
     Unreachable(reason:) -> mcp.ServerUnavailable(reason:)
@@ -112,14 +110,7 @@ fn map_error(error: CallError) -> mcp.McpError {
   }
 }
 
-// Decodes the pinned result shape:
-// `{content: [<block>...], is_error: Bool, structured?: <value>}`.
-// Total: any wrong shape is a `String` fault the caller wraps as
-// `ResultMalformed`, never a crash. `is_error` is tolerated absent and
-// reads as `False` — the harness always writes it, but a missing flag on
-// an otherwise well-formed result is the protocol posture everywhere
-// else here (see `wire.binary_field`'s nil tolerance): decode what was
-// meant rather than refuse what was elided.
+/// Decodes the payload result structure into content blocks and error status.
 fn decode_result(value: MsgPackValue) -> Result(#(ToolResult, Bool), String) {
   use content <- result.try(wire.array_of(value, "content", of: decode_block))
   use is_error <- result.try(error_flag(value))
@@ -130,11 +121,15 @@ fn decode_result(value: MsgPackValue) -> Result(#(ToolResult, Bool), String) {
     Ok(found) -> Some(found)
     Error(_) -> None
   }
+
   Ok(#(ToolResult(content:, structured:), is_error))
 }
 
+/// Decodes a single content block into a text or other content variant.
 fn decode_block(value: MsgPackValue) -> Result(mcp.Content, String) {
   use kind <- result.try(wire.string_field(value, "type"))
+
+  // Decode the content block based on whether its type is text.
   case kind {
     "text" -> wire.string_field(value, "text") |> result.map(Text)
 
@@ -145,6 +140,7 @@ fn decode_block(value: MsgPackValue) -> Result(mcp.Content, String) {
   }
 }
 
+/// Reads the error boolean flag from the result payload.
 fn error_flag(value: MsgPackValue) -> Result(Bool, String) {
   case wire.field(value, "is_error") {
     // Absent reads as success; the doc on `decode_result` says why.

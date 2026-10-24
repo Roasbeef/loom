@@ -225,6 +225,7 @@ pub fn launcher(config: LaunchConfig) -> satellite.Launcher {
   fn(spec) { launch(config, spec) }
 }
 
+/// Sets up the unix socket, listeners, and dispatches the sandboxed satellite node.
 fn launch(
   config: LaunchConfig,
   spec: LaunchSpec,
@@ -268,6 +269,7 @@ fn launch(
         )
     },
   )
+
   use listener <- result.try(
     result.map_error(ffi_unix.listen(spec.cap_socket_path), fn(reason) {
       "could not listen on the cap socket: " <> reason
@@ -276,8 +278,10 @@ fn launch(
   start_channel(config, spec, requirements, listener, now)
 }
 
-// Everything from here on owns a live listener, so every failure path
-// closes it and unlinks the socket file rather than returning.
+/// Spawns the socket writer process and transitions to starting the reader.
+///
+/// Everything from here on owns a live listener, so every failure path
+/// closes it and unlinks the socket file rather than returning.
 fn start_channel(
   config: LaunchConfig,
   spec: LaunchSpec,
@@ -288,6 +292,8 @@ fn start_channel(
   let writer_handoff = process.new_subject()
   let _writer =
     process.spawn_unlinked(fn() { writer_main(listener, writer_handoff) })
+
+  // Await acknowledgement from writer process initialization.
   case process.receive(writer_handoff, handoff_timeout_ms) {
     Error(Nil) -> {
       ffi_unix.close_listener(listener)
@@ -299,6 +305,7 @@ fn start_channel(
   }
 }
 
+/// Spawns the socket reader process and links settlement reporters and janitors.
 fn start_reader(
   config: LaunchConfig,
   spec: LaunchSpec,
@@ -318,6 +325,8 @@ fn start_reader(
         reader_handoff,
       )
     })
+
+  // Await acknowledgement from reader process initialization.
   case process.receive(reader_handoff, handoff_timeout_ms) {
     Error(Nil) -> {
       process.send(outbox, Shutdown)
@@ -367,6 +376,7 @@ fn start_reader(
 // program — is still reaped here, as it was under the operation-wide
 // abort this replaced. What the narrowing buys is the sibling *step*, and
 // the job is the only caller that has one.
+/// Tears down the socket connection, unlinks the path, and awaits settlement report.
 fn destroy(
   config: LaunchConfig,
   spec: LaunchSpec,
@@ -482,6 +492,7 @@ type Held {
 // default weft would have given it: the default carries the machine's own
 // `Held`, and what every sender in this module holds is a
 // `Subject(Settlement)`.
+/// Spawns a state machine tracking settlement status across execution lifecycle.
 fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
   let started =
     sm.new_with_initialiser(handoff_timeout_ms, fn(_default) {
@@ -497,6 +508,8 @@ fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
     |> sm.on_event(reporter_step)
     |> sm.unlinked
     |> sm.start
+
+  // Unpack initialized state machine inbox or provide dummy subject on failure.
   case started {
     Ok(machine) -> machine.data
 
@@ -506,11 +519,13 @@ fn start_reporter(broker_actor: Broker) -> Subject(Settlement) {
   }
 }
 
-// One event, in one state.
-//
-// The pairs are exhaustive by construction: a fourth `Settlement` or a
-// fourth node state is a compile error here rather than a message the
-// holder silently drops.
+/// Handles transition events for node settlement reporting state machine.
+///
+/// One event, in one state.
+///
+/// The pairs are exhaustive by construction: a fourth `Settlement` or a
+/// fourth node state is a compile error here rather than a message the
+/// holder silently drops.
 fn reporter_step(
   node: NodeState,
   holder: Holder,
@@ -545,10 +560,12 @@ fn reporter_step(
     // Teardown got here first, so its cancel had nothing to name. Now it
     // does.
     Pending, Incoming(Cleared(handle:)) -> {
+      // Check teardown flag to cancel immediately if teardown arrived early.
       case holder.teardown {
         Intact -> Nil
         TornDown -> broker.cancel(holder.broker_actor, handle)
       }
+
       sm.transition(to: Running(handle:), data: holder)
     }
 
@@ -569,6 +586,8 @@ fn reporter_step(
     | Running(..), Incoming(Settled(report:))
     -> {
       let settled = sm.transition(to: Done(report:), data: holder)
+
+      // Transition to settled state and trigger linger if already torn down.
       case holder.teardown {
         Intact -> settled
         TornDown -> linger(settled)
@@ -611,9 +630,12 @@ fn linger(
   sm.with_state_timeout(step, after: node_report_wait_ms, sending: Linger)
 }
 
+/// Requests settlement report from state machine and returns enforcement report.
 fn await_report(settlement: Subject(Settlement)) -> Report {
   let reply = process.new_subject()
   process.send(settlement, Ask(reply:))
+
+  // Wait for settlement report reply within configured timeout window.
   case process.receive(reply, node_report_wait_ms) {
     Ok(report) -> report
     Error(Nil) ->
@@ -634,15 +656,18 @@ fn await_report(settlement: Subject(Settlement)) -> Report {
 // unlinked process monitoring the actor, running the same teardown when it
 // dies, however it died.
 //
-// `LaunchSpec.wire` is owned by the host actor, so its owner *is* the pid to
-// watch. Running on an ordinary teardown too is harmless: abort is
-// idempotent, the writer is already gone, and the unlinks are no-ops.
+/// Spawns a background monitor process ensuring node teardown if host actor dies.
+///
+/// `LaunchSpec.wire` is owned by the host actor, so its owner *is* the pid to
+/// watch. Running on an ordinary teardown too is harmless: abort is
+/// idempotent, the writer is already gone, and the unlinks are no-ops.
 fn start_janitor(
   config: LaunchConfig,
   spec: LaunchSpec,
   outbox: Subject(Out),
   settlement: Subject(Settlement),
 ) -> Nil {
+  // Resolve host actor PID to attach a process monitor.
   case process.subject_owner(spec.wire) {
     Error(Nil) -> Nil
     Ok(host) -> {
@@ -654,6 +679,7 @@ fn start_janitor(
   }
 }
 
+/// Monitors the host actor process and tears down satellite resources if it exits.
 fn run_janitor(
   config: LaunchConfig,
   spec: LaunchSpec,
@@ -697,12 +723,14 @@ fn writer_main(listener: Listener, handoff: Subject(Subject(Out))) -> Nil {
   writer_loop(listener, outbox, None, [])
 }
 
+/// Loops processing outbound frames and connection attachment events.
 fn writer_loop(
   listener: Listener,
   outbox: Subject(Out),
   socket: Option(Socket),
   pending: List(BitArray),
 ) -> Nil {
+  // Receive and handle next outbox event.
   case process.receive_forever(outbox) {
     Attach(socket: attached) -> {
       list.each(list.reverse(pending), fn(bytes) { write(attached, bytes) })
@@ -720,10 +748,12 @@ fn writer_loop(
         }
       }
     Shutdown -> {
+      // Close connected socket on shutdown if one was attached.
       case socket {
         Some(open) -> ffi_unix.close(open)
         None -> Nil
       }
+
       ffi_unix.close_listener(listener)
     }
   }
@@ -738,6 +768,7 @@ fn write(socket: Socket, bytes: BitArray) -> Nil {
 
 // --- the reader process ---------------------------------------------------
 
+/// Initializes reader process exits subject and enters accept polling loop.
 fn reader_main(
   listener: Listener,
   outbox: Subject(Out),
@@ -755,6 +786,7 @@ fn reader_main(
 // and the sleep between attempts; there is deliberately almost none of
 // the latter (`every: 1`) because the real wait already happens inside
 // `accept_attempt`, which blocks in the FFI call for one slice at a time.
+/// Polls socket accept until connection arrives, node exits, or timeout expires.
 fn accept_loop(
   listener: Listener,
   outbox: Subject(Out),
@@ -762,6 +794,7 @@ fn accept_loop(
   exits: Subject(String),
   accept_timeout_ms: Int,
 ) -> Nil {
+  // Poll listener socket until client connects or timeout elapses.
   case
     poll.until(within: accept_timeout_ms, every: 1, attempt: fn() {
       accept_attempt(listener, exits)
@@ -785,6 +818,7 @@ fn accept_loop(
 // answering `Fail` instead of `Retry`. Finding nothing yet blocks in
 // `ffi_unix.accept` for up to `accept_poll_ms`, which is what stands in
 // for the sleep between polls.
+/// Checks for premature node exit before executing a single socket accept attempt.
 fn accept_attempt(
   listener: Listener,
   exits: Subject(String),
@@ -803,6 +837,7 @@ fn accept_attempt(
   }
 }
 
+/// Reads incoming frame bytes from socket and forwards them to the satellite wire.
 fn read_loop(
   socket: Socket,
   wire: Subject(satellite.WireIn),
@@ -832,6 +867,7 @@ fn close_wire(wire: Subject(satellite.WireIn), reason: String) -> Nil {
 
 // Dispatches the jailed `erl` and collects its settlement off the host's
 // timeline, reporting the outcome to the reader as a close reason.
+/// Spawns background task clearing and executing the jailed satellite node.
 fn spawn_node(
   config: LaunchConfig,
   spec: LaunchSpec,
@@ -849,6 +885,7 @@ fn spawn_node(
   Nil
 }
 
+/// Clears the node call with the broker and triggers event collection.
 fn run_node(
   config: LaunchConfig,
   call: CallSpec,
@@ -857,6 +894,8 @@ fn run_node(
   waiting: Int,
 ) -> Nil {
   let events = process.new_subject()
+
+  // Request broker clearance to execute the satellite node command.
   case
     broker.clear_call(config.broker, call, events:, waiting: clear_timeout_ms)
   {
@@ -868,6 +907,7 @@ fn run_node(
   }
 }
 
+/// Reports clearance refusal to settlement state machine and exits channel.
 fn report_refused(
   exits: Subject(String),
   settlement: Subject(Settlement),
@@ -883,12 +923,14 @@ fn report_refused(
   )
 }
 
+/// Awaits process completion events from the broker and forwards settlement report.
 fn collect_node_result(
   exits: Subject(String),
   settlement: Subject(Settlement),
   events: Subject(broker.CallEvent),
   waiting: Int,
 ) -> Nil {
+  // Collect call settlement events from broker channel.
   case tool.collect_events(events, waiting:) {
     Ok(collected) -> {
       process.send(
@@ -1053,6 +1095,7 @@ fn bound_wall(base_wall_s: Int, remaining_s: Int) -> Int {
 
 // --- policy checks -------------------------------------------------------
 
+/// Verifies that pooled budget permits sufficient concurrent effects.
 fn check_budget(pooled: Budget) -> Result(Nil, String) {
   case pooled.max_outstanding >= minimum_outstanding {
     True -> Ok(Nil)
@@ -1082,12 +1125,15 @@ fn check_budget(pooled: Budget) -> Result(Nil, String) {
 // Grants only ever widen, so the reachability checks that run on the
 // result of this stay sound: a path the unwidened policy covered is still
 // covered, and one it did not may now be, which is the whole point.
+/// Composes base sandbox policy with requirements and grants, verifying no shortfalls.
 fn composed_policy(
   base: SandboxPolicy,
   requirements: SandboxPolicy,
   grants: List(Grant),
 ) -> Result(SandboxPolicy, String) {
   let #(effective, narrowings) = policy.compose(base:, requirements:, grants:)
+
+  // Check whether policy composition resulted in unacceptable narrowings.
   case narrowings {
     [] -> Ok(effective)
     shortfalls ->
@@ -1129,6 +1175,7 @@ fn refuse_relative(path: String, what: String) -> Result(Nil, String) {
 
 // bwrap shadows a protected path: an existing file with a read-only bind
 // of itself, a directory or a missing path with an empty read-only tmpfs.
+/// Verifies that target path does not sit under a protected sandbox root.
 fn refuse_protected(
   effective: SandboxPolicy,
   path: String,
@@ -1152,6 +1199,7 @@ fn refuse_protected(
 
 // A tmpfs scratch is mounted over `scratch_mount`, so whatever the host
 // had under it is simply not in the jail's filesystem.
+/// Verifies that target path is not shadowed by the scratch tmpfs mount.
 fn refuse_scratch_shadow(
   effective: SandboxPolicy,
   path: String,
@@ -1177,6 +1225,7 @@ fn refuse_scratch_shadow(
 // Under today's ro-bound host root an uncovered path would still be
 // readable, but relying on that is exactly the implicitness these checks
 // exist to remove.
+/// Verifies that directory is explicitly covered by readable or writable roots.
 fn refuse_uncovered(
   effective: SandboxPolicy,
   path: String,
@@ -1184,6 +1233,8 @@ fn refuse_uncovered(
 ) -> Result(Nil, String) {
   let directory = directory_of(path)
   let roots = list.append(effective.readable_roots, effective.writable_roots)
+
+  // Ensure directory sits under at least one declared readable or writable root.
   case list.any(roots, fn(root) { policy.covers(root:, path: directory) }) {
     True -> Ok(Nil)
     False ->
@@ -1202,6 +1253,7 @@ fn directory_of(path: String) -> String {
 // The cap socket lives in its own mode-0700 directory, so nothing else on
 // the host can even reach the socket to connect to it. Mirrors the token
 // file's discipline in `satellite.private_token_writer`.
+/// Creates directory with mode 0700 permissions to secure unix domain sockets.
 fn private_directory(directory: String) -> Result(Nil, String) {
   use _ <- result.try(
     simplifile.create_directory_all(directory)
@@ -1216,6 +1268,7 @@ fn unlink(path: String) -> Nil {
   Nil
 }
 
+/// Formats simplifile errors into human-readable action failure descriptions.
 fn file_error(
   outcome: Result(a, simplifile.FileError),
   what: String,
@@ -1229,6 +1282,7 @@ fn file_error(
 
 // How the node ended, as the close reason the host reports when no
 // terminal `outcome` frame arrived first.
+/// Formats process exit code and stderr output into close diagnosis text.
 fn exit_text(collected: Collected) -> String {
   case collected.outcome {
     broker.CallExited(result:) ->
@@ -1266,6 +1320,7 @@ fn bit_array_text(bytes: BitArray) -> String {
   }
 }
 
+/// Maps broker clearance refusal into descriptive diagnostic sentence.
 fn refusal_text(refusal: broker.Refusal) -> String {
   case refusal {
     broker.PolicyRefused(denial:) -> "policy refused: " <> denial.reason
@@ -1278,6 +1333,7 @@ fn refusal_text(refusal: broker.Refusal) -> String {
   }
 }
 
+/// Renders sandbox policy shortfall narrowing details into human-readable text.
 fn narrowing_text(narrowing: Narrowing) -> String {
   case narrowing {
     policy.NarrowedWritableRoot(path:) -> "writable root " <> path

@@ -4,6 +4,10 @@
 //// This boundary decodes stable envelopes once so scripts cannot confuse JSON
 //// text with a receipt, a cursor from another journal, or an absent message.
 //// Message payloads and model-authored observations remain open report values.
+////
+//// ## Flow
+////
+//// `roster` → `inbox` / `history` → `received` → `send`
 
 import cap/internal/channel
 import cap/internal/dispatch
@@ -437,6 +441,8 @@ pub fn first_receipt() -> ReceiptCursor {
 pub fn receipt_after(text: String) -> Result(ReceiptCursor, PeerError) {
   let prefix = "client/peers/receipt/sha256-"
   let suffix = string.drop_start(text, string.length(prefix))
+
+  // Validate the receipt cursor hex payload format.
   case
     string.starts_with(text, prefix)
     && string.length(suffix) == 64
@@ -629,6 +635,7 @@ pub fn sent_receipt(
   )
 }
 
+/// Invokes a capability call and decodes an optional receipt payload.
 fn receipt_call(
   name: String,
   args: Value,
@@ -639,10 +646,13 @@ fn receipt_call(
 }
 
 // JSON is the existing host transport, decoded once before exposing any fields.
+/// Dispatches a capability call and decodes its JSON string payload.
 fn call(name: String, args: Value) -> Result(Value, PeerError) {
   use value <- result.try(
     dispatch.call(name, args) |> result.map_error(map_error),
   )
+
+  // Verify response holds expected JSON string value.
   case value {
     msgpack.StringValue(text) ->
       cap_report.decode_json(text) |> result.map_error(PeerResultMalformed)
@@ -657,6 +667,7 @@ fn map_error(error: channel.CallError) -> PeerError {
   }
 }
 
+/// Decodes an inbox page containing pending inputs and next cursor.
 fn decode_inbox(value: Value) -> Result(InboxPage, String) {
   use revision <- result.try(nonnegative(value, "revision"))
   use total <- result.try(nonnegative(value, "total"))
@@ -665,17 +676,23 @@ fn decode_inbox(value: Value) -> Result(InboxPage, String) {
   Ok(InboxPage(revision:, items:, total:, next:))
 }
 
+/// Decodes an Input record based on its queue discriminator.
 fn decode_input(value: Value) -> Result(Input, String) {
   use queue <- result.try(wire.string_field(value, "queue"))
+
+  // Route decoding based on whether queue is materialized or pending.
   case queue {
     "materialized" -> decode_materialized(value)
     _ -> decode_pending(value)
   }
 }
 
+/// Decodes a pending input entry from msgpack.
 fn decode_pending(value: Value) -> Result(Input, String) {
   use id <- result.try(entry_field(value, "id"))
   use queue <- result.try(wire.string_field(value, "queue"))
+
+  // Map queue name string to Queue variant.
   use queue <- result.try(case queue {
     "next_run" -> Ok(NextRun)
     "steer" -> Ok(Steer)
@@ -684,27 +701,36 @@ fn decode_pending(value: Value) -> Result(Input, String) {
     "cancelled_follow_up" -> Ok(CancelledFollowUp)
     _ -> Error("unknown pending queue")
   })
+
   use payload <- result.try(wire.field(value, "payload"))
   Ok(Pending(id:, queue:, payload:))
 }
 
+/// Decodes a materialized input entry from msgpack.
 fn decode_materialized(value: Value) -> Result(Input, String) {
   use queue <- result.try(wire.string_field(value, "queue"))
+
+  // Verify queue name is materialized.
   use _ <- result.try(case queue == "materialized" {
     True -> Ok(Nil)
     False -> Error("expected materialized input")
   })
+
   use id <- result.try(entry_field(value, "id"))
   use entry <- result.try(wire.field(value, "entry"))
   Ok(Materialized(id:, entry:))
 }
 
+/// Decodes an admitted receipt envelope from msgpack.
 fn decode_receipt(value: Value) -> Result(Receipt, String) {
   use admitted <- result.try(wire.bool_field(value, "admitted"))
+
+  // Validate that the receipt is marked admitted.
   use _ <- result.try(case admitted {
     True -> Ok(Nil)
     False -> Error("receipt was not admitted")
   })
+
   use request <- result.try(wire.field(value, "request"))
   use source_session <- result.try(session_field(request, "source_session"))
   use source_strand <- result.try(wire.string_field(request, "source_strand"))
@@ -728,12 +754,15 @@ fn decode_received(value: Value) -> Result(ReceivedReceipt, String) {
   Ok(ReceivedReceipt(cursor:, receipt:))
 }
 
+/// Decodes a peer Link record from msgpack.
 fn decode_link(value: Value) -> Result(Link, String) {
   use session <- result.try(session_field(value, "session"))
   use target_strand <- result.try(wire.string_field(value, "target_strand"))
   use metadata <- result.try(wire.field(value, "metadata"))
   use metadata <- result.try(decode_metadata(metadata))
   use exports <- result.try(wire.field(value, "exported_strands"))
+
+  // Unpack exported strands or report resident unavailability.
   use exports <- result.try(case exports {
     msgpack.NilValue -> Ok(NotResident)
     msgpack.ArrayValue(_) ->
@@ -742,23 +771,28 @@ fn decode_link(value: Value) -> Result(Link, String) {
       wire.string_field(exports, "unavailable")
       |> result.map(ExportsUnavailable)
   })
+
   Ok(Link(session:, target_strand:, metadata:, exports:))
 }
 
+/// Decodes metadata envelope into typed Catalogue, Unavailable, or CustomMetadata.
 fn decode_metadata(value: Value) -> Result(Metadata, String) {
-  // Metadata is open JSON; only complete known envelopes claim a typed shape.
+  // Identify whether metadata matches a known typed envelope shape.
   let known = case value {
     msgpack.MapValue([_]) ->
       wire.string_field(value, "unavailable") |> result.map(MetadataUnavailable)
     msgpack.MapValue([_, _, _, _, _]) -> decode_catalogue(value)
     _ -> Error("custom metadata")
   }
+
+  // Return typed metadata if recognized or fallback to CustomMetadata.
   case known {
     Ok(metadata) -> Ok(metadata)
     Error(_) -> Ok(CustomMetadata(value))
   }
 }
 
+/// Decodes catalogue metadata fields from a msgpack map.
 fn decode_catalogue(value: Value) -> Result(Metadata, String) {
   use session <- result.try(session_field(value, "session_id"))
   use workspace <- result.try(wire.string_field(value, "workspace"))
@@ -769,8 +803,11 @@ fn decode_catalogue(value: Value) -> Result(Metadata, String) {
   Ok(Catalogue(session:, workspace:, name:, created_at:, status:))
 }
 
+/// Decodes the session lifecycle state string into a Lifecycle variant.
 fn decode_lifecycle(value: Value) -> Result(Lifecycle, String) {
   use state <- result.try(wire.string_field(value, "state"))
+
+  // Map lifecycle state string to Lifecycle variant.
   case state {
     "reserved" -> Ok(Reserved)
     "saved" -> Ok(Saved)
@@ -783,6 +820,7 @@ fn decode_lifecycle(value: Value) -> Result(Lifecycle, String) {
   }
 }
 
+/// Decodes an Export record representing an exported strand.
 fn decode_export(value: Value) -> Result(Export, String) {
   use strand <- result.try(wire.string_field(value, "strand"))
   use parent <- result.try(optional_field(value, "parent", as_text))
@@ -792,16 +830,20 @@ fn decode_export(value: Value) -> Result(Export, String) {
     as_op,
   ))
   use wake <- result.try(wire.string_field(value, "wake"))
+
+  // Map wake permission string to Wake variant.
   use wake <- result.try(case wake {
     "busy_only" -> Ok(BusyOnly)
     "may_wake" -> Ok(MayWake)
     _ -> Error("unknown peer wake permission")
   })
+
   use activity <- result.try(wire.field(value, "activity"))
   use activity <- result.try(decode_activity(activity))
   Ok(Export(strand:, parent:, current_operation:, wake:, activity:))
 }
 
+/// Decodes strand activity observation fields from msgpack.
 fn decode_activity(value: Value) -> Result(Activity, String) {
   use strand <- result.try(wire.string_field(value, "strand"))
   use state_commit_sequence <- result.try(nonnegative(
@@ -847,6 +889,7 @@ fn decode_terminal(value: Value) -> Result(Terminal, String) {
 }
 
 // Required optional fields distinguish explicit absence from malformed envelopes.
+/// Decodes an optional field with the specified decoder function.
 fn optional_field(
   value: Value,
   key: String,
@@ -856,6 +899,7 @@ fn optional_field(
   decode_optional(found, decode)
 }
 
+/// Decodes a nullable msgpack value into an Option.
 fn decode_optional(
   value: Value,
   decode: fn(Value) -> Result(a, String),
@@ -866,6 +910,7 @@ fn decode_optional(
   }
 }
 
+/// Decodes a msgpack array into a list using the specified decoder.
 fn decode_list(
   value: Value,
   decode: fn(Value) -> Result(a, String),
@@ -915,8 +960,11 @@ fn decode_receipt_cursor(value: Value) -> Result(ReceiptCursor, String) {
   receipt_after(text) |> result.replace_error("invalid receipt cursor")
 }
 
+/// Decodes a required integer field and verifies it is non-negative.
 fn nonnegative(value: Value, key: String) -> Result(Int, String) {
   use n <- result.try(wire.int_field(value, key))
+
+  // Check that the decoded integer is non-negative.
   case n >= 0 {
     True -> Ok(n)
     False -> Error("negative " <> key)

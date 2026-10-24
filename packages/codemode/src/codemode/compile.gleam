@@ -313,6 +313,7 @@ pub fn compile(
   config: CompileConfig,
   identity: PhaseIdentity,
 ) -> Compiled {
+  // Prepare the hermetic build workspace before invoking the builder.
   case prepare(vetted, config) {
     Error(error) ->
       Compiled(
@@ -339,8 +340,10 @@ pub fn compile(
   }
 }
 
-// Writes the hermetic workspace, returning the build root the builder is
-// then handed.
+/// Prepares the isolated compilation workspace directory with source files.
+///
+/// Writes the hermetic workspace, returning the build root the builder is
+/// then handed.
 fn prepare(
   vetted: Vetted,
   config: CompileConfig,
@@ -425,6 +428,7 @@ pub fn project_toml(dependencies: List(Dependency)) -> String {
 
 // --- filesystem helpers, mapping simplifile faults to CompileError -------
 
+/// Creates a directory and maps filesystem errors to compilation failures.
 fn make_directory(path: String) -> Result(Nil, CompileError) {
   simplifile.create_directory_all(path)
   |> result.map_error(fn(error) {
@@ -434,6 +438,7 @@ fn make_directory(path: String) -> Result(Nil, CompileError) {
   })
 }
 
+/// Writes source file contents and maps filesystem errors to compilation failures.
 fn write_source(path: String, contents: String) -> Result(Nil, CompileError) {
   simplifile.write(to: path, contents: contents)
   |> result.map_error(fn(error) {

@@ -653,6 +653,7 @@ pub fn navigate(
 // is the one caller that hands a `Some(mark)` — the rest pass `None`,
 // under which `marked`/`commit_admission` degrade to the plain
 // `commit_or_retry` this always did.
+/// Accepts a request for execution, optionally marking the admission transaction.
 fn accept_request(
   runtime: Runtime,
   request: acceptance.AcceptRequest,
@@ -699,6 +700,7 @@ pub type AsyncCustody {
 
 // The record sequence participates in the recipient transaction. Closing
 // custody therefore serializes with both new runs and busy-child steering.
+/// Validates that an async execution has not been aborted and is actively admitting work.
 fn async_authority(
   runtime: Runtime,
   custody: AsyncCustody,
@@ -706,22 +708,30 @@ fn async_authority(
 ) -> Result(#(async_execution.Execution, List(tx.SeqExpectation)), ApiError) {
   let aborted_key = async_execution.abort_key(custody.operation)
   use aborted <- result.try(fact_cell(runtime, aborted_key))
+
+  // Checks if the initiating operation was aborted.
   use Nil <- result.try(case aborted {
     None -> Ok(Nil)
     Some(_) -> Error(ReadFailed("initiating operation has been aborted"))
   })
+
   use cell <- result.try(fact_cell(
     runtime,
     async_execution.key(custody.execution),
   ))
+
+  // Verifies that the async execution cell exists.
   use cell <- result.try(case cell {
     Some(cell) -> Ok(cell)
     None -> Error(ReadFailed("async execution does not exist"))
   })
+
   use record <- result.try(
     async_execution.decode(cell.value)
     |> result.replace_error(ReadFailed("invalid async execution record")),
   )
+
+  // Checks that the execution record matches custody and is admitting work.
   case
     record.id == custody.execution
     && record.strand == custody.strand
@@ -743,6 +753,7 @@ fn async_authority(
   }
 }
 
+/// Prepares the admission transaction plan for an asynchronous child run.
 fn admitting_async_child(
   runtime: Runtime,
   custody: AsyncCustody,
@@ -752,15 +763,20 @@ fn admitting_async_child(
   plan: tx.Tx,
 ) -> Result(tx.Tx, ApiError) {
   use #(execution, fence) <- result.try(async_authority(runtime, custody, now))
+
+  // Computes the deadline bounded by budget and execution deadline.
   let deadline = case budget {
     Some(ms) -> int.min(now + ms, execution.deadline_ms)
     None -> execution.deadline_ms
   }
+
+  // Attach execution ownership unless the child was spawned detached.
   let owner = case custody.attachment {
     Owned ->
       Some(child_run.AsyncExecution(custody.operation, custody.execution))
     Detached -> None
   }
+
   let run =
     child_run.Run(
       strand: runtime.strand,
@@ -774,6 +790,8 @@ fn admitting_async_child(
   // interruption between admission and publication of the lineage cell.
   let initial_key = child_run.initial_key(runtime.strand)
   use initial <- result.try(fact_cell(runtime, initial_key))
+
+  // Prepares initial write if the initial key has not been recorded yet.
   let initial_writes = case initial {
     Some(_) -> []
     None -> [
@@ -784,10 +802,13 @@ fn admitting_async_child(
       ),
     ]
   }
+
+  // Builds sequence expectations for the initial brief key.
   let initial_expected = case initial {
     Some(cell) -> [tx.Expect(register.FactCustom, initial_key, Some(cell.seq))]
     None -> [tx.Expect(register.FactCustom, initial_key, None)]
   }
+
   Ok(tx.Tx(
     writes: list.append(initial_writes, [
       tx.SetRegister(
@@ -804,6 +825,7 @@ fn admitting_async_child(
   ))
 }
 
+/// Accepts a request and records child run lifecycle tracking when applicable.
 fn accept_with_child_run(
   runtime: Runtime,
   request: acceptance.AcceptRequest,
@@ -865,6 +887,7 @@ fn accept_with_child_run(
 // durable. A fact written after acceptance would leave an unowned run if the
 // sender died between commits. Ordinary strands and structural operations
 // carry no child lifecycle record.
+/// Prepares child run tracking writes and expectations during admission.
 fn admitting_child_run(
   runtime: Runtime,
   request: acceptance.AcceptRequest,
@@ -873,6 +896,7 @@ fn admitting_child_run(
   now: Int,
   plan: tx.Tx,
 ) -> Result(tx.Tx, ApiError) {
+  // Prepares child run plan based on request kind and continuation.
   case request, continuation {
     AcceptCompaction(..), _ | AcceptNavigation(..), _ -> Ok(plan)
     AcceptRun(..),
@@ -893,6 +917,8 @@ fn admitting_child_run(
           },
         ),
       )
+
+      // Checks the lineage cell to determine child run parameters.
       case cell {
         None -> Ok(plan)
 
@@ -916,11 +942,14 @@ fn admitting_child_run(
             lineage,
             continuation,
           ))
+
+          // Computes budget from continuation or default lineage budget.
           let budget = case continuation {
             Some(Continuation(within_ms: Some(budget), ..)) -> Some(budget)
             Some(Continuation(within_ms: None, ..)) | None ->
               lineage.default_within_ms
           }
+
           use deadline <- result.try(run_deadline_for(
             lineage,
             continuation,
@@ -965,6 +994,7 @@ fn admitting_child_run(
 // one its spawn was given, and nothing later: a message must not lengthen what
 // the spawner allowed, however many are sent, and a child past its deadline
 // cannot be revived by one.
+/// Computes the deadline timestamp for a child run.
 fn run_deadline_for(
   child: lineage.Lineage,
   continuation: Option(Continuation),
@@ -990,6 +1020,7 @@ fn run_deadline_for(
 // and a run started without a continuation is nobody's to own: the parent's runs
 // are on the other machine, and its orchestrator never tells this one that one
 // ended. Such a run is unowned, bounded by the deadline its record is given.
+/// Resolves the owner and expectations for a newly admitted child run.
 fn child_owner(
   runtime: Runtime,
   child: lineage.Lineage,
@@ -1001,16 +1032,21 @@ fn child_owner(
   }
 }
 
+/// Resolves child owner from local parent state on the same host.
 fn local_child_owner(
   runtime: Runtime,
   child: lineage.Lineage,
   continuation: Option(Continuation),
 ) -> Result(#(Option(child_run.Owner), List(tx.SeqExpectation)), ApiError) {
+  // Determines the parent strand name from continuation or child lineage.
   let parent = case continuation {
     Some(Continuation(owner: #(strand, _), ..)) -> strand
     None -> child.parent
   }
+
   use #(seq, state) <- result.try(read_strand_state(on_strand(runtime, parent)))
+
+  // Verifies that the sending parent run matches expectations.
   use Nil <- result.try(case continuation {
     Some(Continuation(owner: #(_, expected), ..)) ->
       case state.current_operation == Some(expected) {
@@ -1019,15 +1055,19 @@ fn local_child_owner(
       }
     None -> Ok(Nil)
   })
+
   use #(current_owner, owner_expectations) <- result.try(child_owner_phase(
     runtime,
     state.current_operation,
     continuation,
   ))
+
+  // Assigns owner if the child is not explicitly detached.
   let owner = case child.detached {
     True -> None
     False -> current_owner
   }
+
   Ok(
     #(owner, [
       tx.Expect(register.StrandState, parent, Some(seq)),
@@ -1039,11 +1079,13 @@ fn local_child_owner(
 // Run-end hooks execute before the final strand-state commit. A prompt racing
 // that boundary must not acquire custody from a parent whose cleanup may have
 // already scanned its children. The existing phase and its CAS close that gap.
+/// Validates parent operation phase before attaching custody.
 fn child_owner_phase(
   runtime: Runtime,
   current: Option(OpId),
   continuation: Option(Continuation),
 ) -> Result(#(Option(child_run.Owner), List(tx.SeqExpectation)), ApiError) {
+  // Dispatches on parent current operation to inspect run state.
   case current {
     None -> Ok(#(None, []))
     Some(id) -> {
@@ -1053,6 +1095,8 @@ fn child_owner_phase(
         ids.op_id_to_string(id),
         codec.decode_state,
       ))
+
+      // Checks if parent state cell is present or ended.
       case cell {
         // The parent's run ended between the two reads: the terminal
         // transaction cleared the strand's `current_operation` and deleted its
@@ -1071,12 +1115,14 @@ fn child_owner_phase(
   }
 }
 
+/// Decides ownership based on whether the parent operation is finishing.
 fn child_owner_of(
   id: OpId,
   seq: Int,
   state: OperationState,
   continuation: Option(Continuation),
 ) -> Result(#(Option(child_run.Owner), List(tx.SeqExpectation)), ApiError) {
+  // Checks if the parent operation is in its finishing checkpoint phase.
   let finishing = case state {
     operation.RunState(
       phase: operation.Checkpoint(operation.CheckpointPhase(
@@ -1087,11 +1133,14 @@ fn child_owner_of(
     ) -> True
     _ -> False
   }
+
+  // Validates continuation status against parent finishing state.
   use owner <- result.try(case finishing, continuation {
     True, Some(_) -> Error(ReadFailed("the sending parent run is finishing"))
     True, None -> Ok(None)
     False, _ -> Ok(Some(child_run.ParentRun(id)))
   })
+
   Ok(
     #(owner, [
       tx.Expect(register.OpState, ids.op_id_to_string(id), Some(seq)),
@@ -1102,6 +1151,7 @@ fn child_owner_of(
 // Whether a non-null navigation target exists in the tree. `None` (the
 // root) is always known — `accept_navigation` only consults `target_known`
 // when `target` is `Some` — so this never has to ask the store for it.
+/// Verifies that a navigation target entry exists in storage.
 fn target_exists(
   runtime: Runtime,
   target: Option(EntryId),
@@ -1231,6 +1281,7 @@ pub fn follow_up(
   entry
 }
 
+/// Enqueues a message to an active operation queue.
 fn enqueue(
   runtime: Runtime,
   message: AgentMessage,
@@ -1246,6 +1297,7 @@ fn enqueue(
   enqueue_guarded(runtime, message, admit, mark, None)
 }
 
+/// Enqueues a message with optional transaction mark and custody guards.
 fn enqueue_guarded(
   runtime: Runtime,
   message: AgentMessage,
@@ -1263,6 +1315,8 @@ fn enqueue_guarded(
     use <- attempt
     let w = writer_subject(runtime)
     use #(_seq, strand_state) <- result.try(read_strand_state(runtime))
+
+    // Checks if the strand has an active running operation to accept the queue item.
     case strand_state.current_operation {
       None -> Ok(Done(Error(QueueRejected(reason: queue.NoActiveRun))))
       Some(op_id) -> {
@@ -1276,6 +1330,7 @@ fn enqueue_guarded(
           fn(reason) { QueueRejected(reason:) },
         )
 
+        // Adds fence expectations when custody is supplied.
         use plan_tx <- result.try(case custody {
           None -> Ok(plan_tx)
           Some(owner) -> {
@@ -1366,6 +1421,7 @@ pub fn abort_operation(runtime: Runtime, operation: OpId) -> Nil {
 // The same request addressed by the tree and a strand name rather than by a
 // whole `Runtime`. A drain reaches a driver through these two references only,
 // which is what lets `Drain` hold nothing else.
+/// Requests abortion of a specific strand operation on a live strand driver.
 fn abort_strand_operation(
   tree: SessionTree,
   strand_name: String,
@@ -1456,6 +1512,7 @@ pub fn await_result(
 // The same wait addressed by the session store and a strand name rather than
 // by a whole `Runtime`. A drain reaches a terminal through these two
 // references only, which is what lets `Drain` hold nothing else.
+/// Polls session storage until a terminal result is recorded for the operation.
 fn await_stored_result(
   store: Session,
   strand_name: String,
@@ -1473,6 +1530,8 @@ fn await_stored_result(
         None -> poll.Retry
       }
     })
+
+  // Inspects the poll outcome to return the result or timeout.
   case outcome {
     poll.Answered(last) -> Ok(last)
     poll.Expired -> Error(Nil)
@@ -1487,6 +1546,7 @@ fn await_stored_result(
 // when that cell names this very operation. The fallback is not a
 // substitute — an eager read would run it even when the operation-keyed
 // fact already answered — so it stays behind the first miss.
+/// Reads the settled result from operation-keyed record or fallback last_result.
 fn settled_result(
   store: Session,
   strand_name: String,
@@ -1511,8 +1571,11 @@ fn settled_result(
 // restarts. An unreadable or undecodable row reads as absent — the
 // caller keeps polling and times out rather than faulting, exactly as a
 // missing result behaves.
+/// Looks up the operation-keyed terminal result fact from storage.
 fn operation_result(store: Session, op: OpId) -> Option(LastResult) {
   let key = operation.result_fact_key(op)
+
+  // Queries the operation result custom fact from storage.
   case storage.get_register(store.store, register.FactCustom, key) {
     Ok(Some(storage.Register(value:, ..))) ->
       case codec.decode_last_result(value.payload) {
@@ -1642,6 +1705,8 @@ pub fn adopt_strand(
 ) -> Result(OpId, CreateStrandError) {
   use Nil <- result.try(start_driver(runtime, name))
   let subagent = on_strand(runtime, name)
+
+  // Dispatches the brief to the subagent strand.
   case accept_quietly(subagent, brief) {
     Error(error) -> Error(BriefRejected(error:))
     Ok(operation) -> {
@@ -1654,6 +1719,7 @@ pub fn adopt_strand(
 // The driver-start half `adopt_strand` and `create_idle_strand` share:
 // start (or find already alive) the named strand's driver under the
 // existing StrandSupervisor.
+/// Starts the named strand's driver under the supervisor tree if not running.
 fn start_driver(
   runtime: Runtime,
   name: String,
@@ -1680,10 +1746,12 @@ pub fn result_operation(last: LastResult) -> OpId {
   }
 }
 
+/// Validates that a fork point entry exists in storage when provided.
 fn validate_fork_point(
   runtime: Runtime,
   fork_point: Option(EntryId),
 ) -> Result(Nil, CreateStrandError) {
+  // Checks if fork point is specified and verifies its presence in storage.
   case fork_point {
     None -> Ok(Nil)
     Some(entry) -> {
@@ -1699,6 +1767,7 @@ fn validate_fork_point(
   }
 }
 
+/// Seeds the initial registers for a newly created strand in storage.
 fn seed_strand(
   runtime: Runtime,
   name: String,
@@ -1738,6 +1807,8 @@ fn seed_strand(
         tx.Expect(ns: register.StrandState, key: name, seq: None),
       ],
     )
+
+  // Commits the initial strand registers seed transaction.
   case writer.commit(writer_subject(runtime), seed) {
     Ok(_) -> Ok(Nil)
     Error(writer.Unavailable) ->
@@ -1860,6 +1931,7 @@ pub fn send_to_async_child(
   send_child_attempts(on_strand(runtime, target), message, continuation, 4)
 }
 
+/// Retries sending a child message across runs and active steers.
 fn send_child_attempts(
   target: Runtime,
   message: AgentMessage,
@@ -1879,6 +1951,8 @@ fn send_child_attempts(
       Started(operation:)
     })
   }
+
+  // Determines whether to start fresh run or steer open run based on budget.
   case continuation.within_ms {
     Some(ms) if ms <= 0 -> Error(ReadFailed("within_ms must be positive"))
     Some(_) -> admission()
@@ -1907,6 +1981,7 @@ fn send_child_attempts(
   }
 }
 
+/// Retries sending a message by attempting steer and then new run acceptance.
 fn send_attempts(
   target: Runtime,
   message: AgentMessage,
@@ -1914,6 +1989,8 @@ fn send_attempts(
   attempts: Int,
 ) -> Result(Delivery, ApiError) {
   use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
+
+  // Attempts to enqueue message as a steer onto an active run first.
   case enqueue(target, message, queue.enqueue_steer, mark) {
     Ok(entry) -> {
       nudge(target)
@@ -2060,6 +2137,7 @@ pub fn draining(runtime: Runtime) -> Drain {
 /// // api.drain_within(handle, within_ms: 5000)
 /// ```
 pub fn drain_within(handle: Drain, within_ms timeout_ms: Int) -> Nil {
+  // Lists all strand names to initiate orderly abort on active operations.
   case strand_names(handle.tree) {
     Error(_) -> Nil
     Ok(strands) -> {
@@ -2070,6 +2148,7 @@ pub fn drain_within(handle: Drain, within_ms timeout_ms: Int) -> Nil {
       // later strand's request past the deadline.
       let running =
         list.filter_map(strands, fn(strand) {
+          // Checks if the strand has an active running operation to abort.
           case session.strand_state(handle.session, strand) {
             Ok(Some(session.Cell(
               value: strand.StrandState(current_operation: Some(op), ..),
@@ -2086,6 +2165,8 @@ pub fn drain_within(handle: Drain, within_ms timeout_ms: Int) -> Nil {
       list.each(running, fn(pair) {
         let #(strand, op) = pair
         let remaining = deadline - poll.monotonic().now()
+
+        // Waits for the aborted operation result if time remains.
         case remaining > 0 {
           True -> {
             let _ =
@@ -2119,6 +2200,7 @@ pub fn strands(runtime: Runtime) -> Result(List(String), ApiError) {
 
 // The same listing addressed by the tree alone. `Drain` holds the tree, so a
 // drain can enumerate strands without the `Runtime` that named one of them.
+/// Lists all known strand names registered in storage.
 fn strand_names(tree: SessionTree) -> Result(List(String), ApiError) {
   case writer.list_registers(tree.writer, register.StrandConfig, None) {
     Error(error) -> Error(read_failure(error))
@@ -2227,19 +2309,25 @@ pub type RunDefaults {
 @internal
 pub fn run_defaults_cell(runtime: Runtime) -> Result(RunDefaults, ApiError) {
   use cell <- result.try(fact_cell(runtime, run_settings_key))
+
+  // Reads run defaults from cell or falls back to runtime settings.
   case cell {
     None -> Ok(RunDefaults(runtime.settings, None, None))
     Some(FactCell(json.Object(fields), seq)) -> {
+      // Parses queue mode setting from fields.
       use queue <- result.try(case list.key_find(fields, "queue_mode") {
         Ok(json.String("consume_all")) -> Ok(operation.ConsumeAll)
         Ok(json.String("one_at_a_time")) -> Ok(operation.OneAtATime)
         _ -> Error(ReadFailed("invalid shared queue mode"))
       })
+
+      // Parses tool execution setting from fields.
       use execution <- result.try(case list.key_find(fields, "tool_execution") {
         Ok(json.String("parallel")) -> Ok(operation.Parallel)
         Ok(json.String("sequential")) -> Ok(operation.Sequential)
         _ -> Error(ReadFailed("invalid shared tool execution"))
       })
+
       use author <- result.try(
         origin.decode_field(fields)
         |> result.map_error(fn(_) {
@@ -2273,14 +2361,18 @@ pub fn encode_run_defaults(
   settings: RunSettings,
   author: Option(Origin),
 ) -> JsonValue {
+  // Serializes steering mode setting to string.
   let queue = case settings.steering_mode {
     operation.ConsumeAll -> "consume_all"
     operation.OneAtATime -> "one_at_a_time"
   }
+
+  // Serializes tool execution setting to string.
   let execution = case settings.tool_execution {
     operation.Parallel -> "parallel"
     operation.Sequential -> "sequential"
   }
+
   json.Object([
     #("queue_mode", json.String(queue)),
     #("tool_execution", json.String(execution)),
@@ -2326,6 +2418,7 @@ pub fn put_fact_expecting(
 // `commit_fact`, the reservation check is the caller's, and it is the
 // only thing that differs between `put_fact_expecting` and
 // `put_reserved_fact_expecting`.
+/// Commits a fact with an expectation on its previous sequence number.
 fn commit_fact_expecting(
   address: address.Address(writer.Message),
   key: String,
@@ -2340,6 +2433,7 @@ fn commit_fact_expecting(
 // Both capability shapes use this transaction and the same error mapping.
 // Address resolution remains inside writer.commit, so a retained fact handle
 // never becomes a cached liveness observation or a pinned writer PID.
+/// Commits a fact transaction with custom sequence expectations.
 fn commit_fact_guarded(
   address: address.Address(writer.Message),
   key: String,
@@ -2357,6 +2451,8 @@ fn commit_fact_guarded(
       ],
       expected:,
     )
+
+  // Commits the fact plan and handles stale expectation conflicts.
   case writer.commit(address, plan_tx) {
     Ok(tx.CommitResult(first_seq:, ..)) -> Ok(first_seq)
     Error(writer.Underlying(tx.StaleExpectation(..))) ->
@@ -2368,6 +2464,7 @@ fn commit_fact_guarded(
 // The blind last-write-wins fact commit both write paths share; the
 // reservation check is the caller's, and it is the only thing that
 // differs between them.
+/// Commits an unguarded fact write to the writer.
 fn commit_fact(
   runtime: Runtime,
   key: String,
@@ -2384,6 +2481,8 @@ fn commit_fact(
       ],
       expected: [],
     )
+
+  // Commits the unconditioned fact write.
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(Nil)
     Error(error) -> Error(commit_failure(error))
@@ -2860,6 +2959,8 @@ pub fn delete_reserved_fact(
       writes: [tx.DeleteRegister(ns: register.FactCustom, key:)],
       expected: [],
     )
+
+  // Commits the reserved fact deletion transaction.
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(Nil)
     Error(error) -> Error(commit_failure(error))
@@ -2919,6 +3020,8 @@ pub fn delete_reserved_prefix(
       let #(key, _value) = pair
       tx.DeleteRegister(ns: register.FactCustom, key:)
     })
+
+  // Commits the batch deletion of reserved facts under the prefix.
   case writer.commit(writer_subject(runtime), tx.Tx(writes:, expected: [])) {
     Ok(_result) -> Ok(list.length(cells))
     Error(error) -> Error(commit_failure(error))
@@ -2995,6 +3098,8 @@ pub fn edit_reserved_facts(
         }
       }),
     )
+
+  // Commits the batch edits of reserved facts with sequence expectations.
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(Nil)
     Error(writer.Underlying(tx.StaleExpectation(..))) -> Error(RaceLost)
@@ -3159,6 +3264,8 @@ pub fn claim_escalation(
   retry_admission(4, fn() {
     use <- attempt
     use found <- result.try(read_escalation_cell(runtime, id))
+
+    // Computes expected sequence and claim update based on existing record.
     let #(expected, claim) = case found {
       None -> #(
         None,
@@ -3174,6 +3281,8 @@ pub fn claim_escalation(
         escalation.claimed(record, denial, action, scope, max_asks:),
       )
     }
+
+    // Commits the updated claim or returns without writing if exhausted.
     case claim {
       // Nothing to commit: the row keeps the state it is in, and the
       // absence of a write is the whole of the refusal.
@@ -3251,6 +3360,7 @@ pub fn raise_escalation(
   )
 }
 
+/// Commits a newly raised escalation record with an absence expectation.
 fn commit_raised(
   runtime: Runtime,
   id: String,
@@ -3268,6 +3378,8 @@ fn commit_raised(
       ],
       expected: [tx.Expect(ns: register.FactCustom, key:, seq: None)],
     )
+
+  // Commits the new escalation record.
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(Nil)
     Error(writer.Underlying(tx.StaleExpectation(..))) ->
@@ -3491,6 +3603,7 @@ pub fn deny_escalation_at(
 // seq. There is no retry ladder here on purpose — see
 // `approve_escalation_at` for why rereading a moved record would let one
 // human answer decide a question they were never shown.
+/// Applies an escalation status transition guarded by CAS.
 fn decide_escalation_at(
   runtime: Runtime,
   cell: EscalationCell,
@@ -3502,6 +3615,7 @@ fn decide_escalation_at(
 
 // The optional fact shares the decision's commit and both compare-and-set
 // guards. There is no intermediate state for a restarted runtime to repair.
+/// Commits an escalation decision optionally accompanied by a reserved fact update.
 fn decide_escalation_with_fact_at(
   runtime: Runtime,
   cell: EscalationCell,
@@ -3527,6 +3641,7 @@ fn decide_escalation_with_fact_at(
       expected: [tx.Expect(register.FactCustom, key, Some(cell.seq))],
     )
 
+  // Augments the transaction plan with the reserved fact change when provided.
   let plan = case change {
     None -> plan
     Some(change) ->
@@ -3629,6 +3744,8 @@ pub fn consume_escalation_at(
       ],
       expected: [tx.Expect(ns: register.FactCustom, key:, seq: Some(seq))],
     )
+
+  // Commits the consumption of the approved escalation record.
   case writer.commit(writer_subject(runtime), plan_tx) {
     Ok(_) -> Ok(consumed.grants)
 
@@ -3639,6 +3756,7 @@ pub fn consume_escalation_at(
   }
 }
 
+/// Decides an escalation by applying a mutation function under a retry loop.
 fn decide_escalation_value(
   runtime: Runtime,
   id: String,
@@ -3672,6 +3790,7 @@ fn decide_escalation_value(
   })
 }
 
+/// Reads an escalation record or returns an EscalationNotFound error.
 fn read_escalation(
   runtime: Runtime,
   id: String,
@@ -3683,11 +3802,14 @@ fn read_escalation(
 // The same read for the one caller that treats "no record yet" as a
 // state rather than a fault: a claim writes the record when it is
 // absent and takes it over when it is not.
+/// Reads an escalation record with its sequence number from storage.
 fn read_escalation_cell(
   runtime: Runtime,
   id: String,
 ) -> Result(Option(#(Seq, Escalation)), ApiError) {
   let key = escalation.register_key(id)
+
+  // Looks up the escalation register from custom facts.
   case writer.get_register(writer_subject(runtime), register.FactCustom, key) {
     Error(error) -> Error(read_failure(error))
     Ok(None) -> Ok(None)
@@ -3715,6 +3837,7 @@ type Attempt(value) {
 // that cannot act differently on a full disk than on a corrupt page
 // gains nothing from being told which it was, and the reason string is
 // there for the human.
+/// Maps a writer commit error into a public ApiError variant.
 fn commit_failure(error: writer.Failure(CommitError)) -> ApiError {
   case error {
     writer.Unavailable -> RuntimeUnavailable
@@ -3723,11 +3846,14 @@ fn commit_failure(error: writer.Failure(CommitError)) -> ApiError {
   }
 }
 
+/// Retries an admission attempt up to the given limit against sequence race failures.
 fn retry_admission(
   attempts: Int,
   attempt: fn() -> Attempt(value),
 ) -> Result(value, ApiError) {
   use <- bool.guard(when: attempts <= 0, return: Error(RaceLost))
+
+  // Runs the attempt and decides whether to return outcome or retry.
   case attempt() {
     Done(outcome) -> outcome
     Retry -> retry_admission(attempts - 1, attempt)
@@ -3749,6 +3875,7 @@ fn attempt(body: fn() -> Result(Attempt(value), ApiError)) -> Attempt(value) {
 // as `Done(Error(..))` rather than aborting the ladder. Mirrors
 // `machine/planner`'s `or_fault` and `tools/tool`'s `or_outcome` for this
 // package's `Attempt`-chained admission bodies.
+/// Unwraps a fallible result or returns a rejected admission attempt.
 fn or_rejected(
   result: Result(a, e),
   to_reason: fn(e) -> ApiError,
@@ -3767,6 +3894,7 @@ fn or_rejected(
 // attempt, because `retry_admission` decrements only on `Retry` and
 // spending the ladder's attempts against a fence that refuses all of
 // them would report `RaceLost` and name the wrong cause.
+/// Translates a commit result into an admission attempt outcome or retry.
 fn commit_or_retry(
   result: Result(tx.CommitResult, writer.Failure(CommitError)),
   on_ok on_ok: value,
@@ -3784,16 +3912,21 @@ fn commit_or_retry(
 // earliest failing expectation names the mark rather than the operation
 // state — the two are told apart below, and naming the interesting one
 // first costs nothing.
+/// Augments a transaction plan with an optional write mark and expectations.
 fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
+  // Evaluates the mark option to fold into the transaction plan.
   case mark {
     None -> plan
     Some(mark) -> {
       let key = mark.key
       let value = mark.value
+
+      // Extracts guard expectations from guarded mark variant.
       let guards = case mark {
         Mark(..) -> []
         GuardedMark(expected:, ..) -> expected
       }
+
       tx.Tx(
         writes: list.append(plan.writes, [
           tx.SetRegister(
@@ -3817,6 +3950,7 @@ fn marked(plan: tx.Tx, mark: Option(Mark)) -> tx.Tx {
 // would spend four attempts reloading operation state that was never
 // the problem and then report `RaceLost`, which names the wrong cause —
 // the same mistake the lease branch was written to avoid.
+/// Commits an admission transaction and inspects mark expectation conflicts.
 fn commit_admission(
   result: Result(tx.CommitResult, writer.Failure(CommitError)),
   mark: Option(Mark),
@@ -3829,16 +3963,21 @@ fn commit_admission(
 }
 
 // The mark's key, when this commit failed on the mark's own expectation.
+/// Identifies if a commit failed due to a mark's sequence expectation.
 fn conflicted_key(
   result: Result(tx.CommitResult, writer.Failure(CommitError)),
   mark: Option(Mark),
 ) -> Option(String) {
+  // Inspects the commit failure against mark expectations.
   case result, mark {
     Error(writer.Underlying(tx.StaleExpectation(failed:))), Some(mark) -> {
+      // Extracts expected guards from mark.
       let expected = case mark {
         Mark(..) -> []
         GuardedMark(expected:, ..) -> expected
       }
+
+      // Checks if the failed expectation matches mark key or guards.
       case
         list.contains(
           [tx.Expect(register.FactCustom, mark.key, None), ..expected],
@@ -3865,6 +4004,7 @@ fn conflicted_key(
 }
 
 // `use`-shaped read helpers that short-circuit an attempt.
+/// Reads the current strand state from storage.
 fn read_strand_state(
   runtime: Runtime,
 ) -> Result(#(Int, StrandState), ApiError) {
@@ -3883,6 +4023,7 @@ fn read_strand_state(
 // together, so a run that finishes between the reads leaves a stale operation
 // identity and nothing to read under it. That is a lost race and not a
 // corrupt store, which is why a missing register is `None` here.
+/// Reads the active operation metadata and state from storage.
 fn read_open_operation(
   runtime: Runtime,
   op_id: OpId,
@@ -3899,6 +4040,8 @@ fn read_open_operation(
     ids.op_id_to_string(op_id),
     codec.decode_state,
   ))
+
+  // Checks that both operation metadata and state are present.
   case meta, state {
     Some(#(_, op)), Some(#(seq, op_state)) -> Ok(Some(#(op, seq, op_state)))
 
@@ -3916,6 +4059,7 @@ fn read_open_operation(
 // another attempt when the run finished between the reads. The next attempt
 // reads the strand again and finds a newer operation or none, which the
 // caller answers as it always has.
+/// Binds the open operation read or retries admission if it recently ended.
 fn or_finished(
   read: Result(Option(#(Operation, Int, OperationState)), ApiError),
   then: fn(#(Operation, Int, OperationState)) ->
@@ -3928,6 +4072,7 @@ fn or_finished(
   }
 }
 
+/// Unwraps an optional value or returns a ReadFailed error with the given message.
 fn require(
   read: Result(Option(value), ApiError),
   missing: String,
@@ -3942,6 +4087,7 @@ fn require(
 // The strand's leaf with the seq it was read at: `#(None, None)` when
 // the register does not exist yet (an unseeded strand cannot accept, but
 // the acceptance CAS then expects absence, which is still correct).
+/// Reads the strand leaf entry id and sequence number from storage.
 fn read_leaf(
   runtime: Runtime,
 ) -> Result(#(Option(Seq), Option(EntryId)), ApiError) {
@@ -3950,6 +4096,8 @@ fn read_leaf(
     writer.get_register(w, register.StrandLeaf, runtime.strand)
     |> result.map_error(fn(error) { read_failure(error) }),
   )
+
+  // Decodes the leaf entry id from the register cell.
   case cell {
     None -> Ok(#(None, None))
     Some(storage.Register(value:, seq:)) ->
@@ -3972,6 +4120,7 @@ fn read_leaf(
 // admission therefore let one strand's corrupt queue item refuse every
 // other strand's compaction, and made a path that wants three point
 // lookups scan the whole session (issue #70).
+/// Reads pending queue entries needed for the given accept request kind.
 fn read_pending_for(
   runtime: Runtime,
   request: acceptance.AcceptRequest,
@@ -3982,6 +4131,7 @@ fn read_pending_for(
   }
 }
 
+/// Reads all pending entries from storage.
 fn read_pending(
   runtime: Runtime,
 ) -> Result(dict.Dict(String, operation.PendingEntry), ApiError) {
@@ -4000,6 +4150,7 @@ fn read_pending(
   |> result.map(dict.from_list)
 }
 
+/// Reads and decodes a register value from storage.
 fn read_decoded(
   runtime: Runtime,
   ns: register.RegisterNs,
@@ -4010,6 +4161,8 @@ fn read_decoded(
   use cell <- result.try(
     writer.get_register(w, ns, key) |> result.map_error(read_failure),
   )
+
+  // Decodes the register payload when present.
   case cell {
     None -> Ok(None)
     Some(storage.Register(value:, seq:)) ->
@@ -4033,6 +4186,7 @@ fn writer_subject(runtime: Runtime) -> address.Address(writer.Message) {
   runtime.tree.writer
 }
 
+/// Converts a storage error into a human-readable diagnostic description string.
 fn describe_storage(error: storage.StorageError) -> String {
   case error {
     storage.CorruptRow(report:) -> "corrupt row at " <> report.boundary
@@ -4063,6 +4217,7 @@ fn describe_session_error(error: session.SessionError) -> String {
   }
 }
 
+/// Converts an actor start error into a human-readable diagnostic description string.
 fn describe_start_error(error: actor.StartError) -> String {
   case error {
     actor.InitTimeout -> "supervision tree start timed out"
@@ -4085,12 +4240,14 @@ pub fn claim_reserved_fact(
   value: JsonValue,
   unless fence: String,
 ) -> Result(Seq, ApiError) {
+  // Validates that both the target key and fence are reserved keys.
   use Nil <- result.try(
     case reserved_fact_key(key) && reserved_fact_key(fence) {
       True -> Ok(Nil)
       False -> Error(UnreservedFactKey(key))
     },
   )
+
   commit_fact_guarded(writer_subject(runtime), key, value, [
     tx.Expect(register.FactCustom, key, None),
     tx.Expect(register.FactCustom, fence, None),

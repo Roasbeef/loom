@@ -143,6 +143,8 @@ pub fn accept_prompt(
     when: option.is_some(ctx.strand_state.current_operation),
     return: Error(StrandBusy),
   )
+
+  // Dispatch acceptance according to the incoming prompt request variant.
   case request {
     AcceptRun(prompts:) -> accept_run(prompts, ctx)
     AcceptCompaction(custom_instructions:, preparation:) ->
@@ -167,6 +169,7 @@ pub fn accept_prompt(
   }
 }
 
+/// Accepts a standard prompt execution run and drafts its initial transaction.
 fn accept_run(
   prompts: List(AgentMessage),
   ctx: AcceptCtx,
@@ -212,10 +215,13 @@ fn accept_run(
       inbox: Inbox(steer: [], follow_up: [], writes: []),
       latest_assistant: None,
     )
+
+  // Advance the strand leaf to the newest placed prompt entry if present.
   let leaf = case newest {
     Some(id) -> Some(id)
     None -> ctx.leaf
   }
+
   Ok(plan(
     ctx,
     operation,
@@ -239,11 +245,13 @@ fn accept_run(
   ))
 }
 
+/// Accepts a compaction request and initializes its structural deciding state.
 fn accept_compaction(
   custom_instructions: Option(String),
   preparation: Option(StructuralPreparation),
   ctx: AcceptCtx,
 ) -> Result(AcceptancePlan, RejectReason) {
+  // Ensure compaction preparation exists before planning the operation.
   case preparation {
     None -> Error(NothingToCompact)
     Some(preparation) -> {
@@ -282,6 +290,7 @@ fn accept_compaction(
   }
 }
 
+/// Validates and accepts a navigation operation across the strand history.
 fn accept_navigation(
   target: Option(EntryId),
   summarize: Bool,
@@ -325,6 +334,8 @@ fn accept_navigation(
         custom_instructions:,
       ),
     )
+
+  // Route between summarized navigation with preparation and direct jump.
   case summarize, target, preparation {
     True, Some(_), None ->
       Error(InvalidNavigation(reason: "empty summary preparation"))
@@ -412,6 +423,8 @@ fn place_captured(
 ) -> Result(#(List(Write), Option(EntryId)), RejectReason) {
   list.try_fold(captured, #([], leaf), fn(acc, id) {
     let #(writes, parent) = acc
+
+    // Resolve the pending payload for each captured next-run identifier.
     case dict.get(ctx.pending, ids.entry_id_to_string(id)) {
       Error(Nil) ->
         Error(
@@ -442,6 +455,7 @@ fn place_captured(
   })
 }
 
+/// Wraps planned operation state and writes into an atomic acceptance plan.
 fn plan(
   ctx: AcceptCtx,
   operation: Operation,

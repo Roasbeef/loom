@@ -124,27 +124,39 @@ pub fn encode(run: Run) -> JsonValue {
 /// assert child_run.decode(json.Null) |> result.is_error
 /// ```
 pub fn decode(value: JsonValue) -> Result(Run, CorruptionReport) {
+  // Validates that the outer JSON value is an object.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     other -> invalid("payload", "an object", other)
   })
+
   use strand <- result.try(field(fields, "strand"))
+
+  // Validates that the strand identifier field is a string.
   use strand <- result.try(case strand {
     json.String(text) -> Ok(text)
     other -> invalid("strand", "a string", other)
   })
+
   use owner <- result.try(field(fields, "owner"))
+
+  // Parses the run owner as null, a string operation id, or an async execution object.
   use owner <- result.try(case owner {
     json.Null -> Ok(None)
     json.String(text) ->
       ids.parse_op_id(text) |> result.map(fn(id) { Some(ParentRun(id)) })
     json.Object(fields) -> {
       use operation <- result.try(field(fields, "operation"))
+
+      // Validates that the owner operation field is a string operation id.
       use operation <- result.try(case operation {
         json.String(text) -> ids.parse_op_id(text)
         other -> invalid("owner.operation", "an operation id", other)
       })
+
       use execution <- result.try(field(fields, "execution"))
+
+      // Validates the async execution identifier string.
       use execution <- result.try(case execution {
         json.String(text) -> {
           case async_execution.valid_id(text) {
@@ -154,18 +166,24 @@ pub fn decode(value: JsonValue) -> Result(Run, CorruptionReport) {
         }
         other -> invalid("owner.execution", "an execution id", other)
       })
+
       Ok(Some(AsyncExecution(operation, execution)))
     }
     other -> invalid("owner", "null or an operation id", other)
   })
 
   use deadline <- result.try(field(fields, "deadline"))
+
+  // Parses the optional deadline timestamp from null or an integer.
   use deadline <- result.try(case deadline {
     json.Null -> Ok(None)
     json.Int(at) -> Ok(Some(at))
     other -> invalid("deadline", "null or an absolute millisecond", other)
   })
+
   use stop <- result.try(field(fields, "stop"))
+
+  // Parses the cancellation reason string into a known stop variant.
   use stop <- result.try(case stop {
     json.String("none") -> Ok(Unstopped)
     json.String("budget_expired") -> Ok(BudgetExpired)
@@ -175,9 +193,11 @@ pub fn decode(value: JsonValue) -> Result(Run, CorruptionReport) {
     json.String("legacy_reaped") -> Ok(LegacyReaped)
     other -> invalid("stop", "a known cancellation reason", other)
   })
+
   Ok(Run(strand:, owner:, deadline:, stop:))
 }
 
+/// Looks up a required key from a JSON object fields list.
 fn field(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -188,6 +208,7 @@ fn field(
   }
 }
 
+/// Constructs a corruption report for an unexpected JSON value shape.
 fn invalid(
   name: String,
   expected: String,

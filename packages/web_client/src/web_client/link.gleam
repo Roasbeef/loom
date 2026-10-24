@@ -94,6 +94,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
   )
 }
 
+/// Applies lifecycle and read events to the link model.
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     Connected -> #(model, watch())
@@ -112,8 +113,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-// Reads the destination now, after the paint that put the server's children
-// in place, and again after every change to them.
+/// Starts DOM mutation observer watching for URL and text changes.
 fn watch() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
@@ -124,9 +124,7 @@ fn watch() -> Effect(Msg) {
   dispatch(Watching(observer))
 }
 
-// What the element's `ll-url` and `ll-text` children say: the approved
-// destination, or none, and for a refused one the hint to show after the
-// label.
+/// Reads approved link destination or refused hint text from child elements.
 fn read(host: ffi_dom.Element) -> Msg {
   let text = fn(selector) {
     ffi_dom.query_selector(host, selector)
@@ -135,6 +133,7 @@ fn read(host: ffi_dom.Element) -> Msg {
   }
   let raw = text(".ll-url")
 
+  // Resolve sanitized destination URL or fallback hint text.
   case link_rule.destination(raw) {
     Ok(url) -> Read(destination: Ok(url), refused: "")
     Error(Nil) ->
@@ -145,7 +144,9 @@ fn read(host: ffi_dom.Element) -> Msg {
   }
 }
 
+/// Disconnects active DOM mutation observer if present.
 fn stop(observer: Result(Observer, Nil)) -> Effect(Msg) {
+  // Disconnect the mutation observer when active.
   case observer {
     Ok(observer) -> {
       use _ <- effect.from
@@ -155,11 +156,7 @@ fn stop(observer: Result(Observer, Nil)) -> Effect(Msg) {
   }
 }
 
-// The slot until a destination is approved, followed by the refused
-// destination as quiet text when there is one to show: a relative path such
-// as `docs/README.md` is the most common link a model writes, and the reader
-// should see where it pointed. With an approved destination, the anchor around
-// the slot and a glyph that marks the link as leaving the page.
+/// Renders approved external anchor or fallback default slot text.
 fn view(model: Model) -> Element(Msg) {
   case model.destination {
     Error(Nil) ->

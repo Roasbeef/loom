@@ -85,6 +85,7 @@ pub fn request(request: Request) -> Result(Response, NetError) {
   })
 }
 
+/// Encodes HTTP headers into msgpack map representation.
 fn encode_headers(headers: List(#(String, String))) -> MsgPackValue {
   msgpack.MapValue(
     list.map(headers, fn(pair) {
@@ -93,16 +94,21 @@ fn encode_headers(headers: List(#(String, String))) -> MsgPackValue {
   )
 }
 
+/// Decodes an HTTP response from the capability result value.
 fn decode_response(value: MsgPackValue) -> Result(Response, String) {
   use status <- result.try(wire.int_field(value, "status"))
   use body <- result.try(wire.binary_field(value, "body"))
+
+  // Decode headers dictionary if present, defaulting to empty list.
   let headers = case wire.field(value, "headers") {
     Ok(msgpack.MapValue(entries:)) -> decode_headers(entries)
     _ -> []
   }
+
   Ok(Response(status:, headers:, body:))
 }
 
+/// Decodes msgpack map pairs into string key-value header tuples.
 fn decode_headers(
   entries: List(#(MsgPackValue, MsgPackValue)),
 ) -> List(#(String, String)) {
@@ -115,6 +121,7 @@ fn decode_headers(
   })
 }
 
+/// Maps low-level channel errors into network domain errors.
 fn map_error(error: CallError) -> NetError {
   case error {
     Unreachable(reason:) -> NetUnavailable(reason:)

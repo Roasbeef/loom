@@ -218,20 +218,26 @@ pub fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
 // The popover closes and the chosen row's own sidebar button is pressed. A
 // button the server has since removed is not pressed: the row was drawn from a
 // list that has changed, and nothing is opened.
+/// Hides the switcher dialog and triggers programmatic click on selected target.
 fn opening(
   model: Model,
   entries: List(Entry),
   index: Int,
 ) -> #(Model, Effect(Msg)) {
   let model = Model(..model, state: Hidden)
+
+  // Find target button at selected index and trigger click.
   case list.drop(entries, index) {
     [Entry(button:, ..), ..] -> #(model, pressing(button))
     [] -> #(model, effect.none())
   }
 }
 
+/// Dispatches DOM click event on connected target element.
 fn pressing(button: ffi_dom.Element) -> Effect(Msg) {
   use _ <- effect.from
+
+  // Click target element only when currently connected in DOM tree.
   case ffi_dom.is_connected(button) {
     True -> ffi_dom.click(button)
     False -> Nil
@@ -243,12 +249,7 @@ fn listed(entries: List(Entry), query: String) -> List(switcher_rule.Match) {
   switcher_rule.matching(list.map(entries, fn(entry) { entry.row }), query)
 }
 
-// Reads the openable rows from the page that holds this element: the root its
-// host is attached under, which is the server component's. A row is a button
-// the server drew, and the name, workspace and subtitle are the text it
-// carries, read as text and nothing else. The page's own buttons in the bar
-// come first (the way home on a session page, the admin page on the owner's
-// home), then the sidebar's sessions in the order it draws them.
+/// Scans page DOM for navigation targets and session entries.
 fn scanning() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let page = ffi_dom.root_node(ffi_dom.host(ffi_dom.as_element(root)))
@@ -263,8 +264,7 @@ fn scanning() -> Effect(Msg) {
   dispatch(Scanned(list.append(places, sessions)))
 }
 
-// The buttons the bar draws for one of the app's own pages. What the page is
-// for is the switcher's fixed words, since the button carries only its name.
+/// Gathers static page navigation button targets by selector.
 fn places_of(
   page: ffi_dom.Element,
   selector: String,
@@ -288,6 +288,7 @@ fn places_of(
   })
 }
 
+/// Constructs entry descriptor from a session button element and its metadata.
 fn entry_of(button: ffi_dom.Element) -> Result(Entry, Nil) {
   use name <- result.map(text_of(button, ".session-name"))
   let subtitle = result.unwrap(text_of(button, ".session-subtitle"), "")
@@ -297,6 +298,8 @@ fn entry_of(button: ffi_dom.Element) -> Result(Entry, Nil) {
     |> result.try(ffi_dom.attribute(_, "title"))
     |> result.map(switcher_rule.workspace_label)
     |> result.unwrap("")
+
+  // Determine running or saved session residency status from DOM classes.
   let kind = case
     ffi_dom.query_selector(button, ".residency")
     |> result.try(ffi_dom.attribute(_, "class"))
@@ -308,6 +311,7 @@ fn entry_of(button: ffi_dom.Element) -> Result(Entry, Nil) {
       }
     Error(Nil) -> switcher_rule.Running
   }
+
   Entry(row: switcher_rule.Row(name:, workspace:, subtitle:, kind:), button:)
 }
 
@@ -316,17 +320,18 @@ fn text_of(within: ffi_dom.Element, selector: String) -> Result(String, Nil) {
   |> result.map(fn(found) { string.trim(ffi_dom.text_content(found)) })
 }
 
-// Puts the focus in the query field once the popover is drawn.
+/// Sets input focus on switcher search text field after paint.
 fn focusing() -> Effect(Msg) {
   use _, root <- effect.after_paint
+
+  // Focus input field element when present in dialog root.
   case ffi_dom.query_selector(ffi_dom.as_element(root), "input") {
     Ok(field) -> ffi_dom.focus(field)
     Error(Nil) -> Nil
   }
 }
 
-// Scrolls the list, and only the list, so the highlighted row is inside it, as
-// the composer's completion list does.
+/// Adjusts listbox scroll offset to keep selected row visible.
 fn revealing() -> Effect(Msg) {
   use _, root <- effect.after_paint
   let root = ffi_dom.as_element(root)
@@ -344,6 +349,8 @@ fn revealing() -> Effect(Msg) {
         before,
         ffi_dom.client_height(menu),
       )
+
+    // Scroll menu container when active row position exceeds visible viewport.
     case after == before {
       True -> Nil
       False -> ffi_dom.set_scroll_top(menu, after)
@@ -357,10 +364,12 @@ fn revealing() -> Effect(Msg) {
 // bar's chip. One handler serves both events, so one value removes it from
 // each. The shortcut is cancelled so the browser's own use of it does not also
 // run; Escape is only observed, and a click is never cancelled.
+/// Registers global document listeners for shortcut keys and trigger clicks.
 fn listen() -> Effect(Msg) {
   use dispatch, _ <- effect.after_paint
   let document = ffi_dom.get_document()
   let handle = fn(event) {
+    // Process document event and dispatch matching switcher actions.
     case heard(event) {
       Ok(Toggled) -> {
         ffi_dom.prevent_default(event)
@@ -378,20 +387,19 @@ fn listen() -> Effect(Msg) {
   dispatch(Listening(listener))
 }
 
-// The message a document event is: a click is the chip's press or nothing,
-// and any other event is a key press.
+/// Translates document click and keydown events into switcher messages.
 fn heard(event: Dynamic) -> Result(Msg, Nil) {
   let kind =
     decode.run(event, decode.field("type", decode.string, decode.success))
+
+  // Dispatch click or keydown handling based on event type.
   case kind {
     Ok("click") -> chip_pressed(event)
     Ok(_) | Error(_) -> pressed(event)
   }
 }
 
-// A click is the switcher's when some element on its path carries the chip's
-// marker. The path crosses shadow roots, so the chip inside the frame's own
-// tree is on it.
+/// Detects trigger click events by checking for switcher summon attribute.
 fn chip_pressed(event: Dynamic) -> Result(Msg, Nil) {
   let marked =
     ffi_dom.composed_path(event)
@@ -401,14 +409,15 @@ fn chip_pressed(event: Dynamic) -> Result(Msg, Nil) {
         switcher_rule.summon_attribute,
       ))
     })
+
+  // Emit summon message when event path touches an attribute-marked trigger.
   case marked {
     True -> Ok(Summoned)
     False -> Error(Nil)
   }
 }
 
-// The message a document key press is, or nothing for a key the switcher does
-// not read.
+/// Decodes document keyboard events into shortcut toggle or escape messages.
 fn pressed(event: Dynamic) -> Result(Msg, Nil) {
   let keys = {
     use key <- decode.field("key", decode.string)
@@ -416,11 +425,14 @@ fn pressed(event: Dynamic) -> Result(Msg, Nil) {
     use control <- decode.field("ctrlKey", decode.bool)
     use shift <- decode.field("shiftKey", decode.bool)
     use alt <- decode.field("altKey", decode.bool)
+
+    // Classify modifier combination into primary, bare, or other chord.
     let chord = case meta || control, shift || alt {
       True, False -> switcher_rule.Primary
       False, False -> switcher_rule.Bare
       _, _ -> switcher_rule.Other
     }
+
     decode.success(case switcher_rule.shortcut(key, chord), key {
       True, _ -> Ok(Toggled)
       False, "Escape" -> Ok(Escaped)
@@ -430,7 +442,9 @@ fn pressed(event: Dynamic) -> Result(Msg, Nil) {
   decode.run(event, keys) |> result.unwrap(Error(Nil))
 }
 
+/// Unregisters global document event listeners.
 fn stop(listener: Option(Listener)) -> Effect(Msg) {
+  // Remove document keydown and click listeners.
   case listener {
     None -> effect.none()
     Some(listener) -> {
@@ -442,9 +456,9 @@ fn stop(listener: Option(Listener)) -> Effect(Msg) {
   }
 }
 
-// The popover: a backdrop that closes it when pressed, and on it the panel
-// with the query field and the rows. Every name is a text node.
+/// Renders switcher modal dialog, search input, and filter results.
 fn view(model: Model) -> Element(Msg) {
+  // Render modal backdrop and dialog when state is showing.
   case model.state {
     Hidden -> element.none()
     Showing(entries:, query:, selected:) -> {
@@ -499,6 +513,7 @@ fn view(model: Model) -> Element(Msg) {
   }
 }
 
+/// Renders empty feedback message when no sessions match current query.
 fn empty(entries: List(Entry)) -> Element(Msg) {
   html.p([attribute.class("switcher-empty")], [
     html.text(case entries {
@@ -508,6 +523,7 @@ fn empty(entries: List(Entry)) -> Element(Msg) {
   ])
 }
 
+/// Renders an individual matched session result option row.
 fn row(match: switcher_rule.Match, current: Bool) -> Element(Msg) {
   let row = match.row
   html.li(
@@ -527,16 +543,18 @@ fn row(match: switcher_rule.Match, current: Bool) -> Element(Msg) {
   )
 }
 
-// A key pressed in the field. The arrows and Enter are the list's and are
-// cancelled so the field's caret does not move; every other key fails the
-// decoder, so nothing is dispatched and nothing is cancelled.
+/// Decodes keyboard navigation and activation keys in search input field.
 fn keystroke() -> decode.Decoder(event.Handler(Msg)) {
   use key <- decode.field("key", decode.string)
   use composing <- decode.field("isComposing", decode.bool)
+
+  // Identify input composition state.
   let phase = case composing {
     True -> switcher_rule.Composing
     False -> switcher_rule.Typing
   }
+
+  // Handle navigation arrows and selection activation.
   case switcher_rule.intent(key, phase) {
     switcher_rule.Up ->
       decode.success(event.handler(

@@ -95,10 +95,9 @@ pub fn start_helper() -> exec.Helper {
   helper
 }
 
-// The fake says hello as soon as it is attached, and until then it ignores
-// what the actor writes, because the actor writes nothing before it has been
-// told the fake is there.
+/// Waits for an Attach message on `inbox` and initializes fake jail protocol state.
 fn wait_for_attach(inbox: Subject(Message)) -> Nil {
+  // Wait until an attach wire arrives or the peer closes.
   case process.receive_forever(inbox) {
     Attach(wire:) -> {
       let state =
@@ -122,7 +121,9 @@ fn wait_for_attach(inbox: Subject(Message)) -> Nil {
   }
 }
 
+/// Listens for inbound frames on state.inbox and processes them.
 fn listen(state: State) -> Nil {
+  // Wait for the next message from the inbox.
   case process.receive_forever(state.inbox) {
     PeerClosed -> Nil
     Attach(wire: _) -> listen(state)
@@ -142,10 +143,9 @@ fn listen(state: State) -> Nil {
   }
 }
 
-// What the fake does with one frame. A shutdown is answered the way the real
-// helper answers it, by exiting with status 0, which is the retirement proof
-// the pool waits for.
+/// Reacts to an incoming frame from the execution peer.
 fn react(state: State, frame: framing.Frame) -> State {
+  // Dispatch on the frame body variant.
   case frame.body {
     framing.Shutdown -> {
       process.send(state.wire, exec.WireClosed(status: 0))
@@ -160,10 +160,9 @@ fn react(state: State, frame: framing.Frame) -> State {
   }
 }
 
-// A cancel ends the running execution the way a cancelled one ends: signal 15
-// and the `cancelled` flag, under a full enforcement report so that no demand
-// the broker makes can refuse it. A cancel with nothing running is ignored.
+/// Ends the running execution with signal 15 and sets running to None.
 fn cancelled(state: State) -> State {
+  // Check whether an execution is currently running.
   case state.running {
     None -> state
     Some(id) -> {

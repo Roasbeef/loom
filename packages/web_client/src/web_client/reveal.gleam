@@ -36,9 +36,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
   |> lustre.register(name)
 }
 
-// The box is the nearest `section` around the element. The scroll runs after the
-// first paint, when the box has its height, so "the least that shows all of it"
-// is measured on the finished box.
+/// Scrolls the enclosing section into view after initial paint.
 fn init(_: Nil) -> #(Nil, Effect(Nil)) {
   #(Nil, {
     use _, root <- effect.after_paint

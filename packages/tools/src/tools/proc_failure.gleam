@@ -98,6 +98,7 @@ pub fn command_text(args: MsgPackValue) -> Option(String) {
   }
 }
 
+/// Extracts plain strings from a list of MsgPack values.
 fn argv_words(items: List(MsgPackValue)) -> List(String) {
   list.filter_map(items, fn(item) {
     case item {
@@ -117,11 +118,14 @@ fn argv_words(items: List(MsgPackValue)) -> List(String) {
 /// ```
 ///
 pub fn from_reply(command: String, reply: MsgPackValue) -> Option(ProcFailure) {
+  // Match map output replies and record exit failure or timeout.
   case reply {
     msgpack.MapValue(entries:) -> {
       let exit_code = int_field(entries, "exit_code")
       let timed_out = bool_field(entries, "timed_out")
       let stderr = text_field(entries, "stderr") |> option.unwrap("")
+
+      // Distinguish timeouts and non-zero exit codes from clean exits.
       case exit_code, timed_out {
         Some(code), Some(True) -> Some(failure(command, code, TimedOut, stderr))
         Some(code), Some(False) if code != 0 ->
@@ -133,6 +137,7 @@ pub fn from_reply(command: String, reply: MsgPackValue) -> Option(ProcFailure) {
   }
 }
 
+/// Constructs a ProcFailure record with a bounded stderr tail.
 fn failure(
   command: String,
   exit_code: Int,
@@ -147,6 +152,7 @@ fn failure(
   )
 }
 
+/// Finds a map field value matching a string key.
 fn field(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
@@ -160,6 +166,7 @@ fn field(
   |> option.from_result
 }
 
+/// Extracts an integer field value for `key`.
 fn int_field(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
@@ -170,6 +177,7 @@ fn int_field(
   }
 }
 
+/// Extracts a boolean field value for `key`.
 fn bool_field(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
@@ -180,6 +188,7 @@ fn bool_field(
   }
 }
 
+/// Extracts a string field value for `key`.
 fn text_field(
   entries: List(#(MsgPackValue, MsgPackValue)),
   key: String,
@@ -202,14 +211,18 @@ fn text_field(
 /// ```
 ///
 pub fn line(failure: ProcFailure) -> String {
+  // Format the process termination description.
   let ended = case failure.ending {
     Exited -> "exited " <> int.to_string(failure.exit_code)
     TimedOut -> "timed out"
   }
+
+  // Attach the optional single-line stderr excerpt.
   let stderr = case one_line(failure.stderr_tail) {
     "" -> ""
     text -> ": " <> text
   }
+
   "last failing command: `" <> failure.command <> "` " <> ended <> stderr
 }
 
@@ -249,6 +262,8 @@ fn byte_size(text: String) -> Int {
 ///
 pub fn cut_head(text: String, limit: Int) -> String {
   let bytes = bit_array.from_string(text)
+
+  // Check whether text fits within limit or must be truncated with ellipsis.
   case bit_array.byte_size(bytes) <= limit {
     True -> text
     False -> longest_prefix(bytes, limit - byte_size(ellipsis)) <> ellipsis
@@ -269,6 +284,8 @@ pub fn cut_head(text: String, limit: Int) -> String {
 pub fn cut_tail(text: String, limit: Int) -> String {
   let bytes = bit_array.from_string(text)
   let size = bit_array.byte_size(bytes)
+
+  // Check whether text fits within limit or must be trimmed from the head.
   case size <= limit {
     True -> text
     False ->
@@ -279,9 +296,12 @@ pub fn cut_tail(text: String, limit: Int) -> String {
 
 // The longest prefix of at most `length` bytes that decodes as UTF-8. A
 // character is at most four bytes, so this backs off at most three bytes.
+/// Finds the longest valid UTF-8 prefix within `length` bytes.
 fn longest_prefix(bytes: BitArray, length: Int) -> String {
   let decoded =
     bit_array.slice(bytes, 0, length) |> result.try(bit_array.to_string)
+
+  // Back off byte-by-byte on invalid UTF-8 codepoint boundaries.
   case decoded {
     Ok(text) -> text
     Error(Nil) if length > 0 -> longest_prefix(bytes, length - 1)
@@ -291,10 +311,13 @@ fn longest_prefix(bytes: BitArray, length: Int) -> String {
 
 // The suffix starting at `start`, moved forward to the first character
 // boundary.
+/// Finds the shortest valid UTF-8 suffix starting from `start`.
 fn shortest_suffix(bytes: BitArray, size: Int, start: Int) -> String {
   let decoded =
     bit_array.slice(bytes, start, size - start)
     |> result.try(bit_array.to_string)
+
+  // Step forward byte-by-byte to find the nearest valid character start.
   case decoded {
     Ok(text) -> text
     Error(Nil) if start < size -> shortest_suffix(bytes, size, start + 1)

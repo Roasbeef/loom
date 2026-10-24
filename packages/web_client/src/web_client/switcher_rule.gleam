@@ -187,6 +187,8 @@ pub fn workspace_label(path: String) -> String {
   let segments =
     string.split(path, "/")
     |> list.filter(fn(segment) { segment != "" })
+
+  // Return the trailing path segment or fall back to the raw path.
   case list.last(segments) {
     Ok(last) -> last
     Error(Nil) -> path

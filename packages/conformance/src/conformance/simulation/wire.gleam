@@ -62,6 +62,7 @@ pub fn check(seed seed: Int) -> Result(Nil, WireFailure) {
 
 // --- properties -----------------------------------------------------------
 
+/// Verifies that frame stream decoding produces identical frames regardless of chunk boundaries.
 fn chunking_is_irrelevant(
   frames: List(Frame),
   chunks: List(BitArray),
@@ -92,9 +93,7 @@ fn chunking_is_irrelevant(
   ))
 }
 
-// Damage must be *reported or absorbed*, never crash the decoder and
-// never leave the deframer able to keep reading a stream it has already
-// declared broken.
+/// Verifies that damaged byte streams cause deframers to persistently fault without decoding further.
 fn damage_is_total(bytes: BitArray) -> Result(Nil, WireFailure) {
   let pushed = framing.push(framing.deframer(), bytes)
   use <- bool.guard(when: option.is_none(pushed.fault), return: Ok(Nil))
@@ -102,6 +101,8 @@ fn damage_is_total(bytes: BitArray) -> Result(Nil, WireFailure) {
   // Once faulted, the deframer stays faulted and produces nothing more,
   // whatever it is fed.
   let again = framing.push(pushed.deframer, <<0, 1, 2, 3>>)
+
+  // Check that the deframer produces no inbound frames and retains its fault.
   case again.inbound, again.fault {
     [], Some(_) -> Ok(Nil)
     _, _ ->
@@ -112,8 +113,11 @@ fn damage_is_total(bytes: BitArray) -> Result(Nil, WireFailure) {
   }
 }
 
+/// Verifies that a truncated stream either carries partial frames or reports oversized errors.
 fn truncation_carries(bytes: BitArray) -> Result(Nil, WireFailure) {
   let pushed = framing.push(framing.deframer(), bytes)
+
+  // Check whether the deframer accepted partial frames or failed.
   case pushed.fault {
     Some(framing.OversizedFrame(..)) | None -> Ok(Nil)
     Some(_) ->
@@ -124,6 +128,7 @@ fn truncation_carries(bytes: BitArray) -> Result(Nil, WireFailure) {
   }
 }
 
+/// Feeds a list of bit array chunks sequentially into a deframer accumulator.
 fn feed(chunks: List(BitArray)) -> #(framing.Deframer, List(Inbound), _) {
   list.fold(chunks, #(framing.deframer(), [], None), fn(acc, chunk) {
     let #(deframer, seen, fault) = acc
@@ -142,11 +147,14 @@ fn frame_stream(rng: Rng) -> #(List(Frame), Rng) {
   random.list_of(rng, count, frame)
 }
 
+/// Generates a single randomized Frame with ID and typed payload body.
 fn frame(rng: Rng) -> #(Frame, Rng) {
   let #(id, rng) = random.int_between(rng, 0, 1_000_000)
   let #(kind, rng) = random.int_between(rng, 1, 100)
   let #(size, rng) = random.int_between(rng, 0, 40)
   let #(code, rng) = random.int_between(rng, 0, 255)
+
+  // Select a framing frame body variant based on the random draw.
   let body = case kind {
     n if n <= 20 -> framing.Cancel
     n if n <= 40 -> framing.Heartbeat
@@ -172,6 +180,7 @@ fn frame(rng: Rng) -> #(Frame, Rng) {
         message: string.repeat("x", size),
       )
   }
+
   #(Frame(id:, body:), rng)
 }
 
@@ -182,6 +191,7 @@ fn filler(size: Int, byte: Int) -> BitArray {
   }
 }
 
+/// Encodes a list of frames into a concatenated bit array stream.
 fn encode_all(frames: List(Frame)) -> BitArray {
   list.fold(frames, <<>>, fn(acc, frame) {
     let assert Ok(bytes) = framing.encode(frame)
@@ -190,15 +200,19 @@ fn encode_all(frames: List(Frame)) -> BitArray {
   })
 }
 
-// Split the stream at arbitrary boundaries, including empty chunks.
+/// Splits a bit array stream into chunks at random byte boundaries.
 fn tear(rng: Rng, bytes: BitArray) -> #(List(BitArray), Rng) {
   let total = bit_array.byte_size(bytes)
+
+  // Check if the stream is empty before tearing.
   case total == 0 {
     True -> #([bytes], rng)
     False -> {
       let #(cut, rng) = random.int_between(rng, 0, total)
       let head = slice(bytes, 0, cut)
       let tail = slice(bytes, cut, total - cut)
+
+      // Check if the cut boundary is at either extreme.
       case cut == 0 || cut == total {
         True -> #([head, tail], rng)
         False -> {
@@ -210,9 +224,11 @@ fn tear(rng: Rng, bytes: BitArray) -> #(List(BitArray), Rng) {
   }
 }
 
-// Flip one byte somewhere in the stream.
+/// Inverts bits at a randomly chosen single byte in the byte stream.
 fn corrupt(rng: Rng, bytes: BitArray) -> #(BitArray, Rng) {
   let total = bit_array.byte_size(bytes)
+
+  // Check if the stream is empty before corrupting.
   case total == 0 {
     True -> #(bytes, rng)
     False -> {
@@ -220,18 +236,23 @@ fn corrupt(rng: Rng, bytes: BitArray) -> #(BitArray, Rng) {
       let #(mask, rng) = random.int_between(rng, 1, 255)
       let head = slice(bytes, 0, at)
       let tail = slice(bytes, at + 1, total - at - 1)
+
+      // Extract the target byte to XOR with the bitmask.
       let byte = case bit_array.slice(bytes, at, 1) {
         Ok(<<value:size(8)>>) -> int.bitwise_exclusive_or(value, mask)
         _ -> mask
       }
+
       #(bit_array.append(bit_array.append(head, <<byte:size(8)>>), tail), rng)
     }
   }
 }
 
-// Cut the stream short somewhere inside its last frame.
+/// Cuts the stream short at a random boundary.
 fn truncate(rng: Rng, bytes: BitArray) -> #(BitArray, Rng) {
   let total = bit_array.byte_size(bytes)
+
+  // Check if the stream is too short to truncate.
   case total <= 1 {
     True -> #(<<>>, rng)
     False -> {

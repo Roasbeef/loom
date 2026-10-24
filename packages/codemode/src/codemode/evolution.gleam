@@ -142,8 +142,10 @@ pub fn routing(door: Door, over router: CapRouter) -> CapRouter {
   }
 }
 
-// The arguments are decoded once, here, so a malformed call is refused as
-// the program's own repairable mistake before any door is entered.
+/// Plans one validated evolution operation call.
+///
+/// The arguments are decoded once, here, so a malformed call is refused as
+/// the program's own repairable mistake before any door is entered.
 fn plan(run: Operation, request: CapRequest) -> Result(CapPlan, CapDenial) {
   case json_value.to_json(request.args) {
     Error(reason) ->

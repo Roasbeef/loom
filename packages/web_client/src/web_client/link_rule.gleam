@@ -68,8 +68,7 @@ fn within_limit(codepoints: List(a)) -> Result(Nil, Nil) {
   }
 }
 
-// No character the browser would drop, rewrite or hide: whitespace and
-// control characters, a backslash, and the invisible separators.
+/// Rejects invisible characters, whitespace, and control codepoints.
 fn plain(codepoints: List(UtfCodepoint)) -> Result(Nil, Nil) {
   case
     list.all(codepoints, fn(point) {
@@ -81,6 +80,7 @@ fn plain(codepoints: List(UtfCodepoint)) -> Result(Nil, Nil) {
   }
 }
 
+/// Returns true when codepoint integer represents an allowed visible character.
 fn allowed(code: Int) -> Bool {
   case code {
     _ if code <= 0x20 -> False
@@ -94,11 +94,11 @@ fn allowed(code: Int) -> Bool {
   }
 }
 
-// The authority of an `http` or `https` address: what follows the scheme and
-// `//`, up to the first `/`, `?` or `#`. The scheme is matched in any case
-// because the browser reads it that way; nothing else may stand before it.
+/// Extracts the network authority component from HTTP or HTTPS URLs.
 fn authority(text: String) -> Result(String, Nil) {
   let lowered = string.lowercase(text)
+
+  // Strip HTTP or HTTPS scheme prefix from authority target.
   use rest <- result.try(case string.starts_with(lowered, "https://") {
     True -> Ok(string.drop_start(text, 8))
     False ->
@@ -107,6 +107,7 @@ fn authority(text: String) -> Result(String, Nil) {
         False -> Error(Nil)
       }
   })
+
   Ok(until_path(string.to_graphemes(rest), []))
 }
 
@@ -117,8 +118,7 @@ fn until_path(rest: List(String), kept: List(String)) -> String {
   }
 }
 
-// A host to go to and nothing that names another: not empty, not a bare
-// port, and no credentials.
+/// Rejects empty authority, port-only authority, and user credentials.
 fn host_only(authority: String) -> Result(Nil, Nil) {
   case authority == "" || string.starts_with(authority, ":") {
     True -> Error(Nil)
@@ -147,6 +147,8 @@ pub fn hint(label: String, destination: String) -> String {
     || destination == label
     || destination == "http://" <> label
     || destination == "mailto:" <> label
+
+  // Suppress hint text when destination merely repeats label text.
   case repeats {
     True -> ""
     False -> string.slice(destination, 0, limit)

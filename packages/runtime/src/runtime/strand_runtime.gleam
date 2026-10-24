@@ -591,6 +591,7 @@ pub fn request_abort(strand: Subject(Message), operation: OpId) -> Nil {
 // liveness check and `process.send`'s second lookup. Resolve the name exactly
 // once and send its tagged envelope to that PID. Delivery to a PID which exits
 // after resolution is a harmless no-op; a direct subject needs no lookup.
+/// Delivers a message to a subject, resolving registered names safely.
 fn send_if_registered(subject: Subject(Message), message: Message) -> Nil {
   case process.subject_name(subject) {
     Error(Nil) -> process.send(subject, message)
@@ -604,8 +605,11 @@ fn send_if_registered(subject: Subject(Message), message: Message) -> Nil {
 
 // --- message handling -----------------------------------------------------
 
+/// Main message handler for the strand driver.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let logger = state.logger
+
+  // Dispatches on incoming messages to drive or update strand state.
   case message {
     AwaitPredecessors(resolution:) -> await_predecessors(state, resolution)
 
@@ -638,6 +642,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 // error and it is not work lost: the arming that replaced it is outstanding
 // and will drive, and the strand's durable state is what decides anything
 // either tick would have found.
+/// Handles checkpoint poll tick events and manages poll timers.
 fn polled(
   logger: Logger,
   state: State,
@@ -651,6 +656,8 @@ fn polled(
   // This tick has arrived, so nothing is outstanding until `finish` arms
   // again — and the permit never outlives the drive it was offered to.
   let state = State(..state, armed_poll_ms: None, poll_permit: True)
+
+  // Drives the strand during checkpoint poll.
   case poll_drive(state) {
     Halt(reason) -> finish(logger, Halt(reason))
     Continue(next) ->
@@ -661,10 +668,14 @@ fn polled(
 // The backstop still reads durable control on every accepted tick. A parked
 // live effect cannot progress from an unchanged frontier without an observation,
 // so only that case can omit the large preparation, pending and tool payloads.
+/// Evaluates poll wait conditions or triggers planning loop.
 fn poll_drive(state: State) -> Outcome {
+  // Dispatches on poll wait state, active live effects, and observations.
   case state.poll_wait, state.live, state.observations {
     Some(wait), [_, ..], [] -> {
       use unchanged <- or_halt(poll_wait_unchanged(state, wait))
+
+      // Checks if the frontier remained unchanged to skip full drive.
       case unchanged {
         True -> Continue(state)
         False -> drive(state)
@@ -678,6 +689,7 @@ fn poll_drive(state: State) -> Outcome {
 // transaction as their payloads. Reading both keeps quiet admissions and aborts
 // visible; the configuration and leaf reads cover independent operator changes.
 // These reads remain total even when a matching sequence contains corruption.
+/// Compares state sequences against parked poll wait frontier.
 fn poll_wait_unchanged(state: State, wait: PollWait) -> Result(Bool, String) {
   use strand <- result.try(read_decoded(
     state,
@@ -685,12 +697,15 @@ fn poll_wait_unchanged(state: State, wait: PollWait) -> Result(Bool, String) {
     state.strand,
     codec.decode_strand_state,
   ))
+
+  // Compares strand state sequence against parked wait expectation.
   let same_strand = case strand {
     Some(#(seq, value)) ->
       seq == wait.strand_state_seq
       && value.current_operation == Some(wait.operation)
     None -> False
   }
+
   use <- bool.lazy_guard(!same_strand, fn() { Ok(False) })
 
   use operation <- result.try(read_decoded(
@@ -699,10 +714,13 @@ fn poll_wait_unchanged(state: State, wait: PollWait) -> Result(Bool, String) {
     ids.op_id_to_string(wait.operation),
     codec.decode_state,
   ))
+
+  // Compares operation state sequence against parked wait expectation.
   let same_operation = case operation {
     Some(#(seq, _)) -> seq == wait.op_state_seq
     None -> False
   }
+
   use <- bool.lazy_guard(!same_operation, fn() { Ok(False) })
 
   use configuration <- result.try(read_decoded(
@@ -711,10 +729,13 @@ fn poll_wait_unchanged(state: State, wait: PollWait) -> Result(Bool, String) {
     state.strand,
     codec.decode_configuration,
   ))
+
+  // Compares configuration sequence against parked wait expectation.
   let same_configuration = case configuration {
     Some(#(seq, _)) -> seq == wait.configuration_seq
     None -> False
   }
+
   use <- bool.lazy_guard(!same_configuration, fn() { Ok(False) })
   use leaf <- result.map(read_leaf(state))
   leaf == wait.leaf
@@ -727,11 +748,14 @@ fn poll_wait_unchanged(state: State, wait: PollWait) -> Result(Bool, String) {
 // abort no longer needs hand-carrying through a gate flag, because the
 // mailbox itself preserves the intent. No effect can be driven before this
 // returns, which is the invariant the old two-state gate existed to hold.
+/// Awaits resolution from the predecessor drain barrier.
 fn await_predecessors(
   state: State,
   resolution: Subject(Result(Nil, String)),
 ) -> actor.Next(State, Message) {
   let logger = state.logger
+
+  // Receives resolution from predecessor drain monitor.
   case process.receive_forever(resolution) {
     Ok(Nil) -> {
       // Recovery and its poll clock both begin after the ledger-authored
@@ -774,11 +798,15 @@ fn await_predecessors(
 // here binds it: `real_timers` hands the callback to a timer process, and a
 // closure over `state` would copy the whole strand state — `Effects`
 // included — into that process.
+/// Arms the poll tick timer for the appropriate interval.
 fn arm_poll(state: State) -> State {
+  // Determines delay interval based on occupancy.
   let delay = case state.occupancy {
     Occupied -> state.poll_interval_ms
     Unoccupied -> state.idle_poll_interval_ms
   }
+
+  // Verifies whether a timer with the target delay is already active.
   case state.armed_poll_ms {
     Some(armed) if armed == delay -> state
 
@@ -797,6 +825,7 @@ fn arm_poll(state: State) -> State {
 // the supervisor restarts it and it re-reads durable state — so it is
 // the level policy's `error`, and the last chance to say why before the
 // process is gone.
+/// Concludes a driver turn and updates poll timers.
 fn finish(logger: Logger, outcome: Outcome) -> actor.Next(State, Message) {
   case outcome {
     // The single arming site, which is why it is here rather than in each
@@ -817,18 +846,22 @@ fn finish(logger: Logger, outcome: Outcome) -> actor.Next(State, Message) {
 // The logger for one step of one operation: the scope every effect is
 // dispatched and settled under, and the scope the effect process itself
 // carries once it is spawned.
+/// Creates a step-scoped logger for an effect token.
 fn step_logger(state: State, token: EffectToken) -> Logger {
+  // Extracts operation and step id from token.
   let #(operation, step_id) = case token {
     AssistantEffect(operation:, step_id:, ..) -> #(operation, step_id)
     ToolEffect(operation:, step_id:, ..) -> #(operation, step_id)
     PollEffect(operation:, step_id:, ..) -> #(operation, step_id)
     SummaryEffect(operation:, task_id:, ..) -> #(operation, task_id)
   }
+
   log.for_step(state.logger, op: ids.op_id_to_string(operation), step: step_id)
 }
 
 // What kind of effect a token names, for the `kind` field. A closed set,
 // so a log consumer can index on it.
+/// Returns the kind name of an effect token.
 fn effect_kind(token: EffectToken) -> String {
   case token {
     AssistantEffect(..) -> "provider"
@@ -844,6 +877,7 @@ fn effect_kind(token: EffectToken) -> String {
 // no-op — `or_continue` — while a durable-state read or a decode failure
 // stops the strand — `or_halt`. Both exist because neither `Outcome`
 // alternative is a bare `Result`, so `result.try` cannot serve.
+/// Unwraps an option or continues with existing state.
 fn or_continue(
   option: Option(a),
   otherwise state: State,
@@ -862,6 +896,7 @@ fn or_halt(result: Result(a, String), then: fn(a) -> Outcome) -> Outcome {
   }
 }
 
+/// Handles completion of a provider stream effect.
 fn provider_done(
   state: State,
   token: EffectToken,
@@ -896,6 +931,7 @@ fn provider_done(
 // settled-assistant shape, the summary task's own reply for the third,
 // and a fault for the shapes that cannot occur (a tool token, or a delta
 // arriving as a terminal event).
+/// Converts a provider terminal event into an observation based on effect kind.
 fn provider_terminal_observation(
   token: EffectToken,
   live: Live,
@@ -928,6 +964,7 @@ fn provider_terminal_observation(
 }
 
 // The terminal event's name, for the `outcome` field. A closed set.
+/// Formats the stream terminal event kind.
 fn terminal_name(terminal: stream.StreamEvent) -> String {
   case terminal {
     stream.Settled(..) -> "settled"
@@ -938,22 +975,27 @@ fn terminal_name(terminal: stream.StreamEvent) -> String {
 
 // Whether the strand's durable current operation is the one the token's
 // effect was dispatched for.
+/// Verifies that the effect token belongs to the active operation.
 fn current_operation_owns(
   state: State,
   token: EffectToken,
 ) -> Result(Bool, String) {
+  // Extracts operation id from effect token.
   let operation = case token {
     AssistantEffect(operation:, ..)
     | ToolEffect(operation:, ..)
     | PollEffect(operation:, ..)
     | SummaryEffect(operation:, ..) -> operation
   }
+
   use decoded <- result.try(read_decoded(
     state,
     register.StrandState,
     state.strand,
     codec.decode_strand_state,
   ))
+
+  // Verifies current operation matches token operation.
   case decoded {
     None -> Ok(False)
     Some(#(_seq, strand_state)) ->
@@ -964,6 +1006,7 @@ fn current_operation_owns(
 // Bridges a provider terminal event into the machine's settled shape:
 // settled responses pass through; failures keep their final usage in error
 // responses carrying the retryability convention (see runtime/effects).
+/// Converts a stream terminal event into a planner observation.
 fn settled_observation(
   live: Live,
   terminal: stream.StreamEvent,
@@ -971,6 +1014,7 @@ fn settled_observation(
   wrap: fn(classification.SettledAssistantMessage, accounting.RequestAccounting) ->
     Observation,
 ) -> Result(Observation, String) {
+  // Converts terminal event into settled message and accounting.
   use observed <- result.try(case terminal {
     stream.Settled(message: settled, accounting: report) ->
       Ok(#(stream.message(settled), report))
@@ -982,11 +1026,13 @@ fn settled_observation(
     stream.Delta(..) ->
       Error("provider stream delivered a delta as its terminal event")
   })
+
   classification.settle(observed.0)
   |> result.map(fn(settled) { wrap(settled, observed.1) })
   |> result.map_error(corruption.describe)
 }
 
+/// Handles tool execution completion.
 fn tool_done(
   state: State,
   token: EffectToken,
@@ -1004,6 +1050,7 @@ fn tool_done(
 // a recovered outcome both end here, which is what makes a recovered call
 // indistinguishable from one that ran in this incarnation: same staging,
 // same terminate flag, same synthetic result on failure.
+/// Settles tool outcome into the driver loop.
 fn settle_tool(
   state: State,
   token: EffectToken,
@@ -1025,6 +1072,7 @@ fn settle_tool(
 // outcome is an ordinary settlement, and the two other answers are the
 // orphan observation it has always had, differing only in whether a replay
 // is still permitted.
+/// Handles recovery completion for orphaned tools.
 fn recovery_done(
   state: State,
   token: EffectToken,
@@ -1064,6 +1112,7 @@ fn recovery_done(
 // call is told to the model as not having run, because the planner's
 // orphan arm would claim an unknown outcome for a call known not to have
 // started.
+/// Handles unstarted tool execution.
 fn not_started(
   state: State,
   token: EffectToken,
@@ -1071,11 +1120,14 @@ fn not_started(
   source_index: Int,
   replay: ReplayPolicy,
 ) -> Outcome {
+  // Checks if unstarted call is eligible for replay.
   let replayable = case replay, live.call {
     operation.ReplaySafe, Some(call) ->
       state.effects.tools.replay_still_safe(call.name)
     _, _ -> False
   }
+
+  // Dispatches on replay eligibility.
   case replayable {
     True ->
       drive(push_observation(
@@ -1099,6 +1151,7 @@ fn not_started(
   }
 }
 
+/// Maps a tool outcome into a settled planner observation.
 fn tool_observation(
   live: Live,
   outcome: effects.ToolOutcome,
@@ -1131,7 +1184,9 @@ fn tool_outcome_name(outcome: effects.ToolOutcome) -> String {
   }
 }
 
+/// Handles monitored effect process down messages.
 fn effect_exit(state: State, down: process.Down) -> Outcome {
+  // Dispatches on process down message.
   case down {
     process.PortDown(..) -> Continue(state)
     process.ProcessDown(pid:, ..) -> {
@@ -1150,6 +1205,8 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
       log.warn(step_logger(state, live.token), "effect.exited", [
         field.text(key: "kind", value: effect_kind(live.token)),
       ])
+
+      // Dispatches on effect kind to settle or halt.
       case live.token {
         AssistantEffect(..) | PollEffect(..) | SummaryEffect(..) ->
           Halt("a provider effect exited before its stream owner drained")
@@ -1166,6 +1223,7 @@ fn effect_exit(state: State, down: process.Down) -> Outcome {
   }
 }
 
+/// Requests cancellation of a running operation.
 fn abort(state: State, operation: OpId) -> Outcome {
   case abort_commit(state, operation, 8) {
     AbortFailed(reason) -> Halt(reason)
@@ -1216,8 +1274,11 @@ type AbortAttempt {
 }
 
 // Commits the cancel_requested marker with a bounded stale-retry loop.
+/// Attempts to commit the abort marker with retries.
 fn abort_commit(state: State, operation: OpId, attempts: Int) -> AbortAttempt {
   use <- bool.guard(when: attempts <= 0, return: AbortRaceLost)
+
+  // Loads state to check if operation is open.
   case load(state) {
     Error(reason) -> AbortFailed(reason)
     Ok(Idle) -> AbortObsolete
@@ -1229,12 +1290,15 @@ fn abort_commit(state: State, operation: OpId, attempts: Int) -> AbortAttempt {
   }
 }
 
+/// Commits abort marker on an open operation.
 fn abort_commit_open(
   state: State,
   loaded: Loaded,
   attempts: Int,
 ) -> AbortAttempt {
   let #(now, state) = read_clock(state)
+
+  // Checks if abort already requested or creates plan.
   case
     queue.request_abort(loaded.op, loaded.op_state, loaded.op_state_seq, now)
   {
@@ -1244,6 +1308,7 @@ fn abort_commit_open(
   }
 }
 
+/// Commits abort transaction plan.
 fn commit_abort_marker(
   state: State,
   operation: OpId,
@@ -1290,6 +1355,7 @@ fn drive(state: State) -> Outcome {
   drive_loop(State(..state, poll_wait: None), fuel)
 }
 
+/// Recursive planning loop running under fuel bound.
 fn drive_loop(state: State, fuel: Int) -> Outcome {
   use <- bool.guard(when: fuel <= 0, return: out_of_fuel)
 
@@ -1311,6 +1377,7 @@ fn drive_loop(state: State, fuel: Int) -> Outcome {
 const out_of_fuel =
   Halt("the driver made no durable progress within its fuel bound")
 
+/// Plans next action for loaded operation after projecting context.
 fn plan(
   state: State,
   loaded: Loaded,
@@ -1319,6 +1386,8 @@ fn plan(
 ) -> Outcome {
   use <- bool.guard(when: fuel <= 0, return: out_of_fuel)
   let #(now, state) = read_clock(state)
+
+  // Obtains projection for loaded leaf.
   case project_for(state, loaded.leaf) {
     Error(reason) -> Halt(reason)
     Ok(#(projected, state)) ->
@@ -1326,6 +1395,7 @@ fn plan(
   }
 }
 
+/// Evaluates planner next action and dispatches.
 fn plan_with(
   state: State,
   loaded: Loaded,
@@ -1335,6 +1405,8 @@ fn plan_with(
   fuel: Int,
 ) -> Outcome {
   let inputs = build_inputs(state, loaded, observation, now, projected)
+
+  // Dispatches on planner next action.
   case planner.next_action(loaded.op, loaded.op_state, inputs) {
     planner.Fault(report:) ->
       Halt("planner fault: " <> corruption.describe(report))
@@ -1379,6 +1451,7 @@ fn plan_with(
 // unconsumed real observation, and a resolved key re-enters `plan` with
 // the refined observation (a cleared escalation also carries its grants
 // forward onto `state.cleared` for the dispatch it authorizes).
+/// Handles actions from resolving an await effect key.
 fn await_effect_action(
   state: State,
   loaded: Loaded,
@@ -1399,6 +1472,7 @@ fn await_effect_action(
 
 // Parked on a live effect. An unconsumed real observation goes back to the
 // front of the queue.
+/// Parks driver on live effects preserving observations.
 fn park_on_live(
   state: State,
   loaded: Loaded,
@@ -1422,6 +1496,7 @@ fn park_on_live(
   }
 }
 
+/// Commits planned transaction and continues drive loop.
 fn commit_then(
   state: State,
   loaded: Loaded,
@@ -1440,10 +1515,12 @@ fn commit_then(
     // the observation preserved.
     Error(writer.Unavailable) -> Halt("the session writer is unavailable")
     Error(writer.Underlying(tx.StaleExpectation(..))) -> {
+      // Preserves observation across retry.
       let state = case observation {
         NoObservation -> state
         other -> push_observation_front(state, other)
       }
+
       drive_loop(state, fuel - 1)
     }
     Error(writer.Underlying(tx.Corruption(report:))) ->
@@ -1471,6 +1548,7 @@ fn commit_then(
 // re-plans from durable state and never re-commits a row that is
 // already there, so nothing is announced twice. Losing a trace line is
 // the correct trade against double-counting a session.
+/// Notifies hooks of newly committed usage rows.
 fn announce_usage(
   state: State,
   operation: OpId,
@@ -1497,6 +1575,7 @@ fn announce_usage(
 // strand re-plans from it — but raising at an unregistered name inside
 // someone else's process is not: it turns an ordinary reboot into a
 // crash report from a process the supervisor knows nothing about.
+/// Sends message to subject if process is alive.
 fn wake(subject: Subject(Message), message: Message) -> Nil {
   case process.subject_owner(subject) {
     Ok(pid) ->
@@ -1508,7 +1587,9 @@ fn wake(subject: Subject(Message), message: Message) -> Nil {
   }
 }
 
+/// Arms retry timer for scheduled deadline.
 fn park_retry(state: State, at: Int, now: Int) -> Outcome {
+  // Checks if timer for same instant is already armed.
   case state.retry_wake {
     Some(wake) if wake == at -> Continue(state)
     _ -> {
@@ -1543,6 +1624,7 @@ type KeyResolution {
   KeyHalt(String)
 }
 
+/// Resolves effect key to determine if observation is ready.
 fn resolve_key(
   state: State,
   loaded: Loaded,
@@ -1551,6 +1633,8 @@ fn resolve_key(
   now: Int,
 ) -> KeyResolution {
   let hooks = state.effects.hooks
+
+  // Dispatches on effect key variant.
   case key {
     planner.RunStartKey(operation:) ->
       KeyObservation(
@@ -1635,6 +1719,7 @@ fn resolve_key(
 // step that reads a source call can fail only because the durable state
 // it reads is missing what the operation's own transitions guarantee —
 // which is a fault, not a wait.
+/// Unwraps result or converts error to KeyHalt.
 fn or_key_halt(
   result: Result(a, String),
   then: fn(a) -> KeyResolution,
@@ -1645,6 +1730,7 @@ fn or_key_halt(
   }
 }
 
+/// Resolves overflow preparation effect key.
 fn overflow_preparation_key(
   state: State,
   hooks: effects.Hooks,
@@ -1674,6 +1760,7 @@ fn overflow_preparation_key(
   }
 }
 
+/// Evaluates tool clearance and repeat guard for planned tool.
 fn tool_clearance_key(
   state: State,
   loaded: Loaded,
@@ -1720,6 +1807,7 @@ fn tool_clearance_key(
 // arguments, so it is refused here with the machine's own words and never
 // reaches a tool's clearance, its hooks or the escalation plane. It comes
 // this far at all only so the guard above can count it.
+/// Validates tool call parameters and returns clearance or refusal.
 fn clear_or_refuse_malformed(
   state: State,
   loaded: Loaded,
@@ -1754,7 +1842,9 @@ fn clear_or_refuse_malformed(
 // judges from, so a long session costs no more per clearance than a short
 // one. A read that fails reads as no history, because the guard is a
 // brake on a loop, and a store it could not read is no evidence of one.
+/// Reads recent branch messages for repeat guard.
 fn recent_messages(state: State, loaded: Loaded) -> List(AgentMessage) {
+  // Reads recent branch messages from leaf.
   case loaded.leaf {
     None -> []
     Some(leaf) -> {
@@ -1763,6 +1853,8 @@ fn recent_messages(state: State, loaded: Loaded) -> List(AgentMessage) {
         |> storage.branch_stop_at_kind(storage.Compaction)
         |> storage.branch_kind(storage.Message)
         |> storage.branch_limit(repeat_guard.window)
+
+      // Scans recent branch messages.
       case scan(state, q) {
         Ok(entries) -> list.filter_map(entries, message_of)
         Error(_) -> []
@@ -1771,6 +1863,7 @@ fn recent_messages(state: State, loaded: Loaded) -> List(AgentMessage) {
   }
 }
 
+/// Extracts message from entry.
 fn message_of(entry: Entry) -> Result(AgentMessage, Nil) {
   case entry {
     entry.MessageEntry(message:, ..) -> Ok(message)
@@ -1780,6 +1873,7 @@ fn message_of(entry: Entry) -> Result(AgentMessage, Nil) {
   }
 }
 
+/// Resolves tool effect key during recovery or wait.
 fn tool_key(
   state: State,
   loaded: Loaded,
@@ -1794,6 +1888,8 @@ fn tool_key(
     return: KeyWait,
   )
   use call <- or_key_halt(source_call(loaded, source_index))
+
+  // Checks if tool recovery is available.
   case state.effects.tools.recover {
     // Loom has no durable tool checkpoints (no list store — spec-gaps
     // WP-D item 2), so the checkpoint is always absent.
@@ -1844,10 +1940,12 @@ fn tool_key(
 // The replay policy persisted in the intent of the effect-pending call at
 // `source_index`. Only a call in that state can be orphaned, so any other
 // finding means the batch and the key disagree about where the call is.
+/// Looks up replay policy for pending tool call.
 fn pending_replay(
   loaded: Loaded,
   source_index: Int,
 ) -> Result(ReplayPolicy, String) {
+  // Extracts replay policy from pending tool batch.
   let pending = case loaded.op_state {
     RunState(phase: Tools(batch:), ..) ->
       list.find_map(batch.calls, fn(state) {
@@ -1860,12 +1958,14 @@ fn pending_replay(
       })
     _ -> Error(Nil)
   }
+
   result.replace_error(
     pending,
     "a recovery was requested for a call that is not effect-pending",
   )
 }
 
+/// Resolves summary effect key.
 fn summary_key(
   state: State,
   loaded: Loaded,
@@ -1874,6 +1974,7 @@ fn summary_key(
   task_id: String,
   attempt: Int,
 ) -> KeyResolution {
+  // Checks summary generation state.
   case summary_generation(loaded.op_state) {
     Some(operation.SummaryEffectPending(request: Some(request), ..)) -> {
       let token =
@@ -1903,6 +2004,7 @@ fn summary_key(
 // here, rather than inventing a refusal for a state that cannot ask.
 // The poll sibling (`PollAdmissionKey`) is left on the live register
 // deliberately: `resolution` reads no facts from its argument at all.
+/// Resolves configuration for admission.
 fn admission_configuration(loaded: Loaded) -> StrandConfiguration {
   case loaded.op_state {
     RunState(phase: Assistant(generation: GenerationReady(context:, ..)), ..) ->
@@ -1911,6 +2013,7 @@ fn admission_configuration(loaded: Loaded) -> StrandConfiguration {
   }
 }
 
+/// Extracts active summary generation from operation state.
 fn summary_generation(state: OperationState) -> Option(SummaryGeneration) {
   case state {
     RunState(phase: Compacting(structural: Generating(generation:, ..), ..), ..) ->
@@ -1930,11 +2033,13 @@ fn summary_generation(state: OperationState) -> Option(SummaryGeneration) {
 
 // --- effect dispatch ------------------------------------------------------
 
+/// Starts a planned effect execution.
 fn start_effect(
   state: State,
   loaded: Loaded,
   intent: planner.EffectIntent,
 ) -> Result(State, String) {
+  // Dispatches on effect intent variant.
   case intent {
     planner.ProviderRequest(
       operation:,
@@ -2100,6 +2205,7 @@ fn start_effect(
 // add to, and a decision is transient until the publication commits it —
 // a crash before that re-asks, which is the replay rule every hook is
 // held to.
+/// Enriches a structural verdict with notes.
 fn noted_verdict(
   state: State,
   loaded: Loaded,
@@ -2137,11 +2243,13 @@ fn with_notes(text: String, notes: List(String)) -> String {
 // either — `summary_provider_request` is about to refuse that request
 // anyway, and inventing a cue out of an absent preparation would put
 // numbers on the wire the harness does not have.
+/// Emits compaction notes from loaded preparation.
 fn compaction_notes(
   state: State,
   loaded: Loaded,
   operation: OpId,
 ) -> List(String) {
+  // Checks loaded preparation to emit cue notes.
   case loaded.preparation {
     None | Some(BranchSummaryPreparation(..)) -> []
 
@@ -2176,6 +2284,7 @@ fn compaction_notes(
 // because there is only one way to reach it. Any other state is not a
 // compaction, and the only such dispatch is a branch summary, which
 // `compaction_notes` has already turned away.
+/// Returns compaction cause from operation state.
 fn compaction_cause(op_state: OperationState) -> effects.CompactionCause {
   case op_state {
     RunState(phase: Compacting(reason: ThresholdReason, ..), ..) ->
@@ -2198,17 +2307,20 @@ fn compaction_cause(op_state: OperationState) -> effects.CompactionCause {
 // carry is discarded with it: a clearance whose dispatch never happened
 // has already had its approval marked consumed, and holding the grants
 // for a later call would spend them somewhere nobody approved.
+/// Extracts clearance grants for matching call.
 fn take_cleared(
   state: State,
   step_id: String,
   source_index: Int,
 ) -> #(List(JsonValue), State) {
+  // Extracts grants if cleared entry matches.
   let grants = case state.cleared {
     Some(Cleared(step_id: held_step, source_index: held_index, grants:))
       if held_step == step_id && held_index == source_index
     -> grants
     _ -> []
   }
+
   #(grants, State(..state, cleared: None))
 }
 
@@ -2224,10 +2336,12 @@ fn take_cleared(
 // at all under a leaf that differs. A compaction among the new entries
 // restarts the projection at itself, which is what the full scan's
 // stop-at-compaction already expresses.
+/// Projects context for the specified leaf entry.
 fn project_for(
   state: State,
   leaf: Option(EntryId),
 ) -> Result(#(hooks.Projected, State), String) {
+  // Compares leaf against cached projection.
   case leaf, state.projection {
     None, _ -> Ok(#(hooks.project_from_scan([]), state))
     Some(leaf),
@@ -2239,6 +2353,8 @@ fn project_for(
     -> Ok(#(projected, state))
     Some(leaf), Some(cached) -> {
       use extended <- result.try(extend_scan(state, leaf, cached.scan))
+
+      // Uses extended scan or falls back to full scan.
       case extended {
         Some(newest_first) -> Ok(remember(state, leaf, newest_first))
         None -> full_scan(state, leaf)
@@ -2248,6 +2364,7 @@ fn project_for(
   }
 }
 
+/// Performs full branch scan from leaf.
 fn full_scan(
   state: State,
   leaf: EntryId,
@@ -2261,11 +2378,13 @@ fn full_scan(
 
 // The entries newer than the cached leaf, joined onto the cache when they
 // continue it, or `None` when the branch has to be rescanned.
+/// Extends cached scan with newer entries.
 fn extend_scan(
   state: State,
   leaf: EntryId,
   cached: projection.Cached,
 ) -> Result(Option(List(Entry)), String) {
+  // Checks if cached scan can be extended.
   case cached.newest_first {
     [] -> Ok(None)
     [newest, ..] -> {
@@ -2279,6 +2398,7 @@ fn extend_scan(
   }
 }
 
+/// Caches a newly computed projection.
 fn remember(
   state: State,
   leaf: EntryId,
@@ -2345,6 +2465,7 @@ fn scan(state: State, q: storage.BranchScan) -> Result(List(Entry), String) {
 // claimant is a leaf owner the scope must wait for, which holds the scope's
 // pid alive until the ledger has replied, whatever the driver does meanwhile.
 
+/// Spawns the effect reaper and claims it.
 fn start_reaper(
   options: Options,
   resolution: Subject(Result(Nil, String)),
@@ -2379,6 +2500,7 @@ fn start_reaper(
     |> process.selector_receive_forever()
   process.demonitor_process(watch)
 
+  // Verifies that reaper handed over its ledger.
   case ledger {
     Some(ledger) -> claim_through(ledger, scope, options, resolution)
 
@@ -2386,6 +2508,7 @@ fn start_reaper(
     // adopted nothing; the driver is told so and halts rather than waiting.
     None -> process.send(resolution, Error("the effect reaper did not start"))
   }
+
   Reaper(run:, ledger:, driver:)
 }
 
@@ -2404,6 +2527,7 @@ type ClaimOrder {
 // scope asks to stand down rather than one that would monitor a corpse
 // into the ledger, and a driver that dies during the claim leaves the scope
 // waiting on the claimant, whose exit comes only after the ledger's reply.
+/// Claims reaper through claimant process.
 fn claim_through(
   ledger: weft.Ledger,
   scope: Pid,
@@ -2415,6 +2539,8 @@ fn claim_through(
     process.spawn_unlinked(fn() {
       let orders = process.new_subject()
       process.send(ready, orders)
+
+      // Handles claimant order.
       case process.receive_forever(orders) {
         ForgoClaim -> Nil
         MakeClaim -> {
@@ -2438,6 +2564,7 @@ fn claim_through(
   }
 }
 
+/// Awaits monitor exit of previous reaper processes.
 fn await_previous_reapers(
   previous: List(Pid),
   within_ms: Int,
@@ -2449,6 +2576,8 @@ fn await_previous_reapers(
       |> process.select_specific_monitor(monitor, fn(down) { down })
       |> process.selector_receive(within_ms)
     process.demonitor_process(monitor)
+
+    // Checks exit reason of previous reaper.
     case down {
       Ok(process.ProcessDown(reason: process.Normal, ..)) -> Ok(Nil)
       Ok(process.ProcessDown(reason: process.Killed, ..))
@@ -2463,6 +2592,7 @@ fn await_previous_reapers(
 // is draining and refuses, the worker exits without running. Once adopted,
 // the scope has recorded the pid and cannot finish its own drain until this
 // worker is dead.
+/// Spawns worker process under reaper scope.
 fn spawn_effect(
   reaper: Reaper,
   logger: Logger,
@@ -2485,6 +2615,7 @@ fn spawn_effect(
 // Provider effects receive a cooperative stop because their process is the
 // top-level drain witness. Killing it would start cleanup below it while
 // allowing the reaper to report completion too early.
+/// Spawns provider effect worker with cooperative stop.
 fn spawn_provider_effect(
   reaper: Reaper,
   logger: Logger,
@@ -2507,6 +2638,7 @@ fn spawn_provider_effect(
   #(pid, fn() { process.send(stop, Nil) })
 }
 
+/// Adopts process into reaper and executes body.
 fn adopt_and_run(
   reaper: Reaper,
   logger: Logger,
@@ -2542,6 +2674,7 @@ fn adopt_and_run(
 // a worker that dies before cleanup finishes still leaves a witness behind.
 // The owner is published beneath this effect, so the effect's exit is what
 // asks the stream to cancel: a crashed effect cannot orphan its request.
+/// Registers provider stream owner with reaper.
 fn track_provider_owner(reaper: Reaper, handle: stream.StreamHandle) -> Bool {
   case handle.owner, reaper.ledger {
     _owner, None -> False
@@ -2561,6 +2694,7 @@ fn track_provider_owner(reaper: Reaper, handle: stream.StreamHandle) -> Bool {
   }
 }
 
+/// Spawns provider worker process.
 fn spawn_provider(
   state: State,
   token: EffectToken,
@@ -2584,6 +2718,8 @@ fn spawn_provider(
       let provider_custodian.Prepared(handle:, begin:) =
         provider_custodian.prepare(surface, spec)
       let drain = stream.watch_drain(handle)
+
+      // Tracks provider stream owner with reaper.
       case track_provider_owner(reaper, handle) {
         False -> {
           stream.cancel(handle)
@@ -2591,6 +2727,8 @@ fn spawn_provider(
         }
         True -> {
           begin()
+
+          // Awaits provider terminal response.
           case
             await_provider(
               handle,
@@ -2634,6 +2772,7 @@ fn spawn_provider(
 // this effect exits without fabricating or forwarding an outcome.
 const provider_cancel_grace_ms = 2000
 
+/// Awaits provider stream outcome.
 fn await_provider(
   handle: stream.StreamHandle,
   stop: Subject(Nil),
@@ -2665,6 +2804,7 @@ fn await_provider(
 // Retain one selector carrying one scheduled deadline across every delta. A
 // per-receive timeout would turn ordinary stream activity into a lease which a
 // broken endpoint could renew forever without ever settling the operation.
+/// Selects on provider stream events or deadline.
 fn await_provider_selected(
   selector: process.Selector(ProviderWaitEvent),
   handle: stream.StreamHandle,
@@ -2673,6 +2813,7 @@ fn await_provider_selected(
   deadline_timer: Timer,
   context: stream.FailureObservation,
 ) -> Option(stream.StreamEvent) {
+  // Dispatches on provider stream event or deadline.
   case process.selector_receive_forever(selector) {
     ProviderStream(stream.Delta(..)) ->
       await_provider_selected(
@@ -2691,6 +2832,8 @@ fn await_provider_selected(
     StopProvider -> {
       retire_provider_deadline(deadline_timer)
       stream.cancel(handle)
+
+      // Verifies driver liveness during provider stop.
       case process.is_alive(driver) {
         True ->
           await_provider_cancel(
@@ -2740,6 +2883,7 @@ fn retire_provider_deadline(timer: Timer) -> Nil {
   Nil
 }
 
+/// Awaits provider cancellation response.
 fn await_provider_cancel(
   handle: stream.StreamHandle,
   stop: Subject(Nil),
@@ -2759,11 +2903,13 @@ fn await_provider_cancel(
 // This loop retains the selector carrying the one scheduled deadline. Late
 // deltas are discarded without refreshing the grace period, so a noisy or
 // broken transport cannot keep an effect live forever after cancellation.
+/// Selects on cancellation events or grace expiration.
 fn await_provider_cancel_selected(
   selector: process.Selector(ProviderWaitEvent),
   driver: Pid,
   context: stream.FailureObservation,
 ) -> Option(stream.StreamEvent) {
+  // Dispatches on provider stream event or deadline.
   case process.selector_receive_forever(selector) {
     ProviderStream(stream.Delta(..)) ->
       await_provider_cancel_selected(selector, driver, context)
@@ -2819,6 +2965,7 @@ fn require_provider_drain(witness: stream.DrainWitness) -> Nil {
   }
 }
 
+/// Spawns tool execution worker.
 fn spawn_tool(
   state: State,
   token: EffectToken,
@@ -2835,6 +2982,7 @@ fn spawn_tool(
 // worker registered under the call's own `ToolEffect` token, so `KeyWait`,
 // `has_live_tool` and the abort path treat it as the tool it stands in for.
 // What differs is the question the worker asks and the message it reports.
+/// Spawns recovery worker for orphaned tool.
 fn spawn_recovery(
   state: State,
   token: EffectToken,
@@ -2850,6 +2998,7 @@ fn spawn_recovery(
 // `work` runs on the worker, and its message is the worker's only report.
 // A worker that dies first reports through the monitor instead, as an
 // ordinary tool effect exit.
+/// Spawns and monitors tool worker process.
 fn spawn_tool_worker(
   state: State,
   token: EffectToken,
@@ -2876,6 +3025,7 @@ fn spawn_tool_worker(
 
 // --- loading and validation (spec §3.1) -----------------------------------
 
+/// Loads strand state and registers.
 fn load(state: State) -> Result(LoadOutcome, String) {
   use strand_cell <- result.try(read_decoded(
     state,
@@ -2883,6 +3033,8 @@ fn load(state: State) -> Result(LoadOutcome, String) {
     state.strand,
     codec.decode_strand_state,
   ))
+
+  // Checks if strand state is present.
   case strand_cell {
     None -> Error("strand.state is missing for strand " <> state.strand)
     Some(#(strand_state_seq, strand_state)) ->
@@ -2894,6 +3046,7 @@ fn load(state: State) -> Result(LoadOutcome, String) {
   }
 }
 
+/// Loads active operation registers and preparation.
 fn load_operation(
   state: State,
   op_id: OpId,
@@ -2920,6 +3073,8 @@ fn load_operation(
     codec.decode_configuration,
   ))
   use leaf_cell <- result.try(read_leaf(state))
+
+  // Validates presence of operation registers.
   case meta_cell, state_cell, configuration_cell {
     None, _, _ | _, None, _ ->
       Error("strand.state names an operation whose registers are missing")
@@ -2963,6 +3118,7 @@ fn load_operation(
   }
 }
 
+/// Validates operation metadata.
 fn validate_meta(
   state: State,
   op: Operation,
@@ -2977,10 +3133,12 @@ fn validate_meta(
 
 // The batch's source assistant message is required whenever the phase is
 // Tools; a missing or non-assistant entry is terminal corruption.
+/// Loads tool batch source assistant message.
 fn load_batch_source(
   state: State,
   op_state: OperationState,
 ) -> Result(Option(AgentMessage), String) {
+  // Checks if operation is in tools phase.
   case op_state {
     RunState(phase: Tools(batch:), ..) -> {
       use message <- result.try(entry_message(state, batch.assistant_entry))
@@ -2992,10 +3150,12 @@ fn load_batch_source(
   }
 }
 
+/// Loads deferred source handle.
 fn load_deferred_source(
   state: State,
   op_state: OperationState,
 ) -> Result(Option(DeferredHandle), String) {
+  // Extracts source entry id from deferred phase.
   let source = case op_state {
     RunState(
       phase: AwaitingDeferred(deferred: DeferredSuspended(source_entry:, ..)),
@@ -3007,10 +3167,14 @@ fn load_deferred_source(
     ) -> Some(source_entry)
     _ -> None
   }
+
+  // Loads message from deferred source entry.
   case source {
     None -> Ok(None)
     Some(entry_id) -> {
       use message <- result.try(entry_message(state, entry_id))
+
+      // Extracts deferred handle from message.
       case message {
         Some(AssistantMessage(deferred: Some(handle), ..)) -> Ok(Some(handle))
         Some(_) | None -> Error("the deferred source entry carries no handle")
@@ -3019,6 +3183,7 @@ fn load_deferred_source(
   }
 }
 
+/// Reads message from entry id.
 fn entry_message(
   state: State,
   id: EntryId,
@@ -3027,6 +3192,8 @@ fn entry_message(
     writer.get_entries(state.writer, [id])
     |> result.map_error(describe_read_error),
   )
+
+  // Extracts message from found entry.
   case dict.get(found, id) {
     Error(Nil) -> Ok(None)
     Ok(entry.MessageEntry(message:, ..)) -> Ok(Some(message))
@@ -3050,6 +3217,7 @@ fn entry_message(
 // one strand's undecodable payload fault every other strand's
 // compaction and navigation driver — repeatedly, until the supervisor
 // gave up on a tree whose real work was fine (issue #70).
+/// Loads pending entries relevant to operation intent.
 fn load_pending_for(
   state: State,
   op: Operation,
@@ -3060,6 +3228,7 @@ fn load_pending_for(
   }
 }
 
+/// Loads all pending entries from storage.
 fn load_pending(state: State) -> Result(Dict(String, PendingEntry), String) {
   use cells <- result.try(
     writer.list_registers(state.writer, register.PendingEntry, None)
@@ -3075,6 +3244,7 @@ fn load_pending(state: State) -> Result(Dict(String, PendingEntry), String) {
   |> result.map(dict.from_list)
 }
 
+/// Loads structural preparation registers.
 fn load_preparation(
   state: State,
   prefix: String,
@@ -3087,6 +3257,8 @@ fn load_preparation(
     |> result.map_error(describe_read_error),
   )
   let keys = list.map(cells, fn(pair) { pair.0 })
+
+  // Decodes preparation from first listed cell.
   case cells {
     [] -> Ok(#(None, keys))
     [#(_, storage.Register(value:, ..)), ..] -> {
@@ -3099,6 +3271,7 @@ fn load_preparation(
   }
 }
 
+/// Lists keys matching prefix.
 fn list_keys(
   state: State,
   ns: register.RegisterNs,
@@ -3110,6 +3283,7 @@ fn list_keys(
   }
 }
 
+/// Reads and decodes register value.
 fn read_decoded(
   state: State,
   ns: register.RegisterNs,
@@ -3127,6 +3301,7 @@ fn read_decoded(
   }
 }
 
+/// Reads strand leaf entry id.
 fn read_leaf(state: State) -> Result(Option(EntryId), String) {
   case writer.get_register(state.writer, register.StrandLeaf, state.strand) {
     Error(error) -> Error(describe_read_error(error))
@@ -3143,6 +3318,7 @@ fn read_leaf(state: State) -> Result(Option(EntryId), String) {
 // effects: an `Exclusive` tool starts only alone, and nothing starts
 // beside a live `Exclusive` tool. With no live tool effects the answer
 // is always yes, so sequential batches are unaffected.
+/// Checks if a tool call is permitted to start concurrently.
 fn tool_may_start(state: State, name: String) -> Bool {
   let mode = state.effects.tools.execution_mode
   let live_tools =
@@ -3152,6 +3328,8 @@ fn tool_may_start(state: State, name: String) -> Bool {
         _, _ -> Error(Nil)
       }
     })
+
+  // Checks tool execution mode against running tools.
   case live_tools {
     [] -> True
     running ->
@@ -3183,6 +3361,7 @@ fn tool_may_start(state: State, name: String) -> Bool {
 //   — instead of dispatching under a grant somebody else already spent.
 //   A crash between the consumption commit and the dispatch spends the
 //   approval without an execution: fail-safe, never a silent widening.
+/// Clears a tool call with matching approved escalations.
 fn clear_tool_call(
   state: State,
   loaded: Loaded,
@@ -3207,6 +3386,8 @@ fn clear_tool_call(
       escalation.scoped_to(record, scope)
     })
   use grants <- or_key_halt(consume_escalations(state, matching))
+
+  // Clears tool call through effect surface.
   case
     state.effects.tools.clear(effects.ClearanceQuery(
       operation:,
@@ -3238,6 +3419,7 @@ fn clear_tool_call(
 // The session's approved, unconsumed escalations with the seqs their
 // consumption commits must expect. Corrupt records fault the strand —
 // they are durable state, and partial trust is a bug class.
+/// Lists approved escalations from storage.
 fn approved_escalations(
   state: State,
 ) -> Result(List(#(Seq, escalation.Escalation)), String) {
@@ -3271,6 +3453,7 @@ fn approved_escalations(
 // clearance — so that record's grants are dropped rather than used: the
 // caller clears with only the grants it durably owns, which is what
 // makes one approval worth at most one widened execution.
+/// Commits consumption of matching approved escalations.
 fn consume_escalations(
   state: State,
   matching: List(#(Seq, escalation.Escalation)),
@@ -3292,6 +3475,8 @@ fn consume_escalations(
           tx.Expect(ns: register.FactCustom, key:, seq: option.Some(seq)),
         ],
       )
+
+    // Commits consumption of escalation record.
     case writer.commit(state.writer, plan_tx) {
       Ok(_) -> Ok(list.append(won, record.grants))
       Error(writer.Unavailable) -> Error("the session writer is unavailable")
@@ -3305,6 +3490,7 @@ fn consume_escalations(
   })
 }
 
+/// Reads persisted tool arguments for replay.
 fn read_tool_arguments(state: State, key: String) -> Result(JsonValue, String) {
   case writer.get_register(state.writer, register.OpToolArgs, key) {
     Error(error) -> Error(describe_read_error(error))
@@ -3313,6 +3499,7 @@ fn read_tool_arguments(state: State, key: String) -> Result(JsonValue, String) {
   }
 }
 
+/// Assembles inputs for planner next action.
 fn build_inputs(
   state: State,
   loaded: Loaded,
@@ -3356,6 +3543,7 @@ fn build_inputs(
 
 // --- small helpers --------------------------------------------------------
 
+/// Extracts source tool call from batch.
 fn source_call(loaded: Loaded, source_index: Int) -> Result(ToolCall, String) {
   case loaded.batch_source {
     None -> Error("a tool key was resolved without a batch source message")
@@ -3372,6 +3560,7 @@ fn source_call(loaded: Loaded, source_index: Int) -> Result(ToolCall, String) {
   }
 }
 
+/// Formats synthetic error message for tool failure.
 fn synthetic_tool_error(
   call: ToolCall,
   reason: String,
@@ -3393,6 +3582,7 @@ fn has_live(state: State, token: EffectToken) -> Bool {
   list.any(state.live, fn(live) { live.token == token })
 }
 
+/// Checks if a live tool effect is active.
 fn has_live_tool(state: State, operation: OpId, step_id: String) -> Bool {
   list.any(state.live, fn(live) {
     case live.token {
@@ -3403,7 +3593,9 @@ fn has_live_tool(state: State, operation: OpId, step_id: String) -> Bool {
   })
 }
 
+/// Extracts and demonitors a live effect entry by token.
 fn take_live(state: State, token: EffectToken) -> Option(#(Live, State)) {
+  // Looks up live effect matching token.
   case list.find(state.live, fn(live) { live.token == token }) {
     Error(Nil) -> None
     Ok(live) -> {
@@ -3447,6 +3639,7 @@ fn describe_read_error(error: writer.Failure(storage.StorageError)) -> String {
   }
 }
 
+/// Formats storage error into diagnostic string.
 fn describe_storage_error(error: storage.StorageError) -> String {
   case error {
     storage.CorruptRow(report:) -> corruption.describe(report)

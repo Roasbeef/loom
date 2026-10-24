@@ -182,10 +182,7 @@ pub fn frame(message: JsonValue) -> String {
   <> body
 }
 
-// Drives the two-state machine over one chunk. Each completed frame hands
-// the unconsumed remainder of the chunk back here in the header state, so
-// a chunk carrying several frames is walked once, front to back. `done`
-// collects completed bodies newest first.
+/// Drives the two-state machine over one chunk, collecting completed bodies.
 fn consume(
   buffer: Buffer,
   chunk: BitArray,
@@ -198,11 +195,7 @@ fn consume(
   }
 }
 
-// Appends the chunk to the pending header bytes and looks for the blank
-// line. The scan resumes three bytes before the old end, because that is
-// as much of a terminator as the previous push could have left unmatched,
-// and it never looks past `max_header_bytes`, so each push scans at most
-// a constant number of bytes however large the chunk is.
+/// Appends chunk bytes to the header buffer and scans for the terminal delimiter.
 fn consume_header(
   head: BitArray,
   chunk: BitArray,
@@ -210,6 +203,8 @@ fn consume_header(
 ) -> Result(#(Buffer, List(String)), FramingFault) {
   let data = bit_array.append(head, chunk)
   let from = int.max(bit_array.byte_size(head) - 3, 0)
+
+  // Dispatches on whether the header terminator sequence has arrived.
   case find_terminator(data, from) {
     Ok(at) -> {
       use length <- result.try(parse_header(data, at))
@@ -232,9 +227,7 @@ fn consume_header(
   }
 }
 
-// Finds the first `\r\n\r\n` starting at or after `at`, where the header
-// before it would still fit under `max_header_bytes`. Returns the index of
-// its first byte.
+/// Finds the first delimiter sequence starting at or after the given offset.
 fn find_terminator(data: BitArray, at: Int) -> Result(Int, Nil) {
   case at > max_header_bytes {
     True -> Error(Nil)
@@ -247,9 +240,7 @@ fn find_terminator(data: BitArray, at: Int) -> Result(Int, Nil) {
   }
 }
 
-// Adds a chunk to a body in progress. While the body is short, the chunk
-// is only consed on; once it is complete, the body is joined once, decoded
-// once, and whatever the chunk carried past it starts the next header.
+/// Accumulates body chunks until complete, then delivers the decoded frame.
 fn consume_body(
   length: Int,
   chunks: List(BitArray),
@@ -258,6 +249,8 @@ fn consume_body(
   done: List(String),
 ) -> Result(#(Buffer, List(String)), FramingFault) {
   let size = bit_array.byte_size(chunk)
+
+  // Checks whether more bytes are needed to complete the expected body.
   case have + size < length {
     True ->
       Ok(#(
@@ -293,11 +286,7 @@ fn slice_or_empty(bits: BitArray, from: Int, length: Int) -> BitArray {
   }
 }
 
-// Parses the header section `data[0, at)` into the body length. The
-// section must be text; each line must be `Name: value`; exactly one of
-// them must be `Content-Length`, and its value must fit under the frame
-// cap. Everything else well-formed is tolerated, which is the base
-// protocol's own posture towards `Content-Type`.
+/// Parses the header bytes into the expected content length integer.
 fn parse_header(data: BitArray, at: Int) -> Result(Int, FramingFault) {
   use section <- result.try(
     slice_or_empty(data, 0, at)
@@ -308,12 +297,16 @@ fn parse_header(data: BitArray, at: Int) -> Result(Int, FramingFault) {
     string.split(section, "\r\n")
     |> list.try_fold([], fn(lengths, line) {
       use #(name, value) <- result.try(split_header_line(line))
+
+      // Collects content-length headers while ignoring unrecognised fields.
       case string.lowercase(name) {
         "content-length" -> Ok([value, ..lengths])
         _ -> Ok(lengths)
       }
     }),
   )
+
+  // Verifies exactly one valid content-length header was supplied.
   case lengths {
     [] -> Error(MissingContentLength)
     [value] -> parse_length(value)
@@ -321,9 +314,7 @@ fn parse_header(data: BitArray, at: Int) -> Result(Int, FramingFault) {
   }
 }
 
-// One header line as a trimmed `#(name, value)`. The name must have no
-// surrounding whitespace and must not be empty; a line without a colon is
-// not a header at all, and either case poisons the stream.
+/// Splits a single header line into trimmed name and value components.
 fn split_header_line(line: String) -> Result(#(String, String), FramingFault) {
   case string.split_once(line, ":") {
     Ok(#(name, value)) ->
@@ -335,15 +326,15 @@ fn split_header_line(line: String) -> Result(#(String, String), FramingFault) {
   }
 }
 
-// Digits only. `int.parse` would also take a sign, and a signed length is
-// not a length; the cap is checked here, before the caller buffers a byte
-// of body.
+/// Parses a decimal content length string into a bounded byte count.
 fn parse_length(value: String) -> Result(Int, FramingFault) {
   let digits = string.to_graphemes(value)
   let all_digits =
     digits != []
     && list.all(digits, fn(digit) { string.contains("0123456789", digit) })
   use <- bool.guard(when: !all_digits, return: Error(BadContentLength(value:)))
+
+  // Parses the verified digit string into an integer within frame limits.
   case int.parse(value) {
     Error(Nil) -> Error(BadContentLength(value:))
     Ok(length) ->

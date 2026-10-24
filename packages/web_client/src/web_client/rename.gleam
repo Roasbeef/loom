@@ -52,11 +52,7 @@ fn view(_: Nil) -> Element(Nil) {
   component.default_slot([], [])
 }
 
-// Copies the name's text node into the field. It runs after the first paint,
-// when the server's children are in place, and finds the name in the nearest
-// container marked for it: the form on the home, the Session pane's region on a
-// session page. A page without the marked name, or a field already holding text,
-// is left as the server drew it.
+/// Copies the name's text node into the field after the first paint.
 fn filling() -> Effect(Nil) {
   use _, root <- effect.after_paint
   let filled = {

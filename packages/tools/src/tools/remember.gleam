@@ -260,6 +260,7 @@ pub fn tool(memory: Memory) -> Tool {
   )
 }
 
+/// Executes the remember tool by parsing input arguments and writing to repository memory.
 fn run(memory: Memory, args: JsonValue) -> ToolOutcome {
   use note <- tool.with_arg(decoded_note(args))
   use Nil <- tool.or_outcome(memory.remember(note), refusal_outcome)
@@ -273,6 +274,7 @@ fn run(memory: Memory, args: JsonValue) -> ToolOutcome {
 
 // A missing field, a field of the wrong type and a kind outside the list
 // are each refused in band by name, so the model can say it again.
+/// Decodes and validates the structured note fields from input JSON arguments.
 fn decoded_note(args: JsonValue) -> Result(Note, String) {
   use title <- result.try(tool.required_string(args, "title"))
   use description <- result.try(tool.required_string(args, "description"))
@@ -354,6 +356,7 @@ pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
   )
 }
 
+/// Maps a memory write refusal reason to its stable machine error code.
 fn refusal_code(refusal: Refusal) -> String {
   case refusal {
     MemoryBusy(..) -> "memory_busy"
@@ -365,6 +368,7 @@ fn refusal_code(refusal: Refusal) -> String {
   }
 }
 
+/// Formats a human-readable diagnostic description of a memory write refusal.
 fn describe(refusal: Refusal) -> String {
   case refusal {
     MemoryBusy(reason:) ->

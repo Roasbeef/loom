@@ -91,6 +91,8 @@ pub fn price(usage: Usage, card: Pricing) -> Usage {
   // independently computed figure, so the breakdown always reconciles with
   // the headline the status bar shows.
   let total = input +. output +. cache_read +. cache_write
+
+  // Determine the rate basis depending on whether the plan is ChatGPT or direct API.
   let basis = case usage.evidence {
     usage_evidence.Remote(usage_evidence.ChatGptPlan, _) ->
       usage_evidence.ChatGptReferenceRates
@@ -98,6 +100,7 @@ pub fn price(usage: Usage, card: Pricing) -> Usage {
     | usage_evidence.Remote(usage_evidence.Other, _)
     | usage_evidence.NoProvider -> usage_evidence.ApiRates
   }
+
   Usage(
     ..usage,
     cost: UsageCost(input:, output:, cache_read:, cache_write:, total:),

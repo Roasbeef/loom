@@ -101,6 +101,7 @@ pub fn tool() -> tool.Tool {
   )
 }
 
+/// Runs ripgrep with the specified pattern, directory root, and filters.
 fn run(ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use pattern <- tool.with_arg(tool.required_string(args, "pattern"))
   use path <- tool.with_arg(tool.optional_string(args, "path"))
@@ -150,6 +151,7 @@ fn identity_outcome(outcome: ToolOutcome) -> ToolOutcome {
 // Search accepts the same explicit directory additions as native file tools.
 // Resolve before launch so an escaping symlink cannot change which authority
 // the argument names; the jail independently enforces the captured policy.
+/// Resolves the candidate search directory against the workspace.
 fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
   case path {
     None -> Ok(ctx.workspace)
@@ -159,6 +161,7 @@ fn search_root(ctx: Ctx, path: Option(String)) -> Result(String, ToolOutcome) {
   }
 }
 
+/// Builds the broker CallSpec for invoking `rg` in the sandbox.
 fn call_spec(
   ctx: Ctx,
   pattern: String,
@@ -216,6 +219,7 @@ fn call_spec(
   )
 }
 
+/// Evaluates settled search output and exit status into a tool outcome.
 fn settle(
   ctx: Ctx,
   collected: tool.Collected,
@@ -248,16 +252,20 @@ pub type Match {
   Match(path: String, line: Int, text: String)
 }
 
+/// Translates the command exit code and output into matched or failed tool outcomes.
 fn exited(
   ctx: Ctx,
   collected: tool.Collected,
   result: exec.ExecResult,
   max_results: Int,
 ) -> ToolOutcome {
+  // Decode stderr text for diagnostics on failure.
   let stderr = case bit_array.to_string(collected.stderr) {
     Ok(text) -> text
     Error(Nil) -> ""
   }
+
+  // Differentiate success, zero matches, and error exit codes.
   case result.code {
     0 | 1 -> matched_outcome(ctx, collected, max_results)
 
@@ -276,6 +284,7 @@ fn exited(
   }
 }
 
+/// Parses matched lines from stdout and formats the tool outcome.
 fn matched_outcome(
   ctx: Ctx,
   collected: tool.Collected,
@@ -299,12 +308,14 @@ fn non_utf8_stdout(_nil: Nil) -> ToolOutcome {
   tool.failure("ripgrep produced non-UTF-8 output")
 }
 
+/// Formats search matches and bounds the rendered text into a tool outcome.
 fn render(
   ctx: Ctx,
   matches: List(Match),
   capped capped: Bool,
   truncated truncated: Bool,
 ) -> ToolOutcome {
+  // Format matching lines into path:line:text output rows.
   let body = case matches {
     [] -> "no matches"
     _ ->
@@ -314,11 +325,14 @@ fn render(
       })
       |> string.join(with: "\n")
   }
+
+  // Append warning annotations when results are capped or truncated.
   let body = case capped, truncated {
     True, _ -> body <> "\n[match list capped at max_results]"
     False, True -> body <> "\n[search output truncated at the output cap]"
     False, False -> body
   }
+
   let details =
     json.Object([
       #("matches", json.Array(list.map(matches, encode_match))),
@@ -333,6 +347,8 @@ fn render(
       is_error: False,
       terminate: tool.ContinueRun,
     )
+
+  // Check whether the output exceeds the inline threshold and overflows to a blob.
   case blob.bound(ctx, body) {
     Error(_error) -> outcome
     Ok(bounded) ->
@@ -343,6 +359,7 @@ fn render(
   }
 }
 
+/// Encodes a Match record into structured JSON.
 fn encode_match(match: Match) -> JsonValue {
   json.Object([
     #("path", json.String(match.path)),
@@ -360,12 +377,15 @@ pub fn parse_matches(stdout: String) -> List(Match) {
   |> list.filter_map(parse_match_line)
 }
 
+/// Parses a single line of ripgrep JSON output into a Match record.
 fn parse_match_line(line: String) -> Result(Match, Nil) {
   use parsed <- result.try(
     json.parse(line)
     |> result.replace_error(Nil),
   )
   use kind <- result.try(json_string_field(parsed, "type"))
+
+  // Filter for event records representing search matches.
   case kind {
     "match" -> {
       use data <- result.try(json_field(parsed, "data"))
@@ -387,6 +407,7 @@ fn string_trim_end_newline(text: String) -> String {
   }
 }
 
+/// Retrieves a field value from a JSON object.
 fn json_field(value: JsonValue, key: String) -> Result(JsonValue, Nil) {
   case value {
     json.Object(fields:) ->

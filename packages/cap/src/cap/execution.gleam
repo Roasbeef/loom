@@ -236,6 +236,8 @@ pub fn receive(
 ) -> Result(Received, ExecutionError) {
   let InputCursor(cursor) = cursor
   use value <- result.try(call_receive("execution.receive", cursor, wait))
+
+  // Parse the received envelope or handle nil timeout.
   case value {
     msgpack.NilValue -> Ok(TimedOut)
     _ ->
@@ -251,6 +253,8 @@ pub fn receive(
             wire.field(value, "value")
             |> result.map_error(ExecutionResultMalformed),
           )
+
+          // Validate that the returned sequence advances past the cursor.
           case sequence > cursor {
             True -> Ok(Message(sequence: InputCursor(sequence), value:))
             False ->
@@ -263,11 +267,13 @@ pub fn receive(
   }
 }
 
+/// Serving loop that polls for enveloped messages and dispatches to registered endpoints.
 fn serve_loop(
   endpoints: List(Endpoint),
   cursor: Int,
   idle: Int,
 ) -> Result(ServeExit, ServeError) {
+  // Process next enveloped message event.
   case receive_enveloped(cursor, idle) {
     Error(error) -> Error(ReceiveFailed(error:))
     Ok(EnvelopedWaitTimedOut) -> serve_loop(endpoints, cursor, idle)
@@ -281,6 +287,7 @@ fn serve_loop(
   }
 }
 
+/// Calls execution.receive_enveloped and decodes the enveloped message.
 fn receive_enveloped(
   cursor: Int,
   wait: Int,
@@ -290,6 +297,8 @@ fn receive_enveloped(
     cursor,
     wait,
   ))
+
+  // Decode the enveloped response value.
   case value {
     msgpack.NilValue -> Ok(EnvelopedWaitTimedOut)
     _ ->
@@ -312,6 +321,8 @@ fn receive_enveloped(
             wire.field(value, "value")
             |> result.map_error(ExecutionResultMalformed),
           )
+
+          // Validate that the enveloped message advances the cursor.
           case sequence > cursor {
             True -> Ok(Enveloped(sequence:, endpoint: name, value:))
             False ->
@@ -324,15 +335,18 @@ fn receive_enveloped(
   }
 }
 
+/// Invokes the receive capability with bounded wait time.
 fn call_receive(
   capability: String,
   cursor: Int,
   wait: Int,
 ) -> Result(Value, ExecutionError) {
+  // Clamp wait duration to maximum allowable receive wait.
   let bounded_wait = case wait > max_receive_wait_ms {
     True -> max_receive_wait_ms
     False -> wait
   }
+
   dispatch.call_within(
     capability,
     wire.args([
@@ -344,15 +358,18 @@ fn call_receive(
   |> result.map_error(map_error)
 }
 
+/// Records delivery status for an addressed endpoint message.
 fn record_delivery(
   sequence: Int,
   endpoint: String,
   delivered: Result(Nil, String),
 ) -> Result(Nil, ServeError) {
+  // Convert delivery result into acceptance flag and optional reason.
   let #(accepted, reason) = case delivered {
     Ok(Nil) -> #(True, msgpack.NilValue)
     Error(reason) -> #(False, msgpack.StringValue(bounded_reason(reason)))
   }
+
   dispatch.call(
     "execution.delivery",
     wire.args([
@@ -366,6 +383,7 @@ fn record_delivery(
   |> result.map_error(fn(error) { DeliveryFailed(map_error(error)) })
 }
 
+/// Dispatches an incoming value to the matching endpoint handler.
 fn deliver_to(
   endpoints: List(Endpoint),
   name: String,
@@ -381,6 +399,7 @@ fn deliver_to(
   }
 }
 
+/// Validates endpoint count and ensures all endpoint names are unique.
 fn validate_endpoints(
   endpoints: List(Endpoint),
 ) -> Result(List(String), ServeError) {
@@ -394,6 +413,7 @@ fn validate_endpoints(
   }
 }
 
+/// Recursively verifies that endpoint names contain no duplicates.
 fn unique_names(
   endpoints: List(Endpoint),
   seen: List(String),
@@ -415,6 +435,7 @@ fn validate_idle(idle: Int) -> Result(Nil, ServeError) {
   }
 }
 
+/// Validates that an endpoint name consists of 1..64 ASCII allowed characters.
 fn valid_endpoint_name(name: String) -> Bool {
   string.byte_size(name) >= 1
   && string.byte_size(name) <= 64

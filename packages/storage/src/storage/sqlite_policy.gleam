@@ -100,14 +100,19 @@ pub fn configure_connection(
     "PRAGMA busy_timeout = " <> int.to_string(options.busy_timeout_ms),
     on: connection,
   ))
+
+  // Choose the SQLite foreign key enforcement pragma argument.
   let foreign_keys = case options.foreign_keys {
     Disabled -> "OFF"
     Enabled -> "ON"
   }
+
   use Nil <- result.try(sqlight.exec(
     "PRAGMA foreign_keys = " <> foreign_keys,
     on: connection,
   ))
+
+  // Apply cache size pragma when custom cache size in KiB is specified.
   case options.cache_kib {
     None -> Ok(Nil)
     Some(kib) ->
@@ -135,6 +140,7 @@ pub fn configure_database(
   connection: sqlight.Connection,
   options: Options,
 ) -> Result(Nil, sqlight.Error) {
+  // Determine the requested journal mode pragma argument string.
   let journal = case options.journal {
     Wal -> "WAL"
     Delete -> "DELETE"
@@ -171,6 +177,8 @@ pub fn configure_database(
     with: [],
     expecting: decode.at([0], decode.string),
   ))
+
+  // Verify that SQLite reported exactly one journal mode from the pragma.
   case reported {
     [mode] -> confirm(journal, mode)
 
@@ -186,8 +194,11 @@ pub fn configure_database(
 // SQLite reports modes in lower case. An in-memory database legitimately stays
 // in "memory" whatever the file policy asks for, which the caller-facing doc
 // records; every other disagreement is a declined change wearing a plain reply.
+/// Confirms that the reported journal mode matches the requested mode or is in-memory.
 fn confirm(requested: String, reported: String) -> Result(Nil, sqlight.Error) {
   let reported = string.lowercase(reported)
+
+  // Confirm matching journal mode or allowable in-memory mode.
   case reported == string.lowercase(requested) || reported == "memory" {
     True -> Ok(Nil)
     False ->
@@ -226,6 +237,7 @@ pub fn refusing_unopenable_path(path: String) -> Result(Nil, String) {
     return: Ok(Nil),
   )
 
+  // Reject paths that point directly to an existing directory.
   use Nil <- result.try(case simplifile.is_directory(path) {
     Ok(True) -> Error("a directory sits at " <> path)
     Ok(False) -> Ok(Nil)
@@ -235,6 +247,8 @@ pub fn refusing_unopenable_path(path: String) -> Result(Nil, String) {
     // and it is reached only for permission and I/O faults on the parent.
     Error(_) -> Ok(Nil)
   })
+
+  // Verify that the parent directory exists and is a directory.
   case parent_directory(path) {
     None -> Ok(Nil)
     Some(parent) ->
@@ -279,6 +293,7 @@ pub fn refusing_unreadable_path(path: String) -> Result(Nil, String) {
 
 // The directory a file path lives in, or `None` for a bare name, which lives
 // in the working directory and so has no parent to check.
+/// Computes the parent directory path for a given filesystem path.
 fn parent_directory(path: String) -> Option(String) {
   case string.split(path, "/") {
     [] | [_] -> None
@@ -297,11 +312,15 @@ fn declined(message: String) -> sqlight.Error {
   sqlight.SqlightError(code: sqlight.Misuse, message:, offset: -1)
 }
 
+/// Validates connection options ensuring positive busy timeouts and cache sizes.
 fn validate(options: Options) -> Result(Nil, sqlight.Error) {
+  // Check that custom cache size if provided is strictly positive.
   let valid_cache = case options.cache_kib {
     None -> True
     Some(kib) -> kib > 0
   }
+
+  // Check that busy timeout is nonnegative and cache specification is valid.
   case options.busy_timeout_ms >= 0 && valid_cache {
     True -> Ok(Nil)
     False ->

@@ -162,6 +162,7 @@
 //// | `Idle` | `Idle`, buffered frames flushed | `Answering` once `begin` has minted the token, sent the `hook_call` and armed the deadline | `Destroyed`, `HostFaulted`: it correlates to nothing | `Destroyed`, the node exited | ignored, the deadline is only armed in `Answering` | machine stops, node report returned | a late `ServeStarted` is cancelled, a late `Served` ignored |
 //// | `Answering` | `Answering`, buffered frames flushed | refused, `Busy` | the open id gives `Idle` and cancels the deadline; any other id gives `Destroyed` | `Destroyed`, the open caller told `HostGone` | `Destroyed`, `InvocationDeadline` | machine stops, the open caller told `HostGone` | tracked and settled into the open invocation |
 //// | `Destroyed` | `Destroyed`, the late node is destroyed and its report kept | refused, `HostGone` with the reason | ignored | ignored | ignored | machine stops, the kept report returned | a late `ServeStarted` is cancelled, a late `Served` ignored |
+//// Gathers call event results and reports completed outcome to settling channel.
 
 import broker/broker.{type Broker, type CallSpec}
 import broker/budget.{type Budget}
@@ -695,6 +696,8 @@ pub fn run(
       policy: config.base_policy,
       deadline_ms: identity.pooled_budget(phase).deadline_ms,
     )
+
+  // Mint cap token for the satellite node clearance.
   case token.mint(vault, binding) {
     Error(mint_error) ->
       never_launched(TokenMintFailed(mint_error_text(mint_error)))
@@ -715,8 +718,10 @@ pub fn run(
   }
 }
 
-// A run that never got a node: the failure, and a node report that says
-// outright that nothing was launched rather than leaving a silence.
+/// Constructs a Run report representing a node that failed prior to launch.
+///
+/// A run that never got a node: the failure, and a node report that says
+/// outright that nothing was launched rather than leaving a silence.
 fn never_launched(error: RunError) -> Run {
   Run(
     outcome: Error(error),
@@ -726,6 +731,7 @@ fn never_launched(error: RunError) -> Run {
   )
 }
 
+/// Starts the satellite host actor and dispatches node launch.
 fn run_launched(
   artifact: Artifact,
   phase: PhaseIdentity,
@@ -737,6 +743,8 @@ fn run_launched(
 ) -> Run {
   let #(now, _clock) = clock.read(config.clock)
   let result_subject = process.new_subject()
+
+  // Spawn the host actor managing communication with the satellite node.
   case start_host(phase, broker, config, vault, token_path, result_subject) {
     Error(start_error) -> {
       config.unlink_token_file(token_path)
@@ -756,6 +764,7 @@ fn run_launched(
   }
 }
 
+/// Dispatches node launch and waits for execution outcome or cleanup.
 fn dispatch_launch(
   artifact: Artifact,
   phase: PhaseIdentity,
@@ -777,6 +786,8 @@ fn dispatch_launch(
       cwd: config.cwd,
       wire: host.wire,
     )
+
+  // Invoke injected launcher to start the jailed node process.
   case launch(spec) {
     Error(reason) -> {
       process.send(host.commands, Stop)
@@ -787,10 +798,12 @@ fn dispatch_launch(
 }
 
 // Waits for the host's terminal result, bounded by the wall deadline plus
-// slack for the host's own teardown (`result_margin_ms`). The node's
-// enforcement report comes from whichever side actually ran `destroy`:
-// the host, ordinarily, or `hand_over` here when the host was already
-// gone before it could take the connection (CH-F3).
+/// Awaits the host's terminal execution result within the deadline window.
+///
+/// slack for the host's own teardown (`result_margin_ms`). The node's
+/// enforcement report comes from whichever side actually ran `destroy`:
+/// the host, ordinarily, or `hand_over` here when the host was already
+/// gone before it could take the connection (CH-F3).
 fn await_result(
   phase: PhaseIdentity,
   host: RunHost,
@@ -801,6 +814,8 @@ fn await_result(
   let handed = hand_over(host, connection)
   let deadline_ms = identity.pooled_budget(phase).deadline_ms
   let wait = int.max(deadline_ms - now, 0) + result_margin_ms
+
+  // Wait for execution result from host subject within deadline window.
   case process.receive(result_subject, wait) {
     // The host took the connection and destroyed it itself, so its
     // report is the authoritative one — unless the host was gone before
@@ -845,10 +860,12 @@ type HandOver {
 // `Connected` carries the node's `destroy`, the host's only handle on the
 // launched node and its socket. A message to a stopped actor is dropped, so
 // a bare send would leak the node whenever the host settled during the
-// launch. Monitoring the host closes the race: the acknowledgement and the
-// host's death are ordered signals from the same process, so exactly one of
-// them arrives first, and a death that beats the acknowledgement means the
-// host never took the connection (CH-F3).
+/// Hands the launched node's connection over to the host actor.
+///
+/// Monitoring the host closes the race: the acknowledgement and the
+/// host's death are ordered signals from the same process, so exactly one of
+/// them arrives first, and a death that beats the acknowledgement means the
+/// host never took the connection (CH-F3).
 fn hand_over(host: RunHost, connection: CapConnection) -> Option(Report) {
   let ack = process.new_subject()
   let monitor = process.monitor(host.pid)
@@ -860,6 +877,8 @@ fn hand_over(host: RunHost, connection: CapConnection) -> Option(Report) {
     host.commands,
     Connected(send: connection.send, destroy: connection.destroy, ack:),
   )
+
+  // Await acknowledgement or detect host process death.
   let handed = case process.selector_receive(outcome, hand_over_timeout_ms) {
     // The host is gone, so it will never destroy the node — nor report
     // what confined it. Both fall to the caller here.
@@ -869,6 +888,7 @@ fn hand_over(host: RunHost, connection: CapConnection) -> Option(Report) {
     // and destroying here as well would reap the node twice.
     Ok(RunHostTook) | Error(Nil) -> None
   }
+
   process.demonitor_process(monitor)
   handed
 }
@@ -881,6 +901,8 @@ fn pooled(state: State) -> Budget {
   identity.pooled_budget(state.identity)
 }
 
+/// Spawns the host actor managing connection and capability dispatch.
+///
 fn start_host(
   phase: PhaseIdentity,
   broker: Broker,
@@ -943,11 +965,13 @@ fn start_host(
   })
 }
 
+/// Handles incoming state machine messages for the running host.
 fn handle(
   phase: RunPhase,
   state: State,
   msg: Msg,
 ) -> sm.Next(RunPhase, State, Msg) {
+  // Dispatch based on current phase and received message.
   case phase, msg {
     AwaitingConnection, Connected(send:, destroy:, ack:)
     | ConnectedPhase, Connected(send:, destroy:, ack:)
@@ -973,6 +997,7 @@ fn handle(
   }
 }
 
+/// Records active connection channels and flushes pending outbound frames.
 fn handle_connected(
   state: State,
   send: fn(BitArray) -> Nil,
@@ -1004,6 +1029,7 @@ fn handle_connected(
   |> sm.with_state_timeout(after: delay, sending: Deadline)
 }
 
+/// Records an established broker handle for an in-flight capability call.
 fn handle_cap_started(
   state: State,
   id: Int,
@@ -1018,6 +1044,7 @@ fn handle_cap_started(
         True -> broker.cancel(state.broker, handle)
         False -> Nil
       }
+
       let inflight =
         dict.insert(state.inflight, id, InFlight(..entry, handle: Some(handle)))
       sm.keep(State(..state, inflight:))
@@ -1025,11 +1052,13 @@ fn handle_cap_started(
   }
 }
 
+/// Handles capability completion by sending response frames and updating tallies.
 fn handle_cap_done(
   state: State,
   id: Int,
   outcome: CapOutcome,
 ) -> sm.Next(RunPhase, State, Msg) {
+  // Lookup in-flight call entry to record outcome and emit response frame.
   case dict.get(state.inflight, id) {
     Error(Nil) -> sm.keep(state)
     Ok(entry) -> {
@@ -1046,10 +1075,13 @@ type FrameStep {
   FrameDone(state: State, result: Result(Outcome, RunError))
 }
 
+/// Appends incoming socket bytes to buffer and processes deframed payloads.
 fn handle_bytes(state: State, data: BitArray) -> sm.Next(RunPhase, State, Msg) {
   let buffer = bit_array.append(state.buffer, data)
   let Deframed(payloads:, buffer:, fault:) = deframe(buffer)
   let state = State(..state, buffer:)
+
+  // Process deframed payloads in sequence.
   case handle_payloads(state, payloads) {
     Error(#(state, result)) -> terminate(state, result)
     Ok(state) ->
@@ -1060,7 +1092,9 @@ fn handle_bytes(state: State, data: BitArray) -> sm.Next(RunPhase, State, Msg) {
   }
 }
 
-// Folds the payloads of one chunk, short-circuiting on the terminal frame.
+/// Iterates through deframed payloads until error or completion.
+///
+/// Folds the payloads of one chunk, short-circuiting on the terminal frame.
 fn handle_payloads(
   state: State,
   payloads: List(BitArray),
@@ -1080,8 +1114,10 @@ fn handle_payloads(
 // the exact key set — to the terminal `outcome` frame as to every broker
 // frame (CH-F5), and the two decoders cannot disagree about what is
 // well-formed (CH-F7). `framing` knows no `outcome` kind, so it validates
-// that envelope and then reports the kind as unknown; only then does the
-// host read the body out itself.
+/// Decodes an individual msgpack payload and routes the resulting frame.
+///
+/// that envelope and then reports the kind as unknown; only then does the
+/// host read the body out itself.
 fn handle_payload(state: State, payload: BitArray) -> FrameStep {
   case framing.decode_payload(payload) {
     Ok(frame) -> handle_frame(state, frame)
@@ -1095,6 +1131,7 @@ fn handle_payload(state: State, payload: BitArray) -> FrameStep {
   }
 }
 
+/// Dispatches a decoded frame to cap call, cancel, or outcome handlers.
 fn handle_frame(state: State, frame: framing.Frame) -> FrameStep {
   case frame.body {
     framing.CapCall(token:, cap:, args:, deadline_ms: _) ->
@@ -1115,6 +1152,7 @@ fn handle_frame(state: State, frame: framing.Frame) -> FrameStep {
   }
 }
 
+/// Handles an inbound capability call request frame.
 fn handle_cap_call(
   state: State,
   id: Int,
@@ -1156,8 +1194,10 @@ fn handle_cap_call(
   }
 }
 
-// The terminal outcome frame: its envelope is already validated, so read
-// the body out and decode it into an `Outcome`.
+/// Decodes terminal outcome payload and signals execution completion.
+///
+/// The terminal outcome frame: its envelope is already validated, so read
+/// the body out and decode it into an `Outcome`.
 fn finish_from_payload(state: State, payload: BitArray) -> FrameStep {
   case outcome_body(payload) {
     Error(reason) -> FrameDone(state, Error(ChannelFaulted(reason)))
@@ -1172,10 +1212,12 @@ fn finish_from_payload(state: State, payload: BitArray) -> FrameStep {
 // (b) + (c): map the cap to a plan and service it under the pooled
 // `{op_id, step_id}`, tracking it so a `Cancel` can reach it.
 //
-// The ordinal handed to the router is the count of this capability's
-// admissions so far — not of its attempts. A call the router refuses, or
-// one refused by a ceiling or by the outstanding cap, mints nothing and
-// so leaves the ordinal for the next call to claim.
+/// Routes a capability call to an execution plan or records immediate refusal.
+///
+/// The ordinal handed to the router is the count of this capability's
+/// admissions so far — not of its attempts. A call the router refuses, or
+/// one refused by a ceiling or by the outstanding cap, mints nothing and
+/// so leaves the ordinal for the next call to claim.
 fn route_cap_call(
   state: State,
   now: Int,
@@ -1198,6 +1240,8 @@ fn route_cap_call(
   // The worker needs this gate and its request, not the host's router,
   // ledger or other in-flight calls. Project it before building the closure.
   let precheck = state.precheck
+
+  // Query capability router for handler plan or refusal.
   case state.router(request) {
     Error(denial) ->
       refuse_cap_call(
@@ -1229,10 +1273,11 @@ fn route_cap_call(
 //
 // The admission ceiling bounds how many calls of one capability an
 // *execution* may make in its whole life, and it is the seam's own rule
-// rather than the broker's: see `CapCeiling` for why replacing a turn
-// with a loop needs one. It is checked before the outstanding cap so that
-// a program at its ceiling reads the refusal that will still be true a
-// moment later, rather than a transient "too many in flight".
+/// Validates capability ceilings and concurrency limits before admission.
+///
+/// It is checked before the outstanding cap so that
+/// a program at its ceiling reads the refusal that will still be true a
+/// moment later, rather than a transient "too many in flight".
 fn admit_cap_call(
   state: State,
   now: Int,
@@ -1243,6 +1288,8 @@ fn admit_cap_call(
   check: fn() -> Result(Nil, CapOutcome),
 ) -> State {
   let already = admitted_count(state, cap)
+
+  // Check whether capability ceiling limit has been reached.
   case ceiling_reached(state, cap, already) {
     Some(ceiling) ->
       refuse_cap_call(
@@ -1256,6 +1303,8 @@ fn admit_cap_call(
       )
     None -> {
       let outstanding = pooled(state).max_outstanding
+
+      // Check whether maximum concurrent in-flight calls limit is exceeded.
       case dict.size(state.inflight) >= outstanding {
         True ->
           refuse_cap_call(
@@ -1274,8 +1323,10 @@ fn admit_cap_call(
   }
 }
 
-// Admitted for real: the tally moves, the call becomes cancellable, and a
-// process of its own carries it.
+/// Spawns worker process to execute an admitted capability call plan.
+///
+/// Admitted for real: the tally moves, the call becomes cancellable, and a
+/// process of its own carries it.
 fn dispatch_cap_call(
   state: State,
   now: Int,
@@ -1319,8 +1370,10 @@ fn dispatch_cap_call(
   )
 }
 
-// Only `proc.run` is explained, and only while it is in flight: the command
-// text is the one piece of argv the host reads, and `close_call` drops it.
+/// Records command text for in-flight proc.run capability calls.
+///
+/// Only `proc.run` is explained, and only while it is in flight: the command
+/// text is the one piece of argv the host reads, and `close_call` drops it.
 fn remember_command(
   commands: Dict(Int, String),
   id: Int,
@@ -1333,10 +1386,12 @@ fn remember_command(
   }
 }
 
-// A call the host refused before dispatching it: it is on the record as
-// failed under the refusal's code, took no time, and is answered at once.
-// It never enters `inflight`, so its `id` is free for the satellite's next
-// call.
+/// Emits refusal frame for rejected capability calls and logs call record.
+///
+/// A call the host refused before dispatching it: it is on the record as
+/// failed under the refusal's code, took no time, and is answered at once.
+/// Emits refusal frame for rejected capability calls and logs call record.
+///
 fn refuse_cap_call(
   state: State,
   now: Int,
@@ -1352,8 +1407,10 @@ fn refuse_cap_call(
 
 // Puts a settled call on the record. The host's own decision is what is
 // recorded: a call the satellite cancelled before it settled is cancelled
-// whatever the worker then answered, and the code is the `CapErr` code the
-// host holds, never its message.
+/// Closes an in-flight call entry and records status in call history.
+///
+/// whatever the worker then answered, and the code is the `CapErr` code the
+/// host holds, never its message.
 fn close_call(
   state: State,
   id: Int,
@@ -1361,11 +1418,15 @@ fn close_call(
   outcome: CapOutcome,
 ) -> State {
   let #(now, clock) = clock.read(state.clock)
+
+  // Determine call record status from cancellation and outcome.
   let status = case entry.cancelled, outcome {
     True, _ -> call_record.CallCancelled
     False, framing.CapErr(..) -> call_record.CallFailed
     False, framing.CapOk(..) -> call_record.CallOk
   }
+
+  // Extract error code if call failed.
   let error = case outcome {
     framing.CapErr(code:, ..) -> Some(code)
     framing.CapOk(..) -> None
@@ -1389,8 +1450,10 @@ fn close_call(
 }
 
 // Drops the call's command text and keeps a failure only when the call was
-// not cancelled and answered `CapOk` with a failed command. A later success
-// leaves the kept failure alone: it is still the cause worth showing.
+/// Records process execution failure for non-zero exit codes.
+///
+/// not cancelled and answered `CapOk` with a failed command. A later success
+/// leaves the kept failure alone: it is still the cause worth showing.
 fn settle_command(
   state: State,
   id: Int,
@@ -1398,6 +1461,8 @@ fn settle_command(
   outcome: CapOutcome,
 ) -> #(Dict(Int, String), Option(ProcFailure)) {
   let commands = dict.delete(state.proc_commands, id)
+
+  // Inspect command execution status for failures.
   case dict.get(state.proc_commands, id), entry.cancelled, outcome {
     Ok(command), False, framing.CapOk(value:) ->
       case proc_failure.from_reply(command, value) {
@@ -1416,8 +1481,10 @@ fn admitted_count(state: State, cap: String) -> Int {
 // The lifetime ceiling `cap` has already reached, if this execution
 // declares one for it and the tally is at it. Answering with the whole
 // ceiling rather than its number is what lets the refusal travel under
-// the code the seam declared: a guard cannot read a record field, and
-// asking the question here keeps the admission path two arms deep.
+/// Checks whether a capability invocation count has reached its defined ceiling.
+///
+/// the code the seam declared: a guard cannot read a record field, and
+/// asking the question here keeps the admission path two arms deep.
 fn ceiling_reached(
   state: State,
   cap: String,
@@ -1435,8 +1502,10 @@ fn ceiling_reached(
 //
 // The code is the seam's, carried on the ceiling. `cap/strand.map_error`
 // is the other half of that contract, so a code no `cap` module decodes
-// would reach a program as an unnamed refusal — which is why the host,
-// which knows no capability names, does not invent one here.
+/// Constructs a capability error outcome for an exceeded ceiling.
+///
+/// would reach a program as an unnamed refusal — which is why the host,
+/// which knows no capability names, does not invent one here.
 fn ceiling_denial(ceiling: CapCeiling) -> CapOutcome {
   framing.CapErr(
     code: ceiling.code,
@@ -1449,6 +1518,7 @@ fn ceiling_denial(ceiling: CapCeiling) -> CapOutcome {
   )
 }
 
+/// Constructs a capability error outcome when concurrent budget is exceeded.
 fn budget_denial(max_outstanding: Int) -> CapOutcome {
   framing.CapErr(
     code: "budget",
@@ -1466,6 +1536,7 @@ type Settling {
   Settling(started: fn(broker.CallHandle) -> Nil, done: fn(CapOutcome) -> Nil)
 }
 
+/// Spawns an isolated worker task executing a cleared call or in-process service.
 fn spawn_worker(
   settling: Settling,
   broker: Broker,
@@ -1481,6 +1552,7 @@ fn spawn_worker(
     ScopedService(_) -> Some(weft.cancel_signal())
     ClearedCall(..) | ServedHere(_) -> None
   }
+
   process.spawn_unlinked(fn() {
     // The precheck runs here, on the worker, so a slow answer delays this
     // one call and never the host actor. A refusal settles the call before
@@ -1506,6 +1578,7 @@ fn spawn_worker(
   service
 }
 
+/// Clears call through broker and collects execution events.
 fn run_collector(
   settling: Settling,
   broker: Broker,
@@ -1514,6 +1587,8 @@ fn run_collector(
   call_timeout_ms: Int,
 ) -> Nil {
   let events = process.new_subject()
+
+  // Request broker clearance to execute capability action.
   case broker.clear_call(broker, spec, events:, waiting: clear_timeout_ms) {
     Error(refusal) -> settling.done(refusal_outcome(refusal))
     Ok(handle) -> {
@@ -1546,10 +1621,10 @@ fn run_collector(
 //
 // `broker.cancel` is a send the broker resolves against its own live
 // table, so cancelling a call that has already settled — or one a
-// program-driven `Cancel` cancelled first — is a no-op there rather than
-// a second effect here. That is what makes this safe to issue without
-// consulting the host's `cancelled` bookkeeping, which lives on a
-// process this one is not.
+/// Gathers call event results and reports completed outcome to settling channel.
+///
+/// That is what makes this safe to issue without
+///
 fn report_collected(
   settling: Settling,
   broker: Broker,
@@ -1558,6 +1633,7 @@ fn report_collected(
   events: Subject(broker.CallEvent),
   call_timeout_ms: Int,
 ) -> Nil {
+  // Collect tool events until timeout.
   case tool.collect_events(events, waiting: call_timeout_ms) {
     Ok(collected) -> settling.done(render(collected))
     Error(Nil) -> {
@@ -1584,10 +1660,13 @@ fn report_collected(
 // has to reap it — the same obligation `cap/runtime` discharges on its
 // blocked reader — and the reap is what makes `unsettled` the *end* of
 // the call rather than only the end of the waiting. `weft.deadline` is
-// what discharges it here: on a run of one plain task, hitting the
-// deadline kills the worker and joins it before `start` returns, so by
-// the time this function reads `Abandoned` off the account there is
-// nothing left from the run that could still answer late.
+
+/// Executes an in-process capability service under bounded deadline.
+///
+/// On a run of one plain task, hitting the
+/// deadline kills the worker and joins it before `start` returns, so by
+/// Executes an in-process capability service under bounded deadline.
+///
 fn run_service(
   settling: Settling,
   serve: fn() -> CapOutcome,
@@ -1596,15 +1675,20 @@ fn run_service(
 ) -> Nil {
   let served = fn() -> Result(CapOutcome, Nil) { Ok(serve()) }
   let run = weft.new([served]) |> weft.deadline(call_timeout_ms)
+
+  // Attach cancellation signal and process custody if configured.
   let run = case custody {
     None -> run
     Some(#(signal, owner)) ->
       run |> weft.cancel_with(signal) |> weft.cancel_when_exits(owner)
   }
+
   let outcomes = weft.start(run)
 
   // The signal is one idle process, so successful settlement releases it too.
   option.map(custody, fn(pair) { weft.cancel(pair.0) })
+
+  // Extract capability outcome from completed weft run.
   let outcome = case outcomes {
     [weft.Completed(value:, ..)] -> value
     [weft.Crashed(..)] -> served_died_outcome()
@@ -1619,6 +1703,7 @@ fn run_service(
     | [weft.CancellationUnconfirmed(..)] -> unsettled_outcome()
     [] | [_, _, ..] -> unsettled_outcome()
   }
+
   settling.done(outcome)
 }
 
@@ -1636,7 +1721,9 @@ fn unsettled_outcome() -> CapOutcome {
   )
 }
 
+/// Cancels an in-flight capability call and aborts its broker task.
 fn handle_cancel(state: State, id: Int) -> State {
+  // Find in-flight call entry to cancel.
   case dict.get(state.inflight, id) {
     Error(Nil) -> state
     Ok(entry) -> {
@@ -1646,6 +1733,7 @@ fn handle_cancel(state: State, id: Int) -> State {
         Some(handle) -> broker.cancel(state.broker, handle)
         None -> Nil
       }
+
       option.map(entry.service, weft.cancel)
       State(
         ..state,
@@ -1665,8 +1753,10 @@ fn handle_cancel(state: State, id: Int) -> State {
 // The order is the fix for issue #5. Reporting first and cleaning up
 // afterwards left the node's enforcement report chasing an outcome that
 // had already been delivered, so a healthy run said nothing about the
-// stage whose confinement matters most. Teardown now happens first and
-// hands the report back, so the outcome cannot leave without it.
+/// Terminates the satellite node, cleans up state, and delivers final result.
+///
+/// stage whose confinement matters most. Teardown now happens first and
+/// hands the report back, so the outcome cannot leave without it.
 fn terminate(
   state: State,
   outcome_result: Result(Outcome, RunError),
@@ -1713,10 +1803,8 @@ fn terminate(
 // It is the *step* rather than the operation, and the difference is the
 // one the design note promises: a teardown reaps its own batch, and it
 // does not reap what the program asked to outlive it. A background job
-// the program started clears under the sibling step
-// `{op_id, "job/" <> id}`, so an operation-wide sweep here killed it the
-// instant the program returned. An operator aborting the whole operation
-// still does reach it, through the hub's `abort` command.
+/// Cleans up in-flight capability calls and aborts active steps on teardown.
+///
 fn cleanup(state: State) -> Report {
   list.each(dict.to_list(state.inflight), fn(entry) {
     option.map(entry.1.service, weft.cancel)
@@ -1726,15 +1814,20 @@ fn cleanup(state: State) -> Report {
     identity.op_id(state.identity),
     step_id: identity.step_id(state.identity),
   )
+
+  // Destroy the node connection and collect kernel enforcement report.
   let node = case state.destroy {
     Some(destroy) -> destroy()
     None -> enforcement.Unreported("no node was launched")
   }
+
   state.unlink_token_file(state.token_path)
   node
 }
 
-// Encodes and writes one frame, buffering until the launcher connects.
+/// Encodes and sends a frame over the active connection or buffers it.
+///
+/// Encodes and writes one frame, buffering until the launcher connects.
 fn send_frame(state: State, frame: framing.Frame) -> State {
   case framing.encode(frame) {
     // An unencodable cap_result would be a host bug (ids are positive,
@@ -1779,6 +1872,7 @@ fn deframe(buffer: BitArray) -> Deframed {
   deframe_loop(buffer, [])
 }
 
+/// Extracts length-prefixed frame payloads from buffer until incomplete.
 fn deframe_loop(buffer: BitArray, seen: List(BitArray)) -> Deframed {
   case buffer {
     <<size:size(32), rest:bits>> ->
@@ -1798,6 +1892,7 @@ fn deframe_loop(buffer: BitArray, seen: List(BitArray)) -> Deframed {
   }
 }
 
+/// Handles oversized frame payloads exceeding maximum payload limits.
 fn deframe_oversized(
   buffer: BitArray,
   seen: List(BitArray),
@@ -1814,11 +1909,14 @@ fn deframe_carry(buffer: BitArray, seen: List(BitArray)) -> Deframed {
   Deframed(payloads: list.reverse(seen), buffer:, fault: None)
 }
 
+/// Slices a payload of exact byte size from input bit array if available.
 fn take_payload(
   bytes: BitArray,
   size: Int,
 ) -> Result(#(BitArray, BitArray), Nil) {
   let available = bit_array.byte_size(bytes)
+
+  // Check whether buffer holds enough bytes for payload.
   case available >= size {
     False -> Error(Nil)
     True -> {
@@ -1892,8 +1990,11 @@ pub fn default_router(request: CapRequest) -> Result(CapPlan, CapDenial) {
   }
 }
 
+/// Plans a proc.run capability call verifying unserviced options and argv.
 fn proc_plan(request: CapRequest) -> Result(CapPlan, CapDenial) {
   use _ <- result.try(reject_unserviced(request.args))
+
+  // Decode argv array from arguments map.
   case decode_argv(request.args) {
     Error(reason) -> Error(CapDenial(code: "invalid_argument", message: reason))
     Ok([]) ->
@@ -1939,6 +2040,7 @@ fn reject_unserviced(args: MsgPackValue) -> Result(Nil, CapDenial) {
   })
 }
 
+/// Rejects unsupported capability options that this host cannot service.
 fn check_unserviced_field(
   args: MsgPackValue,
   field: String,
@@ -2008,8 +2110,12 @@ pub fn proc_render(collected: Collected) -> CapOutcome {
 }
 
 // Jailed output is expected to be UTF-8; anything else is summarized
-// rather than corrupted into a program's `String` (the same rule
-// `tools/bash` applies to the transcript).
+/// Decodes command output bytes as UTF-8 string, falling back to empty text.
+/// Decodes command output bytes as UTF-8 string, falling back to empty text.
+///
+/// rather than corrupted into a program's `String` (the same rule
+/// Decodes command output bytes as UTF-8 string, falling back to empty text.
+///
 fn output_text(bytes: BitArray) -> String {
   case bit_array.to_string(bytes) {
     Ok(text) -> text
@@ -2045,6 +2151,7 @@ pub fn private_token_writer(
   }
 }
 
+/// Creates secure private directory with restricted permissions.
 fn private_directory(directory: String) -> Result(Nil, String) {
   use _ <- result.try(
     simplifile.create_directory_all(directory)
@@ -2060,6 +2167,7 @@ pub fn unlink_token_file(path: String) -> Nil {
   Nil
 }
 
+/// Maps simplifile errors into human-readable action error messages.
 fn file_result(
   outcome: Result(a, simplifile.FileError),
   what: String,
@@ -2071,11 +2179,16 @@ fn file_result(
 
 // --- total msgpack field decoding ----------------------------------------
 
-// Decodes the marshalled outcome (mirrors `cap/report`'s `to_msgpack`):
-// `{ok: true, value}` or `{ok: false, message, details}`. Total: a
-// malformed shape is a `String` fault, never a crash.
+/// Decodes the marshalled outcome map into an Outcome variant.
+///
+/// Decodes the marshalled outcome (mirrors `cap/report`'s `to_msgpack`):
+/// `{ok: true, value}` or `{ok: false, message, details}`. Total: a
+/// Decodes the marshalled outcome map into an Outcome variant.
+///
 fn decode_outcome(value: MsgPackValue) -> Result(Outcome, String) {
   use ok <- result.try(map_bool(value, "ok"))
+
+  // Decode Completed or Errored outcome shape.
   case ok {
     True -> {
       use payload <- result.try(map_field(value, "value"))
@@ -2083,15 +2196,19 @@ fn decode_outcome(value: MsgPackValue) -> Result(Outcome, String) {
     }
     False -> {
       use message <- result.try(map_string(value, "message"))
+
+      // Extract optional details value or default to nil.
       let details = case map_field(value, "details") {
         Ok(details) -> details
         Error(_) -> msgpack.NilValue
       }
+
       Ok(Errored(message:, details:))
     }
   }
 }
 
+/// Extracts a field value from a MsgPack map by string key.
 fn map_field(value: MsgPackValue, key: String) -> Result(MsgPackValue, String) {
   case value {
     msgpack.MapValue(entries:) ->
@@ -2106,24 +2223,33 @@ fn map_field(value: MsgPackValue, key: String) -> Result(MsgPackValue, String) {
   }
 }
 
+/// Extracts a boolean field value from a MsgPack map.
 fn map_bool(value: MsgPackValue, key: String) -> Result(Bool, String) {
   use found <- result.try(map_field(value, key))
+
+  // Check that field is a boolean value.
   case found {
     msgpack.BoolValue(flag) -> Ok(flag)
     _ -> Error("field `" <> key <> "` is not a bool")
   }
 }
 
+/// Extracts a string field value from a MsgPack map.
 fn map_string(value: MsgPackValue, key: String) -> Result(String, String) {
   use found <- result.try(map_field(value, key))
+
+  // Check that field is a string value.
   case found {
     msgpack.StringValue(text) -> Ok(text)
     _ -> Error("field `" <> key <> "` is not a string")
   }
 }
 
+/// Decodes command line argument strings list from MsgPack map.
 fn decode_argv(value: MsgPackValue) -> Result(List(String), String) {
   use found <- result.try(map_field(value, "argv"))
+
+  // Extract strings from argv array.
   case found {
     msgpack.ArrayValue(items:) ->
       list.try_map(items, fn(item) {
@@ -2138,6 +2264,7 @@ fn decode_argv(value: MsgPackValue) -> Result(List(String), String) {
 
 // --- diagnostics ----------------------------------------------------------
 
+/// Converts a token minting error into a descriptive message.
 fn mint_error_text(error: token.MintError) -> String {
   case error {
     token.EntropyFailure(got_bytes:) ->
@@ -2146,6 +2273,7 @@ fn mint_error_text(error: token.MintError) -> String {
   }
 }
 
+/// Converts a token validation refusal into a human-readable string.
 fn refusal_text(refusal: token.Refusal) -> String {
   case refusal {
     token.UnknownToken -> "the presented cap token is unknown"
@@ -2161,6 +2289,7 @@ fn start_error_text(error: actor.StartError) -> String {
   "the satellite host actor failed to start: " <> string.inspect(error)
 }
 
+/// Formats a broker refusal into an error capability outcome.
 fn refusal_outcome(refusal: broker.Refusal) -> CapOutcome {
   case refusal {
     broker.PolicyRefused(denial:) ->
@@ -2191,6 +2320,7 @@ fn refusal_outcome(refusal: broker.Refusal) -> CapOutcome {
   }
 }
 
+/// Converts a budget refusal variant into explanatory error text.
 fn budget_text(refusal: budget.Refusal) -> String {
   case refusal {
     budget.OutstandingCapReached(cap:) ->
@@ -2403,12 +2533,14 @@ pub fn start(
   }
 }
 
+/// Starts persistent satellite hosting machine and launches jailed node.
 fn start_hosting(
   artifact: Artifact,
   config: HostConfig,
   launch: Launcher,
   token_path: String,
 ) -> Result(Host, RunError) {
+  // Start the persistent state machine actor.
   case start_machine(config, token_path) {
     Error(reason) -> {
       config.unlink_token_file(token_path)
@@ -2498,6 +2630,7 @@ pub fn invoke(
         "the satellite host did not answer within the invocation's deadline",
       ))
   }
+
   process.demonitor_process(monitor)
   answer
 }
@@ -2522,6 +2655,8 @@ pub fn stop(host: Host) -> Report {
     |> process.select_map(reply, Reported)
     |> process.select_specific_monitor(monitor, ReportLost)
   process.send(host.commands, Halt(reply:))
+
+  // Await halt report confirmation or synthesize loss report.
   let report = case process.selector_receive(selector, halt_timeout_ms) {
     Ok(Reported(report)) -> report
 
@@ -2532,6 +2667,7 @@ pub fn stop(host: Host) -> Report {
     Error(Nil) ->
       enforcement.Unreported("the satellite host did not report in time")
   }
+
   process.demonitor_process(monitor)
   report
 }
@@ -2667,6 +2803,7 @@ type Open {
   )
 }
 
+/// Initializes persistent host state machine actor.
 fn start_machine(
   config: HostConfig,
   token_path: String,
@@ -2702,6 +2839,8 @@ fn start_machine(
     })
     |> sm.on_event(host_step)
     |> sm.start
+
+  // Unpack started state machine subject or format error.
   case started {
     Error(error) -> Error(start_error_text(error))
     Ok(machine) -> {
@@ -2711,9 +2850,12 @@ fn start_machine(
   }
 }
 
-// Hands the launched node's connection to the machine, destroying it here
-// if the machine stopped before it could take it — the same race
-// `hand_over` closes for the single-shot host, closed the same way.
+/// Hands the launched node's connection to the machine.
+///
+/// Destroying it here
+/// if the machine stopped before it could take it — the same race
+/// Hands the launched node's connection to the machine.
+///
 fn hand_over_to(host: Host, connection: CapConnection) -> Option(Report) {
   let ack = process.new_subject()
   let monitor = process.monitor(host.pid)
@@ -2725,10 +2867,13 @@ fn hand_over_to(host: Host, connection: CapConnection) -> Option(Report) {
     host.commands,
     NodeConnected(send: connection.send, destroy: connection.destroy, ack:),
   )
+
+  // Await connection acceptance from persistent host machine.
   let handed = case process.selector_receive(outcome, hand_over_timeout_ms) {
     Ok(HostGoneAway) -> Some(connection.destroy())
     Ok(HostTook) | Error(Nil) -> None
   }
+
   process.demonitor_process(monitor)
   handed
 }
@@ -2739,9 +2884,11 @@ type Handed {
   HostGoneAway
 }
 
-// One event, in one phase. Every pair is written: a new message or a
-// fourth phase is a compile error here rather than an event the host
-// silently drops.
+/// Drives state transitions for the persistent satellite host machine.
+///
+/// One event, in one phase. Every pair is written: a new message or a
+/// fourth phase is a compile error here rather than an event the host
+/// silently drops.
 fn host_step(
   phase: Phase,
   hosting: Hosting,
@@ -2871,9 +3018,13 @@ fn host_step(
 
 // Opens an invocation: mint, send, arm.
 //
-// The token is minted before the frame is composed, because the frame
-// carries it; and the deadline is this state's own timeout, so answering
-// cancels it by leaving the state rather than by a handler remembering to.
+
+/// Opens a fresh invocation on the persistent host and mints a token.
+///
+/// The token is minted before the frame is composed, because the frame
+/// carries it; and the deadline is this state's own timeout, so answering
+/// Opens a fresh invocation on the persistent host and mints a token.
+///
 fn begin(
   hosting: Hosting,
   invocation: Invocation,
@@ -2890,6 +3041,8 @@ fn begin(
       policy: invoking.base_policy,
       deadline_ms: now + deadline_ms,
     )
+
+  // Mint capability token for the open invocation.
   case token.mint(hosting.vault, binding) {
     Error(mint_error) -> {
       process.send(
@@ -2963,7 +3116,9 @@ type Reading {
   Reading(phase: Phase, hosting: Hosting)
 }
 
-// The step one chunk of inbound bytes produces.
+/// Handles incoming socket bytes in persistent host reading payloads.
+///
+/// The step one chunk of inbound bytes produces.
 fn read_bytes(
   phase: Phase,
   hosting: Hosting,
@@ -2972,6 +3127,8 @@ fn read_bytes(
   let buffer = bit_array.append(hosting.buffer, data)
   let Deframed(payloads:, buffer:, fault:) = deframe(buffer)
   let reading = Reading(phase:, hosting: Hosting(..hosting, buffer:))
+
+  // Process deframed payloads and evaluate any frame decoding faults.
   case read_payloads(reading, payloads), fault {
     Error(step), _ -> step
     Ok(Reading(phase:, hosting:)), None ->
@@ -2981,8 +3138,10 @@ fn read_bytes(
   }
 }
 
-// Folds the payloads of one chunk, short-circuiting on the one that ends
-// the host.
+/// Folds incoming payloads for persistent host stopping on fatal faults.
+///
+/// Folds the payloads of one chunk, short-circuiting on the one that ends
+/// the host.
 fn read_payloads(
   reading: Reading,
   payloads: List(BitArray),
@@ -2997,6 +3156,7 @@ fn read_payloads(
   }
 }
 
+/// Decodes and interprets one payload frame on the persistent host.
 fn read_payload(
   reading: Reading,
   payload: BitArray,
@@ -3013,11 +3173,14 @@ fn read_payload(
   }
 }
 
+/// Dispatches decoded frame to invocation handling logic.
 fn read_frame(
   reading: Reading,
   frame: framing.Frame,
 ) -> Result(Reading, sm.Next(Phase, Hosting, HostMsg)) {
   let Reading(phase:, hosting:) = reading
+
+  // Route frame based on frame body and active phase.
   case frame.body, phase {
     framing.CapCall(token: presented, cap:, args:, deadline_ms: _), _ ->
       Ok(carrying(
@@ -3083,10 +3246,13 @@ fn carrying(reading: Reading, hosting: Hosting) -> Reading {
 
 // --- capability calls, under the open invocation's authority --------------
 
-// A `cap_call` is judged against the *invocation's* token binding, so one
-// made when no invocation is open has nothing to check against and is
-// refused before any router sees it. That refusal is the persistent
-// satellite's whole confinement story stated once.
+/// Serves an incoming capability call under the active invocation token.
+///
+/// A `cap_call` is judged against the *invocation's* token binding, so one
+/// made when no invocation is open has nothing to check against and is
+/// refused before any router sees it. That refusal is the persistent
+/// Serves an incoming capability call under the active invocation token.
+///
 fn serve_cap_call(
   hosting: Hosting,
   id: Int,
@@ -3109,6 +3275,7 @@ fn serve_cap_call(
   }
 }
 
+/// Validates token authentication for an invocation capability call.
 fn check_cap_call(
   hosting: Hosting,
   open: Open,
@@ -3119,6 +3286,8 @@ fn check_cap_call(
 ) -> Hosting {
   let #(now, clock) = clock.read(hosting.clock)
   let hosting = Hosting(..hosting, clock:)
+
+  // Verify capability token against invocation vault.
   case
     token.check_for(
       hosting.vault,
@@ -3138,6 +3307,7 @@ fn check_cap_call(
   }
 }
 
+/// Routes an authenticated capability call to its handler plan.
 fn route_invocation_call(
   hosting: Hosting,
   open: Open,
@@ -3157,6 +3327,8 @@ fn route_invocation_call(
       cwd: hosting.config.cwd,
       ordinal: already,
     )
+
+  // Route request through invocation capability router.
   case open.invoking.router(request) {
     Error(denial) ->
       emit_cap_result(
@@ -3168,10 +3340,13 @@ fn route_invocation_call(
   }
 }
 
-// The same two ceilings the single-shot host checks, in the same order and
-// for the same reasons — a program at its lifetime ceiling should read the
-// refusal that will still be true a moment later — with the tally scoped
-// to this invocation rather than to the node's whole life.
+/// Validates invocation ceilings and in-flight limits before admission.
+///
+/// The same two ceilings the single-shot host checks, in the same order and
+/// for the same reasons — a program at its lifetime ceiling should read the
+/// refusal that will still be true a moment later — with the tally scoped
+/// Validates invocation ceilings and in-flight limits before admission.
+///
 fn admit_invocation_call(
   hosting: Hosting,
   open: Open,
@@ -3182,6 +3357,8 @@ fn admit_invocation_call(
 ) -> Hosting {
   let outstanding =
     identity.pooled_budget(open.invoking.identity).max_outstanding
+
+  // Check invocation ceilings and in-flight effect bounds.
   case reached(open.invoking.ceilings, cap, already), dict.size(open.inflight) {
     Some(ceiling), _ -> emit_cap_result(hosting, id, ceiling_denial(ceiling))
     None, live if live >= outstanding ->
@@ -3190,6 +3367,7 @@ fn admit_invocation_call(
   }
 }
 
+/// Spawns worker process for an admitted invocation capability call.
 fn dispatch_invocation_call(
   hosting: Hosting,
   open: Open,
@@ -3228,6 +3406,7 @@ fn spent(open: Open, cap: String) -> Int {
   dict.get(open.admitted, cap) |> result.unwrap(0)
 }
 
+/// Checks whether a given capability has reached its invocation ceiling.
 fn reached(
   ceilings: List(CapCeiling),
   cap: String,
@@ -3239,6 +3418,7 @@ fn reached(
   |> option.from_result
 }
 
+/// Tracks started broker handle for an in-flight invocation call.
 fn track_started(
   hosting: Hosting,
   id: Int,
@@ -3258,10 +3438,12 @@ fn track_started(
           hosting
         }
         Ok(entry) -> {
+          // Cancel handle immediately if call was cancelled in-flight.
           case entry.cancelled {
             True -> broker.cancel(hosting.config.broker, handle)
             False -> Nil
           }
+
           with_inflight(
             hosting,
             open,
@@ -3276,6 +3458,7 @@ fn track_started(
   }
 }
 
+/// Updates tallies and emits response frame when an invocation call settles.
 fn settle_served(hosting: Hosting, id: Int, outcome: CapOutcome) -> Hosting {
   case hosting.open {
     None -> hosting
@@ -3295,6 +3478,7 @@ fn settle_served(hosting: Hosting, id: Int, outcome: CapOutcome) -> Hosting {
   }
 }
 
+/// Cancels an in-flight invocation capability call.
 fn cancel_inflight(hosting: Hosting, id: Int) -> Hosting {
   case hosting.open {
     None -> hosting
@@ -3302,10 +3486,12 @@ fn cancel_inflight(hosting: Hosting, id: Int) -> Hosting {
       case dict.get(open.inflight, id) {
         Error(Nil) -> hosting
         Ok(entry) -> {
+          // Abort broker task if handle has been established.
           case entry.handle {
             Some(handle) -> broker.cancel(hosting.config.broker, handle)
             None -> Nil
           }
+
           option.map(entry.service, weft.cancel)
           with_inflight(
             hosting,
@@ -3317,6 +3503,7 @@ fn cancel_inflight(hosting: Hosting, id: Int) -> Hosting {
   }
 }
 
+/// Updates in-flight calls dictionary on the active open invocation.
 fn with_inflight(
   hosting: Hosting,
   open: Open,
@@ -3325,8 +3512,12 @@ fn with_inflight(
   Hosting(..hosting, open: Some(Open(..open, inflight:)))
 }
 
-// The two callbacks one routed call reports through. They send into the
-// machine's own subject, which the worker holds as a plain `Subject`.
+/// Constructs settling callbacks for an invocation capability call.
+/// Constructs settling callbacks for an invocation capability call.
+///
+/// The two callbacks one routed call reports through. They send into the
+/// Constructs settling callbacks for an invocation capability call.
+///
 fn host_settling(hosting: Hosting, id: Int) -> Settling {
   let commands = hosting.commands
   Settling(
@@ -3339,8 +3530,12 @@ fn host_settling(hosting: Hosting, id: Int) -> Settling {
 
 // Answers the open invocation and returns to `Idle`: revoke its token,
 // cancel anything it left in flight, and clear the slot. Revocation is the
-// harness's half of the token rule, and it happens here rather than in the
-// caller so that no path out of `Answering` can skip it.
+/// Closes active invocation, revokes token, and cleans up open state.
+/// Closes active invocation, revokes token, and cleans up open state.
+///
+/// harness's half of the token rule, and it happens here rather than in the
+/// Closes active invocation, revokes token, and cleans up open state.
+///
 fn close_invocation(
   hosting: Hosting,
   answer: Result(CapOutcome, InvokeError),
@@ -3354,6 +3549,7 @@ fn close_invocation(
   released
 }
 
+/// Delivers response to invocation reply subject and transitions to idle.
 fn answer_open(
   hosting: Hosting,
   answer: Result(CapOutcome, InvokeError),
@@ -3364,15 +3560,19 @@ fn answer_open(
   }
 }
 
+/// Releases active invocation resources and cancels in-flight tasks.
 fn release(hosting: Hosting) -> Hosting {
+  // Cancel all in-flight invocation operations.
   case hosting.open {
     None -> hosting
     Some(open) -> {
       list.each(dict.to_list(open.inflight), fn(entry) {
+        // Cancel broker handle if established.
         case { entry.1 }.handle {
           Some(handle) -> broker.cancel(hosting.config.broker, handle)
           None -> Nil
         }
+
         option.map(entry.1.service, weft.cancel)
       })
 
@@ -3399,10 +3599,13 @@ fn release(hosting: Hosting) -> Hosting {
 // `Destroyed` for the rest of the session.
 //
 // Both callers are protocol breaches rather than ordinary endings: a
-// deadline the satellite ignored, or a frame it sent that correlates to
-// nothing. A restart here would hand the extension a fresh set of the
-// actors it just lost without telling anybody it had lost them; the
-// session's next `session_start` is where a restart belongs.
+/// Destroys persistent host on fatal socket or node faults.
+///
+/// deadline the satellite ignored, or a frame it sent that correlates to
+/// nothing. A restart here would hand the extension a fresh set of the
+/// actors it just lost without telling anybody it had lost them; the
+/// Destroys persistent host on fatal socket or node faults.
+///
 fn perish(
   hosting: Hosting,
   answer: InvokeError,
@@ -3416,6 +3619,7 @@ fn perish(
   )
 }
 
+/// Converts an invocation error into a human-readable perish explanation.
 fn perish_reason(answer: InvokeError) -> String {
   case answer {
     Busy -> "the host was destroyed while an invocation was open"
@@ -3428,9 +3632,14 @@ fn perish_reason(answer: InvokeError) -> String {
 }
 
 // Destroys the node as a unit and unlinks its token file, returning what
-// the kernel enforced on it. Idempotent: a host whose node is already gone
-// hands back the report it kept.
+/// Destroys the node connection and collects kernel enforcement report.
+/// Destroys the node connection and collects kernel enforcement report.
+///
+/// the kernel enforced on it. Idempotent: a host whose node is already gone
+/// Destroys the node connection and collects kernel enforcement report.
+///
 fn teardown(hosting: Hosting) -> Report {
+  // Trigger node destroy hook if present.
   case hosting.destroy {
     Some(destroy) -> {
       let report = destroy()
@@ -3458,8 +3667,12 @@ fn emit_cap_result(hosting: Hosting, id: Int, outcome: CapOutcome) -> Hosting {
 }
 
 // Encodes and writes one frame, buffering until the launcher connects. An
-// unencodable frame would be a host bug (ids are positive, bodies typed);
-// dropping it costs the invocation its deadline rather than the VM.
+/// Encodes and sends a frame over the persistent host connection.
+/// Encodes and sends a frame over the persistent host connection.
+///
+/// unencodable frame would be a host bug (ids are positive, bodies typed);
+/// Encodes and sends a frame over the persistent host connection.
+///
 fn emit_frame(hosting: Hosting, frame: framing.Frame) -> Hosting {
   case framing.encode(frame) {
     Error(_) -> hosting

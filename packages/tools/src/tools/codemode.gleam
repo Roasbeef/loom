@@ -516,6 +516,7 @@ pub type Background {
   )
 }
 
+/// Generates tool schema properties for background execution mode parameters.
 fn async_properties(
   background: Option(Background),
 ) -> List(#(String, JsonValue)) {
@@ -560,9 +561,12 @@ fn async_properties(
 
 // Neither source field is required alone: run and launch require exactly
 // one of them, while interactions use a handle and never load source.
+/// Formats documentation for the `program` tool property based on mode.
 fn program_text(background: Option(Background)) -> String {
   let program =
     "exactly one of program or program_path is required: inline Gleam source defining `pub fn main() -> report.Outcome`, importing `cap/report`"
+
+  // Tailor description depending on whether asynchronous mode is available.
   case background {
     None -> program
     Some(_) ->
@@ -572,9 +576,12 @@ fn program_text(background: Option(Background)) -> String {
   }
 }
 
+/// Formats documentation for the `program_path` tool property based on mode.
 fn program_path_text(background: Option(Background)) -> String {
   let path =
     "alternative to program: path to a UTF-8 Gleam source file, relative to the workspace or absolute with read authority; loaded once for this invocation"
+
+  // Tailor description depending on whether asynchronous mode is available.
   case background {
     None -> "Exactly one of program or program_path is required; " <> path
     Some(_) ->
@@ -694,6 +701,7 @@ pub fn tool_for(mode: CodeMode) -> Tool {
 // region, so an argument with one legal value would be paid for on every
 // request of every strand to tell the model about a decision it cannot
 // make.
+/// Generates tool schema property for `seam` if multiple seams are offered.
 fn seam_properties(seams: Seams) -> List(#(String, JsonValue)) {
   case seams.alternates {
     [] -> []
@@ -782,6 +790,7 @@ pub fn description(mode: CodeMode) -> String {
 
 // State the combined surface only when one installed offer actually admits
 // both halves. Explicit effect-only hosts must never promise child custody.
+/// Generates description guidance about combining workspace and orchestration capabilities.
 fn composition_guidance(seams: Seams) -> String {
   case
     list.any(offered(seams), fn(offer) {
@@ -798,6 +807,7 @@ fn composition_guidance(seams: Seams) -> String {
 
 // Governed evolution has no direct tools, so this sentence is the only place a
 // model learns it exists. It is stated only for an offer that admits the module.
+/// Generates description guidance about evolutionary candidate tools.
 fn evolution_guidance(seams: Seams) -> String {
   case
     list.any(offered(seams), fn(offer) {
@@ -812,6 +822,7 @@ fn evolution_guidance(seams: Seams) -> String {
 
 // A finite capture is a separate admission from native point queries.
 // Advertise SQL only when the same offer can import and collect its facts.
+/// Generates description guidance about SQL queries over language server captures.
 fn lsp_sql_guidance(seams: Seams) -> String {
   case
     list.any(offered(seams), fn(offer) {
@@ -825,6 +836,7 @@ fn lsp_sql_guidance(seams: Seams) -> String {
   }
 }
 
+/// Generates description prose describing background execution lifecycle and endpoints.
 fn async_text(background: Option(Background), seams: Seams) -> String {
   case background {
     None -> ""
@@ -882,6 +894,7 @@ const signature_legend =
 // `fs_read` when needed, outside the cached provider prefix. The generated
 // `type_surfaces` entries are prefixes of the full `surfaces` entries, so
 // discovery extends rather than contradicts the description.
+/// Formats public type surfaces and signatures across offered seams.
 fn signatures_text(seams: Seams) -> String {
   case list.filter(signature_sections(seams), fn(section) { section.1 != "" }) {
     [] -> ""
@@ -908,12 +921,15 @@ fn render_section(section: #(String, String)) -> String {
 // A single-seam host renders one unheaded block, so its description is
 // the description it rendered before, with the surfaces appended and no
 // word anywhere about a seam it cannot choose.
+/// Divides type signatures into shared and seam-specific sections.
 fn signature_sections(seams: Seams) -> List(#(String, String)) {
   let seams =
     Seams(
       default: admitted_lsp_notes(seams.default),
       alternates: list.map(seams.alternates, admitted_lsp_notes),
     )
+
+  // Group signatures into shared or per-seam sections.
   case seams.alternates {
     [] -> [#("", seam_surface(seams.default, seams.default.allowed_imports))]
     _alternates -> {
@@ -954,6 +970,7 @@ fn signature_sections(seams: Seams) -> List(#(String, String)) {
 
 // Supplements cannot introduce their committed module on a closed seam.
 // Generated façades retain their existing independent discovery contract.
+/// Filters extra surfaces on an offer to retain only admitted modules.
 fn admitted_lsp_notes(offer: SeamOffer) -> SeamOffer {
   SeamOffer(
     ..offer,
@@ -969,6 +986,7 @@ fn admitted_lsp_notes(offer: SeamOffer) -> SeamOffer {
 
 // Host-generated modules may be offered on both modes. Render the common
 // surface once; a surface present on only one mode stays under that mode.
+/// Identifies extra surface blocks shared across all offered seams.
 fn shared_extra_surfaces(offers: List(SeamOffer)) -> List(String) {
   case offers {
     [] -> []
@@ -987,6 +1005,7 @@ fn shared_extra_surfaces(offers: List(SeamOffer)) -> List(String) {
 // Host-generated blocks follow the committed prelude. A block shared by
 // all installed modes is rendered once, and a mode-specific block stays
 // under that mode.
+/// Renders the prelude and extra surface blocks for a single seam.
 fn seam_surface(offer: SeamOffer, modules: List(String)) -> String {
   [
     type_surface_text(modules),
@@ -1016,6 +1035,7 @@ fn type_surface_text(allowed: List(String)) -> String {
 
 // Native profile notes supplement an existing module rather than creating
 // another API heading. Keep every note visible; façade summaries stay short.
+/// Formats an extra surface block for display in the tool description.
 fn extra_surface_text(block: String) -> String {
   case surface_module(block) {
     Ok("cap/lsp") -> supplemental_body(block)
@@ -1063,11 +1083,14 @@ pub fn cap_scheme(mode: CodeMode) -> fs.Scheme {
   )
 }
 
+/// Handles virtual `cap://` reads for capability preludes and module indexes.
 fn read_cap(
   seams: Seams,
   reference: String,
 ) -> Result(String, fs.SchemeRefusal) {
   let readable = readable_surfaces(seams)
+
+  // Return index on empty reference or look up specific module surface.
   case string.is_empty(reference) {
     True -> Ok(cap_index(readable))
     False -> {
@@ -1084,6 +1107,7 @@ fn read_cap(
 // The read side starts from the same offered-seam allowlists as the
 // description. The committed block stays whole; generated MCP façades are
 // keyed by their own heading and offered only on admitted seams.
+/// Assembles the list of readable capability module surfaces across offered seams.
 fn readable_surfaces(seams: Seams) -> List(#(String, String)) {
   let offers = offered(seams)
   let committed =
@@ -1102,6 +1126,7 @@ fn readable_surfaces(seams: Seams) -> List(#(String, String)) {
   let generated = list.unique(generated)
   let supplemented =
     list.map(committed, fn(entry) {
+      // Attach supplemental notes to matching prelude modules.
       case entry.0 {
         "cap/lsp" -> {
           let notes =
@@ -1117,6 +1142,7 @@ fn readable_surfaces(seams: Seams) -> List(#(String, String)) {
   list.unique(list.append(supplemented, facades))
 }
 
+/// Formats the index of all importable capability modules.
 fn cap_index(readable: List(#(String, String))) -> String {
   readable
   |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
@@ -1129,11 +1155,15 @@ fn cap_index(readable: List(#(String, String))) -> String {
   |> string.join("\n")
 }
 
+/// Extracts the module name from the heading of an extra surface block.
 fn surface_module(block: String) -> Result(String, Nil) {
+  // Read the first line of the surface block.
   let first = case string.split_once(block, on: "\n") {
     Ok(#(line, _rest)) -> line
     Error(Nil) -> block
   }
+
+  // Check for markdown level-3 heading prefix.
   case string.starts_with(first, "### ") {
     True -> Ok(string.trim(string.drop_start(first, 4)))
     False -> Error(Nil)
@@ -1142,6 +1172,7 @@ fn surface_module(block: String) -> Result(String, Nil) {
 
 // Generator summaries can wrap across lines. Rejoin the first paragraph
 // before cutting it to one sentence for a stable, compact index entry.
+/// Extracts the first summary sentence of a module documentation block.
 fn first_sentence(block: String) -> String {
   let paragraph =
     block
@@ -1150,6 +1181,8 @@ fn first_sentence(block: String) -> String {
     |> list.drop_while(fn(line) { string.trim(line) == "" })
     |> list.take_while(fn(line) { string.trim(line) != "" })
     |> string.join(" ")
+
+  // Extract first natural sentence or skip if paragraph starts with code.
   case
     string.starts_with(paragraph, "pub ")
     || string.starts_with(paragraph, "///")
@@ -1164,6 +1197,7 @@ fn first_sentence(block: String) -> String {
 }
 
 // One seam: the sentence this tool has always rendered.
+/// Generates description text summarizing allowed imports across seams.
 fn seams_text(seams: Seams) -> String {
   case seams.alternates {
     [] ->
@@ -1178,8 +1212,11 @@ fn seams_text(seams: Seams) -> String {
 
 // More than one: name them, say which is the default, and state the
 // shared import subset once instead of twice.
+/// Generates import and capability descriptions when multiple seams are offered.
 fn many_seams_text(seams: Seams) -> String {
   let offers = offered(seams)
+
+  // Check whether all offered seams admit identical imports and capabilities.
   case same_offers(offers) {
     True ->
       "Workspace and orchestration admit the same imports and capabilities; "
@@ -1194,6 +1231,7 @@ fn many_seams_text(seams: Seams) -> String {
   }
 }
 
+/// Checks whether all offered seams share identical allowed imports and caps.
 fn same_offers(offers: List(SeamOffer)) -> Bool {
   case offers {
     [] -> False
@@ -1206,6 +1244,7 @@ fn same_offers(offers: List(SeamOffer)) -> Bool {
   }
 }
 
+/// Formats distinct import and capability clauses for each differing seam.
 fn distinct_seams_text(seams: Seams, offers: List(SeamOffer)) -> String {
   let shared = shared_imports(offers)
   let clauses =
@@ -1225,6 +1264,7 @@ fn distinct_seams_text(seams: Seams, offers: List(SeamOffer)) -> String {
   <> "does not service compile but answer unsupported_cap."
 }
 
+/// Formats the import and capability clause for a single seam.
 fn seam_clause(offer: SeamOffer, shared: List(String)) -> String {
   "`"
   <> seam_name(offer.seam)
@@ -1242,6 +1282,7 @@ fn seam_clause(offer: SeamOffer, shared: List(String)) -> String {
 // The modules every offered seam allows. Derived rather than declared:
 // the seams' pure standard-library subset is the same list today, and a
 // description that asserted so would be a claim nothing checks.
+/// Finds import modules permitted across all offered seams.
 fn shared_imports(offers: List(SeamOffer)) -> List(String) {
   case offers {
     [] -> []
@@ -1286,8 +1327,11 @@ pub fn requirements(workspace: String) -> SandboxPolicy {
   policy.SandboxPolicy(..base, readable_roots: [], env_allow: [])
 }
 
+/// Top-level tool handler dispatching between synchronous runs and asynchronous interactions.
 fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   use named <- tool.with_arg(tool.optional_string(args, "mode"))
+
+  // Dispatch according to requested execution mode.
   case option.unwrap(named, "run"), mode.background {
     "run", _ -> run_program(mode, ctx, args, None)
     "launch", Some(background) -> run_program(mode, ctx, args, Some(background))
@@ -1296,6 +1340,7 @@ fn run(mode: CodeMode, ctx: Ctx, args: JsonValue) -> ToolOutcome {
   }
 }
 
+/// Dispatches interaction commands to an ongoing background execution.
 fn interact(
   background: Background,
   ctx: Ctx,
@@ -1304,16 +1349,22 @@ fn interact(
 ) -> ToolOutcome {
   use handle <- tool.with_arg(tool.required_string(args, "handle"))
   use within <- tool.with_arg(tool.optional_int(args, "within_ms"))
+
+  // Parse background interaction action from command and arguments.
   use action <- tool.with_arg(case command {
     "check" -> Ok(Check)
     "join" -> Ok(Join)
     "cancel" -> Ok(Cancel)
     "send" -> {
       use value <- result.try(tool.optional_value(args, "value"))
+
+      // Validate payload value for send.
       case value {
         None -> Error("send requires value")
         Some(value) -> {
           use endpoint <- result.try(tool.optional_string(args, "endpoint"))
+
+          // Target default or specific endpoint.
           case endpoint {
             None -> Ok(Send(value))
             Some(endpoint) -> Ok(SendTo(endpoint, value))
@@ -1323,6 +1374,7 @@ fn interact(
     }
     _ -> Error("unknown code_mode mode")
   })
+
   async_outcome(background.interact(
     ctx.strand,
     handle,
@@ -1338,6 +1390,7 @@ fn async_outcome(answer: Result(JsonValue, String)) -> ToolOutcome {
   }
 }
 
+/// Compiles, executes, and renders the result of a submitted Gleam program.
 fn run_program(
   mode: CodeMode,
   ctx: Ctx,
@@ -1359,15 +1412,20 @@ fn run_program(
     outcome
   })
   let asked = request(mode, ctx, program, within_ms, on: offer.seam)
+
+  // Launch as a background job or execute synchronously.
   case background {
     None -> render(ctx, offer, program, once_more_if_approved(mode, ctx, asked))
     Some(background) -> async_outcome(background.launch(asked))
   }
 }
 
+/// Validates that exactly one source input (`program` or `program_path`) was provided.
 fn source_input(args: JsonValue) -> Result(SourceInput, String) {
   use program <- result.try(tool.optional_value(args, "program"))
   use path <- result.try(tool.optional_value(args, "program_path"))
+
+  // Ensure mutual exclusivity between inline program and program_path.
   case program, path {
     Some(_), Some(_) ->
       Error("supply exactly one of `program` or `program_path`, not both")
@@ -1389,7 +1447,9 @@ fn nonblank_source(source: String, field: String) -> Result(String, String) {
   }
 }
 
+/// Loads source code from inline arguments or a workspace file path.
 fn load_source(ctx: Ctx, input: SourceInput) -> Result(String, ToolOutcome) {
+  // Load inline source or read file from disk.
   case input {
     InlineSource(source) -> Ok(source)
     FileSource(path) -> {
@@ -1427,12 +1487,15 @@ fn load_source(ctx: Ctx, input: SourceInput) -> Result(String, ToolOutcome) {
 // The retry is not a loop. A second refusal — of the same want or of a
 // new one — settles in band, which is design §5.3's "one re-execution
 // under the widened policy" read literally.
+/// Executes a request, retrying once if a policy escalation is granted by the operator.
 fn once_more_if_approved(
   mode: CodeMode,
   ctx: Ctx,
   asked: Request,
 ) -> Execution {
   let execution = mode.execute(asked)
+
+  // Check whether execution was refused by policy and escalation can be raised.
   case execution.refusal {
     NothingRefused -> execution
     RunRefused(denial:, deadline_ms:) ->
@@ -1457,6 +1520,7 @@ fn once_more_if_approved(
 // there is nothing to gain by telling a model that a seam it cannot use
 // exists somewhere, and nothing but harm in judging its program against
 // an allowlist it did not ask for.
+/// Resolves the requested seam name to a supported SeamOffer.
 fn chosen_seam(
   seams: Seams,
   named: Option(String),
@@ -1520,6 +1584,7 @@ pub fn request(
 /// // codemode.execution_value(execution)
 /// ```
 pub fn execution_value(execution: Execution) -> JsonValue {
+  // Encode execution result into structured JSON fields.
   let fields = case execution.result {
     Ran(Completed(value), manifest_hash) -> [
       #("status", json.String("completed")),
@@ -1545,6 +1610,7 @@ pub fn execution_value(execution: Execution) -> JsonValue {
       #("failure", json.String(string.inspect(failure))),
     ]
   }
+
   json.Object([
     #("enforcement", enforcement_json(execution.enforcement)),
     ..list.append(edits_fields(execution), fields)
@@ -1570,6 +1636,7 @@ fn edits_suffix(execution: Execution) -> String {
 // The same lines on a failure, with the sentence that explains the line
 // numbers beside them: the compiler counted lines in the program after the
 // edits, not in the one submitted.
+/// Formats a diagnostic note if compiler warning edits were applied and discarded.
 fn failed_edits_suffix(execution: Execution) -> String {
   case execution.edits {
     [] -> ""
@@ -1586,6 +1653,7 @@ fn failed_edits_suffix(execution: Execution) -> String {
 // synchronous pipeline with one settlement, and the point of code mode is
 // that the steps inside it stay inside it — a stream of intermediates
 // would put back exactly the context traffic the feature removes.
+/// Translates an Execution outcome into a final ToolOutcome.
 fn render(
   ctx: Ctx,
   offer: SeamOffer,
@@ -1610,6 +1678,7 @@ fn render(
 // have come from either has no way to tell a program it must repair from
 // a submission it must re-aim. Thirty bytes, on a path that is already a
 // failure, buys that.
+/// Formats vetting rule violations into a structured refusal outcome.
 fn vet_outcome(
   offer: SeamOffer,
   source: String,
@@ -1619,10 +1688,13 @@ fn vet_outcome(
     "the program was refused before it ran, judged against the `"
     <> seam_name(offer.seam)
     <> "` seam; "
+
+  // Format rejection count heading.
   let heading = case list.length(rejections) {
     1 -> judged <> "one rule was broken:"
     count -> judged <> int.to_string(count) <> " rules were broken:"
   }
+
   let body =
     [
       [heading],
@@ -1661,6 +1733,7 @@ fn is_import_rejection(rejection: Rejection) -> Bool {
   rejection.rule == ImportNotAllowed
 }
 
+/// Formats a single vetting rejection into explanatory text.
 fn rejection_text(rejection: Rejection, source: String) -> String {
   "- "
   <> rule_text(rejection.rule)
@@ -1670,6 +1743,7 @@ fn rejection_text(rejection: Rejection, source: String) -> String {
   <> source_excerpt(source, rejection.location)
 }
 
+/// Returns the descriptive rule summary for a vetting Rule.
 fn rule_text(rule: Rule) -> String {
   case rule {
     NoForeignInterface -> "foreign interface"
@@ -1678,6 +1752,7 @@ fn rule_text(rule: Rule) -> String {
   }
 }
 
+/// Formats a source location into human-readable line and column text.
 fn location_text(location: Location) -> String {
   case location {
     SourceSpan(start:, end:) ->
@@ -1691,6 +1766,7 @@ fn location_text(location: Location) -> String {
 // against the submitted text, never generated compiler scaffolding. Invalid or
 // non-UTF-8-boundary offsets retain the original diagnostic without inventing a
 // location. EOF is a valid point, including the empty line after a final newline.
+/// Extracts a snippet of source code around a location for error reporting.
 fn source_excerpt(source: String, location: Location) -> String {
   case location {
     SourceSpan(start:, end: _) -> point_excerpt(source, start)
@@ -1699,8 +1775,11 @@ fn source_excerpt(source: String, location: Location) -> String {
   }
 }
 
+/// Extracts a line excerpt around a specific byte offset in source.
 fn point_excerpt(source: String, offset: Int) -> String {
   let bytes = <<source:utf8>>
+
+  // Split bytes at the indicated offset to extract prefix and suffix.
   case bytes {
     <<before:size(offset)-bytes, after:bytes>> ->
       result.try(bit_array.to_string(before), fn(before) {
@@ -1716,6 +1795,7 @@ fn point_excerpt(source: String, offset: Int) -> String {
 // submission must not turn a syntax diagnostic into a second copy of the input.
 // Columns count graphemes from one; tabs expand consistently in the displayed
 // prefix and caret indentation without changing the source column or offset.
+/// Formats an excerpt line with line numbers, gutter, and caret pointer.
 fn excerpt_line(before: String, after: String) -> String {
   let lines = string.split(before, "\n")
   let prefix = list.last(lines) |> result.unwrap("")
@@ -1724,10 +1804,14 @@ fn excerpt_line(before: String, after: String) -> String {
   let suffix = string.split(after, "\n") |> list.first |> result.unwrap("")
   let column = string.length(prefix) + 1
   let start = int.max(0, column - 1 - 60)
+
+  // Add ellipsis if prefix was truncated.
   let leading = case start > 0 {
     True -> "..."
     False -> ""
   }
+
+  // Add ellipsis if suffix was truncated.
   let trailing = case string.drop_start(suffix, 60) != "" {
     True -> "..."
     False -> ""
@@ -1761,7 +1845,9 @@ fn excerpt_line(before: String, after: String) -> String {
   <> "^"
 }
 
+/// Encodes a Rejection record into structured JSON.
 fn rejection_json(rejection: Rejection) -> JsonValue {
+  // Encode source coordinates if present.
   let located = case rejection.location {
     SourceSpan(start:, end:) -> [
       #("start", json.Int(start)),
@@ -1770,6 +1856,7 @@ fn rejection_json(rejection: Rejection) -> JsonValue {
     SourcePoint(byte_offset:) -> [#("byte_offset", json.Int(byte_offset))]
     Unlocated -> []
   }
+
   json.Object(list.append(
     [
       #("rule", json.String(rule_key(rejection.rule))),
@@ -1779,6 +1866,7 @@ fn rejection_json(rejection: Rejection) -> JsonValue {
   ))
 }
 
+/// Returns the machine-readable identifier for a vetting Rule.
 fn rule_key(rule: Rule) -> String {
   case rule {
     NoForeignInterface -> "no_foreign_interface"
@@ -1794,12 +1882,14 @@ fn rule_key(rule: Rule) -> String {
 //
 // When the diagnostics name a capability module, one line says which
 // reference to read (`codemode_pointer`).
+/// Formats compiler diagnostics and failure information into a ToolOutcome.
 fn compile_outcome(
   ctx: Ctx,
   offer: SeamOffer,
   execution: Execution,
   failure: CompileFailure,
 ) -> ToolOutcome {
+  // Extract kind and error diagnostics from the compile failure.
   let #(kind, body) = case failure {
     BuildRejected(diagnostics:) -> #(
       "build_rejected",
@@ -1829,6 +1919,7 @@ fn compile_outcome(
       "the build produced no usable artifact: " <> reason,
     )
   }
+
   let details =
     json.Object(list.append(
       [
@@ -1859,6 +1950,7 @@ fn suggestion_suffix(lines: List(String)) -> String {
   list.map(lines, fn(line) { "\n" <> line }) |> string.concat
 }
 
+/// Returns diagnostic details for a compile failure.
 fn compile_detail(failure: CompileFailure) -> String {
   case failure {
     BuildRejected(diagnostics:) -> diagnostics
@@ -1868,10 +1960,12 @@ fn compile_detail(failure: CompileFailure) -> String {
   }
 }
 
+/// Formats satellite execution crashes or timeouts into a ToolOutcome.
 fn run_failed_outcome(
   execution: Execution,
   failure: RunFailure,
 ) -> ToolOutcome {
+  // Categorize run failure reason into kind and explanatory body.
   let #(kind, body) = case failure {
     DeadlineExceeded -> #(
       "deadline_exceeded",
@@ -1892,6 +1986,7 @@ fn run_failed_outcome(
       "the satellite's capability channel broke protocol: " <> reason,
     )
   }
+
   tool.failure(
     body
     <> edits_suffix(execution)
@@ -1933,6 +2028,7 @@ fn last_failure_fields(execution: Execution) -> List(#(String, JsonValue)) {
   }
 }
 
+/// Returns a short string summary of a run failure.
 fn run_failure_detail(failure: RunFailure) -> String {
   case failure {
     DeadlineExceeded -> "the wall deadline passed"
@@ -1947,6 +2043,7 @@ fn run_failure_detail(failure: RunFailure) -> String {
 // it harder to read — and every other value is rendered as JSON. An
 // `Errored` outcome is the program's own controlled failure, so it is an
 // `is_error` result: something for the model to react to, not a fault.
+/// Formats a completed program outcome into a ToolOutcome response.
 fn ran_outcome(
   ctx: Ctx,
   offer: SeamOffer,
@@ -1954,6 +2051,7 @@ fn ran_outcome(
   outcome: Outcome,
   manifest_hash: String,
 ) -> ToolOutcome {
+  // Map completed or errored outcome to status and payload.
   let #(status, is_error, body, payload) = case outcome {
     Completed(value:) -> #("completed", False, value_text(value), [
       #("value", value_json(value)),
@@ -1973,6 +2071,7 @@ fn ran_outcome(
       ],
     )
   }
+
   let details =
     json.Object(
       list.flatten([
@@ -1998,10 +2097,13 @@ fn ran_outcome(
         offer.allowed_imports,
       ))
   }
+
+  // Format last command failure line if error occurred.
   let last_command = case is_error {
     False -> ""
     True -> failure_line(execution)
   }
+
   let text =
     body
     <> edits_suffix(execution)
@@ -2009,6 +2111,8 @@ fn ran_outcome(
     <> last_command
     <> "\n"
     <> sandbox_text(execution)
+
+  // Return failure or success outcome bounded by blob limits.
   case is_error {
     True -> bounded_failure(ctx, text, details)
     False -> bounded_success(ctx, text, details)
@@ -2042,6 +2146,8 @@ pub fn sandbox_text(execution: Execution) -> String {
   let node = execution.enforcement.node
   let build_line = enforced_summary(build, "; ")
   let node_line = enforced_summary(node, "; ")
+
+  // Merge identical enforcement lines or report stages separately.
   case build, node {
     // Stages that read the same once reduced to layer names are stated once.
     // Their parameters and skip reasons may differ; the details field keeps
@@ -2060,6 +2166,7 @@ pub fn sandbox_text(execution: Execution) -> String {
 
 // `enforced [layers]` plus the degraded and skipped tail, or empty text for a
 // stage that made no report. `separator` joins the tail to the layer list.
+/// Formats applied and skipped layers of an enforcement report.
 fn enforced_summary(report: Report, separator: String) -> String {
   case report {
     Unreported(..) -> ""
@@ -2077,6 +2184,7 @@ pub const build_stage = "the hermetic build"
 /// The stage label for the jailed satellite node.
 pub const satellite_stage = "the satellite node"
 
+/// Formats the summary text for a single enforcement stage.
 fn stage_text(stage: String, report: Report) -> String {
   case report {
     Unreported(reason:) ->
@@ -2092,18 +2200,25 @@ fn stage_text(stage: String, report: Report) -> String {
 // provide every demanded layer, and the skipped layers by name. A skipped
 // layer is never folded into the applied list, so a reader cannot take it for
 // one that held. The reasons stay in the details field.
+/// Formats the degradation and skipped layer annotations of an enforcement report.
 fn compact_tail(separator: String, report: Report) -> String {
+  // Describe skipped or degraded layers.
   case report {
     Unreported(..) -> ""
     Enforced(skipped:, degraded:, ..) -> {
+      // Format skipped layers list if any were skipped.
       let skipped_text = case skipped {
         [] -> []
         missing -> ["skipped [" <> layer_names(missing) <> "]"]
       }
+
+      // Prepend DEGRADED if enforcement degraded.
       let parts = case degraded {
         True -> ["DEGRADED", ..skipped_text]
         False -> skipped_text
       }
+
+      // Join annotation parts with separator.
       case parts {
         [] -> ""
         _ -> separator <> string.join(parts, ", ")
@@ -2115,13 +2230,17 @@ fn compact_tail(separator: String, report: Report) -> String {
 // A layer entry is its name followed by parameters or a reason, such as
 // `seatbelt-fs:rw=4,mask=18` or `rlimit-processes: current uid already has
 // 1009 processes`. The name is the text before the first `:` or `=`.
+/// Normalizes raw layer configuration entries to short layer names.
 fn layer_names(entries: List(String)) -> String {
   entries
   |> list.map(fn(entry) {
+    // Strip parameters after colon.
     let name = case string.split_once(entry, ":") {
       Ok(#(head, _)) -> head
       Error(Nil) -> entry
     }
+
+    // Strip parameters after equals.
     case string.split_once(name, "=") {
       Ok(#(head, _)) -> string.trim(head)
       Error(Nil) -> string.trim(name)
@@ -2137,6 +2256,7 @@ fn enforcement_json(reports: Enforcement) -> JsonValue {
   ])
 }
 
+/// Encodes an enforcement stage Report into structured JSON.
 fn stage_json(report: Report) -> JsonValue {
   case report {
     Unreported(reason:) ->
@@ -2228,6 +2348,7 @@ fn bounded_failure(ctx: Ctx, text: String, details: JsonValue) -> ToolOutcome {
   bounded(ctx, text, details, True)
 }
 
+/// Wraps result text in a ToolOutcome, bounding oversized output into blob storage.
 fn bounded(
   ctx: Ctx,
   text: String,
@@ -2254,6 +2375,7 @@ fn bounded(
 }
 
 // Describe the usable door, not merely a module present in the build seed.
+/// Generates description prose describing cap/notes persistence capabilities.
 fn notes_guidance(seams: Seams) -> String {
   case
     list.any(offered(seams), fn(offer) {
@@ -2268,10 +2390,12 @@ fn notes_guidance(seams: Seams) -> String {
 
 // Include only recipes whose entire import surface the host admits. These are
 // exact executable programs, not pseudocode that makes the model guess APIs.
+/// Generates recipe code examples matching the capabilities of offered seams.
 fn recipes_text(seams: Seams) -> String {
   let offers = offered(seams)
   let seam_recipes =
     list.fold(offers, "", fn(text, offer) {
+      // Determine required imports for the seam recipe.
       let needed = case offer.seam {
         WorkspaceSeam -> [
           "cap/fs",
@@ -2289,6 +2413,8 @@ fn recipes_text(seams: Seams) -> String {
           "gleam/result",
         ]
       }
+
+      // Check whether offer admits all required imports for the recipe.
       case
         list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) }),
         offer.seam
@@ -2317,6 +2443,7 @@ fn recipes_text(seams: Seams) -> String {
 // The shell-probe program, when any offer admits every module it imports. It
 // is the most common real use of code mode, so it is shown once as a whole
 // program that keeps independent probes independent.
+/// Generates the shell probe recipe example if admitted by any offered seam.
 fn shell_probe_recipe(offers: List(SeamOffer)) -> String {
   let needed = [
     "cap/proc", "cap/report", "gleam/dynamic/decode", "gleam/int", "gleam/json",
@@ -2325,6 +2452,8 @@ fn shell_probe_recipe(offers: List(SeamOffer)) -> String {
   let admits = fn(offer: SeamOffer) {
     list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
   }
+
+  // Check whether any seam admits shell probe imports.
   case list.any(offers, admits) {
     False -> ""
     True ->
@@ -2337,6 +2466,7 @@ fn shell_probe_recipe(offers: List(SeamOffer)) -> String {
 // The `fs.edit` + `lsp.diagnostics(Some(path))` program, when any offer admits
 // its modules and services `lsp.diagnostics`. Pairing a code-mode edit with settled
 // diagnostics catches type errors in <1s without spawning a full build.
+/// Generates the LSP edit recipe example if admitted by any offered seam.
 fn lsp_edit_recipe(offers: List(SeamOffer)) -> String {
   let needed = [
     "cap/fs", "cap/lsp", "cap/report", "gleam/int", "gleam/list", "gleam/option",
@@ -2346,6 +2476,8 @@ fn lsp_edit_recipe(offers: List(SeamOffer)) -> String {
     list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
     && list.contains(offer.serviced_caps, "lsp.diagnostics")
   }
+
+  // Check whether any seam admits LSP edit capabilities.
   case list.any(offers, admits) {
     False -> ""
     True ->
@@ -2359,6 +2491,7 @@ fn lsp_edit_recipe(offers: List(SeamOffer)) -> String {
 // It lives here rather than in a module doc because the prelude generator
 // keeps only the prose before a doc's first heading, and a recipe is the
 // one place the description already carries a whole compiling program.
+/// Generates the LSP SQL skeleton recipe if admitted by any offered seam.
 fn lsp_sql_recipe(offers: List(SeamOffer)) -> String {
   let needed = [
     "cap/lsp_sql", "cap/report", "gleam/int", "gleam/list", "gleam/string",
@@ -2366,6 +2499,8 @@ fn lsp_sql_recipe(offers: List(SeamOffer)) -> String {
   let admits = fn(offer: SeamOffer) {
     list.all(needed, fn(name) { list.contains(offer.allowed_imports, name) })
   }
+
+  // Check whether any seam admits LSP SQL capabilities.
   case list.any(offers, admits) {
     False -> ""
     True ->

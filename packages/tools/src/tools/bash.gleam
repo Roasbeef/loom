@@ -319,6 +319,7 @@ pub fn requirements(workspace: String) -> policy.SandboxPolicy {
   policy.SandboxPolicy(..base, readable_roots: [], env_allow: [])
 }
 
+/// Executes a bash shell command according to the requested mode and permissions.
 fn run(
   jobs: Jobs,
   directory: working_directory.Door,
@@ -350,6 +351,8 @@ fn run(
   })
   use selected <- tool.with_arg(tool.optional_string(args, "cwd"))
   use cwd <- tool.with_arg(working_directory.select(directory, ctx, selected))
+
+  // Dispatch command execution to the appropriate lifetime mode handler.
   case mode {
     Auto -> attended(jobs, ctx, cwd, command, requested, wake)
     Background -> background(jobs, ctx, cwd, command, requested, wake)
@@ -366,6 +369,7 @@ fn run(
 // was a subagent running `go test` with `lifetime: session`. The refusal
 // precedes every other check, and so precedes the approval, which is only
 // requested later by `authorize_wall`.
+/// Validates the requested execution lifetime against the mode and strand authority.
 fn requested_lifetime(
   ctx: Ctx,
   args: JsonValue,
@@ -382,6 +386,8 @@ fn requested_lifetime(
       )
     },
   )
+
+  // Validate combination of lifetime, mode, and requested timeout.
   case lifetime, mode, requested {
     None, _mode, _wall | Some("finite"), _mode, _wall -> {
       use <- bool.guard(
@@ -399,11 +405,13 @@ fn requested_lifetime(
 
 // Approval is bound to the launching command's arguments, before the jobs
 // plane can claim or execute it. A later job receives only that snapshot.
+/// Requests authorization for background job wall clock limits exceeding defaults.
 fn authorize_wall(
   ctx: Ctx,
   mode: Mode,
   requested: Option(Int),
 ) -> Result(Ctx, ToolOutcome) {
+  // Authorize wall limits only for background execution modes.
   case mode, requested {
     Background, Some(ms) -> {
       let wall_s = { ms + 999 } / 1000
@@ -425,6 +433,7 @@ fn authorize_wall(
 // exactly as the foreground call it would have been, so the only thing a
 // model writing yesterday's call sees change is a long command that is
 // no longer killed.
+/// Parses the requested execution mode argument.
 fn requested_mode(args: JsonValue) -> Result(Mode, String) {
   case tool.optional_string(args, "mode") {
     Error(reason) -> Error(reason)
@@ -445,8 +454,11 @@ fn requested_mode(args: JsonValue) -> Result(Mode, String) {
 // this says, so the only thing quiet costs is a reminder about a job that
 // hangs, and the job's wall still bounds that. Waking by default spent a
 // model turn per interval on every passive watcher to learn nothing.
+/// Decodes the heartbeat wake setting from JSON arguments.
 fn requested_wake(args: JsonValue) -> Result(job.IdleWake, String) {
   use asked <- result.map(tool.optional_bool(args, "heartbeat"))
+
+  // Default to quiet mode unless waking on heartbeat was explicitly requested.
   case asked {
     Some(True) -> job.WakeWhenIdle
     Some(False) | None -> job.QuietUntilDone
@@ -468,6 +480,7 @@ fn requested_wake(args: JsonValue) -> Result(job.IdleWake, String) {
 // job, and a foreground run beside it would run the command twice. The
 // rest can only mean the door and this module disagree, and they are all
 // reported as they are.
+/// Runs a command as a tracked job while actively observing it during the window.
 fn attended(
   jobs: Jobs,
   ctx: Ctx,
@@ -481,6 +494,8 @@ fn attended(
   use <- bool.lazy_guard(when: outgrows_the_wall(ctx, window), return: fn() {
     foreground(ctx, cwd, command, requested)
   })
+
+  // Start the background job and begin the observation loop.
   case jobs.attend(ctx, cwd, command, wake) {
     Ok(started) -> {
       let #(now, _clock) = clock.read(ctx.clock)
@@ -508,6 +523,7 @@ fn attended(
 // attending a job there would instead kill it at the session wall with
 // nobody asked. So that one case keeps the foreground path, whose refusal
 // the escalation flow turns into the question.
+/// Checks whether the attended window exceeds the policy wall timeout.
 fn outgrows_the_wall(ctx: Ctx, window: Int) -> Bool {
   let #(session, _narrowings) =
     policy.compose(
@@ -542,6 +558,7 @@ type Gaps {
   MissedSome
 }
 
+/// Initializes a fresh Watch record spanning the attended time window.
 fn fresh_watch(until until: Int) -> Watch {
   Watch(
     cursors: job.Cursors(stdout: 0, stderr: 0),
@@ -557,6 +574,7 @@ fn fresh_watch(until until: Int) -> Watch {
 // One look at the job, and then either its end, another look, or the
 // release. Each look waits at most `watch_slice_ms`, which is what keeps
 // the client's view of the output moving while the command runs.
+/// Polls the attended job for output or completion until window expiration.
 fn look(
   jobs: Jobs,
   ctx: Ctx,
@@ -565,6 +583,8 @@ fn look(
 ) -> ToolOutcome {
   let #(now, _clock) = clock.read(ctx.clock)
   let wait = int.clamp(watch.until - now, min: 0, max: watch_slice_ms)
+
+  // Poll the job for recent output.
   case jobs.poll(ctx, started.id, wait, watch.cursors) {
     // The job is ours and the door could not answer about it; nothing is
     // known about the command, so the call hands the job back to its
@@ -573,6 +593,8 @@ fn look(
 
     Ok(polled) -> {
       let watch = seen(watch, polled, ctx.observe_output)
+
+      // Check whether job finished or the attended time window expired.
       case job.is_pending(polled.state), now + wait >= watch.until {
         False, _deadline -> ended(ctx, polled, watch)
         True, True -> release(jobs, ctx, started, watch)
@@ -583,15 +605,18 @@ fn look(
 }
 
 // One poll's bytes folded into the watch, and shown to the client.
+/// Integrates new output chunks from a poll into the Watch state.
 fn seen(
   watch: Watch,
   polled: job.Polled,
   observe: fn(tool.OutputTail) -> Nil,
 ) -> Watch {
+  // Record whether any stream output bytes were dropped.
   let gaps = case polled.stdout.dropped + polled.stderr.dropped {
     0 -> watch.gaps
     _missed -> MissedSome
   }
+
   let stdout_tail = tail.push(watch.stdout_tail, polled.stdout.bytes)
   let stderr_tail = tail.push(watch.stderr_tail, polled.stderr.bytes)
   show(observe, framing.Stdout, stdout_tail, polled.stdout.bytes)
@@ -613,6 +638,7 @@ fn seen(
 // A stream's window, shown only when this look brought it something: a
 // foreground call's collector shows one window per chunk, and a look with
 // no new bytes is not a chunk.
+/// Dispatches recent output chunks to the stream observer.
 fn show(
   observe: fn(tool.OutputTail) -> Nil,
   stream: framing.OutputStream,
@@ -636,6 +662,7 @@ fn show(
 // settlement by the actor, so exactly one of two things is true: the job
 // is still running and its owner will be told when it ends, or it ended
 // first and nobody will be, in which case this call renders it.
+/// Hands off an ongoing job to background execution when the attended window expires.
 fn release(
   jobs: Jobs,
   ctx: Ctx,
@@ -658,6 +685,7 @@ fn release(
 
 // The answer for a command that outlived its window: the handle, what the
 // command has printed so far, and what will happen next.
+/// Formats the success outcome notifying the caller that a job continues in the background.
 fn handed_off(started: job.Started, watch: Watch) -> ToolOutcome {
   let so_far =
     [
@@ -669,6 +697,8 @@ fn handed_off(started: job.Started, watch: Watch) -> ToolOutcome {
         tail.since(pair.1, 0).bytes
         |> bit_array.to_string
         |> result.unwrap("")
+
+      // Omit empty output excerpts.
       case text {
         "" -> Error(Nil)
         _ -> Ok("--- " <> pair.0 <> " so far ---\n" <> text)
@@ -705,6 +735,7 @@ fn handed_off(started: job.Started, watch: Watch) -> ToolOutcome {
 // A job that ended inside the call, rendered as the foreground call it
 // stood in for. An exit or a kill carries the helper's own report and goes
 // through `exited`; a loss carries none, and says so.
+/// Handles terminal job outcomes for jobs that concluded during the attended window.
 fn ended(ctx: Ctx, polled: job.Polled, watch: Watch) -> ToolOutcome {
   case polled.state {
     job.Exited(result:) | job.Killed(result:, ..) ->
@@ -728,6 +759,7 @@ fn ended(ctx: Ctx, polled: job.Polled, watch: Watch) -> ToolOutcome {
 // The whole of each stream, from the looks when they saw every byte and
 // from the spill when they did not. A stream whose spill cannot be read
 // falls back to what the looks saw, which is the tail of it at worst.
+/// Assembles the complete collected output and outcome for a terminated job.
 fn collected(
   ctx: Ctx,
   polled: job.Polled,
@@ -747,6 +779,7 @@ fn collected(
   )
 }
 
+/// Reassembles the complete stream content from in-memory chunks or spill files.
 fn whole(
   ctx: Ctx,
   gaps: Gaps,
@@ -754,6 +787,8 @@ fn whole(
   looked: List(BitArray),
 ) -> BitArray {
   let seen = bit_array.concat(list.reverse(looked))
+
+  // Read spill files if gaps occurred during observation.
   case gaps, spill {
     SawEverything, _spill | MissedSome, None -> seen
     MissedSome, Some(ref) ->
@@ -767,6 +802,7 @@ fn whole(
 // own identity, so a policy refusal, an escalation and the strand's job
 // ceiling all reach this call in the door's own words rather than
 // arriving at some later poll. What it does not wait for is the command.
+/// Starts a command directly in the background without waiting for completion.
 fn background(
   jobs: Jobs,
   ctx: Ctx,
@@ -803,6 +839,7 @@ fn background(
   )
 }
 
+/// Executes a command synchronously in the foreground.
 fn foreground(
   ctx: Ctx,
   cwd: String,
@@ -839,6 +876,7 @@ fn foreground(
 // The CallSpec for one bash invocation. Requirements add the env names
 // actually passed, so composition checks them against the session's
 // allowlist; the wall limit mirrors the timeout.
+/// Builds the broker CallSpec for foreground bash execution.
 fn call_spec(
   ctx: Ctx,
   cwd: String,
@@ -920,6 +958,7 @@ fn settle(ctx: Ctx, collected: tool.Collected) -> ToolOutcome {
 // killed by its deadline is both. Only `cancelled` can distinguish a
 // truncated run from a clean one, since a cancelled payload that had
 // backgrounded its work exits zero (`protocol-change/006`).
+/// Formats the final tool outcome for a completed command execution.
 fn exited(
   ctx: Ctx,
   collected: tool.Collected,
@@ -967,10 +1006,13 @@ fn exited(
     ]
     |> list.flatten
     |> string.join(with: "\n")
+
+  // Default empty output to placeholder text.
   let body = case body {
     "" -> "(no output)"
     _ -> body
   }
+
   let is_error = result.code != 0 || result.signal != 0 || result.timed_out
   let details =
     json.Object([
@@ -1016,7 +1058,9 @@ fn exited(
 // enforcement report, and a shell may already have changed state. The
 // next invocation can declare authority before it starts, but this one
 // must never be replayed automatically.
+/// Analyzes failed command output to offer sandbox permission guidance.
 fn permission_guidance(result: ExecResult, stderr: String) -> List(String) {
+  // Check whether stderr indicates a permission or filesystem violation.
   case
     result.code != 0
     && {
@@ -1026,6 +1070,7 @@ fn permission_guidance(result: ExecResult, stderr: String) -> List(String) {
     }
   {
     True -> {
+      // Check for blocked paths within a git repository.
       let git_hint = case denied_git_directory(stderr) {
         Some(path) ->
           " Git reported a blocked path under `"
@@ -1034,6 +1079,7 @@ fn permission_guidance(result: ExecResult, stderr: String) -> List(String) {
           <> "if the write is intended."
         None -> ""
       }
+
       [
         "If this failure came from the sandbox, do not repeat the same "
         <> "call. Start a new bash call with permissions.readable_roots "
@@ -1054,8 +1100,11 @@ fn permission_guidance(result: ExecResult, stderr: String) -> List(String) {
 // than one file under the common metadata directory. This is only a
 // hint from untrusted stderr; `permissions` still canonicalizes the
 // model's next request and the operator still sees the exact grant.
+/// Identifies blocked git metadata directory paths mentioned in stderr.
 fn denied_git_directory(stderr: String) -> Option(String) {
   let quoted = string.split(stderr, on: "'")
+
+  // Look for quoted absolute paths containing .git directories.
   case
     list.find(quoted, fn(part) {
       string.starts_with(part, "/") && string.contains(part, "/.git/")
@@ -1072,6 +1121,7 @@ fn denied_git_directory(stderr: String) -> Option(String) {
 
 // Jailed output is expected to be UTF-8; anything else is summarized
 // rather than corrupted into the transcript.
+/// Converts raw byte output to a UTF-8 string or summary placeholder.
 fn output_text(bytes: BitArray) -> String {
   case bit_array.to_string(bytes) {
     Ok(text) -> text

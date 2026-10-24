@@ -214,6 +214,7 @@ pub fn subject(value: String) -> Result(Subject, Nil) {
 ///   == Ok("loom claim --addr ws://127.0.0.1:4000/v2/control")
 /// ```
 pub fn text(subject: Subject, value: String) -> Result(String, Nil) {
+  // Validate text against subject syntax specification.
   let shaped = case subject {
     Command -> command(value)
     Token -> token(value)
@@ -224,13 +225,15 @@ pub fn text(subject: Subject, value: String) -> Result(String, Nil) {
     Launch -> launch(value)
     Operate -> operate(value)
   }
+
+  // Return original text on successful validation or error.
   case shaped {
     True -> Ok(value)
     False -> Error(Nil)
   }
 }
 
-// `loom claim --addr ` and an address after it.
+/// Validates command text format beginning with claim prefix and address.
 fn command(value: String) -> Bool {
   case string.split_once(value, command_prefix) {
     Ok(#("", address)) ->
@@ -239,8 +242,7 @@ fn command(value: String) -> Bool {
   }
 }
 
-// `loom ui`, alone or with `--session` and a canonical identity: hexadecimal
-// digits and hyphens, no longer than a session identity can be.
+/// Validates UI launch command or session link CLI invocations.
 fn link(value: String) -> Bool {
   case value {
     "loom ui" -> True
@@ -257,8 +259,7 @@ fn link(value: String) -> Bool {
   }
 }
 
-// `http://`, a loopback host, `/ui/home?ticket=` and exactly 64 lowercase
-// hexadecimal digits.
+/// Validates local browser device claim URL containing authentication ticket.
 fn device(value: String) -> Bool {
   case string.split_once(value, device_scheme) {
     Ok(#("", rest)) ->
@@ -279,7 +280,7 @@ fn device(value: String) -> Bool {
   }
 }
 
-// `http://`, a loopback host and `/ui/claim`, and nothing after it.
+/// Validates claim page URL directed to loopback host.
 fn claim_page(value: String) -> Bool {
   case string.split_once(value, device_scheme) {
     Ok(#("", rest)) ->
@@ -296,8 +297,7 @@ fn claim_page(value: String) -> Bool {
   }
 }
 
-// `http://`, a loopback host, `/ui/l/`, exactly 32 lowercase hexadecimal digits
-// and `/home`, with nothing after it.
+/// Validates home bookmark URL containing 32-digit session key.
 fn bookmark(value: String) -> Bool {
   case string.split_once(value, device_scheme) {
     Ok(#("", rest)) ->
@@ -322,8 +322,7 @@ fn bookmark(value: String) -> Bool {
   }
 }
 
-// `loom --addr `, an address or the placeholder for none, ` --session `, an
-// identity of hexadecimal digits and hyphens, and the fixed ending.
+/// Validates agent launcher command line arguments and session flag.
 fn launch(value: String) -> Bool {
   case string.split_once(value, launch_prefix) {
     Ok(#("", rest)) ->
@@ -349,7 +348,7 @@ fn launch_address(address: String) -> Bool {
   address != "" && !longer_than(address, address_limit) && made_of(address)
 }
 
-// One of the operator commands, with every name a safe shell word.
+/// Validates operator CLI commands and sanitizes shell argument tokens.
 fn operate(value: String) -> Bool {
   case printable(value) && !longer_than(value, operate_limit) {
     False -> False
@@ -376,12 +375,7 @@ type Quoting {
   Inside
 }
 
-// Splits a command into the words a shell would hand the program, quotes
-// removed. A word is a run of bare characters, single-quoted runs and escaped
-// quotes, and a space ends it only outside a quote. Anything else, a doubled
-// space, a backslash before anything but a quote or a quote left open, is no
-// command. The words are the values, so the rule judges what the program reads
-// and not how it was written.
+/// Splits shell command string into unquoted arguments according to POSIX rules.
 fn shell_words(
   characters: List(String),
   done: List(String),
@@ -414,8 +408,7 @@ fn shell_words(
   }
 }
 
-// The commands the page offers, each with only its own flags in its own order.
-// A placeholder the operator finishes is a word like any other.
+/// Verifies parsed argument list against allowed operator CLI command shapes.
 fn operator_command(words: List(String)) -> Bool {
   case words {
     [
@@ -442,9 +435,7 @@ fn operator_command(words: List(String)) -> Bool {
   }
 }
 
-// Whether every word is nonempty, of bounded length and does not begin with a
-// dash, since the program would read a name that does as an option of its own
-// whatever the shell did with its quotes.
+/// Checks that all words are non-empty, bounded, and do not lead with a dash.
 fn all_words(words: List(String)) -> Bool {
   list.all(words, fn(word) {
     word != ""
@@ -453,7 +444,7 @@ fn all_words(words: List(String)) -> Bool {
   })
 }
 
-// `loomclaim_` and exactly 64 hexadecimal digits.
+/// Validates loom claim token format with 64 hexadecimal characters.
 fn token(value: String) -> Bool {
   case string.split_once(value, token_prefix) {
     Ok(#("", digits)) ->

@@ -220,6 +220,7 @@ pub fn commit(
 
 // Rule 4: every expectation is evaluated against the pre-transaction
 // register state; the first mismatch fails the whole commit.
+/// Validates sequence expectations against current register states.
 fn check_expectations(
   state: MemoryState,
   expected: List(SeqExpectation),
@@ -227,6 +228,8 @@ fn check_expectations(
   list.try_fold(over: expected, from: Nil, with: fn(_, expectation) {
     let Expect(ns:, key:, seq:) = expectation
     let current = lookup_register(state, ns, key)
+
+    // Compare current register sequence against expected sequence.
     case current, seq {
       None, None -> Ok(Nil)
       Some(register), Some(expected_seq) if register.seq == expected_seq ->
@@ -239,6 +242,7 @@ fn check_expectations(
 // Every write, register deletes included, consumes the next seq before
 // dispatch, so seqs increase strictly across the transaction in write
 // order regardless of which writes touch which store.
+/// Applies a single transaction write operation to the memory state.
 fn apply_write(
   step: #(MemoryState, List(Seq)),
   write: tx.Write,
@@ -247,6 +251,8 @@ fn apply_write(
   let #(state, seqs) = step
   let seq = state.next_seq
   let state = MemoryState(..state, next_seq: seq + 1)
+
+  // Dispatch write application according to the transaction write variant.
   use state <- result.map(case write {
     InsertEntry(entry:) -> insert_entry(state, entry, seq, ts)
     InsertUsage(row:) -> insert_usage(state, row, seq)
@@ -254,9 +260,11 @@ fn apply_write(
       Ok(put_register(state, ns, key, Register(value:, seq:)))
     DeleteRegister(ns:, key:) -> Ok(drop_register(state, ns, key))
   })
+
   #(state, [seq, ..seqs])
 }
 
+/// Inserts a stamped history entry while enforcing parent existence and child indexing.
 fn insert_entry(
   state: MemoryState,
   entry: Entry,
@@ -287,6 +295,7 @@ fn insert_entry(
       }
     None -> Ok(Nil)
   })
+
   let stamped = storage.stamp(entry, seq:, ts:)
 
   // Each child list is built by prepending, so insertion stays O(1); readers
@@ -300,11 +309,14 @@ fn insert_entry(
     }
     None -> state.children
   }
+
+  // Account message entries into the session statistics counter.
   let message_count = case stamped {
     MessageEntry(..) -> state.stats.message_count + 1
     CompactionEntry(..) | BranchSummaryEntry(..) | CustomEntry(..) ->
       state.stats.message_count
   }
+
   Ok(
     MemoryState(
       ..state,
@@ -315,6 +327,7 @@ fn insert_entry(
   )
 }
 
+/// Records a stamped usage row and accumulates token counts in session statistics.
 fn insert_usage(
   state: MemoryState,
   row: UsageRow,
@@ -336,6 +349,7 @@ fn insert_usage(
   )
 }
 
+/// Ensures that an entry or usage identifier is not already present in memory state.
 fn check_fresh_id(
   state: MemoryState,
   id_text: String,
@@ -357,6 +371,7 @@ fn check_fresh_id(
   }
 }
 
+/// Inserts or replaces a register cell in memory state.
 fn put_register(
   state: MemoryState,
   ns: RegisterNs,
@@ -376,12 +391,15 @@ fn put_register(
   )
 }
 
+/// Removes a register cell from memory state under the specified namespace.
 fn drop_register(
   state: MemoryState,
   ns: RegisterNs,
   key: String,
 ) -> MemoryState {
   let ns_text = register.ns_to_string(ns)
+
+  // Remove the register key from the namespace cell map if present.
   case dict.get(state.registers, ns_text) {
     Ok(cells) ->
       MemoryState(
@@ -396,6 +414,7 @@ fn drop_register(
   }
 }
 
+/// Retrieves an optional register cell value by namespace and key.
 fn lookup_register(
   state: MemoryState,
   ns: RegisterNs,
@@ -466,15 +485,19 @@ pub fn list_registers(
   ns: RegisterNs,
   key_prefix: Option(String),
 ) -> Result(List(#(String, Register)), StorageError) {
+  // Retrieve all register cells for the given namespace.
   let cells = case dict.get(state.registers, register.ns_to_string(ns)) {
     Ok(cells) -> dict.to_list(cells)
     Error(Nil) -> []
   }
+
+  // Filter matching register cells by key prefix if specified.
   let matching = case key_prefix {
     Some(prefix) ->
       list.filter(cells, fn(cell) { string.starts_with(cell.0, prefix) })
     None -> cells
   }
+
   Ok(
     list.sort(matching, by: fn(left, right) { string.compare(left.0, right.0) }),
   )
@@ -497,14 +520,18 @@ pub fn scan_branch(
   q: BranchScan,
 ) -> Result(List(Entry), StorageError) {
   use path <- result.map(root_path(state, q.start))
+
+  // Order the root path entries according to requested scan order.
   let ordered = case q.order {
     NewestFirst -> path
     OldestFirst -> list.reverse(path)
   }
+
   branch.refine_all(q, ordered)
 }
 
 // The path from `start` toward the root, newest (start) first.
+/// Resolves the lineage path from an entry back to the root entry.
 fn root_path(
   state: MemoryState,
   start: EntryId,
@@ -515,12 +542,15 @@ fn root_path(
   }
 }
 
+/// Recursively traverses parent pointers collecting entries until reaching the root.
 fn root_path_loop(
   state: MemoryState,
   entry: Entry,
   accumulator: List(Entry),
 ) -> Result(List(Entry), StorageError) {
   let accumulator = [entry, ..accumulator]
+
+  // Inspect whether this entry has a parent pointer to traverse.
   case entry.parent {
     None -> Ok(list.reverse(accumulator))
     Some(parent) ->
@@ -554,10 +584,13 @@ pub fn scan_entries(
   state.entries
   |> dict.values
   |> list.filter(fn(entry) {
+    // Validate that the entry kind matches any configured filter.
     let kind_ok = case q.kind {
       Some(kind) -> storage.kind_of(entry) == kind
       None -> True
     }
+
+    // Validate that the entry matches any configured custom type filter.
     let custom_ok = case q.custom_type {
       Some(name) ->
         case entry {
@@ -567,6 +600,7 @@ pub fn scan_entries(
         }
       None -> True
     }
+
     kind_ok && custom_ok && in_seq_range(entry.seq, q.from_seq, q.to_seq)
   })
   |> sort_by_seq(fn(entry: Entry) { entry.seq }, q.order)
@@ -653,18 +687,24 @@ pub fn children_of(
   }
 }
 
+/// Checks whether an entry sequence falls within the optional inclusive bounds.
 fn in_seq_range(seq: Seq, from_seq: Option(Seq), to_seq: Option(Seq)) -> Bool {
+  // Validate sequence against the lower bound if specified.
   let from_ok = case from_seq {
     Some(bound) -> seq >= bound
     None -> True
   }
+
+  // Validate sequence against the upper bound if specified.
   let to_ok = case to_seq {
     Some(bound) -> seq <= bound
     None -> True
   }
+
   from_ok && to_ok
 }
 
+/// Sorts rows by extracted sequence number in either ascending or descending order.
 fn sort_by_seq(
   rows: List(row),
   seq_of: fn(row) -> Seq,
@@ -674,6 +714,8 @@ fn sort_by_seq(
     list.sort(rows, by: fn(left, right) {
       int.compare(seq_of(left), seq_of(right))
     })
+
+  // Reverse ascending sequence order if NewestFirst ordering is requested.
   case scan_order {
     OldestFirst -> ascending
     NewestFirst -> list.reverse(ascending)
@@ -710,6 +752,8 @@ pub fn open(clock: Clock) -> Result(Storage(Subject(Message)), StorageError) {
     actor.new(ActorState(state: new(), clock:, closed: False))
     |> actor.on_message(handle_message)
     |> actor.start
+
+  // Construct storage interface functions wrapping actor messages.
   case started {
     Ok(started) ->
       Ok(
@@ -749,6 +793,7 @@ pub fn open(clock: Clock) -> Result(Storage(Subject(Message)), StorageError) {
   }
 }
 
+/// Extracts a descriptive string from actor start initialization errors.
 fn start_error_reason(error: actor.StartError) -> String {
   case error {
     actor.InitTimeout -> "initialisation timeout"
@@ -799,6 +844,7 @@ pub fn snapshot_reader(handle: Subject(Message)) -> snapshot.Reader {
   )
 }
 
+/// Creates a read-only snapshot view from the current in-memory state.
 fn snapshot_view(state: MemoryState) -> snapshot_memory.View {
   snapshot_memory.View(
     state.entries,
@@ -808,10 +854,12 @@ fn snapshot_view(state: MemoryState) -> snapshot_memory.View {
   )
 }
 
+/// Processes messages sent to the in-memory storage actor.
 fn handle_message(
   actor_state: ActorState,
   message: Message,
 ) -> actor.Next(ActorState, Message) {
+  // Dispatch message handling based on message type and closed status.
   case message, actor_state.closed {
     SnapshotCapture(reply:, ..), True ->
       snapshot_answer(
@@ -917,6 +965,8 @@ fn handle_message(
     }
     Commit(tx:, reply:), False -> {
       let #(now, clock) = clock.read(actor_state.clock)
+
+      // Execute the commit operation and reply with the result.
       case commit(actor_state.state, tx, ts: now) {
         Ok(#(state, commit_result)) -> {
           process.send(reply, Ok(commit_result))
@@ -963,6 +1013,7 @@ fn handle_message(
   }
 }
 
+/// Replies to a snapshot request and continues actor execution with state.
 fn snapshot_answer(
   state: ActorState,
   reply: Subject(a),

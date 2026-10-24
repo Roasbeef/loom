@@ -168,7 +168,9 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
   #(Model(rule.new(), Loading, Distant, None, Untouched, Inline), effect.none())
 }
 
+/// Applies lifecycle and rendering events to the mermaid viewer model.
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
+  // Dispatch state transitions for the incoming viewer message.
   case message {
     Connected -> #(model, mount())
     Mounted(resources) -> #(
@@ -209,17 +211,22 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
     )
     CopyPressed -> #(model, copy(model.diagram))
     ToggleExpand -> {
+      // Toggle between inline and expanded viewer presentation modes.
       let next_mode = case model.view_mode {
         Inline -> Expanded
         Expanded -> Inline
       }
+
       #(Model(..model, view_mode: next_mode), effect.none())
     }
     Written(revision, outcome) -> {
+      // Map clipboard write outcome to copy status indicator.
       let notice = case outcome {
         Ok(Nil) -> Copied
         Error(Nil) -> CopyRefused
       }
+
+      // Update copy notification if the response matches current revision.
       case revision == model.diagram.revision {
         True -> #(Model(..model, copy: notice), effect.none())
         False -> #(model, effect.none())
@@ -228,8 +235,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   }
 }
 
-// Reading an unchanged source does nothing: a patch elsewhere in a streaming
-// answer must not postpone this diagram or create more timers.
+/// Re-evaluates diagram source text and arms rendering timers on change.
 fn reread(
   model: Model,
   source: String,
@@ -237,6 +243,8 @@ fn reread(
   units: Int,
 ) -> #(Model, Effect(Msg)) {
   let diagram = rule.read(model.diagram, source, theme, units)
+
+  // Skip updates when revision is unchanged; otherwise arm debounce timers.
   case diagram.revision == model.diagram.revision {
     True -> #(model, effect.none())
     False -> {
@@ -266,17 +274,19 @@ fn reread(
         rule.Waiting | rule.Rendering | rule.Shown(_) | rule.Unavailable ->
           model.frame
       }
+
       #(Model(..model, diagram:, frame:, copy: Untouched), wait)
     }
   }
 }
 
-// The element owns its own message receiver; window identity, not the opaque
-// frame's "null" origin, distinguishes it from sibling diagrams and pages.
+/// Mounts observer and event listener resources after initial paint.
 fn mount() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let root = ffi_dom.as_element(root)
   let host = ffi_dom.host(root)
+
+  // Install listeners only when host element remains connected to the DOM.
   case ffi_dom.is_connected(host) {
     True -> install(dispatch, root, host)
 
@@ -286,6 +296,7 @@ fn mount() -> Effect(Msg) {
   }
 }
 
+/// Configures mutation observers, media queries, and window message listeners.
 fn install(
   dispatch: fn(Msg) -> Nil,
   root: ffi_dom.Element,
@@ -323,11 +334,14 @@ fn install(
   read()
 }
 
+/// Reads mermaid diagram source and resolves active document color theme.
 fn read_source(host: ffi_dom.Element, media: ffi_dom.Element) -> Msg {
   let source =
     ffi_dom.query_selector(host, ".mermaid-source")
     |> result.map(ffi_dom.text_content)
     |> result.unwrap("")
+
+  // Determine dark or light theme preference from attribute or system query.
   let theme = case ffi_dom.attribute(ffi_dom.document_element(), "data-theme") {
     Ok("light") -> rule.Light
     Ok("dark") -> rule.Dark
@@ -337,16 +351,21 @@ fn read_source(host: ffi_dom.Element, media: ffi_dom.Element) -> Msg {
         False -> rule.Dark
       }
   }
+
   Read(source, theme, ffi_dom.utf16_length(source))
 }
 
+/// Extracts and decodes status replies posted from the child iframe window.
 fn frame_reply(root: ffi_dom.Element, event: Dynamic) -> rule.Reply {
   let reply = {
     use frame <- result.try(ffi_dom.query_selector(root, "iframe"))
+
+    // Ensure event originates from the matching sandboxed iframe.
     use Nil <- result.try(case ffi_dom.message_from_frame(frame, event) {
       True -> Ok(Nil)
       False -> Error(Nil)
     })
+
     use text <- result.try(
       decode.run(ffi_dom.message_data(event), decode.string)
       |> result.replace_error(Nil),
@@ -356,11 +375,9 @@ fn frame_reply(root: ffi_dom.Element, event: Dynamic) -> rule.Reply {
   result.unwrap(reply, rule.Ignored)
 }
 
-// A request is text data sent only to this element's fixed sandbox URL. The
-// wildcard is required because sandboxing deliberately gives it an opaque origin.
-// The deadline starts with the post, so it bounds the renderer and not the
-// frame's load; a frame that never loads leaves the source disclosed.
+/// Posts diagram render requests to the child iframe once loaded and ready.
 fn send(model: Model) -> Effect(Msg) {
+  // Post payload to iframe when frame is ready and diagram is rendering.
   case model.frame, model.diagram.phase, model.resources {
     Ready, rule.Rendering, Some(resources) -> {
       let request = rule.request(model.diagram)
@@ -375,8 +392,11 @@ fn send(model: Model) -> Effect(Msg) {
   }
 }
 
+/// Disconnects mutation observers and window listeners on component teardown.
 fn cleanup(resources: Option(Resources)) -> Effect(Msg) {
   use _ <- effect.from
+
+  // Disconnect active observers and remove event listeners.
   case resources {
     Some(resources) -> {
       ffi_dom.disconnect(resources.source)
@@ -397,6 +417,7 @@ fn cleanup(resources: Option(Resources)) -> Effect(Msg) {
   }
 }
 
+/// Writes the raw diagram source text to the system clipboard.
 fn copy(diagram: rule.State) -> Effect(Msg) {
   let source = diagram.source
   let revision = diagram.revision
@@ -406,9 +427,9 @@ fn copy(diagram: rule.State) -> Effect(Msg) {
   })
 }
 
+/// Renders diagram toolbar, sandboxed iframe container, and fallback source details.
 fn view(model: Model) -> Element(Msg) {
-  // Only a shown diagram is visible and focusable; every other phase keeps
-  // the frame loaded but hidden, with the source disclosure open instead.
+  // Configure iframe layout height and disclosure properties by phase.
   let #(height, frame_state, disclosure) = case model.diagram.phase {
     rule.Shown(height) -> #(
       height,
@@ -433,20 +454,27 @@ fn view(model: Model) -> Element(Msg) {
       attribute.attribute("open", ""),
     )
   }
+
+  // Choose copy button label reflecting recent clipboard operation status.
   let label = case model.copy {
     Untouched -> "Copy source"
     Copied -> "Copied"
     CopyRefused -> "Copy unavailable — select source"
   }
 
+  // Determine container CSS styling based on expanded view mode and render state.
   let box_class = case model.view_mode, model.diagram.phase {
     Expanded, rule.Shown(_) -> "mermaid-box mermaid-box-expanded"
     _, _ -> "mermaid-box"
   }
+
+  // Resolve expand button toggle action label and aria attribute.
   let #(expand_label, aria_expanded) = case model.view_mode {
     Inline -> #("Expand", "false")
     Expanded -> #("Collapse", "true")
   }
+
+  // Render expand action button when diagram render completes successfully.
   let expand_button = case model.diagram.phase {
     rule.Shown(_) ->
       html.button(
@@ -463,6 +491,7 @@ fn view(model: Model) -> Element(Msg) {
     | rule.TooLarge
     | rule.Unavailable -> element.none()
   }
+
   html.div([attribute.class(box_class)], [
     html.div([attribute.class("mermaid-toolbar")], [
       html.span([], [html.text(status(model.diagram.phase))]),
@@ -500,6 +529,7 @@ fn view(model: Model) -> Element(Msg) {
   ])
 }
 
+/// Returns status banner text appropriate for current diagram phase.
 fn status(phase: rule.Phase) -> String {
   case phase {
     rule.Empty -> "Mermaid"

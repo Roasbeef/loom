@@ -77,6 +77,7 @@ pub type RetryPolicy {
 /// ```
 ///
 pub fn classify(error: ProviderError) -> RetryClass {
+  // Categorize error by variant and status code to determine retryability.
   case error {
     stream.WithContext(inner, _) -> classify(inner)
     ProviderCancelled -> Terminal
@@ -91,6 +92,8 @@ pub fn classify(error: ProviderError) -> RetryClass {
         status == 408
         || status >= 500
         || is_transient_error_type(api_error_type)
+
+      // Check whether error is an overflow or permanent failure before retrying.
       case is_overflow_message(message) || !transient_status {
         True -> Terminal
         False -> Retryable(backoff_hint_ms: retry_after_ms)
@@ -124,6 +127,7 @@ pub fn classify(error: ProviderError) -> RetryClass {
 // bare digits "429" are deliberately not matched: under an unbounded
 // retry budget a false positive retries forever, and a request id or a
 // byte count can contain those digits.
+/// Detects rate limit and throttling phrases in error messages.
 fn is_throttle_message(message: String) -> Bool {
   let lowered = string.lowercase(message)
   string.contains(lowered, "rate limit")
@@ -132,6 +136,7 @@ fn is_throttle_message(message: String) -> Bool {
   || string.contains(lowered, "throttling")
 }
 
+/// Checks whether an API error code signifies a transient provider failure.
 fn is_transient_error_type(error_type: String) -> Bool {
   case error_type {
     "overloaded_error" | "rate_limit_error" | "api_error" | "timeout_error" ->
@@ -164,6 +169,7 @@ pub fn backoff_ms(
   attempt attempt: Int,
   hint hint: Option(Int),
 ) -> Result(Int, Nil) {
+  // Verify attempt is within policy retry limit before computing backoff delay.
   case attempt >= 1 && attempt <= policy.max_retries {
     False -> Error(Nil)
     True -> {

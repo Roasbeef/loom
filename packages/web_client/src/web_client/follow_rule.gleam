@@ -134,10 +134,13 @@ pub fn origin(
   before: Extent,
   now: Extent,
 ) -> Origin {
+  // Check whether user interaction occurred within recent touch window.
   let touching = case touched {
     Some(when) -> at - when <= touch_window
     None -> False
   }
+
+  // Determine whether scroll origin stems from user input, layout, or steady state.
   case touching, before == now {
     True, _ -> Input
     False, True -> Steady
@@ -423,10 +426,12 @@ pub fn forgotten() -> Memory {
 /// // follow_rule.leaving(follow_rule.forgotten(), 7, reader)
 /// ```
 pub fn leaving(memory: Memory, key: Int, reader: Reader) -> Memory {
+  // Capture current scroll offset or bottom-following posture.
   let saved = case reader.position {
     Following -> AtBottom
     Reading -> Offset(top: reader.top)
   }
+
   dict.insert(memory, key, saved)
 }
 
@@ -490,13 +495,16 @@ pub fn keyed(
   reader: Reader,
   new: Int,
 ) -> Keying {
+  // Retain state when key unchanged, otherwise transition transcript positions.
   case shown == Some(new) {
     True -> Unchanged
     False -> {
+      // Save departing strand position when a previous strand was shown.
       let kept = case shown {
         Some(left) -> leaving(memory, left, reader)
         None -> memory
       }
+
       let arrival = arriving(kept, new)
       Changed(
         key: new,

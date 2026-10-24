@@ -153,6 +153,7 @@ fn shown(model: Model, state: State) -> #(Model, Effect(Msg)) {
   }
 }
 
+/// Updates popover component pseudo-state and aria attributes.
 fn publish(state: State) -> Effect(Msg) {
   effect.batch([
     case state {
@@ -164,11 +165,12 @@ fn publish(state: State) -> Effect(Msg) {
   ])
 }
 
-// The toggle's `aria-expanded`, which the server drew as `false` and never
-// draws again, so its diff cannot overwrite what this writes.
+/// Sets popover toggle button aria-expanded attribute after initial paint.
 fn expand(state: State) -> Effect(Msg) {
   use _, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
+
+  // Update button aria-expanded attribute when toggle target is present.
   case ffi_dom.query_selector(host, "[data-popover=toggle]") {
     Ok(button) ->
       ffi_dom.set_attribute(
@@ -180,10 +182,7 @@ fn expand(state: State) -> Effect(Msg) {
   }
 }
 
-// Listens for `click` and `keydown` on the document, which hears a press
-// wherever it lands, the panel and the rest of the page alike. The click is
-// reduced to the marks of the nodes it passed through before it is dispatched,
-// and a key to its name.
+/// Attaches document listeners for outside click and dismiss key strokes.
 fn listen() -> Effect(Msg) {
   use dispatch, _ <- effect.after_paint
   let click =
@@ -200,6 +199,7 @@ fn listen() -> Effect(Msg) {
   dispatch(Listening(Listeners(click:, key:)))
 }
 
+/// Collects popover marker attributes along an event composed path.
 fn marks_of(event: Dynamic) -> List(popover_rule.Mark) {
   ffi_dom.composed_path(event)
   |> list.filter_map(fn(node) {
@@ -208,8 +208,9 @@ fn marks_of(event: Dynamic) -> List(popover_rule.Mark) {
   })
 }
 
-// Removes the document's listeners, if a pair is in place.
+/// Cleans up document click and keydown event listeners.
 fn stop(listeners: Option(Listeners)) -> Effect(Msg) {
+  // Disconnect registered document listeners when active.
   case listeners {
     None -> effect.none()
     Some(Listeners(click:, key:)) -> {

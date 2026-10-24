@@ -104,6 +104,7 @@ pub fn describe(schedule: Schedule) -> String {
   }
 }
 
+/// Formats a single fault for inclusion in describe output.
 fn describe_fault(fault: Fault) -> String {
   case fault {
     CrashAtCommit(ordinal:) -> "crash@c" <> int.to_string(ordinal)
@@ -147,11 +148,14 @@ pub fn generate(
   #(Schedule(faults: dedupe(faults)), rng)
 }
 
+/// Draws a single fault bounded by commit and effect bounds.
 fn draw(rng: Rng, bound: Int, effects: Int) -> #(Fault, Rng) {
   let #(ordinal, rng) = random.int_between(rng, 1, bound)
   let #(index, rng) = random.int_between(rng, 1, effects)
   let #(delay, rng) = random.pick(rng, [10, 250, 2000], 250)
   let #(kind, rng) = random.int_between(rng, 1, 100)
+
+  // Pick a fault kind based on the weighted random draw.
   let fault = case kind {
     n if n <= 24 -> CrashAtCommit(ordinal:)
     n if n <= 40 -> CrashDuringEffect(index:)
@@ -165,15 +169,17 @@ fn draw(rng: Rng, bound: Int, effects: Int) -> #(Fault, Rng) {
     n if n <= 96 -> ProviderEffectDies(index:)
     _ -> ProviderEffectTimesOut(index:)
   }
+
   #(fault, rng)
 }
 
-// At most one crash of each kind per schedule: two nested tree kills tell
-// no story the single kills do not, and they multiply run time.
+/// Deduplicates faults to at most one crash and unique non-crash faults.
 fn dedupe(faults: List(Fault)) -> List(Fault) {
   let #(kept, _crashes) =
     list.fold(faults, #([], 0), fn(acc, fault) {
       let #(kept, crashes) = acc
+
+      // Filter duplicate crashes and duplicate fault entries.
       case is_crash(fault), crashes {
         True, 0 -> #([fault, ..kept], 1)
         True, _ -> acc
@@ -230,6 +236,7 @@ fn replace_at(faults: List(Fault), index: Int, fault: Fault) -> List(Fault) {
   })
 }
 
+/// Shifts a fault's commit ordinal or effect index toward 1.
 fn earlier(fault: Fault) -> Fault {
   case fault {
     CrashAtCommit(ordinal:) -> CrashAtCommit(ordinal: halve(ordinal))

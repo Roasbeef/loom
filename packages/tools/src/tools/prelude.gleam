@@ -24,26 +24,26 @@
 //// Generated from these inputs; `--check` recomputes each digest and
 //// names the file that moved:
 ////
-////   2b425752c259520016e01882443af8a98dc30fff962f3235f417104f463afe63  packages/cap/src/cap/actor.gleam
-////   76b25f5eed3c61580383caf93aedb3da7ae37b78538291459eb3d5633ce23e5a  packages/cap/src/cap/evolution.gleam
-////   c983a1d854d70c42e45e8d609bf12e6b909af10344a65a6fbc3f2cd5e4d24efa  packages/cap/src/cap/execution.gleam
-////   cbd6841dc7f937beccf4e648b94e80c904099c90feecbdd7abef8fb8ede6015f  packages/cap/src/cap/fs.gleam
-////   862cacde4152ef13b16e817de8ff0d3d73d4e5f53b751b2346e5e47cf89f2c54  packages/cap/src/cap/git.gleam
-////   ec90749a5cecf84dd9562ca2ffbf5b970af787dcb0a2301e8d48183b44311f2b  packages/cap/src/cap/job.gleam
-////   17a9601d4841ac8c598885f4e4d64ed61c44bf358f0a3d4fded9a788154a382b  packages/cap/src/cap/kv.gleam
-////   de8bc6923124ca3278d712b4b79c3750f29ae66279c203e670e0ce549dfde1ae  packages/cap/src/cap/lsp.gleam
-////   f5b100cebb72c327fb76fe9006cd2627fda68aaccbcda9aaf914c43c236b0697  packages/cap/src/cap/lsp_sql.gleam
+////   5816fc74c9ad456210316687f1f3169919cbee4c8e8b0e484caf1716b6b8db48  packages/cap/src/cap/actor.gleam
+////   b3960621d9f9f0ba5c91dc8fc35d00c98c99f8183aa281bfad6d63ef443ad816  packages/cap/src/cap/evolution.gleam
+////   215a3ee1f03e0eff219cb883816afc22a914b25983feebdd681a8c4b6aaf996e  packages/cap/src/cap/execution.gleam
+////   1023007f1155f92e80a7aa5b2af956929d4d123d491696a379bad82e205aee68  packages/cap/src/cap/fs.gleam
+////   a7aeb71d04cfaaa60dcffa39e2a63a6aa9833d2e2d3633da885710b21cb37003  packages/cap/src/cap/git.gleam
+////   ad2411b1504b20dfbce694b85da9c71d2747329dc4cffdec8442a55dc282c70c  packages/cap/src/cap/job.gleam
+////   dee4b64d71d8039f5fb3dd93a98d599819302f15c27a1962ac1b3002ac31d323  packages/cap/src/cap/kv.gleam
+////   9837e9f697891654642049d9cf55a475e2d4e836d0d3461890ac202331278664  packages/cap/src/cap/lsp.gleam
+////   90aa3ebca98e6844770535ee62edbb13fc3f18a84bfec60746dbb3bf6b5c77a2  packages/cap/src/cap/lsp_sql.gleam
 ////   a90f1b65b4b7a59c6fd0ac655210963b094e4a527c648b9291c54df082fc0f88  packages/cap/src/cap/mcp.gleam
-////   bdb1c89dbfa22358935bf092c103d7bc4defa2e71e48748592d7b4f6e9d8f164  packages/cap/src/cap/net.gleam
-////   9eec4c79212a6fb20f448392a8281ee55ca4add85b7da59d4bf1138ddd29d129  packages/cap/src/cap/notes.gleam
-////   856004f80f0e7be10b9ba36221abe3443f126f744ecac3cde407b0fb2c199ea4  packages/cap/src/cap/peer.gleam
-////   f85773eec68e467d8d8aa0cd389d68a759a2ffae04e4fa13a7f68b573611c73a  packages/cap/src/cap/proc.gleam
+////   7f606092038d72cd8c1ac37eb5d54d540f0246cb27961a8fcfd7dde67f0b02a7  packages/cap/src/cap/net.gleam
+////   879573c475f75bb8c806cd8d3c9389b4bffd58e82f6b5cf1b618eeb46452d281  packages/cap/src/cap/notes.gleam
+////   5527ef316f3ddba8392e86ef09b7a3dfd216629d22282e647b8e6e9cf56980e0  packages/cap/src/cap/peer.gleam
+////   69dfc617231cab3a73a9483dad0ce9e47663767a313df13ed4a71c23c2a62fbf  packages/cap/src/cap/proc.gleam
 ////   b4932c98e2a4096b15cb6556d06c86798ea8b5a61b2d8c412f0fd127cddc3d58  packages/cap/src/cap/report.gleam
-////   9b920b09da008701c1154df880341c7b3cb9c642f682c54b399698db9a63667c  packages/cap/src/cap/runtime.gleam
-////   e03e6acc80a63ff3666e4450a566fa071730f8cf3ca5afa414b752a3671b3dd1  packages/cap/src/cap/schedule.gleam
-////   508521d05b5a63799e90cee1a2f0e4bd9f24ed8b89aa497a75f7171fc3ba402b  packages/cap/src/cap/search.gleam
-////   b6bfc99aeccd5e96d1560238f4ed0c0e653551365329b6126c08f465a74dfeff  packages/cap/src/cap/strand.gleam
-////   3196badca88c32f90b568ca3e596b048f543ddb82cc31f591563bf4db938eb15  packages/cap/src/cap/task.gleam
+////   17ccccaa710f7815a584e562219808ee7fded9a06277e89f5221e6cc687b9c12  packages/cap/src/cap/runtime.gleam
+////   88124c165198bd5704b12a807f8c25515a723158b6ba4305ab3e1f84bc76c00c  packages/cap/src/cap/schedule.gleam
+////   e9c39fc8c9025dfb0b8b90356a03801591a73b64c64e710bf0c22bb8299b907d  packages/cap/src/cap/search.gleam
+////   59bfd53624744bdb58ac709a5cd75bbb01e067707854ee16b468b119e12e7cca  packages/cap/src/cap/strand.gleam
+////   e2627134a93602934b5a0b1ce77c2e060684435e9c9fccf6c41306a55ce3a155  packages/cap/src/cap/task.gleam
 ////   dade50ada67f4ac667f0b92cb10d0da213cac327897524dbb006e02cf3c90963  packages/cap/src/cap/workflow.gleam
 ////   3e0ae825edf97c7c0a481333b3d5e7ed7d4130431070141f2e4a3e82455a9304  packages/tools/dev/gen_prelude.gleam
 ////   ea950e639b983ec34145565e194a51f32db158354b4399e9df0b1888d20c0205  packages/tools/dev/gen_prelude/interface.gleam

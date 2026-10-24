@@ -111,6 +111,7 @@ pub fn failure_observation(
   timeout: Int,
   grace: Int,
 ) -> stream.FailureObservation {
+  // Extracts the attempt counter and request identifier based on the request variant.
   let #(attempt, request_id) = case spec {
     GenerationRequest(operation:, step_id:, attempt:, ..) -> #(
       attempt,
@@ -129,6 +130,7 @@ pub fn failure_observation(
         <> int.to_string(request_index),
     )
   }
+
   stream.FailureObservation(
     source,
     cause,
@@ -181,6 +183,7 @@ pub fn prepare_provider(
   surface: ProviderSurface,
   request: RequestSpec,
 ) -> PreparedStream {
+  // Prepares the provider stream depending on whether the surface is already prepared.
   case surface {
     PreparedProviderSurface(prepare:, ..) -> prepare(request)
     ProviderSurface(request: start, ..) -> {
@@ -621,12 +624,15 @@ pub fn settle_failure(
     })
     retry.Terminal -> #(Some("terminal"), [])
   }
+
+  // Formats any retry backoff hints and context diagnostics into an optional JSON object.
   let diagnostics = case
     list.append(hint_fields, stream.context_diagnostics(error))
   {
     [] -> None
     fields -> Some(json.Object(fields))
   }
+
   AssistantMessage(
     content: [],
     api: "unknown",

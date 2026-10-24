@@ -303,9 +303,9 @@ pub fn start(config: Config) -> Result(Relay, actor.StartError) {
   })
 }
 
-// Runs in the relay process. The subject and both monitors must be made
-// here, because a subject and a monitor belong to the process that creates
-// them.
+/// Initialises the relay process, selectors, and execution state.
+/// The subject and both monitors must be made here, because a subject and a
+/// monitor belong to the process that creates them.
 fn init(
   config: Config,
   control: Subject(Event),
@@ -327,6 +327,8 @@ fn init(
       process.monitor(config.helper),
       fn(_down) { execution.HelperDown },
     )
+
+  // Build the selector based on whether a caller process was specified.
   let selector = case config.caller {
     Some(caller) ->
       process.select_specific_monitor(base, process.monitor(caller), fn(_down) {
@@ -350,10 +352,11 @@ fn init(
   |> Ok
 }
 
-// The span the wall deadline has left, measured on the injected clock once
-// and then waited out on the wall clock, which is the same thing for a real
-// session and the only practical one for a state timeout.
+/// The span the wall deadline has left, measured on the injected clock once.
+/// Waited out on the wall clock, which is the same thing for a real
+/// session and the only practical one for a state timeout.
 fn wall_after(clock: Clock, deadline_ms: Int) -> Option(Int) {
+  // A zero deadline indicates no timeout bound.
   case deadline_ms {
     0 -> None
     _ -> {
@@ -363,8 +366,8 @@ fn wall_after(clock: Clock, deadline_ms: Int) -> Option(Int) {
   }
 }
 
-// The helper's own event vocabulary as the core's. The only translation of
-// output the relay performs: bytes are never inspected or copied.
+/// Translates the helper exec event into an execution core event.
+/// Bytes are never inspected or copied.
 fn from_exec(event: exec.ExecEvent) -> Event {
   case event {
     exec.Output(stream:, data:, total_bytes:, truncated:) ->
@@ -379,9 +382,8 @@ fn from_exec(event: exec.ExecEvent) -> Event {
   }
 }
 
-// Entering a mode arms that mode's deadline. `Streaming` is entered once,
-// at start, and `Draining` once, on the core's say-so, so each timeout is
-// armed exactly once and dies with its state.
+/// Arms timeouts when transitioning into a new mode.
+/// `Streaming` is entered once at start, and `Draining` once on the core say-so.
 fn entered(
   _from: Mode,
   to: Mode,
@@ -410,7 +412,7 @@ fn entered(
   }
 }
 
-// One event: ask the core, then carry out what it says.
+/// Dispatches an event to the core and performs resulting effects.
 fn handle(
   _mode: Mode,
   data: Data,
@@ -427,6 +429,8 @@ fn handle(
     Stay | Drain -> announce(data, before)
     End -> data
   }
+
+  // Determine state machine transition based on the resulting course.
   case course {
     Stay -> state_machine.keep(data)
     Drain -> state_machine.transition(to: Draining, data:)
@@ -434,13 +438,8 @@ fn handle(
   }
 }
 
-// Sends the service a progress report when the step moved something an
-// observer reads. Mode and cancel state change at most once or twice in an
-// execution, so they always go. Output is thinned twice: to the first chunk
-// and every `progress_chunks`-th, and then to one report per
-// `progress_interval_ms`, because a count-only bound grows with the output
-// rate times however long the service is busy. The skipped report is not
-// lost: the next one, or the verdict, carries the totals.
+/// Emits progress to the service when observed state has changed or chunk interval is due.
+/// Output is thinned to avoid saturating the service.
 fn announce(data: Data, before: Core) -> Data {
   let after = data.core
   let changed = after.mode != before.mode || after.cancel != before.cancel
@@ -453,6 +452,8 @@ fn announce(data: Data, before: Core) -> Data {
   // Read current monotonic time to bound progress cadence.
   let monotonic = poll.monotonic()
   let now = monotonic.now()
+
+  // Determine if sufficient interval has elapsed since the last progress report.
   let quiet = case data.last_progress_ms {
     Some(last) -> now - last >= progress_interval_ms
     None -> True
@@ -472,10 +473,8 @@ fn progress_of(core: Core) -> Progress {
   Progress(mode: core.mode, output: core.output, cancel: core.cancel)
 }
 
-// Carries out a step's effects in the order the core listed them, and says
-// what the machine does next. `Settle` is always the last effect and ends
-// the relay, so by the time the relay stops everything the caller was owed
-// has been sent.
+/// Carries out a step effects in order and returns the resulting course.
+/// `Settle` is always the last effect and ends the relay.
 fn perform(data: Data, effects: List(Effect)) -> Course {
   list.fold(effects, Stay, fn(course, effect) {
     case effect {

@@ -63,6 +63,7 @@ fn go_back() -> Effect(Msg) {
   ffi_dom.history_back()
 }
 
+/// Renders the back button slot wrapper.
 fn view(_: Nil) -> Element(Msg) {
   html.button(
     [

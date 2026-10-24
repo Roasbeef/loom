@@ -601,6 +601,8 @@ pub fn open(path: String) -> Result(Ledger, Error) {
   use connection <- result.try(
     sqlight.open(path) |> result.map_error(sql_error),
   )
+
+  // Initialize database pragmas and schema or close on failure.
   case initialize(connection) {
     Ok(Nil) -> Ok(Ledger(connection))
     Error(error) -> {
@@ -657,6 +659,8 @@ pub fn attach(
   let connection = ledger.connection
   transaction(connection, fn() {
     use found <- result.try(find_scope(connection, session))
+
+    // Create a new scope or attach to an existing one.
     use how <- result.try(case found {
       None ->
         create_scope(connection, session, workspace, incarnation, token, limits)
@@ -713,6 +717,8 @@ pub fn admit(
     use scope <- result.try(option.to_result(found, NoSuchScope))
     use Nil <- result.try(require_current(scope, incarnation, token))
     use existing <- result.try(find_call(connection, key))
+
+    // Return existing call record or reserve a fresh admission.
     case existing {
       Some(state) -> Ok(Existing(state))
       None -> {
@@ -802,6 +808,7 @@ pub fn mark_unknown(ledger: Ledger, key: Key) -> Result(Nil, Error) {
 
 // The transition to `Unknown`, inside a transaction the caller holds. The
 // statement repeats the `admitted` guard, so it never touches a settled row.
+/// Transitions an admitted call row to unknown state.
 fn mark_call_unknown(
   connection: sqlight.Connection,
   key: Key,
@@ -830,6 +837,8 @@ fn mark_call_unknown(
 /// ```
 pub fn query(ledger: Ledger, key: Key) -> Result(Lookup, Error) {
   use found <- result.try(find_call(ledger.connection, key))
+
+  // Map call lookup state into public Lookup variant.
   case found {
     Some(state) -> Ok(Found(state))
     None -> Ok(Missing)
@@ -864,11 +873,16 @@ pub fn query_or_fence(
   transaction(connection, fn() {
     use found <- result.try(find_scope(connection, key.session))
     use scope <- result.try(option.to_result(found, NoSuchScope))
+
+    // Verify incarnation matches before querying or fencing call.
     use Nil <- result.try(case scope.incarnation == incarnation {
       True -> Ok(Nil)
       False -> Error(StaleIncarnation(scope.incarnation))
     })
+
     use existing <- result.try(find_call(connection, key))
+
+    // Return existing standing call or fence as did-not-start.
     case existing {
       Some(state) -> Ok(Standing(state))
       None -> {
@@ -934,17 +948,24 @@ pub fn stop_or_fence(
   transaction(connection, fn() {
     use found <- result.try(find_scope(connection, key.session))
     use scope <- result.try(option.to_result(found, NoSuchScope))
+
+    // Validate scope incarnation before stopping or fencing.
     use Nil <- result.try(case scope.incarnation == incarnation {
       True -> Ok(Nil)
       False -> Error(StaleIncarnation(scope.incarnation))
     })
+
     use existing <- result.try(find_call(connection, key))
+
+    // Cancel admitted call or fence with a did-not-start outcome.
     case existing {
       Some(Admitted) -> {
         use running <- result.try(rows(
           connection,
           sql.ledger_admitted_keys(session: key.session, tool:),
         ))
+
+        // Check whether this call key is among currently running calls.
         case
           list.any(running, fn(row) {
             row.op == key.op
@@ -1078,6 +1099,8 @@ pub fn begin_close(
       workspace,
       incarnation,
     ))
+
+    // Verify scope is in Open state before transitioning to Closing.
     case scope.state {
       Open ->
         statement(
@@ -1117,6 +1140,8 @@ pub fn finish_close(
       workspace,
       incarnation,
     ))
+
+    // Verify scope is in Closing state before marking Closed.
     case scope.state {
       Closing -> {
         use Nil <- result.try(statement(
@@ -1127,6 +1152,8 @@ pub fn finish_close(
             workspace:,
           ),
         ))
+
+        // Forget acknowledgements if all children retired.
         case outcome {
           AllRetired -> forget_acks(connection, session)
           UnknownCleanup(_) -> Ok(Nil)
@@ -1242,11 +1269,15 @@ pub fn connect(path: String) -> Result(Ledger, Error) {
     use Nil <- result.try(execute(connection, "PRAGMA synchronous = FULL"))
     use found <- result.try(number(connection, "PRAGMA application_id"))
     use version <- result.try(number(connection, "PRAGMA user_version"))
+
+    // Verify database application ID and user_version match schema expectations.
     case found == application_id && version == schema_version {
       True -> Ok(Nil)
       False -> Error(Unsupported)
     }
   }
+
+  // Return connected Ledger handle or close on failure.
   case checked {
     Ok(Nil) -> Ok(Ledger(connection))
     Error(error) -> {
@@ -1268,10 +1299,12 @@ pub fn connect(path: String) -> Result(Ledger, Error) {
 /// // exec_ledger.record_tree(ledger, Tree("s", "repo", "/w/repo/s", "loom/s", Creating))
 /// ```
 pub fn record_tree(ledger: Ledger, tree: Tree) -> Result(Nil, Error) {
+  // Ensure worktree session identifier and path are non-empty.
   use Nil <- result.try(case tree.session == "" || tree.path == "" {
     True -> Error(Invalid("a worktree record needs a session and a path"))
     False -> Ok(Nil)
   })
+
   statement(
     ledger.connection,
     sql.put_ledger_worktree(
@@ -1293,6 +1326,8 @@ pub fn record_tree(ledger: Ledger, tree: Tree) -> Result(Nil, Error) {
 /// ```
 pub fn tree(ledger: Ledger, session: String) -> Result(Option(Tree), Error) {
   use found <- result.try(rows(ledger.connection, sql.ledger_worktree(session)))
+
+  // Decode single worktree row or return None.
   case found {
     [] -> Ok(None)
     [row] -> result.map(decode_tree(row), Some)
@@ -1346,6 +1381,7 @@ pub fn all_trees(ledger: Ledger) -> Result(List(Tree), Error) {
   })
 }
 
+/// Decodes a database worktree row into a typed Tree record.
 fn decode_tree(row: sql.LedgerWorktree) -> Result(Tree, Error) {
   use state <- result.map(tree_state(row.state))
   Tree(
@@ -1357,6 +1393,7 @@ fn decode_tree(row: sql.LedgerWorktree) -> Result(Tree, Error) {
   )
 }
 
+/// Parses a persisted worktree state string into a typed TreeState.
 fn tree_state(text: String) -> Result(TreeState, Error) {
   case text {
     "creating" -> Ok(Creating)
@@ -1368,6 +1405,7 @@ fn tree_state(text: String) -> Result(TreeState, Error) {
   }
 }
 
+/// Formats a TreeState into its persisted string representation.
 fn tree_state_text(state: TreeState) -> String {
   case state {
     Creating -> "creating"
@@ -1494,6 +1532,7 @@ pub fn summary(ledger: Ledger) -> Result(Summary, Error) {
 
 // The worktree records grouped by state. A state the table's check constraint
 // would have refused cannot appear, so an unreadable one is damage.
+/// Aggregates creating and present worktree counts across the database.
 fn tree_counts(connection: sqlight.Connection) -> Result(TreeCounts, Error) {
   use grouped <- result.try(rows(connection, sql.ledger_worktree_states()))
   list.try_fold(
@@ -1501,6 +1540,8 @@ fn tree_counts(connection: sqlight.Connection) -> Result(TreeCounts, Error) {
     TreeCounts(creating: 0, present: 0, kept: 0, removing: 0, removed: 0),
     fn(counts, row) {
       use state <- result.try(tree_state(row.state))
+
+      // Accumulate counts for creating or present worktrees.
       case state {
         Creating -> Ok(TreeCounts(..counts, creating: row.trees))
         Present -> Ok(TreeCounts(..counts, present: row.trees))
@@ -1515,6 +1556,7 @@ fn tree_counts(connection: sqlight.Connection) -> Result(TreeCounts, Error) {
 // The grouped rows carry a count each, and a state and close outcome that decode
 // together as every scope row does. Several unknown-cleanup groups, one for
 // each count of children, add into one `closed_unknown`.
+/// Sums scope states into total counts across Open, Closing, and Closed variants.
 fn count_scopes(
   grouped: List(sql.LedgerScopeStates),
 ) -> Result(ScopeCounts, Error) {
@@ -1523,6 +1565,8 @@ fn count_scopes(
     ScopeCounts(open: 0, closing: 0, closed_clean: 0, closed_unknown: 0),
     fn(counts, row) {
       use state <- result.try(scope_state(row.state, row.close_outcome))
+
+      // Increment counts according to decoded scope state.
       case state {
         Open -> Ok(ScopeCounts(..counts, open: counts.open + row.scopes))
         Closing ->
@@ -1548,8 +1592,11 @@ fn count_scopes(
 
 // A scope that blocks a reopen is either closing or closed with unknown cleanup;
 // any other state in the result is a row the query should not have returned.
+/// Validates that an unclean scope row is in Closing or Closed(UnknownCleanup) state.
 fn unclean_scope(row: sql.LedgerUncleanScopes) -> Result(UncleanScope, Error) {
   use state <- result.try(scope_state(row.state, row.close_outcome))
+
+  // Match only Closing or UnknownCleanup states as unclean scopes.
   case state {
     Closing | Closed(UnknownCleanup(_)) ->
       Ok(UncleanScope(session: row.session, state:))
@@ -1570,6 +1617,7 @@ fn only(found: List(a), what: String) -> Result(a, Error) {
 // of a fresh file cannot both decide it is empty. Journal configuration follows
 // validation, so an unrelated file is refused before any persistent tuning can
 // change its header.
+/// Applies database policy pragmas and ensures the schema is initialized.
 fn initialize(connection: sqlight.Connection) -> Result(Nil, Error) {
   let options = sqlite_policy.defaults()
   use Nil <- result.try(
@@ -1592,10 +1640,13 @@ fn initialize(connection: sqlight.Connection) -> Result(Nil, Error) {
   statement(connection, sql.recover_ledger_calls())
 }
 
+/// Initializes or verifies the ledger schema version inside a transaction.
 fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   transaction(connection, fn() {
     use found <- result.try(number(connection, "PRAGMA application_id"))
     use version <- result.try(number(connection, "PRAGMA user_version"))
+
+    // Verify existing schema version or create fresh tables.
     case found, version {
       id, 4 if id == application_id -> Ok(Nil)
 
@@ -1622,6 +1673,8 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
       }
       0, 0 -> {
         use tables <- result.try(number(connection, "PRAGMA schema_version"))
+
+        // Ensure database has no pre-existing tables before schema creation.
         case tables {
           0 -> create_schema(connection)
           _ -> Error(Unsupported)
@@ -1632,6 +1685,7 @@ fn initialize_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   })
 }
 
+/// Creates the ledger, releases, and acks database tables.
 fn create_schema(connection: sqlight.Connection) -> Result(Nil, Error) {
   use Nil <- result.try(execute(connection, exec_ledger_schema.schema))
   use Nil <- result.try(execute(connection, exec_ledger_releases_schema.schema))
@@ -1651,6 +1705,7 @@ fn migrate_to_worktrees(connection: sqlight.Connection) -> Result(Nil, Error) {
   execute(connection, "PRAGMA user_version = " <> int.to_string(schema_version))
 }
 
+/// Inserts a fresh scope row with incarnation 1 and returns Created attachment.
 fn create_scope(
   connection: sqlight.Connection,
   session: String,
@@ -1674,6 +1729,7 @@ fn create_scope(
 
 // The existing scope decides the attach. The workspace is judged first because
 // every other answer is about the scope the session already has.
+/// Attaches to an existing scope handling rebinds, retries, and re-openings.
 fn attach_existing(
   connection: sqlight.Connection,
   scope: Scope,
@@ -1683,6 +1739,8 @@ fn attach_existing(
   limits: Limits,
 ) -> Result(Attachment, Error) {
   use Nil <- result.try(same_workspace(scope, workspace))
+
+  // Determine attachment handling from current scope state.
   case scope.state {
     Open ->
       case incarnation == scope.incarnation {
@@ -1730,11 +1788,14 @@ fn attach_existing(
 
 // A scope that is not cleanly closed holds a slot. The count excludes a scope
 // that is about to reopen, because a clean close freed its slot until then.
+/// Ensures that the count of unclean scopes does not exceed configured limits.
 fn require_capacity(
   connection: sqlight.Connection,
   limits: Limits,
 ) -> Result(Nil, Error) {
   use counted <- result.try(rows(connection, sql.ledger_unclean_scope_count()))
+
+  // Check whether unclean scope count is within allowed limits.
   case counted {
     [row] ->
       case row.scopes < limits.max_unclean_scopes {
@@ -1748,12 +1809,15 @@ fn require_capacity(
 // The admission check proper. Each comparison is by value against the stored
 // row inside the admitting transaction, so no ordering of messages can slip a
 // request past it: a runtime that attached later has already replaced the token.
+/// Verifies that the scope incarnation and token match the active request.
 fn require_current(
   scope: Scope,
   incarnation: Int,
   token: BitArray,
 ) -> Result(Nil, Error) {
   use Nil <- result.try(require_incarnation(scope, incarnation))
+
+  // Verify that the presented token matches the active scope token.
   case token == scope.token {
     True -> Ok(Nil)
     False -> Error(StaleToken)
@@ -1763,6 +1827,7 @@ fn require_current(
 // The same check without the token, for a request that changes nothing and so
 // has no attach to be fenced against: the scope must be open and at this
 // incarnation.
+/// Verifies that the scope is Open and matches the requested incarnation.
 fn require_incarnation(scope: Scope, incarnation: Int) -> Result(Nil, Error) {
   case scope.state {
     Open ->
@@ -1774,12 +1839,15 @@ fn require_incarnation(scope: Scope, incarnation: Int) -> Result(Nil, Error) {
   }
 }
 
+/// Verifies that adding the reservation bytes does not exceed ledger byte limits.
 fn require_budget(
   connection: sqlight.Connection,
   reservation: Int,
   limits: Limits,
 ) -> Result(Nil, Error) {
   use held <- result.try(rows(connection, sql.ledger_reserved_bytes()))
+
+  // Check whether reserved bytes remain within configured bounds.
   case held {
     [row] ->
       case row.bytes + reservation <= limits.max_ledger_bytes {
@@ -1792,15 +1860,20 @@ fn require_budget(
 
 // The reservation of an admitted row, which is the only row `finish` and
 // `mark_unknown` may settle.
+/// Retrieves the reserved outcome bytes for an admitted call.
 fn admitted_reservation(
   connection: sqlight.Connection,
   key: Key,
 ) -> Result(Int, Error) {
   use found <- result.try(call_rows(connection, key))
+
+  // Check whether the call exists and is in Admitted state.
   case found {
     [] -> Error(NoSuchCall)
     [row] -> {
       use state <- result.try(call_state(key, row))
+
+      // Verify call is in Admitted state.
       case state {
         Admitted -> Ok(row.outcome_bytes)
         Terminal(_) | Unknown | Acked -> Error(CallNotAdmitted)
@@ -1810,6 +1883,7 @@ fn admitted_reservation(
   }
 }
 
+/// Looks up a scope for a session and validates workspace and incarnation.
 fn scope_at(
   connection: sqlight.Connection,
   session: String,
@@ -1819,6 +1893,8 @@ fn scope_at(
   use found <- result.try(find_scope(connection, session))
   use scope <- result.try(option.to_result(found, NoSuchScope))
   use Nil <- result.try(same_workspace(scope, workspace))
+
+  // Ensure requested incarnation matches the scope incarnation.
   case incarnation == scope.incarnation {
     True -> Ok(scope)
     False -> Error(StaleIncarnation(scope.incarnation))
@@ -1832,11 +1908,14 @@ fn same_workspace(scope: Scope, workspace: String) -> Result(Nil, Error) {
   }
 }
 
+/// Retrieves an optional Scope record by session identifier.
 fn find_scope(
   connection: sqlight.Connection,
   session: String,
 ) -> Result(Option(Scope), Error) {
   use found <- result.try(rows(connection, sql.ledger_scope(session)))
+
+  // Decode single scope row or return None.
   case found {
     [] -> Ok(None)
     [row] -> result.map(decode_scope(row), Some)
@@ -1844,6 +1923,7 @@ fn find_scope(
   }
 }
 
+/// Decodes database ledger scope columns into a typed Scope record.
 fn decode_scope(row: sql.LedgerScope) -> Result(Scope, Error) {
   use state <- result.try(scope_state(row.state, row.close_outcome))
   use <- bool.guard(
@@ -1862,6 +1942,7 @@ fn decode_scope(row: sql.LedgerScope) -> Result(Scope, Error) {
 // The state and the close outcome are one fact stored in two columns, so they
 // decode together. A scope that is not closed has no outcome, and a closed one
 // must have a well-formed outcome.
+/// Parses stored state and close outcome strings into a typed ScopeState.
 fn scope_state(
   state: String,
   close_outcome: Option(String),
@@ -1879,6 +1960,7 @@ fn scope_state(
   }
 }
 
+/// Formats a CloseOutcome into its database string representation.
 fn close_outcome_text(outcome: CloseOutcome) -> Result(String, Error) {
   case outcome {
     AllRetired -> Ok("all_retired")
@@ -1889,6 +1971,7 @@ fn close_outcome_text(outcome: CloseOutcome) -> Result(String, Error) {
 
 // The text a release row keeps for the state the scope was in. Only the two
 // states `release` accepts have one.
+/// Formats an unretired ScopeState for storage in release tables.
 fn release_text(state: ScopeState) -> Result(String, Error) {
   case state {
     Closing -> Ok("closing")
@@ -1897,6 +1980,7 @@ fn release_text(state: ScopeState) -> Result(String, Error) {
   }
 }
 
+/// Parses a stored release state string back into a typed ScopeState.
 fn parse_release_text(text: String) -> Result(ScopeState, Error) {
   case text {
     "closing" -> Ok(Closing)
@@ -1909,11 +1993,14 @@ fn parse_release_text(text: String) -> Result(ScopeState, Error) {
   }
 }
 
+/// Retrieves the CallState for a specific call key if recorded.
 fn find_call(
   connection: sqlight.Connection,
   key: Key,
 ) -> Result(Option(CallState), Error) {
   use found <- result.try(call_rows(connection, key))
+
+  // Return call state from row or inspect acknowledgement tombstone.
   case found {
     [] -> acked_state(connection, key)
     [row] -> result.map(call_state(key, row), Some)
@@ -1922,6 +2009,7 @@ fn find_call(
 }
 
 // A key with no row is `Acked` when the acknowledgement left a tombstone.
+/// Checks whether an acknowledgement tombstone exists for a call key.
 fn acked_state(
   connection: sqlight.Connection,
   key: Key,
@@ -1935,6 +2023,8 @@ fn acked_state(
       source_index: key.source_index,
     ),
   ))
+
+  // Return Acked if tombstone row exists, otherwise None.
   case found {
     [] -> Ok(None)
     [_tombstone] -> Ok(Some(Acked))
@@ -1952,6 +2042,7 @@ fn forget_acks(
   statement(connection, sql.delete_ledger_acks(session:))
 }
 
+/// Queries stored ledger call rows for a specific key.
 fn call_rows(
   connection: sqlight.Connection,
   key: Key,
@@ -1971,6 +2062,7 @@ fn call_rows(
 // and a digest. A terminal outcome is returned only if it still hashes to its
 // stored digest and has its recorded size, which is how a damaged blob becomes
 // an error instead of a different tool result.
+/// Converts a database call row into a validated typed CallState.
 fn call_state(key: Key, row: sql.LedgerCall) -> Result(CallState, Error) {
   case row.state, row.outcome, row.outcome_digest {
     "admitted", None, None -> Ok(Admitted)
@@ -1994,6 +2086,7 @@ type Pending {
   Lost(Key)
 }
 
+/// Retrieves terminal and unknown unacknowledged call keys for a session.
 fn unacked_keys(
   connection: sqlight.Connection,
   session: String,
@@ -2008,6 +2101,8 @@ fn unacked_keys(
           step: row.step,
           source_index: row.source_index,
         )
+
+      // Classify unacknowledged call as terminal Resulted or Lost.
       case row.state {
         "terminal" -> Ok(Resulted(key))
         "unknown" -> Ok(Lost(key))
@@ -2032,6 +2127,7 @@ fn unacked_keys(
   ))
 }
 
+/// Verifies that a call key has a non-negative source index.
 fn valid_key(key: Key) -> Result(Nil, Error) {
   use <- bool.guard(
     when: key.source_index < 0,
@@ -2040,6 +2136,7 @@ fn valid_key(key: Key) -> Result(Nil, Error) {
   Ok(Nil)
 }
 
+/// Verifies that an incarnation counter is non-negative.
 fn valid_incarnation(incarnation: Int) -> Result(Nil, Error) {
   use <- bool.guard(
     when: incarnation < 0,
@@ -2048,6 +2145,7 @@ fn valid_incarnation(incarnation: Int) -> Result(Nil, Error) {
   Ok(Nil)
 }
 
+/// Verifies that an attach token is non-empty.
 fn valid_token(token: BitArray) -> Result(Nil, Error) {
   use <- bool.guard(
     when: bit_array.byte_size(token) == 0,
@@ -2056,6 +2154,7 @@ fn valid_token(token: BitArray) -> Result(Nil, Error) {
   Ok(Nil)
 }
 
+/// Verifies that a result reservation byte count is non-negative.
 fn valid_reservation(bytes: Int) -> Result(Nil, Error) {
   use <- bool.guard(
     when: bytes < 0,
@@ -2068,6 +2167,7 @@ fn valid_reservation(bytes: Int) -> Result(Nil, Error) {
 // bind only strings, integers and blobs. Parrot types a parameter that assigns a
 // nullable column as `ParamNullable`, which binds as the value it holds, or as
 // SQL NULL when it holds none.
+/// Encodes a query parameter value into its sqlight representation.
 fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
   case param {
     dev.ParamInt(value) -> Ok(sqlight.int(value))
@@ -2085,6 +2185,7 @@ fn parameter(param: dev.Param) -> Result(sqlight.Value, Error) {
   }
 }
 
+/// Executes a generated SQL query returning mapped row objects.
 fn rows(
   connection: sqlight.Connection,
   generated: #(String, List(dev.Param), decode.Decoder(a)),
@@ -2095,6 +2196,7 @@ fn rows(
   |> result.map_error(sql_error)
 }
 
+/// Executes a parameterized SQL statement returning Nil on success.
 fn statement(
   connection: sqlight.Connection,
   generated: #(String, List(dev.Param)),
@@ -2104,6 +2206,7 @@ fn statement(
   |> result.replace(Nil)
 }
 
+/// Queries a single scalar integer value such as a pragma or count.
 fn number(connection: sqlight.Connection, text: String) -> Result(Int, Error) {
   use values <- result.try(
     sqlight.query(
@@ -2114,6 +2217,8 @@ fn number(connection: sqlight.Connection, text: String) -> Result(Int, Error) {
     )
     |> result.map_error(sql_error),
   )
+
+  // Return single scalar integer value or error.
   case values {
     [value] -> Ok(value)
     [] | [_, _, ..] -> Error(MalformedRow("expected one metadata row"))
@@ -2124,6 +2229,7 @@ fn number(connection: sqlight.Connection, text: String) -> Result(Int, Error) {
 // before the first read. The checks that guard a write therefore see the state
 // the write will land on, even with several connections to the file. A failure
 // rolls back, so a refused admission leaves no row behind.
+/// Executes an action within a BEGIN IMMEDIATE transaction managing commit and rollback.
 fn transaction(
   connection: sqlight.Connection,
   run: fn() -> Result(a, Error),
@@ -2134,6 +2240,8 @@ fn transaction(
     |> result.try(fn(value) {
       execute(connection, "COMMIT") |> result.replace(value)
     })
+
+  // Commit on success or roll back on error.
   case outcome {
     Ok(value) -> Ok(value)
     Error(error) -> {

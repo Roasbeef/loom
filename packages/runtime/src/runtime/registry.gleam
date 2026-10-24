@@ -123,7 +123,10 @@ pub fn supervised(
   supervision.worker(fn() { start(name) })
 }
 
+/// Handles registry messages to look up, allocate, or publish strand addresses
+/// and factory handles.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Dispatches the registry message to lookup or record addresses and factories.
   case message {
     Ensure(strand:, reply_with:) ->
       case dict.get(state.names, strand) {
@@ -238,6 +241,8 @@ pub fn factory(
   use factory <- result.try(
     process.call_forever(registry, LookupFactory(kind, _)),
   )
+
+  // Verifies that the resolved factory process is currently alive before returning it.
   case process.is_alive(factory.pid) {
     True -> Ok(factory)
     False -> Error(Nil)

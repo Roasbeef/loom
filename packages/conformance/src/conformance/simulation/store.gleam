@@ -127,12 +127,7 @@ pub fn instrument(
 
 // A read that may fault transiently, once, at its scheduled commit.
 //
-// ## Examples
-//
-// ```gleam
-// // use <- guarded(ctl, schedule, read_faults)
-// // inner.stats(handle)
-// ```
+/// Wraps a read operation with fault injection according to the simulation schedule.
 fn guarded(
   ctl: Control,
   schedule: Schedule,
@@ -141,6 +136,8 @@ fn guarded(
 ) -> Result(value, StorageError) {
   use <- unless(armed, read)
   let landed = control.commits(ctl)
+
+  // Check whether a read fault is scheduled for the landed commit count.
   case
     scheduled(schedule, fn(item) {
       case item {
@@ -161,15 +158,7 @@ fn guarded(
   }
 }
 
-// Reads are on the hot path of every drive pass, so the control actor is
-// consulted only when the schedule actually has a fault that could fire.
-//
-// ## Examples
-//
-// ```gleam
-// // use <- unless(armed, read)
-// // claim_scheduled_fault()
-// ```
+/// Bypasses fault checks when simulation schedule is not armed.
 fn unless(
   armed: Bool,
   plain: fn() -> value,
@@ -181,6 +170,7 @@ fn unless(
   }
 }
 
+/// Intercepts transaction commit to inject faults or verify invariants.
 fn commit(
   inner: Storage(handle),
   ctl: Control,
@@ -191,12 +181,15 @@ fn commit(
 ) -> Result(CommitResult, CommitError) {
   let transaction = fence_intervention_admissions(transaction)
   let next = control.commits(ctl) + 1
+
+  // Check whether commit should be refused as stale before execution.
   case refuse_as_stale(ctl, schedule, next, stale_faults, transaction) {
     Some(error) -> Error(error)
     None -> commit_and_check(inner, ctl, strand, next, transaction)
   }
 }
 
+/// Executes inner commit and verifies post-commit accounting and invariants.
 fn commit_and_check(
   inner: Storage(handle),
   ctl: Control,
@@ -205,6 +198,8 @@ fn commit_and_check(
   transaction: Tx,
 ) -> Result(CommitResult, CommitError) {
   control.commit_started(ctl)
+
+  // Perform the commit on the inner storage.
   case storage.commit(inner, transaction) {
     Ok(result) -> {
       let _ordinal = control.commit_succeeded(ctl)
@@ -220,13 +215,11 @@ fn commit_and_check(
   }
 }
 
-// A simulated steer or follow-up carries its intervention identity in the
-// opaque signature of its user-text block. Fold a write-once reserved fact
-// into the same transaction as the pending queue entry. If a caller loses the
-// commit reply and retries, exactly one transaction can satisfy the absent
-// expectation; the other learns that the payload is already durable.
+/// Attaches idempotency expectation registers to prevent double-admission of interventions.
 fn fence_intervention_admissions(transaction: Tx) -> Tx {
   let keys = intervention_keys(transaction)
+
+  // Add fence expectations if any intervention keys are present in writes.
   case keys {
     [] -> transaction
     [_, ..] ->
@@ -261,6 +254,7 @@ fn intervention_keys(transaction: Tx) -> List(String) {
   |> list.unique
 }
 
+/// Extracts an intervention key from a single transaction write if applicable.
 fn intervention_key_from_write(write: tx.Write) -> Result(String, Nil) {
   case write {
     tx.SetRegister(ns: register.PendingEntry, value:, ..) ->
@@ -274,6 +268,7 @@ fn intervention_key_from_write(write: tx.Write) -> Result(String, Nil) {
   }
 }
 
+/// Extracts an intervention key from a pending entry structure.
 fn intervention_key_from_pending(
   pending: operation.PendingEntry,
 ) -> Result(String, Nil) {
@@ -284,6 +279,7 @@ fn intervention_key_from_pending(
   }
 }
 
+/// Extracts an intervention key from a UserBlock payload.
 fn intervention_key_from_block(block: UserBlock) -> Result(String, Nil) {
   case block {
     UserText(text_signature: Some(key), ..) ->
@@ -295,9 +291,7 @@ fn intervention_key_from_block(block: UserBlock) -> Result(String, Nil) {
   }
 }
 
-// The boundary invariant is checked at the transaction that caused it,
-// not at the end of the run, so a violation names the commit that
-// produced it.
+/// Verifies placement invariant after commit and records notes on violation.
 fn note_placement_violation(
   ctl: Control,
   inner: Storage(handle),
@@ -317,6 +311,7 @@ fn note_placement_violation(
   }
 }
 
+/// Injects a StaleExpectation refusal error if scheduled for this commit.
 fn refuse_as_stale(
   ctl: Control,
   schedule: Schedule,
@@ -325,6 +320,8 @@ fn refuse_as_stale(
   transaction: Tx,
 ) -> option.Option(CommitError) {
   use <- unless(armed, fn() { None })
+
+  // Check whether a stale commit refusal fault is scheduled for next commit.
   case
     scheduled(schedule, fn(item) {
       case item {
@@ -350,12 +347,10 @@ fn refuse_as_stale(
   }
 }
 
-// The terminal transaction is the one that writes `strand.last_result`;
-// counting those per strand is how "written exactly once per operation"
-// is checked, and how the abort-at-terminal intervention finds its
-// moment.
+/// Bumps terminal write counters when StrandLastResult is committed.
 fn note_terminal_writes(ctl: Control, transaction: Tx) -> Nil {
   list.each(transaction.writes, fn(write) {
+    // Check if write is a terminal last_result register.
     case write {
       tx.SetRegister(ns: register.StrandLastResult, key:, value: _) -> {
         let _count = control.bump(ctl, "last_result:" <> key)
@@ -367,13 +362,7 @@ fn note_terminal_writes(ctl: Control, transaction: Tx) -> Nil {
   })
 }
 
-// A nested summary request that settled *durably*: its usage row (the
-// only rows without an entry id) committed together with the op.state
-// carrying the structural task. The split-summary progress hook counts
-// these, so a settlement that was delivered but lost with a halted
-// strand's mailbox leads to another request rather than to a summary the
-// ledger never paid for — and a zero-usage transport-failure settlement
-// (tokens 0) is not counted, so a lost request is re-asked too.
+/// Tracks settled summary tasks from committed usage rows.
 fn note_summary_settlements(ctl: Control, transaction: Tx) -> Nil {
   let settled =
     list.filter(transaction.writes, fn(write) {
@@ -383,6 +372,8 @@ fn note_summary_settlements(ctl: Control, transaction: Tx) -> Nil {
         _ -> False
       }
     })
+
+  // Associate settled usage with the active structural task.
   case settled, structural_task(transaction) {
     [_, ..], Some(task_id) ->
       list.each(settled, fn(_row) {
@@ -393,8 +384,7 @@ fn note_summary_settlements(ctl: Control, transaction: Tx) -> Nil {
   }
 }
 
-// The structural task the transaction's op.state write belongs to, when
-// it names one mid-generation.
+/// Extracts the generating structural task ID from the transaction writes.
 fn structural_task(transaction: Tx) -> option.Option(String) {
   transaction.writes
   |> list.find_map(fn(write) {
@@ -427,6 +417,7 @@ fn structural_task(transaction: Tx) -> option.Option(String) {
   |> option.from_result
 }
 
+/// Injects lease theft backend fault if scheduled when renewing lease.
 fn renew(
   ctl: Control,
   schedule: Schedule,
@@ -434,6 +425,8 @@ fn renew(
 ) -> Result(Nil, StorageError) {
   use <- unless(armed, fn() { Ok(Nil) })
   let landed = control.commits(ctl)
+
+  // Check whether lease theft fault is scheduled.
   case
     scheduled(schedule, fn(item) {
       case item {

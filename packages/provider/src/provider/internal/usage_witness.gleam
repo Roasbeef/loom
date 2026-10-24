@@ -97,7 +97,9 @@ pub fn finished(
 }
 
 // Paths are fixed by the adapter, so their depth cannot grow with remote input.
+/// Extracts an integer token counter along a nested JSON key path.
 fn counter(value: JsonValue, path: List(String)) -> Result(Int, Nil) {
+  // Traverse path segments to locate the terminal integer field.
   case path {
     [field] -> wire.int_field(value, field)
     [field, ..rest] -> {

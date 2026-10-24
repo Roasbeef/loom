@@ -119,6 +119,7 @@ pub fn enqueue_write(
   generator: ids.Generator,
   payload: PendingEntry,
 ) -> Result(QueuePlan, QueueReject) {
+  // Ensure the target operation is a running prompt execution before enqueuing.
   case state {
     RunState(control:, settings:, phase:, inbox:, latest_assistant:) -> {
       let #(entry, _generator) = ids.mint_entry(generator)
@@ -206,6 +207,7 @@ pub fn cancel_queued(
   op_state_seq: Seq,
   entry: EntryId,
 ) -> CancelOutcome {
+  // Check the operation state and match the queued entry in its inbox queues.
   case state {
     RunState(control:, settings:, phase:, inbox:, latest_assistant:) -> {
       let in_queue =
@@ -261,6 +263,7 @@ pub fn cancel_next_run(
   strand_state_seq: Seq,
   entry: EntryId,
 ) -> CancelNextRunOutcome {
+  // Check whether the entry is present in the strand's pending next-run list.
   case list.contains(state.pending_next_run, entry) {
     False -> NextRunNotPending
     True -> {
@@ -341,6 +344,7 @@ fn abort_running(
   op_state_seq: Seq,
   now: Int,
 ) -> AbortOutcome {
+  // Transition the operation into cancel_requested and capture drained queues.
   case state {
     RunState(settings:, phase:, inbox:, latest_assistant:, ..) -> {
       let next =

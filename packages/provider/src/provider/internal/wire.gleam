@@ -150,6 +150,7 @@ pub fn retry_after_ms(headers: List(#(String, String))) -> Option(Int) {
   }
 }
 
+/// Parses a Retry-After header value in seconds into milliseconds.
 fn retry_after_seconds_ms(headers: List(#(String, String))) -> Option(Int) {
   case list.key_find(headers, "retry-after") {
     Ok(text) ->

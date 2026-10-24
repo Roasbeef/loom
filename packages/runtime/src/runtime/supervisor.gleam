@@ -274,6 +274,8 @@ pub fn start_published(
       }),
     )
     |> sup.start
+
+  // Handles the result of booting the supervision tree.
   case tree {
     Ok(started) -> {
       // The starter owns the tree through this record, not through the
@@ -322,6 +324,7 @@ pub fn start_published(
 // useful lifetime even when the direct drain-ledger handle still witnesses
 // external work. A Weft leaf task performs that cleanup without a custom
 // monitor loop, including roots killed outside the ordinary close path.
+/// Retains and shuts down the address namespace upon supervisor root exit.
 fn retain_namespace(namespace: address.Registry, root: Pid) -> Nil {
   let _custody =
     weft.new_prepared([
@@ -342,6 +345,7 @@ fn retain_namespace(namespace: address.Registry, root: Pid) -> Nil {
 // Publishing inside the child start callback orders discovery before the
 // booter can use it. The registry outlives both factories and is rebuilt
 // before them when rest-for-one restarts its own boundary.
+/// Creates a factory child specification registered with the runtime registry.
 fn registered_factory(
   builder: factory_supervisor.Builder(String, Subject(strand_runtime.Message)),
   registry_name: address.Address(registry.Message),
@@ -395,6 +399,7 @@ pub fn shutdown(tree: SessionTree, grace_ms grace_ms: Int) -> Result(Nil, Nil) {
 
 // Capture the ledger before shutdown, but keep an absent witness as a failed
 // proof rather than using it to skip the root's teardown and routing cleanup.
+/// Monitors the drain registry owner process to witness drain completion.
 fn watch_drains(
   drains: Subject(drain_registry.Message),
 ) -> Result(DrainWitness, Nil) {
@@ -403,11 +408,13 @@ fn watch_drains(
   Ok(register_drain_witness(drain_owner))
 }
 
+/// Terminates the supervisor root process and awaits drain witness completion.
 fn stop_root(
   root: Pid,
   witness: Result(DrainWitness, Nil),
   grace_ms: Int,
 ) -> Result(Nil, Nil) {
+  // Terminates the root process if it is currently alive.
   case process.is_alive(root) {
     True -> {
       let _termination = ffi_sup.terminate_supervisor(root, grace_ms)
@@ -415,6 +422,7 @@ fn stop_root(
     }
     False -> Nil
   }
+
   await_death(root)
   use witness <- result.try(witness)
   await_drain_witness(witness)
@@ -429,12 +437,15 @@ fn register_drain_witness(owner: Pid) -> DrainWitness {
   DrainWitness(monitor:, owner:)
 }
 
+/// Awaits the drain witness monitor down message and validates shutdown.
 fn await_drain_witness(witness: DrainWitness) -> Result(Nil, Nil) {
   let down =
     process.new_selector()
     |> process.select_specific_monitor(witness.monitor, fn(down) { down })
     |> process.selector_receive_forever()
   process.demonitor_process(witness.monitor)
+
+  // Validates that the drain witness exited normally or via shutdown.
   case down {
     process.ProcessDown(pid:, reason: process.Normal, ..)
       if pid == witness.owner
@@ -519,6 +530,8 @@ pub fn strand_subject(
   strand: String,
 ) -> Result(Subject(strand_runtime.Message), Nil) {
   use reg <- result.try(address.lookup(tree.registry))
+
+  // Resolves the strand address from the registry.
   case registry.lookup(reg, strand) {
     Ok(name) -> address.lookup(name)
     Error(Nil) -> Error(Nil)
@@ -532,6 +545,7 @@ pub fn strand_subject(
 // The process it leaves behind does nothing — it exists so the boot
 // re-runs under supervision whenever the children after the writer
 // restart.
+/// Starts the strand booter process under supervision to initialize known strands.
 fn booter_start(
   writer_name: address.Address(writer.Message),
   registry_name: address.Address(registry.Message),
@@ -546,6 +560,7 @@ fn booter_start(
   }
 }
 
+/// Reads configured strands from storage and ensures each has a running driver.
 fn boot_strands(
   writer_name: address.Address(writer.Message),
   registry_name: address.Address(registry.Message),
@@ -557,10 +572,13 @@ fn boot_strands(
   )
   list.try_each(cells, fn(cell) {
     let #(strand_name, _register) = cell
+
+    // Selects the factory kind based on whether the strand is a subagent.
     let factory_name = case subagent(strand_name) {
       True -> registry.Subagent
       False -> registry.Primary
     }
+
     ensure_strand_running(registry_name, factory_name, strand_name)
     |> result.map_error(fn(_) {
       "the strand booter could not start strand " <> strand_name
@@ -568,6 +586,7 @@ fn boot_strands(
   })
 }
 
+/// Verifies whether a strand driver is running and starts it via factory if not.
 fn ensure_strand_running(
   registry_name: address.Address(registry.Message),
   kind: registry.FactoryKind,
@@ -585,6 +604,8 @@ fn ensure_strand_running(
       "the strand factory is restarting; retry the start",
     )),
   )
+
+  // Starts the child strand through the supervisor factory and handles races.
   case factory_supervisor.start_child(factory.handle, strand) {
     Ok(_started) -> Ok(Nil)
 
@@ -601,6 +622,7 @@ fn alive(name: address.Address(strand_runtime.Message)) -> Bool {
   address.lookup(name) |> result.is_ok
 }
 
+/// Resolves the typed subject for the registry from its reference address.
 fn registry_subject(
   name: address.Address(registry.Message),
 ) -> Result(Subject(registry.Message), actor.StartError) {

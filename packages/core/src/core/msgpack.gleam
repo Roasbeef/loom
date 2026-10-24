@@ -144,6 +144,7 @@ pub fn decode(bytes: BitArray) -> Result(MsgPackValue, CorruptionReport) {
 
 // --- encoding -----------------------------------------------------------
 
+/// Encodes a typed MsgPack value into a BytesTree.
 fn encode_tree(value: MsgPackValue) -> Result(BytesTree, EncodeError) {
   case value {
     NilValue -> Ok(bytes_tree.from_bit_array(<<0xc0>>))
@@ -158,7 +159,9 @@ fn encode_tree(value: MsgPackValue) -> Result(BytesTree, EncodeError) {
   }
 }
 
+/// Encodes an integer into its most compact MsgPack representation.
 fn encode_int(value: Int) -> Result(BytesTree, EncodeError) {
+  // Select MsgPack integer format based on value bounds.
   let bytes = case value {
     _ if value >= 0 && value <= 0x7f -> Ok(<<value:size(8)>>)
     _ if value < 0 && value >= -32 -> Ok(<<value:size(8)>>)
@@ -173,13 +176,17 @@ fn encode_int(value: Int) -> Result(BytesTree, EncodeError) {
       Ok(<<0xd3, value:size(64)>>)
     _ -> Error(IntegerOutOfRange(value:))
   }
+
   result.map(bytes, bytes_tree.from_bit_array)
 }
 
+/// Encodes a UTF-8 string into MsgPack fixstr or str format.
 fn encode_string(value: String) -> Result(BytesTree, EncodeError) {
   let bytes = bit_array.from_string(value)
   let length = bit_array.byte_size(bytes)
   let fixstr_tag = 0xa0 + length
+
+  // Select the appropriate string header tag for the byte length.
   let header = case length {
     _ if length <= 31 -> Ok(<<fixstr_tag:size(8)>>)
     _ if length <= 0xff -> Ok(<<0xd9, length:size(8)>>)
@@ -187,15 +194,19 @@ fn encode_string(value: String) -> Result(BytesTree, EncodeError) {
     _ if length <= 0xffffffff -> Ok(<<0xdb, length:size(32)>>)
     _ -> Error(UnencodableLength(length:))
   }
+
   use header <- result.map(header)
   bytes_tree.from_bit_array(header)
   |> bytes_tree.append(bytes)
 }
 
+/// Encodes a raw bit array into MsgPack bin format.
 fn encode_binary(bytes: BitArray) -> Result(BytesTree, EncodeError) {
   let bits = bit_array.bit_size(bytes)
   let length = bit_array.byte_size(bytes)
   let ragged = bits % 8 != 0
+
+  // Choose the bin header tag or reject ragged bit counts.
   let header = case length {
     _ if ragged -> Error(UnencodableLength(length: bits))
     _ if length <= 0xff -> Ok(<<0xc4, length:size(8)>>)
@@ -203,36 +214,45 @@ fn encode_binary(bytes: BitArray) -> Result(BytesTree, EncodeError) {
     _ if length <= 0xffffffff -> Ok(<<0xc6, length:size(32)>>)
     _ -> Error(UnencodableLength(length:))
   }
+
   use header <- result.map(header)
   bytes_tree.from_bit_array(header)
   |> bytes_tree.append(bytes)
 }
 
+/// Encodes a list of MsgPack values into array format.
 fn encode_array(items: List(MsgPackValue)) -> Result(BytesTree, EncodeError) {
   let length = list.length(items)
   let fixarray_tag = 0x90 + length
+
+  // Choose the array header tag based on item count.
   let header = case length {
     _ if length <= 15 -> Ok(<<fixarray_tag:size(8)>>)
     _ if length <= 0xffff -> Ok(<<0xdc, length:size(16)>>)
     _ if length <= 0xffffffff -> Ok(<<0xdd, length:size(32)>>)
     _ -> Error(UnencodableLength(length:))
   }
+
   use header <- result.try(header)
   use trees <- result.map(list.try_map(items, encode_tree))
   bytes_tree.concat([bytes_tree.from_bit_array(header), ..trees])
 }
 
+/// Encodes an association list into MsgPack map format.
 fn encode_map(
   entries: List(#(MsgPackValue, MsgPackValue)),
 ) -> Result(BytesTree, EncodeError) {
   let length = list.length(entries)
   let fixmap_tag = 0x80 + length
+
+  // Choose the map header tag based on entry count.
   let header = case length {
     _ if length <= 15 -> Ok(<<fixmap_tag:size(8)>>)
     _ if length <= 0xffff -> Ok(<<0xde, length:size(16)>>)
     _ if length <= 0xffffffff -> Ok(<<0xdf, length:size(32)>>)
     _ -> Error(UnencodableLength(length:))
   }
+
   use header <- result.try(header)
   use trees <- result.map(
     list.try_map(entries, fn(entry) {
@@ -247,6 +267,7 @@ fn encode_map(
 
 // --- decoding -----------------------------------------------------------
 
+/// Constructs a corruption report for unexpected bytes at the current position.
 fn fail(bytes: BitArray, expected: String) -> CorruptionReport {
   corruption.report(
     at: "core/msgpack.decode",
@@ -256,7 +277,7 @@ fn fail(bytes: BitArray, expected: String) -> CorruptionReport {
   )
 }
 
-// Shows at most the first 16 remaining bytes of input in a report.
+/// Shows at most the first 16 remaining bytes of input in a report.
 fn excerpt(bytes: BitArray) -> String {
   case bit_array.bit_size(bytes) {
     0 -> "end of input"
@@ -271,8 +292,10 @@ fn excerpt(bytes: BitArray) -> String {
   }
 }
 
-// `depth` counts the containers already entered; a new array or map is
-// admitted only while `depth < max_depth`, which bounds the recursion.
+/// Decodes one MsgPack value and returns it with the remaining unparsed bytes.
+///
+/// `depth` counts the containers already entered; a new array or map is
+/// admitted only while `depth < max_depth`, which bounds the recursion.
 fn decode_value(
   bytes: BitArray,
   depth: Int,
@@ -313,9 +336,11 @@ fn decode_value(
   }
 }
 
-// Reached when a leading tag byte matched no complete pattern: either the
-// tag is outside the ADR-003 subset, or its payload is truncated. The two
-// are distinguished so reports name the real problem.
+/// Constructs a detailed corruption report for an unrecognised or truncated tag.
+///
+/// Reached when a leading tag byte matched no complete pattern: either the
+/// tag is outside the ADR-003 subset, or its payload is truncated. The two
+/// are distinguished so reports name the real problem.
 fn tag_error(bytes: BitArray, tag: Int) -> CorruptionReport {
   case tag {
     0xc1 -> fail(bytes, "a valid tag byte, not the never-used 0xc1")
@@ -336,17 +361,21 @@ fn tag_name(tag: Int) -> String {
   "0x" <> string.lowercase(int.to_base16(tag))
 }
 
+/// Decodes a string payload of the given byte length.
 fn decode_string(
   length: Int,
   bytes: BitArray,
 ) -> Result(#(MsgPackValue, BitArray), CorruptionReport) {
   use #(payload, rest) <- result.try(take_bytes(length, bytes, "str"))
+
+  // Verify that the decoded payload is valid UTF-8.
   case bit_array.to_string(payload) {
     Ok(value) -> Ok(#(StringValue(value:), rest))
     Error(Nil) -> Error(fail(payload, "valid utf-8 in a str payload"))
   }
 }
 
+/// Decodes a binary payload of the given byte length.
 fn decode_binary(
   length: Int,
   bytes: BitArray,
@@ -355,12 +384,15 @@ fn decode_binary(
   #(BinaryValue(bytes: payload), rest)
 }
 
+/// Slices off a prefix of `length` bytes from the input bit array.
 fn take_bytes(
   length: Int,
   bytes: BitArray,
   kind: String,
 ) -> Result(#(BitArray, BitArray), CorruptionReport) {
   let available = bit_array.byte_size(bytes)
+
+  // Slice the requested payload and remaining bytes.
   case bit_array.slice(from: bytes, at: 0, take: length) {
     Ok(payload) ->
       case bit_array.slice(from: bytes, at: length, take: available - length) {
@@ -376,6 +408,7 @@ fn take_bytes(
   }
 }
 
+/// Decodes an array container of the given length.
 fn decode_array(
   length: Int,
   bytes: BitArray,
@@ -391,12 +424,14 @@ fn decode_array(
   #(ArrayValue(items:), rest)
 }
 
+/// Loop decoding remaining array elements.
 fn decode_array_loop(
   remaining: Int,
   bytes: BitArray,
   accumulator: List(MsgPackValue),
   depth: Int,
 ) -> Result(#(List(MsgPackValue), BitArray), CorruptionReport) {
+  // Check if all array elements have been decoded.
   case remaining {
     0 -> Ok(#(list.reverse(accumulator), bytes))
     _ -> {
@@ -406,6 +441,7 @@ fn decode_array_loop(
   }
 }
 
+/// Decodes a map container of the given length.
 fn decode_map(
   length: Int,
   bytes: BitArray,
@@ -422,9 +458,11 @@ fn decode_map(
   #(MapValue(entries:), rest)
 }
 
-// `seen` indexes the keys decoded so far (structural equality), so
-// duplicate detection costs one dict probe per entry rather than a
-// quadratic rescan an adversarial many-entry map could exploit.
+/// Loop decoding map key-value pairs while verifying uniqueness of keys.
+///
+/// `seen` indexes the keys decoded so far (structural equality), so
+/// duplicate detection costs one dict probe per entry rather than a
+/// quadratic rescan an adversarial many-entry map could exploit.
 fn decode_map_loop(
   remaining: Int,
   bytes: BitArray,
@@ -432,14 +470,18 @@ fn decode_map_loop(
   seen: Dict(MsgPackValue, Nil),
   depth: Int,
 ) -> Result(#(List(#(MsgPackValue, MsgPackValue)), BitArray), CorruptionReport) {
+  // Check if all map pairs have been decoded.
   case remaining {
     0 -> Ok(#(list.reverse(accumulator), bytes))
     _ -> {
       use #(key, rest) <- result.try(decode_value(bytes, depth))
+
+      // Ensure that this key has not already been seen in the map.
       use Nil <- result.try(case dict.has_key(seen, key) {
         False -> Ok(Nil)
         True -> Error(fail(bytes, "unique map keys (a key repeats)"))
       })
+
       use #(value, rest) <- result.try(decode_value(rest, depth))
       decode_map_loop(
         remaining - 1,
@@ -452,8 +494,10 @@ fn decode_map_loop(
   }
 }
 
-// Refuses to open one more container once `max_depth` levels are already
-// open, keeping decoder recursion bounded by a constant.
+/// Refuses to open one more container once `max_depth` levels are already open.
+///
+/// Refuses to open one more container once `max_depth` levels are already
+/// open, keeping decoder recursion bounded by a constant.
 fn check_depth(bytes: BitArray, depth: Int) -> Result(Nil, CorruptionReport) {
   case depth < max_depth {
     True -> Ok(Nil)

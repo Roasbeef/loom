@@ -109,6 +109,8 @@ type Identity =
 /// ```
 pub fn run(seed seed: Int) -> Verdict {
   let #(script, schedule) = plan(seed)
+
+  // Compare baseline and scheduled runs for the given seed.
   case judged(seed, script, schedule) {
     Ok(Nil) -> Passed
     Error(failure) -> failed(seed, script, schedule, failure)
@@ -117,6 +119,7 @@ pub fn run(seed seed: Int) -> Verdict {
 
 // Both runs of one seed, from scratch, compared. This is what `run` reports
 // and what a confirming run of a shrink candidate repeats.
+/// Runs baseline and faulted executions from scratch and compares results.
 fn judged(
   seed: Int,
   script: Script,
@@ -128,6 +131,7 @@ fn judged(
 
 // The faulted run of one seed, compared with a fault-free report already in
 // hand.
+/// Runs a faulted schedule against an already executed baseline report.
 fn against(
   base: Report,
   seed: Int,
@@ -233,6 +237,7 @@ pub fn describe(seed: Int) -> String {
   daemon_script.describe(script) <> " | " <> daemon_fault.describe(schedule)
 }
 
+/// Executes a single simulation run under clock and schedule.
 fn execute(
   seed: Int,
   script: Script,
@@ -257,6 +262,7 @@ fn state_root(seed: Int) -> String {
 // two, over the same state root, with the kill between them. Everything after
 // the restart is identical in both, which is what makes the comparison a
 // statement about the fault rather than about the script.
+/// Drives the simulation workflow across daemon boot and optional restart.
 fn drive(
   state_root: String,
   clock: Clockwork,
@@ -271,6 +277,8 @@ fn drive(
     0,
     arrest(scheduled, arrived),
   ))
+
+  // Execute fault-free completion or interrupted restart schedule.
   case scheduled {
     None -> finish(daemon, complete(daemon, script, []))
 
@@ -289,6 +297,7 @@ fn drive(
   }
 }
 
+/// Boots the initial test daemon harness instance.
 fn boot(
   state_root: String,
   clock: Clockwork,
@@ -315,6 +324,7 @@ fn boot(
 // operating system after the process is already gone, so a single start races
 // a lock the crash has not finished dropping. A `resume` that runs out of
 // patience still reports the refusal it ended on, which fails the run.
+/// Resumes the test daemon harness following a crash interruption.
 fn resumed(state_root: String, clock: Clockwork) -> Result(Harness, Failure) {
   harness.resume(harness.Boot(
     state_root:,
@@ -332,6 +342,7 @@ fn resumed(state_root: String, clock: Clockwork) -> Result(Harness, Failure) {
 // lock or a root blocked in recovery is exactly what a faulted run is looking
 // for, so a stop failure fails a run that otherwise passed rather than being
 // discarded.
+/// Stops the daemon harness and reports either stop failure or observed outcome.
 fn finish(
   daemon: Harness,
   observed: Result(Report, Failure),
@@ -345,6 +356,7 @@ fn finish(
 // The arrest the schedule arms before the daemon starts. `AfterConfirm` needs
 // none: the run drives to residency on its own and kills a daemon that is
 // doing nothing, which is exactly what that step means.
+/// Determines the harness arrest configuration from the scheduled fault.
 fn arrest(scheduled: Option(Fault), arrived: Subject(Pid)) -> harness.Arrest {
   case scheduled {
     None -> harness.Unimpeded
@@ -364,6 +376,7 @@ fn arrest(scheduled: Option(Fault), arrived: Subject(Pid)) -> harness.Arrest {
 // while it is stopped there, and kill the daemon. Creations after the killed
 // one are left to the second incarnation, because the daemon they would have
 // run against is gone.
+/// Executes the first incarnation up to the scheduled kill point.
 fn interrupt(
   daemon: Harness,
   script: Script,
@@ -400,6 +413,7 @@ fn interrupt(
 // that parks and announces itself, so the run reserves without waiting for a
 // residency that will never come. The fourth is after confirmation, which is
 // an ordinary completed creation with nobody parked.
+/// Advances execution to target step and retrieves parked builder if any.
 fn reach(
   daemon: Harness,
   script: Script,
@@ -411,6 +425,8 @@ fn reach(
   let assert Ok(target) =
     list.find(script.creations, fn(one: Creation) { one.key == key })
     as "a schedule names a key its script creates"
+
+  // Dispatch creation based on whether step requires parking.
   case step {
     AfterConfirm ->
       created(daemon, target, observed)
@@ -428,6 +444,8 @@ fn reach(
           Failure("creation/accepted", key <> ": " <> reason)
         }),
       )
+
+      // Await builder arrival message at parked step.
       case process.receive(arrived, arrival_ms) {
         Ok(builder) -> Ok(#(record, Some(builder)))
         Error(Nil) ->
@@ -445,6 +463,7 @@ fn reach(
 // still read `Reserved` and no open may answer that the session is resident.
 // A creation killed after confirmation is the opposite case and is checked
 // for the opposite answer.
+/// Verifies unpublished state at the crash point before confirmation.
 fn unpublished(
   daemon: Harness,
   record: catalogue.Registration,
@@ -456,10 +475,14 @@ fn unpublished(
     |> result.map_error(fn(reason) { Failure(check, reason) }),
   )
   let admitted = harness.admission(daemon, record.id)
+
+  // Determine whether admission returned a resident status.
   let resident = case admitted {
     Ok(manager.Resident(_)) -> True
     Ok(_) | Error(_) -> False
   }
+
+  // Verify consistency between step and row state.
   case step, row.state, resident {
     AfterConfirm, "Saved", True -> Ok(Nil)
     AfterConfirm, _, _ ->
@@ -487,24 +510,29 @@ fn unpublished(
 // reservation owns no slot after the restart, so its durable state is the
 // whole answer: the registry must refuse to open it, because opening it would
 // let a session run against a row nothing has confirmed.
+/// Verifies state preservation and admission refusal after restart.
 fn recovered(daemon: Harness, key: String, step: Step) -> Result(Nil, Failure) {
   let check = "publication/before-execute"
   use snapshot <- result.try(
     harness.snapshot(daemon)
     |> result.map_error(fn(reason) { Failure(check, reason) }),
   )
-  use row <- result.try(
-    case
-      list.find(snapshot.rows, fn(row: harness.Row) { row.request_key == key })
-    {
-      Ok(row) -> Ok(row)
-      Error(Nil) ->
-        Error(Failure(
-          check,
-          "the reservation for " <> key <> " did not survive the restart",
-        ))
-    },
-  )
+
+  // Look up the reservation row for key in snapshot rows.
+  let found_row = case
+    list.find(snapshot.rows, fn(row: harness.Row) { row.request_key == key })
+  {
+    Ok(row) -> Ok(row)
+    Error(Nil) ->
+      Error(Failure(
+        check,
+        "the reservation for " <> key <> " did not survive the restart",
+      ))
+  }
+
+  use row <- result.try(found_row)
+
+  // Verify post-restart state reflects pre-restart progress.
   case step, row.state, harness.admission(daemon, row.id) {
     AfterConfirm, "Saved", _admitted -> Ok(Nil)
     _parked, "Reserved", Error(manager.NotInitialized) -> Ok(Nil)
@@ -525,6 +553,7 @@ fn recovered(daemon: Harness, key: String, step: Step) -> Result(Nil, Failure) {
 // Everything the run still owes, performed identically whether or not a kill
 // happened: every creation the script names, then every retry, then the three
 // end-of-run checks.
+/// Completes remaining creations and executes validation checks.
 fn complete(
   daemon: Harness,
   script: Script,
@@ -574,15 +603,18 @@ fn complete(
 // finds every lease of the dead incarnation expired and steals it with a
 // bumped fence. A restart inside the lease TTL is a different scenario, and
 // `harness.Boot`'s documentation says where it is checked.
+/// Creates a session and checks registration result against observed identities.
 fn created(
   daemon: Harness,
   one: Creation,
   observed: List(#(String, Identity)),
 ) -> Result(catalogue.Registration, Failure) {
+  // Assign check label based on whether key was previously observed.
   let check = case list.key_find(observed, one.key) {
     Ok(_reserved) -> "creation/one-identity-per-key"
     Error(Nil) -> "creation/accepted"
   }
+
   harness.create(
     daemon,
     key: one.key,
@@ -605,6 +637,7 @@ fn identity(record: catalogue.Registration) -> Identity {
 // reservation observed while its builder still owns the operation reads
 // `Reserved` and the same row observed later reads `Saved`; that is the
 // reservation making progress, not a second identity.
+/// Asserts each request key maps to exactly one consistent identity.
 fn one_identity_per_key(
   observed: List(#(String, Identity)),
 ) -> Result(Nil, Failure) {
@@ -618,6 +651,8 @@ fn one_identity_per_key(
           False -> Error(Nil)
         }
       })
+
+    // Ensure exactly one unique identity per key.
     case list.unique(answers) {
       [_one] -> Ok(Nil)
       several ->
@@ -639,10 +674,13 @@ fn one_identity_per_key(
 // was allowed to confirm its row, so at the end of the run every confirmed
 // row's database carries its own canonical id. A confirmation that overtook
 // that write leaves a row nothing in the file agrees with.
+/// Asserts all saved sessions have matching identity in SQLite database.
 fn published(daemon: Harness, snapshot: Snapshot) -> Result(Nil, Failure) {
   let check = "publication/before-execute"
   list.try_each(snapshot.rows, fn(row: harness.Row) {
     let path = absolute(daemon, row.path)
+
+    // Check that sqlite identity matches catalogue row.
     case row.state, sqlite.identity(path) {
       "Saved", Ok(#(Some(id), _)) if id == row.id -> Ok(Nil)
       _state, read ->
@@ -663,6 +701,7 @@ fn published(daemon: Harness, snapshot: Snapshot) -> Result(Nil, Failure) {
 // naming it. Only conversation databases are counted, because the domain
 // services are never opened under this harness and their memory and search
 // files therefore do not exist.
+/// Asserts bijection between catalogue rows and database files on disk.
 fn no_orphan_file(daemon: Harness, snapshot: Snapshot) -> Result(Nil, Failure) {
   let check = "creation/no-orphan-file"
   let expected =
@@ -704,8 +743,11 @@ fn absolute(daemon: Harness, path: String) -> String {
 // `replay/equal-catalogue-rows`: the transparency claim. Both the rows and
 // the revision they were read at have to agree; a run that wrote a row twice
 // would carry the same rows at a higher fence and would otherwise pass.
+/// Compares baseline and faulted reports for identical rows and fence.
 fn compare(base: Report, faulted: Report) -> Result(Nil, Failure) {
   let check = "replay/equal-catalogue-rows"
+
+  // Check that catalogue fences agree between runs.
   case base.fence == faulted.fence {
     False ->
       Error(Failure(
@@ -724,6 +766,7 @@ fn compare(base: Report, faulted: Report) -> Result(Nil, Failure) {
   }
 }
 
+/// Renders a human-readable diff between baseline and faulted reports.
 fn difference(base: Report, faulted: Report) -> String {
   let render = fn(report: Report) {
     list.map(report.rows, harness.describe_row) |> string.join("\n  ")
@@ -734,6 +777,7 @@ fn difference(base: Report, faulted: Report) -> String {
   <> render(faulted)
 }
 
+/// Constructs a Failed verdict with reproduction details.
 fn failed(
   seed: Int,
   script: Script,

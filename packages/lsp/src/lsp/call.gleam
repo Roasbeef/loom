@@ -88,11 +88,8 @@ pub fn try_call(
   result.unwrap(answer, Error(NoReply))
 }
 
-// use callee <- or_gone(process.subject_owner(subject))
-//
-// Short-circuits an ownerless subject into the fault a dead callee
-// produces, since a caller cannot tell the two apart and should not have
-// to.
+/// Evaluates `then` when the target subject has a live owner process, or fails
+/// with `CalleeGone`.
 fn or_gone(
   owner: Result(process.Pid, Nil),
   then: fn(process.Pid) -> Result(a, CallFault),

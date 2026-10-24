@@ -187,6 +187,7 @@ fn anchor(offset: Int, direction: Direction) -> Effect(Msg) {
   dispatch(Anchored(Reading(offset:, anchor: ffi_dom.now(), direction:)))
 }
 
+/// Anchors an elapsed duration counter relative to a past timestamp.
 fn anchor_since(since: Int) -> Effect(Msg) {
   use dispatch <- effect.from
   let now = ffi_dom.now()
@@ -211,7 +212,9 @@ fn start() -> Effect(Msg) {
   dispatch(Started(timer))
 }
 
+/// Clears active interval timer if present.
 fn stop(timer: Option(ffi_dom.Timer)) -> Effect(Msg) {
+  // Clear the browser interval timer when present.
   case timer {
     None -> effect.none()
     Some(timer) -> {
@@ -221,10 +224,14 @@ fn stop(timer: Option(ffi_dom.Timer)) -> Effect(Msg) {
   }
 }
 
+/// Renders the formatted elapsed or remaining duration.
 fn view(model: Model) -> Element(Msg) {
+  // Render elapsed reading or empty element when unanchored.
   case model.reading {
     Some(reading) -> {
       let passed = model.now - reading.anchor
+
+      // Format count-up duration or countdown remaining time.
       case reading.direction {
         Up ->
           html.text(duration.format(int.max(0, reading.offset + passed) / 1000))

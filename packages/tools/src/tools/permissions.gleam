@@ -102,6 +102,7 @@ pub fn authorize_native(
   authorize_against(ctx, args, base)
 }
 
+/// Decodes requested permissions and authorises them against the base policy.
 fn authorize_against(
   ctx: tool.Ctx,
   args: json.JsonValue,
@@ -114,11 +115,14 @@ fn authorize_against(
   tool.authorize_policy(ctx, base, requested)
 }
 
+/// Decodes optional permission overrides from JSON arguments into a concrete sandbox policy.
 fn decode(
   ctx: tool.Ctx,
   args: json.JsonValue,
 ) -> Result(policy.SandboxPolicy, String) {
   use value <- result.try(tool.optional_value(args, "permissions"))
+
+  // Return the unchanged base policy when permissions are omitted.
   case value {
     None -> Ok(ctx.base_policy)
     Some(value) -> {
@@ -155,11 +159,14 @@ fn decode(
           })
         }),
       )
+
+      // Translate optional network policy strings into concrete policy variants.
       use network <- result.try(case network {
         None -> Ok(ctx.base_policy.network)
         Some("full") -> Ok(policy.NetworkFull)
         Some(_) -> Error("permissions.network must be full")
       })
+
       Ok(
         policy.SandboxPolicy(
           ..ctx.base_policy,
@@ -181,6 +188,7 @@ fn decode(
   }
 }
 
+/// Resolves `path` relative to the workspace if it is not already absolute.
 fn absolute(ctx: tool.Ctx, path: String) -> String {
   case path {
     "/" <> _ -> path

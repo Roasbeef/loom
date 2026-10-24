@@ -504,6 +504,8 @@ pub fn query_one(
     }
   }
   use answer <- result.try(query(observation, sql, params, one_cell))
+
+  // Unpack single-row query result or error on multiple rows.
   case answer.rows {
     [] -> Ok(None)
 
@@ -543,11 +545,13 @@ pub fn references(
   Ok(answer.rows)
 }
 
+/// Decodes rows sequentially using the provided row decoder.
 fn decode_rows(
   rows: List(List(Cell)),
   decoder: RowDecoder(a),
   index: Int,
 ) -> Result(List(a), QueryError) {
+  // Decode each row in sequence until all rows are processed.
   case rows {
     [] -> Ok([])
     [row, ..rest] -> {
@@ -561,6 +565,7 @@ fn decode_rows(
   }
 }
 
+/// Maps low-level channel errors into domain observation errors.
 fn call_error(error: channel.CallError) -> Error {
   case error {
     channel.Unreachable(reason) -> Unavailable(reason)
@@ -584,18 +589,23 @@ fn optional_int(value: Option(Int)) -> m.MsgPackValue {
   }
 }
 
+/// Decodes an observation target specification from a msgpack map.
 fn decode_target(value: m.MsgPackValue) -> Result(Target, String) {
   use symbol <- result.try(wire.string_field(value, "symbol"))
   use path <- result.try(wire.string_field(value, "path"))
   use raw <- result.try(wire.field(value, "line"))
+
+  // Decode optional 1-based target line number.
   use line <- result.try(case raw {
     m.NilValue -> Ok(None)
     m.IntValue(n) if n > 0 -> Ok(Some(n))
     _other -> Error("invalid target line")
   })
+
   Ok(Target(symbol:, path:, line:))
 }
 
+/// Decodes a string value from a msgpack scalar.
 fn text(value: m.MsgPackValue) -> Result(String, String) {
   case value {
     m.StringValue(s) -> Ok(s)
@@ -609,6 +619,7 @@ fn text(value: m.MsgPackValue) -> Result(String, String) {
   }
 }
 
+/// Decodes a msgpack value into a typed SQLite Cell.
 fn cell(value: m.MsgPackValue) -> Result(Cell, String) {
   case value {
     m.NilValue -> Ok(Null)
@@ -622,6 +633,7 @@ fn cell(value: m.MsgPackValue) -> Result(Cell, String) {
   }
 }
 
+/// Decodes a msgpack array of cells into a row list.
 fn row(value: m.MsgPackValue) -> Result(List(Cell), String) {
   case value {
     m.ArrayValue(cells) -> list.try_map(cells, cell)
@@ -635,6 +647,7 @@ fn row(value: m.MsgPackValue) -> Result(List(Cell), String) {
   }
 }
 
+/// Decodes an Observation record from its msgpack representation.
 fn decode(value: m.MsgPackValue) -> Result(Observation, String) {
   use server <- result.try(wire.string_field(value, "server"))
   use root <- result.try(wire.string_field(value, "root"))
@@ -674,12 +687,11 @@ fn decode(value: m.MsgPackValue) -> Result(Observation, String) {
   Ok(Observation(metadata:, documents:, symbols:, targets:, references:))
 }
 
-// The native boundary names a refused table only in SQLite's own words, so a
-// model that wrote `sqlite_master` or guessed `facts` learned nothing about
-// what exists. The two refusals an unknown table produces are given the table
-// list here, in the one place that already knows the schema.
+/// Maps native SQLite driver error codes into domain query errors.
 fn native_error(error: #(String, String)) -> QueryError {
   let #(code, reason) = error
+
+  // Map the native refusal code to the corresponding QueryError variant.
   case code {
     "read_only_denied" if reason == "read_only_denied" ->
       ReadOnlyDenied(
@@ -819,6 +831,7 @@ pub fn cell_text(cell: Cell) -> String {
   }
 }
 
+/// Returns the display text for a query resource limit.
 fn limit_text(limit: QueryLimit) -> String {
   case limit {
     Rows -> "rows"
@@ -839,10 +852,7 @@ const reference_sql =
   <> "FROM targets t JOIN \"references\" r ON r.target_id = t.id "
   <> "ORDER BY t.symbol, r.path, r.line"
 
-// The join's five columns, in its projection order. Each is refused unless
-// it holds the storage class the schema declares: a NULL where the schema
-// says NOT NULL means these two ends disagree about the facts, which is not
-// a reference with an empty field.
+/// Decodes a five-column reference join row into a Reference record.
 fn reference_row(row: List(Cell)) -> Result(Reference, String) {
   case row {
     [Text(symbol), Text(path), Integer(line), Integer(column), Text(text)] ->

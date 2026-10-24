@@ -114,6 +114,7 @@ pub fn decode_usage(value: JsonValue) -> Result(Usage, CorruptionReport) {
     Error(Nil) -> Ok(usage_evidence.unknown(usage_evidence.Other))
     Ok(value) -> usage_evidence.decode(value)
   })
+
   use <- bool.lazy_guard(
     evidence == usage_evidence.NoProvider
       && {
@@ -152,6 +153,7 @@ pub fn decode_usage(value: JsonValue) -> Result(Usage, CorruptionReport) {
   ))
 }
 
+/// Encodes usage cost numbers into a JSON object.
 fn encode_usage_cost(cost: UsageCost) -> JsonValue {
   json.Object([
     #("input", json.Float(cost.input)),
@@ -162,6 +164,7 @@ fn encode_usage_cost(cost: UsageCost) -> JsonValue {
   ])
 }
 
+/// Decodes a usage cost JSON object into a UsageCost struct.
 fn decode_usage_cost(value: JsonValue) -> Result(UsageCost, CorruptionReport) {
   let where = "core/codec.usage.cost"
   use fields <- result.try(fields_of(value, where))
@@ -284,6 +287,8 @@ pub fn decode_message(
   let where = "core/codec.message"
   use fields <- result.try(fields_of(value, where))
   use role <- result.try(require_string(fields, "role", where))
+
+  // Dispatch decoding to role-specific parser.
   case role {
     "user" -> decode_user_message(fields)
     "assistant" -> decode_assistant_message(fields)
@@ -299,12 +304,15 @@ pub fn decode_message(
   }
 }
 
+/// Decodes a user message from its JSON field mapping.
 fn decode_user_message(
   fields: Fields,
 ) -> Result(AgentMessage, CorruptionReport) {
   let where = "core/codec.message.user"
   use timestamp <- result.try(require_int(fields, "timestamp", where))
   use content_value <- result.try(require(fields, "content", where))
+
+  // Support bare string shorthand or array of content blocks.
   use content <- result.try(case content_value {
     // pi's shorthand: a bare string is one text block.
     json.String(text) -> Ok([UserText(text:, text_signature: None)])
@@ -317,10 +325,12 @@ fn decode_user_message(
         context: json.to_string(other),
       ))
   })
+
   use origin <- result.try(origin.decode_field(fields))
   Ok(UserMessage(content:, timestamp:, origin:))
 }
 
+/// Decodes an assistant message from its JSON field mapping.
 fn decode_assistant_message(
   fields: Fields,
 ) -> Result(AgentMessage, CorruptionReport) {
@@ -341,10 +351,13 @@ fn decode_assistant_message(
   use usage <- result.try(decode_usage(usage_value))
   use stop_reason_text <- result.try(require_string(fields, "stopReason", where))
   use stop_reason <- result.try(parse_stop_reason(stop_reason_text, where))
+
+  // Parse optional deferred handle when present.
   use deferred <- result.try(case optional_json(fields, "deferred") {
     None | Some(json.Null) -> Ok(None)
     Some(handle_value) -> result.map(decode_deferred_handle(handle_value), Some)
   })
+
   use error_message <- result.try(optional_string(fields, "errorMessage", where))
   use raw_stop_reason <- result.try(optional_string(
     fields,
@@ -371,6 +384,7 @@ fn decode_assistant_message(
   ))
 }
 
+/// Decodes a tool result message from its JSON field mapping.
 fn decode_tool_result_message(
   fields: Fields,
 ) -> Result(AgentMessage, CorruptionReport) {
@@ -383,10 +397,14 @@ fn decode_tool_result_message(
     decode_tool_result_block,
   ))
   let details = optional_json(fields, "details")
+
+  // Parse optional usage payload when present.
   use usage <- result.try(case optional_json(fields, "usage") {
     None | Some(json.Null) -> Ok(None)
     Some(usage_value) -> result.map(decode_usage(usage_value), Some)
   })
+
+  // Parse optional added tool names list when present.
   use added_tool_names <- result.try(
     case optional_json(fields, "addedToolNames") {
       None | Some(json.Null) -> Ok(None)
@@ -403,6 +421,7 @@ fn decode_tool_result_message(
         ))
     },
   )
+
   use is_error <- result.try(require_bool(fields, "isError", where))
   use timestamp <- result.try(require_int(fields, "timestamp", where))
   Ok(ToolResultMessage(
@@ -417,6 +436,7 @@ fn decode_tool_result_message(
   ))
 }
 
+/// Decodes a custom agent message from its schema and payload fields.
 fn decode_custom_message(
   fields: Fields,
 ) -> Result(AgentMessage, CorruptionReport) {
@@ -462,6 +482,8 @@ pub fn decode_user_block(
   let where = "core/codec.message.user.content"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "type", where))
+
+  // Branch on block type: text or image.
   case kind {
     "text" -> {
       use #(text, text_signature) <- result.map(decode_text_block(fields, where))
@@ -481,6 +503,7 @@ pub fn decode_user_block(
   }
 }
 
+/// Encodes an assistant content block into its JSON representation.
 fn encode_assistant_block(block: AssistantBlock) -> JsonValue {
   case block {
     AssistantText(text:, text_signature:) ->
@@ -496,12 +519,15 @@ fn encode_assistant_block(block: AssistantBlock) -> JsonValue {
   }
 }
 
+/// Decodes an assistant content block from JSON.
 fn decode_assistant_block(
   value: JsonValue,
 ) -> Result(AssistantBlock, CorruptionReport) {
   let where = "core/codec.message.assistant.content"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "type", where))
+
+  // Branch on assistant block type: text, thinking, or toolCall.
   case kind {
     "text" -> {
       use #(text, text_signature) <- result.map(decode_text_block(fields, where))
@@ -532,6 +558,7 @@ fn decode_assistant_block(
   }
 }
 
+/// Encodes a tool result content block into JSON.
 fn encode_tool_result_block(block: ToolResultBlock) -> JsonValue {
   case block {
     ToolResultText(text:, text_signature:) ->
@@ -540,12 +567,15 @@ fn encode_tool_result_block(block: ToolResultBlock) -> JsonValue {
   }
 }
 
+/// Decodes a tool result content block from JSON.
 fn decode_tool_result_block(
   value: JsonValue,
 ) -> Result(ToolResultBlock, CorruptionReport) {
   let where = "core/codec.message.tool_result.content"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "type", where))
+
+  // Branch on tool result block type: text or image.
   case kind {
     "text" -> {
       use #(text, text_signature) <- result.map(decode_text_block(fields, where))
@@ -565,6 +595,7 @@ fn decode_tool_result_block(
   }
 }
 
+/// Encodes a text content block with optional signature.
 fn encode_text_block(
   text: String,
   text_signature: Option(String),
@@ -576,6 +607,7 @@ fn encode_text_block(
   ])
 }
 
+/// Decodes text block fields from an object.
 fn decode_text_block(
   fields: Fields,
   where: String,
@@ -589,6 +621,7 @@ fn decode_text_block(
   Ok(#(text, text_signature))
 }
 
+/// Encodes an image content block into JSON.
 fn encode_image_block(data: String, mime_type: String) -> JsonValue {
   json.Object([
     #("type", json.String("image")),
@@ -597,6 +630,7 @@ fn encode_image_block(data: String, mime_type: String) -> JsonValue {
   ])
 }
 
+/// Decodes image block fields from an object.
 fn decode_image_block(
   fields: Fields,
   where: String,
@@ -606,6 +640,7 @@ fn decode_image_block(
   Ok(#(data, mime_type))
 }
 
+/// Encodes a tool call structure into JSON.
 fn encode_tool_call(call: ToolCall) -> JsonValue {
   object_of([
     #("type", Some(json.String("toolCall"))),
@@ -617,6 +652,7 @@ fn encode_tool_call(call: ToolCall) -> JsonValue {
   ])
 }
 
+/// Decodes a tool call structure from JSON fields.
 fn decode_tool_call(fields: Fields) -> Result(ToolCall, CorruptionReport) {
   let where = "core/codec.message.tool_call"
   use id <- result.try(require_string(fields, "id", where))
@@ -633,6 +669,7 @@ fn decode_tool_call(fields: Fields) -> Result(ToolCall, CorruptionReport) {
 
 // --- stop reasons and deferred handles ----------------------------------
 
+/// Returns the wire string representation of a stop reason.
 fn stop_reason_to_string(reason: StopReason) -> String {
   case reason {
     Pending -> "pending"
@@ -645,6 +682,7 @@ fn stop_reason_to_string(reason: StopReason) -> String {
   }
 }
 
+/// Parses a stop reason string into its typed representation.
 fn parse_stop_reason(
   text: String,
   where: String,
@@ -667,6 +705,7 @@ fn parse_stop_reason(
   }
 }
 
+/// Encodes a deferred operation handle into JSON.
 fn encode_deferred_handle(handle: DeferredHandle) -> JsonValue {
   object_of([
     #("provider", Some(json.String(handle.provider))),
@@ -679,6 +718,7 @@ fn encode_deferred_handle(handle: DeferredHandle) -> JsonValue {
   ])
 }
 
+/// Decodes a deferred operation handle from JSON.
 fn decode_deferred_handle(
   value: JsonValue,
 ) -> Result(DeferredHandle, CorruptionReport) {
@@ -802,6 +842,8 @@ pub fn decode_entry(value: JsonValue) -> Result(Entry, CorruptionReport) {
   use seq <- result.try(require_int(fields, "seq", where))
   use ts <- result.try(require_int(fields, "timestamp", where))
   use kind <- result.try(require_string(fields, "type", where))
+
+  // Dispatch decoding to specific entry type handler.
   case kind {
     "message" -> {
       use message_value <- result.try(require(fields, "message", where))
@@ -877,11 +919,14 @@ fn encode_parent(parent: Option(EntryId)) -> JsonValue {
   }
 }
 
+/// Decodes an optional parent entry ID from parentId field.
 fn decode_parent(
   fields: Fields,
   where: String,
 ) -> Result(Option(EntryId), CorruptionReport) {
   use value <- result.try(require(fields, "parentId", where))
+
+  // Check whether parentId is null or a string ID.
   case value {
     json.Null -> Ok(None)
     json.String(text) -> result.map(ids.parse_entry_id(text), Some)
@@ -895,8 +940,10 @@ fn decode_parent(
   }
 }
 
-// Absent and null both read as None (protocol-change/001: emit null,
-// accept a missing field for forward compatibility).
+/// Decodes an optional entry ID that may be absent or null.
+///
+/// Absent and null both read as None (protocol-change/001: emit null,
+/// accept a missing field for forward compatibility).
 fn decode_entry_id_or_none(
   fields: Fields,
   name: String,
@@ -915,6 +962,7 @@ fn decode_entry_id_or_none(
   }
 }
 
+/// Reads a required entry ID field string and parses it into typed EntryId.
 fn require_entry_id(
   fields: Fields,
   name: String,
@@ -924,6 +972,7 @@ fn require_entry_id(
   ids.parse_entry_id(text)
 }
 
+/// Decodes optional usage field from entry fields.
 fn decode_optional_usage(
   fields: Fields,
 ) -> Result(Option(Usage), CorruptionReport) {
@@ -976,6 +1025,8 @@ pub fn decode_usage_row(
   use id_text <- result.try(require_string(fields, "id", where))
   use id <- result.try(ids.parse_usage_id(id_text))
   use seq <- result.try(require_int(fields, "seq", where))
+
+  // Parse optional entry ID field.
   use entry_id <- result.try(case optional_json(fields, "entryId") {
     None | Some(json.Null) -> Ok(None)
     Some(json.String(text)) -> result.map(ids.parse_entry_id(text), Some)
@@ -987,6 +1038,7 @@ pub fn decode_usage_row(
         context: json.to_string(other),
       ))
   })
+
   use adjustment <- result.try(require_bool(fields, "adjustment", where))
   use usage_value <- result.try(require(fields, "usage", where))
   use usage <- result.try(decode_usage(usage_value))
@@ -1072,8 +1124,10 @@ pub fn decode_corruption_report(
 type Fields =
   List(#(String, JsonValue))
 
-// Builds an object from optional fields, omitting the `None`s. Encoders
-// pass `Some` for required fields.
+/// Builds a JSON object from field pairs, dropping fields with None values.
+///
+/// Builds an object from optional fields, omitting the `None`s. Encoders
+/// pass `Some` for required fields.
 fn object_of(pairs: List(#(String, Option(JsonValue)))) -> JsonValue {
   json.Object(
     list.filter_map(pairs, fn(pair) {
@@ -1093,6 +1147,7 @@ fn encode_default_false(flag: Bool) -> Option(JsonValue) {
   }
 }
 
+/// Extracts association list of fields from a JSON object.
 fn fields_of(
   value: JsonValue,
   where: String,
@@ -1109,9 +1164,11 @@ fn fields_of(
   }
 }
 
-// Parsed documents never carry duplicate keys (`core/json.parse` rejects
-// them), so this lookup normally sees unique names; for hand-constructed
-// values the first occurrence wins, matching the `core/json` tiebreak.
+/// Looks up a field value by name in an association list.
+///
+/// Parsed documents never carry duplicate keys (`core/json.parse` rejects
+/// them), so this lookup normally sees unique names; for hand-constructed
+/// values the first occurrence wins, matching the `core/json` tiebreak.
 fn get(fields: Fields, name: String) -> Result(JsonValue, Nil) {
   case fields {
     [] -> Error(Nil)
@@ -1120,6 +1177,7 @@ fn get(fields: Fields, name: String) -> Result(JsonValue, Nil) {
   }
 }
 
+/// Requires a field to be present in fields list, returning report if missing.
 fn require(
   fields: Fields,
   name: String,
@@ -1145,6 +1203,7 @@ fn optional_json(fields: Fields, name: String) -> Option(JsonValue) {
   }
 }
 
+/// Validates that a JSON value is a string, reporting corruption otherwise.
 fn as_string(
   value: JsonValue,
   name: String,
@@ -1162,6 +1221,7 @@ fn as_string(
   }
 }
 
+/// Requires a named field to be present and to hold a string value.
 fn require_string(
   fields: Fields,
   name: String,
@@ -1171,12 +1231,15 @@ fn require_string(
   as_string(value, name, where)
 }
 
+/// Requires a named field to be present and to hold an integer value.
 fn require_int(
   fields: Fields,
   name: String,
   where: String,
 ) -> Result(Int, CorruptionReport) {
   use value <- result.try(require(fields, name, where))
+
+  // Check that the value is an integer.
   case value {
     json.Int(number) -> Ok(number)
     other ->
@@ -1189,13 +1252,17 @@ fn require_int(
   }
 }
 
-// Accepts both number forms: `0` and `0.0` are the same wire cost.
+/// Requires a named field to hold a floating-point or integer number.
+///
+/// Accepts both number forms: `0` and `0.0` are the same wire cost.
 fn require_float(
   fields: Fields,
   name: String,
   where: String,
 ) -> Result(Float, CorruptionReport) {
   use value <- result.try(require(fields, name, where))
+
+  // Check whether the value is a float or integer to convert.
   case value {
     json.Float(number) -> Ok(number)
     json.Int(number) -> Ok(int.to_float(number))
@@ -1209,12 +1276,15 @@ fn require_float(
   }
 }
 
+/// Requires a named field to hold a boolean value.
 fn require_bool(
   fields: Fields,
   name: String,
   where: String,
 ) -> Result(Bool, CorruptionReport) {
   use value <- result.try(require(fields, name, where))
+
+  // Check that the value is a boolean.
   case value {
     json.Bool(flag) -> Ok(flag)
     other ->
@@ -1227,12 +1297,15 @@ fn require_bool(
   }
 }
 
+/// Requires a named field to hold a JSON array value.
 fn require_array(
   fields: Fields,
   name: String,
   where: String,
 ) -> Result(List(JsonValue), CorruptionReport) {
   use value <- result.try(require(fields, name, where))
+
+  // Check that the value is an array.
   case value {
     json.Array(items) -> Ok(items)
     other ->
@@ -1245,6 +1318,7 @@ fn require_array(
   }
 }
 
+/// Decodes an optional string field, treating absent and null as None.
 fn optional_string(
   fields: Fields,
   name: String,
@@ -1257,6 +1331,7 @@ fn optional_string(
   }
 }
 
+/// Decodes an optional integer field, treating absent and null as None.
 fn optional_int(
   fields: Fields,
   name: String,
@@ -1276,6 +1351,7 @@ fn optional_int(
   }
 }
 
+/// Decodes an optional boolean field, treating absent and null as None.
 fn optional_bool(
   fields: Fields,
   name: String,

@@ -50,6 +50,8 @@ pub fn new(
     + list.fold(descriptions, 0, fn(total, pair) {
       total + bytes(pair.0) + bytes(pair.1)
     })
+
+  // Validate string lengths, API target, total bytes, and unique description names.
   case
     id != ""
     && bytes(id) <= 128
@@ -113,6 +115,8 @@ pub fn fields(
 /// ```
 pub fn validate_map(profiles: List(Profile)) -> Result(List(Profile), String) {
   let targets = list.map(profiles, fn(p) { #(p.provider, p.model_id, p.api) })
+
+  // Validate that profiles map does not exceed max count and has unique target tuples.
   case
     list.length(profiles) <= 64
     && list.length(list.unique(targets)) == list.length(targets)
@@ -136,6 +140,7 @@ pub fn apply(
   api: String,
   base: model.ProviderRequest,
 ) -> #(Option(String), model.ProviderRequest) {
+  // Search profiles for an exact match on provider, model ID, and API protocol.
   case
     list.find(profiles, fn(p) {
       p.provider == target.provider
@@ -161,12 +166,15 @@ pub fn apply(
   }
 }
 
+/// Merges profile suffix and task prefix onto the base system prompt.
 fn append_system(
   base: Option(String),
   suffix: String,
   task: String,
 ) -> Option(String) {
   let extra = appended(suffix, task)
+
+  // Combine base prompt and extra instructions according to presence.
   case base, extra {
     None, "" -> None
     None, extra -> Some(extra)
@@ -174,6 +182,7 @@ fn append_system(
   }
 }
 
+/// Concatenates base text and addition separated by a double newline when both are present.
 fn appended(base: String, addition: String) -> String {
   case base, addition {
     _, "" -> base

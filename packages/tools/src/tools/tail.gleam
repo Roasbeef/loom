@@ -150,6 +150,8 @@ pub fn received(tail: Tail) -> Int {
 pub fn push(tail: Tail, chunk: BitArray) -> Tail {
   let size = bit_array.byte_size(chunk)
   let received = tail.received + size
+
+  // Check whether chunk alone fills capacity or can be appended and trimmed.
   case size >= tail.capacity {
     // The chunk alone fills the window, so nothing already retained can
     // survive it and the answer is a slice of the chunk. Appending first
@@ -159,6 +161,8 @@ pub fn push(tail: Tail, chunk: BitArray) -> Tail {
     // this type's bound was not actually a bound.
     True -> {
       let cut = boundary_at(chunk, size - tail.capacity, utf8_backoff)
+
+      // Slice the chunk at the boundary.
       case bit_array.slice(chunk, cut, size - cut) {
         Ok(window) ->
           Tail(..tail, window:, dropped: tail.received + cut, received:)
@@ -187,10 +191,13 @@ pub fn push(tail: Tail, chunk: BitArray) -> Tail {
 // leading replacement character. Walking forward rather than back is what
 // keeps the window inside its bound: stepping back to the previous
 // boundary would retain more than `capacity` bytes.
+/// Trims the buffer window to capacity on a valid UTF-8 boundary.
 fn trim(tail: Tail) -> Tail {
   let size = bit_array.byte_size(tail.window)
   use <- bool.guard(when: size <= tail.capacity, return: tail)
   let cut = boundary_at(tail.window, size - tail.capacity, utf8_backoff)
+
+  // Slice the window after the cut boundary.
   case bit_array.slice(tail.window, cut, size - cut) {
     Ok(window) -> Tail(..tail, window:, dropped: tail.dropped + cut)
 
@@ -245,8 +252,11 @@ pub fn since(tail: Tail, cursor: Int) -> Since {
 // The record's invariant — `received - dropped` is the window's size — is
 // what makes this subtraction and no bounds arithmetic: `from` is at or
 // after `dropped` and at or before `received` by the two clamps above.
+/// Returns the retained slice of window bytes starting from stream position `from`.
 fn window_from(tail: Tail, from: Int) -> BitArray {
   let offset = from - tail.dropped
+
+  // Slice the window buffer starting from the clamped stream offset.
   case bit_array.slice(tail.window, offset, tail.received - from) {
     Ok(bytes) -> bytes
 
@@ -271,9 +281,12 @@ fn window_from(tail: Tail, from: Int) -> BitArray {
 // fit in what is left is incomplete and waits, and a byte that leads no
 // character at all is binary output and goes out as it is. A stream of
 // 0xFF would otherwise answer every poll with nothing, forever.
+/// Returns the prefix of `bytes` holding only complete characters.
 fn complete_prefix(bytes: BitArray) -> BitArray {
   let size = bit_array.byte_size(bytes)
   let keep = complete_length(bytes, size, size - 1, utf8_backoff)
+
+  // Slice up to the last complete UTF-8 character boundary.
   case bit_array.slice(bytes, 0, keep) {
     Ok(prefix) -> prefix
 
@@ -286,6 +299,7 @@ fn complete_prefix(bytes: BitArray) -> BitArray {
 
 // How much of `bytes` ends on a complete character, walking back from
 // `at` over at most `budget` continuation bytes to find the last lead.
+/// Computes the byte length of `bytes` ending cleanly on a UTF-8 character boundary.
 fn complete_length(bytes: BitArray, size: Int, at: Int, budget: Int) -> Int {
   use <- bool.guard(when: at < 0 || budget < 0, return: size)
   use byte <- or_whole(byte_at(bytes, at), size)
@@ -300,6 +314,8 @@ fn complete_length(bytes: BitArray, size: Int, at: Int, budget: Int) -> Int {
   // A byte that leads no character at all: the stream is not UTF-8 here,
   // so there is no boundary to wait for.
   use width <- or_whole(character_width(byte), size)
+
+  // Check whether the trailing character fits completely within the slice.
   case at + width <= size {
     True -> size
     False -> at
@@ -322,6 +338,7 @@ fn or_whole(value: Result(a, Nil), size: Int, then: fn(a) -> Int) -> Int {
 // How many bytes the character beginning with `lead` occupies, or
 // `Error(Nil)` for a byte that begins none — a continuation byte, an
 // overlong two-byte lead, or one of the five values UTF-8 never uses.
+/// Returns the expected byte length of a UTF-8 character starting with `lead`.
 fn character_width(lead: Int) -> Result(Int, Nil) {
   case lead {
     _ascii if lead < 0x80 -> Ok(1)
@@ -344,8 +361,11 @@ fn is_continuation(byte: Int) -> Bool {
 // Running out of budget means the bytes are not UTF-8 at all, and the
 // offer stands where it was: this walk exists to make text read cleanly,
 // not to refuse binary output.
+/// Finds the first character boundary at or after `from` within a backoff budget.
 fn boundary_at(bytes: BitArray, from: Int, budget: Int) -> Int {
   use <- bool.guard(when: budget <= 0, return: from)
+
+  // Inspect the byte at from to step past continuation bytes.
   case byte_at(bytes, from) {
     Error(Nil) -> from
 
@@ -357,6 +377,7 @@ fn boundary_at(bytes: BitArray, from: Int, budget: Int) -> Int {
   }
 }
 
+/// Returns the byte value at `index` in `bytes` as an integer.
 fn byte_at(bytes: BitArray, index: Int) -> Result(Int, Nil) {
   case bit_array.slice(bytes, index, 1) {
     Ok(<<value:size(8)>>) -> Ok(value)

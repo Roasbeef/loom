@@ -27,6 +27,13 @@
 //// - Strings must be valid JSON: unescaped control characters are
 ////   rejected, `\uXXXX` escapes are decoded including surrogate pairs, and
 ////   lone surrogates are rejected.
+////
+//// ## Flow
+////
+//// Main parsing and serialization operations:
+//// - `parse`: decodes JSON text into a typed `JsonValue`
+//// - `to_string`: formats a `JsonValue` to compact JSON text
+//// - `canonical`: normalises a `JsonValue` with recursively sorted object keys
 
 import core/corruption.{type CorruptionReport}
 import gleam/bit_array
@@ -103,6 +110,8 @@ pub fn parse(text: String) -> Result(JsonValue, CorruptionReport) {
   let cursor = Cursor(rest: bytes, source: bytes, consumed: 0)
   use #(value, cursor) <- result.try(parse_value(skip_whitespace(cursor), 0))
   let cursor = skip_whitespace(cursor)
+
+  // Verify that all input bytes have been consumed after the document.
   case bit_array.byte_size(cursor.rest) {
     0 -> Ok(value)
     _ -> Error(fail(cursor, "end of input after the document"))
@@ -151,8 +160,7 @@ pub fn canonical(value: JsonValue) -> JsonValue {
   }
 }
 
-// --- serialization ------------------------------------------------------
-
+/// Formats a JSON value into a string tree builder.
 fn build(value: JsonValue) -> StringTree {
   case value {
     Null -> string_tree.from_string("null")
@@ -168,10 +176,12 @@ fn build(value: JsonValue) -> StringTree {
   }
 }
 
-// Work backwards so each item and separator can be prepended directly to the
-// final fragment list. This replaces map plus intersperse's reversed accumulator
-// without a recursive frame per sibling on either target. The closing delimiter
-// is already present; only the first textual item omits a preceding comma.
+/// Encodes array items working backwards to construct the formatted array.
+///
+/// Work backwards so each item and separator can be prepended directly to the
+/// final fragment list. This replaces map plus intersperse's reversed accumulator
+/// without a recursive frame per sibling on either target. The closing delimiter
+/// is already present; only the first textual item omits a preceding comma.
 fn build_items_loop(
   reversed: List(JsonValue),
   fragments: List(StringTree),
@@ -193,10 +203,12 @@ fn build_items_loop(
   }
 }
 
-// Keys and values use the unchanged scalar encoders. A field contributes its
-// three fragments directly, rather than building nested append trees and then
-// mapping and interspersing a second list of field trees. Reversing traversal
-// preserves emitted field order, including hand-built duplicate keys.
+/// Encodes object fields working backwards to construct the formatted object.
+///
+/// Keys and values use the unchanged scalar encoders. A field contributes its
+/// three fragments directly, rather than building nested append trees and then
+/// mapping and interspersing a second list of field trees. Reversing traversal
+/// preserves emitted field order, including hand-built duplicate keys.
 fn build_fields_loop(
   reversed: List(#(String, JsonValue)),
   fragments: List(StringTree),
@@ -222,6 +234,7 @@ fn build_fields_loop(
   }
 }
 
+/// Formats a string value with appropriate JSON quotes and character escapes.
 fn build_string(text: String) -> StringTree {
   let bytes = <<text:utf8>>
   let size = bit_array.byte_size(bytes)
@@ -243,17 +256,19 @@ fn build_string(text: String) -> StringTree {
   }
 }
 
-// Walks the string's bytes once and emits every run that needs no escape
-// as a single slice. JSON escapes only `"`, `\` and the C0 controls, all
-// of which are ASCII, and no byte of a multi-byte UTF-8 sequence is below
-// 0x80, so a byte scan can neither split a codepoint nor miss an escape.
-// The pattern keeps the BEAM's match context alive across the loop, so
-// four safe bytes advance together without allocating a new binary. A
-// chunk containing an escape falls back to the original byte step, so
-// `run_start` and `at` still bracket whole codepoints at every flush.
-// The slices are validated in place, not copied. This was a per-codepoint
-// fold that built one binary per character, and on a 1.3 MB request body
-// it was the whole of the encode time (issue #359).
+/// Walks the string's bytes once and emits runs that need no escape.
+///
+/// Walks the string's bytes once and emits every run that needs no escape
+/// as a single slice. JSON escapes only `"`, `\` and the C0 controls, all
+/// of which are ASCII, and no byte of a multi-byte UTF-8 sequence is below
+/// 0x80, so a byte scan can neither split a codepoint nor miss an escape.
+/// The pattern keeps the BEAM's match context alive across the loop, so
+/// four safe bytes advance together without allocating a new binary. A
+/// chunk containing an escape falls back to the original byte step, so
+/// `run_start` and `at` still bracket whole codepoints at every flush.
+/// The slices are validated in place, not copied. This was a per-codepoint
+/// fold that built one binary per character, and on a 1.3 MB request body
+/// it was the whole of the encode time (issue #359).
 fn escape_runs(
   tree: StringTree,
   whole: BitArray,
@@ -261,6 +276,7 @@ fn escape_runs(
   run_start: Int,
   at: Int,
 ) -> Result(StringTree, Nil) {
+  // Inspect remaining bytes to match safe runs or escape delimiters.
   case rest {
     <<a, b, c, d, more:bits>>
       if a >= 0x20
@@ -291,22 +307,27 @@ fn escape_runs(
   }
 }
 
-// Appends `whole[run_start, at)` as one chunk. Both bounds come from the
-// same walk over `whole`, so the slice cannot be out of range and, cut at
-// ASCII, cannot be invalid UTF-8; the `Result` is what keeps this total
-// without a `let assert`, and the caller falls back to the slow path.
-// A binary match enforces both bounds without the slice wrapper's extra
-// Result and continuation; UTF-8 validation remains at the text boundary.
+/// Appends `whole[run_start, at)` as one chunk to the output tree.
+///
+/// Appends `whole[run_start, at)` as one chunk. Both bounds come from the
+/// same walk over `whole`, so the slice cannot be out of range and, cut at
+/// ASCII, cannot be invalid UTF-8; the `Result` is what keeps this total
+/// without a `let assert`, and the caller falls back to the slow path.
+/// A binary match enforces both bounds without the slice wrapper's extra
+/// Result and continuation; UTF-8 validation remains at the text boundary.
 fn flush_run(
   tree: StringTree,
   whole: BitArray,
   run_start: Int,
   at: Int,
 ) -> Result(StringTree, Nil) {
+  // Check whether there is a non-empty run of bytes to append.
   case at > run_start {
     False -> Ok(tree)
     True -> {
       let length = at - run_start
+
+      // Extract the run from whole bytes.
       case whole {
         <<_:bytes-size(run_start), run:bytes-size(length), _:bits>> ->
           bit_array.to_string(run)
@@ -317,6 +338,7 @@ fn flush_run(
   }
 }
 
+/// Returns the JSON escape sequence for a character byte.
 fn escape_of(byte: Int) -> String {
   case byte {
     0x22 -> "\\\""
@@ -336,15 +358,25 @@ fn escape_of(byte: Int) -> String {
   }
 }
 
-// The reference encoder, one codepoint at a time. It is the fallback for
-// the impossible slice failure above and the oracle the tests compare the
-// run-based encoder against.
+/// Encodes a string one codepoint at a time as a reference encoder.
+///
+/// The reference encoder, one codepoint at a time. It is the fallback for
+/// the impossible slice failure above and the oracle the tests compare the
+/// run-based encoder against.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert json.build_string_by_codepoint("hello") == json.to_string(json.String("hello"))
+/// ```
 @internal
 pub fn build_string_by_codepoint(text: String) -> StringTree {
   text
   |> string.to_utf_codepoints
   |> list.fold(from: string_tree.from_string("\""), with: fn(tree, codepoint) {
     let code = string.utf_codepoint_to_int(codepoint)
+
+    // Escape special characters or append ordinary codepoints.
     case code == 0x22 || code == 0x5C || code < 0x20 {
       True -> string_tree.append(tree, escape_of(code))
       False -> string_tree.append(tree, string.from_utf_codepoints([codepoint]))
@@ -367,6 +399,7 @@ type Cursor {
   Cursor(rest: BitArray, source: BitArray, consumed: Int)
 }
 
+/// Constructs a corruption report at the current cursor position.
 fn fail(cursor: Cursor, expected: String) -> CorruptionReport {
   corruption.report(
     at: "core/json.parse",
@@ -385,8 +418,9 @@ fn codepoint_offset(cursor: Cursor) -> Int {
   |> result.unwrap(cursor.consumed)
 }
 
-// Shows at most 24 codepoints of remaining input in a report.
+/// Shows at most 24 codepoints of remaining input in a report.
 fn excerpt(rest: BitArray) -> String {
+  // Check remaining input byte size to generate excerpt.
   case bit_array.byte_size(rest) {
     0 -> "end of input"
     size -> {
@@ -395,6 +429,8 @@ fn excerpt(rest: BitArray) -> String {
       let window = int.min(size, 96)
       let prefix = valid_prefix(rest, window)
       let shown = string.slice(prefix, 0, 24)
+
+      // Append ellipsis if the remaining input exceeds the excerpt window.
       case window < size || string.length(shown) < string.length(prefix) {
         True -> shown <> "…"
         False -> shown
@@ -403,6 +439,7 @@ fn excerpt(rest: BitArray) -> String {
   }
 }
 
+/// Finds the longest valid UTF-8 prefix within length bytes.
 fn valid_prefix(rest: BitArray, length: Int) -> String {
   case length <= 0 {
     True -> ""
@@ -418,6 +455,7 @@ fn advance(cursor: Cursor, rest: BitArray, by count: Int) -> Cursor {
   Cursor(..cursor, rest:, consumed: cursor.consumed + count)
 }
 
+/// Advances past leading whitespace bytes in the cursor input.
 fn skip_whitespace(cursor: Cursor) -> Cursor {
   case cursor.rest {
     <<byte, rest:bits>>
@@ -427,12 +465,15 @@ fn skip_whitespace(cursor: Cursor) -> Cursor {
   }
 }
 
-// `depth` counts the containers already entered; a new object or array is
-// admitted only while `depth < max_depth`, which bounds the recursion.
+/// Parses a single JSON value from the cursor input.
+///
+/// `depth` counts the containers already entered; a new object or array is
+/// admitted only while `depth < max_depth`, which bounds the recursion.
 fn parse_value(
   cursor: Cursor,
   depth: Int,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
+  // Dispatch parsing based on the leading byte of unconsumed input.
   case cursor.rest {
     <<0x7B, rest:bits>> -> {
       use Nil <- result.try(check_depth(cursor, depth))
@@ -472,9 +513,11 @@ fn parse_value(
 
 // --- objects and arrays -------------------------------------------------
 
-// `seen` indexes the field names parsed so far in this object, so
-// duplicate detection costs one dict probe per field rather than a
-// quadratic rescan an adversarial many-field object could exploit.
+/// Parses comma-separated object key-value members until closing brace.
+///
+/// `seen` indexes the field names parsed so far in this object, so
+/// duplicate detection costs one dict probe per field rather than a
+/// quadratic rescan an adversarial many-field object could exploit.
 fn parse_members(
   cursor: Cursor,
   fields: List(#(String, JsonValue)),
@@ -483,6 +526,8 @@ fn parse_members(
   depth depth: Int,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
   let cursor = skip_whitespace(cursor)
+
+  // Branch on closing brace for empty object or continue with member.
   case cursor.rest, expect_first {
     <<0x7D, rest:bits>>, True -> Ok(#(Object([]), advance(cursor, rest, by: 1)))
     _, _ -> {
@@ -491,6 +536,8 @@ fn parse_members(
       let fields = [#(name, value), ..fields]
       let seen = dict.insert(seen, name, Nil)
       let cursor = skip_whitespace(cursor)
+
+      // Check for comma delimiter or closing brace.
       case cursor.rest {
         <<0x2C, rest:bits>> ->
           parse_members(
@@ -508,6 +555,7 @@ fn parse_members(
   }
 }
 
+/// Checks that a member key has not been seen before in this object.
 fn check_unique_key(
   cursor: Cursor,
   seen: Dict(String, Nil),
@@ -520,16 +568,20 @@ fn check_unique_key(
   }
 }
 
+/// Parses one key-value member pair of an object.
 fn parse_member(
   cursor: Cursor,
   depth: Int,
 ) -> Result(#(#(String, JsonValue), Cursor), CorruptionReport) {
+  // Expect string literal as member key.
   case cursor.rest {
     <<0x22, rest:bits>> -> {
       use #(name, cursor) <- result.try(
         parse_string_body(advance(cursor, rest, by: 1), []),
       )
       let cursor = skip_whitespace(cursor)
+
+      // Expect colon separator following object member key.
       case cursor.rest {
         <<0x3A, rest:bits>> -> {
           use #(value, cursor) <- result.try(parse_value(
@@ -545,6 +597,7 @@ fn parse_member(
   }
 }
 
+/// Parses comma-separated array items until closing bracket.
 fn parse_items(
   cursor: Cursor,
   items: List(JsonValue),
@@ -552,12 +605,16 @@ fn parse_items(
   depth depth: Int,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
   let cursor = skip_whitespace(cursor)
+
+  // Check for closing bracket on empty array or parse first item.
   case cursor.rest, expect_first {
     <<0x5D, rest:bits>>, True -> Ok(#(Array([]), advance(cursor, rest, by: 1)))
     _, _ -> {
       use #(item, cursor) <- result.try(parse_value(cursor, depth))
       let items = [item, ..items]
       let cursor = skip_whitespace(cursor)
+
+      // Check for comma delimiter or closing bracket.
       case cursor.rest {
         <<0x2C, rest:bits>> ->
           parse_items(
@@ -574,6 +631,7 @@ fn parse_items(
   }
 }
 
+/// Enforces the maximum nesting depth for JSON containers.
 fn check_depth(cursor: Cursor, depth: Int) -> Result(Nil, CorruptionReport) {
   case depth < max_depth {
     True -> Ok(Nil)
@@ -589,9 +647,11 @@ fn check_depth(cursor: Cursor, depth: Int) -> Result(Nil, CorruptionReport) {
 
 // --- strings ------------------------------------------------------------
 
-// A string body is runs of bytes that need no attention, cut out as
-// slices, separated by the three things that do: the closing quote, an
-// escape, and a control character that should have been escaped.
+/// Parses the body of a string literal after the opening quote.
+///
+/// A string body is runs of bytes that need no attention, cut out as
+/// slices, separated by the three things that do: the closing quote, an
+/// escape, and a control character that should have been escaped.
 fn parse_string_body(
   cursor: Cursor,
   chunks: List(String),
@@ -641,11 +701,13 @@ fn parse_string_body(
   }
 }
 
-// How many leading bytes are neither a quote, a backslash nor a control.
-// Every byte of a multi-byte codepoint is at least 0x80, so the count can
-// only stop on an ASCII byte and the run it measures is whole codepoints.
-// Eight-byte chunks check every byte. The four-byte and single-byte paths
-// finish short runs without rescanning each byte before a nearby delimiter.
+/// Counts how many leading bytes require no escape or special handling.
+///
+/// How many leading bytes are neither a quote, a backslash nor a control.
+/// Every byte of a multi-byte codepoint is at least 0x80, so the count can
+/// only stop on an ASCII byte and the run it measures is whole codepoints.
+/// Eight-byte chunks check every byte. The four-byte and single-byte paths
+/// finish short runs without rescanning each byte before a nearby delimiter.
 fn clean_run(rest: BitArray, count: Int) -> Int {
   case rest {
     <<a, b, c, d, e, f, g, h, more:bits>>
@@ -704,18 +766,22 @@ fn clean_run(rest: BitArray, count: Int) -> Int {
 // `bit_array.slice` calls: a slice is a function call wrapped in an
 // exception handler and answers a fresh tuple. Numeric digit runs use this
 // helper; string runs validate their matched slices without the extra pair.
+/// Slices off a prefix of `length` bytes from the cursor as string text.
 fn cut(
   cursor: Cursor,
   length: Int,
 ) -> Result(#(String, BitArray), CorruptionReport) {
+  // Slice the requested length from remaining bytes.
   let pieces = case cursor.rest {
     <<run:bytes-size(length), after:bits>> ->
       bit_array.to_string(run) |> result.map(fn(text) { #(text, after) })
     _shorter -> Error(Nil)
   }
+
   result.map_error(pieces, fn(_) { fail(cursor, "a valid utf-8 string") })
 }
 
+/// Parses an escape sequence following a backslash character.
 fn parse_escape(
   cursor: Cursor,
   chunks: List(String),
@@ -743,18 +809,23 @@ fn parse_escape(
   }
 }
 
+/// Parses a `\uXXXX` escape sequence including surrogate pairs.
 fn parse_unicode_escape(
   cursor: Cursor,
   chunks: List(String),
 ) -> Result(#(String, Cursor), CorruptionReport) {
   use #(code, after_first) <- result.try(parse_hex_4(cursor))
+
+  // Check whether the codepoint is a high surrogate requiring a pair.
   case code >= 0xD800 && code <= 0xDBFF {
     True -> {
+      // Check if low surrogate escape immediately follows.
       use #(low, after_second) <- result.try(case after_first.rest {
         <<0x5C, 0x75, rest:bits>> ->
           parse_hex_4(advance(after_first, rest, by: 2))
         _ -> Error(fail(after_first, "a low surrogate escape"))
       })
+
       use <- bool.lazy_guard(when: low < 0xDC00 || low > 0xDFFF, return: fn() {
         Error(fail(after_first, "a low surrogate escape"))
       })
@@ -765,6 +836,7 @@ fn parse_unicode_escape(
   }
 }
 
+/// Validates a codepoint integer and appends it to decoded chunks.
 fn append_codepoint(
   cursor: Cursor,
   chunks: List(String),
@@ -781,6 +853,7 @@ fn append_codepoint(
   }
 }
 
+/// Parses four hexadecimal digits from the cursor.
 fn parse_hex_4(cursor: Cursor) -> Result(#(Int, Cursor), CorruptionReport) {
   case cursor.rest {
     <<a, b, c, d, rest:bits>> ->
@@ -796,6 +869,7 @@ fn parse_hex_4(cursor: Cursor) -> Result(#(Int, Cursor), CorruptionReport) {
   }
 }
 
+/// Returns the integer value of an ASCII hex character.
 fn hex_value(code: Int) -> Result(Int, Nil) {
   use <- bool.guard(when: code >= 0x30 && code <= 0x39, return: Ok(code - 0x30))
   use <- bool.guard(
@@ -811,20 +885,27 @@ fn hex_value(code: Int) -> Result(Int, Nil) {
 
 // --- numbers ------------------------------------------------------------
 
-// Digits are cut out as one slice rather than accumulated one integer at a
-// time; the grammar checks (no leading zero, digits after a point or an
-// exponent) are made on the bytes before the slice is taken.
+/// Parses an integer or floating-point number from the cursor.
+///
+/// Digits are cut out as one slice rather than accumulated one integer at a
+/// time; the grammar checks (no leading zero, digits after a point or an
+/// exponent) are made on the bytes before the slice is taken.
 fn parse_number(
   cursor: Cursor,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
   let start = cursor
+
+  // Check for leading minus sign.
   let #(negative, cursor) = case cursor.rest {
     <<0x2D, rest:bits>> -> #(True, advance(cursor, rest, by: 1))
     _ -> #(False, cursor)
   }
+
   use #(int_digits, cursor) <- result.try(parse_integer_digits(cursor))
   use #(frac_digits, cursor) <- result.try(parse_fraction(cursor))
   use #(exponent, cursor) <- result.try(parse_exponent(cursor))
+
+  // Determine whether to produce an integer or a floating-point value.
   case frac_digits, exponent {
     "", "" ->
       case int.parse(int_digits) {
@@ -836,13 +917,17 @@ fn parse_number(
   }
 }
 
+/// Parses optional fraction digits following a decimal point.
 fn parse_fraction(
   cursor: Cursor,
 ) -> Result(#(String, Cursor), CorruptionReport) {
+  // Check for presence of decimal point.
   case cursor.rest {
     <<0x2E, rest:bits>> -> {
       let after = advance(cursor, rest, by: 1)
       use #(digits, after) <- result.try(take_digits(after))
+
+      // Ensure at least one digit follows decimal point.
       case digits {
         "" -> Error(fail(cursor, "digits after the decimal point"))
         _ -> Ok(#(digits, after))
@@ -852,6 +937,7 @@ fn parse_fraction(
   }
 }
 
+/// Parses leading integer digits ensuring no invalid leading zeros.
 fn parse_integer_digits(
   cursor: Cursor,
 ) -> Result(#(String, Cursor), CorruptionReport) {
@@ -869,6 +955,7 @@ fn take_digits(cursor: Cursor) -> Result(#(String, Cursor), CorruptionReport) {
   Ok(#(digits, advance(cursor, after, by: run)))
 }
 
+/// Counts consecutive ASCII digit bytes in the remaining input.
 fn digit_run(rest: BitArray, count: Int) -> Int {
   case rest {
     <<byte, more:bits>> if byte >= 0x30 && byte <= 0x39 ->
@@ -877,18 +964,25 @@ fn digit_run(rest: BitArray, count: Int) -> Int {
   }
 }
 
+/// Parses an optional exponent component of a number literal.
 fn parse_exponent(
   cursor: Cursor,
 ) -> Result(#(String, Cursor), CorruptionReport) {
+  // Check for exponent marker e or E.
   case cursor.rest {
     <<byte, rest:bits>> if byte == 0x65 || byte == 0x45 -> {
       let cursor = advance(cursor, rest, by: 1)
+
+      // Check for exponent sign.
       let #(sign, cursor) = case cursor.rest {
         <<0x2D, rest:bits>> -> #("-", advance(cursor, rest, by: 1))
         <<0x2B, rest:bits>> -> #("", advance(cursor, rest, by: 1))
         _ -> #("", cursor)
       }
+
       use #(digits, cursor) <- result.try(take_digits(cursor))
+
+      // Ensure at least one digit follows the exponent indicator.
       case digits {
         "" -> Error(fail(cursor, "digits in the exponent"))
         _ -> Ok(#("e" <> sign <> digits, cursor))
@@ -898,6 +992,7 @@ fn parse_exponent(
   }
 }
 
+/// Constructs a floating-point number value from parsed components.
 fn finish_float(
   start: Cursor,
   cursor: Cursor,
@@ -906,15 +1001,21 @@ fn finish_float(
   frac_digits: String,
   exponent: String,
 ) -> Result(#(JsonValue, Cursor), CorruptionReport) {
+  // Determine sign string for floating-point literal.
   let sign = case negative {
     True -> "-"
     False -> ""
   }
+
+  // Normalise empty fraction to 0 for float parsing.
   let fraction = case frac_digits {
     "" -> "0"
     _ -> frac_digits
   }
+
   let literal = sign <> int_digits <> "." <> fraction <> exponent
+
+  // Parse the float literal and validate IEEE-754 bounds.
   case float.parse(literal) {
     Ok(value) -> Ok(#(Float(value), cursor))
     Error(Nil) ->

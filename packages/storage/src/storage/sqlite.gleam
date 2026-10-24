@@ -402,6 +402,8 @@ pub fn open_with_migrations(
     }),
   )
   let #(now, clock) = clock.read(clock)
+
+  // Initialize database schema and claim writer lease or close connection.
   case initialize(conn, config, now, migrations) {
     Ok(fence) -> start_actor(conn, config, clock, fence)
     Error(open_error) -> {
@@ -422,6 +424,7 @@ pub fn open_with_migrations(
 // Only after admission commits do the migration chain and the WAL switch
 // run, both under the lease this writer now holds (pi §2.8: migrations
 // run under the writer lease, over quiescent state).
+/// Initializes the database connection, applying pragmas, running migrations, and claiming the lease.
 fn initialize(
   conn: Connection,
   config: Config,
@@ -432,6 +435,8 @@ fn initialize(
   use Nil <- result.try(
     begin_immediate(conn) |> result.map_error(admission_failed),
   )
+
+  // Admit connection, commit schema setup or rollback on failure.
   let admitted = case admit(conn, config, now, migrations) {
     Ok(opened) ->
       commit_sql(conn)
@@ -442,11 +447,14 @@ fn initialize(
       Error(open_error)
     }
   }
+
   use Opened(fence:, migrate_from:) <- result.try(admitted)
   let readied = {
     use Nil <- result.try(migrate(conn, migrate_from, migrations))
     set_wal_journal(conn)
   }
+
+  // Check whether connection readying succeeded or release lease.
   case readied {
     Ok(Nil) -> Ok(fence)
 
@@ -461,6 +469,7 @@ fn initialize(
 
 // Only BEGIN IMMEDIATE reaches this classification. Busy after lease claim,
 // migration or commit remains a failure with its original ownership meaning.
+/// Maps database admission failures into corresponding OpenError variants.
 fn admission_failed(fail: Fail) -> OpenError {
   case fail {
     FailSql(sqlight.SqlightError(code: sqlight.Busy, ..))
@@ -476,6 +485,7 @@ fn admission_failed(fail: Fail) -> OpenError {
   }
 }
 
+/// Maps general SQLite failures during opening into corresponding OpenError variants.
 fn open_failed(fail: Fail) -> OpenError {
   case fail {
     FailSql(error) -> OpenFailed(reason: describe_sqlight(error))
@@ -492,6 +502,7 @@ fn open_failed(fail: Fail) -> OpenError {
 // open can report as `OpenFailed`. The journal-mode switch is the one
 // statement that reliably contends cross-process, so this totality is
 // load-bearing (a contended open must refuse, never crash).
+/// Applies busy timeout settings to the database connection.
 fn set_busy_timeout(
   conn: Connection,
   busy_timeout_ms: Int,
@@ -525,6 +536,7 @@ type Opened {
 // The admission body, run inside the caller's BEGIN IMMEDIATE. Decides
 // fresh-create versus existing-open, refuses before writing, and claims
 // the lease. The caller commits on Ok and rolls back on Error.
+/// Verifies storage version compatibility, runs migrations, and claims the writer lease.
 fn admit(
   conn: Connection,
   config: Config,
@@ -532,6 +544,8 @@ fn admit(
   migrations: List(Migration),
 ) -> Result(Opened, OpenError) {
   use versions <- result.try(read_catalog_versions(conn))
+
+  // Verify existing catalog version or initialize fresh schema.
   case versions {
     // No catalog row: a fresh file, or one whose creation crashed between
     // the DDL and the catalog write (the IF NOT EXISTS batch makes the
@@ -576,6 +590,7 @@ fn admit(
 // The stored versions, or `None` when the file has no `session` table at
 // all (a genuinely fresh database — reading the catalog directly would
 // conjure an error, not an answer).
+/// Queries the session catalog table to read existing storage versions.
 fn read_catalog_versions(
   conn: Connection,
 ) -> Result(Option(List(Int)), OpenError) {
@@ -587,6 +602,8 @@ fn read_catalog_versions(
       decode.at([0], decode.string),
     )
   use tables <- result.try(probed |> result.map_error(open_failed))
+
+  // Probe existing catalog table presence.
   case tables {
     [] -> Ok(None)
     [_, ..] ->
@@ -608,6 +625,7 @@ fn exec_schema(conn: Connection) -> Result(Nil, OpenError) {
   })
 }
 
+/// Inserts the initial single-row session catalog record.
 fn insert_catalog_row(conn: Connection, now: Int) -> Result(Nil, OpenError) {
   run(
     conn,
@@ -628,6 +646,7 @@ fn insert_catalog_row(conn: Connection, now: Int) -> Result(Nil, OpenError) {
 // Verifies, purely, that the chain has a step for every version from
 // `from` up to this build's; the first gap is the refusal, reported
 // before anything has been written.
+/// Validates that migration chain covers all versions from current to target storage version.
 fn check_chain(
   from: Int,
   migrations: List(Migration),
@@ -647,6 +666,7 @@ fn check_chain(
 // transaction per step: the step's statements and its version bump commit
 // together, so a crash mid-chain leaves a file that simply resumes the
 // chain on the next open.
+/// Executes sequential schema migration steps from the current version to the latest.
 fn migrate(
   conn: Connection,
   from: Int,
@@ -666,6 +686,7 @@ fn migrate(
 
 // One step's statements plus its version bump, inside one transaction:
 // rolls back and translates the failure on error, otherwise commits.
+/// Executes SQL statements for a single migration step within a transaction.
 fn run_migration_step(
   conn: Connection,
   from: Int,
@@ -685,6 +706,8 @@ fn run_migration_step(
       ))
       commit_sql(conn)
     }
+
+    // Check if migration step body succeeded or roll back.
     case body {
       Ok(Nil) -> Ok(Nil)
       Error(fail) -> {
@@ -703,6 +726,7 @@ fn run_migration_step(
 // happens before this writer has written anything durable — an
 // existing-file admission claims last, and a create-path admission's
 // writes roll back with the refusal.
+/// Acquires or steals the writer lease for this process on the database.
 fn claim_lease(
   conn: Connection,
   config: Config,
@@ -723,11 +747,14 @@ fn claim_lease(
     )
     |> result.map_error(open_failed),
   )
+
+  // Determine fence value for claiming or stealing writer lease.
   use fence <- result.try(case rows {
     [] -> Ok(1)
     [#(_, fence, expires_at_ms)] if expires_at_ms <= now -> Ok(fence + 1)
     [#(owner, _, expires_at_ms), ..] -> Error(LeaseHeld(owner:, expires_at_ms:))
   })
+
   let written = {
     use _ <- result.try(run(
       conn,
@@ -755,6 +782,7 @@ fn claim_lease(
 // Use the binding's busy-total exec path: a query can throw on SQLITE_BUSY
 // instead of returning its error. The quoted owner and exact fence keep a
 // stale connection from deleting its replacement's lease.
+/// Releases the writer lease held by this process upon closing.
 fn release_lease(
   conn: Connection,
   owner: String,
@@ -815,6 +843,7 @@ pub fn snapshot_reader(handle: Subject(Message)) -> snapshot.Reader {
   )
 }
 
+/// Spawns the dedicated storage actor managing exclusive access to the SQLite connection.
 fn start_actor(
   conn: Connection,
   config: Config,
@@ -835,6 +864,8 @@ fn start_actor(
     actor.new(state)
     |> actor.on_message(handle_message)
     |> actor.start
+
+  // Construct storage interface functions from running actor.
   case started {
     Ok(started) ->
       Ok(
@@ -874,6 +905,7 @@ fn start_actor(
   }
 }
 
+/// Formats an actor startup failure into a descriptive error string.
 fn start_error_reason(error: actor.StartError) -> String {
   case error {
     actor.InitTimeout -> "initialisation timeout"
@@ -918,6 +950,8 @@ pub fn retire_closed(handle: Subject(Message)) -> Result(Nil, StorageError) {
     }),
   )
   let watch = process.monitor(pid)
+
+  // Await actor retirement and process termination.
   let outcome = case process.call_forever(handle, Retire) {
     Error(error) -> Error(error)
     Ok(Nil) -> {
@@ -937,6 +971,7 @@ pub fn retire_closed(handle: Subject(Message)) -> Result(Nil, StorageError) {
       )
     }
   }
+
   process.demonitor_process(watch)
   outcome
 }
@@ -1012,6 +1047,8 @@ pub fn identity(
   path path: String,
 ) -> Result(#(Option(String), Option(String)), RewriteError) {
   use Nil <- result.try(require_session_file(path))
+
+  // Open session database file to read recorded identity.
   case sqlight.open(path) {
     Error(error) ->
       Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
@@ -1139,6 +1176,7 @@ pub fn read_entries_around(
 }
 
 // The entries on one side of `seq`, nearest first.
+/// Queries neighbouring entry descriptors adjacent to a specific sequence number.
 fn neighbours(
   conn: Connection,
   seq: Int,
@@ -1166,6 +1204,7 @@ fn neighbours(
 
 // Opens the host-supplied source read-only, proves it is the named session,
 // runs `body`, and closes the connection whatever `body` answers.
+/// Opens a source session file and verifies that its stored identity matches expectations.
 fn with_identified_source(
   path: String,
   session: ids.SessionId,
@@ -1193,6 +1232,7 @@ fn with_identified_source(
   outcome
 }
 
+/// Verifies that a session database matches the expected session identifier.
 fn check_identity(
   conn: Connection,
   session: ids.SessionId,
@@ -1201,12 +1241,15 @@ fn check_identity(
     read_identity(conn)
     |> result.map_error(fn(error) { BackendFault(string.inspect(error)) }),
   )
+
+  // Verify source session identity matches expected session identifier.
   case identity == Some(ids.session_id_to_string(session)) {
     True -> Ok(Nil)
     False -> Error(BackendFault("history source session identity mismatch"))
   }
 }
 
+/// Queries a stored history entry by identifier from the database.
 fn read_stored_entry(
   conn: Connection,
   entry: EntryId,
@@ -1215,6 +1258,7 @@ fn read_stored_entry(
   dict.get(entries, entry) |> result.map_error(fn(_) { UnknownEntry(entry) })
 }
 
+/// Reads the session identity recorded in the session catalog table.
 fn read_identity(
   conn: Connection,
 ) -> Result(#(Option(String), Option(String)), RewriteError) {
@@ -1226,6 +1270,8 @@ fn read_identity(
     })
     |> result.map_error(rewrite_fail),
   )
+
+  // Decode parent session identifier and metadata fields from catalog row.
   case rows {
     [#(parent, metadata)] -> {
       use fields <- result.map(
@@ -1399,6 +1445,8 @@ pub fn rewrite_into(
 ) -> Result(Rewrite, RewriteError) {
   let #(now, _clock) = clock.read(clock)
   use Nil <- result.try(require_session_file(path))
+
+  // Open session database file for staging rewrite.
   case sqlight.open(path) {
     Error(error) ->
       Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
@@ -1454,11 +1502,15 @@ pub fn export_closed(
 ) -> Result(String, RewriteError) {
   let #(now, _clock) = clock.read(clock)
   use Nil <- result.try(require_session_file(path))
+
+  // Ensure export destination copy path differs from session file.
   use Nil <- result.try(case copy == path {
     True ->
       Error(RewriteFailed(reason: "the export destination is the session file"))
     False -> Ok(Nil)
   })
+
+  // Open source session database for closed export.
   case sqlight.open(path) {
     Error(error) ->
       Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
@@ -1471,6 +1523,8 @@ pub fn export_closed(
           owner:,
           reclaim: ReclaimOwn,
         ))
+
+        // Compute digest of exported copy file.
         case digest_of(copy) {
           Ok(digest) -> Ok(digest)
           Error(error) -> {
@@ -1541,6 +1595,7 @@ pub fn release_export(
 }
 
 // The SHA-256 of a whole file, as lowercase hex.
+/// Calculates the SHA-256 digest of a database file.
 fn digest_of(path: String) -> Result(String, RewriteError) {
   case simplifile.read_bits(path) {
     Ok(bytes) ->
@@ -1561,6 +1616,7 @@ fn digest_of(path: String) -> Result(String, RewriteError) {
 // the unleased copy), transform it, and re-verify the lease. On any
 // failure after the claim the lease is released and the temp copy removed,
 // leaving the original exactly as it was found.
+/// Stages rewritten database contents into a temporary file before atomic swap.
 fn stage_rewrite(
   conn: Connection,
   path: String,
@@ -1586,6 +1642,8 @@ fn stage_rewrite(
     use Nil <- result.map(verify_closed_lease(conn, rewrite_owner, fence))
     #(temp, fence, outcome)
   }
+
+  // Return staged rewrite outcome or clean up on error.
   case staged {
     Ok(ok) -> Ok(ok)
     Error(error) -> {
@@ -1615,6 +1673,7 @@ type Reclaim {
 // stays held in the original and its fence is returned, so the caller can
 // verify or release exactly that claim. On any failure the copy is removed
 // and the claim released, leaving the original as it was found.
+/// Executes cut capture on a closed session database using a temporary lease.
 fn cut_closed(
   conn: Connection,
   now now: Int,
@@ -1643,6 +1702,8 @@ fn cut_closed(
     )
     clear_copy_lease(copy)
   }
+
+  // Return claimed fence or clean up exported copy on error.
   case cut {
     Ok(Nil) -> Ok(fence)
     Error(error) -> {
@@ -1670,7 +1731,9 @@ fn remove_copy(copy: String) -> Result(Nil, RewriteError) {
 // cell's bytes in its page: the copy would then differ between two cuts of
 // the same session by the lease's fence and expiry, and its digest would
 // not name the session's content.
+/// Removes the writer lease record from an exported database copy.
 fn clear_copy_lease(copy: String) -> Result(Nil, RewriteError) {
+  // Open exported copy to clear writer lease records.
   case sqlight.open(copy) {
     Error(error) ->
       Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
@@ -1697,6 +1760,7 @@ fn clear_copy_lease(copy: String) -> Result(Nil, RewriteError) {
 // but a failure to remove an on-disk remnant is an audit failure and is
 // reported, never discarded (M3-01: a swallowed unlink error reported a
 // clean erasure that the next open silently undid).
+/// Atomically renames the temporary rewritten database into place.
 fn swap(
   conn: Connection,
   path: String,
@@ -1704,6 +1768,7 @@ fn swap(
   fence: Int,
   outcome: Rewrite,
 ) -> Result(Rewrite, RewriteError) {
+  // Atomically rename temporary database file over target path.
   case simplifile.rename(at: temp, to: path) {
     Ok(Nil) -> {
       let _ = sqlight.close(conn)
@@ -1725,6 +1790,7 @@ fn swap(
 // Deletes a file, treating "already absent" as success and any other
 // failure as a real error — a rewrite that cannot remove an on-disk
 // remnant must say so, not report a clean erasure over it.
+/// Removes a file from disk if present, ignoring missing file errors.
 fn remove_file(path: String, what: String) -> Result(Nil, RewriteError) {
   case simplifile.delete(path) {
     Ok(Nil) -> Ok(Nil)
@@ -1750,11 +1816,14 @@ fn remove_file(path: String, what: String) -> Result(Nil, RewriteError) {
 // which a freshly closed handle's not-yet-collected statement objects
 // can defeat; a truncated WAL is just as unreplayable.) On a non-WAL
 // file the pragma is a no-op reporting success.
+/// Checkpoints and truncates the write-ahead log for a database.
 fn retire_wal(conn: Connection) -> Result(Nil, RewriteError) {
   use rows <- result.try(
     run(conn, "PRAGMA wal_checkpoint(TRUNCATE)", [], decode.at([0], decode.int))
     |> result.map_error(rewrite_fail),
   )
+
+  // Check whether WAL checkpoint finished without active readers.
   case rows {
     [0] -> Ok(Nil)
     [_, ..] | [] ->
@@ -1772,6 +1841,7 @@ fn retire_wal(conn: Connection) -> Result(Nil, RewriteError) {
 // (M3-02), the claim *holds*: from here until the swap, or a failure's
 // release, a concurrent `open` is refused with `LeaseHeld` instead of
 // committing into a file the rename is about to discard.
+/// Acquires a temporary writer lease on a closed session file.
 fn claim_closed_lease(
   conn: Connection,
   now: Int,
@@ -1796,6 +1866,8 @@ fn claim_closed_lease(
       )
       |> result.map_error(rewrite_fail),
     )
+
+    // Verify lease availability or reclaim eligibility on closed file.
     use fence <- result.try(case rows, reclaim {
       [], _ -> Ok(1)
       [#(_, fence, expires_at_ms)], _ if expires_at_ms <= now -> Ok(fence + 1)
@@ -1803,6 +1875,7 @@ fn claim_closed_lease(
       [#(holder, _, expires_at_ms), ..], _ ->
         Error(RewriteLeaseHeld(owner: holder, expires_at_ms:))
     })
+
     use _ <- result.try(
       run(conn, "DELETE FROM writer_lease", [], decode.dynamic)
       |> result.map_error(rewrite_fail),
@@ -1823,6 +1896,8 @@ fn claim_closed_lease(
     use Nil <- result.map(commit_sql(conn) |> result.map_error(rewrite_fail))
     fence
   }
+
+  // Return claimed fence or roll back on error.
   case claimed {
     Ok(fence) -> Ok(fence)
     Error(error) -> {
@@ -1834,6 +1909,7 @@ fn claim_closed_lease(
 
 // Re-reads the lease: it must still be the claim this operation made.
 // Anything else means the TTL lapsed and another owner took over.
+/// Verifies that the temporary lease on a closed session file remains valid.
 fn verify_closed_lease(
   conn: Connection,
   owner: String,
@@ -1854,6 +1930,8 @@ fn verify_closed_lease(
     )
     |> result.map_error(rewrite_fail),
   )
+
+  // Verify that closed lease holder and fence match expected ownership.
   case rows {
     [#(holder, held_fence, _)] if holder == owner && held_fence == fence ->
       Ok(Nil)
@@ -1867,6 +1945,7 @@ fn verify_closed_lease(
 // the original file survives. Issued through `exec` — the busy-total path —
 // with program-constant operands, because no transaction protects this
 // statement from cross-process contention.
+/// Releases a temporary writer lease on a closed session file.
 fn release_closed_lease(
   conn: Connection,
   owner: String,
@@ -1896,6 +1975,8 @@ fn release_closed_lease(
 ///
 pub fn generation(path path: String) -> Result(Int, RewriteError) {
   use Nil <- result.try(require_session_file(path))
+
+  // Open database to read generation counter.
   case sqlight.open(path) {
     Error(error) ->
       Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
@@ -1912,6 +1993,7 @@ pub fn generation(path path: String) -> Result(Int, RewriteError) {
 
 // `sqlight.open` creates a missing file, so path-level operations that
 // must not conjure empty databases check existence first.
+/// Ensures the database file exists and is not a directory.
 fn require_session_file(path: String) -> Result(Nil, RewriteError) {
   case simplifile.is_file(path) {
     Ok(True) -> Ok(Nil)
@@ -1921,6 +2003,7 @@ fn require_session_file(path: String) -> Result(Nil, RewriteError) {
   }
 }
 
+/// Constructs an appropriate RewriteError from a lower-level failure.
 fn rewrite_fail(fail: Fail) -> RewriteError {
   case fail {
     FailSql(error) ->
@@ -1933,6 +2016,7 @@ fn rewrite_fail(fail: Fail) -> RewriteError {
 
 // Verifies, inside the claim transaction, that the source is a
 // current-version session file with exactly one catalog row.
+/// Verifies that the source database storage version is supported for rewriting.
 fn check_source_version(conn: Connection) -> Result(Nil, RewriteError) {
   use versions <- result.try(
     run(
@@ -1943,6 +2027,8 @@ fn check_source_version(conn: Connection) -> Result(Nil, RewriteError) {
     )
     |> result.map_error(rewrite_fail),
   )
+
+  // Verify that source database matches current storage version.
   case versions {
     [version] -> {
       use <- bool.guard(when: version == storage_version, return: Ok(Nil))
@@ -1977,11 +2063,13 @@ fn check_source_version(conn: Connection) -> Result(Nil, RewriteError) {
 // leaked secret also lands) — bumps the generation, then vacuums so no
 // replaced bytes survive in free pages. The copy is already unleased
 // (`cut_closed` cleared it), so the swapped-in file starts unleased.
+/// Creates a temporary copy of a session database for rewriting.
 fn rewrite_copy(
   temp: String,
   rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
   rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
 ) -> Result(Rewrite, RewriteError) {
+  // Open temporary copy file to execute rewrite transactions.
   case sqlight.open(temp) {
     Error(error) ->
       Error(RewriteFailed(reason: "sqlite open: " <> describe_sqlight(error)))
@@ -1998,6 +2086,7 @@ fn rewrite_copy(
 // failure the transaction rolls back before the error is reported. Only
 // a committed rewrite is vacuumed, so the replaced bytes never survive in
 // free pages of an aborted attempt.
+/// Copies entries and registers from source to destination database in a transaction.
 fn rewrite_copy_transaction(
   conn: Connection,
   rewrite: fn(Entry) -> Result(Option(Entry), CorruptionReport),
@@ -2026,6 +2115,8 @@ fn rewrite_copy_transaction(
     use Nil <- result.map(commit_sql(conn) |> result.map_error(rewrite_fail))
     Rewrite(generation:, entries_rewritten: rewritten)
   }
+
+  // Check whether rewrite body succeeded and run vacuum.
   case body {
     Ok(outcome) ->
       run(conn, "VACUUM", [], decode.dynamic)
@@ -2045,6 +2136,7 @@ fn rewrite_copy_transaction(
 // register carries (a strand leaf, an operation id) will surface as
 // corruption at the machine-level read, exactly like an id collision
 // inside an entry surfaces at the entry codec.
+/// Copies registers from source to destination during database rewrite.
 fn rewrite_registers(
   conn: Connection,
   rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
@@ -2069,6 +2161,8 @@ fn rewrite_registers(
       rewrite_value(value)
       |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
     )
+
+    // Apply register replacement or preserve existing row.
     case replacement {
       None -> Ok(Nil)
       Some(new) ->
@@ -2087,6 +2181,7 @@ fn rewrite_registers(
 // Runs the value transform over every usage-ledger details blob in the
 // copy. Details are opaque JSON written straight through at commit, and
 // straight through here on the way back out.
+/// Rewrites usage details rows into the destination database.
 fn rewrite_usage_details(
   conn: Connection,
   rewrite_value: fn(JsonValue) -> Result(Option(JsonValue), CorruptionReport),
@@ -2115,6 +2210,8 @@ fn rewrite_usage_details(
       rewrite_value(value)
       |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
     )
+
+    // Apply usage replacement or preserve existing row.
     case replacement {
       None -> Ok(Nil)
       Some(new) ->
@@ -2130,6 +2227,7 @@ fn rewrite_usage_details(
   })
 }
 
+/// Inserts an entry row into the destination database during rewrite.
 fn rewrite_row(
   conn: Connection,
   row: #(String, BitArray),
@@ -2144,6 +2242,8 @@ fn rewrite_row(
   use replacement <- result.try(
     rewrite(entry) |> result.map_error(fn(report) { RewriteCorrupt(report:) }),
   )
+
+  // Insert rewritten entry or retain unchanged entry.
   case replacement {
     None -> Ok(count)
     Some(new) -> {
@@ -2170,11 +2270,14 @@ fn rewrite_row(
   }
 }
 
+/// Verifies that entry sequence numbers match expectations during rewrite.
 fn check_placement(old: Entry, new: Entry) -> Result(Nil, RewriteError) {
   let preserved =
     old.id == new.id
     && old.parent == new.parent
     && storage.kind_of(old) == storage.kind_of(new)
+
+  // Ensure sequence and kind invariants are preserved during entry rewrite.
   case preserved {
     True -> Ok(Nil)
     False ->
@@ -2191,6 +2294,7 @@ fn check_placement(old: Entry, new: Entry) -> Result(Nil, RewriteError) {
 
 // Reads `(other metadata fields, current generation)`; an absent metadata
 // blob or absent field is generation 0.
+/// Reads the generation counter from session metadata.
 fn read_generation(
   conn: Connection,
 ) -> Result(#(List(#(String, JsonValue)), Int), RewriteError) {
@@ -2203,6 +2307,8 @@ fn read_generation(
     )
     |> result.map_error(rewrite_fail),
   )
+
+  // Parse generation metadata from session table column.
   case rows {
     [None] -> Ok(#([], 0))
     [Some(blob)] -> parse_generation_metadata(blob)
@@ -2220,6 +2326,7 @@ fn read_generation(
 
 // Parses the session metadata blob into its other fields plus the
 // generation counter (a missing "generation" field means generation 0).
+/// Parses the generation counter from decoded metadata JSON.
 fn parse_generation_metadata(
   blob: BitArray,
 ) -> Result(#(List(#(String, JsonValue)), Int), RewriteError) {
@@ -2240,13 +2347,17 @@ pub const metadata_session_id_field = "session_id"
 // is an empty field list, since a fresh file writes NULL there. Shared by
 // the generation reader and the identity projection, which both
 // read-modify-write the same object and must agree about its shape.
+/// Extracts JSON object fields from a decoded metadata payload.
 fn metadata_fields(
   metadata: Option(BitArray),
 ) -> Result(List(#(String, JsonValue)), CorruptionReport) {
+  // Extract fields from optional metadata JSON blob.
   case metadata {
     None -> Ok([])
     Some(blob) -> {
       use value <- result.try(json_of_blob(blob, "session.metadata"))
+
+      // Parse JSON object fields from metadata value.
       case value {
         json.Object(fields) -> Ok(fields)
         other ->
@@ -2261,6 +2372,7 @@ fn metadata_fields(
   }
 }
 
+/// Parses an integer generation value from metadata fields.
 fn parse_generation_field(
   fields: List(#(String, JsonValue)),
 ) -> Result(#(List(#(String, JsonValue)), Int), CorruptionReport) {
@@ -2277,6 +2389,7 @@ fn parse_generation_field(
   }
 }
 
+/// Increments the generation counter recorded in session metadata.
 fn bump_generation(conn: Connection) -> Result(Int, RewriteError) {
   use #(fields, current) <- result.try(read_generation(conn))
   let generation = current + 1
@@ -2300,6 +2413,7 @@ fn sql_quote(text: String) -> String {
 
 // --- the actor -----------------------------------------------------------
 
+/// Dispatches incoming messages to the SQLite storage actor.
 fn handle_message(
   state: ActorState,
   message: Message,
@@ -2310,6 +2424,7 @@ fn handle_message(
   }
 }
 
+/// Handles requests sent to a closed storage actor.
 fn handle_closed(
   state: ActorState,
   message: Message,
@@ -2317,6 +2432,7 @@ fn handle_closed(
 ) -> actor.Next(ActorState, Message) {
   case message {
     Retire(reply:) -> {
+      // Check close outcome on retired actor.
       case close_outcome {
         Ok(Nil) -> {
           process.send(reply, Ok(Nil))
@@ -2354,6 +2470,7 @@ fn handle_closed(
 
 // Ordinary closed-handle replies keep the actor available for idempotence.
 // Only the separate successful Retire transition ends its process lifetime.
+/// Sends a reply to an actor request and continues actor execution.
 fn answer(
   state: ActorState,
   reply: Subject(value),
@@ -2363,10 +2480,12 @@ fn answer(
   actor.continue(state)
 }
 
+/// Handles requests when the storage actor is in the open state.
 fn handle_open(
   state: ActorState,
   message: Message,
 ) -> actor.Next(ActorState, Message) {
+  // Dispatch message handling for open storage actor.
   case message {
     SnapshotCapture(plan, reply) ->
       answer(state, reply, snapshot_sqlite.capture(state.conn, plan))
@@ -2469,6 +2588,8 @@ fn handle_open(
       // the writer's own pair).
       let released = release_lease(state.conn, state.owner, state.fence)
       let closed = sqlight.close(state.conn)
+
+      // Check outcomes of lease release and database close.
       let outcome = case released, closed {
         Ok(_), Ok(Nil) -> Ok(Nil)
         Error(fail), _ -> Error(fail_to_storage_error(fail))
@@ -2477,6 +2598,7 @@ fn handle_open(
             reason: "sqlite close: " <> describe_sqlight(error),
           ))
       }
+
       process.send(reply, outcome)
       actor.continue(
         ActorState(
@@ -2495,6 +2617,7 @@ type Session {
   Session(next_seq: Seq, message_count: Int, usage_total: json.JsonValue)
 }
 
+/// Executes a write transaction committing entries, registers, and lease updates.
 fn do_commit(
   state: ActorState,
   tx: Tx,
@@ -2525,6 +2648,8 @@ fn do_commit(
         ts: now,
       )
     }
+
+    // Commit transaction on success or roll back on error.
     case body {
       Ok(commit_result) -> Ok(commit_result)
       Error(fail) -> {
@@ -2536,6 +2661,7 @@ fn do_commit(
   result.map_error(applied, fail_to_commit_error)
 }
 
+/// Maps internal failure variants to public CommitError values.
 fn fail_to_commit_error(fail: Fail) -> CommitError {
   case fail {
     FailSql(error) -> Faulted(reason: "sqlite: " <> describe_sqlight(error))
@@ -2551,6 +2677,7 @@ fn fail_to_commit_error(fail: Fail) -> CommitError {
   }
 }
 
+/// Verifies lease fence and updates the lease timestamp during commit.
 fn check_and_renew_lease(state: ActorState, now: Int) -> Result(Nil, Fail) {
   let lease_decoder = {
     use owner <- decode.field(0, decode.string)
@@ -2563,6 +2690,8 @@ fn check_and_renew_lease(state: ActorState, now: Int) -> Result(Nil, Fail) {
     [],
     lease_decoder,
   ))
+
+  // Verify owner and fence match active lease and renew timestamp.
   case rows {
     [#(owner, fence)] if owner == state.owner && fence == state.fence ->
       run(
@@ -2589,6 +2718,7 @@ fn check_and_renew_lease(state: ActorState, now: Int) -> Result(Nil, Fail) {
   }
 }
 
+/// Reads the session catalog row tracking next sequence and statistics.
 fn read_session(conn: Connection) -> Result(Session, Fail) {
   let session_decoder = {
     use next_seq <- decode.field(0, decode.int)
@@ -2602,6 +2732,8 @@ fn read_session(conn: Connection) -> Result(Session, Fail) {
     [],
     session_decoder,
   ))
+
+  // Read session next sequence, message count, and usage payload.
   case rows {
     [#(next_seq, message_count, usage_blob)] -> {
       use usage_total <- result.map(
@@ -2622,6 +2754,7 @@ fn read_session(conn: Connection) -> Result(Session, Fail) {
   }
 }
 
+/// Updates the session catalog row with new sequence and message counts.
 fn write_session(conn: Connection, session: Session) -> Result(Nil, Fail) {
   run(
     conn,
@@ -2636,6 +2769,7 @@ fn write_session(conn: Connection, session: Session) -> Result(Nil, Fail) {
   |> result.replace(Nil)
 }
 
+/// Verifies register sequence expectations against current database state.
 fn check_expectations(
   conn: Connection,
   expected: List(SeqExpectation),
@@ -2648,6 +2782,8 @@ fn check_expectations(
       [sqlight.text(register.ns_to_string(ns)), sqlight.text(key)],
       decode.at([0], decode.int),
     ))
+
+    // Verify current register sequence matches expected sequence.
     case rows, seq {
       [], None -> Ok(Nil)
       [current], Some(expected_seq) if current == expected_seq -> Ok(Nil)
@@ -2660,6 +2796,7 @@ fn check_expectations(
 // before it is dispatched, so seqs stay strictly increasing across a
 // transaction's writes in write order even though only some write kinds
 // touch `entries` (storage rule: seqs increase strictly, gaps legal).
+/// Executes a single transaction write operation against SQLite tables.
 fn apply_write(
   conn: Connection,
   step: #(Session, List(Seq)),
@@ -2669,6 +2806,8 @@ fn apply_write(
   let #(session, seqs) = step
   let seq = session.next_seq
   let session = Session(..session, next_seq: seq + 1)
+
+  // Execute transaction write operation against database tables.
   use session <- result.map(case write {
     InsertEntry(entry:) -> insert_entry(conn, session, entry, seq, ts)
     InsertUsage(row:) -> insert_usage(conn, session, row, seq)
@@ -2699,9 +2838,11 @@ fn apply_write(
       session
     }
   })
+
   #(session, [seq, ..seqs])
 }
 
+/// Inserts a stamped entry row and updates child indices.
 fn insert_entry(
   conn: Connection,
   session: Session,
@@ -2711,6 +2852,8 @@ fn insert_entry(
 ) -> Result(Session, Fail) {
   let id_text = ids.entry_id_to_string(entry.id)
   use Nil <- result.try(check_fresh_id(conn, id_text))
+
+  // Verify parent entry existence if specified.
   use Nil <- result.try(case entry.parent {
     Some(parent) -> {
       let parent_text = ids.entry_id_to_string(parent)
@@ -2720,6 +2863,8 @@ fn insert_entry(
         [sqlight.text(parent_text)],
         decode.at([0], decode.int),
       ))
+
+      // Confirm that parent entry exists in entries table.
       case rows {
         [_, ..] -> Ok(Nil)
         [] ->
@@ -2735,6 +2880,7 @@ fn insert_entry(
     }
     None -> Ok(Nil)
   })
+
   let stamped = storage.stamp(entry, seq:, ts:)
   let kind = storage.kind_of(stamped)
   use _ <- result.try(run(
@@ -2756,11 +2902,14 @@ fn insert_entry(
     decode.dynamic,
   ))
   use Nil <- result.map(index_entry(conn, stamped, seq))
+
+  // Update message count statistics if entry is a message.
   let message_count = case stamped {
     MessageEntry(..) -> session.message_count + 1
     CompactionEntry(..) | BranchSummaryEntry(..) | CustomEntry(..) ->
       session.message_count
   }
+
   Session(..session, message_count:)
 }
 
@@ -2771,6 +2920,7 @@ fn custom_type_of(entry: Entry) -> Option(String) {
   }
 }
 
+/// Records a usage ledger row into SQLite.
 fn insert_usage(
   conn: Connection,
   session: Session,
@@ -2804,6 +2954,7 @@ fn insert_usage(
 }
 
 // Rule 2: entries and usage rows share one session-wide id namespace.
+/// Verifies that an entry identifier has not been previously written.
 fn check_fresh_id(conn: Connection, id_text: String) -> Result(Nil, Fail) {
   use rows <- result.try(run(
     conn,
@@ -2812,6 +2963,8 @@ fn check_fresh_id(conn: Connection, id_text: String) -> Result(Nil, Fail) {
     [sqlight.text(id_text)],
     decode.at([0], decode.int),
   ))
+
+  // Ensure that no entry exists with this identifier.
   case rows {
     [0] -> Ok(Nil)
     [_, ..] | [] ->
@@ -2847,9 +3000,12 @@ fn check_fresh_id(conn: Connection, id_text: String) -> Result(Nil, Fail) {
 //    `newest_compaction` recurses through `branch_meta` bases with a
 //    shrinking seq cap until a compaction row or the root is found.
 
+/// Maintains the branch index when a new entry is inserted.
 fn index_entry(conn: Connection, entry: Entry, seq: Seq) -> Result(Nil, Fail) {
   let id_text = ids.entry_id_to_string(entry.id)
   let kind_text = storage.kind_to_string(storage.kind_of(entry))
+
+  // Index root entry or child entry in branch index.
   case entry.parent {
     // A root entry starts a fresh segment with no base.
     None -> index_root_entry(conn, id_text, seq, kind_text)
@@ -2859,6 +3015,7 @@ fn index_entry(conn: Connection, entry: Entry, seq: Seq) -> Result(Nil, Fail) {
 }
 
 // A root entry starts a fresh segment with no base.
+/// Initializes the branch index segment for a root entry.
 fn index_root_entry(
   conn: Connection,
   id_text: String,
@@ -2886,6 +3043,7 @@ fn index_root_entry(
 // A non-root entry either extends its parent's segment (appending at the
 // tip) or, when the parent is not a tip, starts a new segment that
 // diverges from it (`diverge`).
+/// Extends or diverges branch index segments for child entries.
 fn index_child_entry(
   conn: Connection,
   entry: Entry,
@@ -2901,6 +3059,8 @@ fn index_child_entry(
     [sqlight.text(parent_text)],
     decode.at([0], decode.string),
   ))
+
+  // Append at tip or diverge into a new branch segment.
   case tips {
     // Appending at a tip: one new row, move the tip.
     [branch_id] -> append_at_tip(conn, branch_id, id_text, seq, kind_text)
@@ -2919,6 +3079,7 @@ fn index_child_entry(
   }
 }
 
+/// Appends an entry to an existing branch index segment.
 fn append_at_tip(
   conn: Connection,
   branch_id: String,
@@ -2943,6 +3104,7 @@ fn append_at_tip(
   |> result.replace(Nil)
 }
 
+/// Creates a new branch segment when an entry diverges from an existing segment.
 fn diverge(
   conn: Connection,
   entry: Entry,
@@ -2966,6 +3128,8 @@ fn diverge(
     [sqlight.text(parent_text)],
     cover_decoder,
   ))
+
+  // Retrieve covering segment covering the parent entry.
   case covers {
     [] ->
       Error(
@@ -2996,6 +3160,7 @@ fn diverge(
 // suffix of the chained path into a fresh branch (mandatory rule 2's
 // result decides the floor and the new segment's base), then indexes the
 // diverging entry at its tip.
+/// Constructs a new branch index segment record.
 fn build_diverged_segment(
   conn: Connection,
   cover_id: String,
@@ -3011,6 +3176,8 @@ fn build_diverged_segment(
   // newest physical segment.
   use boundary <- result.try(newest_compaction(conn, windows))
   let branch_id = "b" <> int.to_string(seq)
+
+  // Determine floor sequence from newest compaction boundary.
   let floor = case boundary {
     Some(compaction_seq) -> compaction_seq
     None -> 0
@@ -3029,6 +3196,7 @@ fn build_diverged_segment(
   insert_diverged_meta(conn, branch_id, id_text, seq, cover_id, boundary)
 }
 
+/// Inserts metadata for a newly diverged branch segment.
 fn insert_diverged_meta(
   conn: Connection,
   branch_id: String,
@@ -3065,6 +3233,7 @@ fn insert_diverged_meta(
   }
 }
 
+/// Inserts an entry reference row into the branch index table.
 fn insert_index_row(
   conn: Connection,
   branch_id: String,
@@ -3090,10 +3259,12 @@ fn insert_index_row(
 // The newest compaction on the chained path: the windows partition the
 // path in descending seq order, so the first window holding a compaction
 // holds the newest one at or below the original cap.
+/// Queries the most recent compaction entry on a branch.
 fn newest_compaction(
   conn: Connection,
   windows: List(Window),
 ) -> Result(Option(Seq), Fail) {
+  // Traverse windows searching for most recent compaction entry.
   case windows {
     [] -> Ok(None)
     [window, ..rest] -> {
@@ -3110,6 +3281,8 @@ fn newest_compaction(
         ],
         decode.at([0], decode.int),
       ))
+
+      // Check whether current window contains a compaction entry.
       case own {
         [compaction_seq, ..] -> Ok(Some(compaction_seq))
         [] -> newest_compaction(conn, rest)
@@ -3120,6 +3293,7 @@ fn newest_compaction(
 
 // Copies the chained path's rows with floor < seq into `dest`, window by
 // window.
+/// Copies branch index window records from parent segments.
 fn copy_windows(
   conn: Connection,
   dest: String,
@@ -3153,6 +3327,7 @@ fn copy_windows(
   }
 }
 
+/// Resolves the base entry sequence for a branch segment.
 fn base_of(
   conn: Connection,
   branch_id: String,
@@ -3168,6 +3343,8 @@ fn base_of(
     [sqlight.text(branch_id)],
     base_decoder,
   ))
+
+  // Decode base branch segment and base sequence.
   case rows {
     [#(Some(base_id), Some(base_seq))] -> Ok(Some(#(base_id, base_seq)))
     [#(None, None)] -> Ok(None)
@@ -3185,6 +3362,7 @@ fn base_of(
 
 // --- reads ---------------------------------------------------------------
 
+/// Batch-fetches entries by identifier from SQLite.
 fn do_get_entries(
   conn: Connection,
   entry_ids: List(EntryId),
@@ -3199,6 +3377,8 @@ fn do_get_entries(
       )
       |> result.map_error(fail_to_storage_error)
     use rows <- result.try(rows)
+
+    // Parse entry from payload blob or accumulate existing.
     case rows {
       [] -> Ok(found)
       [payload, ..] -> {
@@ -3211,6 +3391,7 @@ fn do_get_entries(
   })
 }
 
+/// Reads a register cell by namespace and key from SQLite.
 fn do_get_register(
   conn: Connection,
   ns: RegisterNs,
@@ -3231,6 +3412,8 @@ fn do_get_register(
     )
     |> result.map_error(fail_to_storage_error)
   use rows <- result.try(rows)
+
+  // Return cached register value or decode from queried blob.
   case rows {
     [] -> Ok(#(None, cache))
     [#(seq, blob), ..] -> {
@@ -3242,6 +3425,7 @@ fn do_get_register(
   }
 }
 
+/// Queries register cells within a namespace, optionally prefix-filtered.
 fn do_list_registers(
   conn: Connection,
   ns: RegisterNs,
@@ -3255,6 +3439,8 @@ fn do_list_registers(
     decode.success(#(key, seq, value))
   }
   let ns_arg = sqlight.text(register.ns_to_string(ns))
+
+  // Select query based on whether key prefix filtering is applied.
   let rows =
     case key_prefix {
       Some(prefix) ->
@@ -3274,6 +3460,7 @@ fn do_list_registers(
         )
     }
     |> result.map_error(fail_to_storage_error)
+
   use rows <- result.try(rows)
   use #(reversed, cache) <- result.map(
     list.try_fold(rows, #([], cache), fn(acc, row) {
@@ -3289,6 +3476,7 @@ fn do_list_registers(
 }
 
 // Escapes LIKE metacharacters so a register key prefix matches literally.
+/// Escapes pattern characters for SQLite LIKE prefix matching.
 fn like_prefix_pattern(prefix: String) -> String {
   let escaped =
     prefix
@@ -3303,6 +3491,7 @@ fn like_prefix_pattern(prefix: String) -> String {
 // makes `scan_entry_heads` answer the same rows as `scan_entries` in the same
 // order. Every shape orders by `seq`, so it is served from `ix_entry_seq`
 // with no sort step.
+/// Builds the SQL query string for session-wide entry scanning.
 fn entry_scan_statement(
   columns: String,
   q: EntryScan,
@@ -3329,6 +3518,7 @@ fn entry_scan_statement(
   #(sql, arguments)
 }
 
+/// Scans entries matching scan criteria across the session.
 fn do_scan_entries(
   conn: Connection,
   q: EntryScan,
@@ -3347,6 +3537,7 @@ fn do_scan_entries(
 // already hold an entry's place in the tree, so no payload is read or
 // decoded. A damaged id column is the same `CorruptRow` a damaged payload
 // would be.
+/// Scans lightweight entry head records without full payloads.
 fn do_scan_entry_heads(
   conn: Connection,
   q: EntryScan,
@@ -3367,6 +3558,8 @@ fn do_scan_entry_heads(
     use id <- result.try(
       ids.parse_entry_id(id_text) |> result.map_error(CorruptRow),
     )
+
+    // Parse optional parent entry identifier.
     use parent <- result.map(case parent_text {
       Some(text) ->
         ids.parse_entry_id(text)
@@ -3374,10 +3567,12 @@ fn do_scan_entry_heads(
         |> result.map_error(CorruptRow)
       None -> Ok(None)
     })
+
     EntryHead(id:, parent:, seq:)
   })
 }
 
+/// Returns the query execution plan for entry head scans.
 fn do_scan_entry_heads_plan(
   conn: Connection,
   q: EntryScan,
@@ -3392,6 +3587,7 @@ fn do_scan_entry_heads_plan(
   |> result.map_error(fail_to_storage_error)
 }
 
+/// Queries recorded usage rows according to scan parameters.
 fn do_scan_usage(
   conn: Connection,
   q: UsageScan,
@@ -3425,16 +3621,21 @@ fn do_scan_usage(
   })
 }
 
+/// Constructs a UsageRow from queried database columns.
 fn usage_row_of_columns(
   row: #(String, Int, Option(String), Int, BitArray, Option(BitArray)),
 ) -> Result(UsageRow, CorruptionReport) {
   let #(id_text, seq, entry_id_text, adjustment_int, usage_blob, details_blob) =
     row
   use id <- result.try(ids.parse_usage_id(id_text))
+
+  // Parse optional associated entry identifier.
   use entry_id <- result.try(case entry_id_text {
     Some(text) -> result.map(ids.parse_entry_id(text), Some)
     None -> Ok(None)
   })
+
+  // Parse boolean adjustment flag from integer column.
   use adjustment <- result.try(case adjustment_int {
     0 -> Ok(False)
     1 -> Ok(True)
@@ -3446,15 +3647,20 @@ fn usage_row_of_columns(
         context: int.to_string(other),
       ))
   })
+
   use usage_json <- result.try(json_of_blob(usage_blob, id_text))
   use usage <- result.try(codec.decode_usage(usage_json))
+
+  // Decode optional details JSON payload if present.
   use details <- result.map(case details_blob {
     Some(blob) -> result.map(json_of_blob(blob, id_text), Some)
     None -> Ok(None)
   })
+
   UsageRow(id:, seq:, entry_id:, adjustment:, usage:, details:)
 }
 
+/// Queries aggregate session statistics from SQLite.
 fn do_stats(conn: Connection) -> Result(SessionStats, StorageError) {
   let stats_decoder = {
     use message_count <- decode.field(0, decode.int)
@@ -3470,6 +3676,8 @@ fn do_stats(conn: Connection) -> Result(SessionStats, StorageError) {
     )
     |> result.map_error(fail_to_storage_error)
   use rows <- result.try(rows)
+
+  // Decode session stats message count and usage totals.
   case rows {
     [#(message_count, usage_blob)] -> {
       use usage_json <- result.try(
@@ -3493,9 +3701,12 @@ fn do_stats(conn: Connection) -> Result(SessionStats, StorageError) {
   }
 }
 
+/// Explicitly renews the active writer lease timestamp.
 fn do_renew_lease(state: ActorState, now: Int) -> Result(Nil, StorageError) {
   let renewed = {
     use Nil <- result.try(begin_immediate(state.conn))
+
+    // Verify and renew writer lease timestamp.
     case check_and_renew_lease(state, now) {
       Ok(Nil) -> commit_sql(state.conn)
       Error(fail) -> {
@@ -3512,6 +3723,7 @@ fn do_renew_lease(state: ActorState, now: Int) -> Result(Nil, StorageError) {
 // no longer owns the session must not stamp its idea of the identity
 // onto the file. The register cells remain the truth either way, so a
 // refusal here costs a repair on the next open and nothing else.
+/// Records session identity and parent session linkage.
 fn do_record_identity(
   state: ActorState,
   now: Int,
@@ -3520,6 +3732,8 @@ fn do_record_identity(
 ) -> Result(Nil, StorageError) {
   let recorded = {
     use Nil <- result.try(begin_immediate(state.conn))
+
+    // Persist session identity and parent session linkage.
     case write_identity(state.conn, session_id, parent_session_id, state, now) {
       Ok(Nil) -> commit_sql(state.conn)
       Error(fail) -> {
@@ -3531,6 +3745,7 @@ fn do_record_identity(
   result.map_error(recorded, fail_to_storage_error)
 }
 
+/// Persists session identity into the session catalog row.
 fn write_identity(
   conn: Connection,
   session_id: String,
@@ -3588,6 +3803,7 @@ type Window {
   Window(branch_id: String, lo: Seq, hi: Seq)
 }
 
+/// Executes an indexed branch scan over segmented windows.
 fn do_scan_branch(
   conn: Connection,
   q: BranchScan,
@@ -3600,10 +3816,13 @@ fn do_scan_branch(
       [sqlight.text(start_text)],
       decode.at([0], decode.int),
     ))
+
+    // Lookup sequence number of scan start entry.
     use start_seq <- result.try(case start_rows {
       [seq, ..] -> Ok(seq)
       [] -> Error(FailUnknownEntry(id: q.start))
     })
+
     use covers <- result.try(run(
       conn,
       "SELECT branch_id FROM branch_entries
@@ -3611,6 +3830,8 @@ fn do_scan_branch(
       [sqlight.text(start_text)],
       decode.at([0], decode.string),
     ))
+
+    // Lookup covering branch segment identifier.
     use cover_id <- result.try(case covers {
       [branch_id, ..] -> Ok(branch_id)
       [] ->
@@ -3623,6 +3844,7 @@ fn do_scan_branch(
           )),
         )
     })
+
     use windows <- result.try(chain_windows(conn, cover_id, start_seq, [], []))
 
     // Resolve any stop to a seq boundary on the unfiltered path first
@@ -3631,12 +3853,15 @@ fn do_scan_branch(
     // rows the pipeline would discard.
     use stop_bound <- result.try(resolve_stop(conn, windows, q))
     let clipped = clip_windows(windows, q.order, stop_bound, q.cursor)
+
+    // Order clipped scan windows according to scan order.
     let ordered_windows = case q.order {
       // `windows` is built nearest-segment-first, which is descending
       // seq: exactly newest-first.
       NewestFirst -> clipped
       OldestFirst -> list.reverse(clipped)
     }
+
     use refined <- result.map(scan_windows(
       conn,
       ordered_windows,
@@ -3652,21 +3877,27 @@ fn do_scan_branch(
 // order matching `stop_at_kind` or `stop_at_id`. Resolved via the index's
 // denormalized `entry_type` (ix_be_type) and the `(branch_id, entry_id)`
 // primary key, so no payload is touched.
+/// Finds the sequence boundary where a branch scan should terminate.
 fn resolve_stop(
   conn: Connection,
   windows: List(Window),
   q: BranchScan,
 ) -> Result(Option(Seq), Fail) {
+  // Resolve sequence boundary matching stop-at-kind condition.
   use kind_seq <- result.try(case q.stop_at_kind {
     Some(kind) -> {
+      // Order windows according to query scan direction.
       let ordered = case q.order {
         NewestFirst -> windows
         OldestFirst -> list.reverse(windows)
       }
+
       stop_kind_seq(conn, ordered, storage.kind_to_string(kind), q.order)
     }
     None -> Ok(None)
   })
+
+  // Resolve sequence boundary matching stop-at-id condition.
   use id_seq <- result.try(case q.stop_at_id {
     Some(id) -> stop_id_seq(conn, windows, ids.entry_id_to_string(id))
     None -> Ok(None)
@@ -3682,19 +3913,23 @@ fn resolve_stop(
   }
 }
 
+/// Finds the sequence of an entry matching the stop-kind condition.
 fn stop_kind_seq(
   conn: Connection,
   ordered: List(Window),
   kind_text: String,
   order: ScanOrder,
 ) -> Result(Option(Seq), Fail) {
+  // Scan ordered windows for matching entry kind.
   case ordered {
     [] -> Ok(None)
     [window, ..rest] -> {
+      // Choose sort direction matching scan order.
       let direction = case order {
         NewestFirst -> "DESC"
         OldestFirst -> "ASC"
       }
+
       use rows <- result.try(run(conn, "SELECT entry_seq FROM branch_entries
          WHERE branch_id = ?1 AND entry_type = ?2
            AND entry_seq > ?3 AND entry_seq <= ?4
@@ -3704,6 +3939,8 @@ fn stop_kind_seq(
         sqlight.int(window.lo),
         sqlight.int(window.hi),
       ], decode.at([0], decode.int)))
+
+      // Return first matching sequence in window or search remaining windows.
       case rows {
         [seq, ..] -> Ok(Some(seq))
         [] -> stop_kind_seq(conn, rest, kind_text, order)
@@ -3712,11 +3949,13 @@ fn stop_kind_seq(
   }
 }
 
+/// Finds the sequence of an entry matching the stop-id condition.
 fn stop_id_seq(
   conn: Connection,
   windows: List(Window),
   id_text: String,
 ) -> Result(Option(Seq), Fail) {
+  // Scan windows for entry sequence matching stop identifier.
   case windows {
     [] -> Ok(None)
     [window, ..rest] -> {
@@ -3727,6 +3966,8 @@ fn stop_id_seq(
         [sqlight.text(window.branch_id), sqlight.text(id_text)],
         decode.at([0], decode.int),
       ))
+
+      // Check if entry sequence falls within window range.
       case rows {
         [seq, ..] if seq > window.lo && seq <= window.hi -> Ok(Some(seq))
         [_, ..] | [] -> stop_id_seq(conn, rest, id_text)
@@ -3739,6 +3980,7 @@ fn stop_id_seq(
 // the stop side of the boundary and inside the cursor bound. The refine
 // pipeline still applies both rules row-by-row; clipping is purely an
 // I/O reduction.
+/// Clips branch index window ranges to cursor and stop boundaries.
 fn clip_windows(
   windows: List(Window),
   order: ScanOrder,
@@ -3746,33 +3988,44 @@ fn clip_windows(
   cursor: Option(Seq),
 ) -> List(Window) {
   list.filter_map(windows, fn(window) {
+    // Compute clipped window bounds based on scan direction.
     let #(lo, hi) = case order {
       // Newest-first keeps seq >= stop and seq < cursor.
       NewestFirst -> {
+        // Calculate lower bound for newest-first scan.
         let lo = case stop_bound {
           Some(stop) -> int.max(window.lo, stop - 1)
           None -> window.lo
         }
+
+        // Calculate upper bound for newest-first scan.
         let hi = case cursor {
           Some(bound) -> int.min(window.hi, bound - 1)
           None -> window.hi
         }
+
         #(lo, hi)
       }
 
       // Oldest-first keeps seq <= stop and seq > cursor.
       OldestFirst -> {
+        // Calculate upper bound for oldest-first scan.
         let hi = case stop_bound {
           Some(stop) -> int.min(window.hi, stop)
           None -> window.hi
         }
+
+        // Calculate lower bound for oldest-first scan.
         let lo = case cursor {
           Some(bound) -> int.max(window.lo, bound)
           None -> window.lo
         }
+
         #(lo, hi)
       }
     }
+
+    // Retain window only if clipped range is non-empty.
     case lo < hi {
       True -> Ok(Window(..window, lo:, hi:))
       False -> Error(Nil)
@@ -3786,6 +4039,7 @@ fn clip_windows(
 // empty window (skipped by consumers) and the cap flows through
 // unchanged; a revisited branch id means the chain is cyclic, which is
 // reported as corruption instead of looping forever.
+/// Chains branch segments back toward the root to form scan windows.
 fn chain_windows(
   conn: Connection,
   branch_id: String,
@@ -3793,6 +4047,7 @@ fn chain_windows(
   visited: List(String),
   accumulator: List(Window),
 ) -> Result(List(Window), Fail) {
+  // Detect cycles in branch parent linkages.
   case list.contains(visited, branch_id) {
     True ->
       Error(
@@ -3805,6 +4060,8 @@ fn chain_windows(
       )
     False -> {
       use base <- result.try(base_of(conn, branch_id))
+
+      // Terminate at root segment or chain to parent base segment.
       case base {
         None ->
           Ok(list.reverse([Window(branch_id:, lo: 0, hi: cap), ..accumulator]))
@@ -3820,12 +4077,14 @@ fn chain_windows(
   }
 }
 
+/// Iterates over window ranges refining entries through the scan pipeline.
 fn scan_windows(
   conn: Connection,
   windows: List(Window),
   q: BranchScan,
   refined: branch.Refine,
 ) -> Result(branch.Refine, Fail) {
+  // Check termination conditions for window traversal.
   case windows, refined.done {
     [], _ | _, True -> Ok(refined)
     [window, ..rest], False -> {
@@ -3867,6 +4126,7 @@ WHERE b.branch_id = ?1 AND b.entry_seq > ?2 AND b.entry_seq <= ?3
   AND b.entry_type = ?5
 ORDER BY b.entry_seq ASC LIMIT ?4"
 
+/// Fetches paged entry rows within a single window range.
 fn scan_window_pages(
   conn: Connection,
   window: Window,
@@ -3876,30 +4136,38 @@ fn scan_window_pages(
   // SQL applies kind filtering after stop/cursor clipping. Only a custom
   // type can still reject fetched rows, so other scans fetch at most their
   // remaining result limit rather than decoding an entire segment page.
+  // Calculate maximum entries to fetch in this page batch.
   let fetch_cap = case q.custom_type, q.limit {
     None, Some(limit) -> int.min(page_size, int.max(limit - refined.count, 0))
     _, _ -> page_size
   }
+
+  // Check if scan has finished or window range is exhausted.
   case refined.done || window.lo >= window.hi || fetch_cap <= 0 {
     True -> Ok(refined)
     False -> {
+      // Select SQL query based on kind filtering and scan order.
       let sql = case q.kind, q.order {
         None, NewestFirst -> segment_sql_desc
         None, OldestFirst -> segment_sql_asc
         Some(_), NewestFirst -> segment_kind_sql_desc
         Some(_), OldestFirst -> segment_kind_sql_asc
       }
+
       let parameters = [
         sqlight.text(window.branch_id),
         sqlight.int(window.lo),
         sqlight.int(window.hi),
         sqlight.int(fetch_cap),
       ]
+
+      // Append kind argument to parameters list if kind filter is active.
       let parameters = case q.kind {
         None -> parameters
         Some(kind) ->
           list.append(parameters, [sqlight.text(storage.kind_to_string(kind))])
       }
+
       use blobs <- result.try(run(
         conn,
         sql,
@@ -3921,11 +4189,13 @@ fn scan_window_pages(
         // Fewer rows than requested: the window is exhausted.
         [] -> Ok(refined)
         [_, ..] -> {
+          // Advance window boundary past the last fetched entry.
           let window = case q.order, list.last(entries) {
             NewestFirst, Ok(last) -> Window(..window, hi: last.seq - 1)
             OldestFirst, Ok(last) -> Window(..window, lo: last.seq)
             _, Error(Nil) -> Window(..window, hi: window.lo)
           }
+
           scan_window_pages(conn, window, q, refined)
         }
       }
@@ -3933,14 +4203,17 @@ fn scan_window_pages(
   }
 }
 
+/// Returns the EXPLAIN QUERY PLAN analysis for branch queries.
 fn do_scan_branch_plan(
   conn: Connection,
   order: ScanOrder,
 ) -> Result(List(String), StorageError) {
+  // Select query plan query string matching scan order.
   let sql = case order {
     NewestFirst -> segment_sql_desc
     OldestFirst -> segment_sql_asc
   }
+
   run(
     conn,
     "EXPLAIN QUERY PLAN " <> sql,
@@ -3950,6 +4223,7 @@ fn do_scan_branch_plan(
   |> result.map_error(fail_to_storage_error)
 }
 
+/// Queries branch index segment metadata for diagnostic inspection.
 fn do_segments(conn: Connection) -> Result(List(Segment), StorageError) {
   let meta_decoder = {
     use branch_id <- decode.field(0, decode.string)
@@ -3971,6 +4245,8 @@ fn do_segments(conn: Connection) -> Result(List(Segment), StorageError) {
   use rows <- result.try(rows)
   list.try_map(rows, fn(row) {
     let #(branch_id, tip_entry_id, tip_seq, base_id, base_seq) = row
+
+    // Construct Segment record with optional base linkage.
     case base_id, base_seq {
       Some(id), Some(seq) ->
         Ok(Segment(branch_id:, tip_entry_id:, tip_seq:, base: Some(#(id, seq))))
@@ -3990,6 +4266,7 @@ fn do_segments(conn: Connection) -> Result(List(Segment), StorageError) {
 
 // --- SQL plumbing --------------------------------------------------------
 
+/// Executes a raw SQL statement against the connection, returning Fail on error.
 fn run(
   conn: Connection,
   sql: String,
@@ -4012,6 +4289,7 @@ fn rollback(conn: Connection) -> Result(Nil, Fail) {
   sqlight.exec("ROLLBACK", on: conn) |> result.map_error(FailSql)
 }
 
+/// Maps internal Fail error variants to public StorageError values.
 fn fail_to_storage_error(fail: Fail) -> StorageError {
   case fail {
     FailSql(error) ->
@@ -4032,6 +4310,7 @@ fn blob_of_json(value: JsonValue) -> sqlight.Value {
   sqlight.blob(bit_array.from_string(json.to_string(value)))
 }
 
+/// Decodes a UTF-8 JSON bit array into parsed JsonValue.
 fn json_of_blob(
   blob: BitArray,
   subject: String,
@@ -4055,6 +4334,7 @@ fn entry_of_blob(blob: BitArray) -> Result(Entry, CorruptionReport) {
 
 // --- dynamic WHERE clause assembly ---------------------------------------
 
+/// Appends a filter clause to an accumulator of SQL query clauses.
 fn add_clause(
   clauses: List(#(String, sqlight.Value)),
   value: Option(a),
@@ -4068,6 +4348,7 @@ fn add_clause(
 
 // Clauses are accumulated in reverse; restore write order so the plain
 // `?` placeholders line up with the argument list positionally.
+/// Combines accumulated filter clauses into a WHERE clause string.
 fn finish_clauses(
   clauses: List(#(String, sqlight.Value)),
 ) -> #(List(String), List(sqlight.Value)) {
@@ -4096,6 +4377,7 @@ fn direction_sql(order: ScanOrder) -> String {
 // see `storage.EntryScan`/`storage.UsageScan`). SQLite itself treats a
 // negative LIMIT as "no limit at all", the opposite meaning, so clamp
 // before it reaches the SQL text.
+/// Constructs the SQL LIMIT clause string for bounded queries.
 fn limit_sql(limit: Option(Int)) -> String {
   case limit {
     Some(n) if n > 0 -> " LIMIT " <> int.to_string(n)

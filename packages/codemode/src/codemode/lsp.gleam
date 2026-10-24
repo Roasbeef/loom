@@ -253,6 +253,7 @@ pub fn routing(seam: Seam, over inner: CapRouter) -> CapRouter {
 // call is refused at admission and costs no ordinal and no server round
 // trip. The closure the plan carries is the only place the door is called.
 
+/// Plans an lsp.definition capability call decoding query arguments.
 fn definition_plan(
   seam: Seam,
   request: CapRequest,
@@ -267,6 +268,7 @@ fn definition_plan(
   )
 }
 
+/// Plans an lsp.references capability call collecting symbol references.
 fn references_plan(
   seam: Seam,
   request: CapRequest,
@@ -283,6 +285,7 @@ fn references_plan(
   )
 }
 
+/// Plans an lsp.hover capability call returning symbol hover text.
 fn hover_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
   use symbol_query <- result.try(query_arg(request.args))
   let hover = seam.door.hover
@@ -301,6 +304,7 @@ fn hover_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
   )
 }
 
+/// Plans an lsp.outline capability call returning document symbol hierarchy.
 fn outline_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
   use path <- result.try(args.string(request.args, "path"))
   let outline = seam.door.outline
@@ -314,6 +318,7 @@ fn outline_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
   )
 }
 
+/// Plans an lsp.calls capability call traversing incoming or outgoing calls.
 fn calls_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
   use symbol_query <- result.try(query_arg(request.args))
   use direction <- result.try(direction_arg(request.args))
@@ -328,6 +333,7 @@ fn calls_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
   )
 }
 
+/// Plans an lsp.diagnostics capability call querying file diagnostics.
 fn diagnostics_plan(
   seam: Seam,
   request: CapRequest,
@@ -342,6 +348,7 @@ fn diagnostics_plan(
   )
 }
 
+/// Plans an lsp.rename capability call previewing or applying edits across files.
 fn rename_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
   use symbol_query <- result.try(query_arg(request.args))
   use new_name <- result.try(args.string(request.args, "new_name"))
@@ -377,6 +384,7 @@ fn rename_plan(seam: Seam, request: CapRequest) -> Result(CapPlan, CapDenial) {
 // Two shapes are refused that the door would otherwise have to guess at:
 // a `line` with no `path` names a line of no file, and a line below 1 is
 // the zero-based habit ADR-015 §5 exists to keep out.
+/// Decodes symbol query arguments including symbol name, path, and line.
 fn query_arg(value: MsgPackValue) -> Result(SymbolQuery, CapDenial) {
   use symbol <- result.try(args.string(value, "symbol"))
   use path <- result.try(optional_string(value, "path"))
@@ -385,6 +393,7 @@ fn query_arg(value: MsgPackValue) -> Result(SymbolQuery, CapDenial) {
   Ok(query.SymbolQuery(symbol:, path:, line:))
 }
 
+/// Validates that a specified line number has an accompanying path and is positive.
 fn check_line(
   path: Option(String),
   line: Option(Int),
@@ -410,11 +419,14 @@ fn check_line(
 // (`query_arg`), so the three cases are nil, text and anything else, and
 // the arm lists every other variant by name so a new `MsgPackValue` forces
 // a decision here.
+/// Decodes an optional string argument field from MsgPack.
 fn optional_string(
   value: MsgPackValue,
   key: String,
 ) -> Result(Option(String), CapDenial) {
   use found <- result.try(args.field(value, key))
+
+  // Decode string value, nil, or reject unexpected types.
   case found {
     msgpack.NilValue -> Ok(None)
     msgpack.StringValue(text) -> Ok(Some(text))
@@ -428,11 +440,14 @@ fn optional_string(
   }
 }
 
+/// Decodes an optional whole integer argument field from MsgPack.
 fn optional_int(
   value: MsgPackValue,
   key: String,
 ) -> Result(Option(Int), CapDenial) {
   use found <- result.try(args.field(value, key))
+
+  // Decode integer value, nil, or reject unexpected types.
   case found {
     msgpack.NilValue -> Ok(None)
     msgpack.IntValue(number) -> Ok(Some(number))
@@ -446,10 +461,13 @@ fn optional_int(
   }
 }
 
+/// Decodes the call hierarchy direction argument string.
 fn direction_arg(
   value: MsgPackValue,
 ) -> Result(query.CallDirection, CapDenial) {
   use direction <- result.try(args.string(value, "direction"))
+
+  // Map direction string to Incoming or Outgoing variant.
   case direction {
     "incoming" -> Ok(query.Incoming)
 
@@ -464,8 +482,11 @@ fn direction_arg(
   }
 }
 
+/// Decodes the rename mode argument string to preview or apply.
 fn mode_arg(value: MsgPackValue) -> Result(RenameMode, CapDenial) {
   use mode <- result.try(args.string(value, "mode"))
+
+  // Validate rename mode option.
   case mode {
     "preview" -> Ok(Preview)
 
@@ -513,9 +534,11 @@ pub fn preview(file_edits: List(FileEdit)) -> List(PlannedFile) {
   })
 }
 
-// One step per line pair of a span, accumulating in reverse; the list is
-// turned round once when both sides run out. A line with no partner is
-// paired with an empty line, and takes its own side's number.
+/// Pairs removed and added lines into structured diff changes.
+///
+/// One step per line pair of a span, accumulating in reverse; the list is
+/// turned round once when both sides run out. A line with no partner is
+/// paired with an empty line, and takes its own side's number.
 fn paired(
   removed: List(AnchoredLine),
   added: List(AnchoredLine),
@@ -551,8 +574,10 @@ fn trim_cr(text: String) -> String {
 
 // --- rendering an answer ----------------------------------------------------------------
 
-// A door answer becomes a `cap_result`: the rendered fields on success,
-// and on failure whichever of the two channels the module doc assigns it.
+/// Converts an LSP query result into a successful response or capability refusal.
+///
+/// A door answer becomes a `cap_result`: the rendered fields on success,
+/// and on failure whichever of the two channels the module doc assigns it.
 fn answer(
   outcome: Result(Served(a), QueryError),
   render: fn(a) -> List(#(String, MsgPackValue)),
@@ -634,8 +659,10 @@ fn unresolved(tag: String, rest: List(#(String, MsgPackValue))) -> CapOutcome {
   )
 }
 
-// A capped list and its uncapped length. `list.length` walks the whole
-// answer once; the door's own bounds keep that answer finite.
+/// Formats bounded query results and their total element count.
+///
+/// A capped list and its uncapped length. `list.length` walks the whole
+/// answer once; the door's own bounds keep that answer finite.
 fn found_fields(
   key: String,
   items: List(item),
@@ -680,6 +707,7 @@ fn reference_value(reference: Reference) -> MsgPackValue {
   ])
 }
 
+/// Serializes an outline symbol entry into MsgPack format.
 fn symbol_value(entry: SymbolEntry) -> MsgPackValue {
   fields([
     #("name", msgpack.StringValue(entry.name)),
@@ -690,6 +718,7 @@ fn symbol_value(entry: SymbolEntry) -> MsgPackValue {
   ])
 }
 
+/// Serializes a call hierarchy item with caller locations into MsgPack.
 fn call_value(call: Call) -> MsgPackValue {
   fields([
     #("name", msgpack.StringValue(call.name)),
@@ -698,22 +727,27 @@ fn call_value(call: Call) -> MsgPackValue {
   ])
 }
 
-// `state` is a name rather than a boolean: `cap/lsp` decodes it into two
-// variants, and "unsettled" must never be one flipped bit from "clean".
+/// Renders diagnostic settlement state and diagnostic entries into field pairs.
+///
+/// `state` is a name rather than a boolean: `cap/lsp` decodes it into two
+/// variants, and "unsettled" must never be one flipped bit from "clean".
 fn diagnostics_fields(
   diagnostics: Diagnostics,
 ) -> List(#(String, MsgPackValue)) {
+  // Extract state string and diagnostics list from settled or unsettled query.
   let #(state, listed) = case diagnostics {
     query.Settled(diagnostics:) -> #("settled", diagnostics)
 
     query.Unsettled(seen:) -> #("unsettled", seen)
   }
+
   [
     #("state", msgpack.StringValue(state)),
     #("diagnostics", msgpack.ArrayValue(list.map(listed, diagnostic_value))),
   ]
 }
 
+/// Serializes a single diagnostic finding into MsgPack map fields.
 fn diagnostic_value(diagnostic: Diagnostic) -> MsgPackValue {
   fields([
     #("site", site_value(diagnostic.site)),
@@ -722,6 +756,7 @@ fn diagnostic_value(diagnostic: Diagnostic) -> MsgPackValue {
   ])
 }
 
+/// Converts an LSP diagnostic severity enum to its wire text representation.
 fn severity_name(severity: query.Severity) -> String {
   case severity {
     query.SeverityError -> "error"
@@ -743,6 +778,7 @@ fn preview_fields(planned: List(PlannedFile)) -> List(#(String, MsgPackValue)) {
   ]
 }
 
+/// Serializes planned file rename changes into a MsgPack value.
 fn planned_value(planned: PlannedFile) -> MsgPackValue {
   fields([
     #("path", msgpack.StringValue(planned.path)),
@@ -751,6 +787,7 @@ fn planned_value(planned: PlannedFile) -> MsgPackValue {
   ])
 }
 
+/// Serializes a single line change in a file rename into MsgPack format.
 fn change_value(change: LineChange) -> MsgPackValue {
   fields([
     #("line", msgpack.IntValue(change.line)),
@@ -759,6 +796,7 @@ fn change_value(change: LineChange) -> MsgPackValue {
   ])
 }
 
+/// Formats applied rename landing reports and post-rename diagnostics.
 fn applied_fields(report: RenameReport) -> List(#(String, MsgPackValue)) {
   [
     #("mode", msgpack.StringValue("apply")),
@@ -767,6 +805,7 @@ fn applied_fields(report: RenameReport) -> List(#(String, MsgPackValue)) {
   ]
 }
 
+/// Serializes an individual file landing outcome for a landed rename.
 fn landing_value(landing: Landing) -> MsgPackValue {
   case landing {
     query.Landed(path:, edits:) ->

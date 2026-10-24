@@ -56,6 +56,8 @@ pub fn get(key: String) -> Result(Option(Value), NotesError) {
   use found <- result.try(
     wire.bool_field(value, "found") |> result.map_error(NotesUnavailable),
   )
+
+  // Decode the note value only when the blackboard entry exists.
   case found {
     False -> Ok(None)
     True ->
@@ -78,10 +80,12 @@ pub fn get(key: String) -> Result(Option(Value), NotesError) {
 pub fn list(
   prefix: Option(String),
 ) -> Result(List(#(String, Value)), NotesError) {
+  // Encode optional prefix as report null or string.
   let prefix = case prefix {
     None -> report.null()
     Some(text) -> report.string(text)
   }
+
   use value <- result.try(
     dispatch.call("notes.list", wire.args([#("prefix", prefix)]))
     |> result.map_error(map_error),

@@ -63,6 +63,8 @@ pub type Bounded {
 pub fn bound(ctx: Ctx, text: String) -> Result(Bounded, FsError) {
   let bytes = <<text:utf8>>
   let size = bit_array.byte_size(bytes)
+
+  // Inline small outputs and write large ones to content-addressed blobs.
   case size > overflow_threshold_bytes {
     False -> Ok(Inline(text:))
     True -> {
@@ -71,6 +73,8 @@ pub fn bound(ctx: Ctx, text: String) -> Result(Bounded, FsError) {
       use Nil <- result.try(filesystem.create_directory_all(ctx.blob_root))
       let path = ref_path(ctx.blob_root, ref)
       use present <- result.try(filesystem.is_file(path))
+
+      // Avoid rewriting blobs that are already present on disk.
       use Nil <- result.try(case present {
         True -> Ok(Nil)
         False ->
@@ -81,6 +85,7 @@ pub fn bound(ctx: Ctx, text: String) -> Result(Bounded, FsError) {
             bytes:,
           )
       })
+
       Ok(Overflowed(
         ref:,
         size:,
@@ -239,6 +244,7 @@ pub fn with_blob_details(
   outcome: ToolOutcome,
   bounded: Bounded,
 ) -> ToolOutcome {
+  // Pass inline outputs through or attach structured blob metadata on overflow.
   case bounded {
     Inline(text: _) -> outcome
     Overflowed(ref:, size:, head_excerpt:, tail_excerpt:) -> {
@@ -249,6 +255,8 @@ pub fn with_blob_details(
           #("head_excerpt", json.String(head_excerpt)),
           #("tail_excerpt", json.String(tail_excerpt)),
         ])
+
+      // Merge blob details into existing outcome details or create a new object.
       let details = case outcome.details {
         Some(json.Object(fields:)) ->
           json.Object(list_append_field(fields, "blob", blob_details))
@@ -256,11 +264,13 @@ pub fn with_blob_details(
           json.Object([#("details", other), #("blob", blob_details)])
         option.None -> json.Object([#("blob", blob_details)])
       }
+
       tool.with_details(outcome, details)
     }
   }
 }
 
+/// Appends a key-value field to the end of an association list.
 fn list_append_field(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -285,6 +295,7 @@ fn utf8_suffix(bytes: BitArray, max: Int) -> String {
   utf8_slice_from(bytes, size - take, take)
 }
 
+/// Slices up to `length` bytes from `start`, backing off byte-by-byte to find a valid UTF-8 boundary.
 fn utf8_slice_at(bytes: BitArray, start: Int, length: Int) -> String {
   case length <= 0 {
     True -> ""
@@ -302,6 +313,7 @@ fn utf8_slice_at(bytes: BitArray, start: Int, length: Int) -> String {
   }
 }
 
+/// Slices up to `length` bytes ending at `start + length`, advancing start to find a valid UTF-8 boundary.
 fn utf8_slice_from(bytes: BitArray, start: Int, length: Int) -> String {
   case length <= 0 {
     True -> ""

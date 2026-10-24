@@ -380,6 +380,7 @@ fn evolution(value: String) -> Result(Msg, Nil) {
 // would draw a button that hides nothing on an observer's page for as long as
 // the attribute took. The first tab's state is set here, since the stylesheet
 // hides the other panes by the state of the tab that shows.
+/// Initializes default shell layout model and marks initial tab pseudo-state.
 fn init(_: Nil) -> #(Model, Effect(Msg)) {
   let layout = shell_rule.initial()
   #(
@@ -403,6 +404,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
   )
 }
 
+/// Reduces shell layout, drawer, theme, and drag resize events.
 fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
   case message {
     // The sidebar's press is the frame's to interpret: a column changes the
@@ -411,6 +413,8 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       let #(layout, drawer) =
         shell_rule.sidebar_pressed(model.layout, model.frame, model.drawer)
       let model = Model(..model, drawer:)
+
+      // Apply layout change when toggling sidebar outside narrow drawer mode.
       case layout == model.layout {
         True -> #(model, effect.none())
         False -> changed(model, layout, effect.none())
@@ -626,10 +630,7 @@ fn settle() -> Effect(Msg) {
   dispatch(Settled)
 }
 
-// Reports whether the page is narrow now, and again each time the window
-// crosses the breakpoint. The answer is read from the query when it is set up
-// and from the change event after that, and the query and its listener are
-// handed back so the element can stop listening when it leaves.
+/// Sets up media query listener monitoring the narrow window breakpoint.
 fn watch_frame() -> Effect(Msg) {
   use dispatch <- effect.from
   let query = ffi_dom.media_query(shell_rule.narrow_query())
@@ -646,8 +647,9 @@ fn watch_frame() -> Effect(Msg) {
   dispatch(Watching(Watch(query:, listener:)))
 }
 
-// Stops the media query's listener, if one is in place.
+/// Disconnects window resize media query listener.
 fn stop_watch(watch: Option(Watch)) -> Effect(Msg) {
+  // Remove registered media query change listener.
   case watch {
     None -> effect.none()
     Some(Watch(query:, listener:)) -> {
@@ -665,20 +667,19 @@ fn frame_of(matches: Bool) -> Frame {
   }
 }
 
-// Sets `data-theme` on the document's root, or removes it where the theme
-// follows the system, so the stylesheet's `prefers-color-scheme` rule decides.
+/// Sets or removes data-theme attribute on root document element.
 fn apply_theme(theme: Theme) -> Effect(Msg) {
   use _ <- effect.from
   let root = ffi_dom.document_element()
+
+  // Set theme attribute word or remove attribute for system preference.
   case layout_rule.data_theme(theme) {
     Some(word) -> ffi_dom.set_attribute(root, "data-theme", word)
     None -> ffi_dom.remove_attribute(root, "data-theme")
   }
 }
 
-// Writes the theme to its item. As with the layout, a refused write is
-// dropped: the page shows the theme the reader chose and the next load
-// follows the system.
+/// Stores selected color theme in local browser storage.
 fn save_theme(theme: Theme) -> Effect(Msg) {
   use _ <- effect.from
   let _ =
@@ -689,10 +690,7 @@ fn save_theme(theme: Theme) -> Effect(Msg) {
   Nil
 }
 
-// A change of layout the reader made: kept in the model, written to the
-// storage under the page's workspace, and followed by `effects`, the ones the
-// change needs on the page. The write is one effect, so a change that is not
-// saved because the storage is blocked still shows.
+/// Updates layout state in model and persists layout change to storage.
 fn changed(
   model: Model,
   layout: Layout,
@@ -704,11 +702,7 @@ fn changed(
   )
 }
 
-// Writes the layout under the workspace's item, and the tab under the
-// browser's. A page with no workspace writes no layout, but its tab is still
-// the reader's. A refused write, from blocked or full storage, is dropped:
-// the layout on screen is right, the next load starts from the default, and
-// there is nothing the reader could do about it.
+/// Persists active tab and workspace layout configuration to local storage.
 fn save(workspace: Workspace, layout: Layout) -> Effect(Msg) {
   use _ <- effect.from
   let _ =
@@ -716,6 +710,8 @@ fn save(workspace: Workspace, layout: Layout) -> Effect(Msg) {
       layout_rule.tab_key,
       layout_rule.encode_tab(layout.tab),
     )
+
+  // Persist workspace layout when workspace is identified.
   case layout_rule.layout_key(workspace) {
     None -> Nil
     Some(key) -> {
@@ -725,11 +721,7 @@ fn save(workspace: Workspace, layout: Layout) -> Effect(Msg) {
   }
 }
 
-// Reads the workspace's digest from the host's own attribute, which the
-// server wrote before the element connected, and the stored layout under it.
-// It runs after the paint, so the page has drawn its default when the stored
-// layout arrives. A page whose attribute is not a digest reads nothing and
-// answers no layout, so the one it has stands.
+/// Restores stored layout and color theme from local storage after paint.
 fn restore() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
@@ -759,8 +751,7 @@ fn released(model: Model) -> #(Model, Effect(Msg)) {
   )
 }
 
-// Writes the panel's width to its per-browser item. A refused write is
-// dropped, as the layout's is.
+/// Persists panel resize width to local browser storage.
 fn save_width(width: Int) -> Effect(Msg) {
   use _ <- effect.from
   let _ =
@@ -771,11 +762,7 @@ fn save_width(width: Int) -> Effect(Msg) {
   Nil
 }
 
-// Starts listening on the document for a drag's pointer moves and for its end.
-// The pointer leaves the grip's few pixels as soon as it moves, so a listener
-// on the grip would lose the drag; the document hears it wherever it goes. One
-// handler hears both `pointerup` and `pointercancel`, so the two ends of a
-// gesture are the same message and `stop_hooks` removes it from both.
+/// Binds document pointer listeners for active panel resizing drag gestures.
 fn follow_pointer() -> Effect(Msg) {
   use dispatch <- effect.from
   let document = ffi_dom.get_document()
@@ -800,6 +787,7 @@ fn stop_grip(grip: Option(Grip)) -> Effect(Msg) {
   }
 }
 
+/// Removes document pointermove, pointerup, and pointercancel listeners.
 fn stop_hooks(hooks: Hooks) -> Effect(Msg) {
   use _ <- effect.from
   let document = ffi_dom.get_document()
@@ -808,7 +796,7 @@ fn stop_hooks(hooks: Hooks) -> Effect(Msg) {
   ffi_dom.remove_listener(document, "pointercancel", hooks.released)
 }
 
-// What a pointer move says: where it is and whether a button is still down.
+/// Decodes pointer coordinates and contact button state during drag moves.
 fn moving() -> decode.Decoder(Msg) {
   use pointer <- decode.field("clientX", decode.float)
   use buttons <- decode.field("buttons", decode.int)
@@ -818,8 +806,7 @@ fn moving() -> decode.Decoder(Msg) {
   ))
 }
 
-// The custom states for a change of tab: the old one out and the new one in
-// in the same turn, or nothing when the tab did not change.
+/// Updates component tab pseudo-states when switching active panels.
 fn tab_changed(from: Tab, to: Tab) -> Effect(Msg) {
   case from == to {
     True -> effect.none()
@@ -831,30 +818,31 @@ fn tab_changed(from: Tab, to: Tab) -> Effect(Msg) {
   }
 }
 
-// Presses the breadcrumb's `All strands` link, which is drawn only while a
-// strand other than `main` is in focus, so with none drawn nothing happens.
+/// Programmatically clicks all-strands breadcrumb navigation link after paint.
 fn press_crumb() -> Effect(Msg) {
   use _, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
+
+  // Click breadcrumb link when present in DOM.
   case ffi_dom.query_selector(host, shell_rule.crumb_link()) {
     Ok(link) -> ffi_dom.click(link)
     Error(Nil) -> Nil
   }
 }
 
-// Presses the strand card at `card`. The cards are the server's light-DOM
-// descendants of the host, so the host's own query reaches them; a card that
-// is not there, because the strand left the list between the click and now,
-// is not pressed and nothing happens.
+/// Programmatically clicks strand card matching index after paint.
 fn press_card(card: Int) -> Effect(Msg) {
   use _, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
+
+  // Click selected strand card element if found.
   case ffi_dom.query_selector(host, shell_rule.card_selector(card)) {
     Ok(element) -> ffi_dom.click(element)
     Error(Nil) -> Nil
   }
 }
 
+/// Renders top shell bar, responsive columns, and resize grip separator.
 fn view(model: Model) -> Element(Msg) {
   html.div(frame_attributes(model), [
     html.div([attribute.class("shell-bar")], [
@@ -883,13 +871,18 @@ fn view(model: Model) -> Element(Msg) {
 // panel's column, and it needs the width too; a slotted element inherits from
 // its slot's ancestors. A closed panel takes no width, so the property is
 // zero and the popover sits at the page's edge.
+/// Assembles CSS classes and panel width styling for root frame container.
 fn frame_attributes(model: Model) -> List(attribute.Attribute(Msg)) {
   let classes =
     list.map(shell_rule.frame_classes(model.motion), attribute.class)
+
+  // Add dragging class while panel grip drag interaction is active.
   let held = case model.grip {
     Some(_) -> [attribute.class("dragging")]
     None -> []
   }
+
+  // Calculate panel width custom property value based on reachability.
   let width = case
     shell_rule.reach(shell_rule.state(model.layout, shell_rule.Panel))
   {
@@ -900,13 +893,7 @@ fn frame_attributes(model: Model) -> List(attribute.Attribute(Msg)) {
   list.flatten([classes, held, [attribute.style("--panel-width", width)]])
 }
 
-// The panel's grip: a separator on the column's left edge, drawn only while
-// the panel is open. A press starts a drag, an arrow key, Home or End moves the
-// width and a double click resets it. The three handlers measure the columns
-// from the event itself (`room_of`) so the rule has the layout as it was at the
-// moment of the gesture. The press and the keys cancel the browser's default
-// (text selection and scrolling) only when they are the grip's, and any other
-// key is left alone, Tab included.
+/// Renders vertical separator resize grip when panel column is reachable.
 fn grip(model: Model) -> Element(Msg) {
   case shell_rule.reach(shell_rule.state(model.layout, shell_rule.Panel)) {
     shell_rule.Unreachable -> element.none()
@@ -930,13 +917,13 @@ fn grip(model: Model) -> Element(Msg) {
   }
 }
 
-// A primary-button press on the grip, with where it was and how the columns
-// were laid out. Any other button, or a layout that cannot be measured,
-// dispatches nothing and leaves the browser's default alone.
+/// Decodes primary pointerdown press on panel resize grip.
 fn pressed() -> decode.Decoder(event.Handler(Msg)) {
   use event <- decode.then(decode.dynamic)
   use origin <- decode.field("clientX", decode.float)
   use button <- decode.field("button", decode.int)
+
+  // Start drag only on primary mouse button press with measurable room.
   case button, room_of(event) {
     0, Ok(room) ->
       decode.success(event.handler(
@@ -956,12 +943,13 @@ fn pressed() -> decode.Decoder(event.Handler(Msg)) {
   }
 }
 
-// A key the grip takes: an arrow, Home or End, with Shift for the larger step.
-// A key the rule does not know fails the decoder, so the browser keeps it.
+/// Decodes keyboard adjustment navigation keys focused on resize grip.
 fn keyed() -> decode.Decoder(event.Handler(Msg)) {
   use event <- decode.then(decode.dynamic)
   use key <- decode.field("key", decode.string)
   use shift <- decode.field("shiftKey", modifier())
+
+  // Adjust width according to arrow key direction and modifier scale.
   case grip_rule.adjustment(key, shift), room_of(event) {
     Some(adjustment), Ok(room) ->
       decode.success(event.handler(
@@ -981,19 +969,18 @@ fn keyed() -> decode.Decoder(event.Handler(Msg)) {
   }
 }
 
-// A double click on the grip puts the width back.
+/// Decodes double-click on resize grip to reset panel width to default.
 fn doubled() -> decode.Decoder(Msg) {
   use event <- decode.then(decode.dynamic)
+
+  // Reset panel width to default when room can be measured.
   case room_of(event) {
     Ok(room) -> decode.success(GripAdjusted(adjustment: grip_rule.Reset, room:))
     Error(Nil) -> decode.failure(GripReleased, "a measurable layout")
   }
 }
 
-// How wide the panel and the transcript are as the browser drew them, read
-// from the element an event reached and its frame's body. This is the one
-// place a layout is measured: the numbers go into a message and the rule does
-// the arithmetic.
+/// Measures current pixel widths of panel and centre transcript columns.
 fn room_of(event: Dynamic) -> Result(grip_rule.Room, Nil) {
   use target <- result.try(list.first(ffi_dom.composed_path(event)))
   use body <- result.try(ffi_dom.closest(target, ".shell-body"))
@@ -1005,9 +992,7 @@ fn room_of(event: Dynamic) -> Result(grip_rule.Room, Nil) {
   ))
 }
 
-// The veil behind an open drawer, which a click dismisses. It is drawn only
-// while the drawer is open on a narrow page, and a pointer is the only thing
-// that reaches it: the keyboard has `Escape` and the sidebar's own button.
+/// Renders backdrop scrim behind open drawer on narrow screens.
 fn scrim(model: Model) -> Element(Msg) {
   case shell_rule.scrimmed(model.frame, model.drawer) {
     True ->
@@ -1023,8 +1008,7 @@ fn scrim(model: Model) -> Element(Msg) {
   }
 }
 
-// The state a column shows: the sidebar's depends on the frame, the panel's is
-// the layout's.
+/// Resolves open or closed state for sidebar or panel columns.
 fn region_state(model: Model, region: Region) -> State {
   case region {
     shell_rule.Sidebar ->
@@ -1039,6 +1023,7 @@ fn region_state(model: Model, region: Region) -> State {
 // not focus buttons. The callback runs in the event, so it can cancel the
 // browser's action, and it drops every key but the two the rule may read
 // before it looks at where the key was pressed. The event is never stopped.
+/// Attaches global keydown listener to window document.
 fn listen() -> Effect(Msg) {
   use dispatch, root <- effect.after_paint
   let host = ffi_dom.host(ffi_dom.as_element(root))
@@ -1049,8 +1034,9 @@ fn listen() -> Effect(Msg) {
   dispatch(Listening(listener))
 }
 
-// Removes the document's listener, if one is in place.
+/// Cleans up global document keydown listener.
 fn stop_keys(keys: Option(Listener)) -> Effect(Msg) {
+  // Remove registered keydown listener.
   case keys {
     None -> effect.none()
     Some(listener) -> {
@@ -1060,8 +1046,7 @@ fn stop_keys(keys: Option(Listener)) -> Effect(Msg) {
   }
 }
 
-// One keydown. A key that is not one the rule may read is dropped here,
-// before the path is looked at.
+/// Filters and dispatches candidate keyboard shortcut events.
 fn hear(
   host: ffi_dom.Element,
   event: Dynamic,
@@ -1095,6 +1080,7 @@ fn hear(
 // sidebar is read from the host's own attribute, since the event cannot wait
 // for a message to be reduced before the browser's action is cancelled or
 // not.
+/// Evaluates intent for recognized shortcut keystroke and cancels default if needed.
 fn respond(
   host: ffi_dom.Element,
   event: Dynamic,
@@ -1103,6 +1089,8 @@ fn respond(
 ) -> Nil {
   let presence =
     shell_rule.presence(result.unwrap(ffi_dom.attribute(host, "sidebar"), ""))
+
+  // Dispatch shortcut intent and cancel browser default if consumed.
   case shell_rule.intent(keystroke, presence) {
     None -> Nil
     Some(intent) -> {
@@ -1120,7 +1108,7 @@ fn cancel(event: Dynamic, intent: Intent) -> Nil {
   }
 }
 
-// What a `keydown` says, but where it was pressed.
+/// Decodes key, code, modifier flags, and repetition state from keydown event.
 fn heard() -> decode.Decoder(
   #(
     String,
@@ -1150,6 +1138,7 @@ fn heard() -> decode.Decoder(
   ))
 }
 
+/// Decodes boolean modifier state into Held or Free variant.
 fn modifier() -> decode.Decoder(shell_rule.Modifier) {
   decode.map(decode.bool, fn(down) {
     case down {
@@ -1159,6 +1148,7 @@ fn modifier() -> decode.Decoder(shell_rule.Modifier) {
   })
 }
 
+/// Decodes IME composition state flag into Composing or Settled.
 fn composition() -> decode.Decoder(shell_rule.Composition) {
   decode.map(decode.bool, fn(composing) {
     case composing {
@@ -1168,6 +1158,7 @@ fn composition() -> decode.Decoder(shell_rule.Composition) {
   })
 }
 
+/// Decodes defaultPrevented event flag into Handled or Unhandled.
 fn prevention() -> decode.Decoder(shell_rule.Prevention) {
   decode.map(decode.bool, fn(prevented) {
     case prevented {
@@ -1177,6 +1168,7 @@ fn prevention() -> decode.Decoder(shell_rule.Prevention) {
   })
 }
 
+/// Decodes repeat key flag into Repeating or Fresh.
 fn repetition() -> decode.Decoder(shell_rule.Repetition) {
   decode.map(decode.bool, fn(repeating) {
     case repeating {
@@ -1197,6 +1189,7 @@ fn target_of(event: Dynamic) -> shell_rule.Target {
   |> shell_rule.target
 }
 
+/// Inspects DOM element to extract tag name and approval/editing attributes.
 fn step(node: ffi_dom.Element) -> shell_rule.Step {
   shell_rule.Step(
     tag: result.unwrap(ffi_dom.tag_name(node), ""),
@@ -1211,15 +1204,14 @@ fn step(node: ffi_dom.Element) -> shell_rule.Step {
   )
 }
 
-// A click on a control that carries the server's strand marker. The marker's
-// value is read from the click's own target, so a click on anything else, a
-// child of a marked control included, fails the decoder and dispatches
-// nothing; a value that is not a plain number fails it too.
+/// Decodes strand focus marker attribute from clicked element.
 fn marker() -> decode.Decoder(Msg) {
   use value <- decode.subfield(
     ["target", "dataset", "loomFocus"],
     decode.string,
   )
+
+  // Parse target strand card index and reveal flag.
   case shell_rule.relay(value) {
     Ok(relay) -> decode.success(Relayed(relay))
     Error(Nil) ->
@@ -1230,10 +1222,7 @@ fn marker() -> decode.Decoder(Msg) {
   }
 }
 
-// A press inside the sidebar that closes the drawer: the nodes the click passed
-// through hold a button of a door class (`shell_rule.door_classes`), whichever
-// child of the button was hit. A button that works in place, such as the saved
-// group's toggle, and any other click fail the decoder and do nothing.
+/// Decodes navigation clicks inside drawer that dismiss the mobile overlay.
 fn row() -> decode.Decoder(Msg) {
   use event <- decode.then(decode.dynamic)
   let path =
@@ -1243,17 +1232,17 @@ fn row() -> decode.Decoder(Msg) {
       let class = ffi_dom.attribute(node, "class") |> result.unwrap("")
       shell_rule.Pressed(tag:, class:)
     })
+
+  // Dismiss drawer when click targets a navigation door element.
   case shell_rule.presses_door(path) {
     True -> decode.success(DrawerDismissed)
     False -> decode.failure(DrawerDismissed, "a press on a sidebar door")
   }
 }
 
-// A column's button, or nothing where the page has no such column. It is a
-// real button whose words say what pressing does and whose `aria-expanded`
-// says whether the column is open; its icon is drawn by the stylesheet and
-// is decoration.
+/// Renders column collapse toggle button in shell top bar.
 fn button(model: Model, region: Region) -> Element(Msg) {
+  // Render toggle button only when region has button enabled.
   case shell_rule.has_button(model.sidebar, region) {
     False -> element.none()
     True -> {
@@ -1279,6 +1268,7 @@ fn button(model: Model, region: Region) -> Element(Msg) {
 // hint sits on the side facing the centre, so the icon stays at the edge of
 // the bar. Both are decoration, since the button's label and its
 // `aria-keyshortcuts` are what assistive technology reads.
+/// Constructs icon and keyboard shortcut hint decoration for column toggle button.
 fn toggle_face(region: Region) -> List(Element(Msg)) {
   let icon =
     html.span([attribute.class("toggle-icon"), attribute.aria_hidden(True)], [])
@@ -1287,18 +1277,14 @@ fn toggle_face(region: Region) -> List(Element(Msg)) {
       html.text(shell_rule.hint(region)),
     ])
 
+  // Arrange icon and shortcut hint according to column placement.
   case region {
     shell_rule.Sidebar -> [icon, hint]
     shell_rule.Panel -> [hint, icon]
   }
 }
 
-// The `Search` chip, on the pages that have a switcher: a real button with the
-// shortcut's hint beside its word, for a person who has not been told the
-// shortcut and for a touch screen that has no keys. It carries no handler of
-// the shell's. `<loom-switcher>` hears a click on anything marked with the
-// attribute below, so the shell neither reaches the switcher nor holds a
-// state for it. The hint hides on a narrow bar, as the toggles' do.
+/// Renders switcher search shortcut chip button in top bar.
 fn search_chip(model: Model) -> Element(Msg) {
   case shell_rule.has_search(model.sidebar) {
     False -> element.none()
@@ -1330,6 +1316,7 @@ fn search_chip(model: Model) -> Element(Msg) {
 // and whose label says what pressing it does. The label is fixed words from
 // the rule and holds nothing from the session, and the icon is decoration
 // drawn from fixed shapes, so assistive technology reads only the label.
+/// Renders color theme cycling toggle button in top bar.
 fn theme_button(model: Model) -> Element(Msg) {
   html.button(
     [
@@ -1346,7 +1333,9 @@ fn theme_button(model: Model) -> Element(Msg) {
 // The icon for a theme: a half-filled disc while the page follows the system,
 // a sun for light and a moon for dark. Each is a stroked outline in the
 // button's text colour, 16 units square, with no text and no session data.
+/// Renders inline SVG iconography for light, dark, and system themes.
 fn theme_icon(theme: Theme) -> Element(Msg) {
+  // Draw SVG shapes matching selected theme variant.
   let shapes = case theme {
     layout_rule.System -> [
       svg.circle([
@@ -1411,6 +1400,7 @@ fn button_class(region: Region) -> attribute.Attribute(Msg) {
 // width and no paint. The sidebar's wrapper is not drawn when the page has
 // no sidebar. The panel's wrapper holds the tab bar above the slot, so the
 // tabs leave the tab order with the panes when the panel is closed.
+/// Renders side column container with assigned named slot content.
 fn column(model: Model, region: Region) -> Element(Msg) {
   case shell_rule.has_button(model.sidebar, region) {
     False -> element.none()
@@ -1433,12 +1423,15 @@ fn column(model: Model, region: Region) -> Element(Msg) {
   }
 }
 
+/// Constructs responsive attributes and inertness flags for side columns.
 fn column_attributes(
   model: Model,
   region: Region,
 ) -> List(attribute.Attribute(Msg)) {
   let base = [attribute.class("region"), region_class(region)]
   let state = region_state(model, region)
+
+  // Configure drawer and accessibility inert state based on column visibility.
   case shell_rule.reach(state) {
     shell_rule.Reachable ->
       case region, model.frame {
@@ -1481,12 +1474,17 @@ fn tab_bar(model: Model) -> Element(Msg) {
   )
 }
 
+/// Renders an individual panel tab selector button with badge indicators.
 fn tab_button(model: Model, tab: Tab) -> Element(Msg) {
   let shown = model.layout.tab == tab
+
+  // Format aria-pressed state as string boolean.
   let pressed = case shown {
     True -> "true"
     False -> "false"
   }
+
+  // Generate badge element for tabs requiring operator decision attention.
   let badge = case
     tab,
     shell_rule.badge(model.needing),
@@ -1527,6 +1525,8 @@ fn tab_button(model: Model, tab: Tab) -> Element(Msg) {
     ]
     _, _, _, _ -> []
   }
+
+  // Format accessible button label text for tab.
   let words = case tab {
     shell_rule.Strands -> shell_rule.strands_words(model.needing)
     shell_rule.Session -> proposals_rule.session_words(model.proposals)
@@ -1534,6 +1534,7 @@ fn tab_button(model: Model, tab: Tab) -> Element(Msg) {
       shell_rule.evolution_words(option.unwrap(model.evolution, 0))
     _ -> shell_rule.tab_label(tab)
   }
+
   html.button(
     [
       attribute.type_("button"),

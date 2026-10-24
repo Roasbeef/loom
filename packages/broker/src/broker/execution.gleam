@@ -273,8 +273,8 @@ pub fn step(core: Core, event: Event) -> #(Core, List(Effect)) {
   }
 }
 
-// The events of an execution that has not yet settled. Every event is
-// written out, with no catch-all, so a new event is a compile error here.
+/// Steps an open execution across one event to produce the next core state and effects.
+/// Every event is written out, with no catch-all, so a new event is a compile error here.
 fn step_open(core: Core, event: Event) -> #(Core, List(Effect)) {
   case event {
     // Output is forwarded in arrival order in both modes: a draining
@@ -334,8 +334,8 @@ fn settle(core: Core, terminal: dispatch.Terminal) -> #(Core, List(Effect)) {
   #(Core(..core, settled: Settling(terminal:)), [Settle(terminal:)])
 }
 
-// Asks for a cancel and begins the grace. Only a streaming execution does:
-// a draining one has its cancel in already.
+/// Asks for a cancel and begins the grace period if streaming.
+/// Only a streaming execution does: a draining one has its cancel in already.
 fn start_draining(core: Core, cause: CancelCause) -> #(Core, List(Effect)) {
   case core.mode {
     Streaming -> #(
@@ -354,13 +354,16 @@ fn ask(state: CancelState, cause: CancelCause) -> CancelState {
   }
 }
 
-// Adds one delivered chunk to the counters.
+/// Adds one delivered chunk to the output counters.
 fn tally(output: Output, chunk: dispatch.Chunk) -> Output {
   let size = bit_array.byte_size(chunk.data)
+
+  // Update stdout or stderr byte totals according to the chunk stream.
   let #(stdout_bytes, stderr_bytes) = case chunk.stream {
     framing.Stdout -> #(output.stdout_bytes + size, output.stderr_bytes)
     framing.Stderr -> #(output.stdout_bytes, output.stderr_bytes + size)
   }
+
   Output(
     stdout_bytes:,
     stderr_bytes:,

@@ -651,7 +651,7 @@ holds that call pending, that is, the operation's state is gone or its batch no
 longer lists the call as planned or running. A lost `Ack` is therefore found
 again on the next pass, and no row leaks.
 
-`exec_ledger.ack` (`storage/exec_ledger.gleam:848`) deletes a `terminal` or
+`exec_ledger.ack` (`storage/exec_ledger.gleam:857`) deletes a `terminal` or
 `unknown` row, releases its bytes, and writes a tombstone in `call_ack`. A key
 with a tombstone is never admitted again in that incarnation. The tombstone
 closes a race the P model found. When a runtime restarts inside one open, the

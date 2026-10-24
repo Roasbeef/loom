@@ -200,12 +200,15 @@ pub fn build_request_with_prefix(
 ) -> HttpRequest {
   let max_tokens =
     option.unwrap(request.max_output_tokens, resolved.max_output_tokens)
+
+  // Map thinking configuration to token budget if enabled.
   let thinking = case resolved.thinking {
     ThinkingOff -> None
     ThinkingLow -> Some(2048)
     ThinkingMedium -> Some(8192)
     ThinkingHigh -> Some(16_384)
   }
+
   let body =
     json.Object(
       list.flatten([
@@ -258,6 +261,7 @@ pub fn build_request_with_prefix(
   )
 }
 
+/// Encodes a tool specification into an Anthropic tool definition object.
 fn encode_tool(tool: ToolSpec) -> JsonValue {
   json.Object([
     #("name", json.String(tool.name)),
@@ -270,6 +274,7 @@ fn encode_tool(tool: ToolSpec) -> JsonValue {
 // Messages API requires tool results in the user turn that follows the
 // calling assistant turn, and merging makes consecutive `ToolResult`
 // messages one such turn.
+/// Encodes conversation history into merged role-based message turns.
 fn encode_messages(messages: List(AgentMessage)) -> List(JsonValue) {
   messages
   |> list.filter_map(to_turn)
@@ -284,6 +289,7 @@ fn encode_messages(messages: List(AgentMessage)) -> List(JsonValue) {
   })
 }
 
+/// Converts a single agent message into an Anthropic wire role and block list.
 fn to_turn(message: AgentMessage) -> Result(#(String, List(JsonValue)), Nil) {
   case message {
     UserMessage(content:, origin:, ..) ->
@@ -320,6 +326,7 @@ fn to_turn(message: AgentMessage) -> Result(#(String, List(JsonValue)), Nil) {
   }
 }
 
+/// Merges consecutive turns of identical roles into single conversation turns.
 fn merge_turns(
   turns: List(#(String, List(JsonValue))),
   merged: List(#(String, List(JsonValue))),
@@ -337,6 +344,7 @@ fn merge_turns(
   }
 }
 
+/// Encodes a user content block into an Anthropic wire content block.
 fn encode_user_block(block: message.UserBlock) -> JsonValue {
   case block {
     UserText(text:, text_signature: _) ->
@@ -345,6 +353,7 @@ fn encode_user_block(block: message.UserBlock) -> JsonValue {
   }
 }
 
+/// Encodes base64 image data and media type into an Anthropic image content block.
 fn encode_image(data: String, mime_type: String) -> JsonValue {
   json.Object([
     #("type", json.String("image")),
@@ -359,6 +368,7 @@ fn encode_image(data: String, mime_type: String) -> JsonValue {
   ])
 }
 
+/// Encodes an assistant message block into an Anthropic content block.
 fn encode_assistant_block(
   block: message.AssistantBlock,
 ) -> Result(JsonValue, Nil) {
@@ -405,6 +415,7 @@ fn encode_assistant_block(
   }
 }
 
+/// Encodes a tool result block into an Anthropic text or image block.
 fn encode_tool_result_block(block: message.ToolResultBlock) -> JsonValue {
   case block {
     ToolResultText(text:, text_signature: _) ->
@@ -493,6 +504,7 @@ fn cache_5m() -> JsonValue {
 // builds is an object, so the fallback arm is unreachable in practice;
 // it is written out rather than asserted because a caller-supplied tool
 // schema is the one value here this module did not construct itself.
+/// Attaches cache_control breakpoint metadata to a content block object.
 fn with_cache_control(block: JsonValue, control: JsonValue) -> JsonValue {
   case block {
     json.Object(fields:) ->
@@ -518,6 +530,7 @@ fn encode_tools(tools: List(ToolSpec)) -> JsonValue {
 // The system prompt travels as a one-element block array rather than a
 // bare string: the string form renders identically but has nowhere to
 // hang a breakpoint.
+/// Encodes system prompt text with a 1-hour cache breakpoint.
 fn encode_system(system: String) -> JsonValue {
   json.Array([
     with_cache_control(
@@ -541,6 +554,7 @@ fn mark_tail_user_turns(
 
 // Walks the turn list newest-first, spending `remaining` breakpoints on
 // the user turns it meets, and rebuilds the list oldest-first as it goes.
+/// Traverses turns newest-first to mark final user turns with cache breakpoints.
 fn mark_user_turns(
   newest_first: List(#(String, List(JsonValue))),
   remaining: Int,
@@ -660,11 +674,14 @@ pub fn response_machine(
   )
 }
 
+/// Feeds a response byte chunk into the streaming SSE parser and accumulator.
 fn on_chunk(
   acc: Accumulator,
   chunk: BitArray,
 ) -> #(Accumulator, List(StreamEvent)) {
   use <- bool.guard(when: acc.done, return: #(acc, []))
+
+  // Handle 200 streaming events or collect error body chunks.
   case acc.status {
     200 -> {
       let #(sse, sse_events) = stream.feed(acc.sse, chunk)
@@ -700,6 +717,7 @@ fn on_chunk(
   }
 }
 
+/// Handles stream completion when the response body terminates.
 fn on_end(acc: Accumulator) -> List(StreamEvent) {
   case acc.done, acc.status {
     True, _ -> []
@@ -715,12 +733,15 @@ fn on_end(acc: Accumulator) -> List(StreamEvent) {
 // Parses the collected error body — `{"type":"error","error":{...}}` —
 // into a redacted HttpError; an unparsable body degrades to a bounded
 // text excerpt.
+/// Formats HTTP error response using structured error fields or body excerpt.
 fn http_error(status: Int, acc: Accumulator) -> stream.ProviderError {
   let body_text = result.unwrap(bit_array.to_string(acc.error_body), "")
   let error_field =
     json.parse(body_text)
     |> result.replace_error(Nil)
     |> result.try(wire.field(_, "error"))
+
+  // Decode error field or construct fallback excerpt error.
   case error_field {
     Ok(error) ->
       HttpError(
@@ -746,10 +767,12 @@ fn excerpt(text: String) -> String {
   }
 }
 
+/// Parses incoming SSE events and routes them into message handlers.
 fn handle_sse(
   acc: Accumulator,
   event: SseEvent,
 ) -> #(Accumulator, List(StreamEvent)) {
+  // Handle malformed framing or parse message event documents.
   case event {
     SseMalformed(reason:) ->
       fail(acc, MalformedStream(corruption_report("a utf-8 sse line", reason)))
@@ -764,6 +787,7 @@ fn handle_sse(
   }
 }
 
+/// Constructs a structured corruption report for malformed stream data.
 fn corruption_report(expected: String, context: String) -> CorruptionReport {
   corruption.report(
     at: "provider/adapter/anthropic",
@@ -773,6 +797,7 @@ fn corruption_report(expected: String, context: String) -> CorruptionReport {
   )
 }
 
+/// Dispatches a parsed SSE event document to the appropriate event handler.
 fn handle_message(
   acc: Accumulator,
   event_type: String,
@@ -814,6 +839,7 @@ fn handle_message_start(acc: Accumulator, document: JsonValue) -> Accumulator {
   }
 }
 
+/// Applies initial usage counters from message_start to the accumulator.
 fn apply_message_start(acc: Accumulator, started: JsonValue) -> Accumulator {
   let usage = result.unwrap(wire.field(started, "usage"), json.Object([]))
 
@@ -860,6 +886,7 @@ fn apply_message_start(acc: Accumulator, started: JsonValue) -> Accumulator {
 // ephemeral_1h_input_tokens`, `usage.output_tokens_details.
 // thinking_tokens`): absent at either level keeps `previous`, exactly as
 // the flat counters default to the accumulator rather than to zero.
+/// Extracts an optional nested integer count from a document field.
 fn nested_optional_count(
   document: JsonValue,
   field: String,
@@ -872,17 +899,21 @@ fn nested_optional_count(
   }
 }
 
+/// Processes content_block_start event to initialize a new content block.
 fn handle_block_start(
   acc: Accumulator,
   document: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
   let index = wire.int_field_or(document, "index", or: 0)
+
+  // Initialize content block if content_block object is present.
   case wire.field(document, "content_block") {
     Error(Nil) -> #(acc, [])
     Ok(block) -> start_block(acc, index, block)
   }
 }
 
+/// Starts tracking a new content block accumulator by block type.
 fn start_block(
   acc: Accumulator,
   index: Int,
@@ -920,18 +951,22 @@ fn start_block(
   }
 }
 
+/// Initializes a text block accumulator and emits initial text delta if non-empty.
 fn start_text_block(
   acc: Accumulator,
   index: Int,
   text: String,
 ) -> #(Accumulator, List(StreamEvent)) {
   let acc = Accumulator(..acc, blocks: [TextAcc(index:, text:), ..acc.blocks])
+
+  // Emit text delta event if initial text is non-empty.
   case text {
     "" -> #(acc, [])
     _ -> #(acc, [Delta(TextDelta(index:, text:))])
   }
 }
 
+/// Initializes a thinking block accumulator for reasoning traces.
 fn start_thinking_block(
   acc: Accumulator,
   index: Int,
@@ -948,6 +983,7 @@ fn start_thinking_block(
   )
 }
 
+/// Initializes a tool call block accumulator and emits an initial ToolCallDelta.
 fn start_tool_block(
   acc: Accumulator,
   index: Int,
@@ -963,17 +999,21 @@ fn start_tool_block(
   )
 }
 
+/// Processes content_block_delta event to apply streaming text or tool deltas.
 fn handle_block_delta(
   acc: Accumulator,
   document: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
   let index = wire.int_field_or(document, "index", or: 0)
+
+  // Apply delta fragment if delta object is present.
   case wire.field(document, "delta") {
     Error(Nil) -> #(acc, [])
     Ok(delta) -> apply_block_delta(acc, index, delta)
   }
 }
 
+/// Dispatches delta update to the active block according to delta type.
 fn apply_block_delta(
   acc: Accumulator,
   index: Int,
@@ -1002,6 +1042,7 @@ fn apply_block_delta(
   }
 }
 
+/// Appends text fragment to TextAcc block and emits a TextDelta event.
 fn text_delta_update(
   block: BlockAcc,
   index: Int,
@@ -1016,6 +1057,7 @@ fn text_delta_update(
   }
 }
 
+/// Appends thinking fragment to ThinkingAcc block and emits a ThinkingDelta event.
 fn thinking_delta_update(
   block: BlockAcc,
   index: Int,
@@ -1030,6 +1072,7 @@ fn thinking_delta_update(
   }
 }
 
+/// Appends argument fragment to ToolAcc block and emits a ToolCallDelta event.
 fn tool_delta_update(
   block: BlockAcc,
   index: Int,
@@ -1051,6 +1094,7 @@ fn tool_delta_update(
 
 // The signature is a replay artifact, never displayed live, so it has no
 // corresponding `Delta` — unlike the other three deltas above.
+/// Updates thought signature fragment on ThinkingAcc block.
 fn signature_delta_update(
   block: BlockAcc,
   fragment: String,
@@ -1074,6 +1118,7 @@ fn signature_delta_update(
 // expected unique per stream, but this ensures only the first match
 // updates even if a proxy ever duplicates one, rather than silently
 // applying the delta twice.
+/// Applies an update function to the targeted block accumulator by index.
 fn append_to_block(
   acc: Accumulator,
   index: Int,
@@ -1082,6 +1127,8 @@ fn append_to_block(
   let #(blocks, events) =
     list.fold(acc.blocks, #([], []), fn(folded, block) {
       let #(blocks, events) = folded
+
+      // Update the first matching block and preserve following blocks unchanged.
       case block_index(block) == index && events == [] {
         True -> {
           let #(updated, new_events) = update(block)
@@ -1093,6 +1140,7 @@ fn append_to_block(
   #(Accumulator(..acc, blocks: list.reverse(blocks)), events)
 }
 
+/// Retrieves the assigned integer stream index of a block accumulator.
 fn block_index(block: BlockAcc) -> Int {
   case block {
     TextAcc(index:, text: _) -> index
@@ -1101,20 +1149,25 @@ fn block_index(block: BlockAcc) -> Int {
   }
 }
 
+/// Processes message_delta event updating usage statistics and stop reason.
 fn handle_message_delta(
   acc: Accumulator,
   document: JsonValue,
 ) -> #(Accumulator, List(StreamEvent)) {
+  // Merge usage counts if present in message delta.
   let acc = case wire.field(document, "usage") {
     Error(Nil) -> acc
     Ok(usage) -> merge_delta_usage(acc, usage)
   }
+
+  // Apply stop reason if present in message delta.
   case wire.field(document, "delta") {
     Error(Nil) -> #(acc, [])
     Ok(delta) -> apply_stop_reason(acc, delta)
   }
 }
 
+/// Merges output token counts and witness fields into accumulator.
 fn merge_delta_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
   let witness = usage_witness.observe(acc.witness, usage, required_usage_fields)
   Accumulator(
@@ -1152,6 +1205,7 @@ fn merge_delta_usage(acc: Accumulator, usage: JsonValue) -> Accumulator {
   )
 }
 
+/// Applies stop reason string from delta object to accumulator.
 fn apply_stop_reason(
   acc: Accumulator,
   delta: JsonValue,
@@ -1162,6 +1216,7 @@ fn apply_stop_reason(
   }
 }
 
+/// Maps wire stop reason to canonical stop reason variant.
 fn apply_mapped_stop_reason(
   acc: Accumulator,
   raw: String,
@@ -1182,6 +1237,7 @@ fn apply_mapped_stop_reason(
 
 // --- settlement ---------------------------------------------------------
 
+/// Settles stream on message_stop or fails if stop reason was omitted.
 fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
   case acc.stop {
     None ->
@@ -1195,6 +1251,7 @@ fn settle(acc: Accumulator) -> #(Accumulator, List(StreamEvent)) {
   }
 }
 
+/// Finalizes accumulated stream state into Settled assistant message event.
 fn settle_with_stop(
   acc: Accumulator,
   stop: StopReason,
@@ -1225,6 +1282,8 @@ fn settle_with_stop(
   let overflowed =
     input_tokens > acc.resolved.context_window
     && acc.output <= negligible_output_tokens
+
+  // Check whether request overflowed model context limit.
   let #(stop, error_message) = case overflowed {
     True -> #(
       Errored,
@@ -1235,6 +1294,7 @@ fn settle_with_stop(
     )
     False -> #(stop, acc.error_message)
   }
+
   let assistant =
     AssistantMessage(
       content:,
@@ -1270,6 +1330,7 @@ fn settle_with_stop(
 // with `to_error(err)` — the adapter's counterpart to `machine/planner`'s
 // `or_fault`, for the handful of settlement steps that must end the
 // stream in-band rather than propagate a bare `Result`.
+/// Settlement combinator failing stream if result is an Error.
 fn or_fail(
   result: Result(a, e),
   acc: Accumulator,
@@ -1288,6 +1349,7 @@ fn or_fail(
 // not parse is settled by `wire.tool_arguments` as a call carrying the
 // failure, not raised as an error that would fail the stream, so there is
 // no longer a failure mode here for the caller to settle.
+/// Folds accumulated content blocks into settled assistant blocks.
 fn build_blocks(
   blocks: List(BlockAcc),
   built: List(message.AssistantBlock),
@@ -1322,6 +1384,7 @@ fn build_blocks(
   }
 }
 
+/// Constructs final Usage statistics record from accumulator state.
 fn build_usage(acc: Accumulator) -> Usage {
   Usage(
     evidence: acc.evidence,
@@ -1348,6 +1411,7 @@ fn build_usage(acc: Accumulator) -> Usage {
   )
 }
 
+/// Marks accumulator done and generates Failed terminal stream event.
 fn fail(
   acc: Accumulator,
   error: stream.ProviderError,
@@ -1362,6 +1426,7 @@ fn fail(
 
 // Mark before merging: a side boundary adjacent to the parent's final user
 // turn must not move that parent's cached content-block endpoint.
+/// Encodes message history prefix with cache breakpoints prior to merging.
 fn encode_frozen_messages(
   messages: List(AgentMessage),
   prefix: Int,

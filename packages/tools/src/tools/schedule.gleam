@@ -426,6 +426,7 @@ pub fn tools(schedules: Schedules, limits: Limits) -> List(Tool) {
   ]
 }
 
+/// Constructs the `schedule_create` tool definition.
 fn create_tool(
   create: fn(Ctx, Request) -> Result(Created, Refusal),
   limits: Limits,
@@ -615,6 +616,7 @@ fn create_tool(
   )
 }
 
+/// Decodes create arguments and delegates to the host schedule creation function.
 fn run_create(
   create: fn(Ctx, Request) -> Result(Created, Refusal),
   ctx: Ctx,
@@ -652,6 +654,7 @@ fn run_create(
 // description states and the operator's TOML uses. The argument is read
 // here rather than converted from an already-decoded `Option`, so the
 // JSON spelling and the state it names stay in one place.
+/// Decodes the optional `wake` parameter from JSON arguments.
 fn requested_wake(args: JsonValue) -> Result(Wake, String) {
   case tool.optional_bool(args, "wake") {
     Error(reason) -> Error(reason)
@@ -668,6 +671,7 @@ fn requested_wake(args: JsonValue) -> Result(Wake, String) {
 // one" is a question about that list's length. With four spellings a
 // case over the cross product would be sixteen arms saying three things,
 // and a fifth timing would make it thirty-two.
+/// Validates that exactly one timing option was provided and parses it.
 fn requested_timing(args: JsonValue) -> Result(RequestedTiming, String) {
   use every <- result.try(tool.optional_int(args, "every_seconds"))
   use at <- result.try(tool.optional_string(args, "at"))
@@ -684,6 +688,7 @@ fn requested_timing(args: JsonValue) -> Result(RequestedTiming, String) {
     ]
     |> option.values
 
+  // Ensure exactly one timing parameter was supplied.
   case named {
     [only] -> licensed_offset(only, utc_offset)
 
@@ -713,6 +718,7 @@ fn requested_timing(args: JsonValue) -> Result(RequestedTiming, String) {
 // count is: the seam sees a `Timing` that has already forgotten which
 // spellings arrived, and a model told "utc_offset does not apply" needs
 // to know that what it applied the offset to was its own `every_seconds`.
+/// Verifies that `utc_offset` is only specified beside a cron expression.
 fn licensed_offset(
   timing: RequestedTiming,
   utc_offset: Option(String),
@@ -734,6 +740,7 @@ fn licensed_offset(
 
 // Which argument one timing arrived as, for a refusal that has to name
 // the spelling the model wrote rather than the variant it became.
+/// Returns the parameter name for a requested timing variant.
 fn timing_argument(timing: RequestedTiming) -> String {
   case timing {
     Every(..) -> "every_seconds"
@@ -751,6 +758,7 @@ fn timing_argument(timing: RequestedTiming) -> String {
 // timing count is: the seam sees a `Timing` that has already forgotten
 // which spellings arrived, and a model told "max_fires is not valid
 // here" needs to know that "here" was its own `at`.
+/// Verifies that expiry limits are only specified beside recurring timings.
 fn licensed_bounds(
   timing: RequestedTiming,
   max_fires: Option(Int),
@@ -785,15 +793,18 @@ fn recurrence_of(timing: RequestedTiming) -> Recurrence {
   }
 }
 
+/// Formats the confirmation message and structured details for a newly created schedule.
 fn created_outcome(
   created: Created,
   ctx: Ctx,
   asked_for_wake wanted: Wake,
 ) -> ToolOutcome {
+  // Determine whether the target strand is local or a spawned subagent.
   let landing = case created.target == ctx.strand {
     True -> OwnStrand
     False -> SpawnedStrand
   }
+
   let note = wake_note(wanted, created.wake, landing)
 
   // Where it fires is named only when it is somewhere other than here.
@@ -804,6 +815,7 @@ fn created_outcome(
     True -> ""
     False -> " onto " <> created.target
   }
+
   tool.success(
     "scheduled \""
     <> created.name
@@ -850,6 +862,7 @@ type Landing {
 // policy, so the advice has to be true under either: create it with
 // `wake: true`, and the result says whether that was granted. A target
 // that is a subagent says nothing, because no argument could change it.
+/// Formats explanatory guidance regarding waking authority and strand behavior.
 fn wake_note(wanted: Wake, granted: Wake, landing: Landing) -> String {
   case wanted, granted, landing {
     WakesIdle, SteersOnly, OwnStrand | WakesIdle, SteersOnly, SpawnedStrand ->
@@ -873,6 +886,7 @@ fn wake_note(wanted: Wake, granted: Wake, landing: Landing) -> String {
   }
 }
 
+/// Constructs the `schedule_list` tool definition.
 fn list_tool(list_schedules: fn(Ctx) -> Result(List(Listed), Refusal)) -> Tool {
   tool.Tool(
     name: list_tool_name,
@@ -892,11 +906,14 @@ fn list_tool(list_schedules: fn(Ctx) -> Result(List(Listed), Refusal)) -> Tool {
   )
 }
 
+/// Lists all schedules belonging to the calling strand or its children.
 fn run_list(
   list_schedules: fn(Ctx) -> Result(List(Listed), Refusal),
   ctx: Ctx,
 ) -> ToolOutcome {
   use listed <- tool.or_outcome(list_schedules(ctx), refusal_outcome)
+
+  // Format schedule listings or report when none are registered.
   case listed {
     [] ->
       tool.success("you have no schedules.")
@@ -925,7 +942,9 @@ fn wake_flag(wake: Wake) -> Bool {
   }
 }
 
+/// Formats a single schedule entry row for list display.
 fn describe_listed(listed: Listed, ctx: Ctx) -> String {
+  // Describe waking permission in the listed schedule summary.
   let waking = case listed.wake {
     WakesIdle -> ", wakes an idle strand"
     SteersOnly ->
@@ -940,6 +959,7 @@ fn describe_listed(listed: Listed, ctx: Ctx) -> String {
     True -> ""
     False -> " onto " <> listed.target
   }
+
   "\""
   <> listed.name
   <> "\""
@@ -953,6 +973,7 @@ fn describe_listed(listed: Listed, ctx: Ctx) -> String {
   <> listed.body
 }
 
+/// Encodes a Listed schedule record into structured JSON.
 fn listed_json(listed: Listed) -> JsonValue {
   json.Object([
     #("name", json.String(listed.name)),
@@ -964,6 +985,7 @@ fn listed_json(listed: Listed) -> JsonValue {
   ])
 }
 
+/// Constructs the `schedule_cancel` tool definition.
 fn cancel_tool(
   cancel: fn(Ctx, String, Option(String)) -> Result(Nil, Refusal),
 ) -> Tool {
@@ -1003,6 +1025,7 @@ fn cancel_tool(
   )
 }
 
+/// Cancels a schedule by name and optional target strand.
 fn run_cancel(
   cancel: fn(Ctx, String, Option(String)) -> Result(Nil, Refusal),
   ctx: Ctx,
@@ -1038,6 +1061,7 @@ pub fn refusal_outcome(refusal: Refusal) -> ToolOutcome {
   )
 }
 
+/// Maps a schedule operation refusal to its stable machine error code.
 fn refusal_code(refusal: Refusal) -> String {
   case refusal {
     Invalid(..) -> "invalid_schedule"
@@ -1063,6 +1087,7 @@ pub fn refusal_reason(refusal: Refusal) -> String {
   describe(refusal)
 }
 
+/// Formats a human-readable diagnostic description of a schedule refusal.
 fn describe(refusal: Refusal) -> String {
   case refusal {
     Invalid(reason:) -> reason

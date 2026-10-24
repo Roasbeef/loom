@@ -83,6 +83,7 @@ pub fn update(
   }
 }
 
+/// Emits a local clock string adjusted for browser timezone offset.
 fn localise(milliseconds: Int) -> Effect(Msg) {
   use dispatch <- effect.from
   dispatch(

@@ -28,6 +28,14 @@
 //// compare-and-set on the cell's sequence, retrying on a conflict. The
 //// tool stays `Concurrent` and no update is lost.
 ////
+//// ## Flow
+////
+//// - `tool` creates the tool record binding `run` to execution.
+//// - `run` decodes arguments with `parse` and commits through `step`.
+//// - `step` decodes existing state and applies mutations via `apply`.
+//// - `apply` delegates to `change`, resolves targets via `resolve`, and settles.
+//// - `render` serializes the resulting `Board` for presentation.
+////
 //// ## Replay
 ////
 //// The tool is `replay: Safe`, which obliges every operation to be
@@ -140,6 +148,7 @@ pub fn tool(
 const description =
   "Keep a phased todo list for work with three or more steps, and keep it current as you go. The operator sees it pinned above their input, and it is how they follow your progress. Every call needs an `op`, and one op per call.\n\n`init` replaces the list: pass `phases` as [{name, items}], or a flat `items` list for a single phase. Refer to a task by its exact text, never by a number. `start` makes one task the active one. `done` or `drop` closes a `task`, a whole `phase`, or everything when you give neither. `block` marks a task or phase you cannot act on (waiting on the operator, another agent, or an outside service), with an optional `reason`; `unblock` reopens it. `append` adds `items` to a `phase`, creating the phase if it is new. `remove` deletes a task, a phase, or everything. `view` shows the list. Examples: {\"op\":\"init\",\"phases\":[{\"name\":\"Build\",\"items\":[\"Write the parser\"]}]}; {\"op\":\"start\",\"task\":\"Write the parser\"}; {\"op\":\"done\",\"task\":\"Write the parser\"}; {\"op\":\"drop\",\"phase\":\"Build\"}; {\"op\":\"block\",\"task\":\"Deploy\",\"reason\":\"waiting on the operator\"}; {\"op\":\"unblock\",\"task\":\"Deploy\"}; {\"op\":\"append\",\"phase\":\"Build\",\"items\":[\"Add tests\"]}; {\"op\":\"remove\",\"task\":\"Add tests\"}; {\"op\":\"view\"}. After every change, the first open task becomes active if none is.\n\nWrite each task as a short label of 5 to 10 words saying what, not how, and name phases with short nouns and no numbering. Mark a task done as soon as it is finished. Send todo calls in the same batch as the work they describe, not alone. When the operator gives you a list of steps or items, put every one on the list instead of a summary. The list is kept with your notes, so it survives compaction; `view` recovers the exact task text."
 
+/// Generates the JSON Schema describing inputs accepted by the todos tool.
 fn schema() -> JsonValue {
   let phases =
     json.Object([
@@ -210,6 +219,7 @@ fn schema() -> JsonValue {
   )
 }
 
+/// Dispatches a parsed todo operation against the persistent session blackboard.
 fn run(
   update: fn(Ctx, fn(Option(JsonValue)) -> Result(JsonValue, String)) ->
     Result(JsonValue, String),
@@ -226,6 +236,8 @@ fn run(
     result.try(committed, fn(value) {
       todo_list.decode(value) |> result.map_error(corruption.describe)
     })
+
+  // Check whether the updated board decoded cleanly or failed.
   case landed {
     Error(reason) ->
       tool.failure("todo: " <> reason)
@@ -264,6 +276,7 @@ pub fn step(stored: Option(JsonValue), op: Op) -> Result(JsonValue, String) {
   todo_list.encode(board)
 }
 
+/// Decodes the existing stored todo board or starts empty for init.
 fn current(stored: Option(JsonValue), op: Op) -> Result(Board, String) {
   case stored, op {
     None, _ -> Ok(todo_list.empty())
@@ -297,6 +310,7 @@ pub fn apply(board: Board, op: Op) -> Result(Board, String) {
 // tasks equal under that match would let a replayed `remove`, whose exact
 // target is gone, delete the other one. Refusing such a pair when it is
 // written keeps the loose match to at most one candidate.
+/// Asserts that all task labels on the board remain distinct under loose normalization.
 fn distinct_loosely(board: Board) -> Result(Board, String) {
   let texts =
     list.flat_map(board.phases, fn(phase) {
@@ -305,11 +319,15 @@ fn distinct_loosely(board: Board) -> Result(Board, String) {
   let outcome =
     list.try_fold(texts, dict.new(), fn(seen, text) {
       let key = normalize(text)
+
+      // Check for duplicate task texts ignoring case and whitespace.
       case dict.get(seen, key) {
         Ok(other) -> Error(#(other, text))
         Error(Nil) -> Ok(dict.insert(seen, key, text))
       }
     })
+
+  // Reject board if any loose duplicates were detected.
   case outcome {
     Ok(_) -> Ok(board)
     Error(#(first, second)) ->
@@ -323,6 +341,7 @@ fn distinct_loosely(board: Board) -> Result(Board, String) {
   }
 }
 
+/// Applies a single Op mutation to the in-memory Board structure.
 fn change(board: Board, op: Op) -> Result(Board, String) {
   case op {
     View -> Ok(board)
@@ -349,6 +368,7 @@ fn change(board: Board, op: Op) -> Result(Board, String) {
   }
 }
 
+/// Constructs a brand new Board from a list of named phases and task texts.
 fn init(phases: List(#(String, List(String)))) -> Result(Board, String) {
   use <- guard_empty(phases, fn() { "`init` needs at least one phase" })
   list.try_map(phases, fn(entry) {
@@ -367,6 +387,7 @@ fn init(phases: List(#(String, List(String)))) -> Result(Board, String) {
 // Starting a task demotes whichever task was active, so the board keeps
 // its single active task without the model having to close the old one
 // first.
+/// Activates the specified task and resets previously active tasks to pending.
 fn start(board: Board, text: String) -> Result(Board, String) {
   use text <- result.map(resolve(board, text))
   map_tasks(board, fn(_, task) {
@@ -378,6 +399,7 @@ fn start(board: Board, text: String) -> Result(Board, String) {
   })
 }
 
+/// Updates the status of tasks matching target using the mapping closure.
 fn restatus(
   board: Board,
   target: Target,
@@ -396,6 +418,7 @@ fn restatus(
 // replayed append harmless. An item that exists in a different phase is
 // refused, because task text is the task's identity and a second copy
 // would make every later reference to it ambiguous.
+/// Appends new tasks to a phase, creating the phase if it does not yet exist.
 fn append(
   board: Board,
   phase: String,
@@ -403,10 +426,13 @@ fn append(
 ) -> Result(Board, String) {
   use <- guard_empty(items, fn() { "`append` needs at least one item" })
   let existing = find_phase(board, phase)
+
+  // Collect existing task texts in this phase to prevent intra-phase duplicates.
   let here = case existing {
     Some(found) -> list.map(found.tasks, fn(task) { task.text })
     None -> []
   }
+
   let elsewhere =
     board.phases
     |> list.filter(fn(other) { other.name != phase })
@@ -431,6 +457,8 @@ fn append(
     |> list.unique
     |> list.filter(fn(item) { !list.contains(here, item) })
     |> list.map(fn(text) { Task(text:, status: Pending) })
+
+  // Append fresh tasks to the existing phase or insert a new phase.
   case existing {
     None ->
       Ok(Board(list.append(board.phases, [Phase(name: phase, tasks: fresh)])))
@@ -452,6 +480,7 @@ fn append(
 // absent is not an error, so a replayed remove succeeds. Removing a phase
 // deletes the phase itself, not just its tasks, since an empty phase has
 // nothing left to show.
+/// Removes matching tasks or entire phases from the board.
 fn remove(board: Board, target: Target) -> Result(Board, String) {
   case target {
     Everything -> Ok(todo_list.empty())
@@ -496,6 +525,7 @@ pub fn settle(board: Board) -> Board {
 
 // The flag threaded through both passes is whether the board's one active
 // slot has been taken by an earlier task in board order.
+/// Keeps at most the first active task in board order active.
 fn keep_first_active(board: Board) -> Board {
   fold_tasks(board, fn(taken, task) {
     case task.status, taken {
@@ -506,6 +536,7 @@ fn keep_first_active(board: Board) -> Board {
   })
 }
 
+/// Promotes the first pending task to active if none is currently active.
 fn promote_first_pending(board: Board) -> Board {
   fold_tasks(board, fn(taken, task) {
     case task.status, taken {
@@ -518,6 +549,7 @@ fn promote_first_pending(board: Board) -> Board {
   })
 }
 
+/// Maps tasks across all phases while threading a boolean state across them.
 fn fold_tasks(board: Board, with: fn(Bool, Task) -> #(Bool, Task)) -> Board {
   let #(_, phases) =
     list.map_fold(board.phases, False, fn(taken, phase) {
@@ -532,10 +564,12 @@ fn fold_tasks(board: Board, with: fn(Bool, Task) -> #(Bool, Task)) -> Board {
 // A target is checked against the board before anything changes, so a
 // misspelled task is an error naming the open tasks rather than a silent
 // no-op.
+/// Returns a predicate closure matching tasks specified by a Target selector.
 fn matcher(
   board: Board,
   target: Target,
 ) -> Result(fn(Phase, Task) -> Bool, String) {
+  // Construct task matcher predicate for the given target variant.
   case target {
     Everything -> Ok(fn(_, _) { True })
     WholePhase(name) ->
@@ -567,6 +601,8 @@ pub fn resolve(board: Board, text: String) -> Result(String, String) {
   let exact = list.find(tasks, fn(task) { task.text == text })
   let loose = fn() {
     let wanted = normalize(text)
+
+    // Match unique task ignoring case and whitespace differences.
     case list.filter(tasks, fn(task) { normalize(task.text) == wanted }) {
       [only] -> Ok(only)
       [] | [_, _, ..] -> Error(Nil)
@@ -578,6 +614,7 @@ pub fn resolve(board: Board, text: String) -> Result(String, String) {
   |> result.map_error(fn(_) { missing_task(tasks, text) })
 }
 
+/// Lowercases and collapses multiple spaces in `text` for fuzzy task matching.
 fn normalize(text: String) -> String {
   text
   |> string.lowercase
@@ -586,6 +623,7 @@ fn normalize(text: String) -> String {
   |> string.join(" ")
 }
 
+/// Formats a diagnostic message when a requested task text is not found on the board.
 fn missing_task(tasks: List(Task), text: String) -> String {
   let open =
     tasks
@@ -601,6 +639,7 @@ fn missing_task(tasks: List(Task), text: String) -> String {
   }
 }
 
+/// Formats a diagnostic message when a requested phase name is not found on the board.
 fn missing_phase(board: Board, name: String) -> String {
   let names = list.map(board.phases, fn(phase) { string.inspect(phase.name) })
   "no phase "
@@ -617,6 +656,7 @@ fn find_phase(board: Board, name: String) -> Option(Phase) {
   |> option.from_result
 }
 
+/// Maps a task transformation closure over every task across all phases.
 fn map_tasks(board: Board, with: fn(Phase, Task) -> Task) -> Board {
   Board(
     list.map(board.phases, fn(phase) {
@@ -630,6 +670,7 @@ fn map_tasks(board: Board, with: fn(Phase, Task) -> Task) -> Board {
 
 // The reason is a thunk because one of them is built from a phase name,
 // and it is needed only on the path that refuses.
+/// Guards against empty lists, returning an error message if `items` is empty.
 fn guard_empty(
   items: List(a),
   reason: fn() -> String,
@@ -668,6 +709,8 @@ fn one_line(text: String) -> String {
 /// ```
 pub fn parse(args: JsonValue) -> Result(Op, String) {
   use op <- result.try(required_op(args))
+
+  // Parse operation arguments according to the operation name.
   case op {
     "view" -> Ok(View)
     "init" -> parse_init(args)
@@ -698,8 +741,11 @@ pub fn parse(args: JsonValue) -> Result(Op, String) {
 // guessing the op from the other fields: `phases` alone would suggest
 // `init`, but `items` alone fits both `init` and `append`, and a guess that
 // replaces the board is not one to make for the model.
+/// Extracts the mandatory `op` string argument from tool arguments.
 fn required_op(args: JsonValue) -> Result(String, String) {
   use op <- result.try(tool.optional_string(args, "op"))
+
+  // Enforce presence of the op parameter.
   case op {
     Some(op) -> Ok(op)
     None -> Error("`op` is required; " <> op_help)
@@ -709,8 +755,11 @@ fn required_op(args: JsonValue) -> Result(String, String) {
 const op_help =
   "use one of init, start, done, drop, block, unblock, append, remove, view, e.g. {\"op\":\"init\",\"phases\":[{\"name\":\"Build\",\"items\":[\"Write the parser\"]}]}"
 
+/// Parses arguments for the `init` operation supporting multi-phase or flat lists.
 fn parse_init(args: JsonValue) -> Result(Op, String) {
   use phases <- result.try(tool.optional_value(args, "phases"))
+
+  // Support both full multi-phase structures and flat single-phase item lists.
   case phases {
     Some(json.Array(entries)) ->
       list.try_map(entries, parse_phase) |> result.map(Init)
@@ -727,9 +776,12 @@ fn parse_init(args: JsonValue) -> Result(Op, String) {
 // refusal names the half that is wrong. The recorded calls sent a phase
 // with `items` and no `name`, and `items` as objects; both refusals say
 // what the field is and show a phase that would be accepted.
+/// Parses a single `{name, items}` phase specification from JSON.
 fn parse_phase(entry: JsonValue) -> Result(#(String, List(String)), String) {
   use name <- result.try(tool.optional_string(entry, "name"))
   use items <- result.try(task_list(entry))
+
+  // Ensure both name and items fields are provided.
   case name, items {
     Some(name), Some(items) -> Ok(#(name, items))
     None, _ -> Error("a phase needs a `name`, e.g. " <> phase_example)
@@ -747,8 +799,11 @@ const phase_example = "{\"name\":\"Build\",\"items\":[\"Write the parser\"]}"
 
 const items_example = "[\"Write the parser\",\"Add tests\"]"
 
+/// Extracts a non-empty list of task strings for append or init operations.
 fn required_items(args: JsonValue, op: String) -> Result(List(String), String) {
   use items <- result.try(task_list(args))
+
+  // Validate that items array is present and contains tasks.
   case items {
     Some([_, ..] as items) -> Ok(items)
     Some([]) | None ->
@@ -769,8 +824,11 @@ fn required_items(args: JsonValue, op: String) -> Result(List(String), String) {
 // with the same word the schema uses for a task elsewhere. That object has
 // one text field and one possible meaning, so it is read as the text; an
 // object with any other shape is refused, since no key is the obvious one.
+/// Parses the `items` array property into a list of task string labels.
 fn task_list(owner: JsonValue) -> Result(Option(List(String)), String) {
   use found <- result.try(tool.optional_value(owner, "items"))
+
+  // Handle absent, null, array, or malformed items payloads.
   case found {
     None | Some(json.Null) -> Ok(None)
     Some(json.Array(entries)) ->
@@ -779,6 +837,7 @@ fn task_list(owner: JsonValue) -> Result(Option(List(String)), String) {
   }
 }
 
+/// Extracts a task label string from either a plain string or an object with a task key.
 fn task_text(entry: JsonValue) -> Result(String, String) {
   case entry {
     json.String(text) -> Ok(text)
@@ -796,6 +855,7 @@ fn items_shape(received: String) -> String {
 
 // The JSON type, with its article, and never the value: a refusal that
 // echoed the model's payload back would repeat a possibly large argument.
+/// Returns a human-friendly name for a JSON value type.
 fn kind(value: JsonValue) -> String {
   case value {
     json.Object(_) -> "an object"
@@ -807,8 +867,11 @@ fn kind(value: JsonValue) -> String {
   }
 }
 
+/// Extracts the required task label argument for the start operation.
 fn required_task(args: JsonValue) -> Result(String, String) {
   use task <- result.try(tool.optional_string(args, "task"))
+
+  // Ensure task text argument is present.
   case task {
     Some(task) -> Ok(task)
     None ->
@@ -824,9 +887,12 @@ fn required_task(args: JsonValue) -> Result(String, String) {
 // model sent as {task, phase}, and it retried the same shape each time. The
 // narrower reading is the safe one, since the task is one item where the
 // phase is a whole group.
+/// Resolves target selector arguments into a Target variant.
 fn target(args: JsonValue, fallback: Target) -> Result(Target, String) {
   use task <- result.try(tool.optional_string(args, "task"))
   use phase <- result.try(tool.optional_string(args, "phase"))
+
+  // Favor specific task targeting over whole phase or fallback targeting.
   case task, phase {
     Some(text), _ -> Ok(OneTask(text))
     None, Some(name) -> Ok(WholePhase(name))
@@ -834,8 +900,11 @@ fn target(args: JsonValue, fallback: Target) -> Result(Target, String) {
   }
 }
 
+/// Validates that either task or phase is explicitly targeted.
 fn required_target(args: JsonValue, op: String) -> Result(Target, String) {
   use found <- result.try(target(args, Everything))
+
+  // Require an explicit target rather than falling back to everything.
   case found {
     Everything ->
       Error(
@@ -849,6 +918,7 @@ fn required_target(args: JsonValue, op: String) -> Result(Target, String) {
   }
 }
 
+/// Returns the canonical command string representation of an Op variant.
 fn op_name(op: Op) -> String {
   case op {
     Init(_) -> "init"
@@ -883,9 +953,12 @@ pub fn render(board: Board) -> String {
   }
 }
 
+/// Formats a single-line summary of overall progress across all phases.
 fn summary(board: Board) -> String {
   let #(closed, total) = todo_list.count(board)
   let tally = int.to_string(closed) <> "/" <> int.to_string(total) <> " closed"
+
+  // Summarize the active task or report all tasks closed or blocked.
   case todo_list.active(board), closed == total {
     Some(#(phase, task)), _ ->
       tally <> "; active: " <> task.text <> " (" <> phase.name <> ")"
@@ -894,6 +967,7 @@ fn summary(board: Board) -> String {
   }
 }
 
+/// Renders a single phase header and its list of task rows.
 fn render_phase(phase: Phase) -> String {
   let #(closed, total) = todo_list.tally(phase.tasks)
   let heading =
@@ -907,7 +981,9 @@ fn render_phase(phase: Phase) -> String {
   |> string.join("\n")
 }
 
+/// Renders an individual task line with checkbox mark and optional blocker text.
 fn render_task(task: Task) -> String {
+  // Format ASCII checkbox symbol for task status.
   let mark = case task.status {
     Pending -> "[ ]"
     Active -> "[>]"
@@ -915,10 +991,13 @@ fn render_task(task: Task) -> String {
     Dropped -> "[-]"
     Blocked(_) -> "[!]"
   }
+
+  // Append blocker explanation if task is blocked.
   let reason = case task.status {
     Blocked(Some(reason)) -> " (blocked: " <> reason <> ")"
     Blocked(None) | Pending | Active | Done | Dropped -> ""
   }
+
   mark <> " " <> task.text <> reason
 }
 

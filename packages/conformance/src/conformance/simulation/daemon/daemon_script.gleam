@@ -81,14 +81,13 @@ fn draw(rng: Rng, available: List(String)) -> #(Creation, Rng) {
   #(Creation(key: "", workspace:, name: "", seed:), rng)
 }
 
-// Keys and names are assigned after the draw rather than during it, so the
-// generator spends no randomness on them and a script's identifiers stay
-// readable in a failure line.
+/// Assigns readable sequential keys and names to each drawn creation.
 fn named(
   drawn: List(Creation),
   ordinal: Int,
   acc: List(Creation),
 ) -> List(Creation) {
+  // Walk the remaining drawn creations to assign each a numbered key and name.
   case drawn {
     [] -> list.reverse(acc)
     [one, ..rest] -> {

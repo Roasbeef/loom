@@ -142,6 +142,7 @@ pub fn render(report: Report) -> String {
   <> boundary_sentence(report)
 }
 
+/// Formats the explanatory sentence describing remaining tokens and compaction behavior.
 fn boundary_sentence(report: Report) -> String {
   case report.boundary {
     CheckpointAt(tokens:, keep_recent_tokens:) ->
@@ -182,6 +183,7 @@ pub fn remaining(report: Report) -> Int {
   }
 }
 
+/// Encodes context window metrics and checkpoint boundaries into structured JSON.
 fn details(report: Report) -> JsonValue {
   json.Object([
     #("strand", json.String(report.strand)),

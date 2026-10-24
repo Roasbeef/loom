@@ -88,6 +88,7 @@ pub fn split(rng: Rng) -> #(Rng, Rng) {
 /// ```
 ///
 pub fn int_between(rng: Rng, min: Int, max: Int) -> #(Int, Rng) {
+  // Check if the range is degenerate or valid.
   case max <= min {
     True -> #(min, rng)
     False -> {
@@ -132,10 +133,13 @@ pub fn chance(rng: Rng, percent: Int) -> #(Bool, Rng) {
 /// ```
 ///
 pub fn pick(rng: Rng, items: List(a), fallback: a) -> #(a, Rng) {
+  // Check whether the candidate list is empty before picking.
   case list.length(items) {
     0 -> #(fallback, rng)
     count -> {
       let #(index, rng) = int_between(rng, 0, count - 1)
+
+      // Extract the element at the chosen index.
       case list.drop(items, index) {
         [chosen, ..] -> #(chosen, rng)
         [] -> #(fallback, rng)
@@ -161,6 +165,8 @@ pub fn weighted(rng: Rng, choices: List(#(Int, a)), fallback: a) -> #(a, Rng) {
         False -> sum
       }
     })
+
+  // Check if any positive weight was accumulated.
   case total <= 0 {
     True -> #(fallback, rng)
     False -> {
@@ -170,6 +176,7 @@ pub fn weighted(rng: Rng, choices: List(#(Int, a)), fallback: a) -> #(a, Rng) {
   }
 }
 
+/// Traverses weighted choices subtracting weights until the draw is matched.
 fn walk(choices: List(#(Int, a)), draw: Int, fallback: a) -> a {
   case choices {
     [] -> fallback
@@ -194,6 +201,7 @@ pub fn list_of(
   count: Int,
   draw: fn(Rng) -> #(a, Rng),
 ) -> #(List(a), Rng) {
+  // Check if we have drawn the requested count of elements.
   case count <= 0 {
     True -> #([], rng)
     False -> {

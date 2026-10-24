@@ -58,10 +58,12 @@ pub fn status() -> Result(List(StatusEntry), GitError) {
 
 /// The unified diff of the working tree (optionally staged).
 pub fn diff(staged staged: Bool) -> Result(String, GitError) {
+  // Select between index diff or working tree diff flags.
   let argv = case staged {
     True -> ["diff", "--cached"]
     False -> ["diff"]
   }
+
   use output <- result.try(run(argv))
   Ok(output.stdout)
 }
@@ -99,19 +101,21 @@ fn current_sha() -> Result(String, GitError) {
   Ok(string.trim(output.stdout))
 }
 
-// Runs `git ARGV`, mapping a non-zero exit and any proc failure into a
-// typed `GitError`. Success guarantees exit code 0.
+/// Runs git with given arguments and returns output on success.
 fn run(argv: List(String)) -> Result(proc.Output, GitError) {
   use output <- result.try(
     proc.run(proc.command(["git", ..argv]))
     |> result.map_error(ProcessError),
   )
+
+  // Check exit code for success.
   case output.exit_code {
     0 -> Ok(output)
     code -> Error(CommandFailed(exit_code: code, stderr: output.stderr))
   }
 }
 
+/// Parses a single status line in porcelain format.
 fn parse_status_line(line: String) -> Result(StatusEntry, GitError) {
   // Porcelain v1: two status chars, a space, then the path.
   case string.length(line) >= 4 {

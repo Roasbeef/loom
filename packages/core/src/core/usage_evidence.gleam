@@ -220,6 +220,7 @@ pub fn add(left: Evidence, right: Evidence) -> Evidence {
 /// assert usage_evidence.decode(usage_evidence.encode(evidence)) == Ok(evidence)
 /// ```
 pub fn encode(evidence: Evidence) -> JsonValue {
+  // Map evidence variants to their token coverage, billing name, and cost shape.
   let #(tokens, billing, cost) = case evidence {
     NoProvider -> #("complete", "no-provider", encode_kind("no-expense"))
     Remote(billing, Unreported) -> #(
@@ -233,6 +234,7 @@ pub fn encode(evidence: Evidence) -> JsonValue {
       encode_cost(cost),
     )
   }
+
   json.Object([
     #("version", json.Int(1)),
     #("tokens", json.String(tokens)),
@@ -267,9 +269,11 @@ pub fn decode(value: JsonValue) -> Result(Evidence, CorruptionReport) {
   assemble(tokens, billing, cost)
 }
 
-// The stored form spells the local identity twice, as a billing and as a
-// cost, and spells unreported tokens as a coverage. `None` stands for each of
-// those spellings, and only the combinations the types express are accepted.
+/// Assembles typed evidence from decoded coverage, billing, and cost components.
+///
+/// The stored form spells the local identity twice, as a billing and as a
+/// cost, and spells unreported tokens as a coverage. `None` stands for each of
+/// those spellings, and only the combinations the types express are accepted.
 fn assemble(
   tokens: Option(Coverage),
   billing: Option(Billing),
@@ -292,6 +296,7 @@ fn assemble(
   }
 }
 
+/// Combines token reporting records from two joined attempts.
 fn combine_tokens(left: Tokens, right: Tokens) -> Tokens {
   case left, right {
     Unreported, Unreported -> Unreported
@@ -321,6 +326,7 @@ fn partial_cost(cost: Cost) -> Cost {
   }
 }
 
+/// Combines two cost records into a composite cost.
 fn combine_cost(left: Cost, right: Cost) -> Cost {
   case left, right {
     Unpriced, Unpriced -> Unpriced
@@ -343,6 +349,7 @@ fn coverage_name(coverage: Coverage) -> String {
   }
 }
 
+/// Returns the wire string representation of a billing arrangement.
 fn billing_name(billing: Billing) -> String {
   case billing {
     Api -> "api"
@@ -355,6 +362,7 @@ fn encode_kind(kind: String) -> JsonValue {
   json.Object([#("kind", json.String(kind))])
 }
 
+/// Encodes a cost record into its JSON representation.
 fn encode_cost(cost: Cost) -> JsonValue {
   case cost {
     Unpriced -> encode_kind("unavailable")
@@ -367,6 +375,7 @@ fn encode_cost(cost: Cost) -> JsonValue {
   }
 }
 
+/// Returns the wire string representation of a price basis.
 fn basis_name(basis: PriceBasis) -> String {
   case basis {
     ApiRates -> "api-rates"
@@ -375,7 +384,9 @@ fn basis_name(basis: PriceBasis) -> String {
   }
 }
 
-// `None` is the stored word for tokens nobody reported.
+/// Decodes a token coverage field value.
+///
+/// `None` is the stored word for tokens nobody reported.
 fn decode_tokens(
   value: JsonValue,
 ) -> Result(Option(Coverage), CorruptionReport) {
@@ -387,6 +398,7 @@ fn decode_tokens(
   }
 }
 
+/// Decodes a required coverage field value.
 fn decode_coverage(value: JsonValue) -> Result(Coverage, CorruptionReport) {
   case value {
     json.String("partial") -> Ok(Partial)
@@ -395,7 +407,9 @@ fn decode_coverage(value: JsonValue) -> Result(Coverage, CorruptionReport) {
   }
 }
 
-// `None` is the stored no-provider arrangement.
+/// Decodes a billing arrangement field value.
+///
+/// `None` is the stored no-provider arrangement.
 fn decode_billing(
   value: JsonValue,
 ) -> Result(Option(Billing), CorruptionReport) {
@@ -412,10 +426,14 @@ fn decode_billing(
   }
 }
 
-// `None` is the stored no-expense cost.
+/// Decodes a cost field value from JSON.
+///
+/// `None` is the stored no-expense cost.
 fn decode_cost(value: JsonValue) -> Result(Option(Cost), CorruptionReport) {
   use fields <- result.try(object_fields(value))
   use kind <- result.try(field(fields, "kind"))
+
+  // Branch on the cost kind: unavailable, no-expense, or estimated.
   case kind {
     json.String("unavailable") -> {
       use _ <- result.try(exact_fields(value, ["kind"]))
@@ -439,6 +457,7 @@ fn decode_cost(value: JsonValue) -> Result(Option(Cost), CorruptionReport) {
   }
 }
 
+/// Decodes a price basis value from JSON.
 fn decode_basis(value: JsonValue) -> Result(PriceBasis, CorruptionReport) {
   case value {
     json.String("api-rates") -> Ok(ApiRates)
@@ -448,6 +467,7 @@ fn decode_basis(value: JsonValue) -> Result(PriceBasis, CorruptionReport) {
   }
 }
 
+/// Validates that an object contains exactly the expected set of keys.
 fn exact_fields(
   value: JsonValue,
   expected: List(String),
@@ -461,6 +481,7 @@ fn exact_fields(
   Ok(fields)
 }
 
+/// Extracts the key-value list from a JSON object value.
 fn object_fields(
   value: JsonValue,
 ) -> Result(List(#(String, JsonValue)), CorruptionReport) {
@@ -475,6 +496,7 @@ fn object_fields(
   }
 }
 
+/// Extracts a field value from an association list of fields.
 fn field(
   fields: List(#(String, JsonValue)),
   name: String,
@@ -487,6 +509,7 @@ fn invalid(subject: String, expected: String) -> Result(a, CorruptionReport) {
   Error(report(subject, expected))
 }
 
+/// Constructs a corruption report for invalid usage evidence.
 fn report(subject: String, expected: String) -> CorruptionReport {
   corruption.report(
     at: "core/usage_evidence.decode",

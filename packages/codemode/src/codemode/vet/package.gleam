@@ -165,6 +165,8 @@ pub fn vet_package(
       project_refusals(installed),
       list.flat_map(judged, fn(entry) { source_refusals(entry, policy) }),
     ])
+
+  // Return package if no rejections occurred; error list otherwise.
   case refusals {
     [] -> Ok(VettedPackage(modules: passed(judged)))
     [_, ..] -> Error(refusals)
@@ -187,6 +189,8 @@ pub fn vet_candidate(
 ) -> Result(VettedPackage, List(#(String, Rejection))) {
   use admitted <- result.try(list.try_map(files, candidate_file))
   let paths = list.map(admitted, fn(file) { file.0 })
+
+  // Verify candidate paths are unique and do not shadow each other.
   use _ <- result.try(
     case list.length(paths) == list.length(list.unique(paths)) {
       True -> Ok(Nil)
@@ -196,13 +200,17 @@ pub fn vet_candidate(
         ])
     },
   )
+
   vet_package(admitted, policy)
 }
 
+/// Normalizes a candidate file path and rejects forbidden or shadowing files.
 fn candidate_file(
   file: #(String, String),
 ) -> Result(#(String, String), List(#(String, Rejection))) {
   let #(path, text) = file
+
+  // Check whether candidate file path shadows entry module.
   use Nil <- result.try(
     case
       path == "src/" <> compile.entry_module <> ".gleam"
@@ -221,6 +229,7 @@ fn candidate_file(
     },
   )
 
+  // Map test source paths to src/ and classify allowed directories.
   case string.starts_with(path, "test/") {
     True ->
       case string.ends_with(path, ".gleam") {
@@ -343,9 +352,11 @@ pub fn describe(rejection: Rejection) -> String {
 
 // --- layout ---------------------------------------------------------------
 
-// The one file shape that is named rather than dropped. Everything else
-// outside the installed tree is pruned in silence, because a repository
-// carrying a test or a `.gitignore` is a repository, not a mistake.
+/// Rejects files under src/ that do not have a .gleam extension.
+///
+/// The one file shape that is named rather than dropped. Everything else
+/// outside the installed tree is pruned in silence, because a repository
+/// carrying a test or a `.gitignore` is a repository, not a mistake.
 fn native_refusal(
   file: #(String, payload),
 ) -> Result(#(String, Rejection), Nil) {
@@ -378,6 +389,7 @@ type Kind {
   Excluded
 }
 
+/// Classifies a path into module, native code, data asset, or excluded file.
 fn classify(path: String) -> Kind {
   case string.starts_with(path, source_directory) {
     True ->
@@ -393,9 +405,11 @@ fn classify(path: String) -> Kind {
   }
 }
 
-// The installed tree outside `src/`. `README*` and `LICENSE*` match at the
-// root only, because a relative path elsewhere begins with its directory
-// — `docs/README.md` starts with `docs/` and is pruned, which is right.
+/// Identifies installed non-code data files such as schemas and licenses.
+///
+/// The installed tree outside `src/`. `README*` and `LICENSE*` match at the
+/// root only, because a relative path elsewhere begins with its directory
+/// — `docs/README.md` starts with `docs/` and is pruned, which is right.
 fn is_data(path: String) -> Bool {
   string.starts_with(path, "schema/")
   || string.starts_with(path, "skills/")
@@ -418,6 +432,7 @@ fn module_of(path: String) -> String {
 
 // --- the project file -----------------------------------------------------
 
+/// Validates presence and syntax of the package gleam.toml manifest.
 fn project_refusals(
   files: List(#(String, String)),
 ) -> List(#(String, Rejection)) {
@@ -437,6 +452,7 @@ fn project_refusals(
   }
 }
 
+/// Parses gleam.toml text and checks for forbidden keys or dependencies.
 fn project_rejections(text: String) -> List(Rejection) {
   case tom.parse(text) {
     Error(error) -> [ProjectUnreadable(reason: parse_reason(error))]
@@ -445,6 +461,7 @@ fn project_rejections(text: String) -> List(Rejection) {
   }
 }
 
+/// Checks TOML document keys against the allowed project configuration keys.
 fn unknown_keys(document: Dict(String, tom.Toml)) -> List(Rejection) {
   dict.keys(document)
   |> list.filter(fn(key) { !list.contains(allowed_project_keys, key) })
@@ -456,8 +473,10 @@ fn unknown_keys(document: Dict(String, tom.Toml)) -> List(Rejection) {
   })
 }
 
-// Only `[dependencies]` is judged. `[dev_dependencies]` is an author's own
-// business precisely because `test/` never reaches the install.
+/// Rejects package dependencies that are not included in the allowlist.
+///
+/// Only `[dependencies]` is judged. `[dev_dependencies]` is an author's own
+/// business precisely because `test/` never reaches the install.
 fn dependency_rejections(document: Dict(String, tom.Toml)) -> List(Rejection) {
   case dict.get(document, "dependencies") {
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
@@ -475,6 +494,7 @@ fn dependency_rejections(document: Dict(String, tom.Toml)) -> List(Rejection) {
   }
 }
 
+/// Formats TOML parse errors into concise explanation strings.
 fn parse_reason(error: tom.ParseError) -> String {
   case error {
     tom.Unexpected(got:, expected:) ->
@@ -500,12 +520,15 @@ fn widen(base: VetPolicy, names: List(String)) -> VetPolicy {
   list.fold(names, base, policy.allow)
 }
 
+/// Collects source vetting refusals and shadowing errors for a judged module.
 fn source_refusals(
   judged: #(String, vet.VetResult),
   base: VetPolicy,
 ) -> List(#(String, Rejection)) {
   let #(path, result) = judged
   let shadowing = shadow_refusals(path, base)
+
+  // Combine shadowing refusals with any source vetting rejections.
   case result {
     vet.Passed(_vetted) -> shadowing
     vet.Rejected(rejections) ->
@@ -518,15 +541,19 @@ fn source_refusals(
   }
 }
 
-// A module whose name is already on the seam's allowlist would be compiled
-// into the extension's own package under that name, and a sibling's
-// `import cap/fs` would then resolve to it. Refused by name, before the
-// widened policy can make it look legitimate.
+/// Rejects modules whose name shadows an existing allowlisted prelude module.
+///
+/// A module whose name is already on the seam's allowlist would be compiled
+/// into the extension's own package under that name, and a sibling's
+/// `import cap/fs` would then resolve to it. Refused by name, before the
+/// widened policy can make it look legitimate.
 fn shadow_refusals(
   path: String,
   base: VetPolicy,
 ) -> List(#(String, Rejection)) {
   let name = module_of(path)
+
+  // Refuse if module name collides with a standard allowlisted module.
   case policy.contains(base, name) {
     False -> []
     True -> [
@@ -543,9 +570,11 @@ fn shadow_refusals(
   }
 }
 
-// The vetted tokens, in module-name order so a build root is written
-// deterministically. Reached only when nothing was refused, so the
-// `Rejected` arm is unreachable rather than lenient.
+/// Collects vetted modules in alphabetical order by module name.
+///
+/// The vetted tokens, in module-name order so a build root is written
+/// deterministically. Reached only when nothing was refused, so the
+/// `Rejected` arm is unreachable rather than lenient.
 fn passed(judged: List(#(String, vet.VetResult))) -> List(#(String, Vetted)) {
   judged
   |> list.filter_map(fn(entry) {
