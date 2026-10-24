@@ -34,6 +34,7 @@
 //// No command prints a key, a cookie or any certificate. A bundle holds the
 //// first two, and its path is all a command says about it.
 
+import client/authority_home
 import client/authority_key
 import client/daemon/ledger_cli
 import client/distribution
@@ -44,6 +45,7 @@ import client/distribution_provision.{
   type Overwrite, RefuseExisting, ReplaceExisting,
 }
 import client/internal/ffi_os
+import filepath
 import gleam/int
 import gleam/io
 import gleam/list
@@ -145,8 +147,8 @@ commands:
                                   applied. Give the same --bundle-dir the node
                                   was enrolled with, so the bundle installs
                                   over its credentials in place.
-  attach-file NAME --node N --links DAEMON --out DIR [--host H] [--force]
-         [--wait SECONDS] [COMMON]
+  attach-file NAME --node N --links DAEMON (--out DIR | --for pickglass)
+         [--host H] [--force] [--wait SECONDS] [COMMON]
                                   Let a debugging tool (pickglass, Observer,
                                   `erl -remsh`) join a distributed daemon. Like
                                   `enroll`, it mints a certificate and signs a
@@ -159,7 +161,11 @@ commands:
                                   sessions and is never asked anything, but it
                                   is a full Erlang node on the daemon: revoke it
                                   when you are done. Renew it by revoking it
-                                  and attaching again.
+                                  and attaching again. --for pickglass makes
+                                  --out optional: DIR defaults to NAME under
+                                  $PICKGLASS_ATTACH_HOME (else
+                                  $HOME/.pickglass/attach), and the recipe adds
+                                  `pickglass attach --node D --attach NAME`.
   log [--json] [--config PATH] [COMMON]
                                   Print the ledger's entries with their
                                   identities, then the last refusal and each
@@ -176,7 +182,9 @@ commands:
 COMMON is [--home DIR] [--deployment ID] [--passphrase-file PATH]
 [--state-dir DIR | --addr URL --token-file PATH]. The key is found under
 DIR/.loom/authority (DIR defaults to $HOME); --deployment picks one when
-several are kept. The passphrase is asked for on the terminal, which only
+several are kept. When the key is not under DIR, pass the --home that ran
+`provision`; with no --home, a home recorded beside the installed ledger is
+tried. The passphrase is asked for on the terminal, which only
 `loomd distribution` can do; `loom distribution enroll`, `revoke`, `renew` and `attach-file`
 need --passphrase-file. The daemon is the one on this host, found through its
 state directory (default $HOME/.loom), unless --addr names another.
@@ -392,6 +400,14 @@ fn provision_ledger(
     output,
     parsed.overwrite,
   ))
+
+  // The home is a path and no secret. `install` carries it beside the ledger so
+  // a later `attach-file` on this machine can find the sealed key without
+  // `--home`.
+  use Nil <- result.try(case sealing {
+    Some(#(_, home)) -> authority_home.write_hint(output, home)
+    None -> Ok(Nil)
+  })
   Ok(provisioned(deployment, output, closing))
 }
 
@@ -560,6 +576,14 @@ fn install(arguments: List(String)) -> Result(String, String) {
     )
     |> result.map_error(fn(reason) { bundle_path <> ": " <> reason }),
   )
+
+  // A hint left beside the bundle by `provision` moves next to the ledger.
+  use Nil <- result.try(authority_home.copy_hint(
+    filepath.directory_name(bundle_path),
+    option.lazy_unwrap(installed.bundle.bundle_dir, fn() {
+      distribution_install.default_directory(home)
+    }),
+  ))
   Ok(installed_text(installed))
 }
 

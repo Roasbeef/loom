@@ -629,6 +629,27 @@ pickglass attach --node loom@hub.example \
     --cookie-file ~/inspector/.erlang.cookie --name inspector@127.0.0.1
 ```
 
+For pickglass, `--for pickglass` replaces `--out`: the directory defaults to
+`NAME` under pickglass's attach root, which is `$PICKGLASS_ATTACH_HOME` when set
+and `$HOME/.pickglass/attach` otherwise (mode 0700, and the same refusal to
+write into a directory that already holds files). The report then adds
+`pickglass attach --node loom@hub.example --attach inspector`, which pickglass
+expands to `--attach-dir <root>/inspector`. Without `--attach` or `--attach-dir`
+pickglass attaches to no directory, so name one. `--out` still works as before
+when `--for` is absent.
+
+`attach-file`, like `enroll`, `renew` and `revoke`, looks for the sealed
+authority key under `<home>/.loom/authority/<deployment id>`, where `home` is
+`--home` or `$HOME`. A deployment provisioned with `--home /X` keeps its key
+under `/X`, so pass the same `--home`. When the key is not found, the error
+names the deployment id read from the installed ledger (the id is public) and
+the two flags to use, `--home` and `--passphrase-file`. Without `--home`, the
+command also tries the home that `provision` recorded in `OUT/authority-home`
+(a path, no secret), which `install` copies next to the installed ledger. That
+hint is used only when the directory it names holds a sealed key for the
+installed ledger's deployment. A bundle copied alone to another machine carries
+no hint, and the hint means nothing there.
+
 `HOME` points at the directory only because Erlang reads the cookie from
 `$HOME/.erlang.cookie`; copy the cookie to your own `$HOME` instead if you
 prefer. The files are as sensitive as a node bundle: the key lets its holder

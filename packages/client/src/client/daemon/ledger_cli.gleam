@@ -64,11 +64,13 @@
 //// daemon on another host, as `loom access` does. The passphrase comes from the
 //// terminal, which only `loomd` can ask on, or from `--passphrase-file`.
 
+import client/authority_home
 import client/authority_key
 import client/daemon/admin
 import client/distribution
 import client/distribution_attach
 import client/distribution_bundle.{type Bundle, Bundle}
+import client/distribution_install
 import client/distribution_plan.{type Workspace, Executor, Tool, Workspace}
 import client/distribution_provision.{
   type Overwrite, RefuseExisting, ReplaceExisting,
@@ -131,6 +133,25 @@ pub fn run(command: String, arguments: List(String)) -> Result(String, String) {
   run_with(command, arguments, socket_daemon)
 }
 
+/// The same, with the process environment given by the caller as well. A test
+/// passes the `HOME` and `PICKGLASS_ATTACH_HOME` of a scratch directory instead
+/// of changing the variables of the whole VM.
+///
+/// ## Examples
+///
+/// ```gleam
+/// ledger_cli.run_in("log", [], connect, fn(_) { Error(Nil) })
+/// ```
+pub fn run_in(
+  command: String,
+  arguments: List(String),
+  connect: Connect,
+  getenv: fn(String) -> Result(String, Nil),
+) -> Result(String, String) {
+  use parsed <- result.try(parse(command, arguments, getenv))
+  dispatch(command, parsed, connect)
+}
+
 /// The same, with the way a daemon is reached given by the caller. A test
 /// passes a daemon that is a ledger process in its own VM, so the commands run
 /// their production path against a real ledger without a socket.
@@ -145,7 +166,14 @@ pub fn run_with(
   arguments: List(String),
   connect: Connect,
 ) -> Result(String, String) {
-  use parsed <- result.try(parse(command, arguments))
+  run_in(command, arguments, connect, bootstrap.getenv)
+}
+
+fn dispatch(
+  command: String,
+  parsed: Parsed,
+  connect: Connect,
+) -> Result(String, String) {
   case command {
     "enroll" -> enroll(parsed, connect)
     "revoke" -> revoke(parsed, connect)
@@ -169,6 +197,7 @@ type Parsed {
     positional: List(String),
     values: List(#(String, String)),
     switches: List(String),
+    getenv: fn(String) -> Result(String, Nil),
   )
 }
 
@@ -195,7 +224,9 @@ fn flags_of(command: String) -> Flags {
       )
     "attach-file" ->
       Flags(
-        list.append(common, ["--node", "--host", "--links", "--out", "--wait"]),
+        list.append(common, [
+          "--node", "--host", "--links", "--out", "--wait", "--for",
+        ]),
         ["--force"],
         [],
       )
@@ -212,17 +243,23 @@ fn flags_of(command: String) -> Flags {
   }
 }
 
-fn parse(command: String, arguments: List(String)) -> Result(Parsed, String) {
+fn parse(
+  command: String,
+  arguments: List(String),
+  getenv: fn(String) -> Result(String, Nil),
+) -> Result(Parsed, String) {
   use parsed <- result.try(parse_loop(
     arguments,
     flags_of(command),
-    Parsed([], [], []),
+    Parsed([], [], [], getenv),
   ))
-  Ok(Parsed(
-    positional: list.reverse(parsed.positional),
-    values: list.reverse(parsed.values),
-    switches: parsed.switches,
-  ))
+  Ok(
+    Parsed(
+      ..parsed,
+      positional: list.reverse(parsed.positional),
+      values: list.reverse(parsed.values),
+    ),
+  )
 }
 
 fn parse_loop(
@@ -368,15 +405,72 @@ fn home_of(parsed: Parsed) -> Result(String, String) {
   case value(parsed, "--home") {
     Some(home) -> bootstrap.absolute_path(home)
     None ->
-      bootstrap.getenv("HOME")
+      parsed.getenv("HOME")
       |> result.replace_error("HOME is unset; pass --home DIR")
   }
 }
 
 // The directory of the kept authority: the one named by `--deployment`, or the
-// only one under the home.
+// only one under the home. Without `--home`, a home recorded by `provision` and
+// copied beside the installed ledger is tried next, and used only if it holds a
+// sealed key for this deployment. A failure names the deployment the installed
+// ledger belongs to, which is not secret, so the operator can see where the key
+// should be.
 fn authority_directory(parsed: Parsed) -> Result(String, String) {
   use home <- result.try(home_of(parsed))
+  let installed = installed_directory(parsed)
+  let id = authority_home.installed_deployment(installed)
+  case kept_under(parsed, home) {
+    Ok(directory) -> Ok(directory)
+    Error(reason) ->
+      hinted_directory(parsed, installed, id)
+      |> result.map_error(fn(_) { reason <> explanation(id, home) })
+  }
+}
+
+// The sealed key under the home `provision` recorded, when the operator gave no
+// `--home` and that home really holds a key for the deployment.
+fn hinted_directory(
+  parsed: Parsed,
+  installed: String,
+  id: Result(String, Nil),
+) -> Result(String, Nil) {
+  use Nil <- result.try(case value(parsed, "--home") {
+    None -> Ok(Nil)
+    Some(_) -> Error(Nil)
+  })
+  use hinted <- result.try(authority_home.hinted_home(installed))
+  use deployment <- result.try(
+    result.lazy_or(id, fn() {
+      option.to_result(value(parsed, "--deployment"), Nil)
+    }),
+  )
+  let directory = authority_key.default_directory(hinted, deployment)
+  case authority_key.is_kept(directory) {
+    True -> Ok(directory)
+    False -> Error(Nil)
+  }
+}
+
+fn explanation(id: Result(String, Nil), home: String) -> String {
+  case id {
+    Ok(deployment) -> authority_home.explain(deployment, home)
+    Error(Nil) -> ""
+  }
+}
+
+// Where the daemon on this host keeps its installed credentials and ledger:
+// below `--state-dir` when given, else below `$HOME/.loom`. It is not
+// `--home`, which says where the key was sealed.
+fn installed_directory(parsed: Parsed) -> String {
+  case value(parsed, "--state-dir"), parsed.getenv("HOME") {
+    Some(state), _ -> state <> "/distribution"
+    None, Ok(home) -> distribution_install.default_directory(home)
+    None, Error(_) -> ""
+  }
+}
+
+fn kept_under(parsed: Parsed, home: String) -> Result(String, String) {
   let root = home <> "/.loom/authority"
   case value(parsed, "--deployment") {
     Some(id) -> {
@@ -743,8 +837,8 @@ fn attach_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
   use Nil <- result.try(ledger_operator.check_enrollment(request))
   use where_ <- result.try(where_of(parsed))
   use wait <- result.try(wait_ms(parsed))
-  use out <- result.try(required(parsed, "--out"))
-  use out <- result.try(bootstrap.absolute_path(out))
+  use target <- result.try(attach_target(parsed, name))
+  let out = target.out
   let files = distribution_attach.files_in(out)
   use options <- result.try(distribution_attach.options(files))
   use Nil <- result.try(refuse_occupied(out, overwrite_of(parsed)))
@@ -814,10 +908,79 @@ fn attach_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
         distribution_attach.instructions(files, request.node, daemons),
         "",
       ],
+      pickglass_text(target, daemons),
+      pickglass_text(target, daemons),
       confirmations_text(signed, wait, []),
     ]),
     "\n",
   ))
+}
+
+// Where the files go. `--out` names the directory. `--for pickglass` makes it
+// optional and defaults it to `NAME` under pickglass's attach root, so the
+// directory is one pickglass finds by name. With both, `--out` wins and the
+// pickglass lines are printed only when it is that very directory.
+type Target {
+  Target(out: String, pickglass: Option(#(String, String)))
+}
+
+fn attach_target(parsed: Parsed, name: String) -> Result(Target, String) {
+  use for_pickglass <- result.try(case value(parsed, "--for") {
+    None -> Ok(False)
+    Some("pickglass") -> Ok(True)
+    Some(other) -> Error("--for takes pickglass, not " <> other)
+  })
+  case for_pickglass {
+    False -> {
+      use out <- result.try(required(parsed, "--out"))
+      use out <- result.map(bootstrap.absolute_path(out))
+      Target(out:, pickglass: None)
+    }
+    True -> {
+      use Nil <- result.try(case distribution_attach.is_directory_name(name) {
+        True -> Ok(Nil)
+        False ->
+          Error(
+            "--for pickglass makes a directory named "
+            <> name
+            <> ", so the name must be one plain word",
+          )
+      })
+      use home <- result.try(
+        parsed.getenv("HOME")
+        |> result.replace_error("HOME is unset; pass --out DIR"),
+      )
+      let root =
+        distribution_attach.attach_root(
+          option.from_result(parsed.getenv("PICKGLASS_ATTACH_HOME")),
+          home,
+        )
+      use root <- result.try(bootstrap.absolute_path(root))
+      let default = root <> "/" <> name
+      use out <- result.map(case value(parsed, "--out") {
+        None -> Ok(default)
+        Some(out) -> bootstrap.absolute_path(out)
+      })
+      case out == default {
+        True -> Target(out:, pickglass: Some(#(root, name)))
+        False -> Target(out:, pickglass: None)
+      }
+    }
+  }
+}
+
+fn pickglass_text(target: Target, daemons: List(String)) -> List(String) {
+  case target.pickglass, daemons {
+    Some(#(root, name)), [daemon] -> [
+      distribution_attach.pickglass_lines(root, name, daemon),
+      "",
+    ]
+    Some(#(root, name)), _ -> [
+      distribution_attach.pickglass_lines(root, name, "<daemon node>"),
+      "",
+    ]
+    None, _ -> []
+  }
 }
 
 // The directory is made private, and six files are written into it, so a

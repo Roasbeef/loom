@@ -404,7 +404,14 @@ has the variant, `role_from_word` (plans and bundles) refuses the word and
 `loom distribution attach-file` (`daemon/ledger_cli.attach_file`) enrolls one and
 writes `ca.pem`, `tool.pem`, `tool.key`, `.erlang.cookie`, `node` (the tool's node
 name and a newline) and `ssl_dist.conf` into a private directory, the shape
-`pickglass attach --attach-dir` reads. `client/distribution_attach` renders the options file
+`pickglass attach --attach-dir` reads. `--for pickglass` defaults that directory to
+`NAME` under the attach root (`$PICKGLASS_ATTACH_HOME`, else
+`$HOME/.pickglass/attach`) and prints `pickglass attach --node D --attach NAME`;
+Loom agrees with pickglass on the layout and has no dependency on it. The authority
+lookup (`client/authority_home`) names the installed ledger's deployment id in a
+no-key error, and falls back to the `authority-home` file `provision` writes and
+`install` copies beside the ledger, used only if that home holds the sealed key.
+`client/distribution_attach` renders the options file
 and the recipe. The file names only stock `ssl` options (the three credential
 files, `verify_peer`, the TLS versions) in a `client` section alone: a tool must never listen, since a listener would trust the authority and not the ledger, so the recipes add `-hidden -dist_listen false`, because the tool's VM does not have
 Loom's verify function and does not need it: the daemon is the side that pins.
