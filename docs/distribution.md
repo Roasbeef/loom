@@ -649,6 +649,76 @@ only to this machine's own nodes for now, so run it on the daemon's machine.
 cookie directory that a plain `--profile` launch creates, so they do not apply
 to a distributed daemon; use the commands above.
 
+### Attaching Pickglass or another tool to a TLS deployment
+
+Two people are involved, and only the first touches authority material.
+
+The operator is the account that provisioned the deployment. The authority key
+(the key that signs the ledger and issues every certificate) is sealed under
+`~/.loom/authority/<deployment>/` in that account's home, on the machine where
+`provision` ran, and nowhere else. Enrollment signs a ledger entry with it, so
+`attach-file` works only there. On any other machine or account the directory
+does not exist, and copying the key to make the command work defeats the point
+of keeping it in one place. The operator runs `attach-file` once per tool (see
+the previous section for the command) and hands the tool user only the `--out`
+directory.
+
+The tool user receives that directory and nothing else. They run
+`pickglass attach --node <daemon> --attach-dir DIR`, or the explicit flags
+shown above, on the daemon's machine. They never read the authority key, the CA
+key, `~/.erlang.cookie` or the daemon's state directory: the directory they
+were given already holds a certificate for the tool, the deployment's CA
+certificate and the cookie, which is all a tool needs.
+
+`--home` and `--passphrase-file` belong to the operator. `--home DIR` names the
+home whose `.loom/authority` holds the key, for when the command is run from
+another account or with a different `HOME`; `--deployment ID` picks one when
+the home keeps several. `--passphrase-file PATH` reads the key's passphrase
+from a file when there is no terminal to ask on. A tool user has neither a key
+to point at nor a passphrase to give.
+
+What `attach-file` prints when it stops, and the one thing to do about each:
+
+| Message (shortened) | Cause | Do this |
+| --- | --- | --- |
+| `no authority key is kept under <home>/.loom/authority` | This account did not provision the deployment, it was provisioned with `--drop-authority`, or `--home` is wrong. | Run it as the operator on the provisioning machine, or pass `--home` with that account's home. A tool user stops here and asks the operator. |
+| `no authority key is kept in <dir>` | `--deployment` names an id that is not kept in this home. | Run `ls <home>/.loom/authority` as the operator and pass an id from it. |
+| `several deployments are kept under <root>; pass --deployment with one of: ...` | The home keeps more than one authority. | Pass `--deployment` with the id of this deployment. |
+| `there is no terminal to ask for a passphrase on; pass --passphrase-file PATH` | The command has no terminal. | The operator passes `--passphrase-file`. |
+| `the passphrase is wrong, or the key file was changed` | The passphrase does not open the key. | Use the passphrase set at `provision`. If the key file was edited, restore it from the operator's backup; do not retype guesses. |
+| `the key file belongs to another deployment` | `--deployment` or the directory does not match the key. | Pass the right `--deployment`. |
+| `<dir> is not empty. attach-file writes ca.pem, tool.pem, ...` | `--out` holds files already. | Name an empty or new directory. `--force` writes into the directory anyway; use it only for a directory this command made. |
+| `<name> is already a member` | The tool name is enrolled. | `loom distribution revoke <name>`, then enroll again, or choose another name. |
+| `<name> is a tool with no --links` | No daemon was named. | Pass `--links` with the daemon's ledger name from `loom distribution show`. |
+| `another command holds the lock on this ledger copy` | A second enrollment is running. | Wait for it to finish and run the command again. |
+| `the daemon runs another deployment's ledger than this authority's`, or `... hold different entries ...; nothing was signed` | `--addr` or the home points at a different deployment, or the copies have diverged. | Check `--home`, `--deployment` and `--addr`. A fork is an incident: stop and report it, do not sign. |
+| `<name> is enrolled as entry N ... but its files could not be written ... \`revoke\` it and run \`attach-file\` again` | The entry was signed but the directory could not be written. | Do what the message says: `revoke` the name, fix the directory, run again. |
+
+If the daemon cannot be reached the entry is signed into the operator's copy
+only, and the report says so. The daemon learns it from the next command that
+reaches it, so check the confirmation lines in the report before using the
+tool.
+
+An AI or automation client that is asked to attach a tool follows this:
+
+```text
+You may run:   pickglass attach --node <daemon> --attach-dir DIR
+               (DIR is a directory the operator gave you)
+You must ask the operator for: an attach directory for this tool, made with
+               `loom distribution attach-file`. Say the tool name, the node
+               name you will start under and the daemon you need to reach.
+You must not read, copy, search for or guess: ~/.loom/authority, any CA or
+               authority key, any passphrase file, ~/.erlang.cookie, the
+               daemon's state directory, or test credentials. If a command
+               reports that no authority key is kept, stop and report it.
+```
+
+When the work is done the operator runs `loom distribution revoke <name>`,
+which removes the tool from the ledger so the daemon refuses it from then on,
+and the directory can be deleted. To replace a lost or exposed directory,
+revoke the name and run `attach-file` again; a `renew` of a tool is refused
+because no bundle holds its key.
+
 ### Inspecting a running daemon with pickglass
 
 [Pickglass](https://github.com/Roasbeef/pickglass) is a separate inspector for

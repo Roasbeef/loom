@@ -408,7 +408,10 @@ name and a newline) and `ssl_dist.conf` into a private directory, the shape
 and the recipe. The file names only stock `ssl` options (the three credential
 files, `verify_peer`, the TLS versions) in a `client` section alone: a tool must never listen, since a listener would trust the authority and not the ledger, so the recipes add `-hidden -dist_listen false`, because the tool's VM does not have
 Loom's verify function and does not need it: the daemon is the side that pins.
-A `renew` of a tool is refused, since no bundle holds its key.
+A `renew` of a tool is refused, since no bundle holds its key. The operator and
+tool-user roles and the `attach-file` errors are in [Attaching Pickglass or
+another tool to a TLS
+deployment](../distribution.md#attaching-pickglass-or-another-tool-to-a-tls-deployment).
 
 The profile launcher (`scripts/profile-launcher.sh`) no longer conflicts with a
 `[distribution]` table. For the daemon role with `LOOM_DISTRIBUTION_OPTFILE`
