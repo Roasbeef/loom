@@ -80,24 +80,34 @@ pub fn project(
   protected: Int,
 ) -> Result(List(AgentMessage), String) {
   let total = count(messages)
-  let active =
-    int.min(total, int.max(protected, current_count(list.reverse(messages), 0)))
 
-  // Validate limit, ensure turn images fit, or project historical images out.
-  case limit > 0, active > limit, total > limit {
-    False, _, _ -> Error("max_images must be a positive integer")
-    True, True, _ ->
-      Error(
-        "the current turn contains "
-        <> int.to_string(active)
-        <> " images, but this model accepts at most "
-        <> int.to_string(limit)
-        <> "; send fewer images in a new prompt or choose a model with a larger max_images limit",
-      )
-    True, False, False -> Ok(messages)
-    True, False, True -> {
-      let #(_, projected) = list.map_fold(messages, total - limit, trim_message)
-      Ok(projected)
+  // The protected count is capped to the actual total. A request already
+  // within its positive limit cannot overflow its active turn, so it needs
+  // neither a reversed history nor a walk back to the current prompt.
+  case limit > 0, total > limit {
+    False, _ -> Error("max_images must be a positive integer")
+    True, False -> Ok(messages)
+    True, True -> {
+      let active =
+        int.min(
+          total,
+          int.max(protected, current_count(list.reverse(messages), 0)),
+        )
+      case active > limit {
+        True ->
+          Error(
+            "the current turn contains "
+            <> int.to_string(active)
+            <> " images, but this model accepts at most "
+            <> int.to_string(limit)
+            <> "; send fewer images in a new prompt or choose a model with a larger max_images limit",
+          )
+        False -> {
+          let #(_, projected) =
+            list.map_fold(messages, total - limit, trim_message)
+          Ok(projected)
+        }
+      }
     }
   }
 }

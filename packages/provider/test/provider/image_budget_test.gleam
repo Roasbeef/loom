@@ -158,3 +158,17 @@ pub fn assistant_boundaries_preserve_answers_and_tool_continuations_test() {
   let assert Error(_) = image_budget.project([legacy, step, result([10])], 8, 0)
     as "tool use keeps the image turn active"
 }
+
+pub fn imageless_history_is_unchanged_with_excess_protection_test() {
+  let context = list.flatten(list.repeat([prompt([]), result([])], 64))
+  assert image_budget.count(context) == 0
+  list.each([1, 8], fn(limit) {
+    list.each([-3, 0, 100], fn(protected) {
+      assert image_budget.project(context, limit, protected) == Ok(context)
+    })
+  })
+  list.each([-1, 0], fn(limit) {
+    assert image_budget.project(context, limit, 100)
+      == Error("max_images must be a positive integer")
+  })
+}
