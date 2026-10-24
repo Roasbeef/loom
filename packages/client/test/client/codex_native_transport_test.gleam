@@ -42,7 +42,7 @@ pub fn codex_prepared_begin_runs_operation_once_test() {
       Ok(Nil)
     })
     as "The worker owns the begin permit."
-  let watch = process.monitor(prepared.running.owner)
+  let watch = watch_before_begin(prepared.running.owner)
   prepared.begin()
   prepared.begin()
   assert process.receive(calls, 1000) == Ok(Nil)
@@ -81,7 +81,7 @@ pub fn codex_worker_loss_waits_for_adopted_resource_drain_test() {
       Ok(Nil)
     })
     as "The operation is prepared."
-  let watch = process.monitor(prepared.running.owner)
+  let watch = watch_before_begin(prepared.running.owner)
   prepared.begin()
   let assert Ok(worker) = process.receive(adopted, 1000)
     as "The worker publishes only after adoption."
@@ -136,7 +136,7 @@ pub fn codex_consumer_loss_cancels_and_drains_native_resources_test() {
       Ok(Nil)
     })
     as "The operation is prepared."
-  let watch = process.monitor(prepared.running.owner)
+  let watch = watch_before_begin(prepared.running.owner)
   prepared.begin()
   assert process.receive(adopted, 1000) == Ok(Nil)
   process.kill(consumer_worker)
@@ -201,7 +201,7 @@ pub fn codex_logged_out_refusal_has_no_inference_attempt_and_drains_test() {
       fn(_) { panic as "A local credential refusal emits no delta." },
       fn(running) {
         assert process.receive(authorization, 0) == Error(Nil)
-        process.send(owners, process.monitor(running.owner))
+        process.send(owners, watch_before_begin(running.owner))
       },
       control: process.new_subject(),
       consumer: process.self(),
@@ -267,7 +267,7 @@ pub fn codex_authorized_stream_retains_native_creator_until_response_end_test() 
             events,
           )
           as "The authorized bridge parks the real native HTTP owner."
-        let watch = process.monitor(prepared.running.owner)
+        let watch = watch_before_begin(prepared.running.owner)
         prepared.begin()
         let assert Ok(http.ResponseStatus(200, _)) =
           process.receive(events, 2000)
@@ -292,6 +292,16 @@ fn await_response_end(events: process.Subject(http.HttpEvent)) -> Int {
     http.ResponseEnd -> 0
     _ -> panic as "The authorized response terminates without transport failure."
   }
+}
+
+// A monitor request is asynchronous, while begin releases a different worker.
+// The aliveness check delivers this caller's earlier monitor signal to the
+// owner before that worker can finish it, preserving the actual exit proof.
+fn watch_before_begin(owner: process.Pid) -> process.Monitor {
+  let watch = process.monitor(owner)
+  assert process.is_alive(owner)
+    as "The parked owner receives its monitor before the worker is released."
+  watch
 }
 
 fn down(watch: process.Monitor, timeout: Int) {
