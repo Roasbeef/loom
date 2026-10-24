@@ -18,7 +18,7 @@ A program here is not the same thing as an instruction-only `SKILL.md` playbook.
 
 ## The lifecycle
 
-The model has six tools for this: `evolution_propose`, `evolution_test`, `evolution_inspect`, `evolution_catalogue`, `evolution_invoke` and `evolution_trace`. None of them approves or selects anything. Those steps are operator commands that the model cannot call.
+The model reaches all of this from a `code_mode` program that imports `cap/evolution`, which has `propose`, `test_candidate`, `compare`, `inspect`, `catalogue`, `invoke` and `trace`. There are no separate evolution tools, so the six schemas add nothing to a request, and the module is described to the model only in a session that can evolve. None of the calls approves or selects anything. Those steps are operator commands that the model cannot call.
 
 ::figure evolution
 
@@ -29,7 +29,7 @@ The steps in the figure, in words:
 - **Review and approve.** The operator reads the exact source and evidence, then approves one candidate ID together with one evidence ID.
 - **Select.** The operator selects the approved version and names the generation it expects to replace. The daemon answers with a queued receipt and does the work in the background.
 - **Stage and publish.** The daemon compiles the successor in a jail, retires the previous generation, confirms that its processes are gone, and commits the selection in one compare-and-swap. Only then does the successor become callable.
-- **Serve.** The model discovers the callable name, schema, candidate ID and generation through `evolution_catalogue`. `evolution_invoke` needs that exact pair, and a stale one is refused.
+- **Serve.** The model discovers the callable name, schema, candidate ID and generation through `catalogue`. `invoke` needs that exact pair, and a stale one is refused. A program can discover and call in one run.
 - **Roll back and retire.** A rollback selects an earlier approved version under a new generation. The version it replaces is retired the same way as in a replacement.
 
 The conversation is never restarted. The session, its history and its other tools carry on through activation and rollback.
@@ -74,7 +74,7 @@ A session operator can change their own session. Selecting a workspace program o
 
 ## The safety model
 
-**Authority.** The model proposes and tests. Approval, selection and the evidence it relies on stay with the daemon, and an authenticated operator is the only one who can approve or select a candidate. The model has no tool for approving its own candidate, and nothing in a request body can grant a role.
+**Authority.** The model proposes and tests. Approval, selection and the evidence it relies on stay with the daemon, and an authenticated operator is the only one who can approve or select a candidate. The module has no call for approving its own candidate, and nothing in a request body can grant a role.
 
 **Jails and Rule Zero.** Rule Zero says that model-influenced code never runs in the harness VM. Governed evolution keeps to it. Snapshots are taken under the caller's jail, author tests and offline compilation run in jails, and a selected extension runs in a persistent satellite, a separate BEAM node inside a kernel sandbox, with its own small executor pool: one satellite, plus one brokered process nested under it. The catalogue directory, its SQLite files and the scratch space are hidden from filesystem tools and from every jail, so authored code cannot read or rewrite them. The one path that loads code into the harness VM is the scratch component upgrade below, and that is why it accepts only a reviewed release identity and never a candidate.
 
@@ -114,11 +114,11 @@ The two paths keep separate authorities. An extension approval never allows code
 
 ## Prompt-profile trials
 
-A prompt profile is judged by running it. The operator admits a task set with `admit_tasks`: up to ten tasks, each with a prompt, a map of starting files and a map of the exact files expected at the end. The model can name an admitted task set in `evolution_test`, but it cannot write its own scorer.
+A prompt profile is judged by running it. The operator admits a task set with `admit_tasks`: up to ten tasks, each with a prompt, a map of starting files and a map of the exact files expected at the end. The model can name an admitted task set in `compare`, but it cannot write its own scorer.
 
 Every trial opens a fresh session and workspace with the ordinary jailed tools and one resolved model, once with the baseline profile and once with the candidate. Files are compared after the trial's processes have retired. The comparison records usage, turns, tool executions and the profile and composed-request digests. Before every request, a guard reserves its worst-case tokens and cost, including requests that fail, so an attempt with no usage report is never refunded. If anything is incomplete, the result is recorded as inconclusive. A comparison runs at most 20 trials, 20 turns, one million tokens and two dollars unless the caller lowers them.
 
-An operator can also mark a settled assistant message in a session with `mark_outcome`. `evolution_trace` joins bounded excerpts of the conversation with the model identity, usage and these marks, and a message without a mark stays `unmarked`. Thinking blocks, signatures and images are left out.
+An operator can also mark a settled assistant message in a session with `mark_outcome`. `trace` joins bounded excerpts of the conversation with the model identity, usage and these marks, and a message without a mark stays `unmarked`. Thinking blocks, signatures and images are left out.
 
 ## Configuration
 
@@ -126,7 +126,7 @@ Evolution has no `loom.toml` keys. The operator-facing limits are in the command
 
 ## What is not done yet
 
-- **Remote placements.** Evolution is wired only for a session on a local workspace where code mode is available, which means a Gleam and Erlang toolchain was found. A session on an executor or in a pool has no evolution tools, no catalogue and no upgrade controller, and nothing on `main` serves it there.
+- **Remote placements.** Evolution is wired only for a session on a local workspace where code mode is available, which means a Gleam and Erlang toolchain was found. A session on an executor or in a pool is not offered `cap/evolution`, and has no catalogue and no upgrade controller, and nothing on `main` serves it there.
 - **Search.** There is no multiple-candidate search or automatic optimisation of profiles, and no inference of a profile for a family of models.
 - **Resident authored modules and downloads.** Authored code is not loaded into the harness, and a candidate cannot download dependencies.
 - **Automatic state migration.** An extension keeps its state across an upgrade only if its author wrote the migration and opted in.

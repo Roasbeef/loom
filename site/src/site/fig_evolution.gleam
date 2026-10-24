@@ -2,8 +2,8 @@
 ////
 //// Sources: `docs/architecture/evolution.md` ("Agent and operator workflow",
 //// "Catalogue, commit and recovery", "Worker custody") and
-//// `packages/tools/src/tools/evolution.gleam` (the five model doors and what
-//// `evolution_propose` refuses). The figure follows an extension on a local
+//// `packages/cap/src/cap/evolution.gleam` (the six calls a program makes and what
+//// `evolution.propose` refuses). The figure follows an extension on a local
 //// workspace, which is the only placement wired on `main`. The generation
 //// numbers are illustrative.
 ////
@@ -33,7 +33,7 @@ pub fn spec() -> Spec {
         caption: "The model names a directory, and the daemon snapshots it under a jail.",
         heading: "The daemon takes its own copy of the source",
         body: [
-          "The model calls `evolution_propose` with a directory it can already read, a name and a kind. A bounded `tar` of that directory runs under the caller's own kernel jail, and the daemon decodes and hashes the bytes itself.",
+          "A program calls `evolution.propose` with a directory the model can already read, a name and a kind. A bounded `tar` of that directory runs under the caller's own kernel jail, and the daemon decodes and hashes the bytes itself.",
           "The candidate ID covers the source, the test entry, the schemas, the kind, the publication scope, the session and strand that proposed it, and the build, seam and evaluator identities. A path or a digest from the model grants nothing, and a proposal creates no approval.",
         ],
         state: [
@@ -51,7 +51,7 @@ pub fn spec() -> Spec {
         caption: "The candidate is compiled offline and its author tests run in a jail.",
         heading: "Evidence is a separate record",
         body: [
-          "`evolution_test` compiles the candidate offline and runs the tests that its author wrote. The result is stored as a content-addressed evidence record, apart from the candidate.",
+          "`evolution.test_candidate` compiles the candidate offline and runs the tests that its author wrote. The result is stored as a content-addressed evidence record, apart from the candidate.",
           "A passing test shows that the author's own checks pass. It does not show model quality, and it does not replace Loom's isolation and lifecycle tests.",
         ],
         state: [
@@ -117,7 +117,7 @@ pub fn spec() -> Spec {
         caption: "The session calls the new version without restarting.",
         heading: "The call carries the exact version it was written for",
         body: [
-          "`evolution_catalogue` returns the callable name, description, schema, candidate ID and generation. `evolution_invoke` requires that exact pair and runs the call under the caller's current policy.",
+          "`evolution.catalogue` returns the callable name, description, schema, candidate ID and generation. `evolution.invoke` requires that exact pair and runs the call under the caller's current policy.",
           "The session, its history and its other tools were never restarted.",
         ],
         state: [
@@ -216,7 +216,7 @@ pub fn diagram() -> Diagram {
 fn step_0() -> Frame {
   frame(
     [
-      state("model", "calls evolution_propose", Live),
+      state("model", "calls evolution.propose", Live),
       state("operator", "not involved yet", Quiet),
       state("daemon", "hashes the snapshot, computes the candidate ID", Live),
       state("catalogue", "candidate stored, no approval", Live),
@@ -229,7 +229,7 @@ fn step_0() -> Frame {
 fn step_1() -> Frame {
   frame(
     [
-      state("model", "calls evolution_test", Live),
+      state("model", "calls evolution.test", Live),
       state("operator", "not involved yet", Quiet),
       state("daemon", "compiles offline, runs the author tests", Live),
       state("catalogue", "candidate and evidence", Live),
