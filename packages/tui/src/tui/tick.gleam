@@ -172,6 +172,7 @@ fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     drained
     |> watch_memory
+    |> watch_evolution
     |> tui_model.run_shared(session_step.service_reads)
     |> session_control.service_activity
     |> tui_model.run_shared(surfaces.service_block_summaries)
@@ -215,6 +216,33 @@ pub fn watch_memory(model: Model) -> Model {
     True -> model
     False ->
       Model(..model, shared: shared_set.memory_watch(model.shared, watch))
+  }
+}
+
+/// Marks the evolution board as watched exactly while its overlay is open.
+///
+/// The daemon pushes `evolution_changed` for most changes, but a generation
+/// that publishes late and a session restart announce nothing, so the shared
+/// step reads a watched board again once it is a minute old
+/// (`evolution.backstop_ms`). The overlay is the terminal's own fact, so the
+/// tick derives the watch from it, and any way of leaving the overlay stops
+/// the read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tick.watch_evolution(model).shared.evolution_watch
+/// ```
+@internal
+pub fn watch_evolution(model: Model) -> Model {
+  let watch = case model.view.overlay {
+    tui_model.EvolutionReview(_) -> session_model.WatchingEvolution
+    _ -> session_model.NotWatchingEvolution
+  }
+  case model.shared.evolution_watch == watch {
+    True -> model
+    False ->
+      Model(..model, shared: shared_set.evolution_watch(model.shared, watch))
   }
 }
 

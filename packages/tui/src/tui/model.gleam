@@ -123,6 +123,7 @@ import tui/attachment
 import tui/bootstrap
 import tui/connection
 import tui/effect
+import tui/evolution_panel
 import tui/focused_goal_panel
 import tui/herdr
 import tui/image_shown
@@ -196,6 +197,7 @@ pub type Overlay {
   AccessManager(access_overlay.State)
   ApprovalInspector(approval_panel.State)
   ProposalReview(proposal_panel.State)
+  EvolutionReview(evolution_panel.State)
   MemoryOverview(memory_panel.State)
 }
 

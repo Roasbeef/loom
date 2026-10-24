@@ -61,8 +61,8 @@ import tui/job.{
 import tui/model.{
   type Model, AccessManager, ActivityAsking, ActivityDue, ActivityResting,
   AgentInspector, ApprovalInspector, ControlRequest, DaemonSelector,
-  GoalInspector, MemoryOverview, Model, ModelSelector, NoOverlay,
-  PeerLinkManager, ProposalReview, ReconnectAttempting, ReconnectIdle,
+  EvolutionReview, GoalInspector, MemoryOverview, Model, ModelSelector,
+  NoOverlay, PeerLinkManager, ProposalReview, ReconnectAttempting, ReconnectIdle,
   ReconnectSpent, View,
 } as tui_model
 import tui/peer_links
@@ -516,6 +516,7 @@ fn finish_control(model: Model, result) {
           | ApprovalInspector(_)
           | PeerLinkManager(_)
           | ProposalReview(_)
+          | EvolutionReview(_)
           | MemoryOverview(_)
           | AccessManager(_) -> model.view.overlay
         }),
@@ -564,6 +565,7 @@ fn catalogue_removed(model: Model, id: String, description: String) -> Model {
       | ApprovalInspector(_)
       | PeerLinkManager(_)
       | ProposalReview(_)
+      | EvolutionReview(_)
       | MemoryOverview(_)
       | AccessManager(_) -> model.view.overlay
     }),
@@ -1097,6 +1099,7 @@ fn finish_peer_workspace(
     | DaemonSelector(_)
     | ApprovalInspector(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | AccessManager(_) -> model
   }
@@ -1170,6 +1173,7 @@ fn finish_peer_inspection(
     | DaemonSelector(_)
     | ApprovalInspector(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | AccessManager(_) -> model
   }
@@ -1196,6 +1200,7 @@ fn finish_peer_operation(model: Model, document: json.JsonValue) {
     | DaemonSelector(_)
     | ApprovalInspector(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | AccessManager(_) -> model
   }
@@ -1227,6 +1232,7 @@ fn finish_control_failure(model: Model, reason: String) {
     | GoalInspector(_)
     | DaemonSelector(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | ApprovalInspector(_) -> tui_model.append_error(model, reason)
   }
@@ -1366,6 +1372,7 @@ fn finish_access_listing(
     | DaemonSelector(_)
     | PeerLinkManager(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | ApprovalInspector(_) -> model
   }
@@ -1395,6 +1402,7 @@ fn finish_memberships(
     | DaemonSelector(_)
     | PeerLinkManager(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | ApprovalInspector(_) -> model
   }
@@ -1432,6 +1440,7 @@ fn finish_access_change(model: Model, document: json.JsonValue) -> Model {
     | DaemonSelector(_)
     | PeerLinkManager(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | ApprovalInspector(_) ->
       tui_model.append_system(model, "access change acknowledged")
