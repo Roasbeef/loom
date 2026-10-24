@@ -247,3 +247,47 @@ pub fn the_relayed_pane_does_not_shrink_its_children_test() {
   let css = stylesheet()
   assert string.contains(css, ".relayed-pane>*{flex-shrink:0}")
 }
+
+// The Evolution tab (protocol-change/099) is the panel's seventh pane. The
+// shell shows it by the custom state `tab-evolution` and hides it on every
+// other tab, and hides the advisor's nudge card while it shows, as it does on
+// Notes, so the tab keeps the panel's room for the candidates.
+pub fn the_evolution_pane_is_shown_by_its_own_tab_state_test() {
+  let css = stylesheet()
+  assert string.contains(
+    css,
+    "loom-shell:state(tab-evolution) .pane:not(.pane-evolution){display:none}",
+  )
+  assert string.contains(
+    css,
+    "loom-shell:not(:state(tab-evolution)) .pane-evolution{display:none}",
+  )
+  assert string.contains(
+    css,
+    "loom-shell:state(tab-evolution) aside.panel>section.nudges{display:none}",
+  )
+}
+
+// A candidate is a tinted box with a hairline border, and the question a
+// change asks is a tinted block with a hairline border. No rule of the pane
+// draws a bar down an edge or a shadow (the owner's UI rules).
+pub fn the_evolution_pane_has_hairlines_and_tints_and_no_bars_or_shadows_test() {
+  let css = stylesheet()
+  assert string.contains(
+    css,
+    "li.evolution-candidate{border:1px solid var(--color-divider);background:var(--color-bg-sunk)",
+  )
+  assert string.contains(
+    css,
+    ".evolution-ask{border:1px solid color-mix(in srgb,var(--color-signal)35%,var(--color-divider))}",
+  )
+  let rules =
+    string.split(css, "}")
+    |> list.filter(fn(rule) { string.contains(rule, "evolution-") })
+  assert rules != []
+  assert list.all(rules, fn(rule) {
+    !string.contains(rule, "box-shadow")
+    && !string.contains(rule, "border-left")
+    && !string.contains(rule, "border-inline-start")
+  })
+}
