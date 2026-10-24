@@ -66,7 +66,7 @@
 //// cannot stand in for, so a trial is not a `Machine` operation yet. The
 //// reviewed core upgrade already has its own seam, `evolution/control.Seam`,
 //// over `upgrade/control`, and that seam is unchanged. The effect plane a
-//// local machine starts for each check (`serve.evolution_plane`) is passed to
+//// local machine starts for each check (`machine/local.open_plane`) is passed to
 //// `machine/local` as its `open` function, because the plane is shared with
 //// the session's other planes.
 ////
