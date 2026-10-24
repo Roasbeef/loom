@@ -56,6 +56,10 @@ pub type Surface {
   /// Inspect and reduce who has access to this daemon. Owner-only.
   Access
 
+  /// Review the session's evolution candidates, approve one, and select it
+  /// as the generation the session runs (protocol-change/099).
+  Evolution
+
   /// Choose another locally managed session.
   Sessions
 
@@ -462,6 +466,7 @@ fn all_suggestions() -> List(Suggestion) {
     Suggestion("/steer", "inject into the live operation", True),
     Suggestion("/queue", "inspect queued inputs; /queue text adds one", False),
     Suggestion("/access", "owner: see and reduce who has access", False),
+    Suggestion("/evolution", "review and select evolution candidates", False),
     Suggestion("/profile", "show or switch the model profile", True),
     Suggestion("/model-profile", "alias of /profile", True),
     Suggestion("/clear", "clear this local transcript", False),
@@ -511,6 +516,7 @@ pub fn parse(input: String) -> Command {
     "/agents" -> Surface(Agents)
     "/peers" -> Surface(PeerLinks)
     "/access" -> Surface(Access)
+    "/evolution" -> Surface(Evolution)
     "/sessions" -> Surface(Sessions)
     "/rename" -> Session(MissingArgument("rename"))
     "/rename " <> rest ->
@@ -793,6 +799,7 @@ pub fn help_text() -> String {
   <> "/agents           inspect agents and sub-agents\n"
   <> "/peers            manage directional agent links\n"
   <> "/access           owner: see and reduce who has access\n"
+  <> "/evolution        review, approve and select evolution candidates\n"
   <> "/sessions         switch locally managed sessions (← on an empty prompt)\n"
   <> "/rename <name>    rename the current session\n"
   <> "/notes            refresh current agent notes\n"

@@ -727,7 +727,7 @@ pub fn new_model_with_clock(
       evolution_pending: evolution_pending.new(),
       evolution_read_ms: None,
       evolution_watch: session_model.NotWatchingEvolution,
-      evolution_via: evolution.Unclaimed,
+      evolution_via: evolution.ClaimsTerminal,
       nudges: None,
       nudges_refresh: worktree_view.Settled,
       nudges_awaiting: None,

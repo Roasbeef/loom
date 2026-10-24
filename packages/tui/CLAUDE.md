@@ -3554,6 +3554,44 @@ combine with `--to`.
 `memory_watch` from the open overlay, so any way of leaving the overlay stops
 the reads.
 
+## Evolution review (protocol-change/099)
+
+`/evolution` is a `command.Surface` that opens `EvolutionReview(evolution_panel.State)`
+through `side_surfaces.open_evolution`, which asks for a board read
+(`Shared.evolution_refresh`) and clears the surface's last notice. The board,
+the staging tracker, the last opened page and the notice live in `Shared`
+(`evolution`, `evolution_pending`, `evolution_open`, `evolution_notice`), so
+the panel keeps only where the reader is: the list's row, the open candidate,
+the rollback chooser, the question and the core card. `evolution_panel.facts`
+gathers what a draw reads and draws a board only when its `session` is the
+attached one, so a board read before a session switch is never shown as the new
+session's. `tick.watch_evolution` derives `Shared.evolution_watch` from the open
+overlay, so the shared step reads a watched board again once it is a minute old
+and closing the overlay stops the read. `tui.new_model` sets
+`Shared.evolution_via` to `ClaimsTerminal`, so the audit entry of a change made
+here records `terminal`.
+
+The panel is shaped like `proposal_panel`: `update` maps a key to an `Action`
+(`Continue`, `Close`, `Refresh`, or `Act(request, next)`), and every key works
+from every state. A change is two presses. `a`, `s`, `r` and `b` capture the
+`evolution.Request` as drawn (the candidate, the evidence its approval rests on,
+and for a selection the generation the board showed as current) and ask; only a
+lowercase `y` sends it, and any other key goes back. A row offers only what
+`session_view/evolution` can describe (`approval_target`, `selection_target`,
+`rollback_choices`), so a candidate of an unknown kind, one tested under another
+evaluator and one that is already approved offers nothing for that action. While
+a selection stages, `s` and `b` are withheld, because the daemon holds one active
+job and refuses a second with `Busy:`. The reason a change carries is a fixed
+sentence naming the terminal (`select_reason`, `revoke_reason`,
+`rollback_reason`); the command line gives a longer one. The core card is
+read-only: `c` sends `CoreStatus` and draws the daemon's status, and a core
+upgrade stays on `loom evolution core_upgrade`. There is no `d` key that shows the raw request: the request id is minted only
+after `y`, so there is no complete request to show beforehand. The footer badge is
+`input_frame.Status.evolution` (`evolution N · /evolution`, the candidates
+awaiting approval plus the selections staging); it shows only after a board was
+read for this session, which the daemon's `evolution_changed` push or one open
+of the overlay causes.
+
 ## Mermaid diagrams
 
 A fenced `mermaid` block in an answer is drawn as box-drawing text by

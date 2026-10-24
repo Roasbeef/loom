@@ -113,10 +113,11 @@ import tui/markdown
 import tui/message_rows
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
-  FrameCache, GoalInspector, MemoryOverview, Model, ModelSelector, NoOverlay,
-  PeerLinkManager, ProposalReview,
+  EvolutionReview, FrameCache, GoalInspector, MemoryOverview, Model,
+  ModelSelector, NoOverlay, PeerLinkManager, ProposalReview,
 } as tui_model
 
+import tui/evolution_panel
 import tui/memory_panel
 import tui/model_selector
 import tui/note_panel
@@ -288,6 +289,13 @@ pub fn render_frame(
         model.shared.proposals_notice,
         model.view.wall_ms,
       )
+    EvolutionReview(state) ->
+      evolution_panel.render(
+        base,
+        layout.goal_inspector_area(body_area, editor_area),
+        state,
+        evolution_panel.facts(model.shared, model.view.wall_ms),
+      )
     MemoryOverview(state) ->
       memory_panel.render(
         base,
@@ -364,6 +372,7 @@ pub fn render_frame(
     | PeerLinkManager(_), _
     | AccessManager(_), _
     | ProposalReview(_), _
+    | EvolutionReview(_), _
     | MemoryOverview(_), _
     | ApprovalInspector(_), _
     -> Error(Nil)
@@ -575,6 +584,7 @@ fn frame_status(
     cost: transcript_lines.cost_figure(model.shared.usage),
     needs: needs_you(model, strip),
     proposals: proposal_panel.badge(model.shared.proposals),
+    evolution: evolution_panel.badge(model.shared),
     lock: case model.view.overlay {
       ApprovalInspector(_) -> input_frame.Deciding
       _ -> input_frame.Unlocked
@@ -1526,6 +1536,7 @@ fn note_context(model: Model, target: String) -> List(String) {
             | PeerLinkManager(_)
             | AccessManager(_)
             | ProposalReview(_)
+            | EvolutionReview(_)
             | MemoryOverview(_)
             | ApprovalInspector(_) -> ["No observed notes for " <> target]
           }
@@ -1545,6 +1556,7 @@ fn missing_note_context(model: Model, target: String) -> List(String) {
     | PeerLinkManager(_)
     | AccessManager(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | ApprovalInspector(_) -> ["No observed notes for " <> target]
   }
@@ -2163,6 +2175,7 @@ fn render_command_palette(
     | _, PeerLinkManager(_)
     | _, AccessManager(_)
     | _, ProposalReview(_)
+    | _, EvolutionReview(_)
     | _, MemoryOverview(_)
     | _, ApprovalInspector(_)
     -> buf

@@ -67,10 +67,10 @@ import tui/job
 import tui/layout
 import tui/model.{
   type Model, type Reconnect, type StrandWorkspace, AccessManager,
-  AgentInspector, ApprovalInspector, DaemonSelector, GoalInspector,
-  MemoryOverview, Model, ModelSelector, NoOverlay, PeerLinkManager, PromptNext,
-  ProposalReview, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
-  StrandWorkspace, View,
+  AgentInspector, ApprovalInspector, DaemonSelector, EvolutionReview,
+  GoalInspector, MemoryOverview, Model, ModelSelector, NoOverlay,
+  PeerLinkManager, PromptNext, ProposalReview, ReconnectAttempting,
+  ReconnectIdle, ReconnectSpent, StrandWorkspace, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -236,6 +236,7 @@ pub fn surroundings(model: Model) -> lane_fold.Surroundings {
       | PeerLinkManager(_)
       | AccessManager(_)
       | ProposalReview(_)
+      | EvolutionReview(_)
       | MemoryOverview(_) -> None
     },
     wanted: model.view.inspecting_approval,
@@ -568,6 +569,7 @@ fn show_surface(
         PeerLinkManager(state) -> PeerLinkManager(state)
         AccessManager(state) -> AccessManager(state)
         ProposalReview(state) -> ProposalReview(state)
+        EvolutionReview(state) -> EvolutionReview(state)
         MemoryOverview(state) -> MemoryOverview(state)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
       }

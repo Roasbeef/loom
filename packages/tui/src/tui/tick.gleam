@@ -161,17 +161,18 @@ pub fn update_tick(model: Model) -> Model {
 // Preserve the original model for the quiet-time comparison after all
 // reads settle.
 //
-// The first eleven reads (`session_step.service_reads`) take the shared
+// The first fourteen reads (`session_step.service_reads`) take the shared
 // record alone and read nothing of the terminal, so they run as one chain
 // over `Shared` and are held once, before
 // the terminal's activity poll. One hold moves their effects into the outbox
 // in the order the chain decided them and applies their editor notices after
-// the last, and since none of the ten reads what a notice changes, the
+// the last, and since none of the fourteen reads what a notice changes, the
 // model is the same as if each had been held on its own.
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     drained
     |> watch_memory
+    |> watch_evolution
     |> tui_model.run_shared(session_step.service_reads)
     |> session_control.service_activity
     |> tui_model.run_shared(surfaces.service_block_summaries)
@@ -215,6 +216,33 @@ pub fn watch_memory(model: Model) -> Model {
     True -> model
     False ->
       Model(..model, shared: shared_set.memory_watch(model.shared, watch))
+  }
+}
+
+/// Marks the evolution board as watched exactly while its overlay is open.
+///
+/// The daemon pushes `evolution_changed` for most changes, but a generation
+/// that publishes late and a session restart announce nothing, so the shared
+/// step reads a watched board again once it is a minute old
+/// (`evolution.backstop_ms`). The overlay is the terminal's own fact, so the
+/// tick derives the watch from it, and any way of leaving the overlay stops
+/// the read.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // tick.watch_evolution(model).shared.evolution_watch
+/// ```
+@internal
+pub fn watch_evolution(model: Model) -> Model {
+  let watch = case model.view.overlay {
+    tui_model.EvolutionReview(_) -> session_model.WatchingEvolution
+    _ -> session_model.NotWatchingEvolution
+  }
+  case model.shared.evolution_watch == watch {
+    True -> model
+    False ->
+      Model(..model, shared: shared_set.evolution_watch(model.shared, watch))
   }
 }
 

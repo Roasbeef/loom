@@ -24,12 +24,13 @@ import session_view/shared_set
 import session_view/surfaces
 import session_view/worktree_view
 import tui/agents
+import tui/evolution_panel
 import tui/focused_goal_panel
 import tui/memory_panel
 import tui/model.{
   type Model, AccessManager, AgentInspector, ApprovalInspector, DaemonSelector,
-  GoalInspector, MemoryOverview, Model, ModelSelector, NoOverlay,
-  PeerLinkManager, ProposalReview,
+  EvolutionReview, GoalInspector, MemoryOverview, Model, ModelSelector,
+  NoOverlay, PeerLinkManager, ProposalReview,
 } as tui_model
 import tui/proposal_panel
 import tui/queue_editor
@@ -63,6 +64,7 @@ pub fn notes_surface(model: Model) -> Bool {
     | False, PeerLinkManager(_)
     | False, AccessManager(_)
     | False, ProposalReview(_)
+    | False, EvolutionReview(_)
     | False, MemoryOverview(_)
     | False, AgentInspector(_)
     | False, ApprovalInspector(_)
@@ -196,6 +198,36 @@ pub fn open_proposals(model: Model) -> Model {
       |> shared_set.proposals_notice(""),
     view: model.view
       |> view_set.overlay(ProposalReview(state))
+      |> view_set.toggle_repaint,
+  )
+}
+
+/// Opens the evolution review and asks for a fresh board.
+///
+/// The read is the daemon's to refuse. A refusal's words are kept in the
+/// shared record and the overlay draws them, so an attachment that may not use
+/// evolution opens a review that says so. The overlay is also what makes the
+/// shared step read the board again once it is a minute old
+/// (`tick.watch_evolution`), because a generation that publishes late and a
+/// session restart push nothing.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // side_surfaces.open_evolution(model)
+/// ```
+@internal
+pub fn open_evolution(model: Model) -> Model {
+  let state = case model.view.overlay {
+    EvolutionReview(state) -> state
+    _ -> evolution_panel.new()
+  }
+  Model(
+    shared: model.shared
+      |> shared_set.evolution_refresh(worktree_view.Requested)
+      |> shared_set.evolution_notice(""),
+    view: model.view
+      |> view_set.overlay(EvolutionReview(state))
       |> view_set.toggle_repaint,
   )
 }

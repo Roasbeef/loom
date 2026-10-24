@@ -56,6 +56,7 @@ import session_view/commands
 import session_view/composer
 import session_view/connection_event
 import session_view/context_view
+import session_view/evolution
 import session_view/history_view
 import session_view/model.{Attached, OverlaySubmission, Shared} as session_model
 import session_view/msg
@@ -77,6 +78,7 @@ import tui/buffered
 import tui/context_panel
 import tui/daemon/protocol as control_protocol
 import tui/effect
+import tui/evolution_panel
 import tui/focused_goal_panel
 import tui/frame
 import tui/image_drain
@@ -86,10 +88,11 @@ import tui/layout
 import tui/memory_panel
 import tui/model.{
   type Model, type ScrollDirection, AccessManager, AgentInspector,
-  ApprovalInspector, Caches, DaemonSelector, DiffHidden, DiffVisible, FrameCache,
-  GoalInspector, MemoryOverview, Model, ModelSelector, Newer, NoClipboard,
-  NoOverlay, Older, PeerLinkManager, ProposalReview, ReconnectAttempting,
-  ReconnectIdle, ReconnectSpent, TerminalClipboard, View,
+  ApprovalInspector, Caches, DaemonSelector, DiffHidden, DiffVisible,
+  EvolutionReview, FrameCache, GoalInspector, MemoryOverview, Model,
+  ModelSelector, Newer, NoClipboard, NoOverlay, Older, PeerLinkManager,
+  ProposalReview, ReconnectAttempting, ReconnectIdle, ReconnectSpent,
+  TerminalClipboard, View,
 } as tui_model
 import tui/model_selector
 import tui/note_panel
@@ -140,6 +143,7 @@ pub fn handle_paste(
     | ApprovalInspector(_)
     | PeerLinkManager(_)
     | ProposalReview(_)
+    | EvolutionReview(_)
     | MemoryOverview(_)
     | AccessManager(_) -> model
   }
@@ -575,6 +579,7 @@ fn update_normal_key(key: keys.Key, model: Model) -> Model {
         AccessManager(state) ->
           session_control.update_access_overlay(key, model, state)
         ProposalReview(state) -> update_proposal_review(key, model, state)
+        EvolutionReview(state) -> update_evolution_review(key, model, state)
         MemoryOverview(state) -> update_memory_overview(key, model, state)
         ApprovalInspector(panel) ->
           case approval_panel.update(key, panel) {
@@ -668,6 +673,66 @@ fn update_proposal_review(
       )
       |> tui_model.run_shared(surfaces.decide_proposal(_, id, decision))
       |> tui_model.invalidate_frame
+  }
+}
+
+// A key in the evolution review. The board is the shared record's. A request
+// the reader confirmed is sent through the lane (`surfaces.evolve`), which
+// refuses a change the attachment may not make and tracks a selection until
+// the daemon finishes it; the overlay leaves the reader on the candidate, which
+// the reply and the staging redraw.
+fn update_evolution_review(
+  key: keys.Key,
+  model: Model,
+  state: evolution_panel.State,
+) -> Model {
+  case
+    evolution_panel.update(
+      key,
+      state,
+      evolution_panel.facts(model.shared, model.view.wall_ms),
+      layout.model_goal_inspector_area(model),
+    )
+  {
+    evolution_panel.Close ->
+      Model(
+        shared: shared_set.notice(model.shared, "evolution review closed"),
+        view: model.view
+          |> view_set.overlay(NoOverlay)
+          |> view_set.toggle_repaint,
+      )
+    evolution_panel.Continue(next) ->
+      Model(
+        ..model,
+        view: model.view
+          |> view_set.overlay(EvolutionReview(next))
+          |> view_set.toggle_repaint,
+      )
+    evolution_panel.Refresh -> side_surfaces.open_evolution(model)
+    evolution_panel.Act(request:, next:) ->
+      Model(
+        shared: forget_core_page(model.shared, request),
+        view: model.view
+          |> view_set.overlay(EvolutionReview(next))
+          |> view_set.toggle_repaint,
+      )
+      |> tui_model.run_shared(surfaces.evolve(_, request))
+      |> tui_model.invalidate_frame
+  }
+}
+
+// A core status read again clears the page from the last read, so the card
+// says it is reading and does not draw the old status while the new one is in
+// flight.
+fn forget_core_page(shared, request: evolution.Request) {
+  case request {
+    evolution.CoreStatus -> shared_set.evolution_open(shared, None)
+    evolution.Approve(..)
+    | evolution.Revoke(..)
+    | evolution.Select(..)
+    | evolution.Rollback(..)
+    | evolution.Inspect(..)
+    | evolution.ReadEvidence(..) -> shared
   }
 }
 

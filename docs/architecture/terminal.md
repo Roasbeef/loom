@@ -809,6 +809,7 @@ already have.
 | Session picker | `/sessions`, and at a `Local` launch | One authorized catalogue page; Enter opens a session, while `l` links the attached strand to the selected resident session | `session_selector`, `daemon/selection`, `peer_links` |
 | Access overlay | `/access` (owner only) | `principals.list` and `principals.memberships` pages; set-role, revoke and revoke-credentials after a y/N review | `access_overlay`, `daemon/protocol`, `host/access` |
 | Proposals review | `Alt+p` (owner only), or the `proposals N` badge on the input frame's bottom rule | The `proposals_get` board: proposed standing rules newest first, one as a red and green diff, with approve and reject | `proposals` (in `session_view`), `proposal_panel` |
+| Evolution review | `/evolution`, or the `evolution N` badge on the input frame's bottom rule | The `board` read (protocol-change/099): candidates by kind with their approval, evidence and generation, the history of decisions and a read-only core card. `a`, `s`, `r` and `b` ask and only `y` sends; a staging selection draws on its row. The shared step reads a watched board again once it is a minute old (`tick.watch_evolution`) | `evolution`, `evolution_pending` (in `session_view`), `evolution_panel` |
 | Memory overview | `Alt+m` (owner only) | The `memory_get` board, read-only (protocol-change/087): the `[memory] inject` mode and the size of each file a run reads, the newest typed notes, the approved rules and the pending proposal count; arrows and page keys scroll, `Esc` closes. The shared step reads it again once a minute while the overlay is open (`tick.watch_memory`) | `memory_overview` (in `session_view`), `memory_panel` |
 
 The peer-link path starts in `tui/interaction`: `l` on a resident `/sessions`
@@ -858,6 +859,23 @@ back. A row that is no longer pending shows what became of it and offers no
 action. The panel says that an approval writes `loom-rules.md`, which only
 sessions opened afterwards read, and that the workspace's `AGENTS.md` is never
 edited. The daemon, not the overlay, decides who may decide.
+
+The evolution review (protocol-change/099) is the operator's way to approve a
+candidate a session proposed and select it as the generation the session runs.
+`/evolution` opens it; the board is the shared record's (`Shared.evolution`,
+decoded totally by `session_view/evolution`) and `tui/evolution_panel` keeps only
+where the reader is. The list groups candidates as extensions, programs and
+prompts with each one's state (`tests passed`, `approved`, `generation 3, live`),
+and `Enter` opens one to show its evidence, approval and scope. `a` approves,
+`s` selects, `r` revokes and `b` rolls back to an earlier approved generation.
+Each asks first and only a lowercase `y` sends what was drawn, including the
+generation a selection replaces, so a board that moved is refused by the daemon
+and not selected over. A selection is queued by the daemon and finished later,
+so the row reads `staging…` with the time left while the lane polls, and no
+second selection is offered until it ends. The reason is a fixed sentence naming
+the terminal, and the audit entry records `terminal`. `c` shows the session's
+core status, which is read-only: a core upgrade runs from `loom evolution
+core_upgrade`. A refusal is worded inside the overlay.
 
 A few rules apply to every surface. An open overlay owns focus, so ordinary
 prompt editing is inert while it is up, and `Ctrl+C` stays global. Overlay
