@@ -430,7 +430,7 @@ pub fn restore(
   let kept =
     tracker.requests
     |> list.filter(fn(tracked) { !settled(tracked.stage) })
-    |> list.map(fn(tracked) { phase_from_board(tracked, board.pending) })
+    |> list.map(fn(tracked) { phase_from_board(tracked, board) })
   let adopted =
     board.pending
     |> list.filter(fn(waiting) {
@@ -449,20 +449,39 @@ pub fn restore(
   Tracker(..tracker, requests:, awaiting:)
 }
 
-// A request the board lists is further along than `Submitted` or `Publishing`
-// only if the board says so; it never moves a request backward out of
-// `Publishing`, which the board does not list because the queue finished.
-fn phase_from_board(
-  tracked: Tracked,
-  waiting: List(evolution.Waiting),
-) -> Tracked {
-  case list.find(waiting, fn(row) { row.request_id == tracked.request_id }) {
-    Ok(row) ->
-      case tracked.stage {
-        Submitted | Staging(..) -> Tracked(..tracked, stage: Staging(row.phase))
-        Publishing | Landed(..) | Refused(..) | Vanished | TimedOut -> tracked
+// A request the board lists takes the phase the board gives it. A request in
+// `Staging` that the board no longer lists has left the queue, and the board
+// says how it ended: if the candidate is now the selected one, the selection
+// committed, and it is live or still publishing as the board's selection says.
+// A candidate that is not selected is left as it was for the next status poll
+// to explain, since the board cannot say whether the request failed or is in
+// flight on a queue the board predates. `Submitted` and `Publishing` are never
+// moved backward by a board.
+fn phase_from_board(tracked: Tracked, board: evolution.Board) -> Tracked {
+  case
+    list.find(board.pending, fn(row) { row.request_id == tracked.request_id }),
+    tracked.stage
+  {
+    Ok(row), Submitted | Ok(row), Staging(..) ->
+      Tracked(..tracked, stage: Staging(row.phase))
+    Error(Nil), Staging(..) -> settled_by_board(tracked, board)
+    _, _ -> tracked
+  }
+}
+
+fn settled_by_board(tracked: Tracked, board: evolution.Board) -> Tracked {
+  case evolution.find(board, tracked.candidate_id) {
+    Ok(evolution.Candidate(selected: option.Some(chosen), ..)) ->
+      case
+        list.find(board.selections, fn(selection) {
+          selection.candidate_id == tracked.candidate_id
+        })
+      {
+        Ok(evolution.Selection(liveness: evolution.Live, ..)) ->
+          Tracked(..tracked, stage: Landed(Some(chosen.generation)))
+        _ -> Tracked(..tracked, stage: Publishing)
       }
-    Error(Nil) -> tracked
+    _ -> tracked
   }
 }
 

@@ -730,6 +730,17 @@ sends the server nothing.
 - **The proposals count is one attribute.** `<loom-shell>`'s `proposals`
   attribute decodes with `shell_rule.needing` and badges the Session tab, and
   `proposals_rule.session_words` is the tab's label.
+- **The Evolution tab exists only where the attribute does.** `shell_rule.Evolution`
+  is the sixth tab, with `tab-evolution` as its pseudo state and `evolution` as
+  its layout-storage word. `<loom-shell>`'s `evolution` attribute decodes with
+  `shell_rule.offered` (`None` for anything but a short plain number) and
+  `shell_rule.tabs_for` draws the button only for `Some(count)`, which the
+  server writes on an operator's page alone. A tab saved by another page is
+  replaced by Strands where there is no such tab (`shell_rule.reconcile`, run
+  when the tab is restored and when the attribute goes), so the panel never
+  shows with every pane hidden. The badge is `shell_rule.badge` and the label
+  is `shell_rule.evolution_words`; both are in `shell_rule`, which imports no
+  Lustre, so their tests stay clear of R20.
 
 ## Deep Docs
 

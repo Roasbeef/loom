@@ -6,8 +6,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import web_client/proposals_rule
 import web_client/shell_rule.{
-  Changes, Closed, Layout, Listed, Notes, Open, Panel, Reachable, Session,
-  Sidebar, Strands, Trace, Unlisted, Unreachable,
+  Changes, Closed, Evolution, Layout, Listed, Notes, Open, Panel, Reachable,
+  Session, Sidebar, Strands, Trace, Unlisted, Unreachable,
 }
 
 pub fn a_page_starts_with_both_columns_open_on_the_strands_tab_test() {
@@ -108,12 +108,14 @@ pub fn closing_and_opening_the_panel_keeps_the_tab_test() {
 }
 
 pub fn the_tabs_are_drawn_in_a_fixed_order_with_fixed_words_test() {
-  assert shell_rule.tabs() == [Strands, Changes, Trace, Session, Notes]
+  assert shell_rule.tabs()
+    == [Strands, Changes, Trace, Session, Notes, Evolution]
   assert shell_rule.tab_label(Strands) == "Strands"
   assert shell_rule.tab_label(Changes) == "Changes"
   assert shell_rule.tab_label(Trace) == "Trace"
   assert shell_rule.tab_label(Session) == "Session"
   assert shell_rule.tab_label(Notes) == "Notes"
+  assert shell_rule.tab_label(Evolution) == "Evolution"
 }
 
 // The stylesheet spells these states, so each is a fixed literal that no tab
@@ -124,6 +126,7 @@ pub fn each_tab_has_its_own_custom_state_test() {
   assert shell_rule.tab_state(Session) == "tab-session"
   assert shell_rule.tab_state(Trace) == "tab-trace"
   assert shell_rule.tab_state(Notes) == "tab-notes"
+  assert shell_rule.tab_state(Evolution) == "tab-evolution"
 }
 
 // The badge count is the server's number. Decoding is total: a value that is
@@ -712,4 +715,49 @@ pub fn the_narrow_query_is_the_stylesheets_breakpoint_test() {
 pub fn the_search_chip_is_drawn_only_where_there_is_a_sidebar_test() {
   assert shell_rule.has_search(Listed)
   assert !shell_rule.has_search(Unlisted)
+}
+
+// The Evolution tab belongs to a page whose server wrote the attribute. An
+// observer's page never has it, so its bar draws five buttons, whatever the
+// browser saved on another page.
+pub fn the_evolution_tab_is_drawn_only_on_a_page_that_has_the_attribute_test() {
+  assert shell_rule.tabs_for(None) == [Strands, Changes, Trace, Session, Notes]
+  assert shell_rule.tabs_for(Some(0))
+    == [Strands, Changes, Trace, Session, Notes, Evolution]
+  assert list.last(shell_rule.tabs_for(Some(3))) == Ok(Evolution)
+}
+
+pub fn a_saved_evolution_tab_falls_back_where_the_page_has_none_test() {
+  let saved = Layout(sidebar: Open, panel: Open, tab: Evolution)
+  assert shell_rule.reconcile(saved, None)
+    == Layout(sidebar: Open, panel: Open, tab: Strands)
+  assert shell_rule.reconcile(saved, Some(0)) == saved
+  let other = Layout(sidebar: Closed, panel: Open, tab: Notes)
+  assert shell_rule.reconcile(other, None) == other
+}
+
+// The attribute is the server's number, decoded totally: nothing, or anything
+// that is not a plain short number, draws no tab, and a number draws the tab
+// with that count.
+pub fn the_evolution_attribute_decodes_totally_test() {
+  assert shell_rule.offered("0") == Some(0)
+  assert shell_rule.offered("7") == Some(7)
+  assert shell_rule.offered("1234") == Some(1234)
+  assert shell_rule.offered("") == None
+  assert shell_rule.offered("-1") == None
+  assert shell_rule.offered("<b>") == None
+  assert shell_rule.offered("12345") == None
+  assert shell_rule.offered("1 2") == None
+}
+
+// The badge reuses the strand badge's rule: nothing for none, the number to
+// nine and `9+` past that. The tab's own label says the number, since the
+// badge is hidden from a screen reader.
+pub fn the_evolution_badge_and_label_say_how_many_wait_test() {
+  assert shell_rule.badge(0) == None
+  assert shell_rule.badge(2) == Some("2")
+  assert shell_rule.badge(40) == Some("9+")
+  assert shell_rule.evolution_words(0) == "Evolution"
+  assert shell_rule.evolution_words(1) == "Evolution, 1 waiting for review"
+  assert shell_rule.evolution_words(4) == "Evolution, 4 waiting for review"
 }

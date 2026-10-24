@@ -1129,6 +1129,15 @@ still holds. A refused `board` read does not ask again, and the backstop
 retries it once a minute. `Shared.evolution_via` is `ClaimsTerminal` for the
 terminal, which sends `via: "terminal"` so the audit entry says so.
 
+`restore` also settles a request from the board: one in `Staging` that the
+board no longer lists has left the queue, and if its candidate is now the
+selected one it becomes `Landed` (the board's selection is live) or
+`Publishing` (it is not yet), so a row never reads "staging" above a live
+generation. `approval_target` offers a prompt only an `IndependentRollout`
+as evidence, since the store refuses its author's tests, and an extension or a
+program either purpose. `principal_words` cuts a principal to fourteen
+characters for a row, and both hosts draw a principal through it.
+
 A change (`Approve`, `Revoke`, `Select`, `Rollback`) is made only on an
 attached lane with no command out, as a read is, and `begin` refuses while a
 reply is awaited: a reply belongs to `Tracker.awaiting`, so a second request

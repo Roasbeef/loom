@@ -1783,6 +1783,24 @@ pub fn only_an_owners_socket_admits_the_peer_link_controls_test() {
   assert ui_socket.operator_accepts(click_on("0\t3\t2\t70"))
 }
 
+// Protocol-change/099: the Evolution tab's buttons and its question's form are
+// admitted on an operator's socket, a member's as well as the owner's, because
+// the daemon is the gate on what a member may change and the page offers a
+// member this session's rows only. An observer's socket drops every event at
+// or beneath the pane's path, a click and a submit alike.
+pub fn the_evolution_pane_is_admitted_to_operators_and_dropped_for_observers_test() {
+  let at = component.evolution_path
+  assert at == "0\t3\t6"
+  list.each([at, at <> "\t1\t0\t0", at <> "\t3\t0\t1\t0"], fn(path) {
+    assert ui_socket.owner_accepts(click_on(path))
+    assert ui_socket.owner_accepts(submit_on(path))
+    assert ui_socket.operator_accepts(click_on(path))
+    assert ui_socket.operator_accepts(submit_on(path))
+    assert !ui_socket.observer_accepts(click_on(path))
+    assert !ui_socket.observer_accepts(submit_on(path))
+  })
+}
+
 // Only an owner's page is handed the capability to read and change peer links.
 pub fn only_an_owners_page_is_handed_the_peer_link_capability_test() {
   let ask = fn(_request, _deliver) { Nil }

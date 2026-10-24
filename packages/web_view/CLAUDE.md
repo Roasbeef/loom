@@ -1823,6 +1823,59 @@ checks focus and stale handlers, and pins the actual Lustre handler table and
 numeric row paths. It also covers partial boards, raw text, literal excerpts,
 search, refresh selection and markup-looking content.
 
+## Evolution tab (protocol-change/099)
+
+The Evolution pane is the strand panel's seventh child (`component.evolution_path`,
+`0\t3\t6`), appended after Notes so no path the socket admits moved. It is an
+operator's tab: `operator_page.view` draws `view/evolution` there and writes the
+`evolution` attribute of `<loom-shell>` (`Some(count)`, even `0`), which is what
+makes `web_client/shell` draw the tab button. The observer's `component.view`
+passes `element.none()` and `None`, so an observer's page has no tab, no pane
+and no handler beneath the path, and `ui_socket.observer_accepts` drops events
+there. `view/shell.view` takes the new `Option(Int)`; the home and the admin
+page pass `None`.
+
+`web_view/evolution` is the page's part. `offers(reach, staging, board,
+candidate)` is the single rule for what a row may offer, built on
+`session_view/evolution`'s `approval_target`, `selection_target` and
+`rollback_choices`, split in two by `Reach`. `decides` (approve and revoke) is
+`Everywhere` for the owner, on every listed row, another session's included,
+which is what the daemon lets the owner do (`store.owner`), and this session's
+rows only for a member operator. `selects` (select and rollback) is this
+session's rows for both readers, plus the owner's workspace and model rows on
+the owner's page, because a session-scoped selection runs through this session's
+queue and live owner. A kind or scope the client cannot name offers nothing,
+and no selection or rollback is offered while one is staging. History and
+approval lines draw a principal through `session_view/evolution.principal_words`
+(the first fourteen characters), as the terminal overlay will. one is staging. A confirm that meets a busy lane sends nothing and keeps its
+question open (`retained_evolution`).
+`Armed` is a change as drawn. `component.ask_evolve` and `confirm_evolve` both
+call `find_offer` against the board held now, so a forged `AskingEvolve`, or a
+board that moved while the question was open, sends nothing, and the confirm
+sends the armed ids and `expected_generation` and no others. The reason field
+(`reason_for`) is the form's one `text` field, cut at 200 characters, and a
+blank field sends the act's own sentence.
+
+`want_evolution` runs after every message of the operator page, like
+`want_proposals`: it marks the board wanted and watched, and a lost lane clears
+`evolution_read_ms` so the next call owes a read again. `read_evolution` (the
+"Read again" button) sets the want and runs a tick in the same message. The
+core card's button sends `CoreStatus`, on the owner's page alone. `rearm` adds
+`surfaces.evolution_due` (floored at `evolution_retry_ms` past now, because a
+past-due instant means the lane's command slot was busy) to the one timer the
+page arms, which is how a staging selection's status polls fire with no tick of
+the page's own. The frame's badge is `evolving.waiting`: candidates the page may
+approve plus selections staging.
+
+`evolution_page_test` drives the page through `page_fixture.run` and pins the
+path, the two presses with the drawn ids and generation, the member, observer
+and `EventHandlerNotFound` cases, the `staging…` row from a queued reply and its
+redraw from a later status, and the stale-board refusal. `stylesheet_test` pins
+the tab rules and that no evolution rule draws a bar or a shadow. Adding the
+board read makes the operator page ask one more read than before, so
+the fixtures that drain the wire answer `page_fixture.read_rounds` rounds of
+reads, one number for all of them.
+
 ## Side questions (protocol 087)
 
 The operator composer parses `/btw` through the shared command grammar even

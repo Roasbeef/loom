@@ -114,9 +114,12 @@ pub fn every_pane_is_drawn_in_a_fixed_order_on_both_pages_test() {
   })
 
   // The operator's Session pane also holds its controls and remembered list.
-  // Notes is appended after the existing children on both pages.
-  assert count(panel_of(operator(quiet())), "<section") == 6
+  // Notes is appended after the existing children on both pages, and the
+  // Evolution pane after Notes on the operator's alone.
+  assert in_order(panel_of(operator(quiet())), ["pane-notes", "pane-evolution"])
+  assert count(panel_of(operator(quiet())), "<section") == 7
   assert count(panel_of(observer(quiet())), "<section") == 5
+  assert !string.contains(panel_of(observer(quiet())), "pane-evolution")
 }
 
 // The panel is the last child of the frame: nothing is drawn after it, so a
@@ -172,9 +175,9 @@ pub fn the_panel_carries_no_decision_control_test() {
   assert !string.contains(panel, "Deny")
   assert !string.contains(panel, "<textarea")
 
-  // The Session pane's Fork form and Notes Refresh are the two other
-  // controls, and neither decides anything.
-  assert count(panel, "<button") == count(panel, "chip-hit") + 2
+  // The Session pane's Fork form, Notes Refresh and the Evolution tab's Read
+  // again are the three other controls, and none decides anything.
+  assert count(panel, "<button") == count(panel, "chip-hit") + 3
   assert count(panel, "notes-refresh") == 1
   assert count(panel, "<form") == 1
 }

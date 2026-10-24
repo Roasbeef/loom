@@ -454,6 +454,40 @@ pub fn an_approval_rests_on_passing_current_evidence_test() {
   assert evolution.approval_target(stale) == Error(Nil)
 }
 
+// The store approves a prompt only on an independent rollout and refuses its
+// author's tests, so the lane offers an approval on that evidence alone.
+pub fn a_prompt_is_approved_on_an_independent_rollout_only_test() {
+  let read = the_example()
+  let assert [_, proposed] = read.candidates
+  let on = fn(purpose) {
+    evolution.Candidate(..proposed, kind: evolution.Prompt, evidence: [
+      evolution.Evidence(
+        "e9",
+        purpose,
+        evolution.Passed,
+        "",
+        1,
+        evolution.Current,
+      ),
+    ])
+  }
+  assert evolution.approval_target(on(evolution.AuthorTests)) == Error(Nil)
+  assert evolution.approval_target(on(evolution.IndependentRollout)) == Ok("e9")
+  let program =
+    evolution.Candidate(..on(evolution.AuthorTests), kind: evolution.Program)
+  assert evolution.approval_target(program) == Ok("e9")
+}
+
+// An owner's principal is a long digest. Both hosts draw it cut, so a history
+// row stays short, and a short one is left whole.
+pub fn a_long_principal_is_cut_for_a_row_test() {
+  assert evolution.principal_words("member-noa") == "member-noa"
+  assert evolution.principal_words(
+      "owner-2d927c35c48e817d2424885de1166ca9e4f01871137ed1795fa7378d8783d036",
+    )
+    == "owner-2d927c35…"
+}
+
 pub fn a_selection_echoes_the_generation_the_board_shows_test() {
   let read = the_example()
   let assert [selected, proposed] = read.candidates

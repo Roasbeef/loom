@@ -536,7 +536,7 @@ is eight hours, and only the login is thirty days.
 
 ### 1.6 What the home draws
 
-The home is the A2 shell (`view` (`web_view/view/shell.gleam:100`)) with the
+The home is the A2 shell (`view` (`web_view/view/shell.gleam:108`)) with the
 same four children in the same order, so the two pages feel like one app
 and the stylesheet needs no second layout:
 

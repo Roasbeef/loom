@@ -60,7 +60,7 @@ fn in_order(html: String, parts: List(String)) -> Bool {
 pub fn an_operators_frame_names_its_slots_in_order_test() {
   let html = element.to_string(operator_page.view(listed(listing())))
   assert in_order(html, [
-    "<loom-shell class=\"loom-session operator\" needing=\"0\" sidebar=\"listed\">",
+    "<loom-shell class=\"loom-session operator\" evolution=\"0\" needing=\"0\" sidebar=\"listed\">",
     "<header class=\"session-head\" slot=\"bar\">",
     "<aside aria-label=\"Sessions\" class=\"sidebar\" slot=\"left\">",
     "<main class=\"centre\">",

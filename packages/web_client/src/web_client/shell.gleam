@@ -63,7 +63,7 @@
 //// The panel's panes are the server's children of the `right` slot: one
 //// section for each tab, all of them drawn. The element shows one by
 //// setting a custom state on itself, `tab-strands`, `tab-changes`,
-//// `tab-session`, `tab-trace` or `tab-notes` (Lustre's
+//// `tab-session`, `tab-trace`, `tab-notes` or `tab-evolution` (Lustre's
 //// `component.set_pseudo_state`), which the stylesheet reads to hide the
 //// other panes (`loom-shell:state(tab-changes)`).
 //// A hidden pane is `display: none`, so its controls leave the tab order. A
@@ -76,8 +76,10 @@
 //// (protocol-change/086), the number on the Session tab, which holds the
 //// review; the server writes it on the owner's page alone, and it decodes as
 //// `needing` does. `needing` is how many strands wait on a decision, the number on the
-//// Strands tab. An observer's page has no sidebar, and the bar draws no
-//// button for it. The element renders no session text, takes no focus, and
+//// Strands tab. `evolution` is how many governed-evolution candidates wait for
+//// a person (protocol-change/099); the server writes it on an operator's page
+//// alone, even as `0`, and the Evolution tab is drawn only on a page that has
+//// it. An observer's page has no sidebar, and the bar draws no button for it. The element renders no session text, takes no focus, and
 //// sends the server nothing. Its buttons and tabs are real buttons, so a
 //// keyboard presses them as it presses any button, and nothing is
 //// keyboard-only.
@@ -192,6 +194,10 @@ pub type Model {
     /// How many proposed standing rules wait for the owner, the number on the
     /// Session tab. Zero on every page but the owner's.
     proposals: Int,
+    /// How many governed-evolution candidates wait for a person, the number on
+    /// the Evolution tab, or `None` on a page that draws no such tab: the
+    /// observer's, which never has the attribute.
+    evolution: Option(Int),
     /// The workspace the layout is kept for, known once the stored layout has
     /// been read. Until then, and for a page with no digest, it is
     /// `Anonymous` and nothing is written.
@@ -255,6 +261,9 @@ pub type Msg {
 
   /// The server set the `proposals` attribute.
   ProposalsChanged(count: Int)
+
+  /// The server set the `evolution` attribute, or took it away.
+  EvolutionChanged(count: Option(Int))
 
   /// A click reached the centre or the panel on a control that carries a
   /// strand marker, and asks for the strand card at that position to be
@@ -335,6 +344,7 @@ pub fn register() -> Result(Nil, lustre.Error) {
     component.on_attribute_change("sidebar", sidebar),
     component.on_attribute_change("needing", needing),
     component.on_attribute_change("proposals", proposals),
+    component.on_attribute_change("evolution", evolution),
     component.on_connect(Connected),
     component.on_disconnect(Disconnected),
   ])
@@ -358,6 +368,12 @@ fn proposals(value: String) -> Result(Msg, Nil) {
   Ok(ProposalsChanged(shell_rule.needing(value)))
 }
 
+// The evolution attribute, decoded totally: a plain short number draws the
+// tab with that count, and anything else draws no tab.
+fn evolution(value: String) -> Result(Msg, Nil) {
+  Ok(EvolutionChanged(shell_rule.offered(value)))
+}
+
 // A page starts with both columns open on the first tab, no sidebar and no
 // strand waiting. The sidebar's button appears when the server's attribute
 // arrives, which is at once for a page that has one; assuming the opposite
@@ -372,6 +388,7 @@ fn init(_: Nil) -> #(Model, Effect(Msg)) {
       sidebar: shell_rule.Unlisted,
       needing: 0,
       proposals: 0,
+      evolution: None,
       workspace: layout_rule.Anonymous,
       theme: layout_rule.System,
       keys: None,
@@ -419,6 +436,15 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, proposals: count),
       effect.none(),
     )
+
+    // A page that has no Evolution tab cannot be showing it: a tab saved in
+    // the browser by another page is replaced by the first, so the panel is
+    // never left with every pane hidden.
+    EvolutionChanged(count:) -> {
+      let model = Model(..model, evolution: count)
+      let layout = shell_rule.reconcile(model.layout, count)
+      #(Model(..model, layout:), tab_changed(model.layout.tab, layout.tab))
+    }
 
     // One listener per connection: moving the element stops the old one
     // before it starts another, so a page that replaced the element leaves
@@ -510,6 +536,7 @@ fn update(model: Model, message: Msg) -> #(Model, Effect(Msg)) {
       let layout = option.unwrap(saved, model.layout)
       let layout =
         shell_rule.Layout(..layout, tab: option.unwrap(tab, layout.tab))
+        |> shell_rule.reconcile(model.evolution)
       #(
         Model(
           ..model,
@@ -1450,7 +1477,7 @@ fn slot(region: Region) -> String {
 fn tab_bar(model: Model) -> Element(Msg) {
   html.nav(
     [attribute.class("panel-tabs"), attribute.aria_label("Panel views")],
-    list.map(shell_rule.tabs(), tab_button(model, _)),
+    list.map(shell_rule.tabs_for(model.evolution), tab_button(model, _)),
   )
 }
 
@@ -1463,9 +1490,10 @@ fn tab_button(model: Model, tab: Tab) -> Element(Msg) {
   let badge = case
     tab,
     shell_rule.badge(model.needing),
-    shell_rule.badge(model.proposals)
+    shell_rule.badge(model.proposals),
+    option.then(model.evolution, fn(count) { shell_rule.badge(count) })
   {
-    shell_rule.Strands, Some(count), _ -> [
+    shell_rule.Strands, Some(count), _, _ -> [
       html.span([attribute.class("tab-badge"), attribute.aria_hidden(True)], [
         html.text(count),
       ]),
@@ -1474,7 +1502,7 @@ fn tab_button(model: Model, tab: Tab) -> Element(Msg) {
     // The Session tab holds the proposals review, so its badge is the pending
     // count and the tab press is the link to it. It is drawn in the quiet
     // signal colour, not the danger colour of a strand that needs a decision.
-    shell_rule.Session, _, Some(count) -> [
+    shell_rule.Session, _, Some(count), _ -> [
       html.span(
         [
           attribute.class("tab-badge"),
@@ -1484,11 +1512,26 @@ fn tab_button(model: Model, tab: Tab) -> Element(Msg) {
         [html.text(count)],
       ),
     ]
-    _, _, _ -> []
+
+    // The Evolution tab's badge is the candidates and selections waiting for a
+    // person, in the same quiet signal colour as the proposals' badge.
+    shell_rule.Evolution, _, _, Some(count) -> [
+      html.span(
+        [
+          attribute.class("tab-badge"),
+          attribute.class("tab-badge-proposals"),
+          attribute.aria_hidden(True),
+        ],
+        [html.text(count)],
+      ),
+    ]
+    _, _, _, _ -> []
   }
   let words = case tab {
     shell_rule.Strands -> shell_rule.strands_words(model.needing)
     shell_rule.Session -> proposals_rule.session_words(model.proposals)
+    shell_rule.Evolution ->
+      shell_rule.evolution_words(option.unwrap(model.evolution, 0))
     _ -> shell_rule.tab_label(tab)
   }
   html.button(
