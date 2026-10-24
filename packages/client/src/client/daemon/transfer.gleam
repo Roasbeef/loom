@@ -163,6 +163,8 @@ pub fn start(
 ) -> Result(Transfer, String) {
   use _ <- result.try(encoded_size(metadata, metadata_encoded_limit))
   let encoded = bit_array.from_string(json.to_string(metadata))
+
+  // Determine initial recent entries and sequence range based on requested transfer window.
   let #(entries, range) = case window {
     Recent -> #(cut.recent, None)
     Escalations(_) | Decided -> #([], None)
@@ -176,6 +178,7 @@ pub fn start(
     )
     Lineage(_) -> #([], Some(#(0, cut.next_seq)))
   }
+
   Ok(Transfer(
     id,
     cut.next_seq,
@@ -233,6 +236,8 @@ pub fn expired(transfer: Transfer, now: Int) -> Bool {
 pub fn step(transfer: Transfer, now now: Int, until until: Int) -> Step {
   let budget =
     int.min(reader_maximum_ms, int.min(transfer.deadline - now, until - now))
+
+  // Stream metadata chunks first if remaining or transition to streaming log entries.
   case bit_array.byte_size(transfer.metadata) > 0 {
     True -> metadata_piece(transfer)
     False -> entry_piece(transfer, budget)
@@ -241,24 +246,32 @@ pub fn step(transfer: Transfer, now now: Int, until until: Int) -> Step {
 
 // Every read request passes through here, which is what makes an under-funded
 // one unrepresentable rather than merely unlikely.
+/// Funded keeps this client decision explicit for its callers.
 fn funded(budget: Int, read: fn(Int) -> Step) -> Step {
+  // This branch resolves budget reader_minimum_ms before the operation continues.
   case budget >= reader_minimum_ms {
     True -> read(budget)
     False -> Exhausted
   }
 }
 
+/// Slices the next chunk of serialized metadata into an emitted SnapshotChunk step.
 fn metadata_piece(transfer: Transfer) -> Step {
   let total = bit_array.byte_size(transfer.metadata)
   let size = int.min(piece_bytes, total - transfer.metadata_offset)
+
+  // Slice the next metadata piece from the encoded buffer.
   case bit_array.slice(transfer.metadata, transfer.metadata_offset, size) {
     Error(Nil) -> Refused("invalid metadata offset")
     Ok(bytes) -> {
       let next_offset = transfer.metadata_offset + size
+
+      // Clear retained metadata when all bytes have been emitted.
       let retained = case next_offset == total {
         True -> <<>>
         False -> transfer.metadata
       }
+
       Emit(
         chunk(
           transfer,
@@ -280,12 +293,16 @@ fn metadata_piece(transfer: Transfer) -> Step {
   }
 }
 
+/// Emits the next entry chunk or dispatches to the underlying reader to fetch more descriptors.
 fn entry_piece(transfer: Transfer, budget: Int) -> Step {
+  // This branch resolves transfer entries before the operation continues.
   case transfer.entries {
     [] ->
+      // This branch resolves transfer range before the operation continues.
       case transfer.range {
         Some(#(after, before)) ->
           funded(budget, fn(within) {
+            // This branch resolves transfer window before the operation continues.
             case transfer.window {
               Lineage(from) -> ReadLineage(from, before, within)
               Recent | Reconcile(_) | History(..) | Escalations(_) | Decided ->
@@ -299,6 +316,8 @@ fn entry_piece(transfer: Transfer, budget: Int) -> Step {
                 #("snapshot_id", json.String(transfer.id)),
                 #("index", json.Int(transfer.index)),
                 #("next_seq", json.Int(transfer.next_seq)),
+
+                // This branch resolves transfer more_after before the operation continues.
                 #("more_after", case transfer.more_after {
                   None -> json.Null
                   Some(seq) -> json.Int(seq)
@@ -307,13 +326,15 @@ fn entry_piece(transfer: Transfer, budget: Int) -> Step {
             ),
           )
       }
+
     [descriptor, ..rest] ->
       buffered_entry_piece(transfer, descriptor, rest, budget)
   }
 }
 
-// A retained backend fragment is split without fetching or decoding the entry.
+/// Emits pieces from an already-buffered entry fragment or requests the next fragment read.
 fn buffered_entry_piece(transfer: Transfer, descriptor, rest, budget) -> Step {
+  // Check if current fragment is empty and requires reader retrieval.
   case bit_array.byte_size(transfer.fragment) {
     0 ->
       funded(budget, fn(within) {
@@ -321,11 +342,15 @@ fn buffered_entry_piece(transfer: Transfer, descriptor, rest, budget) -> Step {
       })
     total -> {
       let size = int.min(piece_bytes, total - transfer.fragment_offset)
+
+      // Slice the next fragment slice from memory.
       case bit_array.slice(transfer.fragment, transfer.fragment_offset, size) {
         Error(Nil) -> Refused("invalid entry fragment offset")
         Ok(bytes) -> {
           let offset = transfer.offset + size
           let fragment_offset = transfer.fragment_offset + size
+
+          // Advance entry and fragment offsets based on descriptor completion boundaries.
           let #(entries, offset, fragment, fragment_offset) = case
             offset == descriptor.byte_length,
             fragment_offset == total
@@ -339,6 +364,7 @@ fn buffered_entry_piece(transfer: Transfer, descriptor, rest, budget) -> Step {
               fragment_offset,
             )
           }
+
           Emit(
             chunk(
               transfer,
@@ -364,6 +390,7 @@ fn buffered_entry_piece(transfer: Transfer, descriptor, rest, budget) -> Step {
   }
 }
 
+/// Constructs a SnapshotChunk protocol message holding base64-encoded chunk data.
 fn chunk(
   transfer: Transfer,
   kind,
@@ -406,6 +433,8 @@ pub fn accept_page(
     list.drop(page, snapshot.page_limit) != [],
     Error("oversized descriptor page"),
   )
+
+  // This branch resolves the input state before the operation continues.
   use last <- result.try(
     list.try_fold(page, after, fn(previous, descriptor) {
       case
@@ -420,14 +449,19 @@ pub fn accept_page(
     }),
   )
   let full = list.drop(page, snapshot.page_limit - 1) != []
+
+  // Compute remaining sequence range if page limit was reached during reconcile.
   let range = case transfer.window, full {
     Reconcile(_), True -> Some(#(last, before))
     _, _ -> None
   }
+
+  // Set more_after watermark if history pagination requires additional pages.
   let more_after = case transfer.window, full {
     History(..), True -> Some(last)
     _, _ -> None
   }
+
   Ok(Transfer(..transfer, entries: page, range:, more_after:))
 }
 
@@ -456,6 +490,8 @@ pub fn accept_lineage(
     list.drop(page, snapshot.page_limit) != [],
     Error("oversized descriptor page"),
   )
+
+  // This branch resolves the input state before the operation continues.
   use _ <- result.try(
     list.try_fold(page, after, fn(previous, descriptor) {
       case
@@ -483,10 +519,14 @@ pub fn accept_fragment(
   transfer: Transfer,
   bytes: BitArray,
 ) -> Result(Transfer, String) {
+  // Ensure transfer has active entry descriptors awaiting fragment bytes.
   case transfer.entries {
     [] -> Error("unexpected entry fragment")
     [descriptor, ..] -> {
+      // This branch resolves the input state before the operation continues.
       let size = bit_array.byte_size(bytes)
+
+      // Validate fragment size limits and ensure reading does not overrun descriptor bounds.
       case
         size > 0
         && size <= snapshot.fragment_bytes_limit
@@ -511,6 +551,8 @@ pub fn accept_fragment(
 @internal
 pub fn encoded_size(value: json.JsonValue, budget: Int) -> Result(Int, String) {
   use <- bool.guard(budget < 0, Error("encoded metadata exceeds its limit"))
+
+  // Recursively calculate bounded byte size according to JSON value variant.
   let sized = case value {
     json.Null | json.Bool(_) -> Ok(5)
     json.Int(_) | json.Float(_) -> Ok(string.byte_size(json.to_string(value)))
@@ -528,7 +570,10 @@ pub fn encoded_size(value: json.JsonValue, budget: Int) -> Result(Int, String) {
         Ok(prefix + child)
       })
   }
+
   use size <- result.try(sized)
+
+  // Enforce the calculated size against the allocated encoding budget.
   case size <= budget {
     True -> Ok(size)
     False -> Error("encoded metadata exceeds its limit")
@@ -539,12 +584,9 @@ fn quoted_size(text: String) -> Int {
   quoted_bytes(bit_array.from_string(text), 2)
 }
 
-// Escapes are ASCII, so counting UTF-8 bytes preserves the codepoint model
-// without constructing a list. C0 controls still cost six bytes here, even
-// when the serializer uses a shorter escape: admission keeps its existing
-// conservative bound. Four ordinary bytes advance together, including bytes
-// within a multibyte codepoint; this count never slices or decodes the text.
+/// Counts encoded byte size of JSON string content including quote delimiters and escapes.
 fn quoted_bytes(rest: BitArray, size: Int) -> Int {
+  // This branch resolves rest before the operation continues.
   case rest {
     <<a, b, c, d, more:bits>>
       if a >= 0x20

@@ -242,7 +242,9 @@ pub fn detach(queue: Queue) -> Nil {
   process.unlink(queue.pid)
 }
 
+/// Handles message dispatch for the evolution transition queue actor.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Match transition queue protocol command.
   case message {
     Enqueue(transition, signature, reply) -> {
       let #(status, state) = admit(state, transition, signature)
@@ -268,6 +270,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
           actor.stop()
         }
         Some(_job) -> {
+          // Record pending reply if queue is not already draining.
           case state.closing {
             None -> actor.continue(State(..state, closing: Some(reply)))
             Some(_) -> {
@@ -283,6 +286,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Admits a transition request or returns existing receipt if matching signature.
 fn admit(
   state: State,
   transition: live.Transition,
@@ -303,6 +307,7 @@ fn admit(
   }
 }
 
+/// Validates arguments and spawns background managed worker for the transition job.
 fn start_job(
   state: State,
   transition: live.Transition,
@@ -311,6 +316,8 @@ fn start_job(
   let #(now, clock) = clock.read(state.clock)
   let state = State(..state, clock:)
   let waiting = transition.expires_at - now
+
+  // Verify that active slots are free and request parameters are bounded.
   case
     state.active,
     state.closing,
@@ -372,8 +379,7 @@ fn start_job(
   }
 }
 
-// The active job, unless it already has a terminal status and is only waiting
-// for weft to say its relay is drained.
+/// Returns the list of transition jobs currently accepted or staging in the queue.
 fn waiting(state: State) -> List(Waiting) {
   case state.active {
     Some(job) ->
@@ -386,6 +392,7 @@ fn waiting(state: State) -> List(Waiting) {
   }
 }
 
+/// Constructs a waiting record for an active queued or running job.
 fn waiting_job(job: Job, phase: Phase) -> Waiting {
   Waiting(
     request_id: job.receipt.request_id,
@@ -395,6 +402,7 @@ fn waiting_job(job: Job, phase: Phase) -> Waiting {
   )
 }
 
+/// Finds receipt by request identifier in active job or historical receipts.
 fn receipt(state: State, id: String) -> Option(Receipt) {
   case state.active {
     Some(job) if job.receipt.request_id == id -> Some(job.receipt)
@@ -404,12 +412,15 @@ fn receipt(state: State, id: String) -> Option(Receipt) {
   }
 }
 
+/// Handles completion, failure, or cancellation event delivered from background worker.
 fn delivered(
   state: State,
   event: weft.Pulled(record.Selection, String),
 ) -> actor.Next(State, Message) {
+  // Match pulled worker lifecycle outcome.
   case event {
     weft.PulledOutcome(outcome) -> {
+      // Convert weft worker result into evolution job status.
       let status = case outcome {
         weft.Completed(_, selection) -> Completed(selection)
         weft.Failed(_, reason) -> Failed(reason)
@@ -419,6 +430,8 @@ fn delivered(
         weft.DrainProofLost(..) | weft.CancellationUnconfirmed(..) ->
           Failed("managed transition retirement is unconfirmed")
       }
+
+      // Update active job status if job is still resident in state.
       case state.active {
         None -> actor.continue(state)
         Some(job) -> {
@@ -434,6 +447,7 @@ fn delivered(
     }
     weft.AllDelivered -> finished(state)
     weft.RunLost(..) -> {
+      // Mark active job failed when drain witness is lost.
       let state = case state.active {
         None -> state
         Some(job) ->
@@ -461,11 +475,15 @@ fn delivered(
   }
 }
 
+/// Finalizes finished job into receipts history and resolves closing request if pending.
 fn finished(state: State) -> actor.Next(State, Message) {
+  // Archive active job receipt into history bounded to 512 entries.
   let receipts = case state.active {
     None -> state.receipts
     Some(job) -> list.take([job.receipt, ..state.receipts], 512)
   }
+
+  // Close actor if queue closing reply was requested.
   case state.closing {
     Some(reply) -> {
       process.send(reply, Ok(Nil))

@@ -1774,6 +1774,7 @@ pub fn start(
   epoch epoch: String,
   limit limit: Int,
 ) -> Result(Manager(instance), String) {
+  // start distinguishes the limit > 0 && epoch != "" outcomes before continuing the transition.
   case limit > 0 && epoch != "" {
     False -> Error("daemon admission requires a positive limit and epoch")
     True -> {
@@ -2407,6 +2408,8 @@ pub fn sweep_delegates(
     |> list.map(fn(candidate) {
       #(candidate.session_id, candidate.last_contact_ms)
     })
+
+  // sweep_delegates distinguishes the the selected value outcomes before continuing the transition.
   use closed <- result.map(case quiet {
     [] -> Ok(0)
     [_, ..] ->
@@ -2416,6 +2419,7 @@ pub fn sweep_delegates(
       ))
       |> result.replace_error(Unavailable)
   })
+
   Swept(deleted:, closed:)
 }
 
@@ -2942,7 +2946,9 @@ pub const unshared_limit = 256
 // filtered against that set, so the cost is one scan and the pages. The bound
 // is applied to the sorted answer, so no more than `unshared_limit` sessions
 // are ever returned.
+/// Produces the session view with shared-session state removed.
 fn unshared(book: Book(instance)) -> List(String) {
+  // unshared distinguishes the access.membered_sessions(book.catalogue) outcomes before continuing the transition.
   case access.membered_sessions(book.catalogue) {
     Error(_) -> []
     Ok(membered) -> {
@@ -2956,6 +2962,7 @@ fn unshared(book: Book(instance)) -> List(String) {
 
 // The catalogue's pages are in session-ID order and each is bounded, so the
 // walk ends at the last page or once it has found more than the limit.
+/// Projects a shared session into the local, nonshared representation.
 fn unshared_from(
   book: Book(instance),
   after: String,
@@ -3174,6 +3181,7 @@ pub fn drain_held(manager: Manager(instance)) -> Nil {
 // also bounds the task so a misbehaving callback cannot block daemon control.
 const drain_budget_ms = 5000
 
+/// Applies one daemon-manager message, preserving transition ordering while producing effects.
 fn handle(
   phase: Phase,
   book: Book(instance),
@@ -3276,10 +3284,13 @@ fn handle(
     SetVisibility(caller, epoch, id, visibility, reply) -> {
       let outcome = {
         use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+
+        // handle distinguishes the the selected value outcomes before continuing the transition.
         use Nil <- result.try(case dict.has_key(book.slots, id) {
           True -> Error(AdminBusy)
           False -> Ok(Nil)
         })
+
         use Nil <- result.try(refuse_moved(book, id))
         use record <- result.map(
           catalogue.set_visibility(book.catalogue, id, visibility)
@@ -3296,10 +3307,13 @@ fn handle(
           principal_of(book, caller)
           |> result.replace_error(AdminForbidden),
         )
+
+        // handle distinguishes the the selected value outcomes before continuing the transition.
         use Nil <- result.try(case principal.kind {
           access.OwnerPrincipal -> Ok(Nil)
           access.MemberPrincipal -> Error(AdminForbidden)
         })
+
         use page <- result.map(
           catalogue.archived_page(book.catalogue, after:)
           |> result.map_error(AdminMetadata),
@@ -3422,6 +3436,7 @@ fn handle(
       sm.keep(book)
     }
     Reserve(request, directory, generator, scope, configuration, reply) -> {
+      // handle distinguishes the the selected value outcomes before continuing the transition.
       let outcome = case phase {
         ShuttingDown -> Error(Unavailable)
         Ready ->
@@ -3435,6 +3450,7 @@ fn handle(
           )
           |> result.map_error(Catalogue)
       }
+
       process.send(reply, outcome)
       sm.keep(book)
     }
@@ -3488,6 +3504,7 @@ fn handle(
     // rule stays "every writer of the access tables drops it" rather than an
     // argument about which writes are harmless.
     Claim(claim, credential, name, now_ms, reply) -> {
+      // handle distinguishes the the selected value outcomes before continuing the transition.
       let outcome = case phase {
         Ready ->
           access.claim(
@@ -3501,6 +3518,7 @@ fn handle(
           |> result.map_error(ClaimRefused)
         ShuttingDown -> Error(ClaimUnavailable)
       }
+
       let book = Book(..book, authority: dict.new())
       process.send(reply, outcome)
       sm.keep(book)
@@ -3510,6 +3528,7 @@ fn handle(
     // it ends, in the same transaction (protocol-change/065, PR 9). It drops
     // the memo for the reason `Claim` does.
     ClaimLogin(claim, credential, name, now_ms, expires_at_ms, reply) -> {
+      // handle distinguishes the the selected value outcomes before continuing the transition.
       let outcome = case phase {
         Ready ->
           access.claim_login(
@@ -3524,6 +3543,7 @@ fn handle(
           |> result.map_error(ClaimRefused)
         ShuttingDown -> Error(ClaimUnavailable)
       }
+
       let book = Book(..book, authority: dict.new())
       process.send(reply, outcome)
       sm.keep(book)
@@ -3560,10 +3580,13 @@ fn handle(
         use principal <- result.try(
           principal_of(book, digest) |> result.map_error(Catalogue),
         )
+
+        // handle distinguishes the the selected value outcomes before continuing the transition.
         use Nil <- result.try(case principal.id == principal_id {
           True -> Ok(Nil)
           False -> Error(Catalogue(catalogue.Missing))
         })
+
         use _stamp <- result.map(
           access.resumed(book.catalogue, digest, now_ms)
           |> result.map_error(Catalogue),
@@ -3632,6 +3655,8 @@ fn handle(
     AuthorizedPage(digest, after, reply) -> {
       let outcome = {
         use principal <- result.try(principal_of(book, digest))
+
+        // handle distinguishes the principal.kind outcomes before continuing the transition.
         case principal.kind {
           access.OwnerPrincipal -> catalogue.page(book.catalogue, after:)
           access.MemberPrincipal ->
@@ -3644,6 +3669,8 @@ fn handle(
     AuthorizedRoles(digest, reply) -> {
       let outcome = {
         use principal <- result.try(principal_of(book, digest))
+
+        // handle distinguishes the principal.kind outcomes before continuing the transition.
         case principal.kind {
           access.OwnerPrincipal -> Ok([])
           access.MemberPrincipal ->
@@ -3799,6 +3826,7 @@ fn handle(
       sm.keep(book)
     }
     SetDefault(workspace, id, reply) -> {
+      // handle distinguishes the the selected value outcomes before continuing the transition.
       let outcome = case phase {
         ShuttingDown -> Error(Unavailable)
         Ready ->
@@ -3806,6 +3834,7 @@ fn handle(
           |> result.map_error(Catalogue)
           |> result.map(fn(record) { View(record, status(book, record)) })
       }
+
       process.send(reply, outcome)
       sm.keep(book)
     }
@@ -3829,26 +3858,31 @@ fn handle(
       sm.keep(book)
     }
     Resolve(id, reply) -> {
+      // handle distinguishes the the selected value outcomes before continuing the transition.
       let instance = case dict.get(book.slots, id) {
         Ok(Slot(phase: Running(instance), ..)) -> Ok(instance)
         Ok(Slot(..)) | Error(Nil) -> Error(Unavailable)
       }
+
       process.send(reply, instance)
       sm.keep(book)
     }
     ResolveIncarnation(id, incarnation, reply) -> {
+      // handle distinguishes the the selected value outcomes before continuing the transition.
       let instance = case dict.get(book.slots, id) {
         Ok(Slot(phase: Running(instance), operation:, ..))
           if operation == incarnation
         -> Ok(instance)
         Ok(Slot(..)) | Error(Nil) -> Error(StaleOperation)
       }
+
       process.send(reply, instance)
       sm.keep(book)
     }
     Operation(id, operation, reply) -> {
       // A recorded opening failure is already final even while its custody
       // is closing. The operator must see that reason on the first poll;
+
       // retirement still owns the separate capacity and replacement fences.
       let view = case dict.get(book.failed_operations, id) {
         Ok(#(failed, reason)) if failed == operation ->
@@ -3862,6 +3896,7 @@ fn handle(
             Ok(Slot(..)) | Error(Nil) -> Error(StaleOperation)
           }
       }
+
       process.send(reply, view)
       sm.keep(book)
     }
@@ -3881,6 +3916,7 @@ fn handle(
       step(phase, book)
     }
     StopIncarnation(id, incarnation, reply) -> {
+      // handle distinguishes the dict.get(book.slots, id) outcomes before continuing the transition.
       case dict.get(book.slots, id) {
         Ok(slot) if slot.operation == incarnation -> {
           let book = stop_slot(book, id)
@@ -3961,11 +3997,14 @@ fn principal_of(book: Book(instance), digest: access.Digest) {
   access.authenticate(book.catalogue, digest)
 }
 
+/// Resolves an authenticated owner identity from the request context.
 fn authenticated_owner(book: Book(instance), digest) {
   use principal <- result.try(
     principal_of(book, digest)
     |> result.replace_error(AdminForbidden),
   )
+
+  // authenticated_owner distinguishes the principal.kind outcomes before continuing the transition.
   case principal.kind {
     access.OwnerPrincipal -> Ok(Nil)
     access.MemberPrincipal -> Error(AdminForbidden)
@@ -3975,6 +4014,7 @@ fn authenticated_owner(book: Book(instance), digest) {
 // Whose sign-ins a caller may read or revoke, or whose name it may change: its
 // own, or any principal's when the caller is the owner. The caller is authenticated first, as the kind its
 // digest was made as, so a revoked login reads and revokes nothing.
+/// Determines which principal the operation is authorized to act for.
 fn acting_on(
   book: Book(instance),
   caller: access.Digest,
@@ -3983,6 +4023,8 @@ fn acting_on(
   use principal <- result.try(
     principal_of(book, caller) |> result.replace_error(AdminForbidden),
   )
+
+  // acting_on distinguishes the target outcomes before continuing the transition.
   case target {
     option.None -> Ok(principal.id)
     option.Some(id) if id == principal.id -> Ok(id)
@@ -3996,41 +4038,54 @@ fn acting_on(
 
 // A write is refused while the daemon is stopping and when it names another
 // daemon lifetime, as every administration is.
+/// Reads the current membership epoch used to fence stale authority.
 fn current_epoch(
   phase,
   book: Book(instance),
   epoch,
 ) -> Result(Nil, AdminError) {
+  // current_epoch distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case phase {
     Ready -> Ok(Nil)
     ShuttingDown -> Error(AdminUnavailable)
   })
+
+  // current_epoch distinguishes the epoch == book.epoch outcomes before continuing the transition.
   case epoch == book.epoch {
     True -> Ok(Nil)
     False -> Error(AdminStaleEpoch)
   }
 }
 
+/// Checks whether the caller may administer the requested member.
 fn authorize_admin(phase, book: Book(instance), digest, epoch) {
+  // authorize_admin distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case phase {
     Ready -> Ok(Nil)
     ShuttingDown -> Error(AdminUnavailable)
   })
+
   use principal <- result.try(
     principal_of(book, digest)
     |> result.replace_error(AdminForbidden),
   )
+
+  // authorize_admin distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case principal.kind {
     access.OwnerPrincipal -> Ok(Nil)
     access.MemberPrincipal -> Error(AdminForbidden)
   })
+
+  // authorize_admin distinguishes the epoch == book.epoch outcomes before continuing the transition.
   case epoch == book.epoch {
     True -> Ok(Nil)
     False -> Error(AdminStaleEpoch)
   }
 }
 
+/// Applies an authorized member-administration request and returns its transition result.
 fn administer_member(store, action) {
+  // administer_member distinguishes the action outcomes before continuing the transition.
   case action {
     Invite(id, name, enrollment, session_id, role) -> {
       use Nil <- result.try(require_shared(store, session_id))
@@ -4076,22 +4131,29 @@ fn same_digest(stored: String, presented: String) -> Bool {
   )
 }
 
+/// Requires a shared session before applying shared-session operations.
 fn require_shared(store, session_id) {
   use selected <- result.try(
     domain.for_session(store, session_id) |> result.map_error(AdminMetadata),
   )
+
+  // require_shared distinguishes the selected.scope outcomes before continuing the transition.
   case selected.scope {
     domain.WorkspacePrivate -> Error(IsolationRequired)
     domain.SessionOnly -> Ok(Nil)
   }
 }
 
+/// Performs the immediate shared-to-isolated session transition.
 fn isolate_now(phase, book: Book(instance), caller, epoch, id, state_root) {
   use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+
+  // isolate_now distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case dict.has_key(book.slots, id) {
     True -> Error(AdminUnavailable)
     False -> Ok(Nil)
   })
+
   use record <- result.try(
     catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
   )
@@ -4111,6 +4173,7 @@ fn isolate_now(phase, book: Book(instance), caller, epoch, id, state_root) {
 // A session that is moving or has moved is not this catalogue's to archive,
 // restore or delete: the move row is the only record of who owns it. Both
 // answers name the other side, so the caller can say where the session went.
+/// Returns the refusal used when a session has already moved.
 fn refuse_moved(book: Book(instance), id: String) -> Result(Nil, AdminError) {
   case catalogue.custody(book.catalogue, id) {
     Ok(catalogue.Moving(op:, to:)) -> Error(AdminMoving(op:, to:))
@@ -4125,6 +4188,7 @@ fn refuse_moved(book: Book(instance), id: String) -> Result(Nil, AdminError) {
 // recording that the decision was made. The intent is committed before the slot
 // is cancelled, which leaves a crash between the two with a `Moving` row and a
 // slot that does not exist after restart, the state the mover resumes from.
+/// Starts the move after validating that the session can leave its current owner.
 fn begin_move_now(
   phase: Phase,
   book: Book(instance),
@@ -4143,6 +4207,8 @@ fn begin_move_now(
     use custody <- result.try(
       catalogue.custody(book.catalogue, id) |> result.map_error(AdminMetadata),
     )
+
+    // begin_move_now distinguishes the custody outcomes before continuing the transition.
     case custody {
       catalogue.Moved(to: owner, ..) -> Error(AdminMoved(to: owner))
       catalogue.Moving(to: heading, ..) if heading == to -> Ok(custody)
@@ -4152,6 +4218,8 @@ fn begin_move_now(
         |> result.map_error(AdminMetadata)
     }
   }
+
+  // begin_move_now distinguishes the decided outcomes before continuing the transition.
   case decided {
     Ok(custody) -> #(stop_slot(book, id), Ok(custody))
     Error(error) -> #(book, Error(error))
@@ -4161,6 +4229,7 @@ fn begin_move_now(
 // Whether a registration can be handed over: a session on an executor, whose
 // scope the receiver can reopen, that has a file and is not archived. A local
 // session's checkout is a directory on this machine, which does not travel.
+/// Checks the session state and ownership conditions required for a move.
 fn movable(
   book: Book(instance),
   record: catalogue.Registration,
@@ -4177,6 +4246,8 @@ fn movable(
     catalogue.delegate_of(book.catalogue, record.id)
     |> result.map_error(AdminMetadata),
   )
+
+  // movable distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case marker {
     Some(_) ->
       Error(AdminNotMovable(
@@ -4184,6 +4255,8 @@ fn movable(
       ))
     None -> Ok(Nil)
   })
+
+  // movable distinguishes the record.state, visibility, record.executor outcomes before continuing the transition.
   case record.state, visibility, record.executor {
     catalogue.Reserved, _, _ ->
       Error(AdminNotMovable("the session has not finished being created"))
@@ -4202,15 +4275,18 @@ fn movable(
 // into place, all in this turn, so no open sees the row without the file. A
 // crash between the commit and the rename leaves the copy where it was, and the
 // same import arriving again finishes the rename.
+/// Imports a moved session and reconciles its committed state with the local manager.
 fn import_now(
   phase: Phase,
   book: Book(instance),
   incoming: Import,
 ) -> Result(catalogue.Custody, AdminError) {
+  // import_now distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case phase {
     Ready -> Ok(Nil)
     ShuttingDown -> Error(AdminUnavailable)
   })
+
   let id = incoming.registration.id
 
   // Whether this import already committed is read before anything else, since
@@ -4245,11 +4321,13 @@ fn import_now(
   // sender must be told yes however often it asks, because it treats a refusal
   // as final and takes the session back, and the owner may well have opened the
   // session here after the first reply was lost. A repeat touches no file that
+
   // is in place, so a running session is safe from it.
   use Nil <- result.try(case repeat, dict.has_key(book.slots, id) {
     False, True -> Error(AdminBusy)
     True, _ | False, False -> Ok(Nil)
   })
+
   use custody <- result.try(
     domain.import_session(
       book.catalogue,
@@ -4260,10 +4338,14 @@ fn import_now(
     )
     |> result.map_error(AdminMetadata),
   )
+
+  // import_now distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case repeat {
     True -> finish_placement(incoming)
     False -> place_received(incoming)
   })
+
+  // import_now distinguishes the incoming.subtitle outcomes before continuing the transition.
   case incoming.subtitle {
     option.Some(text) -> {
       let _seeded = catalogue.seed_subtitle(book.catalogue, id, text)
@@ -4271,6 +4353,7 @@ fn import_now(
     }
     option.None -> Nil
   }
+
   Ok(custody)
 }
 
@@ -4278,7 +4361,9 @@ fn import_now(
 // already at the session's path was placed by the import that committed, so a
 // copy still waiting is a late duplicate and is removed; with no file there, the
 // commit was not followed by its rename, and the waiting copy is placed now.
+/// Completes placement after the destination has accepted the session.
 fn finish_placement(incoming: Import) -> Result(Nil, AdminError) {
+  // finish_placement distinguishes the simplifile.is_file(incoming.registration.path) outcomes before continuing the transition.
   case simplifile.is_file(incoming.registration.path) {
     Ok(True) -> {
       let _removed = simplifile.delete_file(incoming.received)
@@ -4291,8 +4376,11 @@ fn finish_placement(incoming: Import) -> Result(Nil, AdminError) {
 // Moves the verified copy to the session's path. A copy that is no longer
 // waiting is the repeat of an import that already placed it, which is fine only
 // if the session's file is there.
+/// Places an incoming session only after its transfer state is accepted.
 fn place_received(incoming: Import) -> Result(Nil, AdminError) {
   let path = incoming.registration.path
+
+  // place_received distinguishes the simplifile.is_file(incoming.received) outcomes before continuing the transition.
   case simplifile.is_file(incoming.received) {
     Ok(True) ->
       case simplifile.create_directory_all(filepath.directory_name(path)) {
@@ -4330,6 +4418,7 @@ fn place_received(incoming: Import) -> Result(Nil, AdminError) {
 // it in the turn that reserves one, so nothing can open the session between
 // this turn and the record's deletion. The mark comes before the record is
 // touched because it stops this daemon serving the session.
+/// Begins deletion after checking the session registration and current state.
 fn begin_delete_now(
   phase,
   book: Book(instance),
@@ -4338,10 +4427,13 @@ fn begin_delete_now(
   id,
 ) -> Result(catalogue.Registration, AdminError) {
   use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+
+  // begin_delete_now distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case dict.has_key(book.slots, id) {
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
+
   use Nil <- result.try(refuse_moved(book, id))
   use record <- result.try(
     catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
@@ -4355,6 +4447,7 @@ fn begin_delete_now(
 
 // Every registration placed on an executor or a pool, in both visibilities,
 // paired with its custody row. Local sessions have no directory record.
+/// Collects remote registrations represented by the supplied session state.
 fn remote_registrations_in(
   store: catalogue.Catalogue,
 ) -> Result(List(#(catalogue.Registration, catalogue.Custody)), Error) {
@@ -4371,6 +4464,7 @@ fn remote_registrations_in(
 
 // A reserved registration is a creation that has not finished, and has no
 // session yet to find.
+/// Collects local sessions represented by the supplied session state.
 fn local_sessions_in(
   store: catalogue.Catalogue,
 ) -> Result(List(String), Error) {
@@ -4386,6 +4480,7 @@ fn local_sessions_in(
   |> Ok
 }
 
+/// Reads all bounded pages needed to complete the session listing.
 fn all_pages(
   store: catalogue.Catalogue,
   page: fn(catalogue.Catalogue, String) ->
@@ -4393,6 +4488,7 @@ fn all_pages(
   after: String,
   seen: List(catalogue.Registration),
 ) -> Result(List(catalogue.Registration), Error) {
+  // all_pages distinguishes the page(store, after) outcomes before continuing the transition.
   case page(store, after) {
     Error(error) -> Error(Catalogue(error))
     Ok(catalogue.Page(records: [], ..)) -> Ok(list.reverse(seen))
@@ -4406,6 +4502,7 @@ fn all_pages(
 // The second half: the record is gone, so the registration, its mark and its
 // file go. It needs the mark, which is the owner's authorized intent recorded
 // by the first half, so a restart can finish it without a caller.
+/// Finishes deletion after dependent session state has been retired.
 fn finish_delete_now(
   phase,
   book: Book(instance),
@@ -4413,25 +4510,33 @@ fn finish_delete_now(
   sessions,
   holders,
 ) -> Result(catalogue.Registration, AdminError) {
+  // finish_delete_now distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case phase {
     Ready -> Ok(Nil)
     ShuttingDown -> Error(AdminUnavailable)
   })
+
   use marked <- result.try(
     catalogue.deletion(book.catalogue, id) |> result.map_error(AdminMetadata),
   )
+
+  // finish_delete_now distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case marked {
     catalogue.Deleting -> Ok(Nil)
     catalogue.NotDeleting ->
       Error(AdminFailed("the session is not marked for deletion"))
   })
+
+  // finish_delete_now distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case dict.has_key(book.slots, id) {
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
+
   delete_registration(book, id, sessions, holders)
 }
 
+/// Deletes the registration through the manager-owned deletion transition.
 fn delete_now(
   phase,
   book: Book(instance),
@@ -4442,10 +4547,13 @@ fn delete_now(
   holders,
 ) {
   use Nil <- result.try(authorize_admin(phase, book, caller, epoch))
+
+  // delete_now distinguishes the the selected value outcomes before continuing the transition.
   use Nil <- result.try(case dict.has_key(book.slots, id) {
     True -> Error(AdminBusy)
     False -> Ok(Nil)
   })
+
   use Nil <- result.try(refuse_moved(book, id))
   delete_registration(book, id, sessions, holders)
 }
@@ -4468,6 +4576,7 @@ fn delete_now(
 // A file that cannot be read owes nothing: a session whose file is unreadable
 // could not have been waited on. A catalogue that cannot take the rows refuses
 // the deletion, since the same catalogue would be taking the deletion next.
+/// Removes the registration record after its lifecycle permits deletion.
 fn delete_registration(
   book: Book(instance),
   id: String,
@@ -4478,11 +4587,13 @@ fn delete_registration(
   remove_registration(book, id, sessions)
 }
 
+/// Finds outstanding release obligations retained for active holders.
 fn owe_releases(
   book: Book(instance),
   id: String,
   holders: List(String),
 ) -> Result(Nil, AdminError) {
+  // owe_releases distinguishes the holders outcomes before continuing the transition.
   case holders {
     [] -> Ok(Nil)
     [_, ..] -> {
@@ -4503,6 +4614,7 @@ fn owe_releases(
 // The orchestrators that may hold a child of a session about to be deleted,
 // read from its closed file in the caller's process. A session the registry
 // cannot name, or a file that cannot be read, owes nothing.
+/// Selects holders that own the requested session resource.
 fn holders_of(manager: Manager(instance), id: String) -> List(String) {
   case get(manager, id) {
     Error(_) -> []
@@ -4531,6 +4643,7 @@ fn holders_of(manager: Manager(instance), id: String) -> List(String) {
 // bound, so the caller asks each candidate whether a child still has a run. A
 // deletion that fails leaves its session for the next sweep, since nothing can
 // usefully retry it here.
+/// Coordinates sweep now with the daemon manager’s session state and effects.
 fn sweep_now(
   book: Book(instance),
   standing: fn(String) -> spawners.Standing,
@@ -4568,6 +4681,7 @@ fn sweep_now(
 // one the first turn saw. The stop is the ordinary one, and the row stays. A
 // session that failed any of the three is skipped, and the next sweep judges it
 // again.
+/// Coordinates close idle with the daemon manager’s session state and effects.
 fn close_idle(
   book: Book(instance),
   seen: List(#(String, Int)),
@@ -4575,6 +4689,8 @@ fn close_idle(
   list.fold(seen, #(book, 0), fn(so_far, one) {
     let #(book, closed) = so_far
     let #(session_id, contact) = one
+
+    // close_idle distinguishes the catalogue.delegate_of(book.catalogue, session_id) outcomes before continuing the transition.
     case catalogue.delegate_of(book.catalogue, session_id) {
       Ok(Some(row)) ->
         case row.last_contact_ms == contact, running_slot(book, row) {
@@ -4589,6 +4705,7 @@ fn close_idle(
 // The instance of the running slot that holds the row's session, if the row is
 // open and a slot is running. A session that is still opening or already
 // closing is left to finish.
+/// Coordinates running slot with the daemon manager’s session state and effects.
 fn running_slot(
   book: Book(instance),
   row: catalogue.Delegate,
@@ -4601,6 +4718,7 @@ fn running_slot(
 
 // Whether a session with no slot is deleted: its spawner was removed, its
 // release has begun, or its spawner has been silent past the retention.
+/// Coordinates due for deletion with the daemon manager’s session state and effects.
 fn due_for_deletion(
   standing: fn(String) -> spawners.Standing,
   row: catalogue.Delegate,
@@ -4614,6 +4732,7 @@ fn due_for_deletion(
 }
 
 // Whether the spawner is gone or has been silent for its `idle_close_s`.
+/// Coordinates silent past idle with the daemon manager’s session state and effects.
 fn silent_past_idle(
   standing: fn(String) -> spawners.Standing,
   row: catalogue.Delegate,
@@ -4641,16 +4760,19 @@ fn release_begun(row: catalogue.Delegate) -> Bool {
 // row has nothing to release, and nothing is created for it. The state moves
 // forward only, so a repeat leaves it where it is and tries the deletion again,
 // which is how a deletion that failed is healed.
+/// Coordinates release now with the daemon manager’s session state and effects.
 fn release_now(
   book: Book(instance),
   spawner: String,
   parent_session: String,
   sessions: String,
 ) -> #(Book(instance), Result(Nil, Error)) {
+  // release_now distinguishes the catalogue.delegate_for(book.catalogue, spawner, parent_session) outcomes before continuing the transition.
   case catalogue.delegate_for(book.catalogue, spawner, parent_session) {
     Error(error) -> #(book, Error(Catalogue(error)))
     Ok(None) -> #(book, Ok(Nil))
     Ok(Some(found)) -> {
+      // release_now distinguishes the the selected value outcomes before continuing the transition.
       let marked = case found.state {
         catalogue.Open ->
           catalogue.set_delegate_state(
@@ -4660,6 +4782,8 @@ fn release_now(
           )
         catalogue.Releasing | catalogue.Released -> Ok(Nil)
       }
+
+      // release_now distinguishes the marked outcomes before continuing the transition.
       case marked {
         Error(error) -> #(book, Error(Catalogue(error)))
         Ok(Nil) ->
@@ -4687,6 +4811,7 @@ fn release_now(
 // The last step of a release, once no slot holds the session: the row says the
 // slot has drained, and then the session and its row go together. A deletion
 // that fails leaves the row released, and the next release or sweep tries again.
+/// Coordinates finish release while keeping the session lifecycle transition explicit.
 fn finish_release(
   book: Book(instance),
   session_id: String,
@@ -4713,6 +4838,7 @@ fn finish_release(
 // resending the `Spawn` of a stub that is `Requested`, and one that reached the
 // other orchestrator after its `Release` would make a child there whose parent
 // is gone. Once the slot has drained nothing of the session runs to send it.
+/// Coordinates delete delegate while keeping the session lifecycle transition explicit.
 fn delete_delegate(
   book: Book(instance),
   session_id: String,
@@ -4738,6 +4864,7 @@ const descendant_read_ms = 5000
 // bound and no more, and the store's actor is linked to the task and not to the
 // registry. A file that cannot be read owes nothing, as for a deletion: the
 // children below it run to their deadlines.
+/// Coordinates descendant holders with the daemon manager’s session state and effects.
 fn descendant_holders(path: String, session_id: String) -> List(String) {
   let read =
     [
@@ -4752,12 +4879,15 @@ fn descendant_holders(path: String, session_id: String) -> List(String) {
     |> weft.new
     |> weft.deadline(descendant_read_ms)
     |> weft.start
+
+  // descendant_holders distinguishes the read outcomes before continuing the transition.
   case read {
     [weft.Completed(value: kept, ..)] -> remote_child.holders(kept)
     _ -> []
   }
 }
 
+/// Coordinates remove registration with the daemon manager’s session state and effects.
 fn remove_registration(
   book: Book(instance),
   id: String,
@@ -4771,12 +4901,15 @@ fn remove_registration(
   use existing <- result.try(
     catalogue.get(book.catalogue, id) |> result.map_error(AdminMetadata),
   )
+
+  // This guard prevents deletion when a registration points outside the session root.
   use Nil <- result.try(
     case string.starts_with(existing.path, sessions <> "/") {
       True -> Ok(Nil)
       False -> Error(AdminForeignPath)
     },
   )
+
   use record <- result.try(
     catalogue.delete(book.catalogue, id) |> result.map_error(AdminMetadata),
   )
@@ -4790,6 +4923,7 @@ fn remove_registration(
 // the scratch directory. Nothing here can be retried usefully, so a refusal
 // from the filesystem is not reported: the registration is already gone and
 // the daemon must not resurrect it.
+/// Coordinates unlink conversation with the daemon manager’s session state and effects.
 fn unlink_conversation(path: String) -> Nil {
   // Each of these is a single file, so the non-recursive removal is the one
   // that matches: a `delete` here would descend into anything that turned
@@ -4809,14 +4943,18 @@ fn unlink_conversation(path: String) -> Nil {
   Nil
 }
 
+/// Coordinates admin member with the daemon manager’s session state and effects.
 fn admin_member(store, id) {
   use principal <- result.try(access.get(store, id))
+
+  // admin_member distinguishes the principal.kind outcomes before continuing the transition.
   case principal.kind {
     access.MemberPrincipal -> Ok(principal)
     access.OwnerPrincipal -> Error(catalogue.Conflict)
   }
 }
 
+/// Coordinates viewed page with the daemon manager’s session state and effects.
 fn viewed_page(
   book: Book(instance),
   page: Result(catalogue.Page, catalogue.Error),
@@ -4833,11 +4971,14 @@ fn viewed_page(
 
 // The census walks only the capacity-bounded live slots, never all saved files.
 // Closing and blocked slots count as occupied until their original witness exits.
+/// Coordinates census with the daemon manager’s session state and effects.
 fn census(phase: Phase, book: Book(instance)) -> Summary {
+  // census distinguishes the the selected value outcomes before continuing the transition.
   let admission = case phase {
     Ready -> Accepting
     ShuttingDown -> Draining
   }
+
   let empty =
     Summary(
       admission:,
@@ -4868,6 +5009,7 @@ fn census(phase: Phase, book: Book(instance)) -> Summary {
   })
 }
 
+/// Coordinates create session with the daemon manager’s session state and effects.
 fn create_session(
   phase: Phase,
   book: Book(instance),
@@ -4880,6 +5022,7 @@ fn create_session(
   case phase {
     ShuttingDown -> #(book, Error(Unavailable))
     Ready -> {
+      // create_session distinguishes the the selected value outcomes before continuing the transition.
       case
         reserve_creation(
           book.catalogue,
@@ -4892,6 +5035,7 @@ fn create_session(
       {
         Error(error) -> #(book, Error(Catalogue(error)))
         Ok(record) -> {
+          // create_session distinguishes the the selected value outcomes before continuing the transition.
           let #(book, outcome) = case
             dict.has_key(book.slots, record.id),
             dict.size(book.slots) >= book.limit
@@ -4924,11 +5068,13 @@ fn create_session(
 // registration, its mapping and the row in one transaction. The registry's turn
 // is what orders the creates of one daemon, and the transaction is what holds
 // between connections.
+/// Coordinates relay now with the daemon manager’s session state and effects.
 fn relay_now(
   phase: Phase,
   book: Book(instance),
   request: RelayRequest,
 ) -> Result(Relaying, RelayError) {
+  // relay_now distinguishes the phase outcomes before continuing the transition.
   case phase {
     ShuttingDown -> Error(RelayFailed(Unavailable))
     Ready -> {
@@ -4949,6 +5095,8 @@ fn relay_now(
         )
         |> result.map_error(failed),
       )
+
+      // relay_now distinguishes the found outcomes before continuing the transition.
       case found {
         Some(row) -> relaying(book, row.session_id)
         None -> {
@@ -4979,6 +5127,8 @@ fn relay_now(
             )
             |> result.map_error(failed),
           )
+
+          // relay_now distinguishes the claim outcomes before continuing the transition.
           case claim {
             catalogue.RelayedCapped(cap:, limit:) ->
               Error(RelayCapped(cap:, limit:))
@@ -4997,6 +5147,7 @@ fn relay_now(
 }
 
 // What a reserved session's registration says now.
+/// Coordinates relaying with the daemon manager’s session state and effects.
 fn relaying(
   book: Book(instance),
   session_id: String,
@@ -5009,6 +5160,7 @@ fn relaying(
 // One page of a spawner's relayed sessions with the status each holds now. A
 // row whose registration cannot be read fails the page, because a page that
 // silently dropped it would let the spawner think the session was gone.
+/// Coordinates relayed page now with the daemon manager’s session state and effects.
 fn relayed_page_now(
   book: Book(instance),
   spawner: String,
@@ -5031,12 +5183,14 @@ fn relayed_page_now(
 // Archives a relayed session of the spawner that holds no slot. The relayed row
 // is read in this turn, so a session another spawner started, or none, is
 // refused as not relayed whatever its state.
+/// Coordinates archive relayed now with the daemon manager’s session state and effects.
 fn archive_relayed_now(
   phase: Phase,
   book: Book(instance),
   spawner: String,
   id: String,
 ) -> Result(View, RelayedArchiveError) {
+  // archive_relayed_now distinguishes the phase outcomes before continuing the transition.
   case phase {
     ShuttingDown -> Error(ArchiveFailed(Unavailable))
     Ready -> {
@@ -5044,14 +5198,20 @@ fn archive_relayed_now(
         catalogue.relayed_of(book.catalogue, id)
         |> result.map_error(fn(error) { ArchiveFailed(Catalogue(error)) }),
       )
+
+      // archive_relayed_now distinguishes the the selected value outcomes before continuing the transition.
       use Nil <- result.try(case found {
         Some(row) if row.spawner == spawner -> Ok(Nil)
         Some(_) | None -> Error(ArchiveNotRelayed)
       })
+
+      // archive_relayed_now distinguishes the the selected value outcomes before continuing the transition.
       use Nil <- result.try(case dict.has_key(book.slots, id) {
         True -> Error(ArchiveBusy)
         False -> Ok(Nil)
       })
+
+      // archive_relayed_now distinguishes the the selected value outcomes before continuing the transition.
       use Nil <- result.try(case catalogue.custody(book.catalogue, id) {
         Ok(catalogue.Moving(op:, to:)) ->
           Error(ArchiveFailed(SessionMoving(op:, to:)))
@@ -5059,6 +5219,7 @@ fn archive_relayed_now(
         Ok(catalogue.Resident) | Ok(catalogue.Imported(..)) -> Ok(Nil)
         Error(error) -> Error(ArchiveFailed(Catalogue(error)))
       })
+
       use record <- result.map(
         catalogue.set_visibility(book.catalogue, id, catalogue.Archived)
         |> result.map_error(fn(error) { ArchiveFailed(Catalogue(error)) }),
@@ -5074,6 +5235,7 @@ fn archive_relayed_now(
 // turn. A creation that crashes between the registration and the record is
 // retried under the same request key, which finds the registration again, so
 // the record is the only thing the retry has left to write.
+/// Coordinates delegate now with the daemon manager’s session state and effects.
 fn delegate_now(
   phase: Phase,
   book: Book(instance),
@@ -5110,6 +5272,7 @@ fn delegate_now(
 // turn touches nothing else, so it opens no store and calls no session. Counting
 // in the turn is what makes two spawns see each other, because the registry
 // handles one message at a time.
+/// Coordinates claim now with the daemon manager’s session state and effects.
 fn claim_now(
   book: Book(instance),
   spawner: String,
@@ -5121,6 +5284,8 @@ fn claim_now(
     catalogue.spawner_spend(book.catalogue, spawner, now_ms:)
     |> result.map_error(fn(error) { DelegateFailed(Catalogue(error)) }),
   )
+
+  // claim_now distinguishes the at_cap(spent.tokens, token_budget), at_cap(spent.spawns, max_per_day) outcomes before continuing the transition.
   case at_cap(spent.tokens, token_budget), at_cap(spent.spawns, max_per_day) {
     Some(limit), _ -> Error(DelegateDayCap(cap: DayTokens, limit:))
     None, Some(limit) -> Error(DelegateDayCap(cap: DaySpawns, limit:))
@@ -5138,6 +5303,7 @@ fn claim_now(
 
 // The cap's value when `used` has reached it, and nothing when it has not or
 // when there is no cap.
+/// Coordinates at cap with the daemon manager’s session state and effects.
 fn at_cap(used: Int, cap: Option(Int)) -> Option(Int) {
   option.then(cap, fn(limit) {
     case used >= limit {
@@ -5149,18 +5315,21 @@ fn at_cap(used: Int, cap: Option(Int)) -> Option(Int) {
 
 // A pair that has a session: the contact time moves, and the session is
 // admitted if it is not resident.
+/// Coordinates returning delegate with the daemon manager’s session state and effects.
 fn returning_delegate(
   phase: Phase,
   book: Book(instance),
   request: DelegateRequest,
   session_id: String,
 ) -> #(Book(instance), Result(Delegated, DelegateError)) {
+  // returning_delegate distinguishes the claim_delegate(book, request, session_id) outcomes before continuing the transition.
   case claim_delegate(book, request, session_id) {
     Error(error) -> #(book, Error(error))
     Ok(Nil) -> {
       // A retained slot carries a more precise answer than admission's
       // Unavailable: Closing may retire, while Blocked has lost that proof.
       // The delegate resolver needs that distinction to decide whether its
+
       // sender should retry. Neither descriptor grants a replacement slot.
       let #(book, admitted) = case dict.get(book.slots, session_id) {
         Ok(Slot(phase: Closing, operation:, ..)) -> #(
@@ -5173,6 +5342,7 @@ fn returning_delegate(
         )
         Ok(_) | Error(Nil) -> admit(phase, book, session_id)
       }
+
       #(book, delegated(session_id, admitted))
     }
   }
@@ -5181,11 +5351,13 @@ fn returning_delegate(
 // A pair that has none. The room is checked before anything is created, so a
 // spawner past its cap leaves no registration behind, and the record is written
 // after, once the registration exists for its foreign key.
+/// Coordinates first delegate with the daemon manager’s session state and effects.
 fn first_delegate(
   phase: Phase,
   book: Book(instance),
   request: DelegateRequest,
 ) -> #(Book(instance), Result(Delegated, DelegateError)) {
+  // first_delegate distinguishes the delegate_room(book, request) outcomes before continuing the transition.
   case delegate_room(book, request) {
     Error(error) -> #(book, Error(error))
     Ok(Nil) -> {
@@ -5199,6 +5371,8 @@ fn first_delegate(
           domain.SessionOnly,
           request.configuration,
         )
+
+      // first_delegate distinguishes the created outcomes before continuing the transition.
       case created {
         Error(error) -> #(book, Error(DelegateFailed(error)))
         Ok(View(registration:, status:)) ->
@@ -5214,6 +5388,7 @@ fn first_delegate(
   }
 }
 
+/// Coordinates delegate room with the daemon manager’s session state and effects.
 fn delegate_room(
   book: Book(instance),
   request: DelegateRequest,
@@ -5222,6 +5397,8 @@ fn delegate_room(
     catalogue.delegates_held(book.catalogue, request.spawner)
     |> result.map_error(fn(error) { DelegateFailed(Catalogue(error)) }),
   )
+
+  // delegate_room distinguishes the held >= request.limit outcomes before continuing the transition.
   case held >= request.limit {
     True -> Error(DelegateAtLimit(held:))
     False -> Ok(Nil)
@@ -5230,6 +5407,7 @@ fn delegate_room(
 
 // The catalogue's record of the pair, written or touched. Its own count check
 // is the second line behind `delegate_room`, in one transaction with the insert.
+/// Coordinates claim delegate with the daemon manager’s session state and effects.
 fn claim_delegate(
   book: Book(instance),
   request: DelegateRequest,
@@ -5246,12 +5424,15 @@ fn claim_delegate(
     )
     |> result.map_error(fn(error) { DelegateFailed(Catalogue(error)) }),
   )
+
+  // claim_delegate distinguishes the claim outcomes before continuing the transition.
   case claim {
     catalogue.Claimed(_) -> Ok(Nil)
     catalogue.AtLimit(held:) -> Error(DelegateAtLimit(held:))
   }
 }
 
+/// Coordinates delegated with the daemon manager’s session state and effects.
 fn delegated(
   session_id: String,
   admitted: Result(Status, Error),
@@ -5264,6 +5445,7 @@ fn delegated(
 
 // The registration a creation would make: a fresh identity, the path its file
 // would have, and the creation's metadata, in the `Reserved` state.
+/// Coordinates new registration with the daemon manager’s session state and effects.
 fn new_registration(
   request: Creation,
   directory: String,
@@ -5290,6 +5472,7 @@ fn new_registration(
 
 // Only a missing key permits allocation. Corrupt or unavailable metadata must
 // not produce a second file under a new identity, even if the caller retries.
+/// Coordinates reserve creation with the daemon manager’s session state and effects.
 fn reserve_creation(
   store: catalogue.Catalogue,
   request: Creation,
@@ -5298,6 +5481,7 @@ fn reserve_creation(
   scope: domain.Scope,
   configuration: String,
 ) -> Result(catalogue.Registration, catalogue.Error) {
+  // reserve_creation distinguishes the catalogue.by_request_key(store, request.request_key) outcomes before continuing the transition.
   case catalogue.by_request_key(store, request.request_key) {
     Ok(record) ->
       case
@@ -5311,6 +5495,8 @@ fn reserve_creation(
       {
         True -> {
           use selected <- result.try(domain.for_session(store, record.id))
+
+          // reserve_creation distinguishes the selected.scope == scope outcomes before continuing the transition.
           case selected.scope == scope {
             True -> Ok(record)
             False -> Error(catalogue.Conflict)
@@ -5344,6 +5530,7 @@ fn named_same_executor(
   request.pool != "" || record.executor == request.executor
 }
 
+/// Coordinates select creation domain with the daemon manager’s session state and effects.
 fn select_creation_domain(
   store,
   record: catalogue.Registration,
@@ -5351,10 +5538,13 @@ fn select_creation_domain(
   configuration,
   state_root,
 ) {
+  // select_creation_domain distinguishes the the selected value outcomes before continuing the transition.
   let configuration = case record.configuration {
     "" -> configuration
     explicit -> explicit
   }
+
+  // select_creation_domain distinguishes the domain.get(store, domain.key(scope, record.workspace, record.id)) outcomes before continuing the transition.
   case domain.get(store, domain.key(scope, record.workspace, record.id)) {
     Ok(existing) -> Ok(existing)
     Error(catalogue.Missing) ->
@@ -5382,12 +5572,14 @@ pub fn session_only_domain(
   domain_record(record, domain.SessionOnly, configuration, state_root)
 }
 
+/// Coordinates domain record with the daemon manager’s session state and effects.
 fn domain_record(
   record: catalogue.Registration,
   scope,
   configuration,
   state_root,
 ) {
+  // domain_record distinguishes the the selected value outcomes before continuing the transition.
   let directory = case scope {
     domain.WorkspacePrivate -> {
       let hash =
@@ -5400,6 +5592,7 @@ fn domain_record(
     }
     domain.SessionOnly -> state_root <> "/domains/sessions/" <> record.id
   }
+
   domain.Domain(
     domain.key(scope, record.workspace, record.id),
     scope,
@@ -5410,6 +5603,7 @@ fn domain_record(
   )
 }
 
+/// Coordinates admit with the daemon manager’s session state and effects.
 fn admit(
   phase: Phase,
   book: Book(instance),
@@ -5431,6 +5625,7 @@ fn admit(
   }
 }
 
+/// Coordinates new slot with the daemon manager’s session state and effects.
 fn new_slot(
   book: Book(instance),
   id: String,
@@ -5449,6 +5644,7 @@ fn new_slot(
   }
 }
 
+/// Coordinates prepare slot with the daemon manager’s session state and effects.
 fn prepare_slot(
   book: Book(instance),
   record: catalogue.Registration,
@@ -5458,6 +5654,8 @@ fn prepare_slot(
       catalogue.visibility(book.catalogue, record.id)
       |> result.map_error(Catalogue),
     )
+
+    // prepare_slot distinguishes the the selected value outcomes before continuing the transition.
     use Nil <- result.try(case visibility {
       catalogue.Active -> Ok(Nil)
       catalogue.Archived -> Error(SessionArchived)
@@ -5470,6 +5668,8 @@ fn prepare_slot(
       catalogue.custody(book.catalogue, record.id)
       |> result.map_error(Catalogue),
     )
+
+    // prepare_slot distinguishes the the selected value outcomes before continuing the transition.
     use Nil <- result.try(case custody {
       catalogue.Moving(op:, to:) -> Error(SessionMoving(op:, to:))
       catalogue.Moved(to:, ..) -> Error(SessionMoved(to:))
@@ -5482,6 +5682,8 @@ fn prepare_slot(
       catalogue.deletion(book.catalogue, record.id)
       |> result.map_error(Catalogue),
     )
+
+    // prepare_slot distinguishes the the selected value outcomes before continuing the transition.
     use Nil <- result.try(case marked {
       catalogue.Deleting -> Error(SessionDeleting)
       catalogue.NotDeleting -> Ok(Nil)
@@ -5489,10 +5691,14 @@ fn prepare_slot(
 
     domain.for_session(book.catalogue, record.id) |> result.map_error(Catalogue)
   }
+
+  // prepare_slot distinguishes the selected outcomes before continuing the transition.
   case selected {
     Error(error) -> #(book, Error(error))
     Ok(selected) -> {
       let #(book, admitted) = ensure_domain(book, selected)
+
+      // prepare_slot distinguishes the admitted outcomes before continuing the transition.
       case admitted {
         Error(error) -> #(book, Error(error))
         Ok(_operation) -> prepare_domain_slot(book, record, selected)
@@ -5518,6 +5724,7 @@ fn clear_kept_failure(store: catalogue.Catalogue, id: String) -> Nil {
 
 // Capturing immutable metadata before preparation keeps catalogue access inside
 // the registry and prevents the builder from choosing paths after admission.
+/// Coordinates prepare domain slot with the daemon manager’s session state and effects.
 fn prepare_domain_slot(
   book: Book(instance),
   record: catalogue.Registration,
@@ -5535,6 +5742,7 @@ fn prepare_domain_slot(
   let build = book.assembly.build
   let directory = Manager(commands, process.self())
 
+  // prepare_domain_slot distinguishes the the selected value outcomes before continuing the transition.
   case
     host.prepare(
       build: fn(owner) {
@@ -5593,6 +5801,7 @@ fn prepare_domain_slot(
 // for the domain's normal exit and is then admitted against a replacement; the
 // cancellation already ordered is not withdrawable, so its services are never
 // handed to a new session. One that drained, failed or is blocked refuses.
+/// Coordinates ensure domain with the daemon manager’s session state and effects.
 fn ensure_domain(book: Book(instance), selected: domain.Domain) {
   case dict.get(book.domains, selected.id) {
     Ok(DomainSlot(phase: DomainPreparing, operation:, ..))
@@ -5611,6 +5820,7 @@ fn ensure_domain(book: Book(instance), selected: domain.Domain) {
 // The dependent count is the answer to "may this domain be fenced", and it is
 // maintained at the two places a session slot enters or leaves the book rather
 // than folded out of the slots on every message.
+/// Coordinates depend with the daemon manager’s session state and effects.
 fn depend(domains: Dict(String, DomainSlot), id: String, by: Int) {
   case dict.get(domains, id) {
     Ok(slot) ->
@@ -5623,7 +5833,9 @@ fn depend(domains: Dict(String, DomainSlot), id: String, by: Int) {
   }
 }
 
+/// Coordinates prepare shared domain with the daemon manager’s session state and effects.
 fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
+  // prepare_shared_domain distinguishes the dict.size(book.domains) >= book.limit outcomes before continuing the transition.
   case dict.size(book.domains) >= book.limit {
     True -> #(book, Error(Capacity))
     False -> {
@@ -5645,6 +5857,7 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
       // callback alone, not the registry and its resident instances.
       let domain_build = book.assembly.domain_build
 
+      // prepare_shared_domain distinguishes the the selected value outcomes before continuing the transition.
       case
         host.prepare(
           build: fn(owner) { domain_build(selected, sources, owner) },
@@ -5688,17 +5901,22 @@ fn prepare_shared_domain(book: Book(instance), selected: domain.Domain) {
 // that builder, and it does so after the replacement services are published.
 // Checking the session operation prevents an old builder from borrowing the
 // services selected for a later open of the same durable identity.
+/// Coordinates services for builder with the daemon manager’s session state and effects.
 fn services_for_builder(book: Book(instance), id: String, operation: String) {
   use slot <- result.try(
     dict.get(book.slots, id)
     |> result.map_error(fn(_) { "session admission is no longer retained" }),
   )
+
+  // services_for_builder distinguishes the slot.phase, slot.operation == operation outcomes before continuing the transition.
   case slot.phase, slot.operation == operation {
     Building, True -> {
       use domain <- result.try(
         dict.get(book.domains, slot.domain_id)
         |> result.map_error(fn(_) { "domain admission is no longer retained" }),
       )
+
+      // services_for_builder distinguishes the domain.phase outcomes before continuing the transition.
       case domain.phase {
         DomainRunning(services) -> Ok(services)
         DomainPreparing
@@ -5714,11 +5932,14 @@ fn services_for_builder(book: Book(instance), id: String, operation: String) {
 
 // Waiting sessions already own parked hosts and consume ordinary capacity. No
 // extra waiter process or unbounded continuation book is required.
+/// Coordinates activate domain slots with the daemon manager’s session state and effects.
 fn activate_domain_slots(book: Book(instance), id: String) {
+  // activate_domain_slots distinguishes the dict.get(book.domains, id) outcomes before continuing the transition.
   case dict.get(book.domains, id) {
     Ok(DomainSlot(phase: DomainRunning(_), ..)) -> {
       let slots =
         dict.map_values(book.slots, fn(_, slot) {
+          // activate_domain_slots distinguishes the slot.domain_id == id, slot.phase outcomes before continuing the transition.
           case slot.domain_id == id, slot.phase {
             True, WaitingForDomain -> {
               host.begin(slot.host)
@@ -5733,6 +5954,7 @@ fn activate_domain_slots(book: Book(instance), id: String) {
   }
 }
 
+/// Coordinates domain opened with the daemon manager’s session state and effects.
 fn domain_opened(book: Book(instance), id, operation, outcome) {
   case dict.get(book.domains, id) {
     Ok(slot) if slot.operation == operation ->
@@ -5757,7 +5979,9 @@ fn domain_opened(book: Book(instance), id, operation, outcome) {
   }
 }
 
+/// Coordinates domain failed with the daemon manager’s session state and effects.
 fn domain_failed(book: Book(instance), id, operation, reason) {
+  // domain_failed distinguishes the dict.get(book.domains, id) outcomes before continuing the transition.
   case dict.get(book.domains, id) {
     Ok(DomainSlot(phase: DomainDrained, ..)) -> book
     Ok(DomainSlot(phase: DomainBlocked(_), ..)) -> book
@@ -5789,6 +6013,7 @@ fn domain_failed(book: Book(instance), id, operation, reason) {
   }
 }
 
+/// Coordinates domain retired with the daemon manager’s session state and effects.
 fn domain_retired(book: Book(instance), id, operation, reason) {
   case dict.get(book.domains, id) {
     Ok(slot) if slot.operation == operation ->
@@ -5825,11 +6050,14 @@ fn domain_retired(book: Book(instance), id, operation, reason) {
 // to a fresh builder. Waiting sessions already consume ordinary capacity and
 // own parked hosts; they have never borrowed the retiring services. Cancelled
 // waiters may still be draining, so only a live waiter justifies replacement.
+/// Coordinates replace drained domain with the daemon manager’s session state and effects.
 fn replace_drained_domain(book: Book(instance), id: String, slot: DomainSlot) {
   let waiting =
     list.any(dict.values(book.slots), fn(session) {
       session.domain_id == id && session.phase == WaitingForDomain
     })
+
+  // replace_drained_domain distinguishes the waiting outcomes before continuing the transition.
   case waiting {
     False ->
       Book(
@@ -5843,6 +6071,8 @@ fn replace_drained_domain(book: Book(instance), id: String, slot: DomainSlot) {
     True -> {
       let vacant = Book(..book, domains: dict.delete(book.domains, id))
       let #(replacement, answer) = prepare_shared_domain(vacant, slot.selected)
+
+      // replace_drained_domain distinguishes the answer outcomes before continuing the transition.
       case answer {
         Ok(_) ->
           Book(
@@ -5861,7 +6091,9 @@ fn replace_drained_domain(book: Book(instance), id: String, slot: DomainSlot) {
 
 // A slot that drained because its session was released is the moment the
 // session can be deleted. A failure leaves the row released for the sweep.
+/// Coordinates finish drained release while keeping the session lifecycle transition explicit.
 fn finish_drained_release(book: Book(instance), id: String) -> Book(instance) {
+  // finish_drained_release distinguishes the dict.get(book.releasing, id) outcomes before continuing the transition.
   case dict.get(book.releasing, id) {
     Error(Nil) -> book
     Ok(sessions) -> {
@@ -5875,6 +6107,7 @@ fn finish_drained_release(book: Book(instance), id: String) -> Book(instance) {
 // still accepting makes no difference: the cancellation is not withdrawable,
 // so a session that opens afterwards waits for the drain and is admitted
 // against a replacement.
+/// Coordinates close unused domains with the daemon manager’s session state and effects.
 fn close_unused_domains(book: Book(instance)) {
   dict.fold(book.domains, book, fn(book, id, slot) {
     case slot.dependents > 0 {
@@ -5884,7 +6117,9 @@ fn close_unused_domains(book: Book(instance)) {
   })
 }
 
+/// Coordinates close unused domain with the daemon manager’s session state and effects.
 fn close_unused_domain(book: Book(instance), id, slot: DomainSlot) {
+  // close_unused_domain distinguishes the slot.phase outcomes before continuing the transition.
   case slot.phase {
     DomainRunning(_) | DomainPreparing -> {
       host.cancel(slot.host)
@@ -5927,6 +6162,7 @@ const source_limit = 511
 // The page walk runs on the caller's process, one registry call per half-page,
 // so the cap is enforced here rather than inside a handler turn. SQL filters
 // Saved state before pagination; this only bounds how much of it is admitted.
+/// Coordinates collect sources with the daemon manager’s session state and effects.
 fn collect_sources(
   commands: Subject(Message(instance)),
   id: String,
@@ -5958,6 +6194,8 @@ fn collect_sources(
   // A short page is the last one, and so is a page the walk cannot advance
   // past: both end the enumeration rather than asking the same page again.
   let accumulated = list.append(accumulated, sources)
+
+  // collect_sources distinguishes the list.drop(identities, source_page - 1) == [], list.last(identities) outcomes before continuing the transition.
   case list.drop(identities, source_page - 1) == [], list.last(identities) {
     True, _ | _, Error(Nil) -> Ok(accumulated)
     False, Ok(last) -> collect_sources(commands, id, last, accumulated, total)
@@ -5968,6 +6206,7 @@ fn collect_sources(
 // guard states that rather than trusting it: an oversized list would put the
 // unbounded catalogue walk back inside the handler this split exists to keep
 // short.
+/// Coordinates source paths with the daemon manager’s session state and effects.
 fn source_paths(
   store: catalogue.Catalogue,
   identities: List(String),
@@ -5993,6 +6232,7 @@ fn source_paths(
 // incarnation is gone must not have its credential read at all: the answer is
 // already no, and reading it would make a stale socket a way to probe
 // membership.
+/// Coordinates frame authorized with the daemon manager’s session state and effects.
 fn frame_authorized(
   book: Book(instance),
   epoch: String,
@@ -6004,15 +6244,19 @@ fn frame_authorized(
   Result(#(access.Principal, access.Authority), FrameRefusal),
 ) {
   let answer = {
+    // frame_authorized distinguishes the the selected value outcomes before continuing the transition.
     use Nil <- result.try(case epoch == book.epoch {
       True -> Ok(Nil)
       False -> Error(StaleEpoch)
     })
+
+    // frame_authorized distinguishes the the selected value outcomes before continuing the transition.
     use Nil <- result.try(case dict.get(book.slots, id) {
       Ok(Slot(phase: Running(_), operation:, ..)) if operation == incarnation ->
         Ok(Nil)
       Ok(Slot(..)) | Error(Nil) -> Error(StaleIncarnation)
     })
+
     Ok(Nil)
   }
 
@@ -6062,6 +6306,7 @@ fn frame_authorized(
 // A refusal is not remembered. It is the path that closes the attachment, so
 // there is no second frame to pay for it, and remembering it would keep a
 // principal out between a grant and the next administration.
+/// Coordinates resolved authority with the daemon manager’s session state and effects.
 fn resolved_authority(
   book: Book(instance),
   id: String,
@@ -6071,6 +6316,8 @@ fn resolved_authority(
   Result(#(access.Principal, access.Authority), FrameRefusal),
 ) {
   let key = #(digest, id)
+
+  // resolved_authority distinguishes the dict.get(book.authority, key) outcomes before continuing the transition.
   case dict.get(book.authority, key) {
     Ok(remembered) -> #(book, Ok(remembered))
     Error(Nil) ->
@@ -6084,6 +6331,7 @@ fn resolved_authority(
   }
 }
 
+/// Coordinates resolve authority with the daemon manager’s session state and effects.
 fn resolve_authority(
   book: Book(instance),
   id: String,
@@ -6114,7 +6362,9 @@ fn forget_authority(book: Book(instance), id: String) -> Book(instance) {
   )
 }
 
+/// Coordinates stop slot with the daemon manager’s session state and effects.
 fn stop_slot(book: Book(instance), id: String) -> Book(instance) {
+  // stop_slot distinguishes the dict.get(book.slots, id) outcomes before continuing the transition.
   case dict.get(book.slots, id) {
     Error(Nil) | Ok(Slot(phase: Blocked(_), ..)) -> book
     Ok(slot) -> {
@@ -6127,6 +6377,7 @@ fn stop_slot(book: Book(instance), id: String) -> Book(instance) {
   }
 }
 
+/// Coordinates opened with the daemon manager’s session state and effects.
 fn opened(
   book: Book(instance),
   id: String,
@@ -6172,6 +6423,7 @@ fn opened(
 // newest failure loses its diagnosis rather than the map losing its bound: an
 // operator with `limit` undiagnosed failures already has a bigger problem than
 // the wording of the next refusal.
+/// Coordinates remember failure with the daemon manager’s session state and effects.
 fn remember_failure(
   book: Book(instance),
   id: String,
@@ -6179,6 +6431,8 @@ fn remember_failure(
   reason: String,
 ) -> Book(instance) {
   keep_start_failure(book.catalogue, id, reason)
+
+  // remember_failure distinguishes the the selected value outcomes before continuing the transition.
   case
     dict.has_key(book.failed_operations, id)
     || dict.size(book.failed_operations) < book.limit
@@ -6208,11 +6462,13 @@ fn remember_failure(
 // catalogue refuses it, and a write that fails loses only the diagnosis. Both
 // leave the reservation as it was, so neither is worth failing the cleanup
 // that called this.
+/// Coordinates keep start failure with the daemon manager’s session state and effects.
 fn keep_start_failure(
   store: catalogue.Catalogue,
   id: String,
   reason: String,
 ) -> Nil {
+  // keep_start_failure distinguishes the the selected value outcomes before continuing the transition.
   let line = case
     reason
     |> text_hygiene.single_line
@@ -6221,6 +6477,8 @@ fn keep_start_failure(
     "" -> "the start failed without saying why"
     cleaned -> cleaned
   }
+
+  // keep_start_failure distinguishes the the selected value outcomes before continuing the transition.
   case
     catalogue.record_start_failure(store, id, line, at: ffi_os.system_time_ms())
   {
@@ -6235,6 +6493,7 @@ fn keep_start_failure(
 // no-op on a slot that is merely mid-fault when shutdown arrives. The reason
 // is deliberately not retained: `Closing` is a claim about ordering, and the
 // reservation it holds is released by drain rather than by diagnosis.
+/// Coordinates faulted with the daemon manager’s session state and effects.
 fn faulted(
   book: Book(instance),
   id: String,
@@ -6248,12 +6507,14 @@ fn faulted(
 
 // A cleanup failure is the other half: its holder stays alive by design, so no
 // normal exit can ever arrive and the reservation is genuinely unrecoverable.
+/// Coordinates failed with the daemon manager’s session state and effects.
 fn failed(
   book: Book(instance),
   id: String,
   operation: String,
   reason: String,
 ) -> Book(instance) {
+  // failed distinguishes the dict.get(book.slots, id) outcomes before continuing the transition.
   case dict.get(book.slots, id) {
     Ok(slot) if slot.operation == operation -> {
       host.cancel(slot.host)
@@ -6272,6 +6533,7 @@ fn failed(
 // those cases the drain is complete and the slot must go; making the release
 // conditional on the phase would strand a reservation whose resources are
 // already gone. Every other exit reason is lost proof and blocks instead.
+/// Coordinates retired with the daemon manager’s session state and effects.
 fn retired(
   book: Book(instance),
   id: String,
@@ -6304,6 +6566,7 @@ fn retired(
 // owns no slot either — so an incomplete creation rendered in the selector as
 // an ordinary saved session and every selection of it was refused with
 // `NotInitialized`. Where there is no slot, the durable state is the answer.
+/// Coordinates status with the daemon manager’s session state and effects.
 fn status(book: Book(instance), record: catalogue.Registration) -> Status {
   case dict.get(book.slots, record.id) {
     Error(Nil) ->
@@ -6324,6 +6587,7 @@ fn status(book: Book(instance), record: catalogue.Registration) -> Status {
 // reason for it and an ordinary reservation otherwise. A read that fails shows
 // the plain reservation: the reason is a display aid layered over the
 // registration, and `Reserved` is already the conservative answer.
+/// Coordinates reserved status with the daemon manager’s session state and effects.
 fn reserved_status(
   book: Book(instance),
   record: catalogue.Registration,
@@ -6334,11 +6598,14 @@ fn reserved_status(
   }
 }
 
+/// Coordinates step with the daemon manager’s session state and effects.
 fn step(
   phase: Phase,
   book: Book(instance),
 ) -> sm.Step(Phase, Book(instance), Message(instance), sm.Postponable) {
   let book = close_unused_domains(book)
+
+  // step distinguishes the phase, dict.size(book.slots), dict.size(book.domains) outcomes before continuing the transition.
   case phase, dict.size(book.slots), dict.size(book.domains) {
     ShuttingDown, 0, 0 -> sm.stop()
     _, _, _ -> sm.transition(phase, book) |> sm.with_selector(selector(book))
@@ -6347,6 +6614,7 @@ fn step(
 
 // Rebuild the selector from the bounded live slots. Completed incarnations do
 // not leave monitor handlers or reply subjects accumulating across reopen cycles.
+/// Coordinates selector with the daemon manager’s session state and effects.
 fn selector(book: Book(instance)) -> process.Selector(Message(instance)) {
   let base =
     process.new_selector()

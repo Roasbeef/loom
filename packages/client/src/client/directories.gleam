@@ -51,10 +51,13 @@ pub fn resolve_addition(
   mode: String,
 ) -> Result(String, String) {
   let filesystem = fs.real_filesystem()
+
+  // Form the absolute path candidate from the requested string.
   let absolute = case requested {
     "/" <> _ -> requested
     _ -> workspace <> "/" <> requested
   }
+
   use path <- result.try(
     case mode {
       "read" -> fs.resolve_real(filesystem, "/", absolute)
@@ -128,8 +131,8 @@ fn read_store(
   stored(store) |> result.try(revalidate)
 }
 
-// The store half of every reader: a read fault or a malformed record refuses,
-// a missing record is the empty set.
+/// Reads and decodes persisted session directory access grants from storage,
+/// returning the empty access set when no register entry exists.
 fn stored(
   store: storage.Storage(Nil),
 ) -> Result(directory_access.Access, String) {
@@ -137,6 +140,8 @@ fn stored(
     storage.get_register(store, register.FactCustom, key)
     |> result.map_error(fn(_) { "session directory access could not be read" }),
   )
+
+  // Unpack the stored custom fact register cell if present.
   case cell {
     None -> Ok(directory_access.none())
     Some(cell) ->
@@ -178,6 +183,8 @@ pub fn revalidate(
           "an added directory could not be inspected"
         }),
       )
+
+      // Ensure the path remains an existing directory on the host filesystem.
       case exists {
         True -> Ok(Nil)
         False -> Error("an added directory no longer exists")
@@ -208,9 +215,12 @@ pub fn decode(
   })
 }
 
+/// Decodes raw JSON entries into an Access structure, validating absolute canonical
+/// paths and valid access modes.
 fn decode_access(
   value: json.JsonValue,
 ) -> Result(directory_access.Access, String) {
+  // Extract the directories array from the root state object.
   use entries <- result.try(case value {
     json.Object(fields) ->
       case list.key_find(fields, "directories") {
@@ -219,6 +229,7 @@ fn decode_access(
       }
     _ -> Error("expected directory state object")
   })
+
   list.try_fold(entries, directory_access.none(), fn(access, entry) {
     use path <- result.try(tool.required_string(entry, "path"))
     use mode <- result.try(tool.required_string(entry, "access"))
@@ -230,6 +241,8 @@ fn decode_access(
   })
 }
 
+/// Checks that `path` is an absolute canonical path without relative dot segments,
+/// duplicate slashes, or null bytes.
 fn canonical(path: String) -> Bool {
   string.starts_with(path, "/")
   && path != ""
@@ -239,6 +252,7 @@ fn canonical(path: String) -> Bool {
   && !string.contains(path, "\u{0}")
 }
 
+/// Adds a granted directory path to the access configuration under read or write mode.
 fn add_access(
   access: directory_access.Access,
   path: String,
@@ -263,10 +277,12 @@ fn add_access(
 pub fn encode(access: directory_access.Access) -> json.JsonValue {
   json.Array(
     list.map(access.readable, fn(path) {
+      // Determine read/write permission level for the given directory path.
       let mode = case list.contains(access.writable, path) {
         True -> "write"
         False -> "read"
       }
+
       json.Object([#("path", json.String(path)), #("access", json.String(mode))])
     }),
   )
@@ -356,12 +372,15 @@ pub fn admin_over(
         api.fact_cell_with(live, key)
         |> result.map_error(fn(_) { "directory state could not be read" }),
       )
+
+      // Decode the current access fact or default to none if not yet initialized.
       use existing <- result.try(case cell {
         None -> Ok(directory_access.none())
         Some(cell) ->
           decode(cell.value)
           |> result.map_error(fn(_) { "directory state is malformed" })
       })
+
       use updated <- result.try(add_access(existing, path, mode))
       let payload =
         json.Object([

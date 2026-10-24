@@ -272,9 +272,7 @@ fn decode_note(value: json.JsonValue) -> Result(Note, String) {
   use kind <- result.try(text(fields, "kind"))
   use date <- result.try(text(fields, "date"))
   use title <- result.try(text(fields, "title"))
-  use description <- result.try(
-    Ok(result.unwrap(text(fields, "description"), "")),
-  )
+  let description = result.unwrap(text(fields, "description"), "")
 
   // Check if note is flagged with legacy typing.
   let typing = case list.key_find(fields, "legacy") {

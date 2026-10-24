@@ -115,6 +115,7 @@ pub fn parse(text: String) -> Result(List(Orchestrator), String) {
 pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Orchestrator), String) {
+  // from document handles the dict.get(document, "orchestrators") outcomes before continuing the operation.
   case dict.get(document, "orchestrators") {
     Error(Nil) -> Ok([])
     Ok(tom.Table(tables)) -> {
@@ -178,10 +179,13 @@ pub fn by_node(
 // The peers an orchestrator may name. An orchestrator with no distribution
 // table has no peer to be asked, which is a different mistake from a mistyped
 // node, so it is worded as the missing table.
+/// Resolves peer nodes from the configured orchestrator table.
 fn peer_nodes(
   document: Dict(String, tom.Toml),
 ) -> Result(ledger_reference.Peers, String) {
   use found <- result.try(distribution.from_document(document))
+
+  // peer nodes handles the found outcomes before continuing the operation.
   case found {
     Some(settings) -> Ok(ledger_reference.peers(settings))
     None -> Error("orchestrators needs a [distribution] table naming its peers")
@@ -191,6 +195,7 @@ fn peer_nodes(
 // Two names for one node would let a lookup answer with whichever name sorts
 // first, so the file cannot say it. Names are sorted, so the second of a
 // pair is the one reported.
+/// Resolves distinct nodes from the configured orchestrator table.
 fn distinct_nodes(configured: List(Orchestrator)) -> Result(Nil, String) {
   case configured {
     [] -> Ok(Nil)
@@ -216,7 +221,9 @@ fn distinct_nodes(configured: List(Orchestrator)) -> Result(Nil, String) {
 // (protocol-change/084), so a name containing either would make a handle
 // ambiguous. `orchestrators_test` pins the refusal, so loosening the grammar
 // fails there before it can reach a handle.
+/// Resolves row from the configured orchestrator table.
 fn row(name: String, value: tom.Toml) -> Result(Orchestrator, String) {
+  // row handles the the selected value outcomes before continuing the operation.
   use Nil <- result.try(case catalogue.is_profile_name(name) {
     True -> Ok(Nil)
     False ->
@@ -227,6 +234,8 @@ fn row(name: String, value: tom.Toml) -> Result(Orchestrator, String) {
         <> "starting with a letter, at most 32 characters",
       )
   })
+
+  // row handles the value outcomes before continuing the operation.
   case value {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
@@ -234,11 +243,14 @@ fn row(name: String, value: tom.Toml) -> Result(Orchestrator, String) {
         ["node", "address"],
         "[orchestrators." <> name <> "]",
       ))
+
+      // row handles the the selected value outcomes before continuing the operation.
       use node <- result.try(case dict.get(fields, "node") {
         Ok(tom.String(node)) -> Ok(node)
         Ok(_) -> Error("orchestrators." <> name <> ".node must be a string")
         Error(Nil) -> Error("orchestrators." <> name <> ".node is required")
       })
+
       use address <- result.map(address_of(fields, "orchestrators." <> name))
       Orchestrator(name:, node:, address:)
     }
@@ -253,6 +265,7 @@ fn row(name: String, value: tom.Toml) -> Result(Orchestrator, String) {
 // that client sends a bearer to it, so the rule is the one every other remote
 // control address meets: `wss` to any host, or `ws` only to a literal loopback
 // host, with the path `/v2/control` and no credentials, query or fragment.
+/// Resolves address of from the configured orchestrator table.
 fn address_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -261,6 +274,8 @@ fn address_of(
     place
     <> ".address must be a control address of the form "
     <> "wss://<host>[:<port>]/v2/control (ws:// only for a loopback host)"
+
+  // address of handles the dict.get(fields, "address") outcomes before continuing the operation.
   case dict.get(fields, "address") {
     Error(Nil) -> Ok(None)
     Ok(tom.String(address)) ->
@@ -272,6 +287,7 @@ fn address_of(
   }
 }
 
+/// Parses known keys while rejecting unsupported memory configuration fields.
 fn known_keys(
   present: List(String),
   allowed: List(String),

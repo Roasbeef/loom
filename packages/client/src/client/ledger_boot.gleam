@@ -107,12 +107,15 @@ pub fn start_with(
   observers: List(Observer),
   logger: Logger,
 ) -> Result(Booted, String) {
+  // Branch on whether a dedicated membership ledger path is configured.
   case distribution.ledger_path(config) {
     None ->
       distribution.start(config, cluster)
       |> result.map(Booted(_, None))
       |> result.map_error(distribution.describe)
+
     Some(path) -> {
+      // Validate that static directory configuration does not conflict with dynamic ledger.
       use Nil <- result.try(case cluster {
         distribution.NotMember -> Ok(Nil)
         distribution.Member(..) ->
@@ -122,6 +125,7 @@ pub fn start_with(
             <> "voter or learner, so remove the [directory] table",
           )
       })
+
       let local = distribution.local_node(config)
       use service <- result.try(open_service(
         path,
@@ -145,6 +149,8 @@ pub fn start_with(
 // ledger the process holds. The list of members is empty because a ledger node
 // learns them from the table it publishes, and `distribution` reads the table
 // for the link of every connection it makes.
+
+/// Queries ledger status to derive the local node's cluster membership role.
 fn own_cluster(
   service: Service,
   local: String,
@@ -153,6 +159,8 @@ fn own_cluster(
     ledger_service.status(service, 5000)
     |> result.replace_error("the ledger process did not answer"),
   )
+
+  // Derive cluster membership based on standing in the directory.
   case membership_ledger.member_at(status.ledger, local) {
     Ok(own) if own.directory != membership_entry.NotInDirectory ->
       distribution.Member(members: [])
@@ -164,6 +172,8 @@ fn own_cluster(
 // from the ledger the process holds, and the process is told to dial. Reading
 // the ledger back from the process, and not keeping the one opened earlier, is
 // what keeps this correct if a later change lets a line arrive before this.
+
+/// Publishes initial trust table and dials trusted ledger peers.
 fn begin_trust(
   service: Service,
   membership: distribution.Membership,
@@ -206,11 +216,14 @@ pub fn open_service(
   logger: Logger,
 ) -> Result(Service, String) {
   use loaded <- result.try(ledger_reference.load(path, ca, local))
+
+  // Warn if the append-only ledger log required tail repair during loading.
   case loaded.tail {
     membership_store.Clean -> Nil
     membership_store.Repaired(bytes:) ->
       log.warn(logger, "ledger.tail_repaired", [field.count("bytes", bytes)])
   }
+
   ledger_service.configuration(
     loaded.store,
     loaded.ledger,

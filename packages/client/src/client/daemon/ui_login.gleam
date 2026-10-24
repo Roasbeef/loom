@@ -119,6 +119,8 @@ pub fn root_key(
   registry: manager.Manager(instance),
 ) -> Result(login.RootKey, String) {
   use found <- result.try(login.probe_root(state_root))
+
+  // Branch on whether the root key exists or needs initial provisioning and login revocation.
   case found {
     login.Present(key) -> Ok(key)
     login.Absent -> {
@@ -154,19 +156,21 @@ pub fn issue(
   parent: Option(ui_sessions.Issuer),
   now_ms: Int,
 ) -> Result(Minted, Unset) {
+  // Calculate effective expiration time based on parent issuer bounds or default lifetime.
   let expires_at_ms = case parent {
     Some(parent) -> parent.expires_at_ms
     None -> now_ms + login.lifetime_ms
   }
+
+  // Reject logins whose parent has already expired before writing rows.
   case expires_at_ms > now_ms {
     False -> Error(ParentEnded)
     True -> write(root, registry, grant, parent, now_ms, expires_at_ms)
   }
 }
 
-// Draws the login's three values, signs the token and writes the row. The row
-// is written last of the effects, so a refused row leaves nothing but a token
-// that no row stands behind, which no request can open.
+/// Draws fresh login secrets, signs the capability token, and writes the login row
+/// to the manager registry, failing if database persistence is refused.
 fn write(
   root: login.RootKey,
   registry: manager.Manager(instance),
@@ -186,6 +190,7 @@ fn write(
     access.Operator -> login.Operator
     access.Observer -> login.Observer
   }
+
   let signed =
     seal(root, id, grant.principal, ceiling, expires_at_ms, key, nonce)
 
@@ -213,10 +218,7 @@ fn write(
   minted(signed, key, nonce, now_ms, expires_at_ms, fingerprint)
 }
 
-// Signs the token for a login: the principal, the ceiling, the end, the key and
-// the digest of the nonce, under the root key, for the identifier. It is pure,
-// so the browser claim can run it after the catalogue has said who the claim
-// names.
+/// Cryptographically seals and signs the login capability token with the root key.
 fn seal(
   root: login.RootKey,
   id: String,
@@ -239,7 +241,7 @@ fn seal(
   )
 }
 
-// What the response hands the browser for a login that was signed and written.
+/// Constructs the minted login response containing token, secrets, and timing metadata.
 fn minted(
   signed: String,
   key: String,
@@ -325,7 +327,9 @@ pub fn claim(
   )
 }
 
+/// Parent field keeps this client decision explicit for its callers.
 fn parent_field(from: Option(String)) -> List(field.Field) {
+  // This branch resolves from before the operation continues.
   case from {
     Some(fingerprint) -> [field.ident("issued_by", fingerprint)]
     None -> []

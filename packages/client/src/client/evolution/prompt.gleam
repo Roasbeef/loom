@@ -27,10 +27,12 @@ import provider/profile.{type Profile}
 pub fn candidate_profile(
   candidate: record.Candidate,
 ) -> Result(Profile, String) {
+  // Verify that candidate specifies prompt kind and exact model target.
   use target <- result.try(case candidate.kind, candidate.scope {
     record.Prompt, record.ExactModel(target) -> Ok(target)
     _, _ -> Error("a prompt profile requires an exact model scope")
   })
+
   use source <- result.try(
     list.key_find(candidate.files, "prompt.json")
     |> result.map_error(fn(_) { "prompt.json is absent" }),
@@ -44,6 +46,8 @@ pub fn candidate_profile(
     7,
   ))
   let #(_, provider, model_id, api, _, _, _) = profile.fields(parsed)
+
+  // Validate that prompt profile matches approved exact model coordinates.
   case
     provider == target.provider && model_id == target.model && api == target.api
   {
@@ -73,11 +77,13 @@ pub fn selected(catalogue: store.Store) -> Result(List(Profile), String) {
   profile.validate_map(list.reverse(profiles))
 }
 
+/// Selects and decodes candidate prompt profile if active under store authority.
 fn selected_candidate(
   catalogue: store.Store,
   candidate: record.Candidate,
   profiles: List(Profile),
 ) -> Result(List(Profile), String) {
+  // Skip candidates that do not represent prompt artifacts.
   case candidate.kind {
     record.Extension | record.Program -> Ok(profiles)
     record.Prompt -> {
@@ -85,6 +91,8 @@ fn selected_candidate(
         store.selected(catalogue, candidate.scope, candidate.name)
         |> result.map_error(fn(_) { "the prompt selection is unreadable" }),
       )
+
+      // Check if current selection matches this specific candidate.
       case selected {
         None -> Ok(profiles)
         Some(selection) if selection.candidate_id != candidate.id -> Ok(profiles)
@@ -114,6 +122,7 @@ pub fn encode_map(profiles: List(Profile)) -> json.JsonValue {
   json.Array(list.map(profiles, encode_profile))
 }
 
+/// Encodes an immutable prompt profile record into JSON structure.
 fn encode_profile(profile: Profile) -> json.JsonValue {
   let #(id, provider, model_id, api, system, task, descriptions) =
     profile.fields(profile)
@@ -142,12 +151,15 @@ fn encode_profile(profile: Profile) -> json.JsonValue {
 /// assert prompt.decode_map(json.Array([])) == Ok([])
 /// ```
 pub fn decode_map(value: json.JsonValue) -> Result(List(Profile), String) {
+  // Inspect top-level profile array payload.
   case value {
     json.Array(items) -> {
+      // Enforce maximum pinned profile map count.
       use Nil <- result.try(case list.length(items) <= 64 {
         True -> Ok(Nil)
         False -> Error("oversized pinned profile map")
       })
+
       use profiles <- result.try(
         list.try_map(items, fn(item) {
           use id <- result.try(text_field(item, "id"))
@@ -161,28 +173,36 @@ pub fn decode_map(value: json.JsonValue) -> Result(List(Profile), String) {
   }
 }
 
+/// Decodes a single JSON prompt profile verifying field structure and version.
 fn decode_profile(
   value: json.JsonValue,
   id: String,
   count: Int,
 ) -> Result(Profile, String) {
+  // Validate that JSON value is an object with exact expected field count.
   use fields <- result.try(case value {
     json.Object(fields) ->
+      // Check declared field count.
       case list.length(fields) == count {
         True -> Ok(fields)
         False -> Error("a profile must have exactly its declared fields")
       }
     _ -> Error("a profile must have exactly its declared fields")
   })
+
+  // Verify version tag is present and equals version 1.
   use Nil <- result.try(case list.key_find(fields, "version") {
     Ok(json.Int(1)) -> Ok(Nil)
     _ -> Error("unknown prompt profile format")
   })
+
   use provider <- result.try(text_field(value, "provider"))
   use model_id <- result.try(text_field(value, "model"))
   use api <- result.try(text_field(value, "api"))
   use system <- result.try(text_field(value, "system"))
   use task <- result.try(text_field(value, "task"))
+
+  // Decode optional tool description overrides map.
   use descriptions <- result.try(case list.key_find(fields, "descriptions") {
     Ok(json.Object(fields)) ->
       list.try_map(fields, fn(pair) {
@@ -193,16 +213,21 @@ fn decode_profile(
       })
     _ -> Error("descriptions must be an object of tool prose")
   })
+
   profile.new(id, provider, model_id, api, system, task, descriptions)
 }
 
+/// Extracts and validates a required string field from a JSON object.
 fn text_field(value: json.JsonValue, key: String) -> Result(String, String) {
+  // Match against JSON object structure.
   case value {
     json.Object(fields) -> {
       use item <- result.try(
         list.key_find(fields, key)
         |> result.map_error(fn(_) { "missing profile field " <> key }),
       )
+
+      // Validate field value is a string primitive.
       case item {
         json.String(text) -> Ok(text)
         _ -> Error("profile field " <> key <> " must be text")

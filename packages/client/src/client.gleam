@@ -48,6 +48,9 @@ import gleam/option.{type Option, None, Some}
 ///
 pub fn main() -> Nil {
   let arguments = argv.load().arguments
+
+  // Intercept explicit help requests before starting the daemon or routing
+  // to subcommands.
   case help_for(arguments) {
     // Help never starts the daemon: a flag before the token (`loomd
     // --state-dir X --help`) still answers usage rather than being
@@ -90,10 +93,13 @@ pub fn main() -> Nil {
 /// ```
 @internal
 pub fn help_for(arguments: List(String)) -> Option(String) {
+  // Check for the leading `help` subcommand or help flags in any position.
   let asks = case arguments {
     ["help", ..] -> True
     _ -> list.contains(arguments, "--help") || list.contains(arguments, "-h")
   }
+
+  // Print topic usage if requested, or none when ordinary execution proceeds.
   case asks {
     False -> None
     True ->
@@ -112,6 +118,7 @@ pub fn help_for(arguments: List(String)) -> Option(String) {
   }
 }
 
+/// Checks whether a CLI token matches a known top-level subcommand topic.
 fn is_topic(word: String) -> Bool {
   case word {
     "access"

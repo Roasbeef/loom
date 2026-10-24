@@ -75,7 +75,7 @@ type; that blank line is what turns a footnote on the line above into the
 heading of the stanza below. **R10 gates**, so a welded comment fails the
 build. And **a body does not run more than about eight statements without
 a break**, because a body with no paragraphs has nowhere to put the prose
-(R11, a warning). `docs/gleam-style.md` Part II, "Stanzas: how code
+(R11, an error-level rule). `docs/gleam-style.md` Part II, "Stanzas: how code
 breathes", has the two places `gleam format` deletes a blank line and so
 exempts — the top of a block, and between a constructor's fields — and the
 shapes that are tables rather than paragraphs.
@@ -176,7 +176,7 @@ independently of uncommitted work, add a git worktree — but **not under
 replaces `/tmp` with the scratch tmpfs. `docs/execution.md` §4 has the rest.
 
 `make lint` is Loom's own house-rule lint over the Gleam sources, and it
-runs at the end of `make check`. Twenty-one rules: R0 unparseable source, R1
+runs at the end of `make check`. Twenty-three rules: R0 unparseable source, R1
 eager fallbacks, R2 `case` nesting depth, R3 catch-all patterns, R4
 `panic` and `let assert` in `src`, R5 O(n) answers to bounded questions,
 R6 the portable subset `core`, `machine`, `prompt`, `statem` and
@@ -198,8 +198,10 @@ R19 a `SKIP` diagnostic printed to stdout from a test, where EUnit discards
 it and the skip census never sees it (use `io.println_error`), and R20 a
 `web_client` test whose import graph reaches `lustre` or
 `web_client/internal`, which throws at load on the signoff container's
-Node. **R0, R2, R4, R6, R10, R13, R14, R15, R16, R19 and R20 fail the
-build**; the other ten warn and cost nothing. R3, R8, R17 and R18 are censuses and will never
+Node. R21 checks decision comments and separation around `case` stanzas;
+R22 checks `///` contracts on public functions and long private helpers.
+**R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19, R20, R21
+and R22 fail the build**; the other seven warn. R3, R8, R17 and R18 are censuses and will never
 gate: they over-report by construction, which is the point of measuring
 rather than refusing. A spine is prose that names code, so a renamed
 function fails the build until the spine is told.

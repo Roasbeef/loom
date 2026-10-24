@@ -61,6 +61,7 @@ pub fn read(session: Session, now: Int) -> Result(json.JsonValue, Error) {
     |> result.map_error(Unreadable),
   )
 
+  // Unpack snapshot cells into an optional decoded goal state.
   use goal <- result.try(case cut.cells {
     // No cell is no goal: a real state, answered as one.
     [] -> Ok(None)
@@ -75,6 +76,7 @@ pub fn read(session: Session, now: Int) -> Result(json.JsonValue, Error) {
   Ok(board(goal, now))
 }
 
+/// Encodes the current goal observation into structured JSON blackboard format.
 fn board(goal: option.Option(goalstate.Goal), now: Int) -> json.JsonValue {
   case goal {
     None ->

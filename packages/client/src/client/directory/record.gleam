@@ -150,11 +150,15 @@ pub fn is_migrated(payload: Dynamic) -> Bool {
   decode.run(payload, migrated_decoder()) == Ok(Nil)
 }
 
+/// Decodes the 4-tuple Erlang representation of an owner record, verifying the tag
+/// and schema version.
 fn decoder() -> decode.Decoder(Record) {
   use tag <- decode.field(0, atom.decoder())
   use stored <- decode.field(1, decode.int)
   use owner <- decode.field(2, node_name())
   use state <- decode.field(3, state_decoder())
+
+  // Verify the record tag matches loom_owner and conforms to version 1.
   case atom.to_string(tag) == "loom_owner" && stored == version {
     True -> decode.success(Record(owner:, state:))
     False -> decode.failure(Record(owner:, state:), "a loom_owner record, v1")
@@ -170,43 +174,59 @@ fn state_decoder() -> decode.Decoder(OwnerState) {
   ])
 }
 
+/// Decodes an Erlang atom representing an unparameterized owner state such as
+/// serving or local.
 fn atom_state(name: String, state: OwnerState) -> decode.Decoder(OwnerState) {
   use tag <- decode.then(atom.decoder())
+
+  // Match the decoded atom name against the expected state literal.
   case atom.to_string(tag) == name {
     True -> decode.success(state)
     False -> decode.failure(state, name)
   }
 }
 
+/// Decodes a moving state 3-tuple containing the operation identity and destination node.
 fn moving_decoder() -> decode.Decoder(OwnerState) {
   use tag <- decode.field(0, atom.decoder())
   use op <- decode.field(1, move_op())
   use to <- decode.field(2, node_name())
+
+  // Check the tuple tag atom indicates a moving state.
   case atom.to_string(tag) == "moving" {
     True -> decode.success(Moving(op:, to:))
     False -> decode.failure(Moving(op:, to:), "a moving state")
   }
 }
 
+/// Decodes the migration marker tuple confirming a node has completed table migration.
 fn migrated_decoder() -> decode.Decoder(Nil) {
   use tag <- decode.field(0, atom.decoder())
   use stored <- decode.field(1, decode.int)
+
+  // Validate the migration marker tag atom and version match version 1.
   case atom.to_string(tag) == "loom_migrated" && stored == version {
     True -> decode.success(Nil)
     False -> decode.failure(Nil, "a loom_migrated marker, v1")
   }
 }
 
+/// Decodes and validates a node name string according to Erlang distribution rules.
 fn node_name() -> decode.Decoder(String) {
   use text <- decode.then(decode.string)
+
+  // Validate the string format as an Erlang node name.
   case distribution.check_node_name("owner", text) {
     Ok(Nil) -> decode.success(text)
     Error(_) -> decode.failure(text, "a node name")
   }
 }
 
+/// Decodes and validates a move operation identifier string against catalogue rules.
 fn move_op() -> decode.Decoder(String) {
   use text <- decode.then(decode.string)
+
+  // Check that the text satisfies the format requirements of a move op identifier.
   case catalogue.is_move_op(text) {
     True -> decode.success(text)
     False -> decode.failure(text, "a move identity")

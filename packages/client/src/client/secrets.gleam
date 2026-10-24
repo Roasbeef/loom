@@ -209,14 +209,18 @@ fn entries(fields: Dict(String, tom.Toml)) -> Result(List(Entry), String) {
 
 // One entry. The place string is what every message about it is anchored
 // to, so an operator with several entries is told which one is wrong.
+
+/// Establishes entry for the caller, keeping its validation and result policy at this boundary.
 fn entry(name: String, value: tom.Toml) -> Result(Entry, String) {
   let place = "secrets." <> name
 
+  // Decide how to handle use Nil <- result.try( name {.
   use Nil <- result.try(case name {
     "" -> Error("a [secrets] entry must have a non-empty name")
     _named -> Ok(Nil)
   })
 
+  // Decide how to handle use fields <- result.try( value {.
   use fields <- result.try(case value {
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
     _other ->
@@ -237,6 +241,8 @@ fn entry(name: String, value: tom.Toml) -> Result(Entry, String) {
 }
 
 // The `command` key: a non-empty array of whole arguments.
+
+/// Establishes command source for the caller, keeping its validation and result policy at this boundary.
 fn command_source(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -244,6 +250,7 @@ fn command_source(
   let malformed =
     place <> ".command must be an array of strings, each one whole argument"
 
+  // Decide how to handle use items <- result.try( dict.get(fields, "command") {.
   use items <- result.try(case dict.get(fields, "command") {
     Ok(tom.Array(items)) -> Ok(items)
     Ok(_other) -> Error(malformed)
@@ -260,12 +267,14 @@ fn command_source(
     }),
   )
 
+  // Decide how to handle argv {.
   case argv {
     [] -> Error(place <> ".command must name a program to run")
     _argv -> Ok(Command(argv:))
   }
 }
 
+/// Establishes known keys for the caller, keeping its validation and result policy at this boundary.
 fn known_keys(
   present: List(String),
   allowed: List(String),
@@ -327,6 +336,8 @@ pub fn resolve(
 
 // `list.filter_map` keeps the Ok side; the Error side needs the mirror of
 // it, and the stdlib has no `filter_errors`.
+
+/// Establishes failures for the caller, keeping its validation and result policy at this boundary.
 fn failures(
   outcomes: List(Result(#(String, String), Failure)),
 ) -> List(Failure) {
@@ -341,6 +352,8 @@ fn failures(
 // One entry. A non-zero status is the ordinary "not logged in" answer
 // and is reported as itself; the status is safe to say out loud where
 // the output is not.
+
+/// Establishes resolve one for the caller, keeping its validation and result policy at this boundary.
 fn resolve_one(
   entry: Entry,
   runner: Runner,
@@ -349,6 +362,7 @@ fn resolve_one(
   let Command(argv:) = entry.source
   use capture <- result.try(runner(argv, timeout_ms))
 
+  // Decide how to handle capture.status {.
   case capture.status {
     0 -> resolved_value(without_trailing_newline(capture.output))
     status -> Error("the command exited " <> int.to_string(status))
@@ -375,6 +389,8 @@ fn resolved_value(value: String) -> Result(String, String) {
 // `\r\n`), while whitespace inside or after the value is the value's,
 // and trimming it would silently hand a different credential to the
 // wire than the one the vault holds.
+
+/// Establishes without trailing newline for the caller, keeping its validation and result policy at this boundary.
 fn without_trailing_newline(output: String) -> String {
   case string.ends_with(output, "\r\n"), string.ends_with(output, "\n") {
     True, _crlf -> string.drop_end(output, 2)
@@ -438,6 +454,7 @@ pub fn store(
 ///
 pub fn host_runner() -> Runner {
   fn(argv, timeout_ms) {
+    // Decide how to handle argv {.
     case argv {
       [] -> Error("the entry names no program to run")
       [program, ..arguments] -> {

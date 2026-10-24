@@ -271,6 +271,8 @@ pub fn decode_candidate(text: String) -> Result(Candidate, String) {
     json.parse(text, candidate_decoder())
     |> result.replace_error("invalid candidate envelope"),
   )
+
+  // Verify candidate identity matches computed content hash.
   case identified(candidate).id == candidate.id {
     True -> Ok(candidate)
     False -> Error("candidate content address changed")
@@ -301,6 +303,8 @@ pub fn decode_evidence(text: String) -> Result(Evidence, String) {
     json.parse(text, evidence_decoder())
     |> result.replace_error("invalid evidence envelope"),
   )
+
+  // Verify evidence identity matches computed observation hash.
   case observed(evidence).id == evidence.id {
     True -> Ok(evidence)
     False -> Error("evidence content address changed")
@@ -350,6 +354,8 @@ pub fn encode_scope(scope: Scope) -> json.Json {
 /// `scope_decoder()` rejects unknown scope kinds.
 pub fn scope_decoder() -> decode.Decoder(Scope) {
   use kind <- decode.field("kind", decode.string)
+
+  // Decode scope target based on scope kind tag.
   case kind {
     "session" -> {
       use id <- decode.field("session", decode.string)
@@ -369,6 +375,7 @@ pub fn scope_decoder() -> decode.Decoder(Scope) {
   }
 }
 
+/// Encodes the body payload of a candidate record into JSON.
 fn candidate_body(candidate: Candidate) -> json.Json {
   json.object([
     #("name", json.string(candidate.name)),
@@ -394,6 +401,7 @@ fn candidate_body(candidate: Candidate) -> json.Json {
   ])
 }
 
+/// Encodes the body payload of an evidence record into JSON.
 fn evidence_body(evidence: Evidence) -> json.Json {
   json.object([
     #("candidate_id", json.string(id_string(evidence.candidate_id))),
@@ -425,6 +433,7 @@ fn evidence_body(evidence: Evidence) -> json.Json {
   ])
 }
 
+/// Encodes an execution identity tuple into JSON.
 fn encode_identity(identity: Identity) -> json.Json {
   json.object([
     #("build", json.string(identity.build)),
@@ -433,6 +442,7 @@ fn encode_identity(identity: Identity) -> json.Json {
   ])
 }
 
+/// Encodes provenance origin coordinates into JSON.
 fn encode_origin(origin: Origin) -> json.Json {
   json.object([
     #("session", json.string(origin.session_id)),
@@ -456,11 +466,14 @@ fn identity_decoder() -> decode.Decoder(Identity) {
   decode.success(Identity(build:, seam:, evaluator:))
 }
 
+/// Decodes origin record including optional parent candidate link.
 fn origin_decoder() -> decode.Decoder(Origin) {
   use session_id <- decode.field("session", decode.string)
   use strand <- decode.field("strand", decode.string)
   use workspace <- decode.field("workspace", decode.string)
   use parent <- decode.field("parent", decode.optional(decode.string))
+
+  // Validate parent candidate digest if present.
   use parent <- decode.then(case parent {
     None -> decode.success(None)
     Some(text) ->
@@ -469,6 +482,7 @@ fn origin_decoder() -> decode.Decoder(Origin) {
         Error(_) -> decode.failure(None, "candidate digest")
       }
   })
+
   decode.success(Origin(session_id:, strand:, workspace:, parent:))
 }
 
@@ -484,6 +498,7 @@ fn candidate_decoder() -> decode.Decoder(Candidate) {
   decode.success(Candidate(..body, id:))
 }
 
+/// Decodes structured candidate fields from JSON.
 fn candidate_fields() -> decode.Decoder(Candidate) {
   use name <- decode.field("name", decode.string)
   use kind <- decode.field("kind", kind_decoder())
@@ -514,6 +529,7 @@ fn evidence_decoder() -> decode.Decoder(Evidence) {
   decode.success(Evidence(..body, id:))
 }
 
+/// Decodes structured evidence fields from JSON.
 fn evidence_fields() -> decode.Decoder(Evidence) {
   use candidate_id <- decode.field("candidate_id", digest_decoder(CandidateId))
   use identity <- decode.field("identity", identity_decoder())
@@ -521,12 +537,15 @@ fn evidence_fields() -> decode.Decoder(Evidence) {
   use purpose <- decode.field("purpose", purpose_decoder())
   use verdict <- decode.field("verdict", decode.string)
   use reason <- decode.field("reason", decode.string)
+
+  // Parse verdict status string into typed variant.
   use verdict <- decode.then(case verdict {
     "passed" -> decode.success(Passed)
     "failed" -> decode.success(Failed)
     "inconclusive" -> decode.success(Inconclusive(reason))
     _ -> decode.failure(Failed, "known verdict")
   })
+
   use observation <- decode.field("observation", decode.string)
   decode.success(Evidence(
     id: evidence_placeholder(),
@@ -539,8 +558,11 @@ fn evidence_fields() -> decode.Decoder(Evidence) {
   ))
 }
 
+/// Decodes candidate artifact kind tag.
 fn kind_decoder() -> decode.Decoder(Kind) {
   use name <- decode.then(decode.string)
+
+  // Map kind name string to custom variant.
   case name {
     "extension" -> decode.success(Extension)
     "program" -> decode.success(Program)
@@ -549,8 +571,11 @@ fn kind_decoder() -> decode.Decoder(Kind) {
   }
 }
 
+/// Decodes evaluation purpose discriminant tag.
 fn purpose_decoder() -> decode.Decoder(Purpose) {
   use name <- decode.then(decode.string)
+
+  // Map purpose name string to typed variant.
   case name {
     "author_tests" -> decode.success(AuthorTests)
     "independent_rollout" -> decode.success(IndependentRollout)
@@ -558,6 +583,7 @@ fn purpose_decoder() -> decode.Decoder(Purpose) {
   }
 }
 
+/// Renders candidate artifact kind tag as string text.
 fn kind_name(kind: Kind) -> String {
   case kind {
     Extension -> "extension"
@@ -566,14 +592,18 @@ fn kind_name(kind: Kind) -> String {
   }
 }
 
+/// Decodes and validates a 64-character hexadecimal SHA256 digest string.
 fn digest_decoder(make: fn(String) -> a) -> decode.Decoder(a) {
   use text <- decode.then(decode.string)
+
+  // Ensure digest string is valid 64-character lowercase hexadecimal hash.
   case valid_digest(text) {
     Ok(Nil) -> decode.success(make(text))
     Error(_) -> decode.failure(make(""), "SHA256 hex")
   }
 }
 
+/// Validates that a string conforms to lowercase SHA256 hex format.
 fn valid_digest(text: String) -> Result(Nil, String) {
   case
     string.length(text) == 64

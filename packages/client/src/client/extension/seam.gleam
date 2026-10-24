@@ -255,18 +255,21 @@ pub fn answer_value(answer: Answer) -> MsgPackValue {
 
 // --- net.request -----------------------------------------------------------
 
-// Refusals are returned by the *plan* rather than from inside a served
-// closure, and both of them for the same reason: the host admits a call
-// only once the router has answered `Ok`, so a plan that refuses costs no
-// ordinal and no admission against the ceiling — the rule
-// `satellite.CapRequest`'s `ordinal` doc states.
-//
-// That ordering is also what makes `network_off` reachable at all. An
-// extension with no `[net]` has a `net.request` ceiling of zero
-// admissions, so a `ServedHere` plan here would be overtaken by the
-// ceiling's own refusal and the author would read "lifetime cap of 0"
-// where they should read "this extension declares no [net] table".
+/// Plans a capability request against the extension's configured network egress.
+///
+/// Refusals are returned by the *plan* rather than from inside a served
+/// closure, and both of them for the same reason: the host admits a call
+/// only once the router has answered `Ok`, so a plan that refuses costs no
+/// ordinal and no admission against the ceiling — the rule
+/// `satellite.CapRequest`'s `ordinal` doc states.
+///
+/// That ordering is also what makes `network_off` reachable at all. An
+/// extension with no `[net]` has a `net.request` ceiling of zero
+/// admissions, so a `ServedHere` plan here would be overtaken by the
+/// ceiling's own refusal and the author would read "lifetime cap of 0"
+/// where they should read "this extension declares no [net] table".
 fn net_plan(egress: Egress, request: CapRequest) -> Result(CapPlan, CapDenial) {
+  // Decide whether the extension has outbound egress enabled or is denied by policy.
   case egress {
     ReachesNothing(refusal:) -> Error(refusal)
     Reaches(perform:) -> {
@@ -283,6 +286,7 @@ fn net_plan(egress: Egress, request: CapRequest) -> Result(CapPlan, CapDenial) {
   }
 }
 
+/// Decodes an outbound HTTP request from its MsgPack argument map.
 fn decode_ask(args: MsgPackValue) -> Result(Ask, CapDenial) {
   use method <- result.try(string_field(args, "method"))
   use url <- result.try(string_field(args, "url"))
@@ -293,11 +297,12 @@ fn decode_ask(args: MsgPackValue) -> Result(Ask, CapDenial) {
 
 // --- ext.remember and ext.recall -------------------------------------------
 
-// Both arms check the key before they claim a plan, for the reason the
-// egress refusals are returned by the plan: a refused plan costs no
-// ordinal and no admission, so an extension that sent a malformed key
-// pays nothing for the mistake it is about to be told to fix.
-
+/// Plans a request to write a value into the extension's reserved memory.
+///
+/// Both arms check the key before they claim a plan, for the reason the
+/// egress refusals are returned by the plan: a refused plan costs no
+/// ordinal and no admission, so an extension that sent a malformed key
+/// pays nothing for the mistake it is about to be told to fix.
 fn remember_plan(
   memory: Memory,
   request: CapRequest,
@@ -314,6 +319,7 @@ fn remember_plan(
   )
 }
 
+/// Plans a request to read a value from the extension's reserved memory.
 fn recall_plan(
   memory: Memory,
   request: CapRequest,
@@ -392,8 +398,11 @@ fn leaf_key(args: MsgPackValue) -> Result(String, CapDenial) {
   checked_key(key)
 }
 
+/// Extracts and validates the cell payload value string from MsgPack arguments.
 fn remembered_value(args: MsgPackValue) -> Result(String, CapDenial) {
   use value <- result.try(string_field(args, "value"))
+
+  // Check whether the value fits within the maximum byte bound for a memory cell.
   case string.byte_size(value) > max_value_bytes {
     True ->
       Error(invalid(
@@ -405,14 +414,13 @@ fn remembered_value(args: MsgPackValue) -> Result(String, CapDenial) {
   }
 }
 
-// --- total field extraction ------------------------------------------------
-//
-// `codemode/internal/args` does this for the routers inside that package
-// and is internal to it, so these four are the same discipline restated
-// at the package boundary rather than a second opinion about it: every
-// failure names the offending field, none is a crash, and the code is the
-// one `invalid_argument_code` declares.
-
+/// Extracts a named MsgPack field from an argument map.
+///
+/// `codemode/internal/args` does this for the routers inside that package
+/// and is internal to it, so these four are the same discipline restated
+/// at the package boundary rather than a second opinion about it: every
+/// failure names the offending field, none is a crash, and the code is the
+/// one `invalid_argument_code` declares.
 fn field(value: MsgPackValue, key: String) -> Result(MsgPackValue, CapDenial) {
   case value {
     msgpack.MapValue(entries:) ->
@@ -434,8 +442,11 @@ fn field(value: MsgPackValue, key: String) -> Result(MsgPackValue, CapDenial) {
   }
 }
 
+/// Extracts a required text field from MsgPack arguments.
 fn string_field(value: MsgPackValue, key: String) -> Result(String, CapDenial) {
   use found <- result.try(field(value, key))
+
+  // Verify that the decoded MsgPack value is a string.
   case found {
     msgpack.StringValue(text) -> Ok(text)
 
@@ -449,15 +460,19 @@ fn string_field(value: MsgPackValue, key: String) -> Result(String, CapDenial) {
   }
 }
 
-// Bytes or text, the same latitude `codemode/internal/args.binary` gives
-// and for the same reason: `cap/net` marshals the body with
-// `wire.binary`, but an extension that built its body by string
-// concatenation and sent it as text meant exactly those bytes.
+/// Extracts a bit array field from MsgPack arguments, accepting bytes or text.
+///
+/// Bytes or text, the same latitude `codemode/internal/args.binary` gives
+/// and for the same reason: `cap/net` marshals the body with
+/// `wire.binary`, but an extension that built its body by string
+/// concatenation and sent it as text meant exactly those bytes.
 fn binary_field(
   value: MsgPackValue,
   key: String,
 ) -> Result(BitArray, CapDenial) {
   use found <- result.try(field(value, key))
+
+  // Accept raw binary bytes or UTF-8 text encoded to bytes.
   case found {
     msgpack.BinaryValue(bytes:) -> Ok(bytes)
     msgpack.StringValue(text) -> Ok(<<text:utf8>>)
@@ -472,15 +487,19 @@ fn binary_field(
   }
 }
 
-// Headers are a map of text to text and every entry has to survive: a
-// filter here would drop a header the extension believes it sent, and a
-// request that quietly lost its `Accept` is worse to debug than one that
-// was refused.
+/// Extracts HTTP headers as a map of text key-value pairs from MsgPack arguments.
+///
+/// Headers are a map of text to text and every entry has to survive: a
+/// filter here would drop a header the extension believes it sent, and a
+/// request that quietly lost its `Accept` is worse to debug than one that
+/// was refused.
 fn header_field(
   value: MsgPackValue,
   key: String,
 ) -> Result(List(#(String, String)), CapDenial) {
   use found <- result.try(field(value, key))
+
+  // Decode the headers map entries into paired string headers.
   case found {
     msgpack.MapValue(entries:) -> list.try_map(entries, header_entry)
 
@@ -495,6 +514,7 @@ fn header_field(
   }
 }
 
+/// Converts a single MsgPack map entry into a pair of header name and value strings.
 fn header_entry(
   entry: #(MsgPackValue, MsgPackValue),
 ) -> Result(#(String, String), CapDenial) {

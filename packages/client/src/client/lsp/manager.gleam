@@ -572,6 +572,7 @@ pub fn addressed(name: address.Address(Msg), config: Config) -> Manager {
 // The handle both `start` and `addressed` build. `workspaces` holds the
 // workspace as written and as its real path resolves, so `shown` can strip
 // either spelling when it renders a path for the model.
+/// Coordinates the handle for result while preserving this module’s validation boundary.
 fn handle_for(
   reach: fn() -> Result(Subject(Msg), Nil),
   config: Config,
@@ -596,6 +597,7 @@ fn handle_for(
 
 // The one builder `start` and `supervised` share, so a supervised manager
 // is exactly the machine a test starts.
+/// Builds the builder result while preserving this module’s validation boundary.
 fn builder(config: Config) -> sm.Builder(Phase, Data, Msg, Subject(Msg)) {
   sm.new_with_initialiser(1000, fn(commands) {
     // A selector merges several sources into one mailbox read: the
@@ -648,6 +650,7 @@ fn builder(config: Config) -> sm.Builder(Phase, Data, Msg, Subject(Msg)) {
 /// ```
 ///
 pub fn stop(manager: Manager) -> Nil {
+  // stop handles the ask(manager, waiting: 5000, sending: Shutdown) outcomes here before continuing.
   case ask(manager, waiting: 5000, sending: Shutdown) {
     Ok(Some(keeper)) -> {
       let watch = process.monitor(keeper)
@@ -664,6 +667,7 @@ pub fn stop(manager: Manager) -> Nil {
 // One exchange with whichever incarnation the handle reaches now. An
 // address with nobody bound to it is the dead callee a monitored call
 // would report, because to the caller the two are the same absence.
+/// Coordinates the ask result while preserving this module’s validation boundary.
 fn ask(
   manager: Manager,
   waiting waiting: Int,
@@ -691,6 +695,7 @@ fn tell(manager: Manager, message: Msg) -> Nil {
 // `Acquire` for a different project waits out a start without the handler
 // ever blocking. Every phase and message pair is listed, with no catch-all,
 // so a new `Msg` or `Phase` constructor fails to compile until it is placed.
+/// Coordinates the handle result while preserving this module’s validation boundary.
 fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
   case phase, msg {
     Idle, Acquire(identity:, stamp: _, reply:) ->
@@ -806,12 +811,14 @@ fn handle(phase: Phase, data: Data, msg: Msg) -> sm.Next(Phase, Data, Msg) {
 // Starts a keeper for `identity`. `previous` is the keeper just told to
 // release, whose exit the new one waits for. A restart of the identity
 // last run re-opens its documents; a different identity starts clean.
+/// Coordinates the begin result while preserving this module’s validation boundary.
 fn begin(
   data: Data,
   identity: Identity,
   previous: Option(Pid),
   reply: Subject(Result(Granted, QueryError)),
 ) -> sm.Next(Phase, Data, Msg) {
+  // begin handles the the selected value outcomes here before continuing.
   let reopen = case data.last {
     Some(last) ->
       case resolve.same(last, identity) {
@@ -820,7 +827,10 @@ fn begin(
       }
     None -> []
   }
+
   let data = Data(..data, last: Some(identity), opened: reopen)
+
+  // begin handles the start_keeper(data.config, data.self, identity, previous, reopen) outcomes here before continuing.
   case start_keeper(data.config, data.self, identity, previous, reopen) {
     Ok(keeper) -> {
       process.monitor(keeper.pid)
@@ -839,6 +849,7 @@ fn begin(
 // The current keeper reported. Success and refusal both clear the waiters
 // and answer each of them exactly once with the same outcome, which is
 // what makes one start serve however many callers asked during it.
+/// Coordinates the settle start result while preserving this module’s validation boundary.
 fn settle_start(
   data: Data,
   identity: Identity,
@@ -846,6 +857,8 @@ fn settle_start(
   outcome: Result(Started, String),
 ) -> sm.Next(Phase, Data, Msg) {
   let data_after = Data(..data, waiters: [])
+
+  // settle_start handles the outcome outcomes here before continuing.
   case outcome {
     Ok(Started(client:, stamp:)) -> {
       let data_after = Data(..data_after, stamp:)
@@ -870,6 +883,7 @@ fn answer(
 
 // Records documents opened on `identity`'s server, most recent first. A
 // report about an identity that is no longer the last one is stale.
+/// Coordinates the opened result while preserving this module’s validation boundary.
 fn opened(data: Data, identity: Identity, paths: List(String)) -> Data {
   case data.last {
     Some(last) ->
@@ -896,6 +910,7 @@ fn opened(data: Data, identity: Identity, paths: List(String)) -> Data {
 // evicted server's keeper is still stopping, and `Beginning` otherwise;
 // `sm.continuing(Begin)` queues the first message for itself so the start
 // happens in the keeper's own handler, never in the manager's.
+/// Coordinates the start keeper result while preserving this module’s validation boundary.
 fn start_keeper(
   config: Config,
   manager: Subject(Msg),
@@ -912,6 +927,8 @@ fn start_keeper(
       |> process.select_specific_monitor(manager_watch, fn(_down) {
         ManagerDown
       })
+
+    // start_keeper handles the the selected value outcomes here before continuing.
     let #(phase, selector) = case previous {
       Some(pid) -> #(
         AwaitingPrevious,
@@ -921,6 +938,7 @@ fn start_keeper(
       )
       None -> #(Beginning, selector)
     }
+
     let keeping =
       Keeping(config:, identity:, reopen:, manager:, commands:, manager_watch:)
     sm.initialised(phase, keeping)
@@ -941,6 +959,7 @@ fn start_keeper(
 // The keeper's handler, one arm per cell of the keeper's transition table.
 // The arms marked unreachable are listed rather than collapsed into a
 // wildcard, so a future message or phase must be placed deliberately.
+/// Coordinates the keep server result while preserving this module’s validation boundary.
 fn keep_server(
   phase: KeeperPhase,
   keeping: Keeping,
@@ -983,11 +1002,14 @@ fn keep_server(
 }
 
 // Reports the start and moves to holding the client, now watched.
+/// Coordinates the started result while preserving this module’s validation boundary.
 fn started(
   keeping: Keeping,
   outcome: Result(Started, String),
 ) -> sm.Next(KeeperPhase, Keeping, KeeperMsg) {
   process.send(keeping.manager, KeeperReady(keeper: process.self(), outcome:))
+
+  // started handles the outcome outcomes here before continuing.
   case outcome {
     Error(_reason) -> sm.stop()
     Ok(Started(client:, stamp: _)) -> {
@@ -1009,6 +1031,7 @@ fn started(
 
 // The start itself: the backend's transport (the probe runs in there),
 // the client's handshake, then the documents the dead server held.
+/// Coordinates the begin server result while preserving this module’s validation boundary.
 fn begin_server(keeping: Keeping) -> Result(Started, String) {
   let identity = keeping.identity
   let config = keeping.config
@@ -1035,10 +1058,14 @@ fn begin_server(keeping: Keeping) -> Result(Started, String) {
       |> result.map(lsp.Change(path:, text: _))
       |> result.replace_error(Nil)
     })
+
+  // begin_server handles the the selected value outcomes here before continuing.
   let _ = case reopened {
     [] -> Ok(Nil)
     ops -> lsp.sync(client, ops)
   }
+
+  // begin_server handles the the selected value outcomes here before continuing.
   case
     dependency_stamp(
       config.workspace,
@@ -1057,6 +1084,7 @@ fn begin_server(keeping: Keeping) -> Result(Started, String) {
 
 // Reuse requires the dependency inputs to match the prepared start.
 // Profiles without automatic setup keep the previous no-read behavior.
+/// Coordinates the dependency stamp result while preserving this module’s validation boundary.
 fn dependency_stamp(
   workspace: String,
   protected: List(String),
@@ -1075,6 +1103,7 @@ fn dependency_stamp(
   }
 }
 
+/// Coordinates the start error text result while preserving this module’s validation boundary.
 fn start_error_text(error: lsp.StartError) -> String {
   case error {
     lsp.BadRoot(root:) -> "the project root " <> root <> " is not absolute"
@@ -1087,6 +1116,7 @@ fn start_error_text(error: lsp.StartError) -> String {
   }
 }
 
+/// Coordinates the handshake text result while preserving this module’s validation boundary.
 fn handshake_text(error: lsp.RequestError) -> String {
   "the server's initialize handshake failed: "
   <> case error {
@@ -1164,6 +1194,7 @@ type Target {
 // then turn each location the server named into a `Site` through the gate.
 // `use ... <- result.try(...)` makes each fallible step return its `Error`
 // early, so the happy path reads top to bottom.
+/// Coordinates the definition result while preserving this module’s validation boundary.
 fn definition(
   manager: Manager,
   asked: SymbolQuery,
@@ -1177,6 +1208,7 @@ fn definition(
   Ok(Served(value: sites(session, locations), warmth: session.warmth))
 }
 
+/// Coordinates the references result while preserving this module’s validation boundary.
 fn references(
   manager: Manager,
   asked: SymbolQuery,
@@ -1226,6 +1258,7 @@ fn references(
 
 // Queries references at the target's primary position and any coalesced companion
 // positions (a type and its same-name constructor), deduplicating locations in order.
+/// Coordinates the target references result while preserving this module’s validation boundary.
 fn target_references(target: Target) -> Result(List(Location), QueryError) {
   let session = target.session
   let positions = [target.at, ..target.companions]
@@ -1235,6 +1268,8 @@ fn target_references(target: Target) -> Result(List(Location), QueryError) {
       |> result.map_error(request_error(session, _))
     }),
   )
+
+  // target_references handles the batches outcomes here before continuing.
   case batches {
     [single] -> Ok(single)
     many -> Ok(list.unique(list.flatten(many)))
@@ -1250,6 +1285,7 @@ type Onward {
   StopAsking
 }
 
+/// Coordinates the onward result while preserving this module’s validation boundary.
 fn onward(error: lsp.RequestError) -> Onward {
   case error {
     lsp.TimedOut(..) | lsp.Unavailable(..) | lsp.Unsupported(..) -> StopAsking
@@ -1266,6 +1302,7 @@ fn onward(error: lsp.RequestError) -> Onward {
 // every file after it keeps its references with no container: references
 // are worth answering without containers, and a slow server must not cost
 // the caller one deadline per file.
+/// Coordinates the outlines result while preserving this module’s validation boundary.
 fn outlines(
   session: Session,
   files: List(Named),
@@ -1273,10 +1310,13 @@ fn outlines(
   let #(outlined, _onward) =
     list.fold(files, #(dict.new(), KeepAsking), fn(acc, named) {
       let #(outlined, onward) = acc
+
+      // outlines handles the the selected value outcomes here before continuing.
       let #(symbols, onward) = case named, onward {
         Admitted(path:), KeepAsking -> outline_of(session, path)
         Admitted(_), StopAsking | Withheld(_), _ -> #(None, onward)
       }
+
       #(
         dict.insert(outlined, named.path, #(named_text(named), symbols)),
         onward,
@@ -1285,6 +1325,7 @@ fn outlines(
   outlined
 }
 
+/// Coordinates the outline of result while preserving this module’s validation boundary.
 fn outline_of(
   session: Session,
   path: String,
@@ -1297,6 +1338,7 @@ fn outline_of(
 
 // Hover is the one query whose answer may legitimately be empty. A server
 // with nothing to say at a position is `NotFound`, not a failure.
+/// Coordinates the hover result while preserving this module’s validation boundary.
 fn hover(
   manager: Manager,
   asked: SymbolQuery,
@@ -1307,9 +1349,12 @@ fn hover(
     lsp.hover(session.client, target.path, target.at, request_ms(session))
     |> result.map_error(request_error(session, _)),
   )
+
+  // hover handles the answer outcomes here before continuing.
   case answer {
     None -> Error(query.NotFound(query: asked, searched: None))
     Some(found) -> {
+      // hover handles the the selected value outcomes here before continuing.
       let at = case found.range {
         Some(span) -> span.start
         None -> target.at
@@ -1329,6 +1374,7 @@ fn hover(
 
 // The symbols of one file. A path is all it takes, so there is no
 // position to resolve and the file is read once for the line text.
+/// Coordinates the outline result while preserving this module’s validation boundary.
 fn outline(
   manager: Manager,
   path: String,
@@ -1348,6 +1394,7 @@ fn outline(
 // Incoming or outgoing calls of the symbol the question names. The
 // server is asked twice, once to prepare the hierarchy item at the
 // position and once for the edges of that item.
+/// Coordinates the calls result while preserving this module’s validation boundary.
 fn calls(
   manager: Manager,
   asked: SymbolQuery,
@@ -1366,6 +1413,7 @@ fn calls(
   )
 
   // Each edge is the other end and the file its call sites lie in, which
+
   // for an outgoing call is the asked symbol's own.
   let asked_edges = case direction {
     query.Incoming ->
@@ -1393,6 +1441,7 @@ fn calls(
         }),
       )
   }
+
   use edges <- result.try(
     asked_edges |> result.map_error(request_error(session, _)),
   )
@@ -1418,6 +1467,7 @@ type Edge {
 
 // One edge in the door's form: the other end's name and definition, and
 // the call sites, each against the text `texts` holds for its file.
+/// Coordinates the call edge result while preserving this module’s validation boundary.
 fn call_edge(
   manager: Manager,
   texts: Dict(String, String),
@@ -1446,6 +1496,7 @@ fn call_edge(
 // Diagnostics for one file, or for every document the server holds open.
 // Neither waits for readiness: settlement has its own bound, and an
 // unsettled answer is honest where an empty query result would not be.
+/// Coordinates the diagnostics result while preserving this module’s validation boundary.
 fn diagnostics(
   manager: Manager,
   path: Option(String),
@@ -1474,10 +1525,13 @@ fn diagnostics(
         |> result.map_error(request_error(session, _)),
       )
       use served <- result.map(settled(manager, session, open))
+
+      // diagnostics handles the the selected value outcomes here before continuing.
       let seen = case served.value {
         query.Settled(diagnostics:) -> diagnostics
         query.Unsettled(seen:) -> seen
       }
+
       Served(..served, value: query.Unsettled(seen:))
     }
   }
@@ -1486,11 +1540,13 @@ fn diagnostics(
 // Settles `paths` and converts what was published. With nothing to
 // settle, the stored publications are reported, but never as settled:
 // nothing was changed, so nothing proves they are current.
+/// Coordinates the settled result while preserving this module’s validation boundary.
 fn settled(
   manager: Manager,
   session: Session,
   paths: List(String),
 ) -> Result(Served(Diagnostics), QueryError) {
+  // settled handles the paths outcomes here before continuing.
   case paths {
     [] -> {
       use stored <- result.try(
@@ -1519,12 +1575,15 @@ fn settled(
   }
 }
 
+/// Coordinates the from settlement result while preserving this module’s validation boundary.
 fn from_settlement(
   manager: Manager,
   identity: Identity,
   settlement: lsp.Settlement,
 ) -> Diagnostics {
   let found = converted(manager, identity, settlement.published)
+
+  // from_settlement handles the settlement.outcome outcomes here before continuing.
   case settlement.outcome {
     lsp.Settled -> query.Settled(diagnostics: found)
     lsp.DeadlineExpired -> query.Unsettled(seen: found)
@@ -1535,6 +1594,7 @@ fn from_settlement(
 // the gate: a withheld file's diagnostics keep their coordinates and the
 // server's message, and lose only the line text the harness would have
 // read for them.
+/// Projects the converted result while preserving this module’s validation boundary.
 fn converted(
   manager: Manager,
   identity: Identity,
@@ -1559,6 +1619,7 @@ fn converted(
 // every file the server would touch, which the caller applies or refuses
 // whole; one file the gate withholds, or one edit that does not select
 // the old identifier, refuses all of it.
+/// Builds the prepare rename result while preserving this module’s validation boundary.
 fn prepare_rename(
   manager: Manager,
   asked: SymbolQuery,
@@ -1585,10 +1646,13 @@ fn prepare_rename(
   let grouped =
     list.fold(edit.documents, #([], dict.new()), fn(acc, document) {
       let #(order, edits) = acc
+
+      // prepare_rename handles the the selected value outcomes here before continuing.
       let order = case dict.has_key(edits, document.uri) {
         True -> order
         False -> [document.uri, ..order]
       }
+
       let held = result.unwrap(dict.get(edits, document.uri), [])
       #(
         order,
@@ -1614,6 +1678,7 @@ fn prepare_rename(
 // The identifier every edit must select. `prepareRename` is asked when
 // the server offers it: its refusal is the server's own words, and its
 // placeholder, when it gives one, is the name as the server sees it.
+/// Coordinates the renamed identifier result while preserving this module’s validation boundary.
 fn renamed_identifier(
   target: Target,
   identifier: String,
@@ -1623,6 +1688,8 @@ fn renamed_identifier(
     lsp.capabilities(session.client)
     |> result.map_error(request_error(session, _)),
   )
+
+  // renamed_identifier handles the protocol.supports(capabilities, protocol.PrepareRenameFeature) outcomes here before continuing.
   case protocol.supports(capabilities, protocol.PrepareRenameFeature) {
     protocol.NotProvided -> Ok(identifier)
     protocol.Provided -> {
@@ -1635,6 +1702,8 @@ fn renamed_identifier(
         )
         |> result.map_error(request_error(session, _)),
       )
+
+      // renamed_identifier handles the prepared outcomes here before continuing.
       case prepared {
         protocol.CanRename(range: _, placeholder: Some(placeholder)) ->
           Ok(placeholder)
@@ -1655,6 +1724,7 @@ fn renamed_identifier(
 // the answer was computed against some other text and is refused whole.
 // A file the gate withholds refuses the whole rename before anything is
 // read: a rename the model cannot see all of is not one it can land.
+/// Coordinates the file edit result while preserving this module’s validation boundary.
 fn file_edit(
   manager: Manager,
   session: Session,
@@ -1662,6 +1732,7 @@ fn file_edit(
   edits: List(TextEdit),
   old: String,
 ) -> Result(query.FileEdit, QueryError) {
+  // file_edit handles the the selected value outcomes here before continuing.
   use path <- result.try(case named_uri(session, uri) {
     Admitted(path:) -> Ok(path)
     Withheld(path:) ->
@@ -1675,10 +1746,13 @@ fn file_edit(
         <> " or protected; nothing was read or changed",
       ))
   })
+
+  // file_edit handles the the selected value outcomes here before continuing.
   let held = case lsp.synced_text(session.client, path) {
     Ok(Some(held)) -> Ok(held)
     Ok(None) | Error(_) -> resolve.read_text(path)
   }
+
   use base <- result.try(
     held |> result.map_error(fn(reason) { query.Unavailable(reason:) }),
   )
@@ -1705,11 +1779,15 @@ fn file_edit(
 // The post-edit push. It answers `None` unless the path's server is the one
 // already running, because an edit must never pay for a start or evict
 // another project's server (see `door`).
+/// Coordinates the after write result while preserving this module’s validation boundary.
 fn after_write(manager: Manager, path: String) -> Option(Diagnostics) {
+  // after_write handles the resolve.owner(manager.servers, manager.workspace, path) outcomes here before continuing.
   case resolve.owner(manager.servers, manager.workspace, path) {
     Error(_unowned) -> None
     Ok(owned) -> {
       let peeked = peek(manager)
+
+      // after_write handles the peeked.identity, peeked.client outcomes here before continuing.
       case peeked.identity, peeked.client {
         Some(identity), Some(client) ->
           case resolve.same(identity, owned.identity) {
@@ -1724,6 +1802,7 @@ fn after_write(manager: Manager, path: String) -> Option(Diagnostics) {
 
 // ADR-015 §3's push: the new text, then a bounded wait for settlement. A
 // failure is an unsettled block, never a clean one.
+/// Coordinates the pushed result while preserving this module’s validation boundary.
 fn pushed(
   manager: Manager,
   identity: Identity,
@@ -1742,6 +1821,8 @@ fn pushed(
     lsp.settle(client, [path], manager.timing.settle_ms)
     |> result.replace_error(Nil)
   }
+
+  // pushed handles the settlement outcomes here before continuing.
   case settlement {
     Ok(settlement) -> from_settlement(manager, identity, settlement)
     Error(Nil) -> query.Unsettled(seen: [])
@@ -1753,6 +1834,7 @@ fn pushed(
 // The server and the file a path-scoped question is about, with the
 // server's view of every open document brought up to the disk and the
 // file itself opened.
+/// Coordinates the session for result while preserving this module’s validation boundary.
 fn session_for(
   manager: Manager,
   path: String,
@@ -1765,6 +1847,7 @@ fn session_for(
 // `session_for` without the readiness wait, for diagnostics: settlement
 // is bounded by its own rules and deadline, and an unsettled block is an
 // honest answer where an empty query result is not.
+/// Coordinates the synced for result while preserving this module’s validation boundary.
 fn synced_for(
   manager: Manager,
   path: String,
@@ -1781,7 +1864,9 @@ fn synced_for(
 // documents the query opened are part of that load. A warm query passes
 // at once without asking, so a token a server never ends costs one
 // "still loading" answer at start rather than a deadline on every query.
+/// Coordinates the readied result while preserving this module’s validation boundary.
 fn readied(session: Session) -> Result(Nil, QueryError) {
+  // readied handles the session.warmth outcomes here before continuing.
   case session.warmth {
     query.Warm -> Ok(Nil)
     query.Started(..) -> {
@@ -1792,6 +1877,8 @@ fn readied(session: Session) -> Result(Nil, QueryError) {
           quiet_ms: timing.quiet_ms,
           deadline_ms: timing.ready_ms,
         )
+
+      // readied handles the readiness outcomes here before continuing.
       case readiness {
         Ok(lsp.Quiet) -> Ok(Nil)
         Ok(lsp.StillBusy(titles:)) ->
@@ -1805,14 +1892,18 @@ fn readied(session: Session) -> Result(Nil, QueryError) {
 // A server still loading at the deadline, worded for the model: what it
 // is doing, when there is a title to say, and that asking again is the
 // remedy.
+/// Coordinates the still loading result while preserving this module’s validation boundary.
 fn still_loading(titles: List(String)) -> String {
+  // still_loading handles the the selected value outcomes here before continuing.
   let doing = case titles {
     [] -> ""
     _ -> " (" <> string.join(titles, ", ") <> ")"
   }
+
   "the language server is still loading" <> doing <> "; ask again in a moment"
 }
 
+/// Coordinates the owned result while preserving this module’s validation boundary.
 fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
   use owner <- result.try(
     resolve.owner(manager.servers, manager.workspace, path)
@@ -1833,9 +1924,12 @@ fn owned(manager: Manager, path: String) -> Result(Owned, QueryError) {
 // places a path under a workspace and finds its server; it does not apply
 // the protected list, which `resolve.admit` applies only to the files a
 // server itself names.
+/// Coordinates the refuse protected result while preserving this module’s validation boundary.
 fn refuse_protected(manager: Manager, path: String) -> Result(Nil, QueryError) {
   let filesystem = fs.real_filesystem()
   let real = result.unwrap(fs.resolve_real(filesystem, "/", path), or: path)
+
+  // refuse_protected handles the fs.refuse_protected_read(filesystem, manager.protected, path, real) outcomes here before continuing.
   case fs.refuse_protected_read(filesystem, manager.protected, path, real) {
     Ok(_resolved) -> Ok(Nil)
     Error(fs.ProtectedPath(path:, protected:)) ->
@@ -1857,6 +1951,7 @@ fn refuse_protected(manager: Manager, path: String) -> Result(Nil, QueryError) {
 // `qualifier_separators`), so it is split only once a server is known:
 // after the path's owner is found, or, for a bare name, per server as
 // the search visits each one.
+/// Coordinates the target result while preserving this module’s validation boundary.
 fn target(manager: Manager, asked: SymbolQuery) -> Result(Target, QueryError) {
   case asked.path, asked.line {
     Some(path), Some(line) -> on_line(manager, asked, path, line)
@@ -1870,6 +1965,7 @@ fn symbol_for(server: LspServer, written: String) -> Symbol {
   resolve.split_symbol(written, server.qualifier_separators)
 }
 
+/// Coordinates the on line result while preserving this module’s validation boundary.
 fn on_line(
   manager: Manager,
   asked: SymbolQuery,
@@ -1890,6 +1986,7 @@ fn on_line(
   Ok(Target(session:, path: owned.path, at:, companions: []))
 }
 
+/// Coordinates the in outline result while preserving this module’s validation boundary.
 fn in_outline(
   manager: Manager,
   asked: SymbolQuery,
@@ -1914,6 +2011,8 @@ fn in_outline(
       methods: resolve.method_names(server),
       refine: refine(content, _, symbol.identifier),
     )
+
+  // in_outline handles the found outcomes here before continuing.
   case found {
     [] -> Error(query.NotFound(query: asked, searched: None))
     [resolved] ->
@@ -1939,6 +2038,7 @@ type Definition {
   Definition(path: String, at: Position)
 }
 
+/// Coordinates the anywhere result while preserving this module’s validation boundary.
 fn anywhere(
   manager: Manager,
   asked: SymbolQuery,
@@ -1960,6 +2060,7 @@ fn anywhere(
 
   // The qualifier narrows definitions, never hits: `probe.greet` is
   // written at call sites in files that are not `probe`, and each of them
+
   // leads to the one definition that is.
   let found = case symbol.qualifier {
     None -> found
@@ -1973,6 +2074,8 @@ fn anywhere(
         )
       })
   }
+
+  // anywhere handles the found outcomes here before continuing.
   case found {
     [] ->
       Error(query.NotFound(
@@ -1986,6 +2089,7 @@ fn anywhere(
 
 // When every search-hit definition lands in the same file, consult that file's
 // outline so a type and its same-name constructor coalesce into one Target.
+/// Coordinates the coalesce in file result while preserving this module’s validation boundary.
 fn coalesce_in_file(
   manager: Manager,
   session: Session,
@@ -2006,6 +2110,8 @@ fn coalesce_in_file(
       ),
     )
   }
+
+  // coalesce_in_file handles the list.unique(list.map(many, fn(definition) outcomes here before continuing.
   case list.unique(list.map(many, fn(definition) { definition.path })) {
     [one_path] -> {
       let server = session.identity.server
@@ -2027,6 +2133,8 @@ fn coalesce_in_file(
               methods: resolve.method_names(server),
               refine: refine(content, _, symbol.identifier),
             )
+
+          // coalesce_in_file handles the items outcomes here before continuing.
           case items {
             [only] -> {
               let positions = [only.at, ..only.companions]
@@ -2035,6 +2143,8 @@ fn coalesce_in_file(
               let top_level_hit =
                 only.name == symbol.identifier
                 && list.any(many, fn(d) { d.at == only.at })
+
+              // coalesce_in_file handles the all_coalesced || top_level_hit outcomes here before continuing.
               case all_coalesced || top_level_hit {
                 True -> Ok(only)
                 False -> Error(Nil)
@@ -2043,6 +2153,8 @@ fn coalesce_in_file(
             _ -> Error(Nil)
           }
         })
+
+      // coalesce_in_file handles the resolved outcomes here before continuing.
       case resolved {
         Ok(only) ->
           Ok(Target(
@@ -2073,11 +2185,14 @@ fn searched_root(identity: Identity) -> String {
 // server searches for the identifier its own separators leave, since
 // `util::greet` is `greet` to a `::` server and the unsplit
 // `util::greet` to a `.` one.
+/// Coordinates the searched result while preserving this module’s validation boundary.
 fn searched(
   manager: Manager,
   asked: SymbolQuery,
 ) -> Result(#(Identity, List(Hit)), QueryError) {
   let search = manager.search
+
+  // searched handles the peek(manager).identity outcomes here before continuing.
   case peek(manager).identity {
     Some(identity) -> {
       use hits <- result.try(
@@ -2108,6 +2223,7 @@ fn searched(
 }
 
 // Groups workspace-wide hits by the project that owns them.
+/// Coordinates the by project result while preserving this module’s validation boundary.
 fn by_project(
   manager: Manager,
   asked: SymbolQuery,
@@ -2132,6 +2248,8 @@ fn by_project(
         False -> [entry, ..projects]
       }
     })
+
+  // by_project handles the list.reverse(projects) outcomes here before continuing.
   case list.reverse(projects) {
     [] ->
       Error(query.NotFound(
@@ -2180,6 +2298,7 @@ fn by_project(
 // would hold the caller for many minutes, and a partial answer to a bare
 // name would read as the whole of it — a `NotFound`, or a single
 // definition taken for the only one.
+/// Coordinates the definitions result while preserving this module’s validation boundary.
 fn definitions(
   session: Session,
   hits: List(Hit),
@@ -2220,6 +2339,7 @@ fn definitions(
 }
 
 // One hit's `definition` request, its locations joining `found`.
+/// Coordinates the defined at result while preserving this module’s validation boundary.
 fn defined_at(
   session: Session,
   path: String,
@@ -2240,6 +2360,7 @@ fn defined_at(
 // An unsupported request keeps its own answer; anything else says the
 // search was cut, so the model knows a path-scoped question may still
 // get through.
+/// Coordinates the search cut result while preserving this module’s validation boundary.
 fn search_cut(session: Session, error: lsp.RequestError) -> QueryError {
   case request_error(session, error) {
     query.Unavailable(reason:) ->
@@ -2257,6 +2378,7 @@ fn search_cut(session: Session, error: lsp.RequestError) -> QueryError {
 // request would be about the keyword; so a position that is not already
 // on an occurrence of the identifier moves to the first occurrence on its
 // line, when there is one.
+/// Coordinates the refine result while preserving this module’s validation boundary.
 fn refine(content: String, at: Position, identifier: String) -> Position {
   case text.to_site(content, "", at) {
     Error(_fault) -> at
@@ -2275,6 +2397,7 @@ fn refine(content: String, at: Position, identifier: String) -> Position {
 // The live client for `identity`, starting it if need be. The wait covers
 // the previous server's stop, the probe and the handshake; a start that
 // overruns it is still in progress, and the next query may find it done.
+/// Coordinates the acquire result while preserving this module’s validation boundary.
 fn acquire(
   manager: Manager,
   identity: Identity,
@@ -2291,12 +2414,17 @@ fn acquire(
     }),
   )
   let timing = manager.timing
+
+  // acquire handles the the selected value outcomes here before continuing.
   let setup_ms = case identity.server.preparation {
     profile.AlreadyPrepared -> 0
     profile.GleamDependencies -> preparation.timeout_ms + 2000
   }
+
   let waiting =
     timing.previous_ms + timing.exec_ms * 2 + timing.start_ms + setup_ms + 1000
+
+  // acquire handles the ask(manager, waiting:, sending: Acquire(identity, stamp, _)) outcomes here before continuing.
   case ask(manager, waiting:, sending: Acquire(identity, stamp, _)) {
     Ok(Ok(granted)) ->
       Ok(Session(
@@ -2332,6 +2460,7 @@ fn peek(manager: Manager) -> Peeked {
 // changed or closed to match the disk, before the question is asked; the
 // files in `also` are opened with it. One `sync`, so the server sees the
 // whole correction before the request that follows it.
+/// Coordinates the resync result while preserving this module’s validation boundary.
 fn resync(session: Session, also: List(String)) -> Result(Nil, QueryError) {
   use open <- result.try(
     lsp.open_paths(session.client)
@@ -2358,22 +2487,28 @@ fn resync(session: Session, also: List(String)) -> Result(Nil, QueryError) {
 
   // Synchronize document buffers with language server.
   let ops = list.append(pulled, opening)
+
+  // resync handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case ops {
     [] -> Ok(Nil)
     _ ->
       lsp.sync(session.client, ops)
       |> result.map_error(request_error(session, _))
   })
+
+  // resync handles the also outcomes here before continuing.
   case also {
     [] -> Nil
     _ -> tell(session.manager, Opened(identity: session.identity, paths: also))
   }
+
   Ok(Nil)
 }
 
 // One open document against the disk: unchanged is nothing to send, moved
 // is a full-text change, and unreadable — deleted, grown past the guard,
 // no longer text — is a close, after which the server reads it itself.
+/// Coordinates the pulled result while preserving this module’s validation boundary.
 fn pulled(session: Session, path: String) -> Result(lsp.DocOp, Nil) {
   // An admitted file can later be replaced by a link. Re-admission precedes
   // this harness read, just as it precedes opening a new server-named file.
@@ -2382,6 +2517,8 @@ fn pulled(session: Session, path: String) -> Result(lsp.DocOp, Nil) {
     |> result.try(fn(path) {
       resolve.read_text(path) |> result.replace_error(Nil)
     })
+
+  // pulled handles the content outcomes here before continuing.
   case content {
     Error(_gone) -> Ok(lsp.Close(path:))
     Ok(content) ->
@@ -2395,6 +2532,7 @@ fn pulled(session: Session, path: String) -> Result(lsp.DocOp, Nil) {
 
 // --- conversions -----------------------------------------------------------------
 
+/// Coordinates the sites result while preserving this module’s validation boundary.
 fn sites(session: Session, locations: List(Location)) -> List(Site) {
   let files =
     list.map(locations, fn(location) { named_uri(session, location.uri) })
@@ -2492,6 +2630,7 @@ fn settle_ms(session: Session) -> Int {
 }
 
 // The client's refusal in the door's vocabulary.
+/// Coordinates the request error result while preserving this module’s validation boundary.
 fn request_error(session: Session, error: lsp.RequestError) -> QueryError {
   case error {
     lsp.Unsupported(feature:) ->
@@ -2613,6 +2752,8 @@ pub fn connect_jailed(
   let jailed =
     Jailed(..jailed, reading: fn(name) {
       use value <- result.map(reading(name))
+
+      // connect_jailed handles the name outcomes here before continuing.
       case name {
         "PATH" -> host_git.tool_path(value, git)
         _ -> value
@@ -2652,11 +2793,13 @@ pub fn connect_jailed(
 
 // An older profile never gains network authority merely because the
 // harness was upgraded. Only the recipe approved at installation runs.
+/// Builds the prepare dependencies result while preserving this module’s validation boundary.
 fn prepare_dependencies(
   jailed: Jailed,
   identity: Identity,
   built: jail.Jail,
 ) -> Result(Nil, String) {
+  // prepare_dependencies handles the identity.server.preparation outcomes here before continuing.
   case identity.server.preparation {
     profile.AlreadyPrepared -> Ok(Nil)
     profile.GleamDependencies -> {
@@ -2702,6 +2845,7 @@ fn prepare_dependencies(
 // and a server nobody queries costs no directory, which is ADR-015 §1's
 // laziness kept. The scratch directory's `tmp` is made for the same reason;
 // the relay makes it only for the server itself.
+/// Coordinates the jail for result while preserving this module’s validation boundary.
 fn jail_for(
   jailed: Jailed,
   server: LspServer,
@@ -2837,6 +2981,7 @@ pub fn probe_server(
 
 // The probe's clearance and its settlement, with no verdict: `probe`
 // judges it, and `probe_server` hands it to a caller that reports it.
+/// Coordinates the probe outcome result while preserving this module’s validation boundary.
 fn probe_outcome(
   run: fn(CallSpec, Subject(CallEvent)) -> Result(RunningCall, broker.Refusal),
   built: jail.Jail,
@@ -2857,6 +3002,8 @@ fn probe_outcome(
     run(spec, events) |> result.map_error(jail.refusal_text),
   )
   running.stdin(<<>>, True)
+
+  // probe_outcome handles the tool.collect_events(events, waiting:) outcomes here before continuing.
   case tool.collect_events(events, waiting:) {
     Error(Nil) -> {
       running.cancel()
@@ -2874,6 +3021,7 @@ fn probe_outcome(
 // The probe's verdict. Only a clean exit under the demand passes; every
 // failure names what went wrong, and a degraded one names the layers the
 // helper reported it skipped, which is what an operator has to go and fix.
+/// Coordinates the judged result while preserving this module’s validation boundary.
 fn judged(outcome: broker.CallOutcome) -> Result(Nil, String) {
   case outcome {
     broker.CallExited(result:) if result.code == 0 -> Ok(Nil)
@@ -2894,6 +3042,7 @@ fn judged(outcome: broker.CallOutcome) -> Result(Nil, String) {
   }
 }
 
+/// Coordinates the skipped layers result while preserving this module’s validation boundary.
 fn skipped_layers(failure: exec.ExecFailure) -> String {
   case failure {
     exec.DegradedExecution(result:) ->
@@ -3012,6 +3161,7 @@ const rg_missing =
 // for a program it could not resolve or run inside the jail: ripgrep is
 // not installed where the jail can see it, which a bare name cannot work
 // around but a named file can, so that is what the answer says.
+/// Coordinates the search result result while preserving this module’s validation boundary.
 fn search_result(collected: tool.Collected) -> Result(List(Hit), String) {
   case collected.outcome {
     broker.CallExited(result:) if result.code == 126 || result.code == 127 ->
@@ -3051,10 +3201,14 @@ pub fn bounded_hits(hits: List(Hit)) -> List(Hit) {
     list.fold(hits, #([], dict.new()), fn(acc, hit) {
       let #(kept, counts) = acc
       let seen = dict.get(counts, hit.path)
+
+      // bounded_hits handles the the selected value outcomes here before continuing.
       let admitted = case seen {
         Ok(count) -> count < max_hits_per_file
         Error(Nil) -> dict.size(counts) < max_search_files
       }
+
+      // bounded_hits handles the admitted outcomes here before continuing.
       case admitted {
         False -> acc
         True -> #(
@@ -3111,6 +3265,7 @@ type Collection {
   )
 }
 
+/// Coordinates the collect observation result while preserving this module’s validation boundary.
 fn collect_observation(
   manager: Manager,
   request: observation.Request,
@@ -3131,6 +3286,8 @@ fn collect_observation(
     |> weft.deadline(waiting)
     |> weft.cancel_when_exits(process.self())
     |> weft.start
+
+  // collect_observation handles the outcomes outcomes here before continuing.
   case outcomes {
     [weft.Completed(value:, ..)] -> Ok(value)
     [weft.Failed(error:, ..)] -> Error(error)
@@ -3148,6 +3305,7 @@ fn collect_observation(
   }
 }
 
+/// Coordinates the observation scope result while preserving this module’s validation boundary.
 fn observation_scope(
   request: observation.Request,
 ) -> Result(Nil, observation.Error) {
@@ -3173,8 +3331,11 @@ fn observation_scope(
   }
 }
 
+/// Coordinates the remaining result while preserving this module’s validation boundary.
 fn remaining(control: observation.Control) -> Result(Int, observation.Error) {
   let left = control.deadline_ms - control.now()
+
+  // remaining handles the left > 0 outcomes here before continuing.
   case left > 0 {
     True -> Ok(left)
     False -> Error(observation.DeadlineExceeded)
@@ -3187,6 +3348,7 @@ fn observation_query(
   result.map_error(outcome, observation.QueryFailed)
 }
 
+/// Coordinates the observed result while preserving this module’s validation boundary.
 fn observed(
   manager: Manager,
   request: observation.Request,
@@ -3280,10 +3442,13 @@ fn observed(
           "a requested source is no longer admitted",
         )),
       )
+
+      // observed handles the the selected value outcomes here before continuing.
       use Nil <- result.try(case admitted_path == path {
         True -> Ok(Nil)
         False -> Error(observation.Changed("a requested source was redirected"))
       })
+
       use content <- result.try(
         resolve.read_text(admitted_path)
         |> result.replace_error(observation.Changed(
@@ -3291,6 +3456,8 @@ fn observed(
         )),
       )
       let bytes = bytes + string.byte_size(content)
+
+      // observed handles the bytes <= observation.max_fact_bytes outcomes here before continuing.
       case bytes <= observation.max_fact_bytes {
         True -> Ok(bytes)
         False ->
@@ -3313,11 +3480,14 @@ fn observed(
       observation.QueryFailed(request_error(session, error))
     }),
   )
+
+  // observed handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case readiness {
     lsp.Quiet -> Ok(Nil)
     lsp.StillBusy(titles:) ->
       Error(observation.QueryFailed(query.Unavailable(still_loading(titles))))
   })
+
   use initial <- result.try(observation_state(session, control))
   use Nil <- result.try(quiet_observation(initial))
   use Nil <- result.try(
@@ -3390,6 +3560,7 @@ fn observed(
   ))
 }
 
+/// Coordinates the observation state result while preserving this module’s validation boundary.
 fn observation_state(
   session: Session,
   control: observation.Control,
@@ -3401,6 +3572,7 @@ fn observation_state(
   })
 }
 
+/// Coordinates the quiet observation result while preserving this module’s validation boundary.
 fn quiet_observation(
   state: lsp.ObservationState,
 ) -> Result(Nil, observation.Error) {
@@ -3416,10 +3588,12 @@ fn digest(content: String) -> String {
   blob.ref_for(bit_array.from_string(content))
 }
 
+/// Coordinates the retain file result while preserving this module’s validation boundary.
 fn retain_file(
   collection: Collection,
   path: String,
 ) -> Result(Collection, observation.Error) {
+  // retain_file handles the dict.has_key(collection.files, path) outcomes here before continuing.
   case dict.has_key(collection.files, path) {
     True -> Ok(collection)
     False -> {
@@ -3439,6 +3613,8 @@ fn retain_file(
         list.find(collection.initial.documents, fn(document) {
           document.path == admitted_path
         })
+
+      // retain_file handles the the selected value outcomes here before continuing.
       use version <- result.try(case synced {
         Ok(document) if document.text == content -> Ok(Some(document.version))
         Ok(_) ->
@@ -3447,6 +3623,7 @@ fn retain_file(
           ))
         Error(Nil) -> Ok(None)
       })
+
       let file = ObservedFile(path: admitted_path, content:, version:)
       checked_collection(
         Collection(
@@ -3463,6 +3640,7 @@ fn retain_file(
   }
 }
 
+/// Validates the checked collection result while preserving this module’s validation boundary.
 fn checked_collection(
   collection: Collection,
 ) -> Result(Collection, observation.Error) {
@@ -3482,10 +3660,13 @@ fn fact_count(collection: Collection) -> Int {
   collection.facts
 }
 
+/// Coordinates the request slot result while preserving this module’s validation boundary.
 fn request_slot(
   collection: Collection,
 ) -> Result(#(Collection, Int), observation.Error) {
   use left <- result.try(remaining(collection.control))
+
+  // request_slot handles the collection.requests < observation.max_requests outcomes here before continuing.
   case collection.requests < observation.max_requests {
     False ->
       Error(observation.LimitExceeded(
@@ -3499,6 +3680,7 @@ fn request_slot(
   }
 }
 
+/// Coordinates the observation symbols result while preserving this module’s validation boundary.
 fn observation_symbols(
   collection: Collection,
   path: String,
@@ -3510,6 +3692,8 @@ fn observation_symbols(
       observation.QueryFailed(request_error(collection.session, error))
     }),
   )
+
+  // observation_symbols handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case symbols {
     protocol.Hierarchical(_) -> Ok(Nil)
     protocol.Flat(flat) ->
@@ -3523,9 +3707,11 @@ fn observation_symbols(
         }
       })
   })
+
   Ok(#(collection, symbols))
 }
 
+/// Coordinates the collect outline result while preserving this module’s validation boundary.
 fn collect_outline(
   collection: Collection,
   path: String,
@@ -3545,6 +3731,7 @@ fn collect_outline(
   )
 }
 
+/// Coordinates the flatten observed result while preserving this module’s validation boundary.
 fn flatten_observed(
   collection: Collection,
   entries: List(query.SymbolEntry),
@@ -3583,6 +3770,7 @@ fn site_bytes(site: Site) -> Int {
   string.byte_size(site.path) + string.byte_size(site.text) + 64
 }
 
+/// Coordinates the collect references result while preserving this module’s validation boundary.
 fn collect_references(
   collection: Collection,
   asked: SymbolQuery,
@@ -3602,6 +3790,8 @@ fn collect_references(
     )),
   )
   let symbol = symbol_for(collection.session.identity.server, asked.symbol)
+
+  // collect_references handles the the selected value outcomes here before continuing.
   use #(collection, at, companions) <- result.try(case asked.line {
     Some(line) ->
       text.symbol_position(file.content, line, symbol.identifier)
@@ -3611,6 +3801,7 @@ fn collect_references(
       |> result.map(fn(at) { #(collection, at, []) })
     None -> resolve_observed_target(collection, asked, file, symbol)
   })
+
   use #(collection, locations) <- result.try(
     observed_references(collection, file.path, [at, ..companions]),
   )
@@ -3634,6 +3825,8 @@ fn collect_references(
   ))
   list.try_fold(locations, collection, fn(collection, location) {
     let #(collection, named) = gate_observed_uri(collection, location.uri)
+
+    // collect_references handles the named outcomes here before continuing.
     case named {
       Withheld(_) ->
         Ok(Collection(..collection, withheld: collection.withheld + 1))
@@ -3669,6 +3862,7 @@ fn collect_references(
 
 // Collects references across a target's primary position and any coalesced
 // companion positions, charging one protocol request slot per position.
+/// Coordinates the observed references result while preserving this module’s validation boundary.
 fn observed_references(
   collection: Collection,
   path: String,
@@ -3687,10 +3881,13 @@ fn observed_references(
       Ok(#(collection, [locations, ..batches]))
     }),
   )
+
+  // observed_references handles the the selected value outcomes here before continuing.
   let locations = case list.reverse(batches) {
     [single] -> single
     many -> many |> list.flatten |> list.unique
   }
+
   Ok(#(collection, locations))
 }
 
@@ -3703,10 +3900,12 @@ fn observed_references(
 // before the fact bound could refuse it. The verdict is not trusted past this
 // collection: `check_observation` re-admits and rereads every retained file
 // before anything is published.
+/// Coordinates the gate observed uri result while preserving this module’s validation boundary.
 fn gate_observed_uri(
   collection: Collection,
   uri: String,
 ) -> #(Collection, Named) {
+  // gate_observed_uri handles the dict.get(collection.gated, uri) outcomes here before continuing.
   case dict.get(collection.gated, uri) {
     Ok(named) -> #(collection, named)
     Error(Nil) -> {
@@ -3722,6 +3921,7 @@ fn gate_observed_uri(
   }
 }
 
+/// Resolves the resolve observed target result while preserving this module’s validation boundary.
 fn resolve_observed_target(
   collection: Collection,
   asked: SymbolQuery,
@@ -3748,6 +3948,8 @@ fn resolve_observed_target(
       methods: resolve.method_names(server),
       refine: refine(file.content, _, symbol.identifier),
     )
+
+  // resolve_observed_target handles the found outcomes here before continuing.
   case found {
     [] -> Error(observation.QueryFailed(query.NotFound(asked, searched: None)))
     [resolved] -> Ok(#(collection, resolved.at, resolved.companions))
@@ -3764,6 +3966,7 @@ fn resolve_observed_target(
   }
 }
 
+/// Validates the check observation result while preserving this module’s validation boundary.
 fn check_observation(collection: Collection) -> Result(Nil, observation.Error) {
   use Nil <- result.try(
     list.try_each(dict.to_list(collection.aliases), fn(alias) {
@@ -3773,6 +3976,8 @@ fn check_observation(collection: Collection) -> Result(Nil, observation.Error) {
           "a requested spelling no longer names its admitted source",
         )),
       )
+
+      // check_observation handles the the selected value outcomes here before continuing.
       case
         owned.path == alias.1
         && resolve.same(owned.identity, collection.session.identity)
@@ -3802,6 +4007,8 @@ fn check_observation(collection: Collection) -> Result(Nil, observation.Error) {
           "an observed file could not be reread",
         )),
       )
+
+      // check_observation handles the path == file.path && content == file.content outcomes here before continuing.
       case path == file.path && content == file.content {
         True -> Ok(Nil)
         False ->
@@ -3817,6 +4024,8 @@ fn check_observation(collection: Collection) -> Result(Nil, observation.Error) {
   ))
   use Nil <- result.try(quiet_observation(final))
   let initial = collection.initial
+
+  // check_observation handles the the selected value outcomes here before continuing.
   case
     initial.generation == final.generation
     && initial.revision == final.revision
@@ -3834,6 +4043,7 @@ fn check_observation(collection: Collection) -> Result(Nil, observation.Error) {
 
 // Interactive queries can show raw coordinates after an edit, but a complete
 // observation refuses them rather than labelling UTF-16 units as codepoints.
+/// Validates the valid observed positions result while preserving this module’s validation boundary.
 fn valid_observed_positions(
   symbols: protocol.DocumentSymbols,
   content: String,
@@ -3847,6 +4057,7 @@ fn valid_observed_positions(
   }
 }
 
+/// Validates the valid nested positions result while preserving this module’s validation boundary.
 fn valid_nested_positions(
   symbols: List(protocol.DocumentSymbol),
   content: String,
@@ -3867,6 +4078,7 @@ fn valid_observed_position(
   observed_site(content, "", at) |> result.map(fn(_) { Nil })
 }
 
+/// Coordinates the observed site result while preserving this module’s validation boundary.
 fn observed_site(
   content: String,
   path: String,
@@ -3884,6 +4096,8 @@ fn observed_site(
       "a server position does not fit its observed text",
     )),
   )
+
+  // observed_site handles the site.line == at.line + 1 && character == at.character outcomes here before continuing.
   case site.line == at.line + 1 && character == at.character {
     True -> Ok(site)
     False ->

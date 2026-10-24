@@ -59,6 +59,7 @@ pub const default = Address("127.0.0.1", 0)
 ///   |> result.is_error
 /// ```
 pub fn parse(value: String, from source: String) -> Result(Address, String) {
+  // Ensure the listen target resolves to a supported loopback address.
   use #(host, port) <- result.try(case string.split(value, ":") {
     ["127.0.0.1", port] -> Ok(#("127.0.0.1", port))
     ["[", "", "1]", port] -> Ok(#("::1", port))
@@ -70,12 +71,15 @@ pub fn parse(value: String, from source: String) -> Result(Address, String) {
         <> "\" is not loopback; use 127.0.0.1:port or [::1]:port",
       )
   })
+
   use port <- result.try(
     int.parse(port)
     |> result.map_error(fn(_) {
       source <> " port \"" <> port <> "\" is not a number"
     }),
   )
+
+  // Check that the parsed TCP port fits within the valid IP port range.
   case port >= 0 && port <= 65_535 {
     True -> Ok(Address(host:, port:))
     False ->

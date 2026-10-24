@@ -134,8 +134,11 @@ fn memory_table(fields: Dict(String, tom.Toml)) -> Result(Options, String) {
   Options(inject:, retired: retired_keys(fields))
 }
 
+/// Parses known keys while rejecting unsupported memory configuration fields.
 fn known_keys(fields: Dict(String, tom.Toml)) -> Result(Nil, String) {
   let allowed = ["distill", "distill_wall_ms", "inject"]
+
+  // known keys handles the list.find(dict.keys(fields), fn(key) outcomes before continuing the operation.
   case list.find(dict.keys(fields), fn(key) { !list.contains(allowed, key) }) {
     Error(Nil) -> Ok(Nil)
     Ok(unknown) ->
@@ -151,17 +154,21 @@ fn known_keys(fields: Dict(String, tom.Toml)) -> Result(Nil, String) {
 
 // The value is never read: a retired key means the same whatever it says,
 // which is that nothing consults it.
+/// Parses retired keys while rejecting unsupported memory configuration fields.
 fn retired_keys(fields: Dict(String, tom.Toml)) -> List(String) {
+  // retired keys handles the the selected value outcomes before continuing the operation.
   let digest = case dict.get(fields, "inject") {
     Ok(tom.String("digest")) -> ["inject"]
     _ -> []
   }
+
   list.append(
     list.filter(["distill", "distill_wall_ms"], dict.has_key(fields, _)),
     digest,
   )
 }
 
+/// Parses inject of while rejecting unsupported memory configuration fields.
 fn inject_of(fields: Dict(String, tom.Toml)) -> Result(Injection, String) {
   case dict.get(fields, "inject") {
     Error(Nil) -> Ok(InjectsNotes)

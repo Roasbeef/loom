@@ -108,13 +108,17 @@ pub fn catch_up(
   daemon: Daemon,
   status: StatusView,
 ) -> Result(#(Store, Ledger), Mismatch) {
+  // Ensure local copy belongs to the same cluster deployment.
   use Nil <- result.try(
     case status.deployment == membership_ledger.deployment(ledger) {
       True -> Ok(Nil)
       False -> Error(OtherDeployment)
     },
   )
+
   let ours = membership_ledger.head(ledger)
+
+  // Catch up by pulling forward or verify matching head when at/ahead.
   case status.head.seq > ours.seq {
     True -> pull(store, ledger, verifier, daemon, status.head.seq)
     False -> {
@@ -135,6 +139,8 @@ pub fn catch_up(
 // Pulls pages after the copy's head until it reaches the daemon's, applying
 // each line through the fold. A line that does not chain from the copy's head is
 // a history that does not extend it.
+
+/// Iteratively pulls and appends missing ledger entries until reaching target sequence.
 fn pull(
   store: Store,
   ledger: Ledger,
@@ -143,12 +149,16 @@ fn pull(
   target: Int,
 ) -> Result(#(Store, Ledger), Mismatch) {
   let have = membership_ledger.head(ledger).seq
+
+  // Check if our local copy has caught up to the target sequence.
   case have >= target {
     True -> Ok(#(store, ledger))
     False -> {
       use page <- result.try(
         daemon.entries(have, 64) |> result.map_error(Unusable),
       )
+
+      // Ensure the daemon returned lines to advance our sequence.
       case page.lines {
         [] ->
           Error(Unusable(
@@ -167,6 +177,7 @@ fn pull(
   }
 }
 
+/// Verifies a signed ledger line and applies it to the store and ledger state.
 fn apply_line(
   store: Store,
   ledger: Ledger,
@@ -182,6 +193,8 @@ fn apply_line(
     membership_ledger.apply(ledger, signed)
     |> result.replace_error(Forked(seq)),
   )
+
+  // Append verified entry to local store upon successful ledger transition.
   case outcome {
     membership_ledger.Applied(ledger: next, entry:) ->
       membership_store.append(store, entry)
@@ -250,12 +263,15 @@ pub fn await(
       every: poll.Fixed(250),
       from: last,
       attempt: fn(previous) {
+        // Query status from daemon to check confirmations.
         case daemon.status() {
           Error(_) -> poll.Pending(previous)
           Ok(status) -> {
             let waited_for =
               ledger_operator.confirmations(status, seq)
               |> list.filter(fn(row) { !list.contains(unreachable, row.0) })
+
+            // Settle when all reachable peers have confirmed the sequence.
             case ledger_operator.all_confirmed(waited_for) {
               True -> poll.Settled(status)
               False -> poll.Pending(status)
@@ -264,6 +280,8 @@ pub fn await(
         }
       },
     )
+
+  // Map poll verdict to status and completion boolean.
   case verdict {
     poll.Answer(status) -> #(status, True)
     poll.RanOut(status) -> #(status, False)

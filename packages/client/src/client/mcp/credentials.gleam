@@ -62,6 +62,7 @@ pub type Binding {
 /// // credentials.directory()
 /// ```
 pub fn directory() -> Result(String, String) {
+  // Resolve base configuration directory from XDG_CONFIG_HOME or fallback to HOME/.config.
   let root = case bootstrap.getenv("XDG_CONFIG_HOME") {
     Ok(value) if value != "" -> Ok(value)
     Ok(_) | Error(Nil) ->
@@ -69,6 +70,7 @@ pub fn directory() -> Result(String, String) {
       |> result.map(fn(home) { home <> "/.config" })
       |> result.replace_error("credential_unavailable")
   }
+
   result.map(root, fn(path) { path <> "/loom/mcp-oauth" })
 }
 
@@ -82,6 +84,8 @@ pub fn directory() -> Result(String, String) {
 pub fn valid_server(server: String) -> Result(Nil, String) {
   let lower = "abcdefghijklmnopqrstuvwxyz"
   let allowed = lower <> "0123456789_"
+
+  // Verify server identifier characters and length bounds.
   let valid = case string.to_graphemes(server) {
     [first, ..rest] ->
       server != "internal"
@@ -92,6 +96,8 @@ pub fn valid_server(server: String) -> Result(Nil, String) {
       && list.all(rest, fn(char) { string.contains(allowed, char) })
     [] -> False
   }
+
+  // Reject invalid server identifiers.
   case valid {
     True -> Ok(Nil)
     False -> Error("invalid_server_name")
@@ -114,6 +120,8 @@ pub fn decode_record(document: String) -> Result(Binding, String) {
   Ok(record)
 }
 
+/// Decodes a versioned credential binding record from json.
+/// Builds the total decoder for the persisted binding fields and supported version.
 fn record_decoder() -> decode.Decoder(Binding) {
   use version <- decode.field("version", decode.int)
   use server <- decode.field("server", decode.string)
@@ -122,6 +130,8 @@ fn record_decoder() -> decode.Decoder(Binding) {
   use token_endpoint <- decode.field("token_endpoint", decode.string)
   use client_id <- decode.field("client_id", decode.string)
   use grant <- decode.field("grant", decode.optional(grant_decoder()))
+
+  // Ensure format version is supported.
   case version {
     1 ->
       decode.success(Binding(
@@ -147,6 +157,8 @@ fn record_decoder() -> decode.Decoder(Binding) {
   }
 }
 
+/// Decodes an OAuth grant record containing tokens and expiration.
+/// Requires all token grant fields before a grant can enter a credential binding.
 fn grant_decoder() -> decode.Decoder(Grant) {
   use access <- decode.field("access_token", decode.string)
   use refresh <- decode.field("refresh_token", decode.optional(decode.string))
@@ -175,6 +187,8 @@ pub fn encode_record(record: Binding) -> String {
   |> json.to_string
 }
 
+/// Serializes an OAuth token grant to JSON value.
+/// Encodes token and expiry fields using the versioned on-disk schema.
 fn encode_grant(grant: Grant) -> json.Json {
   json.object([
     #("access_token", json.string(grant.access)),
@@ -192,6 +206,7 @@ fn encode_grant(grant: Grant) -> json.Json {
 /// // credentials.load("/private/mcp-oauth/linear.json")
 /// ```
 pub fn load(path: String) -> Result(Option(Binding), String) {
+  // Check if credential file exists on disk.
   case bootstrap.path_exists(path) {
     False -> Ok(None)
     True -> {
@@ -245,6 +260,8 @@ pub fn with_lock(
   answer
 }
 
+/// Acquires an exclusive filesystem launch lock with polling retry.
+/// Retries a busy launch lock until acquisition or the bounded wait expires.
 fn acquire(path: String) -> Result(bootstrap.LaunchLock, String) {
   case
     poll.until(within: 5000, every: 50, attempt: fn() {
@@ -261,6 +278,8 @@ fn acquire(path: String) -> Result(bootstrap.LaunchLock, String) {
   }
 }
 
+/// Validates field invariants and URL structures of a credential binding.
+/// Enforces server, HTTPS endpoint, client identifier, and optional grant invariants.
 fn validate(record: Binding) -> Result(Nil, String) {
   use Nil <- result.try(valid_server(record.server))
   let ok =
@@ -273,6 +292,8 @@ fn validate(record: Binding) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+/// Checks if an optional token grant adheres to credential character rules.
+/// Rejects unsafe token characters, oversized scopes, and nonpositive expiries.
 fn valid_grant(grant: Option(Grant)) -> Bool {
   case grant {
     None -> True
@@ -331,6 +352,8 @@ fn is_label(value: String, limit: Int) -> Bool {
   && !string.contains(value, "\r")
 }
 
+/// Verifies that a secret token string contains only allowed base64/URL characters.
+/// Restricts token bytes to the accepted bearer-token alphabet and size bound.
 fn is_secret(value: String) -> Bool {
   let permitted =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/="

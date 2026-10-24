@@ -344,6 +344,8 @@ pub fn door(wiring: Wiring) -> Door {
 
 // Every call borrows the runtime first, and a holder that is not up
 // refuses in band rather than crashing the effect process.
+
+/// Establishes with runtime for the caller, keeping its validation and result policy at this boundary.
 fn with_runtime(
   borrow_runtime: fn() -> Result(Runtime, Nil),
   then: fn(Runtime) -> Result(a, schedule_tool.Refusal),
@@ -359,6 +361,7 @@ fn with_runtime(
 
 // --- create ---------------------------------------------------------------
 
+/// Establishes create for the caller, keeping its validation and result policy at this boundary.
 fn create(
   policy: Policy,
   operator_schedules: List(Schedule),
@@ -441,6 +444,8 @@ fn create(
 // been able to see the cell. Every other arm is a store that could not
 // answer at all, which is nothing the model can act on beyond asking
 // again later.
+
+/// Establishes claim refused for the caller, keeping its validation and result policy at this boundary.
 fn claim_refused(error: api.ApiError, name: String) -> schedule_tool.Refusal {
   case error {
     api.FactConflict(..) -> schedule_tool.NameTaken(name:)
@@ -500,12 +505,16 @@ fn granted_wake(wake: schedule.Wake) -> schedule_tool.Wake {
 // pays for, while a child scheduling onto its parent would put text into
 // the context of a strand that outranks it — `client/agency`'s "a report
 // into a finished parent is refused" is the same ruling one door along.
+
+/// Establishes schedulable for the caller, keeping its validation and result policy at this boundary.
 fn schedulable(
   runtime: Runtime,
   caller: String,
   target: String,
 ) -> Result(Nil, schedule_tool.Refusal) {
   use <- bool.guard(when: target == caller, return: Ok(Nil))
+
+  // Decide how to handle agency.owns(runtime, ancestor: caller, strand: target) {.
   case agency.owns(runtime, ancestor: caller, strand: target) {
     True -> Ok(Nil)
     False ->
@@ -536,6 +545,8 @@ fn schedulable(
 // child's open run while it is working, and hold when it is not. The
 // caller reads which it got from `Created.wake`, exactly as it already
 // does under a `steer` policy.
+
+/// Establishes wake onto for the caller, keeping its validation and result policy at this boundary.
 fn wake_onto(wake: schedule.Wake, target: String) -> schedule.Wake {
   case agency.is_subagent(target), wake {
     False, schedule.WakesIdle -> schedule.WakesIdle
@@ -560,10 +571,13 @@ fn wake_onto(wake: schedule.Wake, target: String) -> schedule.Wake {
 // it on logical time exactly as the scanner ticks on logical time. The
 // model cannot do this arithmetic itself: the system prompt carries no
 // date, which is why `In` exists at all.
+
+/// Establishes requested timing for the caller, keeping its validation and result policy at this boundary.
 fn requested_timing(
   runtime: Runtime,
   request: schedule_tool.Request,
 ) -> Result(schedule.Timing, schedule_tool.Refusal) {
+  // Decide how to handle request.timing {.
   case request.timing {
     schedule_tool.Every(seconds:) -> {
       use expiry <- result.try(requested_expiry(request))
@@ -630,6 +644,8 @@ fn requested_offset(utc_offset: Option(String)) -> Result(Int, String) {
 // this door. The tool door has already refused either bound beside a
 // one-shot, so an absent value here means "default", never "not
 // applicable".
+
+/// Establishes requested expiry for the caller, keeping its validation and result policy at this boundary.
 fn requested_expiry(
   request: schedule_tool.Request,
 ) -> Result(schedule.Expiry, schedule_tool.Refusal) {
@@ -642,6 +658,7 @@ fn requested_expiry(
   ))
 }
 
+/// Establishes room for one more for the caller, keeping its validation and result policy at this boundary.
 fn room_for_one_more(
   existing: List(#(String, Schedule)),
 ) -> Result(Nil, schedule_tool.Refusal) {
@@ -664,6 +681,8 @@ fn room_for_one_more(
 // so two owners cannot be allowed to share one. The model is told the
 // name is taken without being told whose it is: an operator's config is
 // not the model's to enumerate, and neither is a sibling's.
+
+/// Establishes name is free for the caller, keeping its validation and result policy at this boundary.
 fn name_is_free(
   existing: List(#(String, Schedule)),
   operator_schedules: List(Schedule),
@@ -679,6 +698,8 @@ fn name_is_free(
       claims(sched)
     })
     || list.any(operator_schedules, claims)
+
+  // Decide how to handle taken {.
   case taken {
     True -> Error(schedule_tool.NameTaken(name:))
     False -> Ok(Nil)
@@ -696,6 +717,8 @@ fn name_is_free(
 // too — a child does not see the schedules its parent set onto it. It
 // cannot retire them, so listing them would offer it a name it can only
 // fail to cancel.
+
+/// Establishes listing for the caller, keeping its validation and result policy at this boundary.
 fn listing(
   runtime: Runtime,
   caller: String,
@@ -723,6 +746,7 @@ fn owned_by(sched: Schedule, caller: String) -> Bool {
   }
 }
 
+/// Establishes listed for the caller, keeping its validation and result policy at this boundary.
 fn listed(runtime: Runtime, sched: Schedule) -> schedule_tool.Listed {
   schedule_tool.Listed(
     name: sched.name,
@@ -759,6 +783,7 @@ pub fn fire_count(runtime: Runtime, sched: Schedule) -> Int {
 
 // --- cancel ---------------------------------------------------------------
 
+/// Establishes cancel for the caller, keeping its validation and result policy at this boundary.
 fn cancel(
   scanner: address.Address(schedulescan.Message),
   runtime: Runtime,
@@ -786,6 +811,7 @@ fn cancel(
         False -> Error(schedule_tool.NotFound(name:))
       }
   })
+
   use Nil <- result.try(retire(runtime, target, name))
 
   // Nothing breaks without this — the next tick would find the cell gone
@@ -910,6 +936,8 @@ pub fn reaping_hooks(hooks: effects.Hooks, wiring: Wiring) -> effects.Hooks {
 // occurrence it would inject onto is one nobody will ever read, and the
 // parent is told nothing because it is not owed a message — it can see
 // the child settled through the handle it already holds.
+
+/// Establishes reap run for the caller, keeping its validation and result policy at this boundary.
 fn reap_run(wiring: Wiring, operation: OpId) -> Nil {
   case wiring.runtime() {
     Error(Nil) -> Nil
@@ -942,6 +970,8 @@ fn reap_run(wiring: Wiring, operation: OpId) -> Nil {
 // fail-closed direction: it reaps nothing rather than guessing at a
 // strand name, and `client/schedulescan` still refuses to fire onto a
 // strand whose cell it cannot read.
+
+/// Establishes ended strands for the caller, keeping its validation and result policy at this boundary.
 fn ended_strands(runtime: Runtime, operation: OpId) -> List(String) {
   case api.reserved_facts(runtime, prefix: lineage.key_prefix) {
     Error(_unreadable) -> []
@@ -952,6 +982,8 @@ fn ended_strands(runtime: Runtime, operation: OpId) -> List(String) {
         use cell <- result.try(
           lineage.decode(payload) |> result.replace_error(Nil),
         )
+
+        // Decide how to handle cell.brief == operation {.
         case cell.brief == operation {
           True -> Ok(strand)
           False -> Error(Nil)
@@ -1074,6 +1106,8 @@ pub fn cell(sched: Schedule) -> JsonValue {
 
 // The structured projection comes from the same accepted timing as the display.
 // In particular, `In` has already resolved to `OneShot` before this boundary.
+
+/// Establishes granted cadence for the caller, keeping its validation and result policy at this boundary.
 fn granted_cadence(timing: schedule.Timing) -> schedule_tool.Cadence {
   case timing {
     schedule.Interval(seconds:, expiry:) ->

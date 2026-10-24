@@ -310,6 +310,7 @@ pub fn supervised(
 /// A registry that is not running, or does not answer, leaves the nodes
 /// to that same janitor.
 pub fn stop(name: address.Address(Message), timeout_ms timeout_ms: Int) -> Nil {
+  // Look up running registry process address.
   case address.lookup(name) {
     Error(Nil) -> Nil
     Ok(subject) -> {
@@ -452,6 +453,7 @@ pub fn invoker(hosts: Hosts, at at: Coordinates) -> hooks.Invoker {
 // right way round: a model reading a tool reply needs to know *why* an
 // extension is unavailable, and the bus logs its own reason from
 // `hooks.describe` beside the extension's name.
+/// Maps internal hook failure reasons to external bus failure errors.
 fn bus_failure(failure: HookFailure) -> hooks.HookFailure {
   case failure {
     Unhandled -> hooks.Unhandled
@@ -496,7 +498,9 @@ pub fn invoke_event(
 
 // --- the actor ------------------------------------------------------------
 
+/// Handles message dispatch for the extension host registry actor.
 fn handle(state: State, msg: Message) -> actor.Next(State, Message) {
+  // Match message variant in registry mailbox.
   case msg {
     Invoke(
       extension:,
@@ -564,6 +568,7 @@ fn abandoned(state: State, expires_at: Int, deadline_ms: Int) -> Bool {
 // mailbox is the queue the protocol's one-slot rule needs, so a second
 // caller waits instead of reading `Busy`. See the module doc for what that
 // costs.
+/// Runs one invocation request on the extension host actor timeline.
 fn serve_invoke(
   state: State,
   extension: String,
@@ -573,6 +578,7 @@ fn serve_invoke(
   deadline_ms: Int,
   reply: Subject(Result(MsgPackValue, HookFailure)),
 ) -> actor.Next(State, Message) {
+  // Verify that target extension is ready or launched.
   case ready(state, extension, at) {
     Error(#(state, failure)) -> {
       process.send(reply, Error(failure))
@@ -596,6 +602,7 @@ fn serve_invoke(
 // The host for `extension`, starting one if this is its first use. The
 // entry travels back with it because the caller needs its `invoking` and
 // looking it up twice would be two chances to find two different rows.
+/// Resolves or launches a live satellite host instance for the named extension.
 fn ready(
   state: State,
   extension: String,
@@ -613,6 +620,7 @@ fn ready(
   }
 }
 
+/// Launches a fresh satellite node process for the requested extension.
 fn launch(
   state: State,
   entry: Extension,
@@ -653,6 +661,7 @@ fn known(state: State, extension: String) -> Result(Extension, Nil) {
 // carry three `Destroyed` machines to the end of it. The report it
 // returns is the node's own account of what confined it, and it goes in
 // the ledger rather than into the garbage.
+/// Records extension departure and cleans up machine if invocation failed terminally.
 fn depart_if_lost(
   state: State,
   extension: String,
@@ -683,6 +692,7 @@ fn depart_if_lost(
   }
 }
 
+/// Reaps a lost satellite host process and records the departure reason.
 fn reaped(
   state: State,
   extension: String,
@@ -692,6 +702,7 @@ fn reaped(
   depart(state, extension, reason, satellite.stop(host))
 }
 
+/// Updates registry state recording that an extension has departed.
 fn depart(
   state: State,
   extension: String,
@@ -710,6 +721,7 @@ fn depart(
 // half of this contract: a code neither of them mints reaches a caller as
 // `Refused`, which is the safe reading — something went wrong and the
 // extension said what.
+/// Maps satellite capability outcome into hook bus result or failure.
 fn settle(
   answer: Result(framing.CapOutcome, satellite.InvokeError),
 ) -> Result(MsgPackValue, HookFailure) {
@@ -735,6 +747,7 @@ fn settle(
 // they went. A departed extension is in the ledger too, because "we ran a
 // node for it and here is its jail" is the same fact whether the node
 // outlived the session or not.
+/// Stops all active hosts and collects enforcement reports for every recorded node.
 fn reap(state: State) -> List(#(String, enforcement.Report)) {
   dict.to_list(state.held)
   |> list.map(fn(entry) {
@@ -750,11 +763,13 @@ fn reap(state: State) -> List(#(String, enforcement.Report)) {
 // its caller on a timeout or a dead callee, and this runs on a strand's
 // own process inside a live run, so the failure mode that must not happen
 // is exactly the one `call` has.
+/// Sends a request to registry subject with caller monitoring and timeout handling.
 fn ask(
   name: address.Address(Message),
   timeout_ms: Int,
   build: fn(Subject(Result(MsgPackValue, HookFailure))) -> Message,
 ) -> Result(MsgPackValue, HookFailure) {
+  // Lookup registry subject address.
   case address.lookup(name) {
     Error(Nil) -> Error(Gone("the extension host registry is not running"))
     Ok(subject) -> {
@@ -771,6 +786,8 @@ fn ask(
         |> process.select_map(reply, Answered)
         |> process.select_specific_monitor(monitor, RegistryDied)
       process.send(subject, build(reply))
+
+      // Await registry response or monitor down signal.
       let answer = case process.selector_receive(selector, timeout_ms) {
         Ok(Answered(answer:)) -> answer
         Ok(RegistryDied(..)) ->
@@ -786,6 +803,7 @@ fn ask(
             <> "invocation is still holding it",
           ))
       }
+
       process.demonitor_process(monitor)
       answer
     }

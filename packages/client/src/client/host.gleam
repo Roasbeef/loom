@@ -167,6 +167,8 @@ pub fn adopt_task(
       // The request subject must belong to this process, which is the
       // only one that ever selects on it.
       let retirement = process.new_subject()
+
+      // Dispatch on the boot initialization result to report status or begin supervision.
       case boot(stops, Host(pid: process.self(), retirement:)) {
         Error(reason) -> process.send(replies, Error(reason))
         Ok(booted) -> {
@@ -313,9 +315,11 @@ type Event {
   Retire(reply: Option(Subject(Result(Nil, cleanup.Failure))))
 }
 
-// Waits for the first fatal death or a retirement request, and tears the
-// stack down. Monitors go on the pids that unlinked themselves from their
-// starter; everything else the boot linked arrives through the exit trap.
+/// Waits for the first fatal death or a retirement request, and tears the stack down.
+///
+/// Waits for the first fatal death or a retirement request, and tears the
+/// stack down. Monitors go on the pids that unlinked themselves from their
+/// starter; everything else the boot linked arrives through the exit trap.
 fn watch(
   watched: List(#(String, Pid)),
   retirement: Subject(Retirement),
@@ -348,6 +352,7 @@ fn watch(
   await_end(selector, teardown, booted, stops)
 }
 
+/// Loops until a monitored service exits or explicit retirement is requested.
 fn await_end(
   selector: process.Selector(Event),
   teardown: fn(booted) -> cleanup.Task,
@@ -365,6 +370,8 @@ fn await_end(
     // in `retire` is waiting on.
     Retire(reply) -> {
       let outcome = cleanup.perform(teardown(booted))
+
+      // Acknowledge the retirement outcome if a reply channel was provided.
       case reply {
         None -> Nil
         Some(endpoint) -> process.send(endpoint, outcome)
@@ -385,6 +392,7 @@ fn named(by_pid: List(#(Pid, String)), pid: Pid) -> String {
   }
 }
 
+/// Formats a process exit reason into human-readable diagnostic text.
 fn describe(reason: process.ExitReason) -> String {
   case reason {
     Normal -> "normal"

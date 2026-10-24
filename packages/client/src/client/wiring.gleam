@@ -310,6 +310,8 @@ pub type Config {
 // checks `harness.new` makes, so that a gateway which routes only part of the
 // roles stays a runtime condition (`resolution` answers `ModelUnresolved`)
 // exactly as it always was.
+
+/// Establishes provider routing for the caller, keeping its validation and result policy at this boundary.
 fn provider_routing(config: Config) -> routing.Routing {
   routing.Routing(
     gateway: config.gateway,
@@ -319,6 +321,7 @@ fn provider_routing(config: Config) -> routing.Routing {
   )
 }
 
+/// Establishes provider configuration for the caller, keeping its validation and result policy at this boundary.
 fn provider_configuration(config: Config) -> provider.Provider {
   provider.new(
     provider_routing(config),
@@ -332,6 +335,8 @@ fn provider_configuration(config: Config) -> provider.Provider {
 // own `ImageReading` because its constructors are the spelling of the
 // `vision` key throughout the parser and the tests, and a Gleam type alias
 // does not re-export constructors; this is the one place the two are mapped.
+
+/// Establishes lookup of for the caller, keeping its validation and result policy at this boundary.
 fn lookup_of(
   facts: fn(ModelIdentity) ->
     Result(#(ResolvedModel, String, catalog.ImageReading), Nil),
@@ -352,6 +357,7 @@ fn image_reading(reading: catalog.ImageReading) -> model_facts.ImageReading {
   }
 }
 
+/// Establishes fallback of for the caller, keeping its validation and result policy at this boundary.
 fn fallback_of(config: Config) -> model_facts.Fallback {
   model_facts.Fallback(
     api: config.api,
@@ -427,6 +433,8 @@ pub fn build_effects_held(
 // The record both builders share, differing only in the `run` slot. The
 // configuration this function receives is read for projections and field
 // copies; nothing it builds other than `run` may close over `config`.
+
+/// Establishes effects over for the caller, keeping its validation and result policy at this boundary.
 fn effects_over(
   config: Config,
   run: fn(effects.ToolRun) -> effects.ToolOutcome,
@@ -586,6 +594,8 @@ fn history_registration(registry: Registry) -> HistoryRegistration {
 // reads beside it instead of branching around them. The two sides are not
 // both `Result`, which is the case the house combinator pattern exists for
 // (`docs/gleam-style.md` Part III, "Short-circuit combinators").
+
+/// Establishes if searchable for the caller, keeping its validation and result policy at this boundary.
 fn if_searchable(
   registration: HistoryRegistration,
   then: fn() -> Result(a, Nil),
@@ -600,6 +610,8 @@ fn if_searchable(
 // both host registration and strand activation, plus the canonical session
 // identity. Missing configuration keeps the original messages; compaction
 // must never grant a tool or expose a database path to make recall possible.
+
+/// Establishes reference projection for the caller, keeping its validation and result policy at this boundary.
 fn reference_projection(
   opened: Session,
   searchable: HistoryRegistration,
@@ -626,6 +638,8 @@ fn reference_projection(
     )
     Ok(session_id)
   }
+
+  // Decide how to handle available {.
   case available {
     Ok(session_id) -> hooks.with_tool_references(projected, opened, session_id)
     Error(Nil) -> projected
@@ -640,6 +654,8 @@ fn reference_projection(
 // tree asks for one; and a checkpoint that could not be built, which
 // leaves a threshold compaction's run alive and unclamped and drains an
 // overflow's — never a published claim that the strand wrote nothing.
+
+/// Establishes structural decision projected for the caller, keeping its validation and result policy at this boundary.
 fn structural_decision_projected(
   opened: Session,
   searchable: HistoryRegistration,
@@ -662,6 +678,8 @@ fn structural_decision_projected(
 
 // A registered tool may still be disabled on this strand. Match the
 // durable active-tool list used to build generation requests.
+
+/// Establishes recall projected for the caller, keeping its validation and result policy at this boundary.
 fn recall_projected(
   opened: Session,
   searchable: HistoryRegistration,
@@ -677,6 +695,8 @@ fn recall_projected(
     use <- if_searchable(searchable)
     Ok(list.contains(configuration.value.active_tool_names, history.tool_name))
   }
+
+  // Decide how to handle available {.
   case available {
     Ok(True) -> checkpoint.Searchable
     _ -> checkpoint.Unsearchable
@@ -686,6 +706,8 @@ fn recall_projected(
 // The request's messages with the notes reminder appended, or untouched.
 // Compaction switched off means no boundary is coming, so there is
 // nothing to remind about.
+
+/// Establishes near limit reminder projected for the caller, keeping its validation and result policy at this boundary.
 fn near_limit_reminder_projected(
   opened: Session,
   lookup: model_facts.Lookup,
@@ -696,6 +718,8 @@ fn near_limit_reminder_projected(
   messages: List(AgentMessage),
 ) -> List(AgentMessage) {
   use <- bool.guard(when: !compaction.enabled, return: messages)
+
+  // Decide how to handle notes.strand_of(opened, operation) {.
   case notes.strand_of(opened, operation) {
     Error(Nil) -> messages
     Ok(strand) ->
@@ -726,6 +750,8 @@ fn near_limit_reminder_projected(
 // context as it stood before the compaction. `carried` is how the usage
 // fold skips those, and without it the first request after a compaction
 // read a stale total and raised the reminder against room that was there.
+
+/// Establishes reminded projected for the caller, keeping its validation and result policy at this boundary.
 fn reminded_projected(
   opened: Session,
   lookup: model_facts.Lookup,
@@ -747,6 +773,8 @@ fn reminded_projected(
   let total = hooks.context_tokens(projected, hooks.estimate_message)
   let window =
     model_facts.of_strand(opened, lookup, fallback, strand).context_window
+
+  // Decide how to handle total > checkpoint.reminder_point(window, compaction) {.
   case total > checkpoint.reminder_point(window, compaction) {
     False -> messages
     True ->
@@ -764,7 +792,10 @@ fn reminded_projected(
 // the compaction itself, which is the only part of the branch the count
 // needs; a strand with no compaction, or a store that will not answer,
 // carries nothing.
+
+/// Establishes carried by session for the caller, keeping its validation and result policy at this boundary.
 fn carried_by_session(opened: Session, strand: String) -> Int {
+  // Decide how to handle session.strand_leaf(opened, strand) {.
   case session.strand_leaf(opened, strand) {
     Ok(Some(session.Cell(value: Some(leaf), ..))) -> {
       let newest =
@@ -773,6 +804,8 @@ fn carried_by_session(opened: Session, strand: String) -> Int {
         |> storage.branch_kind(storage.Compaction)
         |> storage.branch_limit(1)
         |> storage.scan_branch(opened.store, _)
+
+      // Decide how to handle newest {.
       case newest {
         Ok([entry.CompactionEntry(retained_tail:, ..)]) ->
           1 + list.length(retained_tail)
@@ -794,6 +827,8 @@ fn carried_by_session(opened: Session, strand: String) -> Int {
 // has no field for it: the preparation is the *input* the decision hook
 // froze, and the instructions are a property of the operation that asked
 // for the compaction.
+
+/// Establishes instructions for session for the caller, keeping its validation and result policy at this boundary.
 fn instructions_for_session(
   opened: Session,
   operation: OpId,
@@ -1266,11 +1301,13 @@ pub fn run_workspace_tool(
   run: effects.ToolRun,
   authority: Authority,
 ) -> effects.ToolOutcome {
+  // Decide how to handle let outcome =  context_for(workspace, refused, output, run, authority).
   let outcome = case context_for(workspace, refused, output, run, authority) {
     Error(reason) -> tool.failure(reason)
     Ok(ctx) ->
       tool.dispatch(workspace.registry, ctx, run.call.name, run.arguments)
   }
+
   tool_table.finished(outcome, run, workspace.clock)
 }
 
@@ -1345,16 +1382,20 @@ pub fn run_tool_held(
 // The in-band failure for a held value which could not be fetched. The
 // runtime is owed a `ToolCompleted` for the call whatever happened, so the
 // model sees that the call failed and the strand carries on.
+
+/// Establishes holder unavailable for the caller, keeping its validation and result policy at this boundary.
 fn holder_unavailable(
   held: String,
   unavailable: tool_holder.Unavailable,
   run: effects.ToolRun,
   clock: Clock,
 ) -> effects.ToolOutcome {
+  // Decide how to handle let reason =  unavailable {.
   let reason = case unavailable {
     tool_holder.Gone -> held <> " is gone"
     tool_holder.TimedOut -> held <> " did not answer in time"
   }
+
   let #(now, _clock) = clock.read(clock)
   tool_table.completed(
     tool.failure("the tool `" <> run.call.name <> "` did not run: " <> reason),
@@ -1410,6 +1451,8 @@ pub fn run_placed(
 // A workspace-side call: fetch the plane's run, read the authority the
 // session stored for this call, and hand both to the plane. A read fault or
 // a malformed record refuses the call with the reason `run_tool` gives.
+
+/// Establishes run on workspace for the caller, keeping its validation and result policy at this boundary.
 fn run_on_workspace(
   workspace: tool_holder.Holder(WorkspaceRun),
   session: Session,
@@ -1481,6 +1524,8 @@ pub fn tool_context(config: Config, run: effects.ToolRun) -> tool.Ctx {
 
 // `tool_context` over the workspace's own fields and the two owner-side
 // functions, which is all the `Ctx` ever read from the whole `Config`.
+
+/// Establishes workspace context for the caller, keeping its validation and result policy at this boundary.
 fn workspace_context(
   workspace: WorkspaceView,
   refused: fn(escalate.Refused) -> escalate.Decision,
@@ -1533,12 +1578,16 @@ fn workspace_context(
 // The tool decides *whether* to raise, because only the tool knows which
 // of its refusals a re-execution could actually repair; this decides what
 // happens to the one it raises.
+
+/// Establishes raising seam for the caller, keeping its validation and result policy at this boundary.
 fn raising_seam(
   refused: fn(escalate.Refused) -> escalate.Decision,
   run: effects.ToolRun,
 ) -> fn(tool.RaisedRefusal) -> tool.Escalated {
   fn(raised: tool.RaisedRefusal) {
     let tool.RaisedRefusal(denial:, deadline_ms:) = raised
+
+    // Decide how to handle refused(refused_call(run, denial, deadline_ms)) {.
     case refused(refused_call(run, denial, deadline_ms)) {
       escalate.Settle -> tool.Settle
       escalate.Resume(grants:) -> tool.Resume(grants:)
@@ -1550,6 +1599,8 @@ fn raising_seam(
 // the same way and from the same place — the driver's `ToolRun` — so a
 // record raised through either is scoped to one real call in the tree and
 // bound to the arguments a resumption would re-execute with.
+
+/// Establishes refused call for the caller, keeping its validation and result policy at this boundary.
 fn refused_call(
   run: effects.ToolRun,
   denial: Denial,
@@ -1588,6 +1639,8 @@ fn refused_call(
 // Every other refusal — an invalid policy, a spent budget, a missing
 // helper — passes straight through: none of them is a decision a human
 // is being asked to make.
+
+/// Establishes escalating runner for the caller, keeping its validation and result policy at this boundary.
 fn escalating_runner(
   workspace: WorkspaceView,
   refused: fn(escalate.Refused) -> escalate.Decision,
@@ -1600,9 +1653,12 @@ fn escalating_runner(
       waiting: workspace.broker_timeout_ms,
     )
   fn(spec: broker.CallSpec, events) {
+    // Decide how to handle direct(spec, events) {.
     case direct(spec, events) {
       Error(broker.PolicyRefused(denial:)) -> {
         let call = refused_call(run, denial, spec.budget.deadline_ms)
+
+        // Decide how to handle refused(call) {.
         case refused(call) {
           escalate.Settle -> Error(broker.PolicyRefused(denial:))
           escalate.Resume(grants: approved) ->

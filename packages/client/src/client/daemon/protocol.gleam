@@ -409,10 +409,14 @@ pub fn decode(text: String) -> Result(Request, Fault) {
     object(value)
     |> result.map_error(fn(reason) { Fault(None, "bad_envelope", reason) }),
   )
+
+  // Extract the request correlation id when present and positive.
   let reply_to = case list.key_find(fields, "id") {
     Ok(json.Int(id)) if id > 0 -> Some(id)
     Ok(_) | Error(Nil) -> None
   }
+
+  // Enforce protocol envelope version 2.
   use Nil <- result.try(case list.key_find(fields, "v") {
     Ok(json.Int(2)) -> Ok(Nil)
     Ok(_) | Error(Nil) ->
@@ -422,10 +426,13 @@ pub fn decode(text: String) -> Result(Request, Fault) {
         "expected protocol version 2",
       ))
   })
+
+  // Ensure request carries a positive integer request id.
   use id <- result.try(case reply_to {
     Some(id) -> Ok(id)
     None -> Error(Fault(None, "bad_envelope", "expected a positive request id"))
   })
+
   use command <- result.try(
     decode_fields(fields)
     |> result.map_error(fn(reason) { Fault(Some(id), "bad_request", reason) }),
@@ -433,12 +440,15 @@ pub fn decode(text: String) -> Result(Request, Fault) {
   Ok(Request(id, command))
 }
 
+/// Decodes the payload fields for a specific wire command name.
 fn decode_fields(
   fields: List(#(String, JsonValue)),
 ) -> Result(Command, String) {
   use name <- result.try(text_field(fields, "cmd", 64))
   use body <- result.try(required(fields, "body"))
   use fields <- result.try(object(body))
+
+  // Dispatch payload decoding based on the requested command verb.
   case name {
     "peers.inspect" -> {
       use source <- result.try(text_field(fields, "source_session", 128))
@@ -465,6 +475,8 @@ fn decode_fields(
       )
       use to <- result.try(text_field(fields, "target_strand", 512))
       use epoch <- result.try(text_field(fields, "epoch", 256))
+
+      // Decode the specific peer messaging or link command action.
       case name {
         "peers.unlink" -> Ok(UnlinkPeers(source, from, target, to, epoch))
         "peers.send" -> {
@@ -474,11 +486,14 @@ fn decode_fields(
         }
         _ -> {
           use wake <- result.try(text_field(fields, "wake", 32))
+
+          // Validate wake setting options for the link.
           use wake <- result.try(case wake {
             "busy_only" -> Ok(peer_mail.BusyOnly)
             "may_wake" -> Ok(peer_mail.MayWake)
             _ -> Error("wake must be busy_only or may_wake")
           })
+
           Ok(LinkPeers(source, from, target, to, wake, epoch))
         }
       }
@@ -502,6 +517,8 @@ fn decode_fields(
     "sessions.isolate" -> {
       use id <- result.try(session_id(fields))
       use transcript <- result.try(text_field(fields, "transcript", 32))
+
+      // Enforce explicit transcript sharing acknowledgement.
       use Nil <- result.try(case transcript {
         "share_existing" -> Ok(Nil)
         _other ->
@@ -509,6 +526,7 @@ fn decode_fields(
             "explicit share_existing transcript acknowledgement is required",
           )
       })
+
       use epoch <- result.map(text_field(fields, "epoch", 256))
       IsolateSession(id, epoch)
     }
@@ -546,28 +564,36 @@ fn decode_fields(
       RevokeCredentials(principal, epoch)
     }
     "principals.list" -> {
+      // Decode optional principal listing cursor.
       use after <- result.map(case list.key_find(fields, "after") {
         Error(Nil) -> Ok("")
         Ok(_) -> text_field(fields, "after", 128)
       })
+
       ListPrincipals(after)
     }
     "principals.memberships" -> {
       use principal <- result.try(text_field(fields, "principal_id", 128))
+
+      // Decode optional principal memberships cursor.
       use after <- result.map(case list.key_find(fields, "after") {
         Error(Nil) -> Ok("")
         Ok(json.String(text)) -> canonical_id(text)
         Ok(_) -> Error("expected a session cursor")
       })
+
       PrincipalMemberships(principal, after)
     }
     "credentials.signins" -> {
       use target <- result.try(optional_principal(fields))
+
+      // Decode optional credential sign-in cursor.
       use after <- result.map(case list.key_find(fields, "after") {
         Error(Nil) -> Ok("")
         Ok(json.String("")) -> Ok("")
         Ok(_) -> fingerprint_field(fields, "after")
       })
+
       CredentialSignins(target, after)
     }
     "principals.rename" -> {
@@ -585,10 +611,13 @@ fn decode_fields(
 
     "sessions.members" -> {
       use session <- result.try(session_id(fields))
+
+      // Decode optional session members cursor token.
       use after <- result.map(case list.key_find(fields, "after") {
         Error(Nil) -> Ok("")
         Ok(_) -> text_field(fields, "after", 128)
       })
+
       SessionMembers(session, after)
     }
     "status" -> Ok(Status)
@@ -597,6 +626,8 @@ fn decode_fields(
       use page <- result.try(page_ceiling(fields))
       use remember <- result.try(remembering(fields))
       use link <- result.try(link_kind(fields))
+
+      // Match combination of link, session ID, and remember preferences.
       case link, id, remember {
         DeviceSignIn, Some(_), _ ->
           Error("a device link opens the home and names no session")
@@ -635,11 +666,14 @@ fn decode_fields(
       use key <- result.try(text_field(fields, "request_key", 256))
       use executor <- result.try(executor_field(fields))
       use pool <- result.try(pool_field(fields))
+
+      // Enforce exclusivity between executor and pool.
       use Nil <- result.try(case executor, pool {
         Some(_), Some(_) ->
           Error("executor and pool are exclusive: name at most one")
         _, _ -> Ok(Nil)
       })
+
       let placed = option.or(executor, pool)
       use workspace <- result.try(created_workspace(fields, placed))
       use name <- result.try(text_field(fields, "name", 256))
@@ -706,13 +740,16 @@ fn decode_fields(
 // of at most 8 KiB, which is more than the 4 KiB body bound allows once
 // encoded. The ledger judges the lines themselves; this reader bounds their
 // shape and number.
+/// Decodes bounded ledger text lines from command payload fields.
 fn ledger_lines(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(String), String) {
+  // Extract lines array from payload.
   case list.key_find(fields, "lines") {
     Ok(json.Array(items)) -> {
       use lines <- result.try(
         list.try_map(items, fn(item) {
+          // Decode line text and enforce size bound.
           case item {
             json.String(line) ->
               case bit_array.byte_size(bit_array.from_string(line)) <= 8192 {
@@ -723,6 +760,8 @@ fn ledger_lines(
           }
         }),
       )
+
+      // Validate bounds on line array length.
       case list.length(lines) {
         0 -> Error("lines must hold at least one line")
         count if count > 64 -> Error("lines holds more than 64 lines")
@@ -735,6 +774,7 @@ fn ledger_lines(
 
 // `after` is a sequence number from 0 up (the sequence number the asker holds),
 // and `limit` is any positive integer: the ledger clamps it to a page.
+/// Decodes raw ledger entry lines from a JSON payload object.
 fn ledger_entries(
   fields: List(#(String, JsonValue)),
 ) -> Result(Command, String) {
@@ -747,13 +787,17 @@ fn ledger_entries(
   }
 }
 
+/// Decodes a session migration request payload targeting an orchestrator.
 fn move_session(fields) {
   use id <- result.try(session_id(fields))
   use to <- result.try(text_field(fields, "to", 64))
+
+  // Validate orchestrator destination name format.
   use Nil <- result.try(case catalogue.is_orchestrator_name(to) {
     True -> Ok(Nil)
     False -> Error("to must be the name of an orchestrator")
   })
+
   use epoch <- result.map(text_field(fields, "epoch", 256))
   MoveSession(id, to, epoch)
 }
@@ -763,6 +807,7 @@ fn move_session(fields) {
 // registered name is not one, so the default for such a creation is the scope
 // that exists and asking for the other is refused rather than quietly changed.
 // `placed` is the executor or the pool the creation names.
+/// Decodes domain scope bounds and session limits from fields.
 fn domain_scope(fields, placed: Option(String)) {
   case list.key_find(fields, "domain_scope"), placed {
     Error(Nil), None | Ok(json.String("workspace_private")), None ->
@@ -780,6 +825,7 @@ fn domain_scope(fields, placed: Option(String)) {
 // The two optional enrollment fields are exclusive. A digest enrolls the
 // invitee's own credential and creates no claim, so a lifetime for a claim
 // that will not exist names nothing and is refused rather than ignored.
+/// Decodes a node enrollment payload from field key-value pairs.
 fn enrollment(
   fields: List(#(String, JsonValue)),
 ) -> Result(Enrollment, String) {
@@ -800,6 +846,7 @@ fn enrollment(
   }
 }
 
+/// Decodes an expected hexadecimal digest string from payload fields.
 fn digest_field(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -828,6 +875,7 @@ fn digest_field(
 /// assert request.id == 1
 /// ```
 pub fn decode_claim(text: String) -> Result(ClaimRequest, Fault) {
+  // Enforce byte size limit on raw claim payload.
   use Nil <- result.try(
     case bit_array.byte_size(bit_array.from_string(text)) <= max_claim_bytes {
       True -> Ok(Nil)
@@ -849,6 +897,8 @@ pub fn decode_claim(text: String) -> Result(ClaimRequest, Fault) {
     object(value)
     |> result.map_error(fn(reason) { Fault(None, "bad_request", reason) }),
   )
+
+  // Verify version 2 protocol and extract valid request id.
   use id <- result.try(
     case list.key_find(fields, "v"), list.key_find(fields, "id") {
       Ok(json.Int(2)), Ok(json.Int(id)) if id > 0 -> Ok(id)
@@ -860,30 +910,42 @@ pub fn decode_claim(text: String) -> Result(ClaimRequest, Fault) {
         ))
     },
   )
+
   let claim = {
     use name <- result.try(text_field(fields, "cmd", 64))
+
+    // Ensure the endpoint receives only credentials.claim commands.
     use Nil <- result.try(case name {
       "credentials.claim" -> Ok(Nil)
       _other -> Error("the claim endpoint accepts only credentials.claim")
     })
+
     use body <- result.try(required(fields, "body"))
     use body <- result.try(object(body))
     use credential <- result.try(digest_field(body, "credential_digest"))
+
+    // Extract optional name field from the body.
     use name <- result.map(case list.key_find(body, "name") {
       Error(Nil) -> Ok(None)
       Ok(json.String(chosen)) -> Ok(Some(chosen))
       Ok(_) -> Error("expected name to be text")
     })
+
     #(credential, name)
   }
+
+  // Map result into ClaimRequest or Fault.
   case claim {
     Ok(#(credential, name)) -> Ok(ClaimRequest(id, credential, name))
     Error(reason) -> Error(Fault(Some(id), "bad_request", reason))
   }
 }
 
+/// Decodes a membership role string into the corresponding domain role.
 fn member_role(fields) {
   use text <- result.try(text_field(fields, "role", 16))
+
+  // Map role name string to the corresponding access level.
   case text {
     "operator" -> Ok(access.Operator)
     "observer" -> Ok(access.Observer)
@@ -905,14 +967,18 @@ fn required(
   list.key_find(fields, key) |> result.map_error(fn(_) { "missing " <> key })
 }
 
+/// Extracts a non-empty text field from a list of JSON fields.
 fn text_field(
   fields: List(#(String, JsonValue)),
   key: String,
   limit: Int,
 ) -> Result(String, String) {
   use value <- result.try(required(fields, key))
+
+  // Validate non-empty text string value and check byte bounds.
   case value {
     json.String(text) if text != "" -> {
+      // Check byte limit for text field.
       case bit_array.byte_size(bit_array.from_string(text)) <= limit {
         True -> Ok(text)
         False -> Error("text field exceeds its byte limit")
@@ -926,10 +992,14 @@ fn text_field(
 // included, so that the catalogue's rule is the only one that judges it and a
 // name it refuses is `invalid_name` rather than a malformed request. The bound
 // only keeps a frame from carrying a megabyte to the catalogue.
+/// Extracts a valid name field string from a list of JSON fields.
 fn name_field(fields: List(#(String, JsonValue))) -> Result(String, String) {
   use value <- result.try(required(fields, "name"))
+
+  // Ensure name field is a string and conforms to size limits.
   case value {
     json.String(text) ->
+      // Bound name string bytes to 1024.
       case bit_array.byte_size(bit_array.from_string(text)) <= 1024 {
         True -> Ok(text)
         False -> Error("text field exceeds its byte limit")
@@ -938,6 +1008,7 @@ fn name_field(fields: List(#(String, JsonValue))) -> Result(String, String) {
   }
 }
 
+/// Extracts an optional pagination cursor from payload fields.
 fn optional_after(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
@@ -955,6 +1026,7 @@ fn optional_after(
 
 // An empty registration selects the daemon's runtime defaults. Keep this
 // exception on the configuration field, not on identities or display names.
+/// Extracts an optional configuration path string from fields.
 fn configuration_field(
   fields: List(#(String, JsonValue)),
 ) -> Result(String, String) {
@@ -970,6 +1042,7 @@ const profile_words =
 // The optional model profile of a creation. An absent field is the default
 // roles; a field that is present must be a profile name, so a malformed one is
 // refused as a bad request and never read as the default.
+/// Extracts an optional profile name string from payload fields.
 fn profile_field(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
@@ -990,6 +1063,7 @@ const executor_words =
 // The optional executor of a creation. An absent field is a workspace on this
 // host; a field that is present must be an executor name, so a malformed one is
 // refused as a bad request and never read as a local session.
+/// Extracts an optional executor identity string from payload fields.
 fn executor_field(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
@@ -1010,6 +1084,7 @@ const pool_words =
 // The optional pool of a creation, read as the executor is: an absent field is
 // no pool, and a field that is present must be a pool name, so a malformed one
 // is refused as a bad request and never read as a creation with no pool.
+/// Extracts an optional executor pool name string from payload fields.
 fn pool_field(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
@@ -1028,16 +1103,21 @@ fn pool_field(
 // it always was. With either it is the name of a workspace registered there,
 // which is held to its own grammar and to no filesystem rule: the name is never
 // canonicalized on this host, so nothing about it is checked against a disk.
+/// Decodes workspace creation parameters and placement flags.
 fn created_workspace(
   fields: List(#(String, JsonValue)),
   placed: Option(String),
 ) -> Result(String, String) {
+  // Check whether creation is placed or uses raw workspace path.
   case placed {
     None -> text_field(fields, "workspace", 4096)
     Some(_) -> {
       use name <- result.try(required(fields, "workspace"))
+
+      // Validate placed workspace name.
       case name {
         json.String(text) ->
+          // Check against registered workspace name constraints.
           case catalogue.is_workspace_name(text) {
             True -> Ok(text)
             False ->
@@ -1059,22 +1139,29 @@ const node_words =
 // identity or the empty text. A page that follows a row names the group it
 // belongs to, because identities are not ordered across orchestrators, so `after`
 // without `orchestrator` is refused and not read as a cursor into every group.
+/// Decodes remote session query coordinates from payload fields.
 fn elsewhere_request(
   fields: List(#(String, JsonValue)),
 ) -> Result(Command, String) {
+  // Decode optional orchestrator filter name.
   use orchestrator <- result.try(case list.key_find(fields, "orchestrator") {
     Error(Nil) -> Ok(None)
     Ok(json.String(key)) ->
+      // Check that orchestrator identifier matches name syntax.
       case catalogue.is_orchestrator_name(key) {
         True -> Ok(Some(key))
         False -> Error(orchestrator_words)
       }
     Ok(_) -> Error(orchestrator_words)
   })
+
+  // Decode optional after cursor token.
   use after <- result.try(case list.key_find(fields, "after") {
     Error(Nil) -> Ok(None)
     Ok(_) -> cursor(fields) |> result.map(Some)
   })
+
+  // Enforce that pagination after cursor requires an orchestrator target.
   case orchestrator, after {
     None, Some(_) -> Error("after needs the orchestrator it follows")
     _, _ -> Ok(SessionsElsewhere(orchestrator, after))
@@ -1089,6 +1176,7 @@ const orchestrator_words =
 // a malformed one is refused as a bad request and never read as "every node".
 // Whether a well-formed key names anything is the daemon's configuration to
 // say, and an unknown one is answered `not_found` without a connection.
+/// Extracts a node name string from payload fields with validation.
 fn node_field(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
@@ -1116,6 +1204,7 @@ const model_words = "model must be a model key of 1 to 64 bytes"
 // as the profile or configuration gives it; a field that is present must be a
 // key, so a malformed one is refused as a bad request and never read as no
 // choice (protocol-change/080).
+/// Extracts an optional model identifier string from payload fields.
 fn model_field(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
@@ -1138,6 +1227,7 @@ fn session_id(fields: List(#(String, JsonValue))) -> Result(String, String) {
 // A session identity that may be left out. An absent field is the request
 // for a home page (protocol-change/065); a field that is present must be a
 // canonical identity, so a malformed one is refused and never read as a home.
+/// Extracts an optional session identity string from payload fields.
 fn optional_session_id(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
@@ -1149,6 +1239,7 @@ fn optional_session_id(
 
 // A principal the command names, or none when it is absent, which means the
 // caller's own.
+/// Extracts an optional principal identity string from payload fields.
 fn optional_principal(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(String), String) {
@@ -1160,11 +1251,14 @@ fn optional_principal(
 
 // A login's fingerprint: the first sixteen hexadecimal digits of its digest,
 // lowercase, which is the whole of how a login is named on the wire.
+/// Decodes and validates an identity key fingerprint string.
 fn fingerprint_field(
   fields: List(#(String, JsonValue)),
   key: String,
 ) -> Result(String, String) {
   use text <- result.try(text_field(fields, key, 16))
+
+  // Validate 16-character lowercase hex format.
   case
     bit_array.byte_size(bit_array.from_string(text)) == 16
     && list.all(string.to_graphemes(text), fn(digit) {
@@ -1178,6 +1272,7 @@ fn fingerprint_field(
 
 // Whether a home link's exchange sets a browser login. Absent is no answer,
 // which the daemon reads as `Remember`.
+/// Decodes memory retention preferences and flags from payload fields.
 fn remembering(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Remembering), String) {
@@ -1198,6 +1293,7 @@ type LinkKind {
 
 // The `device` field. Absent or `false` is the page link every launcher sent
 // before the field existed.
+/// Decodes an outbound or inbound link kind descriptor string.
 fn link_kind(fields: List(#(String, JsonValue))) -> Result(LinkKind, String) {
   case list.key_find(fields, "device") {
     Error(Nil) | Ok(json.Bool(False)) -> Ok(PageLink)
@@ -1208,6 +1304,7 @@ fn link_kind(fields: List(#(String, JsonValue))) -> Result(LinkKind, String) {
 
 // A page's ceiling. An absent field is an observer's page, which is what
 // a launcher that predates the field asks for.
+/// Decodes an integer pagination item limit from payload fields.
 fn page_ceiling(
   fields: List(#(String, JsonValue)),
 ) -> Result(access.Role, String) {
@@ -1225,6 +1322,7 @@ fn canonical_id(text: String) -> Result(String, String) {
   |> result.replace_error("expected a canonical session id")
 }
 
+/// Decodes an opaque pagination cursor string from payload fields.
 fn cursor(fields: List(#(String, JsonValue))) -> Result(String, String) {
   case list.key_find(fields, "after") {
     Ok(json.String("")) -> Ok("")
@@ -1236,31 +1334,40 @@ fn cursor(fields: List(#(String, JsonValue))) -> Result(String, String) {
 // The identity list is refused whole rather than truncated or deduplicated:
 // a reply shorter than the request must mean "these sessions are not
 // resident", never "the server dropped some of what you asked".
+/// Decodes a bounded list of unique session IDs for activity checks.
 fn activity_sessions(
   fields: List(#(String, JsonValue)),
 ) -> Result(List(String), String) {
+  // Decode non-empty session identity list.
   use values <- result.try(case list.key_find(fields, "sessions") {
     Ok(json.Array([_, ..] as values)) -> Ok(values)
     Ok(_) | Error(Nil) -> Error("expected a nonempty sessions array")
   })
+
+  // Enforce session count ceiling.
   use Nil <- result.try(case list.drop(values, activity_limit) {
     [] -> Ok(Nil)
     [_, ..] -> Error("sessions names more than 24 identities")
   })
+
   use sessions <- result.try(
     list.try_map(values, fn(value) {
+      // Decode canonical session ID.
       case value {
         json.String(text) -> canonical_id(text)
         _ -> Error("expected a canonical session id")
       }
     }),
   )
+
+  // Ensure all session IDs are unique.
   case list.length(list.unique(sessions)) == list.length(sessions) {
     True -> Ok(sessions)
     False -> Error("sessions repeats an identity")
   }
 }
 
+/// Decodes an optional integer revision sequence number.
 fn optional_revision(
   fields: List(#(String, JsonValue)),
 ) -> Result(Option(Int), String) {
@@ -1286,10 +1393,12 @@ pub fn event(
   name: String,
   body: JsonValue,
 ) -> Result(String, Fault) {
+  // Format reply correlation ID into event if present.
   let correlation = case reply_to {
     None -> []
     Some(id) -> [#("reply_to", json.Int(id))]
   }
+
   let text =
     json.to_string(
       json.Object([
@@ -1303,6 +1412,7 @@ pub fn event(
   text
 }
 
+/// Decodes a timeout duration integer bounded by maximum allowed limits.
 fn within_limit(text: String, reply_to: Option(Int)) -> Result(Nil, Fault) {
   case bit_array.byte_size(bit_array.from_string(text)) <= max_bytes {
     True -> Ok(Nil)

@@ -348,6 +348,15 @@ pub fn rules() -> List(Rule) {
 /// stdout is invisible exactly when the suite is green, which is when the
 /// census must see it; a Lustre import in a rule module typechecks and passes
 /// on a newer Node, and fails only in the signoff container.
+///
+/// **R21 and R22 now gate globally.** Both rules are decidable from syntax,
+/// source layout and comment tokens, and they protect the same literacy
+/// invariant everywhere: a complex case states its rationale, and a function
+/// carries its contract. The gate keeps the census at zero rather than letting
+/// new packages accumulate unreviewed findings. `policy.literate_packages()`
+/// remains the public sweep record, not the gate boundary; `client` is included
+/// there while its sweep is in flight, so this policy does not claim a measured
+/// zero census for that package.
 pub fn error_by_default() -> List(Rule) {
   [
     Unparseable,
@@ -364,6 +373,8 @@ pub fn error_by_default() -> List(Rule) {
     QualifiedDomainCall,
     StdoutSkip,
     TestImportWall,
+    CaseStanza,
+    FunctionDoc,
   ]
 }
 
@@ -398,8 +409,9 @@ fn is_gated(found: Finding, errors: List(Rule)) -> Bool {
 }
 
 /// Checks whether `found` is an R21 (`CaseStanza`) or R22 (`FunctionDoc`)
-/// finding inside a package that has already been swept into
-/// `policy.literate_packages()`.
+/// finding in a package covered by `policy.literate_packages()`. The rules also
+/// gate globally through `error_by_default`; this table remains the public
+/// record of packages whose census was swept and helps tests pin the ratchet.
 fn is_ratcheted_literate(found: Finding) -> Bool {
   case found.rule {
     CaseStanza | FunctionDoc ->

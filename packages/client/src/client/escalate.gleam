@@ -387,6 +387,7 @@ pub fn start(
     |> Ok
   })
   |> actor.on_message(fn(state, message) {
+    // The startup result determines whether the escalation service can accept requests.
     case message {
       Borrow(reply:) -> {
         process.send(reply, state)
@@ -546,6 +547,7 @@ pub fn notify_spawner_decision(
 // The notice is owed only once the call stopped parking at this `seq`: a call
 // still inside its grace spends the decision on its next poll slice, and a
 // notice then would tell the model about a decision its call already used.
+/// Sends an escalation notice through the configured sink and preserves delivery failure details.
 fn notify_with(
   runtime: api.Runtime,
   cell: api.EscalationCell,
@@ -582,10 +584,14 @@ pub fn decision_notice_text(
   decision: OperatorDecision,
 ) -> String {
   let tool_name = option.unwrap(record.tool, "tool")
+
+  // The decision variant selects the text sent to the requester.
   let action_line = case record.preview {
     Some(preview) -> "\n\nAction: " <> preview
     None -> ""
   }
+
+  // The decision variant selects the text sent to the requester.
   case decision {
     ApprovedOnce ->
       "[loom] approval "
@@ -647,6 +653,7 @@ pub fn decision_notice_text(
 // unbounded-key-space side with no diff to read and no compiler
 // complaint. Written out, it cannot: the build stops and the judgment
 // above has to be made again for the new variant.
+/// Builds the stable identity used to avoid duplicating an equivalent escalation request.
 fn dedup_key(grant: Grant) -> String {
   case grant {
     // The field, never the number. See the argument above.
@@ -670,6 +677,7 @@ fn dedup_key(grant: Grant) -> String {
   }
 }
 
+/// Extracts the bounded limit value from a configured request field.
 fn limit_field(field: policy.LimitField) -> String {
   case field {
     policy.CpuSeconds -> "cpu_s"
@@ -739,6 +747,8 @@ pub fn action_preview(arguments: JsonValue) -> String {
   let rendered = json.to_string(json.canonical(arguments))
   let bytes = bit_array.from_string(rendered)
   let size = bit_array.byte_size(bytes)
+
+  // The requested action determines which bounded preview is shown.
   case size <= preview_bytes {
     True -> rendered
     False -> {
@@ -755,6 +765,7 @@ const preview_bytes = 2048
 // `max`. A cut inside a multi-byte codepoint steps back and retries,
 // which terminates within three bytes; the recursion is why this is a
 // plain `case` rather than an `unwrap` fallback.
+/// Truncates text at a valid UTF-8 boundary without exceeding the requested byte limit.
 fn utf8_prefix(bytes: BitArray, max: Int) -> String {
   case bit_array.slice(bytes, at: 0, take: max) {
     Error(Nil) -> ""
@@ -768,6 +779,7 @@ fn utf8_prefix(bytes: BitArray, max: Int) -> String {
 
 // A byte count a person can read at a glance rather than count digits
 // of, which is the only reason the marker carries one.
+/// Groups escalation reasons so one notice reports each distinct reason once.
 fn grouped(number: Int) -> String {
   number
   |> int.to_string
@@ -781,7 +793,9 @@ fn grouped(number: Int) -> String {
 
 // --- deciding one refusal --------------------------------------------------
 
+/// Evaluates whether the request is authorized and still within its decision window.
 fn decide(config: Config, refused: Refused) -> Decision {
+  // The stored request and current authority determine whether escalation is approved.
   case borrow(config) {
     Error(Nil) -> Settle
     Ok(runtime) -> {
@@ -821,6 +835,8 @@ fn decide(config: Config, refused: Refused) -> Decision {
           refused:,
           until: until(config, refused),
         )
+
+      // The stored request and current authority determine whether escalation is approved.
       case raise(config, runtime, parked) {
         Error(Nil) -> Settle
         Ok(claimed) -> decide_claimed(config, runtime, parked, claimed)
@@ -829,12 +845,14 @@ fn decide(config: Config, refused: Refused) -> Decision {
   }
 }
 
+/// Commits the result only after the durable claim succeeds.
 fn decide_claimed(
   config: Config,
   runtime: api.Runtime,
   parked: Parked,
   claimed: durable.Escalation,
 ) -> Decision {
+  // The claim result determines whether the decision can be committed.
   case claimed.status, config.interactive() {
     durable.Approved, _ -> spend_claimed(config, runtime, parked)
     _, False -> detach_or_spend(config, runtime, parked)
@@ -845,6 +863,7 @@ fn decide_claimed(
   }
 }
 
+/// Creates or reuses a durable escalation request and returns its current decision.
 fn raise(
   config: Config,
   runtime: api.Runtime,
@@ -859,6 +878,8 @@ fn raise(
     want,
     action.digest,
   ))
+
+  // The request state determines whether a new escalation can be raised or deduplicated.
   case
     api.claim_escalation(
       runtime,
@@ -877,6 +898,7 @@ fn raise(
   }
 }
 
+/// Computes the next permitted ask count without exceeding its configured cap.
 fn want_next_asks(
   config: Config,
   runtime: api.Runtime,
@@ -895,22 +917,28 @@ fn want_next_asks(
   }
 }
 
+/// Increments a pending ask count only while the policy limit permits it.
 fn bump_want_asks(
   config: Config,
   runtime: api.Runtime,
   want: String,
 ) -> Result(Int, Nil) {
+  // The prior ask count determines whether the configured ask limit is reached.
   let current = case api.fact(runtime, want_asks_key(want)) {
     Ok(Some(json.Int(count))) -> count
     _ -> 0
   }
+
+  // The prior ask count determines whether the configured ask limit is reached.
   case current >= config.max_asks {
     True -> Error(Nil)
     False -> Ok(current + 1)
   }
 }
 
+/// Persists the ask count after the corresponding decision is accepted.
 fn record_want_asks(runtime: api.Runtime, want: String, asks: Int) -> Nil {
+  // The result determines whether the updated ask count is persisted.
   case asks > 0 {
     False -> Nil
     True -> {
@@ -932,6 +960,7 @@ fn record_want_asks(runtime: api.Runtime, want: String, asks: Int) -> Nil {
 // turns new records into events — so an unbounded set is a cost on every
 // tool call and every commit hint. The digest already collapses the one
 // model-controlled input (`dedup_key`); this bounds the rest.
+/// Checks whether a count remains within its inclusive configured cap.
 fn within_cap(config: Config, runtime: api.Runtime, id: String) -> Bool {
   case api.escalation(runtime, id) {
     Ok(_already_filed) -> True
@@ -976,6 +1005,7 @@ fn until(config: Config, refused: Refused) -> Int {
 // window left costs one read and no slice. It also means an approval that
 // lands exactly on the deadline is honoured rather than missed, which is
 // the better of the two answers.
+/// Moves an unresolved request into parked state while retaining cleanup custody.
 fn park(config: Config, runtime: api.Runtime, parked: Parked) -> Decision {
   let #(now, _clock) = clock.read(config.clock)
 
@@ -990,6 +1020,7 @@ fn park(config: Config, runtime: api.Runtime, parked: Parked) -> Decision {
       attempt: fn() { look(config, runtime, parked) },
     )
 
+  // The ownership state determines whether the request can be safely parked.
   case outcome {
     poll.Answered(Resume(grants:)) -> Resume(grants:)
     poll.Answered(Settle) | poll.Expired | poll.Failed(Nil) ->
@@ -997,6 +1028,7 @@ fn park(config: Config, runtime: api.Runtime, parked: Parked) -> Decision {
   }
 }
 
+/// Spends a claimed escalation request and returns its durable outcome.
 fn spend_claimed(
   config: Config,
   runtime: api.Runtime,
@@ -1008,6 +1040,7 @@ fn spend_claimed(
   }
 }
 
+/// Detaches a request cell when safe, otherwise completes the spend path.
 fn detach_or_spend(
   config: Config,
   runtime: api.Runtime,
@@ -1019,6 +1052,7 @@ fn detach_or_spend(
   }
 }
 
+/// Detaches a request cell and records whether cleanup completed.
 fn detach_cell(
   config: Config,
   runtime: api.Runtime,
@@ -1029,6 +1063,8 @@ fn detach_cell(
     when: !durable.scoped_to(cell.record, parked.scope),
     return: Settle,
   )
+
+  // The detached cell outcome determines whether cleanup is complete or must be retained.
   case cell.record.status {
     durable.Approved -> spend(config, runtime, parked, cell)
     durable.Rejected | durable.Consumed -> Settle
@@ -1040,6 +1076,7 @@ fn detach_cell(
   }
 }
 
+/// Re-reads durable state after detachment before deciding the request outcome.
 fn recheck_after_detach(
   config: Config,
   runtime: api.Runtime,
@@ -1069,6 +1106,7 @@ fn recheck_after_detach(
 // decision a human is about to make will be spent by that one — waiting
 // for it here could only end in the scope check refusing, one slice
 // before the window closes.
+/// Loads a request record and projects its current escalation state.
 fn look(
   config: Config,
   runtime: api.Runtime,
@@ -1086,6 +1124,7 @@ fn look(
   }
 }
 
+/// Maps the stored record variant to the caller-visible escalation state.
 fn look_at_record(
   config: Config,
   runtime: api.Runtime,
@@ -1097,6 +1136,8 @@ fn look_at_record(
     when: !durable.scoped_to(record, parked.scope),
     return: poll.Done(Settle),
   )
+
+  // The durable record state determines the escalation decision exposed to the caller.
   case record.status {
     durable.Approved -> poll.Done(spend(config, runtime, parked, cell))
     durable.Rejected | durable.Consumed -> poll.Done(Settle)
@@ -1146,6 +1187,7 @@ fn look_at_record(
 // consumed without an execution re-opens on the next raise of the same
 // want (`escalation.claimed`), so the worst case is one wasted approval
 // and a fresh prompt, not a want the session can never escalate again.
+/// Consumes an approved escalation request exactly once.
 fn spend(
   config: Config,
   runtime: api.Runtime,
@@ -1163,6 +1205,8 @@ fn spend(
   )
   let #(now, _clock) = clock.read(config.clock)
   use <- bool.guard(when: now >= parked.refused.deadline_ms, return: Settle)
+
+  // The persisted budget and claim determine whether the escalation may be consumed.
   case api.consume_escalation_at(runtime, cell) {
     // A concurrent consumer won the CAS, or a claim moved the record out
     // from under the three checks above: one approval is worth one
@@ -1172,6 +1216,8 @@ fn spend(
       let _ =
         api.put_reserved_fact(runtime, want_asks_key(parked.want), json.Int(0))
       let _ = api.delete_reserved_fact(runtime, async_key(parked.id))
+
+      // The persisted budget and claim determine whether the escalation may be consumed.
       case grants.decode_all(payloads) {
         Error(_report) -> Settle
         Ok(typed) -> Resume(grants: typed)
@@ -1212,6 +1258,7 @@ fn borrow(config: Config) -> Result(api.Runtime, Nil) {
   ask(subject, config.holder_timeout_ms, Borrow)
 }
 
+/// Submits a bounded ask against the escalation request.
 fn ask(
   subject: Subject(message),
   waiting timeout: Int,

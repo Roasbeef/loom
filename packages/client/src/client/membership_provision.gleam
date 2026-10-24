@@ -175,6 +175,7 @@ type State {
   State(ledger: Ledger, lines: List(BitArray), enrolled: List(String))
 }
 
+/// Creates and signs the first ledger entry for a new deployment.
 fn genesis(authority: Authority, pin: BitArray) -> Result(State, String) {
   let entry =
     Entry(
@@ -194,6 +195,7 @@ fn genesis(authority: Authority, pin: BitArray) -> Result(State, String) {
   Ok(State(ledger:, lines: [membership_entry.line(signed)], enrolled: []))
 }
 
+/// Adds this node to a ledger and prepares its signed enrollment.
 fn enroll(
   state: State,
   plan: Plan,
@@ -226,6 +228,7 @@ fn enroll(
   )
 }
 
+/// Resolves the ledger member matching the local node identity.
 fn member_of(
   plan: Plan,
   member: Pinned,
@@ -236,10 +239,13 @@ fn member_of(
     distribution_plan.peers(plan, node)
     |> list.map(fn(peer) { peer.name })
     |> list.filter(list.contains(enrolled, _))
+
+  // Only directory-enabled peers participate in the membership network.
   let directory = case distribution_plan.in_directory(plan, node) {
     True -> Voter
     False -> NotInDirectory
   }
+
   Member(
     name: node.name,
     node: node.erlang_node,
@@ -252,6 +258,7 @@ fn member_of(
   )
 }
 
+/// Validates an entry against the ledger before signing it.
 fn sign(entry: Entry, signer: Signer) -> Result(SignedEntry, String) {
   membership_entry.seal(entry, signer)
   |> result.map_error(fn(error) {

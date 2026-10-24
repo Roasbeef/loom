@@ -194,6 +194,7 @@ pub fn drop(keeper: address.Address(Message), session: String) -> Nil {
 }
 
 // The machine `start` and `supervised` both describe.
+/// Builder keeps this client operation’s decoding or state decision in one place.
 fn builder(
   options: Options,
   name: address.Address(Message),
@@ -222,11 +223,14 @@ fn builder(
 // Arms the beat on the way into `Holding` and cancels it on the way out.
 // Cancelling also drops a beat that is already in flight, so a keeper that went
 // idle never connects on a late fire.
+/// Entered keeps this client operation’s decoding or state decision in one place.
 fn entered(
   from: Phase,
   to: Phase,
   data: State,
 ) -> sm.Enter(Phase, State, Message) {
+  // This match resolves from, to before the surrounding protocol step continues.
+  // This match resolves from, to before the enclosing validation continues.
   case from, to {
     Idle, Holding ->
       sm.keep(State(..data, delay_ms: beat_ms))
@@ -236,11 +240,14 @@ fn entered(
   }
 }
 
+/// Handle keeps this client operation’s decoding or state decision in one place.
 fn handle(
   phase: Phase,
   data: State,
   message: Message,
 ) -> sm.Next(Phase, State, Message) {
+  // This match resolves phase, message before the surrounding protocol step continues.
+  // This match resolves phase, message before the enclosing validation continues.
   case phase, message {
     // A vote opens the machine. A second vote from the same session replaces the
     // first, so a drainer that restarted under a new process is monitored
@@ -269,11 +276,16 @@ fn handle(
 // Looks at the connection and connects if it is down, and answers the wait
 // before the next look: the base beat when the node is up or the connect brought
 // it back, and twice the last wait, to `max_beat_ms`, when it is still down.
+/// Next delay keeps this client operation’s decoding or state decision in one place.
 fn next_delay(data: State) -> Int {
+  // This match resolves data.link.connected() before the surrounding protocol step continues.
+  // This match resolves data.link.connected() before the enclosing validation continues.
   case data.link.connected() {
     True -> beat_ms
     False -> {
       data.link.connect()
+
+      // This match resolves data.link.connected() before the surrounding protocol step continues.
       case data.link.connected() {
         True -> beat_ms
         False -> int.min(max_beat_ms, data.delay_ms * 2)
@@ -283,6 +295,7 @@ fn next_delay(data: State) -> Int {
 }
 
 // Records a vote, replacing and demonitoring the session's earlier one.
+/// Voted keeps this client operation’s decoding or state decision in one place.
 fn voted(data: State, session: String, pid: Pid) -> State {
   let cleared = without(data, session)
   State(
@@ -296,7 +309,10 @@ fn voted(data: State, session: String, pid: Pid) -> State {
 }
 
 // Removes a session's vote and the monitor that came with it.
+/// Without keeps this client operation’s decoding or state decision in one place.
 fn without(data: State, session: String) -> State {
+  // This match resolves dict.get(data.voters, session) before the surrounding protocol step continues.
+  // This match resolves dict.get(data.voters, session) before the enclosing validation continues.
   case dict.get(data.voters, session) {
     Ok(voter) -> {
       process.demonitor_process(voter.monitor)
@@ -308,11 +324,14 @@ fn without(data: State, session: String) -> State {
 
 // Removes every vote the dead process cast. A monitor that fires is spent, so
 // there is nothing to demonitor.
+/// Without dead keeps this client operation’s decoding or state decision in one place.
 fn without_dead(data: State, down: Down) -> State {
+  // This match resolves down before the enclosing validation continues.
   let dead = case down {
     process.ProcessDown(monitor:, ..) | process.PortDown(monitor:, ..) ->
       monitor
   }
+
   State(
     ..data,
     voters: dict.filter(data.voters, fn(_session, voter) {
@@ -322,7 +341,10 @@ fn without_dead(data: State, down: Down) -> State {
 }
 
 // `Holding` while any vote is left, and `Idle` when none is.
+/// Settled keeps this client operation’s decoding or state decision in one place.
 fn settled(data: State) -> sm.Next(Phase, State, Message) {
+  // This match resolves dict.is_empty(data.voters) before the surrounding protocol step continues.
+  // This match resolves dict.is_empty(data.voters) before the enclosing validation continues.
   case dict.is_empty(data.voters) {
     True -> sm.transition(to: Idle, data:)
     False -> sm.transition(to: Holding, data:)

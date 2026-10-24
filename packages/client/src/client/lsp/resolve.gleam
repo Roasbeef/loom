@@ -256,6 +256,8 @@ pub fn owner(
 // wrote: a failure on the root's walk is still about that path, so the
 // reason names it and the workspace root it left, never an intermediate
 // directory the model did not mention.
+
+/// Resolves a file path to its canonical realpath within workspace boundaries.
 fn real(
   workspace: String,
   path: String,
@@ -287,6 +289,8 @@ fn real(
 // holds a marker file. A marker above the workspace does not count: the
 // session base reaches the workspace, and a root above it is one the jail
 // would refuse to grant anyway.
+
+/// Ascends directory hierarchy looking for marker files defining a project root.
 fn marked_root(
   directory: String,
   top: String,
@@ -296,6 +300,8 @@ fn marked_root(
     list.any(markers, fn(marker) {
       simplifile.is_file(directory <> "/" <> marker) == Ok(True)
     })
+
+  // Check if directory matches marker or stop if top boundary is reached.
   case marked, directory == top || !policy.covers(root: top, path: directory) {
     True, _ -> Ok(directory)
     False, True -> Error(Nil)
@@ -501,10 +507,14 @@ pub fn split_symbol(symbol: String, separators: List(String)) -> Symbol {
       int.compare(string.byte_size(b), string.byte_size(a))
     })
   let parts = segments(symbol, longest_first, "", [])
+
+  // Split into qualifier prefix segments and terminal identifier.
   let #(before, last) = case list.reverse(parts) {
     [last, ..before] -> #(list.reverse(before), last)
     [] -> #([], symbol)
   }
+
+  // Construct structured symbol record with optional qualifier.
   case last, before {
     "", _ | _, [] -> Symbol(identifier: symbol, qualifier: None)
     _, _ -> Symbol(identifier: last, qualifier: Some(string.join(before, "/")))
@@ -523,6 +533,8 @@ pub fn split_symbol(symbol: String, separators: List(String)) -> Symbol {
 // separator would match everywhere and cut nothing, and the profile
 // decoder refuses one, but it is skipped here as well so a hand-built
 // server cannot loop.
+
+/// Tokenizes symbol text into segments using candidate separator strings.
 fn segments(
   rest: String,
   separators: List(String),
@@ -533,6 +545,8 @@ fn segments(
     list.find(separators, fn(separator) {
       separator != "" && string.starts_with(rest, separator)
     })
+
+  // Consume next separator boundary or advance by one grapheme.
   case cut, string.pop_grapheme(rest) {
     Ok(separator), _ ->
       segments(
@@ -582,6 +596,8 @@ pub fn cased(qualifier: String, module_case: ModuleCase) -> String {
 // One segment in snake_case. Each grapheme is judged with its neighbours,
 // since whether a capital starts a word depends on the letter before it
 // and, inside a run of capitals, on the letter after it.
+
+/// Converts CamelCase identifier segments into lowercase snake_case.
 fn snake(segment: String) -> String {
   let graphemes = string.to_graphemes(segment)
   let before = ["", ..graphemes]
@@ -596,6 +612,8 @@ fn snake(segment: String) -> String {
         || is_digit(previous)
         || { is_upper(previous) && is_lower(next) }
       }
+
+    // Insert underscore prefix before words when converting to snake_case.
     case starts_word {
       True -> "_" <> string.lowercase(grapheme)
       False -> string.lowercase(grapheme)
@@ -728,8 +746,11 @@ pub fn in_file(
 ) -> List(ResolvedSymbol) {
   let matched =
     named(symbols, identifier, qualifier, module_case, root:, path:, methods:)
+
+  // Retry lookup without module qualifier if initial query produced no matches.
   let entries = case matched, qualifier {
     [], Some(written) ->
+      // Fallback to unqualified search if qualifier looks like a module name.
       case is_module_qualifier(written) {
         True ->
           named(symbols, identifier, None, module_case, root:, path:, methods:)
@@ -738,6 +759,7 @@ pub fn in_file(
 
     _, _ -> matched
   }
+
   entries
   |> list.map(fn(entry) { #(entry.0, refine(entry.1)) })
   |> coalesce(identifier)
@@ -800,8 +822,12 @@ pub fn named(
 
 // A lowercase last segment names a module, package, directory or import alias,
 // never an UpperCamelCase type or receiver (`Mux`, `Server`, `Web/Endpoint`).
+
+/// Checks if qualifier string represents a module/package rather than a type/receiver.
 fn is_module_qualifier(qualifier: String) -> Bool {
   let segment = list.last(string.split(qualifier, "/")) |> result.unwrap("")
+
+  // Check whether first character of segment is lowercase.
   case string.pop_grapheme(segment) {
     Ok(#(first, _rest)) -> is_lower(first)
     Error(Nil) -> False
@@ -811,6 +837,8 @@ fn is_module_qualifier(qualifier: String) -> Bool {
 // Absorbs direct same-name child declarations (`Parent.Foo` under `Parent` when
 // both matched `Foo`) into their parent's `companions` list, and deduplicates
 // primary declarations by position.
+
+/// Combines companion symbols at identical sites and deduplicates primary declarations.
 fn coalesce(
   entries: List(#(String, Position)),
   identifier: String,
@@ -832,6 +860,8 @@ fn coalesce(
         }
       })
       |> list.unique
+
+    // Deduplicate symbol candidates sharing exact location.
     case list.any(acc, fn(existing) { existing.at == at }) {
       True -> acc
       False -> [ResolvedSymbol(name:, at:, companions:), ..acc]
@@ -844,6 +874,8 @@ fn coalesce(
 // nested children of other types (such as a record field of the same name), keep
 // the top-level declaration. Two receiver methods or two record fields have no
 // top-level entry and stay ambiguous.
+
+/// Selects the unique top-level declaration when multiple candidates match.
 fn prefer_top_level(
   resolved: List(ResolvedSymbol),
   identifier: String,
@@ -858,6 +890,8 @@ fn prefer_top_level(
 // `(*T).M`, `(T).M` or `T.M`, with the receiver's pointer star and
 // parentheses removed. An entry with no dot in its name is not a method
 // spelled this way.
+
+/// Splits receiver method string into receiver type and method name.
 fn method_split(name: String) -> Result(#(String, String), Nil) {
   case list.reverse(string.split(name, ".")) {
     [method, ..receiver] if receiver != [] && method != "" ->
@@ -879,6 +913,8 @@ fn method_part(name: String) -> Result(String, Nil) {
 
 // Whether the qualifier the model wrote names this entry's receiver, in any
 // of the spellings it may use (`T`, `(*T)`, `pkg.T`, `pkg/T`).
+
+/// Determines whether qualifier matches receiver name across variations.
 fn receiver_named(name: String, qualifier: String) -> Bool {
   case method_split(name) {
     Error(Nil) -> False
@@ -903,6 +939,8 @@ fn qualified(entry: Flat) -> String {
 // A hierarchical outline is walked depth first with each entry's parent
 // chain; a flat one already names its container, which is the chain the
 // server chose to give.
+
+/// Flattens hierarchical document symbol trees into a list of Flat symbol records.
 fn flatten(symbols: DocumentSymbols) -> List(Flat) {
   case symbols {
     protocol.Hierarchical(symbols:) -> walk(symbols, "", [])
@@ -921,6 +959,8 @@ fn flatten(symbols: DocumentSymbols) -> List(Flat) {
 // The depth-first walk of one hierarchical level. `parents` is the dotted
 // chain down to this level and `into` accumulates entries, so the result
 // is newest-first, in the order the fold builds it.
+
+/// Recursively traverses nested document symbols accumulating flat entries.
 fn walk(
   symbols: List(DocumentSymbol),
   parents: String,
@@ -1012,6 +1052,8 @@ pub fn outline(
 
 // One hierarchical outline entry, recursing into its children. The site is
 // the entry's name (`selection_range`), not the whole declaration.
+
+/// Transforms an LSP document symbol into an outline SymbolEntry.
 fn entry(
   symbol: DocumentSymbol,
   content: String,

@@ -69,6 +69,8 @@ const connect_ms = 1500
 /// assert remote_peer.wait_ms(peer_mail.Roster("s", "main")) == remote_peer.read_ms
 /// ```
 pub fn wait_ms(command: peer_mail.Command) -> Int {
+  // This match resolves command before the surrounding protocol step continues.
+  // This match resolves command before the enclosing validation continues.
   case command {
     peer_mail.Roster(..) -> read_ms
     peer_mail.Allow(..)
@@ -154,6 +156,7 @@ pub fn over_distribution(
 // selector ends on whichever comes first: the answer, the `DOWN` of the
 // service, or the deadline. Demonitoring flushes a `DOWN` that arrived beside
 // the reply.
+/// Ask keeps this client operation’s decoding or state decision in one place.
 fn ask(
   at: Address(orchestrator_port.Message),
   session: String,
@@ -169,6 +172,9 @@ fn ask(
     |> process.select_specific_monitor(watch, fn(_down) { Error(Nil) })
     |> process.selector_receive(within_ms)
   process.demonitor_process(watch)
+
+  // This match resolves heard before the surrounding protocol step continues.
+  // This match resolves heard before the enclosing validation continues.
   case heard {
     Ok(Ok(answer)) -> result.map_error(answer, failure_of)
     Ok(Error(Nil)) | Error(Nil) -> Error(peer_mail.Unreachable)
@@ -179,7 +185,10 @@ fn ask(
 // the owner's answer that it holds the session and has not opened it
 // (`peer_mail.not_open_reason`); it is a text because the port's reply type
 // carries one, and this is the only place it is turned back into a variant.
+/// Failure of keeps this client operation’s decoding or state decision in one place.
 fn failure_of(text: String) -> peer_mail.Failure {
+  // This match resolves text == peer_mail.not_open_reason before the surrounding protocol step continues.
+  // This match resolves text == peer_mail.not_open_reason before the enclosing validation continues.
   case text == peer_mail.not_open_reason {
     True -> peer_mail.NotOpen
     False -> peer_mail.Refused(text)

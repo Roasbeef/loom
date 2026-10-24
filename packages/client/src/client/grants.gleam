@@ -107,6 +107,8 @@ pub fn decode(value: JsonValue) -> Result(Grant, CorruptionReport) {
   let where = "client/grants.decode"
   use fields <- result.try(fields_of(value, where))
   use kind <- result.try(require_string(fields, "grant", where))
+
+  // Decode specific grant variant based on the discriminator tag.
   case kind {
     "writable_root" -> {
       use path <- result.try(require_string(fields, "path", where))
@@ -133,6 +135,8 @@ pub fn decode(value: JsonValue) -> Result(Grant, CorruptionReport) {
     }
     "scratch" -> {
       use scratch_text <- result.try(require_string(fields, "scratch", where))
+
+      // Distinguish tmpfs in-memory scratch from explicit host filesystem paths.
       case scratch_text {
         "tmpfs" -> Ok(policy.GrantScratch(scratch: policy.ScratchTmpfs))
         path -> Ok(policy.GrantScratch(scratch: policy.ScratchPath(path: path)))
@@ -180,6 +184,8 @@ pub fn decode_denial(
   use fields <- result.try(fields_of(value, where))
   use reason <- result.try(require_string(fields, "reason", where))
   use source_text <- result.try(require_string(fields, "source", where))
+
+  // Map refusal source text to internal PolicyDenial or ExecutionDenial variants.
   use source <- result.try(case source_text {
     "policy" -> Ok(escalation.PolicyDenial)
 
@@ -193,7 +199,10 @@ pub fn decode_denial(
         context: other,
       ))
   })
+
   use wanted_value <- result.try(require(fields, "wanted", where))
+
+  // Decode the list of requested grants demanded by the denial record.
   use wanted <- result.try(case wanted_value {
     json.Array(items) -> decode_all(items)
     other ->
@@ -204,6 +213,7 @@ pub fn decode_denial(
         context: json.to_string(other),
       ))
   })
+
   Ok(DecodedDenial(reason:, source:, wanted:))
 }
 
@@ -259,6 +269,7 @@ pub fn first_unwanted(
 
 // --- internal vocabulary details -------------------------------------------
 
+/// Encodes a NetworkPolicy value into JSON representation.
 fn encode_network(network: policy.NetworkPolicy) -> JsonValue {
   case network {
     policy.NetworkOff -> json.Object([#("mode", json.String("off"))])
@@ -272,6 +283,7 @@ fn encode_network(network: policy.NetworkPolicy) -> JsonValue {
   }
 }
 
+/// Decodes a string host glob pattern from a JSON array element.
 fn host_glob(
   where: String,
   item: JsonValue,
@@ -288,16 +300,20 @@ fn host_glob(
   }
 }
 
+/// Decodes a JSON object into a NetworkPolicy configuration.
 fn decode_network(
   value: JsonValue,
   where: String,
 ) -> Result(policy.NetworkPolicy, CorruptionReport) {
   use fields <- result.try(fields_of(value, where))
   use mode <- result.try(require_string(fields, "mode", where))
+
+  // Match the network policy mode discriminator string.
   case mode {
     "off" -> Ok(policy.NetworkOff)
     "full" -> Ok(policy.NetworkFull)
     "proxy" -> {
+      // Decode optional host allowlist patterns for proxy mode.
       use allow <- result.try(case list.key_find(fields, "allow") {
         Error(Nil) -> Ok([])
         Ok(json.Array(items)) -> list.try_map(items, host_glob(where, _))
@@ -309,6 +325,7 @@ fn decode_network(
             context: json.to_string(other),
           ))
       })
+
       use proxy <- result.try(require_string(fields, "proxy", where))
       Ok(policy.NetworkProxy(allow:, proxy:))
     }
@@ -323,7 +340,9 @@ fn decode_network(
 }
 
 // The internal vocabulary uses the wire limit names (`cpu_s`, ...),
-// matching `tools/tool.grant_to_json`.
+/// Translates a LimitField enum into its external JSON property key name.
+///
+/// matching `tools/tool.grant_to_json`.
 fn limit_field_text(field: policy.LimitField) -> String {
   case field {
     policy.CpuSeconds -> "cpu_s"
@@ -335,6 +354,7 @@ fn limit_field_text(field: policy.LimitField) -> String {
   }
 }
 
+/// Parses an external JSON field name string into a policy LimitField variant.
 fn parse_limit_field(
   text: String,
   where: String,
@@ -363,6 +383,7 @@ fn scratch_text(scratch: policy.Scratch) -> String {
   }
 }
 
+/// Extracts field key-value pairs from a JSON object or returns a CorruptionReport.
 fn fields_of(
   value: JsonValue,
   where: String,
@@ -379,6 +400,7 @@ fn fields_of(
   }
 }
 
+/// Retrieves a mandatory property by name from a list of JSON object fields.
 fn require(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -396,12 +418,15 @@ fn require(
   }
 }
 
+/// Retrieves a mandatory string property by name from JSON object fields.
 fn require_string(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(String, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Validate that the extracted property value is a string.
   case value {
     json.String(text) -> Ok(text)
     other ->
@@ -414,12 +439,15 @@ fn require_string(
   }
 }
 
+/// Retrieves a mandatory integer property by name from JSON object fields.
 fn require_int(
   fields: List(#(String, JsonValue)),
   key: String,
   where: String,
 ) -> Result(Int, CorruptionReport) {
   use value <- result.try(require(fields, key, where))
+
+  // Validate that the extracted property value is an integer.
   case value {
     json.Int(number) -> Ok(number)
     other ->

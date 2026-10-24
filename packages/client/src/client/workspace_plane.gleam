@@ -553,6 +553,8 @@ fn hook_files_of(workspace: String) -> List(#(String, hookserve.Contents)) {
 }
 
 // What the session base is composed from, read off the spec.
+
+/// Establishes basis of for the caller, keeping its validation and result policy at this boundary.
 fn basis_of(spec: WorkspaceSpec) -> workspace_policy.Basis {
   workspace_policy.Basis(
     base_policy: spec.base_policy,
@@ -564,6 +566,8 @@ fn basis_of(spec: WorkspaceSpec) -> workspace_policy.Basis {
 
 // The directories a jailed tool writes: its temporary directory, its home,
 // and the Go caches' when there are any.
+
+/// Establishes tool directories for the caller, keeping its validation and result policy at this boundary.
 fn tool_directories(spec: WorkspaceSpec) -> List(String) {
   let go_directories =
     option.map(spec.go_caches, gocache.directories) |> option.unwrap([])
@@ -595,6 +599,8 @@ fn discovered_extensions(home: Option(String)) -> List(installed.Discovered) {
 // neither refuses the boot, for the reason `mcp.unavailable` does not: a
 // session without semantic queries is still a session, and the operator is
 // told which table to fix.
+
+/// Establishes effective lsp servers for the caller, keeping its validation and result policy at this boundary.
 fn effective_lsp_servers(
   spec: WorkspaceSpec,
   discovered: List(installed.Discovered),
@@ -716,6 +722,8 @@ pub fn start_local(
 // The rest of a local start, once the effect plane is up: the doors the
 // tools and code mode share, the code-mode configuration, the tools, the
 // Git identity and the plane the owner holds.
+
+/// Establishes local over for the caller, keeping its validation and result policy at this boundary.
 fn local_over(
   prepared: Prepared,
   census: Census,
@@ -776,6 +784,8 @@ type Wired {
 
 // The Git identity is resolved before the runtime can commit, so it is the
 // last thing a start does that can fail; then the plane is assembled.
+
+/// Establishes finish local for the caller, keeping its validation and result policy at this boundary.
 fn finish_local(
   wired: Wired,
   prepared: Prepared,
@@ -817,6 +827,8 @@ fn finish_local(
 // session lives, to restart a child from, so nothing the build used to make
 // them (the spec, the census, the owner's services) may be kept alive by
 // them.
+
+/// Establishes children over for the caller, keeping its validation and result policy at this boundary.
 fn children_over(wired: Wired, jobs_wiring: jobs.Wiring) -> Children {
   let scratch_child =
     scratch.supervised(wired.scratch_name, scratch.default_bounds())
@@ -842,6 +854,7 @@ type Doors {
   )
 }
 
+/// Establishes doors over for the caller, keeping its validation and result policy at this boundary.
 fn doors_over(
   clock: Clock,
   scratch_name: address.Address(scratch.Message),
@@ -872,6 +885,8 @@ fn doors_over(
 // two groups set disjoint fields of the configuration, with one exception
 // that decides the order: both wrap the per-execution router, the working
 // directory's inside and the peer router outside, as they always have.
+
+/// Establishes code mode host for the caller, keeping its validation and result policy at this boundary.
 fn code_mode_host(
   spec: WorkspaceSpec,
   census: Census,
@@ -904,6 +919,8 @@ fn code_mode_host(
 // the ones the operator deactivated. `working_directory` and the shell's
 // directory belong to the workspace because the directory lives on its
 // filesystem, though the cell that remembers it is the owner's.
+
+/// Establishes workspace tools in for the caller, keeping its validation and result policy at this boundary.
 fn workspace_tools_in(
   spec: WorkspaceSpec,
   attach: Attach,
@@ -928,6 +945,8 @@ fn workspace_tools_in(
 // What the owner is given to hold. Each function closes over only what it
 // reads, since the plane is copied into every process which holds the
 // instance.
+
+/// Establishes plane over for the caller, keeping its validation and result policy at this boundary.
 fn plane_over(
   prepared: Prepared,
   census: Census,
@@ -986,6 +1005,8 @@ fn plane_over(
 // expensive lives behind this thunk — the workspace's instruction files
 // and the helper spawn the degraded question needs — so a resumed session
 // whose prompt is already pinned pays for none of it.
+
+/// Establishes prompt facts of for the caller, keeping its validation and result policy at this boundary.
 fn prompt_facts_of(
   workspace: String,
   pool: Pool,
@@ -1008,6 +1029,8 @@ fn prompt_facts_of(
 
 // The roots whose death ends the session, in the order the owner has
 // always listed them.
+
+/// Establishes fatal roots for the caller, keeping its validation and result policy at this boundary.
 fn fatal_roots(effect: EffectPlane) -> List(#(String, Pid)) {
   [
     #("the helper pool", exec.pool_pid(effect.pool)),
@@ -1055,6 +1078,8 @@ pub fn worktree_wiring(
 // defaults cross into the tool home; repository settings retain
 // precedence. The warning, when there is one, is a finding and not a
 // failure.
+
+/// Establishes prepare identity for the caller, keeping its validation and result policy at this boundary.
 fn prepare_identity(
   prepared: Prepared,
   census: Census,
@@ -1069,6 +1094,8 @@ fn prepare_identity(
     helper: spec.helper_path,
     reading: workspace_policy.env_text,
   ))
+
+  // Decide how to handle warning {.
   case warning {
     None -> []
     Some(reason) -> [
@@ -1079,6 +1106,7 @@ fn prepare_identity(
   }
 }
 
+/// Establishes log warning for the caller, keeping its validation and result policy at this boundary.
 fn log_warning(logger: Logger, warning: Warning) -> Nil {
   log.warn(
     logger,
@@ -1101,6 +1129,8 @@ fn log_warning(logger: Logger, warning: Warning) -> Nil {
 // nothing and logs nothing: an unconfigured workspace pays nothing (ADR-015
 // §6). A counter that will not start refuses every server, as one warning,
 // and does not refuse the boot.
+
+/// Establishes lsp wiring for the caller, keeping its validation and result policy at this boundary.
 fn lsp_wiring(
   prepared: Prepared,
   census: Census,
@@ -1111,6 +1141,8 @@ fn lsp_wiring(
   logger: Logger,
 ) -> Option(LspWiring) {
   let spec = prepared.spec
+
+  // Decide how to handle census.lsp_servers {.
   case census.lsp_servers {
     [] -> None
     [_, ..] as servers ->
@@ -1149,6 +1181,8 @@ fn lsp_wiring(
 // The manager's configuration over the production backend: every server,
 // its probe and every symbol search clear through the session's broker,
 // under the session's demand and the plane's own operation.
+
+/// Establishes lsp plane wiring for the caller, keeping its validation and result policy at this boundary.
 fn lsp_plane_wiring(
   prepared: Prepared,
   census: Census,
@@ -1206,6 +1240,8 @@ fn lsp_plane_wiring(
 // read from the wired servers rather than the whole catalogue, so a server
 // refused at boot for roots that would not resolve does not describe a
 // language the session cannot ask about.
+
+/// Establishes lsp hints for the caller, keeping its validation and result policy at this boundary.
 fn lsp_hints(wiring: Option(LspWiring)) -> List(#(String, String)) {
   case wiring {
     None -> []
@@ -1219,6 +1255,8 @@ fn lsp_hints(wiring: Option(LspWiring)) -> List(#(String, String)) {
 }
 
 // The manager as a supervised child, when there is a plane to run.
+
+/// Establishes with lsp manager for the caller, keeping its validation and result policy at this boundary.
 fn with_lsp_manager(
   builder: sup.Builder,
   wiring: Option(LspWiring),
@@ -1234,7 +1272,10 @@ fn with_lsp_manager(
 // (`shutdown`, `exit`, stdin EOF, waited for in this process), then the
 // abort of the plane's operation as the backstop for a server that
 // outlived its grace, then the counter.
+
+/// Establishes stop lsp for the caller, keeping its validation and result policy at this boundary.
 fn stop_lsp(plane: Option(LspPlane), broker_actor: Broker) -> Nil {
+  // Decide how to handle plane {.
   case plane {
     None -> Nil
     Some(plane) -> {
@@ -1260,6 +1301,8 @@ fn stop_lsp(plane: Option(LspPlane), broker_actor: Broker) -> Nil {
 // wait, so a job queued behind a full helper pool gives up when a
 // foreground call would have. The actor reaches the owner only through
 // `attach.owner`, so the same actor runs beside a session or away from it.
+
+/// Establishes jobs wiring for the caller, keeping its validation and result policy at this boundary.
 fn jobs_wiring(
   prepared: Prepared,
   census: Census,
@@ -1367,6 +1410,8 @@ pub fn retire_effect_plane(
 }
 
 // A one-shot plane has no custodian to hand a resource to.
+
+/// Establishes no retention for the caller, keeping its validation and result policy at this boundary.
 fn no_retention(
   _part: custody.Part,
   _cleanup: fn() -> Result(Nil, String),
@@ -1415,6 +1460,8 @@ pub fn start_helper_pool(
 // service is started over its seams before anything can borrow; the broker
 // is then given the service's dispatcher, and is the one door every
 // clearance site goes through.
+
+/// Establishes start effect plane in for the caller, keeping its validation and result policy at this boundary.
 fn start_effect_plane_in(
   helper: String,
   base_policy: policy.SandboxPolicy,
@@ -1453,6 +1500,8 @@ fn start_effect_plane_in(
 // this can take fits), and the broker is given its dispatcher. Custody
 // unlinks the service with the pool, since both are fatal children the
 // instance monitors instead.
+
+/// Establishes start service lane for the caller, keeping its validation and result policy at this boundary.
 fn start_service_lane(
   pool: Pool,
   session_clock: Clock,
@@ -1504,6 +1553,8 @@ fn start_service_lane(
 
 // Capture the original actor before requesting stop; absence is not drain
 // proof.
+
+/// Establishes stop broker owned for the caller, keeping its validation and result policy at this boundary.
 fn stop_broker_owned(broker_actor: Broker, pid: Pid) -> Result(Nil, String) {
   let watch = process.monitor(pid)
   broker.stop(broker_actor)
@@ -1536,6 +1587,8 @@ pub fn mixed_entropy() -> fn() -> Int {
   let random_bytes = token.production_entropy()
   fn() {
     let unique = ffi_os.unique_positive_integer()
+
+    // Decide how to handle random_bytes(8) {.
     case random_bytes(8) {
       <<random:size(64)>> -> unique * 18_446_744_073_709_551_616 + random
       _ -> unique

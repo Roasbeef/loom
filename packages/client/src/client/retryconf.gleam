@@ -90,10 +90,19 @@ pub fn parse_policy(text: String) -> Result(NormalizedRetryPolicy, String) {
 /// ```gleam
 /// assert retryconf.policy_from_document(dict.new()) == Ok(retryconf.default_policy)
 /// ```
+/// Policy from document preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// policy_from_document(...)
+/// ```
 @internal
 pub fn policy_from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(NormalizedRetryPolicy, String) {
+  // This match resolves dict.get(document, "retry") before the surrounding protocol step continues.
+  // This match resolves dict.get(document, "retry") before the enclosing validation continues.
   case dict.get(document, "retry") {
     Error(Nil) -> Ok(default_policy)
     Ok(tom.Table(fields)) -> policy_table(fields)
@@ -101,6 +110,7 @@ pub fn policy_from_document(
   }
 }
 
+/// Policy table keeps this client operation’s decoding or state decision in one place.
 fn policy_table(
   fields: Dict(String, tom.Toml),
 ) -> Result(NormalizedRetryPolicy, String) {
@@ -125,7 +135,10 @@ fn policy_table(
 // deliberate rather than one number with a magic value: `attempts = 0`
 // reads like "do not retry" to a writer and like "do not try" to the
 // ladder, so it is refused instead of guessed at.
+/// Attempts key keeps this client operation’s decoding or state decision in one place.
 fn attempts_key(fields: Dict(String, tom.Toml)) -> Result(RetryBudget, String) {
+  // This match resolves dict.get(fields, "attempts") before the surrounding protocol step continues.
+  // This match resolves dict.get(fields, "attempts") before the enclosing validation continues.
   case dict.get(fields, "attempts") {
     Error(Nil) -> Ok(default_policy.attempts)
     Ok(tom.String(word)) if word == unbounded_attempts -> Ok(Unbounded)
@@ -147,11 +160,14 @@ fn attempts_key(fields: Dict(String, tom.Toml)) -> Result(RetryBudget, String) {
 // Both delays share this because they differ only in name and default:
 // the base is the first wait, the maximum is the ceiling that wait
 // doubles towards, and zero is a legitimate answer for either.
+/// Delay key keeps this client operation’s decoding or state decision in one place.
 fn delay_key(
   fields: Dict(String, tom.Toml),
   key: String,
   fallback: Int,
 ) -> Result(Int, String) {
+  // This match resolves dict.get(fields, key) before the surrounding protocol step continues.
+  // This match resolves dict.get(fields, key) before the enclosing validation continues.
   case dict.get(fields, key) {
     Error(Nil) -> Ok(fallback)
     Ok(tom.Int(milliseconds)) if milliseconds >= 0 -> Ok(milliseconds)
@@ -167,10 +183,13 @@ fn delay_key(
   }
 }
 
+/// Known keys keeps this client operation’s decoding or state decision in one place.
 fn known_keys(
   present: List(String),
   allowed: List(String),
 ) -> Result(Nil, String) {
+  // This match resolves list.find(present, fn(key) before the surrounding protocol step continues.
+  // This match resolves list.find(present, fn(key) before the enclosing validation continues.
   case list.find(present, fn(key) { !list.contains(allowed, key) }) {
     Error(Nil) -> Ok(Nil)
     Ok(unknown) ->

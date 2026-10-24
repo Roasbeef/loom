@@ -187,6 +187,7 @@ pub fn parse(text: String) -> Result(List(Executor), String) {
 pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Executor), String) {
+  // Inspect the top-level executors configuration table if defined.
   case dict.get(document, "executors") {
     Error(Nil) -> Ok([])
     Ok(tom.Table(tables)) -> {
@@ -228,20 +229,22 @@ pub fn find(configured: List(Executor), name: String) -> Result(Executor, Nil) {
   list.find(configured, fn(executor) { executor.name == name })
 }
 
-// The peers an executor may name. An executor with no distribution table has no
-// peer to be served by, which is a different mistake from a mistyped node, so it
-// is worded as the missing table.
+/// Resolves configured distribution peers required to host executor workers.
 fn peer_nodes(
   document: Dict(String, tom.Toml),
 ) -> Result(ledger_reference.Peers, String) {
   use found <- result.try(distribution.from_document(document))
+
+  // Check whether a distribution block is defined with peer entries.
   case found {
     Some(settings) -> Ok(ledger_reference.peers(settings))
     None -> Error("executors needs a [distribution] table naming its peers")
   }
 }
 
+/// Decodes a single executor table row and verifies allowed configuration keys.
 fn row(name: String, value: tom.Toml) -> Result(Executor, String) {
+  // Validate executor identifier conforms to syntax and length rules.
   use Nil <- result.try(case catalogue.is_executor_name(name) {
     True -> Ok(Nil)
     False ->
@@ -252,6 +255,8 @@ fn row(name: String, value: tom.Toml) -> Result(Executor, String) {
         <> "starting with a letter, at most 32 characters",
       )
   })
+
+  // Decode executor fields from TOML table structure.
   case value {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
@@ -259,11 +264,14 @@ fn row(name: String, value: tom.Toml) -> Result(Executor, String) {
         ["node", "platform", "enforcement", "toolchains", "attach_within_s"],
         "[executors." <> name <> "]",
       ))
+
+      // Extract required node address string from fields table.
       use node <- result.try(case dict.get(fields, "node") {
         Ok(tom.String(node)) -> Ok(node)
         Ok(_) -> Error("executors." <> name <> ".node must be a string")
         Error(Nil) -> Error("executors." <> name <> ".node is required")
       })
+
       let place = "executors." <> name
       use platform <- result.try(platform_of(fields, place))
       use enforcement <- result.try(enforcement_of(fields, place))
@@ -388,6 +396,8 @@ pub fn toolchains_of(
     place
     <> ".toolchains must be a list of distinct lowercase names, such as "
     <> "[\"codemode\"]"
+
+  // Look up optional toolchains list field in executor table.
   case dict.get(fields, "toolchains") {
     Error(Nil) -> Ok([])
     Ok(tom.Array(items)) -> {
@@ -403,6 +413,8 @@ pub fn toolchains_of(
           }
         }),
       )
+
+      // Verify that all declared toolchain names are unique.
       case list.length(list.unique(names)) == list.length(names) {
         True -> Ok(names)
         False -> Error(words)
@@ -431,6 +443,8 @@ pub fn contradiction(
   observed: Observed,
 ) -> Result(Nil, String) {
   let named = "executor " <> executor.name <> " declares "
+
+  // Verify declared platform matches census observation if specified.
   use Nil <- result.try(case executor.platform {
     Some(declared) if declared != observed.platform ->
       Error(
@@ -442,6 +456,8 @@ pub fn contradiction(
       )
     _ -> Ok(Nil)
   })
+
+  // Verify declared enforcement mode matches observed host posture.
   use Nil <- result.try(case executor.enforcement {
     Some(declared) if declared != observed.enforcement ->
       Error(
@@ -453,6 +469,8 @@ pub fn contradiction(
       )
     _ -> Ok(Nil)
   })
+
+  // Check that all declared toolchains are present in census observation.
   case
     list.find(executor.toolchains, fn(declared) {
       !list.contains(observed.toolchains, declared)
@@ -471,6 +489,7 @@ pub fn contradiction(
   }
 }
 
+/// Verifies that present table keys are a subset of permitted schema keys.
 fn known_keys(
   present: List(String),
   allowed: List(String),

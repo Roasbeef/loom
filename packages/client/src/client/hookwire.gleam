@@ -119,6 +119,7 @@ pub fn matching_handlers(
   }
 }
 
+/// Looks up registered hook handler groups matching an event in configuration.
 fn find_event(
   config: Config,
   event: Event,
@@ -269,6 +270,8 @@ pub fn combine_permissions(
         _ -> Error(Nil)
       }
     })
+
+  // Prioritize explicit deny outcomes over ask prompts or rewrite replacements.
   case deny {
     [reason, ..] -> hookdecisions.Deny(reason)
     [] -> {
@@ -279,6 +282,8 @@ pub fn combine_permissions(
             _ -> Error(Nil)
           }
         })
+
+      // Escalate to operator confirmation if any handler requested an interactive ask.
       case asks {
         [reason, ..] -> hookdecisions.Ask(reason)
         [] ->
@@ -322,6 +327,8 @@ pub fn combine_injections(
         _ -> Error(Nil)
       }
     })
+
+  // Halt processing if any injection handler requested an execution block.
   case blocked {
     [reason, ..] -> hookdecisions.Blocked(reason)
     [] -> {
@@ -334,6 +341,8 @@ pub fn combine_injections(
           }
         })
         |> string.join("\n\n")
+
+      // Return combined injection prose or NoContext when no text was provided.
       case context {
         "" -> hookdecisions.NoContext
         text -> hookdecisions.Injected(text)
@@ -356,6 +365,14 @@ pub type Feedback {
   )
 }
 
+/// Combines multiple tool feedback verdicts into a consolidated Feedback structure.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let feedback = hookwire.combine_feedback([])
+/// assert feedback.replacement == None
+/// ```
 pub fn combine_feedback(
   verdicts: List(hookdecisions.ToolFeedback),
 ) -> Feedback {
@@ -366,6 +383,7 @@ pub fn combine_feedback(
   )
 }
 
+/// Locates the first replacement payload proposed across tool feedback verdicts.
 fn first_rewrite(
   verdicts: List(hookdecisions.ToolFeedback),
 ) -> Option(JsonValue) {
@@ -378,6 +396,7 @@ fn first_rewrite(
   |> option.from_result
 }
 
+/// Extracts the first descriptive reason provided across tool feedback verdicts.
 fn first_reason(verdicts: List(hookdecisions.ToolFeedback)) -> Option(String) {
   list.find_map(verdicts, fn(verdict) {
     case verdict {
@@ -388,6 +407,7 @@ fn first_reason(verdicts: List(hookdecisions.ToolFeedback)) -> Option(String) {
   |> option.from_result
 }
 
+/// Retrieves the first contextual explanation from a list of tool feedback verdicts.
 fn first_context(verdicts: List(hookdecisions.ToolFeedback)) -> Option(String) {
   list.find_map(verdicts, fn(verdict) {
     case verdict {

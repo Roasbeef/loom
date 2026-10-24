@@ -157,6 +157,7 @@ pub fn prepared_on(
   weft.managed(fn(ledger) { execute(name, request, owner, resolve, ledger) })
 }
 
+/// Establishes execute for the caller, keeping its validation and result policy at this boundary.
 fn execute(
   name: registry.Address(scratch.Message),
   request: Request,
@@ -166,6 +167,8 @@ fn execute(
 ) -> Result(Receipt, String) {
   let owner = process.self()
   use _ <- result.try(validate(request))
+
+  // Decide how to handle use artifact <- result.try( request.target_release {.
   use artifact <- result.try(case request.target_release {
     "builtin" ->
       case request.manifest_digest {
@@ -174,6 +177,7 @@ fn execute(
       }
     _ -> resolve(request.target_release, request.manifest_digest)
   })
+
   use slot_owner <- result.try(slots.owner())
   use subject <- result.try(
     registry.lookup(name)
@@ -256,6 +260,7 @@ fn execute(
   |> result.flatten
 }
 
+/// Establishes validate for the caller, keeping its validation and result policy at this boundary.
 fn validate(request: Request) -> Result(Nil, String) {
   use <- bool.guard(
     request.component != "scratch",
@@ -272,6 +277,7 @@ fn validate(request: Request) -> Result(Nil, String) {
   Ok(Nil)
 }
 
+/// Establishes handle for the caller, keeping its validation and result policy at this boundary.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     Begin -> begin(state)
@@ -314,9 +320,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Establishes begin for the caller, keeping its validation and result policy at this boundary.
 fn begin(state: State) -> actor.Next(State, Message) {
   let wiring = state.wiring
   let prepared = prepare(wiring)
+
+  // Decide how to handle prepared {.
   case prepared {
     Error(reason) ->
       retire_admission(
@@ -327,6 +336,7 @@ fn begin(state: State) -> actor.Next(State, Message) {
   }
 }
 
+/// Establishes prepare for the caller, keeping its validation and result policy at this boundary.
 fn prepare(wiring: Wiring) -> Result(Nil, String) {
   use <- bool.guard(
     !native.deliver_signals(wiring.owner),
@@ -356,8 +366,12 @@ fn prepare(wiring: Wiring) -> Result(Nil, String) {
 // orders Disarm after Arm and confirmation after Acquire, and retains ownership
 // until both receivers acknowledge those token-scoped effects. It never resumes
 // a process it has not attempted to suspend.
+
+/// Establishes retire admission for the caller, keeping its validation and result policy at this boundary.
 fn retire_admission(state: State) -> actor.Next(State, Message) {
   let wiring = state.wiring
+
+  // Decide how to handle let disarmed =  process.is_alive(wiring.pid) {.
   let disarmed = case process.is_alive(wiring.pid) {
     True -> scratch.disarm_subject(wiring.subject, wiring.token, 100)
     False -> Ok(Nil)
@@ -371,21 +385,28 @@ fn retire_admission(state: State) -> actor.Next(State, Message) {
     use _ <- result.try(disarmed)
     confirmed
   }
+
+  // Decide how to handle retired {.
   case retired {
     Error(_) -> actor.continue(state)
     Ok(Nil) -> {
+      // Decide how to handle let reason =  state.outcome {.
       let reason = case state.outcome {
         Some(Error(reason)) -> reason
         Some(Ok(Nil)) | None -> "harness admission was cancelled"
       }
+
       process.send(wiring.reply, Error(reason))
       actor.stop()
     }
   }
 }
 
+/// Establishes start change for the caller, keeping its validation and result policy at this boundary.
 fn start_change(state: State) -> actor.Next(State, Message) {
   let wiring = state.wiring
+
+  // Decide how to handle native.suspend(wiring.pid, 100) {.
   case native.suspend(wiring.pid, 100) {
     Error(reason) ->
       finish(State(..state, outcome: Some(Error(reason)), phase: Recovering))
@@ -417,6 +438,7 @@ fn start_change(state: State) -> actor.Next(State, Message) {
   }
 }
 
+/// Establishes outcome result for the caller, keeping its validation and result policy at this boundary.
 fn outcome_result(outcome: weft.Outcome(Nil, String)) -> Result(Nil, String) {
   case outcome {
     weft.Completed(value:, ..) -> Ok(value)
@@ -429,6 +451,7 @@ fn outcome_result(outcome: weft.Outcome(Nil, String)) -> Result(Nil, String) {
   }
 }
 
+/// Establishes finish for the caller, keeping its validation and result policy at this boundary.
 fn finish(state: State) -> actor.Next(State, Message) {
   let wiring = state.wiring
   let resumed = native.resume(wiring.pid, 100)
@@ -436,6 +459,8 @@ fn finish(state: State) -> actor.Next(State, Message) {
   let _retired = scratch.disarm_subject(wiring.subject, wiring.token, 100)
   let observed = scratch.observe_subject(wiring.subject, 100)
   let receipt = settle(wiring, observed, resumed, state.outcome, elapsed)
+
+  // Decide how to handle receipt, process.is_alive(wiring.pid) {.
   case receipt, process.is_alive(wiring.pid) {
     Ok(_), _ | Error(_), False -> {
       process.send(wiring.reply, receipt)
@@ -445,6 +470,7 @@ fn finish(state: State) -> actor.Next(State, Message) {
   }
 }
 
+/// Establishes settle for the caller, keeping its validation and result policy at this boundary.
 fn settle(
   wiring: Wiring,
   observed: Result(abi.Observation, String),
@@ -460,15 +486,20 @@ fn settle(
     wiring.token,
     observed.identity,
   ))
+
+  // Decide how to handle let status =  observed.identity == source.identity(wiring.artifact) {.
   let status = case observed.identity == source.identity(wiring.artifact) {
     True -> "installed"
     False -> "retained"
   }
+
+  // Decide how to handle let error =  outcome {.
   let error = case outcome {
     Some(Error(reason)) -> Some(reason)
     Some(Ok(Nil)) -> None
     None -> Some("migration produced no result")
   }
+
   Ok(Receipt(
     wiring.request.request_id,
     wiring.pid,

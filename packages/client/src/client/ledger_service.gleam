@@ -461,6 +461,7 @@ pub fn start(config: Config) -> Result(Service, StartError) {
   |> result.map_error(fn(error) { NotStarted(describe_start(error)) })
 }
 
+/// Formats actor start failure into a human-readable error description.
 fn describe_start(error: actor.StartError) -> String {
   case error {
     actor.InitTimeout -> "the ledger process did not initialise in time"
@@ -469,6 +470,7 @@ fn describe_start(error: actor.StartError) -> String {
   }
 }
 
+/// Boots the ledger state machine actor and registers wire/change subscribers.
 fn initialise(
   config: Config,
   control: Subject(Event),
@@ -517,6 +519,8 @@ fn initialise(
 }
 
 // A process asks the VM for node-up notices only when its peers are the VM's.
+
+/// Subscribes to Erlang VM distribution node changes when running in Distributed mode.
 fn watch(peers: Peers) -> Result(Nil, String) {
   case peers {
     Distributed ->
@@ -552,6 +556,7 @@ pub fn pid(service: Service) -> Pid {
   service.pid
 }
 
+/// Synchronously queries the ledger service state machine with a timeout budget.
 fn ask(
   service: Service,
   within_ms: Int,
@@ -672,6 +677,7 @@ pub fn meet(service: Service, reach: Reach) -> Nil {
 
 // --- handling events ----------------------------------------------------------------
 
+/// Dispatches state machine events across Quiet and Pulling phases.
 fn handle(
   phase: Phase,
   data: Data,
@@ -705,10 +711,13 @@ fn handle(
     Offer(line:, reply:) -> {
       let #(data, offered) = offer_line(data, line)
       process.send(reply, offered)
+
+      // Broadcast accepted entry to peers.
       case offered {
         Accepted(_) -> broadcast(data, except: None)
         AlreadyHeld | Behind(_) | Refused(_) | NotDurable(_) -> Nil
       }
+
       sm.keep(data)
     }
 
@@ -751,6 +760,8 @@ fn met(data: Data, reach: Reach) -> sm.Next(Phase, Data, Event) {
 // A node joined or left the VM's distribution. Only the drop of the peer being
 // pulled from changes the phase: waiting out the deadline for entries that
 // cannot come would hold every other peer's head back.
+
+/// Handles cluster node connectivity transitions during active synchronization.
 fn changed(
   phase: Phase,
   data: Data,
@@ -774,7 +785,10 @@ fn changed(
 // The deadline of the pull that made the machine Pulling. A fire in Quiet
 // cannot be handled, because leaving Pulling cancels the state timeout, so
 // the Quiet arm only keeps the match total.
+
+/// Handles synchronization pull timeout and restores machine to Quiet phase.
 fn timed_out(phase: Phase, data: Data) -> sm.Next(Phase, Data, Event) {
+  // Check active phase upon pull timeout expiration.
   case phase {
     Quiet -> sm.keep(data)
     Pulling(source:, ..) -> {
@@ -786,11 +800,13 @@ fn timed_out(phase: Phase, data: Data) -> sm.Next(Phase, Data, Event) {
   }
 }
 
+/// Processes inbound peer messages from the distributed communication wire.
 fn wired(
   phase: Phase,
   data: Data,
   message: Message,
 ) -> sm.Next(Phase, Data, Event) {
+  // Handle wire message variant.
   case message {
     Pull(after:, limit:, reply:) -> {
       process.send(reply, entries_after(data, after, limit))
@@ -815,6 +831,8 @@ fn wired(
 
 // A head heard while Quiet: recorded, and answered with a pull when the peer
 // holds something this node lacks.
+
+/// Records peer head position and plans catch-up synchronization if needed.
 fn heard(
   data: Data,
   seq: Int,
@@ -822,6 +840,8 @@ fn heard(
   from: Subject(Message),
 ) -> sm.Next(Phase, Data, Event) {
   let data = remember(data, seq, id, from)
+
+  // Decide synchronization action based on peer head comparison.
   case plan(data, seq, id) {
     Nothing -> sm.keep(data)
     CatchUp(after:) -> pull(data, from, after, max_batch)
@@ -831,12 +851,15 @@ fn heard(
 
 // Asks the peer behind `via` for lines and waits, Pulling, for the answer. A
 // peer whose inbox has no owner cannot be named, so it is not asked.
+
+/// Requests missing log entries from a remote peer and enters Pulling phase.
 fn pull(
   data: Data,
   via: Subject(Message),
   after: Int,
   limit: Int,
 ) -> sm.Next(Phase, Data, Event) {
+  // Resolve peer node identity before initiating pull.
   case owner_of(via) {
     Error(Nil) -> sm.keep(data)
     Ok(source) -> {
@@ -856,6 +879,8 @@ fn pull(
 // a peer could aim a `Pull` at any local process by sending a name, and sending
 // to it would panic if the name were unregistered in between. Only a subject
 // with an owner process of its own can be pulled from or recorded.
+
+/// Resolves the node name owning a remote message channel subject.
 fn owner_of(from: Subject(Message)) -> Result(String, Nil) {
   case process.subject_name(from) {
     Ok(_) -> Error(Nil)
@@ -864,6 +889,7 @@ fn owner_of(from: Subject(Message)) -> Result(String, Nil) {
   }
 }
 
+/// Updates the recorded head sequence and timestamp reported by a peer.
 fn remember(
   data: Data,
   seq: Int,
@@ -886,8 +912,12 @@ fn remember(
 
 // What a peer's head asks of this node. Only the head's sequence number and
 // identity are compared; the entries themselves are checked when they arrive.
+
+/// Compares a peer head against local state to determine synchronization strategy.
 fn plan(data: Data, seq: Int, id: BitArray) -> Plan {
   let ours = membership_ledger.head(data.ledger)
+
+  // Compare sequence numbers to decide between catch-up, compare, or nothing.
   case int.compare(seq, ours.seq) {
     order.Gt -> CatchUp(after: ours.seq)
     order.Lt -> Nothing
@@ -904,6 +934,8 @@ fn plan(data: Data, seq: Int, id: BitArray) -> Plan {
 // peer having more asks for the next batch; a batch that moved nothing ends
 // the exchange, which is what stops a peer that answers with old or invalid
 // lines from holding the machine in a loop.
+
+/// Ingests delivered batch of ledger lines and requests next page if needed.
 fn delivered(
   phase: Phase,
   data: Data,
@@ -913,6 +945,8 @@ fn delivered(
   let data = apply_lines(data, list.take(entries.lines, max_batch))
   let after = membership_ledger.head(data.ledger).seq
   let moved = after > before
+
+  // React to delivered lines depending on active machine phase.
   case phase {
     Quiet -> {
       spread(data, from: before, to: after, except: None)
@@ -921,6 +955,8 @@ fn delivered(
 
     Pulling(source:, via:) -> {
       spread(data, from: before, to: after, except: Some(source))
+
+      // Check if more entries remain to be pulled from peer.
       case moved && entries.head_seq > after {
         True -> {
           process.send(via, Pull(after:, limit: max_batch, reply: data.answers))
@@ -939,6 +975,7 @@ fn delivered(
             True -> broadcast_to(data, source)
             False -> Nil
           }
+
           sm.transition(to: Quiet, data:)
         }
       }
@@ -948,11 +985,16 @@ fn delivered(
 
 // Lines in order, up to the first that cannot be applied. A line already held
 // is skipped, since an offer may have raced the pull.
+
+/// Sequentially applies batch of raw ledger lines stopping on first failure.
 fn apply_lines(data: Data, lines: List(BitArray)) -> Data {
+  // Apply next line or return data when batch is finished.
   case lines {
     [] -> data
     [line, ..rest] -> {
       let #(data, offered) = offer_line(data, line)
+
+      // Continue applying remaining lines if accepted or duplicate.
       case offered {
         Accepted(_) | AlreadyHeld -> apply_lines(data, rest)
         Behind(_) | Refused(_) | NotDurable(_) -> data
@@ -965,6 +1007,8 @@ fn apply_lines(data: Data, lines: List(BitArray)) -> Data {
 // point: the fold decides, the file takes the line, and only then do the
 // observers and the ledger in memory move. A line the file cannot take leaves
 // the node exactly as it was, so what a peer hears is never ahead of the disk.
+
+/// Attempts to parse, verify, apply, and persist a single raw ledger line.
 fn offer_line(data: Data, line: BitArray) -> #(Data, Offered) {
   case membership_entry.read(line, data.verifier) {
     Error(error) ->
@@ -980,7 +1024,9 @@ fn offer_line(data: Data, line: BitArray) -> #(Data, Offered) {
   }
 }
 
+/// Persists an accepted entry to durable store and notifies active observers.
 fn extend(data: Data, ledger: Ledger, entry: SignedEntry) -> #(Data, Offered) {
+  // Append new entry to the durable append-only store.
   case membership_store.append(data.store, entry) {
     Error(membership_store.Unwritable(reason:)) -> {
       log.error(data.logger, "ledger.not_durable", [
@@ -1004,6 +1050,8 @@ fn extend(data: Data, ledger: Ledger, entry: SignedEntry) -> #(Data, Offered) {
 // The sequence number a refused line claimed, when the claim is known. An
 // unreadable line has none; a chain or fold failure is at the successor of
 // the head, since the procedure reaches those steps only there.
+
+/// Determines claimed sequence number of a refused entry when available.
 fn refused_seq(data: Data, refusal: membership_ledger.Refusal) -> Option(Int) {
   case refusal {
     membership_ledger.Unreadable(..) -> None
@@ -1015,6 +1063,8 @@ fn refused_seq(data: Data, refusal: membership_ledger.Refusal) -> Option(Int) {
 
 // Records the refusal in place of the last one, and logs it. Nothing else
 // changes: a refusal never makes the node refuse the next line.
+
+/// Records an entry rejection diagnostic and updates last_refusal state.
 fn refuse(
   data: Data,
   seq: Option(Int),
@@ -1044,7 +1094,10 @@ fn seq_field(seq: Option(Int)) -> List(Field) {
 // with no backoff is attempted now; one with a backoff is attempted when its
 // time has come. A node that stopped being pending loses its backoff, so the
 // next time it is pending the schedule starts again at the first wait.
+
+/// Periodic tick to redial pending peer nodes respecting exponential backoff.
 fn redial_pass(data: Data) -> Data {
+  // Check if dialing policy is enabled for this node.
   case data.dialing {
     None -> data
     Some(dialing) -> {
@@ -1077,17 +1130,22 @@ fn has_reported(data: Data, node: String, seq: Int) -> Bool {
 
 // Attempts one node if its time has come and records when the next attempt is
 // due. The waits are the first wait, then double up to the ceiling.
+
+/// Checks backoff schedule and dials a peer node if due.
 fn attempt(
   dialing: Dialing,
   dials: Dict(String, Backoff),
   node: String,
   now: Int,
 ) -> Dict(String, Backoff) {
+  // Check due time for backoff on target node.
   let wait = case dict.get(dials, node) {
     Ok(Backoff(due:, ..)) if now < due -> Error(Nil)
     Ok(Backoff(next_wait:, ..)) -> Ok(next_wait)
     Error(Nil) -> Ok(dialing.first_ms)
   }
+
+  // Dial node if eligible and advance backoff timer.
   case wait {
     Error(Nil) -> dials
     Ok(wait) -> {
@@ -1120,6 +1178,7 @@ fn reach_of(data: Data, node: Node) -> Reach {
   })
 }
 
+/// Dispatches local head advertisement to a single reachable peer.
 fn send_head(data: Data, reach: Reach) -> Nil {
   let head = membership_ledger.head(data.ledger)
   reach.deliver(Head(
@@ -1131,6 +1190,8 @@ fn send_head(data: Data, reach: Reach) -> Nil {
 
 // The head to every connected peer but one. The one is the peer the news came
 // from, which already has it.
+
+/// Broadcasts head announcement to all connected peers except source.
 fn broadcast(data: Data, except source: Option(String)) -> Nil {
   list.each(reaches(data), fn(reach) {
     case Some(reach.node) == source {
@@ -1141,6 +1202,8 @@ fn broadcast(data: Data, except source: Option(String)) -> Nil {
 }
 
 // The head to one connected peer, if it is still connected.
+
+/// Broadcasts head announcement directly to a specific connected peer node.
 fn broadcast_to(data: Data, node: String) -> Nil {
   list.each(reaches(data), fn(reach) {
     case reach.node == node {
@@ -1151,6 +1214,8 @@ fn broadcast_to(data: Data, node: String) -> Nil {
 }
 
 // A head is announced only when the ledger moved.
+
+/// Broadcasts head updates when sequence number has advanced.
 fn spread(
   data: Data,
   from before: Int,
@@ -1167,6 +1232,7 @@ fn tell(data: Data, observation: Observation) -> Nil {
   list.each(data.observers, fn(observer) { observer(observation) })
 }
 
+/// Retrieves a batch of ledger entries sequencing after a given point.
 fn entries_after(data: Data, after: Int, limit: Int) -> Entries {
   Entries(
     lines: membership_store.lines_after(
@@ -1179,6 +1245,7 @@ fn entries_after(data: Data, after: Int, limit: Int) -> Entries {
   )
 }
 
+/// Assembles point-in-time status snapshot of the ledger service.
 fn status_of(data: Data) -> Status {
   let now = data.now_ms()
   Status(

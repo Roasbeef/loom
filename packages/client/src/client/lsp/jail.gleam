@@ -375,10 +375,12 @@ pub fn locate(
   server: LspServer,
   toolchain: Option(Toolchain),
 ) -> Result(Executable, String) {
+  // locate handles the the selected value outcomes here before continuing.
   use head <- result.try(case server.command {
     [head, ..] -> Ok(head)
     [] -> Error("lsp." <> server.name <> " has an empty command")
   })
+
   use path <- result.try(executable_path(server.name, head, toolchain))
   use file <- result.try(measured(server.name, path))
   Ok(Executable(path:, file:))
@@ -397,6 +399,7 @@ pub fn locate(
 // one that builds the project's programs, and its version cannot disagree
 // with the one the user's code mode runs. No other server has a bundled
 // copy, so every other bare name is looked up on `PATH`.
+/// Coordinates the executable path result while preserving this module’s validation boundary.
 fn executable_path(
   name: String,
   head: String,
@@ -427,6 +430,7 @@ fn executable_path(
 // containment. A path whose status cannot be read is refused rather than
 // taken as a plain file: the answer decides what is mounted, and guessing
 // it wrong is how a link's target would go missing from the jail.
+/// Coordinates the measured result while preserving this module’s validation boundary.
 fn measured(name: String, path: String) -> Result(ExecutableFile, String) {
   case fs.real_filesystem().read_link(path) {
     Ok(tool.NotALink) -> ending(name, path, at: path, chain: [])
@@ -444,6 +448,7 @@ fn measured(name: String, path: String) -> Result(ExecutableFile, String) {
 // the text climbs out of where that directory really is rather than out of
 // how it happened to be spelled. Revisiting a path is a loop, refused
 // before the hop bound because it is the more useful thing to be told.
+/// Coordinates the followed result while preserving this module’s validation boundary.
 fn followed(
   name: String,
   command: String,
@@ -472,6 +477,7 @@ fn followed(
 // running past `max_link_hops` is the chain running past it. Nothing there
 // means the link dangles, and it is refused: the jail would otherwise be
 // built around a file that does not exist.
+/// Coordinates the landed result while preserving this module’s validation boundary.
 fn landed(
   name: String,
   command: String,
@@ -512,6 +518,7 @@ fn landed(
 // The end of the chain, which must be a regular file. `chain` is empty for
 // a plain executable, and that emptiness is the whole difference between
 // the two answers.
+/// Coordinates the ending result while preserving this module’s validation boundary.
 fn ending(
   name: String,
   command: String,
@@ -542,16 +549,19 @@ fn ending(
 // the file tools trust, which follows the links in it in POSIX order and
 // bounds them against loops. The last component is kept, because it is
 // the next hop and `landed` reads it without following it.
+/// Coordinates the hop result while preserving this module’s validation boundary.
 fn hop(
   name: String,
   command: String,
   from from: String,
   target target: String,
 ) -> Result(String, String) {
+  // hop handles the the selected value outcomes here before continuing.
   let joined = case string.starts_with(target, "/") {
     True -> target
     False -> filepath.join(filepath.directory_name(from), target)
   }
+
   fs.resolve_real(
     fs.real_filesystem(),
     workspace: "/",
@@ -573,6 +583,7 @@ fn hop(
 // Rooted at `/` with no protected list, only `Unresolvable` can come back
 // from the walker; the other shapes are named for totality and say only
 // that the path did not resolve.
+/// Coordinates the unresolved result while preserving this module’s validation boundary.
 fn unresolved(error: fs.PathError) -> String {
   case error {
     fs.Unresolvable(path: _, reason:) -> reason
@@ -584,17 +595,20 @@ fn unresolved(error: fs.PathError) -> String {
   }
 }
 
+/// Coordinates the unreadable result while preserving this module’s validation boundary.
 fn unreadable(
   name: String,
   command: String,
   at path: String,
   error error: tool.FsError,
 ) -> String {
+  // unreadable handles the the selected value outcomes here before continuing.
   let reason = case error {
     tool.FsNotFound(path: _) -> "not found"
     tool.FsPermissionDenied(path: _) -> "permission denied"
     tool.FsFailure(path: _, reason:) -> reason
   }
+
   "lsp."
   <> name
   <> "'s command "
@@ -657,6 +671,8 @@ pub fn directory_unlinked(
     use real_write <- result.try(real_path(name, write))
     use real_directory <- result.try(real_path(name, directory))
     let expected = join_below(real_write, below(write, directory))
+
+    // directory_unlinked handles the real_directory == expected outcomes here before continuing.
     case real_directory == expected {
       True -> Ok(Nil)
       False ->
@@ -712,6 +728,8 @@ pub fn caches_unlinked(
   places: Places,
 ) -> Result(Nil, String) {
   use caches <- result.try(private_caches(server, places))
+
+  // caches_unlinked handles the caches, places.cache outcomes here before continuing.
   case caches, places.cache {
     [], _ -> Ok(Nil)
 
@@ -730,6 +748,7 @@ pub fn caches_unlinked(
 
 // One private cache against the real cache place: its spelled path, its
 // real path, and the real path it must have.
+/// Coordinates the cache where placed result while preserving this module’s validation boundary.
 fn cache_where_placed(
   name: String,
   path: profile.LspPath,
@@ -738,10 +757,14 @@ fn cache_where_placed(
 ) -> Result(Nil, String) {
   use spelled <- result.try(profile.expand_path(path, places))
   use real <- result.try(real_path(name, spelled))
+
+  // cache_where_placed handles the the selected value outcomes here before continuing.
   let expected = case path {
     profile.CachePath(rest) -> join_below(real_place, "/" <> rest)
     profile.AbsolutePath(_) | profile.HomePath(_) -> spelled
   }
+
+  // cache_where_placed handles the real == expected outcomes here before continuing.
   case real == expected {
     True -> Ok(Nil)
     False ->
@@ -763,6 +786,7 @@ fn cache_where_placed(
 
 // What `path` adds to `root`, which covers it: empty for the root itself,
 // and otherwise beginning with `/`, whether or not `root` is `/`.
+/// Coordinates the below result while preserving this module’s validation boundary.
 fn below(root: String, path: String) -> String {
   case string.drop_start(path, string.length(root)) {
     "" -> ""
@@ -772,6 +796,7 @@ fn below(root: String, path: String) -> String {
 }
 
 // `below` is empty or begins with `/`; the root `/` is not doubled.
+/// Coordinates the join below result while preserving this module’s validation boundary.
 fn join_below(real: String, below: String) -> String {
   case real, below {
     _, "" -> real
@@ -781,6 +806,7 @@ fn join_below(real: String, below: String) -> String {
 }
 
 // A path with every link in it resolved, or the refusal naming it.
+/// Coordinates the real path result while preserving this module’s validation boundary.
 fn real_path(name: String, path: String) -> Result(String, String) {
   fs.resolve_real(fs.real_filesystem(), workspace: "/", path:)
   |> result.map_error(fn(error) {
@@ -832,10 +858,12 @@ fn real_path(name: String, path: String) -> Result(String, String) {
 /// ```
 ///
 pub fn regions(executable: Executable) -> List(String) {
+  // regions handles the the selected value outcomes here before continuing.
   let led = case executable.file {
     PlainExecutable -> []
     LinkedExecutable(chain:) -> list.map(chain, filepath.directory_name)
   }
+
   let directories =
     list.unique([filepath.directory_name(executable.path), ..led])
   list.filter(directories, fn(directory) {
@@ -1003,10 +1031,13 @@ pub fn policy_for(
     )
 
   use Nil <- result.try(covered(server.name, base, requirements))
+
+  // policy_for handles the the selected value outcomes here before continuing.
   let argv = case server.command {
     [_head, ..rest] -> [placement.executable.path, ..rest]
     [] -> [placement.executable.path]
   }
+
   Ok(Jail(
     base:,
     requirements:,
@@ -1024,6 +1055,7 @@ pub fn policy_for(
 // of the workspace the session already authorizes, but never discovers or
 // grants an external path from a language manifest or server response.
 // Writes and the gate for answer text remain at the selected package root.
+/// Coordinates the workspace reads result while preserving this module’s validation boundary.
 fn workspace_reads(workspace: String, lease: SandboxPolicy) -> List(String) {
   list.append(lease.readable_roots, lease.writable_roots)
   |> list.filter_map(fn(root) {
@@ -1065,6 +1097,7 @@ fn project_writes(server: LspServer, root: String) -> List(String) {
 //
 // A region strictly inside a writable root is left alone: it makes the
 // server's own directory read-only and nothing more.
+/// Coordinates the unshadowed result while preserving this module’s validation boundary.
 fn unshadowed(
   name: String,
   executable: Executable,
@@ -1078,6 +1111,8 @@ fn unshadowed(
       })
       |> result.map(fn(write) { #(mount.path, write) })
     })
+
+  // unshadowed handles the shadow outcomes here before continuing.
   case shadow {
     Error(Nil) -> Ok(Nil)
     Ok(#(region, write)) ->
@@ -1113,11 +1148,13 @@ fn unshadowed(
 // from this resolution and nothing re-reads the chain, so a link rewritten
 // after it points outside what is mounted and fails to execute in the
 // jail rather than widening anything.
+/// Coordinates the unrewritable result while preserving this module’s validation boundary.
 fn unrewritable(
   name: String,
   executable: Executable,
   writes: List(String),
 ) -> Result(Nil, String) {
+  // unrewritable handles the the selected value outcomes here before continuing.
   let links = case executable.file {
     PlainExecutable -> []
     LinkedExecutable(chain:) -> [
@@ -1125,10 +1162,13 @@ fn unrewritable(
       ..list.take(chain, list.length(chain) - 1)
     ]
   }
+
   let rewritable =
     list.find(links, fn(link) {
       list.any(writes, fn(write) { policy.covers(root: write, path: link) })
     })
+
+  // unrewritable handles the rewritable outcomes here before continuing.
   case rewritable {
     Error(Nil) -> Ok(Nil)
     Ok(link) ->
@@ -1149,6 +1189,7 @@ fn unrewritable(
 // the link's own directory or the directory of anything it leads through,
 // and naming the target in `command` would drop only the first, so the
 // remedy says the whole chain has to move.
+/// Coordinates the shadow remedy result while preserving this module’s validation boundary.
 fn shadow_remedy(executable: Executable) -> String {
   case executable.file {
     LinkedExecutable(chain: _) ->
@@ -1159,6 +1200,7 @@ fn shadow_remedy(executable: Executable) -> String {
   }
 }
 
+/// Coordinates the absolute root result while preserving this module’s validation boundary.
 fn absolute_root(name: String, root: String) -> Result(Nil, String) {
   case string.starts_with(root, "/") {
     True -> Ok(Nil)
@@ -1175,6 +1217,7 @@ fn expanded(
 }
 
 // Each `cache_env` variable with the host path of its private directory.
+/// Coordinates the private caches result while preserving this module’s validation boundary.
 fn private_caches(
   server: LspServer,
   places: Places,
@@ -1191,6 +1234,7 @@ fn private_caches(
 // to the base. Adding a nested second bind of a region already bound would
 // be two binds the emitters have to agree on the order of, for nothing.
 // Returns the base's mounts and the requirements' mounts.
+/// Coordinates the admitted mounts result while preserving this module’s validation boundary.
 fn admitted_mounts(
   have: List(Mount),
   regions: List(String),
@@ -1198,6 +1242,8 @@ fn admitted_mounts(
   let #(added, wanted) =
     list.fold(regions, #([], []), fn(acc, region) {
       let #(added, wanted) = acc
+
+      // admitted_mounts handles the list.find(have, fn(mount) outcomes here before continuing.
       case list.find(have, fn(mount) { policy.covers(mount.path, region) }) {
         Ok(existing) -> #(added, [read_only(existing.path), ..wanted])
         Error(Nil) -> #([read_only(region), ..added], [
@@ -1211,6 +1257,7 @@ fn admitted_mounts(
 
 // A server's executable region is required: a wrong derivation must
 // refuse the lease naming the path, not start a jail with no binary in it.
+/// Coordinates the read only result while preserving this module’s validation boundary.
 fn read_only(path: String) -> Mount {
   policy.Mount(
     path:,
@@ -1227,6 +1274,7 @@ fn read_only(path: String) -> Mount {
 // variables come last and carry values the daemon never supplied: each is
 // the private directory the policy grants, so a tool inside the jail keeps
 // its cache there rather than in one the host's own tools read.
+/// Coordinates the environment result while preserving this module’s validation boundary.
 fn environment(
   placement: Placement,
   scratch: String,
@@ -1247,16 +1295,20 @@ fn environment(
 
   // Gleam uses HOME/Library/Caches on macOS even when XDG_CACHE_HOME is
   // set. Setup and the offline server therefore share a private HOME too;
+
   // neither can populate the cache or credentials of the operator's tools.
   let home = case placement.server.preparation {
     profile.AlreadyPrepared -> placement.places.home
     profile.GleamDependencies ->
       list.key_find(caches, "XDG_CACHE_HOME") |> option.from_result
   }
+
+  // environment handles the the selected value outcomes here before continuing.
   let home = case home {
     Some(home) -> [#("HOME", home)]
     None -> []
   }
+
   let owned =
     list.flatten([
       [#("PATH", path)],
@@ -1276,12 +1328,15 @@ fn environment(
 // Composes the two exactly as the broker will, so a lease that would be
 // refused at clearance is refused here, in words, before a directory is
 // made or a lease counted.
+/// Coordinates the covered result while preserving this module’s validation boundary.
 fn covered(
   name: String,
   base: SandboxPolicy,
   requirements: SandboxPolicy,
 ) -> Result(Nil, String) {
   let #(composed, narrowings) = policy.compose(base:, requirements:, grants: [])
+
+  // covered handles the narrowings outcomes here before continuing.
   case narrowings {
     [] ->
       policy.validate(composed)
@@ -1484,11 +1539,14 @@ pub fn transport(launch: Launch) -> transport.Transport {
 // back two closures over the relay's subject, so the client talks to the
 // relay as it would to a pipe: `send` is a cast, because stdin has no
 // backpressure here (ADR-015 §1) and the client must never block on it.
+/// Coordinates the connect result while preserving this module’s validation boundary.
 fn connect(
   launch: Launch,
   inbound: Subject(transport.TransportEvent),
 ) -> transport.Connection {
   let owner = process.self()
+
+  // connect handles the start_relay(launch, inbound, owner) outcomes here before continuing.
   case start_relay(launch, inbound, owner) {
     // A relay that would not start is a server that will not start, and the
     // actor learns that the one way it learns everything about the wire.
@@ -1499,6 +1557,7 @@ fn connect(
     Ok(started) ->
       transport.Connection(
         send: fn(line) {
+          // connect handles the process.is_alive(started.pid) outcomes here before continuing.
           case process.is_alive(started.pid) {
             True -> {
               process.send(
@@ -1524,6 +1583,7 @@ pub const stderr_ring_bytes = 8192
 // the relay then stays alive long enough to return the lease properly.
 // `sm.continuing(Clear)` makes the clearance the relay's own first message,
 // so the start happens inside its handler and not in the client's process.
+/// Coordinates the start relay result while preserving this module’s validation boundary.
 fn start_relay(
   launch: Launch,
   inbound: Subject(transport.TransportEvent),
@@ -1564,6 +1624,7 @@ fn start_relay(
 // held rather than lost. `sm.with_state_timeout` arms a timer that belongs
 // to the phase being entered, so leaving the phase cancels it and a fire
 // that raced the settlement is dropped.
+/// Coordinates the handle result while preserving this module’s validation boundary.
 fn handle(
   phase: Phase,
   relay: Relay,
@@ -1657,6 +1718,7 @@ fn handle(
 // Takes the lease, prepares the scratch directory, and clears the call. A
 // refusal at any step is the one `TransportClosed` the client gets, and the
 // lease — if one was taken — goes back first.
+/// Coordinates the clear result while preserving this module’s validation boundary.
 fn clear(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
   let launch = relay.launch
   let acquired =
@@ -1665,6 +1727,8 @@ fn clear(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
       holder: process.self(),
       waiting: launch.timing.lease_wait_ms,
     )
+
+  // clear handles the acquired outcomes here before continuing.
   case acquired {
     Error(refusal) -> {
       tell(relay, "no_server: " <> leases.refusal_text(refusal))
@@ -1672,6 +1736,8 @@ fn clear(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
     }
     Ok(lease) -> {
       let relay = Relay(..relay, lease: Some(lease))
+
+      // clear handles the dispatch(relay) outcomes here before continuing.
       case dispatch(relay) {
         Ok(call) -> sm.transition(to: Relaying(call), data: relay)
         Error(reason) -> {
@@ -1686,6 +1752,7 @@ fn clear(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
 // The impure half of a clearance: make the scratch `tmp` the jail will bind
 // as `TMPDIR` (it must exist before the helper binds it), then ask the
 // broker to clear and start the call.
+/// Coordinates the dispatch result while preserving this module’s validation boundary.
 fn dispatch(relay: Relay) -> Result(RunningCall, String) {
   let launch = relay.launch
   let tmp = launch.scratch <> "/tmp"
@@ -1729,7 +1796,9 @@ pub fn refusal_text(refusal: broker.Refusal) -> String {
 
 // One broker event while the client is still listening. Stdout is the
 // wire; stderr is a log; the settlement is the end.
+/// Coordinates the output result while preserving this module’s validation boundary.
 fn output(relay: Relay, event: CallEvent) -> sm.Next(Phase, Relay, Signal) {
+  // output handles the event outcomes here before continuing.
   case event {
     broker.CallOutput(stream: framing.Stdout, data:, total_bytes: _, truncated:) ->
       case truncated {
@@ -1777,6 +1846,7 @@ fn orphaned(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
 // Enters `Draining`: the client has been told, or has died, and the relay
 // waits, bounded, for the helper to settle so the lease is not returned
 // while the helper still holds the server.
+/// Coordinates the drain result while preserving this module’s validation boundary.
 fn drain(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
   sm.transition(to: Draining, data: relay)
   |> sm.with_state_timeout(
@@ -1788,11 +1858,14 @@ fn drain(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
 // The lease is released here, explicitly, the moment the helper is known to
 // be back (or will never be heard from). The counter's monitor on this
 // process would release it anyway; this is the prompt path.
+/// Coordinates the finish result while preserving this module’s validation boundary.
 fn finish(relay: Relay) -> sm.Next(Phase, Relay, Signal) {
+  // finish handles the relay.lease outcomes here before continuing.
   case relay.lease {
     Some(lease) -> leases.release(lease)
     None -> Nil
   }
+
   sm.stop()
 }
 
@@ -1802,9 +1875,12 @@ fn tell(relay: Relay, reason: String) -> Nil {
 }
 
 // Keeps the last `stderr_ring_bytes` of the stream.
+/// Coordinates the ring result while preserving this module’s validation boundary.
 fn ring(held: BitArray, data: BitArray) -> BitArray {
   let joined = bit_array.append(held, data)
   let size = bit_array.byte_size(joined)
+
+  // ring handles the size > stderr_ring_bytes outcomes here before continuing.
   case size > stderr_ring_bytes {
     False -> joined
     True ->
@@ -1824,6 +1900,7 @@ fn ring(held: BitArray, data: BitArray) -> BitArray {
 /// ```
 ///
 pub fn settled_text(outcome: broker.CallOutcome, stderr: BitArray) -> String {
+  // settled_text handles the the selected value outcomes here before continuing.
   let ending = case outcome {
     broker.CallExited(result:) ->
       "the language server exited with code "
@@ -1837,6 +1914,8 @@ pub fn settled_text(outcome: broker.CallOutcome, stderr: BitArray) -> String {
       <> tool.exec_failure_text(failure)
       <> missing_layers(failure)
   }
+
+  // settled_text handles the string.trim(stderr_text(stderr)) outcomes here before continuing.
   case string.trim(stderr_text(stderr)) {
     "" -> ending
     tail -> ending <> "; its stderr ended: " <> tail
@@ -1847,6 +1926,7 @@ pub fn settled_text(outcome: broker.CallOutcome, stderr: BitArray) -> String {
 // the helper's own words, because "ran without the demanded enforcement"
 // alone tells an operator nothing about which kernel feature to look for.
 // Every other failure has said everything it knows already.
+/// Coordinates the missing layers result while preserving this module’s validation boundary.
 fn missing_layers(failure: exec.ExecFailure) -> String {
   case failure {
     exec.DegradedExecution(result:) ->
@@ -1876,6 +1956,7 @@ fn missing_layers(failure: exec.ExecFailure) -> String {
 // The ring was cut at a byte count, so it may open part-way through a
 // character. Leading continuation bytes are dropped until the rest reads
 // as text; stderr that is not text at all is described rather than quoted.
+/// Coordinates the stderr text result while preserving this module’s validation boundary.
 fn stderr_text(bytes: BitArray) -> String {
   case bit_array.to_string(bytes) {
     Ok(text) -> text

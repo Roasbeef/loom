@@ -301,6 +301,8 @@ pub fn load_from(
     list.fold(sources, #([], [], []), fn(state, source) {
       let #(configs, skipped, notes) = state
       let #(one, contents) = source
+
+      // Choose the hook source loader based on the discovered file kind.
       case read(one, contents, trust_root) {
         // A file that is not there is not a diagnostic. Every session
         // whose operator keeps no `~/.claude` would otherwise open
@@ -341,6 +343,8 @@ type Reading {
 }
 
 // One located file's contents, parsed and trust-checked.
+
+/// Reads configured hook content and records whether the source is absent or available.
 fn read(
   located: Located,
   contents: Contents,
@@ -365,17 +369,23 @@ fn read(
 // caller's decision, recorded in `Located.shape` when the file was
 // located, because only whoever knows where a file came from knows
 // whether its whole document is the hooks object.
+
+/// Converts parsed hook configuration into the service reading used by request processing.
 fn parsed(
   located: Located,
   trust_root: Option(String),
   text: String,
 ) -> Reading {
   let source = hookcompat.Source(label: located.path, origin: located.origin)
+
+  // Map parse success or failure into the service reading state.
   let outcome = case located.shape {
     ClaudeSettings -> hookcompat.parse_claude_settings(text, source)
     ClaudeHooks -> hookcompat.parse_claude(text, source)
     LoomToml -> hookcompat.parse_loom(text, source)
   }
+
+  // Map parse success or failure into the service reading state.
   case outcome {
     Ok(config) -> checked(located, trust_root, config)
     Error(reason) -> Refused(reason)
@@ -384,6 +394,8 @@ fn parsed(
 
 // A parsed configuration the operator's trust record admits, or the
 // sentence saying why it does not.
+
+/// Applies trust checks before a located configuration can be used to run hooks.
 fn checked(
   located: Located,
   trust_root: Option(String),
@@ -397,6 +409,8 @@ fn checked(
 
 // Whether this source's current definition is one the operator has
 // admitted, and the sentence for the boot log when it is not.
+
+/// Determines whether a hook source is trusted for the requested root and origin.
 fn trusted(
   trust_root: Option(String),
   located: Located,
@@ -423,6 +437,8 @@ fn trusted(
 // on a missing directory fails in the direction that runs a
 // repository's scripts on a daemon started under a stripped
 // environment.
+
+/// Checks whether the located hook file is already recorded as an imported trusted source.
 fn imported(
   trust_root: Option(String),
   located: Located,
@@ -446,12 +462,16 @@ fn imported(
 // trusted. Only the first can be waived by origin. Waiving the second
 // meant a user-level file re-entered no review it had ever left, which
 // is the property the module doc and the parity matrix both claim.
+
+/// Verifies the located configuration against the persisted trust record for its path.
 fn against_the_record(
   root: String,
   located: Located,
   config: hookcompat.Config,
 ) -> Result(Nil, String) {
   let path = hooktrust.record_path(root, located.path)
+
+  // Compare the discovered source with its persisted trust record.
   case hooktrust.load(path) |> option.from_result {
     None -> first_sight(located.origin, path)
 
@@ -473,6 +493,8 @@ fn against_the_record(
 // `~/.claude/settings.json` carries in Claude itself — and every other
 // imported source arrived with a repository or a plugin and asks
 // first.
+
+/// Applies origin-specific trust rules when a hook file is encountered for the first time.
 fn first_sight(origin: hookcompat.Origin, path: String) -> Result(Nil, String) {
   case origin {
     hookcompat.UserSettings | hookcompat.LoomInline -> Ok(Nil)
@@ -706,6 +728,8 @@ pub fn compaction_note(serving: Serving, trigger: String) -> Option(String) {
         outcome.ending,
       ))
     })
+
+  // Select the context note to emit for this compaction event.
   case hookwire.combine_injections(notes) {
     hookdecisions.Injected(text) -> Some(text)
     hookdecisions.NoContext | hookdecisions.Blocked(_) -> None
@@ -832,6 +856,8 @@ pub fn wire(
                   stop_block(ids.op_id_to_string(operation), serving, counters)
                 False -> hookdecisions.Finish
               }
+
+              // Choose whether a hook invocation is wired to this tool outcome.
               case continuation {
                 hookdecisions.Continue(reason) ->
                   Some(hook_message(hookcompat.Stop, reason, clock))
@@ -900,6 +926,8 @@ type RunPosition {
 // this operation and anything else means a `Stop` hook has already
 // blocked this cycle — which is exactly the interval the contract's
 // field describes, since an operation is one conversational run.
+
+/// Constructs the continuation decision that prevents a blocked hook result from being applied.
 fn stop_block(
   operation: String,
   serving: Serving,
@@ -909,6 +937,8 @@ fn stop_block(
     actor.call(counters, waiting: 1000, sending: fn(reply) {
       Tally(operation, reply)
     })
+
+  // Stop asking for continuation once the accumulated block count reaches its cap.
   case placed >= stop_block_cap {
     True -> hookdecisions.Finish
 
@@ -916,6 +946,7 @@ fn stop_block(
     // question, so a hook that trusts the field stops asking at the
     // moment the cap would have stopped asking anyway.
     False ->
+      // Select the block decision from the hook continuation state.
       stop_gate(serving, case placed {
         0 -> hookwire.FirstBlock
         _ -> hookwire.AlreadyBlocked
@@ -936,6 +967,8 @@ fn stop_block(
 // before anything has run. Both were once stamped `[Stop hook]`, which
 // told the model a stop hook had blocked at a moment no stop had been
 // attempted.
+
+/// Builds the hook-facing message with the current clock observation.
 fn hook_message(
   event: hookcompat.Event,
   text: String,
@@ -965,6 +998,8 @@ fn hook_message(
 // `startup`. The contract's other sources (`resume`, `compact`,
 // `clear`) have no moment here, which is why the one this does fire
 // on is the one it names.
+
+/// Produces context frames for a hook run from the service counters and current position.
 fn started_context(
   serving: Serving,
   clock: Clock,
@@ -1010,16 +1045,21 @@ fn trigger_of(cause: effects.CompactionCause) -> String {
 // asked about, because asking about a call that will not run wakes
 // a satellite for nothing and invites a second, contradictory
 // reason.
+
+/// Uses the host clearance result to decide whether a hook may be applied.
 fn cleared(
   serving: Serving,
   clear: fn(effects.ClearanceQuery) -> effects.Clearance,
   query: effects.ClearanceQuery,
 ) -> effects.Clearance {
+  // Map the tool clearance verdict to the corresponding hook continuation result.
   case clear(query) {
     effects.ClearanceRefused(..) as refused -> refused
     effects.Cleared(effective_arguments: _, replay: _) as clearance -> {
       let verdict =
         tool_gate(serving, query.call.name, query.call.id, query.call.arguments)
+
+      // Dispatch the clearance result to the appropriate hook continuation.
       case verdict {
         hookdecisions.Proceed -> clearance
         hookdecisions.Deny(reason) ->
@@ -1072,6 +1112,8 @@ fn cleared(
 // approved. Today the in-tree clearance echoes what it is given and the
 // two are equal; this is the arm that stays correct when one stops
 // echoing.
+
+/// Rechecks clearance after hook feedback changes the returned result.
 fn recleared(
   clear: fn(effects.ClearanceQuery) -> effects.Clearance,
   query: effects.ClearanceQuery,
@@ -1090,16 +1132,21 @@ fn recleared(
 // the native `tool_result` fold holds, and feedback and context ride
 // beside the original in one attributed text rather than three
 // fields.
+
+/// Combines the hook outcome with the original tool run while preserving the result contract.
 fn ran(
   serving: Serving,
   outcome: effects.ToolOutcome,
   run: effects.ToolRun,
 ) -> effects.ToolOutcome {
+  // Apply hook feedback only to successful tool results and leave failures unchanged.
   case outcome {
     effects.ToolFailed(..) -> outcome
     effects.ToolCompleted(result:, terminate:) -> {
       let feedback =
         tool_feedback(serving, run.call.name, run.call.id, run.arguments)
+
+      // Handle success and failure outcomes from the hook execution.
       case feedback.replacement, feedback.context, feedback.reason {
         None, None, None -> outcome
         _, _, _ ->
@@ -1119,6 +1166,8 @@ fn ran(
 // result carries here. Feedback and context ride after it as one
 // attributed block: a tool result the hook annotated is one result,
 // and the attribution stays in the text the model reads.
+
+/// Applies hook feedback to a tool result without changing unrelated message variants.
 fn retexted(result: AgentMessage, feedback: hookwire.Feedback) -> AgentMessage {
   case result {
     message.ToolResultMessage(..) as original ->
@@ -1134,10 +1183,13 @@ fn retexted(result: AgentMessage, feedback: hookwire.Feedback) -> AgentMessage {
 // replacement when the hook made one, else the original, then the
 // note the hook attached — or nothing at all when the hook had
 // neither, which is the common case and the one that costs nothing.
+
+/// Adds hook feedback to the result blocks while retaining the original block content.
 fn annotated(
   original: List(message.ToolResultBlock),
   feedback: hookwire.Feedback,
 ) -> List(message.ToolResultBlock) {
+  // Choose replacement content and feedback text while preserving original result blocks.
   let replaced = case feedback.replacement {
     Some(replacement) -> [
       message.ToolResultText(
@@ -1147,12 +1199,16 @@ fn annotated(
     ]
     None -> original
   }
+
+  // Apply feedback replacement to matching tool-result blocks only.
   let note = case feedback.reason, feedback.context {
     None, None -> ""
     Some(reason), None -> reason
     None, Some(context) -> context
     Some(reason), Some(context) -> reason <> "\n\n" <> context
   }
+
+  // Apply feedback replacement to matching tool-result blocks only.
   case note {
     "" -> replaced
     _ ->

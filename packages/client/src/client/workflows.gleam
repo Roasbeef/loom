@@ -67,6 +67,7 @@ pub fn router_for(
   fallback: satellite.CapRouter,
 ) -> satellite.CapRouter {
   fn(request: satellite.CapRequest) {
+    // Decide how to handle request.cap {.
     case request.cap {
       "workflow.step" if request.ordinal >= 32 ->
         Error(satellite.CapDenial(

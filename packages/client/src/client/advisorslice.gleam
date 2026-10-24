@@ -236,6 +236,7 @@ pub fn render(entries: List(Entry), bounds: Bounds) -> Option(Slice) {
   // would be re-scanned and re-skipped at every run end forever.
   use newest <- option.then(newest_seq(entries))
 
+  // Render each entry into a block and fit within bounds.
   case list.filter_map(entries, block(_, bounds)) {
     [] -> None
     blocks -> Some(fit(blocks, newest, bounds))
@@ -251,7 +252,8 @@ fn newest_seq(entries: List(Entry)) -> Option(Seq) {
   |> option.map(fn(last) { last.seq })
 }
 
-// One entry's rendering, or `Error(Nil)` for an entry that renders nothing.
+/// Renders a single journal entry into a formatted transcript block.
+/// One entry's rendering, or `Error(Nil)` for an entry that renders nothing.
 fn block(entry: Entry, bounds: Bounds) -> Result(String, Nil) {
   case entry {
     entry.MessageEntry(message:, ..) -> message_block(message, bounds)
@@ -274,6 +276,7 @@ fn block(entry: Entry, bounds: Bounds) -> Result(String, Nil) {
   }
 }
 
+/// Formats an agent message into a role-labelled block for the transcript slice.
 fn message_block(message: AgentMessage, bounds: Bounds) -> Result(String, Nil) {
   case message {
     message.UserMessage(content:, ..) -> user_block(content)
@@ -304,6 +307,7 @@ fn user_block(content: List(message.UserBlock)) -> Result(String, Nil) {
   }
 }
 
+/// Extracts plain text representation from a single user content block.
 fn user_piece(piece: message.UserBlock) -> String {
   case piece {
     message.UserText(text:, ..) -> text
@@ -341,16 +345,15 @@ fn label_nudges(text: String) -> String {
   }
 }
 
-// The body between the advice header and footer, or nothing when the text
-// does not carry both.
-//
-// Both tokens are required because this decides attribution, and the
-// harness always writes both: `advice_message` appends the footer after
-// the body, and the byte caps in this module bound a slice rather than a
-// frame, so nothing here can cut one off. A turn that carries the header
-// alone is somebody quoting a verdict — an operator pasting one back to
-// ask about it — and labelling that as the advisor's own words would be
-// the misattribution the label exists to prevent.
+/// The body between the advice header and footer, or nothing when the text
+/// does not carry both.
+/// Both tokens are required because this decides attribution, and the
+/// harness always writes both: `advice_message` appends the footer after
+/// the body, and the byte caps in this module bound a slice rather than a
+/// frame, so nothing here can cut one off. A turn that carries the header
+/// alone is somebody quoting a verdict — an operator pasting one back to
+/// ask about it — and labelling that as the advisor's own words would be
+/// the misattribution the label exists to prevent.
 fn advice_body(text: String) -> Option(String) {
   case string.split_once(text, "\n") {
     Ok(#(first, rest)) if first == advice_header -> framed(rest)
@@ -359,11 +362,11 @@ fn advice_body(text: String) -> Option(String) {
   }
 }
 
-// The body between the continuation header and footer, or nothing when
-// the text does not carry both. The same two-token requirement
-// `advice_body` documents: the harness always writes both, and a turn
-// carrying the header alone is somebody quoting one back, not the
-// advisor's own earlier words.
+/// The body between the continuation header and footer, or nothing when
+/// the text does not carry both. The same two-token requirement
+/// `advice_body` documents: the harness always writes both, and a turn
+/// carrying the header alone is somebody quoting one back, not the
+/// advisor's own earlier words.
 fn continuation_body(text: String) -> Option(String) {
   case string.split_once(text, "\n") {
     Ok(#(first, rest)) if first == continuation_header ->
@@ -387,10 +390,10 @@ fn framed(body: String) -> Option(String) {
   }
 }
 
-// The body inside the nudges fence. A message whose fence was opened but
-// never closed still renders its remainder: the label is about provenance,
-// and losing the text because a cap cut the closing fence would be worse
-// than rendering a little more than was fenced.
+/// The body inside the nudges fence. A message whose fence was opened but
+/// never closed still renders its remainder: the label is about provenance,
+/// and losing the text because a cap cut the closing fence would be worse
+/// than rendering a little more than was fenced.
 fn nudges_body(text: String) -> Option(String) {
   // The header has to open the message, as the terminal's recogniser
   // also insists. A fence found anywhere would let any user-role text on
@@ -403,6 +406,7 @@ fn nudges_body(text: String) -> Option(String) {
   )
   use #(_before, rest) <- option.then(split(text, fence_open <> "\n"))
 
+  // Extract fenced content up to closing fence delimiter.
   case split(rest, "\n" <> fence_close) {
     Some(#(body, _after)) -> Some(body)
     None -> Some(rest)
@@ -415,8 +419,7 @@ fn split(text: String, on: String) -> Option(#(String, String)) {
   |> option.from_result
 }
 
-// --- assistant messages ----------------------------------------------------
-
+/// Renders assistant content blocks and stop/error reasons into a transcript block.
 fn assistant_block(
   content: List(message.AssistantBlock),
   stop_reason: message.StopReason,
@@ -426,22 +429,26 @@ fn assistant_block(
   // A turn that produced only thinking has nothing a reviewer may read, so
   // it contributes no heading either: a bare `assistant:` would announce
   // the one thing this renderer refuses to disclose.
+  // Filter assistant blocks into spoken content.
   let spoken = case list.filter_map(content, assistant_piece(_, bounds)) {
     [] -> []
     said -> ["assistant:", ..said]
   }
 
+  // Check if an error line was reported.
   let lines = case error_line(stop_reason, error_message) {
     None -> spoken
     Some(line) -> list.append(spoken, [line])
   }
 
+  // Return rendered lines if any non-empty content was produced.
   case lines {
     [] -> Error(Nil)
     rendered -> Ok(string.join(rendered, "\n"))
   }
 }
 
+/// Renders a single assistant content block into text, withholding thinking.
 fn assistant_piece(
   piece: message.AssistantBlock,
   bounds: Bounds,
@@ -465,10 +472,11 @@ fn assistant_piece(
   }
 }
 
-// Only `Errored` is a failed turn. `Aborted` is the operator stopping a run
-// and `Deferred` is a provider handing back a handle to poll; neither is
-// something the primary did wrong, and `Pending` never reaches a durable
-// entry at all.
+/// Formats a diagnostic error line if the assistant stopped with an error reason.
+/// Only `Errored` is a failed turn. `Aborted` is the operator stopping a run
+/// and `Deferred` is a provider handing back a handle to poll; neither is
+/// something the primary did wrong, and `Pending` never reaches a durable
+/// entry at all.
 fn error_line(
   stop_reason: message.StopReason,
   error_message: Option(String),
@@ -489,8 +497,7 @@ fn error_line(
   }
 }
 
-// --- tool results ----------------------------------------------------------
-
+/// Formats a tool result block with middle clipping applied to stay within bounds.
 fn tool_result_block(
   label: String,
   content: List(message.ToolResultBlock),
@@ -554,9 +561,11 @@ fn last_bytes(text: String, limit: Int) -> String {
   longest_suffix(bytes, size, int.min(limit, size))
 }
 
+/// Finds the longest valid UTF-8 suffix of bytes that fits in the requested byte count.
 fn longest_suffix(bytes: BitArray, size: Int, take: Int) -> String {
   use <- bool.guard(when: take <= 0, return: "")
 
+  // Slice bytes and attempt UTF-8 string conversion.
   case bit_array.slice(bytes, at: size - take, take: take) {
     Error(Nil) -> ""
     Ok(suffix) ->
@@ -592,10 +601,10 @@ fn joined(kept: List(String), dropped: Int) -> String {
   "[" <> int.to_string(dropped) <> " earlier entries omitted]\n\n" <> body
 }
 
-// Newest first, taking whole blocks while they fit; everything the budget
-// does not reach is dropped from the oldest end. `taken` is built by
-// prepending as the walk moves backwards through time, so it comes out
-// oldest first, which is the order it is joined in.
+/// Newest first, taking whole blocks while they fit; everything the budget
+/// does not reach is dropped from the oldest end. `taken` is built by
+/// prepending as the walk moves backwards through time, so it comes out
+/// oldest first, which is the order it is joined in.
 fn take_newest(
   blocks: List(String),
   remaining: Int,
@@ -607,6 +616,7 @@ fn take_newest(
   }
 }
 
+/// Checks if a block fits into remaining budget and places it into taken accumulator.
 fn place(
   block: String,
   older: List(String),
@@ -616,15 +626,16 @@ fn place(
   // The blank line the block costs once it is joined to its neighbour.
   let cost = notes.byte_size(block) + 2
 
+  // Determine whether this block fits within the remaining byte budget.
   case cost <= remaining {
     True -> take_newest(older, remaining - cost, [block, ..taken])
     False -> stop(block, older, remaining, taken)
   }
 }
 
-// One oversized newest block must still say something: a slice that was
-// nothing but an omission line would be strictly worse than no slice at all.
-// `client/notes` makes the same call for a single oversized note.
+/// One oversized newest block must still say something: a slice that was
+/// nothing but an omission line would be strictly worse than no slice at all.
+/// `client/notes` makes the same call for a single oversized note.
 fn stop(
   block: String,
   older: List(String),
@@ -681,9 +692,9 @@ pub fn feed_message(slice: Slice, now: Int, moment: Moment) -> AgentMessage {
   )
 }
 
-// The mid-run line, or nothing at all. A finished run gets no annotation
-// because that is what every slice used to be: saying so on the common
-// case would spend a line of every prompt restating the default.
+/// The mid-run line, or nothing at all. A finished run gets no annotation
+/// because that is what every slice used to be: saying so on the common
+/// case would spend a line of every prompt restating the default.
 fn standing(moment: Moment) -> String {
   case moment {
     RunEnded -> ""
@@ -741,14 +752,14 @@ fn unframed(token: String) -> String {
   "(" <> inside <> ")"
 }
 
-// The budget line both goal frames render. One function for both
-// readers, because the design note's rule is that the model and the
-// operator cannot be shown different books: the reviewer judges
-// `continue` against the same numbers the goal panel shows, and a
-// second renderer here would be a second set of books to keep in step.
-// The spend is the primary's alone (protocol 044 §5) and the line says
-// so, because a reviewer weighing the budget must know it is not
-// weighing its own spend.
+/// The budget line both goal frames render. One function for both
+/// readers, because the design note's rule is that the model and the
+/// operator cannot be shown different books: the reviewer judges
+/// `continue` against the same numbers the goal panel shows, and a
+/// second renderer here would be a second set of books to keep in step.
+/// The spend is the primary's alone (protocol 044 §5) and the line says
+/// so, because a reviewer weighing the budget must know it is not
+/// weighing its own spend.
 fn budget_line(goal: goalstate.Goal) -> String {
   "Budget: "
   <> int.to_string(goal.tokens_used)
@@ -844,18 +855,13 @@ pub fn goal_feed_message(
 /// on it in the advisor's request bodies.
 pub const check_label = "Check (run by the harness, not by the primary):"
 
-// The check block, drawn only when a run has been recorded.
-//
-// Nothing is drawn for a goal whose operator pinned no check, which is every
-// goal that predates the feature: the block would be a line saying the
-// harness has no evidence, on every feed, for a question nobody asked.
-//
-// Both untrusted parts are made frame-safe. The command is operator data and
-// the output is process data, and either could contain this frame's own
-// header or footer, or the untrusted-objective delimiters: a check that
-// printed `</untrusted_objective>` must not be able to close a block it is
-// quoted after, and one that printed the footer must not be able to end the
-// feed and speak the rest in the harness's voice.
+/// The check block, drawn only when a run has been recorded.
+/// Both untrusted parts are made frame-safe. The command is operator data and
+/// the output is process data, and either could contain this frame's own
+/// header or footer, or the untrusted-objective delimiters: a check that
+/// printed `</untrusted_objective>` must not be able to close a block it is
+/// quoted after, and one that printed the footer must not be able to end the
+/// feed and speak the rest in the harness's voice.
 fn check_block(goal: goalstate.Goal, now: Int) -> String {
   case goal.last_check {
     None -> ""
@@ -873,15 +879,14 @@ fn check_block(goal: goalstate.Goal, now: Int) -> String {
   }
 }
 
-// When the run happened, relative to the feed that carries it.
-//
-// The reviewer cannot otherwise tell a check of this stretch of work from a
-// check of the one before it, and the difference decides what a pass is worth:
-// a pass from before the primary's last run says nothing about the tree the
-// reviewer is being asked to judge. The loop drops a result the primary
-// overtook, so an old one here is the case the loop cannot see — a clock that
-// moved, a restart, a result recorded while the operator was mid-command — and
-// the line is what lets the reviewer discount it.
+/// When the run happened, relative to the feed that carries it.
+/// The reviewer cannot otherwise tell a check of this stretch of work from a
+/// check of the one before it, and the difference decides what a pass is worth:
+/// a pass from before the primary's last run says nothing about the tree the
+/// reviewer is being asked to judge. The loop drops a result the primary
+/// overtook, so an old one here is the case the loop cannot see — a clock that
+/// moved, a restart, a result recorded while the operator was mid-command — and
+/// the line is what lets the reviewer discount it.
 fn check_age(ran_at_ms: Int, now: Int) -> String {
   case int.max(0, { now - ran_at_ms } / 1000) {
     0 -> "immediately before this feed"
@@ -890,9 +895,9 @@ fn check_age(ran_at_ms: Int, now: Int) -> String {
   }
 }
 
-// How the run ended, in the reviewer's own terms. A status rather than a
-// verdict: whether a non-zero exit means the objective is unachieved is the
-// reviewer's judgement, and the footer is where it is asked for.
+/// How the run ended, in the reviewer's own terms. A status rather than a
+/// verdict: whether a non-zero exit means the objective is unachieved is the
+/// reviewer's judgement, and the footer is where it is asked for.
 fn check_ending(ending: goalstate.CheckEnding) -> String {
   case ending {
     goalstate.Exited(status: 0) -> "exit status 0 (the check passed)"
@@ -915,6 +920,7 @@ fn check_ending(ending: goalstate.CheckEnding) -> String {
 /// its own ending either.
 pub const check_output_end = "[end check output]"
 
+/// Formats and wraps the captured output of a verification check.
 fn check_output(output: String) -> String {
   case output {
     "" -> "\n  output: (the check printed nothing)"
@@ -924,10 +930,10 @@ fn check_output(output: String) -> String {
   }
 }
 
-// Breaks this frame's own tokens and both objective delimiters where they
-// occur inside a quoted body. One pass for the reason `frame_safe` documents:
-// every replacement drops the bracket that makes the literal, so a
-// replacement cannot combine with its surroundings to spell one again.
+/// Breaks this frame's own tokens and both objective delimiters where they
+/// occur inside a quoted body. One pass for the reason `frame_safe` documents:
+/// every replacement drops the bracket that makes the literal, so a
+/// replacement cannot combine with its surroundings to spell one again.
 fn goal_frame_safe(text: String) -> String {
   text
   |> string.replace(each: goal_feed_header, with: unframed(goal_feed_header))
@@ -1037,16 +1043,16 @@ pub fn continuation_message(
   user_message(text, now)
 }
 
-// The reviewer's note is made safe against this frame's own tokens
-// rather than the advice frame's: `frame_safe` breaks the advice pair,
-// and a continuation note that quoted the continuation footer verbatim
-// would close this frame early and speak its tail to the primary in the
-// operator's voice. The advice tokens need no breaking here — they are
-// not this frame's tokens, and a note that quoted them is a note about
-// advice, not an attempt to end this frame — but breaking them too costs
-// one pass and keeps one safety function per frame family. One pass
-// suffices, the property `frame_safe` documents: the replacement carries
-// neither bracket.
+/// The reviewer's note is made safe against this frame's own tokens
+/// rather than the advice frame's: `frame_safe` breaks the advice pair,
+/// and a continuation note that quoted the continuation footer verbatim
+/// would close this frame early and speak its tail to the primary in the
+/// operator's voice. The advice tokens need no breaking here — they are
+/// not this frame's tokens, and a note that quoted them is a note about
+/// advice, not an attempt to end this frame — but breaking them too costs
+/// one pass and keeps one safety function per frame family. One pass
+/// suffices, the property `frame_safe` documents: the replacement carries
+/// neither bracket.
 fn continuation_safe(text: String) -> String {
   text
   |> string.replace(
@@ -1206,6 +1212,7 @@ pub fn delivered_body(message: AgentMessage) -> Option(String) {
   }
 }
 
+/// Constructs a timestamped user message containing a single text block.
 fn user_message(text: String, now: Int) -> AgentMessage {
   message.UserMessage(
     content: [message.UserText(text:, text_signature: None)],

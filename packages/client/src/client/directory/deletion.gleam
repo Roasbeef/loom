@@ -49,17 +49,22 @@ pub fn finish(
   ownership: Ownership,
   id: String,
 ) -> Result(catalogue.Registration, Refusal) {
+  // Release directory ownership before completing local registration removal.
   case ownership.release(id) {
     Ok(Nil) | Error(store.Mismatch(None)) ->
       manager.finish_delete(registry, id, sessions)
       |> result.map_error(Registry)
+
     Error(store.Mismatch(Some(found))) -> {
       let _unmarked = manager.unmark_deleting(registry, id)
+
+      // Distinguish a move initiated by this node from ownership by a remote peer.
       case found.state {
         record.Moving(..) if found.owner == ownership.node -> Error(Moving)
         record.Moving(..) | record.Serving | record.Local -> Error(NotOwner)
       }
     }
+
     Error(store.NoQuorum(_)) -> Error(NoQuorum)
   }
 }

@@ -174,6 +174,8 @@ pub fn host(context: Context(instance)) -> orchestrator_port.TopHost {
     stop: fn(node, session) {
       use #(spawner, _table) <- result.try(judged(context, node))
       use Nil <- result.try(relayed(context, spawner, session))
+
+      // Decide how to handle manager.resolve(context.registry, session) {.
       case manager.resolve(context.registry, session) {
         Ok(instance) -> context.endpoint(instance).stop()
 
@@ -221,6 +223,8 @@ pub fn judged(
     spawners.by_node(context.spawners, node)
     |> result.replace_error(remote_top.UnknownSpawner(node:)),
   )
+
+  // Decide how to handle spawner.top_level {.
   case spawner.top_level {
     Some(table) -> Ok(#(spawner, table))
     None -> Error(remote_top.TopLevelOff)
@@ -237,7 +241,10 @@ pub fn judged(
 // pool only when the table lists it; a profile when the table lists it, or every
 // profile when it lists none. The survey connects to the executors, so a table
 // that lists none asks no one.
+
+/// Establishes offers for the caller, keeping its validation and result policy at this boundary.
 fn offers(context: Context(instance), table: TopLevel) -> remote_top.Offers {
+  // Decide how to handle let folders =  table.folders {.
   let folders = case table.folders {
     spawners.NoFolders -> []
     spawners.RecentFolders ->
@@ -255,10 +262,13 @@ fn offers(context: Context(instance), table: TopLevel) -> remote_top.Offers {
         Error(_) -> []
       }
   }
+
+  // Decide how to handle let surveyed =  table.executors, table.pools {.
   let surveyed = case table.executors, table.pools {
     [], [] -> page.Placements(executors: [], pools: [])
     _, _ -> deployment.for_page(context.survey())
   }
+
   remote_top.Offers(
     folders:,
     executors: offered_executors(table, surveyed),
@@ -277,6 +287,7 @@ fn label_of(path: String) -> String {
   }
 }
 
+/// Establishes offered executors for the caller, keeping its validation and result policy at this boundary.
 fn offered_executors(
   table: TopLevel,
   surveyed: page.Placements,
@@ -285,6 +296,8 @@ fn offered_executors(
     let report =
       list.find(surveyed.executors, fn(entry) { entry.name == name })
       |> result.try(fn(entry) { option.to_result(entry.report, Nil) })
+
+    // Decide how to handle report {.
     case report {
       Ok(found) ->
         remote_top.ExecutorOffer(
@@ -304,6 +317,7 @@ fn offered_executors(
   })
 }
 
+/// Establishes state of for the caller, keeping its validation and result policy at this boundary.
 fn state_of(state: page.State) -> remote_top.ExecutorState {
   case state {
     page.Ready -> remote_top.Ready
@@ -313,6 +327,7 @@ fn state_of(state: page.State) -> remote_top.ExecutorState {
   }
 }
 
+/// Establishes offered pools for the caller, keeping its validation and result policy at this boundary.
 fn offered_pools(
   table: TopLevel,
   surveyed: page.Placements,
@@ -321,6 +336,8 @@ fn offered_pools(
     let report =
       list.find(surveyed.pools, fn(entry) { entry.name == name })
       |> result.try(fn(entry) { option.to_result(entry.report, Nil) })
+
+    // Decide how to handle report {.
     case report {
       Ok(found) ->
         remote_top.PoolOffer(
@@ -335,6 +352,8 @@ fn offered_pools(
 
 // The profiles a session may start with: the table's list, or every profile the
 // daemon's configuration defines.
+
+/// Establishes allowed profiles for the caller, keeping its validation and result policy at this boundary.
 fn allowed_profiles(
   context: Context(instance),
   table: TopLevel,
@@ -357,6 +376,8 @@ fn model_keys(context: Context(instance)) -> List(String) {
 // Judges a create and makes the session. Everything the table can refuse is
 // refused before the registry is asked, so a refusal reserves nothing and counts
 // against no cap.
+
+/// Establishes create for the caller, keeping its validation and result policy at this boundary.
 fn create(
   context: Context(instance),
   spawner: Spawner,
@@ -366,6 +387,7 @@ fn create(
   profile: String,
   model: Option(String),
 ) -> Result(String, Refusal) {
+  // Decide how to handle use Nil <- result.try( catalogue.is_request_id(request_id) {.
   use Nil <- result.try(case catalogue.is_request_id(request_id) {
     True -> Ok(Nil)
     False ->
@@ -373,6 +395,7 @@ fn create(
         reason: "the request id is not one to 64 letters, numbers or hyphens",
       ))
   })
+
   use place <- result.try(placed(context, table, placement))
   use Nil <- result.try(profile_allowed(context, table, profile))
   use Nil <- result.try(model_known(context, model))
@@ -416,6 +439,8 @@ fn create(
     )
     |> result.map_error(reservation_refusal),
   )
+
+  // Decide how to handle reserved.state {.
   case reserved.state {
     // The store was made by an earlier attempt, or by this one before it was
     // answered. There is nothing to finish.
@@ -432,6 +457,7 @@ fn create(
             remote_top.StoreFailure(reason: reason)
           })
       })
+
       use made <- result.map(
         manager.create_scoped(
           context.registry,
@@ -453,6 +479,7 @@ fn create(
         }
         remote_top.Workspace(..) | remote_top.Pooled(..) -> Nil
       }
+
       made.registration.id
     }
   }
@@ -464,18 +491,23 @@ type Place {
   Place(workspace: String, executor: String, pool: String)
 }
 
+/// Establishes placed for the caller, keeping its validation and result policy at this boundary.
 fn placed(
   context: Context(instance),
   table: TopLevel,
   placement: Placement,
 ) -> Result(Place, Refusal) {
+  // Decide how to handle placement {.
   case placement {
     remote_top.Folder(path:) -> {
+      // Decide how to handle use Nil <- result.try( table.folders {.
       use Nil <- result.try(case table.folders {
         spawners.NoFolders ->
           Error(remote_top.NotOffered(remote_top.OfferedFolder, path))
         spawners.RecentFolders -> remembered(context, path)
       })
+
+      // Validate this branch before continuing, preserving the owning operation’s failure boundary.
       use canonical <- result.try(
         context.check_folder(path)
         |> result.map_error(fn(words) {
@@ -493,7 +525,9 @@ fn placed(
       }
     }
     remote_top.Workspace(executor:, name:) -> {
+      // Confirm the requested resource was offered to this host before returning its placement.
       use Nil <- result.try(
+        // Decide how to handle the branch input.
         case
           list.contains(table.executors, executor)
           && context.has_executor(executor)
@@ -503,22 +537,27 @@ fn placed(
             Error(remote_top.NotOffered(remote_top.OfferedExecutor, executor))
         },
       )
+
       use Nil <- result.map(workspace_name(name))
       Place(workspace: name, executor:, pool: "")
     }
     remote_top.Pooled(pool:, name:) -> {
+      // Confirm the requested resource was offered to this host before returning its placement.
       use Nil <- result.try(
+        // Decide how to handle list.contains(table.pools, pool) && context.has_pool(pool) {.
         case list.contains(table.pools, pool) && context.has_pool(pool) {
           True -> Ok(Nil)
           False -> Error(remote_top.NotOffered(remote_top.OfferedPool, pool))
         },
       )
+
       use Nil <- result.map(workspace_name(name))
       Place(workspace: name, executor: "", pool:)
     }
   }
 }
 
+/// Establishes workspace name for the caller, keeping its validation and result policy at this boundary.
 fn workspace_name(name: String) -> Result(Nil, Refusal) {
   case catalogue.is_workspace_name(name) {
     True -> Ok(Nil)
@@ -532,6 +571,8 @@ fn workspace_name(name: String) -> Result(Nil, Refusal) {
 // A folder is offered only when this daemon remembers it, so a page cannot name
 // a path it was not shown. The comparison is of the text the daemon holds, which
 // is canonical.
+
+/// Establishes remembered for the caller, keeping its validation and result policy at this boundary.
 fn remembered(
   context: Context(instance),
   path: String,
@@ -547,6 +588,7 @@ fn remembered(
   }
 }
 
+/// Establishes profile allowed for the caller, keeping its validation and result policy at this boundary.
 fn profile_allowed(
   context: Context(instance),
   table: TopLevel,
@@ -558,6 +600,7 @@ fn profile_allowed(
   }
 }
 
+/// Establishes model known for the caller, keeping its validation and result policy at this boundary.
 fn model_known(
   context: Context(instance),
   model: Option(String),
@@ -572,6 +615,7 @@ fn model_known(
   }
 }
 
+/// Establishes choice words for the caller, keeping its validation and result policy at this boundary.
 fn choice_words(refusal: profiles.Refusal) -> String {
   case refusal {
     profiles.UnknownProfile(words) -> words
@@ -582,6 +626,8 @@ fn choice_words(refusal: profiles.Refusal) -> String {
 
 // What the registry's reservation refusal is to the page. A cap is a cap with
 // its own value, and nothing else the registry can say is a reason to give up.
+
+/// Establishes reservation refusal for the caller, keeping its validation and result policy at this boundary.
 fn reservation_refusal(error: manager.RelayError) -> Refusal {
   case error {
     manager.RelayCapped(cap: catalogue.RelayedSessions, limit:) ->
@@ -609,6 +655,8 @@ fn creation_refusal(error: manager.Error) -> Refusal {
 // under one deadline, what it is doing and what it is waiting for. A session
 // that is not resident is listed idle with no requests, and one that does not
 // answer in time is listed the same way: the next poll of the page corrects it.
+
+/// Establishes sessions for the caller, keeping its validation and result policy at this boundary.
 fn sessions(
   context: Context(instance),
   spawner: Spawner,
@@ -631,15 +679,20 @@ fn sessions(
   let overviews = overviews_of(context, table, views)
   let rows =
     list.map2(views, overviews, fn(view, overview) { row_of(view, overview) })
+
+  // Decide how to handle let more =  list.length(views) >= bound {.
   let more = case list.length(views) >= bound {
     True -> remote_top.Further
     False -> remote_top.Last
   }
+
   remote_top.encode_page(remote_top.page_of(rows, more))
 }
 
 // What each resident row says of itself, in the order of the rows. The asks run
 // together under one deadline, so a slow session costs its own row and no other.
+
+/// Establishes overviews of for the caller, keeping its validation and result policy at this boundary.
 fn overviews_of(
   context: Context(instance),
   table: TopLevel,
@@ -649,6 +702,7 @@ fn overviews_of(
   // definition, and spawning a task for them would only fail.
   let asks =
     list.map(views, fn(view) {
+      // Decide how to handle manager.resolve(context.registry, view.listing.record.session_id) {.
       case manager.resolve(context.registry, view.listing.record.session_id) {
         Ok(instance) -> {
           let endpoint = context.endpoint(instance)
@@ -678,6 +732,8 @@ fn overviews_of(
 
 // Puts each outcome back at the row that asked, in order, and leaves a row that
 // asked nothing without one.
+
+/// Establishes rejoin for the caller, keeping its validation and result policy at this boundary.
 fn rejoin(asks: List(Option(a)), outcomes: List(Option(b))) -> List(Option(b)) {
   case asks, outcomes {
     [], _ -> []
@@ -689,6 +745,8 @@ fn rejoin(asks: List(Option(a)), outcomes: List(Option(b))) -> List(Option(b)) {
 
 // One row. The requests are cut to what a row may carry, oldest by seq, so the
 // row is whole and the rest are counted in `more`.
+
+/// Establishes row of for the caller, keeping its validation and result policy at this boundary.
 fn row_of(
   view: manager.RelayedView,
   overview: Option(relayed_session.Overview),
@@ -711,6 +769,8 @@ fn row_of(
     catalogue.Active, Some(found) -> activity_of(found.doing)
     catalogue.Active, None -> remote_top.Idle
   }
+
+  // Decide how to handle let updated_at =  overview {.
   let updated_at = case overview {
     Some(found) -> option.unwrap(found.updated_at, record.created_at)
     None -> record.created_at
@@ -732,15 +792,19 @@ fn row_of(
         None -> []
       },
     )
+
+  // Decide how to handle let pending =  overview {.
   let pending = case overview {
     Some(found) -> found.pending
     None -> []
   }
+
   let rest = string.byte_size(json.to_string(remote_top.encode_row(bare)))
   let #(requests, more) = remote_top.fit_requests(pending, rest)
   remote_top.Row(..bare, requests:, more:)
 }
 
+/// Establishes activity of for the caller, keeping its validation and result policy at this boundary.
 fn activity_of(doing: peer_mail.Doing) -> remote_top.Activity {
   case doing {
     peer_mail.NeedsAnswer -> remote_top.NeedsYou
@@ -752,6 +816,8 @@ fn activity_of(doing: peer_mail.Doing) -> remote_top.Activity {
 // Where a session's tools run, from what the registration holds. A pool is
 // named even after its first attach chose an executor, because the page chose
 // the pool.
+
+/// Establishes placement of for the caller, keeping its validation and result policy at this boundary.
 fn placement_of(listing: catalogue.RelayedListing) -> Placement {
   case listing.pool, listing.executor {
     "", "" -> remote_top.Folder(path: listing.workspace)
@@ -765,6 +831,8 @@ fn placement_of(listing: catalogue.RelayedListing) -> Placement {
 // Whether the session is relayed for the spawner. The row is read in the
 // registry's turn, so a session another spawner started, or none, is refused
 // the same way.
+
+/// Establishes relayed for the caller, keeping its validation and result policy at this boundary.
 fn relayed(
   context: Context(instance),
   spawner: Spawner,
@@ -783,12 +851,16 @@ fn relayed(
 // `NotYetOpen` so the sender asks again. A session that was reserved and never
 // created, or that the owner archived, is not opened: the first needs its create
 // resent, and the second needs its owner.
+
+/// Establishes reached for the caller, keeping its validation and result policy at this boundary.
 fn reached(
   context: Context(instance),
   spawner: Spawner,
   session: String,
 ) -> Result(Endpoint, Refusal) {
   use Nil <- result.try(relayed(context, spawner, session))
+
+  // Decide how to handle use Nil <- result.try( manager.get(context.registry, session) {.
   use Nil <- result.try(case manager.get(context.registry, session) {
     Ok(manager.View(status: manager.Resident(_), ..)) -> Ok(Nil)
     Ok(manager.View(registration: record, ..)) ->
@@ -805,9 +877,11 @@ fn reached(
     Error(error) ->
       Error(remote_top.StoreFailure(reason: delegate_host.describe(error)))
   })
+
   resident(context, session)
 }
 
+/// Establishes open refusal for the caller, keeping its validation and result policy at this boundary.
 fn open_refusal(error: manager.Error) -> Refusal {
   case error {
     manager.SessionArchived ->
@@ -829,6 +903,8 @@ fn open_refusal(error: manager.Error) -> Refusal {
 // Waits for the session's slot to be resident and projects its endpoint. The
 // registry's view is read each time, so a builder that failed ends the wait at
 // once with the registry's own account of it.
+
+/// Establishes resident for the caller, keeping its validation and result policy at this boundary.
 fn resident(
   context: Context(instance),
   session: String,
@@ -860,6 +936,8 @@ fn resident(
           poll.Fail(remote_top.NotYetOpen(reason: "the session did not open"))
       }
     })
+
+  // Decide how to handle waited {.
   case waited {
     poll.Answered(endpoint) -> Ok(endpoint)
     poll.Failed(refusal) -> Error(refusal)
@@ -873,6 +951,8 @@ fn resident(
 // Stops the session and hides it once its slot has drained. Stopping a session
 // with no slot is not an error, and archiving an archived session is not
 // either, so a resend after a lost answer is the same call.
+
+/// Establishes archive for the caller, keeping its validation and result policy at this boundary.
 fn archive(
   context: Context(instance),
   spawner: Spawner,
@@ -891,6 +971,8 @@ fn archive(
           )
       }
     })
+
+  // Decide how to handle waited {.
   case waited {
     poll.Answered(Nil) -> Ok(Nil)
     poll.Failed(refusal) -> Error(refusal)

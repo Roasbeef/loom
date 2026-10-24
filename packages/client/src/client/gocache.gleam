@@ -307,6 +307,8 @@ pub fn environment(caches: GoCaches) -> List(#(String, String)) {
     #("GOMODCACHE", module_cache(caches)),
     #("GOLANGCI_LINT_CACHE", lint_cache(caches)),
   ]
+
+  // Attach local GOPROXY mirror settings when configured for this workspace.
   case caches.mirror {
     None -> base
     Some(mirror) ->
@@ -354,6 +356,7 @@ pub fn admitting(
   }
 }
 
+/// Generates read-only policy mount definitions for the configured Go module mirror.
 fn mirror_mounts(caches: GoCaches) -> List(policy.Mount) {
   case caches.mirror {
     None -> []
@@ -395,15 +398,19 @@ pub fn fault(
 ) -> Result(Nil, String) {
   use Nil <- result.try(owned_name_fault(caches, names))
   use Nil <- result.try(writable_mount_fault(caches, mounts))
+
+  // Validate module mirror configuration if present on this workspace.
   case caches.mirror {
     None -> Ok(Nil)
     Some(mirror) -> mirror_fault(caches, mirror, workspace, protected)
   }
 }
 
-// A read-write mount covering `<cache>/loom/workspace`, the parent of the
-// root, would make the directory holding the retired trees writable from
-// the jail again, which is what retiring them out of the root avoids.
+/// Rejects policies whose read-write mounts overlap the parent directory of Go cache.
+///
+/// A read-write mount covering `<cache>/loom/workspace`, the parent of the
+/// root, would make the directory holding the retired trees writable from
+/// the jail again, which is what retiring them out of the root avoids.
 fn writable_mount_fault(
   caches: GoCaches,
   mounts: List(policy.Mount),
@@ -414,6 +421,8 @@ fn writable_mount_fault(
       mount.access == policy.MountReadWrite
       && policy.covers(root: mount.path, path: parent)
     })
+
+  // Ensure no granted read-write mount covers the cache storage root parent.
   case covering {
     Error(Nil) -> Ok(Nil)
     Ok(mount) ->
@@ -428,6 +437,7 @@ fn writable_mount_fault(
   }
 }
 
+/// Rejects tool configuration that redefines reserved Go environment variable names.
 fn owned_name_fault(
   caches: GoCaches,
   names: List(String),
@@ -445,6 +455,7 @@ fn owned_name_fault(
   }
 }
 
+/// Validates that module mirror paths exist, are directories, and avoid overlap.
 fn mirror_fault(
   caches: GoCaches,
   mirror: String,
@@ -480,6 +491,7 @@ fn mirror_fault(
   })
 }
 
+/// Verifies that a target filesystem path represents an existing directory.
 fn is_directory(
   line: String,
   path: String,
@@ -516,16 +528,20 @@ pub fn trim(
   unique unique: String,
 ) -> Result(Trimmed, String) {
   use size_kib <- result.try(measure(build_cache(caches)))
+
+  // Compare measured cache size against limit to decide whether to retire.
   case size_kib > caches.limit_kib {
     False -> Ok(Within(size_kib:))
     True -> retire(caches, size_kib, unique)
   }
 }
 
-// The rename comes first and the replacement second, and nothing runs
-// between them that could fail on its own account: a failed rename leaves
-// the cache where it was, and a failed replacement leaves Go to create the
-// directory itself at its next open, which it does.
+/// Retires an oversized build cache directory by moving it to an isolated trash path.
+///
+/// The rename comes first and the replacement second, and nothing runs
+/// between them that could fail on its own account: a failed rename leaves
+/// the cache where it was, and a failed replacement leaves Go to create the
+/// directory itself at its next open, which it does.
 fn retire(
   caches: GoCaches,
   size_kib: Int,
@@ -551,9 +567,11 @@ fn retire(
 // The replacement is one plain, non-recursive `mkdir`. A recursive create
 // would follow a link the jail planted at the path between the rename and
 // this call and create directories through it. An existing entry, a planted
-// link included, is left alone, and Go creates its own tree at its next
-// open. A build that held the old cache open fails once and a retry clears
-// it.
+/// Creates an empty directory replacement after retiring an existing cache.
+///
+/// link included, is left alone, and Go creates its own tree at its next
+/// open. A build that held the old cache open fails once and a retry clears
+/// it.
 fn open_fresh(build: String) -> Result(Nil, String) {
   case simplifile.create_directory(build) {
     Ok(Nil) | Error(simplifile.Eexist) -> Ok(Nil)
@@ -632,6 +650,8 @@ pub fn du_kib(path: String) -> Result(Int, String) {
     ["-sk", path],
     measure_timeout_ms,
   ))
+
+  // Inspect du process exit status before parsing disk usage output.
   case status {
     0 -> parse_du(output)
     other ->
@@ -675,11 +695,14 @@ pub fn start_maintenance(caches: GoCaches, logger: Logger) -> weft.Witnessed {
   |> weft.start_witnessed
 }
 
+/// Runs periodic maintenance checks, trimming oversized caches and sweeping trash.
 fn maintain(caches: GoCaches, logger: Logger) -> Nil {
   let unique =
     int.to_string(ffi_os.system_time_ms())
     <> "-"
     <> int.to_string(ffi_os.unique_positive_integer())
+
+  // Trim the build cache if its size exceeds the configured workspace ceiling.
   case trim(caches, measuring: du_kib, unique:) {
     Ok(Within(size_kib:)) ->
       log.debug(logger, "go_cache.within_limit", [
@@ -695,6 +718,8 @@ fn maintain(caches: GoCaches, logger: Logger) -> Nil {
         field.text(key: "reason", value: reason),
       ])
   }
+
+  // Sweep previously retired trash directories to free filesystem storage.
   case sweep(caches) {
     Ok(removed) ->
       log.debug(logger, "go_cache.swept", [

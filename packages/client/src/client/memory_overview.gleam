@@ -232,6 +232,7 @@ pub fn read(wiring: Wiring) -> Overview {
 
 // The rules file is read into every new session's prompt whatever `inject`
 // says. The notes index is read only when `inject` names it.
+/// Reads read receives through the memory store’s validated path.
 fn read_receives(wiring: Wiring) -> List(Receives) {
   let selected = wiring.memory.inject
   [
@@ -256,6 +257,7 @@ fn read_receives(wiring: Wiring) -> List(Receives) {
 // One `stat`, as the readers a run uses do: a file over its ceiling is
 // refused unread, so the overview reports what they would, and never reads a
 // byte of it.
+/// Projects stat file into the bounded memory overview representation.
 fn stat_file(
   file: String,
   path: String,
@@ -292,7 +294,9 @@ fn stat_file(
 // The store is read through `memory.read_note_entries`, the lease-free,
 // identity-checked path the history source uses and never opened, so a
 // `remember` call holding the writer lease is neither delayed nor raced.
+/// Reads read notes through the memory store’s validated path.
 fn read_notes(store_path: String) -> Section(Note) {
+  // read notes handles the memory.read_note_entries(store_path) outcomes before continuing the operation.
   case memory.read_note_entries(store_path) {
     Error(reason) -> unreadable(reason)
     Ok(found) -> {
@@ -311,6 +315,7 @@ fn unreadable(reason: String) -> Section(row) {
 
 // A note as a row. `note_of` already decodes a legacy payload, so the only
 // thing left to ask the entry is whether it had the typed fields.
+/// Projects note row into the bounded memory overview representation.
 fn note_row(item: Entry) -> Result(Note, Nil) {
   use stored <- result.map(memory.note_of(item))
   Note(
@@ -330,6 +335,7 @@ fn utc_date(at_ms: Int) -> String {
   |> string.slice(0, 10)
 }
 
+/// Projects typing of into the bounded memory overview representation.
 fn typing_of(item: Entry) -> Typing {
   case item {
     entry.CustomEntry(data: Some(json.Object(fields)), ..) ->
@@ -349,6 +355,7 @@ fn typing_of(item: Entry) -> Typing {
 // The file is small and bounded by the proposal queue's own ceiling. One
 // `stat` answers whether it is worth a read, and a file the prompt would
 // refuse is reported, not listed.
+/// Reads read rules through the memory store’s validated path.
 fn read_rules(rules_path: String) -> Section(Rule) {
   case simplifile.file_info(rules_path) {
     Error(simplifile.Enoent) -> Listed(rows: [], total: 0)
@@ -365,6 +372,7 @@ fn read_rules(rules_path: String) -> Section(Rule) {
   }
 }
 
+/// Projects listed rules into the bounded memory overview representation.
 fn listed_rules(text: String) -> Section(Rule) {
   let newest_first = rules_in(text)
   Listed(
@@ -391,6 +399,7 @@ pub fn rules_in(text: String) -> List(Rule) {
 // The rules finish in file order, which is approval order, and each is
 // pushed on the front of the accumulator, so the accumulator at the end is
 // already newest first.
+/// Projects collect rules into the bounded memory overview representation.
 fn collect_rules(
   lines: List(String),
   current: Option(Rule),
@@ -420,6 +429,7 @@ const rule_header = "### Rule "
 
 // The first non-blank line below a header is the rule's line, and later lines
 // leave it alone.
+/// Projects with first line into the bounded memory overview representation.
 fn with_first_line(current: Option(Rule), line: String) -> Option(Rule) {
   case current, string.trim(line) {
     Some(Rule(line: "", ..) as rule), text if text != "" ->
@@ -430,8 +440,11 @@ fn with_first_line(current: Option(Rule), line: String) -> Option(Rule) {
 
 // A header is read leniently: one that does not carry both the date and the
 // session still names its rule by whatever follows `### Rule `.
+/// Projects header rule into the bounded memory overview representation.
 fn header_rule(line: String) -> Rule {
   let rest = string.drop_start(line, string.length(rule_header))
+
+  // header rule handles the string.split_once(rest, " (approved ") outcomes before continuing the operation.
   case string.split_once(rest, " (approved ") {
     Error(Nil) -> Rule(id: clip(rest, 80), approved: "", session: "", line: "")
     Ok(#(id, tail)) ->
@@ -472,6 +485,8 @@ pub fn clip(text: String, limit: Int) -> String {
     |> string.replace("\n", " ")
     |> string.replace("\t", " ")
     |> string.trim
+
+  // clip handles the string.drop_start(one_line, limit) outcomes before continuing the operation.
   case string.drop_start(one_line, limit) {
     "" -> one_line
     _over -> string.slice(one_line, 0, int.max(0, limit - 1)) <> "…"
@@ -506,6 +521,7 @@ pub fn board(overview: Overview) -> JsonValue {
 
 // Cuts rows until the encoded board fits. Each pass removes one row, so the
 // loop ends, and when both lists are empty there is nothing left to cut.
+/// Projects fitted into the bounded memory overview representation.
 fn fitted(overview: Overview) -> Overview {
   case bit_array.byte_size(<<json.to_string(encode(overview)):utf8>>) {
     size if size > max_board_bytes ->
@@ -517,9 +533,12 @@ fn fitted(overview: Overview) -> Overview {
   }
 }
 
+/// Projects shrunk into the bounded memory overview representation.
 fn shrunk(overview: Overview) -> Result(Overview, Nil) {
   let notes = listed_count(overview.notes)
   let rules = listed_count(overview.rules)
+
+  // shrunk handles the notes, rules outcomes before continuing the operation.
   case notes, rules {
     0, 0 -> Error(Nil)
     _, _ if notes >= rules ->
@@ -535,6 +554,7 @@ fn listed_count(section: Section(row)) -> Int {
   }
 }
 
+/// Projects without last into the bounded memory overview representation.
 fn without_last(section: Section(row)) -> Section(row) {
   case section {
     Listed(rows:, total:) ->
@@ -543,6 +563,7 @@ fn without_last(section: Section(row)) -> Section(row) {
   }
 }
 
+/// Projects encode into the bounded memory overview representation.
 fn encode(overview: Overview) -> JsonValue {
   json.Object([
     #("inject", json.String(inject_word(overview.inject))),
@@ -560,7 +581,9 @@ fn inject_word(inject: Injection) -> String {
   }
 }
 
+/// Projects encode receives into the bounded memory overview representation.
 fn encode_receives(receives: Receives) -> JsonValue {
+  // encode receives handles the the selected value outcomes before continuing the operation.
   let #(state, reason) = case receives.reach {
     Injected -> #("injected", [])
     NotInjected -> #("off", [])
@@ -569,6 +592,7 @@ fn encode_receives(receives: Receives) -> JsonValue {
       #("reason", json.String(reason)),
     ])
   }
+
   json.Object(
     list.flatten([
       [
@@ -581,6 +605,7 @@ fn encode_receives(receives: Receives) -> JsonValue {
   )
 }
 
+/// Projects encode section into the bounded memory overview representation.
 fn encode_section(
   section: Section(row),
   encode_row: fn(row) -> JsonValue,
@@ -601,6 +626,7 @@ fn encode_section(
   }
 }
 
+/// Projects encode note into the bounded memory overview representation.
 fn encode_note(note: Note) -> JsonValue {
   json.Object([
     #("kind", json.String(note.kind)),
@@ -614,6 +640,7 @@ fn encode_note(note: Note) -> JsonValue {
   ])
 }
 
+/// Projects encode rule into the bounded memory overview representation.
 fn encode_rule(rule: Rule) -> JsonValue {
   json.Object([
     #("id", json.String(rule.id)),
@@ -623,6 +650,7 @@ fn encode_rule(rule: Rule) -> JsonValue {
   ])
 }
 
+/// Projects encode waiting into the bounded memory overview representation.
 fn encode_waiting(waiting: Waiting) -> JsonValue {
   case waiting {
     Waiting(count:) ->

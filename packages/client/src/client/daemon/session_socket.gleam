@@ -123,10 +123,12 @@ pub fn upgrade(
   attachment: server.Attachment(instance),
   hub: gateway.Gateway,
 ) -> Response(mist.ResponseData) {
+  // Map attachment authority to permission class to determine message size limits.
   let class = case attachment.authority {
     access.Participant(access.Observer) -> root.Observer
     access.Owner | access.Participant(access.Operator) -> root.Operator
   }
+
   let limit = root.message_limit(class)
   let authorization =
     Authorization(
@@ -170,6 +172,7 @@ pub fn upgrade(
         )
       },
       handler: fn(phase, event, socket) {
+        // This branch resolves phase event before the operation continues.
         case phase, event {
           Pending(outbound), mist.Custom(Admit) ->
             admit(daemon, authorization, hub, outbound, settled)
@@ -201,6 +204,7 @@ pub fn upgrade(
           // gone, and continuing would leave an armed parser attached to
           // a transport that cannot answer.
           Admitted(connection), mist.Custom(Push(frame)) ->
+            // This branch resolves mist send_text_frame socket frame before the operation continues.
             case mist.send_text_frame(socket, frame) {
               Ok(_) -> mist.continue(Admitted(connection))
               Error(_) -> mist.stop()
@@ -221,6 +225,7 @@ pub fn upgrade(
         }
       },
       on_close: fn(phase) {
+        // This branch resolves phase before the operation continues.
         case phase {
           Admitted(connection) -> gateway.connection_detach(connection)
           Pending(_) -> Nil
@@ -254,14 +259,11 @@ pub fn upgrade(
     // answers a failed start with an empty 400.
     mist.Bytes(_) | mist.Chunked | mist.File(..) | mist.ServerSentEvents -> Nil
   }
+
   response
 }
 
-// Takes the root's permit and attaches to the original gateway, in the handler
-// turn rather than the initializer. `process.self()` is still the websocket
-// process here, so the permit's new owner and the PID the gateway monitors are
-// the ones the initializer would have named; moving these calls changed when
-// the work happens, not whose custody it transfers.
+/// Transfers permit custody from the root daemon and establishes the authenticated gateway attachment.
 fn admit(
   daemon: root.Root(instance),
   authorization: Authorization(instance),
@@ -291,6 +293,8 @@ fn admit(
       process.self(),
     )
   }
+
+  // Branch on attach result to configure outbound message selector or terminate socket.
   case admitted {
     // Continuing would leave an armed parser attached to nothing. A stop from
     // a handler turn is terminal: `on_close` sees `Pending` and detaches
@@ -314,43 +318,22 @@ fn admit(
   }
 }
 
-// The synchronous exchange admits one request at a time. A missing response is
-// an unknown outcome, so closing the socket must not retry the command.
-//
-// What this call bounds is *the parser*: no second request is admitted until
-// this one is answered. It is not a claim that nothing else is written in
-// between. Pushed frames (`protocol-change/018`) are written from the same
-// process, from their own handler turn, and this one blocks in
-// `connection_request` while it waits — so a push that arrives mid-request
-// waits in the mailbox and is written after the reply, and a push that
-// arrives between requests is written immediately. Either way the two writes
-// are strictly ordered by this process's own mailbox, which is the whole of
-// the ordering argument the design note makes: one writer, one queue, no
-// interleaving mid-frame. A client is not asked to rely on it — a notice is
-// idempotent and order-free by design — but the daemon does not depend on the
-// client being careful either.
-//
-// Authorization is not re-asked here. The gateway checks the binding twice for
-// this one command — once when it admits it and once immediately before it
-// hands back the reply — and closes the attachment itself when either answer
-// has changed, so a third check on this side would repeat the second with the
-// same evidence and add another round trip to every frame. A pushed frame is
-// checked on the same `check_binding`, once, immediately before the hub hands
-// it to this sink.
+/// Synchronously delivers a frame request to the gateway and transmits the reply to socket.
 fn respond(connection, frame, socket) {
   let sent = {
     use response <- result.try(gateway.connection_request(connection, frame))
     mist.send_text_frame(socket, response)
     |> result.replace_error("socket delivery failed")
   }
+
+  // Terminate connection if frame delivery fails or continue with active connection.
   case sent {
     Ok(Nil) -> mist.continue(Admitted(connection))
     Error(_) -> mist.stop()
   }
 }
 
-// This returns after stop admission, not after retiring this requesting socket
-// or gateway. The registry compares the original incarnation atomically.
+/// Atomically requests session teardown in the registry if the active incarnation failed.
 fn failed_reader(authorization: Authorization(instance)) -> Nil {
   // The authorization carries its registry so this request cannot be lost to a
   // readiness round trip that times out: a poisoned hub whose stop never
@@ -365,14 +348,7 @@ fn failed_reader(authorization: Authorization(instance)) -> Nil {
   Nil
 }
 
-// One registry turn answers the three facts a frame's authority rests on: this
-// daemon's lifetime, the session's retained incarnation, and the credential's
-// current membership. Asking them separately cost three cross-actor calls per
-// check, and the gateway performs two checks for every command. The registry
-// compares the epoch itself, so the root is not consulted at all on this
-// path. It is asked afresh each time rather than cached, so a credential
-// revoked between a command's admission and its delivery still closes the
-// attachment.
+/// Validates session epoch, incarnation, and credential membership in a single registry call.
 fn authorize(authorization: Authorization(instance)) {
   manager.frame_authority(
     authorization.registry,
@@ -384,9 +360,9 @@ fn authorize(authorization: Authorization(instance)) {
   |> result.map_error(refusal)
 }
 
-// A refusal keeps the words the attached client already saw for each of these,
-// so collapsing three calls into one did not change what a closed socket says.
+/// Translates internal frame authorization refusals into stable protocol error messages.
 fn refusal(refused: manager.FrameRefusal) -> String {
+  // This branch resolves refused before the operation continues.
   case refused {
     manager.StaleEpoch -> "stale epoch"
     manager.StaleIncarnation -> "stale incarnation"

@@ -329,6 +329,7 @@ pub fn factory(
   fn(spec: host.AttachSpec) { build(machine, configured, trees, spec) }
 }
 
+/// Builds a workspace execution plane from configured parameters and attach spec.
 fn build(
   machine: Machine,
   configured: List(Workspace),
@@ -354,6 +355,8 @@ fn build(
       )
     }),
   )
+
+  // Determine build strategy based on workspace shared or worktree mode.
   case workspace.mode {
     workspaces.Shared -> build_in(machine, root, None, spec)
     workspaces.Worktree(..) -> {
@@ -386,6 +389,7 @@ type Custody {
 // The part of a build that is the same for both modes: the blob store, the
 // scope directory and the workspace half, over `directory`, which is `root` for
 // a shared workspace and the session's tree for a worktree one.
+/// Sets up directories and starts common workspace plane components.
 fn build_in(
   machine: Machine,
   directory: String,
@@ -395,6 +399,8 @@ fn build_in(
   let built = {
     use blob_root <- result.try(blob_directory(machine.state_root, spec.session))
     use scope <- result.try(scope_directory(machine.state_root, spec.session))
+
+    // Attempt to start workspace plane with prepared scopes.
     case start(machine, directory, scope, blob_root, custody, spec) {
       Ok(plane) -> Ok(plane)
       Error(reason) -> {
@@ -410,6 +416,7 @@ fn build_in(
 // the scope it is adopted when it exists: a reopened session reads what its
 // transcript names, so nothing here is cleared at attach or removed at
 // close.
+/// Ensures the per-session private blob storage directory exists.
 fn blob_directory(
   state_root: String,
   session: String,
@@ -427,6 +434,7 @@ const blob_directory_name = "blobs"
 
 // The scope's directory, created fresh and private. A directory left by an
 // earlier VM held another build's scratch, so it is replaced and not adopted.
+/// Creates a clean private scratch directory for session scope isolation.
 fn scope_directory(
   state_root: String,
   session: String,
@@ -462,6 +470,7 @@ fn safe_component(name: String) -> Bool {
 // would name a directory that its close deletes. Trees are therefore not masked
 // from one another, which is why protocol-change/095 describes worktree mode as
 // protection against accidents and not against a hostile model.
+/// Protects sibling worktree scratch scopes from mutual visibility.
 fn protecting_siblings(
   base: policy.SandboxPolicy,
   state_root: String,
@@ -473,6 +482,7 @@ fn protecting_siblings(
   }
 }
 
+/// Adds state root scopes directory to policy protected paths.
 fn masking_scopes(
   base: policy.SandboxPolicy,
   state_root: String,
@@ -485,6 +495,7 @@ fn masking_scopes(
 
 // Prepares and starts the workspace half, filing every cleanup the start hands
 // out. A start that fails after resources exist stops them before returning.
+/// Initializes base policies, registry namespace, and workspace plane instance.
 fn start(
   machine: Machine,
   root: String,
@@ -517,6 +528,8 @@ fn start(
   let mcp = start_mcp(machine, spec.mcp, namespace, filed)
   let configs = process.new_subject()
   let attach = attach_of(machine, spec, namespace, filed, mcp.layer, configs)
+
+  // Start workspace execution plane with prepared attach specs.
   case workspace_plane.start(prepared, attach) {
     Ok(started) -> {
       let cleanups = [
@@ -546,6 +559,7 @@ fn start(
   }
 }
 
+/// Constructs workspace specification record for plane preparation.
 fn workspace_spec(
   machine: Machine,
   root: String,
@@ -598,6 +612,7 @@ const mcp_close_ms = 5000
 // exit in time is a process leak the operator is told about, not a reason to
 // refuse the scope a clean close, because an MCP server is neither jailed nor
 // a helper child.
+/// Starts prepared MCP servers and registers cleanup callbacks.
 fn start_mcp(
   machine: Machine,
   plan: protocol.McpPlan,
@@ -620,6 +635,9 @@ fn start_mcp(
   process.send(
     filed,
     #(custody.Mcp, fn() {
+      // Close prepared MCP servers within timeout bound.
+
+      // The start outcome determines whether the MCP host can be reported as ready.
       case mcp_wiring.close_prepared(prepared, within: mcp_close_ms) {
         Ok(Nil) -> Nil
         Error(reason) ->
@@ -627,6 +645,7 @@ fn start_mcp(
             field.text(key: "reason", value: reason),
           ])
       }
+
       Ok(Nil)
     }),
   )
@@ -651,6 +670,7 @@ fn start_mcp(
 }
 
 // How one expected server fared, worded for the orchestrator's log line.
+/// Computes reported census status for an individual MCP server.
 fn status_of(
   name: String,
   declared: List(catalog.McpServer),
@@ -662,6 +682,8 @@ fn status_of(
     list.find(refusals, fn(refusal) { refusal.server == name })
     |> result.map(fn(refusal) { refusal.reason })
   let present = list.any(declared, fn(server) { server.name == name })
+
+  // Classify server status based on listings, refusals, and declarations.
   case listed, refused, present {
     Ok(tools), _, _ -> remote_census.McpReady(server: name, tools:)
     Error(Nil), Ok(reason), _ -> remote_census.McpRefused(server: name, reason:)
@@ -680,6 +702,7 @@ fn status_of(
 // are sent back through them, and a retain function that files each cleanup in
 // the build process. The finished code-mode configuration is sent to
 // `configs`, because a background program the host starts later runs under it.
+/// Assembles workspace plane attach structure with owner services and code mode.
 fn attach_of(
   machine: Machine,
   spec: host.AttachSpec,
@@ -724,6 +747,7 @@ fn attach_of(
 // execution is the owner's, so a launch is a claim sent to the owner and an
 // interaction a question to it; the owner then asks this executor's host to
 // run the program (`execute`).
+/// Wraps code mode with background execution capability delegates.
 fn backgrounded(
   mode: codemode_tool.CodeMode,
   owner: owner_services.OwnerServices,
@@ -741,6 +765,7 @@ fn backgrounded(
 // What a launch captured, as the owner is sent it. The parts that name this
 // machine (the workspace, the base policy, the demand and the environment) are
 // rebuilt here when the program starts, so they never cross the wire.
+/// Extracts serializable execution terms for remote background execution launch.
 fn terms_of(request: codemode_tool.Request) -> owner_services.ExecutionTerms {
   owner_services.ExecutionTerms(
     strand: request.strand,
@@ -781,6 +806,7 @@ type Built {
 // The host's view of a started plane. The prompt facts are read once, here,
 // beside the helpers: a local plane reads them when a prompt is rendered, but
 // that read borrows a helper, and a remote attach pays for it once.
+/// Wraps started workspace plane into remote host plane interface.
 fn plane_over(
   built: Built,
   cleanups: List(Cleanup),
@@ -788,6 +814,8 @@ fn plane_over(
   let plane = built.started.plane
   let machine = built.machine
   let scope = built.scope
+
+  // Verify prompt facts can be queried from started plane.
   case plane.prompt_facts() {
     Error(reason) -> {
       let _outcome = retire_all(cleanups)
@@ -845,6 +873,7 @@ fn plane_over(
 // its own machine, and the deadline is the time the orchestrator says is left,
 // laid on this machine's clock. A plane with no code-mode toolchain answers an
 // errored value, which the record then holds.
+/// Reconstructs execution environment and invokes code mode for background request.
 fn executing(built: Built) -> fn(host.ExecutionStart) -> json.JsonValue {
   let census = built.started.plane.census
   let base_policy = census.base_policy
@@ -853,6 +882,7 @@ fn executing(built: Built) -> fn(host.ExecutionStart) -> json.JsonValue {
   let demand = built.machine.demand
   let code_mode = built.code_mode
   fn(start: host.ExecutionStart) {
+    // Verify that code mode is available to execute request.
     case code_mode {
       None ->
         json.Object([
@@ -906,6 +936,7 @@ fn seam_of(name: String) -> codemode_tool.Seam {
 // A scope that proved its cleanup has no further use for its directory. One
 // that did not keeps it, because a child that may still be running could be
 // writing there, and the log says which scope to look at.
+/// Removes session scratch directory if clean shutdown was witnessed.
 fn settle_scope(
   logger: Logger,
   scope: String,
@@ -924,11 +955,13 @@ fn settle_scope(
 // can be settled: removed when clean, left when it holds changes. A scope that
 // did not prove it leaves the tree and its record alone, as it leaves the scope
 // directory, for the operator's release to handle.
+/// Settles worktree branch and directory after clean retirement.
 fn settle_tree(
   custody: Option(Custody),
   session: String,
   outcome: protocol.CloseOutcome,
 ) -> Nil {
+  // Only close worktree when all children cleanly retired.
   case custody, outcome {
     Some(held), protocol.AllRetired -> {
       let _closed = worktrees.close(held.trees, held.workspace, session)
@@ -938,6 +971,7 @@ fn settle_tree(
   }
 }
 
+/// Deletes scope directory logging warning if removal fails.
 fn remove_scope(logger: Logger, scope: String) -> Nil {
   case simplifile.delete(scope) {
     Ok(Nil) -> Nil
@@ -985,6 +1019,8 @@ pub fn retire(
     }
   let witnessed =
     list.any(ran, fn(each) { each.0 == custody.Helpers && each.1 == Ok(Nil) })
+
+  // Determine overall retirement outcome based on failures and witnesses.
   case failed, witnessed {
     0, True -> protocol.AllRetired
     _, _ -> protocol.UnknownCleanup(count: int.max(1, failed))
@@ -998,6 +1034,7 @@ fn retire_all(cleanups: List(Cleanup)) -> protocol.CloseOutcome {
 
 // Shutdown order, as `instance_owner.Part` documents it. Only some of the parts
 // are ever filed by a workspace plane.
+/// Returns integer ordering rank for plane cleanup parts.
 fn rank(part: custody.Part) -> Int {
   case part {
     custody.Runtime -> 0
@@ -1015,6 +1052,7 @@ fn rank(part: custody.Part) -> Int {
 
 // --- the machine's own settings ------------------------------------------------
 
+/// Parses command line argument tokens into executor plane flags.
 fn read_flags(arguments: List(String), flags: Flags) -> Flags {
   case arguments {
     [] -> flags
@@ -1052,6 +1090,7 @@ fn read_flags(arguments: List(String), flags: Flags) -> Flags {
   }
 }
 
+/// Reads configuration file content from filesystem path.
 fn read_configuration(path: String) -> Result(String, String) {
   case path {
     "" -> Ok("")
@@ -1070,6 +1109,7 @@ fn read_configuration(path: String) -> Result(String, String) {
 // server, `PATH`, then `./bin`. A helper that does not exist is a start
 // failure, because the pool spawns lazily and the first tool call would
 // otherwise be where the operator learns of it.
+/// Resolves path to sandbox helper executable across search ladder.
 fn find_helper(flag: Option(String)) -> Result(String, String) {
   let found =
     serve.helper_ladder(
@@ -1078,6 +1118,8 @@ fn find_helper(flag: Option(String)) -> Result(String, String) {
       on_path: fn() { ffi_os.find_executable(install.helper_name) },
       in_bin: fn() { install.existing_file("./bin/" <> install.helper_name) },
     )
+
+  // Verify helper executable exists and is accessible.
   case found {
     Error(Nil) ->
       Error(
@@ -1122,6 +1164,8 @@ pub fn scope_limits() -> exec_ledger.Limits {
 /// ```
 pub fn scope_limits_from(setting: Result(String, Nil)) -> exec_ledger.Limits {
   let defaults = exec_ledger.default_limits()
+
+  // Parse positive integer override for maximum unclean scopes.
   case result.try(setting, int.parse) {
     Ok(limit) if limit >= 1 ->
       exec_ledger.Limits(..defaults, max_unclean_scopes: limit)
@@ -1144,6 +1188,7 @@ fn named_tools(value: String) -> List(String) {
   |> list.filter(fn(name) { name != "" })
 }
 
+/// Locates Go module cache and build cache directories for workspace.
 fn gocache_of(machine: Machine, root: String) -> Option(gocache.GoCaches) {
   gocache.locate(
     workspace_policy.lsp_places().cache,
@@ -1156,6 +1201,7 @@ fn gocache_of(machine: Machine, root: String) -> Option(gocache.GoCaches) {
 // The code-mode seed: an explicit flag, else the checkout's own when it
 // verifies (the same rung a local daemon takes), else the one bundled with
 // this release.
+/// Resolves code mode seed archive directory path across ladder.
 fn seed_of(machine: Machine, root: String) -> String {
   let in_workspace = root <> "/" <> serve.default_seed_directory
   serve.seed_ladder(

@@ -69,7 +69,7 @@ the grids are exact. Running the generator also writes a viewer page,
 
 Reached with `←` from an empty composer (`packages/tui/src/tui/interaction.gleam:1376`).
 A draft or a pending attachment keeps `←` as a cursor key, as today. The view
-is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:815`)
+is `session_selector.render` (`packages/tui/src/tui/session_selector.gleam:836`)
 (`render`), and this note redraws it without changing its keys.
 
 ![Picker, 120x40](https://raw.githubusercontent.com/Roasbeef/loom/dc70d25d42da531284225bf399f40f82e13539d4/docs/design-notes/terminal-design/terminal-design-picker-120-dark.png)
@@ -200,7 +200,7 @@ like [A's narrow sheet](https://github.com/Roasbeef/loom/blob/dc70d25d42da531284
 Before slice 13 `layout.layout` (`packages/tui/src/tui/layout.gleam:105`)
 (`layout`) stacked header, body, composer and footer, and `body_layout` gave the
 body one side pane, the 34-cell agent rail or the 72-cell changes pane. The
-footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:568`)
+footer is built in `footer_rows` (`packages/tui/src/tui/layout.gleam:587`)
 (`footer_rows`). The new layout replaces the header and footer with the
 identity line and the input frame, and replaces the two side panes with one
 rail.
@@ -558,7 +558,7 @@ main ▸ sub:tests`) and the identity line names it. Focus from the timeline wit
 |---|---|---|
 | `←`, empty composer, no attachment | Open the session picker | Unchanged (`packages/tui/src/tui/interaction.gleam:1376`) (`open_session_selector`) |
 | `↓`, idle composer | Enter the agent strip. While the rail shows Strands, focus the rail's list | Unchanged (`packages/tui/src/tui/interaction.gleam:1236`) (`down_from_composer`) |
-| `Shift+Tab` | Dock or hide the rail; open or close the sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1625`) (`toggle_agent_rail`) |
+| `Shift+Tab` | Dock or hide the rail; open or close the sheet below 120 columns | Replaces "toggle the rail" (`packages/tui/src/tui/interaction.gleam:1672`) (`toggle_agent_rail`) |
 | Escape | Interrupt; closes the surface on top first | Unchanged (`packages/tui/src/tui/interaction.gleam:1337`) (`interrupt_active`) |
 | `Ctrl+O`, `F2`, `/agents` | Open the agent workspace | Unchanged |
 | `/diff`, `/trace` | Open the rail on Changes, Trace | `/diff` exists; `/trace` is new; `/summary` stays the full-screen summary and Session is the digit `4` |

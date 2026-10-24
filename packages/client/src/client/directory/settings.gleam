@@ -106,6 +106,8 @@ pub fn parse(text: String) -> Result(Option(Settings), String) {
 /// ```
 pub fn from_ledger(ledger: Ledger, local: String) -> Option(Settings) {
   let places = seats.places(ledger)
+
+  // Verify whether the local node holds a seat in the directory places.
   case seats.seat_of(places, local) {
     Ok(_) -> Some(Settings(members: list.map(places, fn(place) { place.node })))
     Error(Nil) -> None
@@ -151,6 +153,8 @@ pub fn others(settings: Settings, local: String) -> List(String) {
   list.filter(settings.members, fn(member) { member != local })
 }
 
+/// Parses the static [directory] TOML table and validates membership invariants against
+/// distribution and orchestrator definitions.
 fn table(
   fields: Dict(String, tom.Toml),
   document: Dict(String, tom.Toml),
@@ -164,10 +168,14 @@ fn table(
     distribution.from_document(document)
     |> result.map_error(fn(reason) { "directory needs " <> reason }),
   )
+
+  // Ensure a distribution configuration block is declared before directory parsing.
   use config <- result.try(case found {
     Some(config) -> Ok(config)
     None -> Error("directory needs a [distribution] table naming its members")
   })
+
+  // Refuse static directory table when a membership ledger is configured.
   use Nil <- result.try(case distribution.ledger_path(config) {
     None -> Ok(Nil)
     Some(_) ->
@@ -177,10 +185,13 @@ fn table(
         <> "with `enroll --directory`",
       )
   })
+
   use members <- result.try(member_names(fields))
   use Nil <- result.try(counted(members))
   use Nil <- result.try(distinct(members))
   let local = distribution.local_node(config)
+
+  // Verify that the local node is explicitly included in directory members.
   use Nil <- result.try(case list.contains(members, local) {
     True -> Ok(Nil)
     False ->
@@ -207,6 +218,7 @@ fn table(
   Settings(members:)
 }
 
+/// Extracts and validates the list of member node names from the directory table fields.
 fn member_names(
   fields: Dict(String, tom.Toml),
 ) -> Result(List(String), String) {
@@ -225,8 +237,11 @@ fn member_names(
   }
 }
 
+/// Validates that member cluster size remains within supported minimum and maximum bounds.
 fn counted(members: List(String)) -> Result(Nil, String) {
   let count = list.length(members)
+
+  // Enforce the allowable cluster member bounds.
   case count >= minimum_members && count <= maximum_members {
     True -> Ok(Nil)
     False ->
@@ -241,6 +256,7 @@ fn counted(members: List(String)) -> Result(Nil, String) {
   }
 }
 
+/// Verifies that no duplicate node names appear in the member list.
 fn distinct(members: List(String)) -> Result(Nil, String) {
   case members {
     [] -> Ok(Nil)
@@ -282,6 +298,7 @@ pub fn require_orchestrators(
   })
 }
 
+/// Rejects unrecognized configuration keys in a TOML table section.
 fn known_keys(
   present: List(String),
   allowed: List(String),

@@ -398,7 +398,6 @@ fn finish(
   state: State,
   pending: Pending,
   requested: Decision,
-  requested: Decision,
 ) -> Result(State, #(State, String)) {
   // Resolve effective decision based on pending preparation phase.
   let decision = case pending.preparation {

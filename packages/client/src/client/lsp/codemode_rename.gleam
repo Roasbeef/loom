@@ -120,6 +120,8 @@ pub fn rename(
 // A refused path in the words `fs_write` answers with, protected-path
 // wording included, so a program reading a rejected file's reason reads
 // the sentence a direct write of that file would have produced.
+
+/// Converts a path error outcome into human-readable refusal text.
 fn refusal_text(error: fs.PathError) -> String {
   fs.path_outcome(error).content
   |> list.filter_map(fn(block) {

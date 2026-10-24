@@ -92,10 +92,12 @@ pub fn callbacks(
   score: fn(rollout.Task, String) -> Result(trace.Outcome, String),
 ) -> rollout.Callbacks {
   rollout.Callbacks(mode: rollout.LiveProduction, clock:, open: fn(request) {
+    // Extract and validate resolved model target.
     use target <- result.try(case request.target {
       model.ForResolved(target) -> Ok(target)
       model.ForRole(..) -> Error("a rollout must use one exact resolved target")
     })
+
     use card <- result.try(
       gateway.card_for(base, target.provider)
       |> result.map_error(fn(_) {
@@ -124,15 +126,20 @@ pub fn callbacks(
           ),
         )
       })
+
+    // Wrap optional prompt profile in singleton list for profile middleware.
     let profiles = case request.profile {
       None -> []
       Some(profile) -> [profile]
     }
+
     use guarded <- result.try(
       gateway.with_profiles(guarded, profiles, prompt.fingerprint, fn(_) {
         Ok(Nil)
       }),
     )
+
+    // Attempt to open trial execution runtime with guarded client.
     case open(request, guarded) {
       Error(reason) -> {
         let _retired = stop_guard(guard)
@@ -164,6 +171,7 @@ pub fn callbacks(
   })
 }
 
+/// Starts the background token reservation actor guarding rollout quota.
 fn start_guard(
   request: rollout.TrialRequest,
   target: model.ResolvedModel,
@@ -188,10 +196,12 @@ fn start_guard(
   |> result.map_error(string.inspect)
 }
 
+/// Processes messages to the rollout reservation actor.
 fn handle(
   state: Reservation,
   message: Message,
 ) -> actor.Next(Reservation, Message) {
+  // Match incoming request message variant.
   case message {
     Stop -> actor.stop()
     Count(reply) -> {
@@ -206,6 +216,7 @@ fn handle(
   }
 }
 
+/// Deducts tokens and cost from quota reservation for admitted rollout requests.
 fn reserve(
   state: Reservation,
   target: record.ModelScope,
@@ -236,6 +247,8 @@ fn reserve(
       cache_write: state.context,
     )
   let cost = pricing.price(usage, state.card).cost.total
+
+  // Evaluate remaining balance against projected token and dollar costs.
   case
     target == state.target
     && now < state.remaining.deadline_ms
@@ -267,6 +280,7 @@ fn reserve(
   }
 }
 
+/// Executes a coding task step in the runtime environment and measures resource metrics.
 fn run(
   runtime: api.Runtime,
   request: rollout.TrialRequest,
@@ -296,6 +310,8 @@ fn run(
       operation,
       within_ms: int.max(allowance.deadline_ms - now, 0),
     )
+
+  // Categorize result outcome into trial progress state.
   let progress = case observed_result {
     Error(Nil) ->
       rollout.Interrupted(
@@ -312,7 +328,6 @@ fn run(
       rollout.Interrupted("trial did not settle a coding operation")
   }
 
-  // Query storage statistics and entry history.
   use stats <- result.try(
     storage.stats(runtime.session.store)
     |> result.map_error(fn(_) { "rollout ledger observation failed" }),
@@ -324,10 +339,13 @@ fn run(
     )
     |> result.map_error(fn(_) { "rollout source observation failed" }),
   )
+
+  // Ensure entry count does not overflow maximum scan limits.
   use Nil <- result.try(case list.length(entries) < 256 {
     True -> Ok(Nil)
     False -> Error("rollout source scan exceeded its bounded inventory")
   })
+
   use #(turns, composition_digests) <- result.try(
     call.try_call(guard.requests, waiting: 5000, sending: Count)
     |> result.map_error(fn(_) { "rollout attempt count is unavailable" }),
@@ -364,10 +382,13 @@ fn run(
       }
     })
     |> string.join("\n")
+
+  // Confirm exact model target remains resolved.
   use target <- result.try(case request.target {
     model.ForResolved(target) -> Ok(target)
     model.ForRole(..) -> Error("rollout exact identity disappeared")
   })
+
   Ok(rollout.Step(
     target: record.ModelScope(target.provider, target.model_id, request.api),
     profile_id: case request.profile {
@@ -449,6 +470,7 @@ fn stop_guard(guard: Guard) -> Result(Nil, String) {
   }
 }
 
+/// Stops an active guard actor process and verifies clean termination.
 fn stop_live_guard(guard: Guard) -> Result(Nil, String) {
   let monitor = process.monitor(guard.pid)
   process.send(guard.requests, Stop)
@@ -457,6 +479,8 @@ fn stop_live_guard(guard: Guard) -> Result(Nil, String) {
     |> process.select_specific_monitor(monitor, fn(down) { down.reason })
     |> process.selector_receive(5000)
   process.demonitor_process(monitor)
+
+  // Verify whether the guard stopped under normal conditions.
   case stopped {
     Ok(process.Normal) -> Ok(Nil)
     _ -> Error("rollout admission owner retirement is unconfirmed")

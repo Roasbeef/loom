@@ -235,10 +235,13 @@ pub fn configure_ledger(
   use Nil <- result.try(valid_name("distribution.node", local))
   use Nil <- result.try(valid_files(files))
   use Nil <- result.try(valid_port(listen_port))
+
+  // Validate that the specified ledger path is absolute and within bounds.
   use Nil <- result.try(case absolute_path(path) {
     True -> Ok(Nil)
     False -> Error("distribution.ledger must be an absolute path")
   })
+
   Ok(Config(local:, trust: Ledgered(path:), files:, listen_port:))
 }
 
@@ -426,10 +429,13 @@ pub fn boot_arguments(options_path: String) -> List(String) {
 /// distribution.start(config, distribution.NotMember) // -> Ok(membership)
 /// ```
 pub fn start(config: Config, cluster: Cluster) -> Result(Membership, Fault) {
+  // Extract initial directory cluster member list if this node is enrolling.
   let members = case cluster {
     NotMember -> None
     Member(members:) -> Some(members)
   }
+
+  // Boot Erlang distribution under pinned static trust or live signed ledger trust.
   case config.trust {
     Pinned(peers:) ->
       ffi_distribution.start(
@@ -505,6 +511,7 @@ pub fn name(peer: Peer) -> String {
 /// distribution.connect(peer, 2000) // -> Ok(Nil) or Error(Unavailable)
 /// ```
 pub fn connect(peer: Peer, within_ms: Int) -> Result(Nil, Fault) {
+  // Validate the connection timeout budget.
   case within_ms >= 1 && within_ms <= 60_000 {
     False -> Error(InvalidConfiguration)
     True -> {
@@ -515,6 +522,7 @@ pub fn connect(peer: Peer, within_ms: Int) -> Result(Nil, Fault) {
         |> weft.deadline(within_ms)
         |> weft.start
 
+      // Map the asynchronous dial outcome to connection result or fault.
       case outcomes {
         [weft.Completed(..)] -> Ok(Nil)
         [weft.Failed(error: failure, ..)] -> Error(fault(failure))
@@ -579,12 +587,15 @@ pub fn describe(failure: Fault) -> String {
   }
 }
 
+/// Renders descriptive diagnosis and remediation advice for distribution boot errors.
 fn describe_boot(refusal: BootRefusal) -> String {
   let remedy =
     "; generate the options file with `loomd distribution options` and start "
     <> "the daemon through bin/loomd with "
     <> launcher_variable
     <> " set to it"
+
+  // Return a helpful error description for each boot failure mode.
   case refusal {
     AlreadyDistributed ->
       "[distribution] is configured but this VM already runs distribution"
@@ -611,9 +622,7 @@ fn describe_boot(refusal: BootRefusal) -> String {
   }
 }
 
-// The FFI keeps one flat vocabulary of failures. The public type groups the
-// boot refusals under one constructor so a caller can tell "the operator booted
-// this VM wrongly" from "OTP failed" with a single match.
+/// Maps low-level Erlang distribution failure codes into typed Fault domain variants.
 fn fault(failure: ffi_distribution.Failure) -> Fault {
   case failure {
     ffi_distribution.InvalidConfiguration -> InvalidConfiguration
@@ -635,9 +644,7 @@ fn pairs(peers: List(PeerPin)) -> List(#(String, BitArray)) {
   list.map(peers, fn(pin) { #(pin.node, pin.sha256) })
 }
 
-// The table decoder. A key it does not know is refused, as the daemon's other
-// tables refuse one, so a typo in a trust setting never becomes a setting that
-// silently does nothing.
+/// Decodes the [distribution] table from a configuration document into a typed Config record.
 fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   use Nil <- result.try(known_keys(
     dict.keys(fields),
@@ -659,6 +666,8 @@ fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   use listen_port <- result.try(port_key(fields))
   let files = CredentialFiles(ca:, certificate:, key:, cookie:)
   use ledger <- result.try(ledger_key(fields))
+
+  // Branch between ledger-backed membership and statically pinned peer definitions.
   case ledger, dict.has_key(fields, "peers") {
     Some(path), False -> configure_ledger(local, files, listen_port, path)
     Some(_), True ->
@@ -674,8 +683,7 @@ fn table(fields: Dict(String, tom.Toml)) -> Result(Config, String) {
   }
 }
 
-// The optional ledger path (protocol-change/086), checked like the credential
-// paths: absolute, bounded, and free of a NUL.
+/// Decodes and validates the optional ledger file path from configuration fields.
 fn ledger_key(
   fields: Dict(String, tom.Toml),
 ) -> Result(Option(String), String) {
@@ -696,6 +704,7 @@ fn absolute_path(path: String) -> Bool {
   && !string.contains(path, "\u{0}")
 }
 
+/// Parses the list of peer pin tables from the distribution configuration table.
 fn peer_rows(fields: Dict(String, tom.Toml)) -> Result(List(PeerPin), String) {
   case dict.get(fields, "peers") {
     Error(Nil) ->
@@ -707,6 +716,7 @@ fn peer_rows(fields: Dict(String, tom.Toml)) -> Result(List(PeerPin), String) {
   }
 }
 
+/// Parses an individual peer pin table row, decoding the hexadecimal sha256 fingerprint.
 fn peer_row(row: Dict(String, tom.Toml)) -> Result(PeerPin, String) {
   use Nil <- result.try(known_keys(
     dict.keys(row),
@@ -724,6 +734,7 @@ fn peer_row(row: Dict(String, tom.Toml)) -> Result(PeerPin, String) {
   Ok(PeerPin(node:, sha256:))
 }
 
+/// Decodes the optional listen_port integer field from the distribution configuration.
 fn port_key(fields: Dict(String, tom.Toml)) -> Result(Option(Int), String) {
   case dict.get(fields, "listen_port") {
     Error(Nil) -> Ok(None)
@@ -732,6 +743,7 @@ fn port_key(fields: Dict(String, tom.Toml)) -> Result(Option(Int), String) {
   }
 }
 
+/// Extracts a mandatory string value from a configuration table by field key.
 fn string_key(
   fields: Dict(String, tom.Toml),
   key: String,
@@ -744,6 +756,7 @@ fn string_key(
   }
 }
 
+/// Rejects unrecognized configuration keys in a distribution table section.
 fn known_keys(
   present: List(String),
   allowed: List(String),
@@ -764,13 +777,12 @@ fn known_keys(
   }
 }
 
-// Node names become atoms once, at start, so the grammar is narrow: ASCII only,
-// a dotted host, and a hard length bound. The same grammar is what the TLS
-// name check compares, so a name that passes here is one a certificate can
-// carry exactly.
+/// Validates that an Erlang node name satisfies name@host syntax and character bounds.
 fn valid_name(place: String, name: String) -> Result(Nil, String) {
   let allowed =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."
+
+  // Verify node structure has exactly user@host with non-empty parts and valid characters.
   let shaped = case string.split(name, "@") {
     [user, host] ->
       user != ""
@@ -780,6 +792,8 @@ fn valid_name(place: String, name: String) -> Result(Nil, String) {
       && list.all(string.to_graphemes(user <> host), string.contains(allowed, _))
     _ -> False
   }
+
+  // Ensure the verified format passed before returning success.
   case shaped {
     True -> Ok(Nil)
     False ->
@@ -792,6 +806,7 @@ fn valid_name(place: String, name: String) -> Result(Nil, String) {
   }
 }
 
+/// Validates that all credential file paths in the bundle configuration are absolute.
 fn valid_files(files: CredentialFiles) -> Result(Nil, String) {
   list.try_each(
     [
@@ -802,6 +817,8 @@ fn valid_files(files: CredentialFiles) -> Result(Nil, String) {
     ],
     fn(entry) {
       let #(key, path) = entry
+
+      // Enforce absolute path requirements on each credential path.
       case absolute_path(path) {
         True -> Ok(Nil)
         False -> Error("distribution." <> key <> " must be an absolute path")
@@ -810,15 +827,21 @@ fn valid_files(files: CredentialFiles) -> Result(Nil, String) {
   )
 }
 
+/// Validates that peer node configurations are unique, non-local, and correctly pinned.
 fn valid_peers(local: String, peers: List(PeerPin)) -> Result(Nil, String) {
   let count = list.length(peers)
+
+  // Bound the maximum number of configured static peers.
   use Nil <- result.try(case count >= 1 && count <= 32 {
     True -> Ok(Nil)
     False -> Error("distribution needs between 1 and 32 peers")
   })
+
   use Nil <- result.try(
     list.try_each(peers, fn(pin) {
       use Nil <- result.try(valid_name("distribution.peers.node", pin.node))
+
+      // Verify that the pinned sha256 hash has exactly 32 bytes.
       case bit_array.byte_size(pin.sha256) == 32 {
         True -> Ok(Nil)
         False ->
@@ -834,6 +857,8 @@ fn valid_peers(local: String, peers: List(PeerPin)) -> Result(Nil, String) {
   // Ensure node names and fingerprint pins are unique and exclude local.
   let names = list.map(peers, fn(pin) { pin.node })
   let pins = list.map(peers, fn(pin) { pin.sha256 })
+
+  // Check peer list invariants against duplicate names and local node references.
   case
     list.contains(names, local),
     list.unique(names) == names,
@@ -846,6 +871,7 @@ fn valid_peers(local: String, peers: List(PeerPin)) -> Result(Nil, String) {
   }
 }
 
+/// Validates that an optional port number falls within the legal TCP port range 1..65535.
 fn valid_port(port: Option(Int)) -> Result(Nil, String) {
   case port {
     None -> Ok(Nil)

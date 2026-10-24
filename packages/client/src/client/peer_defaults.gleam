@@ -74,6 +74,7 @@ pub fn from_document(
   }
 }
 
+/// Builds peer defaults from a decoded field set while preserving validation failures.
 fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Policy, String) {
   use _ <- result.try(
     list.try_map(dict.keys(fields), fn(key) {
@@ -83,17 +84,22 @@ fn from_fields(fields: Dict(String, tom.Toml)) -> Result(Policy, String) {
       }
     }),
   )
+
+  // The stored field set determines whether defaults can be reconstructed.
   use links <- result.try(case dict.get(fields, "default_links") {
     Error(Nil) -> Ok(NoDefaultLinks)
     Ok(tom.String("off")) -> Ok(NoDefaultLinks)
     Ok(tom.String("same_owner")) -> Ok(SameOwner)
     Ok(_) -> Error("peers.default_links must be \"off\" or \"same_owner\"")
   })
+
+  // The stored field set determines whether defaults can be reconstructed.
   use wake <- result.try(case dict.get(fields, "default_wake") {
     Error(Nil) -> Ok(BusyOnly)
     Ok(tom.String("busy_only")) -> Ok(BusyOnly)
     Ok(tom.String("may_wake")) -> Ok(MayWake)
     Ok(_) -> Error("peers.default_wake must be \"busy_only\" or \"may_wake\"")
   })
+
   Ok(peer_mail.Policy(links:, wake:))
 }

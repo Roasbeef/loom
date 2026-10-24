@@ -56,16 +56,21 @@ pub fn admit(
   principal: String,
   payload: json.JsonValue,
 ) -> Result(TaskSet, String) {
+  // Verify caller authority holds operator admission rights.
   use Nil <- result.try(case authority {
     access.Owner | access.Participant(access.Operator) -> Ok(Nil)
     access.Participant(access.Observer) ->
       Error("Denied: task fixtures require an authenticated operator")
   })
+
   use task_set <- result.try(decode(payload))
+
+  // Verify that admitted principal string is non-empty and bounded.
   use Nil <- result.try(case principal != "" && bytes(principal) <= 256 {
     True -> Ok(Nil)
     False -> Error("Denied: task admission requires a native principal")
   })
+
   use Nil <- result.try(
     api.put_reserved_fact(
       runtime,
@@ -88,19 +93,26 @@ pub fn admit(
 /// // tasks.load(session, model_requested_task_set_id)
 /// ```
 pub fn load(session: session.Session, id: String) -> Result(TaskSet, String) {
+  // Ensure task identifier is a valid 64-character hexadecimal hash.
   use Nil <- result.try(case valid_id(id) {
     True -> Ok(Nil)
     False -> Error("Bounds: invalid task-set identity")
   })
+
   use stored <- result.try(
     storage.get_register(session.store, register.FactCustom, key(id))
     |> result.replace_error("Unavailable: task-set fact could not be read"),
   )
+
+  // Verify task-set custom register presence and extract payload.
   use payload <- result.try(case stored {
     None -> Error("Missing: task set has not been admitted by an operator")
     Some(storage.Register(value:, ..)) -> field(value.payload, "payload")
   })
+
   use task_set <- result.try(decode(payload))
+
+  // Verify that admitted task-set content identity matches requested ID.
   case task_set.id == id {
     True -> Ok(task_set)
     False -> Error("Corrupt: admitted task-set content identity changed")
@@ -120,10 +132,14 @@ pub fn decode(payload: json.JsonValue) -> Result(TaskSet, String) {
   use fields <- result.try(object(payload, ["version", "tasks"]))
   use version <- result.try(required(fields, "version"))
   use tasks <- result.try(required(fields, "tasks"))
+
+  // Match version and tasks array structure.
   use values <- result.try(case version, tasks {
     json.Int(1), json.Array(values) if values != [] -> Ok(values)
     _, _ -> Error("Bounds: expected nonempty version-one task set")
   })
+
+  // Validate total task items and payload byte size.
   use Nil <- result.try(
     case
       list.length(values) <= 10 && bytes(json.to_string(payload)) <= 262_144
@@ -132,7 +148,10 @@ pub fn decode(payload: json.JsonValue) -> Result(TaskSet, String) {
       False -> Error("Bounds: task-set capture exceeds admission limits")
     },
   )
+
   use fixtures <- result.try(list.try_map(values, fixture))
+
+  // Ensure every task within the set has a unique identifier.
   use Nil <- result.try(
     case
       list.length(list.unique(list.map(fixtures, fn(item) { item.task.id })))
@@ -142,12 +161,14 @@ pub fn decode(payload: json.JsonValue) -> Result(TaskSet, String) {
       False -> Error("Bounds: task identifiers must be unique")
     },
   )
+
   let task_set = TaskSet(id: "", tasks: fixtures)
   Ok(
     TaskSet(..task_set, id: mcp.sha256_hex(json.to_string(canonical(task_set)))),
   )
 }
 
+/// Decodes and validates a single task fixture and its file maps.
 fn fixture(value: json.JsonValue) -> Result(Fixture, String) {
   use fields <- result.try(object(value, ["id", "prompt", "files", "expected"]))
   use id <- result.try(text(fields, "id"))
@@ -156,6 +177,8 @@ fn fixture(value: json.JsonValue) -> Result(Fixture, String) {
   use expected_json <- result.try(required(fields, "expected"))
   use files <- result.try(file_map(files_json))
   use expected <- result.try(file_map(expected_json))
+
+  // Validate identifier, prompt and expected assertions are non-empty and bounded.
   use Nil <- result.try(
     case
       id != ""
@@ -171,6 +194,7 @@ fn fixture(value: json.JsonValue) -> Result(Fixture, String) {
         )
     },
   )
+
   Ok(Fixture(
     task: rollout.Task(
       id:,
@@ -183,11 +207,15 @@ fn fixture(value: json.JsonValue) -> Result(Fixture, String) {
   ))
 }
 
+/// Decodes and checks a map of relative workspace fixture file paths to UTF-8 contents.
 fn file_map(value: json.JsonValue) -> Result(List(#(String, String)), String) {
+  // Verify fixture files payload is a JSON object map.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("Bounds: fixture files require a map of at most 64 paths")
   })
+
+  // Ensure fixture map does not exceed 64 entries and contains unique keys.
   use Nil <- result.try(
     case
       list.length(fields) <= 64
@@ -198,6 +226,7 @@ fn file_map(value: json.JsonValue) -> Result(List(#(String, String)), String) {
       False -> Error("Bounds: repeated fixture paths are invalid")
     },
   )
+
   use files <- result.try(
     list.try_map(fields, fn(pair) {
       case pair {
@@ -216,6 +245,7 @@ fn file_map(value: json.JsonValue) -> Result(List(#(String, String)), String) {
   Ok(list.sort(files, fn(left, right) { string.compare(left.0, right.0) }))
 }
 
+/// Validates that a fixture path does not escape the workspace or access forbidden paths.
 fn safe_path(path: String) -> Bool {
   let pieces = string.split(path, "/")
   path != ""
@@ -231,6 +261,7 @@ fn safe_path(path: String) -> Bool {
   })
 }
 
+/// Encodes a task set into canonical JSON structure for deterministic hashing.
 fn canonical(task_set: TaskSet) -> json.JsonValue {
   json.Object([
     #("version", json.Int(1)),
@@ -264,6 +295,7 @@ fn canonical(task_set: TaskSet) -> json.JsonValue {
   ])
 }
 
+/// Decodes a JSON object and verifies it contains exactly the declared field names.
 fn object(
   value: json.JsonValue,
   names: List(String),
@@ -286,6 +318,7 @@ fn object(
   }
 }
 
+/// Extracts a named field value from a JSON object.
 fn field(
   value: json.JsonValue,
   name: String,
@@ -298,6 +331,7 @@ fn field(
   }
 }
 
+/// Extracts a string text property from a key-value fields list.
 fn text(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -306,6 +340,8 @@ fn text(
     list.key_find(fields, name)
     |> result.replace_error("Bounds: task field is missing"),
   )
+
+  // Ensure field value is a string primitive.
   case value {
     json.String(value) -> Ok(value)
     _ -> Error("Bounds: task field requires text")
@@ -327,6 +363,7 @@ fn bytes(value: String) -> Int {
   bit_array.byte_size(bit_array.from_string(value))
 }
 
+/// Looks up a required JSON property by name from a fields list.
 fn required(
   fields: List(#(String, json.JsonValue)),
   name: String,

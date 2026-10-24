@@ -7,6 +7,13 @@
 //// a local start returns, whose functions are answered by the executor. The
 //// assembly reads that plane and does not know which placement it holds.
 ////
+//// ## Flow
+////
+//// `attach` → `try_in_order` → `attach_to` → `build` assembles the
+//// remote workspace plane after placement and scope ownership are settled.
+//// Runtime recovery then flows through `recover_by_placement` and
+//// `settled_by_kind`, while `pending` and `live_jobs` expose outstanding work.
+////
 //// ## What an open does
 ////
 //// `attach` runs once per session open, in this order, and each step is
@@ -243,26 +250,33 @@ type Attempt {
 /// ```
 pub fn attach(registered: Registered) -> Result(Hands, String) {
   use stored <- result.try(scope.read(registered.opened))
+
+  // This match resolves scope.executor_of(stored) before the enclosing validation continues.
   use candidates <- result.try(case scope.executor_of(stored) {
     Some(name) ->
       registered.placement.named(name) |> result.map(fn(found) { [found] })
     None -> registered.placement.first()
   })
+
   try_in_order(registered, stored, candidates, [])
 }
 
 // Tries each candidate in the order given. Only a first open can have a
 // candidate left over, because a record that names an executor is the only
 // candidate there is.
+/// Try in order keeps this client operation’s decoding or state decision in one place.
 fn try_in_order(
   registered: Registered,
   stored: Option(Scope),
   candidates: List(Candidate),
   declined: List(Attempt),
 ) -> Result(Hands, String) {
+  // This match resolves candidates before the surrounding protocol step continues.
+  // This match resolves candidates before the enclosing validation continues.
   case candidates {
     [] -> Error(none_accepted(list.reverse(declined)))
     [candidate, ..rest] ->
+      // This match resolves attach_to(registered, stored, candidate, MayHeal) before the surrounding protocol step continues.
       case attach_to(registered, stored, candidate, MayHeal) {
         Ok(hands) -> Ok(hands)
         Error(Failed(reason)) -> Error(reason)
@@ -275,7 +289,10 @@ fn try_in_order(
 // The reason an open ends when every candidate declined. One candidate keeps
 // its own reason, which is the message a session on a named executor has always
 // had.
+/// None accepted keeps this client operation’s decoding or state decision in one place.
 fn none_accepted(declined: List(Attempt)) -> String {
+  // This match resolves declined before the surrounding protocol step continues.
+  // This match resolves declined before the enclosing validation continues.
   case declined {
     [Declined(reason:, ..)] -> unavailable(reason)
     [] -> unavailable("no executor is available for this session")
@@ -284,6 +301,7 @@ fn none_accepted(declined: List(Attempt)) -> String {
         "no executor accepted the session: "
         <> string.join(
           list.map(many, fn(attempt) {
+            // This match resolves attempt before the surrounding protocol step continues.
             case attempt {
               Declined(executor:, reason:) -> executor <> ": " <> reason
               Failed(reason:) -> reason
@@ -302,6 +320,7 @@ type Healing {
   Healed
 }
 
+/// Attach to keeps this client operation’s decoding or state decision in one place.
 fn attach_to(
   registered: Registered,
   stored: Option(Scope),
@@ -311,6 +330,8 @@ fn attach_to(
   let reach = candidate.reach
   let name = candidate.executor.name
   let first_open = option.is_none(stored)
+
+  // This match resolves stored before the enclosing validation continues.
   let close_unrecorded = case stored {
     Some(scope.Scope(closed: None, ..)) -> True
     Some(scope.Scope(closed: Some(_), ..)) | None -> False
@@ -357,12 +378,17 @@ fn attach_to(
       mint_token: surface.strong_token,
     ))
   let received = clock.read(registered.clock).0
+
+  // This match resolves attached before the surrounding protocol step continues.
+  // This match resolves attached before the enclosing validation continues.
   case attached {
     // The executor refused for capacity inside the attach transaction, before it
     // built a plane, so on a first open it holds nothing for this session and
     // the record that named it is withdrawn.
     Error(protocol.CapacityExhausted(..) as refusal) if first_open -> {
       owner_port.stop(port)
+
+      // This match resolves scope.clear(registered.opened) before the surrounding protocol step continues.
       case scope.clear(registered.opened) {
         Ok(Nil) -> Error(Declined(name, protocol.describe(refusal)))
         Error(reason) -> Error(Failed(unavailable(reason)))
@@ -428,6 +454,7 @@ fn attach_to(
 // closed is its stored outcome, so a clean close reopens at the next
 // incarnation and an unproven one is refused as an unclean close, which still
 // needs an operator's release.
+/// Learn unrecorded close keeps this client operation’s decoding or state decision in one place.
 fn learn_unrecorded_close(
   registered: Registered,
   candidate: Candidate,
@@ -441,10 +468,15 @@ fn learn_unrecorded_close(
       held,
       2,
     )
+
+  // This match resolves asked before the surrounding protocol step continues.
+  // This match resolves asked before the enclosing validation continues.
   case asked {
     Ok(outcome) -> {
       let updated =
         scope.Scope(held, Some(outcome), Some(candidate.executor.name))
+
+      // This match resolves scope.write(registered.opened, updated) before the surrounding protocol step continues.
       case scope.write(registered.opened, updated) {
         Ok(Nil) -> attach_to(registered, Some(updated), candidate, Healed)
         Error(reason) -> Error(Failed(unavailable(reason)))
@@ -461,6 +493,7 @@ fn learn_unrecorded_close(
   }
 }
 
+/// Build keeps this client operation’s decoding or state decision in one place.
 fn build(
   registered: Registered,
   candidate: Candidate,
@@ -512,6 +545,8 @@ fn build(
     incarnation:,
     recover: recover_by_placement(functions),
     transfer: fn() {
+      // This match resolves process.subject_owner(owner_port.inbox(port)) before the surrounding protocol step continues.
+      // This match resolves process.subject_owner(owner_port.inbox(port)) before the enclosing validation continues.
       case process.subject_owner(owner_port.inbox(port)) {
         Ok(pid) -> process.unlink(pid)
         Error(Nil) -> Nil
@@ -537,6 +572,7 @@ const execution_lookup_ms = 5000
 
 // The key of an execution named by its launching operation and its own step,
 // `async/<id>`, which is how the execution service names it.
+/// Execution key keeps this client operation’s decoding or state decision in one place.
 fn execution_key(session: String, operation: ids.OpId, step: String) -> Key {
   protocol.Key(
     session:,
@@ -679,6 +715,9 @@ pub fn pooled(
           unavailable("no pool named " <> pool <> " is configured")
         }),
       )
+
+      // This match resolves pools.candidates(found, configured) before the surrounding protocol step continues.
+      // This match resolves pools.candidates(found, configured) before the enclosing validation continues.
       case pools.candidates(found, configured) {
         [] ->
           Error(unavailable(
@@ -697,6 +736,9 @@ pub fn pooled(
     },
     named: fn(each) {
       let found = candidate(membership, configured, each)
+
+      // This match resolves pools.find(available, pool) before the surrounding protocol step continues.
+      // This match resolves pools.find(available, pool) before the enclosing validation continues.
       case pools.find(available, pool) {
         Ok(listed) -> result.map(found, waiting_as_pool(_, listed))
         Error(Nil) -> found
@@ -715,8 +757,17 @@ pub fn pooled(
 /// ```gleam
 /// // workspace.waiting_as_pool(candidate, pool).reach.attach_within_ms
 /// ```
+/// Waiting as pool preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// waiting_as_pool(...)
+/// ```
 @internal
 pub fn waiting_as_pool(found: Candidate, pool: pools.Pool) -> Candidate {
+  // This match resolves pool.attach_within_s before the surrounding protocol step continues.
+  // This match resolves pool.attach_within_s before the enclosing validation continues.
   case pool.attach_within_s {
     None -> found
     Some(seconds) ->
@@ -729,6 +780,7 @@ pub fn waiting_as_pool(found: Candidate, pool: pools.Pool) -> Candidate {
 
 const connect_within_ms = 10_000
 
+/// Unavailable keeps this client operation’s decoding or state decision in one place.
 fn unavailable(reason: String) -> String {
   "executor_unavailable: " <> reason
 }
@@ -739,11 +791,14 @@ fn unavailable(reason: String) -> String {
 // numbers. A scope that closed unproven, or was left closing, is not retried
 // either: only the executor's operator can release it, so the message names the
 // command and the session to give it.
+/// Refused keeps this client operation’s decoding or state decision in one place.
 fn refused(
   refusal: protocol.Refusal,
   attempted: Int,
   session: String,
 ) -> String {
+  // This match resolves refusal before the surrounding protocol step continues.
+  // This match resolves refusal before the enclosing validation continues.
   case refusal {
     protocol.UncleanClose(..) | protocol.ScopeClosing ->
       unavailable(
@@ -769,13 +824,17 @@ fn refused(
 // reached the executor, so its answer is the one a session with no recovery
 // gives: a call that is safe to repeat is offered for replay, and any other is
 // unknown.
+/// Recover by placement keeps this client operation’s decoding or state decision in one place.
 fn recover_by_placement(
   functions: surface.Functions,
 ) -> fn(ToolRun) -> Recovery {
   fn(run: ToolRun) {
+    // This match resolves tool_placement.placement(run.call.name) before the surrounding protocol step continues.
+    // This match resolves tool_placement.placement(run.call.name) before the enclosing validation continues.
     case tool_placement.placement(run.call.name) {
       Ok(tool_placement.WorkspaceSide) -> functions.recover(run)
       Ok(tool_placement.OwnerSide) | Error(Nil) ->
+        // This match resolves run.replay before the surrounding protocol step continues.
         case run.replay {
           operation.ReplaySafe -> effects.NotStarted
           operation.ReplayNever -> effects.OutcomeUnknown
@@ -792,12 +851,21 @@ fn recover_by_placement(
 // would call it settled at once, because no planner batch lists an `async/`
 // step, and acknowledging it before the worker read it would leave a tombstone
 // that answers the worker's re-send as lost.
+/// Settled by kind preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// settled_by_kind(...)
+/// ```
 @internal
 pub fn settled_by_kind(
   opened: Session,
   executions: owner_port.Executions,
 ) -> fn(Key) -> Bool {
   fn(key) {
+    // This match resolves protocol.execution_id(key) before the surrounding protocol step continues.
+    // This match resolves protocol.execution_id(key) before the enclosing validation continues.
     case protocol.execution_id(key) {
       Ok(_id) -> executions.standing(key) == owner_port.RecordClosed
       Error(Nil) -> settled(opened, key)
@@ -811,11 +879,21 @@ pub fn settled_by_kind(
 // result is staged or placed, it was interrupted or aborted and the runtime
 // staged that, or the operation is over and its state deleted. A key the store
 // cannot answer is left alone.
+/// Settled preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// settled(...)
+/// ```
 @internal
 pub fn settled(opened: Session, key: Key) -> Bool {
+  // This match resolves ids.parse_op_id(key.op) before the surrounding protocol step continues.
+  // This match resolves ids.parse_op_id(key.op) before the enclosing validation continues.
   case ids.parse_op_id(key.op) {
     Error(_report) -> False
     Ok(operation) ->
+      // This match resolves session.op_state(opened, operation) before the surrounding protocol step continues.
       case session.op_state(opened, operation) {
         Error(_error) -> False
         Ok(None) -> True
@@ -824,17 +902,27 @@ pub fn settled(opened: Session, key: Key) -> Bool {
   }
 }
 
+/// Pending preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// pending(...)
+/// ```
 @internal
 pub fn pending(
   state: operation.OperationState,
   step: String,
   index: Int,
 ) -> Bool {
+  // This match resolves state before the surrounding protocol step continues.
+  // This match resolves state before the enclosing validation continues.
   case state {
     operation.RunState(phase: operation.Tools(batch:), ..)
       if batch.turn_id == step
     ->
       list.any(batch.calls, fn(call) {
+        // This match resolves call before the surrounding protocol step continues.
         case call {
           operation.CallPlanned(source_index:, ..)
           | operation.CallEffectPending(source_index:, ..) ->
@@ -852,6 +940,7 @@ pub fn pending(
 // a `job/<id>` cell here, so the live board is read from the store instead of
 // asked of the executor. A record that does not decode is skipped, as it would
 // be by the actor's own sweep.
+/// Live jobs keeps this client operation’s decoding or state decision in one place.
 fn live_jobs(
   opened: Session,
   strand: String,
@@ -877,11 +966,14 @@ fn live_jobs(
 
 // Asks the executor to close the scope and records what it reports. An answer
 // that is a refusal, or no answer, records nothing.
+/// Close scope keeps this client operation’s decoding or state decision in one place.
 fn close_scope(
   registered: Registered,
   candidate: Candidate,
   incarnation: Int,
 ) -> Nil {
+  // This match resolves ask_close(registered, candidate.reach, incarnation, 2) before the surrounding protocol step continues.
+  // This match resolves ask_close(registered, candidate.reach, incarnation, 2) before the enclosing validation continues.
   case ask_close(registered, candidate.reach, incarnation, 2) {
     Ok(closed) -> {
       let _written =
@@ -895,6 +987,7 @@ fn close_scope(
   }
 }
 
+/// Ask close keeps this client operation’s decoding or state decision in one place.
 fn ask_close(
   registered: Registered,
   reach: Reach,
@@ -944,12 +1037,15 @@ pub fn close_stopped(
   workspace: String,
   incarnation: Int,
 ) -> Result(protocol.CloseOutcome, CloseFailure) {
+  // This match resolves reach.connect() before the surrounding protocol step continues.
+  // This match resolves reach.connect() before the enclosing validation continues.
   case reach.connect() {
     Ok(Nil) -> request_close(session, workspace, reach, incarnation, 2)
     Error(_) -> Error(CloseUnanswered)
   }
 }
 
+/// Request close keeps this client operation’s decoding or state decision in one place.
 fn request_close(
   session: String,
   workspace: String,
@@ -969,6 +1065,9 @@ fn request_close(
     |> process.select_specific_monitor(watch, fn(_down) { Error(Nil) })
     |> process.selector_receive(close_within_ms)
   process.demonitor_process(watch)
+
+  // This match resolves heard before the surrounding protocol step continues.
+  // This match resolves heard before the enclosing validation continues.
   case heard {
     Ok(Ok(Ok(closed))) -> Ok(closed)
     Ok(Ok(Error(refusal))) -> Error(CloseRefused(refusal))
@@ -977,6 +1076,7 @@ fn request_close(
     // already landed answers with its stored outcome, which is how a lost reply
     // is learned.
     Ok(Error(Nil)) ->
+      // This match resolves attempts > 1, reach.connect() before the surrounding protocol step continues.
       case attempts > 1, reach.connect() {
         True, Ok(Nil) ->
           request_close(session, workspace, reach, incarnation, attempts - 1)

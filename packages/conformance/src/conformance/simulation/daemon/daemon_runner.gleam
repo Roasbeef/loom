@@ -519,18 +519,18 @@ fn recovered(daemon: Harness, key: String, step: Step) -> Result(Nil, Failure) {
   )
 
   // Look up the reservation row for key in snapshot rows.
-  let found_row = case
-    list.find(snapshot.rows, fn(row: harness.Row) { row.request_key == key })
-  {
-    Ok(row) -> Ok(row)
-    Error(Nil) ->
-      Error(Failure(
-        check,
-        "the reservation for " <> key <> " did not survive the restart",
-      ))
-  }
-
-  use row <- result.try(found_row)
+  use row <- result.try(
+    case
+      list.find(snapshot.rows, fn(row: harness.Row) { row.request_key == key })
+    {
+      Ok(row) -> Ok(row)
+      Error(Nil) ->
+        Error(Failure(
+          check,
+          "the reservation for " <> key <> " did not survive the restart",
+        ))
+    },
+  )
 
   // Verify post-restart state reflects pre-restart progress.
   case step, row.state, harness.admission(daemon, row.id) {

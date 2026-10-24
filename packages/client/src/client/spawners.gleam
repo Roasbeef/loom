@@ -376,6 +376,7 @@ pub fn parse(text: String) -> Result(List(Spawner), String) {
 pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Spawner), String) {
+  // Decide how to handle dict.get(document, "spawners") {.
   case dict.get(document, "spawners") {
     Error(Nil) -> Ok([])
     Ok(tom.Table(tables)) -> {
@@ -484,10 +485,14 @@ pub fn metered(spawner: Spawner) -> Bool {
 // The peers a spawner may name. A spawner with no distribution table has no
 // peer to be messaged by, which is a different mistake from a mistyped node, so
 // it is worded as the missing table.
+
+/// Establishes peer nodes for the caller, keeping its validation and result policy at this boundary.
 fn peer_nodes(
   document: Dict(String, tom.Toml),
 ) -> Result(ledger_reference.Peers, String) {
   use found <- result.try(distribution.from_document(document))
+
+  // Decide how to handle found {.
   case found {
     Some(settings) -> Ok(ledger_reference.peers(settings))
     None -> Error("spawners needs a [distribution] table naming its peers")
@@ -507,6 +512,8 @@ fn profile_names(document: Dict(String, tom.Toml)) -> List(String) {
 // Two names for one node would let a message be judged by whichever policy
 // sorts first, so the file cannot say it. Names are sorted, so the second of a
 // pair is the one reported.
+
+/// Establishes distinct nodes for the caller, keeping its validation and result policy at this boundary.
 fn distinct_nodes(configured: List(Spawner)) -> Result(Nil, String) {
   case configured {
     [] -> Ok(Nil)
@@ -526,8 +533,11 @@ fn distinct_nodes(configured: List(Spawner)) -> Result(Nil, String) {
   }
 }
 
+/// Establishes row for the caller, keeping its validation and result policy at this boundary.
 fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
   let place = "spawners." <> name
+
+  // Decide how to handle use Nil <- result.try( catalogue.is_profile_name(name) {.
   use Nil <- result.try(case catalogue.is_profile_name(name) {
     True -> Ok(Nil)
     False ->
@@ -537,6 +547,8 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
         <> "starting with a letter, at most 32 characters",
       )
   })
+
+  // Decide how to handle value {.
   case value {
     tom.Table(fields) -> {
       use Nil <- result.try(known_keys(
@@ -644,12 +656,16 @@ fn row(name: String, value: tom.Toml, known: Known) -> Result(Spawner, String) {
 // reference is checked against this file as `placement_of` checks its own, so a
 // renamed executor fails the file and not the first create. The ceiling is the
 // shape of 089's, read by the same decoder.
+
+/// Establishes top level of for the caller, keeping its validation and result policy at this boundary.
 fn top_level_of(
   fields: Dict(String, tom.Toml),
   place: String,
   known: Known,
 ) -> Result(Option(TopLevel), String) {
   let key = place <> ".top_level"
+
+  // Decide how to handle dict.get(fields, "top_level") {.
   case dict.get(fields, "top_level") {
     Error(Nil) -> Ok(None)
     Ok(tom.Table(table)) | Ok(tom.InlineTable(table)) -> {
@@ -712,6 +728,8 @@ fn top_level_of(
 
 // An executor a page may pick must be one this file configures, or, in ledger
 // mode, a name the ledger may give it (the daemon compares it at start).
+
+/// Establishes known executor for the caller, keeping its validation and result policy at this boundary.
 fn known_executor(
   known: Known,
   place: String,
@@ -736,12 +754,16 @@ fn known_executor(
 }
 
 // An optional array of distinct names, empty when absent.
+
+/// Establishes names of for the caller, keeping its validation and result policy at this boundary.
 fn names_of(
   fields: Dict(String, tom.Toml),
   place: String,
   key: String,
 ) -> Result(List(String), String) {
   let words = place <> "." <> key <> " must be an array of names"
+
+  // Decide how to handle use names <- result.try( dict.get(fields, key) {.
   use names <- result.try(case dict.get(fields, key) {
     Error(Nil) -> Ok([])
     Ok(tom.Array(items)) ->
@@ -753,6 +775,8 @@ fn names_of(
       })
     Ok(_) -> Error(words)
   })
+
+  // Decide how to handle first_repeat(names) {.
   case first_repeat(names) {
     Ok(repeated) ->
       Error(place <> "." <> key <> " lists " <> repeated <> " more than once")
@@ -760,11 +784,14 @@ fn names_of(
   }
 }
 
+/// Establishes folders of for the caller, keeping its validation and result policy at this boundary.
 fn folders_of(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Folders, String) {
   use word <- result.try(optional_string(fields, place, "folders"))
+
+  // Decide how to handle word {.
   case word {
     None | Some("recent") -> Ok(RecentFolders)
     Some("none") -> Ok(NoFolders)
@@ -775,11 +802,14 @@ fn folders_of(
 // The profiles a relayed session may start with. Absent is every profile, which
 // is left as `None` so that a profile added later is offered without an edit
 // here; a list names profiles that must exist now.
+
+/// Establishes top level profiles of for the caller, keeping its validation and result policy at this boundary.
 fn top_level_profiles_of(
   fields: Dict(String, tom.Toml),
   place: String,
   known: Known,
 ) -> Result(Option(List(String)), String) {
+  // Decide how to handle dict.has_key(fields, "profiles") {.
   case dict.has_key(fields, "profiles") {
     False -> Ok(None)
     True -> {
@@ -805,6 +835,8 @@ fn top_level_profiles_of(
 
 // `top_level.max_sessions` is a count with its own ceiling, which is the most
 // the catalogue's listing page and the laptop's sidebar are built for.
+
+/// Establishes top level sessions of for the caller, keeping its validation and result policy at this boundary.
 fn top_level_sessions_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -815,6 +847,8 @@ fn top_level_sessions_of(
     "max_sessions",
     default_top_level_sessions,
   ))
+
+  // Decide how to handle sessions > top_level_sessions_limit {.
   case sessions > top_level_sessions_limit {
     False -> Ok(sessions)
     True ->
@@ -831,11 +865,15 @@ fn top_level_sessions_of(
 // The optional ceiling on what the spawner's operator may approve. A table that
 // is absent is no ceiling, which is different from a table that is present and
 // admits nothing: the second asks the operator and can only be told no.
+
+/// Establishes ceiling of for the caller, keeping its validation and result policy at this boundary.
 fn ceiling_of(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Option(Ceiling), String) {
   let key = place <> ".approval_ceiling"
+
+  // Decide how to handle dict.get(fields, "approval_ceiling") {.
   case dict.get(fields, "approval_ceiling") {
     Error(Nil) -> Ok(None)
     Ok(tom.Table(table)) | Ok(tom.InlineTable(table)) ->
@@ -844,6 +882,7 @@ fn ceiling_of(
   }
 }
 
+/// Establishes node of for the caller, keeping its validation and result policy at this boundary.
 fn node_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -871,6 +910,8 @@ fn node_of(
 // A directory is itself the workspace, so `workspace` beside it would say two
 // things about one place and is refused. The match names every combination of
 // the three keys, so adding a fourth placement is a compile error here.
+
+/// Establishes placement of for the caller, keeping its validation and result policy at this boundary.
 fn placement_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -879,10 +920,16 @@ fn placement_of(
   use executor <- result.try(optional_string(fields, place, "executor"))
   use pool <- result.try(optional_string(fields, place, "pool"))
   use directory <- result.try(optional_string(fields, place, "directory"))
+
+  // Decide how to handle executor, pool, directory {.
   use workspace <- result.try(optional_string(fields, place, "workspace"))
+
+  // Resolve the configured executor, pool, and directory combination into one placement.
   case executor, pool, directory {
     Some(executor), None, None -> {
+      // Resolve the configured executor, pool, and directory combination into one placement.
       use Nil <- result.try(
+        // Decide how to handle executors.find(known.executors, executor), known.peers {.
         case executors.find(known.executors, executor), known.peers {
           Ok(_), _ -> Ok(Nil)
 
@@ -909,10 +956,12 @@ fn placement_of(
             )
         },
       )
+
       use workspace <- result.map(workspace_of(workspace, place, "executor"))
       OnExecutor(executor:, workspace:)
     }
     None, Some(pool), None -> {
+      // Decide how to handle use Nil <- result.try( pools.find(known.pools, pool) {.
       use Nil <- result.try(case pools.find(known.pools, pool) {
         Ok(_) -> Ok(Nil)
         Error(Nil) ->
@@ -920,6 +969,7 @@ fn placement_of(
             place <> ".pool " <> pool <> " is not a configured [pools.<name>]",
           )
       })
+
       use workspace <- result.map(workspace_of(workspace, place, "pool"))
       InPool(pool:, workspace:)
     }
@@ -958,6 +1008,8 @@ fn placement_of(
 // The workspace beside an executor or a pool. It is a name registered on that
 // machine, so this module checks only its grammar; whether the machine serves it
 // is learned at the attach.
+
+/// Establishes workspace of for the caller, keeping its validation and result policy at this boundary.
 fn workspace_of(
   workspace: Option(String),
   place: String,
@@ -978,6 +1030,7 @@ fn workspace_of(
   }
 }
 
+/// Establishes profile of for the caller, keeping its validation and result policy at this boundary.
 fn profile_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1004,12 +1057,16 @@ fn profile_of(
 // against the built-in tools, because an extension's tool is whatever its
 // manifest says; a name no tool answers to narrows the ceiling and nothing
 // else, so a typo can only make a child less capable.
+
+/// Establishes tools of for the caller, keeping its validation and result policy at this boundary.
 fn tools_of(
   fields: Dict(String, tom.Toml),
   place: String,
   max_depth: Int,
 ) -> Result(List(String), String) {
   let words = place <> ".tools must be a nonempty array of tool names"
+
+  // Decide how to handle dict.get(fields, "tools") {.
   case dict.get(fields, "tools") {
     Error(Nil) -> Ok(default_tools(max_depth))
     Ok(tom.Array([])) -> Error(words)
@@ -1023,6 +1080,8 @@ fn tools_of(
           }
         }),
       )
+
+      // Decide how to handle first_repeat(names) {.
       case first_repeat(names) {
         Ok(repeated) ->
           Error(place <> ".tools lists " <> repeated <> " more than once")
@@ -1042,12 +1101,16 @@ fn tools_of(
 // A nonempty list under a `max_depth` of one is refused: every child is then at
 // the limit and holds no spawn tool, so the list could never be used, which is
 // the same mistake as a spawn tool that the depth forbids.
+
+/// Establishes spawn on of for the caller, keeping its validation and result policy at this boundary.
 fn spawn_on_of(
   fields: Dict(String, tom.Toml),
   place: String,
   max_depth: Int,
 ) -> Result(List(String), String) {
   let words = place <> ".spawn_on must be an array of orchestrator names"
+
+  // Decide how to handle use names <- result.try( dict.get(fields, "spawn_on") {.
   use names <- result.try(case dict.get(fields, "spawn_on") {
     Error(Nil) -> Ok([])
     Ok(tom.Array(items)) ->
@@ -1069,11 +1132,15 @@ fn spawn_on_of(
       })
     Ok(_) -> Error(words)
   })
+
+  // Decide how to handle use Nil <- result.try( first_repeat(names) {.
   use Nil <- result.try(case first_repeat(names) {
     Ok(repeated) ->
       Error(place <> ".spawn_on lists " <> repeated <> " more than once")
     Error(Nil) -> Ok(Nil)
   })
+
+  // Decide how to handle names, max_depth > 1 {.
   case names, max_depth > 1 {
     [], _ | [_, ..], True -> Ok(names)
     [_, ..], False ->
@@ -1085,6 +1152,7 @@ fn spawn_on_of(
   }
 }
 
+/// Establishes first repeat for the caller, keeping its validation and result policy at this boundary.
 fn first_repeat(names: List(String)) -> Result(String, Nil) {
   case names {
     [] -> Error(Nil)
@@ -1098,6 +1166,8 @@ fn first_repeat(names: List(String)) -> Result(String, Nil) {
 
 // `max_sessions` is a count like the others, with the ceiling an executor's
 // scope limit imposes.
+
+/// Establishes sessions of for the caller, keeping its validation and result policy at this boundary.
 fn sessions_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1108,6 +1178,8 @@ fn sessions_of(
     "max_sessions",
     default_max_sessions,
   ))
+
+  // Decide how to handle sessions > sessions_limit {.
   case sessions > sessions_limit {
     False -> Ok(sessions)
     True ->
@@ -1125,6 +1197,8 @@ fn sessions_of(
 // A positive integer, or `default` when the key is absent. The seconds and the
 // depth are all counts that must be at least one: a deadline of zero ends a
 // child before it starts and a depth of zero admits no child at all.
+
+/// Establishes count of for the caller, keeping its validation and result policy at this boundary.
 fn count_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1142,6 +1216,8 @@ fn count_of(
 // A metering key: absent is no bound, and a bound is a positive integer. Zero is
 // refused because it would admit nothing, which is a spawner that should not be
 // listed, and the same words as for the other counts say so.
+
+/// Establishes budget of for the caller, keeping its validation and result policy at this boundary.
 fn budget_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1155,11 +1231,15 @@ fn budget_of(
 
 // The `transcript` key: `"hidden"` when absent, and one of the two words when
 // present. Anything else is refused, so a typo never opens a transcript.
+
+/// Establishes transcript of for the caller, keeping its validation and result policy at this boundary.
 fn transcript_of(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Transcript, String) {
   use word <- result.try(optional_string(fields, place, "transcript"))
+
+  // Decide how to handle word {.
   case word {
     None | Some("hidden") -> Ok(Hidden)
     Some("visible") -> Ok(Visible)
@@ -1167,6 +1247,7 @@ fn transcript_of(
   }
 }
 
+/// Establishes optional string for the caller, keeping its validation and result policy at this boundary.
 fn optional_string(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1182,6 +1263,8 @@ fn optional_string(
 // The two pairs of durations that constrain each other (see the module doc). A
 // refusal names both values, because either may have come from a default the
 // file never wrote.
+
+/// Establishes windows for the caller, keeping its validation and result policy at this boundary.
 fn windows(
   place: String,
   max_within_s: Int,
@@ -1224,6 +1307,7 @@ fn reaches_beyond_the_session(name: String) -> Bool {
   || string.starts_with(name, "schedule_")
 }
 
+/// Establishes known keys for the caller, keeping its validation and result policy at this boundary.
 fn known_keys(
   present: List(String),
   allowed: List(String),

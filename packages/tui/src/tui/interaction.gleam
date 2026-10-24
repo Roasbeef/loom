@@ -2303,15 +2303,13 @@ fn scroll_transcript(model: Model, older: Bool, rows: Int) -> Model {
       layout.transcript_viewport_height(model),
     )
 
-  // Format tail following notice if returning to live end.
-  let following = case offset == 0 && !older {
-    True -> "following output"
-    False -> model.shared.notice
-  }
-
   let model =
     Model(
-      shared: shared_set.notice(model.shared, following),
+      // Format tail following notice if returning to live end.
+      shared: shared_set.notice(model.shared, case offset == 0 && !older {
+        True -> "following output"
+        False -> model.shared.notice
+      }),
       view: view_set.scroll_offset(model.view, offset),
     )
 

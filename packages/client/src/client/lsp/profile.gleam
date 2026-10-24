@@ -404,6 +404,8 @@ pub fn decode_server(
   // in order, the first failure being the answer; `Nil` is bound where a
   // check yields no value.
   use Nil <- result.try(server_name(name))
+
+  // decode_server handles the the selected value outcomes here before continuing.
   use fields <- result.try(case value {
     tom.Table(fields) | tom.InlineTable(fields) -> Ok(fields)
     _ -> Error(place <> " must be a table")
@@ -464,6 +466,7 @@ pub fn decode_server(
 // Preparation is a named recipe rather than executable text. The same
 // resolved binary serves the project and downloads its dependencies, and
 // only Loom's private cache is writable outside the selected project.
+/// Coordinates the preparation result while preserving this module’s validation boundary.
 fn preparation(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -471,9 +474,11 @@ fn preparation(
   project: ProjectAccess,
   caches: List(#(String, String)),
 ) -> Result(Preparation, String) {
+  // preparation handles the dict.get(fields, "prepare") outcomes here before continuing.
   case dict.get(fields, "prepare") {
     Error(Nil) -> Ok(AlreadyPrepared)
     Ok(tom.String("gleam-dependencies")) -> {
+      // preparation handles the the selected value outcomes here before continuing.
       use Nil <- result.try(case command, project {
         [_executable, "lsp"], ProjectWritable -> Ok(Nil)
         _, _ ->
@@ -482,6 +487,8 @@ fn preparation(
             <> ".prepare requires a Gleam executable followed by lsp, and project = writable",
           )
       })
+
+      // preparation handles the list.any(caches, fn(entry) outcomes here before continuing.
       case list.any(caches, fn(entry) { entry.0 == "XDG_CACHE_HOME" }) {
         True -> Ok(GleamDependencies)
         False ->
@@ -501,9 +508,12 @@ fn preparation(
 // server tables keeps any key an operator writes valid in either.
 // `internal` is not reserved here; that reservation is about the
 // `cap/internal` module tree, which an LSP name never enters.
+/// Coordinates the server name result while preserving this module’s validation boundary.
 fn server_name(name: String) -> Result(Nil, String) {
   let legal =
     !string.contains(name, "/") && vet_policy.is_legal_module_name(name)
+
+  // server_name handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case legal {
     True -> Ok(Nil)
     False ->
@@ -515,6 +525,8 @@ fn server_name(name: String) -> Result(Nil, String) {
         <> " segment ([a-z][a-z0-9_]*)",
       )
   })
+
+  // server_name handles the mangling_fault(name) outcomes here before continuing.
   case mangling_fault(name) {
     Ok(Nil) -> Ok(Nil)
     Error(what) ->
@@ -587,10 +599,12 @@ pub fn mangling_fault(name: String) -> Result(Nil, String) {
 // rather than as a mistyped value, because it is the mistake an operator
 // copying a shell line makes, and the harness never runs a string through
 // a shell: the argv is exec'd as written, element by element.
+/// Coordinates the command result while preserving this module’s validation boundary.
 fn command(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(List(String), String) {
+  // command handles the the selected value outcomes here before continuing.
   use items <- result.try(case dict.get(fields, "command") {
     Ok(tom.Array(items)) -> Ok(items)
     Ok(tom.String(_shell)) ->
@@ -603,6 +617,7 @@ fn command(
       Error(place <> ".command must be an array of strings (the argv)")
     Error(Nil) -> Error(place <> ".command is required")
   })
+
   use argv <- result.try(
     list.try_map(items, fn(item) {
       case item {
@@ -614,6 +629,8 @@ fn command(
       }
     }),
   )
+
+  // command handles the argv outcomes here before continuing.
   case argv {
     [] -> Error(place <> ".command must name at least the executable")
     _some -> Ok(argv)
@@ -623,6 +640,7 @@ fn command(
 // Extensions are compared lowercased, so `.GO` and `.go` are one
 // extension and one owner. Each must carry its leading dot and name
 // something after it; a `/` would make it a path rather than a suffix.
+/// Coordinates the extensions result while preserving this module’s validation boundary.
 fn extensions(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -645,8 +663,11 @@ fn extensions(
 // because each is a different mistake: a lone dot names no suffix, a
 // missing dot is `go` written for `.go`, and a slash means the operator
 // wrote a path where a suffix goes.
+/// Coordinates the one extension result while preserving this module’s validation boundary.
 fn one_extension(at: String, written: String) -> Result(String, String) {
   let lowered = string.lowercase(written)
+
+  // one_extension handles the lowered, string.contains(lowered, "/") outcomes here before continuing.
   case lowered, string.contains(lowered, "/") {
     ".", _ -> Error(at <> " entry \".\" names no extension")
     "." <> _suffix, False -> Ok(lowered)
@@ -665,6 +686,7 @@ fn one_extension(at: String, written: String) -> Result(String, String) {
 // A root marker is looked for by name in each ancestor directory, so it
 // is a bare file name: a path, `.` or `..` would be looked for somewhere
 // other than the ancestor being asked about.
+/// Coordinates the root markers result while preserving this module’s validation boundary.
 fn root_markers(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -699,6 +721,7 @@ fn root_markers(
 // Read-only is the default because a server that writes into the
 // project has to be named as one: it is the operator saying the
 // project's `build/` may change under the model's feet.
+/// Projects the project result while preserving this module’s validation boundary.
 fn project(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -722,6 +745,7 @@ fn project(
 // One `readable` or `writable` list, in file order. Duplicates are
 // judged on the text as written, before any `~/` or `<cache>/` is
 // expanded, so the refusal quotes the line the operator would edit.
+/// Coordinates the paths result while preserving this module’s validation boundary.
 fn paths(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -744,7 +768,9 @@ fn paths(
 // project the model writes to. A `..` component is refused in every
 // form, because the jail compares roots by component and never resolves
 // them, so `..` would grant a directory the line does not name.
+/// Coordinates the one path result while preserving this module’s validation boundary.
 fn one_path(at: String, written: String) -> Result(LspPath, String) {
+  // one_path handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case list.contains(string.split(written, "/"), "..") {
     True ->
       Error(
@@ -755,6 +781,8 @@ fn one_path(at: String, written: String) -> Result(LspPath, String) {
       )
     False -> Ok(Nil)
   })
+
+  // one_path handles the written outcomes here before continuing.
   case written {
     "/" <> _beneath -> Ok(AbsolutePath(written))
     "~/" <> rest -> beneath_place(at, written, rest, "~", "home", HomePath)
@@ -785,6 +813,7 @@ fn one_path(at: String, written: String) -> Result(LspPath, String) {
 // needs, so it is refused and the operator names the directory the server
 // does need. `form` is the prefix as written and `what` names the place in
 // the refusal.
+/// Coordinates the beneath place result while preserving this module’s validation boundary.
 fn beneath_place(
   at: String,
   written: String,
@@ -823,6 +852,7 @@ fn beneath_place(
 // same directory. An absolute or `~/` root that lands there is refused at
 // boot, once the daemon's places say where the cache is
 // (`private_cache_fault`).
+/// Coordinates the outside private cache result while preserving this module’s validation boundary.
 fn outside_private_cache(
   at: String,
   written: String,
@@ -867,6 +897,7 @@ fn at_or_beneath(root: String, path: String) -> Bool {
 // List-prefix test over components. The guard arm compares heads and
 // recurses; any other mismatch ends the walk, so it is linear in the
 // shorter list.
+/// Determines the is prefix result while preserving this module’s validation boundary.
 fn is_prefix(prefix: List(String), of: List(String)) -> Bool {
   case prefix, of {
     [], _ -> True
@@ -906,6 +937,7 @@ pub fn private_cache_fault(
   server: LspServer,
   places: Places,
 ) -> Result(Nil, String) {
+  // private_cache_fault handles the expand_path(CachePath(private_cache_top), places) outcomes here before continuing.
   case expand_path(CachePath(private_cache_top), places) {
     Error(_unplaced) -> Ok(Nil)
     Ok(private) -> {
@@ -927,6 +959,7 @@ pub fn private_cache_fault(
 // One root against the private cache. `holding` is what the root may not
 // be at or above: the private cache itself for a writable root, nothing
 // for a readable one.
+/// Coordinates the root clear of result while preserving this module’s validation boundary.
 fn root_clear_of(
   at: String,
   path: LspPath,
@@ -974,6 +1007,7 @@ fn root_clear_of(
 // A root listed as both readable and writable is two answers to one
 // question. Only writable entries are checked, since every shared root
 // shows up there.
+/// Coordinates the disjoint roots result while preserving this module’s validation boundary.
 fn disjoint_roots(
   place: String,
   readable: List(LspPath),
@@ -994,6 +1028,7 @@ fn disjoint_roots(
 }
 
 // The path as the operator wrote it, for a refusal to quote.
+/// Coordinates the path text result while preserving this module’s validation boundary.
 fn path_text(path: LspPath) -> String {
   case path {
     AbsolutePath(path) -> path
@@ -1010,6 +1045,7 @@ fn path_text(path: LspPath) -> String {
 // `[tools] env` refuses them: a language server whose `PATH` came from
 // the host would resolve a different toolchain than the one the jail
 // was built around.
+/// Coordinates the env result while preserving this module’s validation boundary.
 fn env(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1036,6 +1072,7 @@ const env_name_tail = "ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789"
 // `[A-Z_][A-Z0-9_]*`, checked a grapheme at a time against the two
 // alphabets. A multi-codepoint grapheme is in neither, so a lookalike
 // letter is refused rather than normalised into a different name.
+/// Coordinates the env name result while preserving this module’s validation boundary.
 fn env_name(at: String, name: String) -> Result(Nil, String) {
   case in_grammar(name, env_name_head, env_name_tail) {
     True -> Ok(Nil)
@@ -1115,12 +1152,15 @@ pub fn not_server_owned(place: String, name: String) -> Result(Nil, String) {
 // in `env` as well, which would be two sources for one variable. The
 // entries come back sorted, because a table has no order and the record
 // compares them with the manifest's.
+/// Coordinates the cache env result while preserving this module’s validation boundary.
 fn cache_env(
   fields: Dict(String, tom.Toml),
   place: String,
   env: List(String),
 ) -> Result(List(#(String, String)), String) {
   let at = place <> ".cache_env"
+
+  // cache_env handles the the selected value outcomes here before continuing.
   use entries <- result.try(case dict.get(fields, "cache_env") {
     Error(Nil) -> Ok(dict.new())
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) -> Ok(entries)
@@ -1131,6 +1171,7 @@ fn cache_env(
         <> " { XDG_CACHE_HOME = \"xdg\" }",
       )
   })
+
   use caches <- result.try(
     dict.to_list(entries)
     |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
@@ -1146,6 +1187,7 @@ fn cache_env(
 // points — the helper resolves a bind's source through its links — which
 // would grant a host directory writable that nobody named. Two variables
 // naming the same directory share one bind and are left alone.
+/// Coordinates the unnested result while preserving this module’s validation boundary.
 fn unnested(
   place: String,
   caches: List(#(String, String)),
@@ -1155,6 +1197,8 @@ fn unnested(
       list.find(caches, fn(outer) {
         string.starts_with(inner.1, outer.1 <> "/")
       })
+
+    // unnested handles the outer outcomes here before continuing.
     case outer {
       Error(Nil) -> Ok(Nil)
       Ok(outer) ->
@@ -1176,6 +1220,7 @@ fn unnested(
   })
 }
 
+/// Coordinates the one cache env result while preserving this module’s validation boundary.
 fn one_cache_env(
   place: String,
   env: List(String),
@@ -1183,12 +1228,17 @@ fn one_cache_env(
   value: tom.Toml,
 ) -> Result(#(String, String), String) {
   let here = place <> ".cache_env." <> name
+
+  // one_cache_env handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case in_grammar(name, env_name_head, env_name_tail) {
     True -> Ok(Nil)
     False ->
       Error(here <> " is not an environment variable name ([A-Z_][A-Z0-9_]*)")
   })
+
   use Nil <- result.try(not_server_owned(here, name))
+
+  // one_cache_env handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case list.contains(env, name) {
     False -> Ok(Nil)
     True ->
@@ -1199,10 +1249,13 @@ fn one_cache_env(
         <> ".env; one variable has one source, so drop it from one of them",
       )
   })
+
+  // one_cache_env handles the the selected value outcomes here before continuing.
   use directory <- result.try(case value {
     tom.String(directory) -> Ok(directory)
     _other -> Error(here <> " must be a string naming a directory")
   })
+
   use Nil <- result.try(
     cache_directory_fault(directory)
     |> result.map_error(fn(reason) { here <> reason }),
@@ -1217,8 +1270,11 @@ fn one_cache_env(
 // an empty component (`a//b`, a trailing `/`) name nothing the text does
 // not already, so they are refused as a spelling the reader has to undo.
 // The recorded form is re-read through this same rule.
+/// Coordinates the cache directory fault result while preserving this module’s validation boundary.
 fn cache_directory_fault(directory: String) -> Result(Nil, String) {
   let components = string.split(directory, "/")
+
+  // cache_directory_fault handles the the selected value outcomes here before continuing.
   case
     directory,
     string.starts_with(directory, "/"),
@@ -1287,6 +1343,7 @@ const max_language_id_length = 40
 // lists fits (`typescriptreact`, `objective-cpp`, `shellscript`), so a
 // typo that could never be an id is refused rather than sent to a server
 // that ignores it.
+/// Coordinates the language id result while preserving this module’s validation boundary.
 fn language_id(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1311,13 +1368,17 @@ fn default_language_id(extensions: List(String)) -> String {
 
 // The length is judged first so the grammar walk is bounded by it, and
 // without walking an oversized value to its end (lint R5).
+/// Coordinates the written language id result while preserving this module’s validation boundary.
 fn written_language_id(at: String, written: String) -> Result(String, String) {
+  // written_language_id handles the the selected value outcomes here before continuing.
   use Nil <- result.try(
     case string.drop_start(written, max_language_id_length) {
       "" -> Ok(Nil)
       _longer -> Error(at <> " is longer than 40 characters")
     },
   )
+
+  // written_language_id handles the in_grammar(written, language_id_head, language_id_tail) outcomes here before continuing.
   case in_grammar(written, language_id_head, language_id_tail) {
     True -> Ok(written)
     False ->
@@ -1338,6 +1399,7 @@ fn written_language_id(at: String, written: String) -> Result(String, String) {
 // the default, and a table that wants no qualification at all loses
 // nothing by keeping `.`, since a name with no separator in it is its own
 // identifier either way.
+/// Coordinates the qualifier separators result while preserving this module’s validation boundary.
 fn qualifier_separators(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1348,6 +1410,7 @@ fn qualifier_separators(
   }
 }
 
+/// Coordinates the written separators result while preserving this module’s validation boundary.
 fn written_separators(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1359,10 +1422,13 @@ fn written_separators(
     "qualifier_separators",
     "an array of separators such as \"::\"",
   ))
+
+  // written_separators handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case separators {
     [] -> Error(at <> " must list at least one separator")
     [_, ..] -> Ok(Nil)
   })
+
   use Nil <- result.try(
     list.try_each(separators, fn(separator) { one_separator(at, separator) }),
   )
@@ -1370,10 +1436,13 @@ fn written_separators(
   Ok(separators)
 }
 
+/// Coordinates the one separator result while preserving this module’s validation boundary.
 fn one_separator(at: String, separator: String) -> Result(Nil, String) {
   let spaced =
     string.to_graphemes(separator)
     |> list.any(fn(grapheme) { string.trim(grapheme) == "" })
+
+  // one_separator handles the separator, spaced outcomes here before continuing.
   case separator, spaced {
     "/", _ ->
       Error(
@@ -1387,6 +1456,7 @@ fn one_separator(at: String, separator: String) -> Result(Nil, String) {
   }
 }
 
+/// Coordinates the module case result while preserving this module’s validation boundary.
 fn module_case(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1414,11 +1484,14 @@ const max_hint_bytes = 200
 // every request of every session that configures it (ADR-016, "What it
 // costs"). The line break is refused by name before the general control
 // check, since it is the one an operator is likely to write.
+/// Coordinates the hint result while preserving this module’s validation boundary.
 fn hint(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(Option(String), String) {
   let at = place <> ".hint"
+
+  // hint handles the optional_string(fields, place, "hint") outcomes here before continuing.
   case optional_string(fields, place, "hint") {
     Ok(Error(Nil)) -> Ok(None)
     Ok(Ok("")) -> Error(at <> " must be non-empty")
@@ -1427,11 +1500,14 @@ fn hint(
   }
 }
 
+/// Coordinates the written hint result while preserving this module’s validation boundary.
 fn written_hint(at: String, written: String) -> Result(Option(String), String) {
   let codepoints =
     string.to_utf_codepoints(written) |> list.map(string.utf_codepoint_to_int)
   let broken = list.any(codepoints, fn(code) { code == 0x0A || code == 0x0D })
   let control = list.any(codepoints, is_control)
+
+  // written_hint handles the broken, control, string.byte_size(written) > max_hint_bytes outcomes here before continuing.
   case broken, control, string.byte_size(written) > max_hint_bytes {
     True, _, _ -> Error(at <> " must be one line, with no line break")
     False, True, _ -> Error(at <> " may not hold a control character")
@@ -1492,6 +1568,7 @@ pub fn expand_path(path: LspPath, places: Places) -> Result(String, String) {
 
 // `rest` under `place`, or the refusal naming `written`. `what` names the
 // place and `absent` completes "... is" when there is none.
+/// Coordinates the beneath result while preserving this module’s validation boundary.
 fn beneath(
   place: Option(String),
   written: String,
@@ -1725,6 +1802,8 @@ pub fn approval_lines(server: LspServer) -> List(String) {
     approval_line("env", server.env),
     approval_line("cache_env", caches),
   ]
+
+  // approval_lines handles the the selected value outcomes here before continuing.
   let lines = case server.preparation {
     AlreadyPrepared -> lines
     GleamDependencies ->
@@ -1734,6 +1813,8 @@ pub fn approval_lines(server: LspServer) -> List(String) {
         ]),
       ])
   }
+
+  // approval_lines handles the server.hint outcomes here before continuing.
   case server.hint {
     None -> lines
     Some(hint) -> list.append(lines, [approval_line("hint", [quoted(hint)])])
@@ -1744,11 +1825,14 @@ pub fn approval_lines(server: LspServer) -> List(String) {
 // the executable is found rather than written in the table, which is why
 // it has to be printed: a grant the approval never showed is one nobody
 // approved. The rule is the jail's (`client/lsp/jail.regions`).
+/// Coordinates the executable text result while preserving this module’s validation boundary.
 fn executable_text(server: LspServer) -> String {
+  // executable_text handles the the selected value outcomes here before continuing.
   let head = case server.command {
     [head, ..] -> head
     [] -> "the command"
   }
+
   "the directory holding "
   <> head
   <> ", read-only; for a link, its target's directory too, never an"
@@ -1759,11 +1843,14 @@ fn executable_text(server: LspServer) -> String {
 // width so the operator reads the values down a straight edge, and an empty
 // list prints `(none)` rather than a blank, since a blank would look like a
 // field the approval forgot to show.
+/// Coordinates the approval line result while preserving this module’s validation boundary.
 fn approval_line(label: String, values: List(String)) -> String {
+  // approval_line handles the the selected value outcomes here before continuing.
   let shown = case values {
     [] -> "(none)"
     [_, ..] -> string.join(values, ", ")
   }
+
   "    " <> string.pad_end(label <> ":", to: 14, with: " ") <> shown
 }
 
@@ -1780,8 +1867,11 @@ fn encode_path(path: LspPath) -> Json {
 // A private cache's directory, re-read with the table's own rule, for the
 // reason a root is: the jail creates and grants whatever a record holds,
 // so a record must not hold a `..` a table could never have approved.
+/// Decodes the cache directory decoder result while preserving this module’s validation boundary.
 fn cache_directory_decoder() -> Decoder(String) {
   use written <- decode.then(decode.string)
+
+  // cache_directory_decoder handles the cache_directory_fault(written) outcomes here before continuing.
   case cache_directory_fault(written) {
     Ok(Nil) -> decode.success(written)
     Error(_reason) ->
@@ -1791,8 +1881,11 @@ fn cache_directory_decoder() -> Decoder(String) {
 
 // The written form, re-read with the decoder's own path rule so that a
 // record can hold exactly the roots a table could.
+/// Decodes the path decoder result while preserving this module’s validation boundary.
 fn path_decoder() -> Decoder(LspPath) {
   use written <- decode.then(decode.string)
+
+  // path_decoder handles the one_path("the recorded profile", written) outcomes here before continuing.
   case one_path("the recorded profile", written) {
     Ok(path) -> decode.success(path)
     Error(_reason) ->
@@ -1810,8 +1903,11 @@ fn project_text(project: ProjectAccess) -> String {
 // The record's decoders are total. Each failure arm hands `decode.failure`
 // a placeholder value of the right type, which the decoder discards, plus
 // the sentence the error will quote as what was expected.
+/// Decodes the project decoder result while preserving this module’s validation boundary.
 fn project_decoder() -> Decoder(ProjectAccess) {
   use written <- decode.then(decode.string)
+
+  // project_decoder handles the written outcomes here before continuing.
   case written {
     "read-only" -> decode.success(ProjectReadOnly)
     "writable" -> decode.success(ProjectWritable)
@@ -1826,8 +1922,11 @@ fn module_case_text(module_case: ModuleCase) -> String {
   }
 }
 
+/// Decodes the module case decoder result while preserving this module’s validation boundary.
 fn module_case_decoder() -> Decoder(ModuleCase) {
   use written <- decode.then(decode.string)
+
+  // module_case_decoder handles the written outcomes here before continuing.
   case written {
     "as-written" -> decode.success(AsWritten)
     "snake" -> decode.success(Snake)
@@ -1838,6 +1937,7 @@ fn module_case_decoder() -> Decoder(ModuleCase) {
 // --- field helpers -----------------------------------------------------------
 
 // The present keys must all be known ones.
+/// Coordinates the known keys result while preserving this module’s validation boundary.
 fn known_keys(
   present: List(String),
   allowed: List(String),
@@ -1859,6 +1959,7 @@ fn known_keys(
 }
 
 // Ok(Ok(text)) present, Ok(Error(Nil)) absent, Error(message) mistyped.
+/// Coordinates the optional string result while preserving this module’s validation boundary.
 fn optional_string(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1873,6 +1974,7 @@ fn optional_string(
 
 // A TOML array of non-empty strings, `[]` when the key is absent.
 // `shape` completes "must be ..." for a value of the wrong type.
+/// Coordinates the optional strings result while preserving this module’s validation boundary.
 fn optional_strings(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1880,11 +1982,14 @@ fn optional_strings(
   shape: String,
 ) -> Result(List(String), String) {
   let at = place <> "." <> key
+
+  // optional_strings handles the the selected value outcomes here before continuing.
   use items <- result.try(case dict.get(fields, key) {
     Ok(tom.Array(items)) -> Ok(items)
     Ok(_other) -> Error(at <> " must be " <> shape)
     Error(Nil) -> Ok([])
   })
+
   list.try_map(items, fn(item) {
     case item {
       tom.String("") -> Error(at <> " entries must be non-empty")
@@ -1897,6 +2002,7 @@ fn optional_strings(
 // `optional_strings` for a key that must be present and list at least
 // one entry: a server with no extensions answers for no file, and one
 // with no root markers has no project to start in.
+/// Validates the required strings result while preserving this module’s validation boundary.
 fn required_strings(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -1904,11 +2010,16 @@ fn required_strings(
   shape: String,
 ) -> Result(List(String), String) {
   let at = place <> "." <> key
+
+  // required_strings handles the the selected value outcomes here before continuing.
   use Nil <- result.try(case dict.has_key(fields, key) {
     True -> Ok(Nil)
     False -> Error(at <> " is required")
   })
+
   use values <- result.try(optional_strings(fields, place, key, shape))
+
+  // required_strings handles the values outcomes here before continuing.
   case values {
     [] -> Error(at <> " must list at least one entry")
     _some -> Ok(values)
@@ -1916,6 +2027,7 @@ fn required_strings(
 }
 
 // Each value once, naming the first repeat.
+/// Coordinates the listed once result while preserving this module’s validation boundary.
 fn listed_once(at: String, values: List(String)) -> Result(Nil, String) {
   list.try_fold(values, [], fn(seen, value) {
     case list.contains(seen, value) {
@@ -1929,6 +2041,7 @@ fn listed_once(at: String, values: List(String)) -> Result(Nil, String) {
 // Whether `text` is one grapheme of `head` followed by any number of
 // `tail`, checked a grapheme at a time. A multi-codepoint grapheme is in
 // neither alphabet, so a lookalike is refused rather than normalised.
+/// Coordinates the in grammar result while preserving this module’s validation boundary.
 fn in_grammar(text: String, head: String, tail: String) -> Bool {
   case string.to_graphemes(text) {
     [] -> False
@@ -1947,8 +2060,11 @@ fn preparation_text(preparation: Preparation) -> String {
   }
 }
 
+/// Decodes the preparation decoder result while preserving this module’s validation boundary.
 fn preparation_decoder() -> Decoder(Preparation) {
   use value <- decode.then(decode.string)
+
+  // preparation_decoder handles the value outcomes here before continuing.
   case value {
     "none" -> decode.success(AlreadyPrepared)
     "gleam-dependencies" -> decode.success(GleamDependencies)

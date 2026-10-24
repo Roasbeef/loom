@@ -105,6 +105,8 @@ pub fn files_in(directory: String) -> Files {
 /// // -> Ok("%% coding: utf-8\n[{server, [{cacertfile, \"/a/ca.pem\"}, ..."
 /// ```
 pub fn options(files: Files) -> Result(String, String) {
+  // Verify that all configured certificate paths are safe to embed in an Erlang
+  // terms configuration file.
   case list.find(paths(files), fn(path) { !is_plain_path(path) }) {
     Ok(path) ->
       Error(
@@ -131,8 +133,8 @@ fn paths(files: Files) -> List(String) {
   [files.directory, files.ca, files.certificate, files.key, files.options]
 }
 
-// A path is plain when every grapheme is neither a quote, a backslash nor a
-// control character. A newline is one, so a path cannot start a second term.
+/// Verifies that every codepoint in `path` is printable ASCII without quotes,
+/// backslashes, or control characters, preventing term injection in Erlang config files.
 fn is_plain_path(path: String) -> Bool {
   string.to_utf_codepoints(path)
   |> list.all(fn(point) {
@@ -162,10 +164,13 @@ pub fn instructions(
     <> " -name "
     <> tool_node
     <> " -hidden -dist_listen false"
+
+  // Pick the target node if unambiguous, or leave a descriptive placeholder.
   let daemon = case daemons {
     [only] -> only
     _ -> "<daemon node>"
   }
+
   let directory = shell_quote(files.directory)
   string.join(
     [

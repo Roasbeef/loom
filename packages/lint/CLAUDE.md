@@ -13,11 +13,13 @@ quadratic JSON parser whose every unit test passed (`08cdbce`).
 A pure analysis over `glance`'s AST, plus four `glexer` token scans for
 the questions where a parser miss would be a policy hole rather than a
 missed suggestion, plus one line scan of a `gleam.toml` and one line
-classification of every source. Fourteen of the twenty-three rules gate
-globally — R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19 and R20 —
-and each of their censuses must stay zero; R21 and R22 additionally gate in
-every package listed by `policy.literate_packages()` as the tree is swept. See **Staging** below before
-wiring anything else to the exit code.
+classification of every source. Sixteen of the twenty-three rules gate globally —
+R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19, R20, R21
+and R22 — and each enforces its stated invariant. R21 and R22 are now global
+errors; `policy.literate_packages()` remains the public census/sweep ratchet,
+with all 29 packages included. The whole-tree census is zero for R11, R21
+and R22. See **Staging** below before wiring anything else to the
+exit code.
 
 Four of the twenty-three are not questions about the AST at all. R10, R11 and
 R21 ask how the source was *laid out* — where the blank lines and comments
@@ -83,8 +85,9 @@ wrote ourselves. Nothing here is a security control.
   TestImportWall | CaseStanza | FunctionDoc`, printed as `R0`..`R22`.
   `error_by_default` is the staging decision as data — `[Unparseable,
   EagerFallback, NestingDepth, PanicInSource, PortablePurity,
-  AssertWithoutMessage, CommentStanza, FlowSpine, TransitionTable,
-  StateFirst, QualifiedDomainCall, StdoutSkip, TestImportWall]` — and its doc comment
+  AssertWithoutMessage, CommentStanza, DenseStanza, FlowSpine, TransitionTable,
+  StateFirst, QualifiedDomainCall, StdoutSkip, TestImportWall, CaseStanza,
+  FunctionDoc]` — and its doc comment
   carries one census and one argument per rule, which is what a reader
   who has just been failed by one of them needs. `gate(findings, errors)`
   is the `#(errors, warnings)` split `lint/cli` prints as its last line
@@ -589,14 +592,15 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
 
 ## Staging
 
-**R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19 and R20 gate
-globally, and R21 and R22 gate on `policy.literate_packages()`; R3, R5, R8, R9,
-R12, R17 and R18 warn.** `make lint` and `make check` fail on any gated
-finding. The warning default is deliberate
-and it is the `scripts/doc_check.sh` precedent (D2,
-`docs/design-notes/four-decisions.md`): a check earns the error tier by
-producing a census that is zero, decidable, and argued — not by being
-written. A lint that fails correct code gets disabled.
+**R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19, R20, R21
+and R22 gate globally; R3, R5, R8, R9, R12, R17 and R18 warn.** `make lint`
+and `make check` fail on any gated finding. `policy.literate_packages()`
+remains the public record of the literacy sweep, now including `client`; it is
+not an exemption from the global gate. Both rules have a measured zero
+census across all 29 packages. The warning default is deliberate and follows the
+`scripts/doc_check.sh` precedent (D2, `docs/design-notes/four-decisions.md`):
+a check earns the error tier by producing a census that is zero, decidable,
+and argued — not by being written. A lint that fails correct code gets disabled.
 
 R6 met that bar on the day it was written rather than later, which was
 the whole of its case. Its census is **zero**, it is decidable without
@@ -670,8 +674,8 @@ for the censuses this superseded):
 | R18 unnamed-helper | 1327 | **stays a warning**; whether a name is a domain operation is judgement |
 | R19 stdout-skip | 0 | **error level**; replaced a guard that already failed the build, decidable from the call |
 | R20 test-import-wall | 0 | **error level**; same, decidable from the import graph |
-| R21 case-stanza | 7347 | decidable on the AST and line table; warns until swept |
-| R22 function-doc | 9196 | decidable on the AST and `CommentDoc` tokens; warns until swept |
+| R21 case-stanza | 0 (7347 before the sweep) | **error level globally**; decidable on the AST and line table |
+| R22 function-doc | 0 (9196 before the sweep) | **error level globally**; decidable on the AST and `CommentDoc` tokens |
 
 R13 to R18 arrived together for issue #593, and the argument for each tier
 is in `finding.error_by_default`. The four that gate were driven to zero in
@@ -739,8 +743,8 @@ comment at a time, each reasonable on the day it lands — and it is
 invisible in review, because a welded comment reads fine inside a diff
 hunk that begins above it.
 
-R9 and R11 warn, which is the ordinary staging, and R9 is decidable enough
-that the question of promotion is worth answering rather than deferring.
+R9 remains a warning, and it is decidable enough that promotion is worth
+considering. R11 gates after its whole-tree census was driven to zero.
 
 R9's 223 are every one decidable — an annotation says `Bool` or it does
 not — and what stops promotion is that they are not *fixable* in one
@@ -799,8 +803,9 @@ that a rule *fires* is not a test that it gates.
 - **The tool passes its own R10 and R11.** `make lint-lint` reports zero
   of each. Its R9 census is 13 and is part of the tree-wide sweep the rule
   schedules, which is a different change from the one that counts them.
-- **Every gating rule's census is zero and stays zero.** R0, R2, R4,
-  R6, R10, R13 to R16, R19 and R20 are wired to the exit code by default. If a finding appears the
+- **Every gating rule's census is zero and stays zero.** R0, R1, R2, R4,
+  R6, R7, R10, R11, R13 to R16, R19, R20, R21 and R22 are wired to the exit
+  code by default. If a finding appears the
   answer is to fix the source, not to demote the rule: an exception needs
   the argument in `finding.error_by_default` — and, for R6, in
   `lint/portable` — answered rather than sidestepped. The one legitimate

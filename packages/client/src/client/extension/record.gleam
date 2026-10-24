@@ -388,6 +388,7 @@ fn encode_hook(hook: #(String, String)) -> Json {
   ])
 }
 
+/// Serializes network egress terms into their JSON object representation.
 fn encode_terms(net: NetTerms) -> Json {
   json.object([
     #("hosts", json.array(net.hosts, json.string)),
@@ -416,6 +417,7 @@ pub fn decode(text: String) -> Result(Record, String) {
   |> result.map_error(describe_decode_error)
 }
 
+/// Decodes an install record from its structured JSON representation.
 fn decoder() -> Decoder(Record) {
   use format <- decode.field("format", decode.int)
   use #(tier, lsp) <- decode.then(profile_fields(format))
@@ -452,11 +454,15 @@ fn decoder() -> Decoder(Record) {
   ))
 }
 
-// The two fields format 3 added. A format-2 record has neither and is a
-// jailed extension with no profiles, which is exactly what it could have
-// held; every later format carries both, and a record missing them is a
-// decode failure naming the field.
+/// Decodes profile and tier fields conditionally based on the record format version.
+///
+/// The two fields format 3 added. A format-2 record has neither and is a
+/// jailed extension with no profiles, which is exactly what it could have
+/// held; every later format carries both, and a record missing them is a
+/// decode failure naming the field.
 fn profile_fields(format: Int) -> Decoder(#(Tier, List(LspServer))) {
+  // Format 2 precedes profile support and implies a jailed extension; format 3+
+  // mandates explicit tier and profile server declarations.
   case format == legacy_format_version {
     True -> decode.success(#(manifest.Jailed, []))
     False -> {
@@ -467,8 +473,11 @@ fn profile_fields(format: Int) -> Decoder(#(Tier, List(LspServer))) {
   }
 }
 
+/// Decodes the execution tier string into its domain variant.
 fn tier_decoder() -> Decoder(Tier) {
   use written <- decode.then(decode.string)
+
+  // Match the wire representation against the known extension tiers.
   case written {
     "jailed" -> decode.success(manifest.Jailed)
     "profile" -> decode.success(manifest.Profile)
@@ -482,6 +491,7 @@ fn hook_decoder() -> Decoder(#(String, String)) {
   decode.success(#(event, entry))
 }
 
+/// Decodes the permitted network egress terms for an extension.
 fn terms_decoder() -> Decoder(NetTerms) {
   use hosts <- decode.field("hosts", decode.list(decode.string))
   use methods <- decode.field("methods", decode.list(decode.string))
@@ -543,6 +553,7 @@ fn is_known_format(format: Int) -> Bool {
   format == format_version || format == legacy_format_version
 }
 
+/// Formats a version skew refusal message naming supported and actual formats.
 fn skewed(format: Int) -> String {
   "the install record is format "
   <> int.to_string(format)
@@ -587,6 +598,7 @@ pub fn instant(at_ms: Int) -> String {
   |> timestamp.to_rfc3339(duration.seconds(0))
 }
 
+/// Renders JSON decode errors into a human-readable failure description.
 fn describe_decode_error(error: json.DecodeError) -> String {
   case error {
     json.UnableToDecode(errors) ->
@@ -600,6 +612,7 @@ fn describe_decode_error(error: json.DecodeError) -> String {
   }
 }
 
+/// Extracts detailed path and expectation descriptions from decode error list.
 fn fields(errors: List(decode.DecodeError)) -> List(String) {
   list.map(errors, fn(error) {
     let decode.DecodeError(expected:, found:, path:) = error

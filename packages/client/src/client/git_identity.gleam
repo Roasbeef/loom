@@ -47,6 +47,8 @@ pub fn prepare(
   reading reading: fn(String) -> Result(String, Nil),
 ) -> Result(Option(String), String) {
   let configured = configured_identity(wiring, home, reading)
+
+  // Fall back to empty identity and warn when global git configuration cannot be read.
   let #(identity, warning) = case configured {
     Ok(identity) -> #(identity, None)
     Error(_) -> #(
@@ -56,6 +58,7 @@ pub fn prepare(
       ),
     )
   }
+
   use destination <- result.try(
     list.key_find(wiring.env, environment_name)
     |> result.replace_error("the tool Git configuration path is missing"),
@@ -94,6 +97,8 @@ pub fn prepare(
     )
     |> result.replace_error("Git identity publication did not settle"),
   )
+
+  // Verify that identity publishing exited cleanly before returning warnings.
   case code {
     0 -> Ok(warning)
     _ -> Error(publication_failure(output))
@@ -116,10 +121,13 @@ pub fn prepare(
 /// ```
 pub fn publication_failure(output: String) -> String {
   let base = "could not publish the sandbox Git identity defaults"
+
+  // Extract the leading stdout line reported by the helper process.
   let line = case string.split(output, "\n") {
     [first, ..] -> first
     [] -> ""
   }
+
   use <- bool.guard(!string.starts_with(line, helper_prefix), base)
   let printable =
     line
@@ -129,6 +137,8 @@ pub fn publication_failure(output: String) -> String {
     |> list.take(reason_limit)
     |> string.concat
     |> string.trim
+
+  // Format the failure message with reason details if any printable text survived.
   case printable {
     "" -> base
     reason -> base <> " (" <> reason <> ")"
@@ -139,7 +149,9 @@ const helper_prefix = "loom-exec: "
 
 const reason_limit = 160
 
+/// Validates whether a single grapheme falls within printable ASCII character bounds.
 fn is_printable_ascii(grapheme: String) -> Bool {
+  // Check the UTF-8 codepoint value against standard printable ASCII limits.
   case string.to_utf_codepoints(grapheme) {
     [point] -> {
       let code = string.utf_codepoint_to_int(point)
@@ -149,6 +161,7 @@ fn is_printable_ascii(grapheme: String) -> Bool {
   }
 }
 
+/// Reads global user.name and user.email Git configuration values from the host environment.
 fn configured_identity(
   wiring: worktree_diff.Wiring,
   home: Option(String),
@@ -174,6 +187,8 @@ fn configured_identity(
     ],
     environment,
   ))
+
+  // Decode identity records on success or treat status 1 as empty configuration.
   case code {
     0 -> decode(output)
     1 -> Ok([])
@@ -188,6 +203,7 @@ fn option_home(home: Option(String)) -> String {
   }
 }
 
+/// Decodes null-byte separated Git config output into structured key-value identity pairs.
 fn decode(output: String) -> Result(List(#(String, String)), String) {
   use <- bool.guard(
     !string.ends_with(output, "\u{0}"),
@@ -205,8 +221,10 @@ fn decode(output: String) -> Result(List(#(String, String)), String) {
   })
 }
 
-// The fixed query settles through the existing broker with filesystem access
-// demoted to reads. Publication is a separate, descriptor-confined operation.
+/// Executes a read-only Git probe command through the broker sandbox.
+///
+/// The fixed query settles through the existing broker with filesystem access
+/// demoted to reads. Publication is a separate, descriptor-confined operation.
 fn run(
   wiring: worktree_diff.Wiring,
   base: policy.SandboxPolicy,
@@ -267,6 +285,8 @@ fn run(
       "Git identity preparation did not settle"
     }),
   )
+
+  // Verify that the broker run completed without failure or truncated streams.
   case collected.outcome {
     broker.CallFailed(_) -> Error("Git identity preparation failed")
     broker.CallExited(report) -> {

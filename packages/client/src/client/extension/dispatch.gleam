@@ -280,6 +280,7 @@ type Dispatching {
 // manifest declares neither, deliberately: both are judgements about what
 // the harness may do with a call, and an extension author is not the
 // party who gets to relax them.
+/// Builds a callable tool representation from declared extension metadata.
 fn tool_for(
   config: Config,
   written: Record,
@@ -346,6 +347,7 @@ pub fn requirements(workspace_root: String) -> SandboxPolicy {
 // call, because they outlive it: `client/extension/hosts` prepares that
 // root when it launches, and the launcher's teardown unlinks what it put
 // there.
+/// Invokes extension tool via satellite host and settles outcome.
 fn call(dispatching: Dispatching) -> ToolOutcome {
   let Dispatching(config:, written:, declared:, ctx:, arguments:, ..) =
     dispatching
@@ -437,6 +439,7 @@ pub fn hosting(
 // workspace: a session runs every extension call under one base, so the
 // first call's terms are the session's terms, and re-launching a node to
 // pick up a later call's would be re-launching it for no difference.
+/// Starts satellite host process with configured launch parameters.
 fn start_host(
   config: Config,
   written: Record,
@@ -466,6 +469,7 @@ fn start_host(
 
 // A launch failure as one line. Every variant is written rather than
 // swallowed, so a new one fails exhaustiveness here.
+/// Formats a human-readable error description for satellite start failure.
 fn start_text(error: satellite.RunError) -> String {
   case error {
     satellite.TokenMintFailed(reason:) ->
@@ -492,6 +496,7 @@ fn start_text(error: satellite.RunError) -> String {
 // The node's own budget deadline is the session's ceiling on how long a
 // satellite may live, not any one call's: an invocation's deadline is a
 // state timeout on the host and is enforced there.
+/// Prepares host root, sockets, and identity configuration for satellite launch.
 fn host_config(
   config: Config,
   written: Record,
@@ -614,6 +619,7 @@ pub const host_lifetime_ms = 43_200_000
 
 // What one invocation is judged under: this call's clearance coordinates,
 // this call's base policy, the extension's own router and its ceilings.
+/// Assembles invocation configuration with capability router and ceilings.
 fn invoking(
   config: Config,
   written: Record,
@@ -656,6 +662,7 @@ fn invocation_deadline(config: Config) -> Int {
 // re-derived from the bytes on disk with the build's own fingerprint
 // function — so the address this session reports is a fact about the beams
 // that actually ran.
+/// Resolves compile artifact location from artifact directory and record.
 fn artifact_at(artifact: String, written: Record) -> compile.Artifact {
   compile.Artifact(
     build_root: artifact,
@@ -689,6 +696,7 @@ pub fn within(config: Config, declared: manifest.Tool) -> Int {
 
 // The two layers beneath the extension arm. See the module doc for why
 // the MCP arm is not among them.
+/// Constructs capability router combining extension, workspace, and search seams.
 fn router(
   config: Config,
   written: Record,
@@ -722,6 +730,7 @@ fn router(
 // The workspace bridge this invocation reaches the host through: the very
 // closures a code-mode program on this host gets, bound to this call's
 // workspace and strand.
+/// Builds workspace capability bridge for the current invocation coordinates.
 fn bridge(config: Config, at: hosts.Coordinates) -> workspace.Workspace {
   let seam =
     codemode.workspace_seam_for(
@@ -765,6 +774,7 @@ fn bridge(config: Config, at: hosts.Coordinates) -> workspace.Workspace {
 // matching hop, and returns a `Response` that has no field for it. A
 // refusal has none either, so the mapping below cannot leak one however it
 // is worded.
+/// Configures network egress handler with secret substitution and policy validation.
 fn reaching(
   config: Config,
   written: Record,
@@ -802,6 +812,7 @@ fn reaching(
 // contributes to it, so the subtree an extension reaches is a fact about
 // the install rather than about the frame, and `a` cannot read `ext/b/…`
 // however it words the request.
+/// Binds extension memory storage door to the extension namespace.
 fn remembering(door: Door, written: Record) -> seam.Memory {
   let owner = written.name
   seam.Memory(
@@ -819,6 +830,7 @@ fn remembering(door: Door, written: Record) -> seam.Memory {
 // A memory refusal as the in-band denial the extension reads. Both arms
 // are named rather than caught, so a new refusal fails to compile here
 // rather than becoming a store outage the author is told to retry.
+/// Converts memory store refusal into capability denial.
 fn memory_denial(refusal: memory.Refusal) -> satellite.CapDenial {
   case refusal {
     memory.NotJson(reason:) ->
@@ -834,6 +846,7 @@ fn memory_denial(refusal: memory.Refusal) -> satellite.CapDenial {
 // Refused here rather than inside `egress` because `egress.Request.method`
 // is already the closed set: a name outside it has no value to carry, so
 // the refusal has to be composed where the text is still available.
+/// Validates requested HTTP method against permitted methods in manifest.
 fn requested_method(
   name: String,
   decoded: Manifest,
@@ -851,6 +864,7 @@ fn requested_method(
   })
 }
 
+/// Converts network response into seam answer record.
 fn answered(response: egress.Response) -> seam.Answer {
   seam.Answer(
     status: response.status,
@@ -913,6 +927,7 @@ pub fn settle(
 // repair; a crash is the extension's bug; a deadline and a departed host
 // both mean the satellite is gone, and the second says it will stay gone,
 // so a model that reads it stops trying.
+/// Formats failure explanation text for tool invocation refusal.
 fn failure_text(written: Record, failure: hosts.HookFailure) -> String {
   case failure {
     hosts.Unhandled -> "this extension registers no handler for that event"
@@ -933,6 +948,7 @@ fn failure_text(written: Record, failure: hosts.HookFailure) -> String {
   }
 }
 
+/// Constructs successful tool outcome for completed satellite execution.
 fn completed(
   ctx: Ctx,
   written: Record,
@@ -966,6 +982,7 @@ type Reply {
   Reply(blocks: List(String), terminate: tool.Terminate)
 }
 
+/// Parses extension msgpack return value into structured reply record.
 fn read_reply(value: MsgPackValue) -> Reply {
   case field(value, "content") {
     Ok(msgpack.ArrayValue(items:)) ->
@@ -985,6 +1002,7 @@ fn read_reply(value: MsgPackValue) -> Reply {
 // two structured encodings is a place for the two sides to disagree about
 // numbers. So both arms are a string lookup, and a block of neither shape
 // renders as itself rather than vanishing.
+/// Extracts text from msgpack content block value.
 fn block_text(block: MsgPackValue) -> String {
   case field(block, "type") {
     Ok(msgpack.StringValue("text")) -> string_field(block, "text")
@@ -993,6 +1011,7 @@ fn block_text(block: MsgPackValue) -> String {
   }
 }
 
+/// Reads string field from msgpack object or returns serialized representation.
 fn string_field(value: MsgPackValue, key: String) -> String {
   case field(value, key) {
     Ok(msgpack.StringValue(text)) -> text
@@ -1011,6 +1030,7 @@ fn terminate_of(found: Result(MsgPackValue, Nil)) -> tool.Terminate {
   }
 }
 
+/// Looks up value by string key in msgpack map entries.
 fn field(value: MsgPackValue, key: String) -> Result(MsgPackValue, Nil) {
   case value {
     msgpack.MapValue(entries:) ->
@@ -1031,6 +1051,7 @@ fn field(value: MsgPackValue, key: String) -> Result(MsgPackValue, Nil) {
   }
 }
 
+/// Formats failure details object for tool outcome metadata.
 fn failure_details(
   written: Record,
   declared: manifest.Tool,
@@ -1046,6 +1067,7 @@ fn failure_details(
   ])
 }
 
+/// Constructs error tool outcome for unhandled extension error.
 fn failed(
   ctx: Ctx,
   extension: String,
@@ -1097,6 +1119,7 @@ fn errored(standing: Standing) -> Bool {
 // (spec §3.2). An extension's reply is unbounded by construction — it may
 // be a whole HTTP body — and a store failure falls back to the inline text
 // rather than losing the result.
+/// Applies blob store bounds to output text before producing tool outcome.
 fn bounded(
   ctx: Ctx,
   text: String,
@@ -1105,6 +1128,8 @@ fn bounded(
   standing: Standing,
 ) -> ToolOutcome {
   let is_error = errored(standing)
+
+  // Check if output text exceeds inline size limits and requires blob storage.
   case blob.bound(ctx, text) {
     Error(_error) ->
       tool.ToolOutcome(
@@ -1127,6 +1152,7 @@ fn bounded(
 
 // --- the schema -------------------------------------------------------------
 
+/// Reads and decodes JSON parameters schema file for tool.
 fn schema_of(
   sources: String,
   declared: manifest.Tool,

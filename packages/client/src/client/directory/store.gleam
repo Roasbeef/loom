@@ -217,6 +217,8 @@ pub fn join(remote: Node, within_ms: Int, seat: Seat) -> Result(Nil, String) {
     let clock = poll.monotonic()
     let deadline = clock.now() + within_ms
     let left = fn() { int.max(1, deadline - clock.now()) }
+
+    // Map the requested seat type to the Erlang join parameter.
     let asked = case seat {
       Voter -> ffi_khepri.AsVoter
       Learner -> ffi_khepri.AsLearner
@@ -248,8 +250,7 @@ pub fn join(remote: Node, within_ms: Int, seat: Seat) -> Result(Nil, String) {
   })
 }
 
-// One step of the join, asked again every 50 ms while the cluster says not
-// yet, until it is taken, refused, or the join's deadline passes.
+/// Repeatedly polls a cluster join handshake step until completion, failure, or timeout.
 fn joining(
   left: fn() -> Int,
   step: fn(Int) -> ffi_khepri.JoinStep,
@@ -262,6 +263,8 @@ fn joining(
         ffi_khepri.Failed(reason:) -> poll.Fail(reason)
       }
     })
+
+  // Evaluate the polling outcome to confirm step completion or translate failures.
   case outcome {
     poll.Answered(Nil) -> Ok(Nil)
     poll.Failed(reason) -> Error(reason)
@@ -436,6 +439,7 @@ pub fn membership_within(within_ms: Int) -> Result(Membership, Unavailable) {
   membership_asking(within_ms, describe_for_report)
 }
 
+/// Queries the local node for active Ra cluster membership with a time budget and error mapper.
 fn membership_asking(
   within_ms: Int,
   words: fn(ffi_khepri.Failure) -> String,
@@ -589,6 +593,7 @@ pub fn confirm_current(
   })
 }
 
+/// Decodes an optional raw directory store record payload into a typed Record structure.
 fn decoded(
   read: Result(Option(Dynamic), ffi_khepri.Failure),
 ) -> Result(Option(Record), Unavailable) {
@@ -673,9 +678,8 @@ pub fn mark_migrated(node: String) -> Result(Nil, WriteRefusal) {
   })
 }
 
-// A write's Erlang answer, with a mismatch's payload decoded. A payload that
-// does not decode is reported as no quorum with the decoder's reason: the
-// caller can neither act on it nor treat it as absent, so it waits.
+/// Executes a transactional write against the directory store and translates responses or
+/// mismatches into typed WriteRefusal values.
 fn written(
   within_ms: Int,
   work: fn() -> Result(Nil, ffi_khepri.Failure),
@@ -694,6 +698,7 @@ fn written(
   })
 }
 
+/// Formats low-level Khepri failure variants into diagnostic error messages for internal reporting.
 fn describe(failure: ffi_khepri.Failure) -> String {
   case failure {
     ffi_khepri.Unexpected(term:) ->
@@ -724,10 +729,8 @@ pub fn describe_for_report(failure: ffi_khepri.Failure) -> String {
   }
 }
 
-// Runs one call in a weft task cut off at `budget_ms`. Anything but a finished
-// call (a crash, the deadline, a run that never started) is the fallback,
-// which every caller chooses to mean "no answer", so a fault is never read as
-// an answer.
+/// Executes a fallible action within a deadline-bounded task, falling back to a default
+/// result if the task crashes, times out, or fails to start.
 fn bounded(
   budget_ms: Int,
   fallback: Result(a, e),
@@ -737,6 +740,8 @@ fn bounded(
     weft.new([work])
     |> weft.deadline(budget_ms)
     |> weft.start
+
+  // Check the task completion outcome, returning fallback on any abnormal exit.
   case list.first(outcomes) {
     Ok(weft.Completed(value:, ..)) -> Ok(value)
     Ok(weft.Failed(error:, ..)) -> Error(error)
@@ -766,6 +771,7 @@ pub fn describe_refusal(refusal: WriteRefusal) -> String {
   }
 }
 
+/// Converts an owner state variant into descriptive prose for refusal reporting.
 fn state_words(state: record.OwnerState) -> String {
   case state {
     record.Serving -> " as serving"

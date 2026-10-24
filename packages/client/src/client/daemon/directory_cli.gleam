@@ -73,6 +73,7 @@ Example:
 /// // loomd directory bootstrap --config /etc/loom/loom.toml
 /// ```
 pub fn main(arguments: List(String)) -> Nil {
+  // Run arguments and print output or report error.
   case run(arguments) {
     Ok(text) -> io.println(text)
     Error(reason) -> {
@@ -91,6 +92,7 @@ pub fn main(arguments: List(String)) -> Nil {
 /// assert result.is_error(directory_cli.run(["bootstrap", "--nonsense"]))
 /// ```
 pub fn run(arguments: List(String)) -> Result(String, String) {
+  // Match command and process flags.
   case arguments {
     ["bootstrap", ..flags] -> {
       use #(state_dir, configuration) <- result.try(flags_of(flags, None, None))
@@ -100,6 +102,7 @@ pub fn run(arguments: List(String)) -> Result(String, String) {
   }
 }
 
+/// Parses flags for the bootstrap command.
 fn flags_of(
   flags: List(String),
   state_dir: option.Option(String),
@@ -117,14 +120,17 @@ fn flags_of(
   }
 }
 
+/// Bootstraps directory storage for this daemon.
 fn bootstrap(
   state_dir: option.Option(String),
   configuration: String,
 ) -> Result(String, String) {
+  // Parse daemon configuration according to provided state_dir.
   use config <- result.try(case state_dir {
     Some(path) -> daemon.parse(["--state-dir", path])
     None -> daemon.parse([])
   })
+
   use text <- result.try(
     simplifile.read(configuration)
     |> result.map_error(fn(error) {
@@ -147,19 +153,16 @@ fn bootstrap(
     }),
   )
 
-  // The members of a static deployment are read first, so that a configuration
-  // with no `[directory]` is refused before anything is reserved. A ledger's
-  // members are read once the ledger process runs.
+  // Read members for static deployment before proceeding.
   use listed <- result.try(case distribution.ledger_path(dist) {
     Some(_) -> Ok(None)
     None ->
       listed_members(document, configuration) |> result.map(fn(m) { Some(m) })
   })
+
   let directory = daemon.directory_path(config.state_root)
 
-  // A store on disk is refused before anything is reserved or started: it is
-  // either this cluster's, and must not be replaced, or a leftover an operator
-  // removes on purpose. The refusal says which, and how to remove it.
+  // Check if store directory already holds existing data.
   use Nil <- result.try(case store.holds_data(directory) {
     False -> Ok(Nil)
     True ->
@@ -173,16 +176,20 @@ fn bootstrap(
         <> " and run bootstrap again",
       )
   })
+
   use _claimed <- result.try(
     daemon.claim_endpoint(config)
     |> result.map_error(fn(reason) {
       "the daemon may be running: " <> reason <> "; stop it first"
     }),
   )
+
+  // Start membership using ledgered or listed distribution.
   use #(membership, members) <- result.try(case listed {
     None -> start_ledgered(dist)
     Some(members) -> start_listed(dist, members)
   })
+
   let local = distribution.local_node(dist)
   let others = list.filter(members, fn(member) { member != local })
   use unreachable <- result.try(survey(membership, others, []))
@@ -213,7 +220,9 @@ fn bootstrap(
   )
 }
 
-// The members a static configuration lists, from its `[directory]` table.
+/// Reads listed members from static TOML configuration.
+///
+/// The members a static configuration lists, from its `[directory]` table.
 fn listed_members(
   document: dict.Dict(String, tom.Toml),
   configuration: String,
@@ -222,13 +231,17 @@ fn listed_members(
     settings.from_document(document)
     |> result.map_error(fn(reason) { configuration <> ": " <> reason }),
   )
+
+  // Extract members list from settings.
   case found {
     Some(settings.Settings(members:)) -> Ok(members)
     None -> Error(configuration <> " has no [directory] table")
   }
 }
 
-// Distribution started as a member of a static deployment's directory.
+/// Starts distribution for a static member deployment.
+///
+/// Distribution started as a member of a static deployment's directory.
 fn start_listed(
   dist: distribution.Config,
   members: List(String),
@@ -240,11 +253,13 @@ fn start_listed(
   #(membership, members)
 }
 
-// The members of a deployment whose trust is a ledger: the nodes it seats. The
-// ledger process and distribution start the way the daemon starts them, so the
-// pin table exists before the listener does, and the node is visible because
-// its own entry seats it. Only a voter can create the cluster: a learner has no
-// vote to start one with.
+/// Starts distribution for a ledger-backed deployment.
+///
+/// The members of a deployment whose trust is a ledger: the nodes it seats. The
+/// ledger process and distribution start the way the daemon starts them, so the
+/// pin table exists before the listener does, and the node is visible because
+/// its own entry seats it. Only a voter can create the cluster: a learner has no
+/// vote to start one with.
 fn start_ledgered(
   dist: distribution.Config,
 ) -> Result(#(distribution.Membership, List(String)), String) {
@@ -263,6 +278,8 @@ fn start_ledgered(
   )
   let local = distribution.local_node(dist)
   let places = seats.places(status.ledger)
+
+  // Verify that local node is a voter in the ledger.
   use Nil <- result.map(case seats.seat_of(places, local) {
     Ok(store.Voter) -> Ok(Nil)
     Ok(store.Learner) ->
@@ -278,17 +295,21 @@ fn start_ledgered(
         <> "`--directory voter` first",
       )
   })
+
   #(booted.membership, list.map(places, fn(place) { place.node }))
 }
 
-// Asks every other member whether its store runs. One that answers yes means a
-// cluster already exists, and the command refuses. One that cannot be reached
-// is collected, in configuration order, for the output.
+/// Surveys other cluster members to verify no directory store exists.
+///
+/// Asks every other member whether its store runs. One that answers yes means a
+/// cluster already exists, and the command refuses. One that cannot be reached
+/// is collected, in configuration order, for the output.
 fn survey(
   membership: distribution.Membership,
   others: List(String),
   unreachable: List(String),
 ) -> Result(List(String), String) {
+  // Recursively survey remaining cluster peers.
   case others {
     [] -> Ok(list.reverse(unreachable))
     [name, ..rest] -> {
@@ -296,6 +317,8 @@ fn survey(
         distribution.peer(membership, name)
         |> result.map_error(distribution.describe),
       )
+
+      // Check connectivity and store status on peer.
       case distribution.connect(peer, 3000) {
         Error(_) -> survey(membership, rest, [name, ..unreachable])
         Ok(Nil) ->

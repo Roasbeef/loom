@@ -211,6 +211,32 @@
 //// under the daemon, masked from every jail, and granted to the one
 //// satellite that connects to it (`reaching_socket`). That directory is
 //// keyed on the same triple and removed at the same time.
+//// Derives the capability surface from seams setting and Agency.
+////
+//// Verifies that the derived prefix contains a valid ERTS installation tree.
+////
+//// Formats refusal message when a toolchain mount shadows a protected host region.
+////
+//// Determines the source of a toolchain mount region for error reporting.
+////
+//// Assembles available seam offers based on configured surface.
+////
+//// Constructs a SeamOffer record for a specific seam.
+////
+//// Performs execution setup, watches execution, and collects results.
+////
+//// Constructs an execution report for code that failed source vetting.
+////
+//// Wraps satellite launcher to intercept and report launch refusals.
+////
+//// Formats refusal execution result when requested seam is unserved.
+////
+//// Computes hashed socket directory path under state root.
+////
+//// Constructs tool context for evolution operations in code mode.
+////
+//// Refusal handler when artifact emission is unconfigured on owner.
+////
 
 import broker/broker.{type Broker}
 import broker/budget.{type Budget}
@@ -646,10 +672,12 @@ pub fn serving(config: Config, seams: Seams, over agency: Agency) -> Config {
   )
 }
 
-// The surface a setting and an Agency make, shared by a host that serves code
-// mode and by an owner that only answers for one.
+/// The surface a setting and an Agency make, shared by a host that serves code
+/// mode and by an owner that only answers for one.
 fn surface_of(seams: Seams, agency: Agency) -> Surface {
   let spawn_ceiling = orchestration.default_spawn_ceiling
+
+  // Select surface variant based on seams mode.
   case seams {
     WorkspaceOnly -> Workspace
     OrchestrationOnly -> Orchestration(agency:, spawn_ceiling:)
@@ -764,27 +792,35 @@ pub fn seam_allowlist(
   config: Config,
   seam: vet_policy.Seam,
 ) -> vet_policy.VetPolicy {
+  // The selected surface and seam determine which imports may be exposed.
   let base = case config.surface, seam {
     Workspace, vet_policy.WorkspaceSeam -> vet_policy.workspace_effects()
     _, _ -> seam_policy(seam)
   }
+
   let allowed =
     mcp_wiring.allowed_imports(seam_mcp(config, seam))
     |> list.fold(base, vet_policy.allow)
+
+  // The notes door is admitted only when notes are configured for this seam.
   let noted = case notes_on(config, seam) {
     None -> allowed
     Some(_) -> vet_policy.allow(allowed, "cap/notes")
   }
 
-  // Include evolution and language server modules when configured.
+  // Include evolution module when configured.
   let noted = case evolution_on(config, seam) {
     None -> noted
     Some(_) -> vet_policy.allow(noted, "cap/evolution")
   }
+
+  // Include language server modules when configured.
   case lsp_on(config, seam) {
     None -> noted
     Some(_) -> {
       let native = vet_policy.allow(noted, "cap/lsp")
+
+      // Include LSP SQL module when observation is configured.
       case observation_on(config, seam) {
         None -> native
         Some(_) -> vet_policy.allow(native, "cap/lsp_sql")
@@ -802,6 +838,7 @@ fn seam_mcp(config: Config, seam: vet_policy.Seam) -> McpLayer {
   mcp_for(config.mcp, seam)
 }
 
+/// Selects appropriate MCP layer for the given seam.
 fn mcp_for(layer: McpLayer, seam: vet_policy.Seam) -> McpLayer {
   case seam {
     vet_policy.WorkspaceSeam | vet_policy.OrchestrationSeam -> layer
@@ -893,6 +930,7 @@ pub fn seam_caps(seam: vet_policy.Seam) -> List(String) {
   }
 }
 
+/// Collects list of serviced capabilities on workspace seam.
 fn workspace_caps() -> List(String) {
   list.flatten([
     serviced_caps,
@@ -918,25 +956,33 @@ fn workspace_caps() -> List(String) {
 /// ```
 ///
 pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
+  // The surface/seam pair selects the capability names this endpoint serves.
   let base = case config.surface, seam {
     Workspace, vet_policy.WorkspaceSeam -> workspace_caps()
     _, _ -> seam_caps(seam)
   }
+
   let caps = list.append(base, mcp_wiring.serviced_caps(seam_mcp(config, seam)))
+
+  // Include notes capabilities only when this seam has an authorized notes service.
   let noted = case notes_on(config, seam) {
     None -> caps
     Some(_) -> list.append(caps, notes.serviced_caps)
   }
 
-  // Add evolution and language server capabilities when enabled.
+  // Add evolution capability when enabled.
   let noted = case evolution_on(config, seam) {
     None -> noted
     Some(_) -> list.append(noted, codemode_evolution.serviced_caps)
   }
+
+  // Add language server capabilities when enabled.
   case lsp_on(config, seam) {
     None -> noted
     Some(_) -> {
       let native = list.append(noted, codemode_lsp.serviced_caps)
+
+      // Add observation snapshot cap when configured.
       case observation_on(config, seam) {
         None -> native
         Some(_) -> list.append(native, [codemode_observation.snapshot_cap])
@@ -1328,6 +1374,8 @@ pub fn gleam_binary_kind(gleam_path: String) -> GleamBinary {
 ///
 pub fn install_prefix(binary: String) -> String {
   let directory = filepath.directory_name(canonical(binary))
+
+  // Strip bin directory and climb ERTS layout.
   case filepath.base_name(directory) {
     "bin" -> climb_erts(filepath.directory_name(directory))
     _other -> directory
@@ -1344,24 +1392,28 @@ fn climb_erts(prefix: String) -> String {
   }
 }
 
-// Whether the derived prefix really holds an ERTS install tree, checked
-// in both of the layouts that exist in the wild: `<prefix>/lib/erlang`,
-// which is what a Debian or Ubuntu package and a Homebrew prefix have,
-// and an `erts-<version>` directory directly under the prefix, which is
-// what an OTP install root and a loom release have.
-//
-// The derivation above is a heuristic over a path, so this is what keeps
-// it honest. A prefix that holds neither is a boot-time refusal naming
-// both the binary and the prefix, because the alternative is a jail that
-// mounts the wrong region and an `erl` that dies inside it with no
-// sentence anybody can act on.
+/// Whether the derived prefix really holds an ERTS install tree, checked
+/// in both of the layouts that exist in the wild: `<prefix>/lib/erlang`,
+/// which is what a Debian or Ubuntu package and a Homebrew prefix have,
+/// and an `erts-<version>` directory directly under the prefix, which is
+/// what an OTP install root and a loom release have.
+///
+/// The derivation above is a heuristic over a path, so this is what keeps
+/// it honest. A prefix that holds neither is a boot-time refusal naming
+/// both the binary and the prefix, because the alternative is a jail that
+/// mounts the wrong region and an `erl` that dies inside it with no
+/// sentence anybody can act on.
 fn erts_layout(prefix: String, erl_path: String) -> Result(Nil, String) {
   let packaged = simplifile.is_directory(prefix <> "/lib/erlang")
+
+  // Check for packaged or rooted ERTS installation.
   let rooted =
     simplifile.read_directory(prefix)
     |> result.map(fn(entries) {
       list.any(entries, fn(entry) { string.starts_with(entry, "erts-") })
     })
+
+  // Either supported Erlang installation layout must supply the runtime tree.
   case packaged, rooted {
     Ok(True), _ | _, Ok(True) -> Ok(Nil)
     _packaged, _rooted ->
@@ -1422,6 +1474,7 @@ pub fn toolchain_mounts(toolchain: Toolchain) -> List(policy.Mount) {
       toolchain.gleam_prefix,
     ]
   }
+
   let wanted =
     [toolchain.erl_prefix, toolchain.seed_root, ..gleam_regions]
     |> list.unique
@@ -1523,6 +1576,8 @@ pub fn clear_of(
       })
       |> result.map(fn(root) { #(mount.path, root) })
     })
+
+  // Report error if a toolchain mount shadows a writable region.
   case shadowed {
     Error(Nil) -> Ok(toolchain)
     Ok(#(region, root)) -> Error(shadowing_refusal(toolchain, region, root))
@@ -1535,10 +1590,10 @@ pub fn clear_of(
 // even where the jail names no writable root.
 const fresh_regions = ["/proc", "/dev"]
 
-// The refusal names the region, the path it would shadow, which of the
-// toolchain's paths the region was derived from, and the change that
-// avoids it. It is the only thing an operator will ever see about it,
-// because the tool it would have registered does not exist.
+/// The refusal names the region, the path it would shadow, which of the
+/// toolchain's paths the region was derived from, and the change that
+/// avoids it. It is the only thing an operator will ever see about it,
+/// because the tool it would have registered does not exist.
 fn shadowing_refusal(
   toolchain: Toolchain,
   region: String,
@@ -1562,10 +1617,10 @@ fn shadowing_refusal(
   <> "that does not contain it. No code_mode tool is registered."
 }
 
-// Which of the toolchain's paths a mount region came from. The regions
-// `toolchain_mounts` emits are exactly these four, canonicalized and with
-// nested entries dropped, so the fallback is never reached on a region
-// that list produced.
+/// Which of the toolchain's paths a mount region came from. The regions
+/// `toolchain_mounts` emits are exactly these four, canonicalized and with
+/// nested entries dropped, so the fallback is never reached on a region
+/// that list produced.
 fn region_source(toolchain: Toolchain, region: String) -> String {
   [
     #(
@@ -1631,6 +1686,7 @@ pub fn locate(
 // and no `make`, so the two other ways to supply a seed are added here —
 // where `client/install` is in scope and the question "is this a
 // release" is answerable.
+/// Formats diagnostic remedy hint for build seed root.
 fn seed_remedy(reason: String) -> String {
   reason
   <> " — or pass --codemode-seed <dir>. A release built with the code-mode "
@@ -1650,10 +1706,14 @@ fn seed_remedy(reason: String) -> String {
 /// ```
 ///
 pub fn toolchain_path(toolchain: Toolchain) -> String {
+  // Resolve directory of gleam prefix if symlink.
+
+  // The binary kind decides whether its resolved directory must be included.
   let prefix_bin = case toolchain.gleam_binary {
     GleamSymlink -> [toolchain.gleam_prefix <> "/bin"]
     GleamPlainFile -> []
   }
+
   list.flatten([
     [directory_of(toolchain.gleam_path)],
     prefix_bin,
@@ -1684,22 +1744,24 @@ pub fn seam(config: Config) -> codemode_tool.CodeMode {
   )
 }
 
-// What the tool may offer a model: exactly the seams this surface serves,
-// each carrying the allowlist `execute` will judge that seam's
-// submissions against and the capabilities its router will service. The
-// tool refuses anything else, so a model can never name a seam that would
-// arrive here unserved.
-//
-// `surface_seams` is non-empty for every surface, so the fallback below
-// is unreachable; it is a workspace-seam offer rather than a panic
-// because a `code_mode` that vanished would be a worse answer to a bug
-// than one that serves the narrower of the two.
+/// What the tool may offer a model: exactly the seams this surface serves,
+/// each carrying the allowlist `execute` will judge that seam's
+/// submissions against and the capabilities its router will service. The
+/// tool refuses anything else, so a model can never name a seam that would
+/// arrive here unserved.
+///
+/// `surface_seams` is non-empty for every surface, so the fallback below
+/// is unreachable; it is a workspace-seam offer rather than a panic
+/// because a `code_mode` that vanished would be a worse answer to a bug
+/// than one that serves the narrower of the two.
 fn offered_seams(config: Config) -> codemode_tool.Seams {
   let offers =
     list.filter_map(surface_seams(config.surface), fn(seam) {
       use named <- result.map(tool_seam(seam))
       seam_offer(config, seam, named)
     })
+
+  // Return default seam or combined seam set.
   case offers {
     [] ->
       codemode_tool.one_seam(seam_offer(
@@ -1711,10 +1773,10 @@ fn offered_seams(config: Config) -> codemode_tool.Seams {
   }
 }
 
-// Everything a seam offers, read off this host's running configuration:
-// the allowlist `execute` will judge that seam's submissions against,
-// the capabilities its router will service, and the module surfaces the
-// host generated rather than shipped.
+/// Everything a seam offers, read off this host's running configuration:
+/// the allowlist `execute` will judge that seam's submissions against,
+/// the capabilities its router will service, and the module surfaces the
+/// host generated rather than shipped.
 fn seam_offer(
   config: Config,
   seam: vet_policy.Seam,
@@ -1818,8 +1880,8 @@ pub fn execute(
   }
 }
 
-// The filesystem-owning half of an execution. This is called only after the
-// submission has passed the same seam-specific policy the pipeline will use.
+/// The filesystem-owning half of an execution. This is called only after the
+/// submission has passed the same seam-specific policy the pipeline will use.
 fn execute_after_vetting(
   config: Config,
   request: codemode_tool.Request,
@@ -1835,6 +1897,8 @@ fn execute_after_vetting(
     check_socket_path(sockets)
     |> result.try(fn(_) { prepare_root(root) })
     |> result.try(fn(_) { prepare_root(sockets) })
+
+  // Check if directories were successfully prepared.
   case prepared {
     Error(reason) -> {
       remove_execution_directories(root, sockets)
@@ -1905,9 +1969,9 @@ fn remove_execution_directories(root: String, sockets: String) -> Nil {
   Nil
 }
 
-// The pipeline's rejection translated before any execution resources exist.
-// These report strings match the pipeline because the observable result must
-// not depend on which side of the filesystem boundary performed the vet.
+/// The pipeline's rejection translated before any execution resources exist.
+/// These report strings match the pipeline because the observable result must
+/// not depend on which side of the filesystem boundary performed the vet.
 fn vet_rejected_execution(
   rejections: List(vet.Rejection),
 ) -> codemode_tool.Execution {
@@ -1983,6 +2047,7 @@ fn approved_grants(request: codemode_tool.Request) -> List(Grant) {
 // program is unwatched for a different reason, argued in the module doc:
 // by then the program has performed effects, and the one thing an
 // approval buys is a re-execution.
+/// Augments pipeline config with a watched launcher recording refusals.
 fn watching(
   exec: pipeline.ExecConfig,
   session_clock: Clock,
@@ -2002,20 +2067,20 @@ fn watching(
   )
 }
 
-// The satellite launch, watched.
-//
-// The composition is only run once the launcher has already refused.
-// That ordering costs nothing on a working execution and answers "was
-// policy the reason?" without a second oracle: `launch` composes `base ⊕
-// requirements ⊕ grants` before it binds a socket or spawns anything, so
-// a launch that failed *and* narrows is a launch that narrowed, and a
-// launch that failed on a socket it could not bind composes cleanly and
-// reports nothing.
-//
-// A plain `case` rather than a `result.map_error`: the error arm reports
-// on a subject, and a combinator that reads like a rename is the last
-// place a side effect should be hiding (`docs/gleam-style.md` Part III,
-// "Where the lineage stops").
+/// The satellite launch, watched.
+///
+/// The composition is only run once the launcher has already refused.
+/// That ordering costs nothing on a working execution and answers "was
+/// policy the reason?" without a second oracle: `launch` composes `base ⊕
+/// requirements ⊕ grants` before it binds a socket or spawns anything, so
+/// a launch that failed *and* narrows is a launch that narrowed, and a
+/// launch that failed on a socket it could not bind composes cleanly and
+/// reports nothing.
+///
+/// A plain `case` rather than a `result.map_error`: the error arm reports
+/// on a subject, and a combinator that reads like a rename is the last
+/// place a side effect should be hiding (`docs/gleam-style.md` Part III,
+/// "Where the lineage stops").
 fn watched_launcher(
   launcher: satellite.Launcher,
   session_clock: Clock,
@@ -2024,6 +2089,7 @@ fn watched_launcher(
   deadline_ms: Int,
 ) -> satellite.Launcher {
   fn(spec) {
+    // Launch satellite and monitor for refusal errors.
     case launcher(spec) {
       Ok(connection) -> Ok(connection)
       Error(reason) -> {
@@ -2033,11 +2099,14 @@ fn watched_launcher(
         // be a catch-all whatever it is called, and a third kind of
         // refusal added later would start being reported here with
         // nobody having decided that it should be.
+
+        // A refused launch reports policy shortfalls; a successful launch passes through unchanged.
         case launch_refusal(spec, host_mounts, now, reason, deadline_ms) {
           codemode_tool.NothingRefused -> Nil
           codemode_tool.RunRefused(..) as refused ->
             process.send(shortfalls, refused)
         }
+
         Error(reason)
       }
     }
@@ -2087,6 +2156,8 @@ pub fn launch_refusal(
       requirements: launch.node_requirements(spec, host_mounts:, now_ms:),
       grants: identity.grants(spec.identity),
     )
+
+  // Return policy refusal if requirements cannot be met.
   case narrowings {
     [] -> codemode_tool.NothingRefused
     [_, ..] ->
@@ -2116,6 +2187,7 @@ pub fn launch_refusal(
 // callback: its shape is the pipeline's contract and its return type has
 // no room for anything but the connection. One report at most can arrive
 // — a launch happens once per execution.
+/// Reads received policy refusal from shortfalls subject if any.
 fn reported_refusal(
   shortfalls: Subject(codemode_tool.PolicyRefusal),
 ) -> codemode_tool.PolicyRefusal {
@@ -2127,11 +2199,11 @@ fn reported_refusal(
   )
 }
 
-// Nothing started, and the reason names both the seam that was asked for
-// and the ones on offer. `StartFailed` rather than a vetting rejection
-// because the program was never judged at all: no allowlist was applied
-// to it, and saying one was would be the lie this whole path exists to
-// avoid.
+/// Nothing started, and the reason names both the seam that was asked for
+/// and the ones on offer. `StartFailed` rather than a vetting rejection
+/// because the program was never judged at all: no allowlist was applied
+/// to it, and saying one was would be the lie this whole path exists to
+/// avoid.
 fn unserved(
   surface: Surface,
   seam: codemode_tool.Seam,
@@ -2209,6 +2281,8 @@ pub fn prepare_root(root: String) -> Result(Nil, String) {
 ///
 pub fn check_socket_path(directory: String) -> Result(Nil, String) {
   let path = socket_path(directory)
+
+  // Verify socket path does not exceed maximum byte limit.
   case bit_array.byte_size(<<path:utf8>>) > max_socket_path_bytes {
     False -> Ok(Nil)
     True ->
@@ -2393,10 +2467,10 @@ pub fn host_socket_directory(
   under_socket_root(config, "host\n" <> extension)
 }
 
-// One naming rule for both kinds of socket directory, so an execution's
-// and an extension host's can only differ by their key. The prefixes
-// differ too ("sock" against "host"), which keeps the two key spaces
-// apart even for an extension whose name reads like a coordinate.
+/// One naming rule for both kinds of socket directory, so an execution's
+/// and an extension host's can only differ by their key. The prefixes
+/// differ too ("sock" against "host"), which keeps the two key spaces
+/// apart even for an extension whose name reads like a coordinate.
 fn under_socket_root(config: Config, key: String) -> String {
   socket_root(config)
   <> "/"
@@ -2416,7 +2490,9 @@ fn socket_root(config: Config) -> String {
   option.unwrap(config.socket_root, config.work_root)
 }
 
-// The socket directory for one `code_mode` request.
+/// Determines the socket directory path for an execution.
+/// The socket directory for one `code_mode` request.
+/// Resolves the directory used for execution sockets under the configured root.
 fn exec_socket_directory(
   config: Config,
   request: codemode_tool.Request,
@@ -2523,6 +2599,7 @@ pub const max_socket_path_bytes = 100
 // authenticated by it, and a collision would only mean two executions
 // sharing a directory — which is why the key is the triple that is
 // already unique per execution.
+/// Computes FNV-1a 64-bit hex digest for socket naming.
 fn digest(key: String) -> String {
   key
   |> string.to_utf_codepoints
@@ -2654,6 +2731,7 @@ pub fn exec_config(
 // An Agency-backed host composes the same full router for either model
 // selection. A host without an Agency keeps the effect-only router and
 // allowlist. The request supplies caller coordinates, never authority.
+/// Composes capability router for requested seam surface.
 fn surface_router(
   config: Config,
   request: codemode_tool.Request,
@@ -2666,6 +2744,8 @@ fn surface_router(
       source_index: request.source_index,
       over: workspace_router(config, request),
     )
+
+  // Add evolution router if enabled.
   case evolution_on(config, vetting_seam(request.seam)) {
     None -> owned
     Some(build) ->
@@ -2676,14 +2756,14 @@ fn surface_router(
   }
 }
 
-// The dispatching `tool.Ctx` an evolution operation runs under, rebuilt from
-// the request and this host. Every coordinate comes from the request the
-// `code_mode` tool filled from its own `Ctx`, never from the program. The
-// clearance runner is the session's broker, so a candidate snapshot is jailed
-// exactly as the direct tool's was. The raise seam refuses where the direct
-// tool would have asked: an approval inside a running program costs a whole
-// re-execution (the code-mode approval model), so the program reads the
-// refusal and the model re-submits with the approval consumed.
+/// The dispatching `tool.Ctx` an evolution operation runs under, rebuilt from
+/// the request and this host. Every coordinate comes from the request the
+/// `code_mode` tool filled from its own `Ctx`, never from the program. The
+/// clearance runner is the session's broker, so a candidate snapshot is jailed
+/// exactly as the direct tool's was. The raise seam refuses where the direct
+/// tool would have asked: an approval inside a running program costs a whole
+/// re-execution (the code-mode approval model), so the program reads the
+/// refusal and the model re-submits with the approval consumed.
 fn evolution_context(
   config: Config,
   request: codemode_tool.Request,
@@ -2822,6 +2902,7 @@ pub fn owner_arms(config: Config, seam: vet_policy.Seam) -> OwnerArms {
 // The arms one seam sees. `strand.*` follows the surface alone. The
 // blackboard and the MCP layer also follow the seam, because the extension
 // and resident seams reach neither.
+/// Selects owner capability arms according to session side and seam.
 fn arms_of(side: OwnerSide, seam: vet_policy.Seam) -> OwnerArms {
   OwnerArms(
     agency: case side.surface {
@@ -2842,6 +2923,7 @@ fn arms_of(side: OwnerSide, seam: vet_policy.Seam) -> OwnerArms {
 // `emit` is the artifact writer the strand router is built with. Nothing
 // calls it here, because `report.emit` falls through, but the router takes
 // one and the caller says whose blob store it would have been.
+/// Attaches Agency and notes routers if present in owner arms.
 fn owner_calls(
   arms: OwnerArms,
   emit emit: artifact.Emit,
@@ -2849,6 +2931,7 @@ fn owner_calls(
   source_index source_index: Int,
   over inner: satellite.CapRouter,
 ) -> satellite.CapRouter {
+  // Wrap inner router with orchestration router if agency is available.
   let router = case arms.agency {
     None -> inner
     Some(agency) -> {
@@ -2871,6 +2954,8 @@ fn owner_calls(
       }
     }
   }
+
+  // Wrap router with notes router if notes door is available.
   case arms.notes {
     None -> router
     Some(door) -> notes.routing(door, strand, source_index, over: router)
@@ -2952,6 +3037,8 @@ pub fn owner_answering(
         over: scheduling(arms.schedules, call, over: owner_mcp(arms)),
       )
       |> beyond(call.strand, _)
+
+    // Dispatch owner request through router.
     case router(owner_request(call)) {
       Ok(satellite.ServedHere(serve)) | Ok(satellite.ScopedService(serve)) ->
         Ok(serve())
@@ -2967,8 +3054,8 @@ pub fn owner_answering(
   }
 }
 
-// The artifact writer of an owner which holds no blob store for a workspace
-// on another node. `report.emit` is the workspace's, so nothing reaches it.
+/// The artifact writer of an owner which holds no blob store for a workspace
+/// on another node. `report.emit` is the workspace's, so nothing reaches it.
 fn refused_emit(
   _artifact: artifact.Artifact,
 ) -> Result(String, artifact.EmitRefusal) {
@@ -2977,6 +3064,7 @@ fn refused_emit(
   ))
 }
 
+/// Returns string name of a tool seam.
 fn seam_name(seam: vet_policy.Seam) -> String {
   case seam {
     vet_policy.WorkspaceSeam -> "workspace"
@@ -2989,6 +3077,7 @@ fn seam_name(seam: vet_policy.Seam) -> String {
 // The MCP arm over a base which answers nothing: a name no owner arm claims
 // is denied instead of being handed to the default router, which would plan
 // a jailed process.
+/// Composes MCP router for owner capability calls.
 fn owner_mcp(arms: OwnerArms) -> satellite.CapRouter {
   mcp_wiring.routing(arms.mcp, over: fn(request: satellite.CapRequest) {
     Error(satellite.CapDenial(
@@ -3003,6 +3092,7 @@ fn owner_mcp(arms: OwnerArms) -> satellite.CapRouter {
 // owner serves the scheduling arm of it and none of the filesystem, scratch,
 // job or emit arms beside it. The seam is built from the scheduling door
 // alone, and the closures for what the owner does not serve refuse.
+/// Attaches scheduling router if door is present.
 fn scheduling(
   door: Option(scheduleseam.Door),
   call: owner_services.OwnerCapCall,
@@ -3030,6 +3120,7 @@ fn scheduling(
 // the calling strand as `workspace_seam_with_access` binds them. Everything
 // else answers that the owner has no workspace, which `scheduling` never
 // reaches because it routes by name.
+/// Constructs ScheduleSeam record for execution.
 fn schedule_seam(
   door: Option(scheduleseam.Door),
   strand: String,
@@ -3063,6 +3154,7 @@ fn schedule_seam(
 // The request an owner arm is given. The arms read the capability, its
 // arguments and its ordinal; the fields that describe a jailed process are
 // inert here, because nothing on this side clears one.
+/// Converts an OwnerCall into a satellite CapRequest.
 fn owner_request(call: owner_services.OwnerCapCall) -> satellite.CapRequest {
   satellite.CapRequest(
     cap: call.cap,
@@ -3099,6 +3191,7 @@ fn owner_request(call: owner_services.OwnerCapCall) -> satellite.CapRequest {
 //
 // The layer, store and blob root are read off the host. Both selections
 // on an Agency-backed host share these effects under the same policy.
+/// Composes the capability router for the workspace seam.
 fn workspace_router(
   config: Config,
   request: codemode_tool.Request,
@@ -3108,9 +3201,7 @@ fn workspace_router(
   let arms = owner_arms(config, vetting_seam(request.seam))
   let mcp_router = mcp_wiring.routing(arms.mcp, over: satellite.default_router)
 
-  // Without a door `lsp.*` falls through to the default table, which
-  // refuses it as unknown; the seam's allowlist has already refused the
-  // import, so this arm is the second of two locks, not the only one.
+  // Attach LSP router if language server door is available.
   let lsp_router = case lsp_on(config, vetting_seam(request.seam)) {
     None -> mcp_router
     Some(door) ->
@@ -3125,6 +3216,7 @@ fn workspace_router(
       )
   }
 
+  // Attach observation router if observation is configured.
   let lsp_router = case observation_on(config, vetting_seam(request.seam)) {
     None -> lsp_router
     Some(door) -> {
@@ -3315,9 +3407,9 @@ pub fn workspace_seam_with_access(
   )
 }
 
-// A host with no jobs actor answers every `job.*` call in band rather
-// than leaving the capabilities unrouted. See `Config.jobs` for why this
-// differs from the scheduling posture next to it.
+/// A host with no jobs actor answers every `job.*` call in band rather
+/// than leaving the capabilities unrouted. See `Config.jobs` for why this
+/// differs from the scheduling posture next to it.
 fn jobs_in(
   door: Option(jobseam.Door),
   strand strand: String,
@@ -3409,8 +3501,8 @@ fn resolved_workspace(
   fs.resolve_real(filesystem:, workspace: root, path: ".")
 }
 
-// `search.glob`: resolve the workspace and the root through the one
-// boundary, then walk. Every bound is checked inside the engine.
+/// `search.glob`: resolve the workspace and the root through the one
+/// boundary, then walk. Every bound is checked inside the engine.
 fn glob_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -3435,7 +3527,7 @@ fn glob_in(
   |> result.map_error(search_router.QueryRefused)
 }
 
-// `search.grep`: the same two resolutions, then the content scan.
+/// `search.grep`: the same two resolutions, then the content scan.
 fn grep_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -3460,13 +3552,13 @@ fn grep_in(
   |> result.map_error(search_router.QueryRefused)
 }
 
-// `search.stat`: resolve the parent, name the leaf beneath it, and let
-// the engine `lstat` that. See `search_seam_with_access`'s doc for why the leaf
-// is deliberately not resolved.
-//
-// `display` is the leaf's path relative to the resolved workspace root,
-// which is what the engine echoes back into `Entry.path` — so a program
-// can hand the answer straight to `read_lines` or `fs.read`.
+/// `search.stat`: resolve the parent, name the leaf beneath it, and let
+/// the engine `lstat` that. See `search_seam_with_access`'s doc for why the leaf
+/// is deliberately not resolved.
+///
+/// `display` is the leaf's path relative to the resolved workspace root,
+/// which is what the engine echoes back into `Entry.path` — so a program
+/// can hand the answer straight to `read_lines` or `fs.read`.
 fn stat_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -3490,9 +3582,9 @@ fn stat_in(
   |> result.map_error(search_router.QueryRefused)
 }
 
-// `search.read_lines`: resolve the whole path exactly as `read_in` does,
-// then read the window. A contained symlink reads its target and an
-// escaping one is refused before the engine sees it.
+/// `search.read_lines`: resolve the whole path exactly as `read_in` does,
+/// then read the window. A contained symlink reads its target and an
+/// escaping one is refused before the engine sees it.
 fn read_lines_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -3525,11 +3617,15 @@ type Leaf {
   Leaf(parent: String, name: String)
 }
 
+/// Returns the final path component after removing a trailing separator.
 fn leaf_of(path: String) -> Leaf {
+  // Remove only a trailing separator, preserving the filesystem root itself.
   let trimmed = case path != "/" && string.ends_with(path, "/") {
     True -> string.drop_end(path, 1)
     False -> path
   }
+
+  // The final nonempty component is the leaf; a missing component remains absent.
   case list.reverse(string.split(trimmed, "/")) {
     [] -> NoLeaf
 
@@ -3543,9 +3639,9 @@ fn leaf_of(path: String) -> Leaf {
   }
 }
 
-// The directory a leaf sits in, as a path `resolve_real` will accept: no
-// segments at all is this directory, and one empty segment is the
-// filesystem root rather than the empty path `resolve_real` refuses.
+/// The directory a leaf sits in, as a path `resolve_real` will accept: no
+/// segments at all is this directory, and one empty segment is the
+/// filesystem root rather than the empty path `resolve_real` refuses.
 fn parent_of(segments: List(String)) -> String {
   case segments {
     [] -> "."
@@ -3556,13 +3652,14 @@ fn parent_of(segments: List(String)) -> String {
   }
 }
 
-// The absolute path of a leaf whose parent has been resolved.
+/// The absolute path of a leaf whose parent has been resolved.
 fn resolved_leaf(
   filesystem: tool.FileSystem,
   root: String,
   reads: policy.SandboxPolicy,
   path: String,
 ) -> Result(String, fs.PathError) {
+  // A missing leaf and a present leaf require different canonical-path treatment.
   case leaf_of(path) {
     NoLeaf -> fs.resolve_readable(filesystem, root, reads, path)
 
@@ -3586,12 +3683,14 @@ fn resolved_leaf(
   }
 }
 
-// How an absolute path under the resolved workspace root is rendered
-// back to a program. The fallback is the absolute path itself, which is
-// unreachable while `resolve_real` is the only way to obtain one of
-// these — containment is exactly the claim that it lies under the root.
+/// How an absolute path under the resolved workspace root is rendered
+/// back to a program. The fallback is the absolute path itself, which is
+/// unreachable while `resolve_real` is the only way to obtain one of
+/// these — containment is exactly the claim that it lies under the root.
 fn relative_to(workspace_root: String, absolute: String) -> String {
   use <- bool.guard(when: absolute == workspace_root, return: ".")
+
+  // Only descendants of the workspace root can become workspace-relative paths.
   case string.starts_with(absolute, workspace_root <> "/") {
     True -> string.drop_start(absolute, string.length(workspace_root) + 1)
     False -> absolute
@@ -3613,6 +3712,7 @@ fn relative_to(workspace_root: String, absolute: String) -> String {
 // a `None` door leaves the capabilities unrouted; the arm exists so the
 // closure is total without a panic.
 
+/// Creates a schedule using only the timing and wake policy exposed by the seam.
 fn schedule_create_in(
   door: Option(scheduleseam.Door),
   request: workspace.ScheduleRequest,
@@ -3663,6 +3763,7 @@ fn granted_wake(wake: schedule_tool.Wake) -> workspace.ScheduleWake {
   }
 }
 
+/// Decodes the requested schedule timing into its typed cadence.
 fn schedule_timing(
   request: workspace.ScheduleRequest,
 ) -> Result(schedule_tool.RequestedTiming, workspace.ScheduleRefusal) {
@@ -3677,6 +3778,7 @@ fn schedule_timing(
     ]
     |> option.values
 
+  // The named timing shape selects which validated cadence is constructed.
   case named {
     [only] -> Ok(only)
 
@@ -3691,6 +3793,7 @@ fn schedule_timing(
   }
 }
 
+/// Lists schedules owned by the current seam identity.
 fn schedule_list_in(
   door: Option(scheduleseam.Door),
   strand: String,
@@ -3713,6 +3816,7 @@ fn schedule_list_in(
   |> result.map_error(schedule_refusal)
 }
 
+/// Cancels a schedule only through the seam’s authorized scheduler door.
 fn schedule_cancel_in(
   door: Option(scheduleseam.Door),
   name: String,
@@ -3723,6 +3827,7 @@ fn schedule_cancel_in(
   door.cancel(strand, name, target) |> result.map_error(schedule_refusal)
 }
 
+/// Runs the request through the configured scheduler door and maps its refusal.
 fn with_door(
   door: Option(scheduleseam.Door),
   then: fn(scheduleseam.Door) -> Result(a, workspace.ScheduleRefusal),
@@ -3736,6 +3841,7 @@ fn with_door(
   }
 }
 
+/// Maps a scheduler refusal into the code-mode result vocabulary.
 fn schedule_refusal(
   refusal: schedule_tool.Refusal,
 ) -> workspace.ScheduleRefusal {
@@ -3753,10 +3859,10 @@ fn schedule_refusal(
   }
 }
 
-// `fs.read`: resolve, then read, with both refusals kept structured.
-// This is the whole of it — every decision belongs to one of the two
-// `tools/fs` functions called here, and the bridge's contribution is to
-// name the seam the failure came from.
+/// `fs.read`: resolve, then read, with both refusals kept structured.
+/// This is the whole of it — every decision belongs to one of the two
+/// `tools/fs` functions called here, and the bridge's contribution is to
+/// name the seam the failure came from.
 fn read_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -3776,21 +3882,21 @@ fn read_in(
   |> result.map_error(workspace.ReadRefused)
 }
 
-// `fs.write`: resolve through `resolve_writable` — containment plus the
-// protected-path refusal, the same one function the model's own
-// `fs_write` calls (#105) — then write whole through the seam. Both
-// decisions are `tools/fs`'s; the bridge's contribution is the seam name
-// on the refusal.
-//
-// The write itself is `fs.write_whole`, which is what `fs_write` calls
-// too, so **both doors create missing parent directories**. The
-// alternative was a bridge where `fs.write("new_dir/file.txt", ..)`
-// failed with an errno while the model's own tool, given the same path,
-// succeeded — one workspace behaving two ways depending on which door a
-// write came through, and the difference discoverable only by hitting
-// it. `fs_write`'s description promises parents are created; a program
-// reading `cap/fs.write`'s "creating or replacing the whole file" has
-// every reason to expect the same file to appear.
+/// `fs.write`: resolve through `resolve_writable` — containment plus the
+/// protected-path refusal, the same one function the model's own
+/// `fs_write` calls (#105) — then write whole through the seam. Both
+/// decisions are `tools/fs`'s; the bridge's contribution is the seam name
+/// on the refusal.
+///
+/// The write itself is `fs.write_whole`, which is what `fs_write` calls
+/// too, so **both doors create missing parent directories**. The
+/// alternative was a bridge where `fs.write("new_dir/file.txt", ..)`
+/// failed with an errno while the model's own tool, given the same path,
+/// succeeded — one workspace behaving two ways depending on which door a
+/// write came through, and the difference discoverable only by hitting
+/// it. `fs_write`'s description promises parents are created; a program
+/// reading `cap/fs.write`'s "creating or replacing the whole file" has
+/// every reason to expect the same file to appear.
 fn write_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -3807,13 +3913,13 @@ fn write_in(
   |> result.map_error(workspace.WriteRefused)
 }
 
-// `fs.edit`: read-apply-write inside this one closure, which is the
-// tightest window the seam can offer (the module doc of
-// `codemode/workspace` carries the ruling). The read reuses
-// `read_text_file`, so an edit of a too-large or non-text file is
-// refused with the same guards a read is; the apply is
-// `workspace.apply_replacements`, pure and corpus-pinned; the write goes
-// through the same resolved, protected-checked path the read used.
+/// `fs.edit`: read-apply-write inside this one closure, which is the
+/// tightest window the seam can offer (the module doc of
+/// `codemode/workspace` carries the ruling). The read reuses
+/// `read_text_file`, so an edit of a too-large or non-text file is
+/// refused with the same guards a read is; the apply is
+/// `workspace.apply_replacements`, pure and corpus-pinned; the write goes
+/// through the same resolved, protected-checked path the read used.
 fn edit_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -3838,21 +3944,21 @@ fn edit_in(
   |> result.map_error(workspace.WriteRefused)
 }
 
-// `fs.list`: resolve through the same boundary, then enumerate.
-//
-// Two properties are worth stating because neither is obvious.
-//
-// The listing is bounded *before* it is built: `simplifile.read_directory`
-// hands back every name, and the count is checked against
-// `workspace.max_list_entries` before a single entry is classified, so a
-// directory with a hundred thousand files costs one readdir rather than a
-// hundred thousand `read_link` calls followed by a refusal.
-//
-// `is_directory` is answered with lstat semantics, through the seam's own
-// `read_link`: a symlink is reported as **not** a directory whatever it
-// points at. That is the safe direction — the answer says nothing about a
-// target that may lie outside the workspace — and the honest one, since
-// `fs.read` through that link would be refused by `resolve_real` anyway.
+/// `fs.list`: resolve through the same boundary, then enumerate.
+///
+/// Two properties are worth stating because neither is obvious.
+///
+/// The listing is bounded *before* it is built: `simplifile.read_directory`
+/// hands back every name, and the count is checked against
+/// `workspace.max_list_entries` before a single entry is classified, so a
+/// directory with a hundred thousand files costs one readdir rather than a
+/// hundred thousand `read_link` calls followed by a refusal.
+///
+/// `is_directory` is answered with lstat semantics, through the seam's own
+/// `read_link`: a symlink is reported as **not** a directory whatever it
+/// points at. That is the safe direction — the answer says nothing about a
+/// target that may lie outside the workspace — and the honest one, since
+/// `fs.read` through that link would be refused by `resolve_real` anyway.
 fn list_in(
   filesystem: tool.FileSystem,
   root: String,
@@ -3871,19 +3977,19 @@ fn list_in(
   Ok(list.map(bounded, fn(name) { classify(filesystem, resolved, name) }))
 }
 
-// Why a listing did not happen. `ENOTDIR` is pulled out of the errno
-// crowd because it is the one a program can act on: it means the path is
-// there and `fs.read` is the call that was wanted, which is a repair,
-// where "filesystem error on /work/x: enotdir" is a puzzle. Everything
-// else keeps the backend's own description, since inventing a sentence
-// for an errno nobody anticipated is how a refusal starts lying.
-//
-// `simplifile.read_directory` is what classifies here rather than a
-// prior stat, which also settles the special files: a FIFO, a socket or
-// a device node is not a directory and `readdir` says so with the same
-// `Enotdir`, so all of them reach a program under the honest name
-// without this needing a file-type vocabulary the `tool.FileSystem`
-// seam does not have.
+/// Why a listing did not happen. `ENOTDIR` is pulled out of the errno
+/// crowd because it is the one a program can act on: it means the path is
+/// there and `fs.read` is the call that was wanted, which is a repair,
+/// where "filesystem error on /work/x: enotdir" is a puzzle. Everything
+/// else keeps the backend's own description, since inventing a sentence
+/// for an errno nobody anticipated is how a refusal starts lying.
+///
+/// `simplifile.read_directory` is what classifies here rather than a
+/// prior stat, which also settles the special files: a FIFO, a socket or
+/// a device node is not a directory and `readdir` says so with the same
+/// `Enotdir`, so all of them reach a program under the honest name
+/// without this needing a file-type vocabulary the `tool.FileSystem`
+/// seam does not have.
 fn listing_refusal(
   resolved: String,
   error: simplifile.FileError,
@@ -3898,14 +4004,16 @@ fn listing_refusal(
   }
 }
 
-// The count check, kept as its own function so the O(n) walk it needs is
-// visible: `list.length` over a directory listing is a walk of exactly
-// the thing being bounded, which is the one shape where it is the right
-// answer rather than lint R5's.
+/// The count check, kept as its own function so the O(n) walk it needs is
+/// visible: `list.length` over a directory listing is a walk of exactly
+/// the thing being bounded, which is the one shape where it is the right
+/// answer rather than lint R5's.
 fn within_listing_bound(
   names: List(String),
 ) -> Result(List(String), workspace.FsRefusal) {
   let count = list.length(names)
+
+  // Listings over the configured entry ceiling are refused before materialization.
   case count > workspace.max_list_entries {
     True ->
       Error(workspace.TooManyEntries(count:, limit: workspace.max_list_entries))
@@ -3913,12 +4021,15 @@ fn within_listing_bound(
   }
 }
 
+/// Classifies a filesystem child using its link target without escaping the root.
 fn classify(
   filesystem: tool.FileSystem,
   directory: String,
   name: String,
 ) -> workspace.DirEntry {
   let child = directory <> "/" <> name
+
+  // A symlink remains a distinct filesystem entry and is not mistaken for its target.
   let is_directory = case filesystem.read_link(child) {
     // A symlink, a path that vanished between the readdir and this call,
     // or a seam that would not answer: none of them is a directory this
@@ -3939,29 +4050,30 @@ fn classify(
     // ever costs anything real.
     Ok(tool.NotALink) -> filesystem.is_file(child) == Ok(False)
   }
+
   workspace.DirEntry(name:, is_directory:)
 }
 
-// `report.emit`: the same content-addressed write `tools/blob` performs
-// for an overflowed tool output, into the same store, through the same
-// `blob.write_addressed`.
-//
-// Idempotent by construction, which is why nothing here checks for a
-// prior emission: the id *is* the SHA-256 of the bytes, so emitting the
-// same artifact twice answers the same id and writes the file once. The
-// `is_file` probe before the write is not a correctness guard — it saves
-// rewriting bytes that are already there, exactly as `blob.bound` does.
-//
-// The write is staged and renamed rather than performed in place. An
-// address that vouches for content is only worth anything if nothing can
-// ever be reached under it but that content, and a direct write leaves
-// exactly that: a torn file whose SHA-256 name says it is whole, which
-// every later reader believes. `blob.write_addressed`'s doc carries the
-// argument; what this side owes it is a staging name unique to one
-// write, since two concurrent first emissions of identical bytes are
-// precisely what a content address cannot tell apart. Eight bytes off
-// the session's own entropy is that, and the `.tmp` it leaves behind on
-// a crash is garbage rather than a lie.
+/// `report.emit`: the same content-addressed write `tools/blob` performs
+/// for an overflowed tool output, into the same store, through the same
+/// `blob.write_addressed`.
+///
+/// Idempotent by construction, which is why nothing here checks for a
+/// prior emission: the id *is* the SHA-256 of the bytes, so emitting the
+/// same artifact twice answers the same id and writes the file once. The
+/// `is_file` probe before the write is not a correctness guard — it saves
+/// rewriting bytes that are already there, exactly as `blob.bound` does.
+///
+/// The write is staged and renamed rather than performed in place. An
+/// address that vouches for content is only worth anything if nothing can
+/// ever be reached under it but that content, and a direct write leaves
+/// exactly that: a torn file whose SHA-256 name says it is whole, which
+/// every later reader believes. `blob.write_addressed`'s doc carries the
+/// argument; what this side owes it is a staging name unique to one
+/// write, since two concurrent first emissions of identical bytes are
+/// precisely what a content address cannot tell apart. Eight bytes off
+/// the session's own entropy is that, and the `.tmp` it leaves behind on
+/// a crash is garbage rather than a lie.
 fn emitting(
   filesystem: tool.FileSystem,
   blob_root: String,
@@ -3977,6 +4089,8 @@ fn emitting(
     use present <- result.try(
       filesystem.is_file(path) |> result.map_error(store_failed),
     )
+
+    // An absent report destination skips emission; a present one is sent to the emitter.
     use Nil <- result.try(case present {
       True -> Ok(Nil)
       False ->
@@ -3988,6 +4102,7 @@ fn emitting(
         )
         |> result.map_error(store_failed)
     })
+
     Ok(ref)
   }
 }
@@ -4003,6 +4118,7 @@ fn staging_tag(entropy: fn(Int) -> BitArray) -> String {
   entropy(staging_tag_bytes) |> bit_array.base16_encode |> string.lowercase
 }
 
+/// Explains why a code-mode result could not be stored.
 fn store_failed(error: tool.FsError) -> artifact.EmitRefusal {
   artifact.StoreFailed(reason: case error {
     tool.FsNotFound(path:) -> "the blob store is missing: " <> path
@@ -4012,48 +4128,50 @@ fn store_failed(error: tool.FsError) -> artifact.EmitRefusal {
   })
 }
 
-// The lifetime admission ceilings the execution runs under.
-//
-// The effect and Agency routers overlap in exactly one capability.
-// The test a capability has to meet is `satellite.CapCeiling`'s: does a
-// call *mint something that outlives the execution*. On the orchestration
-// seam four of the six `strand.*` calls do — a child strand, a durable
-// message that can start a run, a durable register, and the scan that
-// reads them. On the workspace seam none of `fs.read`, `fs.list` or
-// `kv.*` does: two are reads bounded by their own size guards, and the
-// scratch store is bounded store-side by a byte cap with eviction, which
-// is the right instrument for something that must not *grow* rather than
-// something that must not be called often.
-//
-// `fs.write` and `fs.edit` are the arms that argument has to be made
-// about rather than around, because they are writes and what they write
-// outlives the execution. They have no ceiling because the numbers
-// already bound them and a ceiling would not. One bridged write is
-// capped by the 16 MiB cap-channel frame — far under the 1 GiB
-// `limits.fsize_bytes` the same execution's jailed `proc.run` writes
-// under, so the bridge is the *narrower* door onto the same workspace —
-// and the loop is bounded by the wall deadline and the pooled
-// outstanding-effect cap, exactly as a jailed write loop is. What
-// separates them from `report.emit` is the kind of thing written: a
-// workspace file is the program's working state, overwritten by the
-// next write to the same path, inside a tree the operator already made
-// writable; an artifact is a mint into a store the session curates,
-// which nothing replaces. `codemode/workspace.ceilings` carries the
-// whole of it.
-//
-// `report.emit` is the one shared limit: every admitted call writes
-// a content-addressed file into a store that outlives the session. So the
-// workspace seam's ceiling list is not empty — it was, and this comment
-// said so, until `report.emit` routed.
-//
-// Read off the surface beside the router. An Agency-backed host gets both
-// ceiling lists with one `report.emit` entry. Only the spawn number is a
-// surface setting; the rest are the routers' constants.
+/// The lifetime admission ceilings the execution runs under.
+///
+/// The effect and Agency routers overlap in exactly one capability.
+/// The test a capability has to meet is `satellite.CapCeiling`'s: does a
+/// call *mint something that outlives the execution*. On the orchestration
+/// seam four of the six `strand.*` calls do — a child strand, a durable
+/// message that can start a run, a durable register, and the scan that
+/// reads them. On the workspace seam none of `fs.read`, `fs.list` or
+/// `kv.*` does: two are reads bounded by their own size guards, and the
+/// scratch store is bounded store-side by a byte cap with eviction, which
+/// is the right instrument for something that must not *grow* rather than
+/// something that must not be called often.
+///
+/// `fs.write` and `fs.edit` are the arms that argument has to be made
+/// about rather than around, because they are writes and what they write
+/// outlives the execution. They have no ceiling because the numbers
+/// already bound them and a ceiling would not. One bridged write is
+/// capped by the 16 MiB cap-channel frame — far under the 1 GiB
+/// `limits.fsize_bytes` the same execution's jailed `proc.run` writes
+/// under, so the bridge is the *narrower* door onto the same workspace —
+/// and the loop is bounded by the wall deadline and the pooled
+/// outstanding-effect cap, exactly as a jailed write loop is. What
+/// separates them from `report.emit` is the kind of thing written: a
+/// workspace file is the program's working state, overwritten by the
+/// next write to the same path, inside a tree the operator already made
+/// writable; an artifact is a mint into a store the session curates,
+/// which nothing replaces. `codemode/workspace.ceilings` carries the
+/// whole of it.
+///
+/// `report.emit` is the one shared limit: every admitted call writes
+/// a content-addressed file into a store that outlives the session. So the
+/// workspace seam's ceiling list is not empty — it was, and this comment
+/// said so, until `report.emit` routed.
+///
+/// Read off the surface beside the router. An Agency-backed host gets both
+/// ceiling lists with one `report.emit` entry. Only the spawn number is a
+/// surface setting; the rest are the routers' constants.
 fn surface_ceilings(
   config: Config,
   request: codemode_tool.Request,
 ) -> List(satellite.CapCeiling) {
   let workspace_ceilings = workspace.ceilings(workspace_seam(config, request))
+
+  // The configured surface selects the compile, run and output ceilings.
   let ceilings = case config.surface {
     Workspace -> workspace_ceilings
     Orchestration(spawn_ceiling:, ..) | Both(spawn_ceiling:, ..) ->
@@ -4066,16 +4184,22 @@ fn surface_ceilings(
           |> list.filter(fn(ceiling) { ceiling.cap != artifact.emit_cap }),
       )
   }
+
+  // Notes ceilings apply only when that service is present on the request seam.
   let ceilings = case notes_on(config, vetting_seam(request.seam)) {
     None -> ceilings
     Some(_) -> list.append(ceilings, notes.ceilings())
   }
 
   // Add evolution and observation ceilings when enabled.
+
+  // Evolution ceilings apply only when evolution is configured on this seam.
   let ceilings = case evolution_on(config, vetting_seam(request.seam)) {
     None -> ceilings
     Some(_) -> list.append(ceilings, codemode_evolution.ceilings())
   }
+
+  // Observation ceilings apply only when snapshot observation is available.
   case observation_on(config, vetting_seam(request.seam)) {
     None -> ceilings
     Some(_) -> list.append(ceilings, codemode_observation.ceilings())
@@ -4189,6 +4313,7 @@ pub fn translate(outcome: pipeline.ExecOutcome) -> codemode_tool.ExecResult {
   }
 }
 
+/// Builds the result for execution rejected before the command ran.
 fn rejection(rejection: vet.Rejection) -> codemode_tool.Rejection {
   codemode_tool.Rejection(
     rule: case rejection.rule {
@@ -4205,6 +4330,7 @@ fn rejection(rejection: vet.Rejection) -> codemode_tool.Rejection {
   )
 }
 
+/// Builds a result that distinguishes compilation failure from runtime failure.
 fn compile_failure(
   error: compile.CompileError,
 ) -> codemode_tool.CompileFailure {
@@ -4219,6 +4345,7 @@ fn compile_failure(
   }
 }
 
+/// Builds the result for a program that compiled but failed during execution.
 fn run_failure(error: satellite.RunError) -> codemode_tool.RunFailure {
   case error {
     satellite.DeadlineExceeded -> codemode_tool.DeadlineExceeded
@@ -4242,6 +4369,7 @@ fn run_failure(error: satellite.RunError) -> codemode_tool.RunFailure {
   }
 }
 
+/// Converts the satellite program outcome into the code-mode result.
 fn program_outcome(outcome: satellite.Outcome) -> codemode_tool.Outcome {
   case outcome {
     satellite.Completed(value:) -> codemode_tool.Completed(value:)
@@ -4252,13 +4380,13 @@ fn program_outcome(outcome: satellite.Outcome) -> codemode_tool.Outcome {
 
 // --- what actually ran -----------------------------------------------------
 
-// Restates the pipeline's enforcement reports in the tool's own vocabulary
-// (`tools` cannot see `codemode`, so the two shapes are mirrors, as
-// `Outcome` already is).
-//
-// The applied layers and the skipped ones are separated here rather than
-// left as one list with `skip:` prefixes in it, so no renderer downstream
-// can present a layer the kernel did not provide as one it did.
+/// Restates the pipeline's enforcement reports in the tool's own vocabulary
+/// (`tools` cannot see `codemode`, so the two shapes are mirrors, as
+/// `Outcome` already is).
+///
+/// The applied layers and the skipped ones are separated here rather than
+/// left as one list with `skip:` prefixes in it, so no renderer downstream
+/// can present a layer the kernel did not provide as one it did.
 fn translate_enforcement(
   reports: enforcement.Enforcement,
 ) -> codemode_tool.Enforcement {
@@ -4268,7 +4396,9 @@ fn translate_enforcement(
   )
 }
 
+/// Stages a report only when its destination is available and permitted.
 fn stage_report(report: enforcement.Report) -> codemode_tool.Report {
+  // The report variant determines whether a successful result can be staged.
   case report {
     enforcement.Unreported(reason:) -> codemode_tool.Unreported(reason:)
     enforcement.Reported(entries: _, degraded:) -> {
@@ -4287,6 +4417,7 @@ fn nothing_dispatched(reason: String) -> codemode_tool.Enforcement {
   )
 }
 
+/// Resolves the directory that owns an absolute path.
 fn directory_of(path: String) -> String {
   case string.split(path, "/") {
     [_file] -> "."
@@ -4314,11 +4445,11 @@ fn lsp_on(config: Config, seam: vet_policy.Seam) -> Option(query.Door) {
   }
 }
 
-// The evolution plane is the workspace seam's alone. `propose` names a
-// workspace directory and every operation is bound to a workspace execution,
-// and an orchestration program reaches the plane by spawning one that does.
-// Extensions and resident hooks never see it. This one choice gates the
-// import, the advertised calls, the quotas and the router arm together.
+/// The evolution plane is the workspace seam's alone. `propose` names a
+/// workspace directory and every operation is bound to a workspace execution,
+/// and an orchestration program reaches the plane by spawning one that does.
+/// Extensions and resident hooks never see it. This one choice gates the
+/// import, the advertised calls, the quotas and the router arm together.
 fn evolution_on(
   config: Config,
   seam: vet_policy.Seam,
@@ -4337,6 +4468,7 @@ fn notes_on(config: Config, seam: vet_policy.Seam) -> Option(notes.Door) {
   notes_for(config.notes, seam)
 }
 
+/// Returns the note service authorized for the current seam.
 fn notes_for(
   door: Option(notes.Door),
   seam: vet_policy.Seam,
@@ -4347,8 +4479,8 @@ fn notes_for(
   }
 }
 
-// The bridge keeps the resolved timing typed until the workspace wire encoder.
-// It never reconstructs cadence by reading the human-facing `when` string.
+/// The bridge keeps the resolved timing typed until the workspace wire encoder.
+/// It never reconstructs cadence by reading the human-facing `when` string.
 fn schedule_cadence(
   cadence: schedule_tool.Cadence,
 ) -> workspace.ScheduleCadence {
@@ -4372,7 +4504,7 @@ fn schedule_expiry(expiry: schedule_tool.Expiry) -> workspace.ScheduleExpiry {
   )
 }
 
-// Capture inherits the native LSP scope and never enters hooks or extensions.
+/// Capture inherits the native LSP scope and never enters hooks or extensions.
 fn observation_on(
   config: Config,
   seam: vet_policy.Seam,

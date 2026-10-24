@@ -218,8 +218,10 @@ pub fn wiring(runner: Runner, timeout_ms timeout_ms: Int) -> Wiring {
 // The order matters in one place: stdin is closed before the collector
 // starts, because a command that reads stdin — a `git` pager, an
 // interactive prompt a script did not expect to be absent — would otherwise
-// sit against an open pipe until the wall killed it, and report a timeout
-// for a reason that has nothing to do with the work.
+/// Executes one goal check command inside a confined sandbox runner environment.
+///
+/// sit against an open pipe until the wall killed it, and report a timeout
+/// for a reason that has nothing to do with the work.
 fn execute(
   runner: Runner,
   command: String,
@@ -228,12 +230,14 @@ fn execute(
   let events = process.new_subject()
   let wait_ms = timeout_ms + settle_grace_ms
 
+  // Acquire broker admission clearance before starting check execution.
   case admitted(runner, command, timeout_ms, events) {
     Error(#(now, reason)) -> unfinished(command, reason, now)
 
     Ok(#(now, call)) -> {
       call.stdin(<<>>, True)
 
+      // Collect sandbox execution events until process completion or timeout grace expires.
       case tool.collect_events(events, waiting: wait_ms) {
         Ok(collected) -> settled(command, collected, now)
 
@@ -268,8 +272,10 @@ fn execute(
 // from it describe the attempt they are used in: the budget deadline the spec
 // carries is the wall of the run that is about to start, and the stamp on the
 // result is when the command the reviewer is shown actually ran. The events
-// subject is reused across attempts, and safely: a refused clearance dispatched
-// nothing, so nothing can ever have sent to it.
+/// Repeatedly polls for broker execution clearance until a concurrency slot frees up.
+///
+/// subject is reused across attempts, and safely: a refused clearance dispatched
+/// nothing, so nothing can ever have sent to it.
 fn admitted(
   runner: Runner,
   command: String,
@@ -279,6 +285,7 @@ fn admitted(
   let attempt = fn() {
     let #(now, _clock) = clock.read(runner.clock)
 
+    // Attempt broker call admission or retry if budget ceiling is momentarily exhausted.
     case
       runner.clear_call(call_spec(runner, command, now, timeout_ms), events)
     {
@@ -291,6 +298,7 @@ fn admitted(
     }
   }
 
+  // Poll for broker clearance until slot wait budget elapses.
   case poll.until(within: slot_wait_ms, every: slot_retry_ms, attempt:) {
     poll.Answered(value: cleared) -> Ok(cleared)
 
@@ -308,11 +316,13 @@ fn admitted(
   }
 }
 
-// The requirements for a check process: the session base's own roots,
-// mounts and network posture, asked for directly. Composition takes the
-// meet of base and requirements, so asking for the base can never widen
-// past it — the intersection of a set with itself is itself — and the two
-// fields that do move are the wall and the output ceiling.
+/// Constructs a confined broker call specification for running a goal verification check.
+///
+/// The requirements for a check process: the session base's own roots,
+/// mounts and network posture, asked for directly. Composition takes the
+/// meet of base and requirements, so asking for the base can never widen
+/// past it — the intersection of a set with itself is itself — and the two
+/// fields that do move are the wall and the output ceiling.
 fn call_spec(
   runner: Runner,
   command: String,
@@ -353,10 +363,12 @@ fn call_spec(
 // A run the wall killed reports no status, because there is none: the
 // process was stopped rather than finished, and an exit code invented for
 // it would read to the reviewer as the command's own verdict on the work.
-// Its output is still carried — unlike a timed-out hook's, which is
-// discarded because a decision is parsed out of it, a check's tail is
-// evidence a reviewer weighs, and the tail of a build that was killed at
-// five minutes is exactly what says why.
+/// Translates finished check execution events into a structured CheckResult record.
+///
+/// Its output is still carried — unlike a timed-out hook's, which is
+/// discarded because a decision is parsed out of it, a check's tail is
+/// evidence a reviewer weighs, and the tail of a build that was killed at
+/// five minutes is exactly what says why.
 fn settled(
   command: String,
   collected: tool.Collected,
@@ -389,6 +401,7 @@ fn settled(
   }
 }
 
+/// Constructs a DidNotFinish CheckResult representing a check that could not complete.
 fn unfinished(
   command: String,
   reason: String,
@@ -402,11 +415,13 @@ fn unfinished(
   )
 }
 
-// Both streams, each clipped to its own tail and labelled. Labelled
-// because a reviewer weighing a failure needs to know which stream said so
-// — a warning on stderr beside a zero exit is a different fact from the
-// same words on stdout — and an empty stream draws nothing rather than a
-// line saying it was empty.
+/// Formats stdout and stderr stream outputs with channel labels and bounded tails.
+///
+/// Both streams, each clipped to its own tail and labelled. Labelled
+/// because a reviewer weighing a failure needs to know which stream said so
+/// — a warning on stderr beside a zero exit is a different fact from the
+/// same words on stdout — and an empty stream draws nothing rather than a
+/// line saying it was empty.
 fn captured(collected: tool.Collected) -> String {
   [
     #("stdout", tail(text(collected.stdout))),
@@ -417,12 +432,14 @@ fn captured(collected: tool.Collected) -> String {
   |> string.join("\n")
 }
 
-// The last `output_tail_chars` characters, marked when anything was cut.
-//
-// Whether the text is longer than the bound is a bounded question, so it is
-// answered by dropping the bound rather than by measuring a megabyte: a
-// stream that has nothing left after dropping the tail is a stream that fits
-// inside it.
+/// Truncates stream text to the trailing window with an omission marker if truncated.
+///
+/// The last `output_tail_chars` characters, marked when anything was cut.
+///
+/// Whether the text is longer than the bound is a bounded question, so it is
+/// answered by dropping the bound rather than by measuring a megabyte: a
+/// stream that has nothing left after dropping the tail is a stream that fits
+/// inside it.
 fn tail(captured_text: String) -> String {
   case string.drop_end(captured_text, output_tail_chars) {
     "" -> captured_text
@@ -433,14 +450,16 @@ fn tail(captured_text: String) -> String {
   }
 }
 
-// Jailed output is expected to be UTF-8, and output that is not says so in
-// the `bash` tool's own words rather than becoming nothing.
-//
-// The empty string is what the reviewer reads as "the check printed nothing",
-// and a failing status beside that line is a contradiction it cannot resolve.
-// Neither case is exotic: a command that cats a binary produces the first, and
-// the sandbox's own byte ceiling produces the second every time it cuts a
-// stream mid-codepoint.
+/// Converts binary stream output to UTF-8 text or emits a byte-count placeholder.
+///
+/// Jailed output is expected to be UTF-8, and output that is not says so in
+/// the `bash` tool's own words rather than becoming nothing.
+///
+/// The empty string is what the reviewer reads as "the check printed nothing",
+/// and a failing status beside that line is a contradiction it cannot resolve.
+/// Neither case is exotic: a command that cats a binary produces the first, and
+/// the sandbox's own byte ceiling produces the second every time it cuts a
+/// stream mid-codepoint.
 fn text(bytes: BitArray) -> String {
   case bit_array.to_string(bytes) {
     Ok(said) -> said
@@ -452,13 +471,16 @@ fn text(bytes: BitArray) -> String {
   }
 }
 
-// The broker's own words for a refusal, taken from the rendering the tool
-// plane already owns rather than reworded here: an operator who has seen a
-// `bash` call refused should read the same sentence when their check is
-// refused for the same reason.
+/// Extracts descriptive error prose from broker clearance refusal outcomes.
+///
+/// The broker's own words for a refusal, taken from the rendering the tool
+/// plane already owns rather than reworded here: an operator who has seen a
+/// `bash` call refused should read the same sentence when their check is
+/// refused for the same reason.
 fn refused(refusal: broker.Refusal) -> String {
   let rendered = tool.refusal_outcome(refusal)
 
+  // Unpack refusal text content blocks or default to a generic refusal sentence.
   case
     list.filter_map(rendered.content, fn(block) {
       case block {

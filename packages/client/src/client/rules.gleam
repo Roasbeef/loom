@@ -156,10 +156,18 @@ pub fn parse(text: String) -> Result(List(Rule), String) {
 /// ```gleam
 /// assert rules.from_document(dict.new()) == Ok([])
 /// ```
+/// From document preserves the client boundary contract for this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// from_document(...)
+/// ```
 @internal
 pub fn from_document(
   document: Dict(String, tom.Toml),
 ) -> Result(List(Rule), String) {
+  // This match resolves dict.get(document, "rule") before the enclosing validation continues.
   use tables <- result.try(case dict.get(document, "rule") {
     Error(Nil) -> Ok([])
     Ok(tom.ArrayOfTables(tables)) -> Ok(tables)
@@ -169,6 +177,7 @@ pub fn from_document(
         <> "triggers and body",
       )
   })
+
   use Nil <- result.try(bounded_count(
     list.length(tables),
     max_rules,
@@ -184,6 +193,7 @@ pub fn from_document(
   Ok(parsed)
 }
 
+/// Parse rule keeps this client operation’s decoding or state decision in one place.
 fn parse_rule(
   position: Int,
   fields: Dict(String, tom.Toml),
@@ -208,11 +218,14 @@ fn parse_rule(
 // quoted inside the injected fence, so the characters refused here are
 // the ones that would make either ambiguous rather than a matter of
 // taste.
+/// Rule name keeps this client operation’s decoding or state decision in one place.
 fn rule_name(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(String, String) {
   use name <- result.try(bounded_string(fields, place, "name", max_name_length))
+
+  // This branch resolves the rule name decision before the operation proceeds.
   case
     string.contains(name, "/"),
     string.contains(name, "\""),
@@ -234,16 +247,19 @@ fn rule_name(
   }
 }
 
+/// Rule triggers keeps this client operation’s decoding or state decision in one place.
 fn rule_triggers(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(List(String), String) {
+  // This match resolves dict.get(fields, "triggers") before the enclosing validation continues.
   use items <- result.try(case dict.get(fields, "triggers") {
     Ok(tom.Array(items)) -> Ok(items)
     Ok(_other) ->
       Error(place <> ".triggers must be an array of literal strings")
     Error(Nil) -> Error(place <> ".triggers is required")
   })
+
   use Nil <- result.try(bounded_count(
     list.length(items),
     max_triggers,
@@ -252,6 +268,8 @@ fn rule_triggers(
   ))
   use triggers <- result.try(
     list.try_map(items, fn(item) {
+      // This match resolves item before the surrounding protocol step continues.
+      // This match resolves item before the enclosing validation continues.
       case item {
         tom.String("") ->
           Error(
@@ -261,6 +279,7 @@ fn rule_triggers(
             <> "no trigger at all",
           )
         tom.String(trigger) ->
+          // This match resolves too_long(trigger, max_trigger_length) before the surrounding protocol step continues.
           case too_long(trigger, max_trigger_length) {
             True ->
               Error(
@@ -276,6 +295,9 @@ fn rule_triggers(
       }
     }),
   )
+
+  // This match resolves triggers before the surrounding protocol step continues.
+  // This match resolves triggers before the enclosing validation continues.
   case triggers {
     [] ->
       Error(
@@ -291,13 +313,17 @@ fn rule_triggers(
 // the fired-mark's key: two rules sharing one would share one mark, so
 // whichever fired first would silence the other for the rest of the
 // session, with nothing anywhere saying so.
+/// Unique names keeps this client operation’s decoding or state decision in one place.
 fn unique_names(
   remaining: List(Rule),
   seen: List(String),
 ) -> Result(Nil, String) {
+  // This match resolves remaining before the surrounding protocol step continues.
+  // This match resolves remaining before the enclosing validation continues.
   case remaining {
     [] -> Ok(Nil)
     [rule, ..rest] ->
+      // This match resolves list.contains(seen, rule.name) before the surrounding protocol step continues.
       case list.contains(seen, rule.name) {
         True ->
           Error(
@@ -311,16 +337,20 @@ fn unique_names(
   }
 }
 
+/// Bounded string keeps this client operation’s decoding or state decision in one place.
 fn bounded_string(
   fields: Dict(String, tom.Toml),
   place: String,
   key: String,
   limit: Int,
 ) -> Result(String, String) {
+  // This match resolves dict.get(fields, key) before the surrounding protocol step continues.
+  // This match resolves dict.get(fields, key) before the enclosing validation continues.
   case dict.get(fields, key) {
     Error(Nil) -> Error(place <> "." <> key <> " is required")
     Ok(tom.String("")) -> Error(place <> "." <> key <> " must be non-empty")
     Ok(tom.String(text)) ->
+      // This match resolves too_long(text, limit) before the surrounding protocol step continues.
       case too_long(text, limit) {
         True ->
           Error(
@@ -340,16 +370,20 @@ fn bounded_string(
 // Asks whether a string is longer than the bound without walking a
 // pathological value to its end (lint R5), the way `client/catalog`
 // bounds an MCP server name.
+/// Too long keeps this client operation’s decoding or state decision in one place.
 fn too_long(text: String, limit: Int) -> Bool {
   string.drop_start(text, limit) != ""
 }
 
+/// Bounded count keeps this client operation’s decoding or state decision in one place.
 fn bounded_count(
   count: Int,
   limit: Int,
   subject: String,
   noun: String,
 ) -> Result(Nil, String) {
+  // This match resolves count > limit before the surrounding protocol step continues.
+  // This match resolves count > limit before the enclosing validation continues.
   case count > limit {
     False -> Ok(Nil)
     True ->
@@ -369,11 +403,14 @@ fn bounded_count(
 // The catalogue's strictness helper, restated rather than imported: this
 // parser answers about a different set of keys and must not depend on
 // the catalogue's private surface.
+/// Known keys keeps this client operation’s decoding or state decision in one place.
 fn known_keys(
   present: List(String),
   allowed: List(String),
   place: String,
 ) -> Result(Nil, String) {
+  // This match resolves list.find(present, fn(key) before the surrounding protocol step continues.
+  // This match resolves list.find(present, fn(key) before the enclosing validation continues.
   case list.find(present, fn(key) { !list.contains(allowed, key) }) {
     Error(Nil) -> Ok(Nil)
     Ok(unknown) ->
@@ -389,7 +426,10 @@ fn known_keys(
   }
 }
 
+/// Describe parse error keeps this client operation’s decoding or state decision in one place.
 fn describe_parse_error(error: tom.ParseError) -> String {
+  // This match resolves error before the surrounding protocol step continues.
+  // This match resolves error before the enclosing validation continues.
   case error {
     tom.Unexpected(got:, expected:) ->
       "not valid toml: expected " <> expected <> ", got `" <> got <> "`"
@@ -424,8 +464,11 @@ fn describe_parse_error(error: tom.ParseError) -> String {
 /// ```
 ///
 pub fn scannable_text(entry: Entry) -> Option(String) {
+  // This match resolves entry before the surrounding protocol step continues.
+  // This match resolves entry before the enclosing validation continues.
   case entry {
     entry.MessageEntry(message: message.AssistantMessage(stop_reason:, ..), ..) ->
+      // This match resolves stop_reason before the surrounding protocol step continues.
       case stop_reason {
         message.Errored | message.Aborted | message.Deferred -> None
         message.Pending | message.Stop | message.Length | message.ToolUse ->
@@ -552,6 +595,8 @@ pub fn cursor_value(seq: Int) -> JsonValue {
 /// ```
 ///
 pub fn cursor_seq(value: Option(JsonValue)) -> Int {
+  // This match resolves value before the surrounding protocol step continues.
+  // This match resolves value before the enclosing validation continues.
   case value {
     Some(json.Int(seq)) -> seq
     Some(json.Object(..))

@@ -102,6 +102,8 @@ pub fn join(tasks: List(Task)) -> Task {
           Error(failed) -> Ok(failed)
         }
       })
+
+    // Combine any recorded task failures into a joined retry task.
     case failed {
       [] -> Ok(Nil)
       [first, ..] ->

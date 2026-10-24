@@ -177,6 +177,7 @@ pub fn admits_all(ceiling: Ceiling, grants: List(Grant)) -> Bool {
   list.all(grants, admits(ceiling, _))
 }
 
+/// Checks whether requested network policy falls under the network ceiling.
 fn admits_network(
   allowed: NetworkCeiling,
   wanted: policy.NetworkPolicy,
@@ -192,6 +193,7 @@ fn admits_network(
   }
 }
 
+/// Checks whether requested scratch space falls under the allowed scratch ceiling.
 fn admits_scratch(
   allowed: List(ScratchCeiling),
   wanted: policy.Scratch,
@@ -212,8 +214,8 @@ fn under_any(path: String, roots: List(String)) -> Bool {
   list.any(roots, under(path, _))
 }
 
-// Whether a path is the root or sits beneath it, on a segment boundary. A path
-// with a `..` segment is refused outright, because the comparison is of text.
+/// Tests whether a path sits beneath a given root on segment boundaries.
+/// A path with a `..` segment is refused outright, because the comparison is of text.
 fn under(path: String, root: String) -> Bool {
   case list.contains(string.split(path, "/"), "..") {
     True -> False
@@ -272,10 +274,10 @@ pub fn from_table(
   ))
 }
 
-// A list of absolute paths, each normalized to have no trailing slash. A path
-// is a prefix on a segment boundary, so `/srv/work/` and `/srv/work` are one
-// root; `//` and `.` segments would make two spellings of one place and are
-// refused with the `..` ones.
+/// Decodes an array of absolute path strings, checking for valid segment boundaries.
+/// A path is a prefix on a segment boundary, so `/srv/work/` and `/srv/work` are one
+/// root; `//` and `.` segments would make two spellings of one place and are
+/// refused with the `..` ones.
 fn paths_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -285,11 +287,14 @@ fn paths_of(
   list.try_map(items, fn(path) { root_of(path, place <> "." <> key) })
 }
 
+/// Validates that an absolute root path does not contain dot or empty segments.
 fn root_of(path: String, key: String) -> Result(String, String) {
   use Nil <- result.try(
     workspaces.absolute(path) |> result.map_error(fn(why) { key <> " " <> why }),
   )
   let segments = string.split(path, "/")
+
+  // Ensure path contains no dot or empty segments and normalize trailing slashes.
   case list.contains(segments, "."), string.contains(path, "//") {
     True, _ | _, True ->
       Error(key <> " must not contain a . segment or an empty one")
@@ -301,24 +306,30 @@ fn root_of(path: String, key: String) -> Result(String, String) {
   }
 }
 
+/// Decodes an array of non-empty identifier strings from a TOML table key.
 fn names_of(
   fields: Dict(String, tom.Toml),
   place: String,
   key: String,
 ) -> Result(List(String), String) {
   use items <- result.try(strings_of(fields, place, key))
+
+  // Check that none of the decoded names are empty strings.
   case list.find(items, fn(name) { name == "" }) {
     Ok(_) -> Error(place <> "." <> key <> " must not hold an empty name")
     Error(Nil) -> Ok(items)
   }
 }
 
+/// Decodes a list of strings from a TOML table key, or empty list if absent.
 fn strings_of(
   fields: Dict(String, tom.Toml),
   place: String,
   key: String,
 ) -> Result(List(String), String) {
   let words = place <> "." <> key <> " must be an array of strings"
+
+  // Read the optional array field from TOML.
   case dict.get(fields, key) {
     Error(Nil) -> Ok([])
     Ok(tom.Array(items)) ->
@@ -332,13 +343,15 @@ fn strings_of(
   }
 }
 
-// `"any"`, or an array of `host:port` entries. The entry is the allowlist text a
-// proxy grant carries, so a ceiling can only admit what a grant can say.
+/// Decodes the network ceiling, either "any", absent, or an array of host:port strings.
+/// The entry is the allowlist text a proxy grant carries, so a ceiling can only admit what a grant can say.
 fn network_of(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(NetworkCeiling, String) {
   let key = place <> ".network"
+
+  // Dispatch on the network configuration shape.
   case dict.get(fields, "network") {
     Error(Nil) -> Ok(NoNetwork)
     Ok(tom.String("any")) -> Ok(AnyNetwork)
@@ -353,8 +366,11 @@ fn network_of(
   }
 }
 
+/// Validates that an entry string matches the host:port format with a valid port number.
 fn host_port(entry: String, key: String) -> Result(Nil, String) {
   let words = key <> " entry " <> entry <> " is not host:port"
+
+  // Verify host:port shape and valid port range.
   case string.split(entry, ":") {
     [host, port] ->
       case host != "", int.parse(port) {
@@ -365,13 +381,16 @@ fn host_port(entry: String, key: String) -> Result(Nil, String) {
   }
 }
 
-// The limit maxima: a table of the six limit names to positive integers. It may
-// be written as `[spawners.<name>.approval_ceiling.limits]` or inline.
+/// Decodes resource limit maxima from table or inline table format.
+/// A table of the six limit names to positive integers. It may
+/// be written as `[spawners.<name>.approval_ceiling.limits]` or inline.
 fn limits_of(
   fields: Dict(String, tom.Toml),
   place: String,
 ) -> Result(List(#(LimitField, Int)), String) {
   let key = place <> ".limits"
+
+  // Parse the limits table or inline table into field-limit pairs.
   case dict.get(fields, "limits") {
     Error(Nil) -> Ok([])
     Ok(tom.Table(table)) | Ok(tom.InlineTable(table)) -> {
@@ -388,6 +407,8 @@ fn limits_of(
           })
           |> result.map_error(fn(_) { key <> "." <> name <> " is not a limit" }),
         )
+
+        // Verify that the limit value is a positive integer.
         case value {
           tom.Int(most) if most >= 1 -> Ok(#(field, most))
           tom.Int(_) -> Error(key <> "." <> name <> " must be positive")
@@ -407,6 +428,7 @@ fn limits_of(
   }
 }
 
+/// Returns the exhaustive list of supported resource limit fields.
 fn limit_fields() -> List(LimitField) {
   [
     policy.CpuSeconds,
@@ -418,7 +440,8 @@ fn limit_fields() -> List(LimitField) {
   ]
 }
 
-// `"tmpfs"` or an absolute path, each entry one scratch choice.
+/// Decodes the scratch space ceiling options from TOML.
+/// `"tmpfs"` or an absolute path, each entry one scratch choice.
 fn scratch_of(
   fields: Dict(String, tom.Toml),
   place: String,
@@ -434,6 +457,7 @@ fn scratch_of(
   })
 }
 
+/// Verifies that all present table keys belong to the allowed list.
 fn known_keys(
   present: List(String),
   allowed: List(String),

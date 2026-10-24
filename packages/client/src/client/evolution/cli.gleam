@@ -68,6 +68,8 @@ pub fn main(arguments: List(String)) -> Nil {
     use command <- result.try(parse(arguments))
     run(command)
   }
+
+  // Print command output to stdout or format failure and halt with appropriate exit code.
   case outcome {
     Ok(value) -> io.println(json.to_string(value))
     Error(failure) -> {
@@ -84,14 +86,19 @@ pub fn main(arguments: List(String)) -> Nil {
 /// `parse(["status",session_id,"--request-id","publish-1"])` retains its exact ID.
 @internal
 pub fn parse(arguments: List(String)) -> Result(Command, Failure) {
+  // Extract optional state directory parameter.
   let #(directory, rest) = case arguments {
     ["--state-dir", directory, ..rest] -> #(directory, rest)
     rest -> #("", rest)
   }
+
+  // Deconstruct command into action verb, session identifier, and option arguments.
   use #(action, session, options) <- result.try(case rest {
     [action, session, ..options] -> Ok(#(action, session, options))
     _ -> Error(Invalid(usage))
   })
+
+  // Validate the requested action against supported evolution commands.
   use Nil <- result.try(
     case
       list.contains(
@@ -107,6 +114,7 @@ pub fn parse(arguments: List(String)) -> Result(Command, Failure) {
       False -> Error(Invalid("unknown evolution action"))
     },
   )
+
   use _ <- result.try(
     ids.parse_session_id(session)
     |> result.replace_error(Invalid(
@@ -127,10 +135,12 @@ pub fn parse(arguments: List(String)) -> Result(Command, Failure) {
   Ok(Command(directory, session, action, arguments))
 }
 
+/// Parses command line option flags and argument files into structured JSON fields.
 fn parse_options(
   arguments: List(String),
   fields: List(#(String, json.JsonValue)),
 ) -> Result(List(#(String, json.JsonValue)), Failure) {
+  // Parse option arguments recursively until all arguments are consumed.
   case arguments {
     [] -> Ok(fields)
     ["--args", path, ..rest] -> {
@@ -140,10 +150,13 @@ fn parse_options(
           Invalid(simplifile.describe_error(error))
         }),
       )
+
+      // Ensure argument file size remains within the 48 KiB ceiling.
       use Nil <- result.try(case info.size <= 49_152 {
         True -> Ok(Nil)
         False -> Error(Invalid("argument file exceeds 48 KiB"))
       })
+
       use text <- result.try(
         simplifile.read(path)
         |> result.map_error(fn(error) {
@@ -155,19 +168,24 @@ fn parse_options(
         |> result.replace_error(Invalid("argument file is not JSON")),
       )
       use value <- result.try(admit_arguments(value))
+
+      // Unpack object fields from parsed JSON arguments.
       use added <- result.try(case value {
         json.Object(added) -> Ok(added)
         _ -> Error(Invalid("argument file must be an object"))
       })
+
       parse_options(rest, list.append(fields, added))
     }
     [flag, value, ..rest] -> {
+      // Map option flag strings to target payload field names.
       use key <- result.try(case flag {
         "--candidate-id" -> Ok("candidate_id")
         "--evidence-id" -> Ok("evidence_id")
         "--request-id" -> Ok("request_id")
         _ -> Error(Invalid("unknown option: " <> flag))
       })
+
       parse_options(rest, [#(key, json.String(value)), ..fields])
     }
     [_] -> Error(Invalid("an option is missing its value"))
@@ -183,11 +201,15 @@ fn parse_options(
 pub fn admit_arguments(
   value: json.JsonValue,
 ) -> Result(json.JsonValue, Failure) {
+  // Ensure the top-level argument payload is an object.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error(Invalid("evolution arguments must be an object"))
   })
+
   let names = list.map(fields, fn(field) { field.0 })
+
+  // Verify field uniqueness, count limits, and total payload size.
   use Nil <- result.try(
     case
       list.length(names) == list.length(list.unique(names))
@@ -198,7 +220,10 @@ pub fn admit_arguments(
       False -> Error(Invalid("duplicate or oversized evolution arguments"))
     },
   )
+
   use Nil <- result.try(list.try_each(fields, admit_identity))
+
+  // Prohibit client callers from spoofing authority or connection parameters.
   case
     list.any(names, fn(name) {
       list.contains(
@@ -218,6 +243,7 @@ pub fn admit_arguments(
   }
 }
 
+/// Validates format constraints on identity argument fields such as candidate and evidence IDs.
 fn admit_identity(field: #(String, json.JsonValue)) -> Result(Nil, Failure) {
   case field {
     #("candidate_id", json.String(id)) ->
@@ -260,6 +286,7 @@ pub fn run(command: Command) -> Result(json.JsonValue, Failure) {
   }
 }
 
+/// Discovers session endpoints and performs the evolution command exchange.
 fn exchange(command: Command) -> Result(json.JsonValue, Failure) {
   use #(address, token, epoch) <- result.try(
     admin.peer_discover(command.directory) |> result.map_error(NotSent),
@@ -300,21 +327,29 @@ fn exchange(command: Command) -> Result(json.JsonValue, Failure) {
   outcome
 }
 
+/// Verifies that the target session is resident on the daemon and returns its incarnation string.
 fn resident(view: json.JsonValue, session: String) -> Result(String, Failure) {
   use id <- result.try(text(view, "session_id") |> result.map_error(NotSent))
+
+  // Verify that the retrieved status matches the requested session identity.
   use Nil <- result.try(case id == session {
     True -> Ok(Nil)
     False -> Error(NotSent("resident lookup returned another session"))
   })
+
   use status <- result.try(field(view, "status") |> result.map_error(NotSent))
   use state <- result.try(text(status, "state") |> result.map_error(NotSent))
+
+  // Require that the session is in the resident operational state.
   use Nil <- result.try(case state {
     "resident" -> Ok(Nil)
     _ -> Error(NotSent("session must already be resident"))
   })
+
   text(status, "incarnation") |> result.map_error(NotSent)
 }
 
+/// Conducts subscription verification and command delivery over an established websocket session.
 fn session_exchange(
   command: Command,
   socket: websocket.Connection,
@@ -354,6 +389,7 @@ fn session_exchange(
   reply_value(reply)
 }
 
+/// Confirms that a subscription acknowledgment frame matches expected snapshot event types.
 fn verify_subscription(reply: protocol.EventEnvelope) -> Result(Nil, String) {
   case reply.event {
     protocol.SnapshotBegin(_)
@@ -365,24 +401,25 @@ fn verify_subscription(reply: protocol.EventEnvelope) -> Result(Nil, String) {
   }
 }
 
-// The bounded network subscribe header carries native attachment metadata.
-// Legacy delivery pushes it separately, so that path retains both frames in
-// either order. No mutation is sent before the original attachment verifies.
+/// Awaits and correlates both subscription and attachment handshake frames from the session stream.
 fn await_subscription(
   inbox,
   attachment: Option(json.JsonValue),
   reply: Option(protocol.EventEnvelope),
   remaining: Int,
 ) -> Result(#(json.JsonValue, protocol.EventEnvelope), String) {
+  // Check if both attachment and subscription frames have arrived.
   case attachment, reply {
     Some(attachment), Some(reply) -> Ok(#(attachment, reply))
     _, _ -> {
+      // Describe missing handshake elements for timeout diagnostics.
       let waiting = case attachment, reply {
         None, None -> "awaiting attachment and subscription reply"
         None, Some(_) -> "awaiting native attachment"
         Some(_), None -> "awaiting subscription reply"
         Some(_), Some(_) -> "subscription received"
       }
+
       use frame <- result.try(
         next_event(inbox, remaining)
         |> result.map_error(fn(reason) {
@@ -393,6 +430,8 @@ fn await_subscription(
           <> int.to_string(128 - remaining)
         }),
       )
+
+      // Handle received websocket events to collect attachment and subscription confirmation.
       case frame.event, frame.reply_to {
         protocol.SnapshotBegin(metadata), Some(1) ->
           await_subscription(inbox, Some(metadata), Some(frame), remaining - 1)
@@ -408,27 +447,35 @@ fn await_subscription(
   }
 }
 
+/// Waits for a correlated event reply matching the sent command sequence identifier.
 fn await_reply(
   inbox,
   id: Int,
   remaining: Int,
 ) -> Result(protocol.EventEnvelope, String) {
   use frame <- result.try(next_event(inbox, remaining))
+
+  // Check whether the incoming frame matches the expected reply identifier.
   case frame.reply_to == Some(id) {
     True -> Ok(frame)
     False -> await_reply(inbox, id, remaining - 1)
   }
 }
 
+/// Receives and decodes the next incoming websocket control event frame within bounds.
 fn next_event(inbox, remaining: Int) -> Result(protocol.EventEnvelope, String) {
+  // Bound the maximum number of intermediate frames examined.
   use Nil <- result.try(case remaining > 0 {
     True -> Ok(Nil)
     False -> Error("too many unrelated control frames")
   })
+
   use message <- result.try(
     process.receive(inbox, 5000)
     |> result.replace_error("control frame did not arrive"),
   )
+
+  // Dispatch incoming websocket messages and decode event frames.
   case message {
     websocket.Connected -> next_event(inbox, remaining - 1)
     websocket.Incoming(text) ->
@@ -460,6 +507,8 @@ pub fn verify_attachment(
   use actual_incarnation <- result.try(
     text(value, "incarnation") |> result.map_error(NotSent),
   )
+
+  // Verify session identity, daemon boot epoch, and manager incarnation match expectations.
   case
     actual_session == session
     && actual_epoch == epoch
@@ -490,14 +539,18 @@ pub fn reply_value(
   }
 }
 
+/// Extracts a non-empty string property from a JSON object.
 fn text(value: json.JsonValue, key: String) -> Result(String, String) {
   use value <- result.try(field(value, key))
+
+  // Ensure the field is a non-empty string.
   case value {
     json.String(text) if text != "" -> Ok(text)
     _ -> Error("invalid " <> key)
   }
 }
 
+/// Extracts a named property from a JSON object.
 fn field(value: json.JsonValue, key: String) -> Result(json.JsonValue, String) {
   case value {
     json.Object(fields) ->
@@ -507,13 +560,16 @@ fn field(value: json.JsonValue, key: String) -> Result(json.JsonValue, String) {
   }
 }
 
+/// Formats a command execution failure into a structured JSON error response.
 fn failure_json(failure: Failure) -> json.JsonValue {
+  // Map failure variants to diagnostic code identifiers and explanation messages.
   let #(code, message) = case failure {
     Invalid(reason) -> #("invalid_arguments", reason)
     NotSent(reason) -> #("not_sent", reason)
     Refused(reason) -> #("refused", reason)
     UnknownOutcome(reason) -> #("unknown_outcome", reason)
   }
+
   json.Object([
     #(
       "error",
@@ -525,6 +581,7 @@ fn failure_json(failure: Failure) -> json.JsonValue {
   ])
 }
 
+/// Maps failure categories to process exit status codes for CLI error reporting.
 fn exit_code(failure: Failure) -> Int {
   case failure {
     Invalid(_) -> 2

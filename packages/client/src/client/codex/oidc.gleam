@@ -82,6 +82,7 @@ pub fn verify(
 /// The refusal for a token whose key ID the published set does not hold.
 const unknown_signing_key = "unknown_signing_key"
 
+/// Fetches the published JSON Web Key Set from the identity provider.
 fn published_keys(
   fetch: fn(http.HttpRequest, Int) -> Result(network.Response, String),
 ) -> Result(String, String) {
@@ -173,6 +174,8 @@ pub fn verify_with_keys(
       && claims.authorized_party != Some(client_id),
     return: Error("invalid_identity_authorized_party"),
   )
+
+  // Verify the identity against expected nonce or subject.
   use Nil <- result.try(case verification {
     Browser(expected) ->
       case claims.nonce {
@@ -194,11 +197,14 @@ pub fn verify_with_keys(
         False -> Error("account_mismatch")
       }
   })
+
   Ok(claims.subject)
 }
 
-// Library errors may carry claims, key identifiers or parser excerpts. Only
-// fixed labels cross the identity boundary into operator diagnostics.
+/// Maps a JWT validation failure to a fixed diagnostic error label.
+///
+/// Library errors may carry claims, key identifiers or parser excerpts. Only
+/// fixed labels cross the identity boundary into operator diagnostics.
 fn identity_failure(error: jwt.JwtError) -> String {
   case error {
     jwt.InvalidSignature -> "invalid_identity_signature"
@@ -251,6 +257,7 @@ pub fn without_certificates(jwks: String) -> String {
     decode.success(keys)
   }
 
+  // Parse JWKS JSON and strip certificates if successful.
   case json.parse(jwks, keys_decoder) {
     Ok(keys) ->
       json.object([#("keys", json.array(keys, certificate_free_key))])
@@ -259,6 +266,7 @@ pub fn without_certificates(jwks: String) -> String {
   }
 }
 
+/// Converts a single JWK map into JSON while omitting X.509 certificate fields.
 fn certificate_free_key(key: dict.Dict(String, Option(String))) -> json.Json {
   dict.to_list(key)
   |> list.filter_map(fn(entry) {
@@ -281,6 +289,7 @@ fn names_unpublished_key(token: String, keys: key_set.JwkSet) -> Bool {
     |> result.replace_error(Nil)
     |> result.try(jwt.kid)
 
+  // Check if parsed key ID exists in key set.
   case named {
     Ok(kid) ->
       !list.any(key_set.to_list(keys), fn(key) { gose.kid(key) == Ok(kid) })
@@ -288,6 +297,7 @@ fn names_unpublished_key(token: String, keys: key_set.JwkSet) -> Bool {
   }
 }
 
+/// Decoder for OIDC ID token payload claims.
 fn identity_decoder() -> decode.Decoder(Identity) {
   use subject <- decode.field("sub", decode.string)
   use nonce <- decode.optional_field(

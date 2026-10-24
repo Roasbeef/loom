@@ -210,11 +210,13 @@ pub fn for_session(config: agency.Config) -> Door {
 
 // --- the two arms ----------------------------------------------------------
 
-// A remember is a parse and a write. The parse is what keeps a cell
-// honest: `ext.remember` takes a JSON document as text on the wire
-// because that is what crosses a msgpack channel cheaply, and storing an
-// unparsed string would put a quoted document where every other reader
-// of the blackboard expects a value.
+/// Writes a JSON value into the extension's reserved memory cell.
+///
+/// A remember is a parse and a write. The parse is what keeps a cell
+/// honest: `ext.remember` takes a JSON document as text on the wire
+/// because that is what crosses a msgpack channel cheaply, and storing an
+/// unparsed string would put a quoted document where every other reader
+/// of the blackboard expects a value.
 fn remember(
   runtime: Runtime,
   cell: Cell,
@@ -233,22 +235,29 @@ fn remember(
   |> result.map_error(unavailable)
 }
 
-// A recall reads the cell and renders it back. `api.fact` is the read
-// that never consulted the reservation, which is what makes it the right
-// one here: this key *is* reserved, and the harness-side listing door
-// would answer a subtree where one cell was asked for.
+/// Reads the current value of the extension's reserved memory cell.
+///
+/// A recall reads the cell and renders it back. `api.fact` is the read
+/// that never consulted the reservation, which is what makes it the right
+/// one here: this key *is* reserved, and the harness-side listing door
+/// would answer a subtree where one cell was asked for.
 fn recall(runtime: Runtime, cell: Cell) -> Result(Option(String), Refusal) {
   use found <- result.try(
     api.fact(runtime, key(cell)) |> result.map_error(unavailable),
   )
+
+  // Render the retrieved JSON value back to its wire text format, or indicate
+  // that no fact currently exists for this key.
   case found {
     None -> Ok(None)
     Some(value) -> Ok(Some(json.to_string(value)))
   }
 }
 
-// Every call borrows the runtime first, and a holder that is not up
-// refuses in band rather than crashing the effect process.
+/// Executes an operation against the storage runtime if it is currently available.
+///
+/// Every call borrows the runtime first, and a holder that is not up
+/// refuses in band rather than crashing the effect process.
 fn with_runtime(
   wiring: Wiring,
   then: fn(Runtime) -> Result(a, Refusal),

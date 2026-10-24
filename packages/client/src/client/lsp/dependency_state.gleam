@@ -62,6 +62,8 @@ pub fn fingerprint(
 
 // Cycles in path dependencies do not turn a query into an unbounded walk.
 // Gleam diagnoses them during setup; this walk records each real root once.
+
+/// Recursively traverses path dependencies to compute transitive dependency digest set.
 fn walk(
   workspace: String,
   protected: List(String),
@@ -70,6 +72,7 @@ fn walk(
   seen: List(String),
   digests: List(String),
 ) -> Result(List(String), String) {
+  // Process next pending root or return sorted digests when queue is empty.
   case pending {
     [] -> Ok(list.sort(digests, string.compare))
     [root, ..rest] -> {
@@ -111,15 +114,20 @@ fn walk(
 
 // Only Gleam's path dependency tables introduce more local configurations.
 // Registry and git dependencies remain the fixed downloader's responsibility.
+
+/// Extracts local path dependency targets declared in a manifest section.
 fn dependencies(section: Result(tom.Toml, Nil), root: String) -> List(String) {
   case section {
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
       entries
       |> dict.values
       |> list.filter_map(fn(value) {
+        // Inspect table entry for path property.
         case value {
           tom.InlineTable(fields) | tom.Table(fields) -> {
             use path <- result.try(dict.get(fields, "path"))
+
+            // Extract string path from toml value.
             case path {
               tom.String(path) -> filepath.expand(filepath.join(root, path))
               _ -> Error(Nil)
@@ -134,6 +142,8 @@ fn dependencies(section: Result(tom.Toml, Nil), root: String) -> List(String) {
 
 // A worktree starts without generated metadata. Absence is an input state,
 // while an existing unreadable or protected file is an actionable failure.
+
+/// Computes digest of a generated metadata file if present or returns missing marker.
 fn generated(
   workspace: String,
   protected: List(String),
@@ -142,6 +152,8 @@ fn generated(
   digest: fn(String) -> Result(String, String),
 ) -> Result(String, String) {
   use admitted <- result.try(admit(workspace, protected, authorized, path))
+
+  // Determine whether metadata file exists on disk.
   case simplifile.is_file(admitted) {
     Ok(False) -> Ok(path <> ":missing")
     Ok(True) -> {
@@ -159,6 +171,7 @@ fn generated(
 // The compiler inventory contains package versions and git commit strings
 // in tables, not ordered instructions. Canonical JSON preserves every key
 // and value while making map iteration order irrelevant to lease reuse.
+/// Parses toml package inventory text and produces a canonical digest.
 fn inventory_digest(text: String) -> Result(String, String) {
   use fields <- result.try(
     tom.parse(text)
@@ -171,10 +184,13 @@ fn inventory_digest(text: String) -> Result(String, String) {
 // Current inventories reach root -> git -> package -> commit. Refuse an
 // unknown value or deeper table instead of omitting an installation input
 // or allowing workspace data to drive an unbounded recursive traversal.
+
+/// Recursively converts TOML values to canonical JSON representation up to bounded depth.
 fn inventory_value(
   value: tom.Toml,
   depth: Int,
 ) -> Result(json.JsonValue, String) {
+  // Convert TOML variant to JSON equivalent.
   case value {
     tom.String(text) -> Ok(json.String(text))
     tom.Table(fields) | tom.InlineTable(fields) -> {
@@ -198,6 +214,7 @@ fn inventory_value(
 // Configuration files are small inputs, not a second source corpus. Stat
 // before reading bounds the normal allocation; the length check also
 // refuses a file that grew between stat and read.
+/// Validates file size and reads small dependency metadata content into string.
 fn metadata(path: String) -> Result(String, String) {
   use info <- result.try(
     simplifile.file_info(path) |> result.map_error(simplifile.describe_error),
@@ -250,6 +267,7 @@ pub fn verify(
 // Workspace containment alone is not session permission. A narrowed session
 // may grant only one subdirectory, so every metadata read must also fit a
 // real readable or writable root already carried by that session.
+/// Verifies that a path sits within authorized readable or writable session roots.
 fn admit(
   workspace: String,
   protected: List(String),
@@ -262,6 +280,8 @@ fn admit(
       let root = resolve.workspace_real(root)
       root == "/" || real == root || string.starts_with(real, root <> "/")
     })
+
+  // Ensure path is covered by at least one authorized root.
   case allowed {
     True -> Ok(real)
     False ->

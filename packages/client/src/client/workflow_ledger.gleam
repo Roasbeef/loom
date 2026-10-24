@@ -46,7 +46,9 @@ pub fn reserve(
   caller: agent.Caller,
   step: Step,
 ) -> Result(agent.Caller, String) {
+  // Validate the workflow identifiers and input bound before reserving a child step.
   use Nil <- result.try(
+    // Decide how to handle the branch input.
     case
       valid_name(step.workflow)
       && valid_name(step.version)
@@ -60,6 +62,7 @@ pub fn reserve(
         )
     },
   )
+
   let run_key =
     "client/workflow/run/"
     <> digest(
@@ -79,9 +82,13 @@ pub fn reserve(
   use existing <- result.try(
     api.fact(runtime, step_key) |> result.map_error(string.inspect),
   )
+
+  // Decide how to handle existing {.
   case existing {
     Some(value) -> {
       use assignment <- result.try(text(value, "assignment"))
+
+      // Decide how to handle use Nil <- result.try( assignment == step.assignment {.
       use Nil <- result.try(case assignment == step.assignment {
         True -> Ok(Nil)
         False ->
@@ -89,6 +96,7 @@ pub fn reserve(
             "workflow step assignment changed; choose an explicit new step name",
           )
       })
+
       use operation <- result.try(text(value, "operation"))
       use operation <- result.try(
         ids.parse_op_id(operation) |> result.map_error(string.inspect),
@@ -121,10 +129,13 @@ pub fn reserve(
   }
 }
 
+/// Establishes ensure same for the caller, keeping its validation and result policy at this boundary.
 fn ensure_same(runtime, key, value) -> Result(Nil, String) {
   use existing <- result.try(
     api.fact(runtime, key) |> result.map_error(string.inspect),
   )
+
+  // Decide how to handle existing {.
   case existing {
     Some(old) if old == value -> Ok(Nil)
     Some(_) ->
@@ -144,14 +155,19 @@ fn digest(value) -> String {
   blob.ref_for(<<json.to_string(value):utf8>>)
 }
 
+/// Establishes text for the caller, keeping its validation and result policy at this boundary.
 fn text(value: JsonValue, key: String) -> Result(String, String) {
+  // Decide how to handle use fields <- result.try( value {.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     _ -> Error("invalid workflow record")
   })
+
   use field <- result.try(
     list.key_find(fields, key) |> result.replace_error("missing workflow field"),
   )
+
+  // Decide how to handle field {.
   case field {
     json.String(value) -> Ok(value)
     _ -> Error("invalid workflow field")

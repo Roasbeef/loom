@@ -54,6 +54,8 @@ pub type Binding {
 /// ```
 pub fn valid_profile(profile: String) -> Result(Nil, String) {
   let letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+  // Check characters of profile name string against allowed letters and punctuation.
   let valid = case string.to_graphemes(profile) {
     [first, ..rest] ->
       string.contains(letters, first)
@@ -61,6 +63,8 @@ pub fn valid_profile(profile: String) -> Result(Nil, String) {
       && list.all(rest, fn(char) { string.contains(letters <> "_-", char) })
     [] -> False
   }
+
+  // Map validation boolean to Ok or error.
   case valid {
     True -> Ok(Nil)
     False -> Error("invalid_profile")
@@ -83,12 +87,15 @@ pub fn decode_record(document: String) -> Result(Binding, String) {
   Ok(record)
 }
 
+/// Decodes a stored Binding JSON record.
 fn record_decoder() -> decode.Decoder(Binding) {
   use version <- decode.field("version", decode.int)
   use host_id <- decode.field("ext_agent_host_id", decode.string)
   use client_id <- decode.field("client_id", decode.optional(decode.string))
   use subject <- decode.field("subject", decode.optional(decode.string))
   use grant <- decode.field("grant", decode.optional(grant_decoder()))
+
+  // Validate version number matches supported SIWC format.
   case version {
     2 -> decode.success(Binding(host_id:, client_id:, subject:, grant:))
     _ ->
@@ -99,6 +106,7 @@ fn record_decoder() -> decode.Decoder(Binding) {
   }
 }
 
+/// Decodes an OAuth Grant JSON object.
 fn grant_decoder() -> decode.Decoder(Grant) {
   use access <- decode.field("access_token", decode.string)
   use refresh <- decode.field("refresh_token", decode.optional(decode.string))
@@ -126,6 +134,7 @@ pub fn encode_record(record: Binding) -> String {
   |> json.to_string
 }
 
+/// Encodes an OAuth Grant record into JSON.
 fn encode_grant(grant: Grant) -> json.Json {
   json.object([
     #("access_token", json.string(grant.access)),
@@ -136,15 +145,20 @@ fn encode_grant(grant: Grant) -> json.Json {
   ])
 }
 
+/// Validates the format and security properties of a binding record.
 fn validate(record: Binding) -> Result(Nil, String) {
   let host_ok =
     string.starts_with(record.host_id, "urn:uuid:")
     && string.byte_size(record.host_id) == 45
+
+  // Validate client ID constraints.
   let client_ok = case record.client_id {
     None -> record.subject == None && record.grant == None
     Some(client_id) ->
       is_label(client_id, 256) && client_id != "dynamic_agent_client"
   }
+
+  // Validate grant presence and subject label constraints.
   let grant_ok = case record.grant, record.subject {
     None, None -> True
     None, Some(subject) -> is_label(subject, 512)
@@ -161,6 +175,8 @@ fn validate(record: Binding) -> Result(Nil, String) {
       && list.all(grant.scopes, fn(scope) { is_label(scope, 128) })
     Some(_), None -> False
   }
+
+  // Combine all validation checks into final result.
   case host_ok && client_ok && grant_ok {
     True -> Ok(Nil)
     False -> Error("credential_unavailable")
@@ -174,6 +190,7 @@ fn is_label(value: String, limit: Int) -> Bool {
   && !string.contains(value, "\r")
 }
 
+/// Checks whether a string contains only permitted URL-safe base64 / token characters.
 fn is_secret(value: String) -> Bool {
   let permitted =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~+/="
@@ -191,6 +208,7 @@ fn is_secret(value: String) -> Bool {
 /// // credentials.load("/private/state/work.json")
 /// ```
 pub fn load(path: String) -> Result(Option(Binding), String) {
+  // Check whether credential file exists on disk.
   case bootstrap.path_exists(path) {
     False -> Ok(None)
     True -> {

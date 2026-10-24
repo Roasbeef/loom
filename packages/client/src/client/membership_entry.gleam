@@ -29,6 +29,12 @@
 //// module cannot call, and a test of the format should not need a key.
 //// `client/membership_signing` supplies the real pair.
 ////
+//// ## Flow
+////
+//// `seal` encodes and signs; `read` parses and verifies; `decode_body`
+//// checks the exact JSON shape before the total field decoders run. `parse_line`
+//// validates framing and canonical base64 before `read` accepts the bytes.
+////
 //// ## How a line becomes an entry
 ////
 //// `read` runs the first three acceptance steps of protocol-change/086 and
@@ -367,6 +373,7 @@ pub fn seal(entry: Entry, sign: Signer) -> Result(SignedEntry, SealError) {
   Ok(SignedEntry(entry:, body:, signature:, id: id_of_body(body)))
 }
 
+/// Refuses bytes larger than the supplied protocol limit.
 fn within(bytes: BitArray, limit: Int) -> Result(Nil, SealError) {
   case bit_array.byte_size(bytes) <= limit {
     True -> Ok(Nil)
@@ -399,6 +406,7 @@ pub fn encode_body(entry: Entry) -> BitArray {
   |> bit_array.from_string
 }
 
+/// Encodes kind-specific fields in canonical wire order.
 fn kind_fields(kind: Kind) -> List(#(String, json.Json)) {
   case kind {
     Genesis(deployment:, authority:) -> [
@@ -416,11 +424,14 @@ fn kind_fields(kind: Kind) -> List(#(String, json.Json)) {
   }
 }
 
+/// Encodes a member, omitting its optional port when absent.
 fn member_fields(member: Member) -> List(#(String, json.Json)) {
+  // Preserve absence as omission rather than encoding a null port.
   let port = case member.listen_port {
     Some(number) -> [#("listen_port", json.int(number))]
     None -> []
   }
+
   list.flatten([
     [
       #("name", json.string(member.name)),
@@ -537,6 +548,7 @@ type Shape {
   RevokeShape
 }
 
+/// Rejects bodies whose format marker is unsupported.
 fn check_format(
   fields: dict.Dict(String, decode.Dynamic),
 ) -> Result(Nil, ReadError) {
@@ -547,10 +559,12 @@ fn check_format(
   }
 }
 
+/// Converts a dynamic JSON value only when it is a string.
 fn text_of_dynamic(value: decode.Dynamic) -> Result(String, Nil) {
   decode.run(value, decode.string) |> result.replace_error(Nil)
 }
 
+/// Selects the key set and decoder from the body's kind word.
 fn read_shape(
   fields: dict.Dict(String, decode.Dynamic),
 ) -> Result(Shape, ReadError) {
@@ -565,6 +579,7 @@ fn read_shape(
 // The keys a body of each kind carries after the five common ones. The member
 // kind has one optional key, `listen_port`, so its required and allowed sets
 // differ.
+/// Lists every mandatory key for the selected entry shape.
 fn required_keys(shape: Shape) -> List(String) {
   let common = ["format", "seq", "prev", "time", "kind"]
   list.append(common, case shape {
@@ -582,6 +597,7 @@ fn required_keys(shape: Shape) -> List(String) {
   })
 }
 
+/// Lists required keys plus the optional member port key.
 fn allowed_keys(shape: Shape) -> List(String) {
   case shape {
     MemberShape -> ["listen_port", ..required_keys(shape)]
@@ -589,6 +605,7 @@ fn allowed_keys(shape: Shape) -> List(String) {
   }
 }
 
+/// Requires all mandatory keys and refuses every unknown key.
 fn check_keys(
   fields: dict.Dict(String, decode.Dynamic),
   shape: Shape,
@@ -596,12 +613,15 @@ fn check_keys(
   let allowed = allowed_keys(shape)
   let complete = list.all(required_keys(shape), dict.has_key(fields, _))
   let nothing_extra = list.all(dict.keys(fields), list.contains(allowed, _))
+
+  // The body is accepted only when required and allowed keys agree exactly.
   case complete && nothing_extra {
     True -> Ok(Nil)
     False -> Error(Malformed(KeysNotExact))
   }
 }
 
+/// Extracts a safe field name from the first decoder failure.
 fn failed_key(errors: List(decode.DecodeError)) -> String {
   case errors {
     [decode.DecodeError(path: [key, ..], ..), ..] -> key
@@ -609,6 +629,7 @@ fn failed_key(errors: List(decode.DecodeError)) -> String {
   }
 }
 
+/// Builds a decoder from the common fields and selected kind.
 fn entry_decoder(shape: Shape) -> decode.Decoder(Entry) {
   use seq <- decode.field("seq", natural_decoder())
   use prev <- decode.field("prev", id_decoder())
@@ -617,7 +638,9 @@ fn entry_decoder(shape: Shape) -> decode.Decoder(Entry) {
   decode.success(Entry(seq:, prev:, time:, kind:))
 }
 
+/// Decodes fields according to the validated entry shape.
 fn kind_decoder(shape: Shape) -> decode.Decoder(Kind) {
+  // The selected shape determines which required fields are meaningful.
   case shape {
     GenesisShape -> {
       use deployment <- decode.field(
@@ -642,6 +665,7 @@ fn kind_decoder(shape: Shape) -> decode.Decoder(Kind) {
   }
 }
 
+/// Decodes required member fields and the optional listen port.
 fn member_decoder() -> decode.Decoder(Member) {
   use name <- decode.field("name", text_decoder(catalogue.is_executor_name))
   use node <- decode.field("node", text_decoder(is_node_name))
@@ -667,53 +691,72 @@ fn member_decoder() -> decode.Decoder(Member) {
 
 // A string that satisfies a predicate. The placeholder in `decode.failure`
 // is never returned to a caller: a failed decoder yields errors only.
+/// Accepts a string only when its domain predicate holds.
 fn text_decoder(accept: fn(String) -> Bool) -> decode.Decoder(String) {
   use text <- decode.then(decode.string)
+
+  // Predicate failure becomes a decoder error, not a placeholder value.
   case accept(text) {
     True -> decode.success(text)
     False -> decode.failure("", "valid text")
   }
 }
 
+/// Decodes a non-negative integer.
 fn natural_decoder() -> decode.Decoder(Int) {
   use number <- decode.then(decode.int)
+
+  // Negative values are outside the ledger's natural-number fields.
   case number >= 0 {
     True -> decode.success(number)
     False -> decode.failure(0, "non-negative integer")
   }
 }
 
+/// Decodes a port in the inclusive range 1 through 65535.
 fn port_decoder() -> decode.Decoder(Option(Int)) {
   use number <- decode.then(decode.int)
+
+  // Zero and values above the TCP port range are not valid ports.
   case number >= 1 && number <= 65_535 {
     True -> decode.success(Some(number))
     False -> decode.failure(None, "port")
   }
 }
 
+/// Decodes exactly the requested width of lowercase hex.
 fn hex_decoder(digits: Int) -> decode.Decoder(BitArray) {
   use text <- decode.then(decode.string)
+
+  // A width or alphabet failure must remain a decoder failure.
   case parse_hex(text, digits) {
     Ok(bytes) -> decode.success(bytes)
     Error(Nil) -> decode.failure(<<>>, "lowercase hex")
   }
 }
 
+/// Wraps a decoded identity as an EntryId.
 fn id_decoder() -> decode.Decoder(EntryId) {
   use bytes <- decode.then(hex_decoder(64))
   decode.success(EntryId(bytes))
 }
 
+/// Resolves a role word using the distribution plan vocabulary.
 fn role_decoder() -> decode.Decoder(Role) {
   use word <- decode.then(decode.string)
+
+  // Unknown role words are rejected instead of silently defaulted.
   case distribution_plan.member_role_from_word(word) {
     Ok(role) -> decode.success(role)
     Error(_) -> decode.failure(distribution_plan.Orchestrator, "role")
   }
 }
 
+/// Decodes one of the three directory standing wire words.
 fn directory_decoder() -> decode.Decoder(DirectoryStanding) {
   use word <- decode.then(decode.string)
+
+  // Keep the wire vocabulary closed so new standings require a versioned change.
   case word {
     "voter" -> decode.success(Voter)
     "learner" -> decode.success(Learner)
@@ -722,6 +765,7 @@ fn directory_decoder() -> decode.Decoder(DirectoryStanding) {
   }
 }
 
+/// Decodes links and enforces the maximum without a full-list count.
 fn links_decoder() -> decode.Decoder(List(String)) {
   use links <- decode.then(
     decode.list(text_decoder(catalogue.is_executor_name)),
@@ -737,12 +781,14 @@ fn links_decoder() -> decode.Decoder(List(String)) {
 
 // --- value checks ------------------------------------------------------------
 
+/// Checks an Erlang node name using distribution naming rules.
 fn is_node_name(text: String) -> Bool {
   result.is_ok(distribution.check_node_name("node", text))
 }
 
 // The host rule of `distribution_plan.check_node`: a DNS name or an address,
 // at most 253 bytes.
+/// Accepts a bounded host spelling for a member.
 fn is_host(text: String) -> Bool {
   let allowed =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:_"
@@ -751,6 +797,7 @@ fn is_host(text: String) -> Bool {
   && list.all(string.to_graphemes(text), string.contains(allowed, _))
 }
 
+/// Checks the revoke reason byte limit and control-character rule.
 fn is_reason(text: String) -> Bool {
   string.byte_size(text) <= max_reason_bytes
   && !distribution_plan.has_control_character(text)
@@ -763,6 +810,7 @@ type Place {
   Literal(code: Int)
 }
 
+/// Checks the fixed UTC timestamp spelling without calendar validation.
 fn is_timestamp(text: String) -> Bool {
   let shape = [
     Digit,
@@ -791,6 +839,7 @@ fn is_timestamp(text: String) -> Bool {
   matches_shape(codes, shape)
 }
 
+/// Matches code points against timestamp digit and literal slots.
 fn matches_shape(codes: List(Int), shape: List(Place)) -> Bool {
   case codes, shape {
     [], [] -> True
@@ -804,12 +853,14 @@ fn matches_shape(codes: List(Int), shape: List(Place)) -> Bool {
 
 // --- hex ---------------------------------------------------------------------
 
+/// Encodes bytes as lowercase hexadecimal text.
 fn hex_of(bytes: BitArray) -> String {
   string.lowercase(bit_array.base16_encode(bytes))
 }
 
 // Exactly `digits` lowercase hex characters. `base16_decode` accepts both
 // cases, so the case is checked by comparing the text with its lowercase.
+/// Decodes exact-width lowercase hexadecimal text.
 fn parse_hex(text: String, digits: Int) -> Result(BitArray, Nil) {
   case string.byte_size(text) == digits && text == string.lowercase(text) {
     True -> bit_array.base16_decode(text)
@@ -893,6 +944,7 @@ pub fn parse_line(line: BitArray) -> Result(RawLine, Defect) {
   Ok(RawLine(body:, signature:))
 }
 
+/// Splits one line at its single dot and rejects empty halves.
 fn split_halves(text: String) -> Result(#(String, String), Defect) {
   case string.split(text, ".") {
     [body, signature] if body != "" && signature != "" -> Ok(#(body, signature))
@@ -900,6 +952,7 @@ fn split_halves(text: String) -> Result(#(String, String), Defect) {
   }
 }
 
+/// Checks encoded text against its protocol size ceiling.
 fn bounded(text: String, limit: Int) -> Result(Nil, Nil) {
   case string.byte_size(text) <= limit {
     True -> Ok(Nil)
@@ -907,6 +960,7 @@ fn bounded(text: String, limit: Int) -> Result(Nil, Nil) {
   }
 }
 
+/// Checks decoded bytes against their protocol size ceiling.
 fn bounded_bytes(bytes: BitArray, limit: Int) -> Result(Nil, Nil) {
   case bit_array.byte_size(bytes) <= limit {
     True -> Ok(Nil)
@@ -917,24 +971,31 @@ fn bounded_bytes(bytes: BitArray, limit: Int) -> Result(Nil, Nil) {
 // One half of a line. The alphabet test refuses padding and whitespace, and
 // the re-encoding test refuses a text whose last character carries bits the
 // bytes do not use.
+/// Decodes one canonical unpadded URL-safe base64 half.
 fn decode_half(text: String) -> Result(BitArray, Defect) {
   let in_alphabet =
     list.all(string.to_utf_codepoints(text), fn(point) {
       is_base64_url(string.utf_codepoint_to_int(point))
     })
+
+  // Reject invalid alphabet characters before invoking the decoder.
   use Nil <- result.try(case in_alphabet {
     True -> Ok(Nil)
     False -> Error(LineShape)
   })
+
   use bytes <- result.try(
     bit_array.base64_url_decode(text) |> result.replace_error(LineShape),
   )
+
+  // Re-encoding rejects alternate spellings of the same decoded bytes.
   case bit_array.base64_url_encode(bytes, False) == text {
     True -> Ok(bytes)
     False -> Error(LineShape)
   }
 }
 
+/// Recognizes URL-safe base64 alphabet code points.
 fn is_base64_url(code: Int) -> Bool {
   { code >= 65 && code <= 90 }
   || { code >= 97 && code <= 122 }
@@ -960,10 +1021,12 @@ pub fn read(
   use raw <- result.try(parse_line(line) |> result.map_error(Malformed))
 
   // Nothing of the body is parsed before the signature passes.
+  // Do not parse attacker-controlled body bytes until signature verification succeeds.
   use Nil <- result.try(case verify(raw, verifier) {
     Authentic -> Ok(Nil)
     Forged -> Error(BadSignature)
   })
+
   use entry <- result.try(decode_body(raw.body))
   Ok(SignedEntry(
     entry:,

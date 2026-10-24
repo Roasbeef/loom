@@ -1043,6 +1043,7 @@ pub fn start(
 }
 
 // The description of a port started without a catalogue to describe from.
+/// Unserved description keeps this client operation’s decoding or state decision in one place.
 fn unserved_description(_session: String) -> Result(JsonValue, String) {
   Error(peer_unserved)
 }
@@ -1192,6 +1193,7 @@ pub const peer_unserved = "that command is not served to a peer orchestrator"
 // the questions behind it by that long and no longer; a sender whose deadline
 // passes first treats the late answer as silence and asks again, and an asked
 // `Deliver` that did commit answers its repeat with the stored receipt.
+/// Answer keeps this client operation’s decoding or state decision in one place.
 fn answer(
   held: fn(String) -> Result(Ownership, Nil),
   peer: PeerHandler,
@@ -1205,14 +1207,18 @@ fn answer(
   state: Nil,
   message: Message,
 ) -> actor.Next(Nil, Message) {
+  // This match resolves message before the surrounding protocol step continues.
+  // This match resolves message before the enclosing validation continues.
   case message {
     Owns(session:, reply:) ->
+      // This match resolves held(session) before the surrounding protocol step continues.
       case held(session) {
         Ok(ownership) -> process.send(reply, ownership)
         Error(Nil) -> Nil
       }
 
     PeerCommand(session:, command:, reply:) ->
+      // This match resolves served(command) before the surrounding protocol step continues.
       case served(command) {
         True -> process.send(reply, peer(session, command))
         False -> process.send(reply, Error(peer_unserved))
@@ -1243,6 +1249,7 @@ fn answer(
     // order they were sent.
     Import(chunk:, reply:) -> process.send(reply, importer.chunk(chunk))
     ImportStatus(session:, op:, reply:) ->
+      // This match resolves importer.stage(session, op) before the surrounding protocol step continues.
       case importer.stage(session, op) {
         Ok(stage) -> process.send(reply, stage)
         Error(Nil) -> Nil
@@ -1392,6 +1399,7 @@ fn answer(
         )
       })
   }
+
   actor.continue(state)
 }
 
@@ -1402,7 +1410,10 @@ fn answer(
 // self-description, and the `Outbox*` commands belong to the sending session.
 // The match names every constructor, so a new command is a compile error here
 // until someone decides whether a peer may send it.
+/// Served keeps this client operation’s decoding or state decision in one place.
 fn served(command: peer_mail.Command) -> Bool {
+  // This match resolves command before the surrounding protocol step continues.
+  // This match resolves command before the enclosing validation continues.
   case command {
     peer_mail.Allow(..)
     | peer_mail.Revoke(..)
@@ -1436,7 +1447,10 @@ fn served(command: peer_mail.Command) -> Bool {
 // silence. `compute` is handed the requester's node name, which the
 // subagent messages and the messages of a spawner's page read to judge the
 // sender.
+/// Detached keeps this client operation’s decoding or state decision in one place.
 fn detached(reply: Subject(reply), compute: fn(String) -> reply) -> Nil {
+  // This match resolves process.subject_owner(reply) before the surrounding protocol step continues.
+  // This match resolves process.subject_owner(reply) before the enclosing validation continues.
   case process.subject_owner(reply) {
     Ok(requester) -> {
       let from = ffi_remote.node_of(requester)
@@ -1505,6 +1519,8 @@ pub fn ask_description(
 /// // orchestrator_port.ask_holds(Address(node: peer, name: orchestrator_port.default()), 5000)
 /// ```
 pub fn ask_holds(at: Address(Message), within_ms: Int) -> Result(Held, Nil) {
+  // This match resolves exchange(at, fn(reply) before the surrounding protocol step continues.
+  // This match resolves exchange(at, fn(reply) before the enclosing validation continues.
   case exchange(at, fn(reply) { Holds(reply:) }, within_ms) {
     Ok(Ok(held)) -> Ok(held)
     Ok(Error(Nil)) | Error(Nil) -> Error(Nil)
@@ -1555,6 +1571,8 @@ pub fn ask_sessions(
   limit: Int,
   within_ms: Int,
 ) -> Result(Page, Nil) {
+  // This match resolves exchange(at, fn(reply) before the surrounding protocol step continues.
+  // This match resolves exchange(at, fn(reply) before the enclosing validation continues.
   case exchange(at, fn(reply) { Sessions(after:, limit:, reply:) }, within_ms) {
     Ok(Ok(page)) -> Ok(page)
     Ok(Error(Nil)) | Error(Nil) -> Error(Nil)
@@ -2031,6 +2049,7 @@ pub fn ask_top_resolve(
 }
 
 // One request and its reply. Silence is `Error(Nil)`.
+/// Exchange keeps this client operation’s decoding or state decision in one place.
 fn exchange(
   at: Address(Message),
   request: fn(Subject(answer)) -> Message,
@@ -2043,6 +2062,7 @@ fn exchange(
 // taken before the request is sent, so a node that is already gone ends the wait
 // at once with its `DOWN` (`PortGone`: nothing is registered there, or the port
 // ended) and not with the deadline (`AskTimedOut`).
+/// Exchange why keeps this client operation’s decoding or state decision in one place.
 fn exchange_why(
   at: Address(Message),
   request: fn(Subject(answer)) -> Message,
@@ -2059,6 +2079,9 @@ fn exchange_why(
 
   // Demonitoring flushes a `DOWN` that arrived beside the reply.
   process.demonitor_process(watch)
+
+  // This match resolves heard before the surrounding protocol step continues.
+  // This match resolves heard before the enclosing validation continues.
   case heard {
     Ok(answered) -> answered
     Error(Nil) -> Error(AskTimedOut)

@@ -112,6 +112,8 @@ pub fn load(path: String, ca: String, local: String) -> Result(Loaded, String) {
     membership_signing.authority_pin(pem)
     |> result.replace_error("distribution.ca does not hold a certificate"),
   )
+
+  // Ensure the authority pin in the ledger matches the certificate.
   use Nil <- result.try(case membership_ledger.authority(opened.ledger) == pin {
     True -> Ok(Nil)
     False ->
@@ -121,6 +123,8 @@ pub fn load(path: String, ca: String, local: String) -> Result(Loaded, String) {
         <> path,
       )
   })
+
+  // Ensure the local node is registered as an active member in the ledger.
   use Nil <- result.try(case membership_ledger.member_at(opened.ledger, local) {
     Ok(_) -> Ok(Nil)
     Error(Nil) ->
@@ -137,6 +141,7 @@ pub fn load(path: String, ca: String, local: String) -> Result(Loaded, String) {
         <> "node cannot be until it is enrolled.)",
       )
   })
+
   Ok(Loaded(
     store: opened.store,
     ledger: opened.ledger,
@@ -387,6 +392,8 @@ pub fn audit_names(
 // A reference to a name that is an active member: an executor this node is
 // linked to is fine, an executor it is not linked to is inert, and anything
 // else cannot be an executor row.
+
+/// Classifies a named member reference against the node link table.
 fn named_member(
   inert: List(InertName),
   row: NameRow,
@@ -416,6 +423,7 @@ fn named_member(
   }
 }
 
+/// Calculates connection standing for a node in relation to the local orchestrator.
 fn standing(
   ledger: Ledger,
   table: membership_ledger.PinTable,
@@ -437,8 +445,11 @@ fn standing(
   }
 }
 
+/// Formats an open error for a ledger store file into diagnostic text.
 fn describe_open(path: String, error: membership_store.OpenError) -> String {
   let place = "distribution.ledger " <> path
+
+  // Map the underlying open error into human-readable detail.
   case error {
     membership_store.Unreadable(reason:) ->
       place <> " could not be read: " <> reason
@@ -457,6 +468,8 @@ fn describe_open(path: String, error: membership_store.OpenError) -> String {
 }
 
 // The role as a noun phrase for a sentence that names the wrong one.
+
+/// Formats a node role into an English noun phrase with appropriate article.
 fn article(role: distribution_plan.Role) -> String {
   case role {
     distribution_plan.Tool -> "a tool"

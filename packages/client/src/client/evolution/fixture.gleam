@@ -77,12 +77,16 @@ pub fn score(
       compare(workspace, expected.0, expected.1)
     }),
   )
+
+  // Verify that all expected outputs matched without any discrepancy.
   case list.all(results, fn(outcome) { outcome == trace.Succeeded }) {
     True -> Ok(trace.Succeeded)
     False -> Ok(trace.Failed)
   }
 }
 
+/// Evaluates one expected file against the candidate workspace, verifying regular
+/// file attributes, size limits, and exact byte content equality.
 fn compare(
   workspace: String,
   relative: String,
@@ -92,10 +96,14 @@ fn compare(
     workspace,
     string.split(relative, "/"),
   ))
+
+  // Reject immediately if path traversal or symlinks violate regular file invariants.
   case admitted {
     False -> Ok(trace.Failed)
     True -> {
       let limit = bit_array.byte_size(bit_array.from_string(expected))
+
+      // Read content within byte budget and check exact match against expectation.
       case bootstrap.read_bounded(workspace <> "/" <> relative, limit) {
         Ok(bytes) ->
           case bytes == bit_array.from_string(expected) {
@@ -109,13 +117,16 @@ fn compare(
   }
 }
 
-// No trial process remains when this walk begins. Every parent must be a real
-// directory and the final component a regular file before opening its bytes.
+/// Traverses a path component by component, ensuring intermediate components are
+/// actual directories and the leaf is a regular non-symlink file.
 fn regular_path(root: String, pieces: List(String)) -> Result(Bool, String) {
+  // Check the remaining path components.
   case pieces {
     [] -> Ok(False)
     [name, ..rest] -> {
       let path = root <> "/" <> name
+
+      // Inspect link info to refuse symlinks and verify component types.
       case simplifile.link_info(path) {
         Error(simplifile.Enoent) -> Ok(False)
         Error(error) -> Error(simplifile.describe_error(error))

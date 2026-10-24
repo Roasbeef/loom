@@ -149,6 +149,7 @@ pub fn creation(
   spawner: Spawner,
   parent: Parent,
 ) -> Result(manager.Creation, SpawnRefusal) {
+  // Map spawner placement configuration into directory, executor, or pool parameters.
   use #(workspace, executor, pool) <- result.map(case spawner.placement {
     OnExecutor(executor:, workspace:) -> Ok(#(workspace, executor, ""))
     InPool(pool:, workspace:) -> Ok(#(workspace, "", pool))
@@ -159,6 +160,7 @@ pub fn creation(
         reason: "the spawner's directory is unusable",
       ))
   })
+
   manager.Creation(
     request_key: "delegate:" <> spawner.name <> ":" <> parent.session,
     workspace:,
@@ -248,6 +250,8 @@ pub fn resolve_existing(
         remote_spawn.StoreFailure(reason: describe(error))
       }),
     )
+
+    // Branch on whether the session pair exists in the registry.
     case found {
       None -> Ok(NoSession)
       Some(row) -> {
@@ -258,15 +262,12 @@ pub fn resolve_existing(
   }
 }
 
-// The Agency of a session if one is running, and nothing if the session is not
-// resident. A session that is still opening has no Agency yet, and the release
-// does not wait for it: the registry marks the row releasing and cancels the
-// build, so the session never serves a child. Waiting here would also outlast
-// the sender's own bound on a release.
+/// Opens the Agency delegate endpoint if the session is currently resident, or returns None.
 fn open_endpoint(
   context: Context(instance),
   session_id: String,
 ) -> Result(Option(agency.DelegateEndpoint), SpawnRefusal) {
+  // This branch resolves manager get context registry session_id before the operation continues.
   case manager.get(context.registry, session_id) {
     Error(error) -> Error(remote_spawn.StoreFailure(reason: describe(error)))
     Ok(manager.View(status: manager.Resident(_), ..)) ->
@@ -303,6 +304,8 @@ pub fn existing_endpoint(
   let find = resolve_existing(context)
   fn(spawner: Spawner, parent: Parent) {
     use found <- result.map(find(spawner, parent))
+
+    // Extract the active delegate endpoint from the existing session if present.
     case found {
       Existing(endpoint:, ..) -> endpoint
       NoSession -> None
@@ -334,9 +337,12 @@ pub fn releaser(
   let sessions = context.sessions_directory
   fn(spawner: Spawner, parent: Parent) {
     use existing <- result.try(find(spawner, parent))
+
+    // Release the session pair or return zero if no session is registered.
     case existing {
       NoSession -> Ok(0)
       Existing(state:, endpoint:, ..) -> {
+        // Release child operations through the open endpoint or return 0 for non-open states.
         use stopped <- result.try(case state, endpoint {
           catalogue.Open, Some(endpoint) -> endpoint.release()
           catalogue.Open, None
@@ -344,6 +350,7 @@ pub fn releaser(
           | catalogue.Released, _
           -> Ok(0)
         })
+
         use Nil <- result.map(
           manager.release_delegate(
             registry,
@@ -361,17 +368,7 @@ pub fn releaser(
   }
 }
 
-// The Agency of a session once it is resident. The registry's view is read each
-// time and not the slot alone, so a session whose builder failed ends the wait
-// at once with the registry's account instead of running out the budget.
-//
-// A session that went back to saved, or did not open within the budget, may
-// open on a later attempt: after the daemon was killed, the file carries the
-// dead writer's lease until it expires, and each open before then fails. Both
-// answer `NotYetOpen`, which the sender treats as silence and asks again, so
-// a spawn resent by the parent's drainer opens the session once the lease is
-// gone. A session that cannot recover, or was never created, is a store
-// failure as before.
+/// Polls the session registry until the delegate session becomes resident or times out.
 fn resident(
   context: Context(instance),
   session_id: String,
@@ -379,14 +376,17 @@ fn resident(
   let failed = fn(reason) { poll.Fail(remote_spawn.StoreFailure(reason:)) }
   let waited =
     poll.until(within: open_budget_ms, every: open_poll_ms, attempt: fn() {
+      // This branch resolves manager get context registry session_id before the operation continues.
       case manager.get(context.registry, session_id) {
         Error(error) -> failed(describe(error))
         Ok(manager.View(status: manager.Opening(_), ..)) -> poll.Retry
         Ok(manager.View(status: manager.Resident(_), ..)) ->
+          // This branch resolves manager resolve context registry session_id before the operation continues.
           case manager.resolve(context.registry, session_id) {
             Ok(instance) -> poll.Done(context.endpoint(instance))
             Error(error) -> failed(describe(error))
           }
+
         Ok(manager.View(status: manager.Reserved, ..)) ->
           failed("the delegate session was reserved and never created")
         Ok(manager.View(status: manager.FailedStart(reason:, ..), ..)) ->
@@ -407,6 +407,8 @@ fn resident(
           failed("the delegate session cannot recover: " <> reason)
       }
     })
+
+  // Transform the poll result into an answered endpoint or a classified spawn refusal.
   case waited {
     poll.Answered(endpoint) -> Ok(endpoint)
     poll.Failed(refusal) -> Error(refusal)
@@ -429,6 +431,7 @@ fn resident(
 ///   == remote_spawn.CapReached(cap: remote_spawn.MaxSessions, limit: 4)
 /// ```
 pub fn refused(error: manager.DelegateError) -> SpawnRefusal {
+  // This branch resolves error before the operation continues.
   case error {
     // The parent session was deleted, so there is no one for a child to report
     // to: the refusal a spawn under an ended run gets.
@@ -459,6 +462,7 @@ pub fn refused(error: manager.DelegateError) -> SpawnRefusal {
 ///   == "this daemon is at its session capacity"
 /// ```
 pub fn describe(error: manager.Error) -> String {
+  // This branch resolves error before the operation continues.
   case error {
     manager.Catalogue(catalogue.Unsupported) ->
       "the catalogue is not one this build supports"

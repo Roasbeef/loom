@@ -123,13 +123,18 @@ pub fn make(
   use held <- result.try(
     manager.session_domain(registry, id) |> result.map_error(unreadable),
   )
+
+  // Branch on existing domain scope to determine whether isolation is needed.
   case held.scope {
     domain.SessionOnly -> Ok(Nil)
     domain.WorkspacePrivate -> {
       use found <- result.try(stopped(registry, id))
+
+      // Attempt domain isolation in the registry or check if concurrently completed.
       case manager.isolate(registry, digest, epoch, id, state_root) {
         Ok(_) -> resumed(registry, id, found)
         Error(_) ->
+          // This branch resolves isolated registry id before the operation continues.
           case isolated(registry, id) {
             Ok(Nil) -> resumed(registry, id, found)
             Error(Nil) -> Error(restored(registry, id, found))
@@ -139,25 +144,25 @@ pub fn make(
   }
 }
 
-// Whether the session is session-only now. Two presses at once both stop the
-// session, and the second isolation is refused because the first one made it:
-// that is the change this task was asked for, not a failure to move.
+/// Checks whether the target session has already reached SessionOnly scope.
 fn isolated(
   registry: manager.Manager(instance),
   id: String,
 ) -> Result(Nil, Nil) {
+  // This branch resolves manager session_domain registry id before the operation continues.
   case manager.session_domain(registry, id) {
     Ok(held) ->
+      // This branch resolves held scope before the operation continues.
       case held.scope {
         domain.SessionOnly -> Ok(Nil)
         domain.WorkspacePrivate -> Error(Nil)
       }
+
     Error(_) -> Error(Nil)
   }
 }
 
-// The credential must authenticate as the daemon's owner. This is the check that
-// guards the stop, which the registry does not authenticate.
+/// Asserts that the authenticated principal possesses daemon owner credentials.
 fn owner(
   registry: manager.Manager(instance),
   digest: access.Digest,
@@ -165,15 +170,17 @@ fn owner(
   use principal <- result.try(
     manager.authenticate(registry, digest) |> result.replace_error(NotOwner),
   )
+
+  // Verify that authenticated principal kind is OwnerPrincipal.
   case principal.kind {
     access.OwnerPrincipal -> Ok(Nil)
     access.MemberPrincipal -> Error(NotOwner)
   }
 }
 
-// A session the catalogue does not hold is `NotFound`, and any other failure to
-// read it is the registry's to sort out.
+/// Maps registry access errors to structured shareable operation refusals.
 fn unreadable(error: manager.Error) -> Refusal {
+  // This branch resolves error before the operation continues.
   case error {
     manager.Catalogue(catalogue.Missing) -> NotFound
     manager.Catalogue(_)
@@ -190,11 +197,7 @@ fn unreadable(error: manager.Error) -> Refusal {
   }
 }
 
-// Brings the session to rest and reports what it was doing. A running session
-// is stopped and waited for; a saved or already stopping one is only waited
-// for, since this task did not start it running. A session still opening or
-// blocked cannot be stopped to a rest by a request, so it is refused before
-// anything is done to it.
+/// Stops a running session or waits for a stopping session to reach rest state.
 fn stopped(
   registry: manager.Manager(instance),
   id: String,
@@ -202,6 +205,8 @@ fn stopped(
   use view <- result.try(
     manager.get(registry, id) |> result.map_error(unreadable),
   )
+
+  // Dispatch on session lifecycle status to ensure safe stoppage before migration.
   case view.status {
     manager.Saved -> Ok(Parked)
     manager.Stopping(_) -> at_rest(registry, id, Parked)
@@ -219,6 +224,7 @@ fn stopped(
           at_rest(registry, id, Running)
         }
       }
+
     manager.Reserved
     | manager.FailedStart(..)
     | manager.Opening(_)
@@ -226,14 +232,7 @@ fn stopped(
   }
 }
 
-// Reads the registry until it holds nothing for the session, or until another
-// task has isolated it. That second exit matters: a task that raced this one
-// isolates the session and resumes it, so it is never saved again, and waiting
-// for `Saved` would run out the whole stop wait for a session nobody is
-// stopping. A drain that
-// outlasts the wait is not an error of the stop, which still completes, but the
-// session cannot be isolated while a process holds it, so the task ends here
-// and a second press finds it saved.
+/// Polls until the session reaches Saved status or concurrent isolation is confirmed.
 fn at_rest(
   registry: manager.Manager(instance),
   id: String,
@@ -241,10 +240,12 @@ fn at_rest(
 ) -> Result(Found, Refusal) {
   let outcome =
     poll.until(within: stop_wait_ms, every: 100, attempt: fn() {
+      // This branch resolves manager get registry id isolated registry id before the operation continues.
       case manager.get(registry, id), isolated(registry, id) {
         Error(_), _ -> poll.Fail(NotStopped)
         Ok(_), Ok(Nil) -> poll.Done(found)
         Ok(view), Error(Nil) ->
+          // This branch resolves view status before the operation continues.
           case view.status {
             manager.Saved -> poll.Done(found)
             manager.Stopping(_) | manager.Resident(_) | manager.Opening(_) ->
@@ -255,6 +256,8 @@ fn at_rest(
           }
       }
     })
+
+  // Branch on poll outcome to report successful rest state or failure refusal.
   case outcome {
     poll.Answered(found) -> Ok(found)
     poll.Failed(reason) -> Error(reason)
@@ -262,17 +265,17 @@ fn at_rest(
   }
 }
 
-// Isolation was refused after the stop. A session that ran is started again so
-// the owner is left with what they had; if that fails too, it is stranded
-// stopped, which the refusal says.
+/// Restores previous session execution state when isolation fails after stopping.
 fn restored(
   registry: manager.Manager(instance),
   id: String,
   found: Found,
 ) -> Refusal {
+  // This branch resolves found before the operation continues.
   case found {
     Parked -> NotMoved
     Running ->
+      // This branch resolves reopened registry id before the operation continues.
       case reopened(registry, id) {
         Ok(Nil) -> NotMoved
         Error(Nil) -> Stranded
@@ -280,13 +283,13 @@ fn restored(
   }
 }
 
-// Isolation succeeded. A session that ran is resumed; one that was saved stays
-// saved.
+/// Resumes running session state after successful isolation or leaves parked sessions saved.
 fn resumed(
   registry: manager.Manager(instance),
   id: String,
   found: Found,
 ) -> Result(Nil, Refusal) {
+  // This branch resolves found before the operation continues.
   case found {
     Parked -> Ok(Nil)
     Running -> reopened(registry, id) |> result.replace_error(NotResumed)

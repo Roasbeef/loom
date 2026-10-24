@@ -183,6 +183,8 @@ pub fn for_operation(
 ) -> Result(Checkpoint, Nil) {
   use strand <- result.try(notes.strand_of(session, operation))
   use preparation <- result.try(preparation_of(session, operation))
+
+  // Render compaction checkpoint if operation prepared one.
   case preparation {
     Branch -> Ok(NotACompaction)
     Compaction(cut_messages:, retained_messages:, tokens_before:) -> {
@@ -205,13 +207,16 @@ pub fn for_operation(
   }
 }
 
-// The three numbers a checkpoint quotes from a frozen preparation, or
-// the fact that the preparation is not a compaction's at all.
+/// Describes compaction preparation numbers.
+///
+/// The three numbers a checkpoint quotes from a frozen preparation, or
+/// the fact that the preparation is not a compaction's at all.
 type Preparation {
   Compaction(cut_messages: Int, retained_messages: Int, tokens_before: Int)
   Branch
 }
 
+/// Extracts compaction preparation details for the operation.
 fn preparation_of(
   session: Session,
   operation: OpId,
@@ -244,8 +249,10 @@ fn preparation_of(
   }
 }
 
-// Prior checkpoints, newest first, provide both the window ordinal and
-// an exact address for inherited context. A strand without a leaf has none.
+/// Finds previous compaction entries on the strand branch.
+///
+/// Prior checkpoints, newest first, provide both the window ordinal and
+/// an exact address for inherited context. A strand without a leaf has none.
 fn closed_windows(
   session: Session,
   strand: String,
@@ -259,9 +266,11 @@ fn closed_windows(
   }
 }
 
-// The scan is filtered to compaction entries, so what comes back is one
-// row per window closed rather than the whole branch; and it runs once
-// per compaction, where a summary request used to run a provider.
+/// Scans compaction entries from the leaf.
+///
+/// The scan is filtered to compaction entries, so what comes back is one
+/// row per window closed rather than the whole branch; and it runs once
+/// per compaction, where a summary request used to run a provider.
 fn scan_compactions(
   session: Session,
   leaf: EntryId,
@@ -272,8 +281,10 @@ fn scan_compactions(
   |> result.replace_error(Nil)
 }
 
-// Keep the address of inherited checkpoint text without embedding it
-// recursively. Exact reads recover what the current notes omit.
+/// Formats pointer to prior checkpoint source if present.
+///
+/// Keep the address of inherited checkpoint text without embedding it
+/// recursively. Exact reads recover what the current notes omit.
 fn previous_checkpoint(session: Session, closed: List(entry.Entry)) -> String {
   case session.id(session), list.first(closed) {
     Ok(Some(session_id)), Ok(prior) ->
@@ -309,6 +320,7 @@ pub fn render(closed: Closed) -> String {
   header(closed) <> "\n\n" <> notes_block(closed) <> instructions_block(closed)
 }
 
+/// Formats the checkpoint introduction header line.
 fn header(closed: Closed) -> String {
   header_prefix
   <> int.to_string(closed.window)
@@ -327,6 +339,7 @@ fn header(closed: Closed) -> String {
   <> "the next window opens with."
 }
 
+/// Formats the history search recovery sentence.
 fn recall_sentence(recall: Recall) -> String {
   case recall {
     Searchable ->
@@ -340,7 +353,9 @@ fn recall_sentence(recall: Recall) -> String {
   }
 }
 
+/// Formats the fenced blackboard notes block.
 fn notes_block(closed: Closed) -> String {
+  // Return notice if no notes were written, otherwise format bounded block.
   case closed.notes {
     [] ->
       "You wrote no notes before this boundary (agent_note under `"
@@ -368,10 +383,12 @@ fn notes_prefix(strand: String) -> String {
   "agent/" <> strand <> "/"
 }
 
-// The operator's `Compact` instructions were written to steer what the
-// checkpoint carries forward. They reach the model as the operator's
-// words, quoted and attributed, so what the operator wanted kept is kept
-// in the operator's own voice rather than paraphrased.
+/// Formats fenced operator compact instructions block if present.
+///
+/// The operator's `Compact` instructions were written to steer what the
+/// checkpoint carries forward. They reach the model as the operator's
+/// words, quoted and attributed, so what the operator wanted kept is kept
+/// in the operator's own voice rather than paraphrased.
 fn instructions_block(closed: Closed) -> String {
   case closed.instructions {
     None -> ""
@@ -385,6 +402,7 @@ fn instructions_block(closed: Closed) -> String {
   }
 }
 
+/// Formats truncation notice if notes exceeded budget.
 fn truncation(truncated: Bool) -> String {
   case truncated {
     False -> ""
@@ -399,20 +417,25 @@ fn line(cell: #(String, JsonValue)) -> String {
   notes.fence_safe(cell.0 <> " = " <> json.to_string(cell.1))
 }
 
-// Newest-first, taking whole lines while they fit. `remaining` counts
-// the newline each line costs when joined. The same walk as the
-// run-start digest's, under a larger cap; one oversized cell still says
-// something, clipped, because a block that was nothing but a truncation
-// notice would be worse than no block.
+/// Takes newest lines up to byte limit while recording truncation.
+///
+/// Newest-first, taking whole lines while they fit. `remaining` counts
+/// the newline each line costs when joined. The same walk as the
+/// run-start digest's, under a larger cap; one oversized cell still says
+/// something, clipped, because a block that was nothing but a truncation
+/// notice would be worse than no block.
 fn take_bounded(
   lines: List(String),
   remaining: Int,
   taken: List(String),
 ) -> #(List(String), Bool) {
+  // Take whole lines while they fit in remaining byte budget.
   case lines {
     [] -> #(list.reverse(taken), False)
     [line, ..rest] -> {
       let cost = notes.byte_size(line) + 1
+
+      // Check if current line fits within remaining bytes.
       case cost <= remaining, taken {
         True, _ -> take_bounded(rest, remaining - cost, [line, ..taken])
         False, [] -> #([notes.clip(line, remaining - 1)], True)
@@ -544,10 +567,12 @@ pub fn remaining_seam(
   })
 }
 
-// Where the threshold will cut, in the same inequality `runtime/hooks`
-// evaluates: past `context_window - reserve_tokens`. Compaction switched
-// off means no boundary at all, and the tool says that rather than
-// naming one that will never come.
+/// Computes compaction checkpoint boundary tokens.
+///
+/// Where the threshold will cut, in the same inequality `runtime/hooks`
+/// evaluates: past `context_window - reserve_tokens`. Compaction switched
+/// off means no boundary at all, and the tool says that rather than
+/// naming one that will never come.
 fn boundary(
   context_window: Int,
   settings: CompactionSettings,

@@ -94,6 +94,7 @@ pub fn model_keys(configuration: String) -> Result(List(String), String) {
 // is read each time, so an edit made since the last creation is seen. The
 // environment-only configuration, which has no file, offers neither profiles nor
 // keys.
+/// Reads the configuration file and extracts catalogue entries using `pick`.
 fn read(
   configuration: String,
   pick: fn(catalog.Catalog) -> List(String),
@@ -106,6 +107,7 @@ fn read(
 
 // The file parsed as a catalogue, with the daemon's startup wording for a file
 // that cannot be read or does not parse.
+/// Reads and parses the configuration file into a catalog.Catalog.
 fn parse_file(path: String) -> Result(catalog.Catalog, String) {
   use text <- result.try(
     simplifile.read(path)
@@ -168,6 +170,8 @@ pub fn check(configuration: String, name: String) -> Result(Nil, Refusal) {
   use known <- result.try(
     names(configuration) |> result.map_error(UnusableConfiguration),
   )
+
+  // Check if the requested profile name exists in the configuration.
   case list.contains(known, name) {
     True -> Ok(Nil)
     False -> Error(UnknownProfile(catalog.unknown_profile(known, name)))
@@ -189,6 +193,8 @@ pub fn check_model(configuration: String, key: String) -> Result(Nil, Refusal) {
   use known <- result.try(
     model_keys(configuration) |> result.map_error(UnusableConfiguration),
   )
+
+  // Check if the requested model key exists in the configuration.
   case list.contains(known, key) {
     True -> Ok(Nil)
     False -> Error(UnknownModel(catalog.unknown_model(known, key)))
@@ -212,10 +218,13 @@ pub fn check_choice(
   profile: Option(String),
   model: Option(String),
 ) -> Result(Nil, Refusal) {
+  // Verify the profile choice if one was explicitly supplied.
   use Nil <- result.try(case profile {
     None -> Ok(Nil)
     Some(name) -> check(configuration, name)
   })
+
+  // Verify the model choice if one was explicitly supplied.
   case model {
     None -> Ok(Nil)
     Some(key) -> check_model(configuration, key)
@@ -244,6 +253,7 @@ pub fn load(
   configuration: String,
   profile: Option(String),
 ) -> Result(catalog.Catalog, Refusal) {
+  // Dispatch on the configuration path and chosen profile variant.
   case configuration, profile {
     "", Some(name) -> Error(UnknownProfile(catalog.unknown_profile([], name)))
     "", None ->

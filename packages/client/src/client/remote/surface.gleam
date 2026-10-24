@@ -234,6 +234,9 @@ pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
       from: Nil,
       attempt: fn(_nothing) {
         let left = int.max(0, deadline - clock.now())
+
+        // This match resolves exchange(config, Within(left), make) before the surrounding protocol step continues.
+        // This match resolves exchange(config, Within(left), make) before the enclosing validation continues.
         case exchange(config, Within(left), make) {
           Ok(Error(protocol.PlaneBuilding)) -> poll.Pending(Nil)
           Ok(answer) -> poll.Settled(answer)
@@ -241,6 +244,9 @@ pub fn attach(config: Config(census)) -> Result(Attachment(census), Refusal) {
         }
       },
     )
+
+  // This match resolves sent before the surrounding protocol step continues.
+  // This match resolves sent before the enclosing validation continues.
   case sent {
     poll.Answer(value: Ok(attached)) -> {
       let surface = Surface(config:, token:)
@@ -299,6 +305,9 @@ pub fn places(surface: Surface(census), tool: String) -> Bool {
 /// ```
 pub fn run(surface: Surface(census), run: ToolRun) -> ToolOutcome {
   let config = surface.config
+
+  // This match resolves places(surface, run.call.name), config.read_authority(run) before the surrounding protocol step continues.
+  // This match resolves places(surface, run.call.name), config.read_authority(run) before the enclosing validation continues.
   case places(surface, run.call.name), config.read_authority(run) {
     False, _ ->
       effects.ToolFailed(
@@ -308,6 +317,7 @@ pub fn run(surface: Surface(census), run: ToolRun) -> ToolOutcome {
       )
     True, Error(reason) -> effects.ToolFailed(reason:)
     True, Ok(authority) ->
+      // This match resolves sent_run(surface, run, authority) before the surrounding protocol step continues.
       case sent_run(surface, run, authority) {
         Ok(protocol.RunFinished(outcome:)) -> outcome
         Ok(protocol.RunLost) ->
@@ -337,6 +347,8 @@ pub fn run(surface: Surface(census), run: ToolRun) -> ToolOutcome {
 pub fn recover(surface: Surface(census), run: ToolRun) -> Recovery {
   let config = surface.config
   let key = protocol.key_of(config.session, run)
+
+  // This match resolves run.replay before the enclosing validation continues.
   let asked = case run.replay {
     operation.ReplaySafe -> exchange(config, Forever, protocol.Query(key, _))
     operation.ReplayNever ->
@@ -346,6 +358,9 @@ pub fn recover(surface: Surface(census), run: ToolRun) -> Recovery {
         _,
       ))
   }
+
+  // This match resolves asked before the surrounding protocol step continues.
+  // This match resolves asked before the enclosing validation continues.
   case asked {
     Ok(Ok(protocol.Missing)) | Ok(Ok(protocol.Fenced)) -> effects.NotStarted
     Ok(Ok(protocol.Terminal(outcome:))) -> effects.Recovered(outcome:)
@@ -390,6 +405,9 @@ pub fn start_execution(
         reply:,
       )
     })
+
+  // This match resolves sent before the surrounding protocol step continues.
+  // This match resolves sent before the enclosing validation continues.
   case sent {
     Ok(answer) -> answer
     Error(Nil) ->
@@ -427,6 +445,8 @@ pub fn query(
   key: protocol.Key,
   within: Int,
 ) -> Result(Lookup, String) {
+  // This match resolves exchange(surface.config, Within(within), protocol.Query(key, _)) before the surrounding protocol step continues.
+  // This match resolves exchange(surface.config, Within(within), protocol.Query(key, _)) before the enclosing validation continues.
   case exchange(surface.config, Within(within), protocol.Query(key, _)) {
     Ok(Ok(found)) -> Ok(found)
     Ok(Error(refusal)) -> Error(protocol.describe(refusal))
@@ -448,10 +468,14 @@ pub fn ack(surface: Surface(census), run: ToolRun) -> Nil {
 }
 
 // The call the executor still reports running: join it and take its answer.
+/// Await live keeps this client operation’s decoding or state decision in one place.
 fn await_live(surface: Surface(census), run: ToolRun) -> Recovery {
+  // This match resolves surface.config.read_authority(run) before the surrounding protocol step continues.
+  // This match resolves surface.config.read_authority(run) before the enclosing validation continues.
   case surface.config.read_authority(run) {
     Error(_reason) -> effects.OutcomeUnknown
     Ok(authority) ->
+      // This match resolves sent_run(surface, run, authority) before the surrounding protocol step continues.
       case sent_run(surface, run, authority) {
         Ok(protocol.RunFinished(outcome:)) -> effects.Recovered(outcome:)
         Ok(protocol.RunLost) | Ok(protocol.RunRefused(..)) | Error(Nil) ->
@@ -460,6 +484,7 @@ fn await_live(surface: Surface(census), run: ToolRun) -> Recovery {
   }
 }
 
+/// Sent run keeps this client operation’s decoding or state decision in one place.
 fn sent_run(
   surface: Surface(census),
   run: ToolRun,
@@ -480,6 +505,7 @@ fn sent_run(
 }
 
 // The reconciler's way to the same host: list what it holds, and acknowledge.
+/// Host link keeps this client operation’s decoding or state decision in one place.
 fn host_link(surface: Surface(census)) -> owner_port.HostLink {
   let config = surface.config
   let host = config.address
@@ -508,11 +534,14 @@ fn host_link(surface: Surface(census)) -> owner_port.HostLink {
 // Sends a request and returns its reply, repairing the connection and sending
 // again whenever the host goes away first. `Error(Nil)` is only possible for a
 // bounded patience that ran out.
+/// Exchange keeps this client operation’s decoding or state decision in one place.
 fn exchange(
   config: Config(census),
   patience: Patience,
   make: fn(Subject(reply)) -> HostMessage(census),
 ) -> Result(reply, Nil) {
+  // This match resolves patience before the surrounding protocol step continues.
+  // This match resolves patience before the enclosing validation continues.
   case patience {
     Within(ms:) -> attempts(config, ms, make)
     Forever -> forever(config, make)
@@ -520,16 +549,20 @@ fn exchange(
 }
 
 // A pass of the repair loop that ends unanswered is followed by another.
+/// Forever keeps this client operation’s decoding or state decision in one place.
 fn forever(
   config: Config(census),
   make: fn(Subject(reply)) -> HostMessage(census),
 ) -> Result(reply, Nil) {
+  // This match resolves attempts(config, pass_ms, make) before the surrounding protocol step continues.
+  // This match resolves attempts(config, pass_ms, make) before the enclosing validation continues.
   case attempts(config, pass_ms, make) {
     Ok(reply) -> Ok(reply)
     Error(Nil) -> forever(config, make)
   }
 }
 
+/// Attempts keeps this client operation’s decoding or state decision in one place.
 fn attempts(
   config: Config(census),
   within: Int,
@@ -543,6 +576,9 @@ fn attempts(
       from: Assumed,
       attempt: fn(link) { attempt(config, link, make) },
     )
+
+  // This match resolves verdict before the surrounding protocol step continues.
+  // This match resolves verdict before the enclosing validation continues.
   case verdict {
     poll.Answer(value:) -> Ok(value)
     poll.Failure(error: Nil) | poll.RanOut(state: _) -> Error(Nil)
@@ -551,14 +587,18 @@ fn attempts(
 
 // One send and one wait. The first attempt trusts the connection; every later
 // one repairs it first, and an attempt whose repair fails waits and tries again.
+/// Attempt keeps this client operation’s decoding or state decision in one place.
 fn attempt(
   config: Config(census),
   link: Link,
   make: fn(Subject(reply)) -> HostMessage(census),
 ) -> poll.Pass(reply, Nil, Link) {
+  // This match resolves link before the surrounding protocol step continues.
+  // This match resolves link before the enclosing validation continues.
   case link {
     Assumed -> send_and_wait(config, make)
     Repair ->
+      // This match resolves config.reconnect() before the surrounding protocol step continues.
       case config.reconnect() {
         Ok(Nil) -> send_and_wait(config, make)
         Error(_unreachable) -> poll.Pending(Repair)
@@ -570,6 +610,7 @@ fn attempt(
 // host watches. Monitoring the host before sending means a host that is
 // already gone answers with its `DOWN` instead of with silence. Whichever of
 // the reply and the `DOWN` comes first ends the wait.
+/// Send and wait keeps this client operation’s decoding or state decision in one place.
 fn send_and_wait(
   config: Config(census),
   make: fn(Subject(reply)) -> HostMessage(census),
@@ -585,6 +626,9 @@ fn send_and_wait(
 
   // Demonitoring flushes a `DOWN` that arrived beside the reply.
   process.demonitor_process(watch)
+
+  // This match resolves heard before the surrounding protocol step continues.
+  // This match resolves heard before the enclosing validation continues.
   case heard {
     Replied(reply:) -> poll.Settled(reply)
     HostDown -> poll.Pending(Repair)

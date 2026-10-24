@@ -24,13 +24,14 @@ import storage/snapshot
 import storage/storage
 import tools/tool
 
-// Observation retains the exact surviving metadata of the immutable registry.
-// Executable callbacks own authority and lifetime elsewhere; this table cannot
-// execute a registration or keep its unrelated captured state alive.
+/// Observation retains the exact surviving metadata of the immutable registry.
+/// Executable callbacks own authority and lifetime elsewhere; this table cannot
+/// execute a registration or keep its unrelated captured state alive.
 type Definition {
   Definition(name: String, description: String, schema: json.JsonValue)
 }
 
+/// Collects definition maps from registered tools.
 fn definitions(registry: tool.Registry) -> Dict(String, Definition) {
   tool.registered(registry)
   |> list.map(fn(registered) {
@@ -104,6 +105,7 @@ pub fn read(
   )
 }
 
+/// Reads projected context metadata, inventory items, and creates a context board.
 fn read_projected(
   session: session.Session,
   name: String,
@@ -136,6 +138,8 @@ fn read_projected(
     register.read_leaf(leaf_cell.register.value)
     |> result.replace_error("context leaf is unreadable"),
   )
+
+  // Scan branch entries from leaf, stopping at compaction or limit.
   use entries <- result.try(case leaf {
     None -> Ok([])
     Some(id) ->
@@ -147,6 +151,7 @@ fn read_projected(
       )
       |> result.replace_error("context branch could not be read")
   })
+
   use <- bool.guard(
     list.drop(entries, 4096) != [],
     Error("context exceeds the 4096-entry inspection limit"),
@@ -194,6 +199,7 @@ pub fn inventory(
   inventory_projected(system, definitions(registry), active, messages)
 }
 
+/// Computes component token inventory from system prompt, tools, and messages.
 fn inventory_projected(
   system: String,
   descriptions: Dict(String, Definition),
@@ -218,6 +224,7 @@ fn inventory_projected(
     })
   let messages =
     list.index_map(messages, fn(value, index) {
+      // Determine human-readable message category label.
       let label = case value {
         message.UserMessage(..) -> "User / injected context"
         message.AssistantMessage(..) -> "Assistant"
@@ -225,6 +232,7 @@ fn inventory_projected(
           "Tool result: " <> tool_name
         message.CustomMessage(schema:, ..) -> "Custom: " <> schema
       }
+
       Item(
         "Messages",
         int.to_string(index + 1) <> ". " <> string.slice(label, 0, 256),
@@ -262,10 +270,13 @@ pub fn board(
   use <- bool.guard(window <= 0, Error("context window is unavailable"))
   let compaction_used = hooks.context_tokens(projected, hooks.estimate_message)
   let reported = hooks.has_reported_usage(projected)
+
+  // Determine token usage based on reported usage availability.
   let used = case reported {
     True -> compaction_used
     False -> list.fold(items, 0, fn(total, item) { total + item.tokens })
   }
+
   let categories =
     list.map(["System prompt", "Tools", "Messages"], fn(category) {
       let matching = list.filter(items, fn(item) { item.category == category })
@@ -323,9 +334,12 @@ pub fn board(
   Ok(payload)
 }
 
-// Fit encoded rows, not unescaped names. The fixed metadata retains room for
-// bounded identifiers; the gateway independently checks the complete envelope.
+/// Bounded packing of rows until limit is exceeded.
+///
+/// Fit encoded rows, not unescaped names. The fixed metadata retains room for
+/// bounded identifiers; the gateway independently checks the complete envelope.
 fn fit(items: List(Item), reversed, used) {
+  // Consume next item while within encoded size threshold.
   case items {
     [] -> list.reverse(reversed)
     [item, ..rest] -> {
@@ -335,6 +349,8 @@ fn fit(items: List(Item), reversed, used) {
           #("name", json.String(item.name)),
           #("tokens", json.Int(item.tokens)),
         ])
+
+      // Check if row fits into remaining size budget.
       case transfer.encoded_size(row, 40_000 - used) {
         Error(_) -> list.reverse(reversed)
         Ok(size) -> fit(rest, [row, ..reversed], used + size + 1)

@@ -245,6 +245,8 @@ pub fn stop(leases: Leases) -> Nil {
 // The counter's one handler. Every message maps to one transition of the
 // `held` dictionary, and none of them blocks: the counter never waits on
 // a holder, so a stuck relay cannot stall another session's lease.
+
+/// Advances the lease counter state in response to acquire, release, or down events.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   case message {
     // A grant at the cap is a refusal, never a queue: the helpers a lease
@@ -264,10 +266,12 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
     // An explicit release drops the holder's monitor with the entry, so
     // the monitor cannot later fire against an id that no longer exists.
     Release(id:) -> {
+      // Demonitor the holding process if a monitor entry was recorded.
       case dict.get(state.held, id) {
         Ok(monitor) -> process.demonitor_process(monitor)
         Error(Nil) -> Nil
       }
+
       actor.continue(State(..state, held: dict.delete(state.held, id)))
     }
 
@@ -294,6 +298,8 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
 // Grants one lease: a fresh id, a monitor on the holder, and the reply.
 // The monitor is taken before the reply is sent, so a holder that dies
 // the instant it receives its lease still produces a `HolderDown`.
+
+/// Records a new lease holder, sets up process monitoring, and replies with the lease.
 fn grant(
   state: State,
   holder: Pid,

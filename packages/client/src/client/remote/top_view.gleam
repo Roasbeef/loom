@@ -91,6 +91,8 @@ pub fn start() -> Result(View, String) {
   let started =
     actor.new(Snapshot(rows: [], seen_ms: None, standing: Current))
     |> actor.on_message(fn(held, message) {
+      // This match resolves message before the surrounding protocol step continues.
+      // This match resolves message before the enclosing validation continues.
       case message {
         Found(rows:, at_ms:) ->
           actor.continue(Snapshot(
@@ -107,6 +109,9 @@ pub fn start() -> Result(View, String) {
       }
     })
     |> actor.start
+
+  // This match resolves started before the surrounding protocol step continues.
+  // This match resolves started before the enclosing validation continues.
   case started {
     Ok(running) -> Ok(View(keeper: running.data))
     Error(_) -> Error("the relay view did not start")
@@ -115,7 +120,10 @@ pub fn start() -> Result(View, String) {
 
 // A failure that follows a failure keeps the time the first one began, so the
 // age a page shows is how long the box has been out of reach.
+/// Stale keeps this client operation’s decoding or state decision in one place.
 fn stale(held: Snapshot, why: Failure, at_ms: Int) -> Standing {
+  // This match resolves held.standing before the surrounding protocol step continues.
+  // This match resolves held.standing before the enclosing validation continues.
   case held.standing {
     Stale(since_ms:, ..) -> Stale(why:, since_ms:)
     Current -> Stale(why:, since_ms: at_ms)
@@ -137,10 +145,13 @@ pub fn refresh(
   orchestrator: String,
   now_ms: fn() -> Int,
 ) -> Snapshot {
+  // This match resolves top_relay.all_sessions(relay, orchestrator) before the surrounding protocol step continues.
+  // This match resolves top_relay.all_sessions(relay, orchestrator) before the enclosing validation continues.
   case top_relay.all_sessions(relay, orchestrator) {
     Ok(rows) -> process.send(view.keeper, Found(rows:, at_ms: now_ms()))
     Error(why) -> process.send(view.keeper, Missed(why:, at_ms: now_ms()))
   }
+
   latest(view)
 }
 

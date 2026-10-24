@@ -198,10 +198,12 @@ repo = \"/home/me/src/loom\"
 /// assert list.length(plan.nodes) == 2
 /// ```
 pub fn parse(text: String, format: Format) -> Result(Plan, String) {
+  // Parse format-specific plan tree from input text.
   use tree <- result.try(case format {
     TomlPlan -> toml_tree(text)
     JsonPlan -> json_tree(text)
   })
+
   use plan <- result.try(plan_of(tree))
   validate(plan)
 }
@@ -215,10 +217,12 @@ pub fn parse(text: String, format: Format) -> Result(Plan, String) {
 /// assert result.is_error(distribution_plan.validate(Plan(nodes: [], directory: [])))
 /// ```
 pub fn validate(plan: Plan) -> Result(Plan, String) {
+  // Ensure the distribution plan declares at least one node definition.
   use Nil <- result.try(case plan.nodes {
     [] -> Error("the plan needs at least one [[node]]")
     _ -> Ok(Nil)
   })
+
   use Nil <- result.try(list.try_each(plan.nodes, check_node))
   use Nil <- result.try(unique_nodes(plan.nodes))
   use Nil <- result.try(
@@ -260,15 +264,15 @@ pub fn directory_members(plan: Plan, node: Node) -> List(String) {
   }
 }
 
-// A directory names plan nodes, once each, and enough of them that losing one
-// still leaves a majority. It names every orchestrator, because a member
-// daemon refuses an `[orchestrators.<name>]` peer that is not a member, and
-// every orchestrator lists every other one.
+/// Validates directory member count, uniqueness, and orchestrator coverage invariants.
 fn valid_directory(plan: Plan) -> Result(Nil, String) {
+  // Check directory node list when explicit directory clustering is declared.
   case plan.directory {
     [] -> Ok(Nil)
     names -> {
       let count = list.length(names)
+
+      // Validate allowable directory cluster member count bounds.
       use Nil <- result.try(case count >= 3 && count <= 7 {
         True -> Ok(Nil)
         False ->
@@ -277,10 +281,13 @@ fn valid_directory(plan: Plan) -> Result(Nil, String) {
             <> int.to_string(count),
           )
       })
+
+      // Verify directory member node names are unique.
       use Nil <- result.try(case list.unique(names) == names {
         True -> Ok(Nil)
         False -> Error("directory lists a node twice")
       })
+
       use Nil <- result.try(
         list.try_each(names, fn(name) {
           case list.any(plan.nodes, fn(node) { node.name == name }) {
@@ -448,6 +455,7 @@ type Tree {
   Fields(Dict(String, Tree))
 }
 
+/// Parses a TOML plan string into an intermediate Tree representation.
 fn toml_tree(text: String) -> Result(Tree, String) {
   use document <- result.try(
     tom.parse(text)
@@ -456,6 +464,7 @@ fn toml_tree(text: String) -> Result(Tree, String) {
   from_toml(tom.Table(document))
 }
 
+/// Converts raw TOML values recursively into the intermediate Tree format.
 fn from_toml(value: tom.Toml) -> Result(Tree, String) {
   case value {
     tom.String(text) -> Ok(Text(text))
@@ -479,6 +488,7 @@ fn json_tree(text: String) -> Result(Tree, String) {
   |> result.map_error(fn(error) { "invalid plan: " <> string.inspect(error) })
 }
 
+/// Decodes JSON terms recursively into the intermediate Tree format.
 fn tree_decoder() -> decode.Decoder(Tree) {
   decode.one_of(decode.string |> decode.map(Text), [
     decode.int |> decode.map(Whole),
@@ -490,10 +500,13 @@ fn tree_decoder() -> decode.Decoder(Tree) {
 
 // --- the plan decoder --------------------------------------------------------
 
+/// Decodes a parsed configuration Tree into a verified Plan data structure.
 fn plan_of(tree: Tree) -> Result(Plan, String) {
   use root <- result.try(table(tree, "the plan"))
   use Nil <- result.try(known_keys(root, ["node", "directory"], "the plan"))
   use directory <- result.try(optional_names(root, "directory", "the plan"))
+
+  // Decode the node table collection from the root tree.
   case dict.get(root, "node") {
     Error(Nil) -> Error("the plan needs at least one [[node]]")
     Ok(Items(rows)) ->
@@ -509,6 +522,7 @@ const node_keys = [
   "executors", "workspaces",
 ]
 
+/// Decodes an individual node table definition from the plan Tree.
 fn node_of(tree: Tree, index: Int) -> Result(Node, String) {
   let place = "node #" <> int.to_string(index + 1)
   use fields <- result.try(table(tree, place))
@@ -545,6 +559,7 @@ fn table(tree: Tree, place: String) -> Result(Dict(String, Tree), String) {
   }
 }
 
+/// Extracts a required string field from a tree table dictionary.
 fn text_key(
   fields: Dict(String, Tree),
   key: String,
@@ -557,6 +572,7 @@ fn text_key(
   }
 }
 
+/// Extracts an optional text field from a tree table dictionary.
 fn optional_text(
   fields: Dict(String, Tree),
   key: String,
@@ -569,6 +585,7 @@ fn optional_text(
   }
 }
 
+/// Extracts an optional integer field from a tree table dictionary.
 fn optional_whole(
   fields: Dict(String, Tree),
   key: String,
@@ -581,6 +598,7 @@ fn optional_whole(
   }
 }
 
+/// Extracts an optional list of string names from a tree table dictionary.
 fn optional_names(
   fields: Dict(String, Tree),
   key: String,
@@ -603,6 +621,7 @@ fn optional_names(
 
 // Workspaces are a table of name to root. The table is read in name order so a
 // plan and a bundle made from it list them the same way every time.
+/// Decodes an optional list of workspace tables associated with an executor node.
 fn optional_workspaces(
   fields: Dict(String, Tree),
   place: String,
@@ -628,6 +647,7 @@ fn optional_workspaces(
   }
 }
 
+/// Rejects unrecognized configuration keys in a plan table section.
 fn known_keys(
   fields: Dict(String, Tree),
   allowed: List(String),
@@ -637,6 +657,8 @@ fn known_keys(
     dict.keys(fields)
     |> list.filter(fn(key) { !list.contains(allowed, key) })
     |> list.sort(string.compare)
+
+  // Report the first unrecognized key if present.
   case unknown {
     [] -> Ok(Nil)
     [first, ..] ->
@@ -666,6 +688,8 @@ fn known_keys(
 /// ```
 pub fn check_node(node: Node) -> Result(Nil, String) {
   let place = "node " <> node.name
+
+  // Enforce name syntax and identifier bounds.
   use Nil <- result.try(case catalogue.is_executor_name(node.name) {
     True -> Ok(Nil)
     False ->
@@ -675,11 +699,14 @@ pub fn check_node(node: Node) -> Result(Nil, String) {
         <> "a letter, at most 32 characters",
       )
   })
+
   use Nil <- result.try(distribution.check_node_name(
     place <> ": erlang_node",
     node.erlang_node,
   ))
   use Nil <- result.try(valid_host(place, node.host))
+
+  // Validate optional listener port bounds.
   use Nil <- result.try(case node.listen_port {
     Some(port) if port < 1 || port > 65_535 ->
       Error(
@@ -689,6 +716,8 @@ pub fn check_node(node: Node) -> Result(Nil, String) {
       )
     _ -> Ok(Nil)
   })
+
+  // Ensure bundle installation directory path is absolute.
   use Nil <- result.try(case node.bundle_dir {
     Some(directory) ->
       case is_absolute_path(directory) {
@@ -698,12 +727,16 @@ pub fn check_node(node: Node) -> Result(Nil, String) {
       }
     None -> Ok(Nil)
   })
+
   valid_role_keys(node, place)
 }
 
+/// Validates that a host address string conforms to DNS and IP character bounds.
 fn valid_host(place: String, host: String) -> Result(Nil, String) {
   let allowed =
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.:_"
+
+  // Check character set and byte length of the host address.
   case
     host != ""
     && string.byte_size(host) <= 253
@@ -721,7 +754,9 @@ fn valid_host(place: String, host: String) -> Result(Nil, String) {
   }
 }
 
+/// Validates that node keys are compatible with the node's assigned role.
 fn valid_role_keys(node: Node, place: String) -> Result(Nil, String) {
+  // Check key compatibility based on whether node is an orchestrator or executor.
   case node.role {
     Tool -> Error(place <> ": a plan holds daemons, and a tool is not one")
     Orchestrator ->
@@ -735,6 +770,7 @@ fn valid_role_keys(node: Node, place: String) -> Result(Nil, String) {
           )
       }
     Executor -> {
+      // Ensure executor nodes do not specify orchestrator-specific executor lists.
       use Nil <- result.try(case node.executors {
         [] -> Ok(Nil)
         _ ->
@@ -744,6 +780,7 @@ fn valid_role_keys(node: Node, place: String) -> Result(Nil, String) {
             <> "executor",
           )
       })
+
       list.try_each(node.workspaces, fn(workspace) {
         case
           catalogue.is_workspace_name(workspace.name),
@@ -772,6 +809,7 @@ fn valid_role_keys(node: Node, place: String) -> Result(Nil, String) {
   }
 }
 
+/// Verifies that node names, Erlang node identities, and host listener ports are distinct.
 fn unique_nodes(nodes: List(Node)) -> Result(Nil, String) {
   let names = list.map(nodes, fn(node) { node.name })
   let erlang = list.map(nodes, fn(node) { node.erlang_node })
@@ -782,6 +820,8 @@ fn unique_nodes(nodes: List(Node)) -> Result(Nil, String) {
         None -> Error(Nil)
       }
     })
+
+  // Ensure no conflicting names, Erlang nodes, or host ports exist in the plan.
   case
     list.unique(names) == names,
     list.unique(erlang) == erlang,
@@ -796,14 +836,16 @@ fn unique_nodes(nodes: List(Node)) -> Result(Nil, String) {
   }
 }
 
-// Each name an orchestrator lists must be an executor in this plan, listed
-// once. The converse, that every executor is used, is `valid_peers`.
+/// Verifies that all executors referenced by an orchestrator exist in the plan and are unique.
 fn references_executors(plan: Plan, node: Node) -> Result(Nil, String) {
   let place = "node " <> node.name
+
+  // Disallow duplicate executor references.
   use Nil <- result.try(case list.unique(node.executors) == node.executors {
     True -> Ok(Nil)
     False -> Error(place <> ": executors lists a node twice")
   })
+
   list.try_each(node.executors, fn(name) {
     case list.find(plan.nodes, fn(other) { other.name == name }) {
       Ok(Node(role: Executor, ..)) -> Ok(Nil)
@@ -822,9 +864,12 @@ fn references_executors(plan: Plan, node: Node) -> Result(Nil, String) {
   })
 }
 
+/// Validates that peer relationships are non-empty and bounded by the 32-peer ceiling.
 fn valid_peers(plan: Plan, node: Node) -> Result(Nil, String) {
   let place = "node " <> node.name
   let count = list.length(peers(plan, node))
+
+  // Check that nodes have at least one peer and do not exceed maximum peer limit.
   case node.role, count {
     Executor, 0 ->
       Error(

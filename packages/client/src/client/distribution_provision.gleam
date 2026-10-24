@@ -265,6 +265,8 @@ type Minted {
   )
 }
 
+/// Generates a local Certificate Authority, issues TLS certificates and pins for all
+/// plan nodes, and creates the cluster distribution cookie.
 fn mint(plan: Plan) -> Result(Minted, String) {
   let #(authority, authority_key) = ffi_pki.authority("loom deployment CA")
   use issued <- result.try(
@@ -331,6 +333,7 @@ pub fn write(
       |> result.map_error(fn(reason) { path <> " is unwritable: " <> reason })
     }
   })
+
   Ok(list.flatten([bundle_paths, [system_path], ledger_paths]))
 }
 
@@ -465,6 +468,8 @@ type Issued {
   Issued(node: Node, certificate: String, key: String, pin: BitArray)
 }
 
+/// Assembles a complete node distribution bundle containing certificates, keys, cluster cookie,
+/// and peer routing topology.
 fn bundle(plan: Plan, entry: Issued, minted: Minted, trust: Trust) -> Bundle {
   let node = entry.node
   Bundle(
@@ -487,10 +492,8 @@ fn bundle(plan: Plan, entry: Issued, minted: Minted, trust: Trust) -> Bundle {
   )
 }
 
-// The members a bundle lists for the session directory. A static bundle lists
-// them, since it has no other way to say. A ledger carries each member's
-// standing in its own entry, and a bundle that also listed the members would be
-// a second source that could disagree.
+/// Determines directory members included in a node bundle, providing members for static
+/// trust mode and omitting them in signed ledger mode.
 fn listed_directory(plan: Plan, node: Node, trust: Trust) -> List(String) {
   case trust {
     distribution_bundle.StaticPeers(..) ->
@@ -509,6 +512,7 @@ fn pin_of(pinned: List(membership_provision.Pinned), node: Node) -> BitArray {
   }
 }
 
+/// Derives the system-wide description summary mapping all node configurations, pins, and peers.
 fn system(plan: Plan, issued: List(Issued)) -> System {
   System(
     nodes: list.map(issued, fn(entry) {
@@ -533,6 +537,8 @@ fn system(plan: Plan, issued: List(Issued)) -> System {
 
 // --- the output directory ----------------------------------------------------
 
+/// Checks whether an output directory exists and is empty, refusing non-empty targets
+/// unless overwrite mode is set.
 fn check_empty(output: String, overwrite: Overwrite) -> Result(Nil, String) {
   case overwrite, simplifile.read_directory(output) {
     ReplaceExisting, _ -> Ok(Nil)
@@ -548,6 +554,7 @@ fn check_empty(output: String, overwrite: Overwrite) -> Result(Nil, String) {
 
 // --- the description ---------------------------------------------------------
 
+/// Emits an optional key-value JSON pair only if the option is present.
 fn optional(
   key: String,
   value: Option(a),
@@ -559,11 +566,12 @@ fn optional(
   }
 }
 
-// The decoder yields a `Result` so the marker check can word its refusal; the
-// caller flattens it.
+/// Decodes the top-level system description JSON document and validates the format marker.
 fn system_decoder() -> decode.Decoder(Result(System, String)) {
   use marker <- decode.field("format", decode.string)
   use nodes <- decode.field("nodes", decode.list(node_decoder()))
+
+  // Validate the system format version string.
   case marker == system_format {
     True -> decode.success(Ok(System(nodes:)))
     False ->
@@ -573,6 +581,7 @@ fn system_decoder() -> decode.Decoder(Result(System, String)) {
   }
 }
 
+/// Decodes one node configuration entry in the system description document.
 fn node_decoder() -> decode.Decoder(SystemNode) {
   use name <- decode.field("name", decode.string)
   use role_word <- decode.field("role", decode.string)
@@ -592,6 +601,8 @@ fn node_decoder() -> decode.Decoder(SystemNode) {
   use peers <- decode.field("peers", decode.list(decode.string))
   use used <- decode.field("executors", decode.list(decode.string))
   use workspaces <- decode.field("workspaces", decode.list(workspace_decoder()))
+
+  // Decode the node role string into a valid Role variant.
   case distribution_plan.role_from_word(role_word) {
     Ok(role) ->
       decode.success(SystemNode(
@@ -638,6 +649,7 @@ fn names(values: List(String)) -> String {
   }
 }
 
+/// Formats human-readable supplementary details regarding a node's executors or workspaces.
 fn detail(node: SystemNode) -> String {
   case node.role, node.executors, node.workspaces {
     Orchestrator, [_, ..], _ ->
