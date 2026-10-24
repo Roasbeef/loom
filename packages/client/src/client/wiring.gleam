@@ -1266,23 +1266,46 @@ pub fn run_workspace_tool(
   run: effects.ToolRun,
   authority: Authority,
 ) -> effects.ToolOutcome {
-  let ctx = workspace_context(workspace, refused, output, run)
-  let live = {
-    use access <- result.try(directories.revalidate(authority.access))
-    use standing <- result.try(permissions.revalidate(authority.standing))
-    Ok(#(access, standing))
-  }
-  let outcome = case live {
+  let outcome = case context_for(workspace, refused, output, run, authority) {
     Error(reason) -> tool.failure(reason)
-    Ok(#(access, standing)) -> {
-      let access = directory_access.approved(access, standing)
-      let base = directory_access.widen(ctx.base_policy, access)
-      let base = policy.compose(base, base, standing).0
-      let ctx = tool.Ctx(..ctx, directory_access: access, base_policy: base)
+    Ok(ctx) ->
       tool.dispatch(workspace.registry, ctx, run.call.name, run.arguments)
-    }
   }
   tool_table.finished(outcome, run, workspace.clock)
+}
+
+/// Builds the context a call runs under, from the stored authority.
+///
+/// This is the revalidate-and-widen half of `run_workspace_tool`. The stored
+/// authority is revalidated against this machine's filesystem before it
+/// widens anything: a canonical name recorded earlier must not become
+/// authority over a symlink that now points elsewhere. A failed revalidation
+/// answers with the reason and no context. Only then is the base policy
+/// widened by the additions and the grants. A caller that is not a registry
+/// dispatch, such as a promoted extension tool, takes its context from here
+/// so it widens by exactly the same rule.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(ctx) =
+/// //   wiring.context_for(view, refused, output, run, authority)
+/// ```
+///
+pub fn context_for(
+  workspace: WorkspaceView,
+  refused: fn(escalate.Refused) -> escalate.Decision,
+  output: fn(effects.ToolRun) -> fn(tool.OutputTail) -> Nil,
+  run: effects.ToolRun,
+  authority: Authority,
+) -> Result(tool.Ctx, String) {
+  let ctx = workspace_context(workspace, refused, output, run)
+  use access <- result.try(directories.revalidate(authority.access))
+  use standing <- result.try(permissions.revalidate(authority.standing))
+  let access = directory_access.approved(access, standing)
+  let base = directory_access.widen(ctx.base_policy, access)
+  let base = policy.compose(base, base, standing).0
+  Ok(tool.Ctx(..ctx, directory_access: access, base_policy: base))
 }
 
 /// `run_tool` over the configuration a `tool_holder` keeps for the session.

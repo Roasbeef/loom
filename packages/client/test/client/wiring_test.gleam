@@ -1318,6 +1318,44 @@ pub fn the_workspace_half_revalidates_before_it_dispatches_test() {
   assert string.contains(text_of(outcome), "canonical target")
 }
 
+/// `context_for` is the half `run_workspace_tool` shares with a promoted tool,
+/// so it refuses on its own an authority whose recorded directory has since
+/// been removed, and answers no context.
+pub fn context_for_refuses_an_authority_whose_directory_is_gone_test() {
+  let root = authority_root("context-for-gone")
+  let shared = root <> "/shared"
+  let assert Ok(Nil) = simplifile.create_directory_all(shared)
+    as "the directory exists when the authority is recorded"
+  let stored =
+    wiring.Authority(
+      access: directory_access.Access([shared], []),
+      standing: [],
+    )
+  let configured = config()
+  let view = wiring.workspace_view(configured)
+  let assert Ok(_) =
+    wiring.context_for(
+      view,
+      configured.escalations.refused,
+      configured.observe_output,
+      halt_run(),
+      stored,
+    )
+    as "a live authority yields a context"
+  let assert Ok(Nil) = simplifile.delete(shared)
+    as "the directory goes away after it was recorded"
+  let assert Error(reason) =
+    wiring.context_for(
+      view,
+      configured.escalations.refused,
+      configured.observe_output,
+      halt_run(),
+      stored,
+    )
+    as "a vanished directory must refuse"
+  assert string.length(reason) > 0
+}
+
 // --- calls routed to the half that runs them --------------------------------
 
 // A tool of the given name which says where it ran.
