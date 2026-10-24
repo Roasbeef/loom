@@ -55,38 +55,10 @@ pub fn capture_with(
   ctx: tool.Ctx,
   snapshot: fn(tool.Ctx, String) -> Result(archive.Tree, store.Refusal),
 ) -> Result(record.Candidate, store.Refusal) {
-  // A candidate's source is the workspace or an approved directory addition,
-  // never the whole host view a session base may read: the snapshot becomes
-  // an immutable artifact, so its reach is the narrower of the two.
-  let access = directory_access.approved(ctx.directory_access, ctx.grants)
-  let reach =
-    sandbox.SandboxPolicy(..ctx.base_policy, readable_roots: [
-      ctx.workspace,
-      ..list.append(access.readable, access.writable)
-    ])
   use path <- result.try(
-    fs.resolve_readable(
-      ctx.filesystem,
-      ctx.workspace,
-      reach,
-      proposal.directory,
-    )
-    |> result.map_error(fn(error) { store.Authority(string.inspect(error)) }),
-  )
-  use Nil <- result.try(
-    case
-      list.any(
-        [store.root(catalogue), ..ctx.base_policy.protected],
-        fn(protected) {
-          path == protected
-          || string.starts_with(path, protected <> "/")
-          || string.starts_with(protected, path <> "/")
-        },
-      )
-    {
-      True -> Error(store.Authority("source snapshot overlaps protected state"))
-      False -> Ok(Nil)
-    },
+    source_path(ctx, proposal.directory, [
+      store.root(catalogue),
+    ]),
   )
   use tree <- result.try(snapshot(ctx, path))
   use files <- result.try(
@@ -99,6 +71,49 @@ pub fn capture_with(
     }),
   )
   from_files(catalogue, proposal, origin, files)
+}
+
+/// Authorizes one source directory and answers the absolute path to capture.
+///
+/// A candidate's source is the workspace or an approved directory addition,
+/// never the whole host view a session base may read: the snapshot becomes an
+/// immutable artifact, so its reach is the narrower of the two. The directory
+/// is resolved through the real filesystem, so a symlink leaving that reach is
+/// refused, and the result is refused when it overlaps the session's protected
+/// entries or any of `extra`, the state that holds the catalogue.
+///
+/// The local door passes the catalogue's root as `extra`. An executor has no
+/// catalogue, so it passes none, and the session's protected entries still
+/// hold the executor's own evolution directory.
+///
+/// ## Examples
+///
+/// `source_path(ctx, "src/ext", [])` is the canonical path of `src/ext`.
+pub fn source_path(
+  ctx: tool.Ctx,
+  directory: String,
+  extra: List(String),
+) -> Result(String, store.Refusal) {
+  let access = directory_access.approved(ctx.directory_access, ctx.grants)
+  let reach =
+    sandbox.SandboxPolicy(..ctx.base_policy, readable_roots: [
+      ctx.workspace,
+      ..list.append(access.readable, access.writable)
+    ])
+  use path <- result.try(
+    fs.resolve_readable(ctx.filesystem, ctx.workspace, reach, directory)
+    |> result.map_error(fn(error) { store.Authority(string.inspect(error)) }),
+  )
+  case
+    list.any(list.append(extra, ctx.base_policy.protected), fn(protected) {
+      path == protected
+      || string.starts_with(path, protected <> "/")
+      || string.starts_with(protected, path <> "/")
+    })
+  {
+    True -> Error(store.Authority("source snapshot overlaps protected state"))
+    False -> Ok(path)
+  }
 }
 
 /// Captures through a fixed tar command under the caller's composed jail policy.
