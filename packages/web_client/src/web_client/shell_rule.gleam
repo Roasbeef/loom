@@ -76,8 +76,8 @@ pub type Region {
 
 /// One of the strand panel's tabs. The server draws a pane for each, always,
 /// and the shell shows the chosen one, so a tab needs no round trip and the
-/// server never learns which is showing. Notes is appended to preserve the
-/// existing tab order, and Strands remains the initial view.
+/// server never learns which is showing. Notes and Evolution are appended to
+/// preserve the existing tab order, and Strands remains the initial view.
 pub type Tab {
   /// The strand cards, and the detail of the strand in focus.
   Strands
@@ -95,6 +95,11 @@ pub type Tab {
 
   /// The focused strand’s bounded durable notes index and reader.
   Notes
+
+  /// The session's governed-evolution candidates, their evidence and the
+  /// decisions made about them. A page draws the pane and the tab only when
+  /// the server writes the `evolution` attribute (protocol-change/099).
+  Evolution
 }
 
 /// Whether a column is shown.
@@ -410,10 +415,44 @@ pub fn chosen(layout: Layout, tab: Tab) -> Layout {
 ///     shell_rule.Trace,
 ///     shell_rule.Session,
 ///     shell_rule.Notes,
+///     shell_rule.Evolution,
 ///   ]
 /// ```
 pub fn tabs() -> List(Tab) {
-  [Strands, Changes, Trace, Session, Notes]
+  [Strands, Changes, Trace, Session, Notes, Evolution]
+}
+
+/// The tabs a page draws buttons for. The Evolution tab belongs to a page
+/// whose server wrote the `evolution` attribute, which is an operator's page,
+/// and an observer's page has no such button.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.tabs_for(None) == [shell_rule.Strands, shell_rule.Changes, shell_rule.Trace, shell_rule.Session, shell_rule.Notes]
+/// assert list.last(shell_rule.tabs_for(Some(0))) == Ok(shell_rule.Evolution)
+/// ```
+pub fn tabs_for(evolution: Option(Int)) -> List(Tab) {
+  case evolution {
+    Some(_) -> tabs()
+    None -> list.filter(tabs(), fn(tab) { tab != Evolution })
+  }
+}
+
+/// The tab a layout shows on a page that draws `tabs_for(evolution)`. A saved
+/// choice of Evolution, read on a page with no such tab, is the Strands tab,
+/// since every other pane would be hidden and nothing shown.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.reconcile(shell_rule.Layout(..shell_rule.initial(), tab: shell_rule.Evolution), None).tab == shell_rule.Strands
+/// ```
+pub fn reconcile(layout: Layout, evolution: Option(Int)) -> Layout {
+  case layout.tab, evolution {
+    Evolution, None -> Layout(..layout, tab: Strands)
+    _, _ -> layout
+  }
 }
 
 /// The word on a tab's button.
@@ -430,6 +469,7 @@ pub fn tab_label(tab: Tab) -> String {
     Session -> "Session"
     Trace -> "Trace"
     Notes -> "Notes"
+    Evolution -> "Evolution"
   }
 }
 
@@ -451,6 +491,7 @@ pub fn tab_state(tab: Tab) -> String {
     Session -> "tab-session"
     Trace -> "tab-trace"
     Notes -> "tab-notes"
+    Evolution -> "tab-evolution"
   }
 }
 
@@ -562,6 +603,33 @@ pub fn needing(value: String) -> Int {
   }
 }
 
+/// What the Evolution tab's attribute says: `None` for a page that draws no
+/// tab, which is every page that did not write the attribute, and the count of
+/// candidates waiting for a person otherwise. Decoding is total, as `needing`
+/// is: a value that is not a plain number of at most four digits draws no tab.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.offered("0") == Some(0)
+/// assert shell_rule.offered("3") == Some(3)
+/// assert shell_rule.offered("") == None
+/// assert shell_rule.offered("<b>") == None
+/// ```
+pub fn offered(value: String) -> Option(Int) {
+  let graphemes = string.to_graphemes(value)
+  let plain =
+    value != ""
+    && list.all(graphemes, fn(grapheme) {
+      string.contains("0123456789", grapheme)
+    })
+    && string.drop_start(value, 4) == ""
+  case plain {
+    True -> option.from_result(int.parse(value))
+    False -> None
+  }
+}
+
 /// What the Strands tab's badge says for `count` strands waiting on a
 /// decision: nothing for none, the number up to nine, and `9+` past that.
 ///
@@ -596,6 +664,24 @@ pub fn strands_words(count: Int) -> String {
     1 -> "Strands, 1 needs approval"
     count if count > 1 -> "Strands, " <> int.to_string(count) <> " need approval"
     _ -> "Strands"
+  }
+}
+
+/// The words a screen reader gets for the Evolution tab: the label alone, or
+/// with how many candidates and selections wait for a person.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert shell_rule.evolution_words(0) == "Evolution"
+/// assert shell_rule.evolution_words(1) == "Evolution, 1 waiting for review"
+/// assert shell_rule.evolution_words(4) == "Evolution, 4 waiting for review"
+/// ```
+pub fn evolution_words(count: Int) -> String {
+  case count {
+    count if count > 0 ->
+      "Evolution, " <> int.to_string(count) <> " waiting for review"
+    _ -> "Evolution"
   }
 }
 

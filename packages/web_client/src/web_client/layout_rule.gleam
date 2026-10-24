@@ -38,7 +38,7 @@ import gleam/result
 import gleam/string
 import web_client/grip_rule
 import web_client/shell_rule.{
-  type Layout, type State, type Tab, Changes, Closed, Layout, Notes, Open,
+  type Layout, type State, type Tab, Changes, Closed, Evolution, Layout, Notes, Open,
   Session, Strands, Trace,
 }
 
@@ -281,6 +281,7 @@ fn tab_word(tab: Tab) -> String {
     Session -> "session"
     Trace -> "trace"
     Notes -> "notes"
+    Evolution -> "evolution"
   }
 }
 
@@ -291,6 +292,7 @@ fn tab_of(word: String) -> Result(Tab, Nil) {
     "session" -> Ok(Session)
     "trace" -> Ok(Trace)
     "notes" -> Ok(Notes)
+    "evolution" -> Ok(Evolution)
     _ -> Error(Nil)
   }
 }

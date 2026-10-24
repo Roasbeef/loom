@@ -6,7 +6,8 @@ import gleam/list
 import gleam/option.{None, Some}
 import web_client/layout_rule.{Anonymous, Identified}
 import web_client/shell_rule.{
-  Changes, Closed, Layout, Notes, Open, Panel, Session, Strands, Trace,
+  Changes, Closed, Evolution, Layout, Notes, Open, Panel, Session, Strands,
+  Trace,
 }
 
 const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -34,7 +35,7 @@ pub fn every_layout_round_trips_test() {
     use tab <- list.flat_map(tabs)
     [Layout(sidebar:, panel:, tab:)]
   }
-  assert list.length(layouts) == 20
+  assert list.length(layouts) == 24
   assert list.all(layouts, fn(layout) {
     layout_rule.restore(Ok(layout_rule.encode(layout))) == layout
   })
@@ -104,6 +105,10 @@ pub fn older_and_new_tab_layouts_decode_test() {
       "{\"sidebar\":\"open\",\"panel\":\"open\",\"tab\":\"notes\"}",
     ))
     == Layout(sidebar: Open, panel: Open, tab: Notes)
+  assert layout_rule.restore(Ok(
+      "{\"sidebar\":\"open\",\"panel\":\"open\",\"tab\":\"evolution\"}",
+    ))
+    == Layout(sidebar: Open, panel: Open, tab: Evolution)
 }
 
 pub fn an_unknown_column_word_is_open_and_keeps_the_tab_test() {
@@ -208,6 +213,7 @@ pub fn the_tab_has_its_own_item_per_browser_test() {
   assert layout_rule.tab_key == "loom.panel.tab.v1"
   assert layout_rule.encode_tab(Changes) == "changes"
   assert layout_rule.encode_tab(Notes) == "notes"
+  assert layout_rule.encode_tab(Evolution) == "evolution"
   list.each(shell_rule.tabs(), fn(tab) {
     assert layout_rule.restored_tab(Ok(layout_rule.encode_tab(tab)))
       == Some(tab)
