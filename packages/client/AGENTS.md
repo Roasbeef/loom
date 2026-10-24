@@ -169,11 +169,24 @@ scrubbed native branch observations and operator outcomes. Read
 
 ## State-preserving component upgrades
 
+Staging is two halves. `machine/local.stage_candidate` takes an approved
+`record.Candidate` and answers an `evolution/staged.Staged`: manifest name,
+selection, declared tools, hook events, an `invoke` closure into the satellite,
+`inventory`, `retire` (stop the host, then close the plane) and an optional
+`Upgrade`. It holds no catalogue, no hook bus and no `live` type, so an executor
+can hold one. `machine/local.generation_of` is the orchestrator's half: it
+starts the hook bus over `invoke`, puts `store.authorized` in `validate` and
+`store.approved` in front of an upgrade's `prepare`, and prepends the bus close
+to `retire`, so retirement runs bus, host, plane. An upgrade's successor reuses
+the predecessor's bus. `machine/local.open_plane` (moved from `serve`) opens a
+check's effect plane, and `wiring.context_for` is the revalidate-and-widen half
+of `run_workspace_tool`.
 `evolution/live.Generation.mode` distinguishes `ReplacementOnly` from
 `Stateful(prepare)`. A `PreparedUpgrade` carries the successor generation,
 publication callback and unpublished compensation callback. The live owner
 holds the selection transaction until every outstanding invocation lease is returned.
-`evolution/stateful` retains the existing jailed hosting and retirement
+`evolution/stateful` attaches an `Upgrade` to a `Staged` value and takes the
+candidate it is handed; it keeps the existing jailed hosting and retirement
 capabilities while compiling the approved successor into an inactive fixed
 namespace. Its reserved control calls prepare, publish or abort the exact
 transition. A published downgrade migrates current state; it cannot restore

@@ -344,6 +344,18 @@ and resident seams never see it. A trial session is never offered it, because
 a trial is judged by its source and must not hold a door over the source's
 catalogue.
 
+Staging a promoted extension is two halves. `machine/local.stage_candidate`
+opens a plane, compiles the approved candidate and starts the satellite, and
+answers a `staged.Staged` value: the extension's name, its declared tools and
+hook events, a closure that fires a hook at the satellite, the inventory, one
+retirement task (stop the host, then close the plane) and, when the live
+contract opts in, an upgrade path. The value holds no catalogue, no hook bus
+and no `live` type. `machine/local.generation_of` then starts the hook bus over
+it and builds the `live.Generation`: `validate` asks `store.authorized`, an
+upgrade asks `store.approved` before the machine compiles the successor, and
+retirement closes the bus, then stops the host, then closes the plane. A
+successor shares the predecessor's bus.
+
 The plane is opened after the code-mode configuration is assembled, since the
 plane takes that configuration as the host its candidates run under. The
 configuration therefore holds a builder over a name, and
@@ -391,7 +403,7 @@ relative to `packages/client/src/client/evolution/`.
 | [`record`](../../packages/client/src/client/evolution/record.gleam), [`identity`](../../packages/client/src/client/evolution/identity.gleam), [`store`](../../packages/client/src/client/evolution/store.gleam) | Immutable envelopes, native compatibility identity, protected catalogue, approval and selection transactions. |
 | [`candidate`](../../packages/client/src/client/evolution/candidate.gleam), [`evaluate`](../../packages/client/src/client/evolution/evaluate.gleam), [`program`](../../packages/client/src/client/evolution/program.gleam) | Jailed capture, author checks, compilation and fresh program inputs. |
 | [`control`](../../packages/client/src/client/evolution/control.gleam), [`board`](../../packages/client/src/client/evolution/board.gleam), [`cli`](../../packages/client/src/client/evolution/cli.gleam), [`queue`](../../packages/client/src/client/evolution/queue.gleam), [`page`](../../packages/client/src/client/evolution/page.gleam) | Authenticated operator actions, the bounded board a panel draws, bounded managed staging, receipts and complete paged inspection. |
-| [`live`](../../packages/client/src/client/evolution/live.gleam), [`machine`](../../packages/client/src/client/evolution/machine.gleam), [`machine/local`](../../packages/client/src/client/evolution/machine/local.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, the machine seam it is staged through and its local implementation over jailed planes, remaining cleanup obligations and leased invocation folds. |
+| [`live`](../../packages/client/src/client/evolution/live.gleam), [`machine`](../../packages/client/src/client/evolution/machine.gleam), [`machine/local`](../../packages/client/src/client/evolution/machine/local.gleam), [`staged`](../../packages/client/src/client/evolution/staged.gleam), [`retirement`](../../packages/client/src/client/evolution/retirement.gleam), [`hook`](../../packages/client/src/client/evolution/hook.gleam) | One published generation, the machine seam it is staged through and its local implementation over jailed planes, remaining cleanup obligations and leased invocation folds. |
 | [`prompt`](../../packages/client/src/client/evolution/prompt.gleam), [`model_door`](../../packages/client/src/client/evolution/model_door.gleam), [`tasks`](../../packages/client/src/client/evolution/tasks.gleam) | Profile capture, the comparison request decoder and trace door, and independently admitted task criteria. |
 | [`capability`](../../packages/client/src/client/evolution/capability.gleam), [`codemode/evolution`](../../packages/codemode/src/codemode/evolution.gleam), [`cap/evolution`](../../packages/cap/src/cap/evolution.gleam) | The code-mode route: the program-side stubs, the router that answers their six names, and the cell that lends the session's doors to a call. |
 | [`rollout`](../../packages/client/src/client/evolution/rollout.gleam), [`rollout_host`](../../packages/client/src/client/evolution/rollout_host.gleam), [`fixture`](../../packages/client/src/client/evolution/fixture.gleam), [`trace`](../../packages/client/src/client/evolution/trace.gleam) | Paired production runs, aggregate request budgets, scoring after native retirement and bounded observations. |

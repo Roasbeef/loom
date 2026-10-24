@@ -40,7 +40,7 @@ mapped on the port:
 | `machine/local.invoke_program`, `live.invoke` | code mode / satellite | same |
 | `evolution_trial` (`open_instance` over a fresh fixture) | a local jail and toolchain, not the session's workspace | the orchestrator may have no helper or toolchain |
 | `upgrade/controller` | the scratch actor's pid, `sys` code change | the scratch actor is the executor's |
-| `evolution_plane` (`start_effect_plane`) | `settings.helper_path` on this machine | same |
+| `machine/local.open_plane` (`start_effect_plane`) | `settings.helper_path` on this machine | same |
 
 A latent bug the remote case exposes: `system_prompt.pin_profiles` runs for
 every session and pins `[]` when there is no wiring, and `pinned_profiles_in`
@@ -68,7 +68,7 @@ second column, replacing the closures `machine/local.Config` builds today:
 - `trial(request) -> Running` (opens and retires a trial session)
 - `core(command) -> Receipt` (status, upgrade, downgrade)
 
-`machine/local.new(...)` is today's `native` code over `evolution_plane`, moved, not
+`machine/local.new(...)` is today's `native` code over `open_plane`, moved, not
 rewritten. `machine.remote(hands)` sends the calls to the executor. The live
 owner, the store and the fold never learn which one they hold.
 
