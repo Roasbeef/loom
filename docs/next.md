@@ -1,89 +1,93 @@
 # Current handoff
 
-This is a scoped profiling handoff, checked October 23, 2026 against
-`3cf6bdc09c281e39dd126d5b7daa6c9d7eb4308d` plus the local terminal optimization
-commits `4e8417fbf` and `0e7b74a2f`. It records this task's measurements and validation, not a fresh
-whole-repository or hosted-CI audit. Rewrite it after the next body of work.
-Publication integrates main `cc6d7be5e`, including LSP ergonomics, Mermaid and
-nightly-update changes. The earlier fixture numbers precede that integration.
-The [publication PR](https://github.com/Roasbeef/loom/pull/1080) records the
-final reviewed head, hosted checks and merge state.
+This is a scoped record of the final literate-lint sweep, baselined October 24,
+2026 against `b5e9e0eb9` on `lint/wave-3c-client`. It records this work's measured
+results, not a fresh audit of releases or unrelated feature work. Rewrite it
+after the remaining validation or another body of work changes those facts.
 
-The [previous reconnect handoff](next-2026-10-22-before-live-profile.md) is
-preserved. Its pending-merge instructions are outdated: GitHub now confirms
-[PR #1069](https://github.com/Roasbeef/loom/pull/1069) merged at `68034bd1a`.
-The installed server and client both identify `3cf6bdc09`, which contains that
-merge. The rest of the previous handoff's detailed validation is historical
-and was not repeated here.
+The [previous handoff](next-2026-10-24-before-final-literate-sweep.md) described
+the reconnect and startup repairs. Those claims retain their original dates
+and were not revalidated here. It did not describe the later lint sweeps.
+Earlier sweep delivery notes also overstated verification: a zero lint census
+did not prove that the comment edits preserved compiling, executable code.
+The repairs below address concrete mistakes found by the final audit.
 
 ## Where the tree is
 
-| Work | Verified state |
+| Work | Measured state |
 | --- | --- |
-| Live terminal | Pickglass census, CPU and cumulative allocation captured from PID 28061 on OTP 29. The user reported Ctrl+G CPU spikes during the switch. |
-| Terminal patch | Layout avoids unused activity labels. Image discovery rejects ordinary text before grapheme conversion and measures span widths only after finding a marker. |
-| Fixture evidence | The 120-column Ctrl+G fixture uses about 18% fewer reductions and 12% fewer heap words with identical expanded/collapsed cells. Forty ordinary styled rows use 94% fewer reductions and 97% fewer words for image discovery alone. These are disposable fixture measurements. |
-| Validation | Before the latest base integration, the full local affected gate and all 1,564 TUI tests passed. Independent source review found no actionable issue. Hosted Linux and hard macOS end-to-end gates passed; one macOS advisory artifact exposed the throughput failure described below. Validation must be refreshed after the base integration. |
-| Live daemon | Native observation averaged 5.71% of one core over 30.138 seconds; RSS ranged 542–579 MiB. No function-level attribution was obtained. |
-| Daemon Pickglass access | Updated Pickglass supports TLS. The observed local ledger has no tool grant; local authority and attach files were absent. Known-peer checks found no usable verified authority access. |
-| Delivery | The owner authorized publication, review and merge after all gates pass, and explicitly waived Linux signoff for this PR because the configured host was offline. Exact-head hosted checks, raw advisory logs and strict skip censuses remain merge gates. Both installed processes remain on their original code; live savings are unmeasured. |
+| Literate sweep | The whole-tree lint command passed across all 29 packages: R11, R21 and R22 each have zero findings. All error-level rules are clear; 2,515 findings remain at warning level. |
+| Global gate | `CaseStanza` and `FunctionDoc` join `finding.error_by_default()`. Sixteen rules gate globally. Tests prove R21/R22 fail an unknown package outside the retained `literate_packages()` ratchet. The ratchet includes all 29 packages and grants no exemption. |
+| Code preservation | The 268 changed client sources match their pre-sweep code tokens except two trailing commas removed by formatting. A direct commit-parent audit of the four earlier sweep commits checked 596 source-file changes outside the intentional lint implementation. |
+| Earlier sweep repairs | `89c61ec39` restores a duplicated `ext` transition parameter, duplicate `cap` monitor selection and discarded fold, and four unplanned expression refactors. The seven repaired files match their respective pre-sweep token streams. Grouping braces in `broker/policy` and `tools/fs` are layout-only. |
+| Generated prelude | `a12c7b1a4` regenerates the two changed capability source digests. The public signatures did not change. The prelude gate and its stale-input self-test pass. |
+| Local validation | Client builds with `--warnings-as-errors`. The extension gate passed 49 tests; the capability gate passed 216; the lint package passed 318. Whole-tree lint and doc-check pass, with warnings retained. These do not replace the incomplete full test run. |
+| Full-gate blocker | `make check` compiles the seed but fails four install-pruning Python fixtures and the fake-origin signoff fixture. All five failures reproduce in a detached checkout of base `1dfef315fd`; the scripts are unchanged. They were not removed or relaxed. |
+| Client test limit | After formatting and compilation, `make check-client` reached the ledger tests before the jailed test process ended with `SIGXCPU` (`exit=-24`). There is no complete client-suite result from this run. |
+| Review | One independent report-only review found an inaccurate deployment copy-state comment. It was corrected and checked against the `facts.copy` encoder. Other false placement claims in the deployment render-budget helpers were corrected as well. |
 
-The [resource report](review/loom-resource-profile-2026-10-22.md) records
-provenance, ownership paths, repeated measurements, limitations and local
-artifact names. The image regression checks both protocols after wide and
-combining text and a marker prefix followed by ordinary text.
-
-The first hosted macOS shard's raw log reported 1,651 stream deltas per second
-against the unchanged 2,000-per-second bound, despite its advisory job's green
-badge. The memory bounds passed. Five unchanged local reproductions passed at
-19,480–20,718 deltas per second; independent source tracing found no plausible
-causal regression. Runner contention remains a hypothesis. The queued retry
-was cancelled when main advanced, so it produced no new evidence. Preserve the
-assertion and inspect the fresh run's raw logs before merging.
+No installation, daemon restart or hotpatch was performed. A hosted CI verdict
+for the final published head is still required before merge.
 
 ## What to do next
 
-1. Complete daemon profiling. **Exit:** locate the deployment authority or an
-   existing supported tool grant, enroll through `loomd distribution attach-file`
-   if needed, then obtain a Pickglass census and CPU sample before choosing
-   daemon code to change. Updating Pickglass supplies transport support, not
-   a new deployment grant. Do not infer a memory leak from the native cuts.
-2. Publish, review and merge the terminal patch. **Exit:** pass hosted CI,
-   inspect advisory artifacts and strict skip censuses, and confirm review for
-   the exact published head before a guarded merge. Linux signoff is explicitly
-   waived for this PR.
-   Installation remains a separate request; compare the same live Ctrl+G
-   workload after an authorized client update. Local fixture improvements
-   alone are not installed CPU or RSS savings.
-3. Revisit remaining transition work only with a matched measurement.
-   **Exit:** distinguish transcript projection, JSON previews, buffer painting
-   and terminal diff costs before introducing retained caches or other
-   machinery. These paths were sampled and left unchanged.
+1. Finish validation and publish the final sweep PR. **Exit:** the exact PR
+   head passes the required Linux fan-in, including both client shards, and
+   advisory logs are inspected rather than treating normalized job success
+   as a passing test suite. Do not bypass the required gate to merge.
+2. Record the local test restrictions separately from product failures.
+   **Exit:** preserve the baseline reproductions and the CPU-limit result
+   alongside the eventual CI result. Do not repair unrelated fixtures or
+   skip tests merely to manufacture a green local command.
+3. Resume the earlier feature work only from its own handoff and issues.
+   **Exit:** revalidate the relevant claims against the current tree; this
+   sweep does not install, release or redesign those features.
 
-## Rulings retained
+## Rulings already made
 
-**Measure distinct memory properties.** Cumulative heap allocation, process
-capacity, binary memory, RSS and physical footprint answer different questions.
-The resource report and `skills/beam-memory-review/SKILL.md` describe the cuts.
+Each of these is settled. Re-open one only with new evidence, and record the
+reopening where the ruling lives.
 
-**Use the deployment's supported tool identity.** Protocol 096 defines the TLS
-attachment and revocation path. No alternate trust path was introduced.
+**The gate is global.** `packages/lint/src/lint/finding.gleam` owns the default
+error rules. A package missing from the public sweep ratchet is still subject
+to R21 and R22. The unknown-package tests pin that behavior.
 
-**Render only the text a caller needs.** A liveness check reads a phase; a
-visible activity label retains its full formatting. Image recognition still
-validates complete marker spans and their terminal-cell positions.
+**Comments do not authorize behavior changes.** Restoring source tokens,
+compiling warning-free and running the relevant tests are separate checks.
+A lint pass cannot detect a duplicated operation or prove a comment true.
+Preserve existing explanatory prose when attaching helper documentation.
+
+## Deliberately open
+
+The full local gate and complete client test run remain unverified for this
+head. The former has baseline fixture failures, and the latter hit a kernel
+resource limit. Hosted CI is pending. None of these is unfinished work somebody
+forgot; none is permission to call the corresponding gate green.
 
 ## How to verify
 
+Run shipment-building package targets sequentially:
+
 ```sh
-bash scripts/check.sh tui
+make check
+make check-client
+make check-cap
+make check-ext
+make check-lint
+make lint
 make doc-check
-bash scripts/tui_perf.sh . candidate render 120 40
+make prelude-check
 ```
 
-The full package gate needs process inspection and loopback networking. The
-sandboxed run failed five bootstrap/process-identity tests because `/bin/ps`
-was blocked; the unrestricted rerun passed all tests. The standalone Ctrl+G
-comparison advances the fixture clock by 50 ms before each toggle, otherwise
-frame pacing can reuse a stale frame. Gate exit codes and artifact names are
-recorded in the report. See `docs/execution.md` for the remaining hazards.
+**Read each command's actual exit status.** The full local check log is
+`$TMPDIR/loom-wave3c-check-final.log`; the client gate is
+`$TMPDIR/loom-wave3c-client-check-final.log`. Baseline Python reproductions are
+`$TMPDIR/loom-wave3c-baseline-python.log` and
+`$TMPDIR/loom-wave3c-baseline-signoff.log`. These are session-local evidence,
+not committed artifacts or a substitute for CI logs.
+
+**Use explicit worktree paths for semantic queries.** Loom's code-mode Gleam
+LSP resolved the repaired `cap/runtime.serving`, `cap/strand.map_batches` and
+`ext/internal/live_runtime.finish` callers in this worktree. Bare project
+queries can describe the main checkout instead. See
+[docs/execution.md](execution.md) for the remaining verification hazards.
