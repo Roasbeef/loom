@@ -148,6 +148,7 @@ pub fn resident_track(status: control_protocol.Lifecycle) -> Bool {
   }
 }
 
+/// Formats session fields into styled table cells.
 fn cells(row: control_protocol.Session) -> List(#(String, style.Style)) {
   [
     #(row.session_id, theme.inline_code()),
@@ -194,11 +195,12 @@ fn signal() -> style.Style {
   style.new(theme.signal, style.Default, style.none())
 }
 
-// Widths are measured in terminal cells, not graphemes, so a wide glyph
-// counts twice exactly as it will be drawn.
+/// Measures column widths across all rows in terminal cells.
 fn column_widths(rows: List(List(#(String, style.Style)))) -> List(Int) {
   list.fold(rows, [], fn(widths, row) {
     let measured = list.map(row, fn(cell) { text.cell_width(cell.0) })
+
+    // Combine with maximum column widths seen so far.
     case widths {
       [] -> measured
       _ -> list.map2(widths, measured, int.max)
@@ -206,6 +208,7 @@ fn column_widths(rows: List(List(#(String, style.Style)))) -> List(Int) {
   })
 }
 
+/// Draws a single row of cells into the buffer at the given position.
 fn draw_row(
   drawn: Buffer,
   row: List(#(String, style.Style)),
@@ -213,6 +216,7 @@ fn draw_row(
   x: Int,
   y: Int,
 ) -> Buffer {
+  // Draw each cell recursively.
   case row, widths {
     [#(content, styled), ..rest], [width, ..more] -> {
       let drawn = buffer.set_string(drawn, Position(x:, y:), content, styled)

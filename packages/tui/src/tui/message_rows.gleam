@@ -61,10 +61,13 @@ pub const margin_bar = "▎"
 ///   )
 /// ```
 pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
+  // Split incoming message text into heading and remaining body.
   let #(heading, body) = case string.split_once(text, "\n") {
     Ok(pair) -> pair
     Error(Nil) -> #(text, "")
   }
+
+  // Dispatch rendering based on speaker role.
   let drawn = case speaker {
     PeerMessage -> peer_rows(heading, body, width)
     SentMessage -> thread_rows("→ to ", heading, body, width)
@@ -92,13 +95,14 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
     | ProgramSettled
     | ImageRow(..) -> body_rows(text, [], width)
   }
+
   list.append(drawn, [span.line_plain("")])
 }
 
-// A sent or sibling message: the heading behind one blank cell, the body
-// behind three, and the other strand's bar in the margin beside both. The
-// strand's name is what follows the heading's verb, up to its first
-// separator, and it is drawn bold in that strand's hue.
+/// A sent or sibling message: the heading behind one blank cell, the body
+/// behind three, and the other strand's bar in the margin beside both. The
+/// strand's name is what follows the heading's verb, up to its first
+/// separator, and it is drawn bold in that strand's hue.
 fn thread_rows(
   verb: String,
   heading: String,
@@ -106,10 +110,13 @@ fn thread_rows(
   width: Int,
 ) -> List(span.Line) {
   let after = string.drop_start(heading, string.length(verb))
+
+  // Extract strand name before the first separator.
   let #(name, rest) = case string.split_once(after, " · ") {
     Ok(#(name, rest)) -> #(name, " · " <> rest)
     Error(Nil) -> #(after, "")
   }
+
   let hue = strand_hue(name)
   let bar =
     span.span_styled(margin_bar, style.new(hue, style.Default, style.none()))
@@ -130,11 +137,13 @@ fn thread_rows(
   [top, ..body_rows(body, [bar, span.span_plain("   ")], width - 3)]
 }
 
-// A peer message: a band whose heading names the source session and strand
-// in the advisor accent, with the daemon's check on the origin in the
-// success colour, and the body behind a bar two cells in.
+/// A peer message: a band whose heading names the source session and strand
+/// in the advisor accent, with the daemon's check on the origin in the
+/// success colour, and the body behind a bar two cells in.
 fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
   let band = fn(color, modifier) { style.new(color, theme.raised, modifier) }
+
+  // Split peer message heading into target name and trailing details.
   let #(name, rest) = case string.split_once(heading, " · ") {
     Ok(#(name, rest)) -> #(name, " · " <> rest)
     Error(Nil) -> #(heading, "")
@@ -145,6 +154,8 @@ fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
   // session or strand that holds the same words cannot colour anything but
   // its own field.
   let #(rest, clock) = split_clock(rest)
+
+  // Check whether origin verification badge ends the line.
   let #(middle, checked) = case
     string.ends_with(rest, transcript_lines.origin_checked)
   {
@@ -154,6 +165,7 @@ fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
     )
     False -> #(rest, "")
   }
+
   let top =
     span.line_new(clipped(
       [
@@ -172,10 +184,12 @@ fn peer_rows(heading: String, body: String, width: Int) -> List(span.Line) {
   [top, ..body_rows(body, [span.span_plain("  "), bar], width - 4)]
 }
 
-// A heading's trailing clock time, ` · 14:02`, split from the words before
-// it, or nothing when the heading has none.
+/// A heading's trailing clock time, ` · 14:02`, split from the words before
+/// it, or nothing when the heading has none.
 fn split_clock(heading: String) -> #(String, String) {
   let tail = string.slice(heading, string.length(heading) - 8, 8)
+
+  // Inspect fixed-width clock suffix format.
   case string.to_graphemes(tail) {
     [" ", "·", " ", h1, h2, ":", m1, m2] ->
       case int.parse(h1 <> h2), int.parse(m1 <> m2) {
@@ -186,13 +200,13 @@ fn split_clock(heading: String) -> #(String, String) {
   }
 }
 
-// The body as plain text, each of its lines wrapped to `room` on its own
-// and drawn behind `prefix`. An agent writes a message as lines, and
-// Markdown would join two of them into one paragraph; kept as text, a
-// message reads as it was sent. The body's own words never become a heading
-// here: whatever they say, they are the rows under one. The message closes
-// with a blank row of its own, so the body's last blanks are dropped rather
-// than drawn as a bar with nothing beside it.
+/// The body as plain text, each of its lines wrapped to `room` on its own
+/// and drawn behind `prefix`. An agent writes a message as lines, and
+/// Markdown would join two of them into one paragraph; kept as text, a
+/// message reads as it was sent. The body's own words never become a heading
+/// here: whatever they say, they are the rows under one. The message closes
+/// with a blank row of its own, so the body's last blanks are dropped rather
+/// than drawn as a bar with nothing beside it.
 fn body_rows(
   body: String,
   prefix: List(span.Span),
@@ -216,16 +230,18 @@ fn body_rows(
   })
 }
 
-// Styled pieces laid end to end and cut at `room` cells, the piece that
-// crosses the edge ending in an ellipsis and the pieces after it dropped.
-// Empty pieces draw nothing, so a heading without a check is not followed
-// by an empty span.
+/// Styled pieces laid end to end and cut at `room` cells, the piece that
+/// crosses the edge ending in an ellipsis and the pieces after it dropped.
+/// Empty pieces draw nothing, so a heading without a check is not followed
+/// by an empty span.
 fn clipped(pieces: List(#(String, style.Style)), room: Int) -> List(span.Span) {
   let #(spans, _) =
     list.fold(pieces, #([], int.max(0, room)), fn(acc, piece) {
       let #(spans, left) = acc
       let #(content, piece_style) = piece
       let cells = text.cell_width(content)
+
+      // Truncate or append span content within available line budget.
       case content, cells <= left {
         "", _ -> acc
         _, True -> #(
@@ -262,6 +278,8 @@ pub fn strand_hue(name: String) -> style.Color {
     |> list.fold(0, fn(total, point) {
       total + string.utf_codepoint_to_int(point)
     })
+
+  // Select accent colour based on codepoint hash.
   case sum % 3 {
     0 -> theme.added
     1 -> theme.current

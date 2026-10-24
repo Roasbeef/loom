@@ -140,11 +140,15 @@ pub fn find(
   let starts = ports(canvas, from, exit)
   let goals = ports(canvas, to, entry)
   let near = window_around(from, to, canvas)
+
+  // Attempt route search in the near window before expanding to full canvas.
   case attempt(canvas, starts, goals, exit, entry, near, budget) {
     Ok(found) -> Ok(found)
     Error(Failure(reason: OutOfBudget, ..) as failure) -> Error(failure)
     Error(Failure(reason: NoRoute, expansions: spent)) -> {
       let whole = #(0, 0, canvas.width(canvas) - 1, canvas.height(canvas) - 1)
+
+      // Fall back to whole-canvas search if window was constrained.
       case near == whole {
         True -> Error(Failure(NoRoute, spent))
         False ->
@@ -161,8 +165,8 @@ pub fn find(
   }
 }
 
-// The window of the first attempt: the two boxes and a margin, kept inside the
-// canvas.
+/// The window of the first attempt: the two boxes and a margin, kept inside the
+/// canvas.
 fn window_around(from: Box, to: Box, canvas: Canvas) -> #(Int, Int, Int, Int) {
   #(
     int.max(0, int.min(from.x, to.x) - window_margin),
@@ -178,7 +182,7 @@ fn window_around(from: Box, to: Box, canvas: Canvas) -> #(Int, Int, Int, Int) {
   )
 }
 
-// One search inside a window. Ports outside the window are not used.
+/// One search inside a window. Ports outside the window are not used.
 fn attempt(
   canvas: Canvas,
   starts: List(#(Int, Int, Int)),
@@ -224,13 +228,15 @@ fn attempt(
         None,
       )
     })
+
+  // Dispatch walk loop if goals are reachable.
   case reachable {
     [] -> Error(Failure(NoRoute, 0))
     _ -> walk(canvas, goal, search, 0)
   }
 }
 
-// The smallest rectangle holding every port, as left, top, right, bottom.
+/// The smallest rectangle holding every port, as left, top, right, bottom.
 fn bounds_of(ports: List(#(Int, Int, Int))) -> #(Int, Int, Int, Int) {
   case ports {
     [] -> #(0, 0, 0, 0)
@@ -246,10 +252,11 @@ fn bounds_of(ports: List(#(Int, Int, Int))) -> #(Int, Int, Int, Int) {
   }
 }
 
-// The free cells just outside a side of a box, with each one's distance from
-// the middle of that side. The corner columns are left out because a line
-// there would read as touching the box's corner.
+/// The free cells just outside a side of a box, with each one's distance from
+/// the middle of that side. The corner columns are left out because a line
+/// there would read as touching the box's corner.
 fn ports(canvas: Canvas, box: Box, side: Side) -> List(#(Int, Int, Int)) {
+  // Generate candidates along the requested side.
   let #(cells, centre) = case side {
     Top -> #(
       list.map(canvas.between(box.x + 1, box.x + box.width - 2), fn(x) {
@@ -282,19 +289,23 @@ fn ports(canvas: Canvas, box: Box, side: Side) -> List(#(Int, Int, Int)) {
   // thick line.
   cells
   |> list.filter(fn(cell) {
+    // Compute surrounding side coordinates for gap clearance.
     let #(before, after) = case side {
       Top | Bottom -> #(#(cell.0 - 1, cell.1), #(cell.0 + 1, cell.1))
       Left | Right -> #(#(cell.0, cell.1 - 1), #(cell.0, cell.1 + 1))
     }
+
     canvas.is_blank(canvas, cell.0, cell.1)
     && !occupied(canvas, before)
     && !occupied(canvas, after)
   })
   |> list.map(fn(cell) {
+    // Compute port offset from centre along side axis.
     let offset = case side {
       Top | Bottom -> int.absolute_value(cell.0 - centre)
       Left | Right -> int.absolute_value(cell.1 - centre)
     }
+
     #(cell.0, cell.1, offset)
   })
 }
@@ -326,8 +337,8 @@ pub fn opposite(side: Side) -> Side {
   }
 }
 
-// Headings are small integers so a state packs into one key: north, south,
-// west, east. A route that leaves a box through its top heads north.
+/// Headings are small integers so a state packs into one key: north, south,
+/// west, east. A route that leaves a box through its top heads north.
 fn heading_of(side: Side) -> Int {
   case side {
     Top -> 0
@@ -337,6 +348,7 @@ fn heading_of(side: Side) -> Int {
   }
 }
 
+/// Maps a heading integer to its coordinate step delta.
 fn step_of(heading: Int) -> #(Int, Int) {
   case heading {
     0 -> #(0, -1)
@@ -346,7 +358,7 @@ fn step_of(heading: Int) -> #(Int, Int) {
   }
 }
 
-// The heading that undoes a heading.
+/// The heading that undoes a heading.
 fn reverse_of(heading: Int) -> Int {
   case heading {
     0 -> 1
@@ -366,6 +378,7 @@ fn state_of(width: Int, packed: Int) -> #(Int, Int, Int) {
   #(cell % width, cell / width, heading)
 }
 
+/// Initializes an empty priority search structure.
 fn empty_search() -> Search {
   Search(
     queue: dict.new(),
@@ -390,9 +403,9 @@ fn estimate_at(goal: Goal, x: Int, y: Int) -> Int {
   + int.max(0, int.max(top - y, y - bottom))
 }
 
-// Queues a state if this is the cheapest way found to reach it. It waits in the
-// bucket of its cost so far plus `remaining`, the estimate for its cell, which
-// the caller already has the coordinates to work out.
+/// Queues a state if this is the cheapest way found to reach it. It waits in the
+/// bucket of its cost so far plus `remaining`, the estimate for its cell, which
+/// the caller already has the coordinates to work out.
 fn push(
   search: Search,
   state: Int,
@@ -400,14 +413,18 @@ fn push(
   remaining: Int,
   parent: Option(Int),
 ) -> Search {
+  // Check if a cheaper path to this state already exists.
   case dict.get(search.best, state) {
     Ok(known) if known <= cost -> search
     _ -> {
       let priority = cost + remaining
+
+      // Retrieve existing waiting states at priority bucket.
       let waiting = case dict.get(search.queue, priority) {
         Ok(states) -> states
         Error(_) -> []
       }
+
       Search(
         ..search,
         queue: dict.insert(search.queue, priority, [state, ..waiting]),
@@ -421,10 +438,10 @@ fn push(
   }
 }
 
-// Takes states from the lowest non-empty priority bucket until the goal is
-// popped, the limit passes, or the frontier empties. A state whose best cost
-// has since improved is stale: it was queued under a priority that no longer
-// matches, and is skipped.
+/// Takes states from the lowest non-empty priority bucket until the goal is
+/// popped, the limit passes, or the frontier empties. A state whose best cost
+/// has since improved is stale: it was queued under a priority that no longer
+/// matches, and is skipped.
 fn walk(
   canvas: Canvas,
   goal: Goal,
@@ -445,7 +462,7 @@ fn walk(
   }
 }
 
-// Handles one popped state, unless its priority is out of date.
+/// Handles one popped state, unless its priority is out of date.
 fn settle(
   canvas: Canvas,
   goal: Goal,
@@ -454,6 +471,8 @@ fn settle(
   priority: Int,
 ) -> Result(Found, Failure) {
   let current = priority - estimate(goal, state)
+
+  // Verify whether state cost remains current.
   case dict.get(remaining.best, state) {
     Ok(known) if known == current ->
       advance(canvas, goal, remaining, state, known, priority)
@@ -461,7 +480,7 @@ fn settle(
   }
 }
 
-// Ends the search at the finish state, or queues what follows any other.
+/// Ends the search at the finish state, or queues what follows any other.
 fn advance(
   canvas: Canvas,
   goal: Goal,
@@ -493,10 +512,11 @@ fn advance(
   }
 }
 
-// Queues what can follow a state. A state on a goal cell, heading into the
-// box, queues the finish instead of moving on. A state on a crossing may only
-// continue straight, because a turn there would join the two routes.
+/// Queues what can follow a state. A state on a goal cell, heading into the
+/// box, queues the finish instead of moving on. A state on a crossing may only
+/// continue straight, because a turn there would join the two routes.
 fn expand(canvas: Canvas, goal: Goal, search: Search, at: Walker) -> Search {
+  // Check if walker has reached the target port cell.
   case dict.get(goal.cells, #(at.x, at.y)) {
     Ok(offset) if at.heading == goal.heading ->
       push(
@@ -507,10 +527,12 @@ fn expand(canvas: Canvas, goal: Goal, search: Search, at: Walker) -> Search {
         Some(at.state),
       )
     _ -> {
+      // Check whether current cell sits on an existing crossing line.
       let on_crossing = case canvas.cell(canvas, at.x, at.y) {
         Some(canvas.Line(..)) -> True
         _ -> False
       }
+
       list.fold([0, 1, 2, 3], search, fn(current, next) {
         case on_crossing, next == at.heading, next == reverse_of(at.heading) {
           True, False, _ | _, _, True -> current
@@ -521,10 +543,10 @@ fn expand(canvas: Canvas, goal: Goal, search: Search, at: Walker) -> Search {
   }
 }
 
-// One step in a heading, if the cell there can be entered that way. A free
-// cell can; a straight line can, but only across it. The extra cost of a cell
-// beside a box is only worked out for a step that could improve on what the
-// state already costs, because most steps reach states already settled.
+/// One step in a heading, if the cell there can be entered that way. A free
+/// cell can; a straight line can, but only across it. The extra cost of a cell
+/// beside a box is only worked out for a step that could improve on what the
+/// state already costs, because most steps reach states already settled.
 fn move(
   canvas: Canvas,
   goal: Goal,
@@ -541,6 +563,7 @@ fn move(
     True -> 0
     False -> turn_cost
   }
+
   let inside =
     nx >= goal.window.0
     && ny >= goal.window.1
@@ -564,6 +587,8 @@ fn move(
       }
     True, Some(_) -> Error(Nil)
   }
+
+  // Advance frontier if step is valid.
   case entering {
     Ok(price) ->
       push(
@@ -577,8 +602,8 @@ fn move(
   }
 }
 
-// One extra step of cost for a cell that touches a box's outline or an edge
-// label, so a route that has a choice keeps a cell of space from them.
+/// One extra step of cost for a cell that touches a box's outline or an edge
+/// label, so a route that has a choice keeps a cell of space from them.
 fn hugging(canvas: Canvas, x: Int, y: Int) -> Int {
   let touching =
     list.any([#(x - 1, y), #(x + 1, y), #(x, y - 1), #(x, y + 1)], fn(at) {
@@ -588,25 +613,29 @@ fn hugging(canvas: Canvas, x: Int, y: Int) -> Int {
         _ -> False
       }
     })
+
+  // Add penalty if cell hugs an ink barrier.
   case touching {
     True -> 1
     False -> 0
   }
 }
 
-// A line can be crossed when it is straight and the crossing is square to it.
+/// A line can be crossed when it is straight and the crossing is square to it.
 fn crossable(mask: Int, heading: Int) -> Bool {
   let vertical = mask == canvas.up + canvas.down
   let horizontal = mask == canvas.left + canvas.right
+
+  // Check orthogonal alignment with line mask.
   case heading {
     0 | 1 -> horizontal
     _ -> vertical
   }
 }
 
-// Walks back from the finish to a start, collecting the cells in order. The
-// finish state shares its cell with the last route cell, which is dropped
-// once, and a start has no parent so the walk ends there.
+/// Walks back from the finish to a start, collecting the cells in order. The
+/// finish state shares its cell with the last route cell, which is dropped
+/// once, and a start has no parent so the walk ends there.
 fn trace(
   width: Int,
   search: Search,
@@ -614,10 +643,14 @@ fn trace(
   cells: List(#(Int, Int)),
 ) -> List(#(Int, Int)) {
   let #(x, y, heading) = state_of(width, state)
+
+  // Omit the synthetic finished state cell from traced route.
   let next = case heading == finished {
     True -> cells
     False -> [#(x, y), ..cells]
   }
+
+  // Recurse along came_from links until root is reached.
   case dict.get(search.came_from, state) {
     Ok(parent) -> trace(width, search, parent, next)
     Error(_) -> next

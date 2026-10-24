@@ -112,6 +112,8 @@ pub fn row_text(buffer: Buffer, left: Int, y: Int, width: Int) -> String {
   range_from(left, width)
   |> list.fold("", fn(text, x) {
     let cell = buffer.get_cell(buffer, Position(x, y))
+
+    // Continuation cells belong to the leading wide character, so skip them.
     case buffer.is_continuation(cell) {
       True -> text
       False -> text <> buffer.cell_symbol(cell)

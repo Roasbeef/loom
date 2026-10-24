@@ -115,15 +115,19 @@ pub fn decode(document: JsonValue) -> Result(List(Group), String) {
   list.try_map(items, group)
 }
 
+/// Decodes one orchestrator group and its remote session listings.
 fn group(value: JsonValue) -> Result(Group, String) {
   use name <- result.try(text_at(value, "name"))
   use node <- result.try(text_at(value, "node"))
   use state <- result.try(text_at(value, "state"))
+
+  // Convert remote hearing status text into the domain variant.
   use hearing <- result.try(case state {
     "answered" -> Ok(Answered)
     "silent" -> Ok(Silent)
     other -> Error("state is " <> text_hygiene.single_line(other))
   })
+
   use more <- result.try(more_at(value))
   use listed <- result.try(field(value, "sessions"))
   use items <- result.try(list_of(listed, "sessions"))
@@ -138,6 +142,7 @@ fn group(value: JsonValue) -> Result(Group, String) {
   )
 }
 
+/// Decodes an individual remote session row from a json object.
 fn row(value: JsonValue) -> Result(Row, String) {
   use session_id <- result.try(text_at(value, "session_id"))
   use Nil <- result.try(
@@ -187,16 +192,21 @@ pub fn section_text(groups: List(Group)) -> String {
 /// // elsewhere_view.group_text(group)
 /// ```
 pub fn group_text(group: Group) -> String {
+  // Format group heading with optional address information.
   let heading = case group.address {
     Some(address) ->
       clean(group.name) <> "  " <> clean(group.node) <> "  " <> clean(address)
     None -> clean(group.name) <> "  " <> clean(group.node)
   }
+
+  // Render group sessions list or display empty/unresponsive message.
   let body = case group.hearing, group.sessions {
     Silent, _ -> ["  no answer"]
     Answered, [] -> ["  no sessions"]
     Answered, rows -> list.map(rows, row_text)
   }
+
+  // Append pagination continuation command hint when more rows exist.
   let next = case group.more, list.last(group.sessions) {
     Further, Ok(last) -> [
       "  more: loom sessions elsewhere --orchestrator "
@@ -206,9 +216,11 @@ pub fn group_text(group: Group) -> String {
     ]
     Further, Error(Nil) | Last, _ -> []
   }
+
   string.join([heading, ..list.append(body, next)], "\n")
 }
 
+/// Formats a single remote session line with aligned fields.
 fn row_text(row: Row) -> String {
   "  "
   <> clean(row.session_id)
@@ -220,6 +232,7 @@ fn row_text(row: Row) -> String {
   <> clean(row.name)
 }
 
+/// Extracts an object property by key or returns an explanatory error.
 fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   case value {
     json.Object(members) ->
@@ -234,8 +247,11 @@ fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   }
 }
 
+/// Reads a required non-empty bounded string property from a JSON object.
 fn text_at(value: JsonValue, key: String) -> Result(String, String) {
   use found <- result.try(field(value, key))
+
+  // Validate string content and length bounds.
   case found {
     json.String(word) if word != "" ->
       case string.byte_size(word) <= text_limit {
@@ -246,10 +262,14 @@ fn text_at(value: JsonValue, key: String) -> Result(String, String) {
   }
 }
 
-// Text that may be empty, for the two members of a row that a daemon draws from
-// what a person typed.
+/// Reads a bounded string property that may be empty from a JSON object.
+///
+/// Text that may be empty, for the two members of a row that a daemon draws from
+/// what a person typed.
 fn label_at(value: JsonValue, key: String) -> Result(String, String) {
   use found <- result.try(field(value, key))
+
+  // Validate string property and length limits.
   case found {
     json.String(word) ->
       case string.byte_size(word) <= text_limit {
@@ -260,8 +280,11 @@ fn label_at(value: JsonValue, key: String) -> Result(String, String) {
   }
 }
 
+/// Decodes the pagination boolean flag into Further or Last.
 fn more_at(value: JsonValue) -> Result(More, String) {
   use found <- result.try(field(value, "more"))
+
+  // Map boolean indicator to More domain type.
   case found {
     json.Bool(True) -> Ok(Further)
     json.Bool(False) -> Ok(Last)
@@ -269,6 +292,7 @@ fn more_at(value: JsonValue) -> Result(More, String) {
   }
 }
 
+/// Validates and extracts a bounded list of JSON values from an array.
 fn list_of(value: JsonValue, key: String) -> Result(List(JsonValue), String) {
   case value {
     json.Array(items) ->

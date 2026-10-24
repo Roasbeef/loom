@@ -194,10 +194,13 @@ pub fn put_ink(
   glyph: String,
   role: Role,
 ) -> Canvas {
+  // Ignore coordinates outside the canvas bounds.
   case contains(canvas, x, y) {
     False -> canvas
     True -> {
       let cells = dict.insert(canvas.cells, #(x, y), Ink(glyph:, role:))
+
+      // Multi-cell glyphs place a continuation cell beside the ink.
       case text.cell_width(glyph) {
         2 -> Canvas(..canvas, cells: dict.insert(cells, #(x + 1, y), Cont))
         _ -> Canvas(..canvas, cells: cells)
@@ -245,9 +248,11 @@ pub fn add_line(
   mask: Int,
   stroke: Stroke,
 ) -> Canvas {
+  // Ignore coordinates outside the canvas bounds.
   case contains(canvas, x, y) {
     False -> canvas
     True -> {
+      // Merge with an existing line cell or initialize a fresh one.
       let merged = case dict.get(canvas.cells, #(x, y)) {
         Ok(Line(mask: existing, stroke: earlier)) ->
           Line(
@@ -256,11 +261,13 @@ pub fn add_line(
           )
         _ -> Line(mask:, stroke:)
       }
+
       Canvas(..canvas, cells: dict.insert(canvas.cells, #(x, y), merged))
     }
   }
 }
 
+/// Returns the heavier stroke when two lines meet at the same cell.
 fn heavier(first: Stroke, second: Stroke) -> Stroke {
   case first, second {
     model.Thick, _ | _, model.Thick -> model.Thick
@@ -292,6 +299,7 @@ pub fn line_glyph(mask: Int, stroke: Stroke) -> String {
   }
 }
 
+/// Selects the glyph for a line stroke according to its style.
 fn by_stroke(stroke: Stroke, solid: String, dotted: String, thick: String) {
   case stroke {
     model.Solid -> solid
@@ -345,8 +353,8 @@ pub fn draw_box(
   })
 }
 
-// The six glyphs of a shape's outline: four corners, the horizontal bar and
-// the vertical bar.
+/// The six glyphs of a shape's outline: four corners, the horizontal bar and
+/// the vertical bar.
 fn outline(shape: Shape) -> #(String, String, String, String, String, String) {
   case shape {
     model.Rectangle -> #("┌", "┐", "└", "┘", "─", "│")
@@ -370,6 +378,7 @@ fn outline(shape: Shape) -> #(String, String, String, String, String, String) {
 /// // -> [[canvas.Run("ab", canvas.Body)]]
 /// ```
 pub fn rows(canvas: Canvas) -> List(List(Run)) {
+  // Collect all occupied cell coordinates to determine bounding box.
   case dict.keys(canvas.cells) {
     [] -> []
     [#(first_x, first_y), ..rest] as positions -> {
@@ -389,7 +398,7 @@ pub fn rows(canvas: Canvas) -> List(List(Run)) {
   }
 }
 
-// One row as runs, with trailing blanks dropped.
+/// Collects one row of cells into styled runs, dropping trailing blanks.
 fn row_runs(canvas: Canvas, y: Int, from_x: Int, to_x: Int) -> List(Run) {
   between(from_x, to_x)
   |> list.filter_map(fn(x) {
@@ -404,6 +413,7 @@ fn row_runs(canvas: Canvas, y: Int, from_x: Int, to_x: Int) -> List(Run) {
   |> drop_trailing_blank
 }
 
+/// Merges consecutive runs with identical styling roles.
 fn merge_runs(pieces: List(Run), done: List(Run)) -> List(Run) {
   case pieces, done {
     [], _ -> list.reverse(done)

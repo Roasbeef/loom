@@ -338,6 +338,8 @@ pub fn decode_text(text: String) -> Result(List(Moment), String) {
       })
     }),
   )
+
+  // Check whether the recording contains homogeneous format events.
   let valid = case moments {
     [Moment(_, LocalFormatTwo), ..rest] ->
       !list.any(rest, fn(moment) {
@@ -354,15 +356,15 @@ pub fn decode_text(text: String) -> Result(List(Moment), String) {
         }
       })
   }
+
+  // Disallow replaying mixed format runs.
   case valid {
     True -> Ok(moments)
     False -> Error("mixed local recording formats are not replayable")
   }
 }
 
-// One append per event. A recording is written by a person's hand or by a
-// websocket, so the syscall rate is bounded by those and buffering would
-// only risk losing the tail of the run that is being diagnosed.
+/// Appends a recorded event to the file at monotonic timestamp offset.
 fn write(path: String, started_ms: Int, event: Recorded) -> Nil {
   let at_ms = host_bootstrap.monotonic_time_ms() - started_ms
   let line = encode_line(Moment(at_ms:, event:)) <> "\n"
@@ -374,6 +376,7 @@ fn write(path: String, started_ms: Int, event: Recorded) -> Nil {
   Nil
 }
 
+/// Encodes a recorded input or gateway event into JSON object fields.
 fn encode_event(event: Recorded) -> List(#(String, json.JsonValue)) {
   case event {
     LocalFormatTwo -> [#("t", json.String("format")), #("version", json.Int(2))]
@@ -401,6 +404,7 @@ fn encode_event(event: Recorded) -> List(#(String, json.JsonValue)) {
   }
 }
 
+/// Encodes mouse coordinate and button name fields.
 fn encode_button(
   tag: String,
   x: Int,
@@ -415,8 +419,7 @@ fn encode_button(
   ]
 }
 
-// The button by name rather than by etui's bit value, so a recording reads
-// as what happened and does not change meaning if etui renumbers.
+/// Converts mouse button variant to a stable string name.
 fn button_name(button: backend.MouseButton) -> String {
   case button {
     backend.MouseLeft -> "left"
@@ -425,10 +428,7 @@ fn button_name(button: backend.MouseButton) -> String {
   }
 }
 
-// The gateway's own bytes go through verbatim: the protocol has one wire
-// form already, and a second encoding of it could only disagree with the
-// first. The three lifecycle messages are not wire frames at all, so each
-// is given a tag of its own rather than being flattened into a fake one.
+/// Encodes connection gateway lifecycle events into tagged JSON fields.
 fn encode_message(
   message: connection_event.Message,
 ) -> List(#(String, json.JsonValue)) {
@@ -449,6 +449,7 @@ fn encode_message(
   }
 }
 
+/// Decodes a tagged JSON payload into a recorded event variant.
 fn decode_event(
   tag: String,
   fields: List(#(String, json.JsonValue)),
@@ -493,6 +494,7 @@ fn decode_event(
   }
 }
 
+/// Decodes terminal resize dimensions from fields.
 fn decode_resize(
   fields: List(#(String, json.JsonValue)),
 ) -> Result(Recorded, String) {
@@ -501,21 +503,24 @@ fn decode_resize(
   Ok(Resized(width:, height:))
 }
 
+/// Decodes scroll position and direction from fields.
 fn decode_scroll(
   fields: List(#(String, json.JsonValue)),
 ) -> Result(Recorded, String) {
   use x <- result.try(required_int(fields, "x"))
   use y <- result.try(required_int(fields, "y"))
+
+  // Decode scroll up boolean direction.
   use direction <- result.try(case list.key_find(fields, "up") {
     Ok(json.Bool(True)) -> Ok(ScrollUp)
     Ok(json.Bool(False)) -> Ok(ScrollDown)
     Ok(_) | Error(Nil) -> Error("scroll needs a boolean \"up\"")
   })
+
   Ok(Scrolled(x:, y:, direction:))
 }
 
-// The three button events share one shape and differ only in the
-// constructor, which the tag has already chosen.
+/// Decodes mouse button coordinates and button identifier.
 fn decode_button(
   fields: List(#(String, json.JsonValue)),
   build: fn(Int, Int, backend.MouseButton) -> Recorded,
@@ -523,15 +528,19 @@ fn decode_button(
   use x <- result.try(required_int(fields, "x"))
   use y <- result.try(required_int(fields, "y"))
   use name <- result.try(required_string(fields, "button"))
+
+  // Parse button name into backend mouse button.
   use button <- result.try(case name {
     "left" -> Ok(backend.MouseLeft)
     "middle" -> Ok(backend.MouseMiddle)
     "right" -> Ok(backend.MouseRight)
     other -> Error("unknown mouse button \"" <> other <> "\"")
   })
+
   Ok(build(x, y, button))
 }
 
+/// Extracts object key-value pairs or fails for non-object JSON values.
 fn object_fields(
   value: json.JsonValue,
 ) -> Result(List(#(String, json.JsonValue)), String) {
@@ -546,6 +555,7 @@ fn object_fields(
   }
 }
 
+/// Looks up a required string field by key.
 fn required_string(
   fields: List(#(String, json.JsonValue)),
   name: String,
@@ -556,6 +566,7 @@ fn required_string(
   }
 }
 
+/// Looks up a required integer field by key.
 fn required_int(
   fields: List(#(String, json.JsonValue)),
   name: String,

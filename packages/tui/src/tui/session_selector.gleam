@@ -263,8 +263,11 @@ fn trim_slash(path: String) -> String {
   }
 }
 
+/// Ranks path distance relative to current workspace directory.
 fn workspace_rank(path: String, workspace: String) -> Int {
   let path = trim_slash(path)
+
+  // Rank exact match, subdirectory, or unrelated path.
   case path == workspace {
     True -> 0
     False ->
@@ -375,6 +378,8 @@ pub fn groups(state: State) -> List(#(Place, List(protocol.Session))) {
   |> list.filter(fn(row) { admits(state.filter, presence(state, row)) })
   |> list.fold([], fn(groups, row) {
     let here = place(row)
+
+    // Append row to matching place group.
     case list.key_find(groups, here) {
       Ok(rows) -> list.key_set(groups, here, [row, ..rows])
       Error(Nil) -> [#(here, [row]), ..groups]
@@ -511,18 +516,22 @@ pub fn carry(previous: State, next: State) -> State {
   reselect(carried, State(..carried, filter: previous.filter))
 }
 
-// Keeps the highlighted identity when the drawn rows change underneath it,
-// and otherwise clamps the index into the new rows.
+/// Recomputes selected row index after state mutation.
 fn reselect(before: State, after: State) -> State {
   let rows = visible(after)
+
+  // Preserve previous row identity if present.
   let selected = case selected_row(before) {
     Some(row) -> index_of(rows, row.session_id)
     None -> None
   }
+
+  // Fall back to clamped index.
   let selected = case selected {
     Some(index) -> index
     None -> int.max(0, int.min(before.selected, list.length(rows) - 1))
   }
+
   State(..after, selected:)
 }
 
@@ -574,9 +583,9 @@ pub fn update(key: keys.Key, state: State) -> Action {
   }
 }
 
-// Editing retains one bounded draft and its original identity. Navigation
-// keys cannot move the target, and Escape never sends a metadata mutation.
+/// Handles key events while renaming a session row.
 fn renaming(key: keys.Key, state: State, id: String, draft: String) -> Action {
+  // Handle renaming keyboard actions.
   case key {
     keys.Escape -> Continue(State(..state, prompt: Browsing))
     keys.Enter ->
@@ -587,8 +596,11 @@ fn renaming(key: keys.Key, state: State, id: String, draft: String) -> Action {
     keys.Backspace ->
       Continue(State(..state, prompt: Renaming(id, string.drop_end(draft, 1))))
     keys.Ctrl("u") -> Continue(State(..state, prompt: Renaming(id, "")))
+
     keys.Char(character) -> {
       let next = draft <> text_hygiene.single_line(character)
+
+      // Check byte budget for rename draft.
       case string.byte_size(next) <= 256 {
         True -> Continue(State(..state, prompt: Renaming(id, next)))
         False -> Continue(state)
@@ -626,6 +638,7 @@ fn confirming(key: keys.Key, state: State, action: Action) -> Action {
   }
 }
 
+/// Handles key navigation and actions during session browsing.
 fn browsing(key: keys.Key, state: State) -> Action {
   case key {
     keys.Escape -> Close
@@ -671,10 +684,12 @@ fn browsing(key: keys.Key, state: State) -> Action {
     keys.Char("d") ->
       case selected_row(state) {
         Some(row) -> {
+          // Confirm delete or archive action depending on collection.
           let prompt = case state.collection {
             Active -> ConfirmingArchive(row.session_id)
             Archived -> ConfirmingDelete(row.session_id)
           }
+
           Continue(State(..state, prompt:))
         }
         None -> Continue(state)
@@ -689,8 +704,7 @@ fn browsing(key: keys.Key, state: State) -> Action {
   }
 }
 
-// An archived page holds only inactive rows, so its tabs would all be empty
-// but one; Tab leaves it on `AllSessions`.
+/// Cycles to next filter tab.
 fn next(state: State) -> Filter {
   case state.collection, state.filter {
     Archived, _ -> AllSessions
@@ -702,6 +716,7 @@ fn next(state: State) -> Filter {
   }
 }
 
+/// Cycles to previous filter tab.
 fn previous(state: State) -> Filter {
   case state.collection, state.filter {
     Archived, _ -> AllSessions
@@ -713,7 +728,7 @@ fn previous(state: State) -> Filter {
   }
 }
 
-// A saved or archived row cannot become a peer target through selection.
+/// Action to link selected session if eligible.
 fn link_selected(state: State) -> Action {
   case selected_row(state) {
     Some(row) ->
@@ -788,7 +803,9 @@ type Columns {
   Columns(width: Int, name: Int, summary: Int)
 }
 
+/// Computes column widths for list arrangement.
 fn columns(width: Int, arrangement: Arrangement) -> Columns {
+  // Size name and summary columns depending on details pane.
   case arrangement {
     WithDetails -> {
       let name = int.clamp(width - 37, min: 12, max: 40)
@@ -829,10 +846,14 @@ pub fn render(
   // The inner width is the frame's less its border and padding. Knowing it
   // before the frame is placed is what lets the height fit the content.
   let inner_width = int.max(0, width - 4)
+
+  // Choose arrangement mode based on available width.
   let arrangement = case inner_width >= details_width {
     True -> WithDetails
     False -> ListOnly
   }
+
+  // Determine column widths for list and details.
   let #(list_width, detail_width) = case arrangement {
     WithDetails -> {
       let detail = int.min(56, inner_width * 2 / 5)
@@ -844,6 +865,8 @@ pub fn render(
   // Both columns are laid out before the frame is placed, since the taller
   // of the two decides the frame's height.
   let list_lines = list_lines(state, list_width, arrangement, now_ms)
+
+  // Format details column lines if arrangement permits.
   let detail_lines = case arrangement, selected_row(state) {
     WithDetails, Some(row) -> detail_lines(state, row, detail_width)
     WithDetails, None | ListOnly, _ -> []
@@ -966,7 +989,7 @@ type ListLine {
   ListLine(row: Option(Int), line: span.Line)
 }
 
-// Group headers, rows and the blank lines between groups, in drawn order.
+/// Formats list lines for session groups in drawn order.
 fn list_lines(
   state: State,
   width: Int,
@@ -976,6 +999,8 @@ fn list_lines(
   let groups = groups(state)
   let columns = columns(width, arrangement)
   let twins = twin_names(state)
+
+  // Check whether groups list is empty.
   case groups {
     [] -> [
       ListLine(
@@ -1003,10 +1028,13 @@ fn list_lines(
               |> list.map(ListLine(Some(first + offset), _))
             })
             |> list.flatten
+
+          // Insert blank gap line between groups.
           let gap = case lines {
             [] -> []
             _ -> [ListLine(None, span.line_new([]))]
           }
+
           #(
             list.flatten([lines, gap, [header], drawn]),
             first + list.length(rows),
@@ -1024,14 +1052,13 @@ fn empty_message(state: State) -> String {
   }
 }
 
-// The names more than one row on this page carries. Two sessions of one
-// workspace are often both called after its branch, and a row that showed
-// only the name would leave the operator unable to tell which one Enter
-// opens, so a twin's row carries its short identity too.
+/// Identifies duplicate session names that need disambiguation IDs.
 fn twin_names(state: State) -> set.Set(String) {
   let #(_, twins) =
     list.fold(state.page.sessions, #(set.new(), set.new()), fn(acc, row) {
       let #(seen, twins) = acc
+
+      // Detect duplicate name collision.
       case set.contains(seen, row.name) {
         True -> #(seen, set.insert(twins, row.name))
         False -> #(set.insert(seen, row.name), twins)
@@ -1047,20 +1074,27 @@ type Label {
   Twin(name: String, identity: String)
 }
 
+/// Creates plain or disambiguated twin label for session row.
 fn row_label(row: protocol.Session, twins: set.Set(String)) -> Label {
   let name = text_hygiene.single_line(row.name)
+
+  // Check whether session name collides with another row.
   case set.contains(twins, row.name) {
     True -> Twin(name, short_identity(row.session_id))
     False -> Plain(name)
   }
 }
 
+/// Truncates label to fit within target cell width.
 fn fit_label(label: Label, width: Int) -> String {
+  // Truncate plain name or twin with identity suffix.
   case label {
     Plain(name) -> text.truncate(name, width, "…")
     Twin(name, identity) -> {
       let suffix = " · " <> identity
       let room = width - text.cell_width(suffix)
+
+      // Fit name and identity suffix into target width.
       case room >= 4 {
         True -> text.truncate(name, room, "…") <> suffix
         False -> text.truncate(identity, width, "…")
@@ -1070,11 +1104,9 @@ fn fit_label(label: Label, width: Int) -> String {
 }
 
 // One workspace heading: its last path segment in capitals, the path
-// shortened to the home directory, and how many of its sessions the filter
-// shows, right-aligned over the age column. A registered workspace has a name
-// and no path, so its heading says which executor it is on where a directory's
-// says where it is.
+/// Formats group header line showing workspace name and session count.
 fn group_header(place: Place, count: Int, width: Int) -> span.Line {
+  // Format workspace location string.
   let #(name, location) = case place {
     Directory(path) -> #(workspace_name(path), home_relative(path))
     Registered(executor:, workspace:) -> #(
@@ -1082,6 +1114,7 @@ fn group_header(place: Place, count: Int, width: Int) -> span.Line {
       "on " <> text_hygiene.single_line(executor),
     )
   }
+
   let label =
     text.truncate(" " <> string.uppercase(name), int.max(4, width / 3), "…")
   let tally = int.to_string(count) <> " "
@@ -1103,6 +1136,7 @@ fn group_header(place: Place, count: Int, width: Int) -> span.Line {
   ])
 }
 
+/// Extracts basename of workspace directory path.
 fn workspace_name(workspace: String) -> String {
   let name =
     workspace
@@ -1110,6 +1144,8 @@ fn workspace_name(workspace: String) -> String {
     |> string.split("/")
     |> list.last
     |> result.unwrap("")
+
+  // Fallback to full string if trailing element was empty.
   case name {
     "" -> text_hygiene.single_line(workspace)
     name -> name
@@ -1129,6 +1165,7 @@ fn home_relative(path: String) -> String {
 // reason and the session's last message, which the pane would otherwise
 // show. The highlighted row is painted on the raised background across the
 // list's full width, so it reads as one bar.
+/// Formats one or two lines representing a single session row.
 fn row_lines(
   state: State,
   row: protocol.Session,
@@ -1165,6 +1202,7 @@ fn row_lines(
       #(theme.quiet, style.none()),
     )
   }
+
   let tone = tone(presence, row.status)
   let name = text.pad_right(fit_label(label, columns.name), columns.name)
   let word = text.pad_right(state_word(presence, row.status), state_width)
@@ -1179,6 +1217,7 @@ fn row_lines(
         cells,
       )
   }
+
   let first =
     span.line_new([
       span.span_styled(marker, style.new(mark_look.0, background, mark_look.1)),
@@ -1202,6 +1241,8 @@ fn row_lines(
     ])
   let width = columns.width
   let first = pad_line(first, width, background)
+
+  // Render secondary expansion line if selected without summary pane.
   case index == state.selected, columns.summary {
     True, 0 -> [
       first,
@@ -1220,13 +1261,14 @@ fn row_lines(
   }
 }
 
-// Extends a line to `width` cells on `background`, so the highlighted bar
-// has no ragged right edge where its last column ends early.
+/// Pads a line with blank space on the given background color to target width.
 fn pad_line(line: span.Line, width: Int, background: style.Color) -> span.Line {
   let used =
     list.fold(line.spans, 0, fn(total, piece) {
       total + text.cell_width(piece.content)
     })
+
+  // Check whether padding spaces are needed.
   case used < width {
     True ->
       span.line_new(
@@ -1241,8 +1283,7 @@ fn pad_line(line: span.Line, width: Int, background: style.Color) -> span.Line {
   }
 }
 
-// The colour and weight a presence is drawn in. Every presence also has a
-// glyph and a word, so a row reads without colour.
+/// Determines text color and weight for session presence status.
 fn tone(
   presence: Presence,
   status: protocol.Lifecycle,
@@ -1255,6 +1296,7 @@ fn tone(
   }
 }
 
+/// Determines visual glyph symbol representing session presence.
 fn glyph(presence: Presence, status: protocol.Lifecycle) -> String {
   case presence, status {
     NeedsYou, _ -> "!"
@@ -1266,8 +1308,7 @@ fn glyph(presence: Presence, status: protocol.Lifecycle) -> String {
   }
 }
 
-// The one word in the state column. An inactive row names its lifecycle,
-// because "saved" and "blocked" ask different things of the operator.
+/// Derives short state text label for presence and lifecycle.
 fn state_word(presence: Presence, status: protocol.Lifecycle) -> String {
   case presence {
     NeedsYou -> "needs you"
@@ -1282,9 +1323,7 @@ fn state_word(presence: Presence, status: protocol.Lifecycle) -> String {
   }
 }
 
-// The short reason in the summary column: what the operator would ask
-// next about a row in this state. It is empty when there is nothing more
-// to say than the state word.
+/// Generates a brief summary phrase describing the active session state.
 fn summary_phrase(
   presence: Presence,
   row: protocol.Session,
@@ -1328,14 +1367,14 @@ fn summary_phrase(
   }
 }
 
-// The longer reason, which the details pane's status line and a narrow
-// picker's second line both carry.
+/// Generates detailed status reason string for session inspection.
 fn reason(
   state: State,
   presence: Presence,
   row: protocol.Session,
   activity: Option(protocol.Activity),
 ) -> String {
+  // Describe reason according to presence and activity observation.
   case presence, activity {
     NeedsYou, Some(protocol.Activity(approvals:, ..)) if approvals > 0 ->
       plural(approvals, "approval") <> " pending"
@@ -1364,10 +1403,13 @@ fn reason(
     Unobserved, Some(_) -> "did not answer"
     Unobserved, None -> "activity not yet observed"
     Inactive, _ -> {
+      // Format action text based on collection.
       let enter = case state.collection {
         Active -> "Enter opens"
         Archived -> "Enter restores"
       }
+
+      // Format status reason string based on lifecycle.
       case row.status {
         protocol.RecoveryBlocked -> "recovery blocked · " <> enter
 
@@ -1388,27 +1430,30 @@ fn reason(
   }
 }
 
-// A narrow picker's second line: the reason, then the last message.
+/// Formats secondary detail line for narrow viewport expansion.
 fn expansion(
   state: State,
   presence: Presence,
   row: protocol.Session,
   activity: Option(protocol.Activity),
 ) -> String {
+  // Extract last message text if activity was observed.
   let message = case activity {
     Some(protocol.Activity(last_message: Some(message), ..)) ->
       text_hygiene.single_line(message)
     Some(protocol.Activity(last_message: None, ..)) | None -> ""
   }
+
   [reason(state, presence, row, activity), message]
   |> list.filter(fn(part) { part != "" })
   |> string.join(" · ")
 }
 
-// A creation age in the largest whole unit, at most three cells. A clock
-// behind the row's own timestamp reads as `now` rather than a negative age.
+/// Formats session creation age into a compact time unit string.
 fn age(now_ms: Int, created_at: Int) -> String {
   let seconds = int.max(0, now_ms - created_at) / 1000
+
+  // Convert age in seconds to human readable units.
   case seconds {
     seconds if seconds < 60 -> "now"
     seconds if seconds < 3600 -> int.to_string(seconds / 60) <> "m"
@@ -1419,9 +1464,7 @@ fn age(now_ms: Int, created_at: Int) -> String {
   }
 }
 
-// Scrolls so every line of the highlighted row is on screen. When lines
-// are cut off, a row at the edge says how many sessions lie beyond it, so
-// a list that ends at the frame never reads as the whole page.
+/// Windows list lines so the selected row remains visible on screen.
 fn window(lines: List(ListLine), state: State, height: Int) -> List(span.Line) {
   let total = list.length(lines)
   let selected =
@@ -1431,17 +1474,18 @@ fn window(lines: List(ListLine), state: State, height: Int) -> List(span.Line) {
     |> list.map(fn(pair) { pair.1 })
   let first = list.first(selected) |> result.unwrap(0)
   let last = list.last(selected) |> result.unwrap(0)
+
+  // Window rows or use full height slice.
   let shown = case total <= height || height < 4 {
     True ->
       lines |> list.drop(int.max(0, last - height + 1)) |> list.take(height)
     False -> scrolled(lines, total, first, last, height)
   }
+
   list.map(shown, fn(line) { line.line })
 }
 
-// The window over a list taller than its area, given the first and last
-// line of the highlighted row. Each case gives up one row per cut side to
-// the count of what that side hides.
+/// Computes scrolled window slice over list lines with boundary indicators.
 fn scrolled(
   lines: List(ListLine),
   total: Int,
@@ -1480,9 +1524,7 @@ fn scrolled(
   }
 }
 
-// A count of the sessions with a line in `hidden` and none in `shown`, as
-// one list line. A row whose second line is cut but whose first is drawn
-// is on screen, so it is not counted.
+/// Formats hidden session counts when list overflows viewport.
 fn more(
   hidden: List(ListLine),
   shown: List(ListLine),
@@ -1508,11 +1550,9 @@ fn more(
   )
 }
 
-// The tab row, one cell between tabs. A narrow picker drops the Tab hint
-// before it drops a tab. The Needs-you tab is drawn in the danger colour
-// while it counts anything, so the one tab that asks for action is seen
-// before it is read.
+/// Formats header tab row displaying filter counts.
 fn tabs_line(state: State, width: Int) -> span.Line {
+  // Render tabs line based on collection state.
   case state.collection {
     Archived ->
       span.line_new([
@@ -1531,12 +1571,15 @@ fn tabs_line(state: State, width: Int) -> span.Line {
           let #(filter, count) = pair
           let label =
             " " <> filter_label(filter) <> " " <> int.to_string(count) <> " "
+
+          // Style tab based on active selection and non-zero counts.
           let look = case filter == state.filter, filter, count {
             True, _, _ -> style.new(theme.paper, theme.raised, style.bold())
             False, NeedsYouSessions, count if count > 0 ->
               style.new(theme.danger, theme.graphite, style.none())
             False, _, _ -> theme.overlay_quiet()
           }
+
           [
             span.span_styled(label, look),
             span.span_styled(" ", theme.overlay_quiet()),
@@ -1547,6 +1590,8 @@ fn tabs_line(state: State, width: Int) -> span.Line {
         list.fold(tabs, 0, fn(total, tab) {
           total + text.cell_width(tab.content)
         })
+
+      // Append hint span if width permits.
       let hint_spans = case used + text.cell_width(hint) + 1 <= width {
         True -> [
           span.span_styled(
@@ -1557,11 +1602,13 @@ fn tabs_line(state: State, width: Int) -> span.Line {
         ]
         False -> []
       }
+
       span.line_new(list.append(tabs, hint_spans))
     }
   }
 }
 
+/// Formats display name for session list filter.
 fn filter_label(filter: Filter) -> String {
   case filter {
     AllSessions -> "All"
@@ -1572,11 +1619,7 @@ fn filter_label(filter: Filter) -> String {
   }
 }
 
-// The details pane for the highlighted row: its name and why it is where
-// it is, the daemon's last word from it and its strands, then a table of
-// where it lives. Every line is pre-wrapped to the pane, because an
-// overlay row never wraps, and each section appears only when the daemon's
-// answer carries it.
+/// Formats right-hand detail pane lines for selected session.
 fn detail_lines(
   state: State,
   row: protocol.Session,
@@ -1601,10 +1644,13 @@ fn detail_lines(
       ),
     ]),
   ]
+
+  // Compose status line reason text.
   let reason = case reason(state, presence, row, activity) {
     "" -> ""
     reason -> " · " <> reason
   }
+
   let status = [
     span.line_new([
       span.span_styled(
@@ -1625,6 +1671,7 @@ fn detail_lines(
     ]),
   ]
 
+  // Extract last message section.
   let message = case activity {
     Some(protocol.Activity(last_message: Some(message), ..)) ->
       section(
@@ -1633,6 +1680,8 @@ fn detail_lines(
       )
     _ -> []
   }
+
+  // Format strands section.
   let strands = case activity {
     Some(protocol.Activity(strands:, working:, glances:, ..)) if strands > 0 ->
       section(
@@ -1652,11 +1701,15 @@ fn detail_lines(
       )
     _ -> []
   }
+
+  // Format model section.
   let model = case activity {
     Some(protocol.Activity(model: Some(model), ..)) ->
       table_row("MODEL", model, width, theme.overlay_plain())
     _ -> []
   }
+
+  // Format session identifier string.
   let identity = case text.cell_width(row.session_id) <= width - 11 {
     True -> row.session_id
     False -> short_identity(row.session_id)
@@ -1692,23 +1745,25 @@ fn detail_lines(
         theme.overlay_plain(),
       )
   }
+
   let place =
     list.flatten([
       model,
       located,
       table_row("ID", identity, width, theme.overlay_quiet()),
     ])
+
   list.flatten([heading, status, message, strands, [span.line_new([]), ..place]])
 }
 
-// One strand of the session, as the daemon's glance describes it: its name,
-// then what it is doing, indented under it. A glance carries no state, so
-// the strand gets a neutral mark rather than a guessed one.
+/// Formats glance summary line for an active strand.
 fn glance_lines(glance: protocol.GlanceLine, width: Int) -> List(span.Line) {
+  // Prefer summary over title if present.
   let doing = case glance.summary {
     "" -> glance.title
     summary -> summary
   }
+
   [
     span.line_new([
       span.span_styled("· ", theme.overlay_quiet()),
@@ -1739,9 +1794,7 @@ fn section(heading: List(span.Span), body: List(span.Line)) -> List(span.Line) {
   [span.line_new([]), span.line_new(heading), ..body]
 }
 
-// One key and value of the pane's closing table. The keys share an
-// eleven-cell column so the values start in one column; a value too long
-// for its row is cut, since the pane never wraps a table row.
+/// Formats a key-value row for the session details summary table.
 fn table_row(
   key: String,
   value: String,
@@ -1763,8 +1816,7 @@ fn table_row(
   ]
 }
 
-// At most `rows` wrapped lines. A longer value ends its last row with an
-// ellipsis at a word boundary, so a cut message never reads as complete.
+/// Wraps text to target width up to a maximum number of rows.
 fn wrapped_at_most(
   value: String,
   rows: Int,
@@ -1772,6 +1824,8 @@ fn wrapped_at_most(
   look: style.Style,
 ) -> List(span.Line) {
   let lines = value |> text_hygiene.single_line |> text.wrap(int.max(1, width))
+
+  // Truncate lines exceeding maximum row count.
   let kept = case list.drop(lines, rows) {
     [] -> lines
     [_, ..] ->
@@ -1779,9 +1833,11 @@ fn wrapped_at_most(
         cut(string.join(list.drop(lines, rows - 1), " "), width),
       ])
   }
+
   list.map(kept, fn(line) { span.line_new([span.span_styled(line, look)]) })
 }
 
+/// Formats integer count with singular or plural noun.
 fn plural(count: Int, noun: String) -> String {
   int.to_string(count)
   <> " "
@@ -1797,9 +1853,7 @@ fn short_identity(identity: String) -> String {
   string.slice(identity, 0, 13)
 }
 
-// Keeps the end of a value: path tails distinguish worktrees, and the end
-// of a name being typed is where the cursor is. Reverse only for cell-aware
-// truncation; markers are separate spans and cannot be clipped.
+/// Truncates string keeping the tail graphemes up to target cell width.
 fn fit_tail(value: String, width: Int) -> String {
   value
   |> text_hygiene.single_line
@@ -1808,15 +1862,15 @@ fn fit_tail(value: String, width: Int) -> String {
   |> string.reverse
 }
 
-// The hint rows: movement and opening first, the rarer keys second. While a
-// question is open it takes the first row, where the reader's eye already
-// is, and the second row is left empty so no stale key is advertised beside
-// it.
+/// Formats bottom key navigation hints for session selector.
 fn help_lines(state: State, width: Int) -> List(span.Line) {
+  // Format more pages indicator.
   let more = case state.page.after {
     Some(_) -> ["→ more"]
     None -> []
   }
+
+  // Display context hints based on prompt status.
   case state.prompt {
     Browsing ->
       case state.collection {
@@ -1876,10 +1930,11 @@ fn help_lines(state: State, width: Int) -> List(span.Line) {
   }
 }
 
-// A session as a question names it: its name and short identity, or the
-// identity alone when the row has left the page.
+/// Formats session name with identity for confirmation prompts.
 fn named(state: State, session_id: String) -> String {
   let identity = short_identity(text_hygiene.single_line(session_id))
+
+  // Look up session row name from page.
   case
     list.find(state.page.sessions, fn(row) { row.session_id == session_id })
   {
@@ -1888,16 +1943,17 @@ fn named(state: State, session_id: String) -> String {
   }
 }
 
-// Joins key hints with ` · `, skipping a hint that does not fit rather than
-// cutting it in half, so every hint drawn names a whole key and action and
-// a short closing hint such as `Esc close` survives a long one before it.
+/// Joins keyboard shortcut hints into a formatted line.
 fn hints(items: List(String), width: Int) -> span.Line {
   let joined =
     list.fold(items, "", fn(line, item) {
+      // Append hint item with separator.
       let next = case line {
         "" -> item
         _ -> line <> " · " <> item
       }
+
+      // Check whether hint fits within available width.
       case text.cell_width(next) <= width {
         True -> next
         False -> line
@@ -1919,6 +1975,7 @@ fn question(value: String, width: Int) -> span.Line {
   ])
 }
 
+/// Maps lifecycle state variant to display word.
 fn lifecycle(status) {
   case status {
     protocol.Reserved -> "reserved"

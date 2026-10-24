@@ -269,6 +269,7 @@ pub fn update(
   }
 }
 
+/// Handles navigation and selection keys while browsing the candidate listing.
 fn listing_key(
   key: keys.Key,
   state: State,
@@ -280,6 +281,8 @@ fn listing_key(
   let last = int.max(0, list.length(rows) - 1)
   let at = int.min(selected, last)
   let step = viewport_rows(area)
+
+  // Handle navigation, core status shortcut, refresh, and detail opening.
   case key {
     keys.Escape -> Close
     keys.Char("R") | keys.Char("r") -> Refresh
@@ -303,6 +306,7 @@ fn listing_key(
   }
 }
 
+/// Handles scrolling and decision trigger shortcuts while viewing candidate details.
 fn reading_key(
   key: keys.Key,
   state: State,
@@ -313,6 +317,8 @@ fn reading_key(
   let step = viewport_rows(area)
   let maximum = max_scroll(state, facts, area)
   let scroll = int.min(state.scroll, maximum)
+
+  // Handle scrolling, returning to list, or triggering governance actions.
   case key {
     keys.Escape -> back_to_list(facts, id)
     keys.Char("a") -> start_approval(state, facts, id, scroll)
@@ -331,8 +337,7 @@ fn reading_key(
   }
 }
 
-// An approval is asked only for a candidate with passing, current evidence
-// and no approval; the question captures that evidence.
+/// Initiates confirmation workflow to approve the candidate based on passing evidence.
 fn start_approval(
   state: State,
   facts: Facts,
@@ -350,8 +355,7 @@ fn start_approval(
   }
 }
 
-// A selection is asked only when nothing else is staging, and it captures the
-// generation the board showed as current, which the request echoes.
+/// Initiates confirmation workflow to select the candidate for execution.
 fn start_selection(
   state: State,
   facts: Facts,
@@ -379,8 +383,7 @@ fn start_selection(
   }
 }
 
-// A revocation is asked only for a candidate that carries an approval this
-// client read, of a kind it can name.
+/// Initiates confirmation workflow to revoke approval of a previously approved candidate.
 fn start_revocation(
   state: State,
   facts: Facts,
@@ -408,6 +411,7 @@ fn asking(id: String, request: evolution.Request, scroll: Int) -> Action {
   Continue(State(place: Confirming(id, request), scroll:))
 }
 
+/// Handles navigation keys when selecting a previous generation to roll back to.
 fn rolling_key(
   key: keys.Key,
   state: State,
@@ -418,6 +422,8 @@ fn rolling_key(
   let choices = rollback_choices(facts, id)
   let last = int.max(0, list.length(choices) - 1)
   let at = int.min(selected, last)
+
+  // Navigate rollback choices or confirm selection.
   case key {
     keys.Escape -> Continue(State(place: Reading(id), scroll: 0))
     keys.Up ->
@@ -429,6 +435,7 @@ fn rolling_key(
   }
 }
 
+/// Formats and stages a rollback confirmation question for the chosen candidate.
 fn pick_rollback(
   state: State,
   facts: Facts,
@@ -456,9 +463,7 @@ fn pick_rollback(
   }
 }
 
-// Only a lowercase y sends. Any other key, Enter included, goes back to the
-// candidate without sending, so a press meant for something else never
-// commits a change.
+/// Handles confirmation key strokes, sending the action only upon receiving 'y'.
 fn confirming_key(
   key: keys.Key,
   state: State,
@@ -473,6 +478,7 @@ fn confirming_key(
   }
 }
 
+/// Handles key events when viewing the core component status card.
 fn core_key(key: keys.Key) -> Action {
   case key {
     keys.Char("R") | keys.Char("r") ->
@@ -482,13 +488,14 @@ fn core_key(key: keys.Key) -> Action {
   }
 }
 
-// Leaving a candidate returns to the list with that row still selected, so
-// the reader who rejects one and goes back is where they were.
+/// Transitions back to the listing view while preserving cursor on candidate.
 fn back_to_list(facts: Facts, id: String) -> Action {
   let position =
     ordered(facts.board)
     |> list.index_map(fn(row, index) { #(row.candidate_id, index) })
     |> list.find(fn(pair) { pair.0 == id })
+
+  // Return to list with previous candidate selected if found.
   case position {
     Ok(#(_, index)) -> Continue(State(place: Listing(index), scroll: 0))
     Error(Nil) -> Continue(new())
@@ -504,7 +511,7 @@ fn staging_free(facts: Facts) -> Offer {
   }
 }
 
-// A revocation applies to an approved candidate of a kind this client names.
+/// Evaluates whether candidate is currently eligible for approval revocation.
 fn revocable(candidate: evolution.Candidate) -> Offer {
   case candidate.approval, candidate.kind {
     Some(_), evolution.Extension
@@ -515,6 +522,7 @@ fn revocable(candidate: evolution.Candidate) -> Offer {
   }
 }
 
+/// Resolves the list of eligible historical candidates for rollback.
 fn rollback_choices(facts: Facts, id: String) -> List(evolution.Candidate) {
   case facts.board, open_candidate(facts, id), staging_free(facts) {
     Some(board), Ok(candidate), Offered ->
@@ -526,9 +534,7 @@ fn rollback_choices(facts: Facts, id: String) -> List(evolution.Candidate) {
   }
 }
 
-// The candidates in the order the list draws them: extensions, programs,
-// prompts, then any kind this client cannot name, each in the daemon's order.
-// The selected row is a position in this list.
+/// Returns candidate records sorted by kind categories in listing order.
 fn ordered(board: Option(evolution.Board)) -> List(evolution.Candidate) {
   case board {
     Some(board) ->
@@ -558,6 +564,7 @@ fn of_kind(
   list.filter(board.candidates, fn(candidate) { candidate.kind == kind })
 }
 
+/// Looks up candidate record matching specified candidate identity.
 fn open_candidate(
   facts: Facts,
   id: String,
@@ -601,10 +608,13 @@ pub fn render(
   }
 
   let cleared = buf |> buffer.clear(area)
+
+  // Draw surrounding border frame when area exceeds threshold.
   let framed = case card.size.height >= 8 && card.size.width >= 20 {
     True -> block.render(cleared, card, frame)
     False -> cleared
   }
+
   framed
   |> paragraph.render_styled(content, list.drop(rows, offset))
   |> paragraph.render_styled(controls, [
@@ -612,6 +622,7 @@ pub fn render(
   ])
 }
 
+/// Formats the panel header title with short session ID.
 fn title(facts: Facts) -> String {
   case facts.board {
     Some(board) ->
@@ -622,17 +633,18 @@ fn title(facts: Facts) -> String {
   }
 }
 
-// The frame's inside, split into the body and the one control row beneath it.
-// A terminal too small for a frame keeps the body and the row and drops the
-// border, as the goal inspector does.
+/// Splits screen area into card boundary, scrollable content, and control bar.
 fn layout_areas(
   area: geometry.Rect,
 ) -> #(geometry.Rect, geometry.Rect, geometry.Rect) {
   let framed = area.size.height >= 8 && area.size.width >= 20
+
+  // Determine horizontal margin for wide terminals.
   let horizontal = case framed && area.size.width >= 70 {
     True -> 2
     False -> 0
   }
+
   let card =
     geometry.rect_new(
       area.position.x + horizontal,
@@ -648,10 +660,12 @@ fn layout_areas(
     False -> card
   }
 
+  // Reserve bottom control row if height permits.
   let controls_height = case inside.size.height >= 3 {
     True -> 1
     False -> 0
   }
+
   let content =
     geometry.rect_new(
       inside.position.x,
@@ -680,7 +694,9 @@ fn max_scroll(state: State, facts: Facts, area: geometry.Rect) -> Int {
   int.max(0, list.length(rows) - content.size.height)
 }
 
+/// Renders footer controls matching the current review state.
 fn control_line(state: State, facts: Facts, width: Int) -> span.Line {
+  // Format contextual key shortcuts according to current place.
   let words = case state.place {
     Listing(..) -> "↑/↓ select · Enter open · c core · R read again · Esc back"
     Reading(id:) -> reading_controls(facts, id)
@@ -688,14 +704,15 @@ fn control_line(state: State, facts: Facts, width: Int) -> span.Line {
     Confirming(..) -> "y sends · any other key goes back"
     Core -> "R read again · Esc back"
   }
+
   span.line_new([
     span.span_styled(text.truncate(words, width, "…"), theme.overlay_signal()),
   ])
 }
 
-// The keys a candidate offers, then the keys every candidate has. A candidate
-// that offers nothing says only how to scroll and leave.
+/// Formats navigation and decision hotkey hints for an open candidate.
 fn reading_controls(facts: Facts, id: String) -> String {
+  // Look up candidate and format available hotkeys.
   case open_candidate(facts, id) {
     Ok(candidate) -> {
       let offered = offered_keys(facts, candidate)
@@ -708,11 +725,15 @@ fn reading_controls(facts: Facts, id: String) -> String {
   }
 }
 
+/// Collects governance action keys that can be applied to the candidate.
 fn offered_keys(facts: Facts, candidate: evolution.Candidate) -> List(String) {
+  // Offer approve hotkey if passing evidence is present.
   let approve = case evolution.approval_target(candidate) {
     Ok(_) -> ["a approve"]
     Error(Nil) -> []
   }
+
+  // Offer select hotkey if approved and nothing is currently staging.
   let select = case facts.board, staging_free(facts) {
     Some(board), Offered ->
       case evolution.selection_target(board, candidate) {
@@ -727,15 +748,17 @@ fn offered_keys(facts: Facts, candidate: evolution.Candidate) -> List(String) {
     Offered -> ["r revoke"]
     Withheld -> []
   }
+
+  // Offer rollback hotkey if earlier generations exist.
   let rollback = case rollback_choices(facts, candidate.candidate_id) {
     [] -> []
     [_, ..] -> ["b rollback"]
   }
+
   list.flatten([approve, select, revoke, rollback])
 }
 
-// The body and where the list's cursor sits in it, which the list's scroll
-// follows. Only the list has a cursor; the other places report zero.
+/// Renders content lines and cursor position for the active panel view.
 fn body_lines(
   state: State,
   facts: Facts,
@@ -743,6 +766,8 @@ fn body_lines(
 ) -> #(List(span.Line), Int) {
   let width = int.max(1, content.size.width)
   let lead = notice_lines(facts.notice, width)
+
+  // Render appropriate view depending on place.
   let #(body, cursor) = case state.place {
     Listing(selected:) -> list_lines(facts, selected, width)
     Reading(id:) -> #(candidate_lines(facts, id, None, width), 0)
@@ -753,9 +778,11 @@ fn body_lines(
     )
     Core -> #(core_lines(facts, width), 0)
   }
+
   #(list.append(lead, body), cursor + list.length(lead))
 }
 
+/// Renders notice banner text if present.
 fn notice_lines(notice: String, width: Int) -> List(span.Line) {
   case notice {
     "" -> []
@@ -766,11 +793,13 @@ fn notice_lines(notice: String, width: Int) -> List(span.Line) {
 
 // --- the list ---------------------------------------------------------------
 
+/// Renders the candidate listing view categorized by kinds.
 fn list_lines(
   facts: Facts,
   selected: Int,
   width: Int,
 ) -> #(List(span.Line), Int) {
+  // Draw loading placeholder or full candidate catalog.
   case facts.board {
     None -> #(wrapped(evolution.loading_words, theme.overlay_quiet(), width), 0)
     Some(board) -> {
@@ -811,16 +840,19 @@ type Tagged {
   Tagged(id: String, line: span.Line)
 }
 
+/// Generates grouped rows across candidate kinds and determines cursor row offset.
 fn group_lines(
   facts: Facts,
   board: evolution.Board,
   at: Int,
   width: Int,
 ) -> #(List(span.Line), Int) {
+  // Identify candidate ID under active cursor.
   let selected_id = case list.drop(ordered(Some(board)), at) {
     [row, ..] -> row.candidate_id
     [] -> ""
   }
+
   let unknown =
     list.filter(board.candidates, fn(candidate) { is_unknown(candidate.kind) })
   let groups = [
@@ -841,9 +873,7 @@ fn group_lines(
   #(list.map(tagged, fn(entry) { entry.line }), cursor)
 }
 
-// One kind's heading and rows. A kind with no candidates is drawn as none,
-// except the catch-all for kinds this client cannot name, which is left out
-// when it is empty.
+/// Renders a section header and associated candidate listing rows.
 fn group_block(
   facts: Facts,
   board: evolution.Board,
@@ -857,6 +887,8 @@ fn group_block(
       "",
       span.line_new([span.span_styled(heading_words, theme.overlay_quiet())]),
     )
+
+  // Check if rows are present or draw placeholder.
   case rows, heading_words {
     [], "OTHER" -> []
     [], _ -> [
@@ -869,19 +901,19 @@ fn group_block(
     _, _ -> [
       head,
       ..list.map(rows, fn(row) {
+        // Determine if cursor is on current row.
         let cursor = case row.candidate_id == selected_id {
           True -> Here
           False -> Elsewhere
         }
+
         Tagged(row.candidate_id, row_line(facts, board, row, cursor, width))
       })
     ]
   }
 }
 
-// One candidate on one line: the cursor, its name and short identity, its
-// state, and the newest evidence. The line is cut to the width and never
-// wrapped, so a row stays one row.
+/// Formats a single candidate listing line.
 fn row_line(
   facts: Facts,
   board: evolution.Board,
@@ -889,10 +921,12 @@ fn row_line(
   cursor: Cursor,
   width: Int,
 ) -> span.Line {
+  // Render selection cursor indicator.
   let mark = case cursor {
     Here -> "▸ "
     Elsewhere -> "  "
   }
+
   let words =
     mark
     <> text_hygiene.single_line(row.name)
@@ -902,17 +936,19 @@ fn row_line(
     <> state_words(facts, board, row)
     <> "  "
     <> evidence_summary(facts, row)
+
+  // Highlight selected row with active theme color.
   let appearance = case cursor {
     Here -> theme.overlay_current()
     Elsewhere -> theme.overlay_plain()
   }
+
   span.line_new([
     span.span_styled(text.truncate(words, width, "…"), appearance),
   ])
 }
 
-// What has been decided about a candidate, as a row says it. A selection that
-// is staging reads as the staging, because that is the part still changing.
+/// Summarizes the decision state of a candidate for listing display.
 fn state_words(
   facts: Facts,
   board: evolution.Board,
@@ -924,6 +960,7 @@ fn state_words(
   }
 }
 
+/// Returns status text for candidates whose governance state is settled.
 fn settled_words(board: evolution.Board, row: evolution.Candidate) -> String {
   case row.selected {
     Some(chosen) ->
@@ -932,6 +969,7 @@ fn settled_words(board: evolution.Board, row: evolution.Candidate) -> String {
   }
 }
 
+/// Describes approval state and test evaluation outcome.
 fn approval_words(row: evolution.Candidate) -> String {
   case row.approval, evolution.approval_target(row) {
     Some(_), _ -> "approved"
@@ -940,6 +978,7 @@ fn approval_words(row: evolution.Candidate) -> String {
   }
 }
 
+/// Checks whether candidate represents a currently active live selection.
 fn liveness(
   board: evolution.Board,
   row: evolution.Candidate,
@@ -951,7 +990,7 @@ fn liveness(
   |> result.unwrap(evolution.NotLive)
 }
 
-// The request the lane is tracking for a candidate, only while it is moving.
+/// Resolves active in-flight request tracking information for a candidate.
 fn staging_for(
   facts: Facts,
   row: evolution.Candidate,
@@ -966,10 +1005,11 @@ fn staging_for(
   }
 }
 
-// How far a selection has got and how long the lane waits for it, in the
-// words the row shows. The identity of the request is never drawn.
+/// Describes current staging stage and remaining timeout seconds.
 fn staging_words(tracked: evolution_pending.Tracked, now_ms: Int) -> String {
   let left = int.to_string(int.max(0, tracked.deadline_ms - now_ms) / 1000)
+
+  // Format stage description with remaining seconds.
   case tracked.stage {
     evolution_pending.Submitted -> "sending…"
     evolution_pending.Staging(evolution.Queued) -> "queued… " <> left <> " s"
@@ -984,7 +1024,7 @@ fn staging_words(tracked: evolution_pending.Tracked, now_ms: Int) -> String {
   }
 }
 
-// The newest evidence: why it was made, what it found and how long ago.
+/// Summarizes most recent evidence purpose and verdict for listing display.
 fn evidence_summary(facts: Facts, row: evolution.Candidate) -> String {
   case row.evidence {
     [newest, ..] ->
@@ -997,7 +1037,7 @@ fn evidence_summary(facts: Facts, row: evolution.Candidate) -> String {
   }
 }
 
-// The generations the session runs now, one line.
+/// Formats live generations running in the session.
 fn live_lines(board: evolution.Board, width: Int) -> List(span.Line) {
   let live =
     list.filter(board.selections, fn(selection) {
@@ -1010,10 +1050,13 @@ fn live_lines(board: evolution.Board, width: Int) -> List(span.Line) {
       <> " generation "
       <> int.to_string(selection.generation)
     })
+
+  // Format list of live selections or state none active.
   let words = case live {
     [] -> "LIVE nothing selected is live in this session"
     _ -> "LIVE " <> string.join(live, " · ")
   }
+
   wrapped(words, theme.overlay_current(), width)
 }
 
@@ -1024,8 +1067,7 @@ fn kind_of(board: evolution.Board, candidate_id: String) -> String {
   }
 }
 
-// The newest few decisions, then how many older ones the board holds or the
-// daemon left out.
+/// Formats historical decision events.
 fn history_lines(
   facts: Facts,
   board: evolution.Board,
@@ -1035,6 +1077,8 @@ fn history_lines(
   let rows = list.take(board.history, shown)
   let older =
     int.max(0, list.length(board.history) - shown) + board.omitted_history
+
+  // Render history rows or placeholder.
   let body = case rows {
     [] -> [
       span.line_new([span.span_styled("  (none)", theme.overlay_quiet())]),
@@ -1048,6 +1092,8 @@ fn history_lines(
         )
       })
   }
+
+  // Note omitted historical decisions count if any.
   let tail = case older {
     0 -> []
     count ->
@@ -1057,6 +1103,7 @@ fn history_lines(
         width,
       )
   }
+
   list.flatten([
     [span.line_new([span.span_styled("HISTORY", theme.overlay_quiet())])],
     body,
@@ -1064,6 +1111,7 @@ fn history_lines(
   ])
 }
 
+/// Formats a single historical governance event into descriptive text.
 fn event_words(event: evolution.Event, wall_ms: Int) -> String {
   let what =
     evolution.decision_words(event.decision)
@@ -1073,6 +1121,8 @@ fn event_words(event: evolution.Event, wall_ms: Int) -> String {
       Some(generation) -> " → generation " <> int.to_string(generation)
       None -> " " <> evolution.short_id(event.candidate_id)
     }
+
+  // Attribute deciding principal and surface.
   let who = case event.principal, evolution.surface_words(event.via) {
     "", "" -> ""
     principal, "" -> " (" <> evolution.principal_words(principal) <> ")"
@@ -1080,24 +1130,29 @@ fn event_words(event: evolution.Event, wall_ms: Int) -> String {
     principal, surface ->
       " (" <> evolution.principal_words(principal) <> ", " <> surface <> ")"
   }
+
   proposals.age(event.at_ms, wall_ms) <> "  " <> what <> who
 }
 
-// What the daemon left out of the board and what this client could not read,
-// so the reader knows the list is not the whole catalogue.
+/// Renders warnings if candidates were omitted by the daemon or unreadable.
 fn unread_lines(board: evolution.Board, width: Int) -> List(span.Line) {
+  // Count candidates omitted by daemon.
   let left_out = case board.omitted_candidates {
     0 -> []
     count -> [
       int.to_string(count) <> " candidates were left out by the daemon.",
     ]
   }
+
+  // Count rows unreadable by client.
   let unread = case board.unread {
     0 -> []
     count -> [
       int.to_string(count) <> " rows could not be read by this client.",
     ]
   }
+
+  // Format combined omissions if any.
   case list.append(left_out, unread) {
     [] -> []
     words -> wrapped(string.join(words, " "), theme.overlay_quiet(), width)
@@ -1106,6 +1161,7 @@ fn unread_lines(board: evolution.Board, width: Int) -> List(span.Line) {
 
 // --- a candidate ------------------------------------------------------------
 
+/// Renders detailed view for a single candidate along with pending questions.
 fn candidate_lines(
   facts: Facts,
   id: String,
@@ -1129,6 +1185,7 @@ fn candidate_lines(
   }
 }
 
+/// Formats candidate metadata, origin, description, and evidence lines.
 fn detail_lines(
   facts: Facts,
   board: evolution.Board,
@@ -1176,6 +1233,7 @@ fn parent_words(candidate: evolution.Candidate) -> String {
   }
 }
 
+/// Renders retained test evidence rows for the candidate.
 fn evidence_lines(
   facts: Facts,
   candidate: evolution.Candidate,
@@ -1186,10 +1244,12 @@ fn evidence_lines(
       wrapped("No evidence is retained for it.", theme.overlay_quiet(), width)
     rows ->
       list.flat_map(rows, fn(row) {
+        // Indicate if evidence was produced under an older evaluator version.
         let evaluator = case row.identity {
           evolution.Current -> ""
           evolution.Outdated -> " · under an older evaluator"
         }
+
         wrapped(
           evolution.purpose_words(row.purpose)
             <> " · "
@@ -1206,16 +1266,20 @@ fn evidence_lines(
   }
 }
 
+/// Renders approval decision history and evaluator freshness status.
 fn decision_lines(
   candidate: evolution.Candidate,
   width: Int,
 ) -> List(span.Line) {
+  // Describe approval grant details.
   let approval = case candidate.approval {
     Some(approval) -> {
+      // Format approving surface description.
       let via = case evolution.surface_words(approval.via) {
         "" -> ""
         surface -> " from the " <> surface
       }
+
       "Approved by "
       <> evolution.principal_words(approval.by)
       <> via
@@ -1225,16 +1289,18 @@ fn decision_lines(
     }
     None -> "Not approved."
   }
+
+  // Check if candidate evaluator version is outdated.
   let identity = case candidate.identity {
     evolution.Current -> ""
     evolution.Outdated ->
       " It was tested under an older evaluator, so it needs new evidence."
   }
+
   wrapped(approval <> identity, theme.overlay_plain(), width)
 }
 
-// The selection the lane is staging for this candidate, in words, so the
-// detail shows it moving.
+/// Renders active staging progress indicator for candidate.
 fn staging_lines(
   facts: Facts,
   candidate: evolution.Candidate,
@@ -1253,6 +1319,7 @@ fn staging_lines(
 
 // --- the question -----------------------------------------------------------
 
+/// Formats confirmation prompts when a governance action is pending.
 fn question_lines(
   question: Option(evolution.Request),
   board: evolution.Board,
@@ -1268,6 +1335,7 @@ fn question_lines(
   }
 }
 
+/// Formats the question dialog heading for the pending request.
 fn question_heading(
   request: evolution.Request,
   board: evolution.Board,
@@ -1294,8 +1362,7 @@ fn question_heading(
   }
 }
 
-// The generation a selection creates, from the generation the board drew as
-// current, which is the echo the request carries.
+/// Formats the destination generation index label.
 fn next_generation(name: String, expected: Int) -> String {
   case expected {
     0 -> "the first generation of " <> text_hygiene.single_line(name)
@@ -1309,6 +1376,7 @@ fn next_generation(name: String, expected: Int) -> String {
   }
 }
 
+/// Explains the implications of confirming the requested governance action.
 fn question_words(
   request: evolution.Request,
   board: evolution.Board,
@@ -1338,6 +1406,7 @@ fn question_words(
   }
 }
 
+/// Resolves descriptive summary text for specific evidence ID.
 fn evidence_words(
   board: evolution.Board,
   candidate_id: String,
@@ -1356,6 +1425,7 @@ fn evidence_words(
   }
 }
 
+/// Returns candidate name and short ID label.
 fn named(board: evolution.Board, candidate_id: String) -> String {
   case evolution.find(board, candidate_id) {
     Ok(candidate) ->
@@ -1368,6 +1438,7 @@ fn named(board: evolution.Board, candidate_id: String) -> String {
 
 // --- the rollback chooser and the core card ---------------------------------
 
+/// Renders candidate choices for rolling back to an earlier generation.
 fn rolling_lines(
   facts: Facts,
   id: String,
@@ -1382,17 +1453,23 @@ fn rolling_lines(
       theme.overlay_quiet(),
       width,
     )
+
+  // Render list of rollback candidate options.
   let rows = case facts.board {
     Some(board) ->
       list.index_map(choices, fn(choice, index) {
+        // Format selection pointer mark.
         let mark = case index == at {
           True -> "▸ "
           False -> "  "
         }
+
+        // Apply highlight theme to selected choice.
         let appearance = case index == at {
           True -> theme.overlay_current()
           False -> theme.overlay_plain()
         }
+
         let words =
           mark
           <> text_hygiene.single_line(choice.name)
@@ -1406,11 +1483,11 @@ fn rolling_lines(
       })
     None -> []
   }
+
   list.append(intro, rows)
 }
 
-// When the journal last selected an earlier candidate, and as which
-// generation.
+/// Formats generation history and timestamp when candidate was previously selected.
 fn earlier_words(
   board: evolution.Board,
   choice: evolution.Candidate,
@@ -1421,6 +1498,8 @@ fn earlier_words(
       event.decision == evolution.Selected
       && event.candidate_id == choice.candidate_id
     })
+
+  // Look up when candidate was previously selected.
   case found {
     Ok(event) ->
       case event.generation {
@@ -1435,7 +1514,9 @@ fn earlier_words(
   }
 }
 
+/// Renders read-only core component upgrade status.
 fn core_lines(facts: Facts, width: Int) -> List(span.Line) {
+  // Format opened core component status payload.
   let status = case facts.opened {
     Some(evolution.Opened(action: "core_status", page: evolution.Whole(value))) ->
       flattened(value)
@@ -1449,6 +1530,7 @@ fn core_lines(facts: Facts, width: Int) -> List(span.Line) {
     Some(_) | None ->
       wrapped("Reading the core status...", theme.overlay_quiet(), width)
   }
+
   list.flatten([
     [heading("CORE", width)],
     status,
@@ -1465,6 +1547,7 @@ fn flattened(value: json.JsonValue) -> List(String) {
   |> list.take(40)
 }
 
+/// Recursively flattens JSON objects into dot-separated key value lines.
 fn flatten_into(
   prefix: String,
   value: json.JsonValue,
@@ -1473,10 +1556,12 @@ fn flatten_into(
   case value {
     json.Object(fields) if depth < 3 ->
       list.flat_map(fields, fn(field) {
+        // Construct hierarchical dotted property path.
         let name = case prefix {
           "" -> field.0
           _ -> prefix <> "." <> field.0
         }
+
         flatten_into(name, field.1, depth + 1)
       })
     json.Array(items) -> [
@@ -1487,6 +1572,7 @@ fn flatten_into(
   }
 }
 
+/// Formats a single property name and value pair.
 fn leaf(name: String, value: String) -> String {
   case name {
     "" -> text_hygiene.single_line(value)
@@ -1508,6 +1594,7 @@ fn heading(words: String, width: Int) -> span.Line {
   }
 }
 
+/// Wraps multiline text into styled lines fitted to the specified width.
 fn wrapped(
   words: String,
   appearance: style.Style,

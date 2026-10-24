@@ -201,18 +201,24 @@ pub fn encode(memory: Memory) -> String {
   |> json.to_string
 }
 
+/// Serializes a workspace layout entry into its JSON representation.
 fn entry_json(entry: Entry) -> JsonValue {
+  // Encode the optional rail layout state if set.
   let rail = case entry.layout.rail {
     Some(rail) -> [#("rail", json.String(rail_word(rail)))]
     None -> []
   }
+
+  // Encode the optional rail tab layout state if set.
   let tab = case entry.layout.tab {
     Some(tab) -> [#("tab", json.String(tab_word(tab)))]
     None -> []
   }
+
   json.Object([#("key", json.String(entry.key)), ..list.append(rail, tab)])
 }
 
+/// Converts a tab identifier into its wire string form.
 fn tab_word(tab: Tab) -> String {
   case tab {
     TabStrands -> "strands"
@@ -247,6 +253,7 @@ pub fn decode(text: String) -> Memory {
   }
 }
 
+/// Constructs a Memory value from decoded top-level JSON fields.
 fn from_fields(fields: List(#(String, JsonValue))) -> Memory {
   case field(fields, "version"), field(fields, "workspaces") {
     Some(json.Int(found)), Some(json.Array(items)) if found == version ->
@@ -265,8 +272,7 @@ fn from_fields(fields: List(#(String, JsonValue))) -> Memory {
   }
 }
 
-// One entry, or nothing for a value that is not an object with a key that is
-// a digest.
+/// Decodes one entry, returning Error for values that do not match the expected shape.
 fn entry_of(value: JsonValue) -> Result(Entry, Nil) {
   case value {
     json.Object(fields) ->
@@ -294,8 +300,7 @@ fn entry_of(value: JsonValue) -> Result(Entry, Nil) {
   }
 }
 
-// A tab word this release knows. `changes`, and any word a later release
-// adds, is no choice.
+/// Parses an optional tab wire representation into the corresponding Tab variant.
 fn tab_of(value: Option(JsonValue)) -> Option(Tab) {
   case value {
     Some(json.String("strands")) -> Some(TabStrands)
@@ -305,6 +310,7 @@ fn tab_of(value: Option(JsonValue)) -> Option(Tab) {
   }
 }
 
+/// Parses an optional rail wire representation into the corresponding Rail variant.
 fn rail_of(value: Option(JsonValue)) -> Option(Rail) {
   case value {
     Some(json.String("shown")) -> Some(RailShown)

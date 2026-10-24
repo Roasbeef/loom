@@ -148,6 +148,8 @@ pub fn probe_terminal(
 /// ```
 pub fn from_capabilities(caps: graphics.Capabilities) -> Support {
   let cell = option.unwrap(caps.cell_size, guessed_cell)
+
+  // Select the highest priority graphics protocol supported by the terminal.
   case graphics.protocol(caps) {
     graphics.Kitty -> KittyPlaceholders(cell)
     graphics.Iterm2 -> Iterm2Inline(cell)

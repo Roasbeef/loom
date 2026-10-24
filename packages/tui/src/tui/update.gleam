@@ -53,6 +53,7 @@ pub fn run(
   outcome
 }
 
+/// Downloads and verifies a release into a staging tree.
 fn staged(choices: options.Options, platform, stage, fetch) {
   use release <- result.try(source.resolve(choices, platform, stage, fetch))
   io.println(
@@ -63,6 +64,8 @@ fn staged(choices: options.Options, platform, stage, fetch) {
     <> ") for "
     <> platform,
   )
+
+  // Check signature presence on release.
   case release.signature {
     source.Present ->
       io.println(
@@ -73,6 +76,8 @@ fn staged(choices: options.Options, platform, stage, fetch) {
         "Release manifest is unsigned; artifact SHA-256 checks remain mandatory.",
       )
   }
+
+  // Execute check or proceed to installation.
   case choices.action {
     options.Check -> Ok(Nil)
     options.Update | options.InstallOnly ->
@@ -80,7 +85,9 @@ fn staged(choices: options.Options, platform, stage, fetch) {
   }
 }
 
+/// Installs release under exclusive launch lock.
 fn install(choices: options.Options, release: source.Release, stage, fetch) {
+  // Check latest version ordering.
   use Nil <- result.try(case choices.selection {
     options.Latest ->
       version.allow_latest(
@@ -89,6 +96,7 @@ fn install(choices: options.Options, release: source.Release, stage, fetch) {
       )
     options.Nightly | options.Tag(_) | options.Commit(_) -> Ok(Nil)
   })
+
   use prefix <- result.try(installation_prefix(choices.prefix))
   use client <- result.try(client_shape(choices.client, prefix))
   let library = prefix <> "/lib/loom"
@@ -102,6 +110,7 @@ fn install(choices: options.Options, release: source.Release, stage, fetch) {
   outcome
 }
 
+/// Performs locked staging and publication steps.
 fn install_locked(
   choices: options.Options,
   release: source.Release,
@@ -111,10 +120,13 @@ fn install_locked(
   client,
 ) {
   use server <- result.try(component(release.manifest, "server"))
+
+  // Choose client component name.
   let selected_client = case client {
     "slim" -> "slim"
     _ -> "client"
   }
+
   use terminal <- result.try(component(release.manifest, selected_client))
   use Nil <- result.try(stage_component(
     release.base,
@@ -123,10 +135,13 @@ fn install_locked(
     stage <> "/build/release/loom",
     fetch,
   ))
+
+  // Choose destination directory for client build.
   let destination = case client {
     "slim" -> stage <> "/slim"
     _ -> stage <> "/build/release/loom-client"
   }
+
   use Nil <- result.try(stage_component(
     release.base,
     terminal,
@@ -145,6 +160,8 @@ fn install_locked(
       "",
       placement.OnThisHost,
     )
+
+  // Perform publish or restart daemon.
   case choices.action {
     options.InstallOnly -> files.publish(stage, prefix, client)
     options.Update ->
@@ -160,6 +177,7 @@ fn install_locked(
   }
 }
 
+/// Publishes release files and gracefully restarts the running daemon.
 fn restart_install(
   choices: options.Options,
   daemon_options,
@@ -172,16 +190,20 @@ fn restart_install(
   use paths <- result.try(endpoint.paths(state))
   use previous <- result.try(lifecycle.capture(paths))
   let installed = files.publish(stage, prefix, client)
+
+  // Check publish outcome and trigger restart.
   case installed {
     Ok(Nil) -> {
       io.println("Release installed; gracefully restarting the shared daemon.")
       lifecycle.restart(previous, daemon_options, commit)
     }
     Error(reason) -> {
+      // Clean up previous control connection on failure.
       case previous {
         None -> Nil
         option.Some(connected) -> daemon.close(connected.control)
       }
+
       Error(reason)
     }
   }
@@ -192,6 +214,7 @@ fn component(document: manifest.Manifest, name) {
   |> result.replace_error("release lacks the selected component")
 }
 
+/// Downloads and unpacks a release component artifact.
 fn stage_component(
   base,
   artifact: manifest.Artifact,
@@ -212,6 +235,7 @@ fn stage_component(
   files.unpack(path, artifact, destination)
 }
 
+/// Renames Erlang shipment bundle directory for slim installations.
 fn prepare_slim(client, stage) {
   case client {
     "slim" ->
@@ -224,6 +248,7 @@ fn prepare_slim(client, stage) {
   }
 }
 
+/// Resolves explicit or inferred installation prefix path.
 fn installation_prefix(explicit) {
   case explicit {
     "" ->
@@ -235,6 +260,7 @@ fn installation_prefix(explicit) {
   }
 }
 
+/// Infers installation prefix from executable path.
 fn infer_prefix() {
   use executable <- result.try(
     host.getenv("LOOM_EXECUTABLE")
@@ -252,11 +278,15 @@ fn infer_prefix() {
   host.absolute_path(prefix)
 }
 
+/// Determines client distribution shape (bundled or slim).
 fn client_shape(explicit, prefix) {
+  // Resolve client shape from flag or environment.
   let selected = case explicit {
     "" -> host.getenv("LOOM_INSTALL_CLIENT") |> result.unwrap("")
     client -> client
   }
+
+  // Validate client shape or infer from prefix.
   case selected {
     "bundled" | "slim" -> Ok(selected)
     "" -> infer_client_shape(prefix)
@@ -264,7 +294,9 @@ fn client_shape(explicit, prefix) {
   }
 }
 
+/// Resolves state directory from argument or default home path.
 fn state_directory(explicit) {
+  // Check explicit state dir option.
   case explicit {
     "" -> {
       use home <- result.try(
@@ -276,12 +308,15 @@ fn state_directory(explicit) {
   }
 }
 
+/// Infers client shape by inspecting installed private directory paths.
 fn infer_client_shape(prefix) {
   let private =
     application.priv_directory("tui")
     |> result.replace_error("missing client private directory")
     |> result.try(host.canonical_path)
     |> result.unwrap("")
+
+  // Check whether private directory matches slim pattern.
   case string.starts_with(private, prefix <> "/lib/loom/tui.") {
     True -> Ok("slim")
     False ->

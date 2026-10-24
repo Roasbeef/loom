@@ -126,12 +126,15 @@ fn live(phase: String) -> Bool {
   phase == "starting" || phase == "running" || phase == "draining"
 }
 
+/// Decodes background execution metadata and outcome fields.
 fn execution(value: JsonValue, seq: Int) -> Result(Execution, Nil) {
   use fields <- result.try(object(value))
   use id <- result.try(field_text(fields, "id"))
   use strand <- result.try(field_text(fields, "strand"))
   use phase <- result.try(field_text(fields, "phase"))
   use payload <- result.try(list.key_find(fields, "result"))
+
+  // Validate known lifecycle phase string.
   case phase {
     "starting" | "running" | "draining" | "finished" | "lost" ->
       Ok(Execution(id, strand, phase, payload, seq))
@@ -139,6 +142,7 @@ fn execution(value: JsonValue, seq: Int) -> Result(Execution, Nil) {
   }
 }
 
+/// Decodes an outgoing link record between two sessions and strands.
 fn link(value: JsonValue) -> Result(Link, Nil) {
   use fields <- result.try(object(value))
   use source <- result.try(field_text(fields, "source_strand"))
@@ -147,6 +151,7 @@ fn link(value: JsonValue) -> Result(Link, Nil) {
   Ok(Link(source, session, target))
 }
 
+/// Decodes a registered named workflow record.
 fn workflow(key: String, value: JsonValue) -> Result(Workflow, Nil) {
   use fields <- result.try(object(value))
   use strand <- result.try(field_text(fields, "strand"))
@@ -169,6 +174,7 @@ fn object(value: JsonValue) -> Result(List(#(String, JsonValue)), Nil) {
   }
 }
 
+/// Extracts a non-empty string property by name from a list of key-value pairs.
 fn field_text(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -179,6 +185,7 @@ fn field_text(
   }
 }
 
+/// Collects inbound peer message records targeted at the specified strand.
 fn peer_messages(
   view: snapshot_view.View,
   window: snapshot.Window,
@@ -186,6 +193,7 @@ fn peer_messages(
 ) -> List(PeerMessage) {
   snapshot_view.branch(view, window, strand).records
   |> list.filter_map(fn(record) {
+    // Match peer-authored entries matching the target strand.
     case record.strand, record.entry {
       target,
         entry.MessageEntry(
@@ -216,6 +224,7 @@ fn peer_messages(
   |> list.take(8)
 }
 
+/// Formats background execution status lines for display.
 fn execution_lines(
   executions: List(Execution),
   facts: List(snapshot_view.Cell),
@@ -231,10 +240,13 @@ fn execution_lines(
         })
         |> result.map(fn(cell) { readiness(cell.value) })
         |> result.unwrap("Endpoints not published")
+
+      // Format termination error message if execution was lost.
       let outcome = case item.phase, item.result {
         "lost", json.String(reason) -> " · " <> reason
         _, _ -> ""
       }
+
       [
         accent(
           "◆ " <> item.id <> " · " <> item.phase <> outcome,
@@ -257,6 +269,7 @@ fn execution_lines(
   )
 }
 
+/// Decodes and formats published readiness endpoint names.
 fn readiness(value: JsonValue) -> String {
   case object(value) {
     Ok(fields) ->
@@ -278,6 +291,7 @@ fn readiness(value: JsonValue) -> String {
   }
 }
 
+/// Formats outgoing peer link summary lines.
 fn link_lines(links: List(Link), width: Int) -> List(span.Line) {
   let rows =
     links
@@ -300,6 +314,7 @@ fn link_lines(links: List(Link), width: Int) -> List(span.Line) {
   )
 }
 
+/// Formats workflow summaries and recorded step intents.
 fn workflow_lines(
   workflows: List(Workflow),
   steps: List(Step),
@@ -330,6 +345,7 @@ fn workflow_lines(
   )
 }
 
+/// Formats recent peer messages into styled TUI lines.
 fn peer_lines(messages: List(PeerMessage), width: Int) -> List(span.Line) {
   let rows =
     messages
@@ -358,6 +374,7 @@ fn peer_lines(messages: List(PeerMessage), width: Int) -> List(span.Line) {
   )
 }
 
+/// Renders a labeled section with an item count and optional empty message.
 fn section(
   title: String,
   rows: List(span.Line),
@@ -375,6 +392,7 @@ fn section(
   ]
 }
 
+/// Wraps multiline message text to fit within a bounded line budget.
 fn wrapped(value: String, width: Int) -> List(span.Line) {
   let lines =
     value
@@ -385,6 +403,8 @@ fn wrapped(value: String, width: Int) -> List(span.Line) {
     lines
     |> list.take(12)
     |> list.map(fn(row) { raised(row, width, theme.paper) })
+
+  // Check if remaining lines exceeded the 12-line excerpt limit.
   case list.drop(lines, 12) {
     [] -> shown
     _ -> list.append(shown, [quiet("  … continued in transcript", width)])
@@ -406,6 +426,7 @@ fn quiet(value: String, width: Int) -> span.Line {
   accent(value, width, theme.quiet)
 }
 
+/// Formats a single line truncated to width with graphite background.
 fn accent(value: String, width: Int, color: style.Color) -> span.Line {
   span.line_new([
     span.span_styled(
@@ -415,6 +436,7 @@ fn accent(value: String, width: Int, color: style.Color) -> span.Line {
   ])
 }
 
+/// Formats a single line padded to width with raised theme background.
 fn raised(value: String, width: Int, color: style.Color) -> span.Line {
   span.line_new([
     span.span_styled(

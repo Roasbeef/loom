@@ -68,6 +68,7 @@ pub fn unpack(
   )
   use _ <- result.try(
     list.try_map(entries, fn(entry) {
+      // Unpack entry onto filesystem according to type.
       case entry {
         archive.Directory(path) ->
           simplifile.create_directory_all(destination <> "/" <> path)
@@ -138,6 +139,8 @@ pub fn publish(
 /// ```
 pub fn run(executable: String, arguments: List(String)) -> Result(Nil, String) {
   use status <- result.try(ffi_terminal.run_forwarding(executable, arguments))
+
+  // Check execution exit status.
   case status {
     0 -> Ok(Nil)
     status -> Error(executable <> " exited " <> int.to_string(status))

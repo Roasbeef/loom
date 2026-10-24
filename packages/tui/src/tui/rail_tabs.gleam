@@ -90,8 +90,11 @@ type Row {
   Row(tone: Tone, text: String)
 }
 
+/// Formats trace rail rows for the active strand.
 fn trace_rows(model: Model) -> List(Row) {
   let strand = model.shared.active_strand
+
+  // Render newest program execution trace or a quiet empty state.
   case trace_view.newest(model.shared.records, strand) {
     None -> [
       Row(Heading, "TRACE · latest program"),
@@ -117,6 +120,7 @@ fn trace_rows(model: Model) -> List(Row) {
   }
 }
 
+/// Formats the state row of a program trace.
 fn state_row(state: trace_view.State) -> Row {
   case state {
     trace_view.Running -> Row(Live, "◐ running · awaiting its result")
@@ -129,9 +133,10 @@ fn state_row(state: trace_view.State) -> Row {
   }
 }
 
-// The call section's rows carry their glyph first, so the glyph says the
-// colour: a failure is the danger colour, a settled call the success one.
+/// The call section's rows carry their glyph first, so the glyph says the
+/// colour: a failure is the danger colour, a settled call the success one.
 fn call_row(line: String) -> Row {
+  // Pick row tone according to line prefix.
   let tone = case
     string.starts_with(line, "CALLS ·"),
     string.starts_with(line, "× "),
@@ -142,11 +147,12 @@ fn call_row(line: String) -> Row {
     False, False, True -> Good
     False, False, False -> Plain
   }
+
   Row(tone, line)
 }
 
-// The Jobs row before a read has answered: a read in flight says so, and one
-// that was never asked points at the summary, which asks.
+/// The Jobs row before a read has answered: a read in flight says so, and one
+/// that was never asked points at the summary, which asks.
 fn unread_jobs(model: Model) -> String {
   case model.shared.jobs_refresh, model.shared.jobs_awaiting {
     worktree_view.Requested, _ | worktree_view.Settled, Some(_) ->
@@ -155,6 +161,7 @@ fn unread_jobs(model: Model) -> String {
   }
 }
 
+/// Renders summary rail rows for the current session state.
 fn session_rows(model: Model) -> List(Row) {
   // Children on other orchestrators spend where this session's ledger cannot
   // see, so their tokens get a row of their own, and none for a session that
@@ -163,6 +170,8 @@ fn session_rows(model: Model) -> List(Row) {
     "" -> []
     words -> [Row(Plain, "Remote  " <> words)]
   }
+
+  // Format current goal or empty goal banner.
   let goal = case model.shared.goal {
     Some(board) ->
       case goal_view.row(board) {
@@ -191,17 +200,22 @@ fn session_rows(model: Model) -> List(Row) {
         },
       ])
   }
+
   let viewers = session_summary.viewers(model.shared.captured)
+
+  // List attached session viewers or display none attached.
   let attached = case viewers.rows {
     [] -> [Row(Quiet, "Viewers none attached")]
     rows ->
       list.flatten([
         [Row(Plain, "Viewers " <> int.to_string(viewers.total))],
         list.map(rows, fn(viewer) {
+          // Add marker for viewer representing the local user.
           let whose = case viewer.whose {
             session_summary.You -> " · you"
             session_summary.Another -> ""
           }
+
           Row(
             Quiet,
             "  "
@@ -213,6 +227,7 @@ fn session_rows(model: Model) -> List(Row) {
         }),
       ])
   }
+
   list.flatten([
     [Row(Heading, "SESSION")],
     goal,
@@ -234,6 +249,7 @@ fn fitted(rows: List(Row), width: Int) -> List(span.Line) {
   })
 }
 
+/// Maps a rail row tone to its terminal style.
 fn style_of(tone: Tone) -> style.Style {
   case tone {
     Heading -> theme.quiet_text()

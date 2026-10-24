@@ -187,6 +187,7 @@ pub fn refusal(support: Support, picture: Picture) -> Option(String) {
   }
 }
 
+/// Returns an error message if the picture payload exceeds the max allowed bytes.
 fn over_budget(picture: Picture) -> Option(String) {
   case picture.bytes > max_bytes {
     True ->
@@ -199,8 +200,10 @@ fn over_budget(picture: Picture) -> Option(String) {
   }
 }
 
-// The room the pane leaves for a box, once the terminal and the image are
-// settled.
+/// Computes fitted dimensions and returns a drawing verdict for the image.
+///
+/// The room the pane leaves for a box, once the terminal and the image are
+/// settled.
 fn sized(
   cell: graphics.CellSize,
   picture: Picture,
@@ -218,6 +221,8 @@ fn sized(
         rows: picture_rows(height),
       ),
     )
+
+  // Check if fitted box fits within available dimensions.
   case box.columns < 1 || box.rows < 1 {
     True -> Keep
     False ->
@@ -244,13 +249,15 @@ pub fn id_of(fingerprint: String) -> Int {
       int.bitwise_exclusive_or(int.bitwise_shift_right(hash, 24), hash),
       0xFFFFFF,
     )
+
+  // Ensure zero is never used as an image ID.
   case folded {
     0 -> 1
     other -> other
   }
 }
 
-// FNV-1a over the bytes, kept to 32 bits at each step.
+/// Computes a 32-bit FNV-1a hash over the input byte array.
 fn fnv(bytes: BitArray, hash: Int) -> Int {
   case bytes {
     <<byte, rest:bits>> ->
@@ -307,8 +314,7 @@ pub fn rows(
   [top, ..list.append(body, [foot])]
 }
 
-// A border row: the corner and its dash, the words, and dashes to the far
-// corner. `frame` is the whole width including both corners.
+/// Builds a styled border line with corner markers and descriptive text.
 fn border(
   open: String,
   words: String,
@@ -325,10 +331,10 @@ fn border(
   ])
 }
 
-// One interior row: the side, the cells the picture is drawn through,
-// centred between padding, and the far side. Placeholder cells are text
-// the terminal fills; blank cells are the marked blanks the picture is
-// drawn over.
+/// Generates an interior row of image placeholder or blank cells.
+///
+/// One interior row: the side, the cells the picture is drawn through,
+/// centred between padding, and the far side.
 fn cell_row(
   support: Support,
   drawing: Drawing,
@@ -338,6 +344,8 @@ fn cell_row(
 ) -> span.Line {
   let columns = int.min(drawing.box.columns, inside)
   let left = { inside - columns } / 2
+
+  // Render appropriate placeholder characters according to terminal graphics protocol.
   let cells = case support {
     image_support.KittyPlaceholders(..) ->
       int.range(from: 0, to: columns, with: [], run: fn(acc, column) {
@@ -348,6 +356,7 @@ fn cell_row(
     image_support.Iterm2Inline(..) | image_support.TextOnly(..) ->
       string.repeat(blank, columns)
   }
+
   span.line_new([
     span.span_plain(indent),
     span.span_styled("│ ", edge),
@@ -438,10 +447,7 @@ type Open {
   Open(run: Found, above: Edge)
 }
 
-// Walks the readings once. A row extends the open run while its marker
-// repeats; any other row closes it, and that row's own edge is the edge
-// below the run. `previous` is the edge of the row just walked, which is
-// what sits above a run that begins on this one.
+/// Aggregates scanned row readings into contiguous found image boxes.
 fn group(
   readings: List(#(Int, Reading)),
   previous: Edge,
@@ -487,6 +493,7 @@ fn group(
   }
 }
 
+/// Initializes a new Found image box from a starting marker and row index.
 fn begin(marker: Marker, row: Int) -> Found {
   Found(
     id: marker.id,
@@ -498,7 +505,7 @@ fn begin(marker: Marker, row: Int) -> Found {
   )
 }
 
-// A run is whole when it opened under a top border and closed above a foot.
+/// Seals an open run, marking it Whole if framed by top and bottom borders.
 fn seal(run: Found, above: Edge, below: Edge) -> Found {
   case above, below {
     TopBorder, FootBorder -> Found(..run, extent: Whole)
@@ -512,10 +519,7 @@ fn read(line: span.Line) -> Reading {
   Reading(marker: marker_of(line.spans, 0), edge: edge_of(line))
 }
 
-// The first marked span of a row and the column it starts at. A span is
-// marked when its colour is a true-colour id and it is made wholly of
-// placeholders or wholly of no-break spaces. A span that merely starts with
-// one is text, such as a pasted line indented with no-break spaces.
+/// Finds the first marked image span and its column offset in a row.
 fn marker_of(spans: List(span.Span), column: Int) -> Option(Marker) {
   case spans {
     [] -> None
@@ -534,6 +538,7 @@ fn marker_of(spans: List(span.Span), column: Int) -> Option(Marker) {
   }
 }
 
+/// Decodes the ImageId and cell type from a span if marked with an RGB color.
 fn cells_of(sp: span.Span) -> Option(#(kitty.ImageId, Cells)) {
   // Theme colours are RGB too. A marked span must start with one of the
   // two cell symbols, so ordinary text needs no grapheme list at all.
@@ -542,9 +547,13 @@ fn cells_of(sp: span.Span) -> Option(#(kitty.ImageId, Cells)) {
       && !string.starts_with(sp.content, blank),
     None,
   )
+
+  // Extract image ID encoded in 24-bit RGB foreground color.
   case sp.style.fg {
     style.Rgb(red, green, blue) -> {
       let marks = string.to_graphemes(sp.content)
+
+      // Check whether span consists entirely of placeholders or blank cells.
       let cells = case
         marks != [] && list.all(marks, string.starts_with(_, kitty.placeholder)),
         marks != [] && list.all(marks, fn(mark) { mark == blank })
@@ -553,6 +562,8 @@ fn cells_of(sp: span.Span) -> Option(#(kitty.ImageId, Cells)) {
         False, True -> Some(Blanks)
         False, False -> None
       }
+
+      // Validate decoded image ID and pair with cell type.
       case cells {
         Some(cells) ->
           kitty.image_id(red * 65_536 + green * 256 + blue)
@@ -565,12 +576,15 @@ fn cells_of(sp: span.Span) -> Option(#(kitty.ImageId, Cells)) {
   }
 }
 
+/// Determines whether a line represents a top border, foot border, or interior.
 fn edge_of(line: span.Line) -> Edge {
   let words =
     line.spans
     |> list.map(fn(sp) { sp.content })
     |> string.concat
     |> string.trim_start
+
+  // Identify border corner characters.
   case string.starts_with(words, "╭"), string.starts_with(words, "╰") {
     True, _ -> TopBorder
     False, True -> FootBorder

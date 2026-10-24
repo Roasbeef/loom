@@ -196,9 +196,7 @@ pub fn listed(rows: List(Row), filter: Filter) -> List(Row) {
   |> list.map(fn(entry) { entry.2 })
 }
 
-// Attention order: the primary leads, then the states that ask something
-// of the operator, then work in flight, then what has settled. The advisor
-// reviews rather than works, so it closes the list.
+/// Orders rows by operational priority: operator attention, working, finished.
 fn rank(row: Row) -> Int {
   case row.id, row.status {
     "main", _ -> 0
@@ -213,6 +211,7 @@ fn rank(row: Row) -> Int {
   }
 }
 
+/// Evaluates whether a given row matches the active inspection Filter.
 fn admits(filter: Filter, row: Row) -> Bool {
   case filter, row.status {
     AllAgents, _ -> True
@@ -242,6 +241,7 @@ pub fn cycle_filter(
   rows: List(Row),
   direction: Direction,
 ) -> Inspector {
+  // Cycle filter state forward or backward.
   let filter = case direction, inspector.filter {
     Next, AllAgents -> AttentionAgents
     Next, AttentionAgents -> WorkingAgents
@@ -252,7 +252,10 @@ pub fn cycle_filter(
     Previous, WorkingAgents -> AttentionAgents
     Previous, SettledAgents -> WorkingAgents
   }
+
   let shown = listed(rows, filter)
+
+  // Preserve selected ID if still admitted by new filter; otherwise pick first matching.
   let selected = case
     list.any(shown, fn(row) { row.id == inspector.selected }),
     shown
@@ -260,6 +263,7 @@ pub fn cycle_filter(
     True, _ | False, [] -> inspector.selected
     False, [first, ..] -> first.id
   }
+
   Inspector(..inspector, filter:, selected:, scroll: 0)
 }
 
@@ -279,6 +283,8 @@ pub fn navigate(
 ) -> Inspector {
   let rows = listed(rows, inspector.filter)
   let index = row_index(rows, inspector.selected)
+
+  // Calculate new selection index bounded by row count.
   let selected = case
     direction,
     list.any(rows, fn(row) { row.id == inspector.selected })
@@ -287,6 +293,8 @@ pub fn navigate(
     Next, True -> move_selection(index, list.length(rows), True)
     Previous, True -> move_selection(index, list.length(rows), False)
   }
+
+  // Resolve strand ID for the new index.
   case list.first(list.drop(rows, selected)) {
     Ok(row) ->
       Inspector(..inspector, selected: row.id, scroll: 0, message: None)
@@ -307,6 +315,8 @@ pub fn next_attention(inspector: Inspector, rows: List(Row)) -> Inspector {
   let index = row_index(rows, inspector.selected)
   let ordered =
     list.append(list.drop(rows, index + 1), list.take(rows, index + 1))
+
+  // Jump to next row flagged as needing operator attention.
   case list.find(ordered, fn(row) { agent_view.needs_attention(row.status) }) {
     Ok(row) ->
       Inspector(..inspector, selected: row.id, scroll: 0, message: None)
@@ -392,6 +402,7 @@ type Arrangement {
 /// The narrowest inside width that puts the detail beside the list.
 const beside_width = 96
 
+/// Computes panel rectangles and layout arrangement for list and detail views.
 fn geometry_for(screen: Rect, shown: Int, tallest: Int) -> Geometry {
   let width = int.max(1, int.min(136, screen.size.width - 2))
   let height = int.max(1, int.min(screen.size.height, tallest))
@@ -403,6 +414,8 @@ fn geometry_for(screen: Rect, shown: Int, tallest: Int) -> Geometry {
       height,
     )
   let inside = block.inner(area, workspace_frame([]))
+
+  // Select horizontal or stacked layout based on available interior columns.
   let arrangement = case inside.size.width >= beside_width {
     True -> Beside
     False -> Stacked
@@ -417,6 +430,8 @@ fn geometry_for(screen: Rect, shown: Int, tallest: Int) -> Geometry {
   let y = inside.position.y
   let footer =
     geometry.rect_new(x, y + body_height + 1, inside.size.width, footer_rows)
+
+  // Configure rects for beside or stacked layout panes.
   case arrangement {
     Beside -> {
       let list_width = agent_row.table_width
@@ -473,6 +488,7 @@ pub fn inspection_detail_area(
   rows: List(Row),
   inspector: Inspector,
 ) -> Rect {
+  // Return compact single-pane geometry or full geometry detail pane.
   case screen.size.height < 10 {
     True ->
       geometry.rect_new(
@@ -507,8 +523,7 @@ fn detail_heading_rows(shape: Geometry) -> Int {
   }
 }
 
-// At short heights, framing would consume the entire body. Keep the selected
-// identity and navigation fixed while the remaining rows scroll the detail.
+/// Renders a minimal framed inspection view for constrained terminal heights.
 fn render_compact_inspection(
   buf: buffer.Buffer,
   area: Rect,
@@ -517,6 +532,8 @@ fn render_compact_inspection(
   content: Option(fn(Rect) -> List(span.Line)),
 ) -> buffer.Buffer {
   let height = int.max(0, area.size.height - 2)
+
+  // Resolve selected agent identity and detail body rows.
   let #(identity, body) = case
     list.find(rows, fn(row) { row.id == inspector.selected })
   {
@@ -534,11 +551,14 @@ fn render_compact_inspection(
       },
     )
   }
+
+  // Calculate vertical scroll offset for detail sections.
   let offset = case inspector.detail {
     Messages -> 0
     Overview | Notes | Collaboration ->
       int.min(inspector.scroll, int.max(0, list.length(body) - height))
   }
+
   paragraph.render_styled(buffer.clear(buf, area), area, [
     line(fit(identity, area.size.width), theme.overlay_signal()),
     ..list.append(list.take(list.drop(body, offset), height), [
@@ -547,6 +567,7 @@ fn render_compact_inspection(
   ])
 }
 
+/// Renders full workspace inspection layout with roster list, divider, and detail pane.
 fn render_full_inspection(
   buf: buffer.Buffer,
   screen: Rect,
@@ -564,6 +585,8 @@ fn render_full_inspection(
   // A view another module draws has no length known here, and a stacked
   // workspace is narrow enough to want every row, so both take the screen.
   let full = geometry_for(screen, list.length(shown), screen.size.height)
+
+  // Calculate tallest interior height for window framing.
   let tallest = case full.arrangement, content {
     Beside, None -> {
       let detail =
@@ -572,6 +595,7 @@ fn render_full_inspection(
     }
     Beside, Some(_) | Stacked, _ -> screen.size.height
   }
+
   let shape = geometry_for(screen, list.length(shown), tallest)
 
   // etui's background fill covers the area inside the padding only, so the
@@ -595,9 +619,11 @@ fn render_full_inspection(
   )
 }
 
-// The rule between list and detail: a column beside, a row when stacked.
+/// Draws a vertical separator column or horizontal divider rule between panes.
 fn divider_lines(shape: Geometry) -> List(span.Line) {
   let rule = style.new(theme.divider, theme.graphite, style.none())
+
+  // Draw vertical bar separator or horizontal rule divider.
   case shape.arrangement {
     Beside ->
       list.repeat(
@@ -612,9 +638,7 @@ fn divider_lines(shape: Geometry) -> List(span.Line) {
   }
 }
 
-// The footer's rows. Beside the list a first row names the recipient the
-// composer keeps, so a reader never takes browsing for retargeting; a
-// stacked workspace has room only for the keys.
+/// Renders footer status lines with active composer recipient and key bindings.
 fn footer_lines(
   shape: Geometry,
   active: String,
@@ -643,12 +667,15 @@ fn footer_lines(
         theme.overlay_quiet(),
       ),
     ])
+
+  // Select full or compact hotkey hints based on layout arrangement.
   case shape.arrangement {
     Beside -> [recipient, hints(full_hints(inspector, active), width)]
     Stacked -> [recipient, hints(compact_hints(inspector), width)]
   }
 }
 
+/// Produces list of keybinding hints for the full workspace footer.
 fn full_hints(inspector: Inspector, active: String) -> List(String) {
   case inspector.focus, inspector.detail {
     Composing, _ -> [
@@ -691,6 +718,7 @@ fn full_hints(inspector: Inspector, active: String) -> List(String) {
   }
 }
 
+/// Produces concise keybinding hints for the compact inspection view.
 fn compact_hints(inspector: Inspector) -> List(String) {
   case inspector.focus, inspector.detail {
     Composing, _ -> ["Enter submits", "Esc returns to the list"]
@@ -708,15 +736,17 @@ fn compact_hints(inspector: Inspector) -> List(String) {
   }
 }
 
-// Joins key hints with ` · `, skipping a hint that does not fit rather than
-// cutting it in half, so every hint drawn names a whole key and action.
+/// Joins key hints with ` · `, skipping a hint that does not fit width.
 fn hints(items: List(String), width: Int) -> span.Line {
   let joined =
     list.fold(items, "", fn(drawn, item) {
+      // Prepend dot separator if earlier items exist.
       let next = case drawn {
         "" -> item
         _ -> drawn <> " · " <> item
       }
+
+      // Check whether next hint fits within width.
       case text.cell_width(next) <= width {
         True -> next
         False -> drawn
@@ -725,6 +755,7 @@ fn hints(items: List(String), width: Int) -> span.Line {
   line(joined, theme.overlay_quiet())
 }
 
+/// Configures rounded border styling and title for the workspace modal window.
 fn workspace_frame(rows: List(Row)) {
   block.block_new()
   |> block.with_border(block.Rounded)
@@ -737,8 +768,7 @@ fn workspace_frame(rows: List(Row)) {
   |> block.with_padding(0, 0, 1, 1)
 }
 
-// The frame's title counts what the operator would ask first: how many
-// agents, how many are working, and how many need them.
+/// Formats the workspace frame header title with active and attention tallies.
 fn title(rows: List(Row)) -> String {
   let working =
     list.count(rows, fn(row) {
@@ -758,6 +788,7 @@ fn title(rows: List(Row)) -> String {
   }
 }
 
+/// Selects singular or plural noun suffix according to numeric count.
 fn plural(count: Int, one: String, many: String) -> String {
   int.to_string(count)
   <> " "
@@ -767,8 +798,7 @@ fn plural(count: Int, one: String, many: String) -> String {
   }
 }
 
-// The list: its heading, then a window of rows that keeps the selected one
-// on screen.
+/// Formats heading and visible agent roster rows for the list viewport.
 fn list_lines(
   rows: List(Row),
   lines: List(agent_roster.Line),
@@ -784,6 +814,8 @@ fn list_lines(
     |> list.key_find(inspector.selected)
     |> result.unwrap(0)
   let #(visible, above, below) = counted_window(lines, index, room)
+
+  // Render placeholder message or windowed list rows.
   let body = case visible, inspector.filter, rows {
     [], AllAgents, [] -> [line("   No agents yet.", theme.overlay_quiet())]
     [], _, _ -> [
@@ -807,6 +839,7 @@ fn list_lines(
         },
       )
   }
+
   list.flatten([
     [heading],
     more_row(above, "↑", "above"),
@@ -815,16 +848,15 @@ fn list_lines(
   ])
 }
 
-// The rows a list shows when it is taller than its room, with how many it
-// cut above and below. A side that cuts rows gives up one row to say so,
-// as the session picker's list does, so a list that ends at the frame never
-// reads as all the agents there are.
+/// Windows a list of rows to keep the selected item visible and reports cut counts.
 fn counted_window(
   lines: List(a),
   selected: Int,
   room: Int,
 ) -> #(List(a), Int, Int) {
   let total = list.length(lines)
+
+  // Window lines directly if space permits; otherwise reserve room for overflow indicators.
   case total <= room || room < 3 {
     True -> {
       let #(visible, offset) = selection_window(lines, selected, room)
@@ -832,15 +864,19 @@ fn counted_window(
     }
     False -> {
       let #(first, offset) = selection_window(lines, selected, room - 1)
+
+      // Reserve lines for above and below overflow counts.
       let #(visible, offset) = case offset > 0, offset + room - 1 < total {
         True, True -> selection_window(lines, selected, room - 2)
         True, False | False, True | False, False -> #(first, offset)
       }
+
       #(visible, offset, int.max(0, total - offset - list.length(visible)))
     }
   }
 }
 
+/// Formats indicator line showing how many items remain unshown above or below.
 fn more_row(count: Int, arrow: String, side: String) -> List(span.Line) {
   case count {
     0 -> []
@@ -853,9 +889,7 @@ fn more_row(count: Int, arrow: String, side: String) -> List(span.Line) {
   }
 }
 
-// The list's heading: what the filter shows and how many. How many need the
-// operator is in the frame's title, and those rows are red, so the heading
-// does not say it a third time.
+/// Formats list heading displaying active filter name and matching count.
 fn list_heading(
   rows: List(Row),
   lines: List(agent_roster.Line),
@@ -864,12 +898,15 @@ fn list_heading(
 ) -> span.Line {
   let shown = int.to_string(list.length(lines))
   let all = int.to_string(list.length(rows))
+
+  // Choose header category text and count display.
   let #(label, count) = case filter {
     AllAgents -> #("AGENTS", " · " <> shown)
     AttentionAgents -> #("NEED YOU", " · " <> shown <> " of " <> all)
     WorkingAgents -> #("WORKING", " · " <> shown <> " of " <> all)
     SettledAgents -> #("SETTLED", " · " <> shown <> " of " <> all)
   }
+
   let left = " " <> label
   span.line_new([
     span.span_styled(
@@ -883,6 +920,7 @@ fn list_heading(
   ])
 }
 
+/// Renders the detail pane containing view selector tabs and section content.
 fn render_detail(
   buf: buffer.Buffer,
   shape: Geometry,
@@ -894,6 +932,8 @@ fn render_detail(
 ) -> buffer.Buffer {
   let area = shape.detail
   let drawn = detail_rows(shape, rows, lines, inspector, facts, content)
+
+  // Calculate scroll offset based on active tab view.
   let offset = case inspector.detail {
     Messages -> 0
     Overview | Notes | Collaboration ->
@@ -902,6 +942,8 @@ fn render_detail(
         int.max(0, list.length(drawn) - area.size.height),
       )
   }
+
+  // Allocate header lines for tabs and spacing.
   let heading = case shape.arrangement {
     Beside -> 2
     Stacked -> 1
@@ -920,7 +962,7 @@ fn render_detail(
   paragraph.render_styled(buf, area, shown)
 }
 
-// The detail's rows from the top: the view tabs, then the selected view.
+/// Formats detail pane rows including tab header and selected view sections.
 fn detail_rows(
   shape: Geometry,
   rows: List(Row),
@@ -930,14 +972,20 @@ fn detail_rows(
   content: Option(fn(Rect) -> List(span.Line)),
 ) -> List(span.Line) {
   let area = shape.detail
+
+  // Render tab selector header according to arrangement.
   let heading = case shape.arrangement {
     Beside -> [tabs(inspector.detail, area.size.width), span.line_new([])]
     Stacked -> [tabs(inspector.detail, area.size.width)]
   }
+
+  // Select vertical spacing mode based on layout.
   let compact = case shape.arrangement {
     Beside -> Spacious
     Stacked -> Compact
   }
+
+  // Generate view section lines for selected strand.
   let body = case list.find(rows, fn(row) { row.id == inspector.selected }) {
     Error(Nil) -> [
       line("Selected strand unavailable", theme.overlay_signal()),
@@ -979,11 +1027,11 @@ fn detail_rows(
         }
       }
   }
+
   list.append(heading, body)
 }
 
-// Drops the trailing blanks and section labels a cut leaves, so the last
-// row drawn is never a heading with nothing under it.
+/// Drops trailing blank lines and dangling section headings from cut text.
 fn without_hanging_label(rows: List(span.Line)) -> List(span.Line) {
   rows
   |> list.reverse
@@ -997,8 +1045,9 @@ fn without_hanging_label(rows: List(span.Line)) -> List(span.Line) {
   |> list.reverse
 }
 
-// The view tabs, named in full when there is room and shortened when not.
+/// Renders horizontal tab selector for Activity and Messages detail views.
 fn tabs(detail: Detail, width: Int) -> span.Line {
+  // Select full or abbreviated tab names based on width.
   let names = case width >= 56 {
     True -> [
       #(Overview, "1 Activity"),
@@ -1013,12 +1062,15 @@ fn tabs(detail: Detail, width: Int) -> span.Line {
       #(Collaboration, "4 Collab"),
     ]
   }
+
   span.line_new(
     list.flat_map(names, fn(pair) {
+      // Highlight active tab with raised styling.
       let look = case pair.0 == detail {
         True -> style.new(theme.paper, theme.raised, style.bold())
         False -> theme.overlay_quiet()
       }
+
       [
         span.span_styled(" " <> pair.1 <> " ", look),
         span.span_styled(" ", theme.overlay_quiet()),
@@ -1035,9 +1087,7 @@ type Spacing {
   Compact
 }
 
-// The Activity detail: the agent's name and state, then its sections, each
-// saying one thing once. A failed agent leads with its error and says the
-// error is not repeated, because the transcript Enter opens already has it.
+/// Formats the Activity view content including state, task, metrics, and identity.
 fn detail_lines(
   row: Row,
   name: String,
@@ -1046,6 +1096,7 @@ fn detail_lines(
   width: Int,
   spacing: Spacing,
 ) -> List(span.Line) {
+  // Choose empty spacer lines based on vertical spacing mode.
   let gap = case spacing {
     Spacious -> [span.line_new([])]
     Compact -> []
@@ -1069,8 +1120,11 @@ fn detail_lines(
     Spacious -> 4
     Compact -> 2
   }
+
   let task = [label_line("TASK"), ..clamped(row.task, task_rows, width)]
   let now = [label_line("NOW"), ..now_lines(row, width)]
+
+  // Include table and identity lines in spacious mode.
   let rest = case spacing {
     Compact -> []
     Spacious ->
@@ -1081,10 +1135,11 @@ fn detail_lines(
         identity_lines(row, width),
       ])
   }
+
   list.flatten([title, gap, task, [span.line_new([])], now, rest])
 }
 
-// The state word in the glyph's colour, then the figures and the model.
+/// Formats status line with colored glyph, state word, elapsed time, and model.
 fn state_line(row: Row, figures: agent_roster.Line, width: Int) -> span.Line {
   let facts =
     [
@@ -1095,10 +1150,13 @@ fn state_line(row: Row, figures: agent_roster.Line, width: Int) -> span.Line {
       short_model(row.model),
     ]
     |> option.values
+
+  // Format bullet-separated facts string if metrics exist.
   let rest = case facts {
     [] -> ""
     _ -> " · " <> string.join(facts, " · ")
   }
+
   let word = string.lowercase(agent_view.label(row.status))
   span.line_new([
     span.span_styled(word, agent_row.status_style(row.status, theme.graphite)),
@@ -1109,8 +1167,7 @@ fn state_line(row: Row, figures: agent_roster.Line, width: Int) -> span.Line {
   ])
 }
 
-// A model reads by its last path segment; an unknown one is left out
-// rather than drawn as a placeholder sentence.
+/// Extracts compact model identifier name from full model string.
 fn short_model(model: String) -> Option(String) {
   case string.contains(model, " ") || model == "" {
     True -> None
@@ -1122,9 +1179,7 @@ fn short_model(model: String) -> Option(String) {
   }
 }
 
-// What the agent is doing now. A pending approval leads with the request
-// and the key that reviews it; nothing here decides it. A failure leads
-// with its error.
+/// Formats current activity section explaining in-flight operation or error.
 fn now_lines(row: Row, width: Int) -> List(span.Line) {
   case row.approvals, row.status {
     [_, ..], _ ->
@@ -1169,8 +1224,7 @@ fn now_lines(row: Row, width: Int) -> List(span.Line) {
   }
 }
 
-// The latest sends in and out of the agent, newest first: the direction,
-// the other strand, and the body cut at a word.
+/// Formats recent message history lines between this agent and peers.
 fn message_lines(
   row: Row,
   messages: List(agent_messages.Item),
@@ -1186,10 +1240,12 @@ fn message_lines(
       span.line_new([]),
       label_line("LATEST MESSAGES"),
       ..list.map(latest, fn(item) {
+        // Choose directional arrow based on sender or recipient.
         let #(arrow, other) = case item.target == row.id {
           True -> #("← ", item.source)
           False -> #("→ ", item.target)
         }
+
         let other =
           agent_row.cut_middle(agent_roster.short_name(other), width / 3)
         span.line_new([
@@ -1214,24 +1270,28 @@ fn message_lines(
   }
 }
 
-// The inbox and the tools, as a two-row table with one key column.
+/// Formats pending inbox items and recently invoked tools as a summary table.
 fn table_lines(row: Row, width: Int) -> List(span.Line) {
+  // Format pending inbox line if non-empty.
   let inbox = case string.trim(row.pending) {
     "" -> []
     pending -> [table_row("INBOX", pending, width)]
   }
+
+  // Format recent tools line if any tools were executed.
   let tools = case row.recent {
     [] -> []
     recent -> [table_row("TOOLS", tally(recent), width)]
   }
+
+  // Prepend blank line if either inbox or tools row was generated.
   case list.append(inbox, tools) {
     [] -> []
     table -> [span.line_new([]), ..table]
   }
 }
 
-// Repeated tool names fold into one with a count, `read ×3`, in the order
-// each first appears.
+/// Aggregates repeated tool executions into deduplicated counts.
 fn tally(names: List(String)) -> String {
   let counts =
     list.fold(names, dict.new(), fn(counts, name) {
@@ -1248,6 +1308,7 @@ fn tally(names: List(String)) -> String {
   |> string.join(" · ")
 }
 
+/// Formats a two-column key-value attribute row.
 fn table_row(key: String, value: String, width: Int) -> span.Line {
   span.line_new([
     span.span_styled(
@@ -1261,12 +1322,14 @@ fn table_row(key: String, value: String, width: Int) -> span.Line {
   ])
 }
 
-// The identity, in the dimmest line, and the advisor's role under it.
+/// Formats strand identity, operation sequence, and advisor role attributes.
 fn identity_lines(row: Row, width: Int) -> List(span.Line) {
+  // Include truncated operation ID if present.
   let operation = case row.operation {
     Some(operation) -> ["op " <> string.slice(operation, 0, 6)]
     None -> []
   }
+
   let rest =
     [operation, option.values([short_model(row.model)])]
     |> list.flatten
@@ -1278,6 +1341,8 @@ fn identity_lines(row: Row, width: Int) -> List(span.Line) {
   let identity =
     agent_row.cut_middle(row.id, int.max(8, width - text.cell_width(rest)))
     <> rest
+
+  // Describe advisor role characteristics if strand represents the advisor.
   let role = case row.id {
     "advisor" -> [
       line(
@@ -1287,6 +1352,7 @@ fn identity_lines(row: Row, width: Int) -> List(span.Line) {
     ]
     _ -> []
   }
+
   [line(fit(identity, width), theme.overlay_quiet()), ..role]
 }
 
@@ -1306,6 +1372,7 @@ fn clamped(value: String, rows: Int, width: Int) -> List(span.Line) {
   clamped_styled(value, rows, width, theme.overlay_plain())
 }
 
+/// Clamps multiline text to specified rows and applies styling.
 fn clamped_styled(
   value: String,
   rows: Int,
@@ -1317,6 +1384,8 @@ fn clamped_styled(
     |> text_hygiene.multiline
     |> string.split("\n")
     |> list.flat_map(fn(row) { text.wrap(row, int.max(1, width)) })
+
+  // Truncate wrapped lines to row limit with trailing ellipsis.
   case list.drop(lines, rows) {
     [] -> list.map(lines, line(_, look))
     [_, ..] ->
@@ -1333,6 +1402,7 @@ fn clamped_styled(
   }
 }
 
+/// Wraps single-line text into multiple styled lines bounded by column width.
 fn wrapped(
   value: String,
   width: Int,

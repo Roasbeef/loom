@@ -114,6 +114,7 @@ pub fn receive(
   namespace: String,
   document: Document,
 ) -> State {
+  // Reconcile incoming authoritative document with any matching draft in progress.
   case state.draft {
     Some(draft)
       if draft.namespace == namespace

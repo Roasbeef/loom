@@ -28,6 +28,8 @@ pub fn fetch(url: String, destination: String, limit: Int) {
     ])
     |> weft.deadline(300_000)
     |> weft.start
+
+  // Extract outcome from supervised download task.
   let outcome = case outcomes {
     [weft.Completed(value:, ..)] -> Ok(value)
     [weft.Failed(error:, ..)] -> Error(error)
@@ -58,6 +60,8 @@ pub fn validate_url(url: String) -> Result(uri.Uri, String) {
   use parsed <- result.try(
     uri.parse(url) |> result.replace_error("invalid download URL"),
   )
+
+  // Verify scheme is HTTPS and lacks credentials or fragments.
   case parsed.scheme, parsed.host, parsed.userinfo, parsed.fragment {
     Some("https"), Some(host), None, None if host != "" -> {
       let port = port_number(parsed.port)
@@ -82,12 +86,16 @@ type Response {
   Redirect(location: String)
 }
 
+/// Downloads a resource over HTTPS following redirects.
 fn follow(url, destination, limit, remaining, ledger) {
   use parsed <- result.try(validate_url(url))
+
+  // Verify URI host component.
   use host <- result.try(case parsed.host {
     Some(host) -> Ok(host)
     None -> Error("download URL lacks host")
   })
+
   use connection <- result.try(native.open(host, port_number(parsed.port)))
 
   // Gun owns its transport. A normal stop runs its termination callback,
@@ -98,8 +106,11 @@ fn follow(url, destination, limit, remaining, ledger) {
     weft.Adopted -> request(connection, parsed, destination, limit)
     weft.Refused -> Error("download was cancelled before request admission")
   }
+
   native.close(connection)
   use response <- result.try(outcome)
+
+  // Process HTTP response or follow redirect.
   case response {
     Found -> Ok(source.Present)
     Missing -> Ok(source.Absent)
@@ -117,17 +128,24 @@ fn follow(url, destination, limit, remaining, ledger) {
   }
 }
 
+/// Issues HTTP GET request and writes response body to staging path.
 fn request(connection, parsed: uri.Uri, destination, limit) {
+  // Default empty path to root.
   let path = case parsed.path {
     "" -> "/"
     path -> path
   }
+
+  // Append query string if present.
   let path = case parsed.query {
     None -> path
     Some(query) -> path <> "?" <> query
   }
+
   use stream <- result.try(native.request(connection, path))
   use #(completion, status, fields) <- result.try(headers(connection, stream, 8))
+
+  // Dispatch based on HTTP status code.
   case status {
     200 -> {
       use Nil <- result.try(
@@ -146,9 +164,12 @@ fn request(connection, parsed: uri.Uri, destination, limit) {
   }
 }
 
+/// Reads HTTP response headers from the stream connection.
 fn headers(connection, stream, remaining) {
   use <- bool.guard(remaining == 0, Error("too many informational responses"))
   use event <- result.try(native.receive(connection, stream))
+
+  // Parse header frame.
   case event {
     native.Headers(completion, status, fields) ->
       Ok(#(completion, status, fields))
@@ -157,11 +178,15 @@ fn headers(connection, stream, remaining) {
   }
 }
 
+/// Streams HTTP response body into destination file.
 fn body(connection, stream, completion, destination, remaining) {
+  // Check whether response body stream has finished.
   case completion {
     native.Finished -> Ok(Nil)
     native.More -> {
       use event <- result.try(native.receive(connection, stream))
+
+      // Process data frame.
       case event {
         native.Data(completion, bytes) -> {
           let size = bit_array.byte_size(bytes)

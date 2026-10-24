@@ -195,8 +195,10 @@ pub fn render_identity(
   ])
 }
 
-// Spans in order until the room runs out; the span that crosses the edge is
-// cut with an ellipsis and nothing after it is drawn.
+/// Fits styled text pieces into available room, truncating with an ellipsis when space expires.
+///
+/// Spans in order until the room runs out; the span that crosses the edge is
+/// cut with an ellipsis and nothing after it is drawn.
 fn fit_spans(
   pieces: List(#(String, style.Style)),
   room: Int,
@@ -205,6 +207,8 @@ fn fit_spans(
     list.fold(pieces, #([], room), fn(acc, piece) {
       let #(spans, left) = acc
       let width = text.cell_width(piece.0)
+
+      // Truncate span if it crosses remaining space boundary.
       case left, width <= left {
         0, _ -> acc
         _, True -> #(
@@ -252,6 +256,8 @@ pub const carries_activity = 72
 @internal
 pub fn render(buf: buffer.Buffer, area: Rect, status: Status) -> buffer.Buffer {
   let width = area.size.width
+
+  // Skip rendering borders if the allocated area is too small.
   case width < 8 || area.size.height < 2 {
     True -> buf
     False -> {
@@ -304,8 +310,7 @@ type Keep {
   KeepRight
 }
 
-// One labelled rule: a corner, a dash, the left label, a run of dashes, the
-// right label, a dash and the other corner.
+/// Draws a horizontal border rule with corner glyphs and embedded status labels.
 fn draw_rule(
   buf: buffer.Buffer,
   at: geometry.Position,
@@ -352,26 +357,30 @@ fn labels_width(labels: List(#(String, style.Style))) -> Int {
   list.fold(labels, 0, fn(total, piece) { total + text.cell_width(piece.0) })
 }
 
-// Where Enter sends and what it does: the recipient in the signal colour,
-// then the keys. A held input says why instead of naming keys it ignores.
+/// Builds left-hand top rule status labels displaying target recipient and shortcut hints.
 fn top_left(status: Status) -> List(#(String, style.Style)) {
   let bold = style.new(theme.signal, style.Default, style.bold())
+
+  // When locked in deciding mode, state lock status instead of key shortcuts.
   let keys = case status.lock {
     Deciding -> "locked while deciding"
     Unlocked -> status.keys
   }
+
+  // Format separator prefix if keys are available.
   let tail = case keys {
     "" -> ""
     _ -> " · " <> keys
   }
+
   [#(" To " <> status.target <> tail <> " ", bold)]
 }
 
-// What the strand is doing. The pieces give way from the end, so the glyph
-// and the action stay longest; the stop key goes first, and on a narrow
-// frame it is spelled `Esc` alone.
+/// Builds right-hand top rule activity indicator and interrupt instructions.
 fn top_right(status: Status, width: Int) -> List(#(String, style.Style)) {
   let quiet = style.new(theme.quiet, style.Default, style.none())
+
+  // Check activity state and lock status to determine right header indicators.
   case status.activity, status.lock {
     _, Deciding -> []
     _, Unlocked if width < carries_activity -> []
@@ -379,14 +388,18 @@ fn top_right(status: Status, width: Int) -> List(#(String, style.Style)) {
       #(" ○ " <> text_hygiene.single_line(status.strand) <> " · idle ", quiet),
     ]
     Busy(glyph:, doing:, elapsed:), Unlocked -> {
+      // Indicate pending message count if greater than zero.
       let queue = case status.queued {
         0 -> []
         count -> ["queue " <> int.to_string(count)]
       }
+
+      // Shorten escape hint on narrower terminals.
       let stop = case width < roomy {
         True -> "Esc"
         False -> "Esc interrupts"
       }
+
       let room = int.max(0, width / 2)
       let pieces =
         list.flatten([
@@ -407,13 +420,16 @@ fn top_right(status: Status, width: Int) -> List(#(String, style.Style)) {
   }
 }
 
-// Joins pieces with ` · ` while they fit in `room`, dropping the rest.
+/// Joins pieces with a dot separator as long as they fit within allowed width.
 fn joined(pieces: List(String), room: Int) -> String {
   list.fold(pieces, "", fn(drawn, piece) {
+    // Prepend separator if not the initial element.
     let next = case drawn {
       "" -> piece
       _ -> drawn <> " · " <> piece
     }
+
+    // Verify combined text fits within allowed room width.
     case text.cell_width(next) <= room {
       True -> next
       False -> drawn
@@ -421,19 +437,22 @@ fn joined(pieces: List(String), room: Int) -> String {
   })
 }
 
-// The model, context and cost, joined as omp joins them, with a notice in
-// front while there is one. A narrow frame drops the effort and the word
-// before the cost.
+/// Builds left-hand bottom rule labels displaying model, context usage, and cost.
 fn bottom_left(status: Status, width: Int) -> List(#(String, style.Style)) {
   let quiet = style.new(theme.quiet, style.Default, style.none())
+
+  // Display reasoning effort alongside model name on spacious displays.
   let model = case status.effort, width < roomy {
     Some(effort), False -> status.model <> " · " <> effort
     Some(_), True | None, _ -> status.model
   }
+
+  // Drop "est " label prefix on narrow terminals.
   let cost = case width < roomy {
     True -> status.cost
     False -> "est " <> status.cost
   }
+
   [
     #(
       " "
@@ -448,10 +467,7 @@ fn bottom_left(status: Status, width: Int) -> List(#(String, style.Style)) {
   ]
 }
 
-// The proposals badge and the evolution badge, in the signal colour, then how
-// many agents need the operator, in the danger colour. Each is nothing while
-// there is nothing to say, and all outrank the model and cost when the rule
-// is too short.
+/// Formats proposal, evolution, and intervention badges for the bottom right rule.
 fn bottom_right(status: Status) -> List(#(String, style.Style)) {
   list.flatten([
     badge_cells(status.proposals),
@@ -460,6 +476,7 @@ fn bottom_right(status: Status) -> List(#(String, style.Style)) {
   ])
 }
 
+/// Renders a highlighted badge span if words are present.
 fn badge_cells(words: String) -> List(#(String, style.Style)) {
   case words {
     "" -> []
@@ -472,6 +489,7 @@ fn badge_cells(words: String) -> List(#(String, style.Style)) {
   }
 }
 
+/// Formats an alert badge when worker agents require operator intervention.
 fn needing(status: Status) -> List(#(String, style.Style)) {
   case status.needs {
     0 -> []
@@ -533,6 +551,8 @@ pub fn render_prompt(
       "›",
       style.new(theme.signal, style.Default, style.bold()),
     )
+
+  // Draw key hints placeholder when prompt buffer is empty.
   case placeholder {
     None -> prompt
     Some(hint) ->

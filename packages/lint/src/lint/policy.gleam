@@ -295,6 +295,7 @@ pub fn literate_packages() -> List(String) {
     "storage",
     "telemetry",
     "tools",
+    "tui",
     "web_client",
     "web_mermaid",
     "web_view",

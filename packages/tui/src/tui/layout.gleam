@@ -134,6 +134,7 @@ pub fn transcript_inner(panel: Rect) -> Rect {
 /// when no side question is shown.
 @internal
 pub fn transcript_areas(area: Rect, model: Model) -> #(Rect, Rect) {
+  // Split transcript into main and peek/btw side views if requested.
   case model.shared.btw.visibility, model.shared.peek {
     btw.Hidden, remote_transcript.Closed -> #(area, geometry.rect_zero())
     btw.Visible, _
@@ -170,16 +171,21 @@ pub fn transcript_areas(area: Rect, model: Model) -> #(Rect, Rect) {
 /// by the strip growing and shrinking.
 @internal
 pub fn layout(screen: Rect, model: Model) -> #(Rect, Rect, Rect, Rect) {
+  // Divide screen into header and below-header section.
   let #(header, below) = case geometry.split_v(screen, [Length(1), Fill]) {
     [header, below] -> #(header, below)
     _ -> #(screen, screen)
   }
+
+  // Carve out docked rail space from column horizontally.
   let column = case
     geometry.split_h(below, [Fill, Length(rail_columns(model))])
   {
     [column, _] -> column
     _ -> below
   }
+
+  // Partition column vertically into body, composer input, and footer rows.
   case
     geometry.split_v(column, [
       Fill,
@@ -282,9 +288,10 @@ pub fn rail_area(screen: Rect, model: Model) -> Rect {
   }
 }
 
-// Where the rail is when it is on screen at all: the conversation's rectangle
-// for the sheet, the docked column otherwise.
+/// Where the rail is when it is on screen at all: the conversation's rectangle
+/// for the sheet, the docked column otherwise.
 fn shown_rail_area(screen: Rect, model: Model) -> Rect {
+  // Return sheet area or docked column area based on narrow terminal threshold.
   case sheet_shown(model) {
     True -> {
       let #(_, body, _, _) = layout(screen, model)
@@ -295,6 +302,7 @@ fn shown_rail_area(screen: Rect, model: Model) -> Rect {
   }
 }
 
+/// Computes the docked rail rectangle on the right side of the screen.
 fn docked_rail_area(screen: Rect, model: Model) -> Rect {
   case geometry.split_v(screen, [Length(1), Fill]) {
     [_, below] ->
@@ -312,6 +320,8 @@ fn docked_rail_area(screen: Rect, model: Model) -> Rect {
 pub fn rail_content_area(screen: Rect, model: Model) -> Rect {
   let area = rail_area(screen, model)
   let lead = rail_lead(model)
+
+  // Guard against non-positive width rail areas.
   case area.size.width > 0 {
     True ->
       geometry.rect_new(
@@ -332,10 +342,7 @@ pub fn queue_body_layout(body: Rect, model: Model) -> #(Rect, Rect) {
   queue_body_layout_for(body, model, queue_rows(model))
 }
 
-// The body splits into the conversation, the pinned todo panel, and the
-// queue card, in that order from the top. Every hit-test and scroll path
-// asks for the conversation through here, so the todo rows are subtracted
-// in one place and no path can disagree about where the transcript ends.
+/// Divides body rectangle into conversation and queue cards.
 fn queue_body_layout_for(
   body: Rect,
   model: Model,
@@ -345,6 +352,7 @@ fn queue_body_layout_for(
   #(conversation, queue)
 }
 
+/// Partitions body into conversation, pinned todo panel, and queue cards.
 fn body_split(
   body: Rect,
   model: Model,
@@ -352,23 +360,28 @@ fn body_split(
 ) -> #(Rect, Rect, Rect) {
   let queue = queue_height(body, model, rows)
   let panel = todo_height(body, model, queue)
+
+  // Split body vertically across conversation, todo panel, and queue areas.
   case geometry.split_v(body, [Fill, Length(panel), Length(queue)]) {
     [conversation, panel, queue] -> #(conversation, panel, queue)
     _ -> #(body, geometry.rect_zero(), geometry.rect_zero())
   }
 }
 
+/// Calculates the height of the queue card in the body area.
 fn queue_height(
   body: Rect,
   model: Model,
   rows: List(snapshot_view.PendingInput),
 ) -> Int {
+  // Determine queue panel height depending on open state and pending rows count.
   let wanted = case model.view.queue_editor.surface, rows {
     queue_editor.Closed, [] -> 0
     queue_editor.Closed, _ -> int.min(5, list.length(rows) + 2)
     queue_editor.Inspector, _ | queue_editor.Editor, _ ->
       int.min(14, int.max(3, body.size.height / 2))
   }
+
   int.min(wanted, int.max(0, body.size.height - 3))
 }
 
@@ -404,8 +417,8 @@ pub fn todo_area(body: Rect, model: Model) -> Rect {
   panel
 }
 
-// The width the changes panel has in the rail, or zero when the changes are
-// not open in a rail that is on screen. In the sheet that is the whole width.
+/// The width the changes panel has in the rail, or zero when the changes are
+/// not open in a rail that is on screen. In the sheet that is the whole width.
 fn diff_pane_width(model: Model) -> Int {
   case rail_tab(model), rail_columns(model) {
     rail.Changes, columns if columns > 0 -> columns - 1
@@ -422,6 +435,7 @@ fn diff_pane_width(model: Model) -> Int {
 /// changes are open in a docked rail, and nothing otherwise.
 @internal
 pub fn changes_panel_area(screen: Rect, model: Model) -> Rect {
+  // Inset changes panel rectangle when diff pane width is non-zero.
   case diff_pane_width(model) > 0 {
     True -> {
       // The panel's geometry is `panel_inner` of its rectangle everywhere, so
@@ -558,6 +572,7 @@ pub fn strip_height(model: Model) -> Int {
   )
 }
 
+/// Calculates total height of the footer rows.
 fn footer_height(model: Model) -> Int {
   case
     model.view.queue_editor.surface != queue_editor.Closed
@@ -632,6 +647,8 @@ pub fn footer_rows(width: Int) -> Int {
       footer_project_cells + footer_model_cells,
       footer_usage_cells + footer_status_cells,
     )
+
+  // Select row count depending on single-line and pair-line cell thresholds.
   case width >= single, width >= pair {
     True, _ -> 1
     False, True -> 2
@@ -680,9 +697,16 @@ pub fn input_layout(
   }
 }
 
-// The editor owns the unwrapped source text, while its view is wrapped to the
-// current terminal width. Keeping this transformation render-only preserves
-// the exact prompt bytes used by editing, history, and submission.
+/// The editor owns the unwrapped source text, while its view is wrapped to the
+/// current terminal width. Keeping this transformation render-only preserves
+/// the exact prompt bytes used by editing, history, and submission.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let state = text_area.new("hello world")
+/// let view_state = layout.input_view_state(state, 80)
+/// ```
 @internal
 pub fn input_view_state(
   state: text_area.TextAreaState,
@@ -707,6 +731,8 @@ pub fn input_view_state(
     lines
     |> list.index_map(fn(line, index) {
       let wrapped = hard_wrap_line(line, width)
+
+      // Ensure cursor row remains accessible in empty lines.
       case index == cursor_y, list.drop(wrapped, cursor_row) {
         True, [] -> list.append(wrapped, [""])
         _, _ -> wrapped
@@ -727,11 +753,13 @@ fn hard_wrap_line(line: String, width: Int) -> List(String) {
   }
 }
 
+/// Hard-wraps non-empty text strings into chunks matching given display width.
 fn hard_wrap_nonempty(
   line: String,
   width: Int,
   rows: List(String),
 ) -> List(String) {
+  // Deconstruct remaining string into wrapped chunks.
   case line {
     "" -> list.reverse(rows)
     _ -> {
@@ -742,8 +770,11 @@ fn hard_wrap_nonempty(
   }
 }
 
+/// Calculates wrapped cursor coordinates from prefix text.
 fn wrapped_cursor(prefix: String, width: Int, rows: Int) -> #(Int, Int) {
   let prefix_width = text.cell_width(prefix)
+
+  // Determine cursor placement within current or wrapped row.
   case prefix_width < width {
     True -> #(rows, prefix_width)
     False -> {
@@ -754,6 +785,7 @@ fn wrapped_cursor(prefix: String, width: Int, rows: Int) -> #(Int, Int) {
   }
 }
 
+/// Computes total prompt composer height including chips and status band.
 fn input_height(model: Model) -> Int {
   // Reserve the same rows that `input_layout` assigns to the attachment
   // list, so every accepted image is visible above the editor.
@@ -778,6 +810,7 @@ fn pending_height(model: Model) -> Int {
 /// submission, the first advisor nudge, the reviewer roster and the send state.
 @internal
 pub fn composer_status_lines(model: Model) -> List(String) {
+  // Include pending submission status if active.
   let pending = case pending_status(model) {
     None -> []
     Some(text) -> [text]
@@ -788,6 +821,8 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   // already sent. An empty queue renders nothing, so the band keeps its
   // height when the advisor has nothing waiting.
   let queue_focused = model.view.queue_editor.surface != queue_editor.Closed
+
+  // Gather pending advisor nudges when composer is focused.
   let nudges = case model.shared.nudges, queue_focused {
     _, True | None, False -> []
     Some(board), False -> list.take(advisor_pending.lines(board), 1)
@@ -841,10 +876,14 @@ pub fn composer_status_lines(model: Model) -> List(String) {
   // The reason behind a held key says what the interrupt's own notice says,
   // so while it stands the notice is not drawn a second time.
   let reason = input_keys(model).1 |> option.unwrap("")
+
+  // Select notice text depending on stopping status and hold reason.
   let notice = case model.shared.notice == commands.stopping_notice, reason {
     True, "" | False, _ -> text_hygiene.single_line(model.shared.notice)
     True, _ -> ""
   }
+
+  // Collect outlook and notice lines when queue editor is closed.
   let news = case queue_focused {
     True -> []
     False ->
@@ -855,6 +894,7 @@ pub fn composer_status_lines(model: Model) -> List(String) {
       ])
       |> list.filter(fn(piece) { piece != "" })
   }
+
   list.flatten([active, reviewers, goal, nudges, news, pending])
 }
 
@@ -876,10 +916,12 @@ const notice_rows = 3
 // the one case `text.wrap` does that. A notice is one line of prose with no
 // cursor in it, unlike the composer's own wrap (`hard_wrap_line`), which must
 // keep every character where the cursor can find it.
+/// Wraps notice text into capped display rows with ellipsis truncation.
 fn wrapped_notice(notice: String, width: Int) -> List(String) {
   let width = int.max(1, width)
   let rows = text.wrap(notice, width)
 
+  // Truncate wrapped rows list if exceeding notice_rows cap.
   case list.length(rows) > notice_rows {
     False -> rows
     True ->
@@ -901,6 +943,7 @@ fn wrapped_notice(notice: String, width: Int) -> List(String) {
 // current fact and the task slot is empty, so completion does not leave stale
 // work looking live. Tiny terminals keep every row for the transcript and
 // editor instead.
+/// Formats reviewer status lines in the composer band.
 fn reviewer_band_lines(model: Model) -> List(String) {
   let idle_advisor =
     model.view.height >= 20
@@ -913,6 +956,8 @@ fn reviewer_band_lines(model: Model) -> List(String) {
       model.shared,
       advisor_pending.advisor_strand,
     )
+
+  // Format reviewer lines or fallback to idle advisor prompt.
   case
     reviewer_status.lines(
       model.shared.reviewer_rows,
@@ -993,8 +1038,7 @@ pub fn pending_layout(area: Rect, model: Model) -> #(Rect, Rect) {
   }
 }
 
-// Receipt is a server fact; sending and waiting for a free channel are local
-// facts. Naming them separately prevents an accepted queue from looking lost.
+/// Resolves pending submission or awaiting outcome status text.
 fn pending_status(model: Model) -> Option(String) {
   case model.shared.pending_submission, model.shared.awaiting_outcome {
     Some(_), _ -> Some("Not sent yet · waiting for session sync · Esc cancels")
@@ -1023,15 +1067,19 @@ fn editor_content_width(model: Model) -> Int {
 ///
 @internal
 pub fn elapsed_label(seconds: Int) -> String {
+  // Format elapsed duration string based on minute boundary.
   case seconds <= 0, seconds >= 60 {
     True, _ -> ""
     False, False -> " (" <> int.to_string(seconds) <> "s)"
     False, True -> {
       let rest = seconds % 60
+
+      // Pad single-digit seconds with leading zero.
       let padded = case rest < 10 {
         True -> "0" <> int.to_string(rest)
         False -> int.to_string(rest)
       }
+
       " (" <> int.to_string(seconds / 60) <> "m " <> padded <> "s)"
     }
   }
@@ -1073,7 +1121,9 @@ pub fn active_status_label(model: Model) -> Option(String) {
   }
 }
 
+/// Formats a label summarizing active tools being executed.
 fn running_tool_label(model: Model) -> String {
+  // Collect running tool calls from operations map.
   let calls = case model.shared.captured {
     None -> []
     Some(#(_, view)) ->
@@ -1087,6 +1137,8 @@ fn running_tool_label(model: Model) -> String {
           )
       }
   }
+
+  // Format single running tool name or append running count.
   case calls {
     [] -> "preparing tools"
     [call, ..rest] ->
@@ -1101,6 +1153,7 @@ fn running_tool_label(model: Model) -> String {
   }
 }
 
+/// Resolves the kind of active stream in the conversation.
 fn active_stream_kind(model: Model) -> Option(String) {
   transcript_lines.display_streams(session_model.presentation(model.shared))
   |> list.reverse
@@ -1175,10 +1228,13 @@ pub fn note_detail_area(model: Model) -> Rect {
 pub fn message_detail_area(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
+
+  // Select active inspector overlay or fallback to strand inspector.
   let inspector = case model.view.overlay {
     AgentInspector(inspector) -> inspector
     _ -> agents.inspect(model.shared.active_strand)
   }
+
   agents.inspection_detail_area(
     workspace_area(screen, body, inspector),
     displayed_agents(model),
@@ -1239,6 +1295,7 @@ pub fn hit_area(model: Model, at: geometry.Position) -> Rect {
     True -> #(geometry.rect_zero(), geometry.rect_zero())
     False -> transcript_areas(transcript_inner(conversation), model)
   }
+
   [
     transcript,
     side,
@@ -1302,12 +1359,14 @@ pub fn tiny_queue_measure(
   controls: String,
   width: Int,
 ) -> #(String, Int) {
+  // Map queue row kind and editability into badge label text.
   let badges = case row.kind, row.editing {
     snapshot_view.Queue, snapshot_view.Editable -> "Q EDIT"
     snapshot_view.Queue, snapshot_view.ReadOnly -> "Q READ-ONLY"
     snapshot_view.Steer, snapshot_view.Editable -> "STEER EDIT"
     snapshot_view.Steer, snapshot_view.ReadOnly -> "STEER READ-ONLY"
   }
+
   let suffix = " · " <> badges <> " · " <> controls
   #(suffix, int.max(1, width - text.cell_width(suffix) - 3))
 }
@@ -1318,6 +1377,7 @@ pub fn model_screen(model: Model) -> geometry.Rect {
   geometry.rect_new(0, 0, model.view.width, model.view.height)
 }
 
+/// Calculates queue panel bounding rectangle for given pending rows.
 fn model_queue_area_for(
   model: Model,
   rows: List(snapshot_view.PendingInput),
@@ -1341,6 +1401,8 @@ pub fn queue_preview_area_for(
 ) -> geometry.Rect {
   let area = model_queue_area_for(model, rows)
   let content = queue_content_area(area)
+
+  // Adjust preview area based on queue panel height.
   case area.size.height {
     height if height <= 2 ->
       case list.first(list.drop(rows, model.view.queue_editor.selected)) {
@@ -1408,11 +1470,14 @@ pub fn summary_body_area(screen: Rect) -> Rect {
   )
 }
 
+/// Computes normal changes panel area in main body or side rail.
 fn normal_diff_panel(model: Model) -> Rect {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
   let #(_, body, _, _) = layout(screen, model)
   let #(conversation, _) = queue_body_layout(body, model)
   let main = conversation
+
+  // Return main conversation or changes panel rectangle based on diff pane width.
   case diff_pane_width(model) {
     0 -> main
     _ -> changes_panel_area(screen, model)
@@ -1445,6 +1510,8 @@ pub fn borrowed_diff_panel(model: Model) -> Option(Rect) {
       normal.size.width,
       int.max(0, editor.position.y - body.position.y),
     )
+
+  // Borrow rows only when expanded panel is strictly taller than normal.
   case expanded.size.height > normal.size.height {
     True -> Some(expanded)
     False -> None
@@ -1485,6 +1552,7 @@ pub fn active_diff_panel(model: Model) -> Rect {
   }
 }
 
+/// Computes active diff panel sub-rectangles for navigation and patch viewports.
 fn active_diff_layout(model: Model) -> diff_panel.Layout {
   let area = panel_inner(active_diff_panel(model))
   diff_panel.layout(
@@ -1543,6 +1611,8 @@ pub fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
     },
     None,
   )
+
+  // Check for hit within file navigator items.
   case
     diff_panel.navigation_hit(
       active_diff_layout(model),
@@ -1563,11 +1633,15 @@ pub fn diff_navigation_hit(model: Model, at: geometry.Position) -> Option(Int) {
 /// session's stubs and carry the orchestrator as their placement.
 @internal
 pub fn displayed_agents(model: Model) -> List(agent_view.Row) {
+  // Select agent rows from captured snapshot or legacy fallback.
   let rows = case model.shared.captured {
     Some(_) -> model.shared.agent_rows
     None -> agent_view.legacy(model.shared.strands)
   }
+
   let rows = list.append(rows, agent_roster.remote_rows(model.shared.roster))
+
+  // Mark rows as unavailable when peer connection is disconnected.
   case model.shared.peer {
     Disconnected ->
       list.map(rows, fn(row) {

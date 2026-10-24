@@ -377,6 +377,8 @@ pub fn main() {
   // the passthrough is meant to be the one place that cannot happen.
   // `replay` has its own parser and no recorder to open.
   let raw = argv.load().arguments
+
+  // Handle main branch dispatch.
   case help_for(raw) {
     Some(usage) -> io.println(usage)
     None -> {
@@ -385,6 +387,7 @@ pub fn main() {
       // installing terminal state.
       ffi_terminal.silence_logger()
 
+      // Handle main branch dispatch.
       let #(record, arguments) = case raw {
         ["ext", ..]
         | ["evolution", ..]
@@ -405,7 +408,10 @@ pub fn main() {
         | ["--version", ..] -> #("", raw)
         _other -> take_flag(raw, "--record")
       }
+
       let launch = parse_launch(arguments)
+
+      // Handle main branch dispatch.
       case launch {
         // The passthrough runs before a single line of terminal setup: this
         // process is a pipe for the duration and then it is gone.
@@ -428,8 +434,7 @@ pub fn main() {
   }
 }
 
-// The launcher owns these values; inspecting another checkout or a live daemon
-// here could report a different build than the executable the operator invoked.
+/// Establishes and coordinates print version operations for the TUI runtime.
 fn print_version() -> Nil {
   let identity = build_identity.current()
   let platform =
@@ -450,7 +455,7 @@ fn version_usage() -> String {
   <> "Runs without starting a terminal or connecting to the daemon.\n"
 }
 
-// Update admission has no terminal dependency; its failures retain a shell status.
+/// Establishes and coordinates run update operations for the TUI runtime.
 fn run_update(arguments: List(String)) -> Nil {
   let outcome = {
     use choices <- result.try(update_options.parse(arguments))
@@ -460,6 +465,8 @@ fn run_update(arguments: List(String)) -> Nil {
     let temporary = host_bootstrap.getenv("TMPDIR") |> result.unwrap("/tmp")
     update.run(choices, platform, temporary, download.fetch)
   }
+
+  // Handle run update branch dispatch.
   case outcome {
     Ok(Nil) -> Nil
     Error(reason) -> rejected_launch("update: " <> reason)
@@ -475,29 +482,15 @@ fn interactive_terminal(launch: Launch, record: String) -> Nil {
   }
 }
 
-// Help is selected before the logger or the interactive backend exist. A
-// command that only describes an invocation must not claim terminal state or
-// reach the daemon it is describing. The `--help` and `-h` flags win
-// wherever they appear in argv: a launcher that answered them only in
-// first position would report the flags before them as unknown, and the
-// conventional reading — `loom --demo --help` asks about the launch —
-// costs nothing here because every topic usage is a static string.
-//
-// The bare word `help` is recognised in first position only. Anywhere
-// else it is a plausible value — a session id, a recording path, an
-// extension name — and intercepting it would break the `loom ext`
-// passthrough's promise that every word of it is the server's.
-//
-// The topic is the first recognised subcommand word anywhere in argv, so
-// `loom replay rec.jsonl --help` describes `replay` rather than the whole
-// launcher. A help request with no topic word answers the top-level
-// usage, which is also what `loom help help` gets: `help` is a
-// dispatcher, not a topic.
+/// Establishes and coordinates help for operations for the TUI runtime.
 fn help_for(arguments: List(String)) -> Option(String) {
+  // Handle help for branch dispatch.
   let asks = case arguments {
     ["help", ..] -> True
     _ -> list.contains(arguments, "--help") || list.contains(arguments, "-h")
   }
+
+  // Handle help for branch dispatch.
   case asks {
     False -> None
     True ->
@@ -511,6 +504,7 @@ fn help_for(arguments: List(String)) -> Option(String) {
   }
 }
 
+/// Establishes and coordinates help topic operations for the TUI runtime.
 fn help_topic(arguments: List(String)) -> Option(String) {
   case list.find(arguments, is_topic) {
     Ok("replay") -> Some(replay_usage())
@@ -529,6 +523,7 @@ fn help_topic(arguments: List(String)) -> Option(String) {
   }
 }
 
+/// Establishes and coordinates is topic operations for the TUI runtime.
 fn is_topic(word: String) -> Bool {
   case word {
     "replay"
@@ -558,9 +553,7 @@ fn rejected_launch(reason: String) -> Nil {
   Nil
 }
 
-// Removes one `--flag value` pair from an argument list, answering its
-// value and what is left. Absence is the empty string rather than an
-// error: every caller here treats a missing flag as a default.
+/// Establishes and coordinates take flag operations for the TUI runtime.
 fn take_flag(arguments: List(String), flag: String) -> #(String, List(String)) {
   case arguments {
     [] | [_] -> #("", arguments)
@@ -575,11 +568,9 @@ fn take_flag(arguments: List(String), flag: String) -> #(String, List(String)) {
   }
 }
 
-// Runs `loomd` with the arguments this launcher was given, streaming its
-// output through and exiting with its status. The daemon is located by the
-// same ladder an implicit local launch uses, so `loom ext` and an
-// auto-started session cannot end up talking to two different binaries.
+/// Establishes and coordinates forward operations for the TUI runtime.
 fn forward(verb: String, arguments: List(String)) -> Nil {
+  // Handle forward branch dispatch.
   case bootstrap.server_executable(flag_or_empty(arguments, "--server")) {
     Error(reason) -> {
       io.println_error("loom " <> verb <> ": " <> reason)
@@ -881,6 +872,7 @@ pub fn new_model_with_clock(
   )
 }
 
+/// Establishes and coordinates interactive operations for the TUI runtime.
 fn interactive(launch: Launch, record: String) -> Nil {
   let inbox = connection.new_inbox()
   let base = new_model(inbox, workspace.discover())
@@ -927,6 +919,8 @@ fn interactive(launch: Launch, record: String) -> Nil {
               placement.OnThisHost, path -> workspace.discover_from(path)
             }),
         )
+
+      // Handle interactive branch dispatch.
       case bootstrap.resolve_daemon(options, process.self(), 90_000) {
         Error(reason) ->
           tui_model.append_error(
@@ -1077,9 +1071,7 @@ pub fn run_script(
   virtual_backend.run_script(loop(), model, script)
 }
 
-// A failed recording is a visible local error rather than a refused
-// launch: the session is still worth having, and the operator is told on
-// the frame that nothing is being written.
+/// Establishes and coordinates open recording operations for the TUI runtime.
 fn open_recording(model: Model, record: String) -> Model {
   case record {
     "" -> model
@@ -1137,8 +1129,11 @@ fn parse_launch(arguments: List(String)) -> Launch {
 // The subcommands whose usage lists the daemon options.
 const hoisting_verbs = ["sessions", "deployment", "directory", "ui"]
 
+/// Establishes and coordinates hoist daemon options operations for the TUI runtime.
 fn hoist_daemon_options(arguments: List(String)) -> List(String) {
   let #(leading, rest) = leading_daemon_options(arguments, [])
+
+  // Handle hoist daemon options branch dispatch.
   case leading, rest {
     [], _ -> arguments
     _, [verb, ..after] ->
@@ -1150,6 +1145,7 @@ fn hoist_daemon_options(arguments: List(String)) -> List(String) {
   }
 }
 
+/// Establishes and coordinates leading daemon options operations for the TUI runtime.
 fn leading_daemon_options(
   arguments: List(String),
   taken: List(String),
@@ -1166,6 +1162,7 @@ fn leading_daemon_options(
   }
 }
 
+/// Establishes and coordinates parse words operations for the TUI runtime.
 fn parse_words(arguments: List(String)) -> Launch {
   case arguments {
     [] -> Local(default_bootstrap_options(), "")
@@ -1329,8 +1326,7 @@ pub fn launch_daemon_options(
   }
 }
 
-// An interactive launch: a remote session when `--addr` is given, otherwise
-// a local one over the bootstrap ladder.
+/// Establishes and coordinates parse terminal launch operations for the TUI runtime.
 fn parse_terminal_launch(arguments: List(String)) -> Launch {
   case
     session_control.flag_value(arguments, "--addr"),
@@ -1350,24 +1346,21 @@ fn parse_terminal_launch(arguments: List(String)) -> Launch {
   }
 }
 
-// A local terminal launch: the shared local options, and the placement that
-// `--executor` or `--pool` and `--workspace` name together. They are read here
-// and not by `parse_local_options`, so `loom ui` and `loom sessions`, which have
-// no session to create, refuse them as the unknown options they are for them.
-// With an executor or a pool the `--workspace` value is a registered name and
-// not a directory, so it is taken out of the words before the options parser
-// can store it as one: the launcher canonicalizes `Options.workspace`, and a
-// name must never reach that.
+/// Establishes and coordinates parse local launch operations for the TUI runtime.
 fn parse_local_launch(
   arguments: List(String),
   selected: String,
 ) -> Result(Launch, String) {
   use #(executor, rest) <- result.try(take_value(arguments, "--executor"))
   use #(pool, rest) <- result.try(take_value(rest, "--pool"))
+
+  // Handle parse local launch branch dispatch.
   use #(registered, rest) <- result.try(case option.or(executor, pool) {
     Some(_) -> take_value(rest, "--workspace")
     None -> Ok(#(None, rest))
   })
+
+  // Handle parse local launch branch dispatch.
   use Nil <- result.try(case option.or(executor, pool), selected {
     Some(_), "" | None, _ -> Ok(Nil)
     Some(_), _ ->
@@ -1375,6 +1368,7 @@ fn parse_local_launch(
         "--executor and --pool name where a new session is created; --session opens an existing one",
       )
   })
+
   use chosen <- result.try(placement.new(executor, pool, registered))
   use options <- result.map(parse_local_options(
     rest,
@@ -1383,9 +1377,7 @@ fn parse_local_launch(
   Local(bootstrap.Options(..options, placement: chosen), selected)
 }
 
-// Removes one `flag value` pair from the words and answers the value, or none
-// when the flag is absent. A flag given twice, or last with no value, or whose
-// value looks like the next flag, is refused rather than guessed at.
+/// Establishes and coordinates take value operations for the TUI runtime.
 fn take_value(
   arguments: List(String),
   flag: String,
@@ -1405,26 +1397,33 @@ fn take_value(
   }
 }
 
-// `--yes` and the verb are read before the shared local options, because
-// `parse_local_options` refuses a flag it does not own and both of these are
-// the sessions parser's.
+/// Establishes and coordinates parse sessions operations for the TUI runtime.
 fn parse_sessions(arguments: List(String)) -> Launch {
+  // Handle parse sessions branch dispatch.
   let #(consent, rest) = case take_switch(arguments, "--yes") {
     #(True, remaining) -> #(GivenOnCommandLine, remaining)
     #(False, remaining) -> #(AskAtTerminal, remaining)
   }
+
+  // Handle parse sessions branch dispatch.
   case rest {
     ["list", ..flags] -> {
       let #(all, remaining) = take_switch(flags, "--all")
+
+      // Handle parse sessions branch dispatch.
       let showing = case all {
         True -> Every
         False -> ResidentOnly
       }
+
       let #(local, remaining) = take_switch(remaining, "--local")
+
+      // Handle parse sessions branch dispatch.
       let reach = case local {
         True -> ThisDaemonOnly
         False -> AllOrchestrators
       }
+
       sessions_launch(remaining, ListRegistrations(showing, reach))
     }
     ["elsewhere", ..flags] -> parse_elsewhere(flags)
@@ -1438,22 +1437,24 @@ fn parse_sessions(arguments: List(String)) -> Launch {
   }
 }
 
-// `loom sessions elsewhere [--orchestrator <key> [--after <id>]] [--json]`. A
-// cursor follows one orchestrator's rows, so it is refused without the key it
-// belongs to, and the key is checked against the grammar of a configuration key
-// here, before any daemon is started or asked.
+/// Establishes and coordinates parse elsewhere operations for the TUI runtime.
 fn parse_elsewhere(arguments: List(String)) -> Launch {
   let #(as_json, rest) = take_switch(arguments, "--json")
+
+  // Handle parse elsewhere branch dispatch.
   let output = case as_json {
     True -> AsJson
     False -> AsText
   }
+
   let parsed = {
     use #(key, rest) <- result.try(take_value(rest, "--orchestrator"))
     use #(after, rest) <- result.try(take_value(rest, "--after"))
     use Nil <- result.map(elsewhere_names(key, after))
     #(key, after, rest)
   }
+
+  // Handle parse elsewhere branch dispatch.
   case parsed {
     Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
     Ok(#(key, after, flags)) ->
@@ -1461,6 +1462,7 @@ fn parse_elsewhere(arguments: List(String)) -> Launch {
   }
 }
 
+/// Establishes and coordinates elsewhere names operations for the TUI runtime.
 fn elsewhere_names(
   key: Option(String),
   after: Option(String),
@@ -1480,11 +1482,11 @@ fn elsewhere_names(
   }
 }
 
-// `loom sessions move <id> --to <orchestrator>`. The destination is required and
-// is a name from the daemon's configuration, not an address, so it is refused here
-// if it is not the shape of one, before any daemon is started or asked.
+/// Establishes and coordinates parse move operations for the TUI runtime.
 fn parse_move(id: String, flags: List(String)) -> Launch {
   let #(abandoning, flags) = take_switch(flags, "--abandon")
+
+  // Handle parse move branch dispatch.
   case abandoning, take_value(flags, "--to") {
     _, Error(reason) -> Invalid(reason <> "\n" <> sessions_usage())
     True, Ok(#(Some(_), _)) ->
@@ -1517,9 +1519,7 @@ fn sessions_launch(flags: List(String), command: SessionsCommand) -> Launch {
   }
 }
 
-// Removes one valueless flag, answering whether it was present and what is
-// left. `take_flag` cannot serve here: it consumes the following word, and
-// `--yes` is followed by the verb.
+/// Establishes and coordinates take switch operations for the TUI runtime.
 fn take_switch(arguments: List(String), flag: String) -> #(Bool, List(String)) {
   case arguments {
     [] -> #(False, [])
@@ -1534,6 +1534,7 @@ fn take_switch(arguments: List(String), flag: String) -> #(Bool, List(String)) {
   }
 }
 
+/// Establishes and coordinates sessions usage operations for the TUI runtime.
 fn sessions_usage() -> String {
   "usage: loom sessions list [--all] [--local] [--state-dir <path>] [--server <path>]\n"
   <> "       loom sessions elsewhere [--orchestrator <key> [--after <session-id>]] [--json]\n"
@@ -1562,12 +1563,7 @@ fn sessions_usage() -> String {
   <> "  if the receiver has already taken the session the move finishes instead"
 }
 
-// `loom deployment status [--node <key>]|executors [--json]` and the shared
-// local options. `--json` is a switch and may stand anywhere after the verb, like
-// `--yes` for `sessions`, so it is taken before the shared options are parsed.
-// `--node` takes the next word and is read before them for the same reason; the
-// key is checked against the grammar of a configuration key here, and whether it
-// names anything is the daemon's configuration to say.
+/// Establishes and coordinates parse deployment operations for the TUI runtime.
 fn parse_deployment(arguments: List(String)) -> Launch {
   let #(as_json, rest) = take_switch(arguments, "--json")
 
@@ -1580,6 +1576,8 @@ fn parse_deployment(arguments: List(String)) -> Launch {
   // Extract the target orchestrator node name when specified.
   let named_one = list.contains(rest, "--node")
   let #(key, rest) = take_flag(rest, "--node")
+
+  // Handle parse deployment branch dispatch.
   let node = case named_one, placement.is_orchestrator_name(key) {
     False, _ -> Ok(None)
     True, True -> Ok(Some(key))
@@ -1599,6 +1597,7 @@ fn parse_deployment(arguments: List(String)) -> Launch {
   }
 }
 
+/// Establishes and coordinates deployment launch operations for the TUI runtime.
 fn deployment_launch(
   flags: List(String),
   command: DeploymentCommand,
@@ -1609,6 +1608,7 @@ fn deployment_launch(
   }
 }
 
+/// Establishes and coordinates deployment usage operations for the TUI runtime.
 fn deployment_usage() -> String {
   "usage: loom deployment status [--node <key>] [--json] [--state-dir <path>] [--server <path>]\n"
   <> "       loom deployment executors [--json] [--state-dir <path>] [--server <path>]\n"
@@ -1627,13 +1627,17 @@ fn deployment_usage() -> String {
   <> "  --json prints the daemon's reply as it was sent"
 }
 
-// `loom directory status [--json]` and the shared local options.
+/// Establishes and coordinates parse directory operations for the TUI runtime.
 fn parse_directory(arguments: List(String)) -> Launch {
   let #(as_json, rest) = take_switch(arguments, "--json")
+
+  // Handle parse directory branch dispatch.
   let output = case as_json {
     True -> AsJson
     False -> AsText
   }
+
+  // Handle parse directory branch dispatch.
   case rest {
     ["status", ..flags] ->
       case parse_local_options(flags, default_bootstrap_options()) {
@@ -1644,6 +1648,7 @@ fn parse_directory(arguments: List(String)) -> Launch {
   }
 }
 
+/// Establishes and coordinates directory usage operations for the TUI runtime.
 fn directory_usage() -> String {
   "usage: loom directory status [--json] [--state-dir <path>] [--server <path>]\n"
   <> "  status shows the session directory's cluster as the daemon you are\n"
@@ -1720,19 +1725,21 @@ pub fn launch_directory(arguments: List(String)) -> Result(Output, String) {
   }
 }
 
-// One deployment read over a control connection this process owns for the
-// length of the command, printed the way a sessions command prints.
+/// Establishes and coordinates run deployment operations for the TUI runtime.
 fn run_deployment(
   options: bootstrap.Options,
   command: DeploymentCommand,
 ) -> Nil {
+  // Handle run deployment branch dispatch.
   case sessions_host(options) {
     Error(reason) -> command_failed("deployment", reason)
     Ok(#(control, host)) -> {
+      // Handle run deployment branch dispatch.
       let node = case command {
         ShowDeployment(node:, ..) -> node
         ShowExecutors(..) -> None
       }
+
       let outcome =
         daemon_selection.deployment(host, node)
         |> result.try(format_deployment(_, command))
@@ -1742,9 +1749,9 @@ fn run_deployment(
   }
 }
 
-// One directory read over a control connection this process owns for the length
-// of the command.
+/// Establishes and coordinates run directory operations for the TUI runtime.
 fn run_directory(options: bootstrap.Options, output: Output) -> Nil {
+  // Handle run directory branch dispatch.
   case sessions_host(options) {
     Error(reason) -> command_failed("directory", reason)
     Ok(#(control, host)) -> {
@@ -1910,6 +1917,8 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
   // Parse session and origin arguments from the remaining flag list.
   use session <- result.try(view_session(rest))
   use asked <- result.try(view_origin(rest))
+
+  // Handle view request branch dispatch.
   use remember <- result.try(case session, forget {
     Some(_), True ->
       Error(
@@ -1939,13 +1948,18 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
     False, _, _, Some(_) -> Ok(#(ListedOrigin(asked), PageTicket))
     False, _, _, None -> Ok(#(LoopbackOrigin, PageTicket))
   })
+
+  // Handle view request branch dispatch.
   let asked = case operate, observe {
     True, True -> AskedBoth
     True, False -> AskedOperator
     False, True -> AskedObserver
     False, False -> AskedNeither
   }
+
   use page <- result.try(view_page(session, asked))
+
+  // Handle view request branch dispatch.
   case
     parse_local_options(
       without_flag(without_flag(rest, "--session"), "--origin"),
@@ -1966,8 +1980,7 @@ pub fn view_request(arguments: List(String)) -> Result(ViewRequest, String) {
   }
 }
 
-// The origin `--origin` names, or none. A `--origin` with no value after it
-// is an error, so a forgotten origin never falls back to loopback.
+/// Establishes and coordinates view origin operations for the TUI runtime.
 fn view_origin(arguments: List(String)) -> Result(Option(String), String) {
   case list.contains(arguments, "--origin") {
     False -> Ok(None)
@@ -2004,6 +2017,7 @@ pub fn listed_origin(
   listed: List(String),
   asked: Option(String),
 ) -> Result(String, String) {
+  // Handle listed origin branch dispatch.
   case listed, asked {
     [], _ ->
       Error(
@@ -2033,23 +2047,24 @@ pub fn listed_origin(
   }
 }
 
-// The daemon's normalization of an origin (`client/daemon/ui_origin`), so
-// `--origin HTTPS://Box.example:443/` finds the listed `https://box.example`.
+/// Establishes and coordinates normalized origin operations for the TUI runtime.
 fn normalized_origin(origin: String) -> String {
   let origin = string.lowercase(origin)
+
+  // Handle normalized origin branch dispatch.
   let origin = case string.ends_with(origin, "/") {
     True -> string.drop_end(origin, 1)
     False -> origin
   }
+
+  // Handle normalized origin branch dispatch.
   case string.ends_with(origin, ":443") {
     True -> string.drop_end(origin, 4)
     False -> origin
   }
 }
 
-// The session `--session` names, or none for the home. A `--session` with no
-// value after it is an error, so a forgotten id is never read as a request
-// for the home.
+/// Establishes and coordinates view session operations for the TUI runtime.
 fn view_session(arguments: List(String)) -> Result(Option(String), String) {
   case list.contains(arguments, "--session") {
     False -> Ok(None)
@@ -2070,8 +2085,7 @@ type PageAsked {
   AskedNeither
 }
 
-// The page's ceiling: the home is an operator's page unless `--observe`, and a
-// session's an observer's unless `--operate`, as `view_request` says why.
+/// Establishes and coordinates view page operations for the TUI runtime.
 fn view_page(
   session: Option(String),
   asked: PageAsked,
@@ -2085,6 +2099,7 @@ fn view_page(
   }
 }
 
+/// Establishes and coordinates without flag operations for the TUI runtime.
 fn without_flag(arguments: List(String), flag: String) -> List(String) {
   case arguments {
     [] -> []
@@ -2093,15 +2108,7 @@ fn without_flag(arguments: List(String), flag: String) -> List(String) {
   }
 }
 
-// Resolves the daemon (starting it with `--ui` when none runs), refuses a
-// running daemon that does not serve the view, opens the session if it is
-// not resident (a home link names none), and prints the link its `ui.link`
-// returns. It never stops
-// or relaunches a running daemon: other people's terminals may be on it.
-//
-// Once the link is minted the command succeeds whatever the opener does.
-// The link is printed before any opener runs, and the ticket in it is
-// written nowhere but standard output and the opener's argument vector.
+/// Establishes and coordinates run view operations for the TUI runtime.
 fn run_view(request: ViewRequest) -> Nil {
   let ViewRequest(
     options:,
@@ -2130,20 +2137,26 @@ fn run_view(request: ViewRequest) -> Nil {
         LoopbackOrigin -> web_origin(connected.record)
         ListedOrigin(asked) -> listed_origin(view_origins(view), asked)
       })
+
       use host <- result.try(view_host(
         connected.record,
         connected.paths.token,
         control,
       ))
       use Nil <- result.try(opened_for_link(host, session))
+
+      // Handle run view branch dispatch.
       let command = case ticket {
         PageTicket -> control_protocol.UiLink(session, page, remember)
         DeviceTicket -> control_protocol.UiDeviceLink(page)
       }
+
       use reply <- result.try(
         daemon.request(control, command, 5000)
         |> result.map_error(daemon_selection.failure),
       )
+
+      // Handle run view branch dispatch.
       case reply {
         control_protocol.UiLinkReply(path:, expires_in_ms:) ->
           Ok(#(origin <> path, expires_in_ms))
@@ -2153,6 +2166,8 @@ fn run_view(request: ViewRequest) -> Nil {
     daemon.close(control)
     linked
   }
+
+  // Handle run view branch dispatch.
   case outcome {
     Ok(#(link, expires_in_ms)) -> {
       view_link.deliver(
@@ -2161,6 +2176,8 @@ fn run_view(request: ViewRequest) -> Nil {
         view_link.system_opener(),
         print_view_output,
       )
+
+      // Handle run view branch dispatch.
       case ticket {
         PageTicket -> Nil
         DeviceTicket -> print_device_code(link, expires_in_ms)
@@ -2183,15 +2200,15 @@ fn view_origins(view: control_protocol.WebView) -> List(String) {
   }
 }
 
-// A device link's QR code and how long it lasts, on standard error: the link
-// on standard output stays the command's one line for a script, and the code
-// is for the person holding a phone up to this terminal.
+/// Establishes and coordinates print device code operations for the TUI runtime.
 fn print_device_code(link: String, expires_in_ms: Int) -> Nil {
+  // Handle print device code branch dispatch.
   case device_code.render(link) {
     Ok(code) -> io.println_error(code)
     Error(Nil) ->
       io.println_error("loom ui: the link is too long for a QR code")
   }
+
   io.println_error(
     "loom ui: open the link on the other device within "
     <> device_lifetime(expires_in_ms)
@@ -2213,6 +2230,8 @@ fn print_device_code(link: String, expires_in_ms: Int) -> Nil {
 @internal
 pub fn device_lifetime(expires_in_ms: Int) -> String {
   let seconds = expires_in_ms / 1000
+
+  // Handle device lifetime branch dispatch.
   case seconds >= 60 {
     True ->
       case seconds / 60 {
@@ -2264,7 +2283,7 @@ pub fn view_served(view: control_protocol.WebView) -> Result(Nil, String) {
   }
 }
 
-// The page's origin: the listener's loopback address over http.
+/// Establishes and coordinates web origin operations for the TUI runtime.
 fn web_origin(record: endpoint.Endpoint) -> Result(String, String) {
   case record {
     endpoint.Ready(host: "::1", port:, ..) ->
@@ -2275,6 +2294,7 @@ fn web_origin(record: endpoint.Endpoint) -> Result(String, String) {
   }
 }
 
+/// Establishes and coordinates view host operations for the TUI runtime.
 fn view_host(record: endpoint.Endpoint, token_file: String, control) {
   use address <- result.try(endpoint.address(record))
   use bytes <- result.try(host_bootstrap.read_private_bounded(token_file, 65))
@@ -2285,14 +2305,13 @@ fn view_host(record: endpoint.Endpoint, token_file: String, control) {
   daemon_selection.host(control, address, string.trim(token))
 }
 
-// One catalogue action over a control connection this process owns for the
-// length of the command. Nothing is retained: the connection closes before
-// the exit status is chosen, so a refusal and a success leave the daemon in
-// the same state as far as this launcher is concerned.
+/// Establishes and coordinates run sessions operations for the TUI runtime.
 fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
+  // Handle run sessions branch dispatch.
   case sessions_host(options) {
     Error(reason) -> sessions_failed(reason)
     Ok(#(control, host)) -> {
+      // Handle run sessions branch dispatch.
       let outcome = case command {
         ListRegistrations(showing:, reach:) ->
           list_registrations(host, showing, reach)
@@ -2306,6 +2325,7 @@ fn run_sessions(options: bootstrap.Options, command: SessionsCommand) -> Nil {
         AbandonRegistration(session_id:) ->
           abandon_registration(host, session_id)
       }
+
       daemon.close(control)
       print_outcome("sessions", outcome)
     }
@@ -2333,8 +2353,7 @@ fn command_failed(verb: String, reason: String) -> Nil {
   Nil
 }
 
-// The picker's own ladder: resolve or start the shared daemon, read the
-// owner credential from the state root, and authenticate one control socket.
+/// Establishes and coordinates sessions host operations for the TUI runtime.
 fn sessions_host(options: bootstrap.Options) {
   use connected <- result.try(bootstrap.resolve_daemon(
     options,
@@ -2358,10 +2377,7 @@ fn sessions_host(options: bootstrap.Options) {
   #(connected.control, host)
 }
 
-// A terminal gets the aligned, coloured table; anything else gets the one
-// line per row that scripts already parse, byte for byte as before. The
-// default view narrows both to the resident track; `--all` widens either
-// back to the whole catalogue.
+/// Establishes and coordinates list registrations operations for the TUI runtime.
 fn list_registrations(
   host: daemon_selection.Host,
   showing: Showing,
@@ -2369,16 +2385,15 @@ fn list_registrations(
 ) -> Result(String, String) {
   use rows <- result.map(registration_rows(host, "", [], 100))
   let listing = format_listing(rows, showing, ffi_terminal.require_terminal())
+
+  // Handle list registrations branch dispatch.
   case reach {
     ThisDaemonOnly -> listing
     AllOrchestrators -> listing <> other_orchestrators(host)
   }
 }
 
-// The section the other orchestrators add to a listing: nothing for a daemon
-// that has none to ask or predates the command, a blank line and the section
-// when it has, and a line saying so when the read failed, because the listing
-// above it is still true and a missing section would read as "none".
+/// Establishes and coordinates other orchestrators operations for the TUI runtime.
 fn other_orchestrators(host: daemon_selection.Host) -> String {
   case daemon_selection.elsewhere(host, None, None) {
     Error(daemon_selection.NoElsewhereViews) -> ""
@@ -2396,8 +2411,7 @@ fn other_orchestrators(host: daemon_selection.Host) -> String {
   }
 }
 
-// One read of the other orchestrators' sessions, printed as text or as the
-// daemon's reply body.
+/// Establishes and coordinates elsewhere registrations operations for the TUI runtime.
 fn elsewhere_registrations(
   host: daemon_selection.Host,
   orchestrator: Option(String),
@@ -2466,14 +2480,15 @@ pub fn format_listing(
   terminal: Result(Nil, String),
 ) -> String {
   let visible = visible_rows(rows, showing)
+
+  // Handle format listing branch dispatch.
   case terminal {
     Error(_) -> plain_listing(visible)
     Ok(Nil) -> terminal_listing(visible, rows, showing)
   }
 }
 
-// The rows a `Showing` keeps. `Every` is the identity; `ResidentOnly` drops
-// exactly the two lifecycles `session_table.resident_track` calls idle.
+/// Establishes and coordinates visible rows operations for the TUI runtime.
 fn visible_rows(
   rows: List(control_protocol.Session),
   showing: Showing,
@@ -2495,17 +2510,19 @@ fn plain_listing(visible: List(control_protocol.Session)) -> String {
   }
 }
 
-// The styled, terminal format: the table (or an empty-catalogue notice),
-// followed by the hidden-count note when `--all` would add rows.
+/// Establishes and coordinates terminal listing operations for the TUI runtime.
 fn terminal_listing(
   visible: List(control_protocol.Session),
   all_rows: List(control_protocol.Session),
   showing: Showing,
 ) -> String {
+  // Handle terminal listing branch dispatch.
   let body = case visible {
     [] -> empty_notice(showing)
     rows -> frame.buffer_to_styled(session_table.render(rows))
   }
+
+  // Handle terminal listing branch dispatch.
   case hidden_summary(all_rows, showing) {
     "" -> body
     summary -> body <> "\n" <> summary
@@ -2519,14 +2536,12 @@ fn empty_notice(showing: Showing) -> String {
   }
 }
 
-// The two lifecycles `--all` alone reveals: a saved registration and a bare
-// reservation. Naming each by its own count, rather than one combined
-// figure, is what lets a person tell stale history apart from a stuck
-// creation without reaching for `--all` first.
+/// Establishes and coordinates hidden summary operations for the TUI runtime.
 fn hidden_summary(
   rows: List(control_protocol.Session),
   showing: Showing,
 ) -> String {
+  // Handle hidden summary branch dispatch.
   case showing {
     Every -> ""
     ResidentOnly -> {
@@ -2534,6 +2549,8 @@ fn hidden_summary(
         list.count(rows, fn(row) { row.status == control_protocol.Saved })
       let reserved =
         list.count(rows, fn(row) { row.status == control_protocol.Reserved })
+
+      // Handle hidden summary branch dispatch.
       case
         list.filter_map(
           [#(saved, "saved"), #(reserved, "reserved")],
@@ -2554,20 +2571,21 @@ fn hidden_word(count: #(Int, String)) -> Result(String, Nil) {
   }
 }
 
-// Pagination is followed to its end so the listing is the whole catalogue
-// rather than its first hundred rows. The page budget is what stops a daemon
-// answering with a cursor that never advances from looping here forever.
+/// Establishes and coordinates registration rows operations for the TUI runtime.
 fn registration_rows(
   host: daemon_selection.Host,
   after: String,
   accumulated: List(control_protocol.Session),
   remaining: Int,
 ) -> Result(List(control_protocol.Session), String) {
+  // Handle registration rows branch dispatch.
   case remaining > 0 {
     False -> Error("session listing did not terminate")
     True -> {
       use page <- result.try(daemon_selection.list(host, after))
       let rows = list.append(accumulated, page.sessions)
+
+      // Handle registration rows branch dispatch.
       case page.after {
         None -> Ok(rows)
         Some(next) -> registration_rows(host, next, rows, remaining - 1)
@@ -2576,6 +2594,7 @@ fn registration_rows(
   }
 }
 
+/// Establishes and coordinates registration line operations for the TUI runtime.
 fn registration_line(row: control_protocol.Session) -> String {
   row.session_id
   <> "  "
@@ -2587,19 +2606,23 @@ fn registration_line(row: control_protocol.Session) -> String {
   <> session_table.failure_note(row.status)
 }
 
+/// Establishes and coordinates remove registration operations for the TUI runtime.
 fn remove_registration(
   host: daemon_selection.Host,
   session_id: String,
   consent: Consent,
 ) -> Result(String, String) {
+  // Handle remove registration branch dispatch.
   use Nil <- result.try(case consent {
     GivenOnCommandLine -> Ok(Nil)
     AskAtTerminal -> asked(session_id)
   })
+
   use deleted <- result.map(daemon_selection.delete(host, session_id))
   "deleted " <> deleted
 }
 
+/// Establishes and coordinates move registration operations for the TUI runtime.
 fn move_registration(
   host: daemon_selection.Host,
   session_id: String,
@@ -2619,10 +2642,7 @@ fn move_registration(
   <> ")"
 }
 
-// `move` given no destination. It reads the session's executor and the
-// deployment, judges each configured orchestrator by the rule the web home
-// uses, and fails with the list, since the move the person meant has not run.
-// A session with no executor has nowhere to go, and says so.
+/// Establishes and coordinates list destinations operations for the TUI runtime.
 fn list_destinations(
   host: daemon_selection.Host,
   session_id: String,
@@ -2630,6 +2650,8 @@ fn list_destinations(
   use executor <- result.try(daemon_selection.executor_of(host, session_id))
   use document <- result.try(daemon_selection.deployment(host, None))
   use found <- result.try(deployment_view.candidates(document, executor))
+
+  // Handle list destinations branch dispatch.
   case executor {
     None -> Error(session_id <> ": " <> move_candidates.no_executor_words())
     Some(_) ->
@@ -2640,6 +2662,7 @@ fn list_destinations(
   }
 }
 
+/// Establishes and coordinates abandon registration operations for the TUI runtime.
 fn abandon_registration(
   host: daemon_selection.Host,
   session_id: String,
@@ -2652,12 +2675,13 @@ fn abandon_registration(
   <> "); if the receiver has taken the session, the move finishes instead"
 }
 
-// Anything but an explicit yes cancels, including an empty line, so the
-// default of a mistyped answer is to keep the conversation.
+/// Establishes and coordinates asked operations for the TUI runtime.
 fn asked(session_id: String) -> Result(Nil, String) {
   use reply <- result.try(ffi_terminal.read_console_reply(
     "delete " <> session_id <> " and its conversation database? [y/N] ",
   ))
+
+  // Handle asked branch dispatch.
   case string.lowercase(string.trim(reply)) {
     "y" | "yes" -> Ok(Nil)
     _refused -> Error("cancelled; nothing was deleted")
@@ -2668,6 +2692,7 @@ fn default_bootstrap_options() -> bootstrap.Options {
   bootstrap.Options("", "", "", "", "", "", placement.OnThisHost)
 }
 
+/// Establishes and coordinates parse local options operations for the TUI runtime.
 fn parse_local_options(
   arguments: List(String),
   options: bootstrap.Options,
@@ -2724,6 +2749,7 @@ fn parse_local_options(
 /// ```
 @internal
 pub fn launch_token(arguments: List(String)) -> Result(String, String) {
+  // Handle launch token branch dispatch.
   use token <- result.try(
     case session_control.flag_value(arguments, "--token-file") {
       Ok(path) -> {
@@ -2743,6 +2769,8 @@ pub fn launch_token(arguments: List(String)) -> Result(String, String) {
         )
     },
   )
+
+  // Handle launch token branch dispatch.
   case claim_token.is_claim_shaped(token), login.is_login_shaped(token) {
     True, _ ->
       Error(
@@ -2759,6 +2787,7 @@ pub fn launch_token(arguments: List(String)) -> Result(String, String) {
   }
 }
 
+/// Establishes and coordinates launch usage operations for the TUI runtime.
 fn launch_usage() -> String {
   "usage: loom [--workspace <path>] [--session <id>] "
   <> "[--server <path>] [--state-dir <path>] [--config <loom.toml>] "
@@ -2816,6 +2845,7 @@ fn launch_usage() -> String {
   <> "resize supersedes them"
 }
 
+/// Establishes and coordinates ui usage operations for the TUI runtime.
 fn ui_usage() -> String {
   "usage: loom ui [--session <id>] [--operate | --observe] [--no-remember] "
   <> "[--device] [--origin <https-origin>] "
@@ -2846,11 +2876,7 @@ fn replay_usage() -> String {
   <> "  Frames keep their colour on a terminal; --plain drops it."
 }
 
-// This copy deliberately stays private to the client-only shipment. `loom`
-// must describe extension commands even when `loomd` is absent, while the
-// terminal package cannot import the daemon package without reversing the
-// dependency boundary. The shipped acceptance compares this text with
-// `loomd ext --help` so the two literals cannot silently drift.
+/// Establishes and coordinates extension usage operations for the TUI runtime.
 fn extension_usage() -> String {
   "usage: loom ext <command>\n"
   <> "  install <source> [--rev <r>] [--home <dir>] [--helper <path>]\n"
@@ -2864,9 +2890,7 @@ fn extension_usage() -> String {
   <> "<home>/.loom/extensions."
 }
 
-// Evolution shares the server command's JSON transport and native owner
-// credential. Keeping its help here makes the client-only shipment
-// discoverable without opening terminal state or starting a daemon.
+/// Establishes and coordinates evolution usage operations for the TUI runtime.
 fn evolution_usage() -> String {
   "usage: loom evolution [--state-dir PATH] ACTION SESSION [--args FILE]\n"
   <> "       [--candidate-id ID] [--evidence-id ID] [--request-id ID]\n\n"
@@ -2877,11 +2901,7 @@ fn evolution_usage() -> String {
   <> "not completed. Poll status with the exact request_id for completion."
 }
 
-// The help text of `loom distribution`, held here for the reason
-// `extension_usage` is: the launcher must describe the command when `loomd` is
-// absent, and the terminal package cannot import the daemon package. The shipped
-// acceptance compares this text with `loomd distribution --help` so the two
-// literals cannot silently drift.
+/// Establishes and coordinates distribution usage operations for the TUI runtime.
 fn distribution_usage() -> String {
   "usage: loom distribution <command>   (also: loomd distribution, and `dist` for short)
 
@@ -3019,9 +3039,7 @@ Example:
   loom dist enroll laptop2 --node loom@laptop2.example --role orchestrator --links devbox --passphrase-file ~/.loom-passphrase"
 }
 
-// The help text of `loom executor`, held here for the reason
-// `distribution_usage` is, and compared with `loomd executor --help` by the
-// same shipped acceptance.
+/// Establishes and coordinates executor usage operations for the TUI runtime.
 fn executor_usage() -> String {
   "usage: loom executor release SESSION [--state-dir PATH]   (also: loomd executor release)
        loom executor release --worktrees --config PATH [--state-dir PATH]
@@ -3086,15 +3104,11 @@ pub fn server_arguments(arguments: List(String)) -> Option(List(String)) {
   }
 }
 
-// `loom distribution` forwards to `loomd`, with one refusal made here. The
-// forwarded child's stdin is a pipe, so a command that opens or seals the
-// authority key cannot ask for the passphrase on the terminal, and would fail
-// only after the server booted. Those are `provision` (ledger mode, which is the
-// default) and `enroll`, `revoke`, `renew` and `attach-file`. Refusing up front gives the
-// operator the same answer and the way out, and leaves the prompt to
-// `loomd distribution`, which owns the terminal.
+/// Establishes and coordinates forward distribution operations for the TUI runtime.
 fn forward_distribution(arguments: List(String)) -> Launch {
   let has = fn(rest, flag) { list.contains(rest, flag) }
+
+  // Handle forward distribution branch dispatch.
   case arguments {
     ["provision", ..rest] ->
       case
@@ -3136,6 +3150,7 @@ fn forward_distribution(arguments: List(String)) -> Launch {
   }
 }
 
+/// Establishes and coordinates parse replay operations for the TUI runtime.
 fn parse_replay(arguments: List(String)) -> Launch {
   case arguments {
     [] -> Invalid("replay needs a recording path\n" <> launch_usage())
@@ -3163,12 +3178,12 @@ fn parse_replay(arguments: List(String)) -> Launch {
   }
 }
 
-// `--all` takes no value, so the list is walked one element at a time and
-// the flags that do take one consume the next themselves.
+/// Establishes and coordinates parse replay options operations for the TUI runtime.
 fn parse_replay_options(
   arguments: List(String),
   options: ReplayOptions,
 ) -> Result(ReplayOptions, String) {
+  // Handle parse replay options branch dispatch.
   case arguments {
     [] -> Ok(options)
     ["--all", ..rest] ->
@@ -3183,6 +3198,7 @@ fn parse_replay_options(
   }
 }
 
+/// Establishes and coordinates replay option operations for the TUI runtime.
 fn replay_option(
   options: ReplayOptions,
   flag: String,
@@ -3219,14 +3235,14 @@ fn replay_option(
   }
 }
 
-// The agent-facing surface: a recording in, frames out, and a non-zero
-// status with a worded reason for anything that stops that happening.
+/// Establishes and coordinates replay operations for the TUI runtime.
 fn replay(
   path: String,
   frames: FrameSelection,
   size: backend.TerminalSize,
   colour: Colour,
 ) -> Nil {
+  // Handle replay branch dispatch.
   case replay_recording(path, size) {
     Ok(rendered) -> print_frames(rendered, frames, frame_printer(colour))
     Error(reason) -> {
@@ -3237,6 +3253,7 @@ fn replay(
   }
 }
 
+/// Establishes and coordinates replay recording operations for the TUI runtime.
 fn replay_recording(
   path: String,
   size: backend.TerminalSize,
@@ -3294,6 +3311,8 @@ pub fn replay_steps(
         model.shared.replay_inbox,
       )),
   ))
+
+  // Handle replay steps branch dispatch.
   case run.final.shared.replay_error {
     None -> Ok(run.frames)
     Some(reason) -> Error(reason)
@@ -3312,6 +3331,7 @@ fn frame_printer(colour: Colour) -> fn(buffer.Buffer) -> String {
   }
 }
 
+/// Establishes and coordinates print frames operations for the TUI runtime.
 fn print_frames(
   frames: List(buffer.Buffer),
   selection: FrameSelection,
@@ -3337,11 +3357,13 @@ fn print_frames(
   }
 }
 
+/// Establishes and coordinates print one operations for the TUI runtime.
 fn print_one(
   frame_result: Result(buffer.Buffer, Nil),
   missing: String,
   render: fn(buffer.Buffer) -> String,
 ) -> Nil {
+  // Handle print one branch dispatch.
   case frame_result {
     Ok(drawn) -> io.println(render(drawn))
     Error(Nil) -> {
@@ -3388,6 +3410,8 @@ pub fn connect_remote(
     )
     daemon_selection.host(control, address, token)
   }
+
+  // Handle connect remote branch dispatch.
   case connected {
     Error(reason) -> tui_model.append_error(base, reason)
     Ok(host) -> {
@@ -3405,6 +3429,7 @@ pub fn connect_remote(
   }
 }
 
+/// Establishes and coordinates live base operations for the TUI runtime.
 fn live_base(base: Model) -> Model {
   Model(
     ..base,
@@ -3459,6 +3484,8 @@ pub fn attach_daemon(
     daemon_selection.host(control, address, string.trim(token))
   }
   let base = live_base(base)
+
+  // Handle attach daemon branch dispatch.
   case host {
     Error(reason) -> {
       daemon.close(control)
@@ -3557,9 +3584,7 @@ pub fn step(message: msg.Msg, model: Model) -> #(Model, List(effect.Effect)) {
   }
 }
 
-// One input's step. Recorded before the event is interpreted, so a
-// recording holds what the client was given rather than what it made of it,
-// and the input's line is ahead of every line the reducer queues for it.
+/// Establishes and coordinates reduce operations for the TUI runtime.
 fn reduce(
   at: session_msg.Stamp,
   wall_ms: Int,
@@ -3571,25 +3596,7 @@ fn reduce(
   runtime.take(settle_update(event, model, updated))
 }
 
-// The dispatch on the event and the settling of its result are two functions
-// rather than one body. `apply_input` is a readability split the build does
-// not depend on. `settle_update` is load-bearing, and the property it
-// carries is that its steps apply to a function parameter. The Erlang
-// inliner tries to expand every local call, and an attempt it abandons for
-// effort restores the state it started from, including its cache of visited
-// expressions. When the settling steps sat in this body, each step's attempt
-// visited the whole dispatched expression — every arm, and the tick's drain
-// chain beneath it — and threw the visit away for the next step to repeat.
-// Six steps made that about sixty-four visits, and the module took over a
-// minute to compile. A parameter is cheap to re-visit, so the same steps in
-// `settle_update` cost a constant number of visits and the module compiles
-// in a few seconds. Hiding the dispatch behind a call while the steps stay
-// in the caller does not help and measured worse. Folding the steps back
-// into `update` restores the blow-up; measure with `erlc +time` on the
-// generated module before doing so. Most settling steps are now calls into
-// sibling modules, which the inliner never attempts. The boundary stays
-// because `snap_viewport_for` is still a local step, and any local step
-// added to `update` would reintroduce the cost.
+/// Establishes and coordinates apply input operations for the TUI runtime.
 fn apply_input(event: msg.Event, model: Model) -> Model {
   case event {
     // A selection is screen cells over a layout the resize just replaced,
@@ -3668,12 +3675,9 @@ fn apply_input(event: msg.Event, model: Model) -> Model {
   }
 }
 
-// Everything an event does after its own handler: the worktree request a
-// newly shown diff needs, the shared step's settle (`session_step.settle`),
-// the Herdr report, the transcript projection, the viewport snap and the
-// frame decision. `model` is the state before the event and `updated` the
-// state its handler produced.
+/// Establishes and coordinates settle update operations for the TUI runtime.
 fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
+  // Handle settle update branch dispatch.
   let updated = case !layout.diff_shown(model) && layout.diff_shown(updated) {
     True -> inbound.request_visible_worktree(updated)
     False -> updated
@@ -3706,10 +3710,7 @@ fn settle_update(event: msg.Event, model: Model, updated: Model) -> Model {
   |> layout_save.settle
 }
 
-// A gesture aimed at the transcript owns the viewport outright: pacing
-// exists to smooth output the reader did not ask for, and making a scroll,
-// a page key or a resize wait on it would put the walk in front of the
-// hand.
+/// Establishes and coordinates snap viewport for operations for the TUI runtime.
 fn snap_viewport_for(model: Model, event: msg.Event) -> Model {
   case pacing.viewport_address(event) {
     pacing.AddressesElsewhere -> model

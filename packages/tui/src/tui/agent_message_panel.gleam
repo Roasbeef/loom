@@ -71,6 +71,7 @@ pub fn move(
   wanted: Option(String),
   amount: Int,
 ) -> Option(String) {
+  // Resolve current selection before computing candidate index.
   case selected(messages, wanted) {
     None -> None
     Some(current) -> {
@@ -80,11 +81,14 @@ pub fn move(
         |> list.key_find(identity(current))
         |> result.unwrap(0)
       let count = list.length(messages)
+
+      // Wrap navigation bounds within the message list length.
       let next = case index + amount {
         candidate if candidate < 0 -> count - 1
         candidate if candidate >= count -> 0
         candidate -> candidate
       }
+
       messages
       |> list.drop(next)
       |> list.first
@@ -108,6 +112,7 @@ pub fn render(
   body_scroll: Int,
   area: Rect,
 ) -> span.Text {
+  // Render empty placeholder or active message layout.
   let lines = case selected(messages, wanted) {
     None -> empty(area.size.width)
     Some(current) ->
@@ -116,6 +121,7 @@ pub fn render(
         False -> stacked(messages, current, body_scroll, area)
       }
   }
+
   span.text_new(lines)
 }
 
@@ -148,12 +154,15 @@ pub fn max_scroll(
   wanted: Option(String),
   area: Rect,
 ) -> Int {
+  // Calculate scroll limit for selected message item body.
   case selected(messages, wanted) {
     Some(item) -> {
+      // Allocate body width based on available layout columns.
       let width = case area.size.width >= 72 && area.size.height >= 8 {
         True -> area.size.width - int.min(38, { area.size.width * 2 } / 5) - 2
         False -> area.size.width - 1
       }
+
       item.body
       |> text_hygiene.multiline
       |> string.split("\n")
@@ -166,6 +175,7 @@ pub fn max_scroll(
   }
 }
 
+/// Renders placeholder lines when no messages exist for the agent.
 fn empty(width: Int) -> List(span.Line) {
   [
     styled("MESSAGES", width, theme.overlay_current()),
@@ -182,6 +192,7 @@ fn empty(width: Int) -> List(span.Line) {
   ]
 }
 
+/// Renders a vertically stacked message panel for narrow geometries.
 fn stacked(
   messages: List(agent_messages.Item),
   current: agent_messages.Item,
@@ -208,6 +219,7 @@ fn stacked(
   )
 }
 
+/// Renders wrapped message body lines for the compact stacked view.
 fn compact_body(
   item: agent_messages.Item,
   body_scroll: Int,
@@ -229,19 +241,24 @@ fn compact_body(
   })
 }
 
+/// Formats a single compact message header line with focus styling.
 fn compact_message_row(
   item: agent_messages.Item,
   width: Int,
   focus: RowFocus,
 ) -> List(span.Line) {
+  // Pick background theme based on row selection focus.
   let background = case focus {
     SelectedRow -> theme.raised
     OrdinaryRow -> theme.graphite
   }
+
+  // Choose selection indicator glyph.
   let marker = case focus {
     SelectedRow -> "▸ "
     OrdinaryRow -> "  "
   }
+
   [
     styled(
       marker
@@ -258,6 +275,7 @@ fn compact_message_row(
   ]
 }
 
+/// Renders header and body lines for a compact preview window.
 fn compact_preview(
   item: agent_messages.Item,
   body_scroll: Int,
@@ -271,10 +289,13 @@ fn compact_preview(
     |> list.flat_map(fn(line) { text.wrap(line, int.max(1, width - 1)) })
   let offset =
     int.min(int.max(0, body_scroll), int.max(0, list.length(body) - 1))
+
+  // Label whether message body is full content or an excerpt.
   let extent = case item.body_extent {
     agent_messages.Complete -> "complete"
     agent_messages.Excerpt -> "retained excerpt"
   }
+
   let shade = style.new(theme.paper, theme.graphite, style.none())
   [
     styled(" " <> extent <> " · r" <> int.to_string(item.seq), width, shade),
@@ -284,6 +305,7 @@ fn compact_preview(
   ]
 }
 
+/// Renders two-column layout with message list on left and preview on right.
 fn wide(
   messages: List(agent_messages.Item),
   current: agent_messages.Item,
@@ -316,6 +338,7 @@ fn wide(
   |> list.reverse
 }
 
+/// Formats message list cards for the wide view panel.
 fn message_rows(
   messages: List(agent_messages.Item),
   current: agent_messages.Item,
@@ -345,6 +368,8 @@ fn message_rows(
         True -> "▸ "
         False -> "  "
       }
+
+      // Pick background tint based on card focus.
       let background = case chosen {
         True -> theme.raised
         False -> theme.graphite
@@ -364,6 +389,7 @@ fn message_rows(
   ]
 }
 
+/// Formats full preview headers and scrollable body lines for wide display.
 fn preview(
   item: agent_messages.Item,
   body_scroll: Int,
@@ -378,10 +404,13 @@ fn preview(
     |> list.flat_map(fn(line) { text.wrap(line, inner) })
   let max_scroll = int.max(0, list.length(body) - 1)
   let offset = int.min(int.max(0, body_scroll), max_scroll)
+
+  // Label captured body extent in header card.
   let extent = case item.body_extent {
     agent_messages.Complete -> "Complete captured body"
     agent_messages.Excerpt -> "Retained excerpt"
   }
+
   let shade = style.new(theme.paper, theme.raised, style.none())
   [
     styled("MESSAGE PREVIEW", width, theme.overlay_current()),
@@ -405,6 +434,7 @@ fn one_line_excerpt(body: String) -> String {
   |> text.truncate(48, "…")
 }
 
+/// Human-readable descriptive status label for an agent message state.
 fn state_label(state: agent_messages.State) -> String {
   case state {
     agent_messages.SendPending -> "Outcome unknown"
@@ -414,6 +444,7 @@ fn state_label(state: agent_messages.State) -> String {
   }
 }
 
+/// Abbreviated single-word badge text for message state.
 fn short_state_label(state: agent_messages.State) -> String {
   case state {
     agent_messages.SendPending -> "Unknown"
@@ -423,6 +454,7 @@ fn short_state_label(state: agent_messages.State) -> String {
   }
 }
 
+/// Returns highlight color matching the message delivery status.
 fn state_color(state: agent_messages.State) -> style.Color {
   case state {
     agent_messages.SendPending -> theme.quiet
@@ -432,6 +464,7 @@ fn state_color(state: agent_messages.State) -> style.Color {
   }
 }
 
+/// Pads and truncates text into a single line styled to width.
 fn styled(value: String, width: Int, appearance: style.Style) -> span.Line {
   span.line_new([
     span.span_styled(

@@ -65,8 +65,8 @@ fn temporary_root() -> String {
   }
 }
 
-// The file's extension, from the declared media type, which is what the
-// opener reads to choose a viewer.
+/// The file's extension, from the declared media type, which is what the
+/// opener reads to choose a viewer.
 fn extension(mime_type: String) -> String {
   case mime_type {
     "image/png" -> "png"
