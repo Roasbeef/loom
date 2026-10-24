@@ -6997,6 +6997,13 @@ fn open_evolution(
   let root = evolution_root(settings)
   let scratch = evolution_scratch(settings)
 
+  // These callbacks outlive assembly and are copied with the machine and door.
+  // Keep only their own coordinates, rather than the full startup settings.
+  let source_session = settings.session_id
+  let secrets = settings.secrets
+  let helper = settings.helper_path
+  let gateway = settings.gateway
+
   // The machine is everything staging and evaluation need that does not change
   // per call. Its `open` starts a fresh effect plane for each check, under the
   // policy that check was granted. It holds no catalogue, so it exists before
@@ -7016,17 +7023,12 @@ fn open_evolution(
         environment,
       ),
       memory: extension_memory.for_session(agency_config),
-      secrets: fn(name) { secret.lookup(settings.secrets, name) },
+      secrets: fn(name) { secret.lookup(secrets, name) },
       namespace:,
       scratch:,
       logger:,
       open: fn(policy) {
-        evolution_machine_local.open_plane(
-          settings.helper_path,
-          policy,
-          scratch,
-          clock,
-        )
+        evolution_machine_local.open_plane(helper, policy, scratch, clock)
       },
     )
   let machine = evolution_machine_local.new(config)
@@ -7050,7 +7052,7 @@ fn open_evolution(
         stage: fn(selection) { machine.stage(catalogue, selection) },
         adopt:,
         recover: fn() {
-          evolution_recover(machine, catalogue, settings.session_id, adopt)
+          evolution_recover(machine, catalogue, source_session, adopt)
         },
       ),
     )
@@ -7085,7 +7087,7 @@ fn open_evolution(
   // A failed door call hands its refusal to `live` first, which retains any
   // cleanup authority the refusal carries, and only then words the error.
   let lookup = fn(ctx: tool.Ctx) {
-    opener(evolution_store.Caller(settings.session_id, ctx.workspace))
+    opener(evolution_store.Caller(source_session, ctx.workspace))
   }
   let failed = fn(error) {
     evolution_live.retain(live, error)
@@ -7097,7 +7099,7 @@ fn open_evolution(
     |> result.replace_error("the native session is unavailable")
   }
   let actual = fn(ctx: tool.Ctx) {
-    evolution_actual_model(settings, agency_config, ctx)
+    evolution_actual_model(gateway, agency_config, ctx)
   }
 
   // Build the initial evolution door with candidate evaluation hooks.
@@ -7105,12 +7107,7 @@ fn open_evolution(
     evolution.door_over_capture_model(
       lookup,
       fn(ctx: tool.Ctx) {
-        evolution_record.Origin(
-          settings.session_id,
-          ctx.strand,
-          ctx.workspace,
-          None,
-        )
+        evolution_record.Origin(source_session, ctx.strand, ctx.workspace, None)
       },
       fn(ctx) { actual(ctx) |> result.map_error(evolution_store.Unavailable) },
       fn(ctx, directory) {
@@ -7200,7 +7197,7 @@ fn open_evolution(
       evolution_operator_controls(
         agency_config,
         evolution_control.new(
-          settings.session_id,
+          source_session,
           settings.workspace,
           opener,
           live,
@@ -7817,7 +7814,7 @@ fn evolution_compare(
     |> result.map_error(evolution_store.Authority),
   )
   use actual <- result.try(
-    evolution_actual_model(settings, agency_config, ctx)
+    evolution_actual_model(settings.gateway, agency_config, ctx)
     |> result.map_error(evolution_store.Authority),
   )
   use target <- result.try(
@@ -8008,7 +8005,7 @@ pub fn evolution_trial_policy(
 
 /// Establishes evolution actual model for the caller, keeping its validation and result policy at this boundary.
 fn evolution_actual_model(
-  settings: Settings,
+  gateway: provider_gateway.Gateway,
   agency_config: agency.Config,
   ctx: tool.Ctx,
 ) -> Result(evolution_record.ModelScope, String) {
@@ -8017,11 +8014,11 @@ fn evolution_actual_model(
     |> result.replace_error("the native session is unavailable"),
   )
   use resolved <- result.try(
-    provider_gateway.resolve(settings.gateway, model.Main)
+    provider_gateway.resolve(gateway, model.Main)
     |> result.replace_error("the native model is unavailable"),
   )
   use api <- result.try(
-    provider_gateway.api_for(settings.gateway, resolved)
+    provider_gateway.api_for(gateway, resolved)
     |> result.replace_error("the native provider API is unavailable"),
   )
   evolution_trace.actual_model(
