@@ -12,6 +12,9 @@ import broker/framing
 import broker/policy
 import client/codemode
 import client/evolution/capability
+import client/evolution/model_door
+import client/serve
+import client/serve_test
 import codemode/evolution as codemode_evolution
 import codemode/identity
 import codemode/satellite
@@ -255,7 +258,8 @@ pub fn a_candidate_importing_cap_evolution_is_refused_at_vetting_test() {
 pub fn a_borrow_before_the_cell_starts_says_the_plane_is_not_open_test() {
   let assert Ok(registry) = address.start()
   let name = address.new_address(registry)
-  assert capability.borrow(name) == Error("the evolution plane is not open")
+  assert capability.borrow(name)
+    == Error("Unavailable: the evolution plane is not open")
   let assert Ok(Nil) = address.stop(registry)
 }
 
@@ -272,7 +276,8 @@ pub fn a_started_cell_hands_out_the_door_until_it_is_stopped_test() {
   // The stop is queued ahead of the next borrow, so the borrow finds either
   // no registered name or a callee that went down, and never a stale door.
   capability.stop(name)
-  assert capability.borrow(name) == Error("the evolution plane is not open")
+  assert capability.borrow(name)
+    == Error("Unavailable: the evolution plane is not open")
   let assert Ok(Nil) = address.stop(registry)
 }
 
@@ -282,7 +287,7 @@ pub fn the_cell_builder_runs_the_borrowed_door_under_the_callers_context_test() 
   let builder = capability.door_over(name)
   let before = builder(ctx())
   assert before.catalogue(0, json.Null)
-    == Error("the evolution plane is not open")
+    == Error("Unavailable: the evolution plane is not open")
   let assert Ok(cell) = capability.start(name, unwired())
   capability.detach(cell)
   let after = builder(ctx())
@@ -304,6 +309,12 @@ pub fn every_admitted_call_of_an_execution_has_its_own_index_test() {
       })
     })
   assert list.length(list.unique(indexes)) == 6 * 128
+
+  // The clamp on the ordinal is sound only while no ceiling admits more than
+  // 128 calls of one name.
+  assert list.all(codemode_evolution.ceilings(), fn(ceiling) {
+    ceiling.admissions <= 128
+  })
   assert list.all(indexes, fn(index) { index >= 1000 })
   assert capability.call_index(2, 1, 3) == 3131
   assert capability.call_index(3, 0, 0) != capability.call_index(2, 0, 0)
@@ -325,6 +336,48 @@ pub fn an_operation_runs_its_door_under_the_calls_own_index_test() {
   assert process.receive(seen, 100) == Ok(capability.call_index(0, 4, 5))
   capability.stop(name)
   let assert Ok(Nil) = address.stop(registry)
+}
+
+// `LOOM_DISABLE_TOOLS` has no tool left to filter, so one reserved name stands
+// for the module. A trial is never offered it whatever the list says.
+pub fn the_reserved_name_withholds_the_module_from_a_source_session_test() {
+  let assert Ok(registry) = address.start()
+  let name = address.new_address(registry)
+  let settings = serve_test.settings_under("build/evolution-switch")
+  let assert option.Some(_) = serve.evolution_offer(settings, name)
+  let disabled =
+    serve.Settings(..settings, deactivated_tools: [
+      "bash",
+      serve.evolution_switch,
+    ])
+  assert serve.evolution_offer(disabled, name) == option.None
+  let trial = serve.Settings(..settings, evolution_role: serve.Trial([]))
+  assert serve.evolution_offer(trial, name) == option.None
+  let assert Ok(Nil) = address.stop(registry)
+}
+
+// `cap/evolution.compare` sends a task-set identity and all six budget
+// fields, and the native decoder must accept exactly that map. The wire shape
+// is pinned in the cap package; this ties it to the decoder without the
+// end-to-end flag.
+pub fn the_map_compare_sends_is_the_map_the_decoder_accepts_test() {
+  let limits =
+    json.Object([
+      #("trials", json.Int(20)),
+      #("turns", json.Int(20)),
+      #("tokens", json.Int(1_000_000)),
+      #("dollars", json.Float(2.0)),
+      #("output_bytes", json.Int(65_536)),
+      #("wall_ms", json.Int(120_000)),
+    ])
+  let arguments =
+    json.Object([
+      #("candidate_id", json.String("c1")),
+      #("taskset_id", json.String("ts1")),
+      #("limits", limits),
+    ])
+  let assert Ok(#("ts1", accepted)) = model_door.evaluation_request(arguments)
+  assert accepted.trials == 20 && accepted.wall_ms == 120_000
 }
 
 pub fn a_doors_outcome_becomes_json_or_a_refusal_sentence_test() {

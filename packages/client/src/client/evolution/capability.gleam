@@ -1,12 +1,14 @@
 //// The route from a code-mode program to the session's evolution doors.
 ////
 //// A program reaches evolution through `cap/evolution` and nothing else.
-//// The host's code-mode configuration is assembled before the evolution
-//// plane exists, because the plane needs that finished configuration as the
-//// host its candidates run under. The configuration therefore cannot hold the
-//// doors. It holds a builder over a *name*, and this module is both ends of
-//// that name: the cell that is registered under it once the plane is open,
-//// and the builder that borrows the doors from it on every call.
+//// The host's code-mode configuration is produced together with the
+//// `code_mode` tool, inside the workspace plane, and the evolution plane is
+//// opened after that, because it needs the finished configuration for its
+//// build identity and as the host its candidates run under. Construction
+//// order is why the configuration cannot capture the doors. It holds a
+//// builder over a *name*, and this module is both ends of that name: the cell
+//// that is registered under it once the plane is open, and the builder that
+//// borrows the doors from it on every call.
 ////
 //// ## Flow
 ////
@@ -26,10 +28,12 @@
 ////
 //// ## Why a cell and not a captured door
 ////
-//// A captured door would need the plane opened first, and the plane needs the
-//// configuration the door would be captured into. A named cell removes the
-//// cycle without adding a mutable field to the configuration, in the same way
-//// the Agency, the scratch store and the jobs actor are reached by name.
+//// A captured door would need the plane opened first, and the plane is opened
+//// from the configuration the door would be captured into. Restructuring the
+//// workspace plane to hand the configuration out before the tool exists would
+//// remove that ordering. A named cell removes it without a mutable field in
+//// the configuration, in the same way the Agency, the scratch store and the
+//// jobs actor are reached by name.
 //// The cell holds one immutable value for the life of the plane and answers
 //// only a borrow, so it has no state to get wrong.
 
@@ -143,7 +147,7 @@ pub fn borrow(
   |> result.replace_error(not_open)
 }
 
-const not_open = "the evolution plane is not open"
+const not_open = "Unavailable: the evolution plane is not open"
 
 /// The builder a code-mode configuration holds: given one execution's
 /// dispatching context, six operations that borrow the doors from the cell
