@@ -78,14 +78,7 @@ pub fn view(
             html.text("Peer links"),
           ]),
           listing(board, step, presses),
-          controls(
-            strand,
-            sessions,
-            linkable(board, sessions),
-            step,
-            asking,
-            presses,
-          ),
+          controls(strand, sessions, board, step, asking, presses),
           status(note),
         ],
       )
@@ -308,7 +301,7 @@ fn linkable(
 fn controls(
   strand: String,
   sessions: List(#(String, String)),
-  linkable: List(#(String, String)),
+  board: option.Option(peer_links.Board),
   step: peer_links.Step,
   asking: peer_links.Asking,
   presses: Presses(message),
@@ -325,7 +318,9 @@ fn controls(
           [html.text("Link a session")],
         ),
       ])
-    Choosing -> picker(sessions, linkable, presses)
+
+    // Only the picker consumes candidates filtered against the current links.
+    Choosing -> picker(sessions, linkable(board, sessions), presses)
     Configuring(name:, wake:, reverse:, ..) ->
       html.div([attribute.class("share-ask")], [
         html.p([attribute.class("share-lead")], [

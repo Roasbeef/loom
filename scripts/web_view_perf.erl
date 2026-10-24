@@ -6,10 +6,12 @@
 
 main([Label, Scenario]) ->
     Wire = 'gleam@erlang@process':new_subject(),
-    Ready = page_fixture:ready(Wire, <<"operator">>),
-    Model = 'web_view@component':apply(Ready, [capture(Scenario)]),
+    Model = fixture(Wire, Scenario),
     View = 'web_view@operator_page':view(Model),
     Cache = lane_memo_ffi:first(View),
+    HandlerHash = binary:decode_unsigned(crypto:hash(sha256,
+        term_to_binary(page_events_ffi:handlers(View)))),
+    io:format("HANDLERS scenario=~s sha256=~64.16.0b~n", [Scenario, HandlerHash]),
     Html = 'lustre@element':to_string(View),
     %% Moving a memo changes only these bookkeeping comments in initial HTML.
     Visible = re:replace(Html, <<"<!-- lustre:memo(?: key=\"[^\"]*\")? -->">>,
@@ -58,6 +60,15 @@ measure(Label, Scenario, Phase, Count, Run) ->
     after
         tprof:stop(Profiler)
     end.
+
+fixture(_Wire, "peers-" ++ Rest) ->
+    [Count, Phase] = string:split(Rest, "-"),
+    io:format("CATALOGUE submitted=~p listed=~p phase=~s~n",
+        [list_to_integer(Count), min(list_to_integer(Count), 100), Phase]),
+    peer_links_test:catalogue_fixture(list_to_integer(Count), list_to_binary(Phase));
+fixture(Wire, Scenario) ->
+    Ready = page_fixture:ready(Wire, <<"operator">>),
+    'web_view@component':apply(Ready, [capture(Scenario)]).
 
 capture("siblings") -> lane_fixture:siblings();
 capture("reasoning") ->
