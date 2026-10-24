@@ -56,6 +56,7 @@ pub fn detect(
   foreground_background: String,
   no_color: Option(String),
 ) -> Palette {
+  // Respect NO_COLOR override before probing terminal capabilities.
   case no_color {
     Some(value) if value != "" -> Plain
     Some(_) | None -> {
@@ -69,6 +70,8 @@ pub fn detect(
         |> list.last
         |> result.try(int.parse)
         |> result.unwrap(0)
+
+      // Match color capabilities and background lightness to a palette.
       case rgb, terminal, background {
         _, "dumb", _ -> Plain
         False, _, _ -> Terminal
@@ -91,6 +94,7 @@ pub fn detect(
 /// ```
 @internal
 pub fn apply(frame: buffer.Buffer, palette: Palette) -> buffer.Buffer {
+  // Fast path for Dark palette leaves frame cells unmodified.
   case palette {
     Dark -> frame
     Light | Terminal | Plain -> {
@@ -100,7 +104,7 @@ pub fn apply(frame: buffer.Buffer, palette: Palette) -> buffer.Buffer {
   }
 }
 
-// One row-major pass retains wide cells exactly as etui created them.
+/// Iterates across frame cells in row-major order, remapping styles per palette.
 fn cells(
   frame: buffer.Buffer,
   palette: Palette,
@@ -108,6 +112,7 @@ fn cells(
   index: Int,
   size: Int,
 ) -> buffer.Buffer {
+  // Check bounds before inspecting and transforming the cell at index.
   case index >= size {
     True -> frame
     False -> {
@@ -118,6 +123,8 @@ fn cells(
         )
       let cell = buffer.get_cell(frame, position)
       let colors = cell.style
+
+      // Remap cell colors preserving Kitty image placeholders.
       let remapped = case cell.content {
         buffer.Content(symbol:, ..) ->
           case string.starts_with(symbol, kitty.placeholder) {
@@ -126,16 +133,20 @@ fn cells(
           }
         buffer.Continuation -> remap(colors, palette)
       }
+
+      // Update the buffer cell only when its style colors changed.
       let frame = case remapped == colors {
         True -> frame
         False ->
           buffer.set_cell(frame, position, buffer.Cell(..cell, style: remapped))
       }
+
       cells(frame, palette, area, index + 1, size)
     }
   }
 }
 
+/// Remaps foreground, background, and underline colors to the target palette.
 fn remap(colors: style.Style, palette: Palette) -> style.Style {
   style.Style(
     ..colors,
@@ -145,6 +156,7 @@ fn remap(colors: style.Style, palette: Palette) -> style.Style {
   )
 }
 
+/// Maps a theme foreground color to its counterpart in the target palette.
 fn foreground(color: style.Color, palette: Palette) -> style.Color {
   case palette {
     Dark -> color
@@ -175,6 +187,7 @@ fn foreground(color: style.Color, palette: Palette) -> style.Color {
   }
 }
 
+/// Maps a theme background color to its counterpart in the target palette.
 fn background(color: style.Color, palette: Palette) -> style.Color {
   case palette {
     Dark -> color

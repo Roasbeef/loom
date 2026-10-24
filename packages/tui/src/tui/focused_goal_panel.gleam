@@ -152,6 +152,8 @@ pub fn update(
   let step = viewport_rows(area)
   let maximum = max_scroll(state, area)
   let state = State(..state, scroll: int.min(state.scroll, maximum))
+
+  // Handle navigation shortcuts, scrolling, or goal state transitions.
   case key {
     keys.Escape -> Close
     keys.Char("r") -> available(availability, Refresh, state)
@@ -167,6 +169,7 @@ pub fn update(
   }
 }
 
+/// Ensures the action is admitted only when the server connection is ready.
 fn available(
   availability: Availability,
   action: Action,
@@ -178,6 +181,7 @@ fn available(
   }
 }
 
+/// Maps user pause or resume key presses to actions based on current goal status.
 fn status_action(
   state: State,
   availability: Availability,
@@ -229,10 +233,13 @@ pub fn render(
   let maximum = int.max(0, list.length(rows) - content.size.height)
   let offset = int.min(maximum, state.scroll)
   let rendered = buf |> buffer.clear(area)
+
+  // Draw surrounding border frame when sufficient area is available.
   let rendered = case layout {
     CompactLayout(..) -> rendered
     FramedLayout(..) -> block.render(rendered, card, frame)
   }
+
   rendered
   |> paragraph.render_styled(content, list.drop(rows, offset))
   |> paragraph.render_styled(controls, [control_line(state, availability)])
@@ -243,6 +250,7 @@ fn viewport_rows(area: geometry.Rect) -> Int {
   content.size.height
 }
 
+/// Computes the maximum scroll offset based on rendered content height.
 fn max_scroll(state: State, area: geometry.Rect) -> Int {
   let #(_, content, _) = layout_areas(panel_layout(area))
   int.max(
@@ -252,14 +260,18 @@ fn max_scroll(state: State, area: geometry.Rect) -> Int {
   )
 }
 
+/// Calculates the panel dimensions, choosing between compact and framed layouts.
 fn panel_layout(area: geometry.Rect) -> PanelLayout {
+  // Use compact layout when panel area is constrained.
   case area.size.height < 8 || area.size.width < 20 {
     True -> build_layout(area, CompactLayout)
     False -> {
+      // Determine margin padding for wider screens.
       let horizontal = case area.size.width >= 70 {
         True -> 2
         False -> 0
       }
+
       let card =
         geometry.rect_new(
           area.position.x + horizontal,
@@ -275,14 +287,17 @@ fn panel_layout(area: geometry.Rect) -> PanelLayout {
   }
 }
 
+/// Partitions the interior area into scrollable content and fixed control rows.
 fn build_layout(
   inside: geometry.Rect,
   finish: fn(geometry.Rect, geometry.Rect, geometry.Rect) -> PanelLayout,
 ) -> PanelLayout {
+  // Allocate a dedicated control row when vertical space allows.
   let controls_height = case inside.size.height >= 3 {
     True -> 1
     False -> 0
   }
+
   let content =
     geometry.rect_new(
       inside.position.x,
@@ -300,6 +315,7 @@ fn build_layout(
   finish(inside, content, controls)
 }
 
+/// Deconstructs a panel layout into card, content, and control rects.
 fn layout_areas(
   layout: PanelLayout,
 ) -> #(geometry.Rect, geometry.Rect, geometry.Rect) {
@@ -309,15 +325,21 @@ fn layout_areas(
   }
 }
 
+/// Formats styled text lines for the goal panel body, observation, and header.
 fn lines(state: State, width: Int, height: Int) -> List(span.Line) {
+  // Choose compact formatting for shallow panels.
   let density = case height <= 6 {
     True -> Compact
     False -> Roomy
   }
+
+  // Render connection observation notice.
   let observation = case state.observation {
     Observed(label) -> styled_lines(label, theme.overlay_quiet(), width)
     Unavailable(label) -> styled_lines(label, theme.overlay_signal(), width)
   }
+
+  // Format goal details or display unavailable placeholder.
   let body = case state.board {
     None -> [
       heading("Goal unavailable", width),
@@ -329,17 +351,21 @@ fn lines(state: State, width: Int, height: Int) -> List(span.Line) {
     ]
     Some(board) -> board_lines(board, width, density)
   }
+
+  // Prepend or append observation status relative to body content.
   case state.observation {
     Observed(_) -> list.append(body, observation)
     Unavailable(_) -> list.append(observation, body)
   }
 }
 
+/// Formats goal status, budget consumption, and reviewer checks into styled rows.
 fn board_lines(
   board: goal_view.Board,
   width: Int,
   density: Density,
 ) -> List(span.Line) {
+  // Render empty state or full pinned goal breakdown.
   case board {
     goal_view.NoGoal(..) -> [
       heading("No goal pinned", width),
@@ -365,6 +391,7 @@ fn board_lines(
       last_check:,
       observed_at_ms:,
     ) -> {
+      // Format header stanza with spacing matched to density.
       let introduction = case density {
         Compact ->
           list.append(
@@ -391,6 +418,7 @@ fn board_lines(
             card_lines(text_hygiene.multiline(objective), width),
           ])
       }
+
       list.append(
         introduction,
         list.flatten([
@@ -424,12 +452,14 @@ fn board_lines(
   }
 }
 
+/// Renders automated evaluation check commands and execution results.
 fn check_lines(
   pinned: Option(String),
   last: Option(goal_view.CheckRun),
   observed: Int,
   width: Int,
 ) -> List(span.Line) {
+  // Display latest check run output if available.
   case pinned, last {
     None, None -> []
     Some(command), None ->
@@ -450,11 +480,15 @@ fn check_lines(
         output:,
         ran_at_ms:,
       ) = run
+
+      // Format check execution exit status or failure reason.
       let result = case status, not_finished {
         Some(code), _ -> "Exit status " <> int.to_string(code)
         None, Some(reason) -> text_hygiene.single_line(reason)
         None, None -> "No result"
       }
+
+      // Format captured command output lines if non-empty.
       let output = case output {
         "" -> []
         text -> [
@@ -462,6 +496,7 @@ fn check_lines(
           ..card_lines(text_hygiene.multiline(text), width)
         ]
       }
+
       list.flatten([
         [heading("Latest check", width)],
         styled_lines(
@@ -480,6 +515,7 @@ fn check_lines(
   }
 }
 
+/// Renders human reviewer notes when present on the goal.
 fn note_lines(note: Option(String), width: Int) -> List(span.Line) {
   case note {
     None -> []
@@ -490,7 +526,9 @@ fn note_lines(note: Option(String), width: Int) -> List(span.Line) {
   }
 }
 
+/// Renders the bottom footer displaying available action keys and scroll hints.
 fn control_line(state: State, availability: Availability) -> span.Line {
+  // Display contextual pause/resume actions according to goal state.
   let action = case state.board {
     Some(goal_view.Pinned(status: goal_view.Active, ..)) -> "p pause"
     Some(goal_view.Pinned(status: goal_view.Paused(..), ..))
@@ -499,14 +537,19 @@ fn control_line(state: State, availability: Availability) -> span.Line {
     | Some(goal_view.NoGoal(..))
     | Some(goal_view.Pinned(status: goal_view.Complete, ..)) -> ""
   }
+
+  // Append navigation key hints.
   let controls = case action {
     "" -> "r refresh · PgUp/PgDn/Home/End"
     value -> value <> " · r refresh · PgUp/PgDn/Home/End"
   }
+
+  // Disable actions when waiting for server response.
   let controls = case availability {
     Ready -> controls
     Pending -> "Waiting for server reply · actions disabled"
   }
+
   span.line_new([span.span_styled(controls, theme.overlay_signal())])
 }
 
@@ -517,6 +560,7 @@ fn heading(text: String, width: Int) -> span.Line {
   }
 }
 
+/// Wraps text and fills background padding to format an elevated card element.
 fn card_lines(text: String, width: Int) -> List(span.Line) {
   text
   |> styled_lines(style.new(theme.paper, theme.raised, style.none()), width)
@@ -534,6 +578,7 @@ fn card_lines(text: String, width: Int) -> List(span.Line) {
   })
 }
 
+/// Splits and wraps text into styled lines constrained to the specified width.
 fn styled_lines(
   text: String,
   appearance: style.Style,
@@ -547,6 +592,7 @@ fn styled_lines(
   |> fn(wrapped) { wrapped.lines }
 }
 
+/// Selects the theme color corresponding to goal status.
 fn status_style(status: goal_view.Status) -> style.Style {
   case status {
     goal_view.Active -> theme.overlay_current()
@@ -555,6 +601,7 @@ fn status_style(status: goal_view.Status) -> style.Style {
   }
 }
 
+/// Selects indicator colors reflecting check run success, failure, or absence.
 fn check_style(status: Option(Int)) -> style.Style {
   case status {
     Some(0) -> style.new(theme.added, theme.graphite, style.bold())
@@ -563,8 +610,11 @@ fn check_style(status: Option(Int)) -> style.Style {
   }
 }
 
+/// Formats an elapsed millisecond timestamp into a human-friendly duration string.
 fn duration(milliseconds: Int) -> String {
   let seconds = int.max(0, milliseconds) / 1000
+
+  // Format duration into seconds, minutes, or hours.
   case seconds {
     value if value < 60 -> int.to_string(value) <> "s"
     value if value < 3600 -> int.to_string(value / 60) <> "m"

@@ -45,11 +45,14 @@ import tui/theme
 ///   )
 /// ```
 pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
+  // Parse header, footer, and body rows from the incoming text.
   let #(title, foot, body) = case string.split(text, "\n") {
     [title, foot, ..body] -> #(title, foot, body)
     [title] -> #(title, "", [])
     [] -> #("", "", [])
   }
+
+  // Choose the border colour according to execution outcome.
   let edge = case speaker {
     ProgramFailure -> theme.danger
     ProgramSettled -> theme.added
@@ -83,9 +86,9 @@ pub fn rows(speaker: Speaker, text: String, width: Int) -> List(span.Line) {
   })
 }
 
-// A rule across the block with `words` set in it after one dash, and the
-// rest of the rule filled to `box` cells. Words too long for the rule are
-// cut, so the rule is always one row.
+/// A rule across the block with `words` set in it after one dash, and the
+/// rest of the rule filled to `box` cells. Words too long for the rule are
+/// cut, so the rule is always one row.
 fn rule(
   open: String,
   words: String,
@@ -95,11 +98,16 @@ fn rule(
   words_style: style.Style,
 ) -> span.Line {
   let room = box - 5
+
+  // Truncate the words to fit available rule room.
   let words = case text.cell_width(words) > room {
     True -> text.truncate(words, int.max(0, room), "…")
     False -> words
   }
+
   let fill = int.max(0, box - 5 - text.cell_width(words))
+
+  // Render the horizontal border rule with or without header words.
   span.line_new(case words {
     "" -> [
       span.span_styled(open <> string.repeat("─", box - 2) <> close, border),
@@ -128,16 +136,20 @@ fn role(speaker: Speaker, index: Int) -> Role {
   }
 }
 
-// One body row, cut or padded to `inside` cells. A source row is drawn on
-// a raised ground with its number quiet; the opening row of a failure is
-// the error's heading, in the danger colour; every other row is text.
+/// One body row, cut or padded to `inside` cells. A source row is drawn on
+/// a raised ground with its number quiet; the opening row of a failure is
+/// the error's heading, in the danger colour; every other row is text.
 fn content(row: String, inside: Int, role: Role) -> List(span.Span) {
+  // Truncate row text when it overflows the available inside width.
   let cut = case text.cell_width(row) > inside {
     True -> text.truncate(row, inside, "…")
     False -> row
   }
+
   let padded =
     cut <> string.repeat(" ", int.max(0, inside - text.cell_width(cut)))
+
+  // Format row spans based on source code presence and role.
   case source_row(row), role {
     True, _ -> {
       let #(number, code) =
@@ -163,9 +175,9 @@ fn content(row: String, inside: Int, role: Role) -> List(span.Span) {
   }
 }
 
-// A row of the calls section opens with its call's ending, `✓` for a call
-// that settled and `×` for one that failed, and takes that colour; any
-// other row is quiet text.
+/// A row of the calls section opens with its call's ending, `✓` for a call
+/// that settled and `×` for one that failed, and takes that colour; any
+/// other row is quiet text.
 fn call_style(row: String) -> style.Style {
   case string.first(row) {
     Ok("✓") -> theme.success_text()
@@ -174,9 +186,10 @@ fn call_style(row: String) -> style.Style {
   }
 }
 
-// A row quoting source: a line number, or nothing but spaces, before the
-// gutter. A compiler's caret row under a quoted line has no number.
+/// A row quoting source: a line number, or nothing but spaces, before the
+/// gutter. A compiler's caret row under a quoted line has no number.
 fn source_row(row: String) -> Bool {
+  // Inspect the gutter divider to verify line number formatting.
   case string.split_once(row, "│") {
     Ok(#(before, _)) -> {
       let before = string.trim(before)

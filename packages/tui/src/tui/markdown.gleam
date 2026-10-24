@@ -219,6 +219,8 @@ pub fn render_detail(markdown: String, width: Int) -> List(span.Line) {
   |> tree.parse
   |> list.flat_map(fn(block) {
     let rows = render_block(block, width, DrawDiagrams)
+
+    // Handle code block harness label stripping or retain standard block rows.
     case block {
       tree.CodeBlock(language: Some(label), ..) ->
         case harness_label(label) {
@@ -316,6 +318,8 @@ pub fn rewrap(
   width: Int,
 ) -> List(span.Line) {
   let #(before, rows) = previous
+
+  // Check if alignment matches and width allows resuming previous wrap.
   let resumed = case width > 0 && before.alignment == line.alignment {
     True -> {
       use Nil <- result.try(flowing_at_margin(before))
@@ -325,6 +329,7 @@ pub fn rewrap(
     }
     False -> Error(Nil)
   }
+
   result.lazy_unwrap(resumed, fn() { wrap_line(line, width) })
 }
 
@@ -363,18 +368,19 @@ type Growth {
   )
 }
 
-// How `line` extends `before`: every span of `before` but its last is
-// repeated unchanged, the last is repeated with the same style and link and
-// with its content possibly lengthened, and more spans may follow.
-//
-// The old last span must hold a word, not only spaces. The rows keep a
-// word's pieces but drop the separators after it, so the added text is
-// joined to the last row's final span, and that span has the old last
-// span's style only if the last word ends in it.
+/// How `line` extends `before`: every span of `before` but its last is
+/// repeated unchanged, the last is repeated with the same style and link and
+/// with its content possibly lengthened, and more spans may follow.
+///
+/// The old last span must hold a word, not only spaces. The rows keep a
+/// word's pieces but drop the separators after it, so the added text is
+/// joined to the last row's final span, and that span has the old last
+/// span's style only if the last word ends in it.
 fn extension(
   before: List(span.Span),
   after: List(span.Span),
 ) -> Result(Growth, Nil) {
+  // Match previous trailing span against newly extended text.
   case before, after {
     [last], [grown, ..more] -> {
       let old = last.content
@@ -382,13 +388,18 @@ fn extension(
       let kept = size - trailing_spaces(bit_array.from_string(old), size - 1, 0)
       let same_style =
         span.Span(..last, content: "") == span.Span(..grown, content: "")
+
+      // Verify style match and prefix continuity before extending word.
       case same_style && kept > 0 && string.starts_with(grown.content, old) {
         True -> {
           use added <- result.try(bytes_after(grown.content, kept))
+
+          // Distinguish additions ending inside or after the current word.
           let ended = case kept == size {
             True -> InsideWord
             False -> AfterWord
           }
+
           Ok(Growth(
             last:,
             added: [span.Span(..grown, content: added), ..more],
@@ -424,16 +435,18 @@ fn joins_a_cluster(first: span.Span, rest: List(span.Span)) -> Bool {
   }
 }
 
-// Whether the last character of `left` and the first of `right` fall in one
-// grapheme cluster. Two ASCII characters never do, since the pass the text
-// went through turned carriage returns into line feeds, so the common join
-// is decided by two bytes. Otherwise the last codepoint of `left` and the
-// first cluster of `right` are measured together. A regional indicator
-// pairs with its neighbour according to how many precede it, which one
-// codepoint of context cannot say, so a join to one always counts.
+/// Whether the last character of `left` and the first of `right` fall in one
+/// grapheme cluster. Two ASCII characters never do, since the pass the text
+/// went through turned carriage returns into line feeds, so the common join
+/// is decided by two bytes. Otherwise the last codepoint of `left` and the
+/// first cluster of `right` are measured together. A regional indicator
+/// pairs with its neighbour according to how many precede it, which one
+/// codepoint of context cannot say, so a join to one always counts.
 fn clusters_across(left: String, right: String) -> Bool {
   let left_bits = bit_array.from_string(left)
   let size = bit_array.byte_size(left_bits)
+
+  // Test byte cluster boundary rules across boundary between left and right.
   case bit_array.slice(left_bits, size - 1, 1), bit_array.from_string(right) {
     Ok(<<last>>), <<first, _:bytes>> if last < 0x80 && first < 0x80 -> False
     Ok(_), <<0xF0, 0x9F, 0x87, fourth, _:bytes>>
@@ -449,8 +462,8 @@ fn clusters_across(left: String, right: String) -> Bool {
   }
 }
 
-// The last character of the text in `bits`, found by stepping back from
-// `index` over continuation bytes to the byte that starts it.
+/// The last character of the text in `bits`, found by stepping back from
+/// `index` over continuation bytes to the byte that starts it.
 fn last_codepoint(bits: BitArray, index: Int) -> Result(String, Nil) {
   case bit_array.slice(bits, index, 1) {
     Ok(<<byte>>) if byte >= 0x80 && byte < 0xC0 ->
@@ -462,29 +475,32 @@ fn last_codepoint(bits: BitArray, index: Int) -> Result(String, Nil) {
   }
 }
 
-// The wrap of the extended line: the final rows of `rows`, then the
-// remainder rebuilt from the spans of the rows that are not final and the
-// text that was added.
-//
-// The last row holds the end of the old line. If its first word is complete
-// — the row holds more than one word, or the old line ended after its last
-// word — every earlier row is final and the wrap resumes at its start. If it
-// holds a single word the new text may lengthen, and a longer word can
-// change where the row above it broke, so the wrap resumes one row earlier.
-// That is only sound when the row above ends before the word: the word must
-// stand whole on the last row rather than be the tail of a word too wide for
-// any row, and the space before it must come from the old last span, which
-// then supplies the separator's style.
+/// The wrap of the extended line: the final rows of `rows`, then the
+/// remainder rebuilt from the spans of the rows that are not final and the
+/// text that was added.
+///
+/// The last row holds the end of the old line. If its first word is complete
+/// — the row holds more than one word, or the old line ended after its last
+/// word — every earlier row is final and the wrap resumes at its start. If it
+/// holds a single word the new text may lengthen, and a longer word can
+/// change where the row above it broke, so the wrap resumes one row earlier.
+/// That is only sound when the row above ends before the word: the word must
+/// stand whole on the last row rather than be the tail of a word too wide for
+/// any row, and the space before it must come from the old last span, which
+/// then supplies the separator's style.
 fn resume(
   rows: List(span.Line),
   growth: Growth,
   width: Int,
   alignment: text.Alignment,
 ) -> Result(List(span.Line), Nil) {
+  // Inspect the trailing row to resume wrapping into.
   case list.reverse(rows) {
     [final_row, ..earlier] -> {
       let final_text = row_text(final_row)
       use Nil <- result.try(opens_on_word(final_text))
+
+      // Check whether final row can absorb additions or needs line above.
       case string.contains(final_text, " "), growth.ended, earlier {
         True, _, _ | False, AfterWord, _ -> {
           use source <- result.try(extended(final_row.spans, growth))
@@ -499,9 +515,9 @@ fn resume(
   }
 }
 
-// The single-word case of `resume`: the wrap restarts at the row above the
-// last, joined to the last word by the space the old last span held before
-// it.
+/// The single-word case of `resume`: the wrap restarts at the row above the
+/// last, joined to the last word by the space the old last span held before
+/// it.
 fn resume_above(
   above: span.Line,
   settled: List(span.Line),
@@ -514,6 +530,8 @@ fn resume_above(
   // with a space and then exactly that row's text says both that the word
   // stands whole on the row and that the space before it is the span's.
   use Nil <- result.try(opens_on_word(row_text(above)))
+
+  // Check whether word on line above matches growth prefix.
   case string.ends_with(growth.last.content, " " <> row_text(final_row)) {
     True -> {
       use source <- result.try(extended(final_row.spans, growth))
@@ -556,7 +574,7 @@ fn bytes_after(text: String, bytes: Int) -> Result(String, Nil) {
   |> result.try(bit_array.to_string)
 }
 
-// The kept rows, newest first, followed by the wrap of what comes after them.
+/// The kept rows, newest first, followed by the wrap of what comes after them.
 fn rewrapped(
   settled: List(span.Line),
   source: List(span.Span),
@@ -567,18 +585,18 @@ fn rewrapped(
   |> list.append(span.wrap_line(span.Line(spans: source, alignment:), width))
 }
 
-// A row's spans followed by the added text.
-//
-// After a complete word the added text begins with the separator the old
-// line ended with, and is placed after the row as it is. Inside a word the
-// first added span carries on the old last span's content, so it is joined
-// to the row's last span rather than placed beside it: the wrapper measures
-// a word piece by piece, and a grapheme cut across two pieces, a flag or a
-// letter and its combining mark, would be measured as two. That join is
-// only the old span continuing if the row's last span still has its style:
-// the tail of a word too wide for any row is drawn in the style of the
-// word's first piece, and the wrap of the grown word would repaint the added
-// text in it too, which is not a resume.
+/// A row's spans followed by the added text.
+///
+/// After a complete word the added text begins with the separator the old
+/// line ended with, and is placed after the row as it is. Inside a word the
+/// first added span carries on the old last span's content, so it is joined
+/// to the row's last span rather than placed beside it: the wrapper measures
+/// a word piece by piece, and a grapheme cut across two pieces, a flag or a
+/// letter and its combining mark, would be measured as two. That join is
+/// only the old span continuing if the row's last span still has its style:
+/// the tail of a word too wide for any row is drawn in the style of the
+/// word's first piece, and the wrap of the grown word would repaint the added
+/// text in it too, which is not a resume.
 fn extended(
   row: List(span.Span),
   growth: Growth,
@@ -607,16 +625,18 @@ fn row_text(row: span.Line) -> String {
   row.spans |> list.map(fn(value) { value.content }) |> string.concat
 }
 
-// The leading whitespace of a line, counted in graphemes. The trim is a
-// grapheme-wise scan that stops at the first non-space, and the part it
-// removed is sliced by bytes, so the cost is the indentation's length rather
-// than the line's. Counting the whole line and then the trimmed remainder
-// gave the same number at the cost of reading every grapheme twice, which on
-// a long paragraph was most of what wrapping it cost.
+/// The leading whitespace of a line, counted in graphemes. The trim is a
+/// grapheme-wise scan that stops at the first non-space, and the part it
+/// removed is sliced by bytes, so the cost is the indentation's length rather
+/// than the line's. Counting the whole line and then the trimmed remainder
+/// gave the same number at the cost of reading every grapheme twice, which on
+/// a long paragraph was most of what wrapping it cost.
 fn leading_cells(line: span.Line) -> Int {
   let text = row_text(line)
   let trimmed = string.trim_start(text)
   let bytes = string.byte_size(text) - string.byte_size(trimmed)
+
+  // Measure leading indentation grapheme width when present.
   case bytes {
     0 -> 0
     _ ->
@@ -628,14 +648,16 @@ fn leading_cells(line: span.Line) -> Int {
   }
 }
 
-// The word wrapper discards leading separators, so the source line's own
-// leading indentation is re-applied to every row it returns, the first row
-// included. Wrapping happens at the narrowed width, which is what keeps a
-// nested note's hierarchy aligned instead of letting continuations fall back
-// to the left margin.
+/// The word wrapper discards leading separators, so the source line's own
+/// leading indentation is re-applied to every row it returns, the first row
+/// included. Wrapping happens at the narrowed width, which is what keeps a
+/// nested note's hierarchy aligned instead of letting continuations fall back
+/// to the left margin.
 fn wrap_indented(line: span.Line, width: Int) -> List(span.Line) {
   let leading = leading_cells(line)
   let indent = int.min(leading, int.max(0, width - 1))
+
+  // Wrap line accounting for preserved leading whitespace indent.
   case indent, line.spans {
     0, _ | _, [] -> span.wrap_line(line, width)
     _, [first, ..] -> {
@@ -656,13 +678,15 @@ fn wrap_indented(line: span.Line, width: Int) -> List(span.Line) {
   }
 }
 
-// A code row is everything after the innermost code gutter; the gutter and
-// whatever nesting precedes it is the prefix every continuation row repeats.
-// Splitting on the last gutter span rather than the first is what keeps a
-// fenced block inside a quoted list under both of its outer bars.
+/// A code row is everything after the innermost code gutter; the gutter and
+/// whatever nesting precedes it is the prefix every continuation row repeats.
+/// Splitting on the last gutter span rather than the first is what keeps a
+/// fenced block inside a quoted list under both of its outer bars.
 fn wrap_code_row(line: span.Line, width: Int) -> List(span.Line) {
   let #(prefix, source) = split_at_code_gutter(line.spans)
   let budget = width - spans_width(prefix)
+
+  // Drop gutter prefix when remaining width budget is non-positive.
   case budget <= 0 {
     // At very narrow widths the gutter would hide every source cell. Drop
     // the whole prefix rather than clipping a line number into a false one.
@@ -671,6 +695,7 @@ fn wrap_code_row(line: span.Line, width: Int) -> List(span.Line) {
   }
 }
 
+/// Breaks a line of code into wrapped display rows prefixed by gutter bars.
 fn code_rows(
   source: List(CellSpan),
   prefix: List(span.Span),
@@ -679,6 +704,8 @@ fn code_rows(
 ) -> List(span.Line) {
   let #(head, tail) = take_span_cells(source, budget, [])
   let row = span.line_new(list.append(prefix, head))
+
+  // Recurse to wrap remaining code cells into subsequent rows.
   case tail {
     [] -> list.reverse([row, ..complete])
     _ -> code_rows(tail, prefix, budget, [row, ..complete])
@@ -691,6 +718,7 @@ fn split_at_code_gutter(
   do_split_at_gutter(list.reverse(spans), [])
 }
 
+/// Recursively splits spans at code gutter bar boundary.
 fn do_split_at_gutter(
   reversed: List(span.Span),
   source: List(span.Span),
@@ -705,10 +733,10 @@ fn do_split_at_gutter(
   }
 }
 
-// Row kinds are read off the glyphs the renderer itself emitted rather than
-// off style equality. A style sentinel broke silently whenever the palette
-// moved, and it could not tell a code gutter from a quotation bar because
-// both were the same character in two colours.
+/// Row kinds are read off the glyphs the renderer itself emitted rather than
+/// off style equality. A style sentinel broke silently whenever the palette
+/// moved, and it could not tell a code gutter from a quotation bar because
+/// both were the same character in two colours.
 fn row_kind(line: span.Line) -> RowKind {
   let span.Line(spans:, ..) = line
   let code = list.any(spans, fn(value) { value.content == code_gutter })
@@ -735,6 +763,7 @@ fn is_grid_span(value: span.Span) -> Bool {
   }
 }
 
+/// Renders a single markdown AST block element into styled lines.
 fn render_block(
   block: tree.Block,
   width: Int,
@@ -779,7 +808,7 @@ fn render_block(
   }
 }
 
-// A code block under its gutter and, when it names a language, a label row.
+/// A code block under its gutter and, when it names a language, a label row.
 fn code_block(language: Option(String), text: String) -> List(span.Line) {
   source_lines(text)
   |> list.map(fn(line) {
@@ -791,18 +820,20 @@ fn code_block(language: Option(String), text: String) -> List(span.Line) {
   |> prepend_code_language(language)
 }
 
-// A Mermaid fence is drawn as a diagram when the renderer accepts it, under
-// the same gutter and `mermaid` label a code block carries so the two read as
-// one kind of block. The renderer is given the width left after the gutter,
-// so a drawn row never needs the hard wrap that would break a diagram.
-//
-// A diagram the renderer refuses is shown as the source it was given, with one
-// quiet row under it saying why, so the reader never loses the model's text.
-// A fence still streaming in is only partial source, and the same fallback
-// covers it: the parser does not say whether a fence was closed, and the
-// partial text is either refused or drawn as far as it already parses.
+/// A Mermaid fence is drawn as a diagram when the renderer accepts it, under
+/// the same gutter and `mermaid` label a code block carries so the two read as
+/// one kind of block. The renderer is given the width left after the gutter,
+/// so a drawn row never needs the hard wrap that would break a diagram.
+///
+/// A diagram the renderer refuses is shown as the source it was given, with one
+/// quiet row under it saying why, so the reader never loses the model's text.
+/// A fence still streaming in is only partial source, and the same fallback
+/// covers it: the parser does not say whether a fence was closed, and the
+/// partial text is either refused or drawn as far as it already parses.
 fn render_mermaid(source: String, width: Int) -> List(span.Line) {
   let room = int.max(1, width - string.length(code_gutter))
+
+  // Render diagram or fall back to plain code block representation.
   case mermaid.render(source, room) {
     Ok(rows) ->
       rows
@@ -837,6 +868,7 @@ fn source_lines(text: String) -> List(String) {
   }
 }
 
+/// Renders a blockquote by indenting and prefixing its inner blocks.
 fn render_quote(
   blocks: List(tree.Block),
   width: Int,
@@ -849,9 +881,9 @@ fn render_quote(
   ])
 }
 
-// An alert is a titled callout, not a quotation, so it drops the quote bar and
-// carries its kind on a heading row instead. The body is indented under that
-// title so the callout reads as one unit even where colour is unavailable.
+/// An alert is a titled callout, not a quotation, so it drops the quote bar and
+/// carries its kind on a heading row instead. The body is indented under that
+/// title so the callout reads as one unit even where colour is unavailable.
 fn render_alert(
   alert: tree.AlertKind,
   blocks: List(tree.Block),
@@ -870,8 +902,8 @@ fn render_alert(
   [title, ..body]
 }
 
-// The palette has no violet, so `Important` takes the strongest neutral the
-// theme offers rather than borrowing a hue that already means something else.
+/// The palette has no violet, so `Important` takes the strongest neutral the
+/// theme offers rather than borrowing a hue that already means something else.
 fn alert_style(alert: tree.AlertKind) -> style.Style {
   case alert {
     tree.Note -> theme.current_bold()
@@ -882,6 +914,7 @@ fn alert_style(alert: tree.AlertKind) -> style.Style {
   }
 }
 
+/// Returns the display title for a GitHub-style alert callout.
 fn alert_title(alert: tree.AlertKind) -> String {
   case alert {
     tree.Note -> "Note"
@@ -892,9 +925,9 @@ fn alert_title(alert: tree.AlertKind) -> String {
   }
 }
 
-// A footnote's definition is laid out as a list item whose marker is its
-// label in brackets, in the quiet colour its references are drawn in, so a
-// reader can match `[1]` in the text to `[1]` here.
+/// A footnote's definition is laid out as a list item whose marker is its
+/// label in brackets, in the quiet colour its references are drawn in, so a
+/// reader can match `[1]` in the text to `[1]` here.
 fn render_footnote(
   label: String,
   blocks: List(tree.Block),
@@ -912,6 +945,7 @@ fn render_footnote(
   |> trailing_blank
 }
 
+/// Computes header text styling based on heading level.
 fn heading_style(level: tree.Level) -> style.Style {
   case level {
     tree.H1 | tree.H2 -> theme.current_bold()
@@ -956,6 +990,7 @@ pub fn diff(patch: String) -> List(span.Line) {
   // Numbers precede the code gutter so hard wraps retain the source line's
   // coordinate, including when the patch is nested in a transcript prefix.
   list.map(rows, fn(row) {
+    // Format line number prefix for diff display.
     let prefix = case width {
       0 -> []
       _ -> [
@@ -965,6 +1000,7 @@ pub fn diff(patch: String) -> List(span.Line) {
         ),
       ]
     }
+
     span.line_new(
       list.append(prefix, [
         span.span_styled(code_gutter, theme.signal_bold()),
@@ -980,6 +1016,7 @@ type DiffHunk {
   DiffHunk(old: Int, new: Int, old_left: Int, new_left: Int)
 }
 
+/// Formats a single numbered line in a unified diff display.
 fn numbered_diff_row(
   hunk: Option(DiffHunk),
   line: String,
@@ -990,6 +1027,7 @@ fn numbered_diff_row(
   }
 }
 
+/// Generates numbered diff body lines with line numbers in gutter.
 fn numbered_diff_body(
   hunk: Option(DiffHunk),
   line: String,
@@ -1015,7 +1053,9 @@ fn numbered_diff_body(
   }
 }
 
+/// Parses a unified diff hunk header into old and new line ranges.
 fn diff_hunk(line: String) -> Option(DiffHunk) {
+  // Parse unified diff hunk header tokens.
   case string.split(line, " ") {
     ["@@", "-" <> old, "+" <> new, "@@", ..] -> {
       use old <- option.then(diff_range(old))
@@ -1026,23 +1066,31 @@ fn diff_hunk(line: String) -> Option(DiffHunk) {
   }
 }
 
+/// Parses a diff range specification into start offset and count.
 fn diff_range(value: String) -> Option(#(Int, Int)) {
+  // Parse comma-separated start offset and count tokens.
   let parts = case string.split(value, ",") {
     [start] -> Some(#(start, "1"))
     [start, count] -> Some(#(start, count))
     _ -> None
   }
+
   use parts <- option.then(parts)
   use start <- option.then(int.parse(parts.0) |> option.from_result)
   use count <- option.then(int.parse(parts.1) |> option.from_result)
+
+  // Validate start and line count values.
   case start >= 0 && count >= 0 && { start > 0 || count == 0 } {
     True -> Some(#(start, count))
     False -> None
   }
 }
 
+/// Formats a syntax-highlighted code token into a styled terminal span.
 fn code_span(part: CodePart) -> span.Span {
   let CodePart(text:, kind:) = part
+
+  // Apply syntax highlighting styles based on token kind.
   let rendered = case kind {
     CodePlain -> code_style()
     CodeKeyword -> theme.current_bold()
@@ -1057,9 +1105,11 @@ fn code_span(part: CodePart) -> span.Span {
     CodeRemoved -> theme.diff_removed()
     CodeDiffMeta -> theme.current_bold()
   }
+
   span.span_styled(text, rendered)
 }
 
+/// Renders an ordered or bulleted list into prefixed display lines.
 fn render_list(
   items: List(List(tree.Block)),
   ordered_start: Option(Int),
@@ -1068,6 +1118,7 @@ fn render_list(
 ) -> List(span.Line) {
   items
   |> list.index_map(fn(blocks, index) {
+    // Generate ordered index numeral or bullet point marker.
     let marker = case ordered_start {
       Some(start) -> int.to_string(start + index) <> ". "
       None -> "• "
@@ -1089,9 +1140,9 @@ fn render_list(
   |> trailing_blank
 }
 
-// A table is the one block whose shape is decided here rather than by the
-// wrapper, because a grid's columns can only be measured once and have to be
-// measured against the width the rows will be drawn in.
+/// A table is the one block whose shape is decided here rather than by the
+/// wrapper, because a grid's columns can only be measured once and have to be
+/// measured against the width the rows will be drawn in.
 fn render_table(
   header: List(tree.Cell),
   rows: List(List(tree.Cell)),
@@ -1103,6 +1154,7 @@ fn render_table(
   }
 }
 
+/// Renders a markdown table into aligned terminal grid lines.
 fn table_lines(
   header: List(tree.Cell),
   rows: List(List(tree.Cell)),
@@ -1149,9 +1201,9 @@ fn table_lines(
   }
 }
 
-// Shrinking stops at the point where a column can no longer hold a word. Past
-// that the grid is all border and no content, so the labelled record form,
-// which needs no horizontal budget at all, carries the row instead.
+/// Shrinking stops at the point where a column can no longer hold a word. Past
+/// that the grid is all border and no content, so the labelled record form,
+/// which needs no horizontal budget at all, carries the row instead.
 fn narrowed_lines(
   headings: List(List(span.Span)),
   body: List(List(List(span.Span))),
@@ -1167,10 +1219,10 @@ fn narrowed_lines(
   }
 }
 
-// The parser already cuts or pads every row to the header's width, so a
-// ragged row should not reach here; padding and truncating keeps the grid
-// rectangular regardless, because a short row would otherwise silently shift
-// every later column left.
+/// The parser already cuts or pads every row to the header's width, so a
+/// ragged row should not reach here; padding and truncating keeps the grid
+/// rectangular regardless, because a short row would otherwise silently shift
+/// every later column left.
 fn fit_row(
   cells: List(List(span.Span)),
   columns: Int,
@@ -1179,8 +1231,8 @@ fn fit_row(
   list.append(taken, list.repeat([], columns - list.length(taken)))
 }
 
-// A column is at least one cell wide so that an empty header still draws a
-// column the reader can see and the wrapper always has a budget to spend.
+/// A column is at least one cell wide so that an empty header still draws a
+/// column the reader can see and the wrapper always has a budget to spend.
 fn measure_columns(
   rows: List(List(List(span.Span))),
   columns: Int,
@@ -1190,10 +1242,10 @@ fn measure_columns(
   })
 }
 
-// Max-min fair allocation. Walking the columns narrowest first and handing
-// each one the smaller of its natural width and an equal share of what is
-// left means a narrow column is never padded at a wide column's expense, and
-// the surplus a narrow column does not use flows on to the wider ones.
+/// Max-min fair allocation. Walking the columns narrowest first and handing
+/// each one the smaller of its natural width and an equal share of what is
+/// left means a narrow column is never padded at a wide column's expense, and
+/// the surplus a narrow column does not use flows on to the wider ones.
 fn fit_columns(natural: List(Int), budget: Int) -> List(Int) {
   let ordered =
     natural
@@ -1210,10 +1262,10 @@ fn fit_columns(natural: List(Int), budget: Int) -> List(Int) {
   |> list.map(fn(column) { column.1 })
 }
 
-// Header cells are centred whatever the column's alignment says, which is how
-// GitHub and Claude Code present them: the alignment marker describes the
-// data, and a centred label sits over a right-aligned column without looking
-// like a stray value.
+/// Header cells are centred whatever the column's alignment says, which is how
+/// GitHub and Claude Code present them: the alignment marker describes the
+/// data, and a centred label sits over a right-aligned column without looking
+/// like a stray value.
 fn grid_lines(
   headings: List(List(span.Span)),
   body: List(List(List(span.Span))),
@@ -1233,6 +1285,7 @@ fn grid_lines(
   ])
 }
 
+/// Draws a table horizontal border line with joints matching column widths.
 fn border_line(
   widths: List(Int),
   left: String,
@@ -1241,10 +1294,12 @@ fn border_line(
 ) -> span.Line {
   let bars =
     list.index_map(widths, fn(width, index) {
+      // Pick left edge or column joint glyph.
       let lead = case index {
         0 -> left
         _ -> joint
       }
+
       [grid_span(lead), span.span_styled(rule(width + 2), theme.quiet_text())]
     })
   span.line_new(list.append(list.flatten(bars), [grid_span(right)]))
@@ -1258,8 +1313,8 @@ fn grid_span(glyph: String) -> span.Span {
   span.span_styled(glyph, theme.quiet_text())
 }
 
-// One source row becomes as many terminal rows as its tallest cell needs, so
-// a narrowed column wraps inside its own box instead of pushing the grid wide.
+/// One source row becomes as many terminal rows as its tallest cell needs, so
+/// a narrowed column wraps inside its own box instead of pushing the grid wide.
 fn cell_lines(
   cells: List(List(span.Span)),
   columns: List(#(Int, tree.Align)),
@@ -1278,12 +1333,13 @@ fn cell_lines(
   |> list.map(grid_line(_, columns))
 }
 
-// Cells are measured down their own column but drawn across the row, so the
-// per-cell row lists are turned inside out once every cell has been padded to
-// the tallest of them.
+/// Cells are measured down their own column but drawn across the row, so the
+/// per-cell row lists are turned inside out once every cell has been padded to
+/// the tallest of them.
 fn transpose(
   columns: List(List(List(span.Span))),
 ) -> List(List(List(span.Span))) {
+  // Transpose column matrix until all column cell lists are exhausted.
   case list.all(columns, list.is_empty) {
     True -> []
     False -> {
@@ -1300,6 +1356,7 @@ fn wrap_cell(cell: List(span.Span), width: Int) -> List(List(span.Span)) {
   |> list.map(fn(row) { clamp_spans(row.spans, width) })
 }
 
+/// Formats an individual row of table cells separated by vertical borders.
 fn grid_line(
   cells: List(List(span.Span)),
   columns: List(#(Int, tree.Align)),
@@ -1316,17 +1373,21 @@ fn grid_line(
   span.line_new(list.append(list.flatten(body), [grid_span("│")]))
 }
 
+/// Pads cell content according to column alignment specifications.
 fn align_cell(
   cell: List(span.Span),
   width: Int,
   alignment: tree.Align,
 ) -> List(span.Span) {
   let slack = int.max(0, width - spans_width(cell))
+
+  // Distribute padding spaces according to cell alignment.
   let #(before, after) = case alignment {
     tree.Unaligned | tree.Left -> #(0, slack)
     tree.Right -> #(slack, 0)
     tree.Center -> #(slack / 2, slack - slack / 2)
   }
+
   list.flatten([pad_spans(before), cell, pad_spans(after)])
 }
 
@@ -1337,10 +1398,10 @@ fn pad_spans(cells: Int) -> List(span.Span) {
   }
 }
 
-// Tables in chat are usually comparisons, and a terminal narrow enough to
-// refuse even the minimum grid is too narrow to preserve source columns.
-// Rendering each source row as one labelled record preserves the
-// relationships without horizontal scrolling.
+/// Tables in chat are usually comparisons, and a terminal narrow enough to
+/// refuse even the minimum grid is too narrow to preserve source columns.
+/// Rendering each source row as one labelled record preserves the
+/// relationships without horizontal scrolling.
 fn record_lines(
   headings: List(List(span.Span)),
   body: List(List(List(span.Span))),
@@ -1351,22 +1412,28 @@ fn record_lines(
   })
 }
 
+/// Renders key-value record fields for vertical table representation.
 fn table_record(
   headings: List(List(span.Span)),
   cells: List(List(span.Span)),
   field: RecordField,
 ) -> List(span.Line) {
+  // Zip heading and cell rows for vertical table representation.
   case headings, cells {
     [], _ | _, [] -> []
     [heading, ..rest_headings], [cell, ..rest_cells] -> {
+      // Select vertical record bar marker for first versus later fields.
       let marker = case field {
         FirstField -> span.span_styled("▌ ", theme.signal_bold())
         LaterField -> span.span_plain("  ")
       }
+
+      // Attach colon separator after heading label if non-empty.
       let label = case span_text(heading) {
         "" -> []
         _ -> list.append(heading, [span.span_styled(": ", theme.quiet_text())])
       }
+
       [
         span.line_new([marker, ..list.append(label, cell)]),
         ..table_record(rest_headings, rest_cells, LaterField)
@@ -1375,6 +1442,7 @@ fn table_record(
   }
 }
 
+/// Extracts the plain string text from a list of styled spans.
 fn span_text(spans: List(span.Span)) -> String {
   spans
   |> list.map(fn(value) {
@@ -1396,8 +1464,8 @@ fn clamp_spans(spans: List(span.Span), width: Int) -> List(span.Span) {
   head
 }
 
-// Each original span pays for segmentation and width once. The template keeps
-// its style, while completed rows materialize only the graphemes they consume.
+/// Each original span pays for segmentation and width once. The template keeps
+/// its style, while completed rows materialize only the graphemes they consume.
 fn cell_spans(spans: List(span.Span)) -> List(CellSpan) {
   list.map(spans, fn(value) {
     let graphemes = string.to_graphemes(value.content)
@@ -1409,9 +1477,9 @@ fn cell_spans(spans: List(span.Span)) -> List(CellSpan) {
   })
 }
 
-// Splitting on cell boundaries rather than on words preserves indentation.
-// The returned cursor shares its unconsumed tail with the original list;
-// neither segmentation nor whole-suffix concatenation occurs on continuation.
+/// Splitting on cell boundaries rather than on words preserves indentation.
+/// The returned cursor shares its unconsumed tail with the original list;
+/// neither segmentation nor whole-suffix concatenation occurs on continuation.
 fn take_span_cells(
   spans: List(CellSpan),
   budget: Int,
@@ -1423,12 +1491,14 @@ fn take_span_cells(
   }
 }
 
+/// Consumes graphemes from a span cell up to allocated width budget.
 fn take_span_cell(
   first: CellSpan,
   rest: List(CellSpan),
   budget: Int,
   taken: List(span.Span),
 ) -> #(List(span.Span), List(CellSpan)) {
+  // Consume whole cell if within budget, otherwise split graphemes.
   case first.cells <= budget {
     True -> {
       let whole =
@@ -1436,10 +1506,12 @@ fn take_span_cell(
       take_span_cells(rest, budget - first.cells, [whole, ..taken])
     }
     False -> {
+      // Consume graphemes up to available budget.
       let #(head, tail, remaining) = case budget <= 0 {
         True -> #("", first.graphemes, budget)
         False -> take_graphemes(first.graphemes, budget, [])
       }
+
       let consumed = budget - remaining
       let continuation =
         CellSpan(..first, graphemes: tail, cells: first.cells - consumed)
@@ -1451,18 +1523,21 @@ fn take_span_cell(
   }
 }
 
-// A positive budget always consumes at least one grapheme, including a wide
-// glyph in a one-cell column. Returning the unused budget lets the cursor
-// subtract the consumed width without walking the remaining input again.
+/// A positive budget always consumes at least one grapheme, including a wide
+/// glyph in a one-cell column. Returning the unused budget lets the cursor
+/// subtract the consumed width without walking the remaining input again.
 fn take_graphemes(
   graphemes: List(String),
   budget: Int,
   taken: List(String),
 ) -> #(String, List(String), Int) {
+  // Step across graphemes accumulating within width budget.
   case graphemes {
     [] -> #(joined(taken), [], budget)
     [first, ..rest] -> {
       let cells = text.grapheme_cell_width(first)
+
+      // Accept grapheme if within budget or to guarantee progress.
       case cells <= budget || taken == [] {
         True -> take_graphemes(rest, budget - cells, [first, ..taken])
         False -> #(joined(taken), graphemes, budget)
@@ -1475,9 +1550,9 @@ fn joined(reversed: List(String)) -> String {
   reversed |> list.reverse |> string.concat
 }
 
-// CommonMark keeps the padding around pipe-delimited cells. Removing only the
-// outer edges retains meaningful spaces between differently styled inline
-// spans while preventing the terminal labels from drifting apart.
+/// CommonMark keeps the padding around pipe-delimited cells. Removing only the
+/// outer edges retains meaningful spaces between differently styled inline
+/// spans while preventing the terminal labels from drifting apart.
 fn trim_span_edges(spans: List(span.Span)) -> List(span.Span) {
   spans
   |> trim_span_start(string.trim_start)
@@ -1486,14 +1561,18 @@ fn trim_span_edges(spans: List(span.Span)) -> List(span.Span) {
   |> list.reverse
 }
 
+/// Trims whitespace from the beginning of a span sequence.
 fn trim_span_start(
   spans: List(span.Span),
   trim: fn(String) -> String,
 ) -> List(span.Span) {
+  // Recursively trim whitespace from leading span contents.
   case spans {
     [] -> []
     [value, ..rest] -> {
       let span.Span(content:, ..) = value
+
+      // Check if span content became empty after trimming.
       case trim(content) {
         "" -> trim_span_start(rest, trim)
         content -> [span.Span(..value, content:), ..rest]
@@ -1527,6 +1606,7 @@ fn trim_span_start(
 /// ```
 @internal
 pub fn join_soft_break(head: span.Line, next: span.Line) -> span.Line {
+  // Match adjacent spans across soft break boundary to merge text.
   let spans = case list.reverse(head.spans), next.spans {
     [last, ..before], [first, ..after] ->
       case is_plain(last), is_plain(first) {
@@ -1551,6 +1631,7 @@ pub fn join_soft_break(head: span.Line, next: span.Line) -> span.Line {
       }
     _, _ -> spaced(head.spans, next.spans)
   }
+
   span.Line(..head, spans:)
 }
 
@@ -1562,6 +1643,7 @@ fn spaced(head: List(span.Span), next: List(span.Span)) -> List(span.Span) {
   list.append(head, [span.span_styled(" ", style.default_style()), ..next])
 }
 
+/// Converts parsed inline AST nodes into wrapped terminal lines.
 fn inline_lines(
   inlines: List(tree.Inline),
   base: style.Style,
@@ -1571,6 +1653,7 @@ fn inline_lines(
   |> parts_to_lines([], [])
 }
 
+/// Converts parsed inline AST nodes into styled terminal spans.
 fn inline_spans(
   inlines: List(tree.Inline),
   base: style.Style,
@@ -1585,6 +1668,7 @@ fn inline_spans(
   })
 }
 
+/// Maps inline markdown elements into intermediate inline text parts.
 fn inline_parts(inline: tree.Inline, base: style.Style) -> List(InlinePart) {
   case inline {
     tree.Text(text:) -> [Styled(span.span_styled(text, base))]
@@ -1642,17 +1726,19 @@ fn nested_parts(
   list.flat_map(inlines, inline_parts(_, base))
 }
 
-// A terminal draws no image, so one is its alternative text and its
-// destination, framed in the quiet colour.
+/// A terminal draws no image, so one is its alternative text and its
+/// destination, framed in the quiet colour.
 fn image_parts(
   alt: String,
   destination: String,
   base: style.Style,
 ) -> List(InlinePart) {
+  // Format alt text label if present.
   let label = case alt {
     "" -> []
     _ -> [Styled(span.span_styled(alt, base))]
   }
+
   [
     Styled(span.span_styled("[image: ", theme.quiet_text())),
     ..list.append(label, [
@@ -1667,6 +1753,7 @@ fn link_style(base: style.Style) -> style.Style {
   |> style.add_modifier(style.underline())
 }
 
+/// Assembles inline text parts into completed terminal display lines.
 fn parts_to_lines(
   parts: List(InlinePart),
   current: List(span.Span),
@@ -1686,6 +1773,7 @@ fn parts_to_lines(
   }
 }
 
+/// Adds leading span prefixes to first and continuation lines.
 fn prefix_lines(
   lines: List(span.Line),
   first: List(span.Span),
@@ -1694,14 +1782,18 @@ fn prefix_lines(
   lines
   |> list.index_map(fn(line, index) {
     let span.Line(spans:, alignment:) = line
+
+    // Select first-line prefix or continuation-line prefix.
     let prefix = case index == 0 {
       True -> first
       False -> continuation
     }
+
     span.Line(spans: list.append(prefix, spans), alignment:)
   })
 }
 
+/// Adds language label header row above a code block.
 fn prepend_code_language(
   lines: List(span.Line),
   language: Option(String),
@@ -1727,6 +1819,7 @@ fn trailing_blank(lines: List(span.Line)) -> List(span.Line) {
   list.append(lines, [span.line_plain("")])
 }
 
+/// Removes trailing empty lines from rendered markdown blocks.
 fn trim_trailing_blank(lines: List(span.Line)) -> List(span.Line) {
   case list.reverse(lines) {
     [span.Line(spans: [], ..), ..rest] -> list.reverse(rest)

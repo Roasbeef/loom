@@ -84,12 +84,15 @@ fn valid_platform(platform) {
   )
 }
 
+/// Decodes the 3 release components from the manifest artifacts array.
 fn decode_artifacts(value) {
+  // Match exactly three artifacts in array.
   use entries <- result.try(case value {
     json.Array([first, second, third]) -> Ok([first, second, third])
     json.Array(_) -> Error("release must contain exactly three components")
     _ -> Error("release artifacts must be an array")
   })
+
   use artifacts <- result.try(list.try_map(entries, decode_artifact))
   let components = list.map(artifacts, fn(item) { item.component })
   use <- bool.guard(
@@ -105,6 +108,7 @@ fn decode_artifacts(value) {
   Ok(artifacts)
 }
 
+/// Decodes an individual release component artifact object.
 fn decode_artifact(value) {
   use component <- result.try(text(value, "component"))
   use name <- result.try(text(value, "name"))
@@ -164,6 +168,7 @@ pub fn hexadecimal(value: String, width: Int) -> Bool {
   })
 }
 
+/// Looks up a named field from a JSON object.
 fn field(value, key) {
   case value {
     json.Object(fields) ->
@@ -173,16 +178,22 @@ fn field(value, key) {
   }
 }
 
+/// Extracts a required string field from a JSON object.
 fn text(value, key) {
   use value <- result.try(field(value, key))
+
+  // Verify string JSON type.
   case value {
     json.String(text) -> Ok(text)
     _ -> Error("release manifest " <> key <> " must be a string")
   }
 }
 
+/// Extracts a required integer field from a JSON object.
 fn integer(value, key) {
   use value <- result.try(field(value, key))
+
+  // Verify integer JSON type.
   case value {
     json.Int(number) -> Ok(number)
     _ -> Error("release manifest " <> key <> " must be an integer")

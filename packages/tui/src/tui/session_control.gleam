@@ -114,9 +114,7 @@ pub fn drain_reconnect(model: Model) -> Model {
   }
 }
 
-// Once the attempt has an outcome the slot is spent, so the relay's
-// `AllDelivered` that follows finds no slot naming its key and the runtime
-// drops it.
+/// Applies reconnect daemon outcome to model and initiates reattach.
 fn apply_reconnect_reply(
   model: Model,
   reply: job.ReconnectReply(job.Daemon),
@@ -148,10 +146,7 @@ fn apply_reconnect_reply(
   }
 }
 
-// Reattaches the session the terminal was already showing. The identity comes
-// from the model, so the operator's transcript and the daemon's registration
-// are the same session; `begin_open` is the shipped path that resolves the
-// current epoch and incarnation through control and adopts the new socket.
+/// Reattaches to previous session after successful daemon reconnect.
 fn reattach_after_reconnect(model: Model) -> Model {
   case model.shared.session {
     "" ->
@@ -199,6 +194,8 @@ const attach_timeout_ms = 90_000
 pub fn begin_open(model: Model, session: String) -> Model {
   let model =
     inbound.cancel_pending(model, "target change from " <> model.shared.session)
+
+  // Check whether candidate is busy and daemon host is connected.
   case attachment.busy(model.view.candidate), model.view.daemon_host {
     True, _ ->
       tui_model.append_error(model, "a session switch is already in progress")
@@ -247,6 +244,8 @@ pub fn begin_open(model: Model, session: String) -> Model {
 @internal
 pub fn open_chosen(model: Model, session: String) -> Model {
   let opened = begin_open(model, session)
+
+  // Check whether session attempt changed.
   case opened.view.next_attempt == model.view.next_attempt {
     True -> opened
     False ->
@@ -276,11 +275,14 @@ pub fn load_catalogue_collection(
   revision: Option(Int),
   collection: session_selector.Collection,
 ) -> Model {
+  // Choose active or archived list command.
   let command = case collection {
     session_selector.Active -> control_protocol.ListSessions(after, revision)
     session_selector.Archived ->
       control_protocol.ListArchivedSessions(after, revision)
   }
+
+  // Verify control socket availability before dispatching list.
   case model.view.control_request, model.view.daemon_host {
     Some(_), _ ->
       tui_model.append_error(model, "a catalogue page is already loading")
@@ -309,9 +311,7 @@ pub fn load_catalogue_collection(
   }
 }
 
-// Starts one control job in the picker's slot. Every caller has already
-// checked that the slot is free and that control is connected, so the job
-// replaces nothing.
+/// Starts a control job in the picker slot.
 fn start_control(
   model: Model,
   host: job.Daemon,
@@ -334,6 +334,7 @@ fn start_control(
 /// and never causes the metadata mutation to be sent a second time.
 @internal
 pub fn begin_rename(model: Model, session: String, name: String) -> Model {
+  // Verify control channel is free before dispatching rename.
   case model.view.control_request, model.view.daemon_host {
     Some(_), _ ->
       tui_model.append_error(model, "a catalogue action is already running")
@@ -364,6 +365,7 @@ pub fn begin_removal(
   session: String,
   removal: job.Removal,
 ) -> Model {
+  // Verify control channel is free before dispatching removal.
   case model.view.control_request, model.view.daemon_host {
     Some(_), _ ->
       tui_model.append_error(model, "a catalogue request is already running")
@@ -414,6 +416,7 @@ pub fn drain_control(model: Model) -> Model {
   }
 }
 
+/// Stages incoming control reply on model.
 fn apply_control_reply(
   model: Model,
   run: tui_model.ControlRequest,
@@ -446,7 +449,7 @@ fn apply_control_reply(
   }
 }
 
-// Keeps an outcome on the slot until the relay reports that it is done.
+/// Retains control outcome on the request slot until relay settles.
 fn staged(
   model: Model,
   run: tui_model.ControlRequest,
@@ -461,7 +464,9 @@ fn staged(
   )
 }
 
+/// Applies settled control job outcome to the model.
 fn finish_control(model: Model, result) {
+  // Match control result variant.
   case result {
     Some(Ok(PageLoaded(page, selected, collection))) -> {
       let selector =
@@ -474,11 +479,14 @@ fn finish_control(model: Model, result) {
       // so it keeps their filter and the last activity answers. A switch of
       // collection starts over: the archive has no resident rows.
       let selector = session_selector.State(..selector, collection:)
+
+      // Carry over previous selector state if same collection.
       let selector = case model.view.overlay {
         DaemonSelector(previous) if previous.collection == collection ->
           session_selector.carry(previous, selector)
         _ -> selector
       }
+
       Model(
         shared: shared_set.notice(model.shared, case collection {
           session_selector.Active ->
@@ -550,8 +558,7 @@ fn finish_control(model: Model, result) {
   }
 }
 
-// Acknowledgements update only the collection already on screen. Restoring a
-// row never opens it, and no metadata acknowledgement retargets attachment.
+/// Removes session from active selector overlay and emits notice.
 fn catalogue_removed(model: Model, id: String, description: String) -> Model {
   Model(
     shared: shared_set.notice(model.shared, description <> id),
@@ -645,11 +652,14 @@ pub fn drain_configuration(model: Model) -> Model {
   }
 }
 
+/// Handles configuration job completion and triggers session creation.
 fn apply_configuration_reply(
   model: Model,
   reply: job.ConfigurationReply,
 ) -> Model {
   let finished = Model(..model, view: view_set.configuring(model.view, None))
+
+  // Check configuration reply status.
   case reply {
     weft.NotYet -> model
 
@@ -736,9 +746,12 @@ fn refuse_creation(model: Model, reason: String) -> Model {
   |> tui_model.append_error(reason)
 }
 
+/// Initiates session creation with parsed configuration.
 fn create_session_configured(model: Model, config: String) -> Model {
   let model =
     inbound.cancel_pending(model, "target change from " <> model.shared.session)
+
+  // Verify creation precondition states.
   case
     model.view.creation_key,
     model.view.daemon_host,
@@ -791,6 +804,7 @@ fn create_session_configured(model: Model, config: String) -> Model {
           "",
         )
       }
+
       let route =
         job.CreateSession(
           host.control,
@@ -936,7 +950,9 @@ pub fn begin_peer_workspace_for_session(
   )
 }
 
+/// Initiates peer workspace state refresh.
 fn begin_peer_workspace_state(model: Model, state: peer_links.State) {
+  // Check preconditions for peer workspace state query.
   case
     model.shared.session,
     model.view.daemon_host,
@@ -967,12 +983,14 @@ fn begin_peer_workspace_state(model: Model, state: peer_links.State) {
   }
 }
 
+/// Initiates peer link inspection request.
 fn begin_peer_inspection(
   model: Model,
   session: String,
   strand: String,
   after: Option(String),
 ) {
+  // Verify control socket availability.
   case model.view.control_request, model.view.daemon_host {
     Some(_), _ ->
       tui_model.append_error(model, "another daemon control request is running")
@@ -992,8 +1010,9 @@ fn begin_peer_inspection(
   }
 }
 
-// The chooser reads only metadata under the first page's catalogue revision.
+/// Fetches next page of target sessions for peer link chooser.
 fn begin_peer_sessions(model: Model, after: String, revision: Int) {
+  // Check control request slot availability.
   case model.view.control_request, model.view.daemon_host {
     Some(_), _ ->
       tui_model.append_error(model, "another daemon control request is running")
@@ -1010,6 +1029,7 @@ fn begin_peer_sessions(model: Model, after: String, revision: Int) {
   }
 }
 
+/// Dispatches link creation request between peers.
 fn begin_peer_link(model: Model, proposal: peer_links.Proposal) {
   run_peer_mutation(
     model,
@@ -1023,6 +1043,7 @@ fn begin_peer_link(model: Model, proposal: peer_links.Proposal) {
   )
 }
 
+/// Dispatches link removal request between peers.
 fn begin_peer_unlink(model: Model, grant: peer_links.Grant) {
   run_peer_mutation(
     model,
@@ -1035,7 +1056,9 @@ fn begin_peer_unlink(model: Model, grant: peer_links.Grant) {
   )
 }
 
+/// Dispatches a peer topology mutation command through control.
 fn run_peer_mutation(model: Model, command: control_protocol.Command) {
+  // Check control request slot availability.
   case model.view.control_request, model.view.daemon_host {
     Some(_), _ ->
       tui_model.append_error(model, "another daemon control request is running")
@@ -1054,6 +1077,7 @@ fn run_peer_mutation(model: Model, command: control_protocol.Command) {
   }
 }
 
+/// Updates peer link manager with inspected workspace session state.
 fn finish_peer_workspace(
   model: Model,
   page: control_protocol.Page,
@@ -1105,6 +1129,7 @@ fn finish_peer_workspace(
   }
 }
 
+/// Appends fetched peer sessions page to peer link manager.
 fn finish_peer_sessions(model: Model, page: control_protocol.Page) {
   case model.view.overlay {
     PeerLinkManager(state) ->
@@ -1124,6 +1149,7 @@ fn finish_peer_sessions(model: Model, page: control_protocol.Page) {
   }
 }
 
+/// Decodes peer inspection page and updates peer link manager overlay.
 fn finish_peer_inspection(
   model: Model,
   document: json.JsonValue,
@@ -1179,7 +1205,9 @@ fn finish_peer_inspection(
   }
 }
 
+/// Completes peer link mutation and triggers refresh inspection.
 fn finish_peer_operation(model: Model, document: json.JsonValue) {
+  // Verify peer link manager overlay is open.
   case model.view.overlay {
     PeerLinkManager(state) -> {
       let notice = peer_links.completed(state, document)
@@ -1206,6 +1234,7 @@ fn finish_peer_operation(model: Model, document: json.JsonValue) {
   }
 }
 
+/// Records daemon control failure reason onto active overlay.
 fn finish_control_failure(model: Model, reason: String) {
   case model.view.overlay {
     PeerLinkManager(state) ->
@@ -1250,6 +1279,7 @@ fn finish_control_failure(model: Model, reason: String) {
 /// // session_control.begin_access(model)
 /// ```
 pub fn begin_access(model: Model) -> Model {
+  // Check control connection and request availability.
   case model.view.daemon_host, model.view.control_request {
     _, Some(_) ->
       tui_model.append_error(model, "another daemon control request is running")
@@ -1308,8 +1338,7 @@ pub fn update_access_overlay(key, model: Model, state: access_overlay.State) {
   }
 }
 
-// The control command for one reviewed change. The epoch is added where the
-// command is encoded, from the hello of the connection that sends it.
+/// Encodes access control change into protocol command.
 fn access_command(change: access_overlay.Change) -> control_protocol.Command {
   case change {
     access_overlay.SetRole(session_id:, principal_id:, role:, ..) ->
@@ -1326,9 +1355,7 @@ fn show_access(model: Model, state: access_overlay.State) -> Model {
   |> tui_model.invalidate_frame
 }
 
-// One control request at a time. When another is running, nothing is sent and
-// the overlay says so on its own notice line; a reviewed change that meets a
-// busy slot returns to browsing unsent, so the operator can repeat it.
+/// Dispatches access control request if control slot is idle.
 fn begin_access_request(
   model: Model,
   state: access_overlay.State,
@@ -1352,6 +1379,7 @@ fn begin_access_request(
   }
 }
 
+/// Updates access manager overlay with decoded principals listing.
 fn finish_access_listing(
   model: Model,
   document: json.JsonValue,
@@ -1378,6 +1406,7 @@ fn finish_access_listing(
   }
 }
 
+/// Updates access manager overlay with decoded memberships listing.
 fn finish_memberships(
   model: Model,
   document: json.JsonValue,
@@ -1408,9 +1437,7 @@ fn finish_memberships(
   }
 }
 
-// An acknowledged change is followed by the read that shows its effect. The
-// acknowledgement itself is drawn by the overlay from what was reviewed. A
-// change acknowledged after the overlay closed leaves one transcript line.
+/// Processes access change response and triggers subsequent listing reads.
 fn finish_access_change(model: Model, document: json.JsonValue) -> Model {
   case model.view.overlay {
     AccessManager(state) ->
@@ -1481,6 +1508,7 @@ pub fn service_activity(model: Model) -> Model {
   }
 }
 
+/// Determines whether a session activity status poll is due.
 fn activity_due(model: Model) -> Bool {
   case model.view.activity_poll {
     ActivityDue -> True
@@ -1489,6 +1517,7 @@ fn activity_due(model: Model) -> Bool {
   }
 }
 
+/// Dispatches an activity status query job for active session rows.
 fn start_activity(model: Model, host: job.Daemon, ids: List(String)) -> Model {
   let #(model, key) =
     tui_model.start_job(model, job.Activity(host.control, ids))
@@ -1543,6 +1572,7 @@ pub fn drain_activity(model: Model) -> Model {
   }
 }
 
+/// Applies activity poll reply to model or advances poll rest timer.
 fn apply_activity_reply(
   model: Model,
   asked: List(String),
@@ -1563,6 +1593,7 @@ fn apply_activity_reply(
   }
 }
 
+/// Updates session selector with fresh activity status observations.
 fn observe_activity(
   model: Model,
   asked: List(String),

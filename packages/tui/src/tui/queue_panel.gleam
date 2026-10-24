@@ -35,6 +35,7 @@ pub fn lines(
   preview_scroll: Int,
   area: geometry.Rect,
 ) -> List(span.Line) {
+  // Inspect selected row presence and render queue lines.
   case selected_row(rows, selected) {
     Error(Nil) -> [
       styled_line(
@@ -46,6 +47,8 @@ pub fn lines(
     Ok(row) -> {
       let preview_scroll =
         int.min(preview_scroll, max_scroll(rows, selected, area))
+
+      // Choose layout based on available width.
       case wide(area) {
         True -> wide_lines(rows, row, selected, preview_scroll, area)
         False ->
@@ -117,6 +120,7 @@ pub fn tiny_line(
   preview_scroll: Int,
   width: Int,
 ) -> span.Line {
+  // Render selected row or fallback notice.
   case selected_row(rows, selected) {
     Error(Nil) -> styled_line("No queued inputs", width, theme.overlay_quiet())
     Ok(row) -> {
@@ -137,15 +141,20 @@ pub fn tiny_line(
   }
 }
 
+/// Formats compact badges indicating queue type and editing access.
 fn tiny_badges(row: snapshot_view.PendingInput) -> String {
+  // Format short kind tag.
   let kind = case row.kind {
     snapshot_view.Queue -> "Q"
     snapshot_view.Steer -> "STEER"
   }
+
+  // Format short editing access tag.
   let access = case row.editing {
     snapshot_view.Editable -> "EDIT"
     snapshot_view.ReadOnly -> "READ-ONLY"
   }
+
   kind <> " " <> access
 }
 
@@ -153,6 +162,7 @@ fn wide(area: geometry.Rect) -> Bool {
   area.size.width >= 70 && area.size.height >= 6
 }
 
+/// Renders wide dual-column layout with queue list and message preview.
 fn wide_lines(
   rows: List(snapshot_view.PendingInput),
   current: snapshot_view.PendingInput,
@@ -183,6 +193,7 @@ fn wide_lines(
   |> list.reverse
 }
 
+/// Renders compact single-column preview layout.
 fn compact_lines(
   row: snapshot_view.PendingInput,
   selected: Int,
@@ -198,6 +209,7 @@ fn compact_lines(
   ]
 }
 
+/// Renders list of queue rows with selection highlight.
 fn queue_rows(
   rows: List(snapshot_view.PendingInput),
   selected: Int,
@@ -224,6 +236,7 @@ fn queue_rows(
   ]
 }
 
+/// Renders full preview pane with heading and wrapped message excerpt.
 fn preview_rows(
   row: snapshot_view.PendingInput,
   preview_scroll: Int,
@@ -237,6 +250,7 @@ fn preview_rows(
   ]
 }
 
+/// Formats the single-line summary of the selected queue item.
 fn selected_line(
   row: snapshot_view.PendingInput,
   width: Int,
@@ -254,17 +268,22 @@ fn selected_line(
   raised_line(label, width, kind_color(row.kind))
 }
 
+/// Formats a single item row in the queue list.
 fn queue_line(
   row: snapshot_view.PendingInput,
   focus: RowFocus,
   width: Int,
 ) -> span.Line {
+  // Select cursor marker based on focus.
   let marker = case focus {
     Selected -> "▸ "
     Ordinary -> "  "
   }
+
   let suffix = " · " <> badges(row)
   let label = marker <> message_with_suffix(row.text, suffix, width - 2)
+
+  // Pick styling based on selection state.
   case focus {
     Selected -> raised_line(label, width, kind_color(row.kind))
     Ordinary -> styled_line(label, width, theme.overlay_plain())
@@ -308,18 +327,24 @@ fn message_with_suffix(value: String, suffix: String, width: Int) -> String {
   text.truncate(text_hygiene.single_line(value), available, "…") <> suffix
 }
 
+/// Formats badge tokens for queue kind and editing mode.
 fn badges(row: snapshot_view.PendingInput) -> String {
+  // Format kind tag.
   let kind = case row.kind {
     snapshot_view.Queue -> "[QUEUE]"
     snapshot_view.Steer -> "[STEER]"
   }
+
+  // Format editing mode tag.
   let access = case row.editing {
     snapshot_view.Editable -> "[EDIT]"
     snapshot_view.ReadOnly -> "[READ-ONLY]"
   }
+
   kind <> " " <> access
 }
 
+/// Renders preview heading with revision metadata and action hints.
 fn preview_heading(row: snapshot_view.PendingInput, width: Int) -> span.Line {
   styled_line(
     "Captured excerpt · revision "
@@ -333,6 +358,7 @@ fn preview_heading(row: snapshot_view.PendingInput, width: Int) -> span.Line {
   )
 }
 
+/// Formats lines of message body text wrapped and scrolled.
 fn excerpt_rows(
   row: snapshot_view.PendingInput,
   preview_scroll: Int,
@@ -353,6 +379,7 @@ fn wrapped_excerpt(value: String, width: Int) -> List(String) {
   |> list.flat_map(fn(line) { text.wrap(line, int.max(1, width)) })
 }
 
+/// Computes available width for preview excerpt based on layout mode.
 fn preview_width(area: geometry.Rect) -> Int {
   case wide(area) {
     True ->
@@ -375,6 +402,7 @@ fn kind_color(kind: snapshot_view.InputKind) -> style.Color {
   }
 }
 
+/// Renders text line on raised background with given foreground colour.
 fn raised_line(
   value: String,
   width: Int,
@@ -383,6 +411,7 @@ fn raised_line(
   styled_line(value, width, style.new(foreground, theme.raised, style.none()))
 }
 
+/// Renders single padded and truncated text line with given appearance style.
 fn styled_line(
   value: String,
   width: Int,

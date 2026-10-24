@@ -114,11 +114,11 @@ fn reconnect_decision(model: Model) -> ReconnectDecision {
   }
 }
 
-// The innermost question, split out so the decision above reads as the
-// three facts it is deciding between rather than four nested cases. A
-// terminal that has already spent its one attempt waits for the operator
-// instead of looping, and one whose attempt is still running must not
-// start a second beside it.
+/// Evaluates current reconnection state to determine whether reconnect is allowed.
+///
+/// A terminal that has already spent its one attempt waits for the operator
+/// instead of looping, and one whose attempt is still running must not
+/// start a second beside it.
 fn reconnect_state_decision(
   reconnect: Reconnect,
   session: String,
@@ -132,14 +132,12 @@ fn reconnect_state_decision(
   }
 }
 
-// Enters the one bounded reconnect an unexpected daemon death is allowed.
-//
-// Called from the two places a live conversation reports its loss — the
-// directly attached socket and the credited session channel — so the
-// decision is made once, at the transition, rather than at each caller. The
-// transcript is deliberately untouched: the model already holds it, and a
-// relaunch that fails must leave it exactly where the operator left it.
+/// Enters the one bounded reconnect an unexpected daemon death is allowed.
+///
+/// The transcript is deliberately untouched: the model already holds it, and a
+/// relaunch that fails must leave it exactly where the operator left it.
 fn begin_reconnect(model: Model) -> Model {
+  // Check if reconnection should be initiated or was refused.
   case reconnect_decision(model) {
     ReconnectRefused(_) -> model
     ReconnectWanted(session, options) -> {
@@ -172,6 +170,7 @@ fn begin_reconnect(model: Model) -> Model {
 /// ```
 @internal
 pub fn tick_channel(model: Model) -> Model {
+  // Advance timers if a session channel is currently attached.
   case model.shared.channel {
     None -> model
     Some(_) -> {
@@ -287,9 +286,9 @@ pub fn apply_cut(
   run_settled(model, lane_fold.apply_cut(_, cut, view, around))
 }
 
-// A question is offered once per exact sequence. Deferring one leaves it in
-// /approvals, while a reopened request with the same ID is a new question.
+/// Automatically prompts the operator with the earliest pending approval request.
 fn present_pending_approval(model: Model) -> Model {
+  // Only present when no other modal overlay is active.
   case model.view.overlay, model.shared.captured {
     NoOverlay, Some(#(cut, _)) if cut.attachment.role != snapshot.Observer -> {
       let seen =
@@ -303,6 +302,8 @@ fn present_pending_approval(model: Model) -> Model {
           record.status == approval.Pending
           && !list.contains(seen, #(record.id, record.seq))
         })
+
+      // Present the first unseen approval request if found.
       case unseen {
         Error(Nil) ->
           Model(..model, view: view_set.prompted_approvals(model.view, seen))
@@ -321,6 +322,7 @@ fn present_pending_approval(model: Model) -> Model {
   }
 }
 
+/// Displays the requested approval inspector once record lookup completes.
 fn inspect_looked_up(model: Model, records, missing) {
   // A lookup started before automatic presentation may finish while the
   // operator is reviewing another question. The visible record owns consent
@@ -372,11 +374,13 @@ pub fn decide_captured_approval(
   record: approval.Review,
   choice: approval_panel.Choice,
 ) -> Model {
+  // Translate panel choice enum into operator decision action.
   let choice = case choice {
     approval_panel.AllowOnce -> operator.AllowOnce
     approval_panel.AllowSession -> operator.AllowForSession
     approval_panel.Deny -> operator.Deny
   }
+
   run_settled(model, commands.act(_, msg.Decide(review: record, choice:)))
 }
 
@@ -401,6 +405,7 @@ pub fn drain_connection(model: Model, remaining: Int) -> Model {
     True -> session_model.MailboxMayHoldMore
     False -> session_model.MailboxDrained
   }
+
   let drained =
     operator.drain(model, remaining, take_connection, handle_connection_message)
 
@@ -446,13 +451,12 @@ pub fn accept_connection_message(
   handle_connection_message(model, incoming)
 }
 
-// One socket message. With a lane, the lane turns it into updates and each
-// is applied as its own unit. With none, it is the preview peer's traffic,
-// applied as one call.
+/// Processes an incoming socket message through the lane fold or direct reducer.
 fn handle_connection_message(
   model: Model,
   incoming: connection_event.Message,
 ) -> Model {
+  // Delegate to channel lane fold when active, or handle unlaned.
   case model.shared.channel {
     Some(channel) -> {
       let #(shared, updates) =
@@ -503,6 +507,7 @@ fn handle_connection_message(
 /// ```
 @internal
 pub fn settle_surfaces(before: Model, held: Model) -> Model {
+  // Apply buffered surface facts to the model.
   let settled = case held.shared.surface_facts {
     [] -> held
     facts ->
@@ -512,6 +517,8 @@ pub fn settle_surfaces(before: Model, held: Model) -> Model {
         fn(model, fact) { show_surface(before, model, fact) },
       )
   }
+
+  // Restore any unsent drafts returned from stopping strands.
   case settled.shared.returned_drafts {
     [] -> settled
     _ -> restore_returned_drafts(settled)
@@ -540,7 +547,7 @@ pub fn run_settled(
   settle_surfaces(model, tui_model.run_shared(model, reducer))
 }
 
-// One fact, applied to the terminal state it stands for.
+/// Applies an individual surface fact to update corresponding view components.
 fn show_surface(
   before: Model,
   model: Model,
@@ -559,6 +566,7 @@ fn show_surface(
 
     // An open model selector lists what the daemon just named.
     session_model.ModelsListed(models:, current:) -> {
+      // Update choices within model selector if open.
       let overlay = case model.view.overlay {
         ModelSelector(selector) ->
           ModelSelector(model_selector.replace_models(selector, models, current))
@@ -573,6 +581,7 @@ fn show_surface(
         MemoryOverview(state) -> MemoryOverview(state)
         ApprovalInspector(panel) -> ApprovalInspector(panel)
       }
+
       Model(..model, view: view_set.overlay(model.view, overlay))
     }
 
@@ -649,6 +658,8 @@ fn show_surface(
     // as the session state has already dropped the attachments it carried.
     session_model.DraftTaken(taking:) -> {
       let cleared = tui_model.clear_composer_text(model)
+
+      // Reset submission mode when taken as prompt.
       case taking {
         session_model.TakenByCommand -> cleared
         session_model.TakenAsPrompt ->
@@ -685,26 +696,26 @@ fn show_surface(
   }
 }
 
-// A notes board belongs to the notes surface when it is for the strand that
-// surface shows: the agent inspector's strand while its Notes tab is open,
-// the active strand otherwise. That board replaces `note_board`, keeps the
-// selection on the same note where it can, and keeps the scroll while the
-// selection holds. Any other board only seeded the todo panel, which the
-// event fold has already done.
+/// Updates the active notes board and preserves selected note and scroll offset.
 fn show_notes(model: Model, board: notes_view.Board) -> Model {
+  // Ignore board updates targeting inactive strands.
   case board.strand == side_surfaces.notes_target(model) {
     False -> model
     True -> {
+      // Preserve previously selected note from the prior board.
       let previous = case model.shared.note_board {
         Some(old) if old.strand == board.strand ->
           render.selected_note(model, old)
         _ -> model.view.note_selected
       }
+
       let selected =
         render.selected_note(
           Model(..model, view: view_set.note_selected(model.view, previous)),
           board,
         )
+
+      // Preserve scroll position if note selection remained identical.
       let scroll = case
         model.shared.note_board,
         selected == model.view.note_selected
@@ -719,6 +730,7 @@ fn show_notes(model: Model, board: notes_view.Board) -> Model {
           )
         None, True | Some(_), True | None, False | Some(_), False -> 0
       }
+
       tui_model.invalidate_transcript(Model(
         shared: Shared(
           ..model.shared,
@@ -738,21 +750,13 @@ fn show_notes(model: Model, board: notes_view.Board) -> Model {
   }
 }
 
-// Moves every returned draft the session state holds into the terminal's
-// editors, oldest first, and empties `Shared.returned_drafts`.
-//
-// A return follows the prompt's original recipient even if the operator has
-// opened another strand since submitting it, so only that strand's editor
-// can accept the text: the composer when the strand is the one on screen,
-// and its parked workspace otherwise. An untouched editor simply becomes the
-// draft. One the operator is typing in keeps its text and grows the return
-// below it, separated by a blank line: discarding either half would lose
-// work the operator can see, and silently replacing the draft would move
-// text out from under the cursor.
+/// Moves returned drafts from cancelled operations back into corresponding editors.
 fn restore_returned_drafts(model: Model) -> Model {
   let view =
     list.fold(model.shared.returned_drafts, model.view, fn(view, returned) {
       let ReturnedDraft(session:, strand:, text:) = returned
+
+      // Append returned text into the active input or stored strand workspace.
       case
         session == model.shared.session && strand == model.shared.active_strand
       {
@@ -777,16 +781,19 @@ fn restore_returned_drafts(model: Model) -> Model {
   Model(shared: Shared(..model.shared, returned_drafts: []), view:)
 }
 
-// Keep both copies when the owner has continued typing before custody returns.
+/// Appends returned text to current draft content with newline separation.
 fn append_returned_text(
   input: text_area.TextAreaState,
   returned: String,
 ) -> text_area.TextAreaState {
   let current = text_area.value(input)
+
+  // When existing text is present, append returned draft below double newline.
   let restored = case string.trim(current) {
     "" -> returned
     _ -> current <> "\n\n" <> returned
   }
+
   text_area.state_from_string(restored)
 }
 
@@ -797,6 +804,7 @@ pub fn select_inspector_message(
   inspector: agents.Inspector,
   messages: List(agent_messages.Item),
 ) -> agents.Inspector {
+  // Only update selection when the messages tab is active.
   case inspector.detail {
     agents.Overview | agents.Notes | agents.Collaboration -> inspector
     agents.Messages -> {
@@ -805,10 +813,13 @@ pub fn select_inspector_message(
         |> agent_messages.for_strand(inspector.selected)
         |> agent_message_panel.selected(inspector.message)
         |> option.map(agent_message_panel.identity)
+
+      // Reset scroll position if selection moved.
       let scroll = case selected == inspector.message {
         True -> inspector.scroll
         False -> 0
       }
+
       agents.Inspector(..inspector, message: selected, scroll:)
     }
   }
@@ -842,10 +853,12 @@ pub fn reconcile_agent_message_selection(model: Model) -> Model {
 /// The furthest the notes panel can scroll for the current selection.
 @internal
 pub fn note_max_scroll(model: Model) -> Int {
+  // Determine detail view bounding area based on active overlay.
   let area = case model.view.overlay {
     AgentInspector(_) -> layout.message_detail_area(model)
     _ -> layout.note_detail_area(model)
   }
+
   render.prepared_notes(model, side_surfaces.notes_target(model), area)
   |> note_panel.max_scroll(model.view.note_selected)
 }
@@ -863,19 +876,28 @@ pub fn captured_approval_panel(model: Model, review: approval.Review) {
         && cell.seq == review.seq
       }),
     )
+
+    // Parse escalation record payload.
     use fields <- result.try(case cell.value {
       json.Object(fields) -> Ok(fields)
       _ -> Error(Nil)
     })
+
     use scope <- result.try(list.key_find(fields, "scope"))
+
+    // Decode inner scope fields.
     use fields <- result.try(case scope {
       json.Object(fields) -> Ok(fields)
       _ -> Error(Nil)
     })
+
+    // Extract target strand owner.
     use owner <- result.try(case list.key_find(fields, "strand") {
       Ok(json.String(owner)) -> Ok(owner)
       _ -> Error(Nil)
     })
+
+    // Extract target operation ID.
     use operation <- result.try(case list.key_find(fields, "operation") {
       Ok(json.String(operation)) -> Ok(operation)
       _ -> Error(Nil)
@@ -932,8 +954,7 @@ pub fn service_history(model: Model) -> Model {
   tui_model.run_shared(model, lane_fold.service_history)
 }
 
-// Keep draft ownership across sessions while retaining history only for
-// strands still present in the current session. Draft text is never evicted.
+/// Evicts cached history for retired strands while preserving draft inputs.
 fn prune_workspace_history(
   workspaces: Dict(#(String, String), StrandWorkspace),
   session: String,
@@ -954,7 +975,7 @@ fn prune_workspace_history(
   })
 }
 
-// New destinations begin with their own editor and an empty history window.
+/// Constructs an initial workspace state for a new destination strand.
 fn empty_workspace() -> StrandWorkspace {
   StrandWorkspace(
     text_area.state_new(),
@@ -992,16 +1013,7 @@ pub fn select_workspace(
   run_settled(model, event_fold.select_workspace(_, session, strand))
 }
 
-// The terminal's half of a workspace switch: the editor, the attachments
-// and the viewport park under the departing key, and the arriving key's are
-// restored. A change of session also closes the goal inspector, whose board
-// the session state has just released, and returns the strip's focus to the
-// composer.
-//
-// The parked viewport height is measured on the model from before the
-// shared half ran, with the boards and the goal inspector a session change
-// releases already released, because layout reads both and the switch used
-// to measure there: after releasing them and before anything else moved.
+/// Parks departing strand workspace state and restores arriving strand editor.
 fn switch_editor(
   before: Model,
   model: Model,
@@ -1010,6 +1022,8 @@ fn switch_editor(
   previous_session: String,
 ) -> Model {
   let same_session = previous_session == arriving.0
+
+  // Dismiss goal inspector overlay when leaving session.
   let overlay = case same_session, model.view.overlay {
     False, GoalInspector(_) -> NoOverlay
     _, other -> other
@@ -1102,17 +1116,7 @@ pub fn refresh_worktree(model: Model) -> Model {
   tui_model.run_shared(model, lane_fold.refresh_worktree)
 }
 
-// The queue editor's selection follows the row it pointed at from the rows
-// a cut replaced into the rows it brought, and its preview keeps its scroll
-// while the same row stays selected.
-//
-// The preview's height depends on layout, which reads the model. The old
-// code measured it inside the cut, before the cut wrote the session state
-// layout reads (the captured cut, the agent rows, the strands) and after
-// only the completion and job fields, which layout does not read. So it is
-// measured here on the shared record from before the update and the
-// terminal state as it stands, which holds every terminal write the update
-// made before this fact.
+/// Updates queue selection index and preview scroll when pending queue rows change.
 fn follow_queue_selection(
   before: Model,
   model: Model,
@@ -1123,6 +1127,8 @@ fn follow_queue_selection(
     previous
     |> list.drop(model.view.queue_editor.selected)
     |> list.first
+
+  // Resolve new index for previously selected queue item.
   let selected = case old {
     Ok(row) ->
       rows
@@ -1131,6 +1137,8 @@ fn follow_queue_selection(
       |> result.unwrap(0)
     Error(Nil) -> 0
   }
+
+  // Maintain scroll offset if selection did not change.
   let preview_scroll = case old {
     Ok(row) ->
       case list.first(list.drop(rows, selected)) {
@@ -1156,6 +1164,7 @@ fn follow_queue_selection(
       }
     Error(Nil) -> 0
   }
+
   Model(
     ..model,
     view: view_set.queue_editor(
@@ -1181,6 +1190,7 @@ fn follow_queue_selection(
 /// ```
 @internal
 pub fn tick_strip(model: Model) -> Model {
+  // Advance agent strip clock only when strip is visible.
   case layout.agents_drawn(model) {
     False -> model
     True -> {
@@ -1188,6 +1198,8 @@ pub fn tick_strip(model: Model) -> Model {
         agent_roster.tick(model.shared.roster, model.shared.stamp.now_ms)
       let model =
         Model(..model, shared: shared_set.roster(model.shared, roster))
+
+      // Invalidate frame when elapsed seconds counter changed.
       case repaint {
         agent_roster.Changed -> tui_model.invalidate_frame(model)
         agent_roster.Unchanged -> model

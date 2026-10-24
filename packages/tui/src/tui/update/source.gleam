@@ -84,6 +84,7 @@ pub fn resolve(
   Ok(Release(document, base, signature))
 }
 
+/// Resolves distribution base URL or directory path from options.
 fn resolve_base(choices: options.Options, platform, stage, fetch) {
   use <- bool.guard(
     choices.selection == options.Nightly
@@ -92,6 +93,8 @@ fn resolve_base(choices: options.Options, platform, stage, fetch) {
       "--nightly selects GitHub main; it cannot use --from or --manifest-url",
     ),
   )
+
+  // Determine source base whether GitHub, mirror, or local directory.
   case choices.from, choices.mirror {
     "", "" -> github_base(choices, stage, fetch)
     "", mirror -> {
@@ -111,7 +114,9 @@ fn resolve_base(choices: options.Options, platform, stage, fetch) {
   }
 }
 
+/// Derives GitHub download release base URL from selected tag or commit.
 fn github_base(choices: options.Options, stage, fetch) {
+  // Resolve selection from GitHub or use local directory.
   case choices.from {
     "" -> {
       use #(tag, commit) <- result.try(resolve_selection(
@@ -132,7 +137,9 @@ fn github_base(choices: options.Options, stage, fetch) {
   }
 }
 
+/// Resolves release selection to explicit tag and commit pair.
 fn resolve_selection(selection, stage, fetch) {
+  // Match selection variant to resolve release tag.
   case selection {
     options.Nightly -> nightly(stage, fetch)
     options.Tag(tag) -> Ok(#(tag, ""))
@@ -172,10 +179,7 @@ const max_pages = 10
 /// Prefix of the tag naming a build of one full source commit.
 const commit_tag_prefix = "commit-"
 
-// Release publication can lag main. Capture its head once and intersect its
-// ordered history with published immutable builds, so a branch advance cannot
-// change the history between pages. Neither draft releases nor side branches
-// can authorize an update.
+/// Resolves latest published commit build from GitHub main branch.
 fn nightly(stage, fetch) {
   use document <- result.try(api("commits/main", stage, fetch))
   use head <- result.try(json_string(document, "sha"))
@@ -191,9 +195,7 @@ fn nightly(stage, fetch) {
   nightly_history(head, published, 1, stage, fetch)
 }
 
-// Collects the full SHA of every published commit release in the recent
-// release window. Order does not matter here: selection follows main's
-// history, not the release listing.
+/// Collects published commit hashes across GitHub releases.
 fn published_commits(page, accumulated, stage, fetch) {
   use <- bool.guard(page > max_pages, Ok(accumulated))
   use document <- result.try(api(
@@ -212,14 +214,15 @@ fn published_commits(page, accumulated, stage, fetch) {
   published_commits(page + 1, commits, stage, fetch)
 }
 
-// A release counts only when it is published and tagged `commit-<full-sha>`.
-// A draft, or one without a publication time, may be an interrupted upload
-// whose assets are incomplete.
+/// Extracts commit hash if release object is non-draft and published.
 fn published_commit(document) {
+  // Extract release document object fields.
   use fields <- result.try(case document {
     json.Object(fields) -> Ok(fields)
     _ -> Error(Nil)
   })
+
+  // Verify release is published and not a draft.
   use Nil <- result.try(
     case list.key_find(fields, "draft"), list.key_find(fields, "published_at") {
       Ok(json.Bool(False)), Ok(json.String(published)) if published != "" ->
@@ -227,6 +230,7 @@ fn published_commit(document) {
       _, _ -> Error(Nil)
     },
   )
+
   use tag <- result.try(
     json_string(document, "tag_name") |> result.replace_error(Nil),
   )
@@ -236,8 +240,7 @@ fn published_commit(document) {
   Ok(commit)
 }
 
-// Walks main's history from the captured head, newest first, and stops at the
-// first commit with a published build.
+/// Intersects main git commit history with published build list.
 fn nightly_history(head, published, page, stage, fetch) {
   use <- bool.guard(
     page > max_pages,
@@ -265,6 +268,7 @@ fn nightly_history(head, published, page, stage, fetch) {
     }),
   )
 
+  // Find first commit matching published releases list.
   case list.find(commits, list.contains(published, _)) {
     Ok(commit) -> Ok(#(commit_tag_prefix <> commit, commit))
     Error(Nil) -> {
@@ -291,6 +295,7 @@ fn json_array(document) {
   }
 }
 
+/// Queries GitHub REST API and parses response JSON.
 fn api(path, stage, fetch) {
   let destination = stage <> "/github.json"
   use presence <- result.try(fetch(
@@ -310,21 +315,27 @@ fn api(path, stage, fetch) {
   json.parse(text) |> result.replace_error("invalid GitHub release metadata")
 }
 
+/// Looks up a string field from a JSON document object.
 fn json_string(document, key) {
+  // Extract JSON object fields.
   use fields <- result.try(case document {
     json.Object(fields) -> Ok(fields)
     _ -> Error("GitHub metadata is not an object")
   })
+
   use value <- result.try(
     list.key_find(fields, key)
     |> result.map_error(fn(_) { "GitHub metadata lacks " <> key }),
   )
+
+  // Verify string JSON value.
   case value {
     json.String(value) -> Ok(value)
     _ -> Error("GitHub metadata has an invalid " <> key)
   }
 }
 
+/// Verifies manifest metadata matches requested release selection.
 fn bind(document: manifest.Manifest, platform, tag, commit, selection) {
   use <- bool.guard(
     document.repository != "Roasbeef/loom" || document.platform != platform,
@@ -337,6 +348,8 @@ fn bind(document: manifest.Manifest, platform, tag, commit, selection) {
       && document.commit != commit,
     Error("release tag or commit differs from resolved selection"),
   )
+
+  // Verify selection details against manifest.
   case selection {
     options.Latest | options.Nightly -> Ok(Nil)
     options.Tag(tag) ->
@@ -352,7 +365,9 @@ fn bind(document: manifest.Manifest, platform, tag, commit, selection) {
   }
 }
 
+/// Validates OpenPGP manifest signature when required or present.
 fn verify_signature(presence, choices: options.Options, path, stage) {
+  // Match signature presence against signature requirement policy.
   case presence, choices.signature {
     Absent, options.Optional -> Ok(Nil)
     Absent, options.Required ->

@@ -874,10 +874,12 @@ pub fn encode(
   command: Command,
   epoch: Epoch,
 ) -> Result(String, String) {
+  // Ensure request identifier is positive.
   use Nil <- result.try(case id > 0 {
     True -> Ok(Nil)
     False -> Error("invalid request id")
   })
+
   use fields <- result.try(command_fields(command, epoch))
   let text =
     json.to_string(
@@ -888,6 +890,8 @@ pub fn encode(
         #("body", json.Object(fields)),
       ]),
     )
+
+  // Verify encoded frame conforms to byte ceiling.
   case string.byte_size(text) <= max_bytes {
     True -> Ok(text)
     False -> Error("control request exceeds byte limit")
@@ -897,10 +901,12 @@ pub fn encode(
 // The members of a `sessions.elsewhere` request. A cursor follows one group's
 // rows, so it is sent only with the group it belongs to, and each is checked
 // here as the daemon will check it.
+/// Encodes elsewhere command fields with optional orchestrator and cursor.
 fn elsewhere_fields(
   orchestrator: Option(String),
   after: Option(String),
 ) -> Result(List(#(String, json.JsonValue)), String) {
+  // Validate orchestrator key and pagination cursor combinations.
   case orchestrator, after {
     None, None -> Ok([])
     None, Some(_) -> Error("a cursor needs the orchestrator it follows")
@@ -914,6 +920,7 @@ fn elsewhere_fields(
   }
 }
 
+/// Formats and validates the orchestrator key property.
 fn orchestrator_member(
   key: String,
 ) -> Result(#(String, json.JsonValue), String) {
@@ -923,8 +930,11 @@ fn orchestrator_member(
   }
 }
 
+/// Encodes command-specific payload properties based on variant and epoch.
 fn command_fields(command: Command, epoch: Epoch) {
   let Epoch(epoch_value) = epoch
+
+  // Encode specific body fields matching command variant.
   case command {
     Status | DeploymentStatus(None) | DirectoryStatus -> Ok([])
     DeploymentStatus(Some(key)) ->
@@ -935,15 +945,19 @@ fn command_fields(command: Command, epoch: Epoch) {
     SessionsElsewhere(orchestrator, after) ->
       elsewhere_fields(orchestrator, after)
     ListSessions(after, revision) | ListArchivedSessions(after, revision) -> {
+      // Validate continuation token.
       use Nil <- result.try(case after {
         "" -> Ok(Nil)
         _ -> valid_id(after)
       })
+
+      // Encode optional catalogue revision bound.
       use extra <- result.try(case revision {
         None -> Ok([])
         Some(value) if value >= 0 -> Ok([#("revision", json.Int(value))])
         Some(_) -> Error("invalid catalogue revision")
       })
+
       Ok([#("after", json.String(after)), ..extra])
     }
     GetSession(id) | UiLink(Some(id), ObserverPage, _) -> identity_fields(id)
@@ -1038,6 +1052,7 @@ fn command_fields(command: Command, epoch: Epoch) {
         "" -> Ok([])
         name -> text_fields([#("pool", name, 64)])
       })
+
       [
         #("configuration", json.String(configuration)),
         ..list.append(fields, list.flatten([profile, executor, pool]))
@@ -1065,10 +1080,12 @@ fn command_fields(command: Command, epoch: Epoch) {
       [#("epoch", json.String(epoch_value)), ..list.append(fields, destination)]
     }
     GetOperation(id, operation, expected) -> {
+      // Ensure expected epoch matches current control epoch.
       use Nil <- result.try(case expected == epoch {
         True -> Ok(Nil)
         False -> Error("stale epoch")
       })
+
       use fields <- result.try(identity_fields(id))
       use other <- result.map(text_fields([#("operation", operation, 512)]))
       [#("epoch", json.String(epoch_value)), ..list.append(fields, other)]
@@ -1094,10 +1111,13 @@ fn command_fields(command: Command, epoch: Epoch) {
         "target_session",
       ))
       use to_field <- result.try(peer_strand_field(to, "target_strand"))
+
+      // Translate wake policy to string representation.
       let wake = case wake {
         BusyOnly -> "busy_only"
         MayWake -> "may_wake"
       }
+
       Ok([
         #("epoch", json.String(epoch_value)),
         ..list.append(
@@ -1115,6 +1135,8 @@ fn command_fields(command: Command, epoch: Epoch) {
     ListPrincipals(after) -> optional_text_field(after, "after", 128)
     PrincipalMemberships(principal, after) -> {
       use identity <- result.try(principal_field(principal))
+
+      // Encode pagination cursor if specified.
       use cursor <- result.try(case after {
         None -> Ok([])
         Some(id) -> {
@@ -1122,15 +1144,19 @@ fn command_fields(command: Command, epoch: Epoch) {
           Ok([#("after", json.String(id))])
         }
       })
+
       Ok(list.append(identity, cursor))
     }
     SetMemberRole(id, principal, role) -> {
       use session <- result.try(identity_fields(id))
       use identity <- result.try(principal_field(principal))
+
+      // Translate role variant to wire format.
       let role = case role {
         OperatorRole -> "operator"
         ObserverRole -> "observer"
       }
+
       Ok([
         #("epoch", json.String(epoch_value)),
         ..list.append(
@@ -1182,12 +1208,17 @@ fn command_fields(command: Command, epoch: Epoch) {
 
 // The daemon refuses the whole request for any of these, so they are
 // refused here instead of spending a round trip on a known refusal.
+/// Validates the list of sessions requested for activity polling.
 fn activity_sessions(sessions: List(String)) {
+  // Validate count bounds for requested sessions.
   use Nil <- result.try(case sessions, list.drop(sessions, activity_limit) {
     [_, ..], [] -> Ok(Nil)
     [], _ | _, [_, ..] -> Error("activity names 1 to 24 sessions")
   })
+
   use Nil <- result.try(list.try_each(sessions, valid_id))
+
+  // Check for duplicate session identities in request list.
   case list.length(list.unique(sessions)) == list.length(sessions) {
     True -> Ok(Nil)
     False -> Error("activity repeats a session")
@@ -1202,6 +1233,7 @@ fn peer_session_field(id: String, key: String) {
 // A principal ID is 1 to 128 bytes of the daemon's identifier alphabet. The
 // daemon applies the same rule and answers `bad_request`, so a value that
 // fails it here is refused without a round trip.
+/// Validates and encodes a principal ID into an object field list.
 fn principal_field(principal: String) {
   case
     string.byte_size(principal) > 0
@@ -1218,16 +1250,20 @@ fn principal_field(principal: String) {
 const principal_alphabet =
   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."
 
+/// Validates and encodes a peer strand name into an object property.
 fn peer_strand_field(strand: String, key: String) {
+  // Validate strand name length.
   use Nil <- result.try(
     case string.byte_size(strand) > 0 && string.byte_size(strand) <= 128 {
       True -> Ok(Nil)
       False -> Error("invalid peer strand")
     },
   )
+
   Ok([#(key, json.String(strand))])
 }
 
+/// Encodes an optional text property if present and non-empty.
 fn optional_text_field(value: Option(String), key: String, limit: Int) {
   case value {
     None -> Ok([])
@@ -1253,6 +1289,7 @@ fn valid_id(id: String) {
   |> result.replace_error("invalid session id")
 }
 
+/// Validates and encodes multiple bounded string fields.
 fn text_fields(fields: List(#(String, String, Int))) {
   list.try_map(fields, fn(field) {
     let #(key, value, limit) = field
@@ -1269,37 +1306,51 @@ fn text_fields(fields: List(#(String, String, Int))) {
 /// assert decode("{}") == Error("unsupported control version")
 /// ```
 pub fn decode(text: String) -> Result(Event, String) {
+  // Check raw message text byte ceiling.
   use Nil <- result.try(case string.byte_size(text) <= max_bytes {
     True -> Ok(Nil)
     False -> Error("control frame exceeds byte limit")
   })
+
   use value <- result.try(
     json.parse(text) |> result.replace_error("invalid control JSON"),
   )
+
+  // Verify protocol version is 2.
   use Nil <- result.try(case field(value, "v") {
     Ok(json.Int(2)) -> Ok(Nil)
     _ -> Error("unsupported control version")
   })
+
   use event <- result.try(text_at(value, "event", 64))
   use body <- result.try(field(value, "body"))
+
+  // Dispatch decoding based on control event type.
   case event {
     "hello" -> {
+      // Ensure hello greeting does not carry a correlation reply ID.
       use Nil <- result.try(case field(value, "reply_to") {
         Error(_) -> Ok(Nil)
         Ok(_) -> Error("correlated hello")
       })
+
+      // Validate protocol version in hello body.
       use Nil <- result.try(case field(body, "protocol") {
         Ok(json.Int(2)) -> Ok(Nil)
         _ -> Error("unsupported hello version")
       })
+
       use epoch <- result.try(text_at(body, "epoch", 256))
       use principal <- result.try(text_at(body, "principal", 256))
       use limits <- result.try(field(body, "limits"))
       use limit <- result.try(number_at(limits, "control_bytes"))
+
+      // Check advertised control bytes limit bounds.
       use Nil <- result.try(case limit > 0 && limit <= max_bytes {
         True -> Ok(Nil)
         False -> Error("unsupported control limit")
       })
+
       use build <- result.try(build_at(body))
       use view <- result.try(view_at(body))
       Ok(Greeting(Hello(Epoch(epoch), principal, limit, build, view)))
@@ -1327,12 +1378,16 @@ pub fn decode(text: String) -> Result(Event, String) {
 
 // The members of the two redirect refusals, or `Error(Nil)` for any other code
 // and for a redirect that does not carry its members in the bounded form.
+/// Decodes redirect details from error body when status indicates redirection.
 fn redirect_at(code: String, body: json.JsonValue) -> Result(Redirect, Nil) {
+  // Match specific redirection refusal codes.
   case code {
     "not_owner" -> {
       use orchestrator <- result.try(
         text_at(body, "orchestrator", 64) |> result.replace_error(Nil),
       )
+
+      // Extract optional orchestrator address.
       case field(body, "address") {
         Error(_) -> Ok(NotOwner(orchestrator, None))
         Ok(address) ->
@@ -1353,7 +1408,9 @@ fn redirect_at(code: String, body: json.JsonValue) -> Result(Redirect, Nil) {
   }
 }
 
+/// Decodes an incoming event body into its corresponding Reply type.
 fn decode_reply(event: String, body: json.JsonValue) {
+  // Dispatch on reply event name to decode structured payload.
   case event {
     "status" -> result.map(summary(body), StatusReply)
     "ui.link" -> {
@@ -1377,6 +1434,8 @@ fn decode_reply(event: String, body: json.JsonValue) {
     "sessions.move" -> {
       use session_id <- result.try(text_at(body, "session_id", 64))
       use op <- result.try(text_at(body, "op", 64))
+
+      // Check if move operation was abandoned or completed.
       case field(body, "state") {
         // An abandon names no destination and says `abandoning`.
         Ok(json.String("abandoning")) -> Ok(AbandonedReply(session_id, op))
@@ -1404,13 +1463,17 @@ fn decode_reply(event: String, body: json.JsonValue) {
   }
 }
 
+/// Decodes the daemon status summary metrics from response body.
 fn summary(body: json.JsonValue) {
   use epoch <- result.try(text_at(body, "epoch", 256))
+
+  // Decode readiness status indicator.
   use readiness <- result.try(case field(body, "ready") {
     Ok(json.Bool(True)) -> Ok(Accepting)
     Ok(json.Bool(False)) -> Ok(Draining)
     _ -> Error("invalid readiness")
   })
+
   use capacity <- result.try(number_at(body, "capacity"))
   use occupied <- result.try(number_at(body, "occupied"))
   use opening <- result.try(number_at(body, "opening"))
@@ -1435,8 +1498,11 @@ fn summary(body: json.JsonValue) {
   )
 }
 
+/// Decodes a page of listed sessions including revision and continuation.
 fn page(body: json.JsonValue) {
   use revision <- result.try(number_at(body, "revision"))
+
+  // Parse sessions array and ensure bounded length.
   use values <- result.try(case field(body, "sessions") {
     Ok(json.Array(values)) ->
       case list.drop(values, 100) {
@@ -1445,13 +1511,17 @@ fn page(body: json.JsonValue) {
       }
     _ -> Error("invalid session page")
   })
+
   use decoded <- result.try(list.try_map(values, listed))
   let sessions = option.values(decoded)
+
+  // Decode optional continuation cursor ID.
   use after <- result.try(case field(body, "after") {
     Ok(json.Null) -> Ok(None)
     Ok(json.String(id)) -> result.map(valid_id(id), fn(_) { Some(id) })
     _ -> Error("invalid continuation")
   })
+
   Ok(Page(revision, sessions, after))
 }
 
@@ -1470,6 +1540,7 @@ fn listed(body: json.JsonValue) -> Result(Option(Session), String) {
   }
 }
 
+/// Decodes a complete Session record from JSON representation.
 fn session(body: json.JsonValue) {
   use id <- result.try(text_at(body, "session_id", 64))
   use Nil <- result.try(valid_id(id))
@@ -1496,6 +1567,7 @@ fn session(body: json.JsonValue) {
 // held to the grammar of an `[orchestrators.<name>]` key, so it has no
 // whitespace or control character: it prints into a table cell and into one
 // token of the plain listing without being cleaned again.
+/// Derives session moving status from payload or preserves current lifecycle.
 fn moving_status(body: json.JsonValue, status: Lifecycle) -> Lifecycle {
   let destination =
     field(body, "moving")
@@ -1506,6 +1578,8 @@ fn moving_status(body: json.JsonValue, status: Lifecycle) -> Lifecycle {
         False -> Error("invalid orchestrator name")
       }
     })
+
+  // Use destination moving status if decoded successfully.
   case destination {
     Ok(to) -> Moving(to)
     Error(_) -> status
@@ -1521,6 +1595,7 @@ fn executor_of(body: json.JsonValue) -> Option(String) {
 
 // The optional subtitle. Every way of not being a nonblank string of at most 60
 // characters reads as none, rather than refusing the row it is on.
+/// Extracts the optional bounded subtitle text from a session object.
 fn subtitle_of(body: json.JsonValue) -> Option(String) {
   case text_at(body, "subtitle", 240) {
     Ok(text) ->
@@ -1544,25 +1619,33 @@ fn activity(body: json.JsonValue) {
   }
 }
 
+/// Decodes a single session activity status row.
 fn activity_row(row: json.JsonValue) {
   use id <- result.try(text_at(row, "session_id", 64))
   use Nil <- result.map(valid_id(id))
+
+  // Map session activity state.
   let state = case field(row, "state") {
     Ok(json.String("needs_you")) -> NeedsYou
     Ok(json.String("working")) -> Working
     Ok(json.String("idle")) -> Idle
     _ -> Unknown
   }
+
+  // Parse last terminal operation outcome.
   let last_outcome = case field(row, "last_outcome") {
     Ok(json.String("completed")) -> Some(LastCompleted)
     Ok(json.String("failed")) -> Some(LastFailed)
     Ok(json.String("aborted")) -> Some(LastAborted)
     _ -> None
   }
+
+  // Parse session glance observation lines.
   let glances = case field(row, "glances") {
     Ok(json.Array(values)) -> list.filter_map(values, glance_line)
     _ -> []
   }
+
   Activity(
     session_id: id,
     state:,
@@ -1578,6 +1661,7 @@ fn activity_row(row: json.JsonValue) {
 
 // A glance's summary is empty until its first refresh, so its text fields
 // may be empty, unlike the nonempty control text elsewhere in this module.
+/// Decodes a glance line containing strand, title, and summary.
 fn glance_line(value: json.JsonValue) {
   case field(value, "strand"), field(value, "title"), field(value, "summary") {
     Ok(json.String(strand)), Ok(json.String(title)), Ok(json.String(summary))
@@ -1605,8 +1689,11 @@ fn deletion(body: json.JsonValue) {
   id
 }
 
+/// Decodes session lifecycle status from a JSON payload.
 fn lifecycle(body: json.JsonValue) {
   use state <- result.try(text_at(body, "state", 64))
+
+  // Parse status into domain Lifecycle variant.
   case state {
     "reserved" -> Ok(reserved(body))
     "saved" -> Ok(Saved)
@@ -1623,11 +1710,14 @@ fn lifecycle(body: json.JsonValue) {
 // member is an addition to the status object, so one that is missing or does
 // not decode leaves the plain reservation an older daemon sent, and never fails
 // the row (`protocol-change/093`).
+/// Decodes a reserved lifecycle state with optional failure reason.
 fn reserved(body: json.JsonValue) -> Lifecycle {
   let failure = {
     use kept <- result.try(field(body, "failure"))
     use reason <- result.try(text_at(kept, "reason", 512))
     use at <- result.try(number_at(kept, "at"))
+
+    // Verify failure reason does not span multiple lines.
     case string.contains(reason, "\n") || string.contains(reason, "\r") {
       True -> Error("failure reason spans lines")
       False -> Ok(FailedStart(reason:, at:))
@@ -1636,6 +1726,7 @@ fn reserved(body: json.JsonValue) -> Lifecycle {
   result.unwrap(failure, Reserved)
 }
 
+/// Extracts an optional correlation reply ID if present.
 fn optional_id(value: json.JsonValue) {
   case field(value, "reply_to") {
     Error(_) -> Ok(None)
@@ -1644,6 +1735,7 @@ fn optional_id(value: json.JsonValue) {
   }
 }
 
+/// Extracts a single field by key from a JSON object.
 fn field(value: json.JsonValue, key: String) {
   case value {
     json.Object(fields) ->
@@ -1656,7 +1748,9 @@ fn field(value: json.JsonValue, key: String) {
 // The web view's route prefix, when the daemon serves the view. An absent
 // field is a daemon started without `--ui`; a present one must be well
 // formed, because a client acts on it.
+/// Decodes optional web view prefix configuration from hello body.
 fn view_at(body: json.JsonValue) {
+  // Extract UI property or fallback to NoWebView.
   case field(body, "ui") {
     Error(_) -> Ok(NoWebView)
     Ok(view) -> {
@@ -1675,16 +1769,22 @@ const max_view_origins = 16
 // field is none, as from a daemon that predates it. A present one is an array
 // of at most `max_view_origins` nonempty `https://` strings, or the hello is
 // refused, because `loom ui --device` builds a link on one of them.
+/// Decodes web view allowed origins list from UI configuration.
 fn origins_at(view: json.JsonValue) -> Result(List(String), String) {
+  // Match origins array property.
   case field(view, "origins") {
     Error(_) -> Ok([])
     Ok(json.Array(items)) -> {
+      // Check origins array length bound.
       use Nil <- result.try(case list.drop(items, max_view_origins) == [] {
         True -> Ok(Nil)
         False -> Error("too many web view origins")
       })
+
       list.try_map(items, fn(item) {
         use text <- result.try(bounded_text(item, 256))
+
+        // Ensure each origin uses secure https scheme.
         case string.starts_with(text, "https://") {
           True -> Ok(text)
           False -> Error("a web view origin must be https")
@@ -1716,6 +1816,7 @@ fn text_at(value: json.JsonValue, key: String, limit: Int) {
   bounded_text(value, limit)
 }
 
+/// Validates that a JSON value is a string within the specified byte limit.
 fn bounded_text(value: json.JsonValue, limit: Int) {
   case value {
     json.String(text) if text != "" ->
@@ -1734,8 +1835,11 @@ fn number_at(value: json.JsonValue, key: String) {
   }
 }
 
+/// Reads a positive integer field by key.
 fn positive_at(value: json.JsonValue, key: String) {
   use number <- result.try(number_at(value, key))
+
+  // Verify integer is strictly positive.
   case number > 0 {
     True -> Ok(number)
     False -> Error("expected positive request id")

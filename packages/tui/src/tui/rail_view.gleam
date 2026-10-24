@@ -59,6 +59,8 @@ import tui/theme
 /// ```
 pub fn render(buf: buffer.Buffer, screen: Rect, model: Model) -> buffer.Buffer {
   let area = layout.rail_area(screen, model)
+
+  // Render only when the rail has visible width.
   case area.size.width > 0 {
     False -> buf
     True -> {
@@ -74,6 +76,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, model: Model) -> buffer.Buffer {
         0 -> buffer.clear(buf, area)
         _ -> separator(buf, area)
       }
+
       ground
       |> paragraph.render_styled(
         geometry.rect_new(area.position.x + lead, area.position.y, width, 2),
@@ -86,7 +89,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, model: Model) -> buffer.Buffer {
   }
 }
 
-// The rail's left edge, one rule down every row of the rail.
+/// The rail's left edge, one rule down every row of the rail.
 fn separator(buf: buffer.Buffer, area: Rect) -> buffer.Buffer {
   let rule = style.new(theme.divider, style.Default, style.none())
   list.fold(
@@ -105,9 +108,9 @@ fn separator(buf: buffer.Buffer, area: Rect) -> buffer.Buffer {
   )
 }
 
-// The tabs, the open one bold and in the accent colour, and the rule under
-// them. Strands carries the number of agents that need the operator, so the
-// count is visible while another tab is open.
+/// The tabs, the open one bold and in the accent colour, and the rule under
+/// them. Strands carries the number of agents that need the operator, so the
+/// count is visible while another tab is open.
 fn tab_bar(
   tab: rail.Tab,
   lines: List(agent_roster.Line),
@@ -115,18 +118,23 @@ fn tab_bar(
 ) -> List(span.Line) {
   let needing =
     list.count(lines, fn(line) { agent_view.needs_attention(line.status) })
+
+  // Show count badge when attention is needed.
   let count = case needing {
     0 -> ""
     n -> " ●" <> int.to_string(n)
   }
+
   let open = theme.current_bold()
   let shut = theme.quiet_text()
   let tabs =
     list.map([rail.Strands, rail.Changes, rail.Trace, rail.Session], fn(named) {
+      // Determine display label for tab.
       let label = case named {
         rail.Strands -> rail.name(named) <> count
         rail.Changes | rail.Trace | rail.Session -> rail.name(named)
       }
+
       span.span_styled(label <> "  ", case named == tab {
         True -> open
         False -> shut
@@ -143,7 +151,7 @@ fn tab_bar(
   ]
 }
 
-// The Strands tab. The Changes tab's content is painted by `tui/render`.
+/// The Strands tab. The Changes tab's content is painted by `tui/render`.
 fn strands(
   buf: buffer.Buffer,
   content: Rect,
@@ -151,6 +159,7 @@ fn strands(
   lines: List(agent_roster.Line),
   tab: rail.Tab,
 ) -> buffer.Buffer {
+  // Paint strands content when the strands tab is selected.
   case tab {
     rail.Changes | rail.Trace | rail.Session -> buf
     rail.Strands -> {
@@ -165,6 +174,8 @@ fn strands(
       // One row goes to the heading and, when the agents do not all fit, one
       // to say how many are out of view.
       let room = int.max(0, content.size.height - 1)
+
+      // Window visible lines when room is constrained.
       let shown = case list.drop(lines, room) != [] {
         True -> agent_strip.window(lines, model.view.strip_focus, room - 1)
         False -> lines
@@ -191,6 +202,8 @@ fn strands(
 
       // Calculate hidden count and append overflow note if necessary.
       let hidden = list.length(lines) - list.length(shown)
+
+      // Format overflow note when lines exceed available room.
       let more = case hidden > 0 {
         True -> [
           span.line_new([
@@ -202,14 +215,15 @@ fn strands(
         ]
         False -> []
       }
+
       paragraph.render_styled(buf, content, [heading, ..list.append(rows, more)])
     }
   }
 }
 
-// The Trace and Session tabs: their rows from the row the reader scrolled
-// to. The scroll is held in the model and may be stale after a resize, so it
-// is cut to what there is to show.
+/// The Trace and Session tabs: their rows from the row the reader scrolled
+/// to. The scroll is held in the model and may be stale after a resize, so it
+/// is cut to what there is to show.
 fn scrolled(
   buf: buffer.Buffer,
   content: Rect,
@@ -217,6 +231,8 @@ fn scrolled(
   tab: rail.Tab,
 ) -> buffer.Buffer {
   let rows = rail_tabs.rows(model, tab, content.size.width)
+
+  // Render scrollable rows when non-empty.
   case rows {
     [] -> buf
     _ -> {
@@ -230,8 +246,8 @@ fn scrolled(
   }
 }
 
-// The keys that act on the rail now: with the cursor in it, the list's keys;
-// otherwise how to reach it and how to dock or hide it.
+/// The keys that act on the rail now: with the cursor in it, the list's keys;
+/// otherwise how to reach it and how to dock or hide it.
 fn hint(
   buf: buffer.Buffer,
   area: Rect,
@@ -243,10 +259,14 @@ fn hint(
     0 -> "closes"
     _ -> "hides"
   }
+
+  // Key action for escaping rail.
   let escape = case layout.rail_lead(model) {
     0 -> "closes"
     _ -> "to composer"
   }
+
+  // Determine hint key legend depending on focus.
   let words = case tab, model.view.strip_focus, model.view.rail_focus {
     rail.Changes, _, _ -> "Esc or Shift+Tab closes the changes"
     rail.Strands, agent_strip.Browsing(_), _ ->
@@ -267,6 +287,7 @@ fn hint(
     | rail.Session, _, tui_model.FocusComposer
     -> "↓ then 1-4 tab · Shift+Tab " <> hides
   }
+
   let width = int.max(0, area.size.width - layout.rail_lead(model) - 1)
   paragraph.render_styled(
     buf,

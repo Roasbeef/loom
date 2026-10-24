@@ -311,6 +311,7 @@ type Input {
   Unhandled
 }
 
+/// Maps terminal key presses to high-level access overlay Input actions.
 fn classify(key: keys.Key) -> Input {
   case key {
     keys.Escape -> Cancel
@@ -346,6 +347,8 @@ fn classify(key: keys.Key) -> Input {
 pub fn update(key: keys.Key, state: State) -> Action {
   let state = State(..state, outcome: None)
   let input = classify(key)
+
+  // Block new proposals while a previous mutation is still sending to the daemon.
   case state.sending, input {
     // While a change is outstanding no second one can be proposed, so its
     // acknowledgement is always checked against the change it answers.
@@ -360,6 +363,7 @@ pub fn update(key: keys.Key, state: State) -> Action {
   }
 }
 
+/// Dispatches classified input based on active prompt mode and list focus.
 fn dispatch(state: State, input: Input) -> Action {
   case state.prompt, input {
     Reviewing(change), input -> review(change, input, state)
@@ -379,10 +383,7 @@ fn dispatch(state: State, input: Input) -> Action {
   }
 }
 
-// The y/N question. Only a lowercase y sends; Escape and `n` decline, and
-// every other key leaves the question open, so a stray key or a held Enter
-// cannot confirm. The state handed to `Apply` has the review closed, which is
-// what keeps a second `y` from sending the same change twice.
+/// Handles confirmation or cancellation responses to a proposed mutation review.
 fn review(change: Change, input: Input, state: State) -> Action {
   case input {
     Letter("y") ->
@@ -401,6 +402,7 @@ fn review(change: Change, input: Input, state: State) -> Action {
   }
 }
 
+/// Handles navigation and action hotkeys while browsing the principals list.
 fn browse_principals(input: Input, state: State) -> Action {
   case input {
     Cancel -> Close
@@ -443,6 +445,7 @@ fn browse_principals(input: Input, state: State) -> Action {
   }
 }
 
+/// Transitions focus from the selected principal to its memberships list.
 fn open_principal(state: State) -> Action {
   case selected_principal(state) {
     Ok(principal) ->
@@ -462,6 +465,7 @@ fn open_principal(state: State) -> Action {
   }
 }
 
+/// Handles navigation and mutation triggers when browsing a principal's memberships.
 fn browse_memberships(
   input: Input,
   state: State,
@@ -521,9 +525,7 @@ fn refreshing(state: State) -> State {
   State(..state, notice: "refreshing")
 }
 
-// A role change is refused here when the member already holds the role, since
-// the daemon would accept it as a no-op and the operator would read the
-// acknowledgement as a change.
+/// Proposes a role modification for the selected principal in the chosen session.
 fn propose_role(
   state: State,
   principal: Principal,
@@ -557,6 +559,7 @@ fn propose_role(
   }
 }
 
+/// Proposes revoking access for the selected principal from a session.
 fn propose_revocation(state: State, principal: Principal) -> Action {
   case selected_membership(state) {
     Ok(membership) ->
@@ -576,10 +579,7 @@ fn propose_revocation(state: State, principal: Principal) -> Action {
   }
 }
 
-// The owner's credential is the owner token. Revoking it through the control
-// socket that the token authenticates would lock the owner out of the daemon
-// they are administering, and the command exists for members, so the overlay
-// declines to propose it.
+/// Proposes revoking authentication credentials for the selected member principal.
 fn propose_credentials(state: State, chosen: Result(Principal, Nil)) -> Action {
   case chosen {
     Ok(Principal(kind: Owner, ..)) ->
@@ -598,6 +598,7 @@ fn propose_credentials(state: State, chosen: Result(Principal, Nil)) -> Action {
   }
 }
 
+/// Prepares a CLI command string for rotating authentication credentials.
 fn propose_rotation(state: State, chosen: Result(Principal, Nil)) -> Action {
   case chosen {
     Ok(Principal(kind: Owner, ..)) ->
@@ -616,10 +617,7 @@ fn propose_rotation(state: State, chosen: Result(Principal, Nil)) -> Action {
   }
 }
 
-// The first page again, in the list the change touched. A role or membership
-// change re-reads the opened principal's memberships. A credential change
-// re-reads the principals and returns to that list, since the credential state
-// is what changed and it is shown there.
+/// Reloads the appropriate listing affected by an applied mutation.
 fn reload(state: State, change: Change) -> Action {
   case change, state.focus {
     SetRole(..), ListingMemberships(principal)
@@ -670,11 +668,12 @@ pub fn decode_memberships(
   MembershipPage(memberships:, next:)
 }
 
-// `host/access` ends a page with `{"next": CURSOR}` when another follows. The
-// rows before it have been checked; the cursor line is separated here.
+/// Separates the trailing cursor line from returned JSON access page rows.
 fn split_cursor(lines: List(JsonValue)) -> #(List(JsonValue), Option(String)) {
   list.fold(lines, #([], None), fn(found, line) {
     let #(rows, next) = found
+
+    // Extract next cursor token or append data rows.
     case line {
       json.Object([#("next", json.String(cursor))]) -> #(rows, Some(cursor))
       json.Object(_)
@@ -688,32 +687,44 @@ fn split_cursor(lines: List(JsonValue)) -> #(List(JsonValue), Option(String)) {
   })
 }
 
+/// Decodes a JSON object row into a strongly typed Principal record.
 fn principal_row(row: JsonValue) -> Result(Principal, String) {
   use fields <- result.try(fields_of(row))
   use id <- result.try(text_at(fields, "principal_id"))
   use name <- result.try(text_at(fields, "name"))
+
+  // Decode principal kind classification string.
   use kind <- result.try(case text_at(fields, "kind") {
     Ok("owner") -> Ok(Owner)
     Ok("member") -> Ok(Member)
     Ok(_) | Error(_) -> Error("invalid principal kind")
   })
+
+  // Parse attached credential state payload.
   use credential <- result.try(case list.key_find(fields, "credential") {
     Ok(value) -> credential_of(value)
     Error(Nil) -> Error("missing credential state")
   })
+
   Ok(Principal(id:, name:, kind:, credential:))
 }
 
+/// Decodes JSON credential state attributes into a Credential variant.
 fn credential_of(value: JsonValue) -> Result(Credential, String) {
   use fields <- result.try(fields_of(value))
   use state <- result.try(text_at(fields, "state"))
+
+  // Dispatch on credential lifecycle state string.
   case state {
     "active" -> {
       use fingerprint <- result.map(text_at(fields, "fingerprint"))
+
+      // Extract optional claim timestamp when available.
       let claimed_at_ms = case list.key_find(fields, "claimed_at_ms") {
         Ok(json.Int(at)) -> Some(at)
         Ok(_) | Error(Nil) -> None
       }
+
       Active(fingerprint:, claimed_at_ms:)
     }
     "claim_open" ->
@@ -727,15 +738,19 @@ fn credential_of(value: JsonValue) -> Result(Credential, String) {
   }
 }
 
+/// Decodes a JSON object row into a strongly typed Membership record.
 fn membership_row(row: JsonValue) -> Result(Membership, String) {
   use fields <- result.try(fields_of(row))
   use session_id <- result.try(text_at(fields, "session_id"))
   use name <- result.try(text_at(fields, "name"))
+
+  // Parse session participant role string.
   use role <- result.try(case text_at(fields, "role") {
     Ok("operator") -> Ok(OperatorRole)
     Ok("observer") -> Ok(ObserverRole)
     Ok(_) | Error(_) -> Error("invalid membership role")
   })
+
   Ok(Membership(session_id:, name:, role:))
 }
 
@@ -746,6 +761,7 @@ fn fields_of(value: JsonValue) -> Result(List(#(String, JsonValue)), String) {
   }
 }
 
+/// Extracts a string property from a JSON key-value field list.
 fn text_at(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -769,10 +785,12 @@ pub fn listed(
   page: PrincipalPage,
   after: Option(String),
 ) -> State {
+  // Replace list on initial page or merge subsequent paginated results.
   let principals = case after {
     None -> page.principals
     Some(_) -> merge(state.principals, page.principals, fn(row) { row.id })
   }
+
   State(
     ..state,
     principals:,
@@ -796,13 +814,16 @@ pub fn memberships_listed(
   page: MembershipPage,
   after: Option(String),
 ) -> State {
+  // Drop membership page if active view focus moved away from requested principal.
   case state.focus {
     ListingMemberships(opened) if opened.id == principal -> {
+      // Replace list on initial page or merge subsequent results.
       let memberships = case after {
         None -> page.memberships
         Some(_) ->
           merge(state.memberships, page.memberships, fn(row) { row.session_id })
       }
+
       State(
         ..state,
         memberships:,
@@ -822,8 +843,7 @@ fn paging_notice(next: Option(String), what: String) -> String {
   }
 }
 
-// Appends rows whose identity is new and replaces those already held, so a
-// row that moved across a cursor boundary between two reads shows once.
+/// Merges incoming paginated records into existing list, updating matched rows.
 fn merge(
   held: List(a),
   incoming: List(a),
@@ -858,9 +878,11 @@ fn merge(
 /// let action = access_overlay.changed(state, document)
 /// ```
 pub fn changed(state: State, document: JsonValue) -> Action {
+  // Confirm pending mutation in flight before processing response.
   case state.sending {
     None -> Continue(state)
     Some(change) -> {
+      // Check whether acknowledged principal ID matches the mutation target.
       let acknowledged = case document {
         json.Object(fields) ->
           list.key_find(fields, "principal_id")
@@ -872,6 +894,7 @@ pub fn changed(state: State, document: JsonValue) -> Action {
         | json.Bool(_)
         | json.Null -> False
       }
+
       let settled = State(..state, sending: None, prompt: Browsing)
       reload(
         case acknowledged {
@@ -894,6 +917,7 @@ pub fn changed(state: State, document: JsonValue) -> Action {
   }
 }
 
+/// Extracts the target principal ID from a Change record.
 fn principal_of(change: Change) -> String {
   case change {
     SetRole(principal_id:, ..)
@@ -902,6 +926,7 @@ fn principal_of(change: Change) -> String {
   }
 }
 
+/// Generates a human-readable description of an applied Change.
 fn describe(change: Change) -> String {
   case change {
     SetRole(principal_name:, session_name:, role:, ..) ->
@@ -931,6 +956,7 @@ fn describe(change: Change) -> String {
 /// let state = access_overlay.failed(state, "forbidden: owner only")
 /// ```
 pub fn failed(state: State, reason: String) -> State {
+  // Format user-facing error notice for the failure reason.
   let notice = case string.starts_with(reason, "forbidden") {
     True -> "the access overlay is for the owner; this connection is not"
     False ->
@@ -946,6 +972,7 @@ pub fn failed(state: State, reason: String) -> State {
     Some(_) -> Browsing
     None -> state.prompt
   }
+
   State(..state, prompt:, sending: None, notice:)
 }
 
@@ -967,6 +994,7 @@ fn selected_session(state: State) -> String {
   }
 }
 
+/// Wraps cursor index upward within list bounds.
 fn wrap_up(index: Int, rows: List(a)) -> Int {
   case list.length(rows) {
     0 -> 0
@@ -975,6 +1003,7 @@ fn wrap_up(index: Int, rows: List(a)) -> Int {
   }
 }
 
+/// Wraps cursor index downward within list bounds.
 fn wrap_down(index: Int, rows: List(a)) -> Int {
   case list.length(rows) {
     0 -> 0
@@ -1016,9 +1045,12 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   |> paragraph.render_styled(inside, lines)
 }
 
+/// Renders the complete body lines and footer lines for the access overlay.
 fn render_lines(state: State, width: Int, height: Int) {
   let footers = footer_lines(state, width)
   let room = int.max(0, height - list.length(footers))
+
+  // Choose content lines based on prompt mode and list focus.
   let content = case state.prompt, state.focus {
     Reviewing(change), _ -> review_lines(change, width)
     ShowingCommand(line), _ -> command_lines(line, width)
@@ -1026,6 +1058,8 @@ fn render_lines(state: State, width: Int, height: Int) {
     Browsing, ListingMemberships(principal) ->
       membership_lines(state, principal, width)
   }
+
+  // Slice content lines to fit available room around the selected cursor.
   let visible = case state.prompt, state.focus {
     Browsing, ListingPrincipals ->
       row_viewport(content, state.selected_principal, 3, 2, room)
@@ -1033,10 +1067,13 @@ fn render_lines(state: State, width: Int, height: Int) {
       row_viewport(content, state.selected_membership, 2, 2, room)
     Reviewing(_), _ | ShowingCommand(_), _ -> list.take(content, room)
   }
+
   list.append(visible, footers)
 }
 
+/// Formats footer lines with key binding hints and operation notices.
 fn footer_lines(state: State, width: Int) {
+  // Select hotkey hint legend based on active focus and prompt mode.
   let keys = case state.prompt, state.focus {
     Reviewing(_), _ -> "y confirm · n or Esc cancel"
     ShowingCommand(_), _ -> "Esc back"
@@ -1049,14 +1086,19 @@ fn footer_lines(state: State, width: Int) {
       <> continuation(state.memberships_next)
       <> " · Esc back"
   }
+
+  // Render mutation outcome notice line if present.
   let outcome = case state.outcome {
     Some(message) -> [quiet(text.truncate(message, width, "…"))]
     None -> []
   }
+
+  // Render transient status notice line if present.
   let notice = case state.notice {
     "" -> []
     message -> [quiet(text.truncate(message, width, "…"))]
   }
+
   list.flatten([outcome, notice, [quiet(text.truncate(keys, width, "…"))]])
 }
 
@@ -1067,7 +1109,7 @@ fn continuation(next: Option(String)) -> String {
   }
 }
 
-// Whole rows scroll under the cursor, after the heading lines that stay.
+/// Windows multi-line rows to keep the selected item visible in the viewport.
 fn row_viewport(
   content: List(span.Line),
   selected: Int,
@@ -1087,11 +1129,14 @@ fn row_viewport(
   list.append(head, shown)
 }
 
+/// Formats header and list rows for the principals view.
 fn principal_lines(state: State, width: Int) {
   let heading = [
     plain("Principals · who can reach this daemon"),
     quiet("Enter shows a principal's sessions."),
   ]
+
+  // Render placeholder message or principal list cards.
   case state.principals {
     [] -> [plain("Principals"), quiet("No principal has been read yet.")]
     principals ->
@@ -1108,6 +1153,7 @@ fn principal_lines(state: State, width: Int) {
   }
 }
 
+/// Formats a single principal entry consisting of name, credential, and ID.
 fn principal_rows(
   principal: Principal,
   selected_index: Int,
@@ -1133,11 +1179,14 @@ fn principal_rows(
   ]
 }
 
+/// Formats header and session membership rows for the focused principal.
 fn membership_lines(state: State, principal: Principal, width: Int) {
   let heading = [
     plain("Access of " <> principal.name),
     quiet(text.truncate("id " <> principal.id, width, "…")),
   ]
+
+  // Display empty explanation or list of session membership rows.
   case state.memberships {
     [] ->
       list.append(heading, [
@@ -1160,6 +1209,7 @@ fn membership_lines(state: State, principal: Principal, width: Int) {
   }
 }
 
+/// Formats a single membership card row with session name, role, and ID.
 fn membership_rows(
   membership: Membership,
   selected_index: Int,
@@ -1180,7 +1230,9 @@ fn membership_rows(
   ]
 }
 
+/// Formats review prompt text explaining proposed mutation details and consequences.
 fn review_lines(change: Change, width: Int) {
+  // Describe the proposed action as a confirmation question.
   let question = case change {
     SetRole(principal_name:, session_name:, role:, ..) ->
       "Set "
@@ -1195,6 +1247,8 @@ fn review_lines(change: Change, width: Int) {
     RevokeCredentials(principal_name:, ..) ->
       "Revoke every credential of " <> principal_name <> "?"
   }
+
+  // Describe the consequence of confirming the mutation.
   let consequence = case change {
     SetRole(..) -> "The role changes for this session only, at once."
     RevokeMembership(..) ->
@@ -1202,6 +1256,7 @@ fn review_lines(change: Change, width: Int) {
     RevokeCredentials(..) ->
       "The credential and any open claim stop working. Access returns only through a new invitation or rotation."
   }
+
   list.flatten([
     wrapped(question, width, plain),
     wrapped(identity_line(change), width, quiet),
@@ -1209,6 +1264,7 @@ fn review_lines(change: Change, width: Int) {
   ])
 }
 
+/// Formats affected session and principal identifiers for review display.
 fn identity_line(change: Change) -> String {
   case change {
     SetRole(principal_id:, session_id:, ..)
@@ -1218,6 +1274,7 @@ fn identity_line(change: Change) -> String {
   }
 }
 
+/// Formats external shell CLI command instruction lines.
 fn command_lines(line: String, width: Int) {
   list.flatten([
     [plain("Run this in a shell, not here:")],
@@ -1251,6 +1308,7 @@ fn role_label(role: MemberRole) -> String {
   }
 }
 
+/// Formats descriptive summary text for a principal credential.
 fn credential_label(credential: Credential) -> String {
   case credential {
     Active(fingerprint:, claimed_at_ms: Some(_)) ->
@@ -1266,10 +1324,11 @@ fn credential_label(credential: Credential) -> String {
   }
 }
 
-// A remaining lifetime as one unit, rounded up so a claim with seconds left
-// is never shown as already gone.
+/// Formats remaining claim validity milliseconds into rounded human units.
 fn duration_label(ms: Int) -> String {
   let minutes = { ms + 59_999 } / 60_000
+
+  // Convert minutes into days, hours, or minute units.
   case minutes {
     _ if minutes >= 2880 -> int.to_string({ minutes + 1439 } / 1440) <> " days"
     _ if minutes >= 120 -> int.to_string({ minutes + 59 } / 60) <> " hours"
@@ -1286,16 +1345,20 @@ fn marker(selected_index: Int, row_index: Int) -> String {
   }
 }
 
+/// Styles and pads an overlay table row with cursor highlight styling.
 fn row_line(value: String, width: Int, selected_index: Int, row_index: Int) {
   let value =
     value
     |> text_hygiene.single_line
     |> text.truncate(width, "…")
     |> text.pad_right(width)
+
+  // Highlight selected row with raised signal styling.
   let row_style = case selected_index == row_index {
     True -> style.new(theme.signal, theme.raised, style.bold())
     False -> theme.overlay_quiet()
   }
+
   span.line_new([span.span_styled(value, row_style)])
 }
 

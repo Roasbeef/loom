@@ -20,11 +20,14 @@ import gleam/string
 /// version.allow_latest("0.3.0", "0.2.0") // Error(..)
 /// ```
 pub fn allow_latest(current: String, candidate: String) -> Result(Nil, String) {
+  // Permit unversioned or dev builds to upgrade freely.
   case current {
     "" | "dev" | "unknown" -> Ok(Nil)
     current -> {
       use previous <- result.try(parts(current))
       use next <- result.try(parts(candidate))
+
+      // Disallow downgrade unless explicit tag or commit is chosen.
       case compare(next, previous) {
         order.Lt ->
           Error(
@@ -36,6 +39,7 @@ pub fn allow_latest(current: String, candidate: String) -> Result(Nil, String) {
   }
 }
 
+/// Parses dotted numeric version segments into integer parts.
 fn parts(value) {
   use numbers <- result.try(
     list.try_map(string.split(value, "."), int.parse)
@@ -43,6 +47,8 @@ fn parts(value) {
       "cannot order this version automatically; select an explicit tag or commit",
     ),
   )
+
+  // Validate 3-part major.minor.patch numeric format.
   case numbers {
     [major, minor, patch] if major >= 0 && minor >= 0 && patch >= 0 ->
       Ok(numbers)
@@ -53,6 +59,7 @@ fn parts(value) {
   }
 }
 
+/// Lexicographically compares two lists of numeric version segments.
 fn compare(left, right) {
   case left, right {
     [a, ..rest_a], [b, ..rest_b] ->

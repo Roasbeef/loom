@@ -99,6 +99,8 @@ pub type Status {
 pub fn decode(document: JsonValue) -> Result(Status, String) {
   use members <- result.try(texts_at(document, "members"))
   use joined <- result.try(field(document, "joined"))
+
+  // Decode joining state from boolean flag.
   use joining <- result.try(case joined {
     json.Bool(True) -> Ok(Joined)
     json.Bool(False) -> Ok(NotJoined)
@@ -109,6 +111,7 @@ pub fn decode(document: JsonValue) -> Result(Status, String) {
     | json.Float(_)
     | json.Null -> Error("joined is not a boolean")
   })
+
   use applied_index <- result.map(count_at(document, "applied_index"))
   Status(
     members:,
@@ -120,9 +123,12 @@ pub fn decode(document: JsonValue) -> Result(Status, String) {
   )
 }
 
+/// Decodes a single Ra cluster member node name and voting status.
 fn ra_member(value: JsonValue) -> Result(RaMember, String) {
   use node <- result.try(text_at(value, "node"))
   use found <- result.try(field(value, "voter"))
+
+  // Parse voter flag into RaMember domain voting status.
   case found {
     json.Bool(True) -> Ok(RaMember(node:, vote: Voter))
     json.Bool(False) -> Ok(RaMember(node:, vote: NonVoter))
@@ -168,16 +174,21 @@ pub fn status_text(status: Status) -> String {
     }
     <> ", applied index "
     <> int.to_string(status.applied_index)
+
+  // Format whether this local node has joined the cluster.
   let standing = case status.joining {
     Joined -> "this node has joined the cluster"
     NotJoined -> "this node has not joined the cluster"
   }
+
   string.join([summary, standing, "", members_table(status)], "\n")
 }
 
-// A row for each configured member, with its vote when Ra lists it, and then one
-// for each Ra member the configured list does not name, so that a cluster that
-// differs from the configuration shows the difference.
+/// Formats a textual table comparing configured members with live Ra cluster members.
+///
+/// A row for each configured member, with its vote when Ra lists it, and then one
+/// for each Ra member the configured list does not name, so that a cluster that
+/// differs from the configuration shows the difference.
 fn members_table(status: Status) -> String {
   let listed =
     list.map(status.members, fn(node) {
@@ -204,6 +215,7 @@ fn members_table(status: Status) -> String {
   aligned([["NODE", "VOTE", "ROLE", "NOTE"], ..list.append(listed, extra)])
 }
 
+/// Returns a readable display label for a member's voting status.
 fn vote_word(status: Status, node: String) -> String {
   case list.find(status.ra_members, fn(member) { member.node == node }) {
     Ok(RaMember(vote: Voter, ..)) -> "voter"
@@ -219,6 +231,7 @@ fn leader_word(status: Status, node: String) -> String {
   }
 }
 
+/// Extracts an object property by key or returns an explanatory error.
 fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   case value {
     json.Object(members) ->
@@ -233,6 +246,7 @@ fn field(value: JsonValue, key: String) -> Result(JsonValue, String) {
   }
 }
 
+/// Decodes bounded nonempty text from a json string value.
 fn text(value: JsonValue) -> Result(String, String) {
   case value {
     json.String(word) ->
@@ -258,17 +272,24 @@ fn optional_text(value: JsonValue, key: String) -> Option(String) {
   text_at(value, key) |> option.from_result
 }
 
+/// Reads a non-negative integer count property from an object.
 fn count_at(value: JsonValue, key: String) -> Result(Int, String) {
   use found <- result.try(field(value, key))
+
+  // Validate integer value is non-negative.
   case found {
     json.Int(count) if count >= 0 -> Ok(count)
     _ -> Error(key <> " is not a count")
   }
 }
 
-// A list of texts the reply must have, bounded like every list.
+/// Decodes a required bounded list of string values from an object field.
+///
+/// A list of texts the reply must have, bounded like every list.
 fn texts_at(value: JsonValue, key: String) -> Result(List(String), String) {
   use found <- result.try(field(value, key))
+
+  // Ensure array does not exceed list limit and decode items.
   case found {
     json.Array(items) ->
       case list.length(items) <= list_limit {
@@ -284,8 +305,10 @@ fn texts_at(value: JsonValue, key: String) -> Result(List(String), String) {
   }
 }
 
-// A list the reply may leave out. Absent, malformed or oversized reads as none,
-// and so does any entry that does not decode.
+/// Decodes an optional bounded list of items from an object field, ignoring missing or invalid entries.
+///
+/// A list the reply may leave out. Absent, malformed or oversized reads as none,
+/// and so does any entry that does not decode.
 fn optional_list(
   value: JsonValue,
   key: String,
@@ -302,8 +325,10 @@ fn clean(word: String) -> String {
   text_hygiene.single_line(word)
 }
 
-// Rows with each column as wide as its widest cell, separated by two spaces,
-// with no trailing spaces, so the output diffs cleanly.
+/// Formats a grid of string rows into aligned space-padded columns.
+///
+/// Rows with each column as wide as its widest cell, separated by two spaces,
+/// with no trailing spaces, so the output diffs cleanly.
 fn aligned(rows: List(List(String))) -> String {
   let first = list.first(rows) |> result.unwrap([])
   let widths =

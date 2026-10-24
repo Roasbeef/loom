@@ -55,11 +55,15 @@ import tui/theme
 /// ```
 pub fn render(source: String, width: Int) -> Result(List(span.Line), Refusal) {
   use diagram <- result.try(parse.parse(source))
+
+  // Render the diagram depending on its kind.
   use picture <- result.try(case diagram {
     model.Flow(chart) -> fit(chart, width)
     model.Sequenced(diagram) ->
       sequence.draw_within(diagram, width) |> result.map(read_out)
   })
+
+  // Verify the rendered picture fits within the allocated column width.
   case picture.width <= width {
     True -> Ok(lines(picture.rows))
     False -> Error(model.TooWide)
@@ -76,16 +80,19 @@ fn read_out(drawn: Canvas) -> Picture {
   Picture(rows:, width: canvas.rows_width(rows))
 }
 
-// The first direction that draws within the width, the declared one before the
-// transposed one. The transposed layout is only built when the declared one is
-// too wide or cannot be drawn. If neither fits, the declared picture is
-// returned for the caller's width check to refuse, so a refusal always names
-// the declared one. Both directions draw from one routing budget, so what the
-// first spends, whether it drew or failed, is taken from the second.
+/// The first direction that draws within the width, the declared one before the
+/// transposed one. The transposed layout is only built when the declared one is
+/// too wide or cannot be drawn. If neither fits, the declared picture is
+/// returned for the caller's width check to refuse, so a refusal always names
+/// the declared one. Both directions draw from one routing budget, so what the
+/// first spends, whether it drew or failed, is taken from the second.
 fn fit(chart: Flowchart, width: Int) -> Result(Picture, Refusal) {
+  // Attempt to draw in the declared flowchart orientation first.
   case draw.flowchart(chart, chart.direction, model.max_route_expansions) {
     Ok(drawn) -> {
       let declared = read_out(drawn.canvas)
+
+      // Check if the declared orientation fits within the column width.
       case declared.width <= width {
         True -> Ok(declared)
         False -> Ok(transposed_or(declared, chart, width, drawn.expansions))
@@ -105,12 +112,14 @@ fn fit(chart: Flowchart, width: Int) -> Result(Picture, Refusal) {
   }
 }
 
+/// Attempts to transpose the diagram into the perpendicular direction when declared overflows.
 fn transposed_or(
   declared: Picture,
   chart: Flowchart,
   width: Int,
   spent: Int,
 ) -> Picture {
+  // Attempt drawing the transposed chart using remaining routing budget.
   case
     draw.flowchart(
       chart,
@@ -120,6 +129,8 @@ fn transposed_or(
   {
     Ok(drawn) -> {
       let other = read_out(drawn.canvas)
+
+      // Choose the transposed picture if it fits within the width.
       case other.width <= width {
         True -> other
         False -> declared
@@ -136,6 +147,7 @@ fn transpose(direction: Direction) -> Direction {
   }
 }
 
+/// Converts canvas runs into rendered styled text lines.
 fn lines(read: List(List(canvas.Run))) -> List(span.Line) {
   list.map(read, fn(runs) {
     case runs {
@@ -145,6 +157,7 @@ fn lines(read: List(List(canvas.Run))) -> List(span.Line) {
   })
 }
 
+/// Maps a canvas run with semantic role into a styled terminal span.
 fn run_span(run: canvas.Run) -> span.Span {
   case run.role {
     canvas.Plain -> span.span_plain(run.text)
@@ -183,6 +196,7 @@ pub fn reason(refusal: Refusal) -> String {
   }
 }
 
+/// Returns a human-readable name for a diagram size or complexity limit.
 fn limit_name(limit: model.Limit) -> String {
   case limit {
     model.SourceBytes -> "source size"

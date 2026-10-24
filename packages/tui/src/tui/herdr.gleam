@@ -283,6 +283,8 @@ pub fn state_for(
   let pending =
     list.any(approvals, fn(review) { review.status == approval.Pending })
   let live = list.any(strands, fn(strand) { strand.live_phase != None })
+
+  // Blocked takes precedence over active work, and active work over idle.
   case pending, live {
     True, _ -> Blocked
     False, True -> Working
@@ -306,6 +308,8 @@ pub fn state_for(
 pub fn message_for(approvals: List(approval.Review)) -> String {
   let pending =
     list.filter(approvals, fn(review) { review.status == approval.Pending })
+
+  // Describe the first pending approval or summarize the queue.
   case pending {
     [] -> ""
 
@@ -441,6 +445,7 @@ pub fn announce(reporter: Option(Reporter), session: String) -> Nil {
 /// its idle shell, which is its documented safety net and the reason
 /// this may give up rather than keep the terminal from quitting.
 pub fn release(reporter: Option(Reporter)) -> Nil {
+  // When a reporter process is running, request release and wait for ack.
   case reporter {
     None -> Nil
     Some(reporter) -> {
@@ -455,6 +460,7 @@ pub fn release(reporter: Option(Reporter)) -> Nil {
   }
 }
 
+/// Handles incoming reporting messages and advances the monotonic sequence.
 fn handle(
   state: ReporterState,
   message: Message,
@@ -493,11 +499,14 @@ fn handle(
   }
 }
 
-// One exchange, one retry, then the report is gone. The retry exists
-// because a pane report racing its own daemon's startup is common enough
-// to be worth one second and no more; anything beyond that is the
-// terminal's own session, which always wins.
+/// Delivers a payload over the Unix domain socket with a single retry.
+///
+/// One exchange, one retry, then the report is gone. The retry exists
+/// because a pane report racing its own daemon's startup is common enough
+/// to be worth one second and no more; anything beyond that is the
+/// terminal's own session, which always wins.
 fn deliver(config: Config, payload: String) -> Nil {
+  // Attempt initial delivery, falling back to one retry on error.
   case ffi_herdr.exchange(config.socket_path, payload, attempt_timeout_ms) {
     Ok(_) -> Nil
     Error(_) -> {
@@ -551,9 +560,10 @@ pub fn encode_release(config: Config, seq: Int) -> String {
   encode(config, seq, "pane.release_agent", [])
 }
 
-// The envelope both methods share: a monotonically sequenced request with
-// the pane identity and this integration's tags, newline-terminated the
-// way the daemon frames it.
+/// Builds the common JSON RPC envelope for Herdr daemon requests.
+///
+/// A monotonically sequenced request with the pane identity and this
+/// integration's tags, newline-terminated the way the daemon frames it.
 fn encode(
   config: Config,
   seq: Int,
@@ -579,6 +589,7 @@ fn encode(
   <> "\n"
 }
 
+/// Translates the internal PaneState enum into the wire representation string.
 fn state_name(state: PaneState) -> String {
   case state {
     Idle -> "idle"

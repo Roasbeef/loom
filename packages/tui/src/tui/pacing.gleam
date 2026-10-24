@@ -233,10 +233,12 @@ pub fn pace(revealed: Int, target: Int, policy: PacePolicy) -> Int {
     target,
   )
 
+  // Scale the reveal step depending on whether backlog exceeds the catch-up threshold.
   let step = case backlog > policy.catch_up_threshold {
     True -> int.max(policy.rows_per_frame, backlog / catch_up_divisor)
     False -> policy.rows_per_frame
   }
+
   revealed + int.min(step, backlog)
 }
 
@@ -381,17 +383,12 @@ pub fn viewport_address(event: msg.Event) -> ViewportAddress {
   }
 }
 
-// The keys that move, submit to, or reshape the transcript. Escape closes
-// help, notes and the changes view, each of which returns the reader to a
-// transcript that was projected while another surface owned the screen;
-// Enter is the submitted prompt appearing at the tail; Ctrl+g re-expands
-// every tool block and so replaces the rows outright. A strand or session
-// switch needs no key here because the projection it produces is adopted
-// whole by the render cache.
-//
-// Everything else is composition or navigation inside the composer, and the
-// modifier keys are listed rather than swept up by a catch-all so a new
-// binding is a decision taken here.
+/// Maps an input key to whether it addresses the transcript viewport.
+///
+/// Escape closes help, notes and the changes view, each of which returns
+/// the reader to a transcript that was projected while another surface owned
+/// the screen; Enter is the submitted prompt appearing at the tail; Ctrl+g
+/// re-expands every tool block and so replaces the rows outright.
 fn key_viewport_address(key: keys.Key) -> ViewportAddress {
   case key {
     keys.PageUp

@@ -23,6 +23,8 @@ pub fn capture(
   paths: endpoint.Paths,
 ) -> Result(Option(discovery.Connected), String) {
   use available <- result.try(endpoint.availability(paths))
+
+  // Check whether the control endpoint is currently occupied.
   case available {
     endpoint.Vacant -> Ok(None)
     endpoint.Occupied(record) ->
@@ -56,6 +58,8 @@ pub fn restart(
   ))
   let identity = daemon.hello(connected.control).build
   daemon.close(connected.control)
+
+  // Verify daemon reports expected build commit.
   case identity {
     Some(protocol.Build(_, commit)) if commit == expected_commit -> Ok(Nil)
     Some(_) ->
@@ -69,7 +73,9 @@ pub fn restart(
   }
 }
 
+/// Shuts down and awaits retirement of the previous daemon instance.
 fn retire(previous: Option(discovery.Connected)) {
+  // Retire previous connected daemon if one was active.
   case previous {
     None -> Ok(Nil)
     Some(connected) -> {
@@ -80,6 +86,7 @@ fn retire(previous: Option(discovery.Connected)) {
   }
 }
 
+/// Polls until the previous daemon fence is removed or the timeout expires.
 fn await_retirement(fence) {
   case
     poll.until(within: 90_000, every: 50, attempt: fn() {

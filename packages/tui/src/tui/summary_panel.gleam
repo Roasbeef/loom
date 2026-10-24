@@ -78,6 +78,7 @@ pub fn follow_selected_job(
   previous: Option(live_jobs.Board),
   board: live_jobs.Board,
 ) -> Int {
+  // Find selected job from previous board snapshot if strand matches.
   let old = case previous {
     Some(previous) if previous.strand == board.strand ->
       previous.jobs
@@ -85,6 +86,8 @@ pub fn follow_selected_job(
       |> list.first
     Some(_) | None -> Error(Nil)
   }
+
+  // Look up matching job index in current board.
   case old {
     Ok(job) ->
       board.jobs
@@ -111,10 +114,12 @@ pub fn tab_line(tab: Tab, width: Int) -> span.Line {
   ]
   let parts =
     list.flat_map(labels, fn(pair) {
+      // Style active vs inactive tab labels.
       let appearance = case pair.0 == tab {
         True -> style.new(theme.paper, theme.raised, style.bold())
         False -> theme.overlay_quiet()
       }
+
       [span.span_styled(" " <> pair.1 <> " ", appearance)]
     })
   let line = span.line_new(parts)
@@ -127,10 +132,12 @@ pub fn tab_line(tab: Tab, width: Int) -> span.Line {
   )
 }
 
+/// Formats summary lines for captured run completion evidence.
 fn completion_lines(
   summary: Option(completion_summary.Summary),
   width: Int,
 ) -> List(span.Line) {
+  // Check whether completed operation summary exists.
   case summary {
     None ->
       styled(
@@ -139,11 +146,14 @@ fn completion_lines(
         width,
       )
     Some(summary) -> {
+      // Format ancestry coverage label.
       let coverage = case summary.coverage {
         completion_summary.Complete -> "complete captured ancestry"
         completion_summary.Partial -> "partial captured ancestry"
         completion_summary.Unavailable -> "ancestry unavailable"
       }
+
+      // Format final assistant response text.
       let final = case summary.final_assistant {
         None ->
           styled(
@@ -156,6 +166,7 @@ fn completion_lines(
           ..styled(value, theme.overlay_plain(), width)
         ]
       }
+
       let edits =
         list.flatten([
           [heading("FILE-TOOL EVIDENCE", width)],
@@ -171,10 +182,13 @@ fn completion_lines(
       let tools = [
         heading("TOOL RESULTS", width),
         ..list.flat_map(summary.tools, fn(tool) {
+          // Format tool outcome status string.
           let status = case tool.status {
             completion_summary.Succeeded -> "succeeded"
             completion_summary.Failed -> "failed"
           }
+
+          // Format tool command and exit code evidence.
           let evidence = case tool.command, tool.exit_code {
             Some(command), Some(code) ->
               " · exit "
@@ -185,6 +199,7 @@ fn completion_lines(
             None, Some(code) -> " · exit " <> int.to_string(code)
             None, None -> ""
           }
+
           styled(
             tool.name <> " · " <> status <> evidence,
             theme.overlay_plain(),
@@ -222,6 +237,7 @@ fn completion_lines(
   }
 }
 
+/// Formats session token and cost usage lines.
 fn usage_lines(
   usage: message.Usage,
   latest: String,
@@ -265,6 +281,7 @@ fn usage_lines(
   ])
 }
 
+/// Formats live job status lines for the summary jobs tab.
 fn jobs_lines(
   board: Option(live_jobs.Board),
   notice: String,
@@ -273,6 +290,8 @@ fn jobs_lines(
   width: Int,
 ) -> List(span.Line) {
   let notice = styled(notice, theme.overlay_signal(), width)
+
+  // Check whether live job board is available.
   case board {
     None -> notice
     Some(board) -> {
@@ -283,14 +302,19 @@ fn jobs_lines(
           fn(job, index) {
             let index = offset + index
             let chosen = index == selected
+
+            // Selection marker for chosen job row.
             let marker = case chosen {
               True -> "▸ "
               False -> "  "
             }
+
+            // Background color for selected vs unselected row.
             let background = case chosen {
               True -> theme.raised
               False -> theme.graphite
             }
+
             padded(
               marker
                 <> "["
@@ -302,6 +326,8 @@ fn jobs_lines(
             )
           },
         )
+
+      // Format selected job inspection details.
       let detail = case list.first(list.drop(board.jobs, selected)) {
         Error(Nil) -> []
         Ok(job) ->
@@ -342,6 +368,7 @@ fn jobs_lines(
             ),
           ])
       }
+
       list.flatten([
         notice,
         styled(
@@ -362,6 +389,7 @@ fn jobs_lines(
   }
 }
 
+/// Maps run completion status to style theme.
 fn outcome_style(outcome: operation.RunOutcome) -> style.Style {
   case outcome {
     operation.RunCompleted(_) ->
@@ -370,6 +398,7 @@ fn outcome_style(outcome: operation.RunOutcome) -> style.Style {
   }
 }
 
+/// Creates a padded styled section heading line.
 fn heading(value: String, width: Int) -> span.Line {
   span.line_new([
     span.span_styled(
@@ -379,6 +408,7 @@ fn heading(value: String, width: Int) -> span.Line {
   ])
 }
 
+/// Wraps and styles multi-line text to fixed width.
 fn styled(
   value: String,
   appearance: style.Style,
@@ -393,6 +423,7 @@ fn styled(
   |> fn(wrapped) { wrapped.lines }
 }
 
+/// Truncates and pads a single line to full width with given styling.
 fn padded(value: String, width: Int, appearance: style.Style) -> span.Line {
   span.line_new([
     span.span_styled(

@@ -111,6 +111,8 @@ pub fn publish_herdr(model: Model) -> Model {
           session:,
           message: herdr.message_for(model.shared.approvals),
         )
+
+      // Check whether published state differs from previous state.
       case herdr.changed(model.view.herdr_published, next) {
         False -> model
         True -> {
@@ -121,6 +123,7 @@ pub fn publish_herdr(model: Model) -> Model {
               tui_model.emit(model, effect.AnnounceHerdr(reporter, session))
             False -> model
           }
+
           Model(..model, view: View(..model.view, herdr_published: Some(next)))
           |> tui_model.emit(effect.ReportHerdr(
             reporter,
@@ -164,10 +167,7 @@ pub fn update_tick(model: Model) -> Model {
 // The first fourteen reads (`session_step.service_reads`) take the shared
 // record alone and read nothing of the terminal, so they run as one chain
 // over `Shared` and are held once, before
-// the terminal's activity poll. One hold moves their effects into the outbox
-// in the order the chain decided them and applies their editor notices after
-// the last, and since none of the fourteen reads what a notice changes, the
-// model is the same as if each had been held on its own.
+/// Performs quiet-period calculations and background refreshes at tick end.
 fn settle_tick(model: Model, drained: Model) -> Model {
   let drained =
     drained
@@ -208,10 +208,13 @@ fn settle_tick(model: Model, drained: Model) -> Model {
 /// ```
 @internal
 pub fn watch_memory(model: Model) -> Model {
+  // Check whether memory overview overlay is currently open.
   let watch = case model.view.overlay {
     tui_model.MemoryOverview(_) -> session_model.WatchingMemory
     _ -> session_model.NotWatchingMemory
   }
+
+  // Update memory watch status if changed.
   case model.shared.memory_watch == watch {
     True -> model
     False ->
@@ -235,10 +238,13 @@ pub fn watch_memory(model: Model) -> Model {
 /// ```
 @internal
 pub fn watch_evolution(model: Model) -> Model {
+  // Check whether evolution review overlay is currently open.
   let watch = case model.view.overlay {
     tui_model.EvolutionReview(_) -> session_model.WatchingEvolution
     _ -> session_model.NotWatchingEvolution
   }
+
+  // Update evolution watch status if changed.
   case model.shared.evolution_watch == watch {
     True -> model
     False ->
@@ -313,21 +319,22 @@ pub fn apply_replay_change(
 // only whether the revision differs from the one it last painted.
 //
 // The glyph reads `active_strand_live` after the hold rather than a surface
-// fact the clocks record. A fact would be recorded and cleared on every tick
-// of a live strand, two copies of the shared record, which measured as 190
-// more words on the idle tick; the read gives the same answer because the
-// clocks change nothing it reads.
+/// Advances spinner animation frame for live strands.
 fn advance_activity_indicator(model: Model) -> Model {
   let model =
     tui_model.hold_shared(
       model,
       session_step.advance_activity_clocks(model.shared),
     )
+
+  // Advance indicator frame only when active strand is live.
   case session_model.active_strand_live(model.shared) {
     False -> model
     True -> {
       let activity_frame = model.view.activity_frame + 1
       let advanced = Model(..model, view: View(..model.view, activity_frame:))
+
+      // Invalidate frame if spinner glyph visual changed.
       case
         layout.activity_glyph(model.view.activity_frame)
         == layout.activity_glyph(activity_frame)
@@ -344,13 +351,14 @@ fn advance_activity_indicator(model: Model) -> Model {
 // function of the model, and the label repaints only when the reading
 // actually moved.
 //
-// The reading is suppressed while the active strand is running
-// (`cache_watch.shown` says why), which the web view's rings follow too.
+/// Updates cache outlook status based on active strand state.
 fn advance_cache_outlook(model: Model) -> Model {
+  // Check whether active strand is currently running.
   let activity = case session_model.active_strand_live(model.shared) {
     True -> cache_watch.Running
     False -> cache_watch.Resting
   }
+
   let label =
     cache_watch.shown(
       model.shared.cache,
@@ -360,6 +368,8 @@ fn advance_cache_outlook(model: Model) -> Model {
     )
     |> option.map(cache_miss.outlook_label)
     |> option.unwrap("")
+
+  // Update view if outlook label changed.
   case label == model.view.cache_outlook {
     True -> model
     False ->
@@ -385,6 +395,8 @@ pub fn refresh_frame_cache(
   boundary: pacing.FrameBoundary,
 ) -> Model {
   let screen = geometry.rect_new(0, 0, model.view.width, model.view.height)
+
+  // Check whether cached frame is fresh.
   let freshness = case viewport_pacing(model) {
     // Rows the model holds but the viewport has not shown make the painted
     // frame stale by definition, whatever the revision says. Without this
@@ -404,6 +416,8 @@ pub fn refresh_frame_cache(
   // monotonic clock, so a wall-clock step cannot stretch or collapse the
   // interval.
   let now = model.shared.stamp.now_ms
+
+  // Decide whether to render, defer, or keep cached frame.
   case
     pacing.frame_decision(boundary, freshness, now - model.view.last_frame_ms)
   {
@@ -482,8 +496,7 @@ pub fn viewport_pacing(model: Model) -> pacing.ViewportPacing {
 // An idle strand holds no rows back at all. The walk exists to smooth output
 // that is still arriving, and a viewport lagging a source that has stopped
 // producing shows the reader stale text for no gain. It is also why a
-// replayed or scripted run settles on the complete frame rather than on
-// however far a fixed number of ticks happened to walk.
+/// Advances revealed row count according to viewport pacing.
 fn advance_viewport(model: Model) -> Model {
   case session_model.active_strand_live(model.shared) {
     False ->
@@ -577,6 +590,8 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
     model.shared.connection_backlog == session_model.MailboxMayHoldMore,
     0,
   )
+
+  // Determine polling interval based on viewport pacing status.
   case viewport_pacing(model) {
     // A backlog is work the loop owes the screen with nothing left to wake
     // it: the deltas that produced those rows are already drained. One row
@@ -587,6 +602,8 @@ pub fn terminal_poll_timeout(model: Model) -> Int {
     pacing.ViewportCatchingUp -> int.min(ordinary, pacing.frame_interval_ms)
     pacing.ViewportSettled -> {
       let lane = lane_wait(model)
+
+      // Choose poll timeout depending on in-flight effects.
       case in_flight(model), wakes_itself(model) {
         True, _ -> int.min(ordinary, 8)
         False, True -> int.min(ordinary, int.min(lane, self_wake_ceiling_ms))
@@ -609,13 +626,15 @@ fn in_flight(model: Model) -> Bool {
 
 // How long until the adopted lane next has something for `tick` to do,
 // measured from the step's transport reading, which is the clock the lane's
-// deadlines are set on. A lane already due answers zero, and one with
-// nothing due, or no lane at all, answers the ceiling.
+/// Computes duration until next scheduled deadline on the active channel.
 fn lane_wait(model: Model) -> Int {
+  // Fetch next due timestamp from channel.
   let due = case model.shared.channel {
     Some(channel) -> session_channel.next_due(channel)
     None -> None
   }
+
+  // Calculate remaining milliseconds until due time.
   case due {
     Some(due) ->
       int.clamp(

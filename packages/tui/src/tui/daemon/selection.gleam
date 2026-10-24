@@ -183,6 +183,7 @@ pub fn with_live_control(
   host: Host,
   action: fn(Host) -> Result(a, String),
 ) -> Result(a, String) {
+  // Check whether current control connection process is still alive.
   case process.is_alive(daemon.owner(host.control)) {
     True -> action(host)
     False -> {
@@ -210,6 +211,8 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
     |> result.map_error(failure_for(session, _))
     |> result.try(selected_row),
   )
+
+  // Inspect selected session status to determine attachment eligibility.
   case selected.status {
     // An observer may attach to an already resident session without asking
     // for execution authority. Saved sessions still require explicit open.
@@ -260,6 +263,7 @@ pub fn open(host: Host, session: String) -> Result(Target, String) {
   }
 }
 
+/// Requests session opening from the daemon and produces an attachable target.
 fn open_selected(host: Host, selected: protocol.Session) {
   use reply <- result.try(
     daemon.request(
@@ -269,6 +273,8 @@ fn open_selected(host: Host, selected: protocol.Session) {
     )
     |> result.map_error(failure),
   )
+
+  // Extract lifecycle status from opening reply.
   use status <- result.try(case reply {
     protocol.LifecycleReply(status) -> Ok(status)
     protocol.StatusReply(_)
@@ -289,6 +295,7 @@ fn open_selected(host: Host, selected: protocol.Session) {
     | protocol.UiLinkReply(..) ->
       Error("open returned an unexpected control reply")
   })
+
   target(
     host,
     selected.session_id,
@@ -336,6 +343,8 @@ pub fn create_named(
     )
     |> result.map_error(failure),
   )
+
+  // Verify creation reply produced a session record.
   case reply {
     protocol.SessionReply(row) ->
       target(
@@ -453,6 +462,8 @@ pub fn move(
     daemon.request(host.control, protocol.MoveSession(session, to), 10_000)
     |> result.map_error(failure_for(session, _)),
   )
+
+  // Handle move reply and verify matching session identity.
   case reply {
     protocol.MovedReply(session_id, op, destination) if session_id == session ->
       Ok(#(op, destination))
@@ -475,6 +486,8 @@ pub fn abandon(host: Host, session: String) -> Result(String, String) {
     daemon.request(host.control, protocol.AbandonMove(session), 10_000)
     |> result.map_error(failure_for(session, _)),
   )
+
+  // Verify abandonment reply matches the requested session.
   case reply {
     protocol.AbandonedReply(session_id, op) if session_id == session -> Ok(op)
     _ -> Error("abandon returned an unexpected control reply")
@@ -511,18 +524,23 @@ pub fn restore(host: Host, session: String) -> Result(String, String) {
     daemon.request(host.control, protocol.RestoreSession(session), 10_000)
     |> result.map_error(failure),
   )
+
+  // Confirm session restoration reply matches target identity.
   case reply {
     protocol.SessionReply(row) if row.session_id == session -> Ok(session)
     _ -> Error("restore returned an unexpected control reply")
   }
 }
 
+/// Coordinates session retirement and history archival or deletion.
 fn remove_using(
   session: String,
   removal: Removal,
   request: fn(protocol.Command, Int) -> Result(protocol.Reply, String),
 ) -> Result(String, String) {
   use stopped <- result.try(request(protocol.StopSession(session), 10_000))
+
+  // Extract lifecycle status from stop reply.
   use status <- result.try(case stopped {
     protocol.LifecycleReply(status) -> Ok(status)
     protocol.StatusReply(_)
@@ -543,6 +561,8 @@ fn remove_using(
     | protocol.UiLinkReply(..) ->
       Error("stop returned an unexpected control reply; session kept")
   })
+
+  // Verify session has retired or wait for retirement completion.
   use _ <- result.try(case status {
     protocol.Saved
     | protocol.Reserved
@@ -554,11 +574,16 @@ fn remove_using(
     protocol.Resident(_) | protocol.Opening(_) ->
       Error("session did not enter stopping; session kept")
   })
+
+  // Select command corresponding to removal strategy.
   let command = case removal {
     KeepHistory -> protocol.ArchiveSession(session)
     EraseHistory -> protocol.DeleteSession(session)
   }
+
   use reply <- result.try(request(command, 10_000))
+
+  // Validate removal response matches requested strategy.
   case removal, reply {
     KeepHistory, protocol.SessionReply(row) if row.session_id == session ->
       Ok(session)
@@ -577,9 +602,11 @@ const retirement_wait_ms = 60_000
 // The answer when the retirement wait runs out, between reads or during one.
 const still_stopping = "session is still stopping; delete was not sent"
 
-// Each read is given what is left of the retirement wait, as `await` does for
-// an open and for the same reason: one slow reply from a loaded daemon must
-// not end a wait that still has most of its time left.
+/// Polls until session retirement is confirmed or timeout expires.
+///
+/// Each read is given what is left of the retirement wait, as `await` does for
+/// an open and for the same reason: one slow reply from a loaded daemon must
+/// not end a wait that still has most of its time left.
 fn await_retirement(session, operation, request) {
   let deadline = host_bootstrap.monotonic_time_ms() + retirement_wait_ms
 
@@ -589,6 +616,8 @@ fn await_retirement(session, operation, request) {
     poll.until(within: retirement_wait_ms, every: 50, attempt: fn() {
       let remaining = deadline - host_bootstrap.monotonic_time_ms()
       use <- bool.guard(remaining <= 0, poll.Retry)
+
+      // Query session status to verify retirement completion.
       case request(protocol.GetSession(session), remaining) {
         // The seam's errors are already worded, so a read that failed because
         // it used up the wait is told apart by the clock: past the deadline,
@@ -657,6 +686,8 @@ pub fn list(host: Host, after: String) -> Result(protocol.Page, String) {
     daemon.request(host.control, protocol.ListSessions(after, None), 5000)
     |> result.map_error(failure),
   )
+
+  // Check whether listing reply returned a session page.
   case reply {
     protocol.SessionsReply(page) -> Ok(page)
     protocol.StatusReply(_)
@@ -703,6 +734,8 @@ pub fn deployment(
     daemon.request(host.control, protocol.DeploymentStatus(node:), 10_000)
     |> result.map_error(deployment_failure),
   )
+
+  // Extract deployment status document from reply.
   case reply {
     protocol.DeploymentReply(document) -> Ok(document)
     protocol.StatusReply(_)
@@ -741,6 +774,8 @@ pub fn directory(host: Host) -> Result(json.JsonValue, String) {
     daemon.request(host.control, protocol.DirectoryStatus, 10_000)
     |> result.map_error(directory_failure),
   )
+
+  // Extract directory status document from reply.
   case reply {
     protocol.DirectoryReply(document) -> Ok(document)
     protocol.StatusReply(_)
@@ -801,6 +836,8 @@ pub fn elsewhere(
     )
     |> result.map_error(elsewhere_failure),
   )
+
+  // Extract elsewhere sessions document from reply.
   case reply {
     protocol.ElsewhereReply(document) -> Ok(document)
     protocol.StatusReply(_)
@@ -886,10 +923,12 @@ pub fn deployment_failure(reason: daemon.Failure) -> String {
   }
 }
 
-// A session on an executor has a registered name where a local one has a path.
-// The name is never probed for a repository: `discover_from` would read it
-// relative to the terminal's own working directory and could show a branch of
-// an unrelated local folder that happens to share the name.
+/// Constructs a Target record with connection URI and context.
+///
+/// A session on an executor has a registered name where a local one has a path.
+/// The name is never probed for a repository: `discover_from` would read it
+/// relative to the terminal's own working directory and could show a branch of
+/// an unrelated local folder that happens to share the name.
 fn target(
   host: Host,
   session,
@@ -899,6 +938,7 @@ fn target(
   creation_key,
   status,
 ) {
+  // Extract active resident incarnation or await opening operation.
   use incarnation <- result.try(case status {
     protocol.Resident(incarnation) -> Ok(incarnation)
     protocol.Opening(operation) -> await(host, session, operation)
@@ -910,6 +950,7 @@ fn target(
     | protocol.RecoveryBlocked ->
       Error("selected session is not available for attachment")
   })
+
   let epoch = daemon.hello(host.control).epoch.value
   let address =
     uri.Uri(
@@ -932,7 +973,9 @@ fn target(
   ))
 }
 
+/// Extracts the selected session row from a control reply.
 fn selected_row(reply) {
+  // Match session reply payload.
   case reply {
     protocol.SessionReply(row) -> Ok(row)
     protocol.StatusReply(_)
@@ -975,9 +1018,12 @@ const startup_incomplete =
 // wait could not continue even though most of its minute was left. Tying the
 // read to the wait's own deadline means the only timeout that can end the
 // open is the one the operator was promised.
+/// Waits for an opening operation to settle and yield a resident session incarnation.
 fn await(host: Host, session, operation) {
   let epoch = daemon.hello(host.control).epoch
   let deadline = host_bootstrap.monotonic_time_ms() + startup_wait_ms
+
+  // Poll opening operation until completion or deadline expiration.
   case
     poll.until(within: startup_wait_ms, every: 50, attempt: fn() {
       let remaining = deadline - host_bootstrap.monotonic_time_ms()
@@ -985,6 +1031,8 @@ fn await(host: Host, session, operation) {
       // The poll makes one last attempt at the deadline itself. There is no
       // time left to give a read, so that attempt ends the wait as expired.
       use <- bool.guard(remaining <= 0, poll.Retry)
+
+      // Query active operation status.
       case
         daemon.request(
           host.control,
@@ -1102,7 +1150,9 @@ pub fn failure_for(session: String, reason: daemon.Failure) -> String {
   }
 }
 
-// What the terminal tells the operator when the daemon points elsewhere.
+/// Formats human-readable redirect instructions for non-local sessions.
+///
+/// What the terminal tells the operator when the daemon points elsewhere.
 fn redirect_words(session: String, redirect: protocol.Redirect) -> String {
   case redirect {
     protocol.NotOwner(orchestrator, Some(address)) ->
@@ -1141,6 +1191,8 @@ pub fn control_address(address: String) -> Result(String, String) {
   use parsed <- result.try(
     uri.parse(address) |> result.replace_error("invalid daemon address"),
   )
+
+  // Check for deprecated v1 gateway endpoint path.
   case parsed.path {
     "/v1/ws" -> Error("gateway v1 is not supported; use the daemon v2 endpoint")
     _ ->

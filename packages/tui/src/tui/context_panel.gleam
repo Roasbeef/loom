@@ -22,6 +22,8 @@ import tui/theme
 @internal
 pub fn lines(state: context_view.State, width: Int) -> List(span.Line) {
   let observation = observation_line(state)
+
+  // Dispatch rendering based on whether a context board observation is present.
   case state.board {
     None -> styled(observation, theme.overlay_signal(), width)
     Some(board) -> {
@@ -71,6 +73,7 @@ pub fn lines(state: context_view.State, width: Int) -> List(span.Line) {
         context_view.Overview | context_view.Hidden ->
           styled("a shows bounded item inventory", theme.overlay_quiet(), width)
       }
+
       list.flatten([
         styled(observation, theme.overlay_signal(), width),
         [
@@ -122,6 +125,7 @@ pub fn lines(state: context_view.State, width: Int) -> List(span.Line) {
   }
 }
 
+/// Constructs a status header describing context observation state and freshness.
 fn observation_line(state: context_view.State) -> String {
   case state.request, state.notice {
     context_view.Requested, "" ->
@@ -137,9 +141,12 @@ fn observation_line(state: context_view.State) -> String {
   }
 }
 
+/// Renders one category token usage row formatted for the available terminal width.
 fn component_row(item: context_view.Item, width: Int) -> List(span.Line) {
   let label = text_hygiene.single_line(item.name)
   let value = "~" <> count(item.tokens)
+
+  // Choose single-row or two-line layout depending on available column width.
   case width >= 32 {
     True -> {
       let label_width = int.max(1, width - text.cell_width(value) - 2)
@@ -161,6 +168,7 @@ fn component_row(item: context_view.Item, width: Int) -> List(span.Line) {
   }
 }
 
+/// Formats a bold section heading line styled with the current overlay theme.
 fn heading(value: String, width: Int) -> span.Line {
   span.line_new([
     span.span_styled(
@@ -170,6 +178,7 @@ fn heading(value: String, width: Int) -> span.Line {
   ])
 }
 
+/// Formats a rectangular card with padding across the target panel width.
 fn card(value: String, width: Int) -> List(span.Line) {
   styled(value, style.new(theme.paper, theme.raised, style.none()), width)
   |> list.map(fn(line) {
@@ -186,6 +195,7 @@ fn card(value: String, width: Int) -> List(span.Line) {
   })
 }
 
+/// Splits and wraps styled text lines to fit the specified maximum width.
 fn styled(
   value: String,
   appearance: style.Style,

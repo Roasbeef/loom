@@ -126,10 +126,14 @@ pub fn place(
   let boxes =
     to_boxes(direction, sizes, along, total_along, across)
     |> list.map(fn(box) { shift(box, margin + room, margin) })
+
+  // Calculate bounding box dimensions based on layout axis orientation.
   let #(width, height) = case axis {
     Vertical -> #(extent + 2 * { margin + room }, total_along + 2 * margin)
     Horizontal -> #(total_along + 2 * { margin + room }, extent + 2 * margin)
   }
+
+  // Guard against canvas allocations that exceed maximum allowed cells.
   case width * height > model.max_canvas_cells {
     True -> Error(model.TooLarge(model.CanvasCells))
     False ->
@@ -161,7 +165,7 @@ fn margin_for(back: Set(Int)) -> Int {
   2 + int.min(set.size(back), 6)
 }
 
-// Extra room at the right for edge labels placed beside a line.
+/// Extra room at the right for edge labels placed beside a line.
 fn label_room(edges: List(Edge)) -> Int {
   case
     list.fold(edges, 0, fn(widest, edge) { int.max(widest, label_cells(edge)) })
@@ -183,9 +187,9 @@ fn shift(box: Box, across: Int, down: Int) -> Box {
 // Layers
 // ---------------------------------------------------------------------------
 
-// The edges that close a cycle: those that reach a node still on the search
-// stack. Dropping them leaves an acyclic graph, because every cycle must
-// contain one.
+/// The edges that close a cycle: those that reach a node still on the search
+/// stack. Dropping them leaves an acyclic graph, because every cycle must
+/// contain one.
 fn find_back_edges(count: Int, edges: List(Edge)) -> Set(Int) {
   let out =
     list.index_fold(edges, dict.new(), fn(table, edge, index) {
@@ -202,6 +206,7 @@ fn find_back_edges(count: Int, edges: List(Edge)) -> Set(Int) {
   back
 }
 
+/// Depth-first search step traversing outgoing edges to detect cycle-closing back edges.
 fn visit(
   node: Int,
   out: Dict(Int, List(#(Int, Int))),
@@ -215,6 +220,8 @@ fn visit(
       #(entered, back),
       fn(state, step) {
         let #(index, target) = step
+
+        // Check target node visit status to identify back-edges.
         case dict.get(state.0, target) {
           Ok(OnStack) -> #(state.0, set.insert(state.1, index))
           Ok(Finished) -> state
@@ -225,8 +232,8 @@ fn visit(
   #(dict.insert(marks, node, Finished), back)
 }
 
-// Longest-path layers over the edges that are not back edges, then each node
-// without a predecessor moved down next to its nearest successor.
+/// Longest-path layers over the edges that are not back edges, then each node
+/// without a predecessor moved down next to its nearest successor.
 fn assign_layers(
   count: Int,
   edges: List(Edge),
@@ -245,6 +252,7 @@ fn assign_layers(
       #(dict.insert(state.0, node, value), memo)
     })
   list.fold(model.indices(count), longest, fn(table, node) {
+    // Shift root nodes down towards their earliest successor layer.
     case dict.get(preds, node), dict.get(succs, node) {
       Error(_), Ok(next) -> {
         let lowest =
@@ -258,6 +266,7 @@ fn assign_layers(
   })
 }
 
+/// Constructs an adjacency dictionary from edges mapped by pair selector.
 fn adjacency(
   edges: List(Edge),
   pair: fn(Edge) -> #(Int, Int),
@@ -269,13 +278,14 @@ fn adjacency(
   })
 }
 
-// The length of the longest path ending at a node, memoised. The recursion is
-// as deep as the longest path, which the node limit bounds.
+/// The length of the longest path ending at a node, memoised. The recursion is
+/// as deep as the longest path, which the node limit bounds.
 fn depth(
   node: Int,
   preds: Dict(Int, List(Int)),
   memo: Dict(Int, Int),
 ) -> #(Int, Dict(Int, Int)) {
+  // Check if depth for this node has already been memoized.
   case dict.get(memo, node) {
     Ok(known) -> #(known, memo)
     Error(_) -> {
@@ -293,7 +303,7 @@ fn depth(
   }
 }
 
-// Nodes grouped by layer, each layer in declaration order.
+/// Nodes grouped by layer, each layer in declaration order.
 fn group_layers(layer_of: Dict(Int, Int)) -> Dict(Int, List(Int)) {
   let count = dict.size(layer_of)
   list.fold(model.indices(count), dict.new(), fn(table, node) {
@@ -311,8 +321,8 @@ fn layer_count(layers: Dict(Int, List(Int))) -> Int {
 // Ordering within layers
 // ---------------------------------------------------------------------------
 
-// Fixed sweeps of the barycenter heuristic: each layer is ordered by the mean
-// position of its neighbours in the layer just processed, down then up.
+/// Fixed sweeps of the barycenter heuristic: each layer is ordered by the mean
+/// position of its neighbours in the layer just processed, down then up.
 fn order_layers(
   layers: Dict(Int, List(Int)),
   edges: List(Edge),
@@ -332,6 +342,7 @@ fn order_layers(
   })
 }
 
+/// Constructs undirected neighbour adjacency table for all flowchart edges.
 fn neighbour_table(edges: List(Edge)) -> Dict(Int, List(Int)) {
   list.fold(edges, dict.new(), fn(table, edge) {
     let from_side = result.unwrap(dict.get(table, edge.from), [])
@@ -341,9 +352,9 @@ fn neighbour_table(edges: List(Edge)) -> Dict(Int, List(Int)) {
   })
 }
 
-// Reorders one layer by the mean index of each node's neighbours in the
-// reference layer. A node with none keeps its own index as its key, and ties
-// keep the current order, so a sweep never moves a node for no reason.
+/// Reorders one layer by the mean index of each node's neighbours in the
+/// reference layer. A node with none keeps its own index as its key, and ties
+/// keep the current order, so a sweep never moves a node for no reason.
 fn sweep_layer(
   layers: Dict(Int, List(Int)),
   layer: Int,
@@ -351,6 +362,7 @@ fn sweep_layer(
   neighbours: Dict(Int, List(Int)),
   layer_of: Dict(Int, Int),
 ) -> Dict(Int, List(Int)) {
+  // Look up layer members and reference layer nodes.
   case dict.get(layers, layer), dict.get(layers, reference) {
     Ok(members), Ok(others) -> {
       let positions =
@@ -406,14 +418,14 @@ fn cross_size(axis: Axis, size: #(Int, Int)) -> Int {
   }
 }
 
-// A box size for each node, width then height. The label fixes the least size:
-// its widest line plus a border and a space on each side, by its line count
-// plus a border on each side. A node with several edges on one side needs more
-// along that side, because the router gives every edge a cell of its own and
-// keeps two of them from touching. The router takes ports from the middle
-// outward, alternating sides, so the side must reach `2 * (ports / 2)` cells
-// either way from the middle. The side runs across the flow axis, so it is the
-// width in a vertical flow and the height in a horizontal one.
+/// A box size for each node, width then height. The label fixes the least size:
+/// its widest line plus a border and a space on each side, by its line count
+/// plus a border on each side. A node with several edges on one side needs more
+/// along that side, because the router gives every edge a cell of its own and
+/// keeps two of them from touching. The router takes ports from the middle
+/// outward, alternating sides, so the side must reach `2 * (ports / 2)` cells
+/// either way from the middle. The side runs across the flow axis, so it is the
+/// width in a vertical flow and the height in a horizontal one.
 fn box_sizes(
   axis: Axis,
   nodes: List(Node),
@@ -429,10 +441,14 @@ fn box_sizes(
     let width = widest + 4
     let height = list.length(node.lines) + 2
     let ports = result.unwrap(dict.get(demand, index), 0)
+
+    // Additional room needed along port side for multiple edge attachments.
     let room = case ports {
       0 | 1 -> 0
       _ -> 4 * { ports / 2 } + 3
     }
+
+    // Map width and height to along/cross dimensions depending on flow axis.
     case axis {
       Vertical -> #(int.max(width, room), height)
       Horizontal -> #(width, int.max(height, room))
@@ -440,17 +456,19 @@ fn box_sizes(
   })
 }
 
-// The most edges any one side of each node must hold. A forward edge leaves
-// its source on the side the flow heads toward and enters its target on the
-// other; a backward edge does the reverse, so both sides of a node can be
-// busy and the larger count is the one that sizes it.
+/// The most edges any one side of each node must hold. A forward edge leaves
+/// its source on the side the flow heads toward and enters its target on the
+/// other; a backward edge does the reverse, so both sides of a node can be
+/// busy and the larger count is the one that sizes it.
 fn port_demand(edges: List(Edge), back: Set(Int)) -> Dict(Int, Int) {
   let counts =
     list.index_fold(edges, dict.new(), fn(table, edge, index) {
+      // Determine orientation of leaving/arriving ports depending on back-edge status.
       let #(leaving, arriving) = case set.contains(back, index) {
         True -> #(Away, Toward)
         False -> #(Toward, Away)
       }
+
       table
       |> bump(#(edge.from, leaving))
       |> bump(#(edge.to, arriving))
@@ -465,8 +483,8 @@ fn bump(table: Dict(#(Int, FlowSide), Int), key: #(Int, FlowSide)) {
   dict.insert(table, key, result.unwrap(dict.get(table, key), 0) + 1)
 }
 
-// A node's size along the flow axis, or across it, if the node has one. A
-// node without a size is left out of whatever is being summed or placed.
+/// A node's size along the flow axis, or across it, if the node has one. A
+/// node without a size is left out of whatever is being summed or placed.
 fn along_of(
   axis: Axis,
   sizes: List(#(Int, Int)),
@@ -475,6 +493,7 @@ fn along_of(
   model.at(sizes, node) |> result.map(along_size(axis, _))
 }
 
+/// Returns a node's size perpendicular to the flow axis.
 fn cross_of(
   axis: Axis,
   sizes: List(#(Int, Int)),
@@ -483,9 +502,9 @@ fn cross_of(
   model.at(sizes, node) |> result.map(cross_size(axis, _))
 }
 
-// The room between layer `l` and layer `l + 1`: a lane for every edge that
-// crosses it, plus the arrow and a free row, and for a horizontal flow the
-// widest label of an edge crossing it, because the label sits on the line.
+/// The room between layer `l` and layer `l + 1`: a lane for every edge that
+/// crosses it, plus the arrow and a free row, and for a horizontal flow the
+/// widest label of an edge crossing it, because the label sits on the line.
 fn channel_sizes(
   axis: Axis,
   edges: List(Edge),
@@ -503,18 +522,21 @@ fn channel_sizes(
   })
 }
 
+/// Calculates channel width between layers accounting for crossing edge lanes and labels.
 fn channel_width(axis: Axis, crossing: List(Edge)) -> Int {
   let lanes = list.length(crossing)
   let widest =
     list.fold(crossing, 0, fn(best, edge) { int.max(best, label_cells(edge)) })
+
+  // Reserve lane and label space appropriate for the flow axis.
   case axis {
     Vertical -> 2 + lanes
     Horizontal -> 4 + lanes + widest
   }
 }
 
-// Each node's start along the flow axis, and the total length. A layer is as
-// thick as its thickest node and a thinner node is centred within it.
+/// Each node's start along the flow axis, and the total length. A layer is as
+/// thick as its thickest node and a thinner node is centred within it.
 fn along_positions(
   axis: Axis,
   sizes: List(#(Int, Int)),
@@ -563,9 +585,9 @@ fn cross_gap(axis: Axis) -> Int {
   }
 }
 
-// Each node's start across the flow axis: a centred packing, then a fixed
-// number of passes that move each node toward the mean centre of its
-// neighbours, left to right so the gap is always kept.
+/// Each node's start across the flow axis: a centred packing, then a fixed
+/// number of passes that move each node toward the mean centre of its
+/// neighbours, left to right so the gap is always kept.
 fn cross_positions(
   axis: Axis,
   sizes: List(#(Int, Int)),
@@ -579,10 +601,12 @@ fn cross_positions(
   let relaxed =
     list.fold(model.indices(passes), packed, fn(table, pass) {
       list.fold(model.indices(count), table, fn(inner, step) {
+        // Alternate sweep direction between even and odd passes.
         let layer = case int.is_even(pass) {
           True -> step
           False -> count - 1 - step
         }
+
         relax(axis, sizes, layers, layer, neighbours, layer_of, inner)
       })
     })
@@ -593,6 +617,7 @@ fn cross_positions(
   dict.map_values(relaxed, fn(_, value) { value - lowest })
 }
 
+/// Performs initial centered packing of nodes within their respective layers.
 fn pack(
   axis: Axis,
   sizes: List(#(Int, Int)),
@@ -625,8 +650,8 @@ fn row_length(axis: Axis, sizes: List(#(Int, Int)), members: List(Int)) -> Int {
   int.sum(widths) + cross_gap(axis) * int.max(0, list.length(widths) - 1)
 }
 
-// Moves one layer's nodes toward their neighbours' mean centre, then pushes
-// them apart left to right wherever that left less than the gap.
+/// Moves one layer's nodes toward their neighbours' mean centre, then pushes
+/// them apart left to right wherever that left less than the gap.
 fn relax(
   axis: Axis,
   sizes: List(#(Int, Int)),
@@ -650,6 +675,8 @@ fn relax(
           use width <- result.map(cross_of(axis, sizes, other))
           start + width / 2
         })
+
+      // Use centroid of connected neighbour centers, or retain existing position.
       case centres {
         [] -> #(node, result.unwrap(dict.get(table, node), 0), size)
         _ -> #(node, int.sum(centres) / list.length(centres) - size / 2, size)
@@ -659,15 +686,19 @@ fn relax(
     list.fold(desired, #(table, None), fn(state, entry) {
       let #(inner, previous_end) = state
       let #(node, want, size) = entry
+
+      // Ensure nodes maintain at least the required minimum cross-axis gap.
       let start = case previous_end {
         Some(end) -> int.max(want, end + cross_gap(axis))
         None -> want
       }
+
       #(dict.insert(inner, node, start), Some(start + size))
     })
   placed
 }
 
+/// Computes total bounding extent across all nodes perpendicular to flow axis.
 fn cross_extent(
   axis: Axis,
   sizes: List(#(Int, Int)),
@@ -681,8 +712,8 @@ fn cross_extent(
   })
 }
 
-// Maps the two coordinates to boxes. A direction that runs against the axis
-// mirrors the flow coordinate so the first layer ends up last.
+/// Maps the two coordinates to boxes. A direction that runs against the axis
+/// mirrors the flow coordinate so the first layer ends up last.
 fn to_boxes(
   direction: Direction,
   sizes: List(#(Int, Int)),
@@ -696,6 +727,8 @@ fn to_boxes(
     let flow_start = result.unwrap(dict.get(along, index), 0)
     let cross_start = result.unwrap(dict.get(across, index), 0)
     let mirrored = total_along - { flow_start + along_size(axis, size) }
+
+    // Assign box coordinates according to direction and axis mirroring.
     case direction {
       model.TopDown -> model.Box(x: cross_start, y: flow_start, width:, height:)
       model.BottomUp -> model.Box(x: cross_start, y: mirrored, width:, height:)

@@ -121,14 +121,18 @@ pub fn rows(selection: Selection) -> List(Rect) {
   int.range(first.y, last.y + 1, [], fn(rows, y) { [y, ..rows] })
   |> list.reverse
   |> list.map(fn(y) {
+    // Determine left column bound.
     let left = case y == first.y {
       True -> first.x
       False -> area.position.x
     }
+
+    // Determine right column bound.
     let right = case y == last.y {
       True -> last.x + 1
       False -> geometry.right(area)
     }
+
     geometry.rect_new(left, y, right - left, 1)
   })
 }
@@ -219,17 +223,18 @@ pub fn copied_notice(lines: Int) -> String {
   }
 }
 
-// The two endpoints in reading order: by row first, then by column.
+/// The two endpoints in reading order: by row first, then by column.
 fn bounds(selection: Selection) -> #(Position, Position) {
   let Selection(anchor:, head:, ..) = selection
+
+  // Order anchor and head in reading sequence.
   case anchor.y < head.y || { anchor.y == head.y && anchor.x <= head.x } {
     True -> #(anchor, head)
     False -> #(head, anchor)
   }
 }
 
-// The nearest cell inside the area. An empty area has no inside, and a
-// press cannot land in one, so the degenerate case only has to be total.
+/// Clamps position to the bounding rectangle.
 fn clamp(area: Rect, at: Position) -> Position {
   Position(
     int.clamp(

@@ -116,6 +116,8 @@ pub fn deliver(
   emit: fn(Output) -> Nil,
 ) -> Nil {
   emit(Link(link))
+
+  // Deliver link to terminal or attempt opening in external browser.
   case delivery {
     PrintLink -> Nil
     OpenInBrowser ->
@@ -157,6 +159,8 @@ pub fn platform_opener(
       find(name)
       |> result.map_error(fn(_) { name <> " was not found on PATH" }),
     )
+
+    // Verify command launch outcome and report exit status.
     case launch(executable, [link]) {
       Ok(Exited(0)) | Ok(StillRunning) -> Ok(Nil)
       Ok(Exited(status)) ->

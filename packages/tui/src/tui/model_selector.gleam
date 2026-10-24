@@ -88,6 +88,8 @@ pub fn replace_models(
 /// ```
 pub fn update(key: keys.Key, state: State) -> Action {
   let visible = filter_models(state.models, state.query)
+
+  // Handle keyboard navigation, selection, and query changes.
   case key {
     keys.Escape -> Close
     keys.Enter ->
@@ -161,6 +163,8 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
     )
     |> block.with_padding(1, 0, 2, 2)
   let inside = block.inner(area, frame)
+
+  // Partition inside area into summary, search, list, and help panes.
   case geometry.split_v(inside, [Length(1), Length(1), Fill, Length(1)]) {
     [summary_area, search_area, list_area, help_area] ->
       buf
@@ -174,6 +178,7 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   }
 }
 
+/// Renders the summary header showing matching model count.
 fn render_summary(
   buf: buffer.Buffer,
   area: Rect,
@@ -191,16 +196,19 @@ fn render_summary(
   )
 }
 
+/// Renders the search query input box.
 fn render_search(
   buf: buffer.Buffer,
   area: Rect,
   query: String,
 ) -> buffer.Buffer {
+  // Show placeholder text when search query is empty.
   let value = case query {
     "" ->
       span.span_styled("Search by name, provider, or model id", overlay_quiet())
     text -> span.span_styled(text, overlay_plain())
   }
+
   paragraph.render_text(
     buf,
     area,
@@ -210,10 +218,10 @@ fn render_search(
   )
 }
 
-// The window is one row per catalogue entry, so it must be rendered by rows
-// as well. A wrapping render would give a wide row two of them, push the
-// selected entry past the clip, and leave the operator navigating a cursor
-// they cannot see; each row is instead cut to the overlay width.
+/// The window is one row per catalogue entry, so it must be rendered by rows
+/// as well. A wrapping render would give a wide row two of them, push the
+/// selected entry past the clip, and leave the operator navigating a cursor
+/// they cannot see; each row is instead cut to the overlay width.
 fn render_models(
   buf: buffer.Buffer,
   area: Rect,
@@ -229,6 +237,8 @@ fn render_models(
     |> list.index_map(fn(model, offset) {
       model_line(model, start + offset == selected, area.size.width)
     })
+
+  // Provide an empty state banner if no models match.
   let rows = case rows {
     [] -> [
       span.line_new([
@@ -237,19 +247,26 @@ fn render_models(
     ]
     rows -> rows
   }
+
   paragraph.render_styled(buf, area, rows)
 }
 
+/// Renders a single model catalogue entry row.
 fn model_line(model: ModelInfo, selected: Bool, width: Int) -> span.Line {
   let ModelInfo(name:, dialect:, model_id:, active:, ..) = model
+
+  // Choose marker and style based on selection.
   let #(marker, name_style) = case selected {
     True -> #("▸ ", overlay_signal())
     False -> #("  ", overlay_plain())
   }
+
+  // Format active role badges.
   let active_badge = case active {
     [] -> ""
     roles -> "  ● " <> string.join(roles, ",")
   }
+
   let identifier =
     "  "
     <> text_hygiene.single_line(dialect)
@@ -279,6 +296,7 @@ fn model_line(model: ModelInfo, selected: Bool, width: Int) -> span.Line {
   ])
 }
 
+/// Renders keyboard shortcuts footer help.
 fn render_help(buf: buffer.Buffer, area: Rect) -> buffer.Buffer {
   paragraph.render_text(
     buf,
@@ -312,8 +330,11 @@ fn overlay_plain() -> style.Style {
   theme.overlay_plain()
 }
 
+/// Filters and ranks models against a search query.
 fn filter_models(models: List(ModelInfo), query: String) -> List(ModelInfo) {
   let needle = normalize(query)
+
+  // Return all models when query is blank, or filter and rank.
   case needle {
     "" -> models
     _ ->
@@ -325,13 +346,15 @@ fn filter_models(models: List(ModelInfo), query: String) -> List(ModelInfo) {
   }
 }
 
-// Search quality follows the interaction pattern in Prime Agent and Crush:
-// exact and prefix matches stay above fuzzy matches, while a subsequence lets
-// an operator type initials such as `glm53f` without remembering punctuation.
+/// Search quality follows the interaction pattern in Prime Agent and Crush:
+/// exact and prefix matches stay above fuzzy matches, while a subsequence lets
+/// an operator type initials such as `glm53f` without remembering punctuation.
 fn match_score(model: ModelInfo, needle: String) -> Int {
   let ModelInfo(name:, dialect:, model_id:, active:, ..) = model
   let name = normalize(name)
   let catalogue = normalize(name <> dialect <> model_id)
+
+  // Compute match quality tier based on exact, prefix, substring, or subsequence.
   let quality = case name == needle, string.starts_with(name, needle) {
     True, _ -> 400
     False, True -> 300
@@ -350,6 +373,8 @@ fn match_score(model: ModelInfo, needle: String) -> Int {
           }
       }
   }
+
+  // Boost score when model is actively configured.
   case quality, active {
     0, _ -> 0
     _, [] -> quality
@@ -357,6 +382,7 @@ fn match_score(model: ModelInfo, needle: String) -> Int {
   }
 }
 
+/// Tests whether needle graphemes appear in order within haystack.
 fn subsequence(needle: List(String), haystack: List(String)) -> Bool {
   case needle, haystack {
     [], _ -> True
@@ -369,6 +395,7 @@ fn subsequence(needle: List(String), haystack: List(String)) -> Bool {
   }
 }
 
+/// Normalizes text by lowercasing and stripping whitespace and punctuation.
 fn normalize(value: String) -> String {
   value
   |> string.lowercase
@@ -378,6 +405,7 @@ fn normalize(value: String) -> String {
   |> string.replace("/", "")
 }
 
+/// Finds the index of the previously selected model or falls back gracefully.
 fn selected_model(
   models: List(ModelInfo),
   current: String,
@@ -391,6 +419,8 @@ fn selected_model(
         False -> found
       }
     })
+
+  // Fall back to clamped index if named model was not found.
   case found >= 0 {
     True -> found
     False -> int.min(int.max(0, fallback), last_index(models))
@@ -421,6 +451,7 @@ fn item_at(items: List(a), index: Int) -> Result(a, Nil) {
   |> list.first
 }
 
+/// Removes the trailing grapheme from a string.
 fn drop_last_grapheme(value: String) -> String {
   value
   |> string.to_graphemes

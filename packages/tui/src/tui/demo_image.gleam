@@ -40,6 +40,7 @@ pub fn seed(model: Model) -> Model {
   )
 }
 
+/// Generates the fixed sequence of conversation entries used in the demo transcript.
 fn entries() -> List(entry.Entry) {
   [
     message_entry(
@@ -93,6 +94,7 @@ fn entries() -> List(entry.Entry) {
   ]
 }
 
+/// Wraps a single agent message into an entry record with deterministic IDs and timestamps.
 fn message_entry(n: Int, value: message.AgentMessage) -> entry.Entry {
   entry.MessageEntry(
     ids.mint_entry(ids.generator(clock.fixed(n), n)).0,

@@ -112,10 +112,13 @@ pub type Action {
 /// // approval_panel.new(review)
 /// ```
 pub fn new(review: approval.Review) -> State {
+  // Extract raw details string from approval review.
   let raw = case approval.details(review) {
     Ok(text) -> text
     Error(reason) -> reason
   }
+
+  // Extract structured presentation record from approval review.
   let presentation = case approval.presentation(review) {
     Ok(presentation) -> presentation
     Error(reason) ->
@@ -123,6 +126,7 @@ pub fn new(review: approval.Review) -> State {
         "Only Deny is available.",
       ])
   }
+
   State(
     presentation,
     raw,
@@ -143,6 +147,7 @@ pub fn new(review: approval.Review) -> State {
 /// ```
 @internal
 pub fn with_context(state: State, context: RequestContext) -> State {
+  // Normalize single-line fields in request context.
   let context = case context {
     NoRequestContext -> NoRequestContext
     CapturedRequest(owner, operation) ->
@@ -158,6 +163,7 @@ pub fn with_context(state: State, context: RequestContext) -> State {
     RequestContextUnavailable(reason) ->
       RequestContextUnavailable(text_hygiene.single_line(reason))
   }
+
   State(..state, context:)
 }
 
@@ -235,6 +241,7 @@ fn previous_page(position: ScrollPosition) -> ScrollPosition {
   }
 }
 
+/// Advances the scroll offset by one page.
 fn next_page(position: ScrollPosition) -> ScrollPosition {
   case position {
     FromStart(page) -> FromStart(page + 1)
@@ -243,6 +250,7 @@ fn next_page(position: ScrollPosition) -> ScrollPosition {
   }
 }
 
+/// Cycles forward through available approval choices.
 fn next(state: State) -> Choice {
   case
     state.selected,
@@ -256,6 +264,7 @@ fn next(state: State) -> Choice {
   }
 }
 
+/// Cycles backward through available approval choices.
 fn previous(state: State) -> Choice {
   case
     state.selected,
@@ -302,10 +311,13 @@ pub fn render(
   waiting waiting: Int,
 ) -> buffer.Buffer {
   let width = area.size.width
+
+  // Select panel width mode based on horizontal columns.
   let panel_width = case width < 74 {
     True -> NarrowPanel
     False -> WidePanel
   }
+
   let content_width = int.max(1, width - 6)
   let lines = detail_lines(state, panel_width, content_width)
 
@@ -317,6 +329,8 @@ pub fn render(
     True -> Spaced
     False -> Tight
   }
+
+  // Calculate height occupied by border, choices, and hint chrome.
   let chrome = case spacing {
     Spaced -> 4 + 3 + 2
     Tight -> 2 + 3 + 1
@@ -332,6 +346,8 @@ pub fn render(
 
   // Compute scrolled line offset into the detail content.
   let max_offset = int.max(0, list.length(lines) - detail_height)
+
+  // Calculate line offset from scroll position and viewport height.
   let offset = case state.scroll {
     FromStart(page) -> int.min(max_offset, page * detail_height)
     FromEnd(pages) -> int.max(0, max_offset - pages * detail_height)
@@ -342,6 +358,8 @@ pub fn render(
     True -> Enabled
     False -> Disabled
   }
+
+  // Determine availability of session-wide permission grant.
   let session = case session_approvable(state.review) {
     True -> Enabled
     False -> Disabled
@@ -363,6 +381,8 @@ pub fn render(
         more,
       ])
   }
+
+  // Choose spacing blank line rows based on vertical room.
   let gap = case spacing {
     Spaced -> [blank()]
     Tight -> []
@@ -403,6 +423,7 @@ type Spacing {
   Tight
 }
 
+/// Renders a horizontal divider rule line across the panel width.
 fn rule(width: Int) -> span.Line {
   span.line_new([
     span.span_styled(
@@ -412,10 +433,7 @@ fn rule(width: Int) -> span.Line {
   ])
 }
 
-// The question in bold beside the danger mark, as the transcript's own
-// approval row draws it, so the two read as one thing, after the strand
-// whose call asked. When more questions wait, the right end says which of
-// them this is.
+/// Renders the approval prompt heading with danger mark and request position.
 fn heading(state: State, waiting: Int, width: Int) -> span.Line {
   let approval.Presentation(question, _, _) = state.presentation
 
@@ -426,10 +444,13 @@ fn heading(state: State, waiting: Int, width: Int) -> span.Line {
     None, Some(strand) -> text_hygiene.single_line(strand) <> " · "
     None, None -> ""
   }
+
+  // Format waiting indicator index when multiple approval requests wait.
   let place = case waiting > 1 {
     True -> "1 of " <> int.to_string(waiting) <> " "
     False -> ""
   }
+
   let room = width - 3 - string.length(place) - 1
   let words = fit(asker <> text_hygiene.single_line(question), room)
   let gap = int.max(1, width - 3 - string.length(words) - string.length(place))
@@ -459,15 +480,17 @@ fn indent(line: span.Line) -> span.Line {
   span.line_new([span.span_plain("   "), ..line.spans])
 }
 
-// Joins the key hints with ` · `, skipping one that does not fit rather
-// than cutting it in half.
+/// Formats panel hotkey hints joined by dots and bounded by available width.
 fn hints(items: List(String), width: Int) -> span.Line {
   let joined =
     list.fold(items, "", fn(drawn, item) {
+      // Prepend separator when appending to existing item string.
       let next = case drawn {
         "" -> " " <> item
         _ -> drawn <> " · " <> item
       }
+
+      // Drop hotkey hint item if it overflows panel width.
       case string.length(next) <= width {
         True -> next
         False -> drawn
@@ -481,11 +504,13 @@ fn hints(items: List(String), width: Int) -> span.Line {
   ])
 }
 
+/// Formats scrollable request detail and authority lines for the panel.
 fn detail_lines(
   state: State,
   panel_width: PanelWidth,
   width: Int,
 ) -> List(span.Line) {
+  // Format request origin banner lines based on captured context.
   let context = case state.context, panel_width, state.detail_mode {
     NoRequestContext, _, _ -> []
     RequestContextUnavailable(reason), _, _ ->
@@ -515,6 +540,8 @@ fn detail_lines(
         width,
       )
   }
+
+  // Render raw request json/text or structured readable authority lines.
   case state.detail_mode {
     Raw ->
       list.flatten([
@@ -528,6 +555,8 @@ fn detail_lines(
       ])
     Readable -> {
       let approval.Presentation(_, action, authority) = state.presentation
+
+      // Format session-level persistence description or unrememberable reason.
       let session = case approval.rememberable(state.review) {
         Ok(_) ->
           styled_lines(
@@ -576,6 +605,7 @@ fn label() -> style.Style {
   style.new(theme.quiet, style.Default, style.bold())
 }
 
+/// Wraps and styles raw text into a list of fixed-width lines.
 fn styled_lines(text: String, appearance: style.Style, width: Int) {
   text
   |> string.split("\n")
@@ -585,8 +615,7 @@ fn styled_lines(text: String, appearance: style.Style, width: Int) {
   |> fn(wrapped) { wrapped.lines }
 }
 
-// One numbered choice. The number is amber, the label plain; the selected
-// choice is the raised bar, and an unavailable one says so and is quiet.
+/// Renders a single selectable choice row (Allow once, Session, Deny).
 fn choice_line(
   choice: Choice,
   number: String,
@@ -608,6 +637,8 @@ fn choice_line(
     True -> theme.raised
     False -> style.Default
   }
+
+  // Select indicator arrow glyph for active selection.
   let marker = case selected {
     True -> " › "
     False -> "   "
@@ -620,6 +651,7 @@ fn choice_line(
       style.new(theme.quiet, ground, style.none())
     False, Enabled -> style.new(theme.paper, ground, style.none())
   }
+
   let used = 3 + string.length(number) + 2 + string.length(label)
   span.line_new([
     span.span_styled(marker, style.new(theme.signal, ground, style.bold())),

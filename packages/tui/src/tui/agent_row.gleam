@@ -125,6 +125,7 @@ pub fn labels(lines: List(agent_roster.Line)) -> Dict(String, String) {
       })
     })
   list.fold(lines, dict.new(), fn(names, line) {
+    // Disambiguate duplicate names with their digest suffix.
     let name = case dict.get(counts, line.name) {
       Ok(count) if count > 1 -> with_digest(line)
       Ok(_) | Error(Nil) -> line.name
@@ -137,14 +138,14 @@ pub fn labels(lines: List(agent_roster.Line)) -> Dict(String, String) {
   })
 }
 
-// The slug and the head of the digest, from the strand identity
-// `sub:{parent}/{slug}-{digest}`. An identity not in that shape is shown
-// whole, since it is already what tells the two apart.
+/// Returns the strand display name disambiguated with a short hash digest.
 fn with_digest(line: agent_roster.Line) -> String {
   let leaf =
     string.split(line.id, "/")
     |> list.last
     |> result_or(line.id)
+
+  // Append four characters of digest when parsing a sub-strand identity.
   case string.split(leaf, "-") |> list.reverse {
     [digest, _, ..] -> line.name <> "-" <> string.slice(digest, 0, 4)
     [_] | [] -> leaf
@@ -167,12 +168,14 @@ type Widths {
   Widths(name: Int, elapsed: Int, context: Int)
 }
 
+/// Calculates column widths for agent row elements under table or strip layout.
 fn widths(
   lines: List(agent_roster.Line),
   label: fn(agent_roster.Line) -> String,
   shape: Shape,
   width: Int,
 ) -> Widths {
+  // Allocate fixed widths for table rows or dynamically sized widths for strip rows.
   case shape {
     TableRow ->
       Widths(
@@ -195,10 +198,13 @@ fn widths(
             ),
           )
         })
+
+      // Clamp name width according to available terminal width.
       let cap = case width >= 100 {
         True -> 36
         False -> int.clamp(width / 3, min: 8, max: 24)
       }
+
       Widths(..widest, name: int.clamp(widest.name, min: 8, max: cap))
     }
   }
@@ -222,6 +228,7 @@ fn spelled_size(line: agent_roster.Line) -> String {
 // the action, which takes whatever the fixed columns leave; then the
 // figures, right-aligned. The cursor's row is painted raised across the
 // full width so it reads as one bar.
+/// Renders a single formatted agent row with status glyph, name, and metrics.
 fn row(
   line: agent_roster.Line,
   name: String,
@@ -231,20 +238,26 @@ fn row(
   ground: style.Color,
   widths: Widths,
 ) -> span.Line {
+  // Highlight cursor row with raised background.
   let background = case mark {
     Cursor -> theme.raised
     Viewing | Unmarked -> ground
   }
+
+  // Apply bold weight when the row is selected under the cursor.
   let weight = case mark {
     Cursor -> style.bold()
     Viewing | Unmarked -> style.none()
   }
+
+  // Select leading pointer symbol based on cursor or viewing mark.
   let lead = case shape, mark {
     StripRow, Cursor -> " ❯ "
     StripRow, Viewing | TableRow, Viewing -> " › "
     TableRow, Cursor -> " ▸ "
     StripRow, Unmarked | TableRow, Unmarked -> "   "
   }
+
   let #(glyph, tone) = glyph(line.id, line.status, background)
   let meter = meter(line, shape, widths)
 
@@ -255,16 +268,20 @@ fn row(
     TableRow -> int.min(width, table_width)
     StripRow -> width
   }
+
   let name_width = widths.name
 
   // The action takes what the fixed columns leave, and is cut a cell short
   // of it so even a full action keeps two spaces before the figures.
   let room = columns - 3 - 2 - name_width - 1 - text.cell_width(meter) - 1
+
+  // Color action text with alert tint if agent requires operator attention.
   let action_style = case agent_view.needs_attention(line.status), shape {
     True, _ -> style.new(theme.danger, background, style.none())
     False, StripRow -> style.new(theme.paper, background, style.none())
     False, TableRow -> style.new(theme.quiet, background, style.none())
   }
+
   let spans = [
     span.span_styled(lead, case mark {
       Cursor -> style.new(theme.signal, background, style.bold())
@@ -296,25 +313,32 @@ fn action(line: agent_roster.Line) -> String {
   }
 }
 
-// The figures at the end of a row, with the margin cell after them.
+/// Formats metrics string (elapsed time and context size) for the row tail.
 fn meter(line: agent_roster.Line, shape: Shape, figures: Widths) -> String {
+  // Format elapsed time and token figures according to row shape.
   case shape {
     StripRow -> {
       let time = spelled_time(line)
       let size = spelled_size(line)
+
+      // Pad and align elapsed time and context size metrics.
       case figures.elapsed, figures.context {
         0, 0 -> ""
         0, context -> text.pad_left(size, context) <> " ctx "
         elapsed, 0 -> text.pad_left(time, elapsed) <> " "
         elapsed, context -> {
+          // Choose metric separator based on presence of elapsed and size values.
           let joint = case time, size {
             "", _ | _, "" -> "   "
             _, _ -> " · "
           }
+
+          // Format token count suffix with padding.
           let size = case size {
             "" -> string.repeat(" ", context + 4)
             size -> text.pad_left(size, context) <> " ctx"
           }
+
           text.pad_left(time, elapsed) <> joint <> size <> " "
         }
       }
@@ -337,6 +361,8 @@ fn meter(line: agent_roster.Line, shape: Shape, figures: Widths) -> String {
 @internal
 pub fn compact_duration(seconds: Int) -> String {
   let seconds = int.max(0, seconds)
+
+  // Format hours and minutes for durations >= 1 hour, or minutes and seconds below.
   case seconds >= 3600 {
     True ->
       int.to_string(seconds / 3600) <> "h" <> pad2({ seconds % 3600 } / 60)
@@ -464,6 +490,8 @@ pub fn status_style(
 @internal
 pub fn cut_middle(value: String, width: Int) -> String {
   let value = text_hygiene.single_line(value)
+
+  // Keep entire string if fitting, truncate from end if narrow, or splice middle.
   case text.cell_width(value) <= width, width > 8 {
     True, _ -> value
     False, False -> text.truncate(value, width, "…")
@@ -488,20 +516,28 @@ pub fn cut_middle(value: String, width: Int) -> String {
 @internal
 pub fn cut(value: String, width: Int) -> String {
   let value = text_hygiene.single_line(value)
+
+  // Avoid cutting if string fits within width constraint.
   case text.cell_width(value) <= width {
     True -> value
     False -> {
       let head = text.truncate(value, int.max(0, width - 1), "")
       let words = string.split(head, " ")
+
+      // Drop trailing partial word when possible.
       let whole = case string.ends_with(head, " "), words {
         True, _ | False, [_] | False, [] -> head
         False, [_, _, ..] ->
           list.take(words, list.length(words) - 1) |> string.join(" ")
       }
+
+      // Retain head if dropping word lost more than a third of the width.
       let whole = case text.cell_width(whole) * 3 < width * 2 {
         True -> head
         False -> whole
       }
+
+      // Append ellipsis after trimming punctuation joints.
       case width {
         0 -> ""
         _ -> trim_joint(whole) <> "…"
@@ -510,8 +546,7 @@ pub fn cut(value: String, width: Int) -> String {
   }
 }
 
-// Drops the spaces and separators a cut leaves at its end, so the ellipsis
-// follows a word rather than a dangling ` ·`.
+/// Trims dangling punctuation and space separators from the cut point.
 fn trim_joint(value: String) -> String {
   case
     string.ends_with(value, " ")
@@ -523,13 +558,14 @@ fn trim_joint(value: String) -> String {
   }
 }
 
-// Extends a line to `width` cells on `background`, so a raised bar has no
-// ragged right edge.
+/// Extends a line with trailing spaces styled with background to fill width.
 fn pad(line: span.Line, width: Int, background: style.Color) -> span.Line {
   let used =
     list.fold(line.spans, 0, fn(total, piece) {
       total + text.cell_width(piece.content)
     })
+
+  // Append background-colored padding spaces if line width is short.
   case used < width {
     True ->
       span.line_new(

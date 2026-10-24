@@ -116,6 +116,8 @@ pub fn draw_within(
 ) -> Result(Canvas, Refusal) {
   let soft = wrap_sequence(diagram, model.max_label_cells, SoftWrap)
   let count = list.length(diagram.participants)
+
+  // Attempt soft-wrapped layout, re-wrapping compact if canvas overflows.
   case draw_wrapped(soft) {
     Ok(drawn) ->
       case
@@ -136,6 +138,7 @@ pub fn draw_within(
   }
 }
 
+/// Calculates available width per column based on canvas limits and participant count.
 fn column_budget(max_width: Int, count: Int) -> Int {
   int.clamp(
     { max_width + 2 } / int.max(1, count) - 6,
@@ -144,6 +147,7 @@ fn column_budget(max_width: Int, count: Int) -> Int {
   )
 }
 
+/// Applies text wrapping rules to diagram labels according to wrap style.
 fn wrap_sequence(
   diagram: Sequence,
   col_budget: Int,
@@ -159,14 +163,18 @@ fn wrap_sequence(
     })
   let events =
     list.map(diagram.events, fn(event: Event) {
+      // Transform individual events with appropriate line wrapping.
       case event {
         model.Said(message) -> {
           let span = int.max(1, int.absolute_value(message.to - message.from))
+
+          // Compute label budget based on wrap style and column span.
           let budget = case style {
             SoftWrap -> model.max_label_cells
             CompactWrap ->
               int.min(model.max_label_cells, span * { col_budget + 6 } - 4)
           }
+
           WrappedSaid(WrappedMessage(
             from: message.from,
             to: message.to,
@@ -176,15 +184,19 @@ fn wrap_sequence(
           ))
         }
         model.Noted(place:, text: words) -> {
+          // Determine participant span covered by note placement.
           let span = case place {
             model.Over(first, last) -> int.max(1, last - first + 1)
             model.LeftOf(_) | model.RightOf(_) -> 1
           }
+
+          // Compute note label budget based on wrap style and note span.
           let budget = case style {
             SoftWrap -> model.max_label_cells
             CompactWrap ->
               int.min(model.max_label_cells, span * { col_budget + 6 } - 4)
           }
+
           WrappedNoted(
             place:,
             lines: non_empty_lines(wrap_text(words, budget, style)),
@@ -195,6 +207,7 @@ fn wrap_sequence(
   WrappedSequence(participants:, header_height: max_header_lines + 2, events:)
 }
 
+/// Wraps message line text within budget constraints.
 fn wrap_message_lines(
   text: String,
   budget: Int,
@@ -213,9 +226,12 @@ fn non_empty_lines(lines: List(String)) -> List(String) {
   }
 }
 
+/// Wraps text to lines honoring soft or compact wrapping style.
 fn wrap_text(text: String, budget: Int, style: WrapStyle) -> List(String) {
   let limit = int.max(4, budget)
   let by_words = parse.wrap_words(text, limit)
+
+  // Choose token breaking behavior based on wrap style.
   case style {
     SoftWrap -> by_words
     CompactWrap -> list.flat_map(by_words, split_long_token(_, limit))
@@ -229,6 +245,7 @@ fn split_long_token(line: String, limit: Int) -> List(String) {
   }
 }
 
+/// Breaks grapheme list into fixed-width chunks.
 fn chunk_graphemes(
   rest: List(String),
   current: String,
@@ -236,6 +253,7 @@ fn chunk_graphemes(
   done: List(String),
   limit: Int,
 ) -> List(String) {
+  // Process remaining graphemes or finish chunk collection.
   case rest {
     [] ->
       case current {
@@ -244,6 +262,8 @@ fn chunk_graphemes(
       }
     [g, ..more] -> {
       let gw = int.max(1, text.grapheme_cell_width(g))
+
+      // Check whether adding grapheme exceeds chunk width limit.
       case current != "" && current_width + gw > limit {
         True -> chunk_graphemes(rest, "", 0, [current, ..done], limit)
         False ->
@@ -253,6 +273,7 @@ fn chunk_graphemes(
   }
 }
 
+/// Draws a sequence diagram whose participants and events have been wrapped.
 fn draw_wrapped(diagram: WrappedSequence) -> Result(Canvas, Refusal) {
   let widths = list.map(diagram.participants, box_width)
   let gaps = column_gaps(diagram, widths)
@@ -260,6 +281,8 @@ fn draw_wrapped(diagram: WrappedSequence) -> Result(Canvas, Refusal) {
   let rows = body_rows(diagram.events)
   let height = diagram.header_height + rows
   let width = canvas_width(diagram, widths, columns)
+
+  // Reject diagrams exceeding maximum canvas cell limit.
   case width * height > model.max_canvas_cells {
     True -> Error(model.TooLarge(model.CanvasCells))
     False -> {
@@ -283,8 +306,7 @@ fn widest_line(lines: List(String)) -> Int {
 // Columns
 // ---------------------------------------------------------------------------
 
-// The gap between each participant's centre and the next one's. A gap starts
-// at what the two boxes need and grows to satisfy each event's needs.
+/// The gap between each participant's centre and the next one's. A gap starts
 fn column_gaps(diagram: WrappedSequence, widths: List(Int)) -> Dict(Int, Int) {
   let count = list.length(widths)
   let base =
@@ -300,12 +322,14 @@ fn column_gaps(diagram: WrappedSequence, widths: List(Int)) -> Dict(Int, Int) {
   |> list.fold(base, fn(table, need) { satisfy(table, need) })
 }
 
-// Grows the last gap in a range until the range is wide enough.
+/// Grows the last gap in a range until the range is wide enough.
 fn satisfy(table: Dict(Int, Int), need: Need) -> Dict(Int, Int) {
   let current =
     list.fold(canvas.between(need.first, need.last - 1), 0, fn(total, index) {
       total + result.unwrap(dict.get(table, index), 0)
     })
+
+  // Expand gap if current width falls short of requirement.
   case current >= need.distance || need.last <= need.first {
     True -> table
     False -> {
@@ -319,7 +343,7 @@ fn satisfy(table: Dict(Int, Int), need: Need) -> Dict(Int, Int) {
   }
 }
 
-// What an event asks of the column spacing.
+/// Extracts column width requirement for an event.
 fn needs_of(event: WrappedEvent) -> List(Need) {
   case event {
     WrappedSaid(message) -> message_needs(message)
@@ -327,8 +351,11 @@ fn needs_of(event: WrappedEvent) -> List(Need) {
   }
 }
 
+/// Returns column spacing requirements for a message event.
 fn message_needs(message: WrappedMessage) -> List(Need) {
   let label = widest_line(message.lines)
+
+  // Distinguish self-messages from normal peer-to-peer messages.
   case message.from == message.to {
     True -> [
       Need(message.from, message.from + 1, int.max(label + 4, loop_reach + 2)),
@@ -343,9 +370,12 @@ fn message_needs(message: WrappedMessage) -> List(Need) {
   }
 }
 
+/// Returns column spacing requirements for a note event.
 fn note_needs(place: NotePlace, lines: List(String)) -> List(Need) {
   let widest = widest_line(lines)
   let box = widest + 4
+
+  // Map note placement to affected column spans.
   case place {
     model.Over(first, last) if first == last -> [
       Need(first - 1, first, box / 2 + 3),
@@ -359,8 +389,7 @@ fn note_needs(place: NotePlace, lines: List(String)) -> List(Need) {
   }
 }
 
-// Column centres from the gaps, and the shift that puts the leftmost cell of
-// anything at the canvas edge.
+/// Column centres from the gaps, and the shift that puts the leftmost cell of
 fn centres(
   diagram: WrappedSequence,
   widths: List(Int),
@@ -407,8 +436,8 @@ fn centre_of(columns: Columns, index: Int) -> Int {
   result.unwrap(dict.get(columns.centres, index), 0) + columns.shift
 }
 
-// A canvas wide enough for the last column, its box, and anything that
-// reaches to the right of it. Cropping removes the slack.
+/// A canvas wide enough for the last column, its box, and anything that
+/// reaches to the right of it. Cropping removes the slack.
 fn canvas_width(
   diagram: WrappedSequence,
   widths: List(Int),
@@ -431,6 +460,7 @@ fn canvas_width(
 // Painting
 // ---------------------------------------------------------------------------
 
+/// Paints participant header boxes along the top row.
 fn paint_headers(
   painted: Canvas,
   diagram: WrappedSequence,
@@ -454,7 +484,7 @@ fn paint_headers(
   })
 }
 
-// A lifeline from the foot of the header to the bottom of the diagram.
+/// A lifeline from the foot of the header to the bottom of the diagram.
 fn paint_lifelines(
   painted: Canvas,
   diagram: WrappedSequence,
@@ -472,12 +502,13 @@ fn paint_lifelines(
   })
 }
 
-// The rows the events occupy: label lines plus two for a message, label lines
-// plus four for a self-message, and label lines plus three for a note.
+/// The rows the events occupy: label lines plus two for a message, label lines
+/// plus four for a self-message, and label lines plus three for a note.
 fn body_rows(events: List(WrappedEvent)) -> Int {
   list.fold(events, 0, fn(total, event) { total + rows_of(event) })
 }
 
+/// Calculates height rows needed for an individual event.
 fn rows_of(event: WrappedEvent) -> Int {
   case event {
     WrappedSaid(message) if message.from == message.to ->
@@ -487,6 +518,7 @@ fn rows_of(event: WrappedEvent) -> Int {
   }
 }
 
+/// Paints all diagram events in sequence onto the canvas.
 fn paint_events(
   painted: Canvas,
   diagram: WrappedSequence,
@@ -498,6 +530,8 @@ fn paint_events(
       #(painted, diagram.header_height),
       fn(state, event) {
         let #(current, y) = state
+
+        // Render event according to its kind.
         let drawn = case event {
           WrappedSaid(message) if message.from == message.to ->
             paint_self_message(current, message, columns, y)
@@ -505,12 +539,14 @@ fn paint_events(
           WrappedNoted(place:, lines:) ->
             paint_note(current, place, lines, columns, y)
         }
+
         #(drawn, y + rows_of(event))
       },
     )
   done
 }
 
+/// Returns the horizontal line stroke glyph.
 fn horizontal(message: WrappedMessage) -> String {
   case message.stroke {
     model.Dotted -> "┄"
@@ -524,8 +560,8 @@ type Way {
   Leftward
 }
 
-// One message between two columns: its label lines above, then the line and
-// its ends on the row below them.
+/// One message between two columns: its label lines above, then the line and
+/// its ends on the row below them.
 fn paint_message(
   painted: Canvas,
   message: WrappedMessage,
@@ -534,10 +570,13 @@ fn paint_message(
 ) -> Canvas {
   let from = centre_of(columns, message.from)
   let to = centre_of(columns, message.to)
+
+  // Determine direction of arrow propagation.
   let way = case from < to {
     True -> Rightward
     False -> Leftward
   }
+
   let label_x = int.min(from, to) + 2
   let arrow_y = y + list.length(message.lines)
   let with_labels =
@@ -550,7 +589,7 @@ fn paint_message(
   |> paint_ends(message, way, from, to, arrow_y)
 }
 
-// The line between two columns, with `┼` where it crosses another lifeline.
+/// The line between two columns, with `┼` where it crosses another lifeline.
 fn paint_run(
   painted: Canvas,
   message: WrappedMessage,
@@ -562,16 +601,18 @@ fn paint_run(
   let centres =
     list.map(dict.values(columns.centres), fn(c) { c + columns.shift })
   list.fold(canvas.between(low + 1, high - 1), painted, fn(current, x) {
+    // Insert junction symbol if line intersects a participant lifeline.
     let glyph = case list.contains(centres, x) {
       True -> "┼"
       False -> horizontal(message)
     }
+
     canvas.put_ink(current, x, y, glyph, canvas.Wire)
   })
 }
 
-// The two ends of a message: a tee on the sender's lifeline, and at the
-// receiver an arrowhead or cross beside the lifeline, or a tee on it.
+/// The two ends of a message: a tee on the sender's lifeline, and at the
+/// receiver an arrowhead or cross beside the lifeline, or a tee on it.
 fn paint_ends(
   painted: Canvas,
   message: WrappedMessage,
@@ -580,15 +621,21 @@ fn paint_ends(
   to: Int,
   y: Int,
 ) -> Canvas {
+  // Select sender lifeline tee glyph based on direction.
   let sender_end = case way {
     Rightward -> "├"
     Leftward -> "┤"
   }
+
   let sent = canvas.put_ink(painted, from, y, sender_end, canvas.Wire)
+
+  // Compute tip coordinate based on direction.
   let tip_x = case way {
     Rightward -> to - 1
     Leftward -> to + 1
   }
+
+  // Paint target endpoint marker or arrowhead.
   case message.end, way {
     model.Head, Rightward -> canvas.put_ink(sent, tip_x, y, "▶", canvas.Head)
     model.Head, Leftward -> canvas.put_ink(sent, tip_x, y, "◀", canvas.Head)
@@ -598,8 +645,7 @@ fn paint_ends(
   }
 }
 
-// A message from a participant to itself: a loop out to the right and back,
-// drawn over the rows under the label lines.
+/// A message from a participant to itself: a loop out to the right and back,
 fn paint_self_message(
   painted: Canvas,
   message: WrappedMessage,
@@ -616,10 +662,13 @@ fn paint_self_message(
     model.Cross -> "×" <> string.repeat(bar, loop_reach - 2)
     model.Plain -> string.repeat(bar, loop_reach - 1)
   }
+
+  // Select loop root glyph based on end style.
   let start = case message.end {
     model.Plain -> "┤"
     _ -> "│"
   }
+
   let base_y = y + list.length(message.lines)
   let with_labels =
     list.index_fold(message.lines, painted, fn(current, line, offset) {
@@ -636,8 +685,8 @@ fn paint_self_message(
   |> canvas.put_ink(x + loop_reach, base_y + 2, "┘", canvas.Wire)
 }
 
-// A note: a box over the lifelines it names, with its interior cleared so the
-// lifelines do not show through the text.
+/// A note: a box over the lifelines it names, with its interior cleared so the
+/// lifelines do not show through the text.
 fn paint_note(
   painted: Canvas,
   place: NotePlace,
@@ -647,6 +696,8 @@ fn paint_note(
 ) -> Canvas {
   let inner = widest_line(lines)
   let height = list.length(lines) + 2
+
+  // Construct bounding box based on note placement mode.
   let box = case place {
     model.Over(first, last) if first == last -> {
       let width = inner + 4
@@ -666,6 +717,7 @@ fn paint_note(
     model.RightOf(index) ->
       model.Box(x: centre_of(columns, index) + 2, y:, width: inner + 4, height:)
   }
+
   let cleared =
     list.fold(
       canvas.between(box.y, box.y + box.height - 1),

@@ -818,10 +818,13 @@ pub fn mark_activity(model: Model) -> Model {
 /// ```
 @internal
 pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
+  // Reset quiet inactivity counter when activity sequence advances.
   let view = case shared.activity_revision == model.shared.activity_revision {
     True -> model.view
     False -> View(..model.view, quiet_for_ms: 0)
   }
+
+  // Drain pending outbox effects into the view outbox queue.
   let held = case shared.outbox {
     [] -> Model(shared:, view:)
     decided ->
@@ -840,6 +843,7 @@ pub fn hold_shared(model: Model, shared: TerminalShared) -> Model {
     True -> held
     False -> clear_composer(held)
   }
+
   held
   |> show_queue_notices
   |> show_goal_observations
@@ -864,8 +868,7 @@ pub fn run_shared(
   hold_shared(model, reducer(model.shared))
 }
 
-// The queue editor is the terminal's, so a shared send or read records what
-// it has to show and the terminal shows it here, at the point of that call.
+/// Propagates notices from the shared queue to the terminal view.
 fn show_queue_notices(model: Model) -> Model {
   case model.shared.queue_notices {
     [] -> model
@@ -884,18 +887,19 @@ fn show_queue_notices(model: Model) -> Model {
   }
 }
 
-// The goal inspector follows the board only while it is open; an
-// observation that arrives with the inspector closed has nothing to update,
-// and the next `/goal` builds the panel from `Shared.goal`.
+/// Updates the goal inspector with newly arrived goal observations.
 fn show_goal_observations(model: Model) -> Model {
+  // Skip when no goal observations arrived.
   case model.shared.goal_observations {
     [] -> model
     observations -> {
+      // Update goal inspector overlay if active.
       let overlay = case model.view.overlay {
         GoalInspector(panel) ->
           GoalInspector(list.fold(observations, panel, observe_goal))
         other -> other
       }
+
       Model(
         shared: shared_set.goal_observations(model.shared, []),
         view: View(..model.view, overlay:),
@@ -904,10 +908,7 @@ fn show_goal_observations(model: Model) -> Model {
   }
 }
 
-// A board replaces the panel's board and its label; a failed refresh keeps
-// the board and says why it was not refreshed. Shared.goal is already None
-// on a correlated refusal, so the composer reports unavailability while this
-// retained inspector board remains explicitly an older observation.
+/// Applies one goal observation to the goal inspector panel.
 fn observe_goal(
   panel: focused_goal_panel.State,
   observation: session_model.GoalObservation,
@@ -1017,9 +1018,7 @@ pub fn clear_composer_text(model: Model) -> Model {
   )
 }
 
-// Submitted text is newest-first so Up is a constant-time move to the common
-// case. Consecutive duplicates collapse because resend remains available
-// without allowing accidental double-enter presses to crowd out useful history.
+/// Records user prompt text submission in historical input buffer.
 fn remember_submission(model: Model, text: String) -> Model {
   case string.trim(text), model.view.history {
     "", _ -> model
@@ -1077,13 +1076,7 @@ pub fn adopt_daemon(model: Model, daemon: job.Daemon) -> Model {
   )
 }
 
-// The build-mismatch notice for a daemon's build and this client's. The
-// authenticated build belongs to the retained control host. Projecting its
-// mismatch on every coherent cut keeps attachment and later captures from
-// erasing the update notice when they replace the transcript presentation.
-// `theirs` is the build the daemon's `hello` named, `None` when it named
-// none. `ours` is `View.client_build`, read when the model was created, so
-// neither the comparison nor a cut reads an environment variable.
+/// Generates notice lines when daemon and client build identities mismatch.
 fn daemon_build_lines(
   theirs: Option(build_identity.Identity),
   ours: build_identity.Identity,
@@ -1262,6 +1255,8 @@ pub fn start_step(
       shared: shared_set.stamp(model.shared, at),
       view: View(..model.view, wall_ms:),
     )
+
+  // Record event payload if recorded in session.
   case msg.recorded(event) {
     Some(recorded) -> record(model, recorded)
     None -> model

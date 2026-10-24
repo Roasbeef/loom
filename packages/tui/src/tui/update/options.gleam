@@ -88,7 +88,9 @@ pub fn parse(arguments: List(String)) -> Result(Options, String) {
   )
 }
 
+/// Recursively parses CLI update argument tokens into Options.
 fn parse_more(arguments, options: Options) {
+  // Match CLI flags and positionals.
   case arguments {
     [] -> Ok(options)
     ["--manifest-url", mirror, ..rest] ->
@@ -121,20 +123,26 @@ fn parse_more(arguments, options: Options) {
       use <- bool.lazy_guard(string.starts_with(value, "-"), fn() {
         Error("unknown or incomplete update option: " <> value)
       })
+
+      // Disambiguate positional argument as commit SHA or release tag.
       let selection = case valid_commit(value) {
         True -> Commit(value)
         False -> Tag(value)
       }
+
       select(rest, options, selection)
     }
   }
 }
 
+/// Records a release target selection and checks its validity.
 fn select(rest, options: Options, selection) {
   use <- bool.guard(
     options.selection != Latest,
     Error("select only one release tag or commit"),
   )
+
+  // Validate selection value format.
   use Nil <- result.try(case selection {
     Latest | Nightly -> Ok(Nil)
     Tag(tag) ->
@@ -149,6 +157,7 @@ fn select(rest, options: Options, selection) {
           Error("commit must be 7 to 40 lowercase hexadecimal characters")
       }
   })
+
   parse_more(rest, Options(..options, selection: selection))
 }
 
@@ -190,6 +199,7 @@ pub fn usage() -> String {
   <> " seconds for retirement, then checks the new daemon."
 }
 
+/// Sets updater lifecycle action mode.
 fn action(rest, options: Options, action) {
   use <- bool.guard(
     options.action != Update && options.action != action,

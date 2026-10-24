@@ -158,18 +158,23 @@ pub fn update(
   }
 }
 
+/// Handles keyboard navigation and selection in the proposals list view.
 fn listing_key(
   key: keys.Key,
   state: State,
   board: Option(proposals.Board),
   selected: Int,
 ) -> Action {
+  // Extract proposal rows from optional board.
   let rows = case board {
     Some(board) -> board.proposals
     None -> []
   }
+
   let last = int.max(0, list.length(rows) - 1)
   let at = int.min(selected, last)
+
+  // Dispatch key actions for list navigation, review, and refresh.
   case key {
     keys.Escape -> Close
     keys.Char("r") -> Refresh
@@ -187,6 +192,7 @@ fn listing_key(
   }
 }
 
+/// Handles keyboard input while reading a proposal detail.
 fn reading_key(
   key: keys.Key,
   state: State,
@@ -194,13 +200,17 @@ fn reading_key(
   id: String,
   area: geometry.Rect,
 ) -> Action {
+  // Check if current proposal is in a decidable state.
   let pending = case open_row(board, id) {
     Ok(row) -> proposals.decidable(row)
     Error(Nil) -> False
   }
+
   let step = viewport_rows(area)
   let maximum = max_scroll(state, board, area)
   let scroll = int.min(state.scroll, maximum)
+
+  // Dispatch review key actions or scrolling.
   case key {
     keys.Escape -> back_to_list(board, id)
     keys.Char("a") if pending ->
@@ -217,23 +227,28 @@ fn reading_key(
   }
 }
 
-// Leaving a proposal returns to the list with that row still selected, so
-// the reader who rejects one and goes back is where they were.
+/// Leaving a proposal returns to the list with that row still selected, so
+/// the reader who rejects one and goes back is where they were.
 fn back_to_list(board: Option(proposals.Board), id: String) -> Action {
+  // Extract proposal rows from optional board.
   let rows = case board {
     Some(board) -> board.proposals
     None -> []
   }
+
   let position =
     rows
     |> list.index_map(fn(row, index) { #(row.id, index) })
     |> list.find(fn(pair) { pair.0 == id })
+
+  // Restore list selection to matching proposal index.
   case position {
     Ok(#(_, index)) -> Continue(State(place: Listing(index), scroll: 0))
     Error(Nil) -> Continue(new())
   }
 }
 
+/// Handles confirmation prompt key inputs for approving a proposal.
 fn confirming_key(key: keys.Key, state: State, id: String) -> Action {
   case key {
     keys.Char("y") -> Decide(id, proposals.Approve)
@@ -255,6 +270,7 @@ pub fn after_decision(state: State, id: String) -> State {
   State(place: Reading(id), scroll: state.scroll)
 }
 
+/// Looks up proposal by id from optional board.
 fn open_row(
   board: Option(proposals.Board),
   id: String,
@@ -295,6 +311,8 @@ pub fn render(
   // Generate body rows and calculate viewport scroll offset.
   let rows = body_lines(state, board, notice, now, content)
   let maximum = int.max(0, list.length(rows) - content.size.height)
+
+  // Calculate viewport scroll offset based on place mode.
   let offset = case state.place {
     Listing(..) ->
       list_offset(
@@ -304,11 +322,15 @@ pub fn render(
       )
     Reading(..) | Confirming(..) -> int.min(maximum, state.scroll)
   }
+
   let cleared = buf |> buffer.clear(area)
+
+  // Render rounded border frame if card geometry permits.
   let framed = case card.size.height >= 8 && card.size.width >= 20 {
     True -> block.render(cleared, card, frame)
     False -> cleared
   }
+
   framed
   |> paragraph.render_styled(content, list.drop(rows, offset))
   |> paragraph.render_styled(controls, [
@@ -316,6 +338,7 @@ pub fn render(
   ])
 }
 
+/// Formats the panel header title based on board state.
 fn title(board: Option(proposals.Board)) -> String {
   case board {
     Some(board) ->
@@ -324,13 +347,15 @@ fn title(board: Option(proposals.Board)) -> String {
   }
 }
 
-// The frame's inside, split into the body and the one control row beneath it.
-// A terminal too small for a frame keeps the body and the row and drops the
-// border, as the goal inspector does.
+/// The frame's inside, split into the body and the one control row beneath it.
+/// A terminal too small for a frame keeps the body and the row and drops the
+/// border, as the goal inspector does.
 fn layout_areas(
   area: geometry.Rect,
 ) -> #(geometry.Rect, geometry.Rect, geometry.Rect) {
   let framed = area.size.height >= 8 && area.size.width >= 20
+
+  // Compute horizontal margin based on available width.
   let horizontal = case framed && area.size.width >= 70 {
     True -> 2
     False -> 0
@@ -357,6 +382,7 @@ fn layout_areas(
     True -> 1
     False -> 0
   }
+
   let content =
     geometry.rect_new(
       inside.position.x,
@@ -379,6 +405,7 @@ fn viewport_rows(area: geometry.Rect) -> Int {
   content.size.height
 }
 
+/// Computes maximum scroll boundary for reading a proposal.
 fn max_scroll(
   state: State,
   board: Option(proposals.Board),
@@ -400,6 +427,7 @@ fn list_offset(state: State, lead: Int, height: Int) -> Int {
   }
 }
 
+/// Formats notice lines when a notification is present.
 fn notice_lines(notice: String, width: Int) -> List(span.Line) {
   case notice {
     "" -> []
@@ -408,11 +436,13 @@ fn notice_lines(notice: String, width: Int) -> List(span.Line) {
   }
 }
 
+/// Formats bottom control hints line based on panel place.
 fn control_line(
   state: State,
   board: Option(proposals.Board),
   width: Int,
 ) -> span.Line {
+  // Format shortcut actions according to current view.
   let words = case state.place {
     Listing(..) -> "↑/↓ select · Enter review · r reload · Esc back"
     Reading(id:) ->
@@ -426,11 +456,13 @@ fn control_line(
       }
     Confirming(..) -> "y approve · n or Esc go back"
   }
+
   span.line_new([
     span.span_styled(text.truncate(words, width, "…"), theme.overlay_signal()),
   ])
 }
 
+/// Generates all panel body content lines for current place.
 fn body_lines(
   state: State,
   board: Option(proposals.Board),
@@ -439,6 +471,8 @@ fn body_lines(
   content: geometry.Rect,
 ) -> List(span.Line) {
   let width = int.max(1, content.size.width)
+
+  // Render place content lines.
   let body = case state.place {
     Listing(selected:) -> list_lines(board, selected, now, width)
     Reading(id:) ->
@@ -446,6 +480,7 @@ fn body_lines(
     Confirming(id:) ->
       detail_lines(open_row(board, id), board, now, width, Asking)
   }
+
   list.append(notice_lines(notice, width), body)
 }
 
@@ -462,6 +497,7 @@ type Reader {
   Asking
 }
 
+/// Renders list of proposal rows or empty/loading state banner.
 fn list_lines(
   board: Option(proposals.Board),
   selected: Int,
@@ -497,19 +533,21 @@ fn omitted_lines(omitted: Int, width: Int) -> List(span.Line) {
   }
 }
 
-// One proposal on one line: the cursor, its identity, its age, its state, the
-// first line of why, and the session it came from. The line is cut to the
-// width and never wrapped, so a row stays one row.
+/// One proposal on one line: the cursor, its identity, its age, its state, the
+/// first line of why, and the session it came from. The line is cut to the
+/// width and never wrapped, so a row stays one row.
 fn row_line(
   row: proposals.Proposal,
   cursor: Cursor,
   now: Int,
   width: Int,
 ) -> span.Line {
+  // Choose selection prefix marker.
   let mark = case cursor {
     Here -> "▸ "
     Elsewhere -> "  "
   }
+
   let fixed =
     mark
     <> row.id
@@ -531,9 +569,11 @@ fn row_line(
     Elsewhere, proposals.Pending -> theme.overlay_plain()
     Elsewhere, _ -> theme.overlay_quiet()
   }
+
   span.line_new([span.span_styled(words, appearance)])
 }
 
+/// Renders proposal details or error banner.
 fn detail_lines(
   row: Result(proposals.Proposal, Nil),
   board: Option(proposals.Board),
@@ -554,16 +594,19 @@ fn detail_lines(
   }
 }
 
+/// Formats all detailed sections of an individual proposal.
 fn proposal_lines(
   row: proposals.Proposal,
   now: Int,
   width: Int,
   reader: Reader,
 ) -> List(span.Line) {
+  // Format source entry label if present.
   let entry = case row.source.entry {
     Some(entry) -> " · entry " <> text_hygiene.single_line(entry)
     None -> ""
   }
+
   let head =
     row.id
     <> " · "
@@ -588,10 +631,13 @@ fn proposal_lines(
       <> " · "
       <> proposals.change_counts(row)
   }
+
+  // Render target config path if proposal is configuration.
   let file = case row.kind {
     proposals.Config -> wrapped(row.target, theme.overlay_quiet(), width)
     proposals.Rule | proposals.Unrecognized(_) -> []
   }
+
   list.flatten([
     wrapped(head, theme.overlay_current(), width),
     wrapped(from, theme.overlay_quiet(), width),
@@ -606,9 +652,9 @@ fn proposal_lines(
   ])
 }
 
-// What closes the detail: the question an approval asks, the sentence about
-// where an approved rule is written, or what became of a row that can no
-// longer change.
+/// What closes the detail: the question an approval asks, the sentence about
+/// where an approved rule is written, or what became of a row that can no
+/// longer change.
 fn ending(
   row: proposals.Proposal,
   reader: Reader,
@@ -635,28 +681,32 @@ fn ending(
   }
 }
 
-// The edit, one line per line of text: removed lines in red with a minus,
-// added lines in green with a plus, and the lines the two texts share in
-// between drawn quiet and unmarked so the change reads against its own
-// surroundings. Every row is filled to the width, so the colour reads as a
-// band rather than as a highlight on some words. The text is wrapped to the
-// width so a long line is read whole, with the sign repeated only on its
-// first row.
+/// The edit, one line per line of text: removed lines in red with a minus,
+/// added lines in green with a plus, and the lines the two texts share in
+/// between drawn quiet and unmarked so the change reads against its own
+/// surroundings. Every row is filled to the width, so the colour reads as a
+/// band rather than as a highlight on some words. The text is wrapped to the
+/// width so a long line is read whole, with the sign repeated only on its
+/// first row.
 fn diff_lines(row: proposals.Proposal, width: Int) -> List(span.Line) {
   proposals.diff_lines(row)
   |> list.flat_map(fn(line) {
+    // Choose prefix sign and colour style per diff kind.
     let #(sign, appearance) = case line.kind {
       diff_view.Removed -> #("- ", theme.diff_removed())
       diff_view.Added -> #("+ ", theme.diff_added())
       _ -> #("  ", theme.overlay_quiet())
     }
+
     let room = int.max(1, width - 2)
     let pieces = wrapped(text_hygiene.single_line(line.text), appearance, room)
     list.index_map(pieces, fn(piece, index) {
+      // Only first wrapped line receives diff sign marker.
       let lead = case index {
         0 -> sign
         _ -> "  "
       }
+
       let text_width = span.line_width(piece)
       span.line_new([
         span.span_styled(lead, appearance),
@@ -678,6 +728,7 @@ fn heading(words: String, width: Int) -> span.Line {
   }
 }
 
+/// Wraps multiline text into styled spans.
 fn wrapped(
   words: String,
   appearance: style.Style,

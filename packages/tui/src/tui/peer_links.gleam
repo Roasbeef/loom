@@ -288,11 +288,13 @@ pub fn loaded(
   inspection: Inspection,
   next_cursor: Option(String),
 ) -> State {
+  // Set notice string based on pagination state.
   let notice = case state.prompt, next_cursor {
     Browsing, Some(_) -> "more grants available · press n to continue"
     Browsing, None -> "peer inspection current · saved targets stay closed"
     _, _ -> ""
   }
+
   State(
     ..state,
     sessions:,
@@ -350,6 +352,7 @@ pub fn append_sessions(state: State, page: protocol.Page) -> State {
 /// let state = peer_links.append_page(state, page)
 /// ```
 pub fn append_page(state: State, page: InspectionPage) -> State {
+  // Merge newly fetched inspection page into previous grants.
   let merged = case state.inspection {
     None -> page.inspection
     Some(previous) ->
@@ -358,6 +361,7 @@ pub fn append_page(state: State, page: InspectionPage) -> State {
         incoming: merge_grants(previous.incoming, page.inspection.incoming),
       )
   }
+
   State(
     ..state,
     inspection: Some(merged),
@@ -389,10 +393,12 @@ pub fn failed(state: State, reason: String) -> State {
 /// let updated = peer_links.completed(state, document)
 /// ```
 pub fn completed(state: State, document: json.JsonValue) -> State {
+  // Convert server result payload to status notice string.
   let result = case document {
     json.Null -> "peer link updated"
     _ -> "server result: " <> text_hygiene.single_line(json.to_string(document))
   }
+
   State(
     ..state,
     prompt: Browsing,
@@ -417,8 +423,11 @@ pub fn update(key: keys.Key, state: State) -> Action {
   }
 }
 
+/// Handles keyboard navigation and actions in browsing prompt mode.
 fn update_browsing(key: keys.Key, state: State) -> Action {
   let grants = grants(state.inspection)
+
+  // Dispatch key action for browsing grants.
   case key {
     keys.Escape -> Close
     keys.Char("l") -> Continue(State(..state, prompt: ChoosingSession))
@@ -461,6 +470,7 @@ fn update_browsing(key: keys.Key, state: State) -> Action {
   }
 }
 
+/// Handles target session selection from catalogue list.
 fn update_session_choice(key: keys.Key, state: State) -> Action {
   case key {
     keys.Escape -> Continue(State(..state, prompt: Browsing))
@@ -531,6 +541,7 @@ fn update_session_choice(key: keys.Key, state: State) -> Action {
   }
 }
 
+/// Handles keyboard input while typing target strand name.
 fn update_target_strand(key: keys.Key, state: State) -> Action {
   case key {
     keys.Escape ->
@@ -576,6 +587,7 @@ fn update_target_strand(key: keys.Key, state: State) -> Action {
   }
 }
 
+/// Handles confirmation prompt key events for creating or rejecting links.
 fn update_confirmation(
   key: keys.Key,
   state: State,
@@ -645,7 +657,9 @@ pub fn render(buf: buffer.Buffer, screen: Rect, state: State) -> buffer.Buffer {
   |> paragraph.render_styled(inside, lines)
 }
 
+/// Renders all modal lines according to prompt state.
 fn render_lines(state: State, width: Int, height: Int) {
+  // Render content according to current prompt mode.
   let content = case state.prompt {
     Browsing -> listing_lines(state, width)
     ChoosingSession -> session_lines(state, width)
@@ -656,10 +670,12 @@ fn render_lines(state: State, width: Int, height: Int) {
   // Format prompt-specific key control hint line.
   let footer = case state.prompt {
     Browsing -> {
+      // Format continuation hint if next page is available.
       let continuation = case state.next_cursor {
         Some(_) -> " · n load more"
         None -> ""
       }
+
       quiet(
         "↑↓ select · d revoke · l link · v reverse · r refresh"
         <> continuation
@@ -678,16 +694,21 @@ fn render_lines(state: State, width: Int, height: Int) {
     Some(message) -> [quiet(text.truncate(message, width, "…"))]
     None -> []
   }
+
+  // Format notice message.
   let notice = case state.notice {
     "" -> []
     message -> [
       quiet(text.truncate(text_hygiene.single_line(message), width, "…")),
     ]
   }
+
   let footers = list.append(list.append(result, notice), [footer])
 
   // Slice visible content viewport based on current prompt state.
   let room = int.max(0, height - list.length(footers))
+
+  // Slice visible content viewport based on current prompt state.
   let visible = case state.prompt {
     Browsing -> grant_viewport(content, state.selected_grant, room)
     ChoosingSession -> row_viewport(content, state.selected_session, 3, room)
@@ -698,15 +719,18 @@ fn render_lines(state: State, width: Int, height: Int) {
   list.append(visible, footers)
 }
 
-// Reserve the source heading, then move whole grant rows under the cursor.
+/// Reserve the source heading, then move whole grant rows under the cursor.
 fn grant_viewport(content, selected: Int, room: Int) {
+  // Determine viewport bounds based on total grant content lines.
   case list.length(content) <= 3 {
     True -> list.take(content, room)
     False -> {
+      // Keep heading line visible when room allows.
       let heading = case room >= 3 {
         True -> list.take(content, 1)
         False -> []
       }
+
       let rows = list.drop(content, 2)
       let row_room = int.max(0, room - list.length(heading))
       list.append(heading, row_viewport(rows, selected, 4, row_room))
@@ -714,7 +738,7 @@ fn grant_viewport(content, selected: Int, room: Int) {
   }
 }
 
-// The selected row always remains visible, even when the modal is narrow.
+/// The selected row always remains visible, even when the modal is narrow.
 fn row_viewport(content, selected: Int, row_height: Int, room: Int) {
   let rows_per_page = int.max(1, room / row_height)
   let first = selected / rows_per_page * rows_per_page
@@ -723,6 +747,7 @@ fn row_viewport(content, selected: Int, row_height: Int, room: Int) {
   |> list.take(room)
 }
 
+/// Formats lines for browsing existing peer grants.
 fn listing_lines(state: State, width: Int) {
   let rows = grants(state.inspection)
   let header =
@@ -736,10 +761,14 @@ fn listing_lines(state: State, width: Int) {
     list.index_map(rows, fn(grant, index) { #(grant, index) })
     |> list.flat_map(fn(pair) {
       let #(grant, index) = pair
+
+      // Format cursor selection marker.
       let marker = case index == state.selected_grant {
         True -> "› "
         False -> "  "
       }
+
+      // Determine grant traffic direction.
       let direction = case
         grant.source_session == state.source_session
         && grant.source_strand == state.source_strand
@@ -747,10 +776,13 @@ fn listing_lines(state: State, width: Int) {
         True -> "Outgoing"
         False -> "Incoming"
       }
+
+      // Format availability status label.
       let availability = case grant.availability {
         Available -> "resident"
         Unavailable(reason) -> "unavailable: " <> reason
       }
+
       [
         row_line(
           marker
@@ -779,6 +811,8 @@ fn listing_lines(state: State, width: Int) {
         quiet(text.truncate("    To ID   " <> grant.target_session, width, "…")),
       ]
     })
+
+  // Return rendered grant rows or empty notice.
   case rendered {
     [] -> [
       header,
@@ -793,19 +827,25 @@ fn listing_lines(state: State, width: Int) {
   }
 }
 
+/// Formats lines for choosing target session from catalogue.
 fn session_lines(state: State, width: Int) {
   let rows =
     list.index_map(state.sessions, fn(row, index) { #(row, index) })
     |> list.flat_map(fn(pair) {
       let #(row, index) = pair
+
+      // Format session selection cursor marker.
       let marker = case index == state.selected_session {
         True -> "› "
         False -> "  "
       }
+
+      // Check whether catalogue session is live and resident.
       let availability = case row.status {
         Resident(_) -> "resident"
         _ -> "unavailable · saved sessions are not opened here"
       }
+
       [
         row_line(
           marker <> row.name <> " · " <> availability,
@@ -817,6 +857,8 @@ fn session_lines(state: State, width: Int) {
         quiet(text.truncate("    workspace " <> row.workspace, width, "…")),
       ]
     })
+
+  // Render session rows or empty availability notice.
   case rows {
     [] -> [
       quiet("No resident sessions are available. No saved session was opened."),
@@ -825,6 +867,7 @@ fn session_lines(state: State, width: Int) {
   }
 }
 
+/// Formats lines for typing target strand name.
 fn editor_lines(state: State, width: Int) {
   [plain("From  " <> session_label(state, state.source_session))]
   |> list.append(wrapped_identity(
@@ -838,6 +881,7 @@ fn editor_lines(state: State, width: Int) {
   |> list.append(wrapped_field(state.target_strand <> "▏", width))
 }
 
+/// Formats lines for reviewing and confirming a proposed link.
 fn confirmation_lines(state: State, pending: Proposal, width: Int) {
   [plain("From  " <> session_label(state, pending.source_session))]
   |> list.append(wrapped_identity(
@@ -862,11 +906,14 @@ fn confirmation_lines(state: State, pending: Proposal, width: Int) {
   ])
 }
 
+/// Formats wrapped session and strand identifier lines.
 fn wrapped_identity(session: String, strand: String, width: Int) {
+  // Format strand line if present.
   let strand_lines = case strand {
     "" -> []
     _ -> wrapped_field("Strand: " <> strand, width)
   }
+
   list.append(wrapped_field("Session: " <> session, width), strand_lines)
 }
 
@@ -929,6 +976,7 @@ pub fn decode_inspection(
   Ok(page.inspection)
 }
 
+/// Decodes an outgoing peer link grant from JSON representation.
 fn decode_outgoing(value, source_session, source_strand) {
   use fields <- result.try(object(value))
   use target_session <- result.try(text_at(fields, "session"))
@@ -945,6 +993,7 @@ fn decode_outgoing(value, source_session, source_strand) {
   ))
 }
 
+/// Decodes an incoming peer link grant from JSON representation.
 fn decode_incoming(value, target_session, target_strand) {
   use fields <- result.try(object(value))
   use source_session <- result.try(text_at(fields, "source_session"))
@@ -968,9 +1017,12 @@ fn grants(optional: Option(Inspection)) -> List(Grant) {
   }
 }
 
+/// Merges incoming grant lists, updating matching entries.
 fn merge_grants(previous: List(Grant), additions: List(Grant)) -> List(Grant) {
   list.fold(additions, previous, fn(rows, addition) {
     let exists = list.any(rows, fn(row) { same_grant(row, addition) })
+
+    // Update existing grant or append new addition.
     case exists {
       True ->
         list.map(rows, fn(row) {
@@ -991,6 +1043,7 @@ fn same_grant(left: Grant, right: Grant) -> Bool {
   && left.target_strand == right.target_strand
 }
 
+/// Constructs a proposal from current state coordinates.
 fn proposal(state: State) -> Proposal {
   case state.selected_target {
     Some(row) ->
@@ -1012,6 +1065,7 @@ fn proposal(state: State) -> Proposal {
   }
 }
 
+/// Initiates a reverse link proposal from selected outgoing grant.
 fn reverse_proposal(state: State, rows: List(Grant)) -> Action {
   case item_at(rows, state.selected_grant) {
     Ok(grant)
@@ -1040,6 +1094,7 @@ fn reverse_proposal(state: State, rows: List(Grant)) -> Action {
   }
 }
 
+/// Resolves peer grant availability status from metadata fields.
 fn availability_at(fields) {
   case field(fields, "metadata") {
     Ok(json.Object(metadata)) ->
@@ -1059,8 +1114,11 @@ fn availability_at(fields) {
   }
 }
 
+/// Extracts peer wake permission setting from fields.
 fn wake_at(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Decode wake permission string.
   case value {
     json.String("busy_only") -> Ok(BusyOnly)
     json.String("may_wake") -> Ok(MayWake)
@@ -1068,6 +1126,7 @@ fn wake_at(fields, key) {
   }
 }
 
+/// Extracts optional peer wake permission setting from fields.
 fn optional_wake_at(fields, key) {
   case field(fields, key) {
     Ok(json.Null) -> Ok(None)
@@ -1084,6 +1143,7 @@ fn object(value) {
   }
 }
 
+/// Validates and extracts JSON array payload.
 fn array(value) {
   case value {
     json.Array(values) ->
@@ -1100,6 +1160,7 @@ fn field(fields, name) {
   |> result.map_error(fn(_) { "missing peer field " <> name })
 }
 
+/// Extracts pagination cursor string from JSON value.
 fn cursor_at(value: json.JsonValue) -> Result(Option(String), String) {
   case value {
     json.Null -> Ok(None)
@@ -1108,8 +1169,11 @@ fn cursor_at(value: json.JsonValue) -> Result(Option(String), String) {
   }
 }
 
+/// Extracts bounded text string from named field.
 fn text_at(fields, name) {
   use value <- result.try(field(fields, name))
+
+  // Verify JSON string format and size limit.
   case value {
     json.String(text) ->
       case string.byte_size(text) <= 4096 {
@@ -1134,6 +1198,7 @@ fn last_grant(inspection: Inspection) -> Int {
   )
 }
 
+/// Wraps selection index upward through list.
 fn wrap_up(index, rows) {
   case list.length(rows) {
     0 -> 0
@@ -1142,6 +1207,7 @@ fn wrap_up(index, rows) {
   }
 }
 
+/// Wraps selection index downward through list.
 fn wrap_down(index, rows) {
   case list.length(rows) {
     0 -> 0
@@ -1154,6 +1220,7 @@ fn item_at(rows, index) {
   rows |> list.drop(index) |> list.first
 }
 
+/// Drops trailing grapheme from string.
 fn drop_last_grapheme(value) {
   value
   |> string.to_graphemes
@@ -1163,6 +1230,7 @@ fn drop_last_grapheme(value) {
   |> string.concat
 }
 
+/// Formats wake permission description for display.
 fn wake_label(wake: Option(PeerWake)) -> String {
   case wake {
     Some(BusyOnly) -> "while running"
@@ -1178,6 +1246,7 @@ fn wake_choice_label(wake: PeerWake) -> String {
   }
 }
 
+/// Formats session label from catalogue metadata.
 fn session_label(state: State, identity: String) -> String {
   case state.selected_target {
     Some(target) if target.session_id == identity -> target.name
@@ -1203,16 +1272,20 @@ fn target_identity(state: State) -> String {
   }
 }
 
+/// Formats a single row line with selection highlighting.
 fn row_line(value: String, width: Int, selected_index: Int, row_index: Int) {
   let value =
     value
     |> text_hygiene.single_line
     |> text.truncate(width, "…")
     |> text.pad_right(width)
+
+  // Select styling based on row selection.
   let row_style = case selected_index == row_index {
     True -> style.new(theme.signal, theme.raised, style.bold())
     False -> theme.overlay_quiet()
   }
+
   span.line_new([span.span_styled(value, row_style)])
 }
 
