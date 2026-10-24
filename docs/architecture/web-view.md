@@ -2110,6 +2110,42 @@ would try to trick the person into approving:
   nothing. The section has no handler, so the socket admits no path beneath it;
   it is drawn and read only where `component.may_review_proposals` holds, and
   the daemon refuses `memory_get` to a member and an observer on its own.
+- **Evolution** (protocol-change/099). The strand panel's seventh child,
+  appended after Notes (`component.evolution_path`, `0\t3\t6`;
+  `view/evolution`), is an operator's tab for the session's governed
+  evolution: the candidates a session proposed, grouped as extensions,
+  programs and prompts, each a tinted box with a hairline border showing its
+  name, short identity, where it stands, its evidence and who approved it; what
+  is live; the decisions made, newest first; and a core card that is read-only
+  status. A row offers an approval, a selection, a revocation or a rollback, and
+  each is two presses: the button opens a question in the row that names the
+  candidate, the evidence and the generation as the page drew them and sends
+  nothing, and the question's confirm sends exactly those and no other
+  (`component.confirm_evolve`). The confirm looks the change up in the board the
+  page holds now, so a board that moved while the question was open, such as a
+  newer generation, sends nothing and says so. A selection the daemon queues
+  draws `staging…` on its row from the lane's own tracker, which polls `status`
+  with an identity the lane minted and the page never draws, and the lane's wake-up
+  (`surfaces.evolution_due`, armed beside `session_channel.next_due`) redraws
+  the row as the daemon reports. The daemon holds one active job and refuses a
+  second with `Busy:`, so a selection or a rollback is not offered while another
+  is staging. Core upgrade and downgrade are never drawn: the daemon admits them
+  to the native owner alone, and the card says to use `loom evolution`. The
+  board is `Shared.evolution`, read with the `board` action when the page opens
+  and on the daemon's `evolution_changed` push, with a 60 second backstop, and
+  drawn only when its session is the attached one. The tab is the owner's and a
+  member operator's: the owner's page is offered this session's own rows and the
+  workspace and model rows that are the owner's, with owner authority derived by
+  the gateway from the principal's kind, and a member operator's page is offered
+  this session's own rows only, which is the store's rule. A row scoped to
+  another session is listed, because the catalogue is daemon-wide, and offered
+  nothing: a change to it would run through this session's queue and live owner. The daemon
+  refuses what a page should not have offered, so the offer is a convenience
+  and never the gate. An observer's page draws no tab, no pane and no `evolution`
+  attribute on `<loom-shell>`, and its socket drops every event beneath the
+  path. Every name, description, reason and identity is a text node. The shell
+  draws the tab button only on a page that carries the `evolution` attribute
+  (the count of candidates and selections waiting for a person, even as `0`).
 - Cards are keyed by the record's sequence, so a click in flight while the
   list shifts reaches the same card or none.
 
@@ -2216,6 +2252,8 @@ browser goes away, because a runtime outlives its last client.
 | `packages/web_view/src/web_view/view/remembered.gleam` | The Session pane's list of what "Allow for this session" kept: each permission and remembered command, who allowed it, from which sign-in or terminal and when, a two-step Forget for each row and for all of them, and a note under a permission whose browser sign-in has ended. The pane's sixth child. Every path, command and name is a text node. |
 | `packages/web_view/src/web_view/proposals.gleam` | The page's own part of the proposals review: `State` (when the board was last wanted, the approval being asked about), `refresh_ms` (60 s), and the labels and the question an approval asks. |
 | `packages/web_view/src/web_view/view/proposals.gleam` | The Session pane's proposals section on the owner's page: a row for each proposal, its drawer with the rationale, source and the red and green diff, Approve behind an in-place question, Reject, and the settled words for a row that cannot change. The pane's eighth child. Every string a model wrote is a text node. |
+| `packages/web_view/src/web_view/evolution.gleam` | The page's own part of the Evolution tab: `Armed` (one change as the page drew it: the candidate, the evidence and the generation), `State` (the open question), `offers` (what a candidate may offer a page, by `Reach` and whether a selection is `Staging`), `find_offer` (the check both the first press and the confirm make against the board held now), `request` and `reason_for` (what the confirm sends), and `waiting` (the tab's badge). |
+| `packages/web_view/src/web_view/view/evolution.gleam` | The strand panel's Evolution pane on an operator's page: the live summary, a box for each candidate with its evidence, approval, staging line and buttons, the question that replaces the buttons in place, the history, and the read-only core card. The panel's seventh child. Every string a model or a catalogue wrote is a text node. |
 | `packages/web_view/src/web_view/view/nudges.gleam` | The advisor's pending nudges, read-only, every body received as a text node and the count the server left out. It is drawn under the strand panel's panes on both pages and has no handler. |
 | `packages/web_view/src/web_view/view/commentary.gleam` | The advisor's settled commentary, read-only: the request labels and full bodies of the reviews, drawn in the Strands pane under the strand cards as one closed `details` whose summary is `Advisor · N reviews · last: …`, the bodies as Markdown, newest three then a count, with the board's not-loaded line. No handler, and nothing while the advisor itself is on screen. |
 | `packages/web_view/src/web_view/view/controls.gleam` | The operator's session controls: the goal row with its buttons and the Fork form (`session`, in the Session pane), and the dock's one goal line while a goal runs or is held (`dock`). It takes the messages its buttons send and the form's submit handler as values. |
