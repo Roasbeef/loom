@@ -6,8 +6,11 @@ The production commits are e97af0e98 (linear turn merging), 857d2cdd9
 the optimization work collected in PR #1110. The owner approved publishing
 this round in a separate follow-up PR after #1110 merges. Its measurement base is
 4510d43863cfccaa383b0f451f25d20132406262, after the earlier request-preparation
-fast paths. The integration owner will rebase onto post-#1110 main and validate the
-follow-up head separately. No post-rebase result is claimed here. The installed daemon and Pickglass viewer were left unchanged.
+fast paths. The follow-up source is now rebased onto post-#1110 main
+141788049d93cfe97a427e350d75001bd88d091c, at 6feb3ef08. The merged base tree
+is identical to #1110 head 4e479fcc1, and the rebased follow-up tree is identical
+to the earlier locally validated e3152a3f3. The same affected gates were rerun
+successfully after rebasing; these are local results, not hosted CI. The installed daemon and Pickglass viewer were left unchanged.
 
 ## Linear Anthropic turn merging
 
@@ -134,5 +137,10 @@ issue. Documentation checking passes with zero errors and 229 existing warnings.
 
 Cumulative allocation and flattened copied words are separate metrics; neither
 is live RSS or leak evidence. The complete-request benchmark measures encoding,
-not transport or provider latency. Hosted checks and combined integration-head
-validation belong to PR #1110 and are not inferred from these local results.
+not transport or provider latency. Hosted checks belong to each PR's exact head and are not inferred from these
+local results. On post-#1110 source head 6feb3ef08, the repeated provider326,
+web1332, codemode90 and workspace41 checks all exit zero, as do affected lints,
+whole-tree lint and doc-check. The full client suite is recorded for #1110;
+the follow-up rerun covers the two affected client modules. The final
+publication note changes documentation only. #1110 was admin-merged while
+its hosted run was still completing, so its merge is not hosted-green proof.
