@@ -170,9 +170,7 @@ pub fn strand_window(
   |> option.unwrap(fallback)
 }
 
-// The figures for an identity nobody stands behind: the host's declared
-// fallbacks, stated once so the readers cannot drift. The image reading is
-// `ReadsImages`, the answer for an entry which never wrote the key.
+/// Constructs default model facts using the host fallback parameters.
 fn unknown(fallback: Fallback) -> ModelFacts {
   ModelFacts(
     api: fallback.api,

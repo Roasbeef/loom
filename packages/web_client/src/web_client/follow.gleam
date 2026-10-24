@@ -582,6 +582,8 @@ fn start() -> Effect(Msg) {
     ffi_dom.add_listener(ffi_dom.get_document(), follow_rule.sent_event, fn(_) {
       dispatch(Sent)
     })
+
+  // Observe resize and DOM mutation events on scroller children.
   let sizes = ffi_dom.resize_observer(fn() { dispatch(Resized) })
   ffi_dom.observe(sizes, host)
   observe_children(sizes, host)

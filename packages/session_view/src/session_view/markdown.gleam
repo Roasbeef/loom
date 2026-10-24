@@ -1921,6 +1921,8 @@ fn delimiter_run(
   state: Scan,
 ) -> List(Inline) {
   let #(length, after) = count_run(input, mark, 0)
+
+  // Identify the adjacent grapheme immediately following the run.
   let next = case after {
     [grapheme, ..] -> grapheme
     [] -> ""
@@ -1929,6 +1931,8 @@ fn delimiter_run(
   let beyond = neighbour(next)
   let can_open = opens(mark, before, beyond)
   let can_close = closes(mark, before, beyond)
+
+  // Fold the delimiter run into the scanner state.
   let state = case delims_of(mark, length, can_close) {
     Ok(delims) ->
       list.fold(delims, state, fn(state, delim) {
@@ -1940,6 +1944,8 @@ fn delimiter_run(
         pending: list.append(list.repeat(mark, length), state.pending),
       )
   }
+
+  // Advance scanning past the consumed delimiter run.
   scan(after, position + length, mark, state)
 }
 

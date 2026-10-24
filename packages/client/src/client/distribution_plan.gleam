@@ -290,6 +290,8 @@ fn valid_directory(plan: Plan) -> Result(Nil, String) {
           }
         }),
       )
+
+      // Verify that every planned orchestrator node is included.
       list.try_each(plan.nodes, fn(node) {
         case node.role, list.contains(names, node.name) {
           Orchestrator, False ->

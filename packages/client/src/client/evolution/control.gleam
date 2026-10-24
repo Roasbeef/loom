@@ -371,6 +371,8 @@ fn select_pending(
   args: json.JsonValue,
   request: Request,
 ) -> Result(json.JsonValue, String) {
+
+  // Extract caller credentials and verify current selection generation.
   let Bound(catalogue:, owner:, transitions:, clock:, session_id:, principal:) =
     bound
   let Request(evidence:, expected_generation:, reason:, request_id:) = request
@@ -386,6 +388,8 @@ fn select_pending(
     True -> Ok(Nil)
     False -> Error(store.describe(store.Stale))
   })
+
+  // Build the commit closure and dispatch transition.
   let candidate_id = candidate.id
   let scope = candidate.scope
   let name = candidate.name
@@ -415,6 +419,8 @@ fn select_pending(
         True -> Ok(Nil)
         False -> Error("Bounds: deadline_ms must be 1..120000")
       })
+
+      // Calculate execution deadline bounds and construct commit closure.
       let #(now, _) = clock.read(clock)
       let expires_at = now + waiting
       let commit = fn() {
@@ -437,6 +443,8 @@ fn select_pending(
           },
         )
       }
+
+      // Prepare selection record and queue transition with state machine.
       let next =
         record.Selection(
           candidate.id,

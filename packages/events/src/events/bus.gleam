@@ -424,6 +424,8 @@ pub fn subscribe(
   topic topic: Topic,
 ) -> Nil {
   let group = #(key_to_string(session), topic)
+
+  // Skip joining if this process is already a member of the group.
   case ffi_pg.is_member(bus.scope, group) {
     True -> Nil
     False -> ffi_pg.join(bus.scope, group)
@@ -458,7 +460,9 @@ pub fn subscribe_hints(bus: Bus, session session: SessionKey) -> Nil {
   subscribe_topics(bus, session, hint_topics())
 }
 
+/// Subscribes the caller to a list of topics under the session key.
 fn subscribe_topics(bus: Bus, session: SessionKey, topics: List(Topic)) -> Nil {
+  // Walk each topic in turn and subscribe to its pg group.
   case topics {
     [] -> Nil
     [topic, ..rest] -> {
@@ -556,6 +560,7 @@ pub fn bridge(
   session session: SessionKey,
   map map: fn(incoming) -> Event,
 ) -> actor.StartResult(Subject(incoming)) {
+  // Unlink immediately on start so bridge crashes stay local.
   case
     actor.new(Nil)
     |> actor.on_message(fn(_state, incoming) {

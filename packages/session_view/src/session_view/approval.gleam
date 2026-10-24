@@ -235,6 +235,8 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
     Error("invalid captured escalation identity"),
   )
   use state <- result.try(text(fields, "status"))
+
+  // Map the captured status to its typed review state.
   use state <- result.try(case state {
     "pending" -> Ok(Pending)
     "approved" -> Ok(Approved)
@@ -246,11 +248,15 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
     Ok(json.Int(seq)) if seq >= 0 -> Ok(seq)
     _ -> Error("invalid captured escalation sequence")
   })
+
+  // Read the routing fields and the decision's origin author.
   use orchestrator <- result.try(text(fields, "placement"))
   use author <- result.try(
     origin.decode_field(fields)
     |> result.replace_error("invalid escalation decision origin"),
   )
+
+  // Read optional tool context and requested grant boundaries.
   let tool = defaulted(fields, "tool")
   let preview = defaulted(fields, "preview")
   let action = defaulted(fields, "action")
@@ -267,6 +273,8 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
     Ok(json.Array(grants)) -> grants
     _ -> []
   }
+
+  // Match wanted grants against what the spawner admitted.
   let permission = case action, wanted {
     "", _ -> Unavailable("approval has no captured action digest")
     _, Error(reason) -> Unavailable(reason)
@@ -279,11 +287,15 @@ fn decode_remote(cell: snapshot_view.Cell) -> Result(Review, String) {
         grants -> Exact(action, grants)
       }
   }
+
+  // Find requested grants outside what the spawner admitted.
   let outside = case wanted {
     Ok(wanted) ->
       list.filter(wanted, fn(grant) { !list.contains(admitted, grant) })
     Error(_) -> []
   }
+
+  // Construct the decoded remote review record.
   Ok(Review(
     id,
     seq,

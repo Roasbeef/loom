@@ -195,6 +195,7 @@ fn compile(pattern: String) -> Result(Regexp, String) {
   |> result.replace_error("a path-literal pattern does not compile")
 }
 
+/// Extracts package path dependencies from a parsed TOML dependencies table.
 fn path_deps(parsed: Dict(String, tom.Toml), table: String) -> Set(String) {
   case tom.get_table(parsed, [table]) {
     Ok(entries) ->
@@ -216,7 +217,9 @@ fn names_a_path(name: String, spec: tom.Toml) -> Bool {
   |> result.unwrap(False)
 }
 
+/// Reads and parses the gleam.toml manifest for a package entry if present.
 fn read_manifest(entry: Entry) -> Result(Option(#(String, Manifest)), String) {
+  // Parse manifest contents if present on the package entry.
   case entry.manifest {
     None -> Ok(None)
     Some(text) -> {
@@ -280,16 +283,19 @@ fn scan_reads(
 
 // Every directory that holds a tracked file, so a literal naming a bare
 // directory such as `docs/examples` still resolves.
+/// Collects all directory ancestor paths for a list of tracked file paths.
 fn directories_of(tracked: List(String)) -> Set(String) {
   list.fold(tracked, set.new(), fn(found, path) {
     let parts = string.split(path, "/")
     parts
     |> list.take(list.length(parts) - 1)
     |> list.fold(#(found, ""), fn(state, part) {
+      // Build cumulative directory prefix from parent path parts.
       let directory = case state.1 {
         "" -> part
         parent -> parent <> "/" <> part
       }
+
       #(set.insert(state.0, directory), directory)
     })
     |> pair.first
@@ -297,6 +303,7 @@ fn directories_of(tracked: List(String)) -> Set(String) {
 }
 
 // The package whose source this is, when it is a source worth scanning.
+/// Determines the owning package name if the given path is a scannable source file.
 fn scannable(path: String, packages: List(String)) -> Option(String) {
   case string.split(path, "/") {
     ["packages", reader, _, ..] ->
@@ -319,6 +326,7 @@ type Candidate {
 // Relative literals first, each resolved against the package root and then
 // the file's own directory; rooted literals after them. The order decides
 // which literal a read is reported with.
+/// Finds relative and rooted literal path candidates referenced inside a file.
 fn candidates(
   scan: Scan,
   reader: String,
@@ -343,6 +351,7 @@ fn candidates(
 }
 
 // The first group of every non-overlapping match, in order.
+/// Extracts matched capture literals from regex scan results.
 fn literals(pattern: Regexp, text: String) -> List(String) {
   regexp.scan(pattern, text)
   |> list.filter_map(fn(found) {
@@ -354,6 +363,7 @@ fn literals(pattern: Regexp, text: String) -> List(String) {
 }
 
 // Keep the first reader, and the first literal, to name a prefix.
+/// Records a resolved path candidate and reading package into the readings list.
 fn record(
   reads: List(Reading),
   scan: Scan,
@@ -366,6 +376,7 @@ fn record(
   }
 }
 
+/// Adds a reader package and literal to the readings entry for a prefix.
 fn add_reader(
   reads: List(Reading),
   prefix: String,
@@ -392,8 +403,11 @@ fn add_reader(
 // the repository, or names `packages` itself, reads nothing; one inside
 // `packages/` reads that whole other package; anything else counts when it
 // is a tracked file or a directory holding one.
+/// Resolves a candidate target path to a canonical repository prefix or package.
 fn read_prefix(target: String, reader: String, scan: Scan) -> Option(String) {
   let parts = string.split(target, "/")
+
+  // Discard escape sequences or resolve matching prefix target.
   case
     string.starts_with(target, "..") || target == "." || target == "packages"
   {
@@ -445,6 +459,8 @@ pub fn normpath(path: String) -> String {
         _, _ -> [step, ..stack]
       }
     })
+
+  // Format normalized path steps or return dot for current directory.
   case steps {
     [] -> "."
     _ -> steps |> list.reverse |> string.join("/")

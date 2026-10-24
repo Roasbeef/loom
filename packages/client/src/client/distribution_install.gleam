@@ -404,6 +404,8 @@ fn merge(
       }
     }),
   )
+
+  // Detect table conflicts and enforce overwrite rules.
   let conflicts =
     list.filter_map(verdicts, fn(verdict) {
       case verdict {
@@ -423,6 +425,8 @@ fn merge(
         <> "bundle owns",
       )
   })
+
+  // Apply section removals and append non-identical table additions.
   let kept =
     remove_sections(existing, list.map(conflicts, fn(table) { table.path }))
   let additions =

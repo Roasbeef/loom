@@ -359,9 +359,7 @@ pub fn available_tools(environment: Environment) -> List(String) {
   environment.available_tools
 }
 
-// Trims, drops empties, sorts, and de-duplicates — the normalization
-// every list-valued environment field gets, so ordering at the call site
-// cannot reach the rendered bytes.
+/// Normalizes string lists by trimming, filtering, sorting, and deduplicating.
 fn normalize(values: List(String)) -> List(String) {
   values
   |> list.map(string.trim)
@@ -562,14 +560,18 @@ pub fn placeholders(template: String) -> List(String) {
   |> list.unique
 }
 
+/// Recursively extracts placeholder names enclosed in braces from graphemes.
 fn placeholder_loop(
   graphemes: List(String),
   found: List(String),
 ) -> List(String) {
+  // Scan graphemes for opening braces identifying placeholders.
   case graphemes {
     [] -> found
     ["{", ..rest] -> {
       let #(name, tail) = take_name(rest, [])
+
+      // Check for closing brace terminating the placeholder.
       case tail {
         ["}", ..after] if name != "" -> placeholder_loop(after, [name, ..found])
         _ -> placeholder_loop(rest, found)
@@ -624,6 +626,8 @@ pub fn decode(source: String) -> Result(Pack, CorruptionReport) {
       result.try(state, read_line(_, line, index + 1))
     }),
   )
+
+  // Require the pack header and version directive before accepting decoded sections.
   use version <- result.try(case reading.header, reading.version {
     False, _ ->
       Error(report_at(
@@ -636,6 +640,7 @@ pub fn decode(source: String) -> Result(Pack, CorruptionReport) {
     True, None -> Error(report_at(0, "a `%% version <id>` directive", ""))
     True, Some(version) -> Ok(version)
   })
+
   Ok(Pack(
     version:,
     digest: fingerprint(source),
@@ -645,6 +650,7 @@ pub fn decode(source: String) -> Result(Pack, CorruptionReport) {
 
 // One line of the source. Directives are recognized only in column zero,
 // which is what lets every other line be kept byte for byte.
+/// Processes a single line of pack source into the ongoing decode state.
 fn read_line(
   reading: Reading,
   line: String,
@@ -666,12 +672,15 @@ fn read_line(
   }
 }
 
+/// Parses directive lines starting with %% into header, version, or section entries.
 fn read_directive(
   reading: Reading,
   line: String,
   number: Int,
 ) -> Result(Reading, CorruptionReport) {
   let content = string.trim(string.drop_start(line, 2))
+
+  // Skip comment directives starting with # or parse active keywords.
   case string.starts_with(content, "#") {
     True -> Ok(reading)
     False -> {
@@ -682,6 +691,8 @@ fn read_directive(
         Ok(#(keyword, argument)) -> #(keyword, string.trim(argument))
         Error(Nil) -> #(content, "")
       }
+
+      // Dispatch on the directive keyword.
       case keyword {
         "loom-prompt-pack" -> read_header(reading, argument, number)
         "version" -> read_version(reading, argument, number)
@@ -697,6 +708,7 @@ fn read_directive(
   }
 }
 
+/// Verifies and registers the pack format version header.
 fn read_header(
   reading: Reading,
   argument: String,
@@ -715,6 +727,7 @@ fn read_header(
   }
 }
 
+/// Validates and records the pack version identifier.
 fn read_version(
   reading: Reading,
   argument: String,
@@ -741,6 +754,7 @@ fn read_version(
   }
 }
 
+/// Validates section name uniqueness and begins capturing a new section body.
 fn read_section(
   reading: Reading,
   argument: String,
@@ -748,6 +762,8 @@ fn read_section(
 ) -> Result(Reading, CorruptionReport) {
   let closed = close_open(reading)
   let taken = list.map(closed.done, fn(section) { section.name })
+
+  // Ensure header and version exist before admitting a section.
   case closed.header, closed.version {
     False, _ -> Error(report_at(number, "the pack header first", argument))
     _, None ->
@@ -772,10 +788,9 @@ fn read_section(
   }
 }
 
-// Closes whatever section is open, trimming its body. Trimming is what
-// makes a trailing newline, or a blank line before the next directive,
-// invisible to the rendered bytes.
+/// Closes any open section by trimming lines and accumulating it into done.
 fn close_open(reading: Reading) -> Reading {
+  // Accumulate open section body or return reading state untouched.
   case reading.open {
     None -> reading
     Some(#(name, body)) -> {
@@ -810,6 +825,7 @@ fn strip_carriage_return(line: String) -> String {
   }
 }
 
+/// Creates a CorruptionReport recording the line number and failure context.
 fn report_at(
   number: Int,
   expected: String,
@@ -919,11 +935,7 @@ fn is_fragment(name: String) -> Bool {
   string.starts_with(name, "_")
 }
 
-// The bindings are built in two tiers. Literal bindings are plain
-// strings taken from the environment. Selected bindings name a
-// *fragment* whose body the environment chooses, and that body is
-// substituted against the literal tier only — one level, no recursion,
-// so no pack can drive expansion in a loop.
+/// Evaluates literal and selected fragment bindings from the environment.
 fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
   let literal =
     dict.from_list([
@@ -958,6 +970,7 @@ fn bindings(pack: Pack, environment: Environment) -> Dict(String, String) {
   dict.merge(literal, dict.from_list(selected))
 }
 
+/// Maps the sandbox enforcement setting to its fragment name.
 fn enforcement_fragment(enforcement: Enforcement) -> String {
   case enforcement {
     FullyEnforced -> "_enforcement_enforced"
@@ -967,6 +980,7 @@ fn enforcement_fragment(enforcement: Enforcement) -> String {
   }
 }
 
+/// Maps network posture to its corresponding fragment identifier.
 fn network_fragment(network: NetworkPosture) -> String {
   case network {
     NetworkBlocked -> "_network_blocked"
@@ -992,6 +1006,7 @@ fn fragment(pack: Pack, name: String, literal: Dict(String, String)) -> String {
   }
 }
 
+/// Looks up a section template by name in a pack.
 fn body(pack: Pack, name: String) -> Result(String, Nil) {
   list.find_map(pack.sections, fn(section) {
     case section.name == name {
@@ -1035,15 +1050,19 @@ fn substitute(template: String, bindings: Dict(String, String)) -> String {
   substitute_loop(string.to_graphemes(template), bindings, [])
 }
 
+/// Recursively substitutes brace-delimited placeholder values in graphemes.
 fn substitute_loop(
   graphemes: List(String),
   bindings: Dict(String, String),
   acc: List(String),
 ) -> String {
+  // Scan graphemes for opening brace indicating placeholder candidate.
   case graphemes {
     [] -> string.concat(list.reverse(acc))
     ["{", ..rest] -> {
       let #(name, tail) = take_name(rest, [])
+
+      // Substitute placeholder binding or emit literal brace.
       case tail {
         ["}", ..after] if name != "" ->
           substitute_loop(after, bindings, [
@@ -1060,6 +1079,7 @@ fn substitute_loop(
   }
 }
 
+/// Collects valid identifier graphemes following an opening brace.
 fn take_name(
   graphemes: List(String),
   taken: List(String),
@@ -1074,13 +1094,13 @@ fn take_name(
   }
 }
 
-// Collapses the gaps an absent fragment leaves behind: trailing
-// whitespace off every line, runs of blank lines down to one, and no
-// blank line at either end.
+/// Collapses trailing whitespace and repeated blank lines in rendered text.
 fn tidy(text: String) -> String {
   string.split(text, on: "\n")
   |> list.fold([], fn(kept, line) {
     let trimmed = string.trim_end(line)
+
+    // Collapse consecutive empty lines while keeping non-empty content.
     case trimmed == "", kept {
       True, [] -> kept
       True, ["", ..] -> kept
@@ -1123,6 +1143,7 @@ const fnv_prime = 1_099_511_628_211
 
 const fnv_mask = 18_446_744_073_709_551_615
 
+/// Accumulates bytes into a 64-bit FNV-1a hash value.
 fn fnv_loop(bytes: BitArray, hash: Int) -> Int {
   case bytes {
     <<byte, rest:bits>> ->
@@ -1137,6 +1158,7 @@ fn fnv_loop(bytes: BitArray, hash: Int) -> Int {
   }
 }
 
+/// Converts an integer into its fixed-width hexadecimal string representation.
 fn hex(value: Int, digits: Int, acc: String) -> String {
   case digits {
     0 -> acc
@@ -1149,6 +1171,7 @@ fn hex(value: Int, digits: Int, acc: String) -> String {
   }
 }
 
+/// Maps a 4-bit nibble value to its hexadecimal character.
 fn hex_digit(nibble: Int) -> String {
   case nibble {
     0 -> "0"

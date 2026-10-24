@@ -93,6 +93,7 @@ fn markers(doc: List(DocLine)) -> List(Marker) {
   }
 }
 
+/// Extracts the target type identifier from inside an HTML comment marker.
 fn marker_target(text: String) -> Result(String, Nil) {
   case
     string.starts_with(text, marker_open)
@@ -108,6 +109,7 @@ fn marker_target(text: String) -> Result(String, Nil) {
   }
 }
 
+/// Validates that a transitions marker references the current module's type.
 fn check_marker(
   module: glance.Module,
   own_path: String,
@@ -159,6 +161,7 @@ fn last_segment(path: String) -> String {
   }
 }
 
+/// Validates that the marked custom type exists and that its transitions table matches constructors.
 fn check_type(
   module: glance.Module,
   marker: Marker,
@@ -168,6 +171,8 @@ fn check_type(
     list.find(module.custom_types, fn(definition) {
       { definition.definition }.name == type_name
     })
+
+  // Check whether the custom type is defined in the current module AST.
   case matching {
     Error(Nil) -> [
       at_marker(
@@ -178,6 +183,8 @@ fn check_type(
     Ok(definition) -> {
       let variants =
         list.map(definition.definition.variants, fn(variant) { variant.name })
+
+      // Parse markdown table rows following the marker comment.
       case table(marker.after) {
         Error(Nil) -> [
           at_marker(
@@ -204,6 +211,8 @@ fn table(after: List(DocLine)) -> Result(#(List(String), List(Row)), Nil) {
     after
     |> list.drop_while(fn(line) { line.text == "" })
     |> list.take_while(fn(line) { string.starts_with(line.text, "|") })
+
+  // Require at least a header and separator row in the markdown table.
   case run {
     [header, separator, ..body] ->
       case is_separator(cells(separator)) {
@@ -222,10 +231,13 @@ fn table(after: List(DocLine)) -> Result(#(List(String), List(Row)), Nil) {
 /// closing pipe still has the cells it shows.
 fn cells(line: DocLine) -> List(String) {
   let inner = string.drop_start(line.text, 1)
+
+  // Strip trailing pipe from markdown table row if present.
   let inner = case string.ends_with(inner, "|") {
     True -> string.drop_end(inner, 1)
     False -> inner
   }
+
   inner |> string.split("|") |> list.map(string.trim)
 }
 
@@ -240,6 +252,7 @@ fn is_separator(cells: List(String)) -> Bool {
   })
 }
 
+/// Compares table rows against custom type constructors for missing, extra, or duplicate states.
 fn check_rows(
   marker: Marker,
   variants: List(String),
@@ -298,6 +311,8 @@ fn by_name(
   let #(seen, reversed) =
     list.fold(rows, #(set.new(), []), fn(state, row) {
       let name = row_name(row)
+
+      // Check for duplicate row entries or names not matching any constructor.
       case set.contains(state.0, name), set.contains(variants, name) {
         True, _ -> #(state.0, [duplicate(row, name), ..state.1])
         False, False -> #(set.insert(state.0, name), [
@@ -329,6 +344,7 @@ fn extra(row: Row, name: String) -> Raw {
   )
 }
 
+/// Constructs a transition-table raw finding positioned at the marker line.
 fn at_marker(marker: Marker, detail: String) -> Raw {
   Raw(
     rule: finding.TransitionTable,
@@ -338,6 +354,7 @@ fn at_marker(marker: Marker, detail: String) -> Raw {
   )
 }
 
+/// Constructs a transition-table raw finding positioned at a specific table row.
 fn at_row(row: Row, detail: String) -> Raw {
   Raw(
     rule: finding.TransitionTable,

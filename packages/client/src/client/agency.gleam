@@ -5091,6 +5091,8 @@ fn delivered(
     True -> Ok(Nil)
     False -> Error(agent.NotADescendant(strand: child.strand))
   })
+
+  // Validate message identifier and text bounds before allocating a receipt key.
   use Nil <- result.try(
     case
       string.byte_size(message_id) > 0

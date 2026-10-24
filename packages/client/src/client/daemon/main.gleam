@@ -1169,6 +1169,8 @@ fn node_reads(
   let identity = build_identity.current()
   let version = identity.version
   let commit = identity.commit
+
+  // Capture ready registry, epoch, and start time.
   let epoch = ready.epoch
   let registry = ready.registry
   let started_ms = ffi_os.system_time_ms()

@@ -34,6 +34,7 @@ pub fn sanitize(text: String) -> String {
 // selectors, the BOM, and the tag-character plane — the last being the
 // classic vector for instructions visible to a model and invisible to a
 // human reading the same rendered text.
+/// Identifies codepoints considered invisible or dangerous format controls.
 fn invisible(code: Int) -> Bool {
   code < 0x20
   || code == 0x7F
@@ -86,15 +87,20 @@ pub fn wrap(text: String, width: Int) -> List(String) {
     list.fold(words, #([], "", 0), fn(state, word) {
       let #(lines, current, length) = state
       let word_length = string.length(word)
+
+      // Start a new line when the current buffer is empty or append within bounds.
       case current {
         "" -> #(lines, word, word_length)
         _ ->
+          // Determine whether the next word fits within the requested line width.
           case length + 1 + word_length <= width {
             True -> #(lines, current <> " " <> word, length + 1 + word_length)
             False -> #([current, ..lines], word, word_length)
           }
       }
     })
+
+  // Flush any remaining line buffer into the reversed accumulator.
   case last {
     "" -> list.reverse(lines)
     _ -> list.reverse([last, ..lines])
@@ -130,8 +136,11 @@ pub fn escape(text: String) -> String {
   |> string.concat
 }
 
+/// Renders a single UTF codepoint into an escaped string segment.
 fn escape_codepoint(codepoint: UtfCodepoint) -> String {
   let code = string.utf_codepoint_to_int(codepoint)
+
+  // Render backslashes, quotes, printable characters, or hex unicode escapes.
   case code {
     0x5C -> "\\\\"
     0x22 -> "\\\""

@@ -258,7 +258,7 @@ pub fn new(settings: Settings) -> Result(HarnessConfig, ConfigError) {
   ))
 }
 
-// `result.try` under a short name, so the checks above read as a column.
+/// `result.try` under a short name, so the checks above read as a column.
 fn try(
   result: Result(a, ConfigError),
   then: fn(a) -> Result(b, ConfigError),
@@ -290,6 +290,7 @@ fn positive(name: String, value: Int) -> Result(Nil, ConfigError) {
   }
 }
 
+/// Constructs a tool execution context generator for hosted or embedded tools.
 fn context_for(
   tools: Tools,
   clock: Clock,
@@ -379,11 +380,7 @@ pub fn effects(config: HarnessConfig) -> Effects {
   )
 }
 
-// The runtime's default hooks with the two slots a provider needs replaced:
-// `admission`, which accounts each request against the facts of the identity
-// it will reach, and `resolution`, which asks the gateway whether the role
-// still routes. Everything else (no compaction, no run-start injection) is the
-// default, which is what an embedder without a notes checkpoint wants.
+/// Builds runtime hooks configured with provider admission and routing resolution.
 fn default_hooks(
   opened: Session,
   provider_gateway: Gateway,

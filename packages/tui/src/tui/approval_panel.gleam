@@ -321,17 +321,23 @@ pub fn render(
     Spaced -> 4 + 3 + 2
     Tight -> 2 + 3 + 1
   }
+
+  // Calculate allocated detail height and bounded container geometry.
   let available = int.max(1, area.size.height - chrome)
   let detail_height =
     int.max(1, int.min(list.length(lines), int.min(available, 12)))
   let height = int.min(area.size.height, detail_height + chrome)
   let top = geometry.bottom(area) - height
   let block = geometry.rect_new(area.position.x, top, width, height)
+
+  // Compute scrolled line offset into the detail content.
   let max_offset = int.max(0, list.length(lines) - detail_height)
   let offset = case state.scroll {
     FromStart(page) -> int.min(max_offset, page * detail_height)
     FromEnd(pages) -> int.max(0, max_offset - pages * detail_height)
   }
+
+  // Check whether single and session approvals are permitted.
   let once = case approvable(state.review) {
     True -> Enabled
     False -> Disabled
@@ -340,11 +346,15 @@ pub fn render(
     True -> Enabled
     False -> Disabled
   }
+
+  // Determine pagination hint messages for scrollable requests.
   let more = case offset, max_offset {
     0, 0 -> []
     offset, max if offset < max -> ["PgDn more of the request"]
     _, _ -> ["PgUp earlier in the request"]
   }
+
+  // Format panel keybinding hints according to available width.
   let controls = case panel_width {
     NarrowPanel -> ["1-3 ↑↓ select", "Enter confirms", "d raw", "Esc defers"]
     WidePanel ->
@@ -357,6 +367,8 @@ pub fn render(
     Spaced -> [blank()]
     Tight -> []
   }
+
+  // Assemble the complete approval panel rows.
   let rows =
     list.flatten([
       [rule(width), heading(state, waiting, width)],
@@ -584,10 +596,14 @@ fn choice_line(
   width: Int,
 ) -> span.Line {
   let selected = state.selected == Some(choice)
+
+  // Suffix unavailable options with explanatory text.
   let label = case availability {
     Enabled -> label
     Disabled -> label <> " (unavailable)"
   }
+
+  // Select background shading based on selection state.
   let ground = case selected {
     True -> theme.raised
     False -> style.Default
@@ -596,6 +612,8 @@ fn choice_line(
     True -> " › "
     False -> "   "
   }
+
+  // Style label text according to choice availability and selection.
   let look = case selected, availability {
     True, Enabled -> style.new(theme.paper, ground, style.bold())
     True, Disabled | False, Disabled ->

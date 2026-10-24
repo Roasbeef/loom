@@ -52,6 +52,7 @@ type Options {
 }
 
 pub fn main() -> Nil {
+  // Evaluate CLI arguments and print selection output or diagnostic error.
   case run(argv.load().arguments) {
     Ok(report) -> {
       io.println(report)
@@ -61,15 +62,19 @@ pub fn main() -> Nil {
   }
 }
 
+/// Parses flags, constructs the dependency graph, and renders affected packages.
 fn run(arguments: List(String)) -> Result(String, String) {
   use options <- result.try(parse(arguments, start()))
   use root <- result.try(required(options.root, "--root"))
   use tracked_file <- result.try(required(options.tracked, "--tracked"))
   use tracked <- result.try(read_lines(tracked_file))
+
+  // Read listed paths from file if supplied via --paths.
   use listed <- result.try(case options.paths_file {
     Some(file) -> read_lines(file)
     None -> Ok([])
   })
+
   use patterns <- result.try(affected_graph.patterns())
   use entries <- result.try(package_entries(root))
   use graph <- result.try(
@@ -88,6 +93,7 @@ fn start() -> Options {
   Options(root: None, tracked: None, paths_file: None, format: Text, paths: [])
 }
 
+/// Recursively parses command line argument flags into an Options record.
 fn parse(arguments: List(String), options: Options) -> Result(Options, String) {
   case arguments {
     [] -> Ok(Options(..options, paths: list.reverse(options.paths)))
@@ -117,6 +123,7 @@ fn required(value: Option(String), flag: String) -> Result(String, String) {
 
 // A file of paths, one per line. Blank lines are not paths: a diff that
 // changed nothing leaves an empty file, and that is an empty change.
+/// Reads lines from a file, returning only non-empty lines.
 fn read_lines(path: String) -> Result(List(String), String) {
   use text <- result.try(
     simplifile.read(path)
@@ -128,6 +135,7 @@ fn read_lines(path: String) -> Result(List(String), String) {
 }
 
 // Every directory under `packages/`, with its manifest text when it has one.
+/// Scans packages directory returning an Entry for each package directory found.
 fn package_entries(root: String) -> Result(List(affected_graph.Entry), String) {
   let base = root <> "/packages"
   use names <- result.try(
@@ -155,10 +163,13 @@ fn package_entries(root: String) -> Result(List(affected_graph.Entry), String) {
 // A source's text for the literal scan. The patterns match ASCII only, so a
 // file that is not valid UTF-8 is scanned with each non-ASCII byte replaced
 // by a character no pattern accepts, which keeps a match from spanning it.
+/// Reads a source file returning ASCII-safe text for dependency scanning.
 fn read_source(path: String) -> Result(String, Nil) {
   use bytes <- result.try(
     simplifile.read_bits(path) |> result.replace_error(Nil),
   )
+
+  // Convert raw bytes to valid UTF-8 string or fallback to ASCII sanitization.
   case bit_array.to_string(bytes) {
     Ok(text) -> Ok(text)
     Error(Nil) -> Ok(ascii_only(bytes))
@@ -169,6 +180,7 @@ fn ascii_only(bytes: BitArray) -> String {
   ascii_loop(bytes, "")
 }
 
+/// Replaces non-ASCII or invalid bytes with question marks across a bit array.
 fn ascii_loop(bytes: BitArray, text: String) -> String {
   case bytes {
     <<byte, rest:bits>> if byte < 128 ->

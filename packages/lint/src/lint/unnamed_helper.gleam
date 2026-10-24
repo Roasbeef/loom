@@ -84,6 +84,8 @@ fn candidate(
 ) -> Result(Raw, Nil) {
   let function = helper.function
   let span = span_lines(function, lines)
+
+  // Check whether the helper has a single caller and falls within the size limit.
   case helper.callers {
     [only] if span <= limit ->
       case set.contains(named, function.name) {
@@ -103,6 +105,7 @@ fn span_lines(function: glance.Function, lines: Lines) -> Int {
   last - first + 1
 }
 
+/// Constructs an unnamed-helper raw finding for a helper with a single caller.
 fn finding_for(function: glance.Function, caller: String, span: Int) -> Raw {
   Raw(
     rule: finding.UnnamedHelper,
@@ -147,7 +150,9 @@ fn words(text: String) -> List(String) {
   |> list.map(string.concat)
 }
 
+/// Determines whether a grapheme is an ASCII alphanumeric character or underscore.
 fn is_word_grapheme(grapheme: String) -> Bool {
+  // Decode the grapheme to inspect its code point value.
   case string.to_utf_codepoints(grapheme) {
     [point] -> {
       let code = string.utf_codepoint_to_int(point)

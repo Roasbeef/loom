@@ -677,6 +677,8 @@ fn valid_directory(bundle: Bundle, peers: List(String)) -> Result(Nil, String) {
         True -> Ok(Nil)
         False -> Error("bundle directory does not list this node")
       })
+
+      // Check that all listed members are known peers or local node.
       list.try_each(members, fn(member) {
         case member == bundle.erlang_node || list.contains(peers, member) {
           True -> Ok(Nil)

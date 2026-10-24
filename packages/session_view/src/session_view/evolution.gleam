@@ -523,6 +523,8 @@ pub fn decode_board(value: json.JsonValue) -> Result(Board, String) {
     rows(fields, "pending", row_limit, decode_waiting)
   let #(history, bad_history) =
     rows(fields, "history", history_limit, decode_event)
+
+  // Decode the published generation if present in the board fields.
   let #(published, bad_published) = case list.key_find(fields, "published") {
     Ok(json.Object(generation)) ->
       case decode_generation(generation) {
@@ -532,10 +534,14 @@ pub fn decode_board(value: json.JsonValue) -> Result(Board, String) {
     Ok(json.Null) | Error(Nil) -> #(None, 0)
     Ok(_) -> #(None, 1)
   }
+
+  // Extract omitted row counts when recorded.
   let omitted = case list.key_find(fields, "omitted") {
     Ok(json.Object(counts)) -> counts
     _ -> []
   }
+
+  // Construct the decoded evolution board with aggregated unread totals.
   Ok(Board(
     version: int_or(fields, "version", 0),
     session: text_or(fields, "session", ""),

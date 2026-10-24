@@ -179,6 +179,8 @@ pub fn start_published(
   use namespace <- result.try(
     address.start() |> result.map_error(actor.InitFailed),
   )
+
+  // Allocate distinct address handles for supervisory components.
   let drains_name = address.new_address(namespace)
   let registry_name = address.new_address(namespace)
   let writer_name = address.new_address(namespace)
@@ -188,6 +190,8 @@ pub fn start_published(
   // publication and booter specifications every time the tree starts.
   let subagent = config.subagent
   let strand_options = config.strand_options
+
+  // Construct supervisory session tree specification.
   let describe_tree = fn(root, drains) {
     SessionTree(
       supervisor: root,
@@ -200,6 +204,8 @@ pub fn start_published(
       subagent:,
     )
   }
+
+  // Build per-strand worker factory closure.
   let factory = fn(strand_name) {
     use reg <- result.try(registry_subject(registry_name))
     use drains <- result.try(
@@ -212,6 +218,8 @@ pub fn start_published(
       strand_options(writer_name, fn(strand, reaper) {
         drain_registry.claim(drains, strand, reaper)
       })
+
+    // Start strand runtime with template options and registered address.
     let name = registry.ensure(reg, strand_name)
     strand_runtime.start(
       strand_runtime.Options(..template, strand: strand_name),

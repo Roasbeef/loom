@@ -1074,6 +1074,8 @@ fn build_plane(
       let owner = owner_link.services(link, state.config.clock)
       let clock = state.config.clock
       let factory = state.config.factory
+
+      // Dispatch plane creation job and register placement.
       let #(state, id, sink, cancel) =
         start_job(state, fn() {
           let built = {

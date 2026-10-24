@@ -214,12 +214,15 @@ pub opaque type BatchPlan {
 pub fn plan_batch(search: Search, session: SessionId, generation: Int) {
   let session = ids.session_id_to_string(session)
   use expected <- result.map(read_cursor(search, session))
+
+  // Resume from the saved high-water mark if the generation still matches.
   let after = case expected {
     Some(sql.GetCursor(generation: stored, high_water:))
       if stored == generation
     -> high_water
     Some(_) | None -> 0
   }
+
   BatchPlan(session, generation, expected, after)
 }
 
@@ -266,12 +269,17 @@ pub fn commit_batch(
       }
     }),
   )
+
+  // Invalidate previous rows if the source generation changed.
   let invalidate = case plan.expected {
     Some(sql.GetCursor(generation:, ..)) -> generation != plan.generation
     None -> True
   }
+
   let rows = list.filter_map(entries, index_row)
   let scanned = list.length(entries)
+
+  // Signal whether more entries may remain based on requested batch limit.
   let continuation = case scanned == requested {
     True -> MorePossible
     False -> CaughtUp
@@ -342,6 +350,8 @@ pub fn schema() -> List(String) {
 ///
 pub fn open(path: String) -> Result(Search, SearchError) {
   use search <- result.try(acquire(path))
+
+  // Ensure the database schema is initialized, closing the handle on failure.
   case initialize(search) {
     Ok(Nil) -> Ok(search)
     Error(error) -> {
@@ -412,6 +422,7 @@ const schema_version = 1
 // `entry_fts` beside the old one and copies the rows across. The file is never
 // deleted: the copied rows keep answering queries while their sessions are
 // re-read, and a failed migration rolls back to the old table intact.
+/// Runs pending migrations up to the current search schema version.
 fn migrate(search: Search) -> Result(Nil, SearchError) {
   use version <- result.try(user_version(search))
   use <- bool.guard(when: version >= schema_version, return: Ok(Nil))
@@ -425,10 +436,13 @@ fn migrate(search: Search) -> Result(Nil, SearchError) {
   use Nil <- result.try(exec(search, create_search_cursor))
   use Nil <- result.try(exec(search, create_search_source))
   use legacy <- result.try(has_table(search, "entry_fts"))
+
+  // Upgrade legacy unversioned FTS table or create fresh schema.
   use Nil <- result.try(case legacy {
     True -> upgrade_entry_fts(search)
     False -> exec(search, create_entry_fts)
   })
+
   exec(search, "PRAGMA user_version = " <> int.to_string(schema_version))
 }
 
@@ -438,6 +452,7 @@ fn migrate(search: Search) -> Result(Nil, SearchError) {
 // sync of each session drop its rows and index them again with both columns, so
 // a session heals as soon as it is read. Sessions that are never read again keep
 // their copied rows, which a `kind` filter will not match.
+/// Upgrades legacy entry_fts table to include kind and timestamp columns.
 fn upgrade_entry_fts(search: Search) -> Result(Nil, SearchError) {
   use Nil <- result.try(exec(
     search,
@@ -457,6 +472,7 @@ fn exec(search: Search, statement: String) -> Result(Nil, SearchError) {
   sqlight.exec(statement, on: search.db) |> result.map_error(index_fault)
 }
 
+/// Reads the SQLite user_version pragma from the database.
 fn user_version(search: Search) -> Result(Int, SearchError) {
   sqlight.query(
     "PRAGMA user_version",
@@ -468,6 +484,7 @@ fn user_version(search: Search) -> Result(Int, SearchError) {
   |> result.map(fn(rows) { result.unwrap(list.first(rows), 0) })
 }
 
+/// Checks whether a table exists in sqlite_master.
 fn has_table(search: Search, name: String) -> Result(Bool, SearchError) {
   sqlight.query(
     "SELECT count(*) FROM sqlite_master WHERE name = ?1",
@@ -590,6 +607,7 @@ pub fn sync(
       Some(sql.GetCursor(..)) -> #(True, 0)
       None -> #(True, 0)
     }
+
     use entries <- result.try(
       storage.scan_entries(
         store,
@@ -685,6 +703,7 @@ fn index_row(entry: Entry) -> Result(Row, Nil) {
 
 // The kind a `history_search` caller filters on. A custom message and every
 // custom entry but a note index no text, so their empty kind is never stored.
+/// Returns the search filter kind string corresponding to an entry.
 fn entry_kind(entry: Entry) -> String {
   case entry {
     entry.MessageEntry(message:, ..) ->
@@ -772,6 +791,7 @@ fn write_index(
 // `False` is not "no-op eagerly" here: `run_statement` executes a real
 // DELETE, so this stays a `case` rather than a `bool.guard` whose eager
 // `return:` would fire the write unconditionally.
+/// Deletes session index rows if the session state is marked stale.
 fn delete_if_stale(
   search: Search,
   session_id: String,
@@ -783,6 +803,7 @@ fn delete_if_stale(
   }
 }
 
+/// Inserts one indexed entry row into the full-text search table.
 fn insert_row(
   search: Search,
   session_id: String,
@@ -941,6 +962,7 @@ fn empty_matches_nothing(expression: String) -> String {
 }
 
 // Leaves an `OR` only where a word stands on both sides of it.
+/// Cleans up adjacent or leading/trailing OR query tokens.
 fn joinable_ors(tokens: List(String)) -> List(String) {
   let trimmed =
     tokens
@@ -957,6 +979,7 @@ fn joinable_ors(tokens: List(String)) -> List(String) {
   |> list.reverse
 }
 
+/// Executes a query statement and maps result rows into search hits.
 fn run_hits(
   search: Search,
   statement: String,
@@ -1049,6 +1072,7 @@ pub fn entry_text(entry: Entry) -> String {
 // A note's searchable words: the fields a typed note carries, in reading
 // order. A note written before notes were typed has only `text`, and the
 // absent fields contribute nothing.
+/// Extracts concatenated search text from note JSON fields.
 fn note_text(data: Option(json.JsonValue)) -> String {
   case data {
     Some(json.Object(fields)) ->
@@ -1059,6 +1083,7 @@ fn note_text(data: Option(json.JsonValue)) -> String {
   }
 }
 
+/// Finds a non-empty string field in a JSON object field list.
 fn non_empty_text(
   fields: List(#(String, json.JsonValue)),
   key: String,
@@ -1069,6 +1094,7 @@ fn non_empty_text(
   }
 }
 
+/// Extracts concatenated searchable text from an agent message.
 fn message_text(message: AgentMessage) -> String {
   case message {
     message.UserMessage(content:, ..) ->
@@ -1095,6 +1121,7 @@ fn assistant_block_text(block: message.AssistantBlock) -> Result(String, Nil) {
   }
 }
 
+/// Extracts indexed text from a tool result block if present.
 fn tool_result_block_text(
   block: message.ToolResultBlock,
 ) -> Result(String, Nil) {
@@ -1212,6 +1239,7 @@ fn index_fault(error: sqlight.Error) -> SearchError {
   IndexFault(message:)
 }
 
+/// Reads the stored search cursor for a session if one exists.
 fn read_cursor(
   search: Search,
   session_id: String,
@@ -1255,6 +1283,8 @@ fn in_transaction(
     sqlight.exec("BEGIN IMMEDIATE", on: search.db)
     |> result.map_error(index_fault),
   )
+
+  // Commit transaction on success or rollback on failure.
   case body() {
     Ok(value) ->
       sqlight.exec("COMMIT", on: search.db)

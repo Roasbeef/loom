@@ -1370,8 +1370,12 @@ fn close_call(
     framing.CapErr(code:, ..) -> Some(code)
     framing.CapOk(..) -> None
   }
+
+  // Settle tracked commands and update failure context.
   let #(proc_commands, last_failure) = settle_command(state, id, entry, outcome)
   let state = State(..state, proc_commands:, last_failure:)
+
+  // Update sequence ledger and remove finished in-flight tracking.
   case dict.get(state.seqs, id) {
     Error(Nil) -> State(..state, clock:)
     Ok(seq) ->

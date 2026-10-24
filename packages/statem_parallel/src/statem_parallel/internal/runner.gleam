@@ -72,6 +72,7 @@ pub fn race(
   branches: List(List(cmd)),
   within: Int,
 ) -> Result(List(List(Event(cmd, response))), Violation) {
+  // Handle empty branches or spawn concurrent runners.
   case branches {
     [] -> Ok([])
 
@@ -90,6 +91,7 @@ pub fn race(
         |> weft.deadline(within)
         |> weft.start_detached
 
+      // Release the start barrier or cancel detached branches on timeout.
       case release(started, count, within) {
         Ok(Nil) -> collect(detached, within + grace)
 
@@ -138,12 +140,14 @@ fn calls(
   now: fn() -> Int,
   recorded: List(Event(cmd, response)),
 ) -> Result(List(Event(cmd, response)), Violation) {
+  // Execute commands sequentially recording invocation and return timestamps.
   case commands {
     [] -> Ok(list.reverse(recorded))
 
     [command, ..rest] -> {
       let invoked_at = now()
 
+      // Execute command under rescue to capture runtime crashes.
       case exception.rescue(fn() { run(sut, command) }) {
         Error(crash) -> Error(statem.crashed("run", crash))
 
@@ -171,6 +175,7 @@ fn release(
   count: Int,
   within: Int,
 ) -> Result(Nil, Nil) {
+  // Wait for all branch processes to check in at the barrier.
   case arrivals(started, count, within, []) {
     Ok(subjects) -> {
       list.each(subjects, fn(go) { process.send(go, Go) })
@@ -324,6 +329,7 @@ fn first_problem(
       }
     })
 
+  // Return results if all branches succeeded or report prioritized violation.
   case problems {
     [] -> Ok(list.filter_map(results, fn(result) { result }))
 

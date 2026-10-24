@@ -266,6 +266,8 @@ fn with_imported_hooks(
   let base_policy = census.base_policy
   let located = hookserve.locations(settings.home, census.workspace)
   let trust_root = option.map(settings.home, fn(home) { home <> "/hooktrust" })
+
+  // Construct hook wiring and runner execution context.
   let wiring =
     hookwire.Wiring(
       config: hookcompat.Config(
@@ -2653,6 +2655,8 @@ fn extension_registrations(
             Error(_) -> Error(Nil)
           }
         })
+
+      // Collect registration notices and truncate excessive refusals.
       let refused =
         list.filter_map(checked, fn(item) {
           case item {
@@ -3434,6 +3438,7 @@ fn assemble_in(
   services: Option(domain_service.Services),
   registered: Option(remote_workspace.Placement),
 ) -> Result(Instance, String) {
+  // Extract ownership custody and self reference.
   let owner = option.map(ownership, fn(pair) { pair.0 })
   let builder = process.self()
 
@@ -3448,7 +3453,11 @@ fn assemble_in(
   // the store behind it is what the index is rendered from. See
   // `protecting_memory`.
   use memory_store <- result.try(beside_session(settings, memory.memory_file))
+
+  // Protect session memory notes sidecar.
   use memory_notes <- result.try(beside_session(settings, memory.notes_file))
+
+  // Protect the approved rules file to prevent unconfined model mutations.
 
   // The approved-rules file is protected on the same argument, one step
   // further: the prompt carries it whole at the start of every new session,
@@ -3477,6 +3486,7 @@ fn assemble_in(
       // spill. See `session_blob_root` for where it is and why.
       use blob_root <- result.try(session_blob_root(settings))
 
+      // Prepare local workspace plane specifications and policy files.
       use prepared <- result.try(
         workspace_plane.prepare(
           workspace_spec(
@@ -3550,6 +3560,8 @@ fn assemble_in(
       fn() { Nil },
     ),
   )
+
+  // Link storage owner process or bind to reserved session identifier.
   use storage_owner <- result.try(
     transfer() |> result.map_error(string.inspect),
   )
@@ -3662,7 +3674,6 @@ fn assemble_in(
   let subagent_gateway = settings.gateway
 
   // A delegate session's depth cap is its spawner's `max_depth`; every other
-  // session keeps the Agency's default.
   let agency_base = agency.default_config(agency_name, clock)
   let agency_config =
     agency.Config(
@@ -3709,6 +3720,8 @@ fn assemble_in(
         )
       },
     )
+
+  // Construct agency seam and peer discovery wiring.
   let agency_seam = agency.seam(agency_config)
   let peer_endpoint = agency.peer_endpoint(agency_config, settings.session_id)
   let peer_wiring =
@@ -3965,6 +3978,8 @@ fn assemble_in(
     Here(_) -> plane.census.extensions
     There(_) -> []
   }
+
+  // Inspect sandboxing policy, environment variables, and log configuration warnings.
   let base_policy = plane.census.base_policy
   let environment = plane.census.env
   let unset_names = plane.census.unset_env
@@ -4124,6 +4139,8 @@ fn assemble_in(
   // a working glance with no configuration; only a catalogue that routes
   // nothing produces no wiring, and then no hook and no machine exist.
   let btw_name = address.new_address(namespace)
+
+  // Initialize background glance and summary routing endpoints.
   let glance_name = address.new_address(namespace)
   let glance_wiring =
     glance_wiring(settings, opened, agency_config, clock, logger, glance_name)
@@ -4657,6 +4674,8 @@ fn assemble_in(
   let btw_gateway = gateway
   let hub_catalog = settings.catalog
   let first_prompt = settings.first_prompt
+
+  // Project profile, spawner, remote reach, and memory settings for the hub.
   let profile_desk = settings.profile_desk
   let spawner_link = settings.spawner
   let hub_remote_reach = agency_config.remote
@@ -4964,6 +4983,8 @@ fn assemble_in(
   // through the start link, so that its death is a fault the host
   // *handles* rather than a signal that fells the host mid-teardown.
   process.unlink(started_services.pid)
+
+  // Build the initialized session instance record.
   Ok(Instance(
     peer: peer_endpoint,
     spawns: agency.DelegateEndpoint(
@@ -6691,6 +6712,8 @@ fn open_evolution(
       },
     )
   let machine = evolution_machine_local.new(config)
+
+  // Establish store authority and verify candidate scratch directory.
   use identity <- result.try(machine.identity())
   let opener = fn(authority) {
     evolution_store.open(root, authority, identity, clock)
@@ -6699,6 +6722,8 @@ fn open_evolution(
     opener(evolution_store.Owner) |> result.map_error(evolution_store.describe),
   )
   use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
+
+  // Start live evolution runtime and initialize transition queue.
   let adopt = fn(selection) { evolution_adopt(agency_config, selection) }
   use live <- result.try(
     evolution_live.start(
@@ -6756,6 +6781,8 @@ fn open_evolution(
   let actual = fn(ctx: tool.Ctx) {
     evolution_actual_model(settings, agency_config, ctx)
   }
+
+  // Build the initial evolution door with candidate evaluation hooks.
   let initial =
     evolution.door_over_capture_model(
       lookup,
@@ -7581,12 +7608,16 @@ fn evolution_trial(
     model.ForResolved(target) -> Ok(target)
     model.ForRole(..) -> Error("a trial requires its exact admitted model")
   })
+
+  // Prepare private fixture trial directory and workspace structure.
   let tag = bit_array.base16_encode(token.production_entropy()(8))
   let private_trials = evolution_trials(settings)
   let root = private_trials <> "/" <> tag
   let workspace = root <> "/work"
   use Nil <- result.try(bootstrap.ensure_private_directory(root))
   use Nil <- result.try(evolution_fixture.install(fixture, workspace))
+
+  // Configure isolated settings and profiles for trial session.
   let sockets = case settings.codemode_sockets {
     None -> filepath.directory_name(settings.session_path) <> "/run"
     Some(root) -> root

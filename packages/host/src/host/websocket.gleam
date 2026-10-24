@@ -204,6 +204,8 @@ pub fn connect_waking(
     request.to(http_address(address))
     |> result.replace_error("the websocket address is invalid"),
   )
+
+  // Apply Bearer authorization header if token is non-empty.
   let websocket_request = case token {
     "" -> websocket_request
     value ->
@@ -270,18 +272,21 @@ pub fn connect_waking(
     process.subject_owner(started)
     |> result.replace_error("the websocket actor exited during startup"),
   )
+
+  // Verify the started websocket actor process is alive.
   use Nil <- result.try(case process.is_alive(owner) {
     True -> Ok(Nil)
     False -> Error("the websocket actor exited during startup")
   })
+
   Ok(Connection(started))
 }
 
-// Files one message in the reader's inbox and then, if the reader asked to
-// be woken, wakes it or schedules the wake the pacing allows. The send comes
-// first: a wake must never reach the reader ahead of what it announces.
+/// Delivers a connection event to the reader and schedules a wake notification if required.
 fn deliver(delivery: Delivery(event), message: event) -> Delivery(event) {
   process.send(delivery.inbox, message)
+
+  // Handle pacing and wake notification for reader.
   case delivery.wake {
     NoWake -> delivery
     WakeAfter(interval_ms:, ..) ->
@@ -299,9 +304,9 @@ fn deliver(delivery: Delivery(event), message: event) -> Delivery(event) {
   }
 }
 
-// The scheduled wake: it announces every delivery since the last one, and
-// opens the next interval from now.
+/// Handles a scheduled wake timer event by notifying the wake target.
 fn woken(delivery: Delivery(event)) -> Delivery(event) {
+  // Dispatch pending wake notification on timer trigger.
   case delivery.wake {
     NoWake -> delivery
     WakeAfter(interval_ms:, ..) -> {
@@ -450,6 +455,7 @@ fn start_owned_socket(
         True -> Ok(Nil)
         False -> Error("the websocket exited before guardian adoption")
       })
+
       actor.initialised(socket.pid)
       |> actor.selecting(selector)
       |> actor.returning(socket.data)
@@ -616,6 +622,8 @@ pub fn adopt(connection: Connection) -> Result(Nil, String) {
     process.subject_owner(subject)
     |> result.replace_error("the websocket actor exited before adoption"),
   )
+
+  // Check if the underlying websocket owner process is alive.
   case process.is_alive(owner) {
     True -> Ok(Nil)
     False -> Error("the websocket actor exited before adoption")
@@ -646,6 +654,7 @@ pub fn receive(inbox: Subject(Message)) -> Result(Message, Nil) {
   process.receive(inbox, 0)
 }
 
+/// Converts a websocket address URI to its HTTP scheme equivalent.
 fn http_address(address: String) -> String {
   case address {
     "ws://" <> rest -> "http://" <> rest

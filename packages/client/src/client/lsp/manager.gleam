@@ -2201,6 +2201,8 @@ fn definitions(
       }
     }),
   )
+
+  // Map resolved location URIs to project paths and text content.
   let found = list.reverse(found)
   let files = list.map(found, fn(location) { named_uri(session, location.uri) })
   let texts = texts_for(files)
@@ -2353,6 +2355,8 @@ fn resync(session: Session, also: List(String)) -> Result(Nil, QueryError) {
           |> result.replace_error(Nil)
       }
     })
+
+  // Synchronize document buffers with language server.
   let ops = list.append(pulled, opening)
   use Nil <- result.try(case ops {
     [] -> Ok(Nil)
@@ -3258,6 +3262,8 @@ fn observed(
   use session <- result.try(
     acquire(manager, first.identity) |> observation_query,
   )
+
+  // Canonicalize paths and verify source file byte sizes.
   let canonical = list.map(owned_paths, fn(owned) { owned.path })
   let path_map = dict.from_list(list.zip(paths, canonical))
   let canonical_outlines =
@@ -3293,6 +3299,8 @@ fn observed(
     }),
   )
   use Nil <- result.try(resync(session, canonical) |> observation_query)
+
+  // Query server readiness and verify initial document sync.
   use left <- result.try(remaining(control))
   let timing = manager.timing
   use readiness <- result.try(

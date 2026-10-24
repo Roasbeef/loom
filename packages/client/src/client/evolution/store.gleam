@@ -1146,6 +1146,8 @@ fn select_new(
   let approved_key = approval_key(id, scope)
   use approved <- result.try(cell(opened, approved_key))
   use Nil <- result.try(approved_evidence(approved, evidence_id))
+
+  // Verify expected generation before recording the new selection.
   let key = selection_key(scope, name)
   use prior <- result.try(cell(opened, key))
   use actual <- result.try(selection_in(opened, scope, name))

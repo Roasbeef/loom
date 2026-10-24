@@ -449,12 +449,16 @@ fn announce(data: Data, before: Core) -> Data {
     && {
       after.output.chunks == 1 || after.output.chunks % progress_chunks == 0
     }
+
+  // Read current monotonic time to bound progress cadence.
   let monotonic = poll.monotonic()
   let now = monotonic.now()
   let quiet = case data.last_progress_ms {
     Some(last) -> now - last >= progress_interval_ms
     None -> True
   }
+
+  // Emit progress if state changed or if chunk progress is due.
   case changed || { chunk_due && quiet } {
     True -> {
       data.link.progress(progress_of(after))

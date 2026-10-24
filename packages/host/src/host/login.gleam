@@ -331,6 +331,8 @@ pub fn draw_root(entropy: fn(Int) -> BitArray) -> RootKey {
 /// ```
 pub fn probe_root(state_root: String) -> Result(Probe, String) {
   let path = state_root <> "/" <> root_file
+
+  // Check whether root browser key exists on disk.
   case bootstrap.path_exists(path) {
     True -> read_root(path) |> result.map(Present)
     False -> Ok(Absent)
@@ -367,6 +369,7 @@ fn root_text(key: RootKey) -> String {
   hex(key.bytes)
 }
 
+/// Reads and validates a private root key file.
 fn read_root(path: String) -> Result(RootKey, String) {
   use bytes <- result.try(
     bootstrap.read_private_bounded(path, 4096)
@@ -394,10 +397,12 @@ fn read_root(path: String) -> Result(RootKey, String) {
 /// // login.issue(root, id, Minting("owner-1", login.Operator, expiry, key, digest))
 /// ```
 pub fn issue(root: RootKey, id: String, minting: Minting) -> String {
+  // Format role ceiling into canonical caveat text.
   let ceiling = case minting.ceiling {
     Observer -> "observer"
     Operator -> "operator"
   }
+
   let caveats = [
     Caveat("p", minting.principal),
     Caveat("c", ceiling),
@@ -452,10 +457,13 @@ pub fn parse(token: String) -> Result(Parsed, Refusal) {
     when: string.byte_size(token) > max_token_bytes,
     return: Error(TooLong),
   )
+
+  // Split token into protocol prefix, identifier, caveat list, and signature.
   use #(id, text, signature) <- result.try(case string.split(token, ":") {
     ["loomb1", id, caveats, signature] -> Ok(#(id, caveats, signature))
     _ -> Error(Malformed)
   })
+
   use <- bool.guard(when: !is_hex(id, 32), return: Error(Malformed))
   use <- bool.guard(when: !is_hex(signature, 64), return: Error(Malformed))
   use caveats <- result.try(
@@ -467,6 +475,7 @@ pub fn parse(token: String) -> Result(Parsed, Refusal) {
   Parsed(id, caveats, signature)
 }
 
+/// Parses a single key-value caveat pair.
 fn parse_caveat(text: String) -> Result(Caveat, Refusal) {
   case string.split(text, "=") {
     [name, value] ->
@@ -501,6 +510,8 @@ pub fn id(token: Parsed) -> String {
 /// ```
 pub fn verify(root: RootKey, token: Parsed) -> Result(Nil, Refusal) {
   let expected = chain(root, token.id, token.caveats)
+
+  // Verify computed HMAC matches provided signature in constant time.
   case crypto.secure_compare(expected, token.signature) {
     True -> Ok(Nil)
     False -> Error(BadSignature)
@@ -567,6 +578,8 @@ pub fn check(
     when: !equal(allowance.nonce_digest, nonce_digest(nonce)),
     return: Error(WrongNonce),
   )
+
+  // Ensure the allowance has not passed its expiration timestamp.
   case allowance.expires_at_ms > now_ms {
     True -> Ok(Nil)
     False -> Error(Expired)
@@ -607,8 +620,7 @@ fn known(caveat: Caveat) -> Result(Nil, Refusal) {
   }
 }
 
-// The one value a name that may not repeat with another value holds, whether
-// it appears once or several times.
+/// Validates that all occurrences of a caveat hold identical values.
 fn same(
   values: dict.Dict(String, List(String)),
   name: String,
@@ -624,6 +636,7 @@ fn same(
   }
 }
 
+/// Resolves the narrowest ceiling among declared ceiling caveats.
 fn narrowest_ceiling(
   values: dict.Dict(String, List(String)),
 ) -> Result(Ceiling, Refusal) {
@@ -639,12 +652,15 @@ fn narrowest_ceiling(
       }
     }),
   )
+
+  // Any Observer caveat restricts the entire allowance to Observer.
   case list.contains(ceilings, Observer) {
     True -> Observer
     False -> Operator
   }
 }
 
+/// Computes the earliest expiration timestamp among expiry caveats.
 fn earliest_expiry(
   values: dict.Dict(String, List(String)),
 ) -> Result(Int, Refusal) {
@@ -662,6 +678,7 @@ fn earliest_expiry(
   list.reduce(instants, int.min) |> result.replace_error(MissingCaveat("e"))
 }
 
+/// Validates session caveat constraints across multiple occurrences.
 fn one_session(
   values: dict.Dict(String, List(String)),
 ) -> Result(Option(String), Refusal) {
@@ -676,7 +693,7 @@ fn one_session(
   }
 }
 
-// The signature a token's chain ends in.
+/// Computes the HMAC signature chain over the identifier and caveats.
 fn chain(root: RootKey, id: String, caveats: List(Caveat)) -> BitArray {
   let start =
     crypto.hmac(
@@ -687,7 +704,7 @@ fn chain(root: RootKey, id: String, caveats: List(Caveat)) -> BitArray {
   list.fold(caveats, start, extend)
 }
 
-// One link of the chain: the caveat's text, keyed by the signature before it.
+/// Extends an HMAC signature with one caveat payload.
 fn extend(signature: BitArray, caveat: Caveat) -> BitArray {
   crypto.hmac(
     bit_array.from_string(caveat.name <> "=" <> caveat.value),
@@ -696,6 +713,7 @@ fn extend(signature: BitArray, caveat: Caveat) -> BitArray {
   )
 }
 
+/// Formats token components into a serialized token string.
 fn render(id: String, caveats: List(Caveat), signature: String) -> String {
   let text =
     caveats
@@ -735,6 +753,7 @@ fn in_alphabet(value: String, alphabet: String) -> Bool {
   all_bytes(bit_array.from_string(value), bit_array.from_string(alphabet))
 }
 
+/// Checks whether every byte in a bit array belongs to an allowed alphabet.
 fn all_bytes(rest: BitArray, allowed: BitArray) -> Bool {
   case rest {
     <<>> -> True

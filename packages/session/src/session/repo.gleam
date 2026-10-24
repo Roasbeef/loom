@@ -170,6 +170,8 @@ pub fn fork(
     |> result.map_error(ForkCopyFailed)
     |> result.replace(destination)
   }
+
+  // Record identity in catalog on success or close destination on failure.
   case copy {
     Ok(forked) -> {
       // The catalog projection is written after the copy commits, so a
@@ -195,6 +197,7 @@ pub fn fork(
 // `protocol-change/008` forks to a destination that records no parent,
 // because minting one into the source would be a mutation the fork
 // contract forbids.
+/// Builds register writes recording minted session id and optional parent id.
 fn identity_writes(
   minted: SessionId,
   parent: Option(SessionId),
@@ -205,6 +208,8 @@ fn identity_writes(
       key: session.session_id_key,
       value: register.value(json.String(ids.session_id_to_string(minted))),
     )
+
+  // Include parent session id register write when parent is known.
   case parent {
     None -> [own]
     Some(parent) -> [
@@ -220,6 +225,7 @@ fn identity_writes(
 
 // The scope's entries, oldest first, so parents precede children in the
 // destination transaction.
+/// Collects source session entries in order according to the requested fork scope.
 fn collect_entries(
   source: Session,
   scope: ForkScope,
@@ -242,6 +248,7 @@ fn collect_entries(
 
 // A missing fork point is reported precisely (`ForkPointUnknown`); every
 // other scan failure is an ordinary source read failure.
+/// Maps branch scan storage error into a specific ForkError variant.
 fn fork_branch_scan_error(error: StorageError) -> ForkError {
   case error {
     storage.UnknownEntry(id:) -> ForkPointUnknown(id:)
@@ -253,11 +260,13 @@ fn fork_branch_scan_error(error: StorageError) -> ForkError {
 // The destination's register writes: strand bookkeeping plus semantic
 // facts. Register payloads are copied verbatim (no decode) — a fork moves
 // cells, it does not interpret them.
+/// Collects register writes necessary to initialize destination for the given scope.
 fn collect_registers(
   source: Session,
   scope: ForkScope,
   entries: List(Entry),
 ) -> Result(List(tx.Write), ForkError) {
+  // Dispatch register collection for branch fork or whole-tree fork.
   case scope {
     ForkBranch(strand: strand_name, at:) -> {
       use configuration <- result.try(read_register(
@@ -306,6 +315,7 @@ fn collect_registers(
 
 // An unconfigured source strand forks to an unconfigured `main` (seeded
 // on first attachment); a configured one carries its configuration over.
+/// Converts optional strand configuration into register write list.
 fn strand_config_write(
   configuration: Option(register.RegisterValue),
 ) -> List(tx.Write) {
@@ -317,6 +327,7 @@ fn strand_config_write(
   }
 }
 
+/// Generates an initial idle strand state register write for the given strand name.
 fn fresh_state(strand_name: String) -> tx.Write {
   SetRegister(
     ns: register.StrandState,
@@ -335,6 +346,7 @@ fn copied_ids(entries: List(Entry)) -> Set(String) {
   |> set.from_list
 }
 
+/// Reads a single register value from the source session store.
 fn read_register(
   source: Session,
   ns: register.RegisterNs,
@@ -352,6 +364,7 @@ fn read_register(
   })
 }
 
+/// Lists all registers in the specified namespace from the source session.
 fn list_namespace(
   source: Session,
   ns: register.RegisterNs,
@@ -368,6 +381,7 @@ fn list_namespace(
   })
 }
 
+/// Transforms key-value register cells into SetRegister writes.
 fn copies(
   ns: register.RegisterNs,
   cells: List(#(String, register.RegisterValue)),
@@ -378,6 +392,7 @@ fn copies(
   })
 }
 
+/// Copies all registers in a namespace from source session as transaction writes.
 fn copy_namespace(
   source: Session,
   ns: register.RegisterNs,
@@ -388,6 +403,7 @@ fn copy_namespace(
 
 // Entry labels are keyed by entry id (pi: labels copy only when their
 // target copies); a label whose key is not a copied entry stays behind.
+/// Copies label registers whose target entry ids exist in the copied entry set.
 fn copy_labels(
   source: Session,
   copied: Set(String),
@@ -398,6 +414,7 @@ fn copy_labels(
   |> copies(register.FactLabel, _)
 }
 
+/// Opens the destination session according to destination configuration.
 fn open_destination(
   into: ForkDestination,
   clock: Clock,
@@ -410,6 +427,7 @@ fn open_destination(
   |> result.map_error(fn(error) { ForkDestinationOpen(error:) })
 }
 
+/// Asserts that destination session has no prior entries.
 fn require_empty(destination: Session) -> Result(Nil, ForkError) {
   case
     storage.scan_entries(
@@ -470,6 +488,8 @@ pub fn erase_text(
   fn(entry: Entry) {
     let encoded = core_codec.encode_entry(entry)
     let #(rewritten, changed) = erase_json(encoded, needle, replacement)
+
+    // Return unchanged entry or decode transformed replacement entry.
     case changed {
       False -> Ok(None)
       True ->
@@ -500,6 +520,8 @@ pub fn erase_value(
 ) -> ValueRewrite {
   fn(value: JsonValue) {
     let #(rewritten, changed) = erase_json(value, needle, replacement)
+
+    // Return unchanged or wrap rewritten value when replacements occurred.
     case changed {
       False -> Ok(None)
       True -> Ok(Some(rewritten))
@@ -509,11 +531,13 @@ pub fn erase_value(
 
 // Replaces the needle in every string *value*; keys are structural.
 // Returns the rewritten value and whether anything changed.
+/// Recursively replaces needle strings in all string fields of a JSON value.
 fn erase_json(
   value: JsonValue,
   needle: String,
   replacement: String,
 ) -> #(JsonValue, Bool) {
+  // Inspect and recurse through JSON value AST nodes.
   case value {
     json.String(text) -> {
       use <- bool.guard(
@@ -680,6 +704,8 @@ pub fn rewrite_memory(
       list.map(usage_rows, fn(row) { InsertUsage(row:) }),
       list.reverse(register_writes),
     ])
+
+  // Commit rewritten entries and registers into destination store.
   case storage.commit(destination.store, Tx(writes:, expected: [])) {
     Ok(_) ->
       Ok(MemoryRewrite(session: destination, entries_rewritten: rewritten))
@@ -699,12 +725,15 @@ fn placement_preserved(old: Entry, new: Entry) -> Bool {
 // One step of the entry-rewrite fold: an untouched entry passes through,
 // a transformed one is checked and re-stamped, and a transform failure
 // short-circuits the whole rewrite.
+/// Applies entry rewrite callback to an entry during rewrite fold.
 fn apply_entry_rewrite(
   step: #(List(Entry), Int),
   entry: Entry,
   rewrite: EntryRewrite,
 ) -> Result(#(List(Entry), Int), RewriteError) {
   let #(accumulator, count) = step
+
+  // Keep unmodified entry, place rewritten entry, or abort on rewrite error.
   case rewrite(entry) {
     Ok(None) -> Ok(#([entry, ..accumulator], count))
     Ok(Some(new)) -> place_rewritten_entry(entry, new, accumulator, count)
@@ -712,6 +741,7 @@ fn apply_entry_rewrite(
   }
 }
 
+/// Validates placement invariants and stamps rewritten entry before accumulating.
 fn place_rewritten_entry(
   entry: Entry,
   new: Entry,
@@ -738,6 +768,7 @@ fn place_rewritten_entry(
 // Usage details are opaque JSON and can carry the needle (provider
 // echoes, request annotations); they go through the value transform on
 // the way into the rebuild, matching the SQLite path's audit scope.
+/// Applies value rewrite to usage row details JSON if present.
 fn rewrite_usage_row(
   row: entry.UsageRow,
   rewrite_value: ValueRewrite,
@@ -760,6 +791,7 @@ fn rewrite_usage_row(
 // history — but its payload runs through the value transform first:
 // pending messages, tool arguments, and preparation copies are exactly
 // where an erased secret also lives.
+/// Rewrites register values across all cells in a single namespace.
 fn rewrite_namespace_registers(
   source: Session,
   rewrite_value: ValueRewrite,
@@ -777,6 +809,7 @@ fn rewrite_namespace_registers(
   })
 }
 
+/// Rewrites a single register cell value and prepends write to accumulator.
 fn rewrite_register_cell(
   rewrite_value: ValueRewrite,
   ns: register.RegisterNs,
@@ -789,13 +822,17 @@ fn rewrite_register_cell(
     rewrite_value(payload)
     |> result.map_error(fn(report) { RewriteValueFailed(report:) }),
   )
+
+  // Retain original value or use updated register value if modified.
   let value = case replaced {
     None -> value
     Some(new) -> register.value(new)
   }
+
   [SetRegister(ns:, key:, value:), ..writes]
 }
 
+/// Enumerates all known register namespaces for memory rewrite.
 fn every_namespace() -> List(register.RegisterNs) {
   [
     register.StrandLeaf,

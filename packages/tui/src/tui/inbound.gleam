@@ -880,8 +880,12 @@ pub fn captured_approval_panel(model: Model, review: approval.Review) {
       Ok(json.String(operation)) -> Ok(operation)
       _ -> Error(Nil)
     })
+
+    // Return the resolved owner and operation pair.
     Ok(#(owner, operation))
   }
+
+  // Construct the approval panel with matched context.
   approval_panel.new(review)
   |> approval_panel.with_context(case review.remote, context {
     // A child's request on another orchestrator is filed whole under
@@ -1010,6 +1014,8 @@ fn switch_editor(
     False, GoalInspector(_) -> NoOverlay
     _, other -> other
   }
+
+  // Measure transcript viewport on the baseline model for the session.
   let measured = case same_session {
     True -> before
     False ->
@@ -1018,6 +1024,8 @@ fn switch_editor(
         view: view_set.overlay(before.view, overlay),
       )
   }
+
+  // Park the departing strand's workspace state in the model table.
   let parked =
     dict.insert(
       model.view.strand_workspaces,

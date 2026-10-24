@@ -439,6 +439,8 @@ fn unique(placed: List(Placed)) -> List(Placed) {
 fn iterm2(shown: Shown, facts: Facts) -> Outcome {
   let fitting = fitted(shown, facts)
   let shown = fitting.shown
+
+  // Collect candidate image spots that are intact and have not previously failed.
   let spots =
     fitting.placed
     |> list.filter(fn(entry) { whole(entry.want) })
@@ -447,11 +449,15 @@ fn iterm2(shown: Shown, facts: Facts) -> Outcome {
     })
     |> list.filter(fn(spot) { facts.showing(spot.at, spot.box) == Intact })
     |> list.filter(fn(spot) { !list.contains(shown.failed, spot.id) })
+
+  // Partition drawn spots into kept and obsolete erasures.
   let #(kept, erasures) =
     list.partition(shown.drawn, fn(spot) { list.contains(spots, spot) })
   let fresh = list.filter(spots, fn(spot) { !list.contains(kept, spot) })
   let #(due, owed) =
     list.partition(fresh, fn(spot) { list.contains(shown.owed, spot) })
+
+  // Initialize the reconciliation outcome with erasure commands.
   let start =
     Outcome(
       shown: Shown(..shown, drawn: kept, owed:),

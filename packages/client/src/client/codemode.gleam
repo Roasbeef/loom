@@ -775,6 +775,8 @@ pub fn seam_allowlist(
     None -> allowed
     Some(_) -> vet_policy.allow(allowed, "cap/notes")
   }
+
+  // Include evolution and language server modules when configured.
   let noted = case evolution_on(config, seam) {
     None -> noted
     Some(_) -> vet_policy.allow(noted, "cap/evolution")
@@ -925,6 +927,8 @@ pub fn seam_caps_on(config: Config, seam: vet_policy.Seam) -> List(String) {
     None -> caps
     Some(_) -> list.append(caps, notes.serviced_caps)
   }
+
+  // Add evolution and language server capabilities when enabled.
   let noted = case evolution_on(config, seam) {
     None -> noted
     Some(_) -> list.append(noted, codemode_evolution.serviced_caps)
@@ -4066,6 +4070,8 @@ fn surface_ceilings(
     None -> ceilings
     Some(_) -> list.append(ceilings, notes.ceilings())
   }
+
+  // Add evolution and observation ceilings when enabled.
   let ceilings = case evolution_on(config, vetting_seam(request.seam)) {
     None -> ceilings
     Some(_) -> list.append(ceilings, codemode_evolution.ceilings())

@@ -759,6 +759,8 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
   use Nil <- result.try(validate_auth(fields, place, dialect))
   use cyber_access <- result.try(parse_cyber_access(fields, place, dialect))
   use service_tier <- result.try(parse_service_tier(fields, place, dialect))
+
+  // Configure base endpoint address and authentication environment keys.
   use base_url <- result.try(case dialect {
     CodexSubscription(profile: _) -> Ok("")
     Anthropic | OpenAiCompatible | OpenAiResponses | Gemini ->
@@ -773,6 +775,8 @@ fn parse_model(name: String, value: tom.Toml) -> Result(CatalogModel, String) {
     Anthropic | OpenAiCompatible | OpenAiResponses | Gemini ->
       required_string(fields, place, "api_key_env")
   })
+
+  // Parse model identity, token context bounds, and thinking options.
   use model_id <- result.try(required_string(fields, place, "model_id"))
   use context_window <- result.try(positive_int(fields, place, "context_window"))
   use max_output_tokens <- result.try(positive_int(
@@ -1682,6 +1686,8 @@ fn parse_profile(
     _ -> Error(place <> " must be a table")
   })
   use Nil <- result.try(known_keys(dict.keys(fields), ["roles"], place))
+
+  // Parse role assignments declared under the profile's roles table.
   use entries <- result.try(case dict.get(fields, "roles") {
     Ok(tom.Table(entries)) | Ok(tom.InlineTable(entries)) ->
       Ok(dict.to_list(entries))

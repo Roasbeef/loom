@@ -84,10 +84,14 @@ pub fn run(backend: Backend(handle)) -> Nil {
   write_order_checks(backend)
   duplicate_id_checks(backend)
   register_checks(backend)
+
+  // Run CAS, placement, and branch verification suites.
   cas_checks(backend)
   placement_checks(backend)
   branch_scan_checks(backend)
   branch_index_checks(backend)
+
+  // Run entry and usage scans, then verify clean shutdown.
   entry_scan_checks(backend)
   usage_scan_checks(backend)
   close_checks(backend)
@@ -423,6 +427,8 @@ fn write_order_checks(backend: Backend(handle)) -> Nil {
     as "conformance storage check"
   let assert Ok(stored_b) = dict.get(found, b.id) as "conformance storage check"
   assert stored_b.parent == Some(a.id)
+
+  // Ensure registers reflect correct deletion, retention, and update order.
   let assert Ok(None) = storage.get_register(store, register.OpState, "gone")
     as "conformance storage check"
   let assert Ok(Some(kept)) =
@@ -510,6 +516,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
     as "conformance storage check"
   assert cell.value == json_value(1) && cell.seq == first.first_seq
 
+  // Replace cell value and verify sequence monotonic advance.
   let #(model, second) =
     commit_ok(
       store,
@@ -524,6 +531,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
     as "conformance storage check"
   assert cell.value == json_value(2) && cell.seq == second.first_seq
 
+  // Delete registered cell and verify removal.
   let #(model, _) =
     commit_ok(
       store,
@@ -559,6 +567,7 @@ fn register_checks(backend: Backend(handle)) -> Nil {
 
   // list_registers: key-ascending, prefix-filtered, namespace-scoped —
   // including keys containing LIKE metacharacters.
+
   let #(_, _) =
     commit_ok(
       store,
@@ -585,11 +594,15 @@ fn register_checks(backend: Backend(handle)) -> Nil {
       "op1:step2:0",
       "op2:step1:0",
     ]
+
+  // Verify prefix matching on hierarchical register keys.
   let assert Ok(op1) =
     storage.list_registers(store, register.OpToolArgs, Some("op1:"))
     as "conformance storage check"
   assert list.map(op1, fn(pair) { pair.0 })
     == ["op1:step1:0", "op1:step1:1", "op1:step2:0"]
+
+  // Verify exact prefix matching with LIKE special characters.
   let assert Ok(weird) =
     storage.list_registers(store, register.OpToolArgs, Some("op1%"))
     as "conformance storage check"
@@ -635,6 +648,8 @@ fn cas_checks(backend: Backend(handle)) -> Nil {
     storage.commit(store, failing_none)
     as "conformance storage check"
   assert failed == Expect(register.OpState, "op", None)
+
+  // Verify that failed CAS transactions do not persist staged entries.
   let assert Ok(found) = storage.get_entries(store, [a.id])
     as "conformance storage check"
   assert dict.size(found) == 0
@@ -759,8 +774,8 @@ fn placement_checks(backend: Backend(handle)) -> Nil {
         ],
       ),
     )
-
   // After placement, exactly the entry exists.
+
   let assert Ok(None) =
     storage.get_register(store, register.PendingEntry, queued_key)
     as "conformance storage check"
@@ -768,6 +783,8 @@ fn placement_checks(backend: Backend(handle)) -> Nil {
     storage.list_registers(store, register.PendingEntry, None)
     as "conformance storage check"
   assert listed == []
+
+  // Ensure entry and strand leaf pointers were updated atomically.
   let assert Ok(found) = storage.get_entries(store, [queued.id])
     as "conformance storage check"
   assert dict.size(found) == 1
@@ -793,6 +810,8 @@ fn branch_scan_checks(backend: Backend(handle)) -> Nil {
   let #(x4, ctx) = custom(ctx, Some(c3.id), "note")
   let #(m5, ctx) = message(ctx, Some(x4.id), "m5")
   let #(m6, ctx) = message(ctx, Some(m5.id), "m6")
+
+  // Define chain and initialize stats tracking for branch scan checks.
   let chain = [m1, m2, c3, x4, m5, m6]
   let model = storage.empty_stats()
 
@@ -1187,6 +1206,8 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
         expected: [],
       ),
     )
+
+  // Verify full-scan retrieval and descending order behavior.
   let assert Ok(all) = storage.scan_entries(store, storage.entry_scan())
     as "conformance storage check"
   assert ids_of(all) == [m1.id, c2.id, x3.id, x4.id, m5.id]
@@ -1197,6 +1218,8 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
     )
     as "conformance storage check"
   assert ids_of(descending) == list.reverse(ids_of(all))
+
+  // Verify filtering entries by kind and custom type tag.
   let assert Ok(messages) =
     storage.scan_entries(
       store,
@@ -1218,6 +1241,8 @@ fn entry_scan_checks(backend: Backend(handle)) -> Nil {
     )
     as "conformance storage check"
   assert ids_of(window) == [c2.id, x3.id, x4.id]
+
+  // Verify positive limit constraints on returned results.
   let assert Ok(limited) =
     storage.scan_entries(store, storage.entry_scan() |> storage.entry_limit(2))
     as "conformance storage check"
@@ -1314,6 +1339,8 @@ fn usage_scan_checks(backend: Backend(handle)) -> Nil {
   let #(u2, ctx) = usage(ctx, None, 20)
   let #(u3, _ctx) = usage(ctx, None, 30)
   let adjustment = UsageRow(..u3, adjustment: True)
+
+  // Initialize stats model and execute successive usage transactions.
   let model = storage.empty_stats()
   let #(model, first) =
     commit_ok(
@@ -1334,6 +1361,8 @@ fn usage_scan_checks(backend: Backend(handle)) -> Nil {
   assert r1.id == u1.id && r1.entry_id == Some(a.id) && !r1.adjustment
   assert r2.id == u2.id && r2.entry_id == None
   assert r3.id == u3.id && r3.adjustment
+
+  // Verify sequence monotonicity and payload accuracy across usage rows.
   assert r1.seq < r2.seq && r2.seq < r3.seq
   assert r1.usage == u1.usage
   assert r1.details == u1.details

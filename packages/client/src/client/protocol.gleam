@@ -1351,6 +1351,8 @@ pub fn decode_command(text: String) -> Result(CommandEnvelope, ProtocolFault) {
     None ->
       Error(BadEnvelope(reason: "a positive integer command id", id: None))
   })
+
+  // Extract command name and parse the corresponding command body.
   use cmd <- result.try(case list.key_find(fields, "cmd") {
     Ok(json.String(cmd)) -> Ok(cmd)
     _ -> Error(BadEnvelope(reason: "a string cmd name", id: Some(id)))
@@ -2209,6 +2211,8 @@ pub fn decode_event(text: String) -> Result(EventEnvelope, ProtocolFault) {
     Ok(json.String(name)) -> Ok(name)
     _ -> Error(BadEnvelope(reason: "a string event name", id: None))
   })
+
+  // Extract optional correlation identifiers and payload body.
   let reply_to = case list.key_find(fields, "reply_to") {
     Ok(json.Int(id)) -> Some(id)
     _ -> None

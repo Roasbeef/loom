@@ -112,6 +112,8 @@ fn repository(text: String, workspace: String) -> Result(String, Nil) {
         }
         |> filepath.expand,
       )
+
+      // Verify the worktree pointer path and ensure directory presence.
       let worktrees = filepath.directory_name(gitdir)
       let common = filepath.directory_name(worktrees)
       use _ <- result.try(case filepath.base_name(worktrees) {

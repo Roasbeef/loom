@@ -249,6 +249,8 @@ pub fn run_on(
     use Nil <- result.try(check(envelope(request, "validation-only")))
     Ok(request)
   }
+
+  // Dispatch parsed command execution or report parse failure.
   case parsed {
     Error(reason) -> {
       console.err(reason)
@@ -256,6 +258,8 @@ pub fn run_on(
     }
     Ok(request) -> {
       announce(console, request)
+
+      // Execute command against the resolved target daemon.
       case execute(request) {
         Ok(lines) -> {
           note_loopback_claim(console, request)
@@ -271,8 +275,7 @@ pub fn run_on(
   }
 }
 
-// The identity a mutation names, printed before the request is sent. Reads
-// change nothing and name nothing to recover.
+/// Announces principal recovery or session identification to console.
 fn announce(console: Console, request: Request) -> Nil {
   case request.kind {
     Member | SigninListing | LoginRevocation ->
@@ -282,10 +285,7 @@ fn announce(console: Console, request: Request) -> Nil {
   }
 }
 
-// A claim command built from the local loopback listener cannot be run by an
-// invitee on another machine, so the owner is told before the line is
-// printed. A remote command's address is the one the owner reached, or the
-// one they gave.
+/// Emits warning when a claim command is generated against loopback.
 fn note_loopback_claim(console: Console, request: Request) -> Nil {
   case request.target, request.claim_address {
     Local(_), DiscoveredAddress ->
@@ -299,7 +299,7 @@ fn note_loopback_claim(console: Console, request: Request) -> Nil {
   }
 }
 
-// Only a mutation can leave an outcome unknown that a retry could repeat.
+/// Appends an outcome note for mutations that fail after dispatch.
 fn unknown_outcome(request: Request) -> String {
   case request.kind {
     Member | Isolation | LoginRevocation ->
@@ -326,11 +326,14 @@ pub fn parse(
 ) -> Result(Request, String) {
   use #(target, rest) <- result.try(parse_target(arguments, program))
   use request <- result.try(parse_command(target, rest, program))
+
+  // Validate principal format for commands that require a valid principal.
   use Nil <- result.try(case request.kind {
     Member | MembershipListing | SigninListing | LoginRevocation ->
       valid_principal(request.subject)
     Isolation | Passthrough | PrincipalListing | MemberListing -> Ok(Nil)
   })
+
   Ok(request)
 }
 
@@ -345,6 +348,7 @@ type Options {
   )
 }
 
+/// Parses leading target connection options from positional arguments.
 fn parse_target(
   arguments: List(String),
   program: Program,
@@ -354,6 +358,8 @@ fn parse_target(
     Options(None, None, None),
     program,
   ))
+
+  // Validate target option combinations and construct Target.
   case options {
     Options(state_dir:, addr: None, token: None) ->
       Ok(#(Local(option.unwrap(state_dir, "")), rest))
@@ -371,6 +377,7 @@ fn parse_target(
   }
 }
 
+/// Gathers target options from leading positional arguments.
 fn gather_target(
   arguments: List(String),
   found: Options,
@@ -392,11 +399,13 @@ fn gather_target(
   }
 }
 
+/// Parses positional arguments into a validated admin Request.
 fn parse_command(
   target: Target,
   arguments: List(String),
   program: Program,
 ) -> Result(Request, String) {
+  // Match command verb and parse command-specific arguments.
   case arguments {
     ["list", ..options] -> {
       use after <- result.try(after_option(options, valid_principal))
@@ -526,8 +535,7 @@ fn parse_command(
   }
 }
 
-// `--after VALUE`, or nothing. A cursor is checked with the same rule the
-// daemon applies to it, so a typo is named before a connection is made.
+/// Parses an optional --after pagination cursor option.
 fn after_option(
   options: List(String),
   check: fn(String) -> Result(Nil, String),
@@ -603,15 +611,20 @@ type EnrollmentOptions {
   EnrollmentOptions(ttl: String, address: String, digest: String)
 }
 
+/// Parses invitation enrollment options and determines claim address posture.
 fn enrollment_options(
   options: List(String),
 ) -> Result(#(List(#(String, JsonValue)), ClaimAddress), String) {
   use found <- result.try(gather_options(options, EnrollmentOptions("", "", "")))
+
+  // Validate option exclusivity and assemble enrollment parameters.
   case found {
     EnrollmentOptions(ttl: "", address: "", digest: "") ->
       Ok(#([], DiscoveredAddress))
     EnrollmentOptions(ttl:, address:, digest: "") -> {
       use ttl <- result.try(ttl_field(ttl))
+
+      // Resolve claim address or default to discovered listener address.
       use address <- result.try(case address {
         "" -> Ok(DiscoveredAddress)
         given ->
@@ -619,6 +632,7 @@ fn enrollment_options(
           |> result.map(fn(_) { GivenAddress(given) })
           |> result.map_error(fn(reason) { "--claim-addr: " <> reason })
       })
+
       Ok(#(ttl, address))
     }
     EnrollmentOptions(ttl: "", address: "", digest:) ->
@@ -631,6 +645,7 @@ fn enrollment_options(
   }
 }
 
+/// Gathers enrollment invitation options from argument flags.
 fn gather_options(
   options: List(String),
   found: EnrollmentOptions,
@@ -647,9 +662,7 @@ fn gather_options(
   }
 }
 
-// `--ttl` takes a count of minutes, hours or days. The daemon holds the
-// range, 5 minutes to 7 days, and refuses anything outside it; the bound is
-// repeated here only so the mistake is named before a connection is made.
+/// Parses and validates claim TTL string into millisecond field representation.
 fn ttl_field(text: String) -> Result(List(#(String, JsonValue)), String) {
   use <- bool.guard(when: text == "", return: Ok([]))
   let unit = string.slice(text, string.length(text) - 1, 1)
@@ -657,19 +670,25 @@ fn ttl_field(text: String) -> Result(List(#(String, JsonValue)), String) {
     int.parse(string.drop_end(text, 1))
     |> result.replace_error("--ttl takes a form such as 30m, 24h or 7d"),
   )
+
+  // Map time unit suffix to millisecond multiplier.
   use multiplier <- result.try(case unit {
     "m" -> Ok(60_000)
     "h" -> Ok(3_600_000)
     "d" -> Ok(86_400_000)
     _other -> Error("--ttl takes a form such as 30m, 24h or 7d")
   })
+
   let ttl = count * multiplier
+
+  // Verify calculated TTL is within allowed bounds.
   case ttl >= 300_000 && ttl <= 604_800_000 {
     True -> Ok([#("claim_ttl_ms", json.Int(ttl))])
     False -> Error("--ttl must be between 5 minutes and 7 days")
   }
 }
 
+/// Validates that principal ID is a non-empty ASCII identifier.
 fn valid_principal(id: String) -> Result(Nil, String) {
   case
     string.byte_size(id) > 0
@@ -720,6 +739,8 @@ pub fn envelope(request: Request, epoch: String) -> String {
     MemberListing -> [#("session_id", json.String(request.subject))]
     Isolation | Passthrough | PrincipalListing -> []
   }
+
+  // Include epoch in mutation command payloads.
   let fenced = case request.kind {
     PrincipalListing | MembershipListing | SigninListing | MemberListing ->
       request.body
@@ -728,6 +749,7 @@ pub fn envelope(request: Request, epoch: String) -> String {
       ..request.body
     ]
   }
+
   json.to_string(
     json.Object([
       #("v", json.Int(2)),
@@ -748,6 +770,7 @@ pub fn envelope(request: Request, epoch: String) -> String {
 /// ```
 @internal
 pub fn execute(request: Request) -> Result(List(JsonValue), String) {
+  // Connect to local or remote target daemon.
   case request.target {
     Local(directory) -> {
       use #(address, token, epoch) <- result.try(discover(directory))
@@ -773,6 +796,7 @@ pub fn execute(request: Request) -> Result(List(JsonValue), String) {
 pub fn discover(
   directory: String,
 ) -> Result(#(String, String, String), String) {
+  // Resolve default state directory if not provided.
   use directory <- result.try(case directory {
     "" ->
       bootstrap.getenv("HOME")
@@ -794,11 +818,15 @@ pub fn discover(
   Ok(#(address, token, epoch))
 }
 
+/// Validates endpoint record is ready and daemon process is live.
 fn ready_record(record) {
+  // Verify endpoint record variant is ready.
   case record {
     None | Some(endpoint.Starting(_)) -> Error("no ready local daemon")
     Some(endpoint.Ready(fence, _, _, epoch, _) as record) -> {
       use present <- result.try(endpoint.is_present(fence))
+
+      // Check whether daemon process is currently running.
       case present {
         True -> Ok(#(record, epoch))
         False -> Error("the published daemon has exited")
@@ -810,6 +838,7 @@ fn ready_record(record) {
 // The owner token is read through the bounded private-file rule, which
 // refuses a link, another user's file, or one other users can read. A file
 // holding a claim token is named as such, since the two are easily confused.
+/// Reads and validates the owner token from disk within private bounds.
 fn read_owner_token(path: String) -> Result(String, String) {
   use bytes <- result.try(bootstrap.read_private_bounded(path, 80))
   use text <- result.try(
@@ -823,6 +852,8 @@ fn read_owner_token(path: String) -> Result(String, String) {
       "that file holds a claim token, not the owner credential; redeem a claim with loom claim",
     ),
   )
+
+  // Validate credential hex format.
   case claim.is_hex_256(token) {
     True -> Ok(token)
     False -> Error("invalid private credential")
@@ -850,6 +881,7 @@ pub fn exchange(
   transact_over(address, token, Expected(epoch), request)
 }
 
+/// Connects to control listener, executes transaction, and ensures cleanup.
 fn transact_over(
   address: String,
   token: String,
@@ -866,6 +898,7 @@ fn transact_over(
   outcome
 }
 
+/// Handshakes with control socket and performs request transaction.
 fn transact(socket, inbox, address, epoch: Epoch, request: Request) {
   use announced <- result.try(
     verify_hello(inbox, epoch)
@@ -880,6 +913,8 @@ fn transact(socket, inbox, address, epoch: Epoch, request: Request) {
       "control response missing or invalid; outcome unknown",
     ),
   )
+
+  // Inspect event type in administration reply.
   case list.key_find(fields, "event") {
     Ok(json.String("error")) -> {
       use body <- result.try(
@@ -899,16 +934,21 @@ fn transact(socket, inbox, address, epoch: Epoch, request: Request) {
 // The hello frame names the daemon lifetime. A local command holds the epoch
 // it discovered and requires the same; a remote command adopts the one the
 // authenticated connection announces.
+/// Verifies hello event frame from daemon against expected epoch.
 fn verify_hello(inbox, epoch: Epoch) -> Result(String, String) {
   use hello <- result.try(next_frame(inbox))
   use fields <- result.try(event_fields(hello))
   use Nil <- result.try(equal_field(fields, "event", json.String("hello")))
   use body <- result.try(body_fields(fields))
   use Nil <- result.try(equal_field(body, "protocol", json.Int(2)))
+
+  // Extract epoch string from hello event body.
   use announced <- result.try(case list.key_find(body, "epoch") {
     Ok(json.String(text)) if text != "" -> Ok(text)
     Ok(_) | Error(Nil) -> Error("response identity or epoch mismatch")
   })
+
+  // Compare announced epoch against expected epoch.
   case epoch {
     Announced -> Ok(announced)
     Expected(expected) if expected == announced -> Ok(announced)
@@ -916,6 +956,7 @@ fn verify_hello(inbox, epoch: Epoch) -> Result(String, String) {
   }
 }
 
+/// Awaits and parses the administration command reply frame.
 fn receive_reply(inbox) {
   use reply <- result.try(next_frame(inbox))
   use fields <- result.try(event_fields(reply))
@@ -927,11 +968,14 @@ fn receive_reply(inbox) {
   Ok(#(fields, body))
 }
 
+/// Receives next incoming text message frame from inbox.
 fn next_frame(inbox) {
   use message <- result.try(
     process.receive(inbox, 5000)
     |> result.replace_error("control response timed out"),
   )
+
+  // Handle websocket connection event or extract text frame.
   case message {
     websocket.Connected ->
       process.receive(inbox, 5000)
@@ -943,6 +987,7 @@ fn next_frame(inbox) {
   }
 }
 
+/// Extracts text payload from an incoming websocket message.
 fn text_frame(message) {
   case message {
     websocket.Incoming(text) -> Ok(text)
@@ -951,11 +996,14 @@ fn text_frame(message) {
   }
 }
 
+/// Validates size and parses event fields from raw message text.
 fn event_fields(text) {
+  // Check response text size bound.
   use Nil <- result.try(case string.byte_size(text) <= max_reply_bytes {
     True -> Ok(Nil)
     False -> Error("oversized control response")
   })
+
   use value <- result.try(
     json.parse(text) |> result.replace_error("invalid control response"),
   )
@@ -964,6 +1012,7 @@ fn event_fields(text) {
   Ok(fields)
 }
 
+/// Extracts body field list from event fields.
 fn body_fields(fields) {
   use body <- result.try(
     list.key_find(fields, "body")
@@ -1002,6 +1051,7 @@ pub fn success(
   address: String,
   request: Request,
 ) -> Result(List(JsonValue), String) {
+  // Transform successful response body according to request kind.
   case request.kind {
     Passthrough -> Ok([body])
     Isolation -> {
@@ -1152,10 +1202,12 @@ pub fn member_lines(
 ///   == "loom access invite SESSION PRINCIPAL ROLE NAME"
 /// ```
 pub fn invite_line(session: String) -> String {
+  // Default empty session string to placeholder.
   let session = case session {
     "" -> "SESSION"
     id -> id
   }
+
   "loom access invite " <> session <> " PRINCIPAL ROLE NAME"
 }
 
@@ -1171,22 +1223,26 @@ pub fn rotate_line(principal: String) -> String {
   "loom access rotate " <> principal
 }
 
-// A member reply is re-encoded from checked fields rather than echoed. A claim
-// is printed only when this request asked for one.
+/// Formats successful member command response into JSON line representation.
 fn member_success(fields, address, request: Request) {
   use Nil <- result.try(equal_field(
     fields,
     "principal_id",
     json.String(request.subject),
   ))
+
+  // Extract member name from response fields.
   use name <- result.try(case list.key_find(fields, "name") {
     Ok(json.String(name)) -> Ok(name)
     Ok(_) | Error(Nil) -> Error("missing successful member name")
   })
+
   let identity = [
     #("principal_id", json.String(request.subject)),
     #("name", json.String(name)),
   ]
+
+  // Handle claim token emission according to command and claim address posture.
   case request.command, request.claim_address {
     "sessions.invite", GivenAddress(given)
     | "credentials.rotate", GivenAddress(given)
@@ -1204,18 +1260,22 @@ fn member_success(fields, address, request: Request) {
   }
 }
 
-// `claim_command` names the address and never the token, so the invitee's
-// shell history and argument vector hold no secret by default.
+/// Emits claim details including claim token and command invocation.
 fn claimed(fields, identity, address: String) {
+  // Extract claim token string.
   use token <- result.try(case list.key_find(fields, "claim") {
     Ok(json.String(token)) -> Ok(token)
     Ok(_) | Error(Nil) -> Error("missing successful claim")
   })
+
   use Nil <- result.try(claim.validate_token(token))
+
+  // Extract claim expiry lifetime.
   use expires_in_ms <- result.try(case list.key_find(fields, "expires_in_ms") {
     Ok(json.Int(value)) if value > 0 -> Ok(value)
     Ok(_) | Error(Nil) -> Error("missing claim lifetime")
   })
+
   Ok(
     json.Object(
       list.append(identity, [
@@ -1228,18 +1288,21 @@ fn claimed(fields, identity, address: String) {
 }
 
 // One line per row, then `{"next": CURSOR}` when the daemon says another page
-// follows. A row that fails its check fails the whole reply: printing the rows
-// before it would show the owner a partial listing as a complete one.
+/// Formats paginated response rows and appends continuation cursor if present.
 fn page_lines(
   fields: List(#(String, JsonValue)),
   key: String,
   row: fn(JsonValue) -> Result(JsonValue, String),
 ) -> Result(List(JsonValue), String) {
+  // Extract array of rows from page fields.
   use rows <- result.try(case list.key_find(fields, key) {
     Ok(json.Array(rows)) -> Ok(rows)
     Ok(_) | Error(Nil) -> Error("missing listing rows")
   })
+
   use lines <- result.try(list.try_map(rows, row))
+
+  // Check for continuation next cursor.
   case list.key_find(fields, "next") {
     Error(Nil) -> Ok(lines)
     Ok(json.String(cursor)) if cursor != "" ->
@@ -1248,25 +1311,33 @@ fn page_lines(
   }
 }
 
+/// Formats a single principal listing row.
 fn listing_row(value: JsonValue) -> Result(JsonValue, String) {
   use fields <- result.try(object_fields(value))
   use id <- result.try(text_field(fields, "principal_id"))
   use Nil <- result.try(valid_principal(id))
   use name <- result.try(text_field(fields, "name"))
+
+  // Parse principal kind.
   use kind <- result.try(case list.key_find(fields, "kind") {
     Ok(json.String("owner")) -> Ok("owner")
     Ok(json.String("member")) -> Ok("member")
     Ok(_) | Error(Nil) -> Error("invalid principal kind")
   })
+
+  // Parse principal credential state.
   use credential <- result.try(case list.key_find(fields, "credential") {
     Ok(found) -> credential_state(found)
     Error(Nil) -> Error("missing credential state")
   })
+
+  // Parse optional login count field.
   use logins <- result.map(case list.key_find(fields, "logins") {
     Error(Nil) -> Ok([])
     Ok(json.Int(count)) if count >= 0 -> Ok([#("logins", json.Int(count))])
     Ok(_) -> Error("invalid login count")
   })
+
   json.Object(list.append(
     [
       #("principal_id", json.String(id)),
@@ -1278,19 +1349,22 @@ fn listing_row(value: JsonValue) -> Result(JsonValue, String) {
   ))
 }
 
-// One browser login, rebuilt from checked fields. The fingerprint and the
-// parent's are exactly 16 lowercase hexadecimal digits and the times are
-// non-negative integers, so no longer value can ride in a field.
+/// Formats a single signin session row.
 fn signin_row(value: JsonValue) -> Result(JsonValue, String) {
   use fields <- result.try(object_fields(value))
   use login <- result.try(text_field(fields, "fingerprint"))
   use Nil <- result.try(fingerprint(login))
+
+  // Parse sign-in issued timestamp.
   use issued <- result.try(case list.key_find(fields, "issued_at_ms") {
     Ok(json.Int(at)) if at >= 0 -> Ok(at)
     Ok(_) | Error(Nil) -> Error("invalid sign-in instant")
   })
+
   use resumed <- result.try(optional_instant(fields, "last_resumed_ms"))
   use expires <- result.try(optional_instant(fields, "expires_at_ms"))
+
+  // Parse optional parent signer fingerprint.
   use parent <- result.map(case list.key_find(fields, "issued_by") {
     Error(Nil) -> Ok([])
     Ok(json.String(from)) ->
@@ -1298,6 +1372,7 @@ fn signin_row(value: JsonValue) -> Result(JsonValue, String) {
       |> result.map(fn(_) { [#("issued_by", json.String(from))] })
     Ok(_) -> Error("invalid sign-in parent")
   })
+
   json.Object(
     list.flatten([
       [
@@ -1311,6 +1386,7 @@ fn signin_row(value: JsonValue) -> Result(JsonValue, String) {
   )
 }
 
+/// Extracts an optional non-negative instant field as an object pair.
 fn optional_instant(
   fields: List(#(String, JsonValue)),
   key: String,
@@ -1322,8 +1398,7 @@ fn optional_instant(
   }
 }
 
-// A login's fingerprint: the first sixteen hexadecimal digits of its digest,
-// lowercase.
+/// Validates that a string is a 16-hex character fingerprint.
 fn fingerprint(value: String) -> Result(Nil, String) {
   case
     string.byte_size(value) == 16 && claim.is_hex_256(string.repeat(value, 4))
@@ -1333,15 +1408,17 @@ fn fingerprint(value: String) -> Result(Nil, String) {
   }
 }
 
-// The four states the daemon reports, each rebuilt from checked fields. A
-// fingerprint is exactly 16 lowercase hexadecimal characters, which is what
-// keeps a full credential from riding in the field.
+/// Validates and parses credential state dictionary.
 fn credential_state(value: JsonValue) -> Result(JsonValue, String) {
   use fields <- result.try(object_fields(value))
   use state <- result.try(text_field(fields, "state"))
+
+  // Branch on credential state variant.
   case state {
     "active" -> {
       use fingerprint <- result.try(text_field(fields, "fingerprint"))
+
+      // Validate active credential fingerprint.
       use Nil <- result.try(
         case
           string.byte_size(fingerprint) == 16
@@ -1351,11 +1428,14 @@ fn credential_state(value: JsonValue) -> Result(JsonValue, String) {
           False -> Error("invalid credential fingerprint")
         },
       )
+
+      // Parse optional claim timestamp.
       use claimed <- result.map(case list.key_find(fields, "claimed_at_ms") {
         Error(Nil) -> Ok([])
         Ok(json.Int(at)) if at >= 0 -> Ok([#("claimed_at_ms", json.Int(at))])
         Ok(_) -> Error("invalid claim instant")
       })
+
       json.Object(list.append(
         [
           #("state", json.String("active")),
@@ -1365,10 +1445,12 @@ fn credential_state(value: JsonValue) -> Result(JsonValue, String) {
       ))
     }
     "claim_open" -> {
+      // Parse remaining claim lifetime in milliseconds.
       use remaining <- result.map(case list.key_find(fields, "expires_in_ms") {
         Ok(json.Int(ms)) if ms >= 0 -> Ok(ms)
         Ok(_) | Error(Nil) -> Error("invalid claim lifetime")
       })
+
       json.Object([
         #("state", json.String("claim_open")),
         #("expires_in_ms", json.Int(remaining)),
@@ -1381,16 +1463,20 @@ fn credential_state(value: JsonValue) -> Result(JsonValue, String) {
   }
 }
 
+/// Formats a single membership listing row.
 fn membership_row(value: JsonValue) -> Result(JsonValue, String) {
   use fields <- result.try(object_fields(value))
   use session <- result.try(text_field(fields, "session_id"))
   use Nil <- result.try(session_id(session))
   use name <- result.try(text_field(fields, "name"))
+
+  // Parse and validate member role.
   use role <- result.try(case list.key_find(fields, "role") {
     Ok(json.String("operator")) -> Ok("operator")
     Ok(json.String("observer")) -> Ok("observer")
     Ok(_) | Error(Nil) -> Error("invalid membership role")
   })
+
   Ok(
     json.Object([
       #("session_id", json.String(session)),
@@ -1400,16 +1486,20 @@ fn membership_row(value: JsonValue) -> Result(JsonValue, String) {
   )
 }
 
+/// Formats a single member listing row.
 fn member_row(value: JsonValue) -> Result(JsonValue, String) {
   use fields <- result.try(object_fields(value))
   use principal <- result.try(text_field(fields, "principal_id"))
   use Nil <- result.try(valid_principal(principal))
   use name <- result.try(text_field(fields, "name"))
+
+  // Parse and validate member role.
   use role <- result.try(case list.key_find(fields, "role") {
     Ok(json.String("operator")) -> Ok("operator")
     Ok(json.String("observer")) -> Ok("observer")
     Ok(_) | Error(Nil) -> Error("invalid membership role")
   })
+
   Ok(
     json.Object([
       #("principal_id", json.String(principal)),
@@ -1426,6 +1516,7 @@ fn text_field(fields, key: String) -> Result(String, String) {
   }
 }
 
+/// Translates response refusal error codes into descriptive strings.
 fn refusal_code(fields) {
   case list.key_find(fields, "code") {
     Ok(json.String("forbidden")) -> "forbidden"

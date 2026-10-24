@@ -549,6 +549,8 @@ fn signed_under_lock(
       }
     }),
   )
+
+  // Apply the sealed entry and commit it to membership storage.
   use applied <- result.try(
     membership_ledger.apply(ledger, signed)
     |> result.map_error(fn(refusal) { ledger_operator.describe(refusal) }),
@@ -1506,6 +1508,8 @@ fn import_file(parsed: Parsed, connect: Connect) -> Result(String, String) {
     [] -> Error(path <> " holds no ledger lines")
     _ -> Ok(Nil)
   })
+
+  // Connect to target daemon and replay ledger entries in pages.
   let daemon = connect(where_)
   use applied <- result.try(
     list.try_fold(ledger_control.pages(lines), #(0, None), fn(state, page) {

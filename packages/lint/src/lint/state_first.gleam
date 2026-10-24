@@ -92,6 +92,8 @@ pub fn findings_named(module: glance.Module, names: List(String)) -> List(Raw) {
   // `step` is not charged twice for the same late `State`.
   list.flat_map(local_types(module), fn(local) {
     let #(name, start) = local
+
+    // Compare definition position against the module's first function.
     case first, owning_step(steps, name) {
       Some(#(first_name, first_start)), Some(step) if start > first_start -> [
         late_type(name, start, step.name, first_name),
@@ -146,10 +148,13 @@ fn signature_names(fun: glance.Function) -> Set(String) {
     list.filter_map(fun.parameters, fn(parameter) {
       option.to_result(parameter.type_, Nil)
     })
+
+  // Include the return type in the collected annotations if present.
   let annotated = case fun.return {
     Some(return) -> [return, ..parameters]
     None -> parameters
   }
+
   list.fold(annotated, set.new(), type_names)
 }
 

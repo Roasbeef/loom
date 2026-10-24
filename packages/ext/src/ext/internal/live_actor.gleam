@@ -78,6 +78,8 @@ pub fn start(
     |> actor.on_message(handle)
     |> actor.with_upgrade(within: int.max(1, within / 4), migrate: change)
     |> actor.start
+
+  // Wrap the started actor in a handle or return start failure.
   case started {
     Ok(started) -> Ok(Handle(started.pid, started.data))
     Error(_) -> Error("stateful extension actor could not start")
@@ -122,7 +124,9 @@ pub fn inspect(component: Handle, within: Int) -> Snapshot {
   actor.call(component.inbox, within, Inspect)
 }
 
+/// Handles actor inspect and callback invocation messages.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+  // Dispatch on the actor message protocol variant.
   case message {
     Inspect(reply) -> {
       process.send(reply, state.snapshot)
@@ -148,6 +152,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Settles the computed transition result into updated state and answer.
 fn settle(
   state: State,
   computed: Result(#(String, runtime.Answer), String),
@@ -161,11 +166,14 @@ fn settle(
   }
 }
 
+/// Migrates actor state during code upgrade requests.
 fn change(
   request: upgrade.Request,
   state: State,
 ) -> Result(actor.Migration(State, Message), String) {
   use proposed <- result.try(ffi_live_definition.change(request.extra))
+
+  // Restore previous snapshot text or run migration on current state.
   use text <- result.try(case proposed.restore {
     Some(snapshot) -> Ok(snapshot)
     None ->
@@ -175,6 +183,7 @@ fn change(
         state.snapshot.state,
       )
   })
+
   use canonical <- result.try(state_document(text, state.max_state_bytes))
   let snapshot =
     Snapshot(
@@ -193,11 +202,14 @@ fn change(
 }
 
 // Validates JSON and bounds its UTF-8 document before state admission.
+/// Validates that state text is valid JSON and within byte size limits.
 fn state_document(text: String, maximum: Int) -> Result(String, String) {
+  // Check byte size bounds before attempting JSON parse.
   use Nil <- result.try(case string.byte_size(text) <= maximum && maximum > 0 {
     True -> Ok(Nil)
     False -> Error("live state exceeds its native byte bound")
   })
+
   use _ <- result.try(
     json.parse(text, decode.dynamic)
     |> result.replace_error("live state is not a JSON document"),

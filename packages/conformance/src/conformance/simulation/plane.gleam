@@ -280,6 +280,8 @@ pub fn verify(plane: Plane) -> Observation {
   let entries = drain(plane.ledger, [])
   let started = list.count(entries, fn(entry) { entry == Started })
   let heard = list.count(entries, fn(entry) { entry == Heard })
+
+  // Collect relay PIDs and fault texts observed in the drained ledger.
   let relays =
     list.filter_map(entries, fn(entry) {
       case entry {
@@ -294,10 +296,14 @@ pub fn verify(plane: Plane) -> Observation {
         Started | Heard | Relay(..) -> Error(Nil)
       }
     })
+
+  // Verify that all relay processes unwound cleanly.
   let orphans = case await_unwound(plane, relays) {
     Ok(Nil) -> []
     Error(what) -> ["effects/no-orphan: " <> what]
   }
+
+  // Compare executions and audit logs if no relays were orphaned.
   let #(executions, settled) = case orphans {
     // An execution that is still unwinding has not settled, so the books
     // would only repeat the orphan under another name.

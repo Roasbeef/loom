@@ -392,8 +392,12 @@ fn facts(
     Dialled(findings:) -> Some(findings)
     NotLinkedFromHere -> None
   }
+
+  // Extract optional orchestrator and executor fact findings.
   let orchestrator = option.then(found, fn(each) { each.orchestrator })
   let executor = option.then(found, fn(each) { each.executor })
+
+  // Compile group-specific metrics and attributes.
   let own = case machines.group_of(machine) {
     OrchestratorGroup -> [
       #("Build", option.then(found, machines.build_words)),

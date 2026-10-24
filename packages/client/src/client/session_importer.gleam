@@ -166,6 +166,8 @@ fn taken(context: Context(instance), piece: Chunk) -> Result(Nil, Verdict) {
         Error(Refused(session_move.BadSize(limit: session_move.size_limit)))
     },
   )
+
+  // Ensure incoming storage directory exists before writing chunk.
   let directory = session_move.incoming_directory(context.state_root)
   use Nil <- result.try(
     bootstrap.ensure_private_directory(directory)
@@ -402,6 +404,8 @@ fn verified(
     True -> Ok(Nil)
     False -> Error(Refused(session_move.DigestMismatch))
   })
+
+  // Verify recorded closed cell metadata and executor identity.
   use cell <- result.try(closed_cell(context, activation, whole))
   let named = case cell.executor {
     Some(name) -> name

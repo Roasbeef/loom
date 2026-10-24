@@ -99,10 +99,13 @@ fn report(above: List(Helper), count: Int, total: Int) -> Raw {
   )
 }
 
+/// Formats an example helper-above-caller diagnostic phrase for a finding.
 fn example(helper: Helper) -> String {
+  // Pick the first caller name to mention in the example phrase.
   let caller = case helper.callers {
     [first, ..] -> first.name
     [] -> ""
   }
+
   "`" <> helper.function.name <> "` above `" <> caller <> "`"
 }

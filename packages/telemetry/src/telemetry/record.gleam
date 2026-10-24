@@ -82,6 +82,7 @@ pub fn render(record: Record) -> String {
   json.to_string(to_json(record))
 }
 
+/// Converts a telemetry field value into its JSON representation.
 fn encode(value: field.Value) -> JsonValue {
   case value {
     field.Text(text) -> json.String(text)
@@ -92,10 +93,7 @@ fn encode(value: field.Value) -> JsonValue {
   }
 }
 
-// First occurrence of each key wins. A duplicated key is corruption to
-// `core/json`'s parser, so a line carrying one would not read back —
-// and the reserved context keys are emitted first, which is what stops
-// a caller's field from shadowing `session`.
+/// Deduplicates field keys, keeping earlier occurrences.
 fn dedupe(
   fields: List(#(String, JsonValue)),
   seen: List(String),

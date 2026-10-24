@@ -998,16 +998,22 @@ fn landed(model: Model, result: Reading) -> #(Model, Effect(Msg)) {
     Flying(asked:, then:) -> #(asked, then)
     Landed -> #(model.chosen, Nothing)
   }
+
+  // Filter snapshot selection if the requested target is no longer chosen.
   let found = case result, asked == model.chosen {
     grants.Read(snapshot:), False ->
       grants.Read(grants.Snapshot(..snapshot, selection: None))
     _, _ -> result
   }
+
+  // Apply response and restore the currently selected target.
   let after = answered(Model(..model, flight: Landed), found)
   let after = case asked == model.chosen {
     True -> after
     False -> Model(..after, chosen: model.chosen)
   }
+
+  // Dispatch following queued read or transition to observational loop.
   case then, after.status {
     Again, Connecting | Again, Connected -> {
       let #(after, more) = reading(after, Continue)

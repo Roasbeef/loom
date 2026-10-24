@@ -57,6 +57,8 @@ pub fn instrument(
         _ -> False
       }
     })
+
+  // Filter schedule items for commit staleness and lease theft faults.
   let stale_faults =
     scheduled(schedule, fn(item) {
       case item {
@@ -71,6 +73,8 @@ pub fn instrument(
         _ -> False
       }
     })
+
+  // Wrap session storage operations with injected faults.
   Session(
     // Snapshot fault injection is separate from this commit-schedule wrapper.
     snapshot_reader: session.snapshot_reader,

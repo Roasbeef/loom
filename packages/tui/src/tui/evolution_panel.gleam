@@ -591,12 +591,15 @@ pub fn render(
     |> block.with_title(title(facts), block.Top)
   let #(rows, cursor) = body_lines(state, facts, content)
   let maximum = int.max(0, list.length(rows) - content.size.height)
+
+  // Keep the selected listing row in view, or clamp detail scroll to the body.
   let offset = case state.place {
     Listing(..) ->
       int.min(maximum, int.max(0, cursor + 1 - content.size.height))
     Reading(..) | Rolling(..) | Confirming(..) | Core ->
       int.min(maximum, state.scroll)
   }
+
   let cleared = buf |> buffer.clear(area)
   let framed = case card.size.height >= 8 && card.size.width >= 20 {
     True -> block.render(cleared, card, frame)
@@ -637,11 +640,14 @@ fn layout_areas(
       int.max(1, area.size.width - horizontal * 2),
       area.size.height,
     )
+
+  // Carve out the inner area and reserve the bottom control row when tall enough.
   let inside = case framed {
     True ->
       block.inner(card, block.block_new() |> block.with_border(block.Rounded))
     False -> card
   }
+
   let controls_height = case inside.size.height >= 3 {
     True -> 1
     False -> 0
@@ -715,6 +721,8 @@ fn offered_keys(facts: Facts, candidate: evolution.Candidate) -> List(String) {
       }
     _, _ -> []
   }
+
+  // Offer revocation and rollback hints when the candidate's state admits them.
   let revoke = case revocable(candidate) {
     Offered -> ["r revoke"]
     Withheld -> []

@@ -221,6 +221,8 @@ pub fn boot_with(
       "cannot create " <> config.scratch <> ": " <> string.inspect(error)
     }),
   )
+
+  // Clean up the scratch directory if booting the plane fails.
   case start(config) {
     Ok(up) -> Ok(up)
     Error(reason) -> {
@@ -230,8 +232,7 @@ pub fn boot_with(
   }
 }
 
-// Spawns the pool, the service over it and the broker over the service. The
-// pool is lazy and linked to the caller, so a failure here leaves no helper.
+/// Spawns the pool, the service over it and the broker over the service.
 fn start_plane(config: Config) -> Result(Standalone, String) {
   let spawn_config =
     exec.SpawnConfig(
@@ -372,8 +373,7 @@ pub fn smoke(
   settled(events)
 }
 
-// Waits for the one settlement a cleared call always produces, skipping
-// output chunks. Silence is a failure of the service, not of `true`.
+/// Waits for the one settlement a cleared call always produces.
 fn settled(events: process.Subject(broker.CallEvent)) -> Result(Nil, String) {
   case process.receive(events, 20_000) {
     Error(Nil) -> Error("the smoke call never settled")
@@ -394,8 +394,7 @@ fn settled(events: process.Subject(broker.CallEvent)) -> Result(Nil, String) {
   }
 }
 
-// The helper reports every layer it did not build as `skip:` and the reason,
-// so the refusal can name them.
+/// Extracts skipped enforcement layers from the reported enforcement strings.
 fn skipped_layers(enforcement: List(String)) -> List(String) {
   list.filter_map(enforcement, fn(entry) {
     case string.starts_with(entry, exec.skip_prefix) {
@@ -431,6 +430,8 @@ pub fn main() -> Nil {
   let helper = choose_helper(argv.load().arguments, envoy.get(helper_variable))
   let scratch = scratch_root()
   let outcome = run(Config(helper:, scratch:, pool_size: 1))
+
+  // Exit immediately on success or log and fail on error.
   case outcome {
     Ok(Nil) -> Nil
     Error(reason) -> {
@@ -477,10 +478,13 @@ pub fn run_with(
   // The census follows the smoke because features are what a helper said in
   // its hello: before the first spawn the answer is "unknown" (empty).
   let measured = census(up)
+
+  // Print the census line when measurement succeeds.
   case measured {
     Ok(here) -> io.println(census_line(here))
     Error(_) -> Nil
   }
+
   let verdict = drain(up)
   remove_scratch(config.scratch, verdict)
   io.println(
@@ -495,10 +499,7 @@ pub fn run_with(
   verdict |> result.map_error(fn(failure) { string.inspect(failure) })
 }
 
-// Only a drain that answered `Ok` proves no jail is left, so only then is
-// the scratch (the writable root and the helper's policy files) removed. On
-// an unconfirmed custody it stays as evidence and the operator is told. A
-// removal failure is reported and never changes the exit status.
+/// Removes the scratch directory if shutdown custody was confirmed.
 fn remove_scratch(
   scratch: String,
   verdict: Result(Nil, exec.RetirementFailure),
@@ -524,13 +525,14 @@ fn remove_scratch(
   }
 }
 
-// A scratch under the OS temp area, distinct per incarnation so that two
-// executors on one host do not share a policy-file directory.
+/// Computes the unique scratch directory path for this executor incarnation.
 fn scratch_root() -> String {
+  // Resolve the scratch base from the environment or fall back to /tmp.
   let base = case envoy.get("TMPDIR") {
     Ok(dir) if dir != "" -> dir
     _ -> "/tmp"
   }
+
   base <> "/loom-executor-" <> int.to_string(mint_incarnation())
 }
 

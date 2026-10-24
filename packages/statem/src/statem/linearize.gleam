@@ -288,6 +288,7 @@ pub fn check(
     |> list.filter(fn(lane) { lane.events != [] })
   let walk = Walk(nodes: 0, failed: set.new(), deepest: None)
 
+  // Search for an interleaving of branch events that satisfies the specification.
   case search(machine, budget, lanes, initial, [], walk) {
     Found(order) -> Linearizable(order)
     Overspent -> Undecided(budget)
@@ -314,6 +315,7 @@ fn search(
 
   let tried = Tried(blocked: [], descended: 0)
 
+  // Attempt to place head events from each eligible untried lane.
   case attempt(machine, budget, lanes, lanes, model, placed, walk, tried) {
     Found(order) -> Found(order)
     Overspent -> Overspent
@@ -341,8 +343,10 @@ fn attempt(
   walk: Walk(model, cmd, response),
   tried: Tried(cmd, response),
 ) -> Walked(model, cmd, response) {
+  // Explore each untried lane or record dead end if no branches descended.
   case untried {
     [] -> {
+      // Record the dead end if no sibling placement was able to descend.
       let walk = case tried.descended {
         0 -> record_dead_end(walk, placed, list.reverse(tried.blocked))
         _ -> walk
@@ -359,6 +363,7 @@ fn attempt(
         [event, ..later] -> {
           let here = Placed(lane.branch, lane.index, event)
 
+          // Check whether a call on another lane must precede this event in real time.
           case blocked_by(lanes, lane, event) {
             Some(#(branch, index)) -> {
               let blocked =
@@ -402,6 +407,7 @@ fn place(
 
   let walk = Walk(..walk, nodes: walk.nodes + 1)
 
+  // Verify that the command response satisfies the postcondition in the model.
   case machine.postcondition(model, here.event.cmd, here.event.response) {
     Error(violation) -> {
       let blocked = Blocked(placed: here, obstacle: Violated(violation))
@@ -414,6 +420,7 @@ fn place(
       let advanced = advance(lanes, Lane(lane.branch, lane.index + 1, later))
       let next = machine.next_model(model, here.event.cmd)
 
+      // Continue searching with the event placed and model advanced.
       case search(machine, budget, advanced, next, [here, ..placed], walk) {
         Found(order) -> Found(order)
         Overspent -> Overspent
@@ -486,6 +493,7 @@ fn record_dead_end(
   let depth = list.length(placed)
   let explanation = Explanation(placed: list.reverse(placed), blocked: blocked)
 
+  // Update deepest dead-end candidate if this path reached greater depth.
   case walk.deepest {
     Some(#(best, _)) if best >= depth -> walk
     Some(_) | None -> Walk(..walk, deepest: Some(#(depth, explanation)))

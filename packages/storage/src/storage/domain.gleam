@@ -437,6 +437,8 @@ fn validate(domain: Domain) -> Result(Nil, Error) {
     "" -> Ok(Nil)
     path -> absolute(path)
   })
+
+  // Ensure memory, index, and sidecar digest paths are distinct.
   let digest = digest_beside(domain.memory_path)
   use Nil <- result.try(absolute(digest))
   use Nil <- result.try(

@@ -179,7 +179,9 @@ fn helper_prefix(names: List(String), prefix: String) -> String {
   }
 }
 
+/// Selects and renders necessary import statements based on generated token presence.
 fn imports(content: String, facades: List(Facade)) -> String {
+  // Form base capability imports when any facade functions are present.
   let base = case facades {
     [_, ..] -> [
       "import cap/internal/mcp as internal",
@@ -188,11 +190,16 @@ fn imports(content: String, facades: List(Facade)) -> String {
     ]
     [] -> []
   }
+
   let tokens = source_tokens(content)
+
+  // Import codec module when codec usage appears in generated tokens.
   let codec = case string.contains(tokens, "codec.") {
     True -> ["import cap/internal/mcp_codec as codec"]
     False -> []
   }
+
+  // Import list module when list functions appear in generated tokens.
   let listed = case string.contains(tokens, "list.") {
     True -> ["import gleam/list"]
     False -> []
@@ -200,26 +207,36 @@ fn imports(content: String, facades: List(Facade)) -> String {
 
   // Option constructors are imported only when generator syntax uses them;
   // words inside server comments, enum literals and identifiers do not count.
+  // Check for Option type constructor usage in tokens.
   let option_type = case string.contains(tokens, "Option(") {
     True -> ["type Option"]
     False -> []
   }
+
+  // Check for None constructor usage in tokens.
   let none = case token_contains(tokens, "None") {
     True -> ["None"]
     False -> []
   }
+
+  // Check for Some constructor usage in tokens.
   let some = case token_contains(tokens, "Some") {
     True -> ["Some"]
     False -> []
   }
+
   let opts = list.flatten([option_type, none, some])
+
+  // Render gleam/option unqualified imports when option tokens were detected.
   let optional = case opts {
     [] -> []
     _ -> ["import gleam/option.{" <> string.join(opts, ", ") <> "}"]
   }
+
   string.join(list.flatten([base, codec, listed, optional]), "\n")
 }
 
+/// Generates the facade definition, documentation, and signature for one tool descriptor.
 fn facade(
   server: String,
   tool: protocol.ToolDescriptor,
@@ -231,10 +248,13 @@ fn facade(
 ) -> Facade {
   let function = name.mangle(tool.name, digest)
   let stem = Scope(Input(index), pascal(function), allocated)
+
+  // Avoid collisions with existing tools when naming default options.
   let default_name = case list.contains(tool_names, function <> "_defaults") {
     True -> prefix <> function <> "_defaults"
     False -> function <> "_defaults"
   }
+
   let intro =
     docs(case tool.description {
       None -> "Tool " <> tool.name <> "."
@@ -243,6 +263,7 @@ fn facade(
 
   // Advertised structured output owns its total decoder. A tool without an
   // output schema retains the existing ToolResult envelope and error channel.
+  // Map optional output schema into a typed result node when present.
   let output = case tool.output_schema {
     None -> None
     Some(value) ->
@@ -253,6 +274,7 @@ fn facade(
         digest,
       ))
   }
+
   let intro =
     intro
     <> case output {
@@ -263,22 +285,32 @@ fn facade(
           note -> "\n" <> docs("Output" <> note <> ".")
         }
     }
+
+  // Determine the function return type based on output schema availability.
   let return_type = case output {
     None -> "mcp.ToolResult"
     Some(n) -> n.type_name
   }
+
+  // Collect definitions contributed by the output shape node.
   let output_definitions = case output {
     None -> []
     Some(n) -> n.definitions
   }
+
+  // Collect allocated type names from the output node.
   let output_names = case output {
     None -> []
     Some(n) -> n.names
   }
+
+  // Choose the typed or raw broker invocation helper.
   let invoke = case output {
     None -> "internal.invoke"
     Some(_) -> "internal.invoke_typed"
   }
+
+  // Render the optional decoder parameter argument string.
   let decoded = case output {
     None -> ""
     Some(n) -> ",\n    " <> n.decoder
@@ -287,6 +319,8 @@ fn facade(
   // A malformed top-level input preserves the entire arguments object. Only
   // an independently unsupported field narrows to a local Value fallback.
   let planned = schema.input_fields(tool.input_schema)
+
+  // Dispatch between untyped fallback and strongly typed argument facades.
   case planned {
     Error(reason) -> {
       let documentation =
@@ -337,6 +371,7 @@ fn facade(
   }
 }
 
+/// Generates a strongly typed facade with individual parameters and option records.
 fn typed_facade(
   server: String,
   tool: protocol.ToolDescriptor,
@@ -357,6 +392,8 @@ fn typed_facade(
     name.first_collision(
       list.map(members, fn(m) { #(m.field.original, m.label) }),
     )
+
+  // Fall back to untyped arguments on member name collision or render typed parameters.
   case collisions {
     Error(_) -> {
       let documentation =
@@ -391,6 +428,8 @@ fn typed_facade(
         list.filter(members, fn(m) { m.field.presence == schema.Required })
       let optional =
         list.filter(members, fn(m) { m.field.presence == schema.OptionalField })
+
+      // Allocate options record type for omitted optional parameter fields.
       let options_key =
         "McpT" <> int.to_string(stem.direction.tool) <> "Options"
       let options_semantic = semantic_name(stem.semantic <> "Options")
@@ -450,6 +489,8 @@ fn typed_facade(
           <> encoder_function(m.node, "value")
           <> ")"
         })
+
+      // Format required arguments and optional argument fragments into an object literal.
       let pairs = case optional_pairs {
         [] -> required_pairs
         _ ->
@@ -457,6 +498,7 @@ fn typed_facade(
           <> string.join([required_pairs, ..optional_pairs], ", ")
           <> "])"
       }
+
       let body =
         "  "
         <> invoke
@@ -497,17 +539,23 @@ fn typed_facade(
   }
 }
 
+/// Formats doc comment lines describing an individual record member field.
 fn member_doc(member: Member) -> String {
   let fallback = shape_note(member.node.kind)
+
+  // Render schema default value doc snippet when defined.
   let default = case member.field.default {
     None -> ""
     Some(value) ->
       "; schema default " <> codegen.clean(json.to_string(value), 120)
   }
+
+  // Render description note doc snippet when defined.
   let note = case member.field.note {
     None -> ""
     Some(text) -> "; " <> codegen.clean(text, 120)
   }
+
   docs(
     "- "
     <> member.label
@@ -520,6 +568,7 @@ fn member_doc(member: Member) -> String {
   )
 }
 
+/// Summarizes fallback shape reasons for documentation generation.
 fn shape_note(shape: schema.Shape) -> String {
   case shape {
     schema.ValueFallback(reason) -> "; report.Value fallback: " <> reason
@@ -542,6 +591,7 @@ fn shape_note(shape: schema.Shape) -> String {
 
 // Each subtree receives a fresh identity after its parent. A field starts a
 // nearby semantic name instead of retaining every ancestor in its spelling.
+/// Renders record members and updates the naming counter.
 fn members(
   fields: List(schema.Field),
   stem: Scope,
@@ -559,6 +609,7 @@ fn members(
 
 // Type, encoder and decoder are one structural decision. Input and output
 // stems are separate so a hostile property cannot collide with a result type.
+/// Compiles a schema shape into a code-generated Node with types and codecs.
 fn node(
   shape: schema.Shape,
   stem: Scope,
@@ -608,6 +659,7 @@ fn node(
   }
 }
 
+/// Constructs a terminal leaf Node with static type and codec expressions.
 fn leaf(
   shape: schema.Shape,
   type_name: String,
@@ -620,6 +672,7 @@ fn leaf(
 
 // A named two-variant boolean puts wire meaning at each call site instead of
 // making the caller remember the polarity of a naked Bool parameter.
+/// Builds a named two-variant boolean type and associated codecs.
 fn boolean_node(shape: schema.Shape, stem: Scope, counter: Int) -> Node {
   let identifier = node_identifier(stem, counter)
   let key = node_prefix(stem.direction, counter)
@@ -657,6 +710,7 @@ fn boolean_node(shape: schema.Shape, stem: Scope, counter: Int) -> Node {
 
 // Enum wire literals remain exact. Their display candidates share the same
 // allocator as records and other constructors, including ordinal lookalikes.
+/// Allocates semantic variant identifiers for enum string values.
 fn enum_variants(
   values: List(String),
   stem: Scope,
@@ -675,6 +729,7 @@ fn enum_variants(
   })
 }
 
+/// Generates a closed Gleam custom type representing a string enum schema.
 fn enum_node(
   shape: schema.Shape,
   values: List(String),
@@ -736,6 +791,7 @@ type Container {
   NullableContainer
 }
 
+/// Constructs container nodes such as lists, dictionaries, or optional values.
 fn container_node(
   container: Container,
   inner: schema.Shape,
@@ -750,6 +806,8 @@ fn container_node(
       counter + 1,
       digest,
     )
+
+  // Render container type signatures and codec transformations.
   let #(type_name, encode, decoder) = case container {
     ListContainer -> #(
       "List(" <> child.type_name <> ")",
@@ -769,11 +827,14 @@ fn container_node(
       "codec.nullable(" <> child.decoder <> ")",
     )
   }
+
+  // Map container variant to its corresponding schema shape.
   let shape = case container {
     ListContainer -> schema.Sequence(child.kind)
     MapContainer -> schema.Mapping(child.kind)
     NullableContainer -> schema.Nullable(child.kind)
   }
+
   Node(
     shape,
     type_name,
@@ -787,6 +848,7 @@ fn container_node(
 
 // A record decoder establishes object shape and required presence before
 // construction. Its open/closed policy is the schema policy, not a heuristic.
+/// Generates a record type definition, encoder, and decoder for an object schema.
 fn object_node(
   fields: List(schema.Field),
   openness: schema.Openness,
@@ -796,6 +858,8 @@ fn object_node(
 ) -> Node {
   let identifier = node_identifier(stem, counter)
   let #(members, next) = members(fields, stem, counter + 1, digest)
+
+  // Check whether member property names collide after identifier mangling.
   case
     name.first_collision(
       list.map(members, fn(m) { #(m.field.original, m.label) }),
@@ -846,6 +910,7 @@ fn object_node(
   }
 }
 
+/// Emits the top-level type declaration string for a generated wire record.
 fn record_definition(identifier: String, members: List(Member)) -> String {
   "/// Named wire properties; optional fields retain absence separately from null.\npub type "
   <> identifier
@@ -854,6 +919,7 @@ fn record_definition(identifier: String, members: List(Member)) -> String {
   <> "\n}"
 }
 
+/// Formats constructor fields for an emitted wire record type.
 fn record_constructor(identifier: String, members: List(Member)) -> String {
   case members {
     [] -> identifier
@@ -888,6 +954,7 @@ type TaggedNode {
   TaggedNode(members: List(Member), openness: schema.Openness, literal: String)
 }
 
+/// Generates a union custom type node, preferring tagged union representations.
 fn union_node(
   branches: List(schema.Shape),
   stem: Scope,
@@ -904,9 +971,11 @@ fn union_node(
   }
 }
 
+/// Discovers potential discriminator fields suitable for tagged union decoding.
 fn tagged_branches(
   branches: List(schema.Shape),
 ) -> Option(#(String, List(TaggedBranch))) {
+  // Locate candidate discriminator fields across all record branches.
   case branches {
     [schema.Record(fields, _), ..] -> {
       let candidates =
@@ -942,15 +1011,19 @@ fn option_from_result(value: Result(a, Nil)) -> Option(a) {
   }
 }
 
+/// Validates that a branch record contains a required singleton string tag.
 fn tagged_branch(
   branch: schema.Shape,
   tag: String,
 ) -> Result(TaggedBranch, Nil) {
+  // Ensure the branch is an object record containing the candidate tag.
   case branch {
     schema.Record(fields, openness) -> {
       use field <- result.try(
         list.find(fields, fn(field) { field.original == tag }),
       )
+
+      // Verify that the discriminator field is required and has a singleton enum value.
       case field.presence, field.shape {
         schema.Required, schema.Enumeration([literal]) ->
           Ok(TaggedBranch(fields, openness, literal))
@@ -961,6 +1034,7 @@ fn tagged_branch(
   }
 }
 
+/// Generates a tagged union type definition, constructor codecs, and variant metadata.
 fn tagged_union_node(
   tag: String,
   branches: List(TaggedBranch),
@@ -968,6 +1042,7 @@ fn tagged_union_node(
   counter: Int,
   digest: fn(String) -> String,
 ) -> Result(Node, Nil) {
+  // Render payload members for each branch while tracking sequential naming counters.
   let #(next, rendered) =
     list.map_fold(branches, counter + 1, fn(counter, branch) {
       let #(members, next) = members(branch.fields, stem, counter + 1, digest)
@@ -997,6 +1072,8 @@ fn tagged_union_node(
     }),
     return: fn() { Error(Nil) },
   )
+
+  // Allocate type and constructor names for tagged union variants.
   let key = node_prefix(stem.direction, counter)
   let identifier = node_identifier(stem, counter)
   let variants =
@@ -1029,6 +1106,8 @@ fn tagged_union_node(
       "\n\n",
     )
     <> "\n}"
+
+  // Encode tagged union variants with literal discriminator injection.
   let encode =
     "case \u{1} { "
     <> string.join(
@@ -1047,6 +1126,8 @@ fn tagged_union_node(
       " ",
     )
     <> " }"
+
+  // Construct a one_of decoder trying each tagged variant in order.
   let decoder =
     "codec.one_of(["
     <> string.join(
@@ -1068,6 +1149,7 @@ fn tagged_union_node(
     <> "])"
   let payloads =
     list.flat_map(rendered, fn(branch) { payload_members(branch.members, tag) })
+
   Ok(Node(
     schema.Alternatives(
       list.map(rendered, fn(branch) {
@@ -1101,17 +1183,21 @@ fn member_usage(member: Member) -> Usage {
   }
 }
 
+/// Renders a single field label and type annotation for constructor signatures.
 fn member_declaration(member: Member) -> String {
+  // Wrap optional property types in Option constructors.
   let type_name = case member.field.presence {
     schema.Required -> member.node.type_name
     schema.OptionalField -> "Option(" <> member.node.type_name <> ")"
   }
+
   member.label <> ": " <> type_name
 }
 
 // Records and flattened tagged variants share their wire codecs. The optional
 // fixed field changes only how the constructor supplies one required literal;
 // object keys, openness, presence and nested decoder checks remain identical.
+/// Renders an object encoding expression traversing all field members.
 fn object_encode(
   members: List(Member),
   access: String,
@@ -1149,6 +1235,7 @@ fn object_encode(
   "report.object(list.flatten([" <> string.join(fields, ", ") <> "]))"
 }
 
+/// Reconstitutes a Record schema shape from rendered Member instances.
 fn record_shape(
   members: List(Member),
   openness: schema.Openness,
@@ -1161,18 +1248,22 @@ fn record_shape(
   )
 }
 
+/// Constructs a multi-field object decoder pipeline enforcing presence and openness.
 fn object_decoder(
   members: List(Member),
   openness: schema.Openness,
   constructed: String,
   fixed: Option(#(String, String)),
 ) -> String {
+  // Map schema openness to the corresponding codec policy flag.
   let openness = case openness {
     schema.Closed -> "codec.RejectAdditional"
     schema.Open -> "codec.AllowAdditional"
   }
+
   let fields =
     list.map(members, fn(member) {
+      // Enforce fixed literal values on discriminator tags or decode normal fields.
       case fixed {
         Some(#(tag, literal)) if member.field.original == tag ->
           "use _tag <- codec.field("
@@ -1181,10 +1272,12 @@ fn object_decoder(
           <> codegen.lit(literal)
           <> "), Nil))\n "
         _ -> {
+          // Select required or optional decoding combinator based on field presence.
           let field_fn = case member.field.presence {
             schema.Required -> "field"
             schema.OptionalField -> "optional_field"
           }
+
           "use "
           <> member.label
           <> " <- codec."
@@ -1213,6 +1306,7 @@ fn object_decoder(
 
 // Planning proved the branches structurally disjoint. The trusted one_of
 // combinator still requires exactly one successful decoder at the wire edge.
+/// Generates an ordinary union type representation trying alternative decoders in order.
 fn ordinary_union_node(
   branches: List(schema.Shape),
   stem: Scope,
@@ -1350,11 +1444,14 @@ fn encoder_function(node: Node, variable: String) -> String {
   "fn(" <> binding_name(variable, payload_usage(node)) <> ") { " <> body <> " }"
 }
 
+/// Builds unique key prefixes incorporating direction lane and node counter.
 fn node_prefix(direction: Direction, counter: Int) -> String {
+  // Determine lane label string based on direction variant.
   let lane = case direction {
     Input(_) -> "Input"
     Output(_) -> "Output"
   }
+
   "McpT"
   <> int.to_string(direction.tool)
   <> lane
@@ -1362,6 +1459,7 @@ fn node_prefix(direction: Direction, counter: Int) -> String {
   <> int.to_string(counter)
 }
 
+/// Resolves the allocated identifier string for a node in scope.
 fn node_identifier(scope: Scope, counter: Int) -> String {
   allocated_name(
     scope,
@@ -1387,6 +1485,7 @@ fn allocated_name(scope: Scope, key: String, semantic: String) -> String {
   }
 }
 
+/// Computes singular semantic name hints for container child types.
 fn container_semantic(container: Container, semantic: String) -> String {
   case container {
     NullableContainer -> semantic
@@ -1400,6 +1499,7 @@ fn container_semantic(container: Container, semantic: String) -> String {
   }
 }
 
+/// Derives semantic label fragments for union branch variants based on shape kind.
 fn branch_semantic(shape: schema.Shape) -> String {
   case shape {
     schema.Primitive(schema.ScalarString) -> "Text"
@@ -1421,6 +1521,7 @@ fn semantic_name(value: String) -> String {
   string.slice(value, 0, 64)
 }
 
+/// Converts snake_case strings into PascalCase type identifier candidates.
 fn pascal(value: String) -> String {
   string.split(value, "_")
   |> list.map(fn(piece) {
@@ -1435,6 +1536,7 @@ fn docs(text: String) -> String {
   |> string.join("\n")
 }
 
+/// Formats the Gleam function signature declaration string.
 fn signature(
   name: String,
   params: List(Parameter),
@@ -1452,6 +1554,7 @@ fn signature(
   <> ", mcp.McpError)"
 }
 
+/// Emits the complete formatted Gleam function source with doc comments and body.
 fn function_source(
   doc: String,
   name: String,
@@ -1484,6 +1587,7 @@ fn function_source(
 
 // Import selection reads generator syntax only. Server literals or prose
 // mentioning a module must not manufacture an unused compiler import.
+/// Extracts non-comment code tokens from source text.
 fn source_tokens(source: String) -> String {
   string.split(source, "\n")
   |> list.filter(fn(line) { !string.starts_with(string.trim(line), "///") })
@@ -1499,6 +1603,7 @@ type LiteralState {
   EscapedLiteral
 }
 
+/// Strips string literals from a line of source graphemes.
 fn tokens_loop(
   chars: List(String),
   state: LiteralState,
@@ -1518,6 +1623,7 @@ fn tokens_loop(
   }
 }
 
+/// Checks whether a specific identifier token appears outside string literals.
 fn token_contains(code: String, identifier: String) -> Bool {
   let text =
     list.fold(

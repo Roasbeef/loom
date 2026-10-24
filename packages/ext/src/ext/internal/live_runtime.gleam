@@ -146,6 +146,8 @@ pub fn start_with_sys(
     config.max_state_bytes,
     config.pause_ms,
   ))
+
+  // Start the live runtime transition controller actor.
   case
     actor.new(State(config, sys, component, None, "", "", "a"))
     |> actor.on_message(handle)
@@ -189,8 +191,11 @@ pub fn pid(controller: Controller) -> Pid {
   controller.pid
 }
 
+/// Handles runtime controller expiry timers and invocation requests.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   let state = expire(state)
+
+  // Dispatch on timer tick or incoming client call.
   case message {
     Expire -> actor.continue(state)
     Ask(asked, reply) -> {
@@ -201,6 +206,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
+/// Dispatches control events or forwards ordinary invocations to the state actor.
 fn answer(state: State, asked: runtime.Asked) -> #(State, runtime.Answer) {
   case asked.invocation {
     runtime.Event("__loom_live_prepare") -> prepared(state, asked.args)
@@ -220,6 +226,7 @@ fn answer(state: State, asked: runtime.Asked) -> #(State, runtime.Answer) {
   }
 }
 
+/// Handles live transition prepare requests and records pending transitions.
 fn prepared(state: State, args: report.Value) -> #(State, runtime.Answer) {
   case state.pending {
     Some(pending) -> {
@@ -250,15 +257,19 @@ fn prepared(state: State, args: report.Value) -> #(State, runtime.Answer) {
   }
 }
 
+/// Validates code and prepares the suspended state transition.
 fn prepare(
   state: State,
   args: report.Value,
 ) -> Result(#(State, Result(Nil, String)), String) {
   use id <- result.try(text(args, "transition"))
+
+  // Ensure no conflicting live transition is already prepared.
   use Nil <- result.try(case state.pending {
     None -> Ok(Nil)
     Some(_) -> Error("another live transition is prepared")
   })
+
   use from <- result.try(text(args, "from"))
   use boundary <- result.try(text(args, "boundary"))
   use version <- result.try(text(args, "version"))
@@ -267,6 +278,8 @@ fn prepare(
   use migration <- result.try(text(args, "migration"))
   let expected =
     list.map(state.config.modules, fn(module) { beam_name(slot, module) })
+
+  // Verify target slot and module contract compatibility.
   use Nil <- result.try(
     case
       boundary == state.config.boundary
@@ -280,6 +293,7 @@ fn prepare(
         Error("live contract or fixed implementation slot is incompatible")
     },
   )
+
   use modules <- result.try(compiled_modules(args))
   use Nil <- result.try(ffi_live_code.retire(expected))
   use baseline <- result.try(
@@ -307,10 +321,13 @@ fn prepare(
       Ok(live_actor.inspect(state.component, state.config.pause_ms))
     }),
   )
+
+  // Ensure previous state version matches expected source version.
   use Nil <- result.try(case previous.version == from {
     True -> Ok(Nil)
     False -> Error("live state version changed before preparation")
   })
+
   let expires_at = ffi_live_sys.now() + state.config.pause_ms
 
   // Custody precedes the first suspend signal. A timeout can leave that signal
@@ -329,6 +346,8 @@ fn prepare(
       state.config.pause_ms,
     )
   }
+
+  // Advance state on successful change or run cleanup on failure.
   case changed {
     Ok(Nil) ->
       Ok(#(
@@ -339,15 +358,19 @@ fn prepare(
       // Failed acknowledgements do not prove that queued operations did not
       // execute. Retrying compensation keeps ordinary invocations excluded.
       let cleanup = finish(owned, pending, Compensate)
+
+      // Unwrap the cleaned up state from the result.
       let next = case cleanup {
         Ok(next) -> next
         Error(#(next, _)) -> next
       }
+
       Ok(#(next, Error(reason)))
     }
   }
 }
 
+/// Completes or compensates a pending transition by decision.
 fn completed(
   state: State,
   args: report.Value,
@@ -370,15 +393,20 @@ fn completed(
   }
 }
 
+/// Finalizes a pending live transition by applying commit or compensation.
 fn finish(
   state: State,
   pending: Pending,
   requested: Decision,
+  requested: Decision,
 ) -> Result(State, #(State, String)) {
+  // Resolve effective decision based on pending preparation phase.
   let decision = case pending.preparation {
     Resuming(decision) -> decision
     Cleaning | Prepared -> requested
   }
+
+  // Apply compensating state rollback if compensation was requested.
   let changed = case pending.preparation, decision {
     Resuming(_), _ -> Ok(Nil)
     Cleaning, Publish -> Error("live preparation cleanup is pending")
@@ -395,6 +423,7 @@ fn finish(
         state.config.pause_ms,
       )
   }
+
   use Nil <- result.try(
     result.map_error(changed, fn(reason) { #(state, reason) }),
   )
@@ -410,18 +439,25 @@ fn finish(
     state.sys.resume(live_actor.pid(state.component), state.config.pause_ms)
     |> result.map_error(fn(reason) { #(owned, reason) }),
   )
+
+  // Select active slot based on the finalized decision.
   let slot = case decision {
     Publish -> pending.slot
     Compensate -> state.slot
   }
+
+  // Set status label based on the finalized decision.
   let last_status = case decision {
     Publish -> "committed"
     Compensate -> "aborted"
   }
+
+  // Update config version if the transition was committed.
   let config = case decision {
     Publish -> Config(..state.config, version: pending.version)
     Compensate -> state.config
   }
+
   Ok(
     State(
       ..state,
@@ -434,8 +470,11 @@ fn finish(
   )
 }
 
+/// Checks and compensates any timed-out pending transition.
 fn expire(state: State) -> State {
   let now = ffi_live_sys.now()
+
+  // Roll back pending transition if expiry deadline was reached.
   case state.pending {
     Some(pending) if pending.expires_at <= now ->
       case finish(state, pending, Compensate) {
@@ -446,6 +485,7 @@ fn expire(state: State) -> State {
   }
 }
 
+/// Formats current live runtime state into an answered status report.
 fn status(state: State) -> runtime.Answer {
   runtime.Answered(
     report.object([
@@ -472,6 +512,7 @@ fn refused(reason: String) -> runtime.Answer {
   runtime.Refused("live_upgrade_refused", reason)
 }
 
+/// Extracts a required string field from a report value.
 fn text(args: report.Value, key: String) -> Result(String, String) {
   use value <- result.try(
     report.field(args, key)
@@ -481,6 +522,7 @@ fn text(args: report.Value, key: String) -> Result(String, String) {
   |> result.map_error(fn(_) { "invalid live control field: " <> key })
 }
 
+/// Decodes and validates compiled BEAM modules from live transition arguments.
 fn compiled_modules(
   args: report.Value,
 ) -> Result(List(#(String, BitArray, String)), String) {

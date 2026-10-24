@@ -113,6 +113,8 @@ pub fn paths(directory: String) -> Result(Paths, String) {
 /// ```
 pub fn observe(pid: Int) -> Result(Fence, String) {
   use identity <- result.try(bootstrap.process_identity(pid))
+
+  // Extract fence information if the process is still running.
   case identity {
     bootstrap.ProcessAbsent -> Error("daemon process exited before publication")
     bootstrap.ProcessPresent(birth) ->
@@ -129,6 +131,8 @@ pub fn observe(pid: Int) -> Result(Fence, String) {
 /// ```
 pub fn is_present(fence: Fence) -> Result(Bool, String) {
   use identity <- result.try(bootstrap.process_identity(fence.pid))
+
+  // Compare live process identity with the recorded fence birth.
   case identity, fence.birth {
     bootstrap.ProcessPresent(birth), expected if birth == expected -> Ok(True)
 
@@ -143,8 +147,11 @@ pub fn is_present(fence: Fence) -> Result(Bool, String) {
   }
 }
 
+/// Verifies presence against legacy Darwin birth strings.
 fn legacy_is_present(fence: Fence) -> Result(Bool, String) {
   use identity <- result.try(ffi_process.legacy_darwin_identity(fence.pid))
+
+  // Match against legacy process birth timestamps.
   case identity {
     bootstrap.ProcessPresent(birth) if birth == fence.birth -> Ok(True)
     bootstrap.ProcessPresent(_) ->
@@ -163,6 +170,7 @@ fn legacy_is_present(fence: Fence) -> Result(Bool, String) {
 /// // endpoint.load(paths)
 /// ```
 pub fn load(paths: Paths) -> Result(Option(Endpoint), String) {
+  // Check if the endpoint record file exists on disk.
   case bootstrap.path_exists(paths.record) {
     False -> Ok(None)
     True -> {
@@ -188,6 +196,8 @@ pub fn load(paths: Paths) -> Result(Option(Endpoint), String) {
 /// ```
 pub fn availability(paths: Paths) -> Result(Availability, String) {
   use record <- result.try(load(paths))
+
+  // Determine whether the endpoint file exists and is active.
   case record {
     None ->
       case bootstrap.path_exists(paths.catalogue) {
@@ -199,6 +209,8 @@ pub fn availability(paths: Paths) -> Result(Availability, String) {
       }
     Some(record) -> {
       use present <- result.try(is_present(record.fence))
+
+      // Branch on whether the recorded process identity is still present.
       case present {
         True -> Ok(Occupied(record))
         False -> Ok(Vacant)
@@ -220,6 +232,8 @@ pub fn availability(paths: Paths) -> Result(Availability, String) {
 /// ```
 pub fn claim(paths: Paths, own: Fence) -> Result(Fence, String) {
   use available <- result.try(availability(paths))
+
+  // Claim a vacant reservation or adopt a matching startup fence.
   case available {
     Vacant -> write(paths, Starting(own)) |> result.replace(own)
     Occupied(Starting(fence))
@@ -261,6 +275,8 @@ pub fn publish_ready(
   identity: Option(build_identity.Identity),
 ) -> Result(Nil, String) {
   use current <- result.try(load(paths))
+
+  // Verify current reservation matches fence before publishing ready state.
   case current {
     Some(Starting(found)) if found == fence ->
       write(paths, Ready(fence, host, port, epoch, identity))
@@ -276,13 +292,16 @@ pub fn publish_ready(
 /// // endpoint.address(record)
 /// ```
 pub fn address(record: Endpoint) -> Result(String, String) {
+  // Verify daemon is in ready state before constructing address.
   case record {
     Starting(_) -> Error("daemon is still starting")
     Ready(_, host, port, _, _) -> {
+      // Format IPv6 loopback addresses with brackets for URI compatibility.
       let host = case host {
         "::1" -> "[::1]"
         _ -> host
       }
+
       Ok("ws://" <> host <> ":" <> int_text(port) <> "/v2/control")
     }
   }
@@ -303,15 +322,20 @@ pub fn address(record: Endpoint) -> Result(String, String) {
 /// ```
 pub fn encode(record: Endpoint) -> String {
   let fence = record.fence
+
+  // Select base schema version based on birth timestamp format.
   let base_version = case string.starts_with(fence.birth, "darwin:utc:") {
     True -> 3
     False -> 1
   }
+
+  // Compute effective schema version including build identity presence.
   let version = case record {
     Starting(_) -> base_version
     Ready(_, _, _, _, None) -> base_version
     Ready(_, _, _, _, Some(_)) -> base_version + 1
   }
+
   let common = [
     #("version", json.Int(version)),
     #("protocol", json.Int(2)),
@@ -319,6 +343,8 @@ pub fn encode(record: Endpoint) -> String {
     #("birth", json.String(fence.birth)),
     #("started_at_ms", json.Int(fence.started_at_ms)),
   ]
+
+  // Assemble status-specific fields and identity payload.
   let fields = case record {
     Starting(_) -> [#("status", json.String("starting")), ..common]
     Ready(_, host, port, epoch, identity) -> {
@@ -331,12 +357,11 @@ pub fn encode(record: Endpoint) -> String {
       list.append(list.append(head, identity_fields(identity)), common)
     }
   }
+
   json.to_string(json.Object(fields))
 }
 
-// The identity keys sit between the epoch and the schema tail. Within either
-// version pair, the higher version inserts both fields. `None` contributes
-// nothing; absence is never encoded as an empty build identity.
+/// Formats build identity fields into JSON key-value pairs if present.
 fn identity_fields(identity: Option(build_identity.Identity)) {
   case identity {
     None -> []
@@ -366,6 +391,8 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
     json.parse(text)
     |> result.replace_error("invalid daemon endpoint"),
   )
+
+  // Parse raw JSON value into an object field list.
   use fields <- result.try(case value {
     json.Object(fields) -> Ok(fields)
     json.Array(_)
@@ -375,6 +402,7 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
     | json.Bool(_)
     | json.Null -> Error("invalid daemon endpoint")
   })
+
   use version <- result.try(number(fields, "version"))
   use protocol <- result.try(number(fields, "protocol"))
   use pid <- result.try(number(fields, "pid"))
@@ -396,6 +424,8 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
     Error("invalid daemon endpoint"),
   )
   let fence = Fence(pid, birth, started)
+
+  // Decode record payload based on reported status field.
   case status {
     "starting" -> {
       // A starting record is reservation only and never carries an
@@ -424,6 +454,8 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
       // malformed record rather than an old one. Duplicate keys were
       // already refused by the parser, so "at most N fields" plus the N
       // distinct keys read above is exactly N.
+
+      // Decode optional build identity fields based on schema version.
       use identity <- result.try(case version {
         1 | 3 -> {
           use <- bool.guard(
@@ -452,6 +484,7 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
         }
         _ -> Error("invalid daemon endpoint")
       })
+
       use <- bool.guard(
         !{
           { host == "127.0.0.1" || host == "::1" }
@@ -468,8 +501,11 @@ pub fn decode(text: String) -> Result(Endpoint, String) {
   }
 }
 
+/// Extracts an integer field from parsed JSON fields.
 fn number(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Verify value is a JSON integer.
   case value {
     json.Int(value) -> Ok(value)
     json.Object(_)
@@ -481,8 +517,11 @@ fn number(fields, key) {
   }
 }
 
+/// Extracts a string field from parsed JSON fields.
 fn text_field(fields, key) {
   use value <- result.try(field(fields, key))
+
+  // Verify value is a JSON string.
   case value {
     json.String(value) -> Ok(value)
     json.Object(_)

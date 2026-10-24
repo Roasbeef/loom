@@ -541,6 +541,8 @@ fn admit(state: State, permit: abi.Permit) -> Result(State, String) {
     None -> Ok(Nil)
     Some(_) -> Error("scratch already has an admitted upgrade")
   })
+
+  // Verify matching target boundary version before admitting upgrade.
   use _ <- result.try(case permit.expected == state.identity {
     True -> Ok(Nil)
     False -> Error("scratch implementation differs from expected identity")

@@ -257,6 +257,7 @@ pub fn open_sqlite_custody(
   open_sqlite_configured(config, clock, lease_ttl_ms)
 }
 
+/// Opens a SQLite session with configured migrations and lease parameters.
 fn open_sqlite_configured(
   config: sqlite.Config,
   clock: Clock,
@@ -269,6 +270,7 @@ fn open_sqlite_configured(
   ),
   OpenError,
 ) {
+  // Open database with schema migrations applied.
   case sqlite.open_with_migrations(config, clock, migration_chain()) {
     Ok(store) -> {
       let handle = store.handle
@@ -429,6 +431,8 @@ pub fn ensure_id(
   generator: Generator,
 ) -> Result(#(SessionId, Generator), SessionError) {
   use existing <- result.try(id(session))
+
+  // Return existing session identity or mint a new identity.
   case existing {
     Some(id) -> {
       use Nil <- result.map(project_identity(session, id))
@@ -438,11 +442,14 @@ pub fn ensure_id(
   }
 }
 
+/// Mints a fresh session identity and commits it as the session root identity.
 fn mint_identity(
   session: Session,
   generator: Generator,
 ) -> Result(#(SessionId, Generator), SessionError) {
   let #(minted, generator) = ids.mint_session(generator)
+
+  // Commit minted identity or adopt winner on race condition.
   case storage.commit(session.store, identity_seed(minted)) {
     Ok(_) -> {
       use Nil <- result.map(project_identity(session, minted))
@@ -457,6 +464,7 @@ fn mint_identity(
 
 // Both creation paths compare against absence before establishing identity.
 // The daemon supplies a reserved ID; standalone boot supplies a freshly minted ID.
+/// Builds the transaction seeding the initial session identity register.
 fn identity_seed(identity: SessionId) -> Tx {
   Tx(
     writes: [
@@ -491,6 +499,8 @@ pub fn ensure_reserved_id(
   reserved: SessionId,
 ) -> Result(SessionId, SessionError) {
   use existing <- result.try(id(session))
+
+  // Verify existing identity matches reserved id or commit reservation.
   case existing {
     Some(_) -> accept_reserved_identity(session, reserved, existing)
     None -> {
@@ -509,6 +519,7 @@ pub fn ensure_reserved_id(
   }
 }
 
+/// Verifies existing session identity matches the expected reserved identity.
 fn accept_reserved_identity(
   session: Session,
   reserved: SessionId,
@@ -535,11 +546,14 @@ fn accept_reserved_identity(
   }
 }
 
+/// Adopts winning identity committed by a racing minter.
 fn adopt_minted_identity(
   session: Session,
   generator: Generator,
 ) -> Result(#(SessionId, Generator), SessionError) {
   use existing <- result.try(id(session))
+
+  // Read the identity cell written by the winning concurrent seeder.
   case existing {
     Some(id) -> Ok(#(id, generator))
     None ->
@@ -555,6 +569,7 @@ fn adopt_minted_identity(
 // one, its parent's. Only the read is allowed to fail the caller — a
 // projection write that fails leaves the register cell (the truth)
 // standing, and the next open repairs the row.
+/// Writes the catalog identity projection for a session and its parent.
 fn project_identity(
   session: Session,
   id: SessionId,
@@ -569,6 +584,7 @@ fn project_identity(
   Nil
 }
 
+/// Reads and decodes a canonical identity cell from custom fact registers.
 fn read_identity_cell(
   session: Session,
   key: String,
@@ -577,6 +593,8 @@ fn read_identity_cell(
     storage.get_register(session.store, register.FactCustom, key)
     |> result.map_error(StoreFailure),
   )
+
+  // Decode register payload when cell exists in store.
   case cell {
     None -> Ok(None)
     Some(storage.Register(value:, ..)) ->
@@ -584,6 +602,7 @@ fn read_identity_cell(
   }
 }
 
+/// Decodes a string JSON payload into a SessionId.
 fn decode_identity_cell(
   payload: JsonValue,
   key: String,
@@ -775,6 +794,8 @@ pub fn strand_leaf(
     storage.get_register(session.store, register.StrandLeaf, strand_name)
     |> result.map_error(StoreFailure),
   )
+
+  // Decode leaf entry pointer when register cell exists.
   case found {
     None -> Ok(None)
     Some(storage.Register(value:, seq:)) ->
@@ -865,6 +886,8 @@ pub fn pending_payloads(
   cells
   |> list.try_map(fn(pair) {
     let #(key, storage.Register(value:, ..)) = pair
+
+    // Decode individual pending entry payload.
     case codec.decode_pending_entry(value.payload) {
       Ok(pending) -> Ok(#(key, pending))
       Error(report) -> Error(SessionCorrupt(report:))
@@ -910,6 +933,8 @@ pub fn tool_arguments(
     storage.get_register(session.store, register.OpToolArgs, key)
     |> result.map_error(StoreFailure),
   )
+
+  // Return register cell payload when present in storage.
   case found {
     None -> Ok(None)
     Some(storage.Register(value:, seq:)) ->
@@ -935,12 +960,15 @@ pub fn preparation(
     register.OpPreparation,
     ids.op_id_to_string(operation),
   ))
+
+  // Return None when no preparation registers exist, or decode the first key.
   case keys {
     [] -> Ok(None)
     [key, ..] -> decode_preparation_cell(session, key)
   }
 }
 
+/// Decodes an operation's structural preparation register value.
 fn decode_preparation_cell(
   session: Session,
   key: String,
@@ -949,6 +977,8 @@ fn decode_preparation_cell(
     storage.get_register(session.store, register.OpPreparation, key)
     |> result.map_error(StoreFailure),
   )
+
+  // Decode preparation payload when register is present.
   case found {
     None -> Ok(None)
     Some(storage.Register(value:, ..)) ->
@@ -958,6 +988,7 @@ fn decode_preparation_cell(
   }
 }
 
+/// Helper for reading and decoding a register cell value by key.
 fn read_cell(
   session: Session,
   ns: RegisterNs,
@@ -968,6 +999,8 @@ fn read_cell(
     storage.get_register(session.store, ns, key)
     |> result.map_error(StoreFailure),
   )
+
+  // Decode register cell payload when found.
   case found {
     None -> Ok(None)
     Some(storage.Register(value:, seq:)) ->
@@ -1073,6 +1106,7 @@ pub fn project(
   leaf: Option(EntryId),
   projection: Projection,
 ) -> Result(List(AgentMessage), SessionError) {
+  // Return empty list on absent leaf or scan branch backward from leaf.
   case leaf {
     None -> Ok([])
     Some(start) -> {
@@ -1159,6 +1193,7 @@ pub fn project_scan(newest_first: List(Entry)) -> List(AgentMessage) {
   project_entries(newest_first, projection())
 }
 
+/// Projects a single durable entry into agent messages.
 fn project_entry(
   entry: Entry,
   projectors: Dict(String, fn(CustomView) -> Option(AgentMessage)),
@@ -1203,6 +1238,7 @@ fn heal_orphan_calls(messages: List(AgentMessage)) -> List(AgentMessage) {
   heal_loop(messages, [])
 }
 
+/// Tail-recursive loop healing orphaned tool calls across projected messages.
 fn heal_loop(
   remaining: List(AgentMessage),
   healed: List(AgentMessage),
@@ -1237,6 +1273,7 @@ fn heal_loop(
   }
 }
 
+/// Checks if any message in the list is a tool result matching call_id.
 fn has_result(messages: List(AgentMessage), call_id: String) -> Bool {
   list.any(messages, fn(message) {
     case message {
@@ -1258,6 +1295,7 @@ fn synthetic_result_if_orphan(
   Ok(synthetic_result(call, timestamp))
 }
 
+/// Synthesizes an error tool result message for an orphaned tool call.
 fn synthetic_result(call: message.ToolCall, timestamp: Int) -> AgentMessage {
   ToolResultMessage(
     tool_call_id: call.id,

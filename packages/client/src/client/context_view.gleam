@@ -279,6 +279,8 @@ pub fn board(
         ),
       ])
     })
+
+  // Fit items into the payload window and assemble response attributes.
   let shown = fit(items, [], 0)
   let payload =
     json.Object([

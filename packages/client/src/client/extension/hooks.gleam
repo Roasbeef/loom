@@ -1567,6 +1567,8 @@ pub fn wire(
   let run_start = built.run_start
   let context = built.context
   let run_end = built.run_end
+
+  // Bind compaction, usage, and tool effect hooks.
   let compaction_note = built.compaction_note
   let on_usage = built.usage
   let clear = tools.clear

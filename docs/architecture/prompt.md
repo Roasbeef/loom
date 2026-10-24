@@ -121,7 +121,7 @@ what these postures mean at the kernel.
 
 ### Rendering
 
-`render` (`prompt/pack.gleam:906`) walks each non-fragment section once.
+`render` (`prompt/pack.gleam:919`) walks each non-fragment section once.
 Bindings come in two tiers. Literal bindings are strings taken straight
 from the environment, such as `{workspace}` or `{network_allow}`. Selected
 bindings, such as `{enforcement}` or `{repository_guidance}`, name a

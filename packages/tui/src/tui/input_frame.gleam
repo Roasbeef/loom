@@ -140,8 +140,12 @@ pub fn render_identity(
       None -> ""
     }
     <> " "
+
+  // Truncate right-side model descriptor and determine remaining room.
   let right = text.truncate(right, int.max(0, width / 3), "…")
   let room = int.max(0, width - text.cell_width(right))
+
+  // Construct styled span segments for workspace, session, and strand.
   let pieces = [
     #(" ◆ ", style.new(theme.signal, ground, style.bold())),
     #(
@@ -314,6 +318,8 @@ fn draw_rule(
   let rule = style.new(theme.signal, style.Default, style.none())
   let inner = width - 4
   let fits = labels_width(left) + labels_width(right) + 1 <= inner
+
+  // Select whether to drop the right-hand label based on available inner width.
   let #(left, right) = case fits, keep {
     True, _ -> #(left, right)
     False, KeepLeft -> #(left, case labels_width(right) + 12 <= inner {
@@ -325,6 +331,8 @@ fn draw_rule(
       False -> []
     })
   }
+
+  // Clip left-hand spans to fit within remaining inner rule width.
   let left = fit_spans(left, int.max(0, inner - labels_width(right) - 1))
   let used = spans_width(left) + labels_width(right)
   let line =

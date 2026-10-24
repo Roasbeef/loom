@@ -53,6 +53,8 @@ pub fn private_helpers(module: glance.Module) -> List(Helper) {
   })
   |> list.filter_map(fn(definition) {
     let function = definition.definition
+
+    // Filter for private functions that have at least one caller in the module.
     case function.publicity, callers_of(module, function.name) {
       glance.Private, [_, ..] as callers ->
         Ok(Helper(function:, callers: list.map(callers, fn(c) { c.definition })))
@@ -166,6 +168,7 @@ fn mentions_optional(value: Option(glance.Expression), name: String) -> Bool {
   }
 }
 
+/// Checks whether any expression in a list of fields references the given name.
 fn mentions_fields(
   arguments: List(glance.Field(glance.Expression)),
   name: String,

@@ -283,6 +283,7 @@ type Piece {
   Gap(String)
 }
 
+/// Splits graphemes into alternating token and gap pieces.
 fn split_tokens(
   graphemes: List(String),
   current: List(String),
@@ -312,7 +313,9 @@ fn token_character(grapheme: String) -> Bool {
   }
 }
 
+/// Checks whether a single grapheme represents an ASCII alphanumeric character.
 fn is_alphanumeric(grapheme: String) -> Bool {
+  // Match single codepoints to verify ASCII letter or digit ranges.
   case string.to_utf_codepoints(grapheme) {
     [codepoint] -> {
       let value = string.utf_codepoint_to_int(codepoint)
@@ -324,9 +327,7 @@ fn is_alphanumeric(grapheme: String) -> Bool {
   }
 }
 
-// The 8-4-4-4-12 hexadecimal shape. Loom's entry, usage and op ids are
-// UUIDv7 and appear in error text constantly; treating them as secrets
-// would make the shape rule unusable.
+/// Checks whether a string matches the standard 8-4-4-4-12 UUID shape.
 fn is_uuid(word: String) -> Bool {
   // Thirty-six bytes exactly, dashes included, and every grapheme that can
   // pass `hex_run` is one byte — so asking the binary its own size settles
@@ -340,6 +341,7 @@ fn is_uuid(word: String) -> Bool {
 
 const uuid_bytes = 36
 
+/// Verifies that the dash-separated parts of a candidate UUID are hexadecimal runs.
 fn uuid_runs(word: String) -> Bool {
   case string.split(word, "-") {
     [a, b, c, d, e] ->
@@ -352,11 +354,7 @@ fn uuid_runs(word: String) -> Bool {
   }
 }
 
-// `byte_size` rather than `string.length`: it is the binary's own size on
-// the BEAM rather than a grapheme walk, and the hex test below makes the
-// two agree on anything that can return `True` — a multi-byte grapheme
-// costs more bytes than it does graphemes, so it can only make this
-// comparison hold on a segment that then fails to be hexadecimal.
+/// Checks whether a segment has the expected byte size and consists only of hex characters.
 fn hex_run(text: String, length: Int) -> Bool {
   string.byte_size(text) == length
   && list.all(string.to_graphemes(text), fn(grapheme) {

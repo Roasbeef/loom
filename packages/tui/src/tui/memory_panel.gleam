@@ -185,6 +185,8 @@ fn layout_areas(
     True -> 2
     False -> 0
   }
+
+  // Construct bounded card outer rectangle.
   let card =
     geometry.rect_new(
       area.position.x + horizontal,
@@ -192,11 +194,15 @@ fn layout_areas(
       int.max(1, area.size.width - horizontal * 2),
       area.size.height,
     )
+
+  // Inset inner bounds when rendered inside a rounded border frame.
   let inside = case framed {
     True ->
       block.inner(card, block.block_new() |> block.with_border(block.Rounded))
     False -> card
   }
+
+  // Partition inside area between main content and bottom controls.
   let controls_height = case inside.size.height >= 3 {
     True -> 1
     False -> 0

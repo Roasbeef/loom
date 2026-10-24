@@ -44,6 +44,7 @@ fn init(vendor: ffi_dom.Vendor) -> #(Model, Effect(controller.Msg)) {
   #(Model(vendor, controller.new()), subscribe())
 }
 
+/// Advances controller state and performs the resulting DOM and communication effects.
 fn update(
   model: Model,
   message: controller.Msg,
@@ -58,11 +59,11 @@ fn view(_: Model) -> Element(controller.Msg) {
   element.none()
 }
 
-// The listener exists before Ready is sent. Window identity is checked before
-// decoding data; an opaque origin's "null" string is not a sender identity.
+/// Sets up window message listeners and resize observers for the host container.
 fn subscribe() -> Effect(controller.Msg) {
   use dispatch <- effect.from
   ffi_dom.listen_messages(fn(event) {
+    // Verify message sender origin before parsing incoming data.
     case ffi_dom.is_parent_message(event) {
       False -> Nil
       True -> {
@@ -93,12 +94,14 @@ fn subscribe() -> Effect(controller.Msg) {
   ffi_dom.send_text(controller.reply_json(controller.Ready))
 }
 
+/// Executes a list of side-effects requested by the controller.
 fn perform(
   vendor: ffi_dom.Vendor,
   effects: List(controller.Effect),
 ) -> Effect(controller.Msg) {
   use dispatch <- effect.from
   list.each(effects, fn(effect) {
+    // Dispatch each controller effect to its corresponding DOM operation.
     case effect {
       controller.Begin(request) -> begin(vendor, request, dispatch)
       controller.Inspect(revision, svg) -> inspect(revision, svg, dispatch)
@@ -113,8 +116,7 @@ fn perform(
   })
 }
 
-// Fixed configuration is produced in Gleam. The vendor promise reports only
-// a Result carrying SVG text, and only the controller can authorize inspection.
+/// Initializes the vendor library and triggers diagram rendering into the host element.
 fn begin(
   vendor: ffi_dom.Vendor,
   request: controller.Request,
@@ -146,15 +148,15 @@ fn begin(
     )
     Ok(Nil)
   }
+
+  // Report render outcome back to the controller.
   case began {
     Ok(Nil) -> Nil
     Error(Nil) -> dispatch(controller.Rendered(revision, Error(Nil)))
   }
 }
 
-// Inspection is synchronous inside one event-loop turn. The controller has
-// already accepted the render revision; publication is checked again when
-// the measured result is dispatched, before any reply reaches the parent.
+/// Validates SVG security policy and attaches the sanitized element to the document.
 fn inspect(
   revision: Int,
   svg: String,
@@ -166,10 +168,13 @@ fn inspect(
     let nodes =
       [root, ..ffi_dom.query_selector_all(root, "*")]
       |> list.map(node_info)
+
+    // Verify that every node and attribute in the SVG complies with the security policy.
     use Nil <- result.try(case controller.safe_svg(nodes) {
       True -> Ok(Nil)
       False -> Error(Nil)
     })
+
     use host <- result.try(diagram_host())
 
     // Nothing from the parsed document is attached before policy validation.
@@ -185,6 +190,7 @@ fn inspect(
   dispatch(controller.Published(revision, inspected))
 }
 
+/// Extracts tag name and attribute list from a DOM element into a controller Node.
 fn node_info(node: ffi_dom.Element) -> controller.Node {
   let attributes =
     ffi_dom.attributes(node)
@@ -197,6 +203,7 @@ fn node_info(node: ffi_dom.Element) -> controller.Node {
   controller.Node(ffi_dom.local_name(node), attributes)
 }
 
+/// Measures the rendered SVG element height and dispatches the result.
 fn measure(revision: Int, dispatch: fn(controller.Msg) -> Nil) -> Nil {
   let _ =
     diagram_host()

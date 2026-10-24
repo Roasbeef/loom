@@ -73,6 +73,7 @@ pub fn clear(
 ) -> effects.Clearance {
   let name = query.call.name
 
+  // Check whether the tool is active in the strand's configuration.
   case list.contains(query.configuration.active_tool_names, name) {
     False ->
       effects.ClearanceRefused(

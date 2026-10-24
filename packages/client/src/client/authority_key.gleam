@@ -442,6 +442,8 @@ fn decode_envelope(text: String) -> Result(Envelope, KeyError) {
       False -> Error(NotAnEnvelope(FieldInvalid("iterations")))
     },
   )
+
+  // Decode cryptographic components from base64 envelope fields.
   use salt <- result.try(binary(fields, "salt", salt_bytes, salt_bytes))
   use nonce <- result.try(binary(fields, "nonce", nonce_bytes, nonce_bytes))
   use ciphertext <- result.try(binary(

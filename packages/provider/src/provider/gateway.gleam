@@ -1975,6 +1975,8 @@ fn attempt_one(
       accounting.empty(),
     ))
   })
+
+  // Build provider profile and check request admission guards.
   use request <- or_profile_failure(compose_profile(
     gateway,
     walk.request,
@@ -1986,6 +1988,8 @@ fn attempt_one(
     None -> Ok(request)
     Some(guard) -> guard(target, adapter_api(config), request)
   })
+
+  // Enforce image budget limits across request messages.
   let limit =
     list.key_find(gateway.image_limits, #(target.provider, target.model_id))
     |> result.unwrap(image_budget.default_max_images)

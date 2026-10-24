@@ -13,9 +13,10 @@ quadratic JSON parser whose every unit test passed (`08cdbce`).
 A pure analysis over `glance`'s AST, plus four `glexer` token scans for
 the questions where a parser miss would be a policy hole rather than a
 missed suggestion, plus one line scan of a `gleam.toml` and one line
-classification of every source. Thirteen of the twenty-three rules gate — R0,
-R1, R2, R4, R6, R7, R10, R13, R14, R15, R16, R19 and R20 — and each of their
-censuses must stay zero; the other ten report. See **Staging** below before
+classification of every source. Fourteen of the twenty-three rules gate
+globally — R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19 and R20 —
+and each of their censuses must stay zero; R21 and R22 additionally gate in
+every package listed by `policy.literate_packages()` as the tree is swept. See **Staging** below before
 wiring anything else to the exit code.
 
 Four of the twenty-three are not questions about the AST at all. R10, R11 and
@@ -588,10 +589,10 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
 
 ## Staging
 
-**R0, R1, R2, R4, R6, R7, R10, R13, R14, R15, R16, R19 and R20 gate; R3, R5,
-R8, R9, R11, R12, R17, R18, R21 and R22 warn.** `make lint` and `make check`
-fail on
-any of the thirteen. The warning default is deliberate
+**R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19 and R20 gate
+globally, and R21 and R22 gate on `policy.literate_packages()`; R3, R5, R8, R9,
+R12, R17 and R18 warn.** `make lint` and `make check` fail on any gated
+finding. The warning default is deliberate
 and it is the `scripts/doc_check.sh` precedent (D2,
 `docs/design-notes/four-decisions.md`): a check earns the error tier by
 producing a census that is zero, decidable, and argued — not by being
@@ -659,7 +660,7 @@ for the censuses this superseded):
 | R8 lone-caller-arity | 31, and moving | **stays a warning**; a shape, never a verdict |
 | R9 naked-bool | 231 | decidable; promotable once the sweep lands and the four irreducible sites are the census rather than 2% of it |
 | R10 comment-stanza | 0, swept from 1137 | **error level**; zero in `src/` and `test/` alike, and the sweep is formatter-verified |
-| R11 dense-stanza | 132 at threshold 8 | precise (with `Compound` weight 2), but the threshold is a judgement; treat the number as a reading |
+| R11 dense-stanza | 0, swept from 152 | **error level**; zero across all 29 packages under `Compound` weight 2 |
 | R12 broad-closure-capture | 119 | **stays a warning**; record width and closure lifetime are absent from the AST |
 | R13 flow-spine | 0, swept from 96 | **error level**; every module of 1000+ lines has a checked spine |
 | R14 transition-table | 0, nine tables | **error level**; zero by construction, and the gate is the rule's whole purpose |

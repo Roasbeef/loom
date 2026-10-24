@@ -1674,10 +1674,14 @@ fn call_rows(
     | Some(message.AssistantMessage(..))
     | Some(message.CustomMessage(..)) -> [Line(ToolCall, summary)]
   }
+
+  // Clear program preview once the tool result completes successfully.
   let program = case outcome {
     Some(message.ToolResultMessage(is_error: False, ..)) -> None
     _ -> program
   }
+
+  // Insert program source line if the call failed or remains pending.
   let rows = case rows, program {
     [heading, ..details], Some(source) -> [
       heading,
@@ -1686,10 +1690,14 @@ fn call_rows(
     ]
     [], Some(_) | _, None -> rows
   }
+
+  // Extract inline image preview lines when present in the result content.
   let images = case outcome {
     Some(message.ToolResultMessage(content:, ..)) -> result_image_lines(content)
     Some(_) | None -> []
   }
+
+  // Combine rows, note summaries, and images into the final line sequence.
   list.flatten([
     rows,
     note_call_lines(invocation.name, invocation.arguments, notes_view.Excerpt),
@@ -2170,10 +2178,14 @@ pub fn call_section(log: CallLog) -> List(String) {
       }
       glyph <> text_hygiene.single_line(group.call.cap) <> times
     })
+
+  // Measure the widest capability label to align trailing arguments.
   let column =
     list.fold(labels, 0, fn(widest, label) {
       int.max(widest, string.length(label))
     })
+
+  // Format aligned rows for each shown call group with duration and args.
   let rows =
     list.map2(shown, labels, fn(group, label) {
       let ending = case group.call.status {
@@ -2197,10 +2209,14 @@ pub fn call_section(log: CallLog) -> List(String) {
       <> ending
       <> took
     })
+
+  // Note any additional calls truncated by the group limit.
   let more = case unlisted {
     0 -> []
     n -> ["… " <> count_text(n, "more call", "more calls")]
   }
+
+  // Prepend the calls section header and return all rendered lines.
   ["", "CALLS · " <> call_tree.summary(log), ..list.append(rows, more)]
 }
 
@@ -2370,6 +2386,8 @@ fn failure_text(
   let said = content |> list.map(tool_result_text) |> string.join("\n")
   let status = string_field(details, "status") |> option.unwrap("")
   let title = status_title(status)
+
+  // Map the failure status into its explanatory footer and error text.
   let #(foot, error) = case status {
     "compile_failed" -> #(
       "the program did not run",
@@ -2385,14 +2403,20 @@ fn failure_text(
   }
   let all = string.split(string.trim(text_hygiene.multiline(error)), "\n")
   let body = diagnostic(all)
+
+  // Note any additional error lines beyond the extracted diagnostic snippet.
   let more = case list.length(all) > list.length(body) {
     True -> " · " <> count_text(list.length(all), "line", "lines")
     False -> ""
   }
+
+  // Include call tree details when recorded in the result object.
   let calls = case call_tree.read(json.Object(details)) {
     Some(log) -> call_section(log)
     None -> []
   }
+
+  // Assemble the failure title, footer, diagnostic lines, and call trace.
   ["× code_mode · " <> title, foot <> more, ..list.append(body, calls)]
   |> string.join("\n")
 }
@@ -3929,9 +3953,13 @@ fn propose_summary(fields: List(#(String, json.JsonValue))) -> String {
     Some("config") -> "the configuration"
     _ -> "the rules"
   }
+
+  // Calculate edit difference counts from old and new values.
   let old = string_field(fields, "old") |> option.unwrap("")
   let new = string_field(fields, "new") |> option.unwrap("")
   let counts = proposals.edit_counts(old, new)
+
+  // Extract and compact the optional proposal rationale.
   let reason = case string_field(fields, "rationale") {
     Some(reason) -> reason
     None -> ""
@@ -3940,6 +3968,8 @@ fn propose_summary(fields: List(#(String, json.JsonValue))) -> String {
     "" -> ""
     _ -> " · " <> compact(reason, 84)
   }
+
+  // Format the complete proposal summary description.
   "propose · " <> file <> " · " <> counts <> reason
 }
 

@@ -169,6 +169,7 @@ fn is_skip_text(text: String) -> Bool {
   }
 }
 
+/// Constructs a raw finding for a SKIP message printed to stdout.
 fn finding_at(offset: Int, function: String) -> Raw {
   Raw(
     rule: finding.StdoutSkip,
@@ -183,6 +184,7 @@ fn finding_at(offset: Int, function: String) -> Raw {
 
 // --- the walk ---------------------------------------------------------------
 
+/// Walks a list of statements accumulating any forbidden stdout skip emissions.
 fn statements(
   body: List(glance.Statement),
   emitters: Emitters,
@@ -206,6 +208,7 @@ fn statements(
   })
 }
 
+/// Walks a list of expressions accumulating stdout skip emissions.
 fn expressions(
   values: List(glance.Expression),
   emitters: Emitters,
@@ -217,6 +220,7 @@ fn expressions(
   })
 }
 
+/// Inspects an optional expression if present.
 fn optional(
   value: option.Option(glance.Expression),
   emitters: Emitters,
@@ -229,6 +233,7 @@ fn optional(
   }
 }
 
+/// Inspects expression fields for stdout skip emissions.
 fn fields(
   arguments: List(glance.Field(glance.Expression)),
   emitters: Emitters,
@@ -244,6 +249,7 @@ fn fields(
   })
 }
 
+/// Recursively inspects a single glance expression for stdout skip emissions.
 fn expression(
   value: glance.Expression,
   emitters: Emitters,

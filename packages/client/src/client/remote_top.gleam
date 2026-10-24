@@ -553,6 +553,8 @@ pub fn decode_offers(value: JsonValue) -> Result(Offers, String) {
       PoolOffer(name:, ready:, workspaces:)
     }),
   )
+
+  // Decode profiles, models, and enforce maximum aggregate offer count.
   use profiles <- result.try(texts_of(fields, "profiles", max_offers))
   use models <- result.try(texts_of(fields, "models", max_offers))
   let offers = Offers(folders:, executors:, pools:, profiles:, models:)

@@ -580,6 +580,8 @@ fn prepare_oauth_auth(
     )
     |> result.map_error(mcp_oauth.describe_auth_error(server, _))
   }
+
+  // Perform initial authorization handshake through managed runner.
   let initial =
     weft.new_prepared([weft.managed(authorize)])
     |> weft.deadline(int.max(options.handshake_timeout_ms, 5000))

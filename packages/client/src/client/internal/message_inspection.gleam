@@ -317,6 +317,8 @@ pub fn history(
     True -> Ok(Nil)
     False -> Error("history cursor must be nonnegative")
   })
+
+  // Capture tree branch and determine the current strand leaf.
   use cut <- result.try(capture(tree, strand, []))
   use leaf <- result.try(leaf(cut, strand))
   case leaf {
@@ -334,6 +336,8 @@ pub fn history(
         storage.scan_branch(tree.store, query)
         |> result.map_error(string.inspect),
       )
+
+      // Filter user message rows and compute the pagination cursor.
       let page = list.take(scanned, limit)
       let rows =
         list.filter_map(page, fn(record) {

@@ -148,12 +148,15 @@ pub fn prepare(
   case spec {
     effects.GenerationRequest(operation:, ..) -> {
       let request = request(provider, spec)
+
+      // Count protected active run images to respect image budget reservations.
       let protected = case image_budget.count(request.messages) {
         0 -> 0
         _ ->
           admission.active_run_images(provider.session, operation)
           |> result.unwrap(0)
       }
+
       let scoped =
         gateway.with_protected_images(provider.routing.gateway, protected)
       gateway.prepare(scoped, request)
@@ -217,14 +220,7 @@ pub fn request(
   }
 }
 
-// The vision rule's dispatch half (issue #358): the request's own content, not
-// the strand's pinned model, decides the target when the two disagree about
-// images. An image-bearing request from a text-only model dispatches through
-// the `vision` chain, admitted there already, so an unresolvable chain here
-// means the registry moved between admission and dispatch, and the ordinary
-// target plus placeholders is the honest fallback. Every other request to a
-// text-only identity has its images placeholdered, because an image the model
-// cannot read is invalid input on any turn, not just the newest one.
+/// Builds a generation provider request, routing image-bearing calls through vision.
 fn generation(
   provider: Provider,
   operation: OpId,
@@ -237,6 +233,8 @@ fn generation(
       provider.routing.fallback,
       configuration.model,
     ).reading
+
+  // Determine whether this request needs routing through the vision provider chain.
   let routed = case
     reading == TextOnly
     && admission.image_bearing(provider.session, operation, context)
@@ -245,6 +243,7 @@ fn generation(
     False -> None
   }
 
+  // Dispatch with the routed vision target or fall back to default target formatting.
   case routed {
     Some(target) -> generation_request(provider, configuration, context, target)
     None ->
@@ -260,6 +259,7 @@ fn generation(
   }
 }
 
+/// Assembles the complete provider request with tools, system prompt, and limits.
 fn generation_request(
   provider: Provider,
   configuration: StrandConfiguration,
@@ -337,11 +337,7 @@ fn prepared_unsupported(reason: String) -> stream.PreparedStream {
   stream.PreparedStream(handle: unsupported(reason), begin: fn() { Nil })
 }
 
-// A handle whose single event is an in-band, terminally-classified failure.
-// `StreamError` with a non-transient error type is Terminal under
-// `retry.classify`, so the machine fails the operation at once instead of
-// burning its whole retry ladder against a surface that can never succeed (a
-// transport failure would read as retryable).
+/// Creates an immediate terminal stream handle for unsupported requests.
 fn unsupported(reason: String) -> StreamHandle {
   let events = process.new_subject()
   process.send(

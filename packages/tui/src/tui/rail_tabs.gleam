@@ -175,6 +175,8 @@ fn session_rows(model: Model) -> List(Row) {
       }
     None -> [Row(Quiet, "Goal    none pinned")]
   }
+
+  // Format active background jobs summary rows.
   let jobs = case
     session_summary.jobs(model.shared.jobs, model.shared.active_strand)
   {

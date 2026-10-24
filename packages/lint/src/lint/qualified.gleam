@@ -158,10 +158,12 @@ fn import_findings(
 
 /// Whether a module path starts at one of this tree's roots.
 fn is_loom_module(path: String) -> Bool {
+  // Extract the root component of the module path.
   let root = case string.split_once(path, "/") {
     Ok(#(head, _)) -> head
     Error(Nil) -> path
   }
+
   list.contains(loom_roots(), root)
 }
 
@@ -178,11 +180,13 @@ fn is_value_name(name: String) -> Bool {
 /// qualifier is the alias when the import has one, otherwise the last path
 /// segment, which is what the call site will have to spell.
 fn detail(import_: glance.Import, name: String) -> String {
+  // Determine the qualifier prefix to recommend for the import.
   let qualifier = case import_.alias {
     Some(glance.Named(alias)) -> alias
     Some(glance.Discarded(_)) -> last_segment(import_.module)
     None -> last_segment(import_.module)
   }
+
   "import `"
   <> import_.module
   <> "` and call `"

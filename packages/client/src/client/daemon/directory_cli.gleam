@@ -186,6 +186,8 @@ fn bootstrap(
   let local = distribution.local_node(dist)
   let others = list.filter(members, fn(member) { member != local })
   use unreachable <- result.try(survey(membership, others, []))
+
+  // Initialize directory storage and verify join status.
   use Nil <- result.try(store.start_system(directory))
   use Nil <- result.try(
     store.boot(30_000)

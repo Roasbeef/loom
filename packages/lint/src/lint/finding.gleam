@@ -7,6 +7,7 @@
 import gleam/int
 import gleam/list
 import gleam/string
+import lint/policy
 
 /// The house rules this linter knows. Each is a separate promotion decision:
 /// a rule that over-reports stays a warning forever and says so, exactly as
@@ -356,6 +357,7 @@ pub fn error_by_default() -> List(Rule) {
     PortablePurity,
     AssertWithoutMessage,
     CommentStanza,
+    DenseStanza,
     FlowSpine,
     TransitionTable,
     StateFirst,
@@ -385,8 +387,61 @@ pub fn error_by_default() -> List(Rule) {
 ///
 pub fn gate(findings: List(Finding), errors: List(Rule)) -> #(Int, Int) {
   let #(gated, warned) =
-    list.partition(findings, fn(found) { list.contains(errors, found.rule) })
+    list.partition(findings, fn(found) { is_gated(found, errors) })
   #(list.length(gated), list.length(warned))
+}
+
+/// Whether `found` fails the build: either its rule is in `errors`, or it is
+/// an R21/R22 finding in a package listed by `policy.literate_packages()`.
+fn is_gated(found: Finding, errors: List(Rule)) -> Bool {
+  list.contains(errors, found.rule) || is_ratcheted_literate(found)
+}
+
+/// Checks whether `found` is an R21 (`CaseStanza`) or R22 (`FunctionDoc`)
+/// finding inside a package that has already been swept into
+/// `policy.literate_packages()`.
+fn is_ratcheted_literate(found: Finding) -> Bool {
+  case found.rule {
+    CaseStanza | FunctionDoc ->
+      case package_name(found.path) {
+        Ok(pkg) -> list.contains(policy.literate_packages(), pkg)
+        Error(Nil) -> False
+      }
+    Unparseable
+    | EagerFallback
+    | NestingDepth
+    | CatchAll
+    | PanicInSource
+    | BoundedLength
+    | PortablePurity
+    | AssertWithoutMessage
+    | LoneCallerArity
+    | NakedBool
+    | CommentStanza
+    | DenseStanza
+    | BroadClosureCapture
+    | FlowSpine
+    | TransitionTable
+    | StateFirst
+    | QualifiedDomainCall
+    | FlowOrder
+    | UnnamedHelper
+    | StdoutSkip
+    | TestImportWall -> False
+  }
+}
+
+/// Extracts the package name from a `packages/<pkg>/...` path.
+fn package_name(path: String) -> Result(String, Nil) {
+  // Strip any leading prefix before `packages/` and take the first segment.
+  case string.split_once(path, "packages/") {
+    Error(Nil) -> Error(Nil)
+    Ok(#(_, rest)) ->
+      case string.split(rest, "/") {
+        [name, _, ..] -> Ok(name)
+        _ -> Error(Nil)
+      }
+  }
 }
 
 /// The short identifier a report and a `--error` flag both use.

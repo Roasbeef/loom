@@ -29,14 +29,19 @@ pub fn allocate(requests: List(#(String, String))) -> Dict(String, String) {
     list.fold(requests, #(dict.new(), occupied, dict.new()), fn(state, request) {
       let #(names, occupied, next) = state
       let #(key, semantic) = request
+
+      // Determine the starting numeric suffix for candidate resolution.
       let start = case dict.get(next, semantic) {
         Ok(ordinal) -> ordinal
         Error(Nil) -> 2
       }
+
+      // Pick the base name directly when unoccupied, or walk available suffixes.
       let #(chosen, following) = case dict.has_key(occupied, semantic) {
         False -> #(semantic, start)
         True -> available(semantic, preferred, occupied, start)
       }
+
       #(
         dict.insert(names, key, chosen),
         dict.insert(occupied, chosen, Nil),
@@ -48,6 +53,7 @@ pub fn allocate(requests: List(#(String, String))) -> Dict(String, String) {
 
 // A collision suffix contains only trusted ordinals. Each retry varies a
 // bounded counter, rather than growing an identifier until it exceeds an atom.
+/// Finds the next unused collision suffix for an already occupied semantic name.
 fn available(
   semantic: String,
   preferred: Dict(String, Nil),
@@ -55,6 +61,8 @@ fn available(
   attempt: Int,
 ) -> #(String, Int) {
   let candidate = semantic <> int.to_string(attempt)
+
+  // Check whether the candidate name is claimed in preferred or occupied sets.
   case dict.has_key(preferred, candidate) || dict.has_key(occupied, candidate) {
     True -> available(semantic, preferred, occupied, attempt + 1)
     False -> #(candidate, attempt + 1)

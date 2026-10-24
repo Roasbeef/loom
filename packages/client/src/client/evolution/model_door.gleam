@@ -141,6 +141,8 @@ fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
       False -> Error("Bounds: rollout limits require six exact budget fields")
     },
   )
+
+  // Extract numeric budget fields from the object payload.
   use trials <- result.try(integer(value, "trials"))
   use turns <- result.try(integer(value, "turns"))
   use tokens <- result.try(integer(value, "tokens"))
