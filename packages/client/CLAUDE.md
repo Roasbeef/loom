@@ -7428,8 +7428,35 @@ A `loomd` whose `--config` file has `[distribution]` and at least one
   `owner_codemode.advertising_peers` as the `code_mode` tool. The census it
   returns is
   `RemoteCensus` (plain data plus the broker's subject; the prompt facts are read
-  once, at attach; `evolution` is `Uncompiled` until the executor's evolution
-  plane is built). `workspace_plane` itself is unchanged apart from `WorkspaceSpec.blob_root`.
+  once, at attach; `evolution` is `Compiles(identity)` or `Uncompiled(reason)`,
+  below). `workspace_plane` itself is unchanged apart from `WorkspaceSpec.blob_root`
+  and `Started.view`.
+- **The evolution plane** (protocol-change/098). When a scope has a code-mode
+  configuration, `executor_plane.evolution_of` computes the compile identity
+  once (`executor_evolution.identity`) and starts one `executor_evolution` actor
+  for the scope, over a `local.Config` built from this machine's own inputs:
+  `Built.code_mode` without its evolution door, the plane's base policy and
+  environment, `serve.hook_coordinates_at` for the hook coordinates, memory
+  through `extension_memory.over_facts(spec.owner.facts)` (written back to the
+  owner under the reserved `ext/` prefix), secrets from the executor's own
+  `[secrets]` table and environment (`secret.lookup(machine.secrets, ..)`, the
+  store MCP and the workspace plane read, never the orchestrator's), and
+  `<state>/evolution/run/<session>` as the candidate scratch. The `view` is
+  `Started.view`, the `WorkspaceView` `plane_over` already builds, kept out of
+  `WorkspacePlane` because that record is copied into every process holding the
+  instance. The actor is filed as `#(custody.Evolution, retire_all)`, which
+  ranks before the broker and the helpers, and `host.Plane.evolution` is its
+  `plane`. A scope with no code mode, or whose identity cannot be observed,
+  starts no actor, files nothing and reports `Uncompiled` with the toolchain's
+  reason. `<state>/evolution` is created before the base policy is built and
+  masked from the session's own jails (`workspace_policy.protecting_evolution`,
+  a conditional mask like the memory files); a candidate's build jail lifts
+  the mask for its own directory and narrows its readable roots to it, which is
+  what separates one scope's build from another's. The per-session scratch is
+  removed on `AllRetired` with the scope directory. A generation's retire runs
+  inside its owner task (`Perform`), because `local.stop_host` unlinks the
+  extension host from the process that runs it before it kills it and the host
+  is linked to the owner.
 - **A remote session's blobs.** They live in `<state>/blobs/<session>`, passed as
   `WorkspaceSpec.blob_root`. Not in `<state>/scopes/<session>`, which is removed
   when a scope retires cleanly while a reopened session must still read the
@@ -7488,7 +7515,10 @@ workspace, the census walk for function values and its `term_to_binary` round
 trip, an 8 MiB read, the `code_mode` description listing the owner-bound
 capabilities where a seed exists, a real program whose `strand.roster` and
 `notes.put` reach the owner's Agency through the owner port where the host
-has a jail, and `retire` with injected cleanups). `daemon_executor_test`
+has a jail, and `retire` with injected cleanups; with a seed and a jail, the
+evolution plane's stage, promoted run, undeclared hook, retire, close without a
+retire, evaluate with a duplicate key, and the `Compiles` census).
+`daemon_executor_test`
 covers the boot decision. `remote_nodes_test`'s `remote_workspace` scenario
 serves a real workspace to a second node. Making `retire` ignore the helper
 witness fails `a_scope_with_no_helper_cleanup_has_no_witness_test`; building the
