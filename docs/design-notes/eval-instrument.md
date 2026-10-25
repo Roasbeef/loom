@@ -34,9 +34,9 @@ ceilings. The shared parts are three functions, not a framework.
 
 **P2. "Ensemble" in Loom is already mostly a catalogue question, not a
 profile question.** A profile is keyed by exact `(provider, model_id, api)`
-(`profile.gleam:137-167`); two strands on the same model get the same overlay
+(`provider/profile.gleam:137-167`); two strands on the same model get the same overlay
 and nothing today sees a strand or role at composition time
-(`gateway.gleam:2227-2252`). But the roles that exist — `main`, `subagent`,
+(`provider/gateway.gleam:2227-2252`). But the roles that exist — `main`, `subagent`,
 `advisor`, `summarize`, `vision` — already resolve to *different models* via
 `[roles]` (`client/catalog`; `agency.Config.subagent_model`, client CLAUDE.md),
 and a different model gets its own profile for free. So "different prompts
@@ -44,7 +44,7 @@ or tools per agent" is, for the first two waves, "a different `Settings`
 per arm" (catalogue roles, profile map, `LOOM_PROMPT_PACK`), which needs no
 core change and no protocol change. The per-role key inside one model is a
 real gap, but it is protocol-change work (`prompt.encode_profile`'s strict
-8-field v1 shape, `evo/prompt.gleam:118-160`) and it is deferred, not
+8-field v1 shape, `evolution/prompt.gleam:118-160`) and it is deferred, not
 designed away: the arm type below carries the role axis so step 7 and the
 later change slot in without a new abstraction.
 
@@ -117,7 +117,7 @@ things and nothing else:
    execution, `packages/harness/CLAUDE.md` "Invariants") is **not** the trial
    runner: a coding task needs `bash`, `fs_*` and code mode in a jail.
 2. **One grade type and one verifier.** `rollout.Trial.score` currently
-   returns `trace.Outcome` (`rollout.gleam:143`), three-valued, with no
+   returned `trace.Outcome` at `f21afd07d`, three-valued, with no
    diagnostic. It becomes `fn(String) -> Result(Grade, String)` where
    `Grade(reward: Float, scores: List(#(String, Float)), side_info: String,
    verifier: VerifierRun)` (sketch in §3). The governed path's
@@ -340,7 +340,7 @@ pub type Knobs {
 `eval/arm.to_settings(arm, base: Settings) -> Result(Settings, String)`
 renders the components into `provider/profile.new` values (one `Profile` per
 distinct `Target` with `role: Any`), builds the profile map via
-`gateway.with_profiles` (`gateway.gleam:558`), writes the pack to a per-arm
+`gateway.with_profiles` (`provider/gateway.gleam:558`), writes the pack to a per-arm
 file, and overrides `catalog.roles`. A component whose `Target.role` is not
 `Any` is **refused** with "per-role profiles need protocol-change 101" — so
 the axis exists in the data and step 7 can emit it, but nothing lies about
@@ -350,8 +350,8 @@ applying it.
 Agency children (`sub:{parent}/{slug}-{digest}`, `agency.child_name`), the
 advisor strand (`advisor`, `client/advisor.ensure_strand`) and the
 `summarize`/`vision` routes. Per-role profile selection would need the strand
-or role at `compose_profile` (`gateway.gleam:2227`) and a 9th field in
-`prompt.encode_profile` (`evo/prompt.gleam:118-137`), hence a persisted-format
+or role at `compose_profile` (`provider/gateway.gleam:2227`) and a 9th field in
+`prompt.encode_profile` (`evolution/prompt.gleam:118-137`), hence a persisted-format
 bump and protocol-change 101. Deferred.
 
 **`profile.apply` stays append-only.** A replace mode is a different trust
@@ -496,7 +496,7 @@ the rule cannot hold α on synthetic data it will not hold it on a model.
   clustering that prevents a leaked near-duplicate.
 - The seal: `evolution.compare` can name only a task set admitted into the
   *source session* by `admit_tasks` (`tasks.load`, `tasks.gleam:95-120`;
-  `serve.evolution_compare`, `serve.gleam:7816-7820`). The instrument's
+  `serve.evolution_compare`, `serve.gleam:7800-7804`). The instrument's
   `eval admit --split tune|validate` writes a v2 task set through the same
   operator door; `eval admit --split holdout` **does not exist** — the
   command refuses, and a lint-style test in `eval` asserts no holdout id
@@ -509,7 +509,7 @@ the rule cannot hold α on synthetic data it will not hold it on a model.
   and the **gap** `d̄_validate − d̄_holdout` with its own paired CI; a
   positive gap beyond its CI is printed as "memorised".
 - Holdout vs production: `eval production --since <date>` reads reserved
-  facts `prompt/evolution-outcome/<entry_id>` (`trace.gleam:490-515`) from
+  facts `prompt/evolution-outcome/<entry_id>` (`evolution/trace.gleam:490-515`) from
   *copies* of production session databases (writer lease, storage
   CLAUDE.md), joins each to the profile id journaled in
   `evolution/attempt/<hex>` facts (`serve.evolution_attempt`,
@@ -532,14 +532,14 @@ must refuse with the words "holdout".
 **Ruling.** Two lanes, two different claims, one transport seam.
 
 **Replay lane (harness/tool regressions).** `eval/cassette.gleam`
-implements `provider/http.Transport` (`http.gleam:145-151`) twice:
+implements `provider/http.Transport` (`provider/http.gleam:145-151`) twice:
 `recording(inner, sink)` tees every `HttpEvent` with the request's
 *ordinal* and a **semantic digest**; `replaying(tape)` answers the *n*-th
 request of a `(task, arm, trial)` with the recorded events **after
 comparing the semantic digest**. A mismatch is not an error to paper over —
 it is the lane's finding: "request 4 of task X diverged: system prompt
 digest changed" with a redacted diff summary. The digest is
-`prompt.fingerprint(system, tools)` (`evo/prompt.gleam:248-272`) plus a
+`prompt.fingerprint(system, tools)` (`evolution/prompt.gleam:248-272`) plus a
 digest of the message list with these normalised: absolute paths under
 the trial root → `<root>`, ISO dates → `<date>`, tool-use ids kept (they
 come from the tape, so they recur). Determinism needs: `Settings` with a
@@ -606,7 +606,7 @@ git-ignored; never under `/tmp`; never inside a workspace. One run:
   (the frozen agent tree, before the verifier copy), `verifier/` (stdout,
   stderr, `reward.json`), `trajectory.json` (ATIF-v1.7, §10),
   `requests.jsonl` on the live lane (the cassette tape doubles as the API
-  exchange log, scrubbed with `trace.scrub_excerpt`, `trace.gleam:464`).
+  exchange log, scrubbed with `trace.scrub_excerpt`, `evolution/trace.gleam:464`).
 - `report.json` + `report.md` — the `evalstat` verdict, MDE first line,
   panels per split, variance decomposition, Pareto table, and the list of
   trial rows the verdict used.
@@ -630,10 +630,10 @@ the denominator.
 - `eval transcripts --state <dir> --since <date> --out <dir>` opens *copies*
   of session databases (`session.open_sqlite` takes a writer lease;
   `client_dev.gleam:15-17` carries the same warning), walks
-  `storage.scan_entries`/`scan_usage` (`storage.gleam:365, 402`), and
+  `storage.scan_entries` (`storage.gleam:365`) and `storage.scan_usage` (`storage.gleam:402`), and
   writes one JSONL per session with: user/assistant text through
-  `trace.scrub_excerpt` (`trace.gleam:464`; thinking and images excluded
-  as `trace.select` does, `evolution.md:319-323`), tool calls (name +
+  `trace.scrub_excerpt` (`evolution/trace.gleam:464`; thinking and images excluded
+  as `trace.select` does, the trace section of `docs/architecture/evolution.md`), tool calls (name +
   argument *keys* + a 256-byte scrubbed argument digest preview), tool
   results (`is_error`, 512-byte scrubbed tail), compactions, usage rows,
   and any `prompt/evolution-outcome/*` mark. The scrubber's limits
@@ -744,7 +744,7 @@ named mutation tests, `make doc-check`. Never `git checkout <file>`.
 
 | Slice | Owner files | No-touch | Cut list | Proof | Who |
 |---|---|---|---|---|---|
-| **1A `evalstat`** (hardest math) | `packages/evalstat/**`, `lint/portable.gleam` (add the name), `Makefile:6`, `scripts/check.sh:7`, `scripts/test.sh:7` | everything in `client`, `eval` | no plotting, no CSV, no t-distribution tables beyond z, no Bayesian variant | the seven mutation tests in §5, `make check-evalstat`, R6 clean | **Fable** writes; Opus reviews mandatory |
+| **1A `evalstat`** (hardest math) | `packages/evalstat/**`, `lint/portable.gleam` (add the name), `Makefile:6`, `scripts/check.sh` line 7, `scripts/test.sh:7` | everything in `client`, `eval` | no plotting, no CSV, no t-distribution tables beyond z, no Bayesian variant | the seven mutation tests in §5, `make check-evalstat`, R6 clean | **Fable** writes; Opus reviews mandatory |
 | **1B `eval` task/plan/ledger codecs** | `packages/eval/src/eval/{task,arm,plan,ledger,split}.gleam`, `packages/eval/gleam.toml`, `CLAUDE.md`/`AGENTS.md` | `rollout*.gleam`, `serve.gleam`, `evalstat` | no runner, no SQLite, no CLI beyond `eval validate <file>` | total-decoder round trips; `task_id_changes_on_any_edit_test`; `holdout_admit_is_refused_test`; `plan_rows_are_the_denominator_test` | Sonnet |
 | **1C miner** | `packages/eval/src/eval/{mine,eunit_ids,git}.gleam`, `packages/eval/test/eval/mine_test.gleam` | 1B's files (consume its types as published; agree the `Task` constructor in the brief) | no SWE-smith synthesis, no client/tui mining yet, no prompt rewriting by a model | reproduce the `eccdddad0` probe end-to-end (F2P = the two ids, P2P = 77); a feature commit with no F2P is culled; a fixture with ANSI-coloured EUnit output parses | Sonnet |
 | **1D client seam** | `serve.gleam` (extract `trial_settings`, tag parameter), `rollout.gleam` (`Grade`, `Limits.samples`), `rollout_host.gleam`, `fixture.gleam` (adapter), `model_door.gleam` (samples cap), `evolution/models_test.gleam`, `evolution_prompt_acceptance_test.gleam` | everything else | no verdict change yet (that is 2C), no verifier yet | `make check-client` green; acceptance observation unchanged except `grade`; `samples: 2` doubles `reports` | **Fable** (8,151-line `serve.gleam`; Opus review) |
@@ -756,7 +756,7 @@ modules and the brief fixes the `Task` constructor up front.
 
 | Slice | Owner files | Cut list | Proof | Who |
 |---|---|---|---|---|
-| **2A runner** `eval/{run,trial,budget,cli}.gleam`, `Makefile` `eval` target | no dashboards; quick/full only; concurrency fixed at 2 | scripted-provider run over 2 inline tasks × 2 arms × K=2 writes 8 rows + report; a killed trial becomes `infra` then a retry row; measured-spend cap stops admission (test with a priced fixture card as `evolution_prompt_acceptance_test.gleam:880-889`) | Sonnet, Opus review |
+| **2A runner** `eval/{run,trial,budget,cli}.gleam`, `Makefile` `eval` target | no dashboards; quick/full only; concurrency fixed at 2 | scripted-provider run over 2 inline tasks × 2 arms × K=2 writes 8 rows + report; a killed trial becomes `infra` then a retry row; measured-spend cap stops admission (test with a priced fixture card as the priced fixture card in the governed acceptance test) | Sonnet, Opus review |
 | **2B jailed verifier** `eval/verify.gleam`, `eval/prove.gleam` (hardest isolation) | no LLM judge; no host-side fallback when the jail is absent (refuse, print the selftest line) | ordering test: verifier files absent from `workspace/` and present in `verify/`; verifier cannot write outside `verify/`; `prove` on the `eccdddad0` task yields gold=1, null=0 inside a real jail (`make e2e-evolution` posture) | **Fable** |
 | **2C governed verdict** `rollout.gleam` (`verdict` → `evalstat`), `record.gleam` (observation `grade`), `protocol-change/100.md`, `evolution/models_test.gleam` | no new door, no ceilings raised | synthetic reports: A/A → `Inconclusive(underpowered)`, planted harm → `Failed`, baseline-fails-candidate-passes → `Passed`; old asymmetric case (candidate fails once) no longer decides alone | **Fable**, Opus review mandatory |
 | **2D cassette** `eval/cassette.gleam`, `eval/normalise.gleam` | no byte-exact replay; no live-lane claims | record/replay twice identical rows; one-word pack change → divergence at request 1; tape scrubbed (planted `sk-` token absent) | Sonnet, Opus review |
@@ -795,3 +795,38 @@ LLM-judged tasks; SWE-smith bug synthesis; byte-exact replay; a web
 dashboard; `loom run`; the Harbor Python adapter; mining of `client`,
 `tui`, `session_view` until the per-module verifier cost is measured;
 raising any model-door ceiling; a second evidence authority.
+
+## 15. Amendments from review
+
+Independent reviews of each slice changed four rulings above. The code is
+the authority; this section says where the note no longer describes it.
+
+- **§5, the significance test.** The verdict's sign test runs on the sign
+  of each task's paired difference, not on discordant trial pairs. The
+  pair-level test was two-sided with no check of direction, so one heavily
+  sampled task could carry a verdict its p-value pointed against. Effect,
+  interval and task signs must now agree in direction. Pair-level McNemar
+  counts are still reported.
+- **§5, power.** A design with no between-task spread is `Underpowered`
+  with a reason (the constructor gained a `reason` field), and its
+  detectable effect comes from the binomial floor. A standard error of zero
+  is not evidence of power.
+- **§5, the bootstrap and stopping.** The bootstrap resamples whole tasks;
+  the nested form counted within-task noise twice. Sequential futility can
+  only stop a run as undecided (`StopUndecided`); there is no early stop
+  with a verdict, because a stop that settles the sign test can still be
+  contradicted by the interval.
+- **§3, the verifier boundary.** The agent controls every byte of its
+  frozen tree, so the verify copy keeps only regular files and
+  directories, discards the agent's `logs/` and `build/`, and takes its
+  dependency build from a pristine host-side preparation the agent never
+  saw. A pass requires exit status zero, every fail-to-pass and
+  pass-to-pass id observed passing, and the reward map; runner scripts are
+  always hidden files. Code an F2P test reaches still runs in the test VM
+  and could print forged EUnit lines; the defence is the hidden test
+  bodies and the pristine build, not output parsing.
+- **§7, the replay lane.** Tapes store response bodies verbatim and match
+  requests by digest, not ordinal, so concurrent strands replay the same
+  way; redaction is limited to the request's own credentials and known
+  credential prefixes, and a recording redaction changed is refused at
+  replay rather than served.
