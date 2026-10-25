@@ -4823,18 +4823,6 @@ fn assemble_in(
     None -> Ok(Nil)
   })
 
-  // Decide how to handle use Nil <- result.try( evolution_wiring {.
-  use Nil <- result.try(case evolution_wiring {
-    None -> Ok(Nil)
-    Some(wiring) ->
-      evolution_live.recover(wiring.live, 120_000)
-      |> result.map_error(fn(error) {
-        // Recovery already retains its failed native continuation before
-        // replying. Rendering that refusal must not add another owner.
-        evolution_store.describe(error)
-      })
-  })
-
   // The advisor strand is seeded here, once the writer that claims its
   // three registers exists. A failure is one warned line rather than a
   // refused boot: a session whose advisor could not be created runs
@@ -5180,6 +5168,23 @@ fn assemble_in(
   // through the start link, so that its death is a fault the host
   // *handles* rather than a signal that fells the host mid-teardown.
   process.unlink(started_services.pid)
+
+  // The selected extension is staged again only now. Its adoption audit
+  // borrows the runtime through the Agency's holder, which is one of the
+  // services started above; before them the borrow answered "runtime
+  // unavailable" and a session with a selection could not be opened again. A
+  // refusal stops the services, since nothing else owns them yet.
+  use Nil <- result.try(case evolution_wiring {
+    None -> Ok(Nil)
+    Some(wiring) ->
+      evolution_live.recover(wiring.live, 120_000)
+      |> result.map_error(fn(error) {
+        // Recovery already retains its failed native continuation before
+        // replying. Rendering that refusal must not add another owner.
+        stop_services(started_services.pid)
+        evolution_store.describe(error)
+      })
+  })
 
   // Build the initialized session instance record.
   Ok(Instance(
