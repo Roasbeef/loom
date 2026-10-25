@@ -10,16 +10,44 @@ import gleam/option.{None, Some}
 import gleam/string
 import qcheck
 
+/// A code point from the ranges that have broken a grapheme- or
+/// code-unit-based codec: the separators, backslashes, combining marks,
+/// the zero-width joiner, CRLF, Latin-1, and astral characters.
+fn tricky_codepoint() -> qcheck.Generator(Int) {
+  qcheck.from_generators(qcheck.bounded_int(0x20, 0x7E), [
+    qcheck.bounded_int(0x300, 0x36F),
+    qcheck.bounded_int(0x1F600, 0x1F64F),
+    qcheck.bounded_int(0xA0, 0x2FF),
+    pick([
+      0x5C, 0x20, 0x0A, 0x0D, 0x09, 0x2C, 0x3B, 0x3D, 0x200D, 0x301, 0x7B, 0x7D,
+      0x75,
+    ]),
+  ])
+}
+
 fn text() -> qcheck.Generator(String) {
-  // Plain text and the characters the escape covers, with a few more
-  // that could collide with the syntax.
+  // Plain text, the characters the escape covers, and strings built from
+  // the tricky code points, including ones that start with a combining
+  // mark or a joiner.
   qcheck.from_generators(qcheck.string(), [
-    qcheck.return(" "),
+    qcheck.generic_list(tricky_codepoint(), qcheck.bounded_int(0, 6))
+      |> qcheck.map(from_codes),
+    qcheck.return("\n\u{301}"),
+    qcheck.return("\u{301}x"),
+    qcheck.return(" \u{301}"),
+    qcheck.return(",\u{301}"),
+    qcheck.return(";\u{301}"),
+    qcheck.return("\\\u{301}"),
+    qcheck.return(" \u{200D}"),
     qcheck.return("a b,c;d=e\\f\ng\th\r\ni"),
-    qcheck.return("\\s\\n\\\\"),
+    qcheck.return("\\s\\n\\\\\\u{41}"),
     qcheck.return("ünïcödé 🙂"),
     qcheck.return(""),
   ])
+}
+
+fn from_codes(codes: List(Int)) -> String {
+  codes |> list.filter_map(string.utf_codepoint) |> string.from_utf_codepoints
 }
 
 fn id() -> qcheck.Generator(String) {
@@ -184,6 +212,46 @@ pub fn a_fixed_line_is_stable_test() {
     == "refused v=1 step=3 reason=nothing"
 }
 
+/// The golden lines: the same bytes on both targets for the values that
+/// told the two apart, each read back to its value.
+pub fn tricky_values_encode_to_the_same_ascii_on_both_targets_test() {
+  let golden = [
+    #("\n\u{301}", "\\n\\u{301}"),
+    #("\u{301}x", "\\u{301}x"),
+    #(" \u{301}", "\\s\\u{301}"),
+    #(",\u{301}", "\\c\\u{301}"),
+    #(";\u{301}", "\\p\\u{301}"),
+    #("\\\u{301}", "\\\\\\u{301}"),
+    #(" \u{200D}", "\\s\\u{200d}"),
+    #("\r\n", "\\r\\n"),
+    #("é🙂", "\\u{e9}\\u{1f642}"),
+    #("a=b", "a=b"),
+    #("{u}", "{u}"),
+    #("", ""),
+  ]
+
+  list.each(golden, fn(pair) {
+    let line = "minted v=1 candidate=c parent=p step=1 slot=s text=" <> pair.1
+    assert log.encode(gepa.Minted("c", "p", 1, "s", pair.0)) == line
+    assert log.decode(line) == Ok(gepa.Minted("c", "p", 1, "s", pair.0))
+
+    // Every line is printable ASCII, so no target can split it two ways.
+    assert list.all(string.to_utf_codepoints(line), fn(cp) {
+      let code = string.utf_codepoint_to_int(cp)
+      code >= 0x20 && code <= 0x7E
+    })
+  })
+
+  // A list of tricky ids keeps its separators escaped inside each atom.
+  let tasks = [" \u{301}", ",\u{301}", ";\u{301}"]
+  let event = gepa.Evaluated(gepa.Validate, 1, "c", tasks, 0.0, "", [], 0.0)
+  assert string.contains(
+    log.encode(event),
+    "tasks=\\s\\u{301},\\c\\u{301},\\p\\u{301}",
+  )
+  assert log.decode(log.encode(event)) == Ok(event)
+}
+
 pub fn malformed_lines_are_refused_by_name_test() {
   let refused = fn(line: String, naming: String) {
     let assert Error(reason) = log.decode(line)
@@ -208,6 +276,34 @@ pub fn malformed_lines_are_refused_by_name_test() {
   refused(
     "minted v=1 candidate=c parent=p step=1 slot=s text=t\\",
     "lone backslash",
+  )
+  refused(
+    "minted v=1 candidate=c parent=p step=1 slot=s text=\\u{zz}",
+    "malformed",
+  )
+  refused(
+    "minted v=1 candidate=c parent=p step=1 slot=s text=\\u{41",
+    "malformed",
+  )
+  refused(
+    "minted v=1 candidate=c parent=p step=1 slot=s text=\\u{d800}",
+    "names no code point",
+  )
+  refused(
+    "minted v=1 candidate=c parent=p step=1 slot=s text=é",
+    "outside printable ASCII",
+  )
+  refused(
+    "minted v=1 candidate=c parent=p step=1 slot=s text=a\u{301}",
+    "outside printable ASCII",
+  )
+  refused(
+    "evaluated v=1 stage=validate step=1 candidate=c tasks=a cap=NaN.0 ref= cost=0.0",
+    "number",
+  )
+  refused(
+    "evaluated v=1 stage=validate step=1 candidate=c tasks=a cap=Infinity.0 ref= cost=0.0",
+    "number",
   )
   refused(
     "evaluated v=1 stage=validate step=1 candidate=c tasks=a cap=x ref= cost=0.0",

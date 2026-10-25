@@ -4,14 +4,24 @@
 ////
 //// A line is the event's kind, then `key=value` fields separated by
 //// single spaces, the first field always the format version (`v=1`).
-//// Every value is an atom escaped so it holds no space, newline, comma
-//// or semicolon (`\s`, `\n`, `\t`, `\r`, `\c`, `\p`, and `\\` for the
-//// backslash itself); a list is atoms joined by commas, a record by
-//// semicolons, and a repeated key is a list of records. The kind tag
-//// picks the keys a row must carry and nothing else, so a new kind is one
-//// constructor plus one encode and one decode arm, and a row of a version
-//// this reader does not know is refused by its number rather than
-//// misread.
+//// Every value is an atom of printable ASCII: the separators and the
+//// backslash are escaped (`\s`, `\n`, `\t`, `\r`, `\c`, `\p`, `\\`) and
+//// every other code point outside `!`..`~` is `\u{hex}`. A list is atoms
+//// joined by commas, a record by semicolons, and a repeated key is a list
+//// of records. The kind tag picks the keys a row must carry and nothing
+//// else, so a new kind is one constructor plus one encode and one decode
+//// arm, and a row of a version this reader does not know is refused by
+//// its number rather than misread.
+////
+//// Lines are ASCII, and both directions walk code points, never
+//// graphemes or code units, because the two targets disagree about
+//// those: Erlang's string functions see grapheme clusters, so a combining
+//// mark glues itself to the separator or bracket before it, and
+//// JavaScript's see UTF-16 code units, so an astral character is two of
+//// them. A text whose encoding depends on the target is a log that
+//// replays differently on each, so the encoder emits nothing a target
+//// can read two ways, and the decoder refuses a raw code point outside
+//// printable ASCII before it splits anything.
 ////
 //// Decoding is total: every malformed line is an `Error` naming what was
 //// wrong, never a panic, and a whole log stops at its first bad line with
@@ -417,8 +427,17 @@ type Fields =
 
 /// Splits a line into its kind and its raw `key=value` fields. An empty
 /// token (two spaces, a trailing space) is malformed, as is a field with
-/// no `=`.
+/// no `=`, as is any code point outside printable ASCII, which the encoder
+/// never writes and the two targets would split differently.
 fn tokens(line: String) -> Result(#(String, Fields), String) {
+  use Nil <- result.try(require(
+    list.all(string.to_utf_codepoints(line), fn(cp) {
+      let code = string.utf_codepoint_to_int(cp)
+      code >= 0x20 && code <= 0x7E
+    }),
+    "a line holds a code point outside printable ASCII",
+  ))
+
   // The kind leads; every later token is a field.
   case string.split(line, " ") {
     [""] -> Error("an empty line")
@@ -502,11 +521,17 @@ fn float_field(fields: Fields, key: String) -> Result(Float, String) {
   |> result.map_error(fn(_) { "\"" <> key <> "\" must be a number" })
 }
 
-/// A number as `float.to_string` writes it, or an integer literal.
+/// A finite number as `float.to_string` writes it, or an integer
+/// literal. The encoder is never handed a non-finite float (`gepa.apply`
+/// refuses one), so none is read back.
 fn number(text: String) -> Result(Float, String) {
   float.parse(text)
   |> result.lazy_or(fn() { int.parse(text) |> result.map(int.to_float) })
   |> result.replace_error("not a number")
+  |> result.try(fn(value) {
+    require(gepa.is_finite(value), "not a finite number")
+    |> result.replace(value)
+  })
 }
 
 /// Nonempty ids, comma-joined; an empty value is no ids.
@@ -543,50 +568,105 @@ fn atoms_of(raw: String) -> Result(List(String), String) {
   string.split(raw, ",") |> list.try_map(unescape)
 }
 
-/// Escapes a value so it holds no space, newline, comma or semicolon.
+/// Escapes a value to printable ASCII: the separators and the backslash
+/// by name, everything else outside `!`..`~` as `\u{hex}`, code point by
+/// code point so both targets write the same line.
 fn atom(text: String) -> String {
   text
-  |> string.replace(each: "\\", with: "\\\\")
-  |> string.replace(each: " ", with: "\\s")
-  |> string.replace(each: "\n", with: "\\n")
-  |> string.replace(each: "\t", with: "\\t")
-  |> string.replace(each: "\r", with: "\\r")
-  |> string.replace(each: ",", with: "\\c")
-  |> string.replace(each: ";", with: "\\p")
-}
+  |> string.to_utf_codepoints
+  |> list.map(fn(cp) {
+    let code = string.utf_codepoint_to_int(cp)
 
-/// Reverses `atom`, refusing an escape it does not know and a trailing
-/// lone backslash.
-fn unescape(raw: String) -> Result(String, String) {
-  unescape_graphemes(string.to_graphemes(raw), [])
-}
-
-/// Walks the graphemes, turning each escape back into its character.
-fn unescape_graphemes(
-  graphemes: List(String),
-  done: List(String),
-) -> Result(String, String) {
-  // A backslash takes the next grapheme as the escape's name.
-  case graphemes {
-    [] -> Ok(string.concat(list.reverse(done)))
-    ["\\", name, ..rest] -> {
-      // The name after the backslash is one of the seven escapes.
-      use character <- result.try(case name {
-        "\\" -> Ok("\\")
-        "s" -> Ok(" ")
-        "n" -> Ok("\n")
-        "t" -> Ok("\t")
-        "r" -> Ok("\r")
-        "c" -> Ok(",")
-        "p" -> Ok(";")
-        other -> Error("unknown escape \"\\" <> other <> "\"")
-      })
-
-      unescape_graphemes(rest, [character, ..done])
+    // The named escapes first, then the printable range, then `\u{…}`.
+    case code {
+      0x5C -> "\\\\"
+      0x20 -> "\\s"
+      0x0A -> "\\n"
+      0x09 -> "\\t"
+      0x0D -> "\\r"
+      0x2C -> "\\c"
+      0x3B -> "\\p"
+      _ if code > 0x20 && code < 0x7F -> string.from_utf_codepoints([cp])
+      _ -> "\\u{" <> string.lowercase(int.to_base16(code)) <> "}"
     }
-    ["\\"] -> Error("a value ends in a lone backslash")
-    [grapheme, ..rest] -> unescape_graphemes(rest, [grapheme, ..done])
+  })
+  |> string.concat
+}
+
+/// Reverses `atom`, refusing an escape it does not know, a trailing lone
+/// backslash, and a `\u{…}` that names no code point. The walk is over
+/// integer code points, which both targets agree on.
+fn unescape(raw: String) -> Result(String, String) {
+  raw
+  |> string.to_utf_codepoints
+  |> list.map(string.utf_codepoint_to_int)
+  |> unescape_codes([])
+}
+
+/// Walks the code points, turning each escape back into its character.
+fn unescape_codes(codes: List(Int), done: List(Int)) -> Result(String, String) {
+  // A backslash takes the next code point as the escape's name.
+  case codes {
+    [] -> Ok(from_codes(list.reverse(done)))
+
+    [0x5C, name, ..rest] ->
+      // The name is one of the seven, or `u` opening a hex code point.
+      case name {
+        0x5C -> unescape_codes(rest, [0x5C, ..done])
+        0x73 -> unescape_codes(rest, [0x20, ..done])
+        0x6E -> unescape_codes(rest, [0x0A, ..done])
+        0x74 -> unescape_codes(rest, [0x09, ..done])
+        0x72 -> unescape_codes(rest, [0x0D, ..done])
+        0x63 -> unescape_codes(rest, [0x2C, ..done])
+        0x70 -> unescape_codes(rest, [0x3B, ..done])
+        0x75 -> {
+          use #(code, rest) <- result.try(unescape_hex(rest))
+          unescape_codes(rest, [code, ..done])
+        }
+        _ -> Error("unknown escape \"\\" <> from_codes([name]) <> "\"")
+      }
+
+    [0x5C] -> Error("a value ends in a lone backslash")
+    [code, ..rest] -> unescape_codes(rest, [code, ..done])
   }
+}
+
+/// Reads `{hex}` after `\u`, returning the code point and what follows.
+fn unescape_hex(codes: List(Int)) -> Result(#(Int, List(Int)), String) {
+  // The brace opens, hex digits follow, the brace closes.
+  case codes {
+    [0x7B, ..rest] -> {
+      let digits = list.take_while(rest, fn(code) { code != 0x7D })
+      let after = list.drop(rest, list.length(digits))
+
+      // The closing brace must be there, and the digits must name a code
+      // point a string can hold.
+      case after, digits {
+        [0x7D, ..rest], [_, ..] -> {
+          use code <- result.try(
+            int.base_parse(from_codes(digits), 16)
+            |> result.replace_error("malformed \\u{…} escape"),
+          )
+          use _valid <- result.try(
+            string.utf_codepoint(code)
+            |> result.replace_error("\\u{…} names no code point"),
+          )
+          Ok(#(code, rest))
+        }
+        _, _ -> Error("malformed \\u{…} escape")
+      }
+    }
+    _ -> Error("malformed \\u{…} escape")
+  }
+}
+
+/// A string from integer code points; one that names no code point is
+/// dropped, which cannot happen for codes that came from a string or
+/// passed `string.utf_codepoint`.
+fn from_codes(codes: List(Int)) -> String {
+  codes
+  |> list.filter_map(string.utf_codepoint)
+  |> string.from_utf_codepoints
 }
 
 fn require(condition: Bool, message: String) -> Result(Nil, String) {

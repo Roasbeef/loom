@@ -1745,6 +1745,22 @@ fn scores_at(
   |> result.unwrap([])
 }
 
+/// Whether a float is a number and not infinite: the one float that is
+/// not zero when subtracted from itself is one the search must never
+/// record, since no arithmetic over it decides anything and the log
+/// could not spell it the same on both targets.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert gepa.is_finite(1.5)
+/// assert !gepa.is_finite(1.0e308 *. 10.0)
+/// ```
+///
+pub fn is_finite(value: Float) -> Bool {
+  value -. value == 0.0
+}
+
 /// What the search has spent: evaluations and reflections together.
 ///
 /// ## Examples
