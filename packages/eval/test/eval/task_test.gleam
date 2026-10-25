@@ -324,14 +324,14 @@ pub fn bounds_are_enforced_test() {
     == "unsupported task version"
   assert reason_for(with_extra(base)) == "unknown key \"extra\""
   assert reason_for(with_nested(base, "verifier", "timeout_ms", json.Int(0)))
-    == "\"timeout_ms\" must be between 1 and 3600000"
+    == "\"timeout_ms\" must be between 1 and 600000"
   assert reason_for(with_nested(
       base,
       "verifier",
       "timeout_ms",
-      json.Int(3_600_001),
+      json.Int(600_001),
     ))
-    == "\"timeout_ms\" must be between 1 and 3600000"
+    == "\"timeout_ms\" must be between 1 and 600000"
   assert reason_for(with_nested(base, "verifier", "argv", json.Array([])))
     == "verifier argv must hold 1 to 64 words"
   assert reason_for(with_nested(

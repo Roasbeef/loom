@@ -368,7 +368,7 @@ fn prepare(config: Config, candidate: Candidate) -> Result(Prepared, String) {
   use parent <- result.try(ask(git.parent_args(candidate.commit)))
   let parent = string.trim(parent)
 
-  use runner_files <- result.try(runner_files(config, parent))
+  use runner_files <- result.try(runner_files(config))
   use tree <- result.try(ask(git.tree_args(parent)))
   use message <- result.try(ask(git.message_args(candidate.commit)))
   use diff <- result.try(ask(git.diff_args(candidate.commit)))
@@ -400,32 +400,18 @@ const runner_paths = [
   "scripts/serial-tests",
 ]
 
-/// The runner files the verifier must carry for this parent, none when the
-/// parent already has `scripts/test.sh`.
-fn runner_files(
-  config: Config,
-  parent: String,
-) -> Result(List(#(String, String)), String) {
-  let present =
-    git.ask(
-      config.runner,
-      config.repo,
-      ["cat-file", "-e", parent <> ":scripts/test.sh"],
-      120_000,
-    )
-
-  // A parent that already has the runner needs no vendored copy; an older one gets the miner's own.
-  case present {
-    Ok(_) -> Ok([])
-    Error(_) ->
-      list.try_map(runner_paths, fn(path) {
-        simplifile.read(config.repo <> "/" <> path)
-        |> result.map(fn(content) { #(path, content) })
-        |> result.map_error(fn(e) {
-          "runner file " <> path <> ": " <> simplifile.describe_error(e)
-        })
-      })
-  }
+/// The runner files every task carries, read from the miner's own checkout.
+/// Always, not only when the parent predates the runner: the verifier
+/// refuses to run a script from the agent's workspace unless the task stages
+/// it, because an agent that owns `scripts/test.sh` grades its own work.
+fn runner_files(config: Config) -> Result(List(#(String, String)), String) {
+  list.try_map(runner_paths, fn(path) {
+    simplifile.read(config.repo <> "/" <> path)
+    |> result.map(fn(content) { #(path, content) })
+    |> result.map_error(fn(e) {
+      "runner file " <> path <> ": " <> simplifile.describe_error(e)
+    })
+  })
 }
 
 /// The twelve-character prefix that names a commit's files and worktree.
@@ -550,12 +536,12 @@ fn after_fix(
   case apply(job.config, job.path, job.stem <> ".src.patch") {
     Error(reason) -> #(Error(reason), timing)
     Ok(Nil) -> {
-      let #(after, after_ms) = timed(job.config, job.path, job.argv)
+      let #(after, after_ms) = timed_offline(job.config, job.path, job.argv)
       let timing = Timing(..timing, after: after_ms)
 
       // The judgement decides admission; only a reproduced fix gets the
       // sabotage census.
-      case after |> result.map(judge(before, _)) {
+      case after |> result.map(judge_offline(job, before, _)) {
         Error(reason) -> #(Error(reason), timing)
         Ok(Rejected(reason)) -> #(Error(reason), timing)
         Ok(Judged(fail_to_pass:, pass_to_pass:)) -> {
@@ -567,6 +553,89 @@ fn after_fix(
         }
       }
     }
+  }
+}
+
+/// The judgement, with one more question when the after run failed: did it
+/// fail only for want of the network? The verifier's jail has the network
+/// off, so a test that opens a socket can never pass there, and a task whose
+/// fix passes on the host but not without the network is culled by name
+/// rather than admitted and refused at proof time.
+fn judge_offline(job: Job, before: TestReport, after: TestReport) -> Judgement {
+  // Only a failing after run needs the second, networked run to explain it.
+  case eunit_ids.ids(after, eunit_ids.Failed), offline_available(job.config) {
+    [], _ | _, False -> judge(before, after)
+    [_, ..], True -> {
+      let #(plain, _) = timed(job.config, job.path, job.argv)
+
+      // Ids that pass with the network and fail without it need it.
+      case plain |> result.map(network_only_failures(after, _)) {
+        Ok([]) | Error(_) -> judge(before, after)
+        Ok(needs) ->
+          Rejected(
+            "tests need the network, which the verifier jail has off: "
+            <> string.join(needs, ", "),
+          )
+      }
+    }
+  }
+}
+
+/// The ids a run without the network failed that the same run with it
+/// passed: the tests that need a socket.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // mine.network_only_failures(offline, online) == ["m@t.listens_test"]
+/// ```
+///
+pub fn network_only_failures(
+  offline: TestReport,
+  online: TestReport,
+) -> List(String) {
+  let passed_online = eunit_ids.ids(online, eunit_ids.Passed)
+
+  eunit_ids.ids(offline, eunit_ids.Failed)
+  |> list.filter(list.contains(passed_online, _))
+  |> list.unique
+}
+
+/// The argv that runs a program in a fresh, empty network namespace, which
+/// is the nearest a host-side run comes to the verifier's network-off jail:
+/// no interface is up, so a test that listens and connects fails as it
+/// will in the jail.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert mine.offline(["bash", "x.sh"]) == ["unshare", "-rn", "--", "bash", "x.sh"]
+/// ```
+///
+pub fn offline(argv: List(String)) -> List(String) {
+  ["unshare", "-rn", "--", ..argv]
+}
+
+/// Whether this host can unshare a network namespace unprivileged. A host
+/// that cannot (macOS, a locked-down kernel) runs the after run with the
+/// network and the proof step catches a networked test instead.
+fn offline_available(config: Config) -> Bool {
+  case git.run_in(config.runner, config.repo, offline(["true"]), 10_000) {
+    Ok(capture) -> capture.status == 0
+    Error(_) -> False
+  }
+}
+
+/// The after run without the network when the host can arrange it, else
+/// with it.
+fn timed_offline(
+  config: Config,
+  dir: String,
+  argv: List(String),
+) -> #(Result(TestReport, String), Int) {
+  case offline_available(config) {
+    True -> timed(config, dir, offline(argv))
+    False -> timed(config, dir, argv)
   }
 }
 

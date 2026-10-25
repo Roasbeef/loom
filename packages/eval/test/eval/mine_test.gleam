@@ -66,6 +66,20 @@ pub fn prompt_redacts_named_tests_test() {
     == #("fix: x", SubjectOnly)
 }
 
+pub fn network_only_failures_are_the_offline_minus_online_test() {
+  let offline =
+    eunit_ids.parse(
+      "  m: listens_test...*failed*\n  m: pure_test...ok\n  m: broken_test...*failed*\n",
+    )
+  let online =
+    eunit_ids.parse(
+      "  m: listens_test...ok\n  m: pure_test...ok\n  m: broken_test...*failed*\n",
+    )
+  assert mine.network_only_failures(offline, online) == ["m.listens_test"]
+  assert mine.network_only_failures(online, online) == []
+  assert mine.offline(["bash", "x"]) == ["unshare", "-rn", "--", "bash", "x"]
+}
+
 pub fn verifier_argv_chains_modules_test() {
   assert mine.verifier_argv("m", ["m@a_test"])
     == ["bash", "scripts/test.sh", "m", "--match", "m@a_test:"]
@@ -117,7 +131,11 @@ fn reproduce(repo: String) {
   let mined = mine.mine(config, candidate)
   let assert Ok(minted) = mined.result
 
-  let assert Program(fail_to_pass:, pass_to_pass:, ..) = minted.verifier
+  let assert Program(fail_to_pass:, pass_to_pass:, files:, ..) = minted.verifier
+
+  // The runner is always among the hidden files, so the verifier never runs
+  // the agent's copy of it.
+  assert list.key_find(files, "scripts/test.sh") |> result.is_ok
   assert fail_to_pass
     == [
       "machine@failure_test.threshold_summarizer_unresolved_keeps_the_run_alive_test",

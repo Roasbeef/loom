@@ -43,8 +43,10 @@ pub const max_inline_files = 64
 /// The most bytes (paths plus contents) any one file set may hold.
 pub const max_file_bytes = 262_144
 
-/// The longest verifier wall-clock ceiling a task may request, one hour.
-pub const max_timeout_ms = 3_600_000
+/// The longest verifier wall-clock ceiling a task may request, ten minutes:
+/// the jail's default wall (`broker/policy.workspace_default`), so a valid
+/// task can never ask for a run the sandbox would refuse to clear.
+pub const max_timeout_ms = 600_000
 
 /// One versioned, content-addressed evaluation task.
 pub type Task {

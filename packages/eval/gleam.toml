@@ -15,10 +15,14 @@ tools = { path = "../tools" }
 client = { path = "../client" }
 prompt = { path = "../prompt" }
 evalstat = { path = "../evalstat" }
+telemetry = { path = "../telemetry" }
+machine = { path = "../machine" }
+broker = { path = "../broker" }
 weft = "== 0.4.6"
 simplifile = ">= 2.0.0 and < 3.0.0"
 argv = ">= 1.1.0 and < 2.0.0"
 
 [dev_dependencies]
+host = { path = "../host" }
 gleeunit = ">= 1.0.0 and < 2.0.0"
 qcheck = ">= 1.0.5 and < 2.0.0"
