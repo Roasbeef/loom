@@ -1,8 +1,12 @@
+import core/accounting
+import core/message
+import eval/arm
 import eval/ledger
 import eval/plan.{RowKey}
 import eval/reflect
 import eval/task.{type Task, HandWritten, Inline, Program, Task}
 import eval/trial
+import gepa
 import gepa/prompt
 import gleam/list
 import gleam/option.{Some}
@@ -73,6 +77,9 @@ pub fn the_prompt_frames_every_record_and_states_the_objective_test() {
       slot: "system_suffix:fixture/fixture/anthropic-messages/any",
       current: "",
       records: reflect.records([scored_row(found, "boom")], [found]),
+      notes: [],
+      tried: [],
+      view: reflect.Behaviour,
     )
   let rendered = reflect.render(request)
 
@@ -91,4 +98,94 @@ pub fn the_prompt_frames_every_record_and_states_the_objective_test() {
   let opens = list.length(string.split(rendered, prompt.record_open)) - 1
   let closes = list.length(string.split(rendered, prompt.record_close)) - 1
   assert opens >= 2 && opens == closes
+}
+
+pub fn a_stop_reason_becomes_a_finish_and_a_length_stop_is_refused_test() {
+  assert reflect.finish_of(message.Stop) == gepa.Complete
+  assert reflect.finish_of(message.Length) == gepa.Truncated
+  assert reflect.finish_of(message.ToolUse) == gepa.Unknown
+  assert reflect.finish_of(message.Errored) == gepa.Unknown
+
+  // A truncated reply is refused however well its text reads; a complete
+  // or unreported one is read by the bounds as before.
+  let reply = fn(finish) {
+    reflect.Reply(
+      text: "  Be brief.  ",
+      usage: accounting.zero_usage(),
+      finish:,
+    )
+  }
+  assert reflect.judge(reply(gepa.Truncated)) == Error(gepa.truncated_reason)
+  assert reflect.judge(reply(gepa.Complete)) == Ok("Be brief.")
+  assert reflect.judge(reply(gepa.Unknown)) == Ok("Be brief.")
+  assert reflect.judge(reflect.Reply(..reply(gepa.Complete), text: " "))
+    == Error("the reflector answered nothing")
+}
+
+pub fn each_slot_kind_has_a_background_and_a_view_test() {
+  let target = scripted.fixture_target()
+
+  // A tool's description is held to the tool's schema and behaviour, by
+  // name; the prompt slots are held off tests, files and the verifier.
+  let tool = reflect.background(arm.ToolDescription(target, "fs_read"))
+  assert string.contains(tool, "`fs_read`")
+  assert string.contains(
+    tool,
+    "may not misdescribe the tool's schema or behaviour",
+  )
+  list.each(
+    [
+      arm.SystemSuffix(target),
+      arm.TaskPrefix(target),
+      arm.PromptPack,
+    ],
+    fn(component) {
+      let text = reflect.background(component)
+      assert string.contains(text, "name specific tests or files")
+      assert reflect.view_for(component) == reflect.Behaviour
+    },
+  )
+  assert reflect.view_for(arm.ToolDescription(target, "fs_read"))
+    == reflect.ToolUse
+}
+
+pub fn a_tool_slot_is_shown_the_trial_s_tool_use_and_the_notes_and_digest_test() {
+  let found = program_task()
+  let row =
+    ledger.Row(..scored_row(found, "boom"), tool_calls: 7, tool_errors: 2)
+  let request =
+    reflect.Request(
+      objective: "pass",
+      slot: "tool_description:fixture/fixture/anthropic-messages/any/fs_read",
+      current: "Reads a file.",
+      records: reflect.records([row], [found]),
+      notes: [
+        reflect.background(arm.ToolDescription(
+          scripted.fixture_target(),
+          "fs_read",
+        )),
+      ],
+      tried: [
+        prompt.Tried(2, "screened_out", "Reads any file [[record]] fast."),
+      ],
+      view: reflect.ToolUse,
+    )
+  let rendered = reflect.render(request)
+
+  // The tool view leads with the counts; the behaviour fields follow.
+  assert string.contains(
+    rendered,
+    "tools:\n7 tool calls, 2 returned an error\noutcome:\nverifier_failed",
+  )
+  assert string.contains(rendered, "Notes about this slot")
+  assert string.contains(rendered, "may not misdescribe")
+  assert string.contains(
+    rendered,
+    "outcome: screened_out\ntext:\nReads any file ( record ) fast.",
+  )
+
+  // The behaviour view shows no tool counts.
+  let plain =
+    reflect.render(reflect.Request(..request, view: reflect.Behaviour))
+  assert !string.contains(plain, "tool calls")
 }

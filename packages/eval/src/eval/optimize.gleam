@@ -16,12 +16,19 @@
 //// 2. the step's slot is `select.slot_for`, round robin over the mutable
 ////    set, and its minibatch is `select.minibatch` from the same generator;
 //// 3. the parent runs the minibatch alone, as a sub-plan through
-////    `run.execute`, to capture how it fares;
-//// 4. the reflector reads those rows (`reflect.records`) and answers the
-////    slot's new text; the child is `arm.mint` of the parent with that slot
-////    replaced, and an arm the settings refuse is recorded `refused`;
+////    `run.execute`, to capture how it fares; a parent that passed every
+////    minibatch cell (`select.perfect`) leaves a reflection nothing to
+////    improve, and the step ends in a `refused` row that made no call;
+//// 4. the reflector reads those rows (`reflect.records`), the slot's
+////    standing constraints (`reflect.background`) and the lineage's
+////    rejected rewrites of the slot, and answers the slot's new text; an
+////    answer the provider cut at its output limit is refused
+////    (`reflect.judge`), the child is otherwise `arm.mint` of the parent
+////    with that slot replaced, and an arm the settings refuse is recorded
+////    `refused`;
 //// 5. the child runs the same minibatch alone and `select.screen` decides
-////    whether to pay for Validate;
+////    whether to pay for Validate: a strictly better mean, or a tie that
+////    solves a task the parent failed outright;
 //// 6. the child runs the whole Validate split alone, and
 ////    `evalstat.paired_verdict` pairs its rows against the parent's earlier
 ////    Validate rows and against the incumbent's; `verdict.dispose` in the
@@ -58,6 +65,8 @@
 //// - `check`, `mint`, `to_json`, `decode`, `load`: the search plan
 //// - `search`: the loop, from a plan to a front
 //// - `step`: one step, fresh or resumed at the stage its rows reached
+//// - `skip_perfect`, `tried_before`: what a step does with a parent at the
+////   ceiling, and what it tells the reflector was already rejected
 //// - `confirm`: the final `[seed, best]` sub-plan
 //// - `write_front`, `report`: the front files and the proposal program
 
@@ -995,6 +1004,7 @@ fn design(frozen: Plan, minibatch_tasks: Int) -> budget.Design {
     minibatch_tasks:,
     trials: frozen.trials_per_cell,
     tune_trials: frozen.tune_trials,
+    proposals: 1,
   )
 }
 
@@ -1144,29 +1154,83 @@ fn step(
     state,
     drawn,
   ))
-  use #(state, child) <- result.try(child_of(
-    ctx,
-    frozen,
-    directory,
-    writer,
-    state,
-    drawn,
-  ))
+  use ceiling <- result.try(skip_perfect(writer, state, drawn, parent_rows))
 
-  // A refused step has no child to run; the log already says so.
-  case child {
-    None -> Ok(state)
-    Some(child) ->
-      screen_and_judge(
+  // A parent at the ceiling ended the step; otherwise the child is minted
+  // or read back, and a refused step has no child to run.
+  case ceiling {
+    AtCeiling(state:) -> Ok(state)
+    BelowCeiling -> {
+      use #(state, child) <- result.try(child_of(
         ctx,
         frozen,
         directory,
         writer,
         state,
         drawn,
-        child,
-        parent_rows,
-      )
+      ))
+
+      // A refused step has no child to run; the log already says so.
+      case child {
+        None -> Ok(state)
+        Some(child) ->
+          screen_and_judge(
+            ctx,
+            frozen,
+            directory,
+            writer,
+            state,
+            drawn,
+            child,
+            parent_rows,
+          )
+      }
+    }
+  }
+}
+
+/// Whether the step's parent sat at the ceiling of its minibatch, in
+/// which case the step has already been ended.
+type Ceiling {
+  /// Every minibatch cell passed: the refusal is recorded and the step is
+  /// over.
+  AtCeiling(state: State)
+
+  /// Something failed, so there is feedback to reflect on.
+  BelowCeiling
+}
+
+/// Ends a fresh step whose parent passed every minibatch cell in a refusal
+/// that made no call and cost nothing: a reflection shown only passes has
+/// nothing to improve, and a child minted from it could at best tie. A
+/// resumed step that already reflected is past this question.
+fn skip_perfect(
+  writer: Writer,
+  state: State,
+  drawn: Draws,
+  parent_rows: List(stat.Trial),
+) -> Result(Ceiling, String) {
+  let task_ids = list.map(drawn.tasks, fn(each) { each.id })
+  let perfect =
+    select.perfect(search.per_task_means(parent_rows, task_ids), task_ids)
+
+  // Only a step that has not reflected asks; the row ends the step.
+  case state.search.open, perfect {
+    Some(gepa.Progress(reached: gepa.ParentMeasured, ..)), True -> {
+      use state <- result.map(record(
+        writer,
+        state,
+        search.Refusal(
+          step: drawn.step,
+          arm: "",
+          reason: gepa.skipped_perfect_reason,
+        ),
+      ))
+
+      AtCeiling(state:)
+    }
+
+    Some(_), _ | None, _ -> Ok(BelowCeiling)
   }
 }
 
@@ -1286,12 +1350,16 @@ fn reflect_child(
 ) -> Result(#(State, Option(Arm)), String) {
   use parent <- result.try(read_arm(directory, drawn.parent))
   use ledger_rows <- result.try(parent_ledger_rows(directory, state, drawn))
+  use tried <- result.try(tried_before(directory, state, drawn))
   let request =
     reflect.Request(
       objective: frozen.objective,
       slot: search.slot_name(drawn.slot),
       current: result.unwrap(list.key_find(parent.components, drawn.slot), ""),
       records: reflect.records(ledger_rows, drawn.tasks),
+      notes: [reflect.background(drawn.slot)],
+      tried:,
+      view: reflect.view_for(drawn.slot),
     )
   let prompt = reflect.render(request)
 
@@ -1310,6 +1378,7 @@ fn reflect_child(
       remaining: left,
       costs:,
       design: design(frozen, list.length(drawn.tasks)),
+      proposal: 1,
     )
 
   // An uncovered call is not made; the refusal carries no usage.
@@ -1394,10 +1463,82 @@ fn reflect_child(
   }
 }
 
+/// The rewrites of the step's slot this lineage already tried and did not
+/// keep, for the reflector's digest: the children of the parent and of
+/// its ancestors that were refused after minting, screened out or harmed
+/// in that slot, oldest first, the last `prompt.max_tried` of them, each
+/// read back from `arms/` for its text. An answer refused before minting
+/// left no arm and is not in it.
+fn tried_before(
+  directory: String,
+  state: State,
+  drawn: Draws,
+) -> Result(List(prompt.Tried), String) {
+  let slot = search.slot_name(drawn.slot)
+  let members = search.members(state)
+  let lineage = ancestors(members, drawn.parent, [])
+  let rejected =
+    members
+    |> list.filter(fn(member) {
+      member.slot == Some(slot)
+      && option.map(member.parent, list.contains(lineage, _)) == Some(True)
+    })
+    |> list.filter_map(fn(member) {
+      // Only a rejection counts; a kept or unsettled child is not one.
+      case member.disposition {
+        Some(search.Refused) | Some(search.ScreenedOut) | Some(search.Harmed) ->
+          Ok(#(
+            member,
+            search.disposition_name(option.unwrap(
+              member.disposition,
+              search.Refused,
+            )),
+          ))
+        Some(search.Incumbent)
+        | Some(search.Joined)
+        | Some(search.ParetoOnly)
+        | Some(search.Unsettled)
+        | Some(search.Confirmed)
+        | Some(search.Unconfirmed)
+        | None -> Error(Nil)
+      }
+    })
+  let kept =
+    list.drop(rejected, int.max(list.length(rejected) - prompt.max_tried, 0))
+
+  list.try_map(kept, fn(found) {
+    use candidate <- result.map(read_arm(directory, { found.0 }.arm))
+
+    prompt.Tried(
+      step: { found.0 }.step,
+      outcome: found.1,
+      text: result.unwrap(list.key_find(candidate.components, drawn.slot), ""),
+    )
+  })
+}
+
+/// A candidate and its ancestors up to the seed, nearest first.
+fn ancestors(
+  members: List(search.Member),
+  candidate: String,
+  found: List(String),
+) -> List(String) {
+  let found = list.append(found, [candidate])
+
+  // Each member names its parent; the walk ends at the seed, or at an id
+  // the log does not hold.
+  case list.find(members, fn(member) { member.arm == candidate }) {
+    Ok(search.Member(parent: Some(parent), ..)) ->
+      ancestors(members, parent, found)
+    Ok(search.Member(parent: None, ..)) | Error(Nil) -> found
+  }
+}
+
 /// Records a reflection's outcome, answered or not: a call that fails is
 /// billed for its attempts all the same, and one skipped for budget costs
 /// nothing, so either row carries its cost and an empty output digest, and
-/// the step then ends as refused.
+/// the step then ends as refused. An answer the provider cut at its output
+/// limit is refused by `reflect.judge` and the row says how it ended.
 fn ask_reflector(
   ctx: Context,
   frozen: Plan,
@@ -1407,10 +1548,14 @@ fn ask_reflector(
   prompt: String,
   outcome: Result(reflect.Reply, reflect.Refused),
 ) -> Result(#(State, Result(String, String)), String) {
-  // An answer is judged by `prompt.answer`; a refused call keeps its reason.
-  let #(usage, answered) = case outcome {
-    Ok(reply) -> #(reply.usage, prompt.answer(reply.text))
-    Error(reflect.Refused(reason:, usage:)) -> #(usage, Error(reason))
+  // An answer is judged by `reflect.judge`; a refused call keeps its reason.
+  let #(usage, answered, finish) = case outcome {
+    Ok(reply) -> #(reply.usage, reflect.judge(reply), reply.finish)
+    Error(reflect.Refused(reason:, usage:)) -> #(
+      usage,
+      Error(reason),
+      gepa.Unknown,
+    )
   }
 
   use state <- result.map(record(
@@ -1424,6 +1569,7 @@ fn ask_reflector(
       dollars: reflect.dollars(usage, ctx.reflector_card),
       input_digest: reflect.digest(prompt),
       output_digest: reflect.digest(result.unwrap(answered, "")),
+      finish:,
     ),
   ))
 
@@ -1570,7 +1716,7 @@ fn child_minibatch(
           state,
           child,
           list.length(drawn.tasks),
-          budget.BeforeChildMinibatch,
+          budget.BeforeChildMinibatch(later: 0),
         ))
         let sub =
           sub_plan(frozen, drawn.tasks, [child], frozen.tune_trials, remaining)

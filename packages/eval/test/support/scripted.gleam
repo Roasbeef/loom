@@ -42,6 +42,7 @@ import eval/run_cli
 import eval/task.{type Task, ExpectedFiles, HandWritten, Inline, Task}
 import eval/trial
 import evalstat/prng
+import gepa
 import gleam/bit_array
 import gleam/erlang/process
 import gleam/float
@@ -990,7 +991,24 @@ pub fn scripted_reflector(
       |> list.first
       |> result.unwrap("")
 
-    Ok(reflect_reply.Reply(text: answer, usage: reflect_usage()))
+    Ok(reflect_reply.Reply(
+      text: answer,
+      usage: reflect_usage(),
+      finish: gepa.Complete,
+    ))
+  }
+}
+
+/// A reflector whose every answer stopped at the output limit: the text
+/// is the scripted one, the finish says the provider cut it.
+pub fn truncating_reflector(
+  answers: List(String),
+  served: Counter,
+) -> fn(String) -> Result(reflect_reply.Reply, reflect_reply.Refused) {
+  fn(prompt) {
+    use reply <- result.map(scripted_reflector(answers, served)(prompt))
+
+    reflect_reply.Reply(..reply, finish: gepa.Truncated)
   }
 }
 
@@ -1016,6 +1034,7 @@ pub fn inert_reflector(
     Ok(reflect_reply.Reply(
       text: "Keep" <> string.repeat(" ", ordinal) <> "going.",
       usage: reflect_usage(),
+      finish: gepa.Complete,
     ))
   }
 }

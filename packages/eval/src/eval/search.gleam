@@ -48,6 +48,7 @@ import evalstat/trial as stat
 import evalstat/verdict.{type Verdict}
 import gepa
 import gepa/budget
+import gepa/log
 import gepa/select
 import gepa/verdict as rule
 import gleam/float
@@ -182,6 +183,9 @@ pub type Event {
     input_digest: String,
     /// SHA-256 of the text received.
     output_digest: String,
+    /// How the answer ended, from the provider's stop reason; `Unknown`
+    /// on a row written before the key existed.
+    finish: gepa.Finish,
   )
 
   /// A step's child was refused before it ran: no arm when the answer was
@@ -321,6 +325,7 @@ pub fn to_json(event: Event) -> JsonValue {
       dollars:,
       input_digest:,
       output_digest:,
+      finish:,
     ) -> [
       #("kind", json.String("reflection")),
       #("step", json.Int(step)),
@@ -330,6 +335,7 @@ pub fn to_json(event: Event) -> JsonValue {
       #("dollars", json.Float(dollars)),
       #("input_digest", json.String(input_digest)),
       #("output_digest", json.String(output_digest)),
+      #("finish", json.String(log.finish_name(finish))),
     ]
     Refusal(step:, arm:, reason:) -> [
       #("kind", json.String("refused")),
@@ -429,7 +435,7 @@ pub fn parse(text: String) -> Result(List(Event), String) {
 const event_keys = [
   "v", "kind", "arm", "parent", "step", "source", "slot", "split", "plan",
   "role", "provider", "model", "api", "dollars", "input_digest", "output_digest",
-  "reason", "against", "verdict", "disposition", "cap",
+  "reason", "against", "verdict", "disposition", "cap", "finish",
 ]
 
 /// Decodes a `candidate` row.
@@ -472,6 +478,13 @@ fn decode_reflection(fields: wire.Fields) -> Result(Event, String) {
   use input_digest <- result.try(wire.text(fields, "input_digest"))
   use output_digest <- result.try(wire.text(fields, "output_digest"))
 
+  // A row written before the key existed did not know how its answer
+  // ended, and says so.
+  use finish <- result.try(case list.key_find(fields, "finish") {
+    Ok(_) -> wire.text(fields, "finish") |> result.try(log.parse_finish)
+    Error(Nil) -> Ok(gepa.Unknown)
+  })
+
   Ok(Reflection(
     step:,
     provider:,
@@ -480,6 +493,7 @@ fn decode_reflection(fields: wire.Fields) -> Result(Event, String) {
     dollars:,
     input_digest:,
     output_digest:,
+    finish:,
   ))
 }
 
@@ -897,12 +911,14 @@ pub fn to_gepa(event: Event, store: Store) -> Result(gepa.Event, String) {
       ))
     }
 
-    Reflection(step:, dollars:, output_digest:, ..) ->
+    Reflection(step:, dollars:, output_digest:, finish:, ..) ->
       Ok(gepa.Reflected(
         step:,
         cost: dollars,
         ref: output_digest,
-        finish: gepa.Unknown,
+        finish:,
+        proposal: 1,
+        of: 1,
       ))
 
     Refusal(step:, arm:, reason:) ->

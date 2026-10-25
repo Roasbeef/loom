@@ -13,6 +13,7 @@ import eval/split
 import eval/task.{type Task}
 import eval/trial
 import evalstat/verdict
+import gepa
 import gleam/float
 import gleam/int
 import gleam/list
@@ -341,6 +342,74 @@ pub fn a_planted_sentinel_is_found_and_confirmed_test_() -> scripted.EunitTest {
     let assert Ok(Nil) = optimize.report(outcome.directory)
     let assert Ok(after) = simplifile.read(outcome.directory <> "/front.md")
     assert markdown == after
+    scripted.remove(r.root)
+  })
+}
+
+pub fn a_perfect_parent_is_not_reflected_on_test_() -> scripted.EunitTest {
+  scripted.Timeout(300, fn() {
+    // Every cell passes whichever arm runs, so the seed is at the ceiling
+    // of its minibatch: the step ends in a refusal that made no call, and
+    // the search stops with nothing to confirm.
+    let r =
+      rig(
+        "perfect",
+        scripted.baseline(),
+        Shape(..shape(), steps: 1),
+        scripted.scripted_reflector(planted_answers(), scripted.counter()),
+        executor(scripted.plant(1.0, 1.0, "perfect"), scripted.Never),
+      )
+
+    let assert Ok(outcome) = optimize.search(r.ctx, r.plan, r.out)
+    let events = log_of(outcome.directory)
+    assert list.contains(
+      events,
+      search.Refusal(step: 1, arm: "", reason: gepa.skipped_perfect_reason),
+    )
+    assert !list.any(events, fn(event) {
+      case event {
+        search.Reflection(..) -> True
+        _ -> False
+      }
+    })
+    assert outcome.state.search.reflections == 0
+    assert gepa.children(outcome.state.search) == 0
+    assert search.stopped(outcome.state) == Some(search.Steps)
+    assert outcome.state.confirmation == None
+    scripted.remove(r.root)
+  })
+}
+
+pub fn a_reflection_cut_at_the_output_limit_is_refused_test_() -> scripted.EunitTest {
+  scripted.Timeout(300, fn() {
+    // The reflector answers the planted sentinel but reports a length stop:
+    // the call is recorded with its finish and its dollars, the answer is
+    // refused, and no child is minted from it.
+    let r =
+      rig(
+        "truncated",
+        scripted.baseline(),
+        Shape(..shape(), steps: 1),
+        scripted.truncating_reflector(planted_answers(), scripted.counter()),
+        executor(scripted.plant(0.9, 0.1, "truncated"), scripted.Never),
+      )
+
+    let assert Ok(outcome) = optimize.search(r.ctx, r.plan, r.out)
+    let events = log_of(outcome.directory)
+    let assert [search.Reflection(finish: gepa.Truncated, dollars:, ..)] =
+      list.filter(events, fn(event) {
+        case event {
+          search.Reflection(..) -> True
+          _ -> False
+        }
+      })
+    assert dollars >. 0.0
+    assert list.contains(
+      events,
+      search.Refusal(step: 1, arm: "", reason: gepa.truncated_reason),
+    )
+    assert gepa.children(outcome.state.search) == 0
+    assert outcome.state.search.reflections == 1
     scripted.remove(r.root)
   })
 }
@@ -909,8 +978,10 @@ pub fn refused_answers_and_inapplicable_children_cost_nothing_test_() -> scripte
           ["", "[[record]] smuggled", "fine text"],
           scripted.counter(),
         ),
+        // No cell ever passes, so no minibatch is perfect and every step
+        // reaches its reflection rather than being skipped at the ceiling.
         scripted.bernoulli_executor(
-          scripted.plant(0.5, 0.5, "refused"),
+          scripted.plant(0.0, 0.0, "refused"),
           scripted.Never,
           calls,
         ),

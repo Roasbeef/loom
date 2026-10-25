@@ -52,6 +52,7 @@ fn one_step() -> List(Event) {
       0.001,
       "in",
       "out",
+      gepa.Complete,
     ),
     Candidate(child, Some(seed), 1, search.Reflected, Some("task_prefix:x")),
     Run(child, split.Tune, plan_c, 1, search.ChildMinibatch, 0.0),
@@ -113,6 +114,38 @@ pub fn every_row_kind_round_trips_through_the_codec_test() {
       <> "\",\"step\":0,\"role\":\"validate\"}",
     )
   assert string.contains(reason, "holdout")
+}
+
+pub fn a_reflection_row_without_a_finish_reads_as_unknown_test() {
+  // A row written before the key existed decodes, and says it did not
+  // know how its answer ended; a new row carries the word.
+  let old =
+    "{\"v\":1,\"kind\":\"reflection\",\"step\":1,\"provider\":\"fixture\","
+    <> "\"model\":\"fixture\",\"api\":\"anthropic-messages\",\"dollars\":0.001,"
+    <> "\"input_digest\":\"in\",\"output_digest\":\"out\"}"
+  let assert Ok(Reflection(finish: gepa.Unknown, ..)) = search.decode_line(old)
+
+  let truncated =
+    Reflection(
+      1,
+      "fixture",
+      "fixture",
+      "anthropic-messages",
+      0.001,
+      "in",
+      "out",
+      gepa.Truncated,
+    )
+  assert string.contains(
+    search.encode_line(truncated),
+    "\"finish\":\"truncated\"",
+  )
+  assert search.decode_line(search.encode_line(truncated)) == Ok(truncated)
+
+  // The library's row carries the finish through, as the one proposal of
+  // a width-one step.
+  let assert Ok(gepa.Reflected(finish: gepa.Truncated, proposal: 1, of: 1, ..)) =
+    search.to_gepa(truncated, bare_store())
 }
 
 pub fn a_loom_log_replays_through_the_library_test() {
