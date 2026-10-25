@@ -972,7 +972,12 @@ fn arm_rows(
 /// What the host's evaluations and reflections cost at worst, in dollars:
 /// a cell is the per-trial worst case at `ledger.max_attempts`, since an
 /// infrastructure fault retries the cell and every attempt is charged.
-/// The child's model knobs are the parent's, so one arm prices a step.
+/// `trial.worst_case` reads the arm's gateway target and never its text,
+/// and a child is its parent with one slot's text replaced, so every arm
+/// of a search prices as the seed: the step's holds priced at the parent
+/// and the confirm run priced at the seed are one figure. A knob that
+/// varied per child would break that, and `admit_child` is where such a
+/// child would be refused.
 fn costs(ctx: Context, candidate: Arm) -> Result(budget.Costs, String) {
   use per_trial <- result.map(trial.worst_case(ctx.trial, candidate))
 
@@ -1307,6 +1312,7 @@ fn reflect_child(
       design: design(frozen, list.length(drawn.tasks)),
     )
 
+  // An uncovered call is not made; the refusal carries no usage.
   let outcome = case affordable {
     True -> ctx.seams.reflect(prompt)
     False ->
