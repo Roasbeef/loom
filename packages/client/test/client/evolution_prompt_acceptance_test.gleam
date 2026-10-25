@@ -926,10 +926,12 @@ fn observation_shape(observation: json.JsonValue) {
         "unreported_tokens",
       ]
       as "a trial report adds only grade and sample to its known members"
-    assert field(report, "sample") == json.Int(1)
-      && field(field(field(report, "grade"), "verifier"), "kind")
+    // One assertion per member, so a failure prints the value it found
+    // rather than only that a conjunction was false.
+    assert field(report, "sample") == json.Int(1) as "the one sample is 1"
+    assert field(field(field(report, "grade"), "verifier"), "kind")
       == json.String("expected-files")
-      as "one sample, graded by the exact-byte verifier"
+      as "the exact-byte verifier graded the trial"
 
     // The base fails every task but the tie task, naming the differing
     // file; the candidate passes them all.
@@ -938,16 +940,20 @@ fn observation_shape(observation: json.JsonValue) {
     case base && !tie {
       True -> {
         assert field(report, "outcome") == json.String("failed")
-          && field(field(report, "grade"), "reward") == json.Float(0.0)
-          && field(field(report, "grade"), "side_info")
-          == json.String("expected file differs: result.txt")
           as "the base arm fails the task the candidate solves"
+        assert field(field(report, "grade"), "reward") == json.Float(0.0)
+          as "the base arm's grade rewards nothing"
+        assert field(field(report, "grade"), "side_info")
+          == json.String("expected file differs: result.txt")
+          as "the base arm's grade names the differing file"
       }
       False -> {
         assert field(report, "outcome") == json.String("succeeded")
-          && field(field(report, "grade"), "reward") == json.Float(1.0)
-          && field(field(report, "grade"), "side_info") == json.String("")
           as "the candidate, and the base on the tie task, pass"
+        assert field(field(report, "grade"), "reward") == json.Float(1.0)
+          as "a passing trial is rewarded fully"
+        assert field(field(report, "grade"), "side_info") == json.String("")
+          as "a passing grade carries no side information"
       }
     }
   })
