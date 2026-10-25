@@ -871,6 +871,41 @@ pub fn to_result_message(
   )
 }
 
+/// Reads an outcome back out of the result message `to_result_message` built.
+///
+/// A tool that ran on another machine comes back as the effect plane's
+/// `ToolCompleted(result, terminate)`, which holds the finished message and the
+/// run's termination flag. A caller that needs the `ToolOutcome` again (the
+/// promoted tool of a remote generation returns one to its door) reads it here.
+/// Content, details and the error flag are the message's own; `terminate` is
+/// supplied by the caller because a result message does not carry it.
+///
+/// Only a `ToolResultMessage` is an outcome. Any other message is `Error(Nil)`,
+/// so a peer that answered with another shape cannot pass for a tool result.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let outcome = tool.success("done")
+/// let message =
+///   tool.to_result_message(outcome, tool_call_id: "c", tool_name: "t", timestamp: 0)
+/// assert tool.from_result_message(message, outcome.terminate) == Ok(outcome)
+/// ```
+///
+pub fn from_result_message(
+  result: message.AgentMessage,
+  terminate: Terminate,
+) -> Result(ToolOutcome, Nil) {
+  case result {
+    message.ToolResultMessage(content:, details:, is_error:, ..) ->
+      Ok(ToolOutcome(content:, details:, is_error:, terminate:))
+
+    message.UserMessage(..)
+    | message.AssistantMessage(..)
+    | message.CustomMessage(..) -> Error(Nil)
+  }
+}
+
 // --- argument decoding ---------------------------------------------------
 
 /// Chains argument decoding with `use`: an `Error` becomes the standard
