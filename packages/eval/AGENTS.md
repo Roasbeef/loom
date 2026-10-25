@@ -134,33 +134,49 @@ decides what counts as the same request. The lane's whole claim is that the
 harness, given the same model outputs, makes the same requests; it says nothing
 about model quality.
 
-- `cassette.recording(inner, root, sink)` forwards each request to `inner` and
-  files a `Recorded(ordinal, digest, shape, events)` in the `Sink` (a weft
-  actor, `start_sink`) when the terminal event passes through, before the
-  consumer sees it. `cassette.finish(sink)` returns the `Tape`.
-- `cassette.replaying(tape, root, log)` answers the n-th request with the n-th
-  recording only if the digests match. Otherwise it delivers
-  `RequestFailed("replay diverged at request n: ...")`, files a `Divergence` in
-  the `Log` (`start_log`, read with `divergences`), and never hands back bytes
-  recorded for another request. A request beyond the tape is a divergence with
-  an empty `expected`.
+- `cassette.recording(inner, root, sink)` forwards each request to `inner`. A
+  request is entered on the tape when it is *prepared* (`Open`), and filed when
+  its terminal event passes through, before the consumer sees it. A request
+  cancelled at any point, even before begin, is filed as a `Cancelled` recording,
+  and `finish` closes still-open entries the same way, so ordinals are
+  contiguous and `tape_from_jsonl` accepts every tape the recorder produces.
+- `cassette.replaying(tape, root, log)` matches by digest, not position: each
+  request takes the first recording with an equal digest that no earlier request
+  took (the `Log` actor holds the taken set; the choice is made at prepare time,
+  in the caller's order). Concurrent strands (primary, advisor, subagents,
+  summarizer) therefore replay whatever order they arrive in. No match is a
+  `Divergence` naming the nearest recording (longest agreeing leaf prefix, then
+  same position), delivered as `RequestFailed("replay diverged at request n:
+  ...")`; the tape's bytes never answer a different request. A recording marked
+  `Redacted` is reported, not served.
+- Responses are stored **verbatim**: signatures, encrypted reasoning, item ids
+  and SHAs are echoed into later requests and must round-trip byte-exact.
+  Redaction is only (a) the exact credential values the request's own headers
+  carried (held in memory during the request, never stored) and (b) the
+  prefixes `sk-`, `xai-`, `ghp_`, `gho_`, `ghs_`, `ghu_`, `github_pat_` and
+  `Bearer `. Any change marks the recording `Redacted`. Of response headers only
+  the status and `content-type` are stored. A non-UTF-8 body is left as is.
 - `normalise.view(request, root)` reduces a request to leaves (method, URL path,
-  one leaf per JSON scalar) and a SHA-256 digest. Headers and the URL's host and
-  query never contribute; keys naming secrets are dropped at any depth; paths
-  under `root` become `<root>` and ISO-8601 dates and times become `<date>`.
-  The tape keeps each leaf's length and a 12 digit fingerprint, so
-  `normalise.summary` can name the first differing path without any prompt text
-  on disk.
+  one leaf per JSON scalar, each key JSON-encoded in its path) and a SHA-256
+  digest. Headers and the URL's host and query never contribute; keys containing
+  `key`, `secret`, `password`, `cookie`, `session`, `authorization`,
+  `credential` or the singular `token` are dropped at any depth (`max_tokens`
+  stays: it is a count). Paths under `root` become `<root>` only at a path
+  boundary; ISO-8601 dates and times become `<date>` everywhere, **including in
+  user content**, so text differing only in a date does not diverge. The tape
+  keeps each leaf's length and a 12 digit fingerprint, so `normalise.summary`
+  can name the first differing path without prompt text on disk.
 - Both transports honour the `Transport` contract the way the native ChatGPT
   transport does: one parked weft managed task per request, its scope pid the
   drain witness, nothing (including the inner `prepare_streaming`) running
-  before the begin permit. A cancel before begin therefore starts nothing.
-- `tape_to_jsonl` scrubs on the way out (the body joined and scrubbed whole, so a
-  secret split across chunks is found; chunk boundaries survive only if nothing
-  changed) and `tape_from_jsonl` is total. One JSON object per line, `"v":1`.
+  before the begin permit.
+- The sink and log are weft actors reached through `ask`, a monitored call that
+  returns `Result`; a dead or wedged actor fails the request with
+  `RequestFailed("replay lane unavailable: ...")` instead of crashing its task.
+  (docs/weft.md names the missing weft primitive for a monitored call on a
+  pre-existing pid; `ask` is the stand-in.) `close_sink`/`close_log` stop them.
 
-Hazards: the tape stores response bodies, so a model that echoes a credential is
-the reason scrubbing lives in the encoder rather than the recorder. A line over
-16000 graphemes cannot be scrubbed and is withheld. Replay is not byte-exact:
-scrubbed bodies differ from what the wire carried. Ordinals count from one and
-are reserved when a request begins.
+Hazards: replay is not byte-exact for redacted recordings, which refuse to
+replay. A request entered on the tape but never finished is a `Cancelled`
+recording, and a replayed request that takes it receives a failure naming the
+cancellation. Tape ordinals count from one in prepare order.

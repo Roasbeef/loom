@@ -2,6 +2,7 @@
 //// requests the same request, and what a divergence summary may say.
 
 import eval/normalise
+import gleam/list
 import gleam/string
 import provider/http.{HttpRequest}
 
@@ -95,7 +96,7 @@ pub fn summary_names_the_path_and_lengths_only_test() {
     )
   let summary = normalise.summary(one.leaves, two.leaves)
 
-  assert string.contains(summary, "body.system")
+  assert string.contains(summary, "body.\"system\"")
   assert string.contains(summary, "expected 12 chars")
   assert !string.contains(summary, "PLANTED")
   assert !string.contains(summary, "careless")
@@ -107,6 +108,55 @@ pub fn summary_reports_missing_and_extra_leaves_test() {
   let short = normalise.view(request([], "{\"a\":1}"), "/w")
   let long = normalise.view(request([], "{\"a\":1,\"b\":2}"), "/w")
 
-  assert string.contains(normalise.summary(short.leaves, long.leaves), "body.b")
-  assert string.contains(normalise.summary(long.leaves, short.leaves), "body.b")
+  assert string.contains(
+    normalise.summary(short.leaves, long.leaves),
+    "body.\"b\"",
+  )
+  assert string.contains(
+    normalise.summary(long.leaves, short.leaves),
+    "body.\"b\"",
+  )
+}
+
+pub fn path_encoding_is_injective_test() {
+  let dotted = request([], "{\"a.b\":1}")
+  let nested = request([], "{\"a\":{\"b\":1}}")
+  let forged = request([], "{\"a\":1,\"b\":2}")
+  let tabbed = request([], "{\"a\\t1\\nb\":2}")
+
+  assert normalise.request_digest(dotted, "/w")
+    != normalise.request_digest(nested, "/w")
+  assert normalise.request_digest(forged, "/w")
+    != normalise.request_digest(tabbed, "/w")
+}
+
+pub fn root_rewrite_respects_boundaries_test() {
+  assert normalise.text("/w/t1/a and /w/t1", "/w/t1") == "<root>/a and <root>"
+  assert normalise.text("/w/t10/a", "/w/t1") == "/w/t10/a"
+  assert normalise.text("/home/u/w/t1/a", "/w/t1") == "/home/u/w/t1/a"
+  assert normalise.text("in \"/w/t1\".", "/w/t1") == "in \"<root>\"."
+
+  let one = request([], "{\"p\":\"/w/t1X/a\"}")
+  let two = request([], "{\"p\":\"/v/t2X/a\"}")
+
+  assert normalise.request_digest(one, "/w/t1")
+    != normalise.request_digest(two, "/v/t2")
+}
+
+pub fn secret_words_drop_keys_but_not_token_counts_test() {
+  let one = request([], "{\"session_id\":\"a\",\"github_token\":\"b\",\"n\":1}")
+  let two = request([], "{\"session_id\":\"zzz\",\"n\":1}")
+  let leaves = normalise.view(one, "/w").leaves
+
+  assert normalise.request_digest(one, "/w")
+    == normalise.request_digest(two, "/w")
+  assert list.all(leaves, fn(leaf) {
+    !string.contains(leaf.path, "token")
+    && !string.contains(leaf.path, "session")
+  })
+
+  let low = request([], "{\"max_tokens\":1}")
+  let high = request([], "{\"max_tokens\":2}")
+  assert normalise.request_digest(low, "/w")
+    != normalise.request_digest(high, "/w")
 }

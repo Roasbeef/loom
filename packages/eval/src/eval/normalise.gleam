@@ -24,11 +24,18 @@
 ////   when a header is not available.
 //// - Any object key that names a secret, at any depth.
 ////
+//// Two limits are deliberate. ISO-8601 dates and times are rewritten
+//// everywhere in the body, including inside user content, so a prompt or a
+//// tool result that differs from the recorded one only in a date does not
+//// diverge. And paths under the root are rewritten only at a path boundary,
+//// so `/w/t1` does not swallow the front of `/w/t10`.
+////
 //// ## Flow
 ////
 //// - `view`: request to leaves plus digest
 //// - `request_digest`: the digest alone
 //// - `summary`: where two leaf lists first differ, redacted
+//// - `agreement`: how many leading leaves two requests share
 
 import client/evolution/trace
 import client/mcp
@@ -89,7 +96,9 @@ pub fn view(request: HttpRequest, root: String) -> View {
     ..body_leaves(request.body, root)
   ]
   let lines =
-    list.map(named, fn(pair) { pair.0 <> "\t" <> pair.1 })
+    list.map(named, fn(pair) {
+      pair.0 <> "\t" <> int.to_string(string.length(pair.1)) <> ":" <> pair.1
+    })
     |> string.join("\n")
 
   View(digest: mcp.sha256_hex(lines), leaves: list.map(named, leaf))
@@ -115,6 +124,11 @@ pub fn request_digest(request: HttpRequest, root: String) -> String {
 /// Rewrites every absolute path under `root` to `<root>` and every ISO-8601
 /// date or date-time to `<date>`.
 ///
+/// The root is rewritten only where it stands alone as a path: not preceded by
+/// a path character, and followed by `/`, the end of the text, or anything that
+/// cannot continue a name. Dates are rewritten wherever they occur, including in
+/// user content, so text differing only in a date is the same text.
+///
 /// An empty root rewrites nothing: replacing the empty string would insert
 /// the marker between every pair of characters.
 ///
@@ -131,7 +145,7 @@ pub fn text(text: String, root: String) -> String {
   // An empty root names no directory, and replacing it would corrupt the text.
   let rooted = case trimmed {
     "" -> text
-    _ -> string.replace(text, trimmed, "<root>")
+    _ -> anchored_replace(text, trimmed)
   }
 
   rooted
@@ -152,7 +166,7 @@ pub fn text(text: String, root: String) -> String {
 /// let a = normalise.view(http.HttpRequest("POST", "https://h/m", [], "{\"system\":\"one\"}"), "/w")
 /// let b = normalise.view(http.HttpRequest("POST", "https://h/m", [], "{\"system\":\"two!\"}"), "/w")
 /// assert normalise.summary(a.leaves, b.leaves)
-///   == "body.system changed (expected 5 chars, actual 6 chars)"
+///   == "body.\"system\" changed (expected 5 chars, actual 6 chars)"
 /// ```
 ///
 pub fn summary(expected: List(Leaf), actual: List(Leaf)) -> String {
@@ -246,7 +260,11 @@ fn walk(
         [] -> [#(path, "{}")]
         kept ->
           list.flat_map(kept, fn(field) {
-            walk(field.1, path <> "." <> field.0, root)
+            walk(
+              field.1,
+              path <> "." <> json.to_string(json.String(field.0)),
+              root,
+            )
           })
       }
 
@@ -268,24 +286,79 @@ fn walk(
   }
 }
 
-const secret_keys = [
-  "api_key", "apikey", "authorization", "x_api_key", "password", "secret",
-  "client_secret", "access_token", "refresh_token", "id_token", "bearer",
-  "cookie", "set_cookie", "proxy_authorization", "private_key", "credentials",
+const secret_words = [
+  "key", "secret", "password", "cookie", "session", "authorization",
+  "credential",
 ]
 
-/// Whether an object key names a credential.
-/// Whether an object key names a credential. The key is folded to lowercase
-/// with underscores so `X-Api-Key` and `x_api_key` are one name. `token` alone
-/// is not in the list: `max_tokens` is a semantic field, and dropping it would
-/// hide a real change.
+/// Whether an object key names a credential, so its value never reaches the
+/// digest or the tape.
+///
+/// The key is folded to lowercase with underscores and tested for a secret
+/// word anywhere in it. `token` is a secret word too, except in the plural:
+/// `max_tokens` and `budget_tokens` are counts, semantic fields whose change a
+/// replay must notice.
 fn secret_key(key: String) -> Bool {
   let folded = key |> string.lowercase |> string.replace("-", "_")
+  let secret_token =
+    string.contains(folded, "token") && !string.contains(folded, "tokens")
 
-  list.contains(secret_keys, folded)
-  || string.ends_with(folded, "_secret")
-  || string.ends_with(folded, "_api_key")
-  || string.ends_with(folded, "_password")
+  secret_token
+  || list.any(secret_words, fn(word) { string.contains(folded, word) })
+}
+
+/// How many leading leaves two requests share, in traversal order.
+///
+/// The replay lane uses it to name the recording nearest a request that matched
+/// none: the one that agrees longest before the first difference.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert normalise.agreement([], []) == 0
+/// ```
+///
+pub fn agreement(expected: List(Leaf), actual: List(Leaf)) -> Int {
+  case expected, actual {
+    [one, ..rest_expected], [other, ..rest_actual] if one == other ->
+      1 + agreement(rest_expected, rest_actual)
+    _, _ -> 0
+  }
+}
+
+/// Replaces `root` with `<root>` wherever it stands alone as a path.
+fn anchored_replace(text: String, root: String) -> String {
+  case string.split(text, root) {
+    [] -> text
+    [first, ..rest] ->
+      list.fold(rest, first, fn(kept, part) { join(kept, part, root) })
+  }
+}
+
+/// Joins the text kept so far to the text after one occurrence of the root,
+/// rewriting the occurrence only when both sides are boundaries.
+fn join(kept: String, part: String, root: String) -> String {
+  let before = string.slice(kept, -1, 1)
+  let after = string.slice(part, 0, 1)
+
+  // A path character on the left means the root is the tail of a longer path;
+  // a name character on the right means it is the head of a longer name.
+  case path_character(before) || name_character(after) {
+    True -> kept <> root <> part
+    False -> kept <> "<root>" <> part
+  }
+}
+
+fn name_character(char: String) -> Bool {
+  char != "" && { alphanumeric(char) || char == "-" || char == "_" }
+}
+
+fn path_character(char: String) -> Bool {
+  name_character(char) || char == "." || char == "/"
+}
+
+fn alphanumeric(char: String) -> Bool {
+  string.lowercase(char) != string.uppercase(char) || digit(char)
 }
 
 /// Walks graphemes, replacing each ISO-8601 date or date-time with a marker.
