@@ -774,6 +774,7 @@ fn inspect_and_approve(
   let assert Ok(observation) = json.parse(evidence.observation)
     as "rollout observation is bounded canonical JSON"
   assert field(observation, "mode") == json.String("live-production")
+  observation_shape(observation)
   let inspected =
     acceptance.request(
       owner,
@@ -823,6 +824,65 @@ fn select(
   assert field(selected, "candidate_id") == json.String(authored.candidate)
     && field(selected, "generation") == json.Int(generation + 1)
     as "authenticated owner changes one exact model slot by native CAS"
+}
+
+// The retained observation is the seam's falsifier: with one sample it is
+// the shape it always was, plus exactly the members the grade added. A member
+// that appears or disappears here is a leak from the instrument's seam into
+// the governed record, which protocol-change 100 is to describe, not this.
+fn observation_shape(observation: json.JsonValue) {
+  let assert json.Object(top) = observation as "observation is an object"
+  assert list.map(top, fn(member) { member.0 })
+    == [
+      "api",
+      "candidate",
+      "limits",
+      "mode",
+      "model",
+      "partial_reason",
+      "provider",
+      "task_set_digest",
+      "tasks",
+      "trials",
+      "unreported",
+      "used",
+      "version",
+    ]
+    as "the canonical observation has its known members and no other"
+  assert field(field(observation, "limits"), "samples") == json.Int(1)
+    as "the governed comparison ran one sample per arm"
+  let assert json.Array([base, changed]) = field(observation, "trials")
+    as "one task yields one base and one candidate report"
+  list.each([base, changed], fn(report) {
+    let assert json.Object(members) = report as "report is an object"
+    assert list.map(members, fn(member) { member.0 })
+      == [
+        "composition_digests",
+        "dollars",
+        "elapsed_ms",
+        "grade",
+        "output",
+        "output_bytes",
+        "outcome",
+        "partial_reason",
+        "profile",
+        "sample",
+        "task",
+        "tokens",
+        "tools",
+        "turns",
+        "unreported_dollars",
+        "unreported_tokens",
+      ]
+      as "a trial report adds only grade and sample to its known members"
+    assert field(report, "outcome") == json.String("succeeded")
+      && field(report, "sample") == json.Int(1)
+      && field(field(report, "grade"), "reward") == json.Float(1.0)
+      && field(field(report, "grade"), "side_info") == json.String("")
+      && field(field(field(report, "grade"), "verifier"), "kind")
+      == json.String("expected-files")
+      as "the exact-byte verifier graded both arms as passing"
+  })
 }
 
 fn taskset() -> json.JsonValue {

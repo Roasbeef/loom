@@ -20,8 +20,9 @@ import core/tx
 import core/usage_evidence
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleeunit/should
@@ -78,7 +79,11 @@ fn task() -> rollout.Task {
 }
 
 fn limits() -> rollout.Limits {
-  rollout.Limits(2, 8, 10_000, 1.0, 10_000, 10_000)
+  rollout.Limits(2, 8, 10_000, 1.0, 10_000, 10_000, 1)
+}
+
+fn graded(reward: Float) -> rollout.Grade {
+  rollout.Grade(reward, [], "", rollout.ExpectedFiles)
 }
 
 fn scripted(
@@ -113,7 +118,7 @@ fn scripted(
           },
           score: fn(criterion) {
             assert criterion == "fixture-test-v1"
-            Ok(trace.Succeeded)
+            Ok(graded(1.0))
           },
           close: retirement.repeat(fn() {
             process.send(closed, request.task.id)
@@ -223,7 +228,7 @@ pub fn budget_exhaustion_retains_partial_trials_and_teardown_test() {
       target(),
       "anthropic-messages",
       [task()],
-      rollout.Limits(..limits(), trials: 1),
+      rollout.Limits(..limits(), turns: 1),
       native,
     )
     as "partial evidence is durable"
@@ -443,7 +448,7 @@ pub fn independent_score_runs_only_after_witnessed_native_retirement_test() {
             score: fn(_) {
               process.receive(retired, 0) |> should.equal(Ok(Nil))
               process.send(scored, Nil)
-              Ok(trace.Succeeded)
+              Ok(graded(1.0))
             },
             cleanup: fn() {
               process.receive(scored, 0) |> should.equal(Ok(Nil))
@@ -566,6 +571,346 @@ pub fn unknown_attempt_spend_is_not_refunded_before_the_next_trial_arm_test() {
       process.receive(closings, 0) |> should.equal(Ok(task().id))
     },
   )
+}
+
+// The paired fold's one generalisation: K samples per task per arm through
+// the same budget. Both arms of every sample must appear, in budget order, and
+// every debit must scale with the sample count rather than with the task count.
+pub fn samples_double_the_trial_reports_and_the_budget_debits_test() {
+  let once = sampled(1)
+  let twice = sampled(2)
+  assert list.length(once.reports) == 2 && list.length(twice.reports) == 4
+    as "each sample adds one base and one candidate report"
+  assert twice.trials == 2 * once.trials
+    && twice.turns == 2 * once.turns
+    && twice.tokens == 2 * once.tokens
+    as "the budget debits double with the samples"
+  assert once.openings == [None, Some("a")]
+    as "one sample pairs base then candidate"
+  assert twice.openings == [None, Some("a"), None, Some("a")]
+    as "each sample pairs base then candidate in budget order"
+  assert list.map(once.reports, sample_of) == [1, 1]
+    && list.map(twice.reports, sample_of) == [1, 1, 2, 2]
+    as "every report names its sample index"
+}
+
+type Sampled {
+  Sampled(
+    reports: List(json.JsonValue),
+    trials: Int,
+    turns: Int,
+    tokens: Int,
+    openings: List(Option(String)),
+  )
+}
+
+fn sampled(samples: Int) -> Sampled {
+  let catalogue = opened()
+  let proposed = candidate("Sample twice.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let base = scripted(openings, closings)
+  let native =
+    rollout.Callbacks(..base, open: fn(request) {
+      let assert Ok(trial) = base.open(request) as "scripted trial opens"
+      Ok(
+        rollout.Trial(..trial, step: fn(allowance) {
+          trial.step(allowance)
+          |> result.map(fn(step) {
+            rollout.Step(
+              ..step,
+              usage: message.Usage(..storage.empty_usage(), input: 10),
+            )
+          })
+        }),
+      )
+    })
+  let assert Ok(evidence) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      [task()],
+      rollout.Limits(..limits(), trials: 4, samples:),
+      native,
+    )
+    as "sampled evidence is durable"
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  let assert json.Array(reports) = member(observation, "trials")
+    as "reports are an array"
+  let used = member(observation, "used")
+  let assert json.Int(trials) = member(used, "trials") as "trials counted"
+  let assert json.Int(turns) = member(used, "turns") as "turns counted"
+  let assert json.Int(tokens) = member(used, "tokens") as "tokens counted"
+  assert member(member(observation, "limits"), "samples") == json.Int(samples)
+    as "the observation records the sample count it ran under"
+  let opened_arms =
+    list.map(drain(openings, []), fn(request) {
+      option.map(request.profile, fn(p) { profile.fields(p).0 })
+    })
+    |> list.map(option.map(_, fn(_) { "a" }))
+  Sampled(reports:, trials:, turns:, tokens:, openings: opened_arms)
+}
+
+fn drain(subject: process.Subject(a), collected: List(a)) -> List(a) {
+  case process.receive(subject, 0) {
+    Ok(item) -> drain(subject, [item, ..collected])
+    Error(Nil) -> list.reverse(collected)
+  }
+}
+
+fn sample_of(report: json.JsonValue) -> Int {
+  let assert json.Int(sample) = member(report, "sample") as "sample is an int"
+  sample
+}
+
+fn member(value: json.JsonValue, name: String) -> json.JsonValue {
+  let assert json.Object(fields) = value as "observation member is an object"
+  let assert Ok(found) = list.key_find(fields, name) as name
+  found
+}
+
+// `verdict` reads the grade, not the projected word: a candidate reward below
+// the threshold fails, one at the threshold passes, and one the verifier could
+// not have produced stops the comparison.
+pub fn verdict_consumes_the_grade_against_the_pass_threshold_test() {
+  let assert record.Failed = graded_verdict(0.0).verdict
+    as "a candidate reward below the threshold fails"
+  let assert record.Passed = graded_verdict(1.0).verdict
+    as "a candidate reward at the threshold passes"
+  let assert record.Inconclusive(reason) = graded_verdict(1.5).verdict
+    as "an out-of-range reward is a verifier defect"
+  assert string.contains(reason, "out of range")
+  let assert record.Inconclusive(reason) = graded_verdict(-0.5).verdict
+    as "a negative reward is a verifier defect"
+  assert string.contains(reason, "out of range")
+}
+
+// Every grade member is bounded before it is retained, and a defect ends the
+// comparison Inconclusive with its own reason while the partial observation
+// still commits: a duplicate score name would otherwise corrupt the canonical
+// JSON after the whole budget was spent.
+pub fn grade_members_outside_their_bounds_stop_the_comparison_with_a_named_reason_test() {
+  let program = rollout.ProgramRun(["bash", "verify.sh"], 0, 10)
+  let cases = [
+    #(
+      rollout.Grade(1.0, [#("tests", 1.0), #("tests", 0.5)], "", program),
+      "names repeat",
+    ),
+    #(rollout.Grade(1.0, [#("", 1.0)], "", program), "empty or over 32 bytes"),
+    #(
+      rollout.Grade(1.0, [#(string.repeat("n", 33), 1.0)], "", program),
+      "empty or over 32 bytes",
+    ),
+    #(
+      rollout.Grade(
+        1.0,
+        list.index_map(list.repeat(1.0, 9), fn(value, index) {
+          #("s" <> int.to_string(index), value)
+        }),
+        "",
+        program,
+      ),
+      "more than 8 scores",
+    ),
+    #(
+      rollout.Grade(1.0, [#("tests", 1.5)], "", program),
+      "score is out of range",
+    ),
+    #(
+      rollout.Grade(1.0, [], "", rollout.ProgramRun(list.repeat("x", 9), 0, 10)),
+      "more than 8 entries",
+    ),
+    #(
+      rollout.Grade(
+        1.0,
+        [],
+        "",
+        rollout.ProgramRun([string.repeat("x", 513)], 0, 10),
+      ),
+      "exceeds 512 bytes",
+    ),
+  ]
+  list.each(cases, fn(case_) {
+    let evidence = graded_with(case_.0)
+    let assert record.Inconclusive(reason) = evidence.verdict
+      as "a defective grade cannot decide"
+    assert string.contains(reason, case_.1) as reason
+    let assert Ok(observation) = json.parse(evidence.observation)
+      as "the partial observation still commits"
+    assert member(observation, "partial_reason") == json.String(reason)
+  })
+
+  // A grade at every bound is admitted and retained whole.
+  let full =
+    rollout.Grade(
+      1.0,
+      list.index_map(list.repeat(1.0, 8), fn(value, index) {
+        #(string.repeat("n", 31) <> int.to_string(index), value)
+      }),
+      "",
+      rollout.ProgramRun(list.repeat(string.repeat("x", 64), 8), 0, 10),
+    )
+  let assert record.Passed = graded_with(full).verdict
+    as "a grade at its bounds is admitted"
+}
+
+// Side information is kept in bytes, so a multibyte text cannot carry four
+// kilobytes under a grapheme count, and it is cut between graphemes.
+pub fn side_info_is_clipped_to_a_kibibyte_of_whole_graphemes_test() {
+  let text = string.repeat("é", 2000)
+  let evidence =
+    graded_with(rollout.Grade(0.0, [], text, rollout.ExpectedFiles))
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  let assert json.Array([_, changed]) = member(observation, "trials")
+    as "one pair"
+  let assert json.String(kept) = member(member(changed, "grade"), "side_info")
+    as "side_info is text"
+  let size = bit_array.byte_size(bit_array.from_string(kept))
+  assert size <= 1024 && size >= 1023 as "clipped to the byte bound"
+  assert kept == string.repeat("é", 512) as "cut between whole graphemes"
+}
+
+// Live mode with two samples: the verdict needs every (task, sample, arm)
+// report, so a fold that counted only tasks x 2 would call four reports an
+// incomplete pair set. All passing is Passed; a candidate that passes one
+// sample and fails the other is Failed, which is the current rule 2C replaces.
+pub fn live_samples_all_pass_and_a_mixed_candidate_fails_test() {
+  let assert record.Passed = live_sampled([1.0, 1.0]).verdict
+    as "two passing samples per arm pass"
+  let assert record.Failed = live_sampled([1.0, 0.0]).verdict
+    as "one failing candidate sample fails under the current rule"
+}
+
+// A sample count the trial budget cannot pair is refused before any trial
+// opens, naming the product, instead of spending the budget on a comparison
+// that can only end Inconclusive.
+pub fn a_sample_count_the_trial_budget_cannot_pair_is_refused_before_any_trial_opens_test() {
+  let catalogue = opened()
+  let proposed = candidate("Pair me.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let assert Error(store.Bounds(reason)) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      [task()],
+      rollout.Limits(..limits(), trials: 3, samples: 2),
+      scripted(openings, closings),
+    )
+    as "an unpairable sample count is refused"
+  assert string.contains(reason, "needs 4 trials")
+    && string.contains(reason, "admits 3")
+    as reason
+  assert process.receive(openings, 0) == Error(Nil) as "no trial opened"
+}
+
+fn live_sampled(candidate_rewards: List(Float)) -> record.Evidence {
+  let catalogue = opened()
+  let proposed = candidate("Sample live.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let rewards = process.new_subject()
+  list.each(candidate_rewards, process.send(rewards, _))
+  let base = scripted(openings, closings)
+  let native =
+    rollout.Callbacks(..base, mode: rollout.LiveProduction, open: fn(request) {
+      let assert Ok(trial) = base.open(request) as "scripted trial opens"
+      Ok(
+        rollout.Trial(..trial, score: fn(_) {
+          case request.profile {
+            None -> Ok(graded(1.0))
+            Some(_) -> {
+              let assert Ok(reward) = process.receive(rewards, 0)
+                as "one candidate reward per sample"
+              Ok(graded(reward))
+            }
+          }
+        }),
+      )
+    })
+  let assert Ok(evidence) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      [task()],
+      rollout.Limits(..limits(), trials: 4, samples: 2),
+      native,
+    )
+    as "sampled live evidence is durable"
+  evidence
+}
+
+// Every retained report carries the grade and the sample beside the projected
+// outcome word, and the projection agrees with the grade.
+pub fn reports_carry_grade_and_sample_beside_the_outcome_projection_test() {
+  let evidence = graded_verdict(0.0)
+  let assert Ok(observation) = json.parse(evidence.observation)
+    as "observation parses"
+  let assert json.Array([base, changed]) = member(observation, "trials")
+    as "one task yields one pair"
+  assert member(base, "outcome") == json.String("succeeded")
+    && member(changed, "outcome") == json.String("failed")
+  assert member(member(changed, "grade"), "reward") == json.Float(0.0)
+    && member(member(base, "grade"), "reward") == json.Float(1.0)
+  assert member(member(changed, "grade"), "side_info")
+    == json.String("expected file differs: out/result.txt")
+  assert member(member(member(changed, "grade"), "verifier"), "kind")
+    == json.String("expected-files")
+  assert member(base, "sample") == json.Int(1)
+    && member(changed, "sample") == json.Int(1)
+}
+
+fn graded_verdict(candidate_reward: Float) -> record.Evidence {
+  graded_with(rollout.Grade(
+    candidate_reward,
+    [],
+    "expected file differs: out/result.txt",
+    rollout.ExpectedFiles,
+  ))
+}
+
+fn graded_with(candidate_grade: rollout.Grade) -> record.Evidence {
+  let catalogue = opened()
+  let proposed = candidate("Grade me.")
+  let assert Ok(_) = store.propose(catalogue, proposed) as "candidate retained"
+  let openings = process.new_subject()
+  let closings = process.new_subject()
+  let base = scripted(openings, closings)
+  let native =
+    rollout.Callbacks(..base, mode: rollout.LiveProduction, open: fn(request) {
+      let assert Ok(trial) = base.open(request) as "scripted trial opens"
+      Ok(
+        rollout.Trial(..trial, score: fn(_) {
+          case request.profile {
+            None -> Ok(graded(1.0))
+            Some(_) -> Ok(candidate_grade)
+          }
+        }),
+      )
+    })
+  let assert Ok(evidence) =
+    rollout.evaluate(
+      catalogue,
+      proposed.id,
+      target(),
+      "anthropic-messages",
+      [task()],
+      limits(),
+      native,
+    )
+    as "graded evidence is durable"
+  evidence
 }
 
 pub fn unknown_native_attempts_retain_reservation_despite_foreign_or_synthetic_usage_test() {

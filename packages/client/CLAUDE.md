@@ -204,7 +204,14 @@ is a durable choice of none. `tasks` retains independently admitted
 fixture and expected-file bytes. `rollout` and `rollout_host` run fresh ordinary
 coding runtimes with native aggregate guards and actual composition digests;
 unknown billing reservations remain debited across both comparison arms.
-`fixture` scores files only after witnessed retirement. `trace` retains bounded,
+`rollout.Limits.samples` runs K independent samples of every task per arm
+through the same budget, and `rollout.Trial.score` answers a `rollout.Grade`
+(reward, sub-scores, side information, the verifier) that `verdict` reads against
+`rollout.pass_threshold`; `fixture` grades files only after witnessed retirement
+and names the first differing path. `serve.trial_settings` is the one trial
+recipe, `@internal` so an evaluation instrument opens the same fresh jailed
+session the governed opener does; it takes the trial tag as a parameter and the
+governed opener mints that tag from production entropy. `trace` retains bounded,
 scrubbed native branch observations and operator outcomes. Read
 [the evolution architecture](../../docs/architecture/evolution.md) and
 [protocol-change 068](../../protocol-change/068-runtime-evolution.md).

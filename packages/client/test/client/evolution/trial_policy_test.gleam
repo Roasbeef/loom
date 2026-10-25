@@ -8,6 +8,9 @@ import client/workspace_policy
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
+import provider/model
+import provider/profile
 
 pub fn trial_preserves_native_masks_and_network_without_broad_host_roots_test() {
   let base = workspace_policy.base_policy("/source/work")
@@ -134,4 +137,53 @@ fn trial_base_fault(
     )
   workspace_policy.session_base(basis, Some(files), Error("no toolchain"))
   |> workspace_policy.base_policy_fault
+}
+
+// The one trial recipe the governed opener and the instrument share: a root
+// paired with its tag, a session named by the tag, a workspace under the root,
+// a policy narrowed to that workspace alone, and the arm's exact profile map.
+pub fn trial_settings_is_the_tagged_narrowed_recipe_test() {
+  let settings = serve_test.settings_under("build/test_db/trial-settings")
+  let tag = "ab12cd34ef56ab78"
+  let root = serve.trial_root(settings, tag)
+  assert string.ends_with(root, "/" <> tag)
+    && string.ends_with(root, "/evolution-trials/" <> tag)
+    as "the opener pairs the root with its tag under the trial parent"
+  let workspace = serve.trial_workspace(root)
+  let assert Ok(arm) =
+    profile.new("cand-1", "p", "m", "anthropic-messages", "Be terse.", "", [])
+    as "a profile for the candidate arm"
+  let target = model.ResolvedModel("p", "m", model.ThinkingOff, 1000, 100)
+  let trial =
+    serve.trial_settings(
+      settings,
+      target,
+      "anthropic-messages",
+      [arm],
+      root,
+      tag,
+      settings.gateway,
+      settings.base_policy,
+    )
+  assert trial.session_id == "trial-" <> tag
+    && trial.workspace == workspace
+    && string.starts_with(trial.session_path, root <> "/")
+    && trial.home == Some(root <> "/home")
+    as "session, state and workspace all live under the tagged root"
+  assert trial.base_policy.readable_roots == [workspace]
+    && trial.base_policy.writable_roots == [workspace]
+    && trial.base_policy.scratch == policy.ScratchTmpfs
+    as "the trial can read and write only its own workspace"
+  let assert serve.Trial([pinned]) = trial.evolution_role
+    as "a trial runs exactly its profiles"
+  assert pinned == arm
+  assert trial.api == "anthropic-messages"
+    && trial.context_window == 1000
+    && trial.max_output_tokens == 100
+    && trial.peer_directory == None
+    && trial.spawner == None
+    && trial.laptop == None
+    && trial.advisor == None
+    && trial.helper_pool_size == 2
+    as "a trial is a local session bound to the exact admitted model"
 }

@@ -300,8 +300,16 @@ an ID, prompt, initial file map and an exact expected-file map. Sorted fixture
 and criterion bytes are part of the immutable task-set identity. The model can
 name that admitted identity in `evolution.compare`; it cannot author its scorer.
 Every baseline and candidate arm opens a fresh production runtime and workspace,
-with ordinary jailed tools and one exact resolved model. Trial workers retire
-before independent file comparison, eliminating authored path races during scoring.
+with ordinary jailed tools and one exact resolved model, and `Limits.samples`
+runs that many independent samples of every task through each arm under the
+same aggregate budget (one by default; the model door admits at most three).
+Trial workers retire before independent scoring, eliminating authored path
+races. The scorer answers a `rollout.Grade`: a reward from zero through one
+that passes at `rollout.pass_threshold`, named sub-scores, bounded side
+information and the verifier that produced it. The exact-byte verifier
+(`fixture.score`) grades one or zero and names the first differing path. Each
+retained trial report carries the grade and its sample index beside the
+projected `outcome` word.
 
 The native request guard reserves conservative context/cache/output tokens and
 priced cost before every dispatched request, including failed attempts. The
@@ -429,7 +437,7 @@ The adjacent package contracts are described in the READMEs for
 | Operator board | 48 KiB reply; the newest 64 audit entries; observations left out. Oldest decisions, then oldest candidates, shed first and counted in `omitted`. |
 | Task admission | Ten tasks, 64 initial and 64 expected paths per task, 256 KiB captured JSON. |
 | Operator activation | One queued managed job; relative deadline at most 120 seconds; bounded deduplication receipts. |
-| Model-facing comparison | At most 20 trials, 20 turns, one million aggregate tokens, two dollars, 64 KiB retained output and 120 seconds. Callers may lower ceilings. |
+| Model-facing comparison | At most 20 trials, 20 turns, one million aggregate tokens, two dollars, 64 KiB retained output, 120 seconds and three samples per task per arm. Callers may lower ceilings. |
 | Trace door | At most 32 retained turns; 100 source descriptors, 256 usage rows, 16 KiB per source entry, 1 MiB source copies, 32 KiB retained excerpts. |
 
 The catalogue envelope ceiling is not a cap on its append-only lifecycle journal.

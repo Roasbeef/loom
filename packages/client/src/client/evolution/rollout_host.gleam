@@ -78,7 +78,7 @@ type Guard {
 
 /// Builds real coding callbacks from the native session opener and fixture scorer.
 /// The opener must honor the supplied guarded gateway and exact profile override,
-/// and the scorer must inspect the isolated fixture independently of model text.
+/// and the scorer must grade the isolated fixture independently of model text.
 ///
 /// ## Examples
 ///
@@ -89,7 +89,7 @@ pub fn callbacks(
   base: gateway.Gateway,
   clock: Clock,
   open: fn(rollout.TrialRequest, gateway.Gateway) -> Result(Running, String),
-  score: fn(rollout.Task, String) -> Result(trace.Outcome, String),
+  score: fn(rollout.Task, String) -> Result(rollout.Grade, String),
 ) -> rollout.Callbacks {
   rollout.Callbacks(mode: rollout.LiveProduction, clock:, open: fn(request) {
     // Extract and validate resolved model target.

@@ -3,7 +3,6 @@
 import client/evolution/fixture
 import client/evolution/rollout
 import client/evolution/tasks
-import client/evolution/trace
 import client/internal/ffi_os
 import core/json
 import gleam/int
@@ -11,16 +10,15 @@ import simplifile
 
 pub fn scoring_compares_native_expected_bytes_and_refuses_oversized_output_test() {
   let #(admitted, captured, workspace) = prepared("score")
-  assert fixture.score(admitted, captured.task, workspace) == Ok(trace.Failed)
+  assert fixture.score(admitted, captured.task, workspace) == Ok(failed())
   let assert Ok(Nil) =
     simplifile.write(workspace <> "/out/result.txt", "expected")
     as "the completed coding operation writes the criterion"
-  assert fixture.score(admitted, captured.task, workspace)
-    == Ok(trace.Succeeded)
+  assert fixture.score(admitted, captured.task, workspace) == Ok(passed())
   let assert Ok(Nil) =
     simplifile.write(workspace <> "/out/result.txt", "expected extra")
     as "an oversized file cannot pass by a matching prefix"
-  assert fixture.score(admitted, captured.task, workspace) == Ok(trace.Failed)
+  assert fixture.score(admitted, captured.task, workspace) == Ok(failed())
   let assert Ok(Nil) = simplifile.delete(workspace)
     as "the native fixture owner retires its scratch directory"
 }
@@ -35,7 +33,7 @@ pub fn scoring_refuses_a_linked_file_and_a_linked_parent_test() {
   let assert Ok(Nil) =
     simplifile.create_symlink(to: outside, from: workspace <> "/out/result.txt")
     as "the trial replaces the scored file with a link"
-  assert fixture.score(admitted, captured.task, workspace) == Ok(trace.Failed)
+  assert fixture.score(admitted, captured.task, workspace) == Ok(failed())
   let assert Ok(Nil) = simplifile.delete(workspace <> "/out")
     as "the native fixture removes its linked leaf"
   let assert Ok(Nil) =
@@ -50,7 +48,7 @@ pub fn scoring_refuses_a_linked_file_and_a_linked_parent_test() {
       from: workspace <> "/out",
     )
     as "the trial replaces an intermediate parent with a link"
-  assert fixture.score(admitted, captured.task, workspace) == Ok(trace.Failed)
+  assert fixture.score(admitted, captured.task, workspace) == Ok(failed())
   let assert Ok(Nil) = simplifile.delete(workspace)
     as "native cleanup does not follow the trial's links"
 }
@@ -62,6 +60,20 @@ pub fn scoring_refuses_a_task_that_differs_from_its_admitted_fixture_test() {
     == Error("the rollout task differs from its admitted fixture")
   let assert Ok(Nil) = simplifile.delete(workspace)
     as "the unused fixture is cleaned by its native owner"
+}
+
+fn passed() -> rollout.Grade {
+  rollout.Grade(1.0, [], "", rollout.ExpectedFiles)
+}
+
+// The side information names the differing path and nothing of its bytes.
+fn failed() -> rollout.Grade {
+  rollout.Grade(
+    0.0,
+    [],
+    "expected file differs: out/result.txt",
+    rollout.ExpectedFiles,
+  )
 }
 
 fn prepared(name: String) {

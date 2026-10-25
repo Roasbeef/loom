@@ -71,6 +71,8 @@ pub fn trace_door(
 /// Decodes only a task-set identity and ceilings for the paired native evaluator.
 /// Absent limits use twenty trials/turns, one million tokens, two dollars,
 /// 64 KiB of retained output and two minutes. Requests may only lower them.
+/// The optional `samples` member asks for that many independent samples of
+/// every task per arm, one by default and at most three through this door.
 ///
 /// ## Examples
 ///
@@ -85,7 +87,7 @@ pub fn evaluation_request(
   // Parse and validate optional limit overrides against system ceilings.
   use limits <- result.try(case field(args, "limits") {
     Error(Nil) | Ok(json.Null) ->
-      Ok(rollout.Limits(20, 20, 1_000_000, 2.0, 65_536, 120_000))
+      Ok(rollout.Limits(20, 20, 1_000_000, 2.0, 65_536, 120_000, 1))
     Ok(value) -> limits(value)
   })
 
@@ -144,16 +146,21 @@ fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
     "wall_ms",
   ]
 
-  // Check that all required ceiling budget fields are provided.
+  // Every budget field is required and `samples` is the one optional member;
+  // any other name is refused so a request cannot smuggle a scorer or a
+  // ceiling this door does not know.
   use Nil <- result.try(
     case
-      list.length(fields) == 6
-      && list.all(names, fn(name) {
-        list.key_find(fields, name) |> result.is_ok
+      list.all(names, fn(name) { list.key_find(fields, name) |> result.is_ok })
+      && list.all(fields, fn(member) {
+        member.0 == "samples" || list.contains(names, member.0)
       })
     {
       True -> Ok(Nil)
-      False -> Error("Bounds: rollout limits require six exact budget fields")
+      False ->
+        Error(
+          "Bounds: rollout limits require six exact budget fields and admit only an optional samples count",
+        )
     },
   )
 
@@ -171,6 +178,8 @@ fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
     _ -> Error("Bounds: dollars requires a positive number")
   })
 
+  use samples <- result.try(samples(value))
+
   // Ensure all budget values remain strictly within native ceilings.
   case
     trials > 0
@@ -187,8 +196,39 @@ fn limits(value: json.JsonValue) -> Result(rollout.Limits, String) {
     && wall_ms <= 120_000
   {
     True ->
-      Ok(rollout.Limits(trials, turns, tokens, dollars, output_bytes, wall_ms))
+      Ok(rollout.Limits(
+        trials,
+        turns,
+        tokens,
+        dollars,
+        output_bytes,
+        wall_ms,
+        samples,
+      ))
     False -> Error("Bounds: rollout request exceeds native model-door ceilings")
+  }
+}
+
+// The model-door cap is below the evaluator's own ceiling of five on purpose:
+// every sample is a paid fresh runtime, and a model spending the operator's
+// money gets the smaller number.
+/// Decodes the optional `samples` count, defaulting to one and capped at three.
+fn samples(value: json.JsonValue) -> Result(Int, String) {
+  // An absent or null member is the default of one; only an integer counts.
+  use requested <- result.try(case field(value, "samples") {
+    Error(Nil) | Ok(json.Null) -> Ok(1)
+    Ok(json.Int(samples)) -> Ok(samples)
+    Ok(json.Float(_))
+    | Ok(json.String(_))
+    | Ok(json.Bool(_))
+    | Ok(json.Array(_))
+    | Ok(json.Object(_)) -> Error("Bounds: samples requires an integer")
+  })
+
+  // Name the cap in the refusal so a program can lower its request.
+  case requested > 0 && requested <= 3 {
+    True -> Ok(requested)
+    False -> Error("Bounds: samples must be from one to three")
   }
 }
 
