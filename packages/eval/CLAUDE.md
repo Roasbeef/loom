@@ -181,6 +181,209 @@ replay. A request entered on the tape but never finished is a `Cancelled`
 recording, and a replayed request that takes it receives a failure naming the
 cancellation. Tape ordinals count from one in prepare order.
 
+## Runner
+
+`eval/run_cli` (`gleam run -m eval/run_cli -- run <plan.json> [--out DIR]
+[--tasks DIR] [--arms DIR] [--config loom.toml] [--helper PATH] [--seed DIR]
+[--tapes DIR]`, or `make eval-run ARGS="..."`; `... -- report <run-dir>`)
+runs or resumes a frozen plan and writes the report. Modules: `eval/budget`
+(the dollar account), `eval/materialise` (starting tree to files),
+`eval/arm_settings` (arm to session configuration), `eval/trial` (one
+attempt to one ledger row), `eval/run` (plan, rounds, ledger, resume) and
+`eval/report` (rows to `report.md` and `report.json`). It also adds
+`telemetry`, `machine` and `broker` to `gleam.toml`: `serve.open_instance`
+takes a logger, and the base `Settings` literal names types from the other two.
+
+### Flow
+
+A run directory `<out>/<plan id>/` holds `plan.json`, copies of `tasks/` and
+`arms/`, the append-only `trials.jsonl`, `notes.txt` (the budget stop) and the
+report. `run.execute` refuses an arm it cannot apply before any trial starts,
+then works in rounds, one per attempt number, cells as weft tasks
+`budgets.concurrency` at a time. One writer actor appends each row as a whole
+line, so a crash leaves a parseable prefix; a `Running` row is written before
+a trial starts. Resuming is the same call: a `Running` row with no successor is
+closed as an `Infra` row (that attempt is spent) and finished cells are skipped.
+Each attempt has its own root, `<task>/<arm>/<index>/attempt-<n>/`, holding
+`work/` (the live tree), `state/session.db`, `frozen/` (the copy the grader
+sees) and `verifier/`.
+
+`trial.run_one` order: materialise (timed as `prepare`), apply the arm, open a
+session through `serve.trial_settings`, prompt and wait under
+`wall_ms_per_trial`, read usage and counts from the store, retire and confirm
+retirement, copy the workspace to `frozen/`, grade. Timeout is `AgentTimeout`
+(a failure, never retried, never graded); a materialise, open, observation,
+retirement or grading fault is `Infra`. `Seams` (runner, open, retire, grade)
+is how a test makes one fail or watches their order.
+
+### Rulings
+
+- **Budget.** `eval/budget` admits a trial when the cap, less measured spend,
+  less the worst case of trials in flight, covers one more worst case
+  (`max_requests_per_trial * priced (3 * context + output)`). The first refusal
+  is permanent and recorded as "budget exhausted after N trials"; the unrun
+  cells are missing, so the verdict is `Incomplete`. The replay lane is
+  `Unmetered`. The per-trial guard (a weft actor on the gateway) only counts
+  requests against the plan's ceiling; the dollar bound is the run's.
+- **The report trusts only a reconciled ledger.** Any `ledger.reconcile`
+  failure makes every verdict `Incomplete` with its reason. Line one is the
+  minimum detectable effect; each non-baseline arm is compared with the first.
+- **Tags.** The session tag is a digest of plan, task, arm, index and attempt,
+  not production entropy: the roots are unique per attempt under the run
+  directory, and a replay needs the same tag every time.
+- **Arms.** `arm_settings.to_settings` applies roles, thinking (and routes every
+  role again from the resulting catalogue) and withheld tools;
+  `arm_settings.profiles` builds one profile per exact target. A `PromptPack`
+  component is refused by name: the pack reaches a session only through the
+  process environment (`LOOM_PROMPT_PACK`), `Settings` has no field for it,
+  and trials share a VM. A `Settings` field in `client` is what lifts it.
+- **Exact-file grading** is `trial.grade_expected`, a copy of
+  `client/evolution/fixture.score`'s comparison, because that function takes
+  the governed task set. `Program` verifiers go through `Seams.grade`; the CLI
+  wires `trial.refuse_program` ("program verifier not built") until
+  `eval/verify` is joined.
+- **Served models** come from the profile observer when the arm has profiles
+  and from the recorded answers otherwise (digest empty then).
+
+### Hazards
+
+- Every test that opens a session needs `packages/sandbox/loom-exec` and
+  `build/codemode-seed`; without them it prints `SKIP` on standard error and
+  passes. Test roots live under `packages/eval/build/eval-test/`, never `/tmp`.
+- `jail.selftest` in a row is "unprobed": the posture is read from the
+  platform, not from a self-test of the helper.
+- Replay tapes are looked up as `<tapes>/<task id>/<index>.jsonl`, so one tape
+  serves every arm; a divergence is a `VerifierFailed` row naming the request.
+
+## Verifier
+
+`eval/verify` grades a retired trial by running the task's `Program` in a
+fresh jail; `eval/prove` is mutation testing of a mined task's verifier; and
+`eval/prove_cli` (`gleam run -m eval/prove_cli -- --tasks <dir> --repo <path>
+[--out <dir>] [--helper <path>] [--seed <dir>] [--best-effort]`) proves a
+directory of tasks into `<out>/prove.jsonl`.
+
+- `verify.open_jail(settings, root)` starts a two-helper pool, executor and
+  broker (`workspace_plane.start_effect_plane`, the one-shot plane shape
+  `serve.BuildPlane` names) over `root`, with `gleam` and `erl` located as
+  code mode locates them and mounted read-only, then proves the pool can run
+  `true` under `settings.demand` and keeps the kernel's enforcement report
+  (`verify.enforcement`, `verify.demand_text`). A host whose helper skips a
+  layer refuses here with the layer in the reason. Under `BestEffort` the
+  only tolerated skip is `skip:cgroup-v2` (`verify.tolerated_skip`); any other
+  skipped layer refuses the probe and every later run. There is no host
+  fallback.
+- `verify.grade(task, workspace, out_dir, jail, pristine)` treats the frozen
+  `workspace` as adversarial. The copy at `<out_dir>/verify` is built by a
+  walk that `lstat`s every entry and keeps regular files and directories only
+  (symlinks, fifos, sockets and devices are dropped and counted in
+  `side_info`), drops the top-level `logs/` and every `build/`, then lays the
+  `build/` directories under `pristine` (materialise's host-prepared copy
+  from before the agent ran, `Prepared.pristine`) over it. Hidden files are
+  re-checked with `wire.safe_path`, every path component must be a real
+  directory, and the target is unlinked before it is written. A `Program`
+  whose argv runs a workspace path in command position (`bash
+  scripts/test.sh`, `./run && ...`, read by `verify.command_paths`) is refused
+  unless that path is among `Program.files`.
+- The run clears `bash -o pipefail -c '( exec <argv> ) >logs/verifier/stdout
+  2>…/stderr; tail -c 1 MiB … > stdout.tail …'` through
+  `tools/tool.broker_runner` under `evolution_trial_policy(build_plane_policy
+  (root), trials, copy)`: readable and writable roots are the copy alone,
+  network off, scratch tmpfs, wall `timeout_ms` (capped at
+  `task.max_timeout_ms` = 600 s, the jail's default wall), `HOME` outside
+  every root. Host reads of `stdout.tail`, `stderr.tail` and `reward.json`
+  `lstat` first, accept regular files only, and cap at 1 MiB / 64 KiB; a fifo
+  or link is refused unread, never opened. Only those three are copied to
+  `<out_dir>/verifier/`. The copy walk reads at most `verify.default_caps`
+  (64 MiB per file, 1 GiB per copy; `grade_within` takes other caps for a
+  test); a file over either is dropped and counted as `oversize` in
+  `side_info`, and the grade continues. A task whose `timeout_ms` exceeds
+  `task.max_timeout_ms` is graded 0 up front with the cap named, never run
+  and never `Infra`.
+- A pass is all of: exit status 0; every `fail_to_pass` and `pass_to_pass`
+  id parsed as `Passed` by `eunit_ids.parse` over both tails (an unnamed id
+  did not pass); and `reward.json`, when present, passing `Scoring`. Any
+  fault is reward 0 with every fault named in `side_info`. A wall-stopped
+  run is reward 0 with "verifier timed out" and `exit_status`
+  `no_exit_status` (-1), never `Error`. Only a refusal, an execution failure
+  or an unadmitted task is `Error` (the runner's `Infra`). `scores` carries
+  the reward map plus `f2p`/`p2p` fractions; `side_info` (<= 8 KiB) is the
+  faults, the drop counts, then a `telemetry/field.scrub_text` tail.
+- `prove.prove(task, repo, root, jail, runner)`: `git archive` of the parent
+  (no `.git`, tree id checked, `MinedCommit.parent` must equal
+  `GitTree.commit`) under `<root>/<id12>/tree`, the task's `prepare` argvs
+  plus a warm `gleam build` on the host, the source patch from `git diff
+  parent fix -- . ':!packages/*/test/*' ':!*CLAUDE.md' ':!*AGENTS.md'
+  ':!docs/*'`, then three grades with the tree as the pristine build: null
+  (tree), gold (tree + patch via `git apply`), sabotaged (gold with
+  `git.first_revert` applied). `verdict` admits only gold reward 1 with f2p
+  = p2p = 1.0 and null reward 0 with f2p < 1.0; sabotage is a census
+  (`mine.Sabotage`). `prove.jsonl` lines are `to_json` (`"v":1`, with
+  `demand` and the probe's `enforcement`), or `{"file","error"}` for a proof
+  that could not run.
+
+### Residual limits
+
+- Code reachable from a fail-to-pass test runs inside the test VM: it can
+  print forged EUnit lines or halt the emulator with status 0, and output
+  parsing cannot tell. The verifier's defence is the hidden test bodies the
+  agent never saw and the pristine dependency build it compiles against, not
+  the parse.
+- The runner check (`verify.command_paths`) is token-based: an argv such as
+  `bash -c "cd scripts && bash test.sh"` runs a workspace file it does not
+  name as a path, and is not recognised. The argv is authored by the operator
+  or the miner, never by the agent, so the check guards against a careless
+  task, not a hostile one; the miner always writes `bash scripts/test.sh
+  <pkg> …` and stages that file.
+
+### Hazards
+
+- Every mined task now vendors `scripts/test.sh`, `scripts/with_timeout.py`
+  and `scripts/serial-tests` (`mine.runner_files`), because the verifier
+  refuses an unstaged runner; tasks mined before this rule without the
+  `runner:vendored` tag are refused at grade time and must be re-mined.
+- The miner's after-fix run is made without the network (`mine.offline`,
+  `unshare -rn`, when the host allows it); a fix whose tests pass with the
+  network and fail without it is culled as "tests need the network, which the
+  verifier jail has off: <ids>" (`mine.network_only_failures`). Tasks mined
+  before this rule whose tests open sockets (the two `provider/http_test`
+  commits) are refused at proof time with gold f2p = p2p = 0 and
+  `{badmatch,{error,eperm}}` in the verifier output.
+- `prove.package_for(task, argv)` reads the `pkg:<name>` tag first and falls
+  back to `prove.package_of(argv)`, which also understands the miner's chained
+  `bash -c "… 'scripts/test.sh' '<pkg>' … && …"` form; both `prove` and
+  `materialise` use it to find the package a `prepare` step runs in.
+- `scrub_text` redacts any 32-grapheme credential-alphabet run, which
+  includes long test names in the output tail; the failing ids are listed
+  unscrubbed above the tail for that reason.
+- The verifier policy's limits are the pool defaults (`cpu_s: 300`); a
+  verifier that needs more CPU time than that is killed by the rlimit, not
+  the wall.
+- Test roots live under `$HOME/evalwt/verify-test/`; the tests ask for
+  `PlatformEnforcement` first and rerun under `BestEffort` only when every
+  `skip:` in the refusal is `skip:cgroup-v2`, printing a `NOTE` line; any
+  other refusal is a `SKIP`.
+
+### Runner addenda
+
+- `materialise` runs a git task's `prepare` argvs in the package the verifier
+  names (`prove.package_of`, so `packages/<pkg>`) when the tree root is not a
+  Gleam project, then a warm `gleam build` there when any step used `gleam`;
+  both are inside the timed cold start. This supersedes the hazard under
+  Verifier that says materialise runs them at the root.
+- `run -- --record DIR` on a live plan taps the wire with `cassette.recording`
+  per cell and writes `<DIR>/<task id>/<index>.jsonl` when the trial's findings
+  are asked for (after retirement); the lane is `trial.Recording`, metered like
+  `Live`. Both transports normalise `<root>` over the whole attempt root, since
+  the system prompt names its home and state directories too.
+- `Context.selftest` is what each scored row's `jail.selftest` carries: the
+  CLI says `verify.open_jail probe: ...` when it opened a jail (the probe ran
+  `true` under the demanded enforcement) and `trial.unprobed` otherwise.
+- The program path is tested with the mined `eccdddad0` task
+  (`test/fixtures/f97168ff....json`) through `trial.run_one` and the real jail;
+  the gold case patches the frozen copy from inside the grader seam, so it
+  needs the loom repository history and skips without it.
+
 ## Transcripts
 
 `eval/transcripts` exports daemon sessions for the failure taxonomy

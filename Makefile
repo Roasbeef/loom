@@ -513,6 +513,10 @@ lsp-seed: ## Download workspace package dependencies before offline LSP use
 e2e-codemode: sandbox codemode-seed ## Code-mode end to end: jailed build, real satellite, real cap call
 	@bash scripts/test.sh codemode
 
+.PHONY: eval-run
+eval-run: ## Run or report an evaluation plan: make eval-run ARGS="run plan.json --tasks T --arms A"
+	cd packages/eval && gleam run -m eval/run_cli -- $(ARGS)
+
 .PHONY: e2e-evolution
 e2e-evolution: binaries codemode-seed ## Author, test, approve, replace and roll back one real session
 	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
