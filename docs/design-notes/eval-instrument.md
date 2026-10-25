@@ -107,7 +107,7 @@ is buying nothing and the modules go under `client/dev/`.
 instrument *produces* and the governed plane *consumes*; they share three
 things and nothing else:
 
-1. **One trial recipe.** `serve.evolution_trial` (`serve.gleam:8054-8108`)
+1. **One trial recipe.** `serve.evolution_trial` (`serve.gleam:8141-8195`)
    builds a `Settings` for a fresh jailed session. Extract its body into
    `@internal pub fn trial_settings(settings, target, api, profiles, root, tag,
    base_policy) -> Settings` so `eval/trial.gleam` and the governed opener
@@ -255,7 +255,7 @@ evidence directory, and the raw workspace stays for the artifact);
 (c) `Verifier.Program.files` are written into the copy; (d) `argv` is cleared
 through `tool.broker_runner(broker)` (`tools/tool.gleam:1222`) of the
 *evaluating* session, under `serve.evolution_trial_policy(base, trials,
-verify_dir)` (`serve.gleam:7994-8010`: readable/writable roots = that
+verify_dir)` (`serve.gleam:8334-8350`: readable/writable roots = that
 directory only, scratch tmpfs, network as the base says). This is
 `client/goalcheck`'s arrangement (`goalcheck.gleam:1-25`: operator-authored
 is not exempt from Rule Zero) and nanocodex's join-then-stage (`670ebd961`,
@@ -340,7 +340,7 @@ pub type Knobs {
 `eval/arm.to_settings(arm, base: Settings) -> Result(Settings, String)`
 renders the components into `provider/profile.new` values (one `Profile` per
 distinct `Target` with `role: Any`), builds the profile map via
-`gateway.with_profiles` (`provider/gateway.gleam:558`), writes the pack to a per-arm
+`gateway.with_profiles` (`provider/gateway.gleam:602`), writes the pack to a per-arm
 file, and overrides `catalog.roles`. A component whose `Target.role` is not
 `Any` is **refused** with "per-role profiles need protocol-change 101" — so
 the axis exists in the data and step 7 can emit it, but nothing lies about
@@ -350,7 +350,7 @@ applying it.
 Agency children (`sub:{parent}/{slug}-{digest}`, `agency.child_name`), the
 advisor strand (`advisor`, `client/advisor.ensure_strand`) and the
 `summarize`/`vision` routes. Per-role profile selection would need the strand
-or role at `compose_profile` (`provider/gateway.gleam:2227`) and a 9th field in
+or role at `compose_profile` (`provider/gateway.gleam:2104`) and a 9th field in
 `prompt.encode_profile` (`evolution/prompt.gleam:118-137`), hence a persisted-format
 bump and protocol-change 101. Deferred.
 
@@ -496,7 +496,7 @@ the rule cannot hold α on synthetic data it will not hold it on a model.
   clustering that prevents a leaked near-duplicate.
 - The seal: `evolution.compare` can name only a task set admitted into the
   *source session* by `admit_tasks` (`tasks.load`, `tasks.gleam:95-120`;
-  `serve.evolution_compare`, `serve.gleam:7981-7804`). The instrument's
+  `serve.evolution_compare`, `serve.gleam:8068-8120`). The instrument's
   `eval admit --split tune|validate` writes a v2 task set through the same
   operator door; `eval admit --split holdout` **does not exist** — the
   command refuses, and a lint-style test in `eval` asserts no holdout id
@@ -513,7 +513,7 @@ the rule cannot hold α on synthetic data it will not hold it on a model.
   *copies* of production session databases (writer lease, storage
   CLAUDE.md), joins each to the profile id journaled in
   `evolution/attempt/<hex>` facts (`serve.evolution_attempt`,
-  `serve.gleam:7585-7618`), and reports marked-success rate per profile
+  `serve.gleam:7853-7887`), and reports marked-success rate per profile
   beside the holdout pass rate of the same profile id. `Unmarked` is
   **excluded** from the rate and counted in a visible `unmarked` column
   (answering #236's open question: neutral would reward profiles that make
@@ -544,7 +544,7 @@ digest of the message list with these normalised: absolute paths under
 the trial root → `<root>`, ISO dates → `<date>`, tool-use ids kept (they
 come from the tape, so they recur). Determinism needs: `Settings` with a
 `clock.stepping` clock, a fixed trial tag (today minted from
-`token.production_entropy()` at `serve.gleam:7784`, so `trial_settings`
+`token.production_entropy()` at `serve.gleam:7871`, so `trial_settings`
 takes the tag as a parameter — part of the §2 extraction), and the agent's
 tools running against a workspace prepared identically (the tree id
 guarantees it). What the lane may claim: *the harness produced the same

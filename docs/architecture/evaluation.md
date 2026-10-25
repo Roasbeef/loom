@@ -45,9 +45,9 @@ The two planes share three things and nothing else:
 
 | Shared | Where it lives | Why shared |
 | --- | --- | --- |
-| One trial recipe | `trial_settings` at `client/serve.gleam:8053` | A trial is the same fresh jailed session on both paths. |
+| One trial recipe | `trial_settings` at `client/serve.gleam:8140` | A trial is the same fresh jailed session on both paths. |
 | One grade type | `rollout.Grade` (reward, named scores, bounded side information, the verifier run) | The exact-file scorer and the jailed program verifier both return it. |
-| One decision rule | `evalstat` (`paired_verdict`, `decide`) | `evolution/rollout.gleam:1041` (`decide`) maps its verdict to the three stored words. |
+| One decision rule | `evalstat` (`paired_verdict`, `decide`) | `evolution/rollout.gleam:1166` (`decide`) maps its verdict to the three stored words. |
 
 ### Two lanes, two claims
 
@@ -666,7 +666,7 @@ They bound a model spending the operator's money. After protocol-change/100:
 | Dollars | 2.0, unchanged |
 | Retained output | 65,536 bytes |
 
-`validate` (`evolution/rollout.gleam:439`) refuses a request whose trial budget
+`validate` (`evolution/rollout.gleam:398`) refuses a request whose trial budget
 cannot hold `tasks × 2 × samples`, naming the product, before any trial opens.
 A compare may now hold its budget for up to eight minutes instead of two and may
 make up to a hundred provider attempts, within the same dollar and token caps.
@@ -685,7 +685,7 @@ make up to a hundred provider attempts, within the same dollar and token caps.
 | A row is missing, from another plan, outside the plan, or rerolled | `ledger.reconcile` (`eval/ledger.gleam:384`) refuses with `plan row missing: <task>/<arm>/<index>`, or names the stray or the rerolled cell. Every verdict is then `Incomplete` with that reason. |
 | The process crashes while appending | One writer actor appends each row as a whole line, so a crash leaves a parseable prefix. |
 | A replay diverges | A `VerifierFailed` row naming the request and the first differing key path. |
-| An arm cannot be applied | `run.execute` refuses before any trial starts. A `PromptPack` component and any `Target.role` other than `Any` are refused by name. |
+| An arm cannot be applied | `run.execute` refuses before any trial starts. A `PromptPack` component that does not decode, and any `Target.role` other than `Any`, are refused by name. |
 
 The report trusts only a reconciled ledger. Any reconcile failure makes every
 verdict `Incomplete`; nothing is estimated from a partial ledger, because
@@ -743,7 +743,6 @@ limits what was exercised, and it is worth being exact about it.
 | --- | --- |
 | Admission tool and the mechanical holdout seal; the production join | Design note slice 3A, `eval/split` plus a new `eval/production` |
 | Per-role profile key (so `Target.role` can be applied) | protocol-change/101, reserved |
-| A `Settings` field for prompt packs (so `PromptPack` can be applied) | A `client` change to `serve.Settings`; refusal text in `eval/arm_settings` |
 | Task set v2 admission through `admit_tasks`; refusing a repeated (fixture, expected) pair | protocol-change/100, "Task set v2 is deferred" |
 | Refunding the unused part of a per-attempt reservation, so large-window targets can reach `Passed` | Follow-up to protocol-change/100 |
 | `Program` verifiers in governed comparisons | ADR-021, deferred |
