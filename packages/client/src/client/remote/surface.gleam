@@ -467,6 +467,84 @@ pub fn ack(surface: Surface(census), run: ToolRun) -> Nil {
   address.deliver(surface.config.address, protocol.Ack(key))
 }
 
+/// Sends one request to the executor and waits for its reply, however long the
+/// executor takes and however often the connection has to be repaired.
+///
+/// The caller builds the request around the reply subject it is given, and
+/// reads the scope's fence from `incarnation` and `token`. A request is sent
+/// again after a repair, so it must be one the host answers the same way twice:
+/// a keyed call, a read, or a step the host treats as idempotent. The wait ends
+/// only with the reply or with the death of the calling process, as a `Run`'s
+/// does (`run`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.ask(attached_surface, fn(reply) {
+/// //   protocol.EvolutionInventory(session:, incarnation:, handle:, reply:)
+/// // })
+/// ```
+pub fn ask(
+  surface: Surface(census),
+  make: fn(Subject(reply)) -> HostMessage(census),
+) -> reply {
+  case exchange(surface.config, Forever, make) {
+    Ok(reply) -> reply
+
+    // `Forever` repeats its pass until the executor answers, so it has no
+    // unanswered ending. The arm exists only to keep the match total.
+    Error(Nil) -> ask(surface, make)
+  }
+}
+
+/// Sends one request to the executor and waits for its reply, giving up when
+/// repairs have failed for `ms` milliseconds.
+///
+/// The bound is on the repair loop, which is the only part of an exchange that
+/// can go on without end: a connected executor that never answers is waited for
+/// until the host's monitor reports it gone. `Error(Nil)` therefore means the
+/// executor could not be reached in time, and says nothing about whether the
+/// request took effect. The same rule about repeated sends applies as for `ask`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.ask_within(attached_surface, 60_000, fn(reply) {
+/// //   protocol.EvolutionRetire(session:, incarnation:, token:, handle:, reply:)
+/// // })
+/// ```
+pub fn ask_within(
+  surface: Surface(census),
+  ms: Int,
+  make: fn(Subject(reply)) -> HostMessage(census),
+) -> Result(reply, Nil) {
+  exchange(surface.config, Within(ms), make)
+}
+
+/// The scope incarnation this surface attached under. An evolution message
+/// carries it so the host can refuse one from a dead open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.incarnation(attached_surface)
+/// ```
+pub fn incarnation(surface: Surface(census)) -> Int {
+  surface.config.incarnation
+}
+
+/// The attach token this surface minted. A message that changes the scope
+/// carries it, and the host compares it by value with the scope's current one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // surface.token(attached_surface)
+/// ```
+pub fn token(surface: Surface(census)) -> BitArray {
+  surface.token
+}
+
 // The call the executor still reports running: join it and take its answer.
 /// Await live keeps this client operation’s decoding or state decision in one place.
 fn await_live(surface: Surface(census), run: ToolRun) -> Recovery {

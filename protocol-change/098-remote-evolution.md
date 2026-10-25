@@ -4,9 +4,12 @@
 protocol-change/078 (`remote/protocol`, version 4 to 5), the execution ledger's
 use, the census, the owner port's fact fence, and the evolution catalogue's
 scope key · **Raised by**: the owner, after PR #824 landed evolution for a local
-workspace only · **Implemented**: slice 3 messages at protocol version 5 (PR #1092): the
-vocabulary, the census field and the refusing host arms; the executor plane and
-the orchestrator machine follow. Plan in `docs/design-notes/remote-evolution.md`
+workspace only · **Implemented**: slice 3 at protocol version 5: the messages, the census field
+and the host arms (PR #1092), the executor plane (`executor_evolution`, PR
+#1113), the orchestrator's remote machine (`evolution/machine/remote`) with the
+capability route that reaches it, and the refusal of `sessions.move` for a
+session that serves a selection. Trials (slice 4) and core upgrades (slice 5) are
+not implemented. Plan in `docs/design-notes/remote-evolution.md`
 
 ## Problem
 
@@ -542,3 +545,57 @@ concrete form of the proposal's rule that a handle is unique per executor boot.
 - Unchanged: `executor_plane`, `evolution/machine`, `serve`, `system_prompt`,
   `owner_services`, `evolution/store` and the P model. These belong to steps 4
   and 5 and later slices.
+
+## Addendum (slice 3 steps 4 and 5, as built), 2026-10-25
+
+The executor plane and the orchestrator's machine are built, and a shipped
+two-daemon test (`evolution_remote_acceptance_test`) proves the lifecycle on a
+fixed executor. This addendum records where they differ from the text above and
+from the step 3 addendum. The status stays PROPOSED until slices 4 and 5.
+
+**The executor builds a `local.Config`, as the step 3 addendum said it would.**
+`executor_plane` assembles one from the machine's own inputs and calls the
+catalogue-free functions of `machine/local`. The proposal's `machine.local`,
+an orchestrator-side value, is not built on the executor. The `Config` is held
+by `executor_evolution`, one actor for each scope, which is filed in custody as
+`custody.Evolution`.
+
+**`Hands.evolution` has two variants.** The orchestrator's view of the executor
+is `Reachable(Link)` when the census says `Compiles(identity)` and
+`Withheld(reason)` when it says `Uncompiled(reason)`. A `Reachable` link carries
+the surface the remote machine sends through, the session's stored authority and
+the patience a retire or an inventory has. A `Withheld` session has no machine,
+no catalogue and no plane. It still registers the evolution cell over doors that
+refuse every operation with the executor's reason, so a program that imports
+`cap/evolution` reads why there is no plane and not a sentence about a plane
+that is not open.
+
+**A capability call is keyed `(code_mode call key, cap, ordinal)`.** An
+`EvolutionEvaluate` or `EvolutionRun` sent for a call of `cap/evolution` carries
+the `code_mode` call's key, with the capability name and the call's
+`OwnerCapCall.ordinal` folded into the key's source index by
+`capability.call_index`, so two capability calls of one program are two ledger
+rows and a repair that resends one finds its row. The step 3 addendum's
+`Coordinates` carry that key. The authority in the coordinates is the call
+door's stored `wiring.Authority`, which the executor revalidates against its own
+filesystem before it widens a policy.
+
+**The machine resolves a directory.** The model names a candidate's source
+directory in the workspace's own terms. `EvolutionSnapshot` carries it as named,
+and the machine that holds the workspace resolves it: `serve` for a workspace in
+this VM, with the catalogue's root as an extra protected path, and the executor
+for a registered session. An earlier cut resolved it on the orchestrator first,
+which sent the executor an absolute path built from an empty workspace.
+
+**A hook that cannot reach the executor is skipped.** The remote machine answers
+`Refused` for a hook whose wait for the executor ran out, not `Gone`. The hook
+bus drops a handler that answers `Gone` for the rest of the session, and a link
+cut is not the end of the extension. `Gone` is kept for the host's own refusals
+that say the generation no longer exists.
+
+**`sessions.move` and a selection.** The catalogue stays on the orchestrator
+that holds the session and does not travel in the move manifest, so a moved
+session would find its selection gone while the executor still served the
+generation. The plan refuses the move for a session with a selection; that
+refusal is step 6, built separately, and this addendum does not record it as
+done.

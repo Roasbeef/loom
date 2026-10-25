@@ -828,6 +828,10 @@ fn run_tests(
 
 /// Borrows a dedicated jail only for bounded source capture and retirement.
 ///
+/// `directory` is the canonical path `candidate.source_path` answered; the
+/// caller resolves it, because only the caller knows which extra state the
+/// source may not overlap.
+///
 /// ## Examples
 ///
 /// `local.snapshot(config, ctx, directory)` applies current caller masks.

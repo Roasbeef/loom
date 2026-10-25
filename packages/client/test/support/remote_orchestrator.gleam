@@ -9,6 +9,7 @@
 import broker/broker
 import broker/exec
 import broker/token
+import client/evolution/record
 import client/executors
 import client/remote/address
 import client/remote/host
@@ -28,6 +29,7 @@ import gleam/result
 import runtime/effects
 import storage/exec_ledger
 import support/remote_fixtures as fixtures
+import telemetry/log
 import tools/tool
 
 /// The workspace root the fake executor reports. It is a path on the
@@ -92,6 +94,28 @@ pub fn census_over(
       "the fake executor has no evolution plane",
     ),
   )
+}
+
+/// The same census, for an executor that compiles evolution candidates under
+/// `identity`.
+pub fn compiling(
+  census: RemoteCensus,
+  identity: record.Identity,
+) -> RemoteCensus {
+  RemoteCensus(..census, evolution: remote_census.Compiles(identity))
+}
+
+/// A plane factory whose planes also answer the evolution messages from
+/// `evolution`, instead of refusing them with `NoEvolution`.
+pub fn evolving(
+  built: host.PlaneFactory(RemoteCensus),
+  evolution: host.Evolution,
+) -> host.PlaneFactory(RemoteCensus) {
+  fn(spec: host.AttachSpec) {
+    result.map(built(spec), fn(plane) {
+      host.Plane(..plane, evolution: Some(evolution))
+    })
+  }
 }
 
 /// A running broker standing for the executor's. It refuses every clearance, as
@@ -398,6 +422,7 @@ pub fn registered_in(
     reconcile_every_ms: 60_000,
     executions: owner_port.no_executions(),
     mcp: protocol.McpPlan(served: [], expected: []),
+    logger: log.discard(),
   )
 }
 

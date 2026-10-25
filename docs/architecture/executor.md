@@ -1419,6 +1419,26 @@ clears each Git call through the broker with a policy built for that call
 before the session has a plane, and Rule Zero forbids running that in the
 harness VM. A daemon with no worktree workspace never starts it.
 
+## A third instance: the evolution plane
+
+A distributed executor that can compile candidates also runs an evolution plane
+for each scope it serves (protocol-change/098). The plane is one
+`executor_evolution` actor over a `machine/local.Config` built from the scope's
+own code-mode host, helper pool and seed. It stages, serves, migrates and
+retires the generations of one promoted extension, snapshots a candidate's
+source, and runs author tests and program candidates, each in a jail whose
+policy comes from the call's stored authority. A stage runs in a task that owns
+the generation for its whole life, because the pool and satellite it builds
+shut down when their starter exits.
+
+The actor is filed under custody as `custody.Evolution`, which ranks before the
+broker and the helper pool, so it retires first. A scope close therefore waits for any stage in flight, retires the serving generation and the
+generations still finishing calls, and only then lets the broker and the pool
+drain. The scope's evolution directory is masked from the session's own jails,
+and each candidate's build jail lifts the mask for its own scratch only. An
+executor restart leaves nothing running: a new process has no generations, and
+the orchestrator stages the session's selection again at the next open.
+
 ## Protocol changes
 
 None is needed in any phase. The witnessed kill is a signal sent from the BEAM

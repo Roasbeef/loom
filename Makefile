@@ -524,6 +524,19 @@ e2e-evolution: binaries codemode-seed ## Author, test, approve, replace and roll
 	@LOOM_EVOLUTION_E2E=1 LOOM_TEST_TIMEOUT_SECONDS=720 \
 		bash scripts/test.sh client --match client@live_upgrade_acceptance_test:
 
+# Remote evolution against two shipped daemons: a session registered on an
+# executor proposes, tests, selects and invokes an extension and a program, and
+# a restarted executor stages the selection again. The executor compiles every
+# candidate, so the target builds the helper, the shipment and the code-mode
+# seed first. A host without one of them prints a SKIP line and passes.
+.PHONY: e2e-evolution-remote
+e2e-evolution-remote: sandbox codemode-seed server-shipment ## Propose, select and invoke on an executor session
+	@install -m 0755 $(HELPER) bin/loom-exec
+	@LOOM_BOOTSTRAP_E2E_SERVER="$(CURDIR)/bin/loomd" \
+		LOOM_TEST_PROVIDER_KEY=loom-provider-fixture-key \
+		LOOM_TEST_TIMEOUT_SECONDS=720 \
+		bash scripts/test.sh client --match client@evolution_remote_acceptance_test:
+
 # ------------------------------------------------------------- the signoff
 # The merge gate on a developer's own machines instead of hosted runners:
 # every lane is a CI job's exact command, run in parallel on one checkout,

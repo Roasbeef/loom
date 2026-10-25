@@ -1,5 +1,62 @@
 # Current handoff
 
+Two bodies of work are live. Remote evolution slice 3 closed with the PR that
+added this section; the post-merge CI repair below it is still open on draft
+PR #1112 and is unchanged here.
+
+## Remote evolution, slice 3: closed
+
+A session on an executor can now author, test, select and run extensions and
+programs, built and run on the executor's checkout. The pieces, in order:
+
+- Step 4 (PR #1113): an `executor_evolution` actor per scope with code mode,
+  under `custody.Evolution`. The census reports `Compiles(identity)` or
+  `Uncompiled(reason)`, and the identity is computed from the host with its
+  evolution door withdrawn, so offering `cap/evolution` cannot change it.
+- Step 5: `client/evolution/machine/remote` sends the eight protocol-v5
+  evolution messages, and `serve` chooses the local, remote or no machine.
+  The executor's code mode offers `cap/evolution` and routes each call to the
+  owner as `Capability(OwnerCapCall)`, keyed `(code_mode call key, cap,
+  ordinal)`.
+- Step 6: `sessions.move` refuses a session that serves a `Session`-scoped
+  selection whose approval still stands. It checks both places
+  `serve.evolution_root` can put the catalogue, and an unreadable catalogue
+  refuses the move.
+- Step 7: `evolution_remote_acceptance_test` (`make e2e-evolution-remote`), on
+  two shipped daemons, covers an extension, a program candidate and an
+  executor restart.
+
+Bugs the acceptance run and the reviews found, all fixed in the same PR:
+
+- A proposal's relative directory was resolved on the orchestrator.
+- A hook that lost the link dropped its handler for good.
+- A session with a selected extension could not be reopened, because recovery
+  ran before the Agency holder started. This affected local sessions too.
+- The move check read only one catalogue location.
+
+Rulings, not to re-litigate: refuse the move rather than carry catalogue rows;
+eight messages in version 5, with trials and core getting their own bumps; no
+`Hands.recover` by key, since an evolution door follows its `code_mode` call's
+`replay: Never`; a remote check has no rolling output tail; one catalogue per
+daemon holds both placements' candidates.
+
+Open, in rough priority:
+
+1. Slice 4: trials and prompt profiles on executor sessions. The `Authority`
+   guard for prompt trials on a registered session is not added yet.
+2. Retire and publish still run inside the evolution actor's own turn, so a slow
+   retire stalls other requests to that scope's plane. Moving retire into a weft
+   task is the fix.
+3. Untested: a pool of executors, a link cut during staging, an orchestrator
+   restart with a selection in flight, a prepare or snapshot in flight at
+   close, hooks across a real link cut, and background programs calling
+   `evolution.*`.
+4. After two in-place upgrades, an empty alias record stays on the executor
+   until the scope closes. A publish answered `UnknownHandle` is reported as
+   "migration lost" but not re-staged; 098 describes the re-stage.
+
+## Post-merge CI repair
+
 This is the post-merge CI repair, based on main
 `d70c7d073c96a0afb8d28e676003e6bace147099` on
 `codex/postmerge-fixture-repairs`. The published diagnostic head was
@@ -9,7 +66,7 @@ is preserved exactly; its local gates and performance measurements retain their
 original observation cuts. The [repair report](review/postmerge-ci-repair-2026-10-24.md)
 records reproduction, causal evidence and validation.
 
-## What happened
+### What happened
 
 PR #1110 merged as `141788049d93cfe97a427e350d75001bd88d091c` and PR #1111
 as `d70c7d073c96a0afb8d28e676003e6bace147099` before their hosted checks
@@ -26,7 +83,7 @@ downstream packages did not run. The macOS fan-in skipped artifact downloads
 and its strict skip census, despite its success badge. Those original failures
 remain evidence even if another run passes.
 
-## Repairs
+### Repairs
 
 Both changes are test-only. The real evolution-door fixture now counts its exact
 startup marker through closure environments. Independently minted UUID integers
@@ -44,7 +101,7 @@ covers publication arriving after the barrier. The entire LSP package was
 unchanged between pre-#1110 base `3e258a2f3` and this repair base: that fixture
 race predates the optimizations. The retention fixture was introduced by #1110.
 
-## Validation at publication
+### Validation at publication
 
 Five original focused runs passed for each intermittent fixture, followed by
 controlled probes that reproduced each exact failure. Five repaired retention
@@ -82,7 +139,7 @@ retention fixture failure, its second shard truly completed the whole check,
 and its macOS strict census was skipped. Neither original merge is a passing
 hosted-CI verdict.
 
-## Shipped fixture ordering repair
+### Shipped fixture ordering repair
 
 Run 40153045412 attempt 1 at `318bfbc816` completed both macOS whole checks,
 including all 5,328 client tests and both earlier repaired assertions. Shard 2
@@ -110,7 +167,7 @@ the marker, which proves only shell progress. This makes the fixture's existing
 claim that no child is running at restart true. The earlier remote-worktree
 failure remains unexplained; do not attribute it to this distinct ordering race.
 
-## What remains
+### What remains
 
 1. Complete the five real shipped repetitions and independent review of this
    ordering fix, then publish the exact new head to draft repair PR #1112.

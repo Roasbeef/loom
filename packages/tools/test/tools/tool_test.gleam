@@ -240,6 +240,43 @@ pub fn failure_outcome_maps_to_is_error_message_test() {
   let assert message.ToolResultMessage(is_error: True, ..) = result
 }
 
+// A result message read back is the outcome it was built from, for each shape
+// an outcome has: plain text, text with details, an error, and an image beside
+// text, and for each termination flag.
+
+pub fn from_result_message_inverts_to_result_message_test() {
+  let image = message.ToolResultImage(data: "AAAA", mime_type: "image/png")
+  let outcomes = [
+    tool.success("plain"),
+    tool.success("detailed")
+      |> tool.with_details(json.Object([#("k", json.Int(1))])),
+    tool.failure("broken"),
+    tool.ToolOutcome(
+      content: [tool.text_block("with an image"), image],
+      details: None,
+      is_error: False,
+      terminate: tool.TerminateRun,
+    ),
+  ]
+  list.each(outcomes, fn(outcome) {
+    let built =
+      tool.to_result_message(
+        outcome,
+        tool_call_id: "call_1",
+        tool_name: "bash",
+        timestamp: 5,
+      )
+    assert tool.from_result_message(built, outcome.terminate) == Ok(outcome)
+  })
+}
+
+pub fn only_a_tool_result_message_is_an_outcome_test() {
+  let user = message.UserMessage(content: [], timestamp: 0, origin: None)
+  assert tool.from_result_message(user, tool.ContinueRun) == Error(Nil)
+  let custom = message.CustomMessage(schema: "x", payload: json.Null)
+  assert tool.from_result_message(custom, tool.ContinueRun) == Error(Nil)
+}
+
 // A version disagreement has to reach the reader as two numbers and a
 // remedy. Issue #61 was an hour lost to a stale `bin/loom-exec` whose only
 // symptom was "the sandbox channel broke protocol", so the assertions here

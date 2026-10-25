@@ -48,6 +48,17 @@
 ////   though the executor offers both, because the executor is not told which
 ////   seams the operator chose.
 ////
+//// ## Evolution
+////
+//// `cap/evolution` is offered on an executor only when its census says it
+//// compiles candidates (`offering_evolution`). The six `evolution.*` names are
+//// owner-bound like `strand.*`: the executor sends them as `OwnerCapCall`s, and
+//// the owner's `OwnerSide.evolution` builds the same `codemode/evolution`
+//// doors a local session uses, over the evolution wiring `serve` opens for the
+//// session. The call's key is the `code_mode` call's, with the capability's slot
+//// and ordinal folded into the source index (`evolution/capability.call_index`),
+//// and recovery is the `code_mode` call's, which never replays.
+////
 //// ## A background program's calls
 ////
 //// A program launched in the background on the executor carries the step
@@ -83,6 +94,7 @@ import client/mcp as mcp_wiring
 import client/owner_services.{type OwnerCapCall, type OwnerServices}
 import client/peers
 import client/remote/protocol
+import codemode/evolution as codemode_evolution
 import codemode/satellite.{type CapDenial, type CapRouter}
 import gleam/list
 import gleam/option.{None, Some}
@@ -227,6 +239,49 @@ fn call_for(
     cap: call.cap,
     args: call.args,
     ordinal: call.ordinal,
+  )
+}
+
+/// Offers `cap/evolution` on an executor whose census says it compiles
+/// candidates.
+///
+/// The import, the rendered types, the six advertised names and their admission
+/// ceilings are the executor's to decide, because they are part of the program
+/// the satellite compiles. The operations are not: `over_owner` sends every
+/// `evolution.*` name to the owner before the execution's own router sees it, so
+/// the builder installed here is never run. It refuses, with the sentence a
+/// program would read if a call somehow reached it, so that a bug cannot answer
+/// from nothing.
+///
+/// This is separate from `over_owner` because an executor that cannot compile
+/// must not offer the module, and a machine's evolution identity hashes the
+/// allowlist. The evolution plane's own host is built with
+/// `codemode.without_evolution`, so the identity the census reports is the same
+/// whether or not this has been applied.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_codemode.offering_evolution(config)
+/// ```
+///
+pub fn offering_evolution(config: Config) -> Config {
+  codemode.over_evolution(config, Some(fn(_ctx) { owner_answered() }))
+}
+
+// The door of a builder that is never run: the owner answers these names.
+/// The refusing door installed where the owner answers instead.
+fn owner_answered() -> codemode_evolution.Door {
+  let refuse = fn(_ordinal, _arguments) {
+    Error("Unavailable: the session owner answers evolution operations")
+  }
+  codemode_evolution.Door(
+    propose: refuse,
+    test_candidate: refuse,
+    inspect: refuse,
+    catalogue: refuse,
+    invoke: refuse,
+    trace: refuse,
   )
 }
 

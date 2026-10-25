@@ -2839,6 +2839,13 @@ pub type OwnerSide {
     schedules: Option(scheduleseam.Door),
     /// The MCP servers behind `mcp.<server>`.
     mcp: McpLayer,
+    /// The six governed-evolution operations, built for one owner-bound call,
+    /// or `None` on an owner that answers none. The builder is given the call's
+    /// coordinates and nothing else, because the owner has no checkout; the
+    /// workspace seam alone is offered them, as on a local session.
+    evolution: Option(
+      fn(owner_services.OwnerCapCall) -> codemode_evolution.Door,
+    ),
   )
 }
 
@@ -2856,6 +2863,7 @@ pub fn owner_side(config: Config) -> OwnerSide {
     notes: config.notes,
     schedules: config.schedules,
     mcp: config.mcp,
+    evolution: None,
   )
 }
 
@@ -2884,6 +2892,7 @@ pub fn owner_serving(
     notes: Some(notes.Door(put: agency.note, scan: agency.notes)),
     schedules:,
     mcp: mcp_wiring.none(),
+    evolution: None,
   )
 }
 
@@ -3037,6 +3046,7 @@ pub fn owner_answering(
         over: scheduling(arms.schedules, call, over: owner_mcp(arms)),
       )
       |> beyond(call.strand, _)
+      |> with_evolution(side.evolution, call, _)
 
     // Dispatch owner request through router.
     case router(owner_request(call)) {
@@ -3051,6 +3061,27 @@ pub fn owner_answering(
         ))
       Error(denial) -> Error(denial)
     }
+  }
+}
+
+// The six evolution operations over `router`, when the owner answers them and
+// the call is under the workspace seam, the only seam a local session offers
+// them on. Every other call is the router's.
+/// Attaches the evolution router to an owner-bound call's chain.
+fn with_evolution(
+  evolution: Option(fn(owner_services.OwnerCapCall) -> codemode_evolution.Door),
+  call: owner_services.OwnerCapCall,
+  router: satellite.CapRouter,
+) -> satellite.CapRouter {
+  case evolution, call.seam {
+    Some(build), vet_policy.WorkspaceSeam ->
+      codemode_evolution.routing(build(call), over: router)
+
+    Some(_), vet_policy.OrchestrationSeam
+    | Some(_), vet_policy.ExtensionSeam
+    | Some(_), vet_policy.ResidentSeam
+    | None, _
+    -> router
   }
 }
 

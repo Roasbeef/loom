@@ -900,6 +900,100 @@ pub fn selected(
   with_session(store, fn(opened) { selection_in(opened, scope, name) })
 }
 
+/// Lists the selections scoped to one session that are still approved, which
+/// are the extensions and programs that session would serve if it were open.
+///
+/// A daemon asks this before handing the session to another orchestrator,
+/// because the selection lives in this daemon's catalogue and does not travel
+/// with the session. It is a read for the owner, so it takes no store from the
+/// caller and compares no identity: identity gates proposals, evidence and
+/// approvals, and none of the reads below consult it. A selection whose
+/// approval was revoked stays on file but serves nothing, so it is not listed.
+///
+/// A directory with no catalogue database holds no selections. The database is
+/// not created to find that out, so asking about a daemon that never used
+/// evolution leaves its state directory as it was. An existing database is
+/// opened under the store's usual lease, waiting at most one second for it
+/// (`borrow`); a catalogue that stays busy answers `Busy`, and the caller must
+/// not read that as an empty list.
+///
+/// ## Examples
+///
+/// `session_selections(state <> "/evolution", "session-a", clock)` is
+/// `Ok([])` for a session that serves nothing.
+pub fn session_selections(
+  root: String,
+  session_id: String,
+  clock: Clock,
+) -> Result(List(record.Selection), Refusal) {
+  use present <- result.try(
+    simplifile.is_file(root <> "/evolution.db")
+    |> result.map_error(fn(error) {
+      Unavailable(simplifile.describe_error(error))
+    }),
+  )
+
+  // Without a database file there is nothing to open, and opening would make
+  // the directory and the database.
+  case present {
+    False -> Ok([])
+    True -> {
+      let unchecked = record.Identity("", "", "")
+      use reader <- result.try(open(root, Owner, unchecked, clock))
+      with_session(reader, fn(opened) {
+        use candidates <- result.try(catalogue_in(reader, opened))
+        let names =
+          list.filter_map(candidates, fn(candidate) {
+            case candidate.scope == record.Session(session_id) {
+              True -> Ok(candidate.name)
+              False -> Error(Nil)
+            }
+          })
+          |> list.unique
+
+        list.try_fold(names, [], fn(found, name) {
+          use selected <- result.try(approved_selection_in(
+            opened,
+            record.Session(session_id),
+            name,
+          ))
+          Ok(list.append(found, option.values([selected])))
+        })
+      })
+    }
+  }
+}
+
+// The selection of a name if its current approval names the selected evidence.
+// Revocation deletes the approval and leaves the selection register, so the
+// approval is what says the selection still serves.
+/// Reads one selection and keeps it only while its approval still holds.
+fn approved_selection_in(
+  opened: session.Session,
+  scope: record.Scope,
+  name: String,
+) -> Result(Option(record.Selection), Refusal) {
+  use found <- result.try(selection_in(opened, scope, name))
+
+  // No selection register means nothing was ever selected under this name.
+  case found {
+    None -> Ok(None)
+    Some(selection) -> {
+      use approval <- result.try(cell(
+        opened,
+        approval_key(selection.candidate_id, scope),
+      ))
+
+      // A missing or different approval is the revoked state, not an error.
+      case approved_evidence(approval, selection.evidence_id) {
+        Ok(Nil) -> Ok(Some(selection))
+        Error(NotApproved) -> Ok(None)
+        Error(refusal) -> Error(refusal)
+      }
+    }
+  }
+}
+
 /// Publishes after current approval and expected generation both hold.
 ///
 /// The caller stages and proves predecessor retirement before committing here.
