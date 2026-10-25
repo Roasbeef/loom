@@ -145,7 +145,7 @@ fn start(
   let assert Ok(hands) =
     workspace.attach(rig.registered(executor, opened, clock.fixed(at: 1000)))
     as "the session attaches"
-  let assert Some(link) = hands.evolution
+  let assert workspace.Reachable(link) = hands.evolution
     as "a compiling executor gives the session an evolution link"
   Rig(
     executor:,
@@ -303,6 +303,36 @@ pub fn an_unapproved_selection_is_refused_before_sending_test() {
     as "an unapproved selection is refused"
 
   assert drain(r.seen) == []
+  finish(r)
+}
+
+/// An executor that already serves a newer generation of the selection is the
+/// store's `Stale`, which tells the model to discover the current candidate and
+/// generation. Every other refusal keeps its reason as an unavailable
+/// dependency.
+pub fn a_stale_generation_is_the_stores_stale_test() {
+  let script =
+    plane.Script(
+      ..staged_script(),
+      stage_refusal: Some(protocol.StaleGeneration(serving: 9)),
+    )
+  let r = start(script, extension_candidate(), 300)
+  let assert Error(refusal) = r.machine.stage(r.catalogue, r.selection)
+  assert refusal == store.Stale
+  finish(r)
+}
+
+/// A refusal with no equivalent in the store's vocabulary keeps its reason.
+pub fn another_refusal_keeps_its_reason_test() {
+  let script =
+    plane.Script(
+      ..staged_script(),
+      stage_refusal: Some(protocol.ExecutorFault("disk full")),
+    )
+  let r = start(script, extension_candidate(), 300)
+  let assert Error(store.Unavailable(reason)) =
+    r.machine.stage(r.catalogue, r.selection)
+  assert string.contains(reason, "disk full")
   finish(r)
 }
 

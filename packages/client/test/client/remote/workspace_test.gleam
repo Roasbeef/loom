@@ -743,7 +743,7 @@ pub fn a_compiling_executor_gives_the_open_an_evolution_link_test() {
 
   let hands = attached(executor, store())
 
-  let assert Some(link) = hands.evolution
+  let assert workspace.Reachable(link) = hands.evolution
     as "the census says the executor compiles"
   assert link.session == "registered-session"
   assert link.executor == rig.executor_name
@@ -767,7 +767,9 @@ pub fn an_executor_that_cannot_compile_gives_no_link_and_one_notice_test() {
     )
     as "the attach succeeds"
 
-  assert hands.evolution == None
+  let assert workspace.Withheld(reason) = hands.evolution
+  assert string.contains(reason, "`" <> rig.executor_name <> "`")
+  assert string.contains(reason, "the fake executor has no evolution plane")
   let assert Ok(notice) = process.receive(records, 1000)
   assert notice.event == "evolution.unavailable"
   assert list.contains(

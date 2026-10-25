@@ -118,7 +118,9 @@ import broker/exec.{type EnforcementDemand}
 import broker/policy
 import client/catalog
 import client/codemode as codemode_wiring
+import client/evolution/identity as evolution_identity
 import client/evolution/machine/local
+import client/evolution/record
 import client/executor_evolution
 import client/extension/memory as extension_memory
 import client/gocache
@@ -601,7 +603,8 @@ fn start(
         #(custody.Namespace, fn() { registry.stop(namespace) }),
         ..drain(filed, [])
       ]
-      let code_mode = process.receive(configs, 0) |> option.from_result
+      let configured = process.receive(configs, 0) |> option.from_result
+      let code_mode = option.map(configured, fn(each) { each.host })
 
       // The evolution plane starts last, after everything it runs on exists, so
       // a failure to start it stops the cleanups filed so far and nothing else.
@@ -611,7 +614,7 @@ fn start(
           spec,
           root,
           started,
-          code_mode,
+          configured,
           prepared.census.toolchain,
           namespace,
         )
@@ -644,6 +647,18 @@ fn start(
       Error(reason)
     }
   }
+}
+
+// The finished code-mode configuration of a scope and the compile identity
+// observed from it. The tool callback computes the identity first, because
+// whether the configuration offers `cap/evolution` depends on it, and the
+// evolution plane reads the same value instead of observing it again.
+@internal
+pub type Configured {
+  Configured(
+    host: codemode_wiring.Config,
+    identity: Result(record.Identity, String),
+  )
 }
 
 // What a scope's evolution plane adds to its plane: the door the host serves
@@ -680,15 +695,15 @@ fn evolution_of(
   spec: host.AttachSpec,
   root: String,
   started: workspace_plane.Started,
-  code_mode: Option(codemode_wiring.Config),
+  configured: Option(Configured),
   toolchain: Result(codemode_wiring.Toolchain, String),
   namespace: registry.Registry,
 ) -> Result(Evolving, String) {
   // Without a code-mode configuration there is no compiler to stage a
   // candidate with, so the scope compiles nothing and says why.
-  case code_mode {
+  case configured {
     None -> Ok(uncompiled(toolchain_reason(toolchain)))
-    Some(host_config) -> {
+    Some(Configured(host: host_config, identity: observed)) -> {
       let census = started.plane.census
       let clock = host_config.clock
       let scratch = evolution_run(machine.state_root, spec.session)
@@ -714,7 +729,9 @@ fn evolution_of(
         )
 
       // Without an identity there is nothing a candidate could be stamped with.
-      case executor_evolution.identity(config) {
+      // It was observed when the `code_mode` tool was built, from this same
+      // configuration with its evolution door withdrawn, so it is not read twice.
+      case observed {
         Error(reason) -> Ok(uncompiled(reason))
         Ok(identity) -> {
           use actor <- result.map(
@@ -905,7 +922,7 @@ fn attach_of(
   namespace: registry.Registry,
   filed: Subject(Cleanup),
   layer: mcp_wiring.Layer,
-  configs: Subject(codemode_wiring.Config),
+  configs: Subject(Configured),
 ) -> workspace_plane.Attach {
   let owner = spec.owner
   let session = spec.session
@@ -930,13 +947,40 @@ fn attach_of(
         |> owner_codemode.over_owner_serving(owner, answered_here:)
       },
       tool: fn(config) {
-        process.send(configs, config)
-        codemode_wiring.seam(config)
+        let offered = offering_evolution(config)
+        process.send(configs, offered)
+        codemode_wiring.seam(offered.host)
         |> backgrounded(owner)
         |> owner_codemode.advertising_peers
       },
     ),
   )
+}
+
+// Offers `cap/evolution` when this machine can compile candidates. The identity
+// is observed from the configuration with its evolution door withdrawn, which is
+// also the host the evolution plane compiles under, so offering the module
+// cannot change it: `evolution/identity` hashes the seam allowlists, and the
+// allowlist of a withdrawn host never contains the module. A machine whose
+// identity cannot be observed offers nothing and says so in its census.
+/// The configuration to build the `code_mode` tool from, with its identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // executor_plane.offering_evolution(config).identity
+/// ```
+@internal
+pub fn offering_evolution(config: codemode_wiring.Config) -> Configured {
+  let identity =
+    evolution_identity.current(codemode_wiring.without_evolution(config))
+
+  // Only an observable identity makes the module worth offering.
+  case identity {
+    Ok(_) ->
+      Configured(host: owner_codemode.offering_evolution(config), identity:)
+    Error(_) -> Configured(host: config, identity:)
+  }
 }
 
 // The `code_mode` tool's background modes on an executor. The record of an

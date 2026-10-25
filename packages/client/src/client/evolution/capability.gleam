@@ -37,8 +37,13 @@
 //// The cell holds one immutable value for the life of the plane and answers
 //// only a borrow, so it has no state to get wrong.
 
+import broker/broker
+import broker/exec
 import broker/internal/call
+import broker/policy
+import client/owner_services.{type OwnerCapCall}
 import codemode/evolution as codemode_evolution
+import core/clock.{type Clock}
 import core/json.{type JsonValue}
 import core/message
 import gleam/erlang/process.{type Pid, type Subject}
@@ -47,6 +52,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
+import tools/directory_access
 import tools/evolution as evolution_tool
 import tools/tool
 import weft/actor
@@ -175,6 +181,87 @@ pub fn door_over(
       trace: operation(name, ctx, 5, fn(door) { door.trace }),
     )
   }
+}
+
+/// The builder an owner holds for a workspace on another node: given one
+/// owner-bound call, six operations that borrow the doors from the cell under
+/// `name` and run them under that call's coordinates.
+///
+/// The owner has no checkout, so the context carries the call's strand,
+/// operation, step and source index and nothing machine-local: the workspace,
+/// policy and filesystem are empty, and the clearance runner refuses. That is
+/// all the doors of a session on an executor read, because the machine behind
+/// them (`machine/remote`) sends the coordinates and the executor rebuilds the
+/// rest from its own machine. The key an operation is admitted under is the
+/// `code_mode` call's, with the capability's slot and ordinal folded into the
+/// source index by `call_index`, as for a local program.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // owner_side.evolution = Some(capability.door_for_call(name, clock))
+/// ```
+///
+pub fn door_for_call(
+  name: address.Address(Message),
+  clock: Clock,
+) -> fn(OwnerCapCall) -> codemode_evolution.Door {
+  fn(call: OwnerCapCall) { door_over(name)(context_of(call, clock)) }
+}
+
+/// The context an owner-bound call runs its doors under: the call's
+/// coordinates, with everything that belongs to a machine left empty.
+fn context_of(call: OwnerCapCall, clock: Clock) -> tool.Ctx {
+  tool.Ctx(
+    workspace: "",
+    strand: call.strand,
+    op_id: call.op_id,
+    step_id: call.step_id,
+    source_index: call.source_index,
+    base_policy: policy.workspace_default(""),
+    directory_access: directory_access.none(),
+    grants: [],
+    demand: exec.BestEffort,
+    env: [],
+    clock:,
+    filesystem: tool.FileSystem(
+      read: fn(path) { Error(tool.FsNotFound(path:)) },
+      write: fn(path, _bytes) { Error(tool.FsNotFound(path:)) },
+      create_directory_all: fn(path) { Error(tool.FsNotFound(path:)) },
+      is_file: fn(_path) { Ok(False) },
+      read_link: fn(_path) { Ok(tool.LinkMissing) },
+      rename: fn(from, _to) { Error(tool.FsNotFound(path: from)) },
+    ),
+    blob_root: "",
+    clear_call: fn(_spec, _events) { Error(broker.BrokerUnavailable) },
+    raise_refusal: tool.no_raise(),
+    observe_output: tool.ignore_output(),
+  )
+}
+
+/// Doors that refuse every operation with `reason`, for a session whose
+/// executor cannot compile candidates.
+///
+/// The cell is registered under the same name a working plane would use, so a
+/// program that reaches the owner's evolution route reads why there is none
+/// instead of a sentence about a plane that is not open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // capability.start(name, capability.refusing(reason))
+/// ```
+///
+pub fn refusing(reason: String) -> evolution_tool.Door {
+  let refuse = fn(_ctx, _arguments) { tool.failure("Unavailable: " <> reason) }
+  evolution_tool.Door(
+    propose: refuse,
+    test_candidate: refuse,
+    inspect: refuse,
+    catalogue: refuse,
+    invoke: refuse,
+    trace: refuse,
+  )
 }
 
 /// Builds a code-mode evolution operation that borrows the cell door, adjusts the

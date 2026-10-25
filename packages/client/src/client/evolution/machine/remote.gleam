@@ -246,11 +246,34 @@ fn coordinates(
 
 /// A refusal the executor gave, in the vocabulary of the catalogue's callers.
 ///
-/// The executor's reason is kept whole. The machine seam has no way to say
-/// "the executor refused" separately from "the catalogue is unavailable", and a
-/// caller reads either as a refusal it can show.
+/// A stage for a generation the executor already passed is `Stale`, which the
+/// model is told to answer by discovering the current candidate and generation.
+/// Every other refusal has no equivalent in the store's vocabulary, so its
+/// reason is kept whole as an unavailable dependency.
 fn refused(refusal: protocol.Refusal) -> store.Refusal {
-  store.Unavailable(protocol.describe(refusal))
+  case refusal {
+    protocol.StaleGeneration(..) -> store.Stale
+
+    protocol.StaleToken
+    | protocol.StaleIncarnation(..)
+    | protocol.ScopeNotOpen
+    | protocol.ScopeClosing
+    | protocol.UncleanClose(..)
+    | protocol.CapacityExhausted(..)
+    | protocol.BudgetExhausted(..)
+    | protocol.VersionMismatch(..)
+    | protocol.WorkspaceMismatch(..)
+    | protocol.NoSuchScope
+    | protocol.NoPlane(..)
+    | protocol.PlaneBuilding
+    | protocol.WorktreeFailed(..)
+    | protocol.UnknownHandle
+    | protocol.AlreadyPublished
+    | protocol.NoEvolution(..)
+    | protocol.Invalid(..)
+    | protocol.ExecutorFault(..)
+    | protocol.Unreachable(..) -> store.Unavailable(protocol.describe(refusal))
+  }
 }
 
 // --- checks beside a generation -------------------------------------------------

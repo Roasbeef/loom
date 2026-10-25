@@ -7256,11 +7256,27 @@ local fixtures).
 - **Prompt.** `render_prompt` is unchanged: the user's guidance is read here, the
   workspace's arrives in `census.prompt`, and the platform, shell and policy
   facts come from `census.census`.
-- **Evolution.** `Hands.evolution` is `Some(Link)` when the census says
-  `Compiles(identity)` and `None` otherwise, with `evolution.unavailable` logged
-  once naming the executor (`Registered.logger`). `Half.evolution_link` carries it
-  to `assemble_in`, which opens the catalogue under the census identity and builds
-  the live owner over `machine/remote`. The link reads the session's standing
+- **Evolution.** `Hands.evolution` is `Reachable(Link)` when the census says
+  `Compiles(identity)` and `Withheld(reason)` otherwise, with `evolution.unavailable`
+  logged once naming the executor (`Registered.logger`). `Half.evolution` carries
+  it to `assemble_in`, which opens the catalogue under the census identity and
+  builds the live owner over `machine/remote`, or for `Withheld` registers the
+  usual cell over `evolution/capability.refusing(reason)` so a program reads the
+  executor's reason. A model reaches it through `cap/evolution`: on the executor
+  `executor_plane.offering_evolution` computes the compile identity from the
+  configuration with its evolution door withdrawn (`evolution/identity` hashes
+  the seam allowlists, so the identity must come from that host, and the
+  evolution actor's `local.Config` is built from it too), and only an `Ok`
+  identity calls `owner_codemode.offering_evolution`, which admits the import,
+  advertises the six names and their ceilings, and installs a stub builder that
+  never runs because `over_owner` sends the owner-bound names first. On the owner
+  `codemode.OwnerSide.evolution` is `capability.door_for_call(name, clock)`: the
+  doors are built for each call from its coordinates alone (an empty workspace,
+  policy and filesystem), keyed `(code_mode call key, slot, ordinal)` by
+  `capability.call_index`, with recovery the `code_mode` call's `replay: Never`.
+  The executor's `StaleGeneration` refusal is `store.Stale`; other refusals are
+  `Unavailable`. Tests: `owner_codemode_test` (door reached, ordinals keyed
+  apart, refusing reason, listing). The link reads the session's standing
   authority (`wiring.read_standing`) for each check, because the executor needs it
   and only this side holds it.
 - **Scope record.** `remote/scope` keeps `{incarnation, closed, executor}` in the

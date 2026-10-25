@@ -228,11 +228,22 @@ pub type Hands {
     execution_lookup: fn(ids.OpId, String) -> Result(protocol.Lookup, String),
     /// How the MCP servers the session expected the executor to run fared.
     mcp: List(remote_census.McpStatus),
-    /// The way to the executor's evolution plane, present when the executor's
-    /// census says it compiles candidates. The session's evolution machine is
-    /// built over it; a session on an executor that does not compile has none.
-    evolution: Option(remote_machine.Link),
+    /// What the executor's census says about evolution: the way to its
+    /// evolution plane when it compiles candidates, and the reason it will not
+    /// when it does not.
+    evolution: EvolutionAccess,
   )
+}
+
+/// Whether a session on this executor can use governed evolution.
+pub type EvolutionAccess {
+  /// The executor compiles candidates, and the session's evolution machine is
+  /// built over this link.
+  Reachable(link: remote_machine.Link)
+
+  /// The executor cannot compile candidates. `reason` names the executor and
+  /// says why, in words an operator or a model can read.
+  Withheld(reason: String)
 }
 
 // How long a close waits for the executor, which retires the scope's helpers
@@ -576,12 +587,12 @@ fn build(
   )
 }
 
-/// The evolution link the executor's census allows, and the notice when it does not.
+/// What the executor's census allows, and the notice when it allows nothing.
 ///
 /// A census that says `Compiles` gives the session a link over the attached
-/// surface. An `Uncompiled` census gives none and logs `evolution.unavailable`
-/// with the executor's name and its reason, which is where an operator learns why
-/// a session on that executor has no governed evolution.
+/// surface. An `Uncompiled` census gives the reason, worded with the executor's
+/// name, and logs `evolution.unavailable` with both, which is where an operator
+/// learns why a session on that executor has no governed evolution.
 ///
 /// `build` runs once for each open, so the notice is written once for each open.
 fn evolution_link(
@@ -589,11 +600,11 @@ fn evolution_link(
   candidate: Candidate,
   joined: surface.Surface(RemoteCensus),
   census: remote_census.EvolutionCensus,
-) -> Option(remote_machine.Link) {
+) -> EvolutionAccess {
   // Only an executor that says it compiles candidates can stage them.
   case census {
     remote_census.Compiles(identity:) ->
-      Some(remote_machine.Link(
+      Reachable(remote_machine.Link(
         session: registered.session,
         executor: candidate.executor.name,
         surface: joined,
@@ -608,7 +619,12 @@ fn evolution_link(
         field.text(key: "executor", value: candidate.executor.name),
         field.text(key: "reason", value: reason),
       ])
-      None
+      Withheld(
+        "the executor `"
+        <> candidate.executor.name
+        <> "` cannot compile evolution candidates: "
+        <> reason,
+      )
     }
   }
 }

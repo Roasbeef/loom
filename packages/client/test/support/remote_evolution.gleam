@@ -48,6 +48,8 @@ pub type Script {
   Script(
     /// The reply to every stage.
     staged: protocol.Staged,
+    /// A refusal to answer every stage with instead of `staged`.
+    stage_refusal: Option(protocol.Refusal),
     /// The reply to a retire of the handle, or `None` to leave it unanswered.
     retire: fn(Handle) -> Option(protocol.CloseOutcome),
     /// The reply to each step of an upgrade.
@@ -67,6 +69,7 @@ pub type Script {
 pub fn script(staged: protocol.Staged) -> Script {
   Script(
     staged:,
+    stage_refusal: None,
     retire: fn(_handle) { Some(protocol.AllRetired) },
     transition: fn(_step) { Ok(protocol.TransitionPublished) },
     hook: Ok(msgpack.NilValue),
@@ -146,7 +149,10 @@ fn serve(
 
     protocol.StageRequest(selection:, candidate:, reply:) -> {
       process.send(seen, Stage(selection, candidate))
-      process.send(reply, Ok(script.staged))
+      process.send(reply, case script.stage_refusal {
+        Some(refusal) -> Error(refusal)
+        None -> Ok(script.staged)
+      })
     }
 
     protocol.HookRequest(handle:, event:, within_ms:, reply:, ..) -> {

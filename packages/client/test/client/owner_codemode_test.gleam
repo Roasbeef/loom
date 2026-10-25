@@ -16,6 +16,8 @@ import broker/exec
 import broker/framing.{type CapOutcome}
 import broker/policy
 import client/codemode
+import client/evolution/capability
+import client/executor_plane
 import client/owner_codemode
 import client/owner_services.{type OwnerCapCall, type OwnerServices}
 import client/peer_mail
@@ -32,13 +34,17 @@ import core/ids
 import core/json
 import core/msgpack
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None}
+import gleam/string
 import support/remote_fixtures as fixtures
 import tools/agent
 import tools/codemode as codemode_tool
 import tools/directory_access
+import tools/evolution as evolution_tool
 import tools/tool
+import weft/registry as address
 
 @external(erlang, "client_test_ffi", "function_values")
 fn function_values(term: a) -> Int
@@ -124,6 +130,17 @@ fn routed(
   cap: String,
   args: msgpack.MsgPackValue,
 ) -> CapOutcome {
+  routed_at(config, seam, cap, args, 4)
+}
+
+// The same, as the `ordinal`th call of that name in one execution.
+fn routed_at(
+  config: codemode.Config,
+  seam: codemode_tool.Seam,
+  cap: String,
+  args: msgpack.MsgPackValue,
+  ordinal: Int,
+) -> CapOutcome {
   let request = request_on(seam)
   let pipeline =
     codemode.exec_config(
@@ -142,7 +159,7 @@ fn routed(
       demand: request.demand,
       env: [],
       cwd: request.workspace,
-      ordinal: 4,
+      ordinal:,
     )
   // The satellite's host asks the strand's tool list before it routes.
   let planned = case pipeline.satellite.precheck(cap_request) {
@@ -650,5 +667,198 @@ pub fn an_mcp_server_the_executor_runs_is_answered_beside_the_checkout_test() {
   let outcome = routed(config, codemode_tool.WorkspaceSeam, "mcp.files", call)
   let assert framing.CapErr(code: "unsupported_cap", ..) = outcome
   assert process.receive(sent, 50) == Error(Nil)
+  broker.stop(broker_actor)
+}
+
+// --- governed evolution ----------------------------------------------------------
+
+// A door that records the context each operation is built under, as
+// `slot source_index strand step`, and answers success.
+fn recording_door(seen: Subject(String)) -> evolution_tool.Door {
+  let record = fn(slot) {
+    fn(ctx: tool.Ctx, _arguments) {
+      process.send(
+        seen,
+        slot
+          <> " "
+          <> int.to_string(ctx.source_index)
+          <> " "
+          <> ctx.strand
+          <> " "
+          <> ctx.step_id,
+      )
+      tool.success("{\"ok\":true}")
+    }
+  }
+  evolution_tool.Door(
+    propose: record("propose"),
+    test_candidate: record("test"),
+    inspect: record("inspect"),
+    catalogue: record("catalogue"),
+    invoke: record("invoke"),
+    trace: record("trace"),
+  )
+}
+
+// The owner of a remote session with evolution doors registered under `name`,
+// reached through a link, and the executor's configuration over it.
+fn evolving_executor(
+  broker_actor: broker.Broker,
+  name: address.Address(capability.Message),
+) -> #(owner_port.Port, owner_link.Link, codemode.Config) {
+  let agency = agency_over(process.new_subject())
+  let side =
+    codemode.OwnerSide(
+      ..codemode.owner_serving(
+        codemode.BothSeams,
+        over: agency,
+        schedules: None,
+      ),
+      evolution: option.Some(capability.door_for_call(name, clock.fixed(at: 0))),
+    )
+  let services =
+    owner_services.OwnerServices(
+      ..fixtures.quiet_services(),
+      capability: owner_codemode.answering(
+        side,
+        peers: mailbox(process.new_subject()),
+      ),
+      holds: agency.holds,
+    )
+  let #(port, link, linked_services) = linked(services)
+  #(
+    port,
+    link,
+    executor_over(broker_actor, linked_services)
+      |> owner_codemode.offering_evolution,
+  )
+}
+
+pub fn an_executor_program_reaches_the_owners_evolution_doors_test() {
+  let broker_actor = idle_broker()
+  let seen = process.new_subject()
+  let assert Ok(registry) = address.start()
+  let name = address.new_address(registry)
+  let assert Ok(cell) = capability.start(name, recording_door(seen))
+  let #(port, link, config) = evolving_executor(broker_actor, name)
+
+  // Two tests of one candidate and an invocation, from one program.
+  let args = msgpack.MapValue([pair("candidate_id", string("c1"))])
+  let first =
+    routed_at(config, codemode_tool.WorkspaceSeam, "evolution.test", args, 0)
+  let second =
+    routed_at(config, codemode_tool.WorkspaceSeam, "evolution.test", args, 1)
+  let invoked =
+    routed_at(config, codemode_tool.WorkspaceSeam, "evolution.invoke", args, 0)
+
+  // Each is the owner's door answering, not a refusal from either end.
+  let assert framing.CapOk(_) = first
+  let assert framing.CapOk(_) = second
+  let assert framing.CapOk(_) = invoked
+
+  // The door ran under the dispatching call's strand and step, with the slot
+  // and ordinal folded into the source index, so the two tests never share a
+  // key and a test never shares one with an invocation.
+  let ran = drain(seen, []) |> list.reverse
+  assert ran
+    == [
+      "test "
+        <> int.to_string(capability.call_index(2, 1, 0))
+        <> " main turn-1:tools",
+      "test "
+        <> int.to_string(capability.call_index(2, 1, 1))
+        <> " main turn-1:tools",
+      "invoke "
+        <> int.to_string(capability.call_index(2, 4, 0))
+        <> " main turn-1:tools",
+    ]
+  assert list.unique([
+      capability.call_index(2, 1, 0),
+      capability.call_index(2, 1, 1),
+      capability.call_index(2, 4, 0),
+    ])
+    |> list.length
+    == 3
+  capability.stop(name)
+  let _ = cell
+  owner_link.stop(link)
+  owner_port.stop(port)
+  broker.stop(broker_actor)
+}
+
+pub fn a_session_whose_executor_cannot_compile_denies_with_the_reason_test() {
+  let broker_actor = idle_broker()
+  let assert Ok(registry) = address.start()
+  let name = address.new_address(registry)
+  let reason =
+    "the executor `box` cannot compile evolution candidates: no toolchain"
+  let assert Ok(_cell) = capability.start(name, capability.refusing(reason))
+  let #(port, link, config) = evolving_executor(broker_actor, name)
+
+  let assert framing.CapErr(code: _, message:) =
+    routed(
+      config,
+      codemode_tool.WorkspaceSeam,
+      "evolution.catalogue",
+      msgpack.MapValue([]),
+    )
+  assert string.contains(message, reason)
+  capability.stop(name)
+  owner_link.stop(link)
+  owner_port.stop(port)
+  broker.stop(broker_actor)
+}
+
+pub fn an_owner_with_no_evolution_arm_denies_the_names_test() {
+  let broker_actor = idle_broker()
+  let agency = agency_over(process.new_subject())
+  let #(port, link, services) =
+    linked(owner_over(
+      codemode.BothSeams,
+      agency,
+      mailbox(process.new_subject()),
+    ))
+  let config =
+    executor_over(broker_actor, services) |> owner_codemode.offering_evolution
+
+  let assert framing.CapErr(code: _, message:) =
+    routed(
+      config,
+      codemode_tool.WorkspaceSeam,
+      "evolution.catalogue",
+      msgpack.MapValue([]),
+    )
+  assert string.contains(message, "evolution.catalogue")
+  owner_link.stop(link)
+  owner_port.stop(port)
+  broker.stop(broker_actor)
+}
+
+pub fn the_executor_lists_cap_evolution_only_when_it_offers_it_test() {
+  let broker_actor = idle_broker()
+  let owner = permissive()
+  let plain = executor_over(broker_actor, owner) |> codemode.seam
+  let offered =
+    executor_over(broker_actor, owner)
+    |> owner_codemode.offering_evolution
+    |> codemode.seam
+
+  assert !list.contains(plain.seams.default.serviced_caps, "evolution.test")
+  assert list.contains(offered.seams.default.serviced_caps, "evolution.test")
+  assert list.contains(offered.seams.default.serviced_caps, "evolution.invoke")
+  broker.stop(broker_actor)
+}
+
+// A machine whose compile identity cannot be observed (this fixture's compiler
+// path does not exist) offers nothing and reports the reason, so its census
+// says `Uncompiled` and its description never lists the module.
+pub fn an_executor_that_cannot_observe_an_identity_offers_nothing_test() {
+  let broker_actor = idle_broker()
+  let config = executor_over(broker_actor, permissive())
+
+  let configured = executor_plane.offering_evolution(config)
+
+  let assert Error(_) = configured.identity
+  assert configured.host.evolution == option.None
   broker.stop(broker_actor)
 }

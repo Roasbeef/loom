@@ -3397,7 +3397,7 @@ type Half {
     /// The way to the executor's evolution plane, when the executor's census
     /// says it compiles candidates; `None` for a local workspace and for an
     /// executor that cannot compile.
-    evolution_link: Option(evolution_machine_remote.Link),
+    evolution: Option(remote_workspace.EvolutionAccess),
   )
 }
 
@@ -3432,7 +3432,7 @@ fn here(
     call_clock: clock,
     recover: None,
     executions: None,
-    evolution_link: None,
+    evolution: None,
   )
 }
 
@@ -3476,7 +3476,7 @@ fn there(
       stop: hands.stop_execution,
       lookup: hands.execution_lookup,
     )),
-    evolution_link: hands.evolution,
+    evolution: Some(hands.evolution),
   )
 }
 
@@ -4038,6 +4038,14 @@ fn assemble_in(
                 schedules: schedule_door,
               ),
               mcp: mcp_layer,
+              // The same six operations a local program has, answered over
+              // the doors that `open_evolution` registers under the cell's
+              // name. Whether the plane behind them works is decided there.
+              evolution: case evolution_offer(settings, evolution_name) {
+                Some(_) ->
+                  Some(evolution_capability.door_for_call(evolution_name, clock))
+                None -> None
+              },
             )
           }
           owner_codemode.answering_executions(
@@ -4327,7 +4335,7 @@ fn assemble_in(
   // else has no evolution plane, as before.
   use evolution_wiring <- result.try(
     // Decide how to handle settings.evolution_role, code_mode_host {.
-    case settings.evolution_role, code_mode_host, half.evolution_link {
+    case settings.evolution_role, code_mode_host, half.evolution {
       Trial(_), _, _ -> Ok(None)
       Source, None, None -> Ok(None)
       Source, Some(host), _ ->
@@ -4351,7 +4359,9 @@ fn assemble_in(
           evolution_name,
         )
         |> result.map(Some)
-      Source, None, Some(link) ->
+      Source, None, Some(remote_workspace.Withheld(reason:)) ->
+        withhold_evolution(owner, evolution_name, reason)
+      Source, None, Some(remote_workspace.Reachable(link:)) ->
         open_evolution(
           settings,
           evolution_machine_remote.new(link),
@@ -7097,6 +7107,37 @@ fn local_evolution_machine(
       },
     ),
   )
+}
+
+// A session on an executor that cannot compile candidates has no plane, but its
+// owner still answers the six `evolution.*` names a program may send, and a
+// program should read why there is no plane rather than a sentence about a
+// plane that is not open. The cell is registered under the usual name over doors
+// that refuse every operation with `reason`, and custody stops it. Nothing else
+// of the evolution wiring exists for such a session.
+
+/// Establishes the refusing evolution cell for a session whose executor cannot compile.
+fn withhold_evolution(
+  owner: Option(custody.Owner),
+  name: address.Address(evolution_capability.Message),
+  reason: String,
+) -> Result(Option(EvolutionWiring), String) {
+  use cell <- result.try(evolution_capability.start(
+    name,
+    evolution_capability.refusing(reason),
+  ))
+  use Nil <- result.map(
+    retain(
+      owner,
+      custody.Evolution,
+      fn() {
+        evolution_capability.stop(name)
+        Ok(Nil)
+      },
+      fn() { evolution_capability.detach(cell) },
+    ),
+  )
+  None
 }
 
 // Opens the plane for a session that has an evolution machine. The catalogue
