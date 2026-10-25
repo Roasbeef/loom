@@ -50,6 +50,7 @@ type Rig {
     executor: rig.Executor,
     hands: workspace.Hands,
     machine: machine.Machine,
+    link: remote.Link,
     seen: Subject(plane.Seen),
     catalogue: store.Store,
     root: String,
@@ -152,6 +153,7 @@ fn start(
     executor:,
     hands:,
     machine: remote.new(remote.Link(..link, patience_ms:)),
+    link: remote.Link(..link, patience_ms:),
     seen:,
     catalogue:,
     root:,
@@ -291,6 +293,23 @@ pub fn the_bus_sends_hooks_with_the_deadline_unchanged_test() {
 
   let assert Ok(Nil) = retirement.perform(generation.retire)
   finish(r)
+}
+
+/// A hook that cannot reach the executor skips that one event and keeps the
+/// handler. `Gone` would drop it for the rest of the session, and a short link
+/// cut would end the generation's hooks for good.
+pub fn an_unreachable_executor_skips_a_hook_and_keeps_the_handler_test() {
+  let r = start(staged_script(), extension_candidate(), 300)
+  let assert Ok(generation) = r.machine.stage(r.catalogue, r.selection)
+  let _staged = drain(r.seen)
+  rig.stop(r.executor)
+
+  let answered =
+    remote.hook(r.link, 0, plane.handle(1), "tool_call", msgpack.NilValue, 1)
+
+  assert answered == Error(hooks.Refused("the executor could not be reached"))
+  let assert Ok(Nil) = retirement.perform(generation.retire)
+  r.hands.plane.close()
 }
 
 /// A selection the catalogue does not hold approved is refused before the

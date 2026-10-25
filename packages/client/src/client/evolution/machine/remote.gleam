@@ -515,7 +515,7 @@ fn start_bus(
       name: slot.name,
       events: slot.events,
       invoke: fn(_name, event, payload, within) {
-        hook(link, handle, event, payload, within)
+        hook(link, hook_margin_ms, handle, event, payload, within)
       },
     )
 
@@ -530,17 +530,21 @@ fn start_bus(
 /// Delivers one hook event to the generation named by `handle`.
 ///
 /// The hook's own deadline is sent unchanged, since it is a remaining duration
-/// and not a time, and the wait outlasts it by a margin. A host that cannot be
-/// reached has no extension left to answer, which is what `Gone` says.
-fn hook(
+/// and not a time, and the wait outlasts it by `margin_ms`. A host that cannot be
+/// reached skips this one event with `Refused`, because the extension may be
+/// running and the link may come back; `Gone` drops the handler for the rest of
+/// the session, so it is kept for the host's own terminal refusals.
+@internal
+pub fn hook(
   link: Link,
+  margin_ms: Int,
   handle: Handle,
   event: String,
   payload: MsgPackValue,
   within: Int,
 ) -> Result(MsgPackValue, hooks.HookFailure) {
   let answered =
-    send_within(link, within + hook_margin_ms, fn(incarnation, token, reply) {
+    send_within(link, within + margin_ms, fn(incarnation, token, reply) {
       protocol.EvolutionHook(
         session: link.session,
         incarnation:,
@@ -556,7 +560,7 @@ fn hook(
   // Not hearing from the executor in time is not a crash of the extension.
   case answered {
     Ok(answer) -> answer
-    Error(Nil) -> Error(hooks.Gone)
+    Error(Nil) -> Error(hooks.Refused("the executor could not be reached"))
   }
 }
 
