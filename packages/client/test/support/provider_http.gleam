@@ -336,7 +336,10 @@ pub fn with_watched_server(
 }
 
 /// Runs a finite lifecycle script that includes several real jailed builds.
-/// The longer budget is fixed and only this explicit entry permits 32 steps.
+/// The longer budget is fixed and only this explicit entry permits 128 steps.
+/// The prompt acceptance needs about a hundred: a comparison powered enough
+/// for the paired verdict to call an improvement is seven tasks, two arms and
+/// three provider turns a trial, run once per authored version.
 ///
 /// ## Examples
 ///
@@ -346,8 +349,8 @@ pub fn with_extended_script(
   script: List(Exchange),
   run: fn(String) -> a,
 ) -> #(a, Result(List(ObservedRequest), String)) {
-  assert list.length(script) <= 32
-    as "the lifecycle script has at most 32 steps"
+  assert list.length(script) <= 128
+    as "the lifecycle script has at most 128 steps"
   with_server_for(script, OnlySuccessful, 600_000, run)
 }
 
