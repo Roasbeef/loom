@@ -114,8 +114,12 @@ pub fn git_workspace_has_no_history_test_() -> scripted.EunitTest {
         30_000,
       )
     let repo = string.trim(top)
+
+    // HEAD and not an older commit: CI checks out one commit with no
+    // history, and the property is that none travels with the files, which
+    // HEAD shows as well as any ancestor would.
     let assert Ok(commit) =
-      git.ask(secrets.host_runner(), repo, ["rev-parse", "HEAD~1"], 30_000)
+      git.ask(secrets.host_runner(), repo, ["rev-parse", "HEAD"], 30_000)
     let commit = string.trim(commit)
     let assert Ok(tree) =
       git.ask(
