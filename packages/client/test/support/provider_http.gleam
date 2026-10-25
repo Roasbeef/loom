@@ -351,7 +351,10 @@ pub fn with_extended_script(
 ) -> #(a, Result(List(ObservedRequest), String)) {
   assert list.length(script) <= 128
     as "the lifecycle script has at most 128 steps"
-  with_server_for(script, OnlySuccessful, 600_000, run)
+
+  // `watched` directly, as the upgrade script does: `with_server_for` holds
+  // every other caller to 64 steps, and this entry's bound is its own.
+  watched(script, OnlySuccessful, 600_000, fn(url, _watch) { run(url) })
 }
 
 /// Runs the bounded live-upgrade matrix with separately compiled refusals.
