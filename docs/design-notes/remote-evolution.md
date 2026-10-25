@@ -143,8 +143,10 @@ directory, `store.open` opens `evolution.db` under it, and
 `session_move.Manifest` carries no evolution rows. A session moved to another
 orchestrator keeps its executor but finds an empty catalogue, so its selection
 is gone while the executor still holds the generation until the old scope
-closes. Slice 3 must either refuse `sessions.move` for a session that has an
-evolution selection, or carry that scope's catalogue rows in the manifest.
+closes. Slice 3 refuses `sessions.move` for a session that serves a
+`Session`-scoped selection whose approval still stands (`daemon/server.selections_stay_behind`,
+read outside the registry turn, in both places `serve.evolution_root` can put the
+catalogue). Carrying the rows in the manifest was not built.
 
 ### Protocol (protocol-change/098, remote protocol version 5)
 
@@ -194,14 +196,13 @@ is not in this plan.
 2. **The seam, locally.** Introduce `evolution/machine`, move `native` behind
    `machine/local`, fix the empty-pin bug, no behaviour change otherwise. Gate:
    the existing evolution suites unchanged. Done; see "The seam as built".
-3. **Executor machine.** Done, except the move refusal, which is on its own
-   branch. `executor_plane` builds a `local.Config` and `executor_evolution`
+3. **Executor machine.** Done. `executor_plane` builds a `local.Config` and `executor_evolution`
    serves the new messages; `machine.remote` on the orchestrator; census
    identity; custody. A shipped fixture proves an extension, a program and a
    restart (`make e2e-evolution-remote`); a pool of one and a link cut during
    staging are not covered. Programs, extensions and author tests work on executor sessions. Also
-   in this slice: refuse `sessions.move` for a session with an evolution
-   selection, or carry its catalogue rows (see "The executor side"); admit
+   in this slice: `sessions.move` is refused for a session that serves a
+   selection (see "The executor side"); admit
    `EvolutionEvaluate` by call key and recover both evolution doors from the
    ledger in `Hands.recover`; resolve a snapshot's directory on the executor.
    The first step moved the evidence write above the seam (done; see "The seam

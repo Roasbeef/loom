@@ -7,9 +7,9 @@ scope key · **Raised by**: the owner, after PR #824 landed evolution for a loca
 workspace only · **Implemented**: slice 3 at protocol version 5: the messages, the census field
 and the host arms (PR #1092), the executor plane (`executor_evolution`, PR
 #1113), the orchestrator's remote machine (`evolution/machine/remote`) with the
-capability route that reaches it. The `sessions.move` refusal is step 6 of the
-plan and is not in this line. Trials (slice 4) and core upgrades (slice 5) are not
-implemented. Plan in `docs/design-notes/remote-evolution.md`
+capability route that reaches it, and the refusal of `sessions.move` for a
+session that serves a selection. Trials (slice 4) and core upgrades (slice 5) are
+not implemented. Plan in `docs/design-notes/remote-evolution.md`
 
 ## Problem
 
