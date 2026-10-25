@@ -403,11 +403,17 @@ jobs:
           # 1.75 min alone; kept isolated because it is the shared-suite
           # package (storage conformance + wiring + e2e) and a change
           # there is worth a log of its own rather than folded into a
-          # mixed bucket. `eval`, the evaluation instrument, rides here
-          # because it is the other package that depends on `client` and
-          # never ships, so it pays the same client compile.
+          # mixed bucket.
           - bucket: conformance
-            packages: conformance eval
+            packages: conformance
+          # `eval`, the evaluation instrument, needs what the conformance
+          # bucket deliberately lacks: a jail, because its hidden verifier
+          # refuses to grade outside one, and the repository's history,
+          # because its mined tasks name Loom's own commits. A bucket of its
+          # own gets both without changing what every conformance fixture
+          # exercises.
+          - bucket: eval
+            packages: eval
           # Everything else: seconds per package in the measured run, so
           # bucketing them together costs nothing. This also carries the
           # two packages the "fast" name in the work order didn't spell
@@ -426,6 +432,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          # The eval bucket's mined tasks are Loom commits, materialised with
+          # `git archive`; one commit of history would skip every one of them.
+          fetch-depth: ${{ matrix.bucket == 'eval' && '0' || '1' }}
 
       - uses: ./.github/actions/setup-toolchain
         with:
@@ -480,7 +489,7 @@ jobs:
       # The developer fixture checks both host and restricted read views.
       # Restricted reads need bwrap's mount namespace, as in the jail job.
       - name: Install developer fixture tools and jail
-        if: startsWith(matrix.bucket, 'client')
+        if: startsWith(matrix.bucket, 'client') || matrix.bucket == 'eval'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ripgrep bubblewrap
@@ -492,8 +501,10 @@ jobs:
       # the client bucket, and rustup's `rust-analyzer` link exists on the
       # runner without the component, so without this the fixture skips
       # and the gate's census refuses it. Same script as the jail lane's.
+      # The eval bucket's verifier demands platform enforcement, pids
+      # limit included, so it takes the same delegation.
       - name: Delegate enforcement for the client lifecycle tests
-        if: startsWith(matrix.bucket, 'client')
+        if: startsWith(matrix.bucket, 'client') || matrix.bucket == 'eval'
         run: .github/scripts/delegate_cgroup.sh
 
       - name: Install rust-analyzer for the language-server fixture
@@ -816,6 +827,7 @@ jobs:
             check-client-2.log \
             check-runtime-storage-session-events.log \
             check-conformance.log \
+            check-eval.log \
             check-fast.log
   # --------------------------------------------------------- the second OS
   #
