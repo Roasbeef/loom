@@ -878,16 +878,32 @@ fn observation_shape(observation: json.JsonValue) {
 
     // One assertion per member, so a failure prints the value it found
     // rather than only that a conjunction was false.
-    assert field(report, "outcome") == json.String("succeeded")
-      as "both arms succeed"
     assert field(report, "sample") == json.Int(1) as "the one sample is 1"
-    assert field(field(report, "grade"), "reward") == json.Float(1.0)
-      as "the exact-byte verifier rewards both arms fully"
-    assert field(field(report, "grade"), "side_info") == json.String("")
-      as "a passing grade carries no side information"
     assert field(field(field(report, "grade"), "verifier"), "kind")
       == json.String("expected-files")
       as "the exact-byte verifier graded both arms"
+
+    // The scripted base writes `wrong baseline`, so it fails and its grade
+    // names the differing file; the candidate writes the expected bytes.
+    case field(report, "profile") == json.Null {
+      True -> {
+        assert field(report, "outcome") == json.String("failed")
+          as "the base arm fails the task"
+        assert field(field(report, "grade"), "reward") == json.Float(0.0)
+          as "the base arm's grade rewards nothing"
+        assert field(field(report, "grade"), "side_info")
+          == json.String("expected file differs: result.txt")
+          as "the base arm's grade names the differing file"
+      }
+      False -> {
+        assert field(report, "outcome") == json.String("succeeded")
+          as "the candidate passes the task"
+        assert field(field(report, "grade"), "reward") == json.Float(1.0)
+          as "the candidate is rewarded fully"
+        assert field(field(report, "grade"), "side_info") == json.String("")
+          as "a passing grade carries no side information"
+      }
+    }
   })
 }
 
