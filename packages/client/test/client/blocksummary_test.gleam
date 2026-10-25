@@ -638,7 +638,12 @@ pub fn ledger_failure_prevents_block_summary_publication_test() {
       total_tokens: 12,
     )
   let answer =
-    auxiliary.Answer("A usable summary.", usage, accounting.from_usage(usage))
+    auxiliary.Answer(
+      "A usable summary.",
+      usage,
+      accounting.from_usage(usage),
+      message.Stop,
+    )
   let rig =
     a_rig_with_store(Accounted(Ok(answer)), fn(store) {
       storage.Storage(..store, commit: fn(_handle, _tx) {
@@ -728,6 +733,7 @@ fn a_rig_with_store(
             accounting: accounting.from_usage(accounting.unknown_usage(
               usage_evidence.Other,
             )),
+            stop_reason: message.Stop,
           ))
         }
       }
@@ -766,6 +772,7 @@ fn option_answer(
         accounting: accounting.from_usage(accounting.unknown_usage(
           usage_evidence.Other,
         )),
+        stop_reason: message.Stop,
       ))
     Error(reason) -> Error(auxiliary.Failure(reason, accounting.empty()))
   }

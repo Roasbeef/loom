@@ -62,6 +62,10 @@ pub type Answer {
     usage: Usage,
     /// All attempts consumed by the logical request.
     accounting: accounting.RequestAccounting,
+    /// Why the final response ended, as the provider reported it, so a
+    /// caller can tell an answer cut at an output limit (`Length`) from
+    /// one the model finished (`Stop`) before trusting its text.
+    stop_reason: message.StopReason,
   )
 }
 
@@ -270,6 +274,7 @@ fn bound_gateway_summarizer(
           text: settled_text(settled),
           usage: final_usage(settled),
           accounting: report,
+          stop_reason: final_stop_reason(settled),
         ))
       }
     }
@@ -302,6 +307,18 @@ fn final_usage(settled: AgentMessage) -> Usage {
     message.UserMessage(..)
     | message.ToolResultMessage(..)
     | message.CustomMessage(..) -> accounting.total(unknown_accounting())
+  }
+}
+
+/// How the settled response ended. The settled wrapper guarantees an
+/// assistant message, so the other arms are unreachable and read as a
+/// failed request rather than as a finished answer.
+fn final_stop_reason(settled: AgentMessage) -> message.StopReason {
+  case settled {
+    message.AssistantMessage(stop_reason:, ..) -> stop_reason
+    message.UserMessage(..)
+    | message.ToolResultMessage(..)
+    | message.CustomMessage(..) -> message.Errored
   }
 }
 
