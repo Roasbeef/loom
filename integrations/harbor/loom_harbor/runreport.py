@@ -204,6 +204,15 @@ def parse_run_output(stdout: str) -> RunReport:
     )
 
 
+# Probes whose skip does not mean a layer is missing. The "unvetted beam" probe
+# runs a hostile BEAM program and needs an Erlang toolchain on the host's PATH;
+# the release bundles its own runtime and docs/docker.md's full-isolation row
+# (10 of 11) skips exactly this probe on a correct setup. Nothing else is
+# tolerated: a skipped fork-bomb probe means no delegated cgroup, and under
+# PlatformEnforcement the daemon requires that layer.
+TOLERATED_SKIPS = ("unvetted beam",)
+
+
 @dataclass(frozen=True)
 class SelfTest:
     """The verdict of `loom-exec --self-test`, labelled the way `loom run` does."""
@@ -213,12 +222,31 @@ class SelfTest:
     skipped: int
     failed: int
     exit_code: int
+    skipped_probes: tuple[str, ...] = ()
+
+    @property
+    def unexpected_skips(self) -> tuple[str, ...]:
+        """Skipped probes that are not in `TOLERATED_SKIPS`."""
+        return tuple(
+            name for name in self.skipped_probes if not name.startswith(TOLERATED_SKIPS)
+        )
+
+    @property
+    def platform_ready(self) -> bool:
+        """Whether `jail=platform` may proceed: a clean run, skipping nothing that matters."""
+        return (
+            self.posture in ("enforced", "degraded")
+            and self.failed == 0
+            and not self.unexpected_skips
+            and len(self.skipped_probes) == self.skipped
+        )
 
 
 # The helper prints `enforced (N):` and `skipped (N) ...` summary lines, and one
 # `  FAILED    <probe>` line per probe that tried to enforce and could not.
 _COUNT = re.compile(r"^\s*(enforced|skipped)\s*\((\d+)\)", re.MULTILINE)
 _FAILED = re.compile(r"^\s*FAILED\s", re.MULTILINE)
+_SKIPPED_LINE = re.compile(r"^\s+-\s+(.+?)(?::\s|\s*$)", re.MULTILINE)
 
 
 def parse_self_test(exit_code: int, output: str) -> SelfTest:
@@ -229,16 +257,21 @@ def parse_self_test(exit_code: int, output: str) -> SelfTest:
     `degraded`. The counts come from the helper's `enforced (N)` and
     `skipped (N)` summary lines, zero when absent; `failed` counts the
     `FAILED` probe lines, which is what an unprivileged container prints when
-    bubblewrap cannot create a user namespace.
+    bubblewrap cannot create a user namespace. The skipped probes' names are
+    the `  - name: reason` lines under the skipped summary.
     """
     counts = {name: int(number) for name, number in _COUNT.findall(output)}
     enforced = counts.get("enforced", 0)
     skipped = counts.get("skipped", 0)
     failed = len(_FAILED.findall(output))
+    after_skipped = output.split("skipped (", 1)[1] if "skipped (" in output else ""
+    section = after_skipped.split("\n", 1)[1] if "\n" in after_skipped else ""
+    section = section.split("RESULT:", 1)[0]
+    names = tuple(match.strip() for match in _SKIPPED_LINE.findall(section))
     if exit_code != 0 or "RESULT: OK" not in output:
         posture = "unverified"
     elif skipped:
         posture = "degraded"
     else:
         posture = "enforced"
-    return SelfTest(posture, enforced, skipped, failed, exit_code)
+    return SelfTest(posture, enforced, skipped, failed, exit_code, names)

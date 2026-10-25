@@ -125,3 +125,19 @@ def test_lines_printed_by_loom_runs_own_renderer_parse():
     assert reports[1].reason == "the run failed: provider_error"
     assert reports[2].usage is None and reports[2].model is None
     assert reports[0].usage.prompt_tokens == 115 and reports[0].usage.cost_reported
+
+
+def test_skipped_probe_names_are_read_from_the_summary():
+    result = parse_self_test(0, ENFORCED.replace("skipped (0)", "skipped (2)").replace(
+        "\n\nRESULT", "\n  - unvetted beam denied host write: no erl\n  - fork bomb capped by pids limit: no cgroup\n\nRESULT"))
+    assert result.skipped_probes == ("unvetted beam denied host write", "fork bomb capped by pids limit")
+    assert result.unexpected_skips == ("fork bomb capped by pids limit",)
+    assert not result.platform_ready
+
+
+def test_only_the_unvetted_beam_skip_is_tolerated_for_platform_mode():
+    ok = parse_self_test(0, ENFORCED.replace("skipped (0)", "skipped (1)").replace(
+        "\n\nRESULT", "\n  - unvetted beam denied host write: no erl\n\nRESULT"))
+    assert ok.posture == "degraded" and ok.platform_ready
+    assert parse_self_test(0, ENFORCED).platform_ready
+    assert not parse_self_test(1, CONTAINER).platform_ready
