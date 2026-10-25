@@ -85,19 +85,61 @@ pub fn slots_rotate_round_robin_from_step_one_test() {
   assert select.slot_for(1, []) == Error(Nil)
 }
 
-pub fn the_screen_passes_a_child_no_worse_than_its_parent_test() {
+pub fn the_screen_demands_strict_improvement_or_a_fixed_failure_test() {
   let parent = [#("t1", 1.0), #("t2", 0.0)]
 
+  // Above the parent passes; below fails.
   assert select.screen(parent, [#("t1", 1.0), #("t2", 1.0)], ["t1", "t2"])
-    == select.Passed
-  assert select.screen(parent, [#("t1", 0.0), #("t2", 1.0)], ["t1", "t2"])
     == select.Passed
   assert select.screen(parent, [#("t1", 0.0), #("t2", 0.0)], ["t1", "t2"])
     == select.Failed
 
+  // A tie that fixes a task the parent failed passes: the child solved t2,
+  // which the parent scored zero on, and gave t1 back.
+  assert select.screen(parent, [#("t1", 0.0), #("t2", 1.0)], ["t1", "t2"])
+    == select.Passed
+
+  // A tie without such a fix fails: the identical vector, nought of three
+  // against nought of three, and a shuffle among partly solved tasks.
+  assert select.screen(parent, parent, ["t1", "t2"]) == select.Failed
+  let nought = [#("a", 0.0), #("b", 0.0), #("c", 0.0)]
+  assert select.screen(nought, nought, ["a", "b", "c"]) == select.Failed
+  let partly = [#("a", 0.5), #("b", 1.0)]
+  assert select.screen(partly, [#("a", 1.0), #("b", 0.5)], ["a", "b"])
+    == select.Failed
+
   // A task the child never scored is a zero, not a skipped task.
-  assert select.screen(parent, [#("t1", 1.0)], ["t1", "t2"]) == select.Passed
+  assert select.screen(parent, [#("t1", 1.0)], ["t1", "t2"]) == select.Failed
   assert select.screen(parent, [#("t2", 0.0)], ["t1", "t2"]) == select.Failed
+  assert select.screen([#("t1", 0.5)], [#("t1", 1.0)], ["t1", "t2"])
+    == select.Passed
+}
+
+pub fn a_perfect_minibatch_is_every_task_at_one_test() {
+  assert select.perfect([#("t1", 1.0), #("t2", 1.0)], ["t1", "t2"])
+  assert !select.perfect([#("t1", 1.0), #("t2", 0.999)], ["t1", "t2"])
+
+  // A task without a score is a zero, and no tasks is not perfect.
+  assert !select.perfect([#("t1", 1.0)], ["t1", "t2"])
+  assert !select.perfect([], [])
+}
+
+pub fn the_winner_is_the_best_passer_and_the_earliest_on_a_tie_test() {
+  let tasks = ["a", "b"]
+  let parent = [#("a", 0.0), #("b", 0.0)]
+  let low = [#("a", 0.5), #("b", 0.0)]
+  let high = [#("a", 1.0), #("b", 1.0)]
+
+  // The highest mean among the passers wins, wherever it was minted.
+  assert select.winner(parent, [#("c1", low), #("c2", high)], tasks) == Ok("c2")
+  assert select.winner(parent, [#("c1", high), #("c2", low)], tasks) == Ok("c1")
+
+  // A tie goes to the earliest minted; a failed screen is never the winner.
+  assert select.winner(parent, [#("c1", low), #("c2", low)], tasks) == Ok("c1")
+  assert select.winner(parent, [#("c1", parent), #("c2", low)], tasks)
+    == Ok("c2")
+  assert select.winner(parent, [#("c1", parent)], tasks) == Error(Nil)
+  assert select.winner(parent, [], tasks) == Error(Nil)
 }
 
 pub fn dispositions_follow_the_acceptance_and_the_incumbent_test() {

@@ -13,9 +13,15 @@
 ////   same parent.
 //// - **The minibatch is a spend filter, not a decision rule.** A child
 ////   goes on to the validate split only when its mean score over the
-////   minibatch tasks is at least the parent's. With three or four tasks no
+////   minibatch tasks is strictly above the parent's, or ties it while
+////   solving a task the parent scored zero on. With three or four tasks no
 ////   test can reach its level, so nothing is claimed at that size; the
-////   screen only decides whether to pay for the stage that can.
+////   screen only decides whether to pay for the stage that can, and a
+////   child that merely matches its parent (nought of three against nought
+////   of three is the common case) has shown nothing worth paying for. When
+////   a step minted several children, `winner` picks the one passer that
+////   validate is paid for: the highest minibatch mean, the earliest minted
+////   on a tie.
 //// - **The front is reported incumbent first**, then the members that
 ////   improved over their parent, then the Pareto members by minting step,
 ////   so a Pareto-only child never stands above its parent whatever its
@@ -52,10 +58,11 @@ pub type Leader {
 
 /// Whether a child passed the spend filter.
 pub type Screen {
-  /// Its minibatch mean is at least the parent's: pay for validate.
+  /// Its minibatch mean is above the parent's, or ties it while fixing a
+  /// task the parent failed: pay for validate.
   Passed
 
-  /// Below the parent: the step ends here.
+  /// Not above the parent, and no failed task fixed: the step ends here.
   Failed
 }
 
@@ -329,15 +336,27 @@ pub fn slot_for(step: Int, slots: List(String)) -> Result(String, Nil) {
 }
 
 /// The spend filter: the child goes on to validate when the mean over
-/// `tasks` of its per-task score is at least the parent's. Both vectors
-/// are read by task, so the comparison is over the same tasks whatever
-/// order the scores arrived in.
+/// `tasks` of its per-task score is strictly above the parent's, or equal
+/// to it while the child scores above zero on a task the parent scored
+/// zero on. Both vectors are read by task, so the comparison is over the
+/// same tasks whatever order the scores arrived in.
+///
+/// The tie rule is the one exception to strictness, and it is narrow by
+/// design. A parent's zero on a task is a task every trial failed; a child
+/// that scores on it while giving the same amount back elsewhere is a
+/// different point on the minibatch, and the Pareto front values exactly
+/// that, leadership on a task, which only validate can weigh. A tie
+/// without such a fix, the identical vector or a shuffle among partly
+/// solved tasks, has shown nothing the parent had not, and nought out of
+/// three against nought out of three must not buy a validate run.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert select.screen([#("t", 0.5)], [#("t", 0.5)], ["t"]) == select.Passed
-/// assert select.screen([#("t", 0.5)], [#("t", 0.0)], ["t"]) == select.Failed
+/// assert select.screen([#("t", 0.5)], [#("t", 1.0)], ["t"]) == select.Passed
+/// assert select.screen([#("t", 0.5)], [#("t", 0.5)], ["t"]) == select.Failed
+/// assert select.screen([#("a", 0.0), #("b", 1.0)], [#("a", 1.0), #("b", 0.0)], ["a", "b"])
+///   == select.Passed
 /// ```
 ///
 pub fn screen(
@@ -347,13 +366,67 @@ pub fn screen(
 ) -> Screen {
   let parent_mean = list.map(tasks, score_for(parent, _)) |> mean
   let child_mean = list.map(tasks, score_for(child, _)) |> mean
+  let fixes_a_failure =
+    list.any(tasks, fn(task) {
+      score_for(parent, task) == 0.0 && score_for(child, task) >. 0.0
+    })
 
-  // The child pays for validate only when it is at least as good as its
-  // parent on the minibatch.
-  case child_mean >=. parent_mean {
-    True -> Passed
-    False -> Failed
+  // Strictly better pays; a tie pays only when it bought a task the
+  // parent could not do at all.
+  case child_mean >. parent_mean, child_mean == parent_mean && fixes_a_failure {
+    True, _ | False, True -> Passed
+    False, False -> Failed
   }
+}
+
+/// Whether a candidate scored one on every task of a minibatch: the
+/// ceiling, above which no reflection can show anything. An empty
+/// minibatch is not perfect; nothing was measured.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert select.perfect([#("t1", 1.0), #("t2", 1.0)], ["t1", "t2"])
+/// assert !select.perfect([#("t1", 1.0)], ["t1", "t2"])
+/// assert !select.perfect([], [])
+/// ```
+///
+pub fn perfect(scores: List(#(String, Float)), tasks: List(String)) -> Bool {
+  tasks != [] && list.all(tasks, fn(task) { score_for(scores, task) == 1.0 })
+}
+
+/// The one child of a step that validate is paid for: among the children
+/// that pass the screen against the parent, the highest minibatch mean,
+/// and on a tie the earliest in `children`, which is minting order. The
+/// earliest wins a tie because it is the order the log already fixes and
+/// the proposal the reflector gave before it was shown its siblings; an
+/// id comparison would make the choice depend on the host's hash.
+/// `Error(Nil)` when no child passes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // select.winner(parent, [#("c1", scores_1), #("c2", scores_2)], tasks) == Ok("c2")
+/// assert select.winner([#("t", 1.0)], [#("c", [#("t", 0.0)])], ["t"]) == Error(Nil)
+/// ```
+///
+pub fn winner(
+  parent: List(#(String, Float)),
+  children: List(#(String, List(#(String, Float)))),
+  tasks: List(String),
+) -> Result(String, Nil) {
+  children
+  |> list.filter(fn(child) { screen(parent, child.1, tasks) == Passed })
+  |> list.fold(Error(Nil), fn(best, child) {
+    let child_mean = list.map(tasks, score_for(child.1, _)) |> mean
+
+    // Only a strictly higher mean displaces the earlier passer.
+    case best {
+      Ok(#(_, best_mean)) if best_mean >=. child_mean -> best
+      Ok(_) | Error(Nil) -> Ok(#(child.0, child_mean))
+    }
+  })
+  |> result.map(fn(found) { found.0 })
 }
 
 /// Orders pool members for the front: the incumbent first, then the
