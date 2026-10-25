@@ -126,3 +126,41 @@ tag; it never gates.
 - The host runner (`secrets.host_runner`) double-encodes non-ASCII argv under
   `scripts/test.sh`, whose emulator has a non-UTF-8 native file-name encoding.
   Repository and work paths must be ASCII.
+
+## Replay lane
+
+`eval/cassette` implements `provider/http.Transport` twice, and `eval/normalise`
+decides what counts as the same request. The lane's whole claim is that the
+harness, given the same model outputs, makes the same requests; it says nothing
+about model quality.
+
+- `cassette.recording(inner, root, sink)` forwards each request to `inner` and
+  files a `Recorded(ordinal, digest, shape, events)` in the `Sink` (a weft
+  actor, `start_sink`) when the terminal event passes through, before the
+  consumer sees it. `cassette.finish(sink)` returns the `Tape`.
+- `cassette.replaying(tape, root, log)` answers the n-th request with the n-th
+  recording only if the digests match. Otherwise it delivers
+  `RequestFailed("replay diverged at request n: ...")`, files a `Divergence` in
+  the `Log` (`start_log`, read with `divergences`), and never hands back bytes
+  recorded for another request. A request beyond the tape is a divergence with
+  an empty `expected`.
+- `normalise.view(request, root)` reduces a request to leaves (method, URL path,
+  one leaf per JSON scalar) and a SHA-256 digest. Headers and the URL's host and
+  query never contribute; keys naming secrets are dropped at any depth; paths
+  under `root` become `<root>` and ISO-8601 dates and times become `<date>`.
+  The tape keeps each leaf's length and a 12 digit fingerprint, so
+  `normalise.summary` can name the first differing path without any prompt text
+  on disk.
+- Both transports honour the `Transport` contract the way the native ChatGPT
+  transport does: one parked weft managed task per request, its scope pid the
+  drain witness, nothing (including the inner `prepare_streaming`) running
+  before the begin permit. A cancel before begin therefore starts nothing.
+- `tape_to_jsonl` scrubs on the way out (the body joined and scrubbed whole, so a
+  secret split across chunks is found; chunk boundaries survive only if nothing
+  changed) and `tape_from_jsonl` is total. One JSON object per line, `"v":1`.
+
+Hazards: the tape stores response bodies, so a model that echoes a credential is
+the reason scrubbing lives in the encoder rather than the recorder. A line over
+16000 graphemes cannot be scrubbed and is withheld. Replay is not byte-exact:
+scrubbed bodies differ from what the wire carried. Ordinals count from one and
+are reserved when a request begins.
