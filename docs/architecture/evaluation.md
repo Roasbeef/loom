@@ -675,7 +675,7 @@ make up to a hundred provider attempts, within the same dollar and token caps.
 
 | Failure | What the instrument does |
 | --- | --- |
-| The run is killed mid-trial | A `Running` row was written first. On resume, a `Running` row with no successor is closed as an `Infra` row with the reason "interrupted"; that attempt is spent. Finished cells are skipped. |
+| The run is killed mid-trial | A `Running` row was written first. On resume, a `Running` row with no successor is closed as an `Infra` row with the reason "interrupted"; that attempt is spent. Finished cells are skipped. The budget account starts with the ledger's recorded dollars (Infra rows included) debited from the cap, so the cap bounds spend across all attempts. |
 | A trial hits a harness, jail or network fault | An `Infra` row, followed by a retry round at attempt + 1, up to 3. At attempt 3 the `Infra` row is terminal, and the cell is `Infrastructure`, excluded from the estimate and counted in the report. |
 | The agent runs out of wall | `AgentTimeout`. Terminal, never graded, never retried, counted against the arm. |
 | Retirement cannot be confirmed | An `Infra` row. The workspace is never graded. |

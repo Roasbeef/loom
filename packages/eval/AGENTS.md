@@ -229,7 +229,7 @@ nobody has tried, runs them in waves of whole tasks and asks
 each row as a whole
 line, so a crash leaves a parseable prefix; a `Running` row is written before
 a trial starts. Resuming is the same call: a `Running` row with no successor is
-closed as an `Infra` row (that attempt is spent) and finished cells are skipped.
+closed as an `Infra` row (that attempt is spent) and finished cells are skipped. The budget account starts with the ledger's recorded dollars (Infra rows included) debited from the cap, so the cap bounds the plan across every resume.
 Each attempt has its own root, `<task>/<arm>/<index>/attempt-<n>/`, holding
 `work/` (the live tree), `state/session.db`, `frozen/` (the copy the grader
 sees) and `verifier/`.

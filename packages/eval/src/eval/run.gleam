@@ -34,7 +34,9 @@
 ////   dropped, because a dropped trial is a smaller sample.
 ////
 //// Resuming is the same call: the existing ledger is read first, and any cell
-//// that is already finished is skipped.
+//// that is already finished is skipped. The budget account starts with the
+//// dollars the ledger already records debited from the cap, so the cap bounds
+//// the plan's spend across every attempt to run it.
 
 import core/json
 import eval/arm.{type Arm}
@@ -163,6 +165,8 @@ pub fn execute(
     }),
   )
 
+  use Nil <- result.try(charge_prior_spend(account, directory))
+
   let ran = rounds(ctx, loaded, directory, writer, account, worst)
   let status = budget.status(account)
   budget.stop(account)
@@ -184,6 +188,24 @@ pub fn execute(
     budget_note: note,
     futility_note: futility,
   ))
+}
+
+/// Debits what the ledger already records from a fresh account. The cap is a
+/// promise about the plan, not about one call of `execute`: an account that
+/// began at the full cap on every resume would let a crash after nine of ten
+/// dollars be followed by nine more. Every row's measured dollars count,
+/// `Infra` rows included, because a faulted attempt still paid its requests;
+/// `settle` with a zero reservation charges them without touching in-flight
+/// worst cases.
+fn charge_prior_spend(
+  account: budget.Account,
+  directory: String,
+) -> Result(Nil, String) {
+  use rows <- result.map(read_rows(directory))
+  let spent =
+    list.fold(rows, 0.0, fn(total, row) { total +. row.usage.dollars })
+
+  budget.settle(account, 0.0, measured: spent)
 }
 
 /// Every arm must apply and every arm's worst case must be known before a

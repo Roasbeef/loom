@@ -723,3 +723,53 @@ pub fn a_flip_costs_two_sign_moves_so_the_run_is_not_stopped_test() {
 
   assert run.futile_after(frozen, rows) == None
 }
+
+pub fn a_resumed_run_cannot_spend_past_its_cap_test_() -> scripted.EunitTest {
+  scripted.Timeout(300, fn() {
+    scripted.when_available("a_resumed_run_cannot_spend_past_its_cap", fn() {
+      let tasks = [
+        scripted.task_named("first", "hello", "hello"),
+        scripted.task_named("second", "world", "world"),
+      ]
+      let worst =
+        budget.worst_case_dollars(
+          4,
+          pricing.Pricing(1.0, 1.0, 1.0, 1.0),
+          context: 100_000,
+          output: 4096,
+        )
+      let cap = worst *. 1.05
+
+      // A first call under a cap that covers one trial runs the first cell
+      // and measures what it cost.
+      let r =
+        rig(
+          "resumed_cap",
+          tasks,
+          [scripted.baseline()],
+          1,
+          1,
+          cap,
+          60_000,
+          40_000,
+        )
+      let assert Ok(first) = run.execute(r.ctx, r.loaded, r.out)
+      let spent = fn(rows: List(Row)) {
+        list.fold(rows, 0.0, fn(total, row) { total +. row.usage.dollars })
+      }
+      let before = spent(rows_of(first.directory))
+      assert before >. 0.0
+      assert first.budget_note == Some("budget exhausted after 1 trials")
+
+      // Resumed, the account must remember that spend: what is left of the
+      // cap no longer covers a worst case, so nothing is admitted. A fresh
+      // full-cap account would admit the second cell and overshoot.
+      let assert Ok(second) = run.execute(r.ctx, r.loaded, r.out)
+      let after = spent(rows_of(second.directory))
+
+      assert after == before
+      assert second.started == 0
+      assert second.budget_note == Some("budget exhausted after 0 trials")
+    })
+  })
+}
