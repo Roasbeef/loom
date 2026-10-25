@@ -11,6 +11,9 @@ import client/daemon/manager
 import client/daemon/root
 import client/daemon/ui_socket
 import client/daemon_server_test as wire
+import client/evolution/record as evolution_record
+import client/evolution/record_test as evolution_record_test
+import client/evolution/store as evolution_store
 import client/orchestrators
 import client/remote/orchestrator_port
 import client/roster
@@ -666,4 +669,103 @@ pub fn a_daemon_that_lists_no_orchestrator_has_nowhere_to_send_a_session_test() 
       Nil
     },
   )
+}
+
+// Selects one approved extension in `scope` in the evolution catalogue at
+// `place`, one of the two directories `sessions.move` reads for what a session
+// would leave behind.
+fn select_in(place: String, scope: evolution_record.Scope) -> Nil {
+  let assert Ok(catalogue) =
+    evolution_store.open(
+      place,
+      evolution_store.Owner,
+      evolution_record_test.candidate().identity,
+      clock.fixed(1_700_000_000_000),
+    )
+    as "the evolution catalogue opens"
+  let candidate =
+    evolution_record.identified(
+      evolution_record.Candidate(..evolution_record_test.candidate(), scope:),
+    )
+  let assert Ok(_) = evolution_store.propose(catalogue, candidate)
+    as "the candidate is proposed"
+  let assert Ok(evidence) =
+    evolution_store.record_evidence(
+      catalogue,
+      candidate.id,
+      evolution_record.AuthorTests,
+      evolution_record.Passed,
+      "{\"checks\":2}",
+    )
+    as "the evaluator's observation is retained"
+  let assert Ok(Nil) =
+    evolution_store.approve(
+      catalogue,
+      candidate.id,
+      evidence.id,
+      scope,
+      "operator",
+    )
+    as "the operator approves"
+  let assert Ok(_) =
+    evolution_store.select(
+      catalogue,
+      candidate.id,
+      evidence.id,
+      scope,
+      candidate.name,
+      None,
+      "operator",
+      "activate",
+    )
+    as "the operator selects"
+  Nil
+}
+
+pub fn a_session_serving_a_selected_extension_cannot_move_test() {
+  moving(fn(ready, port, credential, recorder) {
+    let session = remote(ready, "selected")
+    let other = remote(ready, "selected-other")
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    // A workspace selection is held by no session, and the selection of
+    // another session is not this one's, so neither stops this move.
+    let beside_sockets = ready.state_root <> "/evolution"
+    select_in(beside_sockets, evolution_record.Workspace("/workspace"))
+    select_in(beside_sockets, evolution_record.Session(other))
+    let free = move(socket, 1, session, "laptop", ready.epoch)
+    assert field(free, "event") == json.String("sessions.move")
+    assert list.length(told(recorder)) == 1
+
+    // The session's own selection would be dropped by the move, so the request
+    // is refused before the registry stops the session.
+    assert code(move(socket, 2, other, "laptop", ready.epoch))
+      == json.String("not_movable")
+    assert told(recorder) == []
+    assert manager.custody(ready.registry, other) == Ok(catalogue.Resident)
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
+}
+
+pub fn a_selection_beside_the_session_files_also_stops_a_move_test() {
+  moving(fn(ready, port, credential, recorder) {
+    let session = remote(ready, "beside")
+    let #(socket, _) = wire.connect(port, credential, "/v2/control")
+    let _hello = wire.frame(socket, within_ms: 1000)
+
+    // A session whose writable roots cover the socket root keeps its catalogue
+    // beside the session files instead, and the move must find it there too.
+    select_in(
+      ready.sessions_directory <> "/evolution",
+      evolution_record.Session(session),
+    )
+    assert code(move(socket, 1, session, "laptop", ready.epoch))
+      == json.String("not_movable")
+    assert told(recorder) == []
+    assert manager.custody(ready.registry, session) == Ok(catalogue.Resident)
+    let _ = ffi_ws.tcp_close(socket)
+    Nil
+  })
 }

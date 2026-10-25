@@ -7786,6 +7786,17 @@ the protocol-change/078 addendum on moving a session have the protocol.
   instead of putting it over the placed file. It reads whether the import already
   committed before it checks for an open slot, and `AdminBusy` refuses a first
   import only.
+- `sessions.move` also refuses a session that still serves a selected extension
+  or program: the selection lives in this daemon's evolution catalogue and the
+  manifest does not carry it. `server.selections_stay_behind` reads
+  `evolution/store.session_selections(<state>/evolution, id, clock)`, which lists
+  the `Session`-scoped selections whose approval still holds (a revoked
+  selection serves nothing and is not listed; `evolution revoke` is the remedy
+  the refusal names) and answers `[]` without creating anything when there is no
+  `evolution.db`. It runs in `move_session` and not in `movable`, outside the
+  registry's turn, because the catalogue open waits up to one second on the
+  store's lease. A `Workspace`-scoped selection does not block a move.
+  A catalogue that cannot be read refuses the move too.
 - `remote/orchestrator_port` gains `Import`, `ImportStatus` and `Activate` beside
   `Owns`, and `Ownership` gains `Moved(to)`. The daemon supplies an `Importer` of
   three functions, so the port knows neither the catalogue nor the filesystem. A
@@ -7837,7 +7848,7 @@ the protocol-change/078 addendum on moving a session have the protocol.
   is how a restarted mover learns a lost reply had landed.
 - `daemon/server` has `sessions.move` (owner, epoch, destination in
   `Config.movers.orchestrators`, then `inbound_settled` for an imported session,
-  then `manager.begin_move`, then
+  then `selections_stay_behind`, then `manager.begin_move`, then
   `Config.movers.begin`), the `moving` and `moved` members of `sessions.get`
   (`with_custody`) and of every `sessions.list` record (`listed_json`, which reads
   one `manager.custodies` for the page and encodes with the same

@@ -72,7 +72,9 @@ import client/deployment
 import client/directory/deletion
 import client/directory/store
 import client/elsewhere
+import client/evolution/store as evolution_store
 import client/executors
+import client/internal/ffi_os
 import client/ledger_control
 import client/orchestrators
 import client/peer_mail
@@ -82,6 +84,7 @@ import client/remote/orchestrator_port
 import client/roster.{type Roster}
 import client/session_directory
 import client/session_movers
+import core/clock
 import core/ids
 import core/json.{type JsonValue}
 import gleam/bit_array
@@ -4514,6 +4517,7 @@ pub fn move_session(
       )),
     ),
   )
+  use Nil <- result.try(selections_stay_behind(config, id))
   let #(minted, _) = ids.mint_op(config.generator())
   use custody <- result.try(
     manager.begin_move(
@@ -4536,6 +4540,66 @@ pub fn move_session(
     catalogue.Moved(to: owner, ..) ->
       Error(Declined(manager.AdminMoved(to: owner)))
     catalogue.Resident | catalogue.Imported(..) -> Error(Unanswered)
+  }
+}
+
+// The evolution catalogue is this daemon's, and a promoted extension or program
+// is a selection in it. The manifest carries the session file and nothing of
+// the catalogue, so the receiving orchestrator would serve the session without
+// the selection and nothing would say so. The refusal names the remedy: a
+// revoked selection serves nothing and is not listed.
+//
+// The read runs here, outside the registry's turn, for the reason
+// `inbound_settled` does. The catalogue is a SQLite database under a lease, a
+// busy one is waited for up to a second, and the registry's turns are bounded
+// at a few seconds; a daemon's owner is asking, not the session, so one
+// blocked caller costs nothing the registry would otherwise lose. A selection
+// made between this read and `begin_move` is not seen. Making one needs the
+// session open and the owner approving, and `begin_move` stops the slot, so
+// the owner would be racing their own two commands.
+/// Refuses a move when the session still serves a selected extension.
+fn selections_stay_behind(
+  config: Config(instance),
+  id: String,
+) -> Result(Nil, MoveRefusal) {
+  use ready <- result.try(
+    root.ready(config.daemon, within: 1000)
+    |> result.replace_error(Unanswered),
+  )
+
+  // `serve.evolution_root` puts the catalogue beside the code-mode socket root,
+  // `<state>/evolution`, and falls back to the session file's directory,
+  // `<state>/sessions/evolution`, when a session's writable roots cover the
+  // socket root. The session's settings are not at hand here, so both places
+  // are read. A place with no database is no selections and opens nothing.
+  let clock = clock.from_function(ffi_os.system_time_ms)
+  let places = [
+    ready.state_root <> "/evolution",
+    ready.sessions_directory <> "/evolution",
+  ]
+
+  // An unreadable catalogue refuses as well: an empty answer is the only one
+  // that lets the session leave.
+  case
+    list.try_fold(places, [], fn(found, place) {
+      evolution_store.session_selections(place, id, clock)
+      |> result.map(list.append(found, _))
+    })
+  {
+    Ok([]) -> Ok(Nil)
+    Ok([_, ..]) ->
+      Error(
+        Declined(manager.AdminNotMovable(
+          "the session serves a selected extension; revoke the selection (evolution revoke) before moving it",
+        )),
+      )
+    Error(refusal) ->
+      Error(
+        Declined(manager.AdminNotMovable(
+          "the evolution catalogue could not be read: "
+          <> evolution_store.describe(refusal),
+        )),
+      )
   }
 }
 
