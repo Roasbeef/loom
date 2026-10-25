@@ -22,6 +22,7 @@ packages = [
   { name = "exception", version = "2.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "exception", source = "hex", outer_checksum = "6BDEA95248093599391C3B5DF1835C5C6A86C353C2F99CE539B450E3432FE117" },
   { name = "filepath", version = "1.1.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "filepath", source = "hex", outer_checksum = "B06A9AF0BF10E51401D64B98E4B627F1D2E48C154967DA7AF4D0914780A6D40A" },
   { name = "gen_batch_server", version = "0.10.0", build_tools = ["rebar3"], requirements = [], otp_app = "gen_batch_server", source = "hex", outer_checksum = "391E2E634ABEC00F9229F766BCFF736E07CC66530495DFD4A164724ECAF7008F" },
+  { name = "gepa", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], source = "local", path = "../gepa" },
   { name = "glaml", version = "3.0.2", build_tools = ["gleam"], requirements = ["gleam_stdlib", "yamerl"], source = "git", repo = "https://github.com/Roasbeef/glaml.git", commit = "084857ebd45aba028f583b7221db9860a86979b9" },
   { name = "glance", version = "6.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "glexer"], otp_app = "glance", source = "hex", outer_checksum = "9037EBBAD2A220CD46DADEDCDF9DFAC7406FD2959535334473E60C32F170622A" },
   { name = "gleam_crypto", version = "1.6.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleam_crypto", source = "hex", outer_checksum = "2DE9E4EF53CF6FEE049D4F765731F7178F7A11AEFAE00EEE63BF7536B354AD3F" },
@@ -85,6 +86,7 @@ broker = { path = "../broker" }
 client = { path = "../client" }
 core = { path = "../core" }
 evalstat = { path = "../evalstat" }
+gepa = { path = "../gepa" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_otp = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_stdlib = { version = ">= 1.0.0 and < 2.0.0" }

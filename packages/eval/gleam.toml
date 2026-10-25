@@ -15,6 +15,7 @@ tools = { path = "../tools" }
 client = { path = "../client" }
 prompt = { path = "../prompt" }
 evalstat = { path = "../evalstat" }
+gepa = { path = "../gepa" }
 telemetry = { path = "../telemetry" }
 machine = { path = "../machine" }
 broker = { path = "../broker" }
