@@ -24,9 +24,10 @@
 //// printable ASCII before it splits anything.
 ////
 //// Decoding is total: every malformed line is an `Error` naming what was
-//// wrong, never a panic, and a whole log stops at its first bad line with
-//// the line number, as a ledger does, so a torn last row is never read as
-//// the end of the search.
+//// wrong, never a panic. A whole log stops at its first bad line with the
+//// line number, as a ledger does, and refuses a text whose last row has
+//// no newline, so a crash mid-write is never read as the end of the
+//// search.
 
 import gepa.{type Event, type Measured, type Score, type Stage}
 import gepa/budget
@@ -168,16 +169,24 @@ pub fn decode(line: String) -> Result(Event, String) {
   }
 }
 
-/// Decodes a whole log. A trailing partial line (a crash mid-write) is
-/// refused, so a torn row is never read as the end of the search.
+/// Decodes a whole log. A text whose last row has no newline is a crash
+/// mid-write, and is refused whole rather than read up to the tear, so a
+/// torn row is never taken for the end of the search; an empty text is an
+/// empty log.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// assert log.parse("") == Ok([])
+/// assert log.parse("stopped v=1 reason=steps") == Error("the log's last row is torn")
 /// ```
 ///
 pub fn parse(text: String) -> Result(List(Event), String) {
+  use Nil <- result.try(require(
+    text == "" || string.ends_with(text, "\n"),
+    "the log's last row is torn",
+  ))
+
   text
   |> string.split("\n")
   |> list.filter(fn(line) { line != "" })

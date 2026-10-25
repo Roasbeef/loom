@@ -319,9 +319,16 @@ pub fn malformed_lines_are_refused_by_name_test() {
   )
   refused("seeded v=1 candidate=c component=a", "a name and a text")
 
-  // A whole log stops at the first bad line and names it.
+  // A whole log stops at the first bad line and names it, and a text whose
+  // last row has no newline is a tear, not a shorter log.
   let assert Error(reason) =
     log.parse("stopped v=1 reason=steps\nstopped v=1\n")
   assert string.starts_with(reason, "search row 2: ")
   assert log.parse("") == Ok([])
+  assert log.parse("stopped v=1 reason=steps\nstopped v=1 reason=")
+    == Error("the log's last row is torn")
+  assert log.parse("stopped v=1 reason=steps")
+    == Error("the log's last row is torn")
+  assert log.parse("stopped v=1 reason=steps\n")
+    == Ok([gepa.Stopped(budget.Steps)])
 }
