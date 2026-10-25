@@ -11,21 +11,21 @@
 //// One step, given a pool whose every member has a complete Validate
 //// ledger:
 ////
-//// 1. a parent is drawn by `search.front` and `search.draw_parent` from a
+//// 1. a parent is drawn by `select.front` and `select.draw_parent` from a
 ////    generator seeded by the search id and the step number;
-//// 2. the step's slot is `search.slot_for`, round robin over the mutable
-////    set, and its minibatch is `search.minibatch` from the same generator;
+//// 2. the step's slot is `select.slot_for`, round robin over the mutable
+////    set, and its minibatch is `select.minibatch` from the same generator;
 //// 3. the parent runs the minibatch alone, as a sub-plan through
 ////    `run.execute`, to capture how it fares;
 //// 4. the reflector reads those rows (`reflect.records`) and answers the
 ////    slot's new text; the child is `arm.mint` of the parent with that slot
 ////    replaced, and an arm the settings refuse is recorded `refused`;
-//// 5. the child runs the same minibatch alone and `search.screen` decides
+//// 5. the child runs the same minibatch alone and `select.screen` decides
 ////    whether to pay for Validate;
 //// 6. the child runs the whole Validate split alone, and
 ////    `evalstat.paired_verdict` pairs its rows against the parent's earlier
-////    Validate rows and against the incumbent's; `search.dispose` turns the
-////    verdicts into the step's disposition.
+////    Validate rows and against the incumbent's; `verdict.dispose` in the
+////    `gepa` library turns the verdicts into the step's disposition.
 ////
 //// Pairing a child's run against a parent's earlier one is sequential, not
 //// simultaneous. Every sub-plan stamps the same harness commit and pins the
@@ -46,7 +46,12 @@
 //// resume. The reflector is a live call on every lane, so its calls are
 //// metered on every lane: the confirm run and one reflection are reserved
 //// before a step is taken, and a reflection is made only when its worst
-//// case is still covered.
+//// case is still covered. The arithmetic of those holds is `gepa/budget`'s,
+//// and every decision the loop makes — the draws, the screen, the
+//// disposition, the stop — is asked of the library's pure pieces; what
+//// stays here is the ordering of effects, because each sub-run is a
+//// resumable directory with its own ledger and cap, which the library's
+//// own loop (`gepa.next`) has no way to see.
 ////
 //// ## Flow
 ////
@@ -74,9 +79,14 @@ import eval/wire
 import evalstat
 import evalstat/dominance
 import evalstat/pairing
-import evalstat/prng
 import evalstat/trial as stat
 import evalstat/verdict.{type Verdict}
+import gepa
+import gepa/budget
+import gepa/prng
+import gepa/prompt
+import gepa/select
+import gepa/verdict as rule
 import gleam/dict
 import gleam/erlang/process.{type Subject}
 import gleam/float
@@ -188,9 +198,10 @@ type WriterMessage {
   Close
 }
 
-/// The process that owns `search.jsonl`.
+/// The process that owns `search.jsonl`, and the lookups the fold reads
+/// the directory through.
 type Writer {
-  Writer(subject: Subject(WriterMessage))
+  Writer(subject: Subject(WriterMessage), store: search.Store)
 }
 
 /// The encoding version of `search.json`.
@@ -531,7 +542,8 @@ pub fn search(
 
   use Nil <- result.try(prepare_directory(directory, frozen))
   use events <- result.try(read_log(directory))
-  use writer <- result.try(start_writer(directory <> "/search.jsonl"))
+  let store = store_for(directory)
+  use writer <- result.try(start_writer(directory <> "/search.jsonl", store))
 
   // A fresh search opens with the seed's candidate row; a resumed one folds
   // what it has.
@@ -547,8 +559,8 @@ pub fn search(
           slot: None,
         ),
       )
-      |> result.try(fn(event) { search.replay([event]) })
-    [_, ..] -> search.replay(events)
+      |> result.try(fn(event) { search.replay([event], store) })
+    [_, ..] -> search.replay(events, store)
   }
 
   let ran = {
@@ -658,11 +670,15 @@ fn ensure_seed_validated(
 ) -> Result(State, String) {
   // The seed's run row is the first run row; its presence says step 0 ran
   // or is running, and executing again resumes it.
-  case state.runs {
+  case search.runs(state) {
     [] -> {
       use left <- result.try(remaining(ctx, frozen, directory, state))
-      use hold <- result.try(confirm_worst_case(ctx, frozen))
-      let remaining = float.max(left -. hold, 0.0)
+      use costs <- result.try(costs(ctx, frozen.seed))
+      let remaining =
+        budget.cap(
+          remaining: left,
+          hold: budget.confirm_worst_case(costs, design(frozen, 0)),
+        )
       let sub =
         sub_plan(
           frozen,
@@ -728,7 +744,7 @@ fn loop(
 ) -> Result(State, String) {
   // A stopped search is finished; an open step is resumed before anything
   // else is decided.
-  case state.stopped, state.open {
+  case state.search.stopped, state.search.open {
     Some(_), _ -> Ok(state)
 
     None, Some(_) -> {
@@ -774,7 +790,9 @@ fn loop(
 }
 
 /// Why the search should stop now, if it should: the counted ceilings
-/// first, then whether the next step's worst case fits the dollars left.
+/// first, then whether the next step's worst case and the confirm run fit
+/// the dollars left, all of it `budget.stop_reason`'s arithmetic over
+/// Loom's numbers.
 fn stop_reason(
   ctx: Context,
   frozen: Plan,
@@ -782,27 +800,55 @@ fn stop_reason(
   state: State,
 ) -> Result(Option(search.StopReason), String) {
   let budgets = frozen.budgets
+  let limits =
+    budget.Limits(
+      budget: budgets.max_dollars,
+      max_steps: budgets.max_steps,
+      max_reflections: budgets.max_reflections,
+      max_candidates: budgets.max_candidates,
+    )
+  let counts =
+    budget.Counts(
+      steps: state.search.step,
+      reflections: state.search.reflections,
+      candidates: gepa.children(state.search),
+    )
 
-  // The counted ceilings need no arithmetic; the dollar one does.
+  // The counted ceilings need no arithmetic; the dollar one prices the
+  // step the search would take next, whose parent sets the cell cost.
   case
-    state.step >= budgets.max_steps,
-    state.reflections >= budgets.max_reflections,
-    search.children(state) >= budgets.max_candidates
+    budget.stop_reason(
+      limits,
+      counts,
+      0.0,
+      budget.Costs(trial: 0.0, attempts: 1, reflection: 0.0),
+      design(frozen, 0),
+    )
   {
-    True, _, _ -> Ok(Some(search.Steps))
-    False, True, _ -> Ok(Some(search.Reflections))
-    False, False, True -> Ok(Some(search.Candidates))
-    False, False, False -> {
+    Some(budget.Steps) -> Ok(Some(search.Steps))
+    Some(budget.Reflections) -> Ok(Some(search.Reflections))
+    Some(budget.Candidates) -> Ok(Some(search.Candidates))
+    Some(budget.Budget) | None -> {
       use remaining <- result.try(remaining(ctx, frozen, directory, state))
-      use need <- result.try(step_worst_case(ctx, frozen, directory, state))
-      use confirm <- result.try(confirm_worst_case(ctx, frozen))
+      use draws <- result.try(draws(
+        frozen,
+        directory,
+        state,
+        state.search.step + 1,
+      ))
+      use parent <- result.try(read_arm(directory, draws.parent))
+      use costs <- result.try(costs(ctx, parent))
 
-      // The step is taken only when the confirm run still fits after it; a
-      // taped lane's trials cost nothing, so only the reflections bind there.
-      case remaining <. need +. confirm {
-        True -> Ok(Some(search.Dollars))
-        False -> Ok(None)
-      }
+      // A taped lane's trials cost nothing, so only the reflections bind there.
+      budget.stop_reason(
+        limits,
+        counts,
+        remaining,
+        costs,
+        design(frozen, list.length(draws.tasks)),
+      )
+      |> option.map(search.stop_from_gepa)
+      |> Ok
     }
   }
 }
@@ -834,7 +880,7 @@ fn remaining(
   }
 
   float.max(
-    frozen.budgets.max_dollars -. trials -. state.reflection_dollars,
+    frozen.budgets.max_dollars -. trials -. state.search.spent_reflecting,
     0.0,
   )
 }
@@ -858,16 +904,19 @@ fn spent(
   // A replay lane's rows carry the tape's prices, not a charge.
   case frozen.lane {
     plan.Live ->
-      Spend(paid: ledgers +. state.reflection_dollars, priced_not_paid: 0.0)
+      Spend(
+        paid: ledgers +. state.search.spent_reflecting,
+        priced_not_paid: 0.0,
+      )
     plan.Replay ->
-      Spend(paid: state.reflection_dollars, priced_not_paid: ledgers)
+      Spend(paid: state.search.spent_reflecting, priced_not_paid: ledgers)
   }
 }
 
 /// The measured dollars of every sub-run's ledger.
 fn ledger_total(directory: String, state: State) -> Result(Float, String) {
   use runs <- result.map(
-    list.try_map(state.runs, fn(event) {
+    list.try_map(search.runs(state), fn(event) {
       case event {
         search.Run(plan:, ..) -> ledger_dollars(directory, plan)
         search.Candidate(..)
@@ -920,94 +969,49 @@ fn arm_rows(
   |> list.map(report.to_stat)
 }
 
-/// The worst case of one step: the parent's and the child's minibatches,
-/// the child's Validate run, and one reflection. The child's model knobs
-/// are the parent's, so its worst case per cell is the parent's.
-fn step_worst_case(
+/// What the host's evaluations and reflections cost at worst, in dollars:
+/// a cell is the per-trial worst case at `ledger.max_attempts`, since an
+/// infrastructure fault retries the cell and every attempt is charged.
+/// The child's model knobs are the parent's, so one arm prices a step.
+fn costs(ctx: Context, candidate: Arm) -> Result(budget.Costs, String) {
+  use per_trial <- result.map(trial.worst_case(ctx.trial, candidate))
+
+  budget.Costs(
+    trial: per_trial,
+    attempts: ledger.max_attempts,
+    reflection: ctx.reflection_worst,
+  )
+}
+
+/// The shape of the search's evaluations for the library's arithmetic.
+fn design(frozen: Plan, minibatch_tasks: Int) -> budget.Design {
+  budget.Design(
+    validate_tasks: list.length(frozen.validate),
+    minibatch_tasks:,
+    trials: frozen.trials_per_cell,
+    tune_trials: frozen.tune_trials,
+  )
+}
+
+/// The cap a sub-run started at `stage` is handed: what remains less the
+/// library's hold for that stage, so a step whose cells retry cannot spend
+/// the confirm's reservation.
+fn capped(
   ctx: Context,
   frozen: Plan,
   directory: String,
   state: State,
-) -> Result(Float, String) {
-  use draws <- result.try(draws(frozen, directory, state, state.step + 1))
-  use parent <- result.try(read_arm(directory, draws.parent))
-  use per_cell <- result.try(cell_worst_case(ctx, parent))
-  use hold <- result.try(held_back(
-    ctx,
-    frozen,
-    parent,
-    list.length(draws.tasks),
-    BeforeParentMinibatch,
-  ))
-  use confirm <- result.map(confirm_worst_case(ctx, frozen))
-  let parent_minibatch =
-    int.to_float(list.length(draws.tasks) * frozen.tune_trials) *. per_cell
-
-  // The hold already counts the confirm run, which `stop_reason` adds itself.
-  hold -. confirm +. parent_minibatch
-}
-
-/// The worst case of a cell: the per-trial worst case times the attempts
-/// the runner may make at it, since an infrastructure fault retries the
-/// cell and every attempt is charged.
-fn cell_worst_case(ctx: Context, candidate: Arm) -> Result(Float, String) {
-  use per_trial <- result.map(trial.worst_case(ctx.trial, candidate))
-
-  per_trial *. int.to_float(ledger.max_attempts)
-}
-
-/// The worst case of the confirm run: seed and best on every Validate cell.
-/// The best's knobs are the seed's, so the seed prices both.
-fn confirm_worst_case(ctx: Context, frozen: Plan) -> Result(Float, String) {
-  use per_cell <- result.try(cell_worst_case(ctx, frozen.seed))
-
-  Ok(
-    per_cell
-    *. int.to_float(2 * list.length(frozen.validate) * frozen.trials_per_cell),
-  )
-}
-
-/// Where in a step a sub-run is about to start, which decides how much of
-/// the search's remaining money is held back from it.
-type Stage {
-  /// The parent's minibatch: the reflection, the child's minibatch and the
-  /// child's Validate run are still to come.
-  BeforeParentMinibatch
-
-  /// The child's minibatch: the Validate run is still to come.
-  BeforeChildMinibatch
-
-  /// The child's Validate run: only the confirm run is still to come.
-  BeforeValidate
-}
-
-/// The money a sub-run started at `stage` may not touch: the confirm run's
-/// worst case and the worst case of the stages still to come in its step,
-/// every cell at `ledger.max_attempts`. The sub-run's cap is what remains
-/// less this, so a step whose cells retry cannot spend the confirm's
-/// reservation.
-fn held_back(
-  ctx: Context,
-  frozen: Plan,
   candidate: Arm,
   minibatch_tasks: Int,
-  stage: Stage,
+  stage: budget.Stage,
 ) -> Result(Float, String) {
-  use per_cell <- result.try(cell_worst_case(ctx, candidate))
-  use confirm <- result.try(confirm_worst_case(ctx, frozen))
-  let minibatch = int.to_float(minibatch_tasks * frozen.tune_trials) *. per_cell
-  let validate =
-    int.to_float(list.length(frozen.validate) * frozen.trials_per_cell)
-    *. per_cell
+  use left <- result.try(remaining(ctx, frozen, directory, state))
+  use costs <- result.map(costs(ctx, candidate))
 
-  // Each stage holds back what follows it.
-  let later = case stage {
-    BeforeParentMinibatch -> ctx.reflection_worst +. minibatch +. validate
-    BeforeChildMinibatch -> validate
-    BeforeValidate -> 0.0
-  }
-
-  Ok(confirm +. later)
+  budget.cap(
+    remaining: left,
+    hold: budget.held_back(costs, design(frozen, minibatch_tasks), stage),
+  )
 }
 
 // What a step draws before it runs anything: all from the pool as it stood
@@ -1028,33 +1032,50 @@ fn draws(
   let generator = prng.from_string(frozen.id <> "/" <> int.to_string(step))
 
   use #(parent, generator) <- result.try(
-    search.draw_parent(leaders, generator)
+    select.draw_parent(leaders, generator)
     |> result.replace_error(
       "the front leads no task, so no parent can be drawn",
     ),
   )
   let tune_ids = list.map(frozen.tune, fn(each) { each.id })
   let #(drawn, _generator) =
-    search.minibatch(tune_ids, frozen.minibatch, generator)
+    select.minibatch(tune_ids, frozen.minibatch, generator)
   use tasks <- result.try(find_tasks(drawn, frozen.tune))
+
+  // The library rotates over slot names; the component is found back by
+  // the same name.
   use slot <- result.try(
-    search.slot_for(step, frozen.slots)
-    |> result.replace_error("the mutable set is empty"),
+    select.slot_for(step, list.map(frozen.slots, search.slot_name))
+    |> result.replace_error("the mutable set is empty")
+    |> result.try(fn(name) {
+      list.find(frozen.slots, fn(slot) { search.slot_name(slot) == name })
+      |> result.replace_error("the mutable set is empty")
+    }),
   )
 
   Ok(Draws(parent:, tasks:, slot:, step:))
 }
 
 /// The pool's front over Validate: each member's per-task means from its
-/// own Validate ledger, then `search.front`.
+/// own Validate ledger, then `select.front`.
 fn pool_front(
   frozen: Plan,
   directory: String,
   state: State,
-) -> Result(List(search.Leader), String) {
-  use members <- result.map(pool_means(frozen, directory, state, state.pool))
+) -> Result(List(select.Leader), String) {
+  use members <- result.map(pool_means(
+    frozen,
+    directory,
+    state,
+    state.search.pool,
+  ))
 
-  search.front(members, frozen.trials_per_cell)
+  select.front(members, validate_ids(frozen), frozen.trials_per_cell)
+}
+
+/// The validate tasks' ids, the task order every score vector follows.
+fn validate_ids(frozen: Plan) -> List(String) {
+  list.map(frozen.validate, fn(each) { each.id })
 }
 
 /// Per-task means for the given arms, each read from its Validate ledger.
@@ -1080,7 +1101,7 @@ fn validate_rows(
   arm_id: String,
 ) -> Result(List(stat.Trial), String) {
   use member <- result.try(
-    list.find(state.members, fn(member) { member.arm == arm_id })
+    list.find(search.members(state), fn(member) { member.arm == arm_id })
     |> result.map_error(fn(_) { "no candidate row for arm " <> arm_id }),
   )
   use plan_id <- result.try(option.to_result(
@@ -1104,9 +1125,9 @@ fn step(
   state: State,
 ) -> Result(State, String) {
   // A resumed step keeps its number; a fresh one is the next.
-  let number = case state.open {
+  let number = case state.search.open {
     Some(progress) -> progress.step
-    None -> state.step + 1
+    None -> state.search.step + 1
   }
 
   use drawn <- result.try(draws(frozen, directory, state, number))
@@ -1157,17 +1178,17 @@ fn parent_minibatch(
 
   // A fresh step writes the run row with the dollars left; a resumed one
   // must find the same parent and plan it wrote before.
-  use #(state, sub) <- result.try(case state.open {
+  use #(state, sub) <- result.try(case state.search.open {
     None -> {
-      use left <- result.try(remaining(ctx, frozen, directory, state))
-      use hold <- result.try(held_back(
+      use remaining <- result.try(capped(
         ctx,
         frozen,
+        directory,
+        state,
         parent,
         list.length(drawn.tasks),
-        BeforeParentMinibatch,
+        budget.BeforeParentMinibatch,
       ))
-      let remaining = float.max(left -. hold, 0.0)
       let sub =
         sub_plan(frozen, drawn.tasks, [parent], frozen.tune_trials, remaining)
       use state <- result.map(record(
@@ -1194,8 +1215,14 @@ fn parent_minibatch(
           <> " but the log holds "
           <> progress.parent,
       ))
+      use plan_id <- result.try(
+        search.plan_of(state, progress.step, search.ParentMinibatch)
+        |> result.replace_error(
+          "search row missing: the parent minibatch run that opens the step",
+        ),
+      )
       use sub <- result.map(
-        reloaded(directory, state, progress.parent_minibatch, fn(cap) {
+        reloaded(directory, state, plan_id, fn(cap) {
           sub_plan(frozen, drawn.tasks, [parent], frozen.tune_trials, cap)
         }),
       )
@@ -1223,20 +1250,21 @@ fn child_of(
   drawn: Draws,
 ) -> Result(#(State, Option(Arm)), String) {
   // A child already minted is read back; otherwise the reflector is asked.
-  case state.open {
-    Some(search.Progress(child: Some(id), child_minibatch: Some(_), ..)) -> {
+  case state.search.open {
+    Some(gepa.Progress(child: Some(id), reached: gepa.ChildMeasured, ..))
+    | Some(gepa.Progress(child: Some(id), reached: gepa.ChildValidated, ..)) -> {
       use child <- result.map(read_arm(directory, id))
 
       #(state, Some(child))
     }
 
-    Some(search.Progress(child: Some(id), child_minibatch: None, ..)) -> {
+    Some(gepa.Progress(child: Some(id), ..)) -> {
       use child <- result.try(read_arm(directory, id))
 
       admit_child(ctx, writer, state, drawn, child)
     }
 
-    Some(search.Progress(child: None, ..)) | None ->
+    Some(gepa.Progress(child: None, ..)) | None ->
       reflect_child(ctx, frozen, directory, writer, state, drawn)
   }
 }
@@ -1313,7 +1341,9 @@ fn reflect_child(
 
       // An answer that reproduces a candidate already in the search mints
       // nothing new; the arm id is content, so the log would refuse it twice.
-      case list.any(state.members, fn(member) { member.arm == child.id }) {
+      case
+        list.any(search.members(state), fn(member) { member.arm == child.id })
+      {
         True -> {
           use state <- result.map(record(
             writer,
@@ -1362,9 +1392,9 @@ fn ask_reflector(
   prompt: String,
   outcome: Result(reflect.Reply, reflect.Refused),
 ) -> Result(#(State, Result(String, String)), String) {
-  // An answer is judged by `reflect.answer`; a refused call keeps its reason.
+  // An answer is judged by `prompt.answer`; a refused call keeps its reason.
   let #(usage, answered) = case outcome {
-    Ok(reply) -> #(reply.usage, reflect.answer(reply.text))
+    Ok(reply) -> #(reply.usage, prompt.answer(reply.text))
     Error(reflect.Refused(reason:, usage:)) -> #(usage, Error(reason))
   }
 
@@ -1391,9 +1421,11 @@ fn parent_ledger_rows(
   state: State,
   drawn: Draws,
 ) -> Result(List(ledger.Row), String) {
-  // The minibatch plan is in the open step's progress once its row is written.
-  use plan_id <- result.try(case state.open {
-    Some(progress) -> Ok(progress.parent_minibatch)
+  // The minibatch plan is in the open step's rows once its row is written.
+  use plan_id <- result.try(case state.search.open {
+    Some(progress) ->
+      search.plan_of(state, progress.step, search.ParentMinibatch)
+      |> result.replace_error("the parent's minibatch has not been recorded")
     None -> Error("the parent's minibatch has not been recorded")
   })
 
@@ -1462,15 +1494,19 @@ fn screen_and_judge(
 
   // A step the log already carried past the screen is not screened again;
   // the verdict rows decide what remains.
-  let screened = case state.open {
-    Some(search.Progress(validate: Some(_), ..)) -> search.Passed
-    Some(search.Progress(validate: None, ..)) | None ->
-      search.screen(parent_rows, child_rows, task_ids)
+  let screened = case state.search.open {
+    Some(gepa.Progress(reached: gepa.ChildValidated, ..)) -> select.Passed
+    Some(gepa.Progress(..)) | None ->
+      select.screen(
+        search.per_task_means(parent_rows, task_ids),
+        search.per_task_means(child_rows, task_ids),
+        task_ids,
+      )
   }
 
   // A failed screen is recorded as a tune-split verdict that claims nothing.
   case screened {
-    search.Failed ->
+    select.Failed ->
       record(
         writer,
         state,
@@ -1483,7 +1519,7 @@ fn screen_and_judge(
         ),
       )
 
-    search.Passed ->
+    select.Passed ->
       validate(ctx, frozen, directory, writer, state, drawn, child)
   }
 }
@@ -1498,46 +1534,48 @@ fn child_minibatch(
   drawn: Draws,
   child: Arm,
 ) -> Result(#(State, List(stat.Trial)), String) {
-  // The row is written once; a resumed step finds it in the progress.
-  use #(state, sub) <- result.try(case state.open {
-    Some(search.Progress(child_minibatch: Some(plan_id), ..)) -> {
-      use sub <- result.map(
-        reloaded(directory, state, plan_id, fn(cap) {
-          sub_plan(frozen, drawn.tasks, [child], frozen.tune_trials, cap)
-        }),
-      )
+  // The row is written once; a resumed step finds it in its rows.
+  use #(state, sub) <- result.try(
+    case search.plan_of(state, drawn.step, search.ChildMinibatch) {
+      Ok(plan_id) -> {
+        use sub <- result.map(
+          reloaded(directory, state, plan_id, fn(cap) {
+            sub_plan(frozen, drawn.tasks, [child], frozen.tune_trials, cap)
+          }),
+        )
 
-      #(state, sub)
-    }
+        #(state, sub)
+      }
 
-    Some(search.Progress(child_minibatch: None, ..)) | None -> {
-      use left <- result.try(remaining(ctx, frozen, directory, state))
-      use hold <- result.try(held_back(
-        ctx,
-        frozen,
-        child,
-        list.length(drawn.tasks),
-        BeforeChildMinibatch,
-      ))
-      let remaining = float.max(left -. hold, 0.0)
-      let sub =
-        sub_plan(frozen, drawn.tasks, [child], frozen.tune_trials, remaining)
-      use state <- result.map(record(
-        writer,
-        state,
-        search.Run(
-          arm: child.id,
-          split: split.Tune,
-          plan: sub.id,
-          step: drawn.step,
-          role: search.ChildMinibatch,
-          cap: remaining,
-        ),
-      ))
+      Error(Nil) -> {
+        use remaining <- result.try(capped(
+          ctx,
+          frozen,
+          directory,
+          state,
+          child,
+          list.length(drawn.tasks),
+          budget.BeforeChildMinibatch,
+        ))
+        let sub =
+          sub_plan(frozen, drawn.tasks, [child], frozen.tune_trials, remaining)
+        use state <- result.map(record(
+          writer,
+          state,
+          search.Run(
+            arm: child.id,
+            split: split.Tune,
+            plan: sub.id,
+            step: drawn.step,
+            role: search.ChildMinibatch,
+            cap: remaining,
+          ),
+        ))
 
-      #(state, sub)
-    }
-  })
+        #(state, sub)
+      }
+    },
+  )
 
   use _summary <- result.try(
     execute(ctx, frozen, directory, state, sub, drawn.tasks, [child]),
@@ -1559,57 +1597,59 @@ fn validate(
   child: Arm,
 ) -> Result(State, String) {
   // As with the minibatches, the row is written once.
-  use #(state, sub) <- result.try(case state.open {
-    Some(search.Progress(validate: Some(plan_id), ..)) -> {
-      use sub <- result.map(
-        reloaded(directory, state, plan_id, fn(cap) {
+  use #(state, sub) <- result.try(
+    case search.plan_of(state, drawn.step, search.ValidateRun) {
+      Ok(plan_id) -> {
+        use sub <- result.map(
+          reloaded(directory, state, plan_id, fn(cap) {
+            sub_plan(
+              frozen,
+              frozen.validate,
+              [child],
+              frozen.trials_per_cell,
+              cap,
+            )
+          }),
+        )
+
+        #(state, sub)
+      }
+
+      Error(Nil) -> {
+        use remaining <- result.try(capped(
+          ctx,
+          frozen,
+          directory,
+          state,
+          child,
+          list.length(drawn.tasks),
+          budget.BeforeValidate,
+        ))
+        let sub =
           sub_plan(
             frozen,
             frozen.validate,
             [child],
             frozen.trials_per_cell,
-            cap,
+            remaining,
           )
-        }),
-      )
+        use state <- result.map(record(
+          writer,
+          state,
+          search.Run(
+            arm: child.id,
+            split: split.Validate,
+            plan: sub.id,
+            step: drawn.step,
+            role: search.ValidateRun,
+            cap: remaining,
+          ),
+        ))
 
-      #(state, sub)
-    }
-
-    Some(search.Progress(validate: None, ..)) | None -> {
-      use left <- result.try(remaining(ctx, frozen, directory, state))
-      use hold <- result.try(held_back(
-        ctx,
-        frozen,
-        child,
-        list.length(drawn.tasks),
-        BeforeValidate,
-      ))
-      let remaining = float.max(left -. hold, 0.0)
-      let sub =
-        sub_plan(
-          frozen,
-          frozen.validate,
-          [child],
-          frozen.trials_per_cell,
-          remaining,
-        )
-      use state <- result.map(record(
-        writer,
-        state,
-        search.Run(
-          arm: child.id,
-          split: split.Validate,
-          plan: sub.id,
-          step: drawn.step,
-          role: search.ValidateRun,
-          cap: remaining,
-        ),
-      ))
-
-      #(state, sub)
-    }
-  })
+        #(state, sub)
+      }
+    },
+  )
 
   use _summary <- result.try(
     execute(ctx, frozen, directory, state, sub, frozen.validate, [child]),
@@ -1622,31 +1662,37 @@ fn validate(
   // The incumbent comparison exists only when the parent is not the
   // incumbent, and a resumed step that already holds it does not write it twice.
   use #(state, against_incumbent) <- result.try(
-    case state.incumbent == drawn.parent, state.open {
+    case state.search.incumbent == drawn.parent, state.search.open {
       True, _ -> Ok(#(state, None))
-      False, Some(search.Progress(against_incumbent: Some(found), ..)) ->
+      False, Some(gepa.Progress(against_incumbent: Some(found), ..)) ->
         Ok(#(state, Some(found)))
-      False, Some(search.Progress(against_incumbent: None, ..)) | False, None -> {
+      False, Some(gepa.Progress(against_incumbent: None, ..)) | False, None -> {
         use incumbent_rows <- result.try(validate_rows(
           directory,
           state,
-          state.incumbent,
+          state.search.incumbent,
         ))
         let found =
-          judge(frozen, incumbent_rows, state.incumbent, child_rows, child.id)
+          judge(
+            frozen,
+            incumbent_rows,
+            state.search.incumbent,
+            child_rows,
+            child.id,
+          )
         use state <- result.map(record(
           writer,
           state,
           search.Judgement(
             arm: child.id,
-            against: state.incumbent,
+            against: state.search.incumbent,
             split: split.Validate,
             verdict: found,
             disposition: search.Unsettled,
           ),
         ))
 
-        #(state, Some(found))
+        #(state, Some(search.acceptance_of(found)))
       }
     },
   )
@@ -1659,7 +1705,13 @@ fn validate(
     sub.id,
   ))
   let disposition =
-    search.dispose(against_parent, against_incumbent, child_led, incumbent_led)
+    rule.dispose(
+      search.acceptance_of(against_parent),
+      against_incumbent,
+      child_led,
+      incumbent_led,
+    )
+    |> search.disposition_from_gepa
 
   record(
     writer,
@@ -1707,24 +1759,25 @@ fn led_by(
   child: String,
   child_plan: String,
 ) -> Result(#(Int, Int), String) {
-  let validate_ids = list.map(frozen.validate, fn(each) { each.id })
+  let validate_ids = validate_ids(frozen)
 
-  use pool <- result.try(pool_means(frozen, directory, state, state.pool))
+  use pool <- result.try(pool_means(frozen, directory, state, state.search.pool))
   use child_rows <- result.map(arm_rows(directory, child_plan, child))
   let leaders =
-    search.front(
+    select.front(
       list.append(pool, [
         #(child, search.per_task_means(child_rows, validate_ids)),
       ]),
+      validate_ids,
       frozen.trials_per_cell,
     )
   let led = fn(arm_id: String) {
-    list.find(leaders, fn(leader) { leader.arm == arm_id })
+    list.find(leaders, fn(leader) { leader.candidate == arm_id })
     |> result.map(fn(leader) { leader.tasks_led })
     |> result.unwrap(0)
   }
 
-  #(led(child), led(state.incumbent))
+  #(led(child), led(state.search.incumbent))
 }
 
 // --- the confirm run ---------------------------------------------------------------------
@@ -1747,16 +1800,22 @@ fn confirm(
   state: State,
 ) -> Result(Confirmed, String) {
   // Three cases: nothing to confirm, already judged, or a run to start or resume.
-  case state.incumbent == frozen.seed.id, state.confirmation {
+  case state.search.incumbent == frozen.seed.id, state.confirmation {
     True, _ -> Ok(Ran(state))
     False, Some(search.Confirmation(verdict: Some(_), ..)) -> Ok(Ran(state))
     False, found -> {
       use left <- result.try(remaining(ctx, frozen, directory, state))
-      use need <- result.try(confirm_worst_case(ctx, frozen))
+      use costs <- result.try(costs(ctx, frozen.seed))
+      let affordable =
+        budget.confirm_affordable(
+          remaining: left,
+          costs:,
+          design: design(frozen, 0),
+        )
 
       // A confirm run the search can no longer cover is not started; the
       // headline then says the budget, not the evidence, left it unconfirmed.
-      case found, left >=. need {
+      case found, affordable {
         None, False -> Ok(Unaffordable(state))
         None, True | Some(_), _ ->
           run_confirm(ctx, frozen, directory, writer, state, found)
@@ -1775,7 +1834,7 @@ fn run_confirm(
   state: State,
   found: Option(search.Confirmation),
 ) -> Result(State, String) {
-  use best <- result.try(read_arm(directory, state.incumbent))
+  use best <- result.try(read_arm(directory, state.search.incumbent))
   let arms = [frozen.seed, best]
   {
     // The run row is written once.
@@ -1807,7 +1866,7 @@ fn run_confirm(
             arm: best.id,
             split: split.Validate,
             plan: sub.id,
-            step: state.step,
+            step: state.search.step,
             role: search.Confirm,
             cap: remaining,
           ),
@@ -1898,7 +1957,7 @@ fn reloaded(
         )
         |> result.map(fn(loaded) { loaded.plan })
       Ok(False) | Error(_) -> {
-        use cap <- result.map(recorded_cap(state, plan_id))
+        use cap <- result.map(search.recorded_cap(state, plan_id))
 
         rebuild(cap)
       }
@@ -1921,24 +1980,6 @@ fn reloaded(
   ))
 
   loaded
-}
-
-/// The cap a Run row recorded for a sub-plan.
-fn recorded_cap(state: State, plan_id: String) -> Result(Float, String) {
-  list.find_map(state.runs, fn(event) {
-    case event {
-      search.Run(plan:, cap:, ..) if plan == plan_id -> Ok(cap)
-      search.Run(..)
-      | search.Candidate(..)
-      | search.Reflection(..)
-      | search.Refusal(..)
-      | search.Judgement(..)
-      | search.Stop(..) -> Error(Nil)
-    }
-  })
-  |> result.map_error(fn(_) {
-    "search row missing: the run row for " <> plan_id
-  })
 }
 
 /// Runs a sub-plan under `runs/` through the seam, with the trial context
@@ -1975,11 +2016,11 @@ fn execute(
 // --- the log writer ------------------------------------------------------------------------
 
 /// Starts the process that owns the search log.
-fn start_writer(path: String) -> Result(Writer, String) {
+fn start_writer(path: String, store: search.Store) -> Result(Writer, String) {
   actor.new(path)
   |> actor.on_message(write_line)
   |> actor.start
-  |> result.map(fn(started) { Writer(started.data) })
+  |> result.map(fn(started) { Writer(started.data, store) })
   |> result.replace_error("the search log writer did not start")
 }
 
@@ -2020,10 +2061,19 @@ fn append(writer: Writer, event: Event) -> Result(Event, String) {
 /// refuses never reaches disk and the state in memory is always the fold of
 /// the file.
 fn record(writer: Writer, state: State, event: Event) -> Result(State, String) {
-  use next <- result.try(search.apply(state, event))
+  use next <- result.try(search.apply(state, event, writer.store))
   use _event <- result.map(append(writer, event))
 
   next
+}
+
+/// The lookup the fold reads a search directory through: an arm's
+/// components from `arms/`. Nothing else leaves the ledgers, which every
+/// decision reads from disk.
+fn store_for(directory: String) -> search.Store {
+  search.Store(components: fn(arm_id) {
+    read_arm(directory, arm_id) |> result.map(search.component_map)
+  })
 }
 
 // --- the front -------------------------------------------------------------------------------
@@ -2058,22 +2108,23 @@ pub fn write_front(
 ) -> Result(Nil, String) {
   use lines <- result.try(lines(directory, frozen, state))
   let ranked =
-    search.rank(
+    select.rank(
       list.map(lines, fn(line) {
-        search.Ranked(
-          arm: line.member.arm,
-          disposition: option.unwrap(line.member.disposition, search.Unsettled),
+        select.Ranked(
+          candidate: line.member.arm,
+          disposition: option.unwrap(line.member.disposition, search.Unsettled)
+            |> search.disposition_to_gepa,
           step: line.member.step,
-          dominance: dominance_of(line, lines, frozen),
+          standing: search.standing_of(dominance_of(line, lines, frozen)),
           tasks_led: line.tasks_led,
         )
       }),
-      state.incumbent,
+      state.search.incumbent,
     )
   let ordered =
     list.filter_map(ranked, fn(entry) {
-      list.find(lines, fn(line) { line.member.arm == entry.arm })
-      |> result.map(fn(line) { #(line, entry.dominance) })
+      list.find(lines, fn(line) { line.member.arm == entry.candidate })
+      |> result.map(fn(line) { #(line, dominance_of(line, lines, frozen)) })
     })
   use spend <- result.try(spent(frozen, directory, state))
 
@@ -2101,7 +2152,7 @@ pub fn write_front(
 pub fn report(directory: String) -> Result(Nil, String) {
   use frozen <- result.try(load(directory))
   use events <- result.try(read_log(directory))
-  use state <- result.try(search.replay(events))
+  use state <- result.try(search.replay(events, store_for(directory)))
 
   write_front(directory, frozen, state)
 }
@@ -2114,12 +2165,18 @@ fn lines(
   frozen: Plan,
   state: State,
 ) -> Result(List(Line), String) {
-  use means <- result.try(pool_means(frozen, directory, state, state.pool))
-  let leaders = search.front(means, frozen.trials_per_cell)
+  use means <- result.try(pool_means(
+    frozen,
+    directory,
+    state,
+    state.search.pool,
+  ))
+  let leaders =
+    select.front(means, validate_ids(frozen), frozen.trials_per_cell)
   use seed_rows <- result.try(validate_rows(directory, state, frozen.seed.id))
 
-  state.members
-  |> list.filter(fn(member) { list.contains(state.pool, member.arm) })
+  search.members(state)
+  |> list.filter(fn(member) { list.contains(state.search.pool, member.arm) })
   |> list.try_map(fn(member) {
     use candidate <- result.try(read_arm(directory, member.arm))
     use rows <- result.try(validate_rows(directory, state, member.arm))
@@ -2145,7 +2202,9 @@ fn lines(
       rows:,
       against_parent:,
       against_seed:,
-      tasks_led: list.find(leaders, fn(leader) { leader.arm == member.arm })
+      tasks_led: list.find(leaders, fn(leader) {
+        leader.candidate == member.arm
+      })
         |> result.map(fn(leader) { leader.tasks_led })
         |> result.unwrap(0),
       scores: score_vector(rows),
@@ -2256,17 +2315,17 @@ fn headline(frozen: Plan, state: State) -> String {
     None ->
       // Without a confirm run the search is unfinished, found nothing, or
       // stopped for dollars before the run could be paid for.
-      case state.incumbent == frozen.seed.id, state.stopped {
+      case state.search.incumbent == frozen.seed.id, state.search.stopped {
         True, _ -> "No candidate improved on the seed"
         False, None ->
           "In progress: "
-          <> short(state.incumbent)
+          <> short(state.search.incumbent)
           <> " leads, not yet confirmed"
         False, Some(reason) ->
           "Not confirmed (budget): "
-          <> short(state.incumbent)
+          <> short(state.search.incumbent)
           <> " led the search but it stopped for "
-          <> search.stop_name(reason)
+          <> search.stop_name(search.stop_from_gepa(reason))
           <> " before the seed-and-best sub-plan could be paid for"
       }
   }
@@ -2326,24 +2385,25 @@ fn front_json(
     #("v", json.Int(version)),
     #("search", json.String(frozen.id)),
     #("headline", json.String(headline(frozen, state))),
-    #("incumbent", json.String(state.incumbent)),
+    #("incumbent", json.String(state.search.incumbent)),
     #("confirm", case state.confirmation {
       Some(search.Confirmation(verdict: Some(found), ..)) ->
         search.verdict_json(found)
       Some(search.Confirmation(verdict: None, ..)) | None -> json.Null
     }),
-    #("steps", json.Int(state.step)),
-    #("reflections", json.Int(state.reflections)),
-    #("stopped", case state.stopped {
-      Some(reason) -> json.String(search.stop_name(reason))
+    #("steps", json.Int(state.search.step)),
+    #("reflections", json.Int(state.search.reflections)),
+    #("stopped", case state.search.stopped {
+      Some(reason) ->
+        json.String(search.stop_name(search.stop_from_gepa(reason)))
       None -> json.Null
     }),
     #(
       "spend",
       json.Object([
         #("total", json.Float(spend.paid)),
-        #("reflections", json.Float(state.reflection_dollars)),
-        #("trials", json.Float(spend.paid -. state.reflection_dollars)),
+        #("reflections", json.Float(state.search.spent_reflecting)),
+        #("trials", json.Float(spend.paid -. state.search.spent_reflecting)),
         #("trials_priced_not_paid", json.Float(spend.priced_not_paid)),
       ]),
     ),
@@ -2445,21 +2505,21 @@ fn front_markdown(
       <> " at K "
       <> int.to_string(frozen.tune_trials),
     "- steps: "
-      <> int.to_string(state.step)
+      <> int.to_string(state.search.step)
       <> ", reflections: "
-      <> int.to_string(state.reflections)
+      <> int.to_string(state.search.reflections)
       <> ", children: "
-      <> int.to_string(search.children(state)),
+      <> int.to_string(gepa.children(state.search)),
     "- spend: "
       <> fmt(spend.paid)
       <> " dollars ("
-      <> fmt(state.reflection_dollars)
+      <> fmt(state.search.spent_reflecting)
       <> " in reflections; "
       <> fmt(spend.priced_not_paid)
       <> " priced on tape, not paid)",
     "- stopped: "
-      <> case state.stopped {
-      Some(reason) -> search.stop_name(reason)
+      <> case state.search.stopped {
+      Some(reason) -> search.stop_name(search.stop_from_gepa(reason))
       None -> "not yet"
     },
     "",

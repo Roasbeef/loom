@@ -617,11 +617,20 @@ holdout measured. The decision for the payload is in
 a loop over the runner, a reflection call and a pure search state that
 proposes, screens and accepts candidate arms, and writes a front the
 operator takes to the governed plane by hand. It never calls `propose`,
-`approve` or `select`. Modules: `eval/search` (the log codec, the fold, the
-front, the parent draw, the screen, the dispositions, the ranking),
-`eval/reflect` (the reflection prompt, its bounds and the gateway call),
-`eval/optimize` (the search plan, the loop, the sub-plans, the front files)
-and `eval/optimize_cli` (`gleam run -m eval/optimize_cli -- search
+`approve` or `select`. The search's decisions live in the `gepa` library
+(`packages/gepa`, stdlib only, held to R6): the fold over the log, the
+front, the parent draw, the minibatch, the screen, the dispositions, the
+ranking, the budget holds and the reflection prompt. Modules here:
+`eval/search` (Loom's row type and its JSON codec, unchanged on disk, and
+the adapter that feeds each row to `gepa.apply`, reading an arm's
+components from `arms/` through a `Store` and nothing from the ledgers,
+so the state is a fold of the log alone, plus the Loom-shaped projections
+`members`, `runs`, `plan_of`, `recorded_cap`, `stopped` and the word
+mappings `acceptance_of`, `disposition_to_gepa`, `stop_from_gepa`,
+`standing_of`), `eval/reflect` (Loom's reflective dataset built from
+ledger rows, scrubbed by `trace.scrub_excerpt`, rendered and bounded by
+`gepa/prompt`, and the gateway call), `eval/optimize` (the search plan, the
+loop, the sub-plans, the front files) and `eval/optimize_cli` (`gleam run -m eval/optimize_cli -- search
 --objective TEXT [--arm FILE|none] [--tasks DIR] [--out DIR] [--config
 loom.toml] [--reflector NAME] [--steps N] [--max-dollars X]
 [--max-reflections N] [--max-candidates N] [--k N] [--k-tune N] [--minibatch
@@ -642,20 +651,26 @@ all of it), copies of `tasks/` and `arms/` (every candidate's
 `PROPOSE.md`.
 
 One step, given a pool whose members all have a complete Validate ledger:
-`search.front` builds the per-task leading sets (within `1/K` of the best
-mean), prunes the union by `dominance.pareto` and `search.draw_parent` draws
-the parent in proportion to tasks led from `prng.from_string(search id <>
-"/" <> step)`; `search.slot_for` picks the slot round robin and
-`search.minibatch` draws `b` tune tasks from the same generator; the parent
+`select.front` builds the per-task leading sets (within `1/K` of the best
+mean, from `search.per_task_means` over each arm's Validate ledger), prunes
+the union by Pareto dominance and `select.draw_parent` draws the parent in
+proportion to tasks led from `gepa/prng.from_string(search id <> "/" <>
+step)` (the same stream as `evalstat/prng`, which `search_test` checks);
+`select.slot_for` picks the slot round robin over slot names and
+`select.minibatch` draws `b` tune tasks from the same generator; the parent
 runs the minibatch alone (`run.execute` on a one-arm sub-plan at `K_tune`);
 `reflect.records` builds the reflective dataset from those rows and the
 reflector answers the slot's new text; the child is `arm.mint` of the parent
 with that slot replaced; the child runs the same minibatch alone and
-`search.screen` (mean per-task reward at least the parent's) decides whether
+`select.screen` (mean per-task reward at least the parent's) decides whether
 to pay for Validate; the child runs the whole Validate split alone at `K`
 and `evalstat.paired_verdict` pairs its rows against the parent's earlier
-Validate rows and against the incumbent's; `search.dispose` turns the
-verdicts into the step's disposition. At a stop (`steps`, `dollars`,
+Validate rows and against the incumbent's; the verdicts become the
+library's `Acceptance` (`search.acceptance_of`) and `gepa/verdict.dispose`
+turns them into the step's disposition. The loop stays in `eval/optimize`
+rather than running `gepa.next`, because each sub-run is a resumable
+directory with its own ledger and cap that the library cannot see; every
+decision it would make is asked of the library's pure pieces instead. At a stop (`steps`, `dollars`,
 `reflections`, `candidates`) the search runs seed and best together in one
 sub-plan, the only simultaneous comparison, and that verdict is the
 headline; anything but `Improved` reads "Not confirmed".
@@ -674,7 +689,8 @@ headline; anything but `Improved` reads "Not confirmed".
   reproduces an existing candidate is a `refused` row and costs nothing.
   Futility never fires inside a sub-run (every sub-plan but the confirm run
   has one arm), so there is no `stopped_futile` disposition.
-- **The log is the state.** `search.replay` folds `search.jsonl` and refuses
+- **The log is the state.** `search.replay` translates each row of
+  `search.jsonl` (`search.to_gepa`) and `gepa.apply` refuses
   the first row that does not follow: a row out of order, an arm no
   candidate row introduced, a settling verdict whose runs are missing
   (`search row missing: ...`), a disposition that does not follow from its
@@ -706,9 +722,15 @@ headline; anything but `Improved` reads "Not confirmed".
   |V| * K * worst(cell) + worst(reflection)` and `confirm = 2 * |V| * K *
   worst(cell)`, and the money is held back, not merely checked: each
   sub-run's cap is `remaining - confirm - the worst case of the stages still
-  to come in its step` (`held_back`), the seed's `remaining - confirm`, so a
-  step whose cells retry is truncated rather than allowed into the
-  confirm's reservation. A reflection is made only when its worst case is
+  to come in its step` (`gepa/budget.held_back`), the seed's `remaining -
+  confirm`, so a step whose cells retry is truncated rather than allowed
+  into the confirm's reservation; the arithmetic is the library's
+  (`budget.stop_reason`, `budget.cap`, `budget.confirm_affordable`,
+  `budget.reflection_affordable`) over Loom's numbers (`costs`: the
+  per-trial worst case at `ledger.max_attempts` and the reflection's worst
+  case; `design`: the task counts and the `K`s), comparing money with a
+  relative tolerance of one part in a billion, since what remains is a sum
+  of ledger charges. A reflection is made only when its worst case is
   still covered; a skipped one is a zero-dollar reflection row and a
   `refused` row naming the budget, so the fold still reads the step. A
   confirm run the budget no longer covers is `Unaffordable` (an ADT, not a
@@ -735,7 +757,7 @@ headline; anything but `Improved` reads "Not confirmed".
   to the holdout and any task listed under a split the salt does not assign
   it to (so a hand-minted `search.json` cannot smuggle or swap one), and a
   search row cannot spell the split (`decode_split`).
-- **The front and the proposals.** `search.rank` orders the incumbent
+- **The front and the proposals.** `select.rank` orders the incumbent
   first, then the improved tier (`incumbent`, `joined`) by dominance over
   the seed and tasks led, then the Pareto tier by minting step, so a
   `pareto_only` child never stands above its parent whatever its
@@ -788,11 +810,14 @@ reflection the budget cannot cover writes a zero-dollar row and a budget
 refusal, stops cleanly, and the directory replays and resumes; a refused answer and an inapplicable child cost
 nothing and a search with nothing improved writes no `propose/`; the
 search stops for dollars before a step it cannot cover; a holdout-assigned
-or split-swapped task is refused by `check`. `search_test` holds the codec, the fold (a
-deleted run row refuses with `search row missing`; a contradicting or
-duplicate row is refused), the front, the draw, the dispositions and the
-Pareto-below-parent ranking. `reflect_test` holds the bounds and the EUnit
-verbose redaction. Every test deletes its scratch root when it finishes.
+or split-swapped task is refused by `check`. `search_test` holds the codec, the adapter (a
+Loom log replays through the library; a deleted run row still refuses with
+`search row missing`), the word mappings, the generator equality with
+`evalstat/prng`, the ledger-to-score aggregation and the arm-to-component
+map; the fold's own rules, the front, the draws, the screen, the
+dispositions, the ranking, the budget holds and the prompt's bounds and
+redaction are `packages/gepa/test`'s. `reflect_test` holds Loom's record
+building over ledger rows and the rendered prompt. Every test deletes its scratch root when it finishes.
 
 ### Hazards
 
@@ -807,8 +832,9 @@ verbose redaction. Every test deletes its scratch root when it finishes.
   here, and its session teardown can print a `client/agency` hook-reaper
   crash report (a `ProcessDown` from `runtime/writer`), which is noise from
   the client's own shutdown, not a failed test.
-- `step_worst_case` counts one attempt per cell; a cell can retry three
-  times under the sub-run's own cap, which is why the reflection's worst
-  case is checked again right before the call.
+- `budget.step_worst_case` prices every cell at `ledger.max_attempts`
+  attempts; the reflection's worst case is still checked again right
+  before the call, because an executor that ignores its cap can have
+  spent past the hold.
 - The headline's improvement is on the validate tasks the search selected
   on; the holdout is never run by the search, and `front.md` says so.

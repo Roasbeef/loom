@@ -291,12 +291,12 @@ pub fn a_planted_sentinel_is_found_and_confirmed_test_() -> scripted.EunitTest {
 
     // The incumbent carries the plant, became so at step 2, and the inert
     // step-1 child never did.
-    let assert Ok(best) = arm_file(outcome.directory, state.incumbent)
+    let assert Ok(best) = arm_file(outcome.directory, state.search.incumbent)
     assert scripted.carries_sentinel(best)
     let verdicts = validate_verdicts(events)
     assert list.contains(list.map(verdicts, disposition_of), search.Incumbent)
     let assert [first, ..] =
-      list.filter(state.members, fn(member) { member.step == 1 })
+      list.filter(search.members(state), fn(member) { member.step == 1 })
     assert !scripted.carries_sentinel(result.unwrap(
       arm_file(outcome.directory, first.arm),
       scripted.baseline(),
@@ -307,7 +307,7 @@ pub fn a_planted_sentinel_is_found_and_confirmed_test_() -> scripted.EunitTest {
     // The confirm run, the only simultaneous comparison, agrees.
     let assert Some(search.Confirmation(verdict: Some(verdict.Improved(..)), ..)) =
       state.confirmation
-    assert state.stopped == Some(search.Steps)
+    assert search.stopped(state) == Some(search.Steps)
     let assert Ok(markdown) = simplifile.read(outcome.directory <> "/front.md")
     assert string.starts_with(markdown, "Confirmed: ")
     assert string.contains(markdown, "| 1 | " <> string.slice(best.id, 0, 12))
@@ -456,7 +456,7 @@ pub fn an_interrupted_search_resumes_byte_identically_test_() -> scripted.EunitT
         }
       })
     assert list.length(plans) == list.length(list.unique(plans))
-    assert outcome.state.stopped == Some(search.Steps)
+    assert search.stopped(outcome.state) == Some(search.Steps)
     scripted.remove(r.root)
     scripted.remove(other_root)
   })
@@ -501,7 +501,7 @@ pub fn a_crash_before_the_run_directory_exists_still_resumes_test_() -> scripted
         directory <> "/runs/" <> minibatch <> "/plan.json",
       )
       == Ok(True)
-    assert outcome.state.stopped == Some(search.Steps)
+    assert search.stopped(outcome.state) == Some(search.Steps)
     scripted.remove(r.root)
   })
 }
@@ -547,7 +547,7 @@ pub fn a_resumed_sub_run_cannot_spend_past_the_search_test_() -> scripted.EunitT
     let total = ledger_dollars(directory, log_of(directory))
     assert total <=. 10.0
     assert scripted.dollars_close(total, 9.9)
-    assert outcome.state.stopped == Some(search.Dollars)
+    assert search.stopped(outcome.state) == Some(search.Dollars)
     scripted.remove(r.root)
   })
 }
@@ -573,9 +573,9 @@ pub fn reflections_are_metered_on_a_taped_lane_test_() -> scripted.EunitTest {
 
     // Two reflections fit before the third's worst case does not.
     let assert Ok(outcome) = optimize.search(r.ctx, r.plan, r.out)
-    assert outcome.state.reflections == 2
-    assert outcome.state.stopped == Some(search.Dollars)
-    assert outcome.state.reflection_dollars <=. r.plan.budgets.max_dollars
+    assert outcome.state.search.reflections == 2
+    assert search.stopped(outcome.state) == Some(search.Dollars)
+    assert outcome.state.search.spent_reflecting <=. r.plan.budgets.max_dollars
     scripted.remove(r.root)
   })
 }
@@ -602,12 +602,12 @@ pub fn a_failed_reflection_is_charged_and_refused_test_() -> scripted.EunitTest 
     // Both steps failed to reflect, both were billed, nothing joined.
     assert list.length(refusals) == 2
     assert list.all(refusals, string.contains(_, "timed out"))
-    assert outcome.state.reflections == 2
+    assert outcome.state.search.reflections == 2
     assert scripted.dollars_close(
-      outcome.state.reflection_dollars,
+      outcome.state.search.spent_reflecting,
       2.0 *. reflect.dollars(scripted.reflection_usage(), r.ctx.reflector_card),
     )
-    assert outcome.state.pool == [scripted.baseline().id]
+    assert outcome.state.search.pool == [scripted.baseline().id]
     scripted.remove(r.root)
   })
 }
@@ -630,7 +630,8 @@ pub fn a_confirm_run_can_fail_the_search_test_() -> scripted.EunitTest {
         executor(config, scripted.Never),
       )
     let assert Ok(outcome) = optimize.search(r.ctx, r.plan, r.out)
-    let assert Ok(best) = arm_file(outcome.directory, outcome.state.incumbent)
+    let assert Ok(best) =
+      arm_file(outcome.directory, outcome.state.search.incumbent)
     assert scripted.carries_sentinel(best)
 
     // Not confirmed, said so in the headline and the proposal note; the
@@ -689,8 +690,8 @@ pub fn the_confirm_run_is_reserved_before_a_step_is_taken_test_() -> scripted.Eu
       )
 
     let assert Ok(outcome) = optimize.search(r.ctx, r.plan, r.out)
-    assert outcome.state.step == 1
-    assert outcome.state.stopped == Some(search.Dollars)
+    assert outcome.state.search.step == 1
+    assert search.stopped(outcome.state) == Some(search.Dollars)
     let assert Some(search.Confirmation(verdict: Some(_), ..)) =
       outcome.state.confirmation
     let assert Ok(markdown) = simplifile.read(outcome.directory <> "/front.md")
@@ -756,8 +757,8 @@ pub fn an_unaffordable_reflection_stops_cleanly_and_resumes_test_() -> scripted.
         }
       })
     assert string.starts_with(reason, "budget:")
-    assert outcome.state.stopped == Some(search.Dollars)
-    assert outcome.state.step == 1
+    assert search.stopped(outcome.state) == Some(search.Dollars)
+    assert outcome.state.search.step == 1
     let assert Ok(Nil) = optimize.report(outcome.directory)
     let assert Ok(again) = optimize.search(r.ctx, r.plan, r.out)
     assert again.state == outcome.state
@@ -799,12 +800,12 @@ pub fn retrying_cells_cannot_spend_the_confirm_reservation_test_() -> scripted.E
       )
 
     let assert Ok(outcome) = optimize.search(r.ctx, r.plan, r.out)
-    assert outcome.state.step == 1
-    assert outcome.state.incumbent != scripted.baseline().id
+    assert outcome.state.search.step == 1
+    assert outcome.state.search.incumbent != scripted.baseline().id
     let assert Some(search.Confirmation(verdict: Some(found), ..)) =
       outcome.state.confirmation
     assert is_improved(search.Judgement(
-      outcome.state.incumbent,
+      outcome.state.search.incumbent,
       scripted.baseline().id,
       split.Validate,
       found,
@@ -860,7 +861,7 @@ pub fn refused_answers_and_inapplicable_children_cost_nothing_test_() -> scripte
     // Three steps, three parent minibatches, no child ever ran: the seed's
     // Validate run plus three runs, and the pool is still the seed.
     assert scripted.count(calls) == 4
-    assert outcome.state.pool == [scripted.baseline().id]
+    assert outcome.state.search.pool == [scripted.baseline().id]
     assert outcome.state.confirmation == None
     let assert Ok(propose) = simplifile.read(outcome.directory <> "/PROPOSE.md")
     assert string.contains(propose, "nothing to propose")
@@ -892,8 +893,8 @@ pub fn the_search_stops_for_dollars_it_cannot_cover_test_() -> scripted.EunitTes
 
     // One dollar covers the seed's run only as far as the executor lets it;
     // the first step's worst case does not fit, so no step is taken.
-    assert outcome.state.stopped == Some(search.Dollars)
-    assert outcome.state.step == 0
+    assert search.stopped(outcome.state) == Some(search.Dollars)
+    assert outcome.state.search.step == 0
     let assert Ok(markdown) = simplifile.read(outcome.directory <> "/front.md")
     assert string.starts_with(markdown, "No candidate improved on the seed")
     assert string.contains(markdown, "stopped: dollars")
@@ -1049,7 +1050,8 @@ pub fn a_planted_sentinel_is_found_through_real_sessions_test_() -> scripted.Eun
         // Two reflections went through the gateway; the second planted the
         // sentinel, which reached the agent's system text and was confirmed.
         assert scripted.count(reflections) == 2
-        let assert Ok(best) = arm_file(outcome.directory, state.incumbent)
+        let assert Ok(best) =
+          arm_file(outcome.directory, state.search.incumbent)
         assert scripted.carries_sentinel(best)
         let assert Some(search.Confirmation(
           verdict: Some(verdict.Improved(..)),

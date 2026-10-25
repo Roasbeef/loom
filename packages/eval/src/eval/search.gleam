@@ -1,63 +1,59 @@
-//// The pure state of a prompt search: the append-only log it is folded from,
-//// the pool and its front, the parent draw, the spend filter and the
-//// bookkeeping that turns a verdict into a disposition.
+//// Loom's side of the prompt search: the log rows `search.jsonl` holds,
+//// their JSON codec, and the adapter that feeds them to the `gepa`
+//// library, which owns every decision the search makes.
 ////
-//// `eval/optimize` is a loop with effects: it opens sessions, calls a model
-//// and writes files. Everything the loop *decides* lives here instead, over
-//// values, so that a search can be replayed from its log without running
-//// anything and every rule can be tested without a process. The log is
-//// `search.jsonl`, one JSON object per line, and `replay` is the fold that
-//// turns it back into a `State`. The fold is strict: a row that arrives out
-//// of order, names an arm no `candidate` row introduced, or settles a step
-//// whose runs are missing is a refusal naming the row, never a smaller
-//// search. That is the same rule the trial ledger is held to, and for the
-//// same reason: a log that quietly tolerated a dropped row would let a
-//// candidate look better by losing the run it failed.
+//// The library is generic over the host's world: a candidate is a map
+//// from component name to text, a task an opaque id, a score a float, and
+//// money whatever unit the host meters. This module is where Loom's own
+//// nouns meet it. An `Arm` becomes a component map keyed by `slot_name`;
+//// a sub-run's ledger becomes per-task means (`per_task_means`); a row of
+//// `search.jsonl` becomes a `gepa.Event` (`to_gepa`), with the sub-plan id
+//// riding as the evaluation's `ref` and an arm's components read through a
+//// `Store`, because Loom's rows were written before the library existed
+//// and carry neither. The on-disk format is therefore unchanged: a log
+//// written before the extraction replays through the same codec and the
+//// same fold.
 ////
-//// Three decisions are the search's own and are stated here once.
-////
-//// - **Selection** follows GEPA's Algorithm 2 over the Validate split: for
-////   each task the leading set is every pool member whose per-task mean is
-////   within one sample's worth (`1 / K`) of the best, the union is pruned by
-////   Pareto dominance over the per-task vectors, and the parent is drawn in
-////   proportion to the tasks it leads from a generator seeded by the search
-////   id and the step number, so a resumed search draws the same parent.
-//// - **The minibatch is a spend filter, not a decision rule.** A child runs
-////   the Validate split only when its mean per-task reward on the tune
-////   minibatch is at least the parent's. With three or four tasks the sign
-////   test cannot reach its level, so nothing is claimed at that size; the
-////   screen only decides whether to pay for the run that can.
-//// - **Acceptance is `evalstat.paired_verdict` on Validate**, child against
-////   parent and against the incumbent. The verdict becomes a `Disposition`
-////   by `dispose`: only `Improved` joins the pool as a ranked member;
-////   `Indistinguishable` and `Underpowered` join as Pareto members that are
-////   never ranked above their parent; `Harmed` and `Incomplete` stay out.
+//// `State` is the library's state plus the one thing Loom keeps richer:
+//// the confirm run's full statistical verdict, which the headline prints
+//// and the library reduces to an `Acceptance`. Everything else a reader of
+//// the old `State` wanted (members, runs, the open step's plan ids) is a
+//// projection of the library's state, built on request so the two cannot
+//// drift. The fold is a fold of the log alone: a `Run` row becomes an
+//// evaluation with no tasks, no scores and no cost, because Loom writes the
+//// row before the run exists and reads the ledger from disk at every
+//// decision, so a state folded while running and one replayed afterwards
+//// are the same value. It follows that `gepa.next` is not the loop Loom
+//// runs: `eval/optimize` orders its own effects, since each sub-run is a
+//// resumable directory with a ledger and a cap the library cannot see, and
+//// asks the library's pure pieces for every decision it would make.
 ////
 //// ## Flow
 ////
 //// - `encode_line`, `decode_line`, `parse`: the log's codec
-//// - `replay`, `apply`: the fold from rows to `State`
-//// - `per_task_means`, `front`, `draw_parent`: selection
-//// - `minibatch`, `slot_for`: the step's other two draws
-//// - `screen`: the spend filter
-//// - `dispose`: a verdict to a disposition
-//// - `rank`: the order the front is reported in
+//// - `to_gepa`, `apply`, `replay`: a row into the library's fold
+//// - `members`, `runs`, `plan_of`, `recorded_cap`: Loom-shaped reads
+//// - `component_map`, `per_task_means`: an arm and a ledger as the
+////   library sees them
+//// - `standing_of`, `acceptance_of`: Loom's verdicts as the library's
+////   words
 //// - `slot_name`, `verdict_json`, `decode_verdict`: the shared spellings
 
 import core/json.{type JsonValue}
-import eval/arm.{type Component}
+import eval/arm.{type Arm, type Component}
 import eval/split.{type Split}
 import eval/wire
 import evalstat/dominance
-import evalstat/prng.{type Prng}
 import evalstat/trial as stat
 import evalstat/verdict.{type Verdict}
-import gleam/dict.{type Dict}
+import gepa
+import gepa/budget
+import gepa/select
+import gepa/verdict as rule
 import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/order
 import gleam/result
 import gleam/string
 
@@ -220,7 +216,8 @@ pub type Event {
   )
 }
 
-/// A candidate the fold has seen.
+/// A candidate as Loom reports it: the library's member with Loom's
+/// names, and the sub-plan whose ledger holds its Validate rows.
 pub type Member {
   Member(
     /// The arm id.
@@ -240,40 +237,8 @@ pub type Member {
   )
 }
 
-/// Where an unfinished step has got to. The rows a step writes arrive in
-/// a fixed order, and the stage is the last one seen.
-pub type Progress {
-  Progress(
-    /// The step number.
-    step: Int,
-    /// The parent drawn for the step.
-    parent: String,
-    /// The parent's minibatch sub-plan.
-    parent_minibatch: String,
-    /// Whether a reflection row has been seen since the minibatch.
-    reflected: Reflected,
-    /// The child, once minted.
-    child: Option(String),
-    /// The child's minibatch sub-plan, once started.
-    child_minibatch: Option(String),
-    /// The child's Validate sub-plan, once started.
-    validate: Option(String),
-    /// The verdict against the incumbent, when one was written before the
-    /// settling row.
-    against_incumbent: Option(Verdict),
-  )
-}
-
-/// Whether the open step has reflected yet.
-pub type Reflected {
-  /// No reflection row since the parent's minibatch.
-  NotYet
-
-  /// At least one reflection row.
-  Done
-}
-
-/// The confirm run and what it found.
+/// The confirm run and what it found, with the full verdict the headline
+/// prints.
 pub type Confirmation {
   Confirmation(
     /// The best arm's id.
@@ -285,52 +250,24 @@ pub type Confirmation {
   )
 }
 
-/// The whole search, as the fold leaves it.
+/// The whole search: the library's state and Loom's confirm verdict.
 pub type State {
   State(
-    /// The search id the log belongs to, as the first row named it.
-    seed: String,
-    /// Every candidate in log order.
-    members: List(Member),
-    /// The arms in the pool, in log order: the seed first.
-    pool: List(String),
-    /// The best arm by the search's rule.
-    incumbent: String,
-    /// Every sub-run, in log order.
-    runs: List(Event),
-    /// How many reflections have been made.
-    reflections: Int,
-    /// What the reflections cost.
-    reflection_dollars: Float,
-    /// The last step number opened.
-    step: Int,
-    /// The step in progress, if the log ends inside one.
-    open: Option(Progress),
-    /// The confirm run, once started.
+    /// The library's state, which every decision reads.
+    search: gepa.State,
+    /// The confirm run, once started, with its verdict once judged.
     confirmation: Option(Confirmation),
-    /// Why the search stopped, if it did.
-    stopped: Option(StopReason),
   )
 }
 
-/// Whether a child passed the spend filter.
-pub type Screen {
-  /// Its minibatch mean is at least the parent's: pay for Validate.
-  Passed
-
-  /// Below the parent: the step ends here.
-  Failed
-}
-
-/// A pool member with the per-task means and the count of tasks it leads.
-pub type Leader {
-  Leader(
-    /// The arm id.
-    arm: String,
-    /// The Validate tasks on which it is within one sample of the best.
-    tasks_led: Int,
-    /// Its mean reward per task, task-major in the plan's order.
-    means: List(#(String, Float)),
+/// Where the fold reads what the rows do not carry: an arm's components,
+/// which the library holds a candidate as. The function is data access,
+/// not an effect: a test hands in a constant, `eval/optimize` a reader of
+/// `arms/<id>.json`.
+pub type Store {
+  Store(
+    /// An arm's components by `slot_name`.
+    components: fn(String) -> Result(List(#(String, String)), String),
   )
 }
 
@@ -891,6 +828,165 @@ fn target_name(target: arm.Target) -> String {
 
 // --- the fold -----------------------------------------------------------------------
 
+/// One row as the library's event. The store supplies the seed's and a
+/// child's components; a run's tasks, scores and cost stay in Loom's
+/// ledgers, so its evaluation carries none.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.to_gepa(Stop(Steps), store) == Ok(gepa.Stopped(budget.Steps))
+/// ```
+///
+pub fn to_gepa(event: Event, store: Store) -> Result(gepa.Event, String) {
+  // Each row kind has one library counterpart; the seed's validate run is
+  // told apart from a child's by its step.
+  case event {
+    Candidate(arm:, parent: None, ..) -> {
+      use components <- result.map(store.components(arm))
+
+      gepa.Seeded(candidate: arm, components:)
+    }
+
+    Candidate(arm:, parent: Some(parent), step:, slot:, ..) -> {
+      use components <- result.map(store.components(arm))
+      let slot = option.unwrap(slot, "")
+
+      gepa.Minted(
+        candidate: arm,
+        parent:,
+        step:,
+        slot:,
+        text: result.unwrap(list.key_find(components, slot), ""),
+      )
+    }
+
+    Run(arm:, plan:, step:, role:, cap:, ..) ->
+      Ok(gepa.Evaluated(
+        stage: stage_of(role, step),
+        step:,
+        candidate: arm,
+        tasks: [],
+        cap:,
+        ref: plan,
+        measured: [],
+        cost: 0.0,
+      ))
+
+    Reflection(step:, dollars:, output_digest:, ..) ->
+      Ok(gepa.Reflected(
+        step:,
+        cost: dollars,
+        ref: output_digest,
+        finish: gepa.Unknown,
+      ))
+
+    Refusal(step:, arm:, reason:) ->
+      Ok(gepa.Refused(
+        step:,
+        candidate: case arm {
+          "" -> None
+          _ -> Some(arm)
+        },
+        reason:,
+      ))
+
+    Judgement(arm:, against:, split:, verdict: found, disposition:) ->
+      Ok(gepa.Judged(
+        candidate: arm,
+        against:,
+        basis: basis_of(split, disposition),
+        acceptance: acceptance_of(found),
+        disposition: disposition_to_gepa(disposition),
+        ref: "",
+      ))
+
+    Stop(reason:) -> Ok(gepa.Stopped(stop_to_gepa(reason)))
+  }
+}
+
+/// The library's stage for a run role: the seed's step-0 validate run is
+/// its own stage.
+fn stage_of(role: RunRole, step: Int) -> gepa.Stage {
+  case role, step {
+    ValidateRun, 0 -> gepa.SeedValidate
+    ValidateRun, _ -> gepa.Validate
+    ParentMinibatch, _ -> gepa.ParentMinibatch
+    ChildMinibatch, _ -> gepa.ChildMinibatch
+    Confirm, _ -> gepa.Confirm
+  }
+}
+
+/// The library's basis for a judgement: the split it was reached on, or
+/// the confirm run when the disposition says so.
+fn basis_of(split: Split, disposition: Disposition) -> rule.Basis {
+  // The two confirm dispositions name the confirm run whatever the split
+  // says; otherwise the split is the basis.
+  case disposition, split {
+    Confirmed, _ | Unconfirmed, _ -> rule.OnConfirm
+    Incumbent, split.Tune
+    | Joined, split.Tune
+    | ParetoOnly, split.Tune
+    | Harmed, split.Tune
+    | Unsettled, split.Tune
+    | Refused, split.Tune
+    | ScreenedOut, split.Tune
+    -> rule.OnMinibatch
+    Incumbent, split.Validate
+    | Joined, split.Validate
+    | ParetoOnly, split.Validate
+    | Harmed, split.Validate
+    | Unsettled, split.Validate
+    | Refused, split.Validate
+    | ScreenedOut, split.Validate
+    | Incumbent, split.Holdout
+    | Joined, split.Holdout
+    | ParetoOnly, split.Holdout
+    | Harmed, split.Holdout
+    | Unsettled, split.Holdout
+    | Refused, split.Holdout
+    | ScreenedOut, split.Holdout
+    -> rule.OnValidate
+  }
+}
+
+/// Applies one row to the state, or says why it cannot follow: the
+/// library's fold, then Loom's confirm verdict.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.apply(state, Stop(Steps), store) -> Ok(State(..state, search: stopped))
+/// ```
+///
+pub fn apply(
+  state: State,
+  event: Event,
+  store: Store,
+) -> Result(State, String) {
+  use translated <- result.try(to_gepa(event, store))
+  use search <- result.map(gepa.apply(state.search, translated))
+
+  // The confirm run's row opens Loom's confirmation; its judgement
+  // carries the verdict the library reduced to a word.
+  let confirmation = case event, state.confirmation {
+    Run(arm:, plan:, role: Confirm, ..), _ ->
+      Some(Confirmation(best: arm, plan:, verdict: None))
+    Judgement(verdict: found, disposition: Confirmed, ..), Some(open)
+    | Judgement(verdict: found, disposition: Unconfirmed, ..), Some(open)
+    -> Some(Confirmation(..open, verdict: Some(found)))
+    Run(..), held
+    | Judgement(..), held
+    | Candidate(..), held
+    | Reflection(..), held
+    | Refusal(..), held
+    | Stop(..), held
+    -> held
+  }
+
+  State(search:, confirmation:)
+}
+
 /// Folds a log into the search's state, refusing the first row that does
 /// not follow from the rows before it. An empty log is an error: a search
 /// that has not started has no state to replay.
@@ -898,606 +994,154 @@ fn target_name(target: arm.Target) -> String {
 /// ## Examples
 ///
 /// ```gleam
-/// // search.replay([Candidate(seed, None, 0, Seed, None)]) -> Ok(State(..))
-/// // search.replay([]) == Error("search row missing: the seed candidate")
+/// // search.replay([Candidate(seed, None, 0, Seed, None)], store) -> Ok(State(..))
+/// // search.replay([], store) == Error("search row missing: the seed candidate")
 /// ```
 ///
-pub fn replay(events: List(Event)) -> Result(State, String) {
+pub fn replay(events: List(Event), store: Store) -> Result(State, String) {
+  // The seed's row opens the library's state; every later row folds in.
   case events {
-    [Candidate(arm:, parent: None, step: 0, source: Seed, slot: None), ..rest] ->
-      list.index_fold(rest, Ok(opened(arm)), fn(folded, event, position) {
+    [Candidate(arm:, parent: None, step: 0, source: Seed, slot: None), ..rest] -> {
+      use components <- result.try(store.components(arm))
+      let opened =
+        State(search: gepa.start(arm, components), confirmation: None)
+
+      list.index_fold(rest, Ok(opened), fn(folded, event, position) {
         use state <- result.try(folded)
 
-        apply(state, event)
+        apply(state, event, store)
         |> result.map_error(fn(reason) {
           "search row " <> int.to_string(position + 2) <> ": " <> reason
         })
       })
+    }
 
     [] -> Error("search row missing: the seed candidate")
     [_, ..] -> Error("search row 1: the log must begin with the seed candidate")
   }
 }
 
-/// The state right after the seed's candidate row: step 0 is open until the
-/// seed's Validate run is recorded.
-fn opened(seed: String) -> State {
-  State(
-    seed:,
-    members: [
-      Member(
-        arm: seed,
-        parent: None,
-        step: 0,
-        source: Seed,
-        slot: None,
-        validate_plan: None,
-        disposition: Some(Incumbent),
-      ),
-    ],
-    pool: [seed],
-    incumbent: seed,
-    runs: [],
-    reflections: 0,
-    reflection_dollars: 0.0,
-    step: 0,
-    open: None,
-    confirmation: None,
-    stopped: None,
-  )
-}
+// --- Loom-shaped reads ----------------------------------------------------------------
 
-/// Applies one row to the state, or says why it cannot follow.
+/// Every candidate in log order, with Loom's names.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // search.apply(state, Stop(Steps)) -> Ok(State(..state, stopped: Some(Steps)))
+/// // search.members(state) |> list.first -> Ok(Member(arm: seed, source: Seed, ..))
 /// ```
 ///
-pub fn apply(state: State, event: Event) -> Result(State, String) {
-  use Nil <- result.try(require(
-    state.stopped == None,
-    "a row follows the stop row",
-  ))
-
-  // Each row kind has one place in a step; the open progress says where the
-  // step is, and the row must be the next stage.
-  case event {
-    Candidate(..) -> apply_candidate(state, event)
-    Run(role: ParentMinibatch, ..) -> open_step(state, event)
-    Run(role: ChildMinibatch, ..) -> apply_child_minibatch(state, event)
-    Run(role: ValidateRun, ..) -> apply_validate_run(state, event)
-    Run(role: Confirm, ..) -> apply_confirm_run(state, event)
-    Reflection(step:, dollars:, ..) -> apply_reflection(state, step, dollars)
-    Refusal(step:, arm:, ..) -> apply_refusal(state, step, arm)
-    Judgement(..) -> apply_judgement(state, event)
-    Stop(reason:) -> apply_stop(state, reason)
-  }
-}
-
-/// A `candidate` row after the seed is a reflected child of the open step.
-fn apply_candidate(state: State, event: Event) -> Result(State, String) {
-  // A child needs an open step that has reflected; anything else is misplaced.
-  case event, state.open {
-    Candidate(arm:, parent: Some(parent), step:, source: Reflected, slot:),
-      Some(progress)
-    -> {
-      use Nil <- result.try(require(
-        step == progress.step
-          && parent == progress.parent
-          && progress.reflected == Done
-          && progress.child == None,
-        "a candidate row needs an open step that has reflected and has no child",
-      ))
-      use Nil <- result.try(require(
-        !list.any(state.members, fn(member) { member.arm == arm }),
-        "candidate " <> arm <> " was already introduced",
-      ))
-
-      let member =
-        Member(
-          arm:,
-          parent: Some(parent),
-          step:,
-          source: Reflected,
-          slot:,
-          validate_plan: None,
-          disposition: None,
-        )
-
-      Ok(
-        State(
-          ..state,
-          members: list.append(state.members, [member]),
-          open: Some(Progress(..progress, child: Some(arm))),
-        ),
-      )
-    }
-
-    Candidate(..), None ->
-      Error("search row missing: the parent minibatch run that opens the step")
-    Candidate(..), Some(_) ->
-      Error("a candidate after the seed must be reflected from a parent")
-    Run(..), _
-    | Reflection(..), _
-    | Refusal(..), _
-    | Judgement(..), _
-    | Stop(..), _
-    -> Error("not a candidate row")
-  }
-}
-
-/// The seed's Validate run closes step 0; every later step opens with the
-/// parent's minibatch run, which must name a pool member and the next step.
-fn open_step(state: State, event: Event) -> Result(State, String) {
-  // A step opens only between steps, before the confirm run, from the tune split.
-  case event, state.open, state.confirmation {
-    Run(arm:, split: split.Tune, plan:, step:, role: ParentMinibatch, ..),
-      None,
-      None
-    -> {
-      use Nil <- result.try(require(
-        step == state.step + 1,
-        "a step opens at the step after the last",
-      ))
-      use Nil <- result.try(require(
-        list.contains(state.pool, arm),
-        "the parent " <> arm <> " is not in the pool",
-      ))
-      use Nil <- result.try(seed_validated(state))
-
-      Ok(
-        State(
-          ..state,
-          runs: list.append(state.runs, [event]),
-          step:,
-          open: Some(Progress(
-            step:,
-            parent: arm,
-            parent_minibatch: plan,
-            reflected: NotYet,
-            child: None,
-            child_minibatch: None,
-            validate: None,
-            against_incumbent: None,
-          )),
-        ),
-      )
-    }
-
-    Run(..), Some(_), _ -> Error("a step opened inside an unfinished step")
-    Run(..), None, Some(_) -> Error("a step opened after the confirm run")
-    Run(..), None, None ->
-      Error("a parent minibatch must draw from the tune split")
-    Candidate(..), _, _
-    | Reflection(..), _, _
-    | Refusal(..), _, _
-    | Judgement(..), _, _
-    | Stop(..), _, _
-    -> Error("not a run row")
-  }
-}
-
-/// Step 0 is the seed's Validate run; nothing else may happen before it.
-fn seed_validated(state: State) -> Result(Nil, String) {
-  case list.first(state.members) {
-    Ok(Member(validate_plan: Some(_), ..)) -> Ok(Nil)
-    Ok(Member(validate_plan: None, ..)) | Error(Nil) ->
-      Error("search row missing: the seed's validate run")
-  }
-}
-
-/// A Validate run is the seed's at step 0, or the open step's child's.
-fn apply_validate_run(state: State, event: Event) -> Result(State, String) {
-  // Step 0's run is the seed's; a later one is the open step's child's.
-  case event, state.open {
-    Run(arm:, split: split.Validate, plan:, step: 0, role: ValidateRun, ..),
-      None
-    -> {
-      use Nil <- result.try(require(
-        arm == state.seed && state.step == 0 && state.runs == [],
-        "the step 0 validate run belongs to the seed, before anything else",
-      ))
-
-      Ok(
-        State(
-          ..state,
-          runs: [event],
-          members: with_validate_plan(state.members, arm, plan),
-        ),
-      )
-    }
-
-    Run(arm:, split: split.Validate, plan:, step:, role: ValidateRun, ..),
-      Some(progress)
-    -> {
-      use Nil <- result.try(require(
-        step == progress.step
-          && progress.child == Some(arm)
-          && progress.validate == None,
-        "a validate run needs the step's child and no earlier validate run",
-      ))
-      use Nil <- result.try(require(
-        progress.child_minibatch != None,
-        "search row missing: the child's minibatch run",
-      ))
-
-      Ok(
-        State(
-          ..state,
-          runs: list.append(state.runs, [event]),
-          members: with_validate_plan(state.members, arm, plan),
-          open: Some(Progress(..progress, validate: Some(plan))),
-        ),
-      )
-    }
-
-    Run(..), _ -> Error("a validate run row out of place")
-    Candidate(..), _
-    | Reflection(..), _
-    | Refusal(..), _
-    | Judgement(..), _
-    | Stop(..), _
-    -> Error("not a run row")
-  }
-}
-
-/// Records the sub-plan whose ledger holds an arm's Validate rows.
-fn with_validate_plan(
-  members: List(Member),
-  arm: String,
-  plan: String,
-) -> List(Member) {
-  list.map(members, fn(member) {
-    case member.arm == arm {
-      True -> Member(..member, validate_plan: Some(plan))
-      False -> member
-    }
+pub fn members(state: State) -> List(Member) {
+  list.map(state.search.members, fn(member) {
+    Member(
+      arm: member.candidate,
+      parent: member.parent,
+      step: member.step,
+      source: case member.parent {
+        None -> Seed
+        Some(_) -> Reflected
+      },
+      slot: member.slot,
+      validate_plan: member.validated,
+      disposition: option.map(member.disposition, disposition_from_gepa),
+    )
   })
 }
 
-/// The child's minibatch follows its candidate row.
-fn apply_child_minibatch(state: State, event: Event) -> Result(State, String) {
-  // The child's minibatch follows its candidate row inside the open step.
-  case event, state.open {
-    Run(arm:, split: split.Tune, plan:, step:, role: ChildMinibatch, ..),
-      Some(progress)
-    -> {
-      use Nil <- result.try(require(
-        progress.child != None,
-        "search row missing: the child's candidate row",
-      ))
-      use Nil <- result.try(require(
-        step == progress.step
-          && progress.child == Some(arm)
-          && progress.child_minibatch == None,
-        "a child minibatch needs the step's child and no earlier one",
-      ))
-
-      Ok(
-        State(
-          ..state,
-          runs: list.append(state.runs, [event]),
-          open: Some(Progress(..progress, child_minibatch: Some(plan))),
-        ),
-      )
-    }
-
-    Run(..), _ -> Error("a child minibatch row out of place")
-    Candidate(..), _
-    | Reflection(..), _
-    | Refusal(..), _
-    | Judgement(..), _
-    | Stop(..), _
-    -> Error("not a run row")
-  }
-}
-
-/// The confirm run comes after the last step settles and before the stop.
-fn apply_confirm_run(state: State, event: Event) -> Result(State, String) {
-  // The confirm run comes once, between the last settled step and the stop.
-  case event, state.open, state.confirmation {
-    Run(arm:, split: split.Validate, plan:, step:, role: Confirm, ..),
-      None,
-      None
-    -> {
-      use Nil <- result.try(require(
-        step == state.step && arm == state.incumbent && arm != state.seed,
-        "a confirm run names the incumbent at the last step",
-      ))
-
-      Ok(
-        State(
-          ..state,
-          runs: list.append(state.runs, [event]),
-          confirmation: Some(Confirmation(best: arm, plan:, verdict: None)),
-        ),
-      )
-    }
-
-    Run(..), Some(_), _ -> Error("a confirm run inside an unfinished step")
-    Run(..), None, Some(_) -> Error("a second confirm run")
-    Run(..), None, None -> Error("a confirm run row out of place")
-    Candidate(..), _, _
-    | Reflection(..), _, _
-    | Refusal(..), _, _
-    | Judgement(..), _, _
-    | Stop(..), _, _
-    -> Error("not a run row")
-  }
-}
-
-/// A reflection belongs to the open step, after the parent's minibatch and
-/// before the child. A second one in the same step is a resumed search
-/// that lost the first answer before minting, and is counted too.
-fn apply_reflection(
-  state: State,
-  step: Int,
-  dollars: Float,
-) -> Result(State, String) {
-  // A reflection belongs to an open step that has no child yet.
-  case state.open {
-    Some(progress) -> {
-      use Nil <- result.try(require(
-        step == progress.step && progress.child == None,
-        "a reflection needs an open step with no child yet",
-      ))
-
-      Ok(
-        State(
-          ..state,
-          reflections: state.reflections + 1,
-          reflection_dollars: state.reflection_dollars +. dollars,
-          open: Some(Progress(..progress, reflected: Done)),
-        ),
-      )
-    }
-
-    None ->
-      Error("search row missing: the parent minibatch run that opens the step")
-  }
-}
-
-/// A refusal closes the open step: with no arm after a refused answer, with
-/// the child's arm when its settings refused.
-fn apply_refusal(
-  state: State,
-  step: Int,
-  arm: String,
-) -> Result(State, String) {
-  // A refusal closes an open step before its child has run.
-  case state.open {
-    Some(progress) -> {
-      use Nil <- result.try(require(
-        step == progress.step && progress.child_minibatch == None,
-        "a refusal needs an open step whose child has not run",
-      ))
-      use Nil <- result.try(require(
-        case arm {
-          "" -> progress.child == None && progress.reflected == Done
-          _ -> progress.child == Some(arm)
-        },
-        "a refusal names the step's child, or no arm before one was minted",
-      ))
-
-      Ok(
-        State(
-          ..state,
-          members: with_disposition(state.members, arm, Refused),
-          open: None,
-        ),
-      )
-    }
-
-    None ->
-      Error("search row missing: the parent minibatch run that opens the step")
-  }
-}
-
-/// Records what the search decided about an arm.
-fn with_disposition(
-  members: List(Member),
-  arm: String,
-  disposition: Disposition,
-) -> List(Member) {
-  list.map(members, fn(member) {
-    case member.arm == arm {
-      True -> Member(..member, disposition: Some(disposition))
-      False -> member
-    }
-  })
-}
-
-/// A verdict row settles the open step when it is against the parent,
-/// records the incumbent comparison when it is against the incumbent, or
-/// judges the confirm run.
-fn apply_judgement(state: State, event: Event) -> Result(State, String) {
-  // A verdict settles the open step, records the incumbent comparison, or judges the confirm run.
-  case event, state.open, state.confirmation {
-    Judgement(arm:, against:, split:, verdict:, disposition:), Some(progress), _
-    -> {
-      use Nil <- result.try(require(
-        progress.child == Some(arm),
-        "a verdict names the step's child",
-      ))
-
-      // Against the parent the row settles the step; against the incumbent
-      // it is kept for the settling row that follows.
-      case against == progress.parent {
-        True -> settle(state, progress, event, disposition)
-        False -> {
-          use Nil <- result.try(require(
-            against == state.incumbent && progress.validate != None,
-            "a verdict is against the parent or the incumbent, after validate",
-          ))
-          use Nil <- result.try(require(
-            progress.against_incumbent == None,
-            "a second verdict against the incumbent in one step",
-          ))
-          use Nil <- result.try(require(
-            split == split.Validate && disposition == Unsettled,
-            "an incumbent comparison is a validate row that settles nothing",
-          ))
-
-          Ok(
-            State(
-              ..state,
-              open: Some(Progress(..progress, against_incumbent: Some(verdict))),
-            ),
-          )
-        }
-      }
-    }
-
-    Judgement(arm:, against:, verdict:, disposition:, ..),
-      None,
-      Some(confirmation)
-    -> {
-      use Nil <- result.try(require(
-        arm == confirmation.best
-          && against == state.seed
-          && confirmation.verdict == None
-          && { disposition == Confirmed || disposition == Unconfirmed },
-        "a confirm verdict pairs the best against the seed once",
-      ))
-
-      Ok(
-        State(
-          ..state,
-          confirmation: Some(
-            Confirmation(..confirmation, verdict: Some(verdict)),
-          ),
-        ),
-      )
-    }
-
-    Judgement(..), None, None -> Error("search row missing: the step's rows")
-    Candidate(..), _, _
-    | Run(..), _, _
-    | Reflection(..), _, _
-    | Refusal(..), _, _
-    | Stop(..), _, _
-    -> Error("not a verdict row")
-  }
-}
-
-/// Closes a step with its disposition, checking the runs the disposition
-/// presupposes are in the log. A disposition that needs a run the log does
-/// not hold is a deleted row, and the search refuses to continue over it.
-fn settle(
-  state: State,
-  progress: Progress,
-  event: Event,
-  disposition: Disposition,
-) -> Result(State, String) {
-  // Only a verdict row settles; the type does not narrow it, so its parts are read here.
-  use #(arm, split, found) <- result.try(case event {
-    Judgement(arm:, split:, verdict:, ..) -> Ok(#(arm, split, verdict))
-    Candidate(..) | Run(..) | Reflection(..) | Refusal(..) | Stop(..) ->
-      Error("not a verdict row")
-  })
-
-  // A disposition is what `dispose` makes of its verdict, and a row that
-  // claims otherwise was not written by the search.
-  use Nil <- result.try(require(
-    consistent(found, split, disposition),
-    "the disposition "
-      <> disposition_name(disposition)
-      <> " does not follow from its verdict",
-  ))
-  use Nil <- result.try(require(
-    disposition != Incumbent
-      || progress.parent == state.incumbent
-      || progress.against_incumbent != None,
-    "search row missing: the verdict against the incumbent",
-  ))
-
-  // Each disposition names the stage the step must have reached.
-  use Nil <- result.try(case disposition {
-    ScreenedOut ->
-      require(
-        progress.child_minibatch != None && progress.validate == None,
-        "search row missing: a screened-out child has run its minibatch and nothing more",
-      )
-    Incumbent | Joined | ParetoOnly | Harmed | Unsettled ->
-      require(
-        progress.validate != None,
-        "search row missing: the child's validate run",
-      )
-    Refused | Confirmed | Unconfirmed ->
-      Error("a step does not settle as " <> disposition_name(disposition))
-  })
-
-  // Only the three joining dispositions change the pool.
-  let pool = case disposition {
-    Incumbent | Joined | ParetoOnly -> list.append(state.pool, [arm])
-    Harmed | Unsettled | ScreenedOut | Refused | Confirmed | Unconfirmed ->
-      state.pool
-  }
-
-  // The incumbent changes with exactly one of them.
-  let incumbent = case disposition {
-    Incumbent -> arm
-    Joined
-    | ParetoOnly
-    | Harmed
-    | Unsettled
-    | ScreenedOut
-    | Refused
-    | Confirmed
-    | Unconfirmed -> state.incumbent
-  }
-
-  Ok(
-    State(
-      ..state,
-      members: with_disposition(state.members, arm, disposition),
-      pool:,
-      incumbent:,
-      open: None,
-    ),
-  )
-}
-
-/// Whether a settling disposition is one `dispose` gives its verdict, on
-/// the split that verdict was reached on.
-fn consistent(found: Verdict, split: Split, disposition: Disposition) -> Bool {
-  case found, split, disposition {
-    verdict.Incomplete(..), split.Tune, ScreenedOut -> True
-    verdict.Improved(..), split.Validate, Incumbent
-    | verdict.Improved(..), split.Validate, Joined
-    -> True
-    verdict.Indistinguishable(..), split.Validate, ParetoOnly
-    | verdict.Underpowered(..), split.Validate, ParetoOnly
-    -> True
-    verdict.Harmed(..), split.Validate, Harmed -> True
-    verdict.Incomplete(..), split.Validate, Unsettled -> True
-    _, _, _ -> False
-  }
-}
-
-/// The stop row ends the log, and only between steps.
-fn apply_stop(state: State, reason: StopReason) -> Result(State, String) {
-  case state.open {
-    None -> Ok(State(..state, stopped: Some(reason)))
-    Some(_) -> Error("the search stopped inside a step")
-  }
-}
-
-/// How many children the search has minted.
+/// Every sub-run in log order, as the `Run` rows that recorded them.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // search.children(state) == list.length(state.members) - 1
+/// // search.runs(state) -> [Run(seed, Validate, plan_a, 0, ValidateRun, 9.0), ..]
 /// ```
 ///
-pub fn children(state: State) -> Int {
-  list.count(state.members, fn(member) { member.source == Reflected })
+pub fn runs(state: State) -> List(Event) {
+  list.map(state.search.evaluations, fn(evaluation) {
+    Run(
+      arm: evaluation.candidate,
+      split: case evaluation.stage {
+        gepa.ParentMinibatch | gepa.ChildMinibatch -> split.Tune
+        gepa.SeedValidate | gepa.Validate | gepa.Confirm -> split.Validate
+      },
+      plan: evaluation.ref,
+      step: evaluation.step,
+      role: case evaluation.stage {
+        gepa.SeedValidate | gepa.Validate -> ValidateRun
+        gepa.ParentMinibatch -> ParentMinibatch
+        gepa.ChildMinibatch -> ChildMinibatch
+        gepa.Confirm -> Confirm
+      },
+      cap: evaluation.cap,
+    )
+  })
 }
 
-// --- selection ------------------------------------------------------------------------
+/// Why the search stopped, in Loom's words, if it did.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.stopped(state) == Some(search.Dollars)
+/// ```
+///
+pub fn stopped(state: State) -> Option(StopReason) {
+  option.map(state.search.stopped, stop_from_gepa)
+}
+
+/// The sub-plan a step's run of one role was recorded with, if any.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.plan_of(state, 3, ChildMinibatch) == Ok(plan_c)
+/// ```
+///
+pub fn plan_of(state: State, step: Int, role: RunRole) -> Result(String, Nil) {
+  list.find_map(state.search.evaluations, fn(evaluation) {
+    case evaluation.step == step && stage_of(role, step) == evaluation.stage {
+      True -> Ok(evaluation.ref)
+      False -> Error(Nil)
+    }
+  })
+}
+
+/// The cap a Run row recorded for a sub-plan.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.recorded_cap(state, plan_b) == Ok(4.5)
+/// ```
+///
+pub fn recorded_cap(state: State, plan_id: String) -> Result(Float, String) {
+  list.find_map(state.search.evaluations, fn(evaluation) {
+    case evaluation.ref == plan_id {
+      True -> Ok(evaluation.cap)
+      False -> Error(Nil)
+    }
+  })
+  |> result.map_error(fn(_) {
+    "search row missing: the run row for " <> plan_id
+  })
+}
+
+// --- an arm and a ledger as the library sees them -----------------------------------
+
+/// An arm's components keyed by `slot_name`, the map the library holds a
+/// candidate as.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // search.component_map(arm) == [#("task_prefix:p/m/api/any", "Be brief.")]
+/// ```
+///
+pub fn component_map(candidate: Arm) -> List(#(String, String)) {
+  list.map(candidate.components, fn(component) {
+    #(slot_name(component.0), component.1)
+  })
+}
 
 /// The mean reward per task of one arm's counted Validate rows, in the
 /// order of `tasks`. A task with no counted row scores zero: the design
@@ -1536,359 +1180,122 @@ fn mean_of(values: List(Float)) -> Float {
   }
 }
 
-/// GEPA's Algorithm 2 over the pool: the per-task leading sets, their union
-/// pruned by Pareto dominance, and each survivor's count of tasks led. The
-/// leading set of a task is every member within `1 / k` of its best mean,
-/// because one lucky sample out of `k` must not make a member the sole
-/// leader of a task. Survivors come back in pool order.
+/// Loom's dominance ruling as the library's standing, for the front's
+/// order.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // search.front([#("a", means_a), #("b", means_b)], 3) -> [Leader("a", 5, ..), Leader("b", 3, ..)]
+/// assert search.standing_of(dominance.Tie) == select.Tied
 /// ```
 ///
-pub fn front(
-  members: List(#(String, List(#(String, Float)))),
-  k: Int,
-) -> List(Leader) {
-  let tolerance = 1.0 /. int.to_float(int.max(k, 1))
-
-  // Every member carries the same task order, so the first one names the tasks.
-  let tasks = case members {
-    [first, ..] -> list.map(first.1, fn(entry) { entry.0 })
-    [] -> []
-  }
-
-  // The best mean per task, over every member, is the bar for leadership.
-  let bests =
-    list.map(tasks, fn(task) {
-      #(
-        task,
-        list.fold(members, 0.0, fn(best, member) {
-          float.max(best, mean_for(member.1, task))
-        }),
-      )
-    })
-
-  let leading =
-    list.filter(members, fn(member) { leads(member.1, bests, tolerance) > 0 })
-  let survivors =
-    list.filter(leading, fn(member) {
-      !list.any(leading, fn(other) {
-        other.0 != member.0
-        && dominance.pareto(member.1, other.1)
-        == dominance.Dominated(dominance.Scores)
-      })
-    })
-
-  list.map(survivors, fn(member) {
-    Leader(
-      arm: member.0,
-      tasks_led: leads(member.1, bests, tolerance),
-      means: member.1,
-    )
-  })
-}
-
-fn mean_for(means: List(#(String, Float)), task: String) -> Float {
-  result.unwrap(list.key_find(means, task), 0.0)
-}
-
-/// How many tasks a member leads: those on which it is within `tolerance`
-/// of the best.
-fn leads(
-  means: List(#(String, Float)),
-  bests: List(#(String, Float)),
-  tolerance: Float,
-) -> Int {
-  list.count(bests, fn(best) { mean_for(means, best.0) +. tolerance >=. best.1 })
-}
-
-/// Draws the parent in proportion to tasks led, from the step's generator.
-/// An empty front cannot happen for a non-empty pool (the seed leads at
-/// least the tasks nobody beats it on), but the type says so rather than
-/// the caller trusting it.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // search.draw_parent(leaders, prng.from_string("search/3")) -> Ok(#("a", prng))
-/// ```
-///
-pub fn draw_parent(
-  leaders: List(Leader),
-  generator: Prng,
-) -> Result(#(String, Prng), Nil) {
-  let total = list.fold(leaders, 0, fn(sum, leader) { sum + leader.tasks_led })
-
-  // A front that leads nothing has nothing to draw from.
-  use Nil <- result.try(case total > 0 {
-    True -> Ok(Nil)
-    False -> Error(Nil)
-  })
-
-  let #(point, generator) = prng.below(generator, total)
-
-  // Walk the leaders, each owning `tasks_led` points of the range.
-  let chosen =
-    list.fold_until(leaders, #(point, Error(Nil)), fn(held, leader) {
-      case held.0 < leader.tasks_led {
-        True -> list.Stop(#(held.0, Ok(leader.arm)))
-        False -> list.Continue(#(held.0 - leader.tasks_led, Error(Nil)))
-      }
-    })
-
-  result.map(chosen.1, fn(arm) { #(arm, generator) })
-}
-
-/// Draws `size` tune tasks without replacement, in draw order. Fewer tasks
-/// than `size` means all of them, shuffled.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // search.minibatch(["a", "b", "c"], 2, generator) -> #(["c", "a"], generator)
-/// ```
-///
-pub fn minibatch(
-  tasks: List(String),
-  size: Int,
-  generator: Prng,
-) -> #(List(String), Prng) {
-  draw_without_replacement(
-    tasks,
-    int.min(size, list.length(tasks)),
-    generator,
-    [],
-  )
-}
-
-/// Takes `wanted` elements from `remaining` one index draw at a time, so
-/// every element is drawn at most once and the order is the draw order.
-fn draw_without_replacement(
-  remaining: List(String),
-  wanted: Int,
-  generator: Prng,
-  drawn: List(String),
-) -> #(List(String), Prng) {
-  // Each draw takes one element by index from what is left; the walk ends
-  // when enough are drawn or none remain.
-  case wanted <= 0 || remaining == [] {
-    True -> #(list.reverse(drawn), generator)
-    False -> {
-      let #(index, generator) = prng.below(generator, list.length(remaining))
-      let before = list.take(remaining, index)
-      let after = list.drop(remaining, index)
-
-      // The drawn element is the head of the tail; an empty tail cannot
-      // happen for an index below the length, but the type says so.
-      case after {
-        [picked, ..rest] ->
-          draw_without_replacement(
-            list.append(before, rest),
-            wanted - 1,
-            generator,
-            [picked, ..drawn],
-          )
-        [] -> #(list.reverse(drawn), generator)
-      }
-    }
-  }
-}
-
-/// The slot a step rewrites: round robin over the mutable set, step 1
-/// taking the first.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // search.slot_for(3, [a, b]) == Ok(a)
-/// ```
-///
-pub fn slot_for(step: Int, slots: List(Component)) -> Result(Component, Nil) {
-  // Round robin needs at least one slot; step 1 takes the first.
-  case slots {
-    [] -> Error(Nil)
-    [_, ..] -> {
-      let index = { int.max(step, 1) - 1 } % list.length(slots)
-
-      list.drop(slots, index) |> list.first
-    }
-  }
-}
-
-/// The spend filter: the child goes on to Validate when the mean over the
-/// minibatch tasks of its per-task mean reward is at least the parent's.
-/// Both ledgers are paired by task through `per_task_means`, so the
-/// comparison is over the same tasks whatever order the rows arrived in.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // search.screen(parent_rows, child_rows, tasks) == search.Passed
-/// ```
-///
-pub fn screen(
-  parent: List(stat.Trial),
-  child: List(stat.Trial),
-  tasks: List(String),
-) -> Screen {
-  let parent_mean =
-    per_task_means(parent, tasks) |> list.map(fn(entry) { entry.1 }) |> mean_of
-  let child_mean =
-    per_task_means(child, tasks) |> list.map(fn(entry) { entry.1 }) |> mean_of
-
-  // The child pays for Validate only when it is at least as good as its parent on the minibatch.
-  case child_mean >=. parent_mean {
-    True -> Passed
-    False -> Failed
-  }
-}
-
-/// The disposition a Validate verdict earns. `against_incumbent` is the
-/// verdict against the pool's best when the parent is not it, and `led` the
-/// tasks the child and the incumbent lead on a front that includes both.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // search.dispose(verdict.Harmed(..), None, 0, 0) == search.Harmed
-/// ```
-///
-pub fn dispose(
-  against_parent: Verdict,
-  against_incumbent: Option(Verdict),
-  child_led: Int,
-  incumbent_led: Int,
-) -> Disposition {
-  case against_parent {
-    verdict.Improved(..) ->
-      // The incumbent changes only when the child is not shown worse than
-      // it and leads more tasks; otherwise the child joins below it.
-      case not_worse(against_incumbent) && child_led > incumbent_led {
-        True -> Incumbent
-        False -> Joined
-      }
-    verdict.Indistinguishable(..) | verdict.Underpowered(..) -> ParetoOnly
-    verdict.Harmed(..) -> Harmed
-    verdict.Incomplete(..) -> Unsettled
-  }
-}
-
-/// Whether the child stands against the incumbent: no comparison (the
-/// parent is the incumbent) counts as standing, since the parent verdict
-/// already decided; `Harmed` or `Incomplete` do not.
-fn not_worse(against_incumbent: Option(Verdict)) -> Bool {
-  case against_incumbent {
-    None -> True
-    Some(verdict.Improved(..))
-    | Some(verdict.Indistinguishable(..))
-    | Some(verdict.Underpowered(..)) -> True
-    Some(verdict.Harmed(..)) | Some(verdict.Incomplete(..)) -> False
-  }
-}
-
-// --- ranking ----------------------------------------------------------------------------
-
-/// One line of the reported front.
-pub type Ranked {
-  Ranked(
-    /// The arm id.
-    arm: String,
-    /// How it joined the pool.
-    disposition: Disposition,
-    /// The step that minted it; the seed's is zero.
-    step: Int,
-    /// Its standing against the seed over outcome and scores.
-    dominance: dominance.Dominance,
-    /// The tasks it leads.
-    tasks_led: Int,
-  )
-}
-
-/// Orders pool members for the front: the incumbent first, then the
-/// members that improved over their parent (and the seed), then the
-/// Pareto-only members. Within the improved tier the order is dominance
-/// over the seed (outcome before scores, dominating before tied before
-/// trading off before undecided before dominated), then tasks led; within
-/// the Pareto tier it is the minting step, so a Pareto-only child never
-/// stands above its parent; the arm id makes every order total.
-///
-/// ## Examples
-///
-/// ```gleam
-/// // search.rank(lines, incumbent) -> [incumbent line, ..]
-/// ```
-///
-pub fn rank(lines: List(Ranked), incumbent: String) -> List(Ranked) {
-  list.sort(lines, fn(left, right) {
-    // The incumbent outranks everything; among the rest the disposition
-    // tier, then the tier's own order, then the id.
-    case left.arm == incumbent, right.arm == incumbent {
-      True, False -> order.Lt
-      False, True -> order.Gt
-      True, True | False, False ->
-        int.compare(standing(left.disposition), standing(right.disposition))
-        |> order.lazy_break_tie(fn() { within_tier(left, right) })
-        |> order.lazy_break_tie(fn() { string.compare(left.arm, right.arm) })
-    }
-  })
-}
-
-/// The tier a disposition puts a member in: improved first, Pareto last.
-fn standing(disposition: Disposition) -> Int {
-  case disposition {
-    Incumbent | Joined | Confirmed | Unconfirmed -> 0
-    ParetoOnly -> 1
-    Harmed | Unsettled | Refused | ScreenedOut -> 2
-  }
-}
-
-/// The order inside one tier: a Pareto member by its step, an improved one
-/// by dominance over the seed and then tasks led.
-fn within_tier(left: Ranked, right: Ranked) -> order.Order {
-  case left.disposition {
-    ParetoOnly -> int.compare(left.step, right.step)
-    Incumbent
-    | Joined
-    | Confirmed
-    | Unconfirmed
-    | Harmed
-    | Unsettled
-    | Refused
-    | ScreenedOut ->
-      int.compare(tier(left.dominance), tier(right.dominance))
-      |> order.lazy_break_tie(fn() {
-        int.compare(right.tasks_led, left.tasks_led)
-      })
-  }
-}
-
-/// The rank of a dominance outcome, lower first.
-fn tier(found: dominance.Dominance) -> Int {
+pub fn standing_of(found: dominance.Dominance) -> select.Standing {
   case found {
-    dominance.Dominates(dominance.Outcome) -> 0
-    dominance.Dominates(dominance.Scores) -> 1
-    dominance.Tie -> 2
-    dominance.Tradeoff(..) -> 3
-    dominance.Undecided -> 4
-    dominance.Dominated(dominance.Scores) -> 5
-    dominance.Dominated(dominance.Outcome) -> 6
+    dominance.Dominates(dominance.Outcome) -> select.DominatesOnOutcome
+    dominance.Dominates(dominance.Scores) -> select.DominatesOnScores
+    dominance.Tie -> select.Tied
+    dominance.Tradeoff(..) -> select.Tradeoff
+    dominance.Undecided -> select.Undecided
+    dominance.Dominated(dominance.Scores) -> select.DominatedOnScores
+    dominance.Dominated(dominance.Outcome) -> select.DominatedOnOutcome
   }
 }
 
-/// The per-member rows of a step's pool, as a dictionary by arm, for the
-/// callers that look rows up by id.
+/// Loom's statistical verdict as the four words the library decides
+/// with: `Indistinguishable` and `Underpowered` are both inconclusive.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // search.by_arm([#("a", rows_a)]) |> dict.get("a") == Ok(rows_a)
+/// assert search.acceptance_of(verdict.Incomplete("x")) == rule.Incomplete
 /// ```
 ///
-pub fn by_arm(
-  members: List(#(String, List(stat.Trial))),
-) -> Dict(String, List(stat.Trial)) {
-  dict.from_list(members)
+pub fn acceptance_of(found: Verdict) -> rule.Acceptance {
+  case found {
+    verdict.Improved(..) -> rule.Improved
+    verdict.Harmed(..) -> rule.Harmed
+    verdict.Indistinguishable(..) | verdict.Underpowered(..) ->
+      rule.Inconclusive
+    verdict.Incomplete(..) -> rule.Incomplete
+  }
+}
+
+/// Loom's disposition as the library's; the words are the same but for
+/// `Harmed`, which the library calls `Discarded` to keep it apart from the
+/// acceptance of the same name.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert search.disposition_to_gepa(search.Harmed) == rule.Discarded
+/// ```
+///
+pub fn disposition_to_gepa(disposition: Disposition) -> rule.Disposition {
+  case disposition {
+    Incumbent -> rule.Incumbent
+    Joined -> rule.Joined
+    ParetoOnly -> rule.ParetoOnly
+    Harmed -> rule.Discarded
+    Unsettled -> rule.Unsettled
+    Refused -> rule.Refused
+    ScreenedOut -> rule.ScreenedOut
+    Confirmed -> rule.Confirmed
+    Unconfirmed -> rule.Unconfirmed
+  }
+}
+
+/// The library's disposition as Loom's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert search.disposition_from_gepa(rule.Discarded) == search.Harmed
+/// ```
+///
+pub fn disposition_from_gepa(disposition: rule.Disposition) -> Disposition {
+  case disposition {
+    rule.Incumbent -> Incumbent
+    rule.Joined -> Joined
+    rule.ParetoOnly -> ParetoOnly
+    rule.Discarded -> Harmed
+    rule.Unsettled -> Unsettled
+    rule.Refused -> Refused
+    rule.ScreenedOut -> ScreenedOut
+    rule.Confirmed -> Confirmed
+    rule.Unconfirmed -> Unconfirmed
+  }
+}
+
+/// Loom's stop reason as the library's: dollars are the library's budget.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert search.stop_to_gepa(search.Dollars) == budget.Budget
+/// ```
+///
+pub fn stop_to_gepa(reason: StopReason) -> budget.StopReason {
+  case reason {
+    Steps -> budget.Steps
+    Dollars -> budget.Budget
+    Reflections -> budget.Reflections
+    Candidates -> budget.Candidates
+  }
+}
+
+/// The library's stop reason as Loom's.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert search.stop_from_gepa(budget.Budget) == search.Dollars
+/// ```
+///
+pub fn stop_from_gepa(reason: budget.StopReason) -> StopReason {
+  case reason {
+    budget.Steps -> Steps
+    budget.Budget -> Dollars
+    budget.Reflections -> Reflections
+    budget.Candidates -> Candidates
+  }
 }

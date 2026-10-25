@@ -1,12 +1,17 @@
+//// Loom's side of the search: the row codec, the adapter that feeds a
+//// Loom log to the `gepa` fold, the ledger-to-score aggregation, and the
+//// one thing the extraction must not have changed, the draws.
+
 import eval/arm.{Any, Target, TaskPrefix}
 import eval/search.{
   type Event, Candidate, Judgement, Reflection, Refusal, Run, Stop,
 }
 import eval/split
-import evalstat/dominance
-import evalstat/prng
+import evalstat/prng as theirs
 import evalstat/trial as stat
 import evalstat/verdict
+import gepa
+import gepa/prng as ours
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -58,6 +63,12 @@ fn one_step() -> List(Event) {
   ]
 }
 
+/// A store with no directory behind it: every arm has one slot whose text
+/// is its id.
+fn bare_store() -> search.Store {
+  search.Store(components: fn(id) { Ok([#("task_prefix:x", id)]) })
+}
+
 pub fn every_row_kind_round_trips_through_the_codec_test() {
   let rows =
     list.append(one_step(), [
@@ -104,24 +115,42 @@ pub fn every_row_kind_round_trips_through_the_codec_test() {
   assert string.contains(reason, "holdout")
 }
 
-pub fn a_complete_log_replays_to_a_stopped_search_test() {
-  let assert Ok(state) = search.replay(one_step())
+pub fn a_loom_log_replays_through_the_library_test() {
+  let assert Ok(state) = search.replay(one_step(), bare_store())
 
-  assert state.pool == [seed, child]
-  assert state.incumbent == child
-  assert state.step == 1
-  assert state.open == None
-  assert state.stopped == Some(search.Steps)
-  assert state.reflections == 1
-  assert search.children(state) == 1
-  let assert Some(search.Confirmation(best:, plan:, verdict: Some(_))) =
+  // The library's state carries the pool and the incumbent; Loom's
+  // wrapper keeps the confirm verdict the headline prints.
+  assert state.search.pool == [seed, child]
+  assert state.search.incumbent == child
+  assert state.search.step == 1
+  assert state.search.open == None
+  assert search.stopped(state) == Some(search.Steps)
+  assert state.search.reflections == 1
+  assert state.search.spent_reflecting == 0.001
+  assert gepa.children(state.search) == 1
+  let assert Some(search.Confirmation(best:, plan:, verdict: Some(found))) =
     state.confirmation
-  assert best == child && plan == plan_e
+  assert best == child && plan == plan_e && found == improved()
+
+  // The Loom-shaped projections name plans and dispositions as before.
+  let assert [first, second] = search.members(state)
+  assert first.arm == seed && first.validate_plan == Some(plan_a)
+  assert second.parent == Some(seed) && second.validate_plan == Some(plan_d)
+  assert second.disposition == Some(search.Incumbent)
+  assert search.plan_of(state, 1, search.ChildMinibatch) == Ok(plan_c)
+  assert search.recorded_cap(state, plan_b) == Ok(0.0)
+  assert list.length(search.runs(state)) == 5
+
+  // A child's components are the parent's with the slot replaced, which
+  // the store's arm files agree with.
+  let assert Ok(minted) =
+    list.find(state.search.members, fn(m) { m.candidate == child })
+  assert minted.components == [#("task_prefix:x", child)]
 }
 
-pub fn a_deleted_run_row_refuses_replay_test() {
+pub fn a_deleted_run_row_still_refuses_replay_test() {
   // Each run row of the step, deleted alone, is caught by the row that
-  // presupposes it, with the message `eval report` uses for a plan row.
+  // presupposes it, through the adapter as it was before it.
   list.each([plan_a, plan_b, plan_c, plan_d], fn(deleted) {
     let rows =
       list.filter(one_step(), fn(row) {
@@ -130,131 +159,84 @@ pub fn a_deleted_run_row_refuses_replay_test() {
           _ -> True
         }
       })
-    let assert Error(reason) = search.replay(rows)
+    let assert Error(reason) = search.replay(rows, bare_store())
     assert string.contains(reason, "search row missing")
   })
 
-  // The seed's validate run in particular is named.
-  let assert Error(reason) =
-    search.replay(
-      list.filter(one_step(), fn(row) {
-        row != Run(seed, split.Validate, plan_a, 0, search.ValidateRun, 0.0)
-      }),
-    )
-  assert string.contains(reason, "search row missing: the seed's validate run")
-}
-
-pub fn a_log_cut_inside_a_step_replays_to_an_open_step_test() {
-  let prefix = list.take(one_step(), 6)
-  let assert Ok(state) = search.replay(prefix)
-
-  let assert Some(progress) = state.open
-  assert progress.step == 1
-  assert progress.parent == seed
-  assert progress.child == Some(child)
-  assert progress.child_minibatch == Some(plan_c)
-  assert progress.validate == None
-  assert state.pool == [seed]
-}
-
-pub fn a_lax_row_is_refused_test() {
-  let prefix = list.take(one_step(), 7)
-  let flat =
-    verdict.Indistinguishable(effect: 0.0, ci: #(-0.1, 0.1), p: 1.0, mde: 0.05)
-
-  // A disposition that does not follow from its verdict.
+  // A contradicting disposition and a row after the stop are refused.
   let assert Error(contradiction) =
     search.replay(
-      list.append(prefix, [
+      list.append(list.take(one_step(), 7), [
         Judgement(child, seed, split.Validate, improved(), search.ParetoOnly),
       ]),
+      bare_store(),
     )
-  assert string.contains(contradiction, "does not follow from its verdict")
+  assert string.contains(contradiction, "does not follow")
+  let assert Error(after) =
+    search.replay(list.append(one_step(), [Stop(search.Steps)]), bare_store())
+  assert string.contains(after, "follows the stop row")
+  assert search.replay([], bare_store())
+    == Error("search row missing: the seed candidate")
 
-  // A settlement on the tune split, and a screen on the validate split.
-  let assert Error(wrong_split) =
-    search.replay(
-      list.append(prefix, [
-        Judgement(child, seed, split.Tune, flat, search.ParetoOnly),
-      ]),
-    )
-  assert string.contains(wrong_split, "does not follow")
-
-  // Two steps: the second child's parent is the first child, which is not
-  // the incumbent, so an `incumbent` settlement needs the incumbent row,
-  // and may carry it only once.
-  let two_steps =
-    list.flatten([
-      list.take(one_step(), 8),
-      [
-        Run(seed, split.Tune, plan_b, 2, search.ParentMinibatch, 0.0),
-        Reflection(
-          2,
-          "fixture",
-          "fixture",
-          "anthropic-messages",
-          0.001,
-          "i",
-          "o",
-        ),
-        Candidate(grandchild, Some(seed), 2, search.Reflected, Some("s")),
-        Run(grandchild, split.Tune, plan_c, 2, search.ChildMinibatch, 0.0),
-        Run(grandchild, split.Validate, plan_e, 2, search.ValidateRun, 0.0),
-      ],
-    ])
-  let incumbent_row =
-    Judgement(grandchild, child, split.Validate, flat, search.Unsettled)
-  let settles =
-    Judgement(grandchild, seed, split.Validate, improved(), search.Incumbent)
-  let assert Error(missing) = search.replay(list.append(two_steps, [settles]))
-  assert string.contains(
-    missing,
-    "search row missing: the verdict against the incumbent",
-  )
-  let assert Error(twice) =
-    search.replay(list.append(two_steps, [incumbent_row, incumbent_row]))
-  assert string.contains(twice, "a second verdict against the incumbent")
-  let assert Ok(state) =
-    search.replay(list.append(two_steps, [incumbent_row, settles]))
-  assert state.incumbent == grandchild
+  // A cut log is an open step at the stage its rows reached.
+  let assert Ok(cut) = search.replay(list.take(one_step(), 6), bare_store())
+  let assert Some(progress) = cut.search.open
+  assert progress.reached == gepa.ChildMeasured && progress.child == Some(child)
 }
 
-pub fn a_pareto_only_child_ranks_below_its_parent_test() {
-  let line = fn(arm, disposition, step, found) {
-    search.Ranked(arm:, disposition:, step:, dominance: found, tasks_led: 1)
-  }
-  let lines = [
-    line(
-      "c-pareto",
+pub fn the_library_s_words_round_trip_with_loom_s_test() {
+  list.each(
+    [
+      search.Incumbent,
+      search.Joined,
       search.ParetoOnly,
-      2,
-      dominance.Dominates(dominance.Scores),
-    ),
-    line("b-joined", search.Joined, 1, dominance.Tradeoff(["x"], ["y"])),
-    line("a-seed", search.Incumbent, 0, dominance.Tie),
-  ]
-
-  // The joined member and the seed both stand above the Pareto child,
-  // whatever its point-estimate dominance says.
-  assert list.map(search.rank(lines, "a-seed"), fn(each) { each.arm })
-    == ["a-seed", "b-joined", "c-pareto"]
-  assert list.map(search.rank(lines, "b-joined"), fn(each) { each.arm })
-    == ["b-joined", "a-seed", "c-pareto"]
+      search.Harmed,
+      search.Unsettled,
+      search.Refused,
+      search.ScreenedOut,
+      search.Confirmed,
+      search.Unconfirmed,
+    ],
+    fn(disposition) {
+      assert search.disposition_from_gepa(search.disposition_to_gepa(
+          disposition,
+        ))
+        == disposition
+    },
+  )
+  list.each(
+    [search.Steps, search.Dollars, search.Reflections, search.Candidates],
+    fn(reason) {
+      assert search.stop_from_gepa(search.stop_to_gepa(reason)) == reason
+    },
+  )
 }
 
-pub fn a_row_after_the_stop_is_refused_test() {
-  let assert Error(reason) =
-    search.replay(list.append(one_step(), [Stop(search.Steps)]))
-  assert string.contains(reason, "follows the stop row")
+pub fn the_library_s_generator_draws_what_evalstat_s_does_test() {
+  // The library carries its own copy of the generator so it needs no
+  // Loom package; the copy must stay the same stream, or a search log
+  // written before the extraction would draw other parents on resume.
+  list.each(["search/1", "search/2", "", "plan-7", "ünï"], fn(seed_text) {
+    let mine =
+      list.repeat(Nil, 200)
+      |> list.map_fold(ours.from_string(seed_text), fn(state, _) {
+        let #(value, state) = ours.next(state)
+        #(state, value)
+      })
+    let evalstat =
+      list.repeat(Nil, 200)
+      |> list.map_fold(theirs.from_string(seed_text), fn(state, _) {
+        let #(value, state) = theirs.next(state)
+        #(state, value)
+      })
+
+    assert mine.1 == evalstat.1
+    assert ours.below(ours.from_string(seed_text), 7).0
+      == theirs.below(theirs.from_string(seed_text), 7).0
+  })
 }
 
-pub fn an_empty_log_or_a_wrong_first_row_is_refused_test() {
-  assert search.replay([]) == Error("search row missing: the seed candidate")
-  let assert Error(reason) = search.replay([Stop(search.Steps)])
-  assert string.contains(reason, "begin with the seed candidate")
-}
-
-// --- selection -------------------------------------------------------------------
+// --- an arm and a ledger as the library sees them ---------------------------------
 
 fn trial(task: String, arm: String, index: Int, passed: Bool) -> stat.Trial {
   stat.Trial(
@@ -287,115 +269,17 @@ pub fn per_task_means_count_failures_and_exclude_infrastructure_test() {
     == [#("t1", 0.5), #("t2", 0.0), #("t3", 0.0)]
 }
 
-pub fn the_front_keeps_leaders_within_one_sample_and_prunes_dominated_test() {
-  // K = 3, so a member within a third of the best on a task leads it.
-  let members = [
-    #("a", [#("t1", 1.0), #("t2", 0.0), #("t3", 0.667)]),
-    #("b", [#("t1", 0.667), #("t2", 1.0), #("t3", 0.333)]),
-    #("c", [#("t1", 0.333), #("t2", 0.0), #("t3", 0.0)]),
-  ]
-  let leaders = search.front(members, 3)
-
-  // c leads nothing and is dropped; a leads t1 and t3 (b is within 1/3 on
-  // t1), b leads t1 and t2.
-  assert list.map(leaders, fn(leader) { #(leader.arm, leader.tasks_led) })
-    == [#("a", 2), #("b", 2)]
-
-  // A member dominated on every task by another is pruned even if it ties
-  // one of them within tolerance.
-  let dominated = [
-    #("a", [#("t1", 1.0), #("t2", 1.0)]),
-    #("d", [#("t1", 0.9), #("t2", 0.9)]),
-  ]
-  assert list.map(search.front(dominated, 3), fn(leader) { leader.arm })
-    == ["a"]
-}
-
-pub fn the_parent_draw_is_proportional_and_reproducible_test() {
-  let leaders = [
-    search.Leader("a", 3, []),
-    search.Leader("b", 1, []),
-  ]
-  let draws =
-    list.index_map(list.repeat(Nil, 400), fn(_, i) { i + 1 })
-    |> list.map(fn(step) {
-      let assert Ok(#(arm, _)) =
-        search.draw_parent(
-          leaders,
-          prng.from_string("search/" <> string.inspect(step)),
-        )
-      arm
-    })
-  let a = list.count(draws, fn(arm) { arm == "a" })
-
-  // Three to one, within what 400 draws allow.
-  assert a > 260 && a < 340
-
-  // The same seed draws the same parent, every time.
-  let assert Ok(#(first, _)) =
-    search.draw_parent(leaders, prng.from_string("s/1"))
-  let assert Ok(#(again, _)) =
-    search.draw_parent(leaders, prng.from_string("s/1"))
-  assert first == again
-  assert search.draw_parent([], prng.from_string("s/1")) == Error(Nil)
-}
-
-pub fn the_minibatch_draws_without_replacement_test() {
-  let tasks = ["a", "b", "c", "d", "e", "f"]
-  let #(drawn, _) = search.minibatch(tasks, 4, prng.from_string("x"))
-
-  assert list.length(drawn) == 4
-  assert list.length(list.unique(drawn)) == 4
-  assert list.all(drawn, list.contains(tasks, _))
-
-  // A minibatch wider than the split is the whole split, shuffled.
-  let #(all, _) = search.minibatch(tasks, 10, prng.from_string("x"))
-  assert list.sort(all, string.compare) == tasks
-}
-
-pub fn slots_rotate_round_robin_from_step_one_test() {
+pub fn an_arm_is_a_component_map_keyed_by_slot_name_test() {
   let target = Target("p", "m", "api", Any)
-  let slots = [arm.SystemSuffix(target), TaskPrefix(target)]
+  let candidate =
+    arm.Arm(
+      id: "",
+      name: "n",
+      components: [#(TaskPrefix(target), "Be brief."), #(arm.PromptPack, "")],
+      knobs: arm.Knobs(roles: [], thinking: [], disabled_tools: []),
+    )
 
-  assert search.slot_for(1, slots) == Ok(arm.SystemSuffix(target))
-  assert search.slot_for(2, slots) == Ok(TaskPrefix(target))
-  assert search.slot_for(3, slots) == Ok(arm.SystemSuffix(target))
-  assert search.slot_for(1, []) == Error(Nil)
   assert search.slot_name(TaskPrefix(target)) == "task_prefix:p/m/api/any"
-}
-
-pub fn the_screen_passes_a_child_no_worse_than_its_parent_test() {
-  let parent = [trial("t1", "p", 0, True), trial("t2", "p", 0, False)]
-  let better = [trial("t1", "c", 0, True), trial("t2", "c", 0, True)]
-  let same = [trial("t1", "c", 0, False), trial("t2", "c", 0, True)]
-  let worse = [trial("t1", "c", 0, False), trial("t2", "c", 0, False)]
-
-  assert search.screen(parent, better, ["t1", "t2"]) == search.Passed
-  assert search.screen(parent, same, ["t1", "t2"]) == search.Passed
-  assert search.screen(parent, worse, ["t1", "t2"]) == search.Failed
-}
-
-pub fn dispositions_follow_the_verdict_and_the_incumbent_test() {
-  let flat =
-    verdict.Indistinguishable(effect: 0.0, ci: #(-0.1, 0.1), p: 1.0, mde: 0.05)
-  let weak = verdict.Underpowered(mde: 0.4, needed_tasks: 30, reason: "few")
-  let harmed =
-    verdict.Harmed(effect: -0.5, ci: #(-0.8, -0.2), p: 0.01, mde: 0.3)
-
-  // Improved over the parent, which is the incumbent, leading more tasks.
-  assert search.dispose(improved(), None, 5, 3) == search.Incumbent
-
-  // Improved over the parent but not leading more tasks than the incumbent.
-  assert search.dispose(improved(), None, 3, 3) == search.Joined
-
-  // Improved over the parent, harmed against the incumbent.
-  assert search.dispose(improved(), Some(harmed), 9, 3) == search.Joined
-
-  // Improved over the parent, indistinguishable from the incumbent, leading more.
-  assert search.dispose(improved(), Some(flat), 5, 3) == search.Incumbent
-
-  assert search.dispose(flat, None, 9, 0) == search.ParetoOnly
-  assert search.dispose(weak, None, 9, 0) == search.ParetoOnly
-  assert search.dispose(harmed, None, 9, 0) == search.Harmed
-  assert search.dispose(verdict.Incomplete("x"), None, 9, 0) == search.Unsettled
+  assert search.component_map(candidate)
+    == [#("task_prefix:p/m/api/any", "Be brief."), #("prompt_pack", "")]
 }

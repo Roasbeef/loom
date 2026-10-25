@@ -308,7 +308,7 @@ fn run_search(
   use Nil <- result.map(closed)
 
   "searched "
-  <> int.to_string(outcome.state.step)
+  <> int.to_string(outcome.state.search.step)
   <> " steps; front at "
   <> outcome.directory
   <> "/front.md"
