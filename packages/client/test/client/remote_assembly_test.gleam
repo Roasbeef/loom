@@ -12,6 +12,7 @@
 
 import broker/broker
 import client/catalog
+import client/evolution/record
 import client/extension/installed
 import client/internal/instance_host as host
 import client/internal/instance_owner as custody
@@ -227,6 +228,64 @@ pub fn a_registered_session_opens_without_touching_its_name_here_test() {
   assert scope.read(instance.runtime.session)
     == Ok(Some(scope.Scope(1, None, Some(rig.executor_name))))
 
+  assert host.close(prepared, within_ms: 10_000) == custody.Closed
+  rig.stop(executor)
+}
+
+// The directory the session's evolution catalogue lives in, as `serve`
+// resolves it: beside the daemon's socket root, or beside the session file.
+fn evolution_root(settings: serve.Settings) -> String {
+  let state = case settings.codemode_sockets {
+    Some(root) -> filepath.directory_name(root)
+    None -> filepath.directory_name(settings.session_path)
+  }
+  state <> "/evolution"
+}
+
+// An executor whose census says it compiles, over a broker that refuses every
+// clearance at once, as `observed_executor` has.
+fn compiling_executor() {
+  let probe = fixtures.probe(fixtures.Open)
+  let executor_broker = rig.refusing_broker(fixtures.marks())
+  let census =
+    rig.compiling(
+      rig.census_over(rig.standard_tools(), broker.subject(executor_broker)),
+      record.Identity("build-v1", "extension-v1", "evaluator-v1"),
+    )
+  rig.start(rig.factory(probe, census, protocol.AllRetired))
+}
+
+/// An executor that compiles gives the registered session an evolution plane:
+/// the cell the doors are borrowed under, and a catalogue opened under the
+/// executor's identity. Nothing is built on this machine, so the run scratch
+/// the local machine keeps is not made.
+pub fn a_compiling_executor_gives_the_session_an_evolution_plane_test() {
+  let settings = settings()
+  let executor = compiling_executor()
+
+  let #(prepared, instance) =
+    assembled(settings, identity(11), rig.placement(executor))
+
+  let assert Some(_cell) = instance.evolution_cell
+    as "the session has an evolution plane"
+  let root = evolution_root(settings)
+  assert simplifile.is_file(root <> "/evolution.db") == Ok(True)
+  assert simplifile.is_directory(root <> "/run/registered-session") == Ok(False)
+  assert host.close(prepared, within_ms: 10_000) == custody.Closed
+  rig.stop(executor)
+}
+
+/// An executor that cannot compile gives the session no evolution plane, and
+/// no catalogue is made for it.
+pub fn an_executor_that_cannot_compile_gives_the_session_no_evolution_test() {
+  let settings = settings()
+  let #(_probe, executor) = standard_executor()
+
+  let #(prepared, instance) =
+    assembled(settings, identity(12), rig.placement(executor))
+
+  assert instance.evolution_cell == None
+  assert simplifile.is_directory(evolution_root(settings)) == Ok(False)
   assert host.close(prepared, within_ms: 10_000) == custody.Closed
   rig.stop(executor)
 }

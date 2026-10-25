@@ -93,6 +93,7 @@ import client/evolution/hook as evolution_hook
 import client/evolution/live as evolution_live
 import client/evolution/machine as evolution_machine
 import client/evolution/machine/local as evolution_machine_local
+import client/evolution/machine/remote as evolution_machine_remote
 import client/evolution/model_door as evolution_model_door
 import client/evolution/prompt as evolution_prompt
 import client/evolution/queue as evolution_queue
@@ -3393,6 +3394,10 @@ type Half {
     /// whose program runs on an executor; `None` for a local workspace, whose
     /// programs run in this VM.
     executions: Option(RemoteExecutions),
+    /// The way to the executor's evolution plane, when the executor's census
+    /// says it compiles candidates; `None` for a local workspace and for an
+    /// executor that cannot compile.
+    evolution_link: Option(evolution_machine_remote.Link),
   )
 }
 
@@ -3427,6 +3432,7 @@ fn here(
     call_clock: clock,
     recover: None,
     executions: None,
+    evolution_link: None,
   )
 }
 
@@ -3470,6 +3476,7 @@ fn there(
       stop: hands.stop_execution,
       lookup: hands.execution_lookup,
     )),
+    evolution_link: hands.evolution,
   )
 }
 
@@ -4312,21 +4319,48 @@ fn assemble_in(
   // Only the source session governs evolution. A trial inherits the source's
   // code-mode host and socket root, so `open_evolution` would resolve the
   // source's own catalogue and hand the trial's model the doors over it.
+  //
+  // The machine is the placement's. A workspace with a local code-mode host
+  // compiles and runs candidates in this VM, under the session's own scratch.
+  // A workspace on an executor whose census says it compiles sends them there,
+  // and has no scratch here because nothing is built on this machine. Anything
+  // else has no evolution plane, as before.
   use evolution_wiring <- result.try(
     // Decide how to handle settings.evolution_role, code_mode_host {.
-    case settings.evolution_role, code_mode_host {
-      Trial(_), _ -> Ok(None)
-      Source, None -> Ok(None)
-      Source, Some(host) ->
+    case settings.evolution_role, code_mode_host, half.evolution_link {
+      Trial(_), _, _ -> Ok(None)
+      Source, None, None -> Ok(None)
+      Source, Some(host), _ ->
         open_evolution(
           settings,
-          host,
-          base_policy,
+          local_evolution_machine(
+            settings,
+            host,
+            base_policy,
+            agency_config,
+            namespace,
+            environment,
+            clock,
+            logger,
+          ),
+          LocalScope,
+          Some(evolution_scratch(settings)),
           agency_config,
-          namespace,
-          environment,
           clock,
-          logger,
+          owner,
+          evolution_name,
+        )
+        |> result.map(Some)
+      Source, None, Some(link) ->
+        open_evolution(
+          settings,
+          evolution_machine_remote.new(link),
+          ExecutorScope(
+            label: "executor:" <> link.executor <> "/" <> settings.workspace,
+          ),
+          None,
+          agency_config,
+          clock,
           owner,
           evolution_name,
         )
@@ -6904,10 +6938,14 @@ pub fn usable_seed(root: String) -> Result(String, Nil) {
 // which effect plane a native check runs on, how a trial session is built
 // from its source session's settings, and in what order the plane retires.
 //
-// The plane is local-only, like an extension, because its catalogue and
-// scratch live beside the session's own state. A session without code mode
-// has no wiring, and with no wiring there is no door, no hook and no control
-// seam.
+// The catalogue and the live owner are always this VM's, beside the session's
+// own state, and are the same whichever machine compiles and runs candidates.
+// A workspace with a local code-mode host uses the machine in this VM
+// (`local_evolution_machine`). A workspace on an executor whose census says it
+// compiles uses a machine that sends the work there
+// (`evolution/machine/remote`), with no scratch directory here. A workspace
+// with neither has no wiring, and with no wiring there is no door, no hook and
+// no control seam.
 // ---------------------------------------------------------------------------
 
 // Evolution lives under one maskable directory, so future SQLite sidecars and
@@ -6983,13 +7021,46 @@ type EvolutionWiring {
   )
 }
 
-// Opens the plane for a session that has code mode. The catalogue is opened as
-// owner once, here. Every model-facing call re-opens it as a caller scoped to
-// that call's session and workspace, so a tool never acts with the owner's
-// authority.
+// Which string names the workspace in the catalogue's scopes and in the
+// operator's commands. A workspace in this VM keeps naming itself by the path
+// every context carries, as it always has. A workspace on an executor is named
+// `executor:<executor>/<name>`, because its registered name is only unique on
+// the executor and two executors may register the same name for different
+// checkouts; the same label scopes its program candidates.
+type EvolutionScope {
+  LocalScope
+  ExecutorScope(label: String)
+}
 
-/// Establishes open evolution for the caller, keeping its validation and result policy at this boundary.
-fn open_evolution(
+// The workspace a door call's candidates are scoped to.
+/// Establishes the scope string a context's candidates are filed under.
+fn scope_of_context(scope: EvolutionScope, ctx: tool.Ctx) -> String {
+  case scope {
+    LocalScope -> ctx.workspace
+    ExecutorScope(label:) -> label
+  }
+}
+
+// The workspace the operator's commands are scoped to.
+/// Establishes the scope string the operator's commands act under.
+fn scope_of_settings(scope: EvolutionScope, settings: Settings) -> String {
+  case scope {
+    LocalScope -> settings.workspace
+    ExecutorScope(label:) -> label
+  }
+}
+
+// The machine for a workspace in this VM: everything staging and evaluation
+// need that does not change per call. Its `open` starts a fresh effect plane
+// for each check, under the policy that check was granted. It holds no
+// catalogue, so it exists before the catalogue is opened with the identity it
+// reports, and every call that needs the catalogue is handed it.
+//
+// Candidates are vetted and run under the host with the evolution door
+// withdrawn, so no selected program can import `cap/evolution`.
+
+/// Establishes the evolution machine for a workspace started in this VM.
+fn local_evolution_machine(
   settings: Settings,
   host: codemode_wiring.Config,
   base: policy.SandboxPolicy,
@@ -6998,27 +7069,14 @@ fn open_evolution(
   environment: List(#(String, String)),
   clock: Clock,
   logger: Logger,
-  owner: Option(custody.Owner),
-  name: address.Address(evolution_capability.Message),
-) -> Result(EvolutionWiring, String) {
-  let root = evolution_root(settings)
+) -> evolution_machine.Machine {
   let scratch = evolution_scratch(settings)
 
-  // These callbacks outlive assembly and are copied with the machine and door.
-  // Keep only their own coordinates, rather than the full startup settings.
-  let source_session = settings.session_id
+  // These callbacks outlive assembly and are copied with the machine. Keep
+  // only their own coordinates, rather than the full startup settings.
   let secrets = settings.secrets
   let helper = settings.helper_path
-  let gateway = settings.gateway
-
-  // The machine is everything staging and evaluation need that does not change
-  // per call. Its `open` starts a fresh effect plane for each check, under the
-  // policy that check was granted. It holds no catalogue, so it exists before
-  // the catalogue is opened with the identity it reports, and every call that
-  // needs the catalogue is handed it.
-  // Candidates are vetted and run under the host with the evolution door
-  // withdrawn, so no selected program can import `cap/evolution`.
-  let config =
+  evolution_machine_local.new(
     evolution_machine_local.Config(
       host: codemode_wiring.without_evolution(host),
       base:,
@@ -7037,10 +7095,41 @@ fn open_evolution(
       open: fn(policy) {
         evolution_machine_local.open_plane(helper, policy, scratch, clock)
       },
-    )
-  let machine = evolution_machine_local.new(config)
+    ),
+  )
+}
 
-  // Establish store authority and verify candidate scratch directory.
+// Opens the plane for a session that has an evolution machine. The catalogue
+// is opened as owner once, here. Every model-facing call re-opens it as a
+// caller scoped to that call's session and workspace, so a tool never acts
+// with the owner's authority.
+//
+// The machine says where candidates are compiled and run, and `scope` says how
+// the workspace is named. `scratch` is the directory this VM keeps for the
+// machine's check and build output, or `None` for a machine that builds on
+// another one.
+
+/// Establishes open evolution for the caller, keeping its validation and result policy at this boundary.
+fn open_evolution(
+  settings: Settings,
+  machine: evolution_machine.Machine,
+  scope: EvolutionScope,
+  scratch: Option(String),
+  agency_config: agency.Config,
+  clock: Clock,
+  owner: Option(custody.Owner),
+  name: address.Address(evolution_capability.Message),
+) -> Result(EvolutionWiring, String) {
+  let root = evolution_root(settings)
+
+  // These callbacks outlive assembly and are copied with the door.
+  // Keep only their own coordinates, rather than the full startup settings.
+  let source_session = settings.session_id
+  let gateway = settings.gateway
+  let workspace = scope_of_settings(scope, settings)
+
+  // Establish store authority, and make the scratch directory if the machine
+  // keeps one on this VM.
   use identity <- result.try(machine.identity())
   let opener = fn(authority) {
     evolution_store.open(root, authority, identity, clock)
@@ -7048,7 +7137,12 @@ fn open_evolution(
   use catalogue <- result.try(
     opener(evolution_store.Owner) |> result.map_error(evolution_store.describe),
   )
-  use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
+
+  // A machine that builds on another one keeps nothing here to prepare.
+  use Nil <- result.try(case scratch {
+    Some(directory) -> bootstrap.ensure_private_directory(directory)
+    None -> Ok(Nil)
+  })
 
   // Start live evolution runtime and initialize transition queue.
   let adopt = fn(selection) { evolution_adopt(agency_config, selection) }
@@ -7094,7 +7188,7 @@ fn open_evolution(
   // A failed door call hands its refusal to `live` first, which retains any
   // cleanup authority the refusal carries, and only then words the error.
   let lookup = fn(ctx: tool.Ctx) {
-    opener(evolution_store.Caller(source_session, ctx.workspace))
+    opener(evolution_store.Caller(source_session, scope_of_context(scope, ctx)))
   }
   let failed = fn(error) {
     evolution_live.retain(live, error)
@@ -7114,7 +7208,12 @@ fn open_evolution(
     evolution.door_over_capture_model(
       lookup,
       fn(ctx: tool.Ctx) {
-        evolution_record.Origin(source_session, ctx.strand, ctx.workspace, None)
+        evolution_record.Origin(
+          source_session,
+          ctx.strand,
+          scope_of_context(scope, ctx),
+          None,
+        )
       },
       fn(ctx) { actual(ctx) |> result.map_error(evolution_store.Unavailable) },
       fn(ctx, directory) {
@@ -7205,7 +7304,7 @@ fn open_evolution(
         agency_config,
         evolution_control.new(
           source_session,
-          settings.workspace,
+          workspace,
           opener,
           live,
           transitions,
