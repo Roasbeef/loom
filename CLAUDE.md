@@ -300,7 +300,8 @@ one.
   Programs and extensions: `code-mode`, `extensions`, `mcp`,
   `async-collaboration`. Strands and automation: `messaging`,
   `advisor`, `goals`, `automation`, `hooks-compat`. Observation and
-  testing: `events`, `telemetry`, `simulation`.
+  testing: `events`, `telemetry`, `simulation`, and `evaluation`, the
+  instrument that measures prompt, tool and model changes.
 - **Embedding** — `packages/harness/CLAUDE.md`: running a session in your own
   process without `client`, with the embedding test as the contract, and
   `docs/design-notes/harness-extraction.md` for what moved out of the daemon.
