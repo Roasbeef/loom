@@ -118,6 +118,7 @@ pub fn base_settings(
       clock: clock.from_function(ffi_os.system_time_ms),
     ),
     evolution_role: serve.Source,
+    pack: None,
     catalog: catalogue,
     system: None,
     home: Some(root <> "/empty-home"),

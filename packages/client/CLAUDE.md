@@ -3182,7 +3182,9 @@ catalogue without opening runtimes. Explicit admission invokes
   render_pack, pack_source, guidance, pinned_in, pinned, pin}` — the I/O
   half of the pure `prompt` package. `Host` is every `pack.Environment`
   field gathered from a real source; `pack_source` picks the shipped pack
-  or the one `LOOM_PROMPT_PACK` names; `render_pack` renders it or
+  or the one `LOOM_PROMPT_PACK` names (a host that sets `Settings.pack` hands the
+  source text in directly, skipping the environment, and the origin is
+  `Provided(label)`); `render_pack` renders it or
   refuses; `assemble` chooses between the `LOOM_SYSTEM_PROMPT` override,
   the pinned cell and a fresh render; `pinned_in`/`pinned`/`pin` are the
   two ends of the reserved `prompt/` cell. Nothing here is called per

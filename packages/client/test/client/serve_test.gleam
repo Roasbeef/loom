@@ -177,6 +177,7 @@ pub fn settings_under(root: String) -> serve.Settings {
   let root = absolute(root)
   serve.Settings(
     evolution_role: serve.Source,
+    pack: None,
     peer_directory: None,
     peer_defaults: None,
     remote_reach: None,
@@ -1197,6 +1198,63 @@ pub fn an_explicit_override_bypasses_the_pack_test() {
     as "the override must be pinned"
   assert pinned == "operator words only"
   serve.shutdown(booted)
+}
+
+/// A pack handed in through `Settings.pack` is the one rendered and pinned,
+/// whatever the environment would have said, and it names itself `Provided`.
+pub fn a_provided_pack_is_the_one_rendered_and_pinned_test() {
+  let pack_root = "build/serve-test-provided-pack"
+  let _stale = simplifile.delete(pack_root)
+  let assert Ok(booted) =
+    serve.boot(
+      serve.Settings(
+        ..settings_under(pack_root),
+        pack: Some(provided_pack("PROVIDED-PACK-SENTINEL")),
+      ),
+    )
+    as "the boot must succeed with a provided pack"
+  let assert Ok(Some(pinned)) = system_prompt.pinned(booted.instance.runtime)
+    as "the provided pack must be pinned"
+  assert string.contains(pinned, "PROVIDED-PACK-SENTINEL")
+  assert booted.instance.prompt.origin
+    == system_prompt.Provided(label: "provided by the host")
+  serve.shutdown(booted)
+}
+
+/// A provided pack that does not decode refuses the boot by naming itself,
+/// rather than falling back to the shipped pack.
+pub fn a_corrupt_provided_pack_refuses_the_boot_test() {
+  let pack_root = "build/serve-test-corrupt-pack"
+  let _stale = simplifile.delete(pack_root)
+  let assert Error(reason) =
+    serve.boot(serve.Settings(..settings_under(pack_root), pack: Some("{}")))
+    as "a corrupt provided pack must refuse the boot"
+  assert string.contains(reason, "provided by the host")
+  assert string.contains(reason, "corrupt")
+}
+
+/// `system` still outranks a provided pack: the override bypasses packs.
+pub fn an_override_outranks_a_provided_pack_test() {
+  let pack_root = "build/serve-test-override-pack"
+  let _stale = simplifile.delete(pack_root)
+  let assert Ok(booted) =
+    serve.boot(
+      serve.Settings(
+        ..settings_under(pack_root),
+        system: Some("operator words only"),
+        pack: Some(provided_pack("PROVIDED-PACK-SENTINEL")),
+      ),
+    )
+    as "the boot must succeed"
+  let assert Ok(Some(pinned)) = system_prompt.pinned(booted.instance.runtime)
+  assert pinned == "operator words only"
+  serve.shutdown(booted)
+}
+
+fn provided_pack(sentinel: String) -> String {
+  "%% loom-prompt-pack 1\n%% version provided\n%% section identity\n"
+  <> sentinel
+  <> "\n"
 }
 
 /// The assembled prompt reaches the wire, not just the durable cell. A

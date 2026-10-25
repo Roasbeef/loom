@@ -553,6 +553,15 @@ pub type Settings {
     /// prompt pack entirely. `None` — the ordinary case — leaves `boot`
     /// to use the session's pinned prompt or render the pack.
     system: Option(String),
+    /// The prompt pack's *source text*, handed to the session directly.
+    /// `None` — the ordinary case — keeps the boot's own lookup: the file
+    /// `LOOM_PROMPT_PACK` names, else the pack shipped with the build.
+    /// `Some(text)` skips that environment read and renders `text`, so
+    /// concurrent sessions in one VM can each run a different pack without
+    /// racing on a process-wide variable. It is text rather than a path
+    /// because a path is an environment read in disguise and a trial's jail
+    /// could not see it anyway. A `system` override still bypasses the pack.
+    pack: Option(String),
     /// The operator's home directory, where the global `AGENTS.md`
     /// default is looked for when the workspace has none of its own.
     /// `resolve` fills it from `HOME`, and `None` records that `HOME`
@@ -1569,6 +1578,7 @@ fn resolve(flags: Flags, placement: Placement) -> Result(Settings, String) {
       demand: option.unwrap(flags.demand, exec.PlatformEnforcement),
       gateway:,
       evolution_role: Source,
+      pack: None,
       catalog: catalogue,
       secrets: secret_store,
       secret_failures:,
@@ -6239,13 +6249,10 @@ fn render_prompt(
       ]),
       list.flatten([standing_notes, facts.guidance_notes, approved_notes]),
     )
-  use #(origin, source) <- result.try(
-    system_prompt.pack_source(
-      option.from_result(workspace_policy.env_text(
-        system_prompt.pack_path_variable,
-      )),
-    ),
-  )
+
+  // The pack's source and origin: the host's own text if it gave one, else
+  // the environment's file, else the shipped pack.
+  use #(origin, source) <- result.try(chosen_pack(settings))
   use rendered <- result.try(system_prompt.render_pack(
     origin,
     source,
@@ -6270,6 +6277,26 @@ fn render_prompt(
       warnings: list.append(notes, rendered.warnings),
     ),
   )
+}
+
+/// Chooses the pack source this boot renders. A pack handed in through
+/// `Settings` wins over the environment: the field exists so a host can pick
+/// a pack per session, and an ambient variable that silently outranked it
+/// would make that choice unobservable.
+fn chosen_pack(
+  settings: Settings,
+) -> Result(#(system_prompt.Origin, String), String) {
+  case settings.pack {
+    Some(text) ->
+      Ok(#(system_prompt.Provided(label: "provided by the host"), text))
+
+    None ->
+      system_prompt.pack_source(
+        option.from_result(workspace_policy.env_text(
+          system_prompt.pack_path_variable,
+        )),
+      )
+  }
 }
 
 // How this session runs the operator's goal check.

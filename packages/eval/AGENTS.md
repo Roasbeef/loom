@@ -294,9 +294,11 @@ retire, grade) is how a test makes one fail or watches their order.
 - **Arms.** `arm_settings.to_settings` applies roles, thinking (and routes every
   role again from the resulting catalogue) and withheld tools;
   `arm_settings.profiles` builds one profile per exact target. A `PromptPack`
-  component is refused by name: the pack reaches a session only through the
-  process environment (`LOOM_PROMPT_PACK`), `Settings` has no field for it,
-  and trials share a VM. A `Settings` field in `client` is what lifts it.
+  component is applied through `Settings.pack` (the pack's source text, which
+  `serve.render_prompt` renders instead of reading `LOOM_PROMPT_PACK`).
+  `to_settings` decodes the pack with `pack.decode` first, so a corrupt pack
+  refuses the arm by name before any trial opens; an arm with no pack keeps
+  the base's.
 - **Exact-file grading** is `trial.grade_expected`, a copy of
   `client/evolution/fixture.score`'s comparison, because that function takes
   the governed task set. `Program` verifiers go through `Seams.grade`;
