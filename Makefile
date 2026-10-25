@@ -680,6 +680,10 @@ docker-smoke: ## Build the image, boot it, run a client command and the self-tes
 docker-distributed-smoke: ## Bring up docker/distributed (orchestrator + executor), check both run a TLS node, tear down; skips without Docker
 	@bash scripts/distributed_smoke.sh "$(DOCKER_IMAGE)"
 
+.PHONY: harbor-test
+harbor-test: ## Unit-test the Harbor agent adapter (integrations/harbor); skips without uv, not part of make check
+	@bash scripts/harbor_test.sh
+
 .PHONY: clean
 clean: ## Remove build artifacts
 	@rm -rf packages/*/build $(HELPER) bin build dist
