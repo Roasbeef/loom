@@ -12,7 +12,10 @@ import broker/exec
 import client/catalog
 import client/codemode
 import client/evolution/record
+import client/evolution/record_test
+import client/executor_evolution
 import client/executor_plane
+import client/extension/hooks
 import client/internal/ffi_os
 import client/internal/instance_owner as custody
 import client/jobs
@@ -29,6 +32,8 @@ import client/workspaces
 import core/clock
 import core/json
 import core/message
+import core/msgpack
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/io
@@ -41,6 +46,7 @@ import provider/secret
 import runtime/effects.{type ToolOutcome, type ToolRun}
 import simplifile
 import storage/exec_ledger
+import support/evolution as fixture
 import support/remote_fixtures as fixtures
 import telemetry/log
 import tools/tool
@@ -407,12 +413,11 @@ pub fn the_census_is_plain_data_with_no_function_values_test() {
   // A shared workspace has no branch to report.
   assert census.branch == None
 
-  // The evolution plane is not built on the executor yet, and the census says
-  // so in words an operator can act on.
-  assert census.evolution
-    == remote_census.Uncompiled(
-      "the executor's evolution plane is not built yet",
-    )
+  // This rig has no code-mode seed, so it cannot compile candidates, and the
+  // census gives the toolchain's reason in words an operator can act on.
+  let assert remote_census.Uncompiled(reason) = census.evolution
+    as "a plane with no code mode is uncompiled"
+  assert reason != ""
 
   // And the term survives the trip a distribution connection gives it.
   assert wire_round_trip(census) == census
@@ -667,4 +672,280 @@ pub fn the_scope_limit_is_the_default_unless_a_positive_integer_is_set_test() {
   assert executor_plane.scope_limits_from(Ok("-3")).max_unclean_scopes == 16
   assert executor_plane.scope_limits_from(Ok("many")).max_unclean_scopes == 16
   assert executor_plane.scope_limits_from(Ok("")).max_unclean_scopes == 16
+}
+
+// --- the evolution plane ---------------------------------------------------------
+
+// The attach token the evolution tests present. The surface mints its own, so a
+// test that sends raw protocol messages after attaching fixes it here.
+fn evolution_token() -> BitArray {
+  bit_array.from_string("evolution-test-token")
+}
+
+// An executor whose workspace has a code-mode seed and whose jail is real, the
+// only kind that can build a candidate. A host without either skips, naming
+// why, as the code-mode cases above do.
+type Evolving {
+  Evolving(rig: Rig, identity: record.Identity)
+}
+
+fn with_evolution(name: String, body: fn(Evolving) -> Nil) -> Nil {
+  case exec.unjailed_skip_reason(exec.host_platform()), prepared_seed() {
+    option.Some(reason), _ ->
+      io.println_error("SKIP " <> name <> ": " <> reason)
+    option.None, Error(reason) ->
+      io.println_error("SKIP " <> name <> ": " <> reason)
+    option.None, Ok(seed) -> {
+      let scratch = shallow_scratch()
+
+      // The candidate's author test runs a process through `cap/proc`, which
+      // asks the owner whether the strand holds `bash`, so the owner here
+      // answers yes.
+      let services =
+        owner_services.OwnerServices(
+          ..fixtures.quiet_services(),
+          holds: fn(_caller, _tool) { Ok(Nil) },
+        )
+      let rig = rig_over(Some(seed), services, scratch)
+      let census = attached_census(rig)
+      let assert remote_census.Compiles(identity) = census.evolution
+        as "an executor with code mode compiles candidates"
+      body(Evolving(rig:, identity:))
+
+      // A scope the body left open is closed, so no generation's jail
+      // outlives the test. A scope the body closed answers again harmlessly.
+      let _closed = close(rig, 0)
+      stop(rig)
+      let _removed = simplifile.delete_all([scratch])
+      Nil
+    }
+  }
+}
+
+// Attaches session `s1` with the token the evolution tests present, and returns
+// the census the executor reported. A second attach with the same token rebinds
+// the scope without rebuilding it.
+fn attached_census(rig: Rig) -> RemoteCensus {
+  let assert Ok(attachment) =
+    surface.attach(
+      surface.Config(
+        ..config(rig, "s1", "proj", 0),
+        mint_token: evolution_token,
+      ),
+    )
+    as "the attach succeeds"
+  attachment.attached.census
+}
+
+// The fixture extension as a candidate stamped with the executor's own
+// identity.
+fn candidate_of(identity: record.Identity) -> record.Candidate {
+  record.identified(
+    record.Candidate(
+      ..record_test.candidate(),
+      name: "evolution_echo",
+      identity:,
+      files: fixture.extension(1),
+      test_entry: Some("evolution_check"),
+      description: "A governed live echo fixture.",
+      input_schema: json.to_string(fixture.schema()),
+    ),
+  )
+}
+
+// The selection that approves the candidate's first generation.
+fn selection_of(candidate: record.Candidate) -> record.Selection {
+  record.Selection(
+    candidate.id,
+    record.evidence_placeholder(),
+    candidate.scope,
+    candidate.name,
+    1,
+  )
+}
+
+// Builds the fixture on the executor, which is a real compile in the jail.
+fn build_generation(
+  evolving: Evolving,
+) -> Result(protocol.Staged, protocol.Refusal) {
+  let candidate = candidate_of(evolving.identity)
+  let reply = process.new_subject()
+  address.deliver(
+    evolving.rig.address,
+    protocol.EvolutionStage(
+      session: "s1",
+      incarnation: 0,
+      token: evolution_token(),
+      selection: selection_of(candidate),
+      candidate:,
+      reply:,
+    ),
+  )
+  let assert Ok(answer) = process.receive(reply, 600_000)
+    as "the executor answers a stage"
+  answer
+}
+
+fn retire_generation(
+  evolving: Evolving,
+  handle: protocol.Handle,
+) -> Result(protocol.CloseOutcome, protocol.Refusal) {
+  let reply = process.new_subject()
+  address.deliver(
+    evolving.rig.address,
+    protocol.EvolutionRetire(
+      session: "s1",
+      incarnation: 0,
+      token: evolution_token(),
+      handle:,
+      reply:,
+    ),
+  )
+  let assert Ok(answer) = process.receive(reply, 60_000)
+    as "the executor answers a retire"
+  answer
+}
+
+fn evaluate_fixture(
+  evolving: Evolving,
+  step: String,
+) -> protocol.ExecutionAnswer {
+  let reply = process.new_subject()
+  address.deliver(
+    evolving.rig.address,
+    protocol.EvolutionEvaluate(
+      incarnation: 0,
+      token: evolution_token(),
+      coordinates: fixtures.evolution_coordinates("s1", step),
+      candidate: candidate_of(evolving.identity),
+      reply:,
+    ),
+  )
+  let assert Ok(answer) = process.receive(reply, 600_000)
+    as "the executor answers an evaluate"
+  answer
+}
+
+/// The whole life of a generation on the executor: a build names the fixture's
+/// tool, a promoted run answers with the built version's marker, a hook for an
+/// event the manifest never declared is unhandled, and a retire answers
+/// `AllRetired`, again when repeated.
+pub fn an_executor_builds_runs_and_retires_a_generation_test() {
+  use evolving <- with_evolution(
+    "an_executor_builds_runs_and_retires_a_generation",
+  )
+  let assert Ok(built) = build_generation(evolving)
+    as "the fixture builds in the jail"
+
+  // A serving generation answers a census of its own helper pool.
+  let census = process.new_subject()
+  address.deliver(
+    evolving.rig.address,
+    protocol.EvolutionInventory(
+      session: "s1",
+      incarnation: 0,
+      handle: built.handle,
+      reply: census,
+    ),
+  )
+  let assert Ok(Ok(json.Object(_fields))) = process.receive(census, 20_000)
+    as "the executor answers an inventory"
+  assert list.map(built.tools, fn(described: tool.Described) { described.name })
+    == ["evolution_echo"]
+  assert built.hooks == []
+  assert built.superseded == []
+
+  // The tool runs in the generation's own jail and answers with its version.
+  let reply = process.new_subject()
+  address.deliver(
+    evolving.rig.address,
+    protocol.EvolutionRun(
+      incarnation: 0,
+      token: evolution_token(),
+      coordinates: fixtures.evolution_coordinates("s1", "run-1"),
+      target: protocol.Promoted(handle: built.handle, tool: "evolution_echo"),
+      args: json.Object([#("say", json.String("fresh"))]),
+      reply:,
+    ),
+  )
+  let assert Ok(protocol.RunFinished(outcome)) = process.receive(reply, 120_000)
+    as "the executor answers a run"
+  assert text_of(outcome) == Ok("version-1:fresh")
+
+  // The manifest declares no hooks, so the generation does not handle one.
+  let heard = process.new_subject()
+  address.deliver(
+    evolving.rig.address,
+    protocol.EvolutionHook(
+      session: "s1",
+      incarnation: 0,
+      token: evolution_token(),
+      handle: built.handle,
+      event: "tool_call",
+      payload: msgpack.NilValue,
+      within_ms: 5000,
+      reply: heard,
+    ),
+  )
+  let assert Ok(answer) = process.receive(heard, 60_000)
+    as "the executor answers a hook"
+  assert answer == Error(hooks.Unhandled)
+
+  // A retire is idempotent: the second one finds nothing and answers the same.
+  assert retire_generation(evolving, built.handle) == Ok(protocol.AllRetired)
+  assert retire_generation(evolving, built.handle) == Ok(protocol.AllRetired)
+  Nil
+}
+
+/// A close after a build whose generation was never retired still retires it.
+/// The evolution actor is filed in the scope's custody, so the close stops the
+/// generation's jail and reports `AllRetired`, and the candidate scratch goes
+/// with it.
+pub fn a_close_retires_a_generation_the_orchestrator_never_retired_test() {
+  use evolving <- with_evolution(
+    "a_close_retires_a_generation_the_orchestrator_never_retired",
+  )
+  let assert Ok(_built) = build_generation(evolving)
+    as "the fixture builds in the jail"
+  let scratch = evolving.rig.state <> "/evolution/run/s1"
+  assert simplifile.is_directory(scratch) == Ok(True)
+  assert close(evolving.rig, 0) == Ok(protocol.AllRetired)
+  assert simplifile.is_directory(scratch) == Ok(False)
+  Nil
+}
+
+/// The author tests of a candidate run on the executor and the report comes
+/// back as JSON with its verdict. A second evaluate under the same call key is
+/// the same call re-sent and reads the same report. The fixture's tests are
+/// deterministic, so equal answers alone would not show that the second did
+/// not run them again; that the host joins a key is pinned in
+/// `remote/host_execution_test`, and this case shows the plane end to end.
+pub fn an_evaluate_reports_a_verdict_and_a_duplicate_key_joins_test() {
+  use evolving <- with_evolution(
+    "an_evaluate_reports_a_verdict_and_a_duplicate_key_joins",
+  )
+  let first = evaluate_fixture(evolving, "evaluate-1")
+  let assert protocol.ExecutionFinished(value) = first
+    as "the evaluation finishes"
+  let assert Ok(Ok(report)) = executor_evolution.decode_report(value)
+    as "the answer is a report"
+  assert report.verdict == record.Passed
+
+  // Same key, same stored answer.
+  assert evaluate_fixture(evolving, "evaluate-1") == first
+  Nil
+}
+
+/// The census says whether the executor compiles candidates. With code mode it
+/// carries the identity candidates are stamped with, and without it the reason,
+/// which `the_census_is_plain_data_with_no_function_values_test` reads.
+pub fn the_census_says_whether_the_executor_compiles_test() {
+  use evolving <- with_evolution(
+    "the_census_says_whether_the_executor_compiles",
+  )
+  let assert remote_census.Compiles(identity) =
+    attached_census(evolving.rig).evolution
+  assert identity == evolving.identity
+  assert identity.build != ""
+  Nil
 }

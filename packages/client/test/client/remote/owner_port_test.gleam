@@ -426,3 +426,33 @@ pub fn the_reconciler_stops_running_programs_whose_record_closed_test() {
   let assert Ok(again) = process.receive(stopped, 2000)
   assert again == closing
 }
+
+pub fn the_extension_memory_prefix_crosses_the_port_and_others_do_not_test() {
+  // The services' fact access is the real one with no store bound, so what the
+  // port sends back says where the key stopped: a served key reaches the
+  // store and finds it absent, and an unserved one never gets that far.
+  let services =
+    owner_services.OwnerServices(
+      ..fixtures.quiet_services(),
+      facts: owner_services.local_facts(
+        handle: fn() { Error(Nil) },
+        runtime: fn() { Error(Nil) },
+      ),
+    )
+  let inbox = owner_port.inbox(port_over(services, fn(_key) { False }, 60_000))
+
+  assert process.call(inbox, 2000, protocol.FactPutBlind(
+      "ext/web-search/last",
+      json.Null,
+      _,
+    ))
+    == Error(owner_services.StoreAbsent)
+  assert process.call(inbox, 2000, protocol.FactGet("ext/web-search/last", _))
+    == Error(owner_services.StoreAbsent)
+  assert process.call(inbox, 2000, protocol.FactPutBlind(
+      "agent/notes",
+      json.Null,
+      _,
+    ))
+    == Error(owner_services.NotServed(key: "agent/notes"))
+}

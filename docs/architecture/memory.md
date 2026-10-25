@@ -507,9 +507,9 @@ Everything below sits in that directory unless the table says otherwise.
 Protection means the jail bars writes to the path. Writing is the entire
 poisoning path: the notes index and the rules file reach later sessions
 unasked, and a search snippet reaches a later session whenever a model
-searches for it. `client/workspace_policy.gleam:1312` (`protecting_memory`)
+searches for it. `client/workspace_policy.gleam:1341` (`protecting_memory`)
 covers the store and the notes index, and
-`client/workspace_policy.gleam:1340` (`protecting_rules`) covers the rules
+`client/workspace_policy.gleam:1369` (`protecting_rules`) covers the rules
 file. The protection is conditional on the paths because none of them need
 exist, and the jail refuses to mask a missing path under a read-only parent.
 The state root's `workspaces/` and `domains/` directories are also masked

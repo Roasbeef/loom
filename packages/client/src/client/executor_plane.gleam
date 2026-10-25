@@ -73,9 +73,28 @@
 //// closed. A scope without that result is `UnknownCleanup`, whatever else went
 //// well.
 ////
+//// ## The evolution plane
+////
+//// A scope with code mode also starts an evolution actor (`client/executor_evolution`),
+//// which stages, runs and retires the generations of a promoted extension for
+//// the orchestrator's session. The actor is built from this machine's own
+//// inputs and none of the orchestrator's: the helper pool and policy are the
+//// scope's, extension memory goes back through the owner's fact access under
+//// the reserved `ext/` prefix, and extension secrets come from this machine's
+//// `[secrets]` table and environment, the same store MCP and the workspace
+//// plane read. The candidates' scratch is `<state root>/evolution/run/<session>`,
+//// and `<state root>/evolution` is masked from every jail, so a build cannot see
+//// another scope's scratch.
+////
+//// The actor is filed under `custody.Evolution`, so a close retires it before
+//// the broker and the helpers it runs on. The census carries the compile
+//// identity, computed once at attach. A scope with no code mode, or whose
+//// identity cannot be observed, starts no actor, files nothing and reports
+//// `Uncompiled` with the reason.
+////
 //// ## Flow
 ////
-//// `machine` → `worktrees_of` → `factory` → `build` → `plane_over` → `retire`
+//// `machine` → `worktrees_of` → `factory` → `build` → `evolution_of` → `plane_over` → `retire`
 ////
 //// 1. `machine` reads this executor's own settings once, at daemon start.
 //// 2. `worktrees_of` starts the sandboxed Git and the gates of the worktree
@@ -85,17 +104,23 @@
 //// 4. `build` resolves the workspace name, opens the session's tree when the
 ////    workspace has one, makes the scope directory, and starts the workspace
 ////    half.
-//// 5. `plane_over` reads the prompt facts once and wraps the started plane as the
+//// 5. `evolution_of` starts the scope's evolution actor when code mode is
+////    available, and says in the census whether this machine compiles
+////    (`uncompiled` is the answer for a scope that cannot).
+//// 6. `plane_over` reads the prompt facts once and wraps the started plane as the
 ////    host's plane, with the census as plain data.
-//// 6. `retire` closes a scope: language servers, children, broker, then helpers,
-////    and reports a clean close only on the helper witness. A clean close then
-////    settles the session's tree.
+//// 7. `retire` closes a scope: language servers, children, evolution, broker,
+////    then helpers, and reports a clean close only on the helper witness. A
+////    clean close then settles the session's tree.
 
 import broker/broker
 import broker/exec.{type EnforcementDemand}
 import broker/policy
 import client/catalog
 import client/codemode as codemode_wiring
+import client/evolution/machine/local
+import client/executor_evolution
+import client/extension/memory as extension_memory
 import client/gocache
 import client/install
 import client/internal/ffi_os
@@ -400,13 +425,23 @@ fn build_in(
     use blob_root <- result.try(blob_directory(machine.state_root, spec.session))
     use scope <- result.try(scope_directory(machine.state_root, spec.session))
 
-    // Attempt to start workspace plane with prepared scopes.
-    case start(machine, directory, scope, blob_root, custody, spec) {
-      Ok(plane) -> Ok(plane)
+    // The evolution directories exist before the base policy that masks them
+    // is built, so the mask is applied and not filtered out as a missing path.
+    case evolution_scratch(machine.state_root, spec.session) {
       Error(reason) -> {
         remove_scope(machine.logger, scope)
         Error(reason)
       }
+      Ok(scratch) ->
+        // Attempt to start workspace plane with prepared scopes.
+        case start(machine, directory, scope, blob_root, custody, spec) {
+          Ok(plane) -> Ok(plane)
+          Error(reason) -> {
+            remove_scope(machine.logger, scope)
+            remove_evolution_scratch(machine.logger, scratch)
+            Error(reason)
+          }
+        }
     }
   }
   result.map_error(built, host.NoPlaneBuilt)
@@ -446,6 +481,35 @@ fn scope_directory(
   use Nil <- result.try(bootstrap.ensure_private_directory(scopes))
   use Nil <- result.try(bootstrap.ensure_private_directory(scope))
   Ok(scope)
+}
+
+// The evolution plane's directory under the state root. Every scope's candidate
+// scratch lives beneath it, and the session's own jails mask it
+// (`workspace_policy.protecting_evolution`).
+fn evolution_root(state_root: String) -> String {
+  state_root <> "/evolution"
+}
+
+// One scope's candidate scratch. The session name has been judged by
+// `usable_session` wherever this path is made for a use that writes.
+fn evolution_run(state_root: String, session: String) -> String {
+  evolution_root(state_root) <> "/run/" <> session
+}
+
+// The scope's candidate scratch, created private and fresh. A directory left by
+// an earlier VM held another build's artifacts, so it is replaced and not
+// adopted. It is made for every scope, whether or not code mode starts, so that
+// the evolution root the policy masks always exists when the policy is built.
+/// Creates the scope's evolution scratch directory and returns its path.
+fn evolution_scratch(
+  state_root: String,
+  session: String,
+) -> Result(String, String) {
+  use Nil <- result.try(usable_session(session))
+  let scratch = evolution_run(state_root, session)
+  let _removed = simplifile.delete(scratch)
+  use Nil <- result.try(bootstrap.ensure_private_directory(scratch))
+  Ok(scratch)
 }
 
 // A session name arrives from a peer, so it is judged before it names a path.
@@ -513,6 +577,7 @@ fn start(
     |> workspace_policy.protecting_state_root(machine.state_root)
     |> workspace_policy.protecting_blobs(blob_root)
     |> protecting_siblings(machine.state_root, custody)
+    |> workspace_policy.protecting_evolution(evolution_root(machine.state_root))
   use prepared <- result.try(
     workspace_plane.prepare(
       workspace_spec(machine, root, scope, blob_root, base),
@@ -537,25 +602,156 @@ fn start(
         ..drain(filed, [])
       ]
       let code_mode = process.receive(configs, 0) |> option.from_result
-      plane_over(
-        Built(
-          machine:,
-          root:,
-          scope:,
-          custody:,
-          session: spec.session,
-          started:,
-          code_mode:,
-          mcp: mcp.statuses,
-        ),
-        cleanups,
-      )
+
+      // The evolution plane starts last, after everything it runs on exists, so
+      // a failure to start it stops the cleanups filed so far and nothing else.
+      case
+        evolution_of(
+          machine,
+          spec,
+          root,
+          started,
+          code_mode,
+          prepared.census.toolchain,
+          namespace,
+        )
+      {
+        Error(reason) -> {
+          let _outcome = retire_all(cleanups)
+          Error(reason)
+        }
+        Ok(evolving) ->
+          plane_over(
+            Built(
+              machine:,
+              root:,
+              scope:,
+              custody:,
+              session: spec.session,
+              started:,
+              code_mode:,
+              mcp: mcp.statuses,
+              evolving:,
+            ),
+            list.append(cleanups, evolving.cleanups),
+          )
+      }
     }
+
     Error(reason) -> {
       let _outcome = retire_all(drain(filed, []))
       let _stopped = registry.stop(namespace)
       Error(reason)
     }
+  }
+}
+
+// What a scope's evolution plane adds to its plane: the door the host serves
+// evolution messages through, the census line the orchestrator reads, and the
+// cleanup that retires it.
+type Evolving {
+  Evolving(
+    door: Option(host.Evolution),
+    census: remote_census.EvolutionCensus,
+    cleanups: List(Cleanup),
+  )
+}
+
+// Starts the scope's evolution actor when this machine can compile candidates.
+//
+// The identity is computed once, here, and is the census line: a rebound attach
+// reuses the plane and so the line. A machine that cannot compile, because
+// code mode found no toolchain or the identity could not be observed, starts no
+// actor and files nothing, and the census says why, so an orchestrator opens no
+// catalogue against it. Only a failure to start the actor itself is an error,
+// and the caller then stops everything the build had started.
+//
+// The actor is filed under `custody.Evolution`, which ranks before the broker
+// and the helpers: it retires its generations while the machinery they run on
+// is still up. The memory door and the secrets lookup are this executor's own.
+// Memory writes go back through the owner's fact access under the reserved
+// `ext/` prefix, and secrets come from this machine's `[secrets]` table and
+// environment, the store MCP and the workspace plane read, never from the
+// orchestrator's. An extension that needs a secret this machine does not hold
+// meets the same missing-secret refusal it would meet anywhere else.
+/// Starts the evolution plane for a scope when code mode is available.
+fn evolution_of(
+  machine: Machine,
+  spec: host.AttachSpec,
+  root: String,
+  started: workspace_plane.Started,
+  code_mode: Option(codemode_wiring.Config),
+  toolchain: Result(codemode_wiring.Toolchain, String),
+  namespace: registry.Registry,
+) -> Result(Evolving, String) {
+  // Without a code-mode configuration there is no compiler to stage a
+  // candidate with, so the scope compiles nothing and says why.
+  case code_mode {
+    None -> Ok(uncompiled(toolchain_reason(toolchain)))
+    Some(host_config) -> {
+      let census = started.plane.census
+      let clock = host_config.clock
+      let scratch = evolution_run(machine.state_root, spec.session)
+      let secrets = machine.secrets
+      let config =
+        local.Config(
+          host: codemode_wiring.without_evolution(host_config),
+          base: census.base_policy,
+          at: serve.hook_coordinates_at(
+            root,
+            census.base_policy,
+            machine.demand,
+            census.env,
+            workspace_plane.mixed_entropy()(),
+            clock,
+          ),
+          memory: extension_memory.over_facts(spec.owner.facts),
+          secrets: fn(name) { secret.lookup(secrets, name) },
+          namespace:,
+          scratch:,
+          logger: machine.logger,
+          open: local.open_plane(machine.helper_path, _, scratch, clock),
+        )
+
+      // Without an identity there is nothing a candidate could be stamped with.
+      case executor_evolution.identity(config) {
+        Error(reason) -> Ok(uncompiled(reason))
+        Ok(identity) -> {
+          use actor <- result.map(
+            executor_evolution.start(executor_evolution.Config(
+              local: config,
+              view: started.view,
+              refused: spec.owner.escalate,
+              logger: machine.logger,
+            )),
+          )
+          Evolving(
+            door: Some(executor_evolution.plane(actor)),
+            census: remote_census.Compiles(identity),
+            cleanups: [
+              #(custody.Evolution, fn() { executor_evolution.retire_all(actor) }),
+            ],
+          )
+        }
+      }
+    }
+  }
+}
+
+// An evolving line for a scope that cannot compile: no door, no cleanup.
+fn uncompiled(reason: String) -> Evolving {
+  Evolving(door: None, census: remote_census.Uncompiled(reason), cleanups: [])
+}
+
+// A toolchain that was found but whose configuration never reached the build is
+// reported as that, since the discovery has no reason to give.
+/// Why code mode is absent, in the words the toolchain discovery used.
+fn toolchain_reason(
+  toolchain: Result(codemode_wiring.Toolchain, String),
+) -> String {
+  case toolchain {
+    Error(reason) -> reason
+    Ok(_) -> "code mode did not start on this executor"
   }
 }
 
@@ -800,6 +996,7 @@ type Built {
     started: workspace_plane.Started,
     code_mode: Option(codemode_wiring.Config),
     mcp: List(remote_census.McpStatus),
+    evolving: Evolving,
   )
 }
 
@@ -825,9 +1022,12 @@ fn plane_over(
       let children = built.started.children
       let broker_actor = plane.broker
       let close_plane = plane.close
+
+      // What the close settles after the cleanups have run.
       let logger = machine.logger
       let custody = built.custody
       let session = built.session
+      let state_root = machine.state_root
       Ok(
         host.Plane(
           run: plane.run,
@@ -845,11 +1045,9 @@ fn plane_over(
             broker: broker.subject(broker_actor),
             mcp: built.mcp,
             branch: option.map(built.custody, fn(held) { held.branch }),
-            evolution: remote_census.Uncompiled(
-              "the executor's evolution plane is not built yet",
-            ),
+            evolution: built.evolving.census,
           ),
-          evolution: None,
+          evolution: built.evolving.door,
           children: fn(builder) {
             builder
             |> children.scratch
@@ -859,6 +1057,7 @@ fn plane_over(
           close: fn(retire_children) {
             let outcome = retire(close_plane, retire_children, cleanups)
             settle_scope(logger, scope, outcome)
+            settle_evolution(logger, state_root, session, outcome)
             settle_tree(custody, session, outcome)
             outcome
           },
@@ -947,6 +1146,34 @@ fn settle_scope(
     protocol.UnknownCleanup(count:) ->
       log.warn(logger, "executor.scope_cleanup_unproven", [
         field.count(key: "unproven", value: count),
+      ])
+  }
+}
+
+// The candidate scratch follows the scope directory's rule: a scope that proved
+// its cleanup has no candidate process left writing there, and one that did not
+// keeps the directory for the operator.
+/// Removes the scope's evolution scratch when the close was witnessed clean.
+fn settle_evolution(
+  logger: Logger,
+  state_root: String,
+  session: String,
+  outcome: protocol.CloseOutcome,
+) -> Nil {
+  case outcome {
+    protocol.AllRetired ->
+      remove_evolution_scratch(logger, evolution_run(state_root, session))
+    protocol.UnknownCleanup(..) -> Nil
+  }
+}
+
+/// Deletes the evolution scratch directory, logging a warning if that fails.
+fn remove_evolution_scratch(logger: Logger, scratch: String) -> Nil {
+  case simplifile.delete(scratch) {
+    Ok(Nil) -> Nil
+    Error(error) ->
+      log.warn(logger, "executor.evolution_scratch_kept", [
+        field.text(key: "reason", value: simplifile.describe_error(error)),
       ])
   }
 }
