@@ -576,6 +576,25 @@ hidden files in, runs the argv, and a Python helper writes
 writes `{"files": x}`. An inline program task has no reference solution and its
 `solve.sh` fails and says so.
 
+**The Harbor agent adapter** is the other direction: Harbor running Loom.
+[`integrations/harbor`](../../integrations/harbor/README.md) is a Python package,
+`loom_harbor.agent:LoomAgent`, that Harbor loads by import path
+(`harbor run --agent loom_harbor.agent:LoomAgent -m provider/model`). It installs
+a release into the task container, writes a one-model `loom.toml`, starts `loomd`
+and drives it with `loom run -p`, and reports the run as an `AgentContext` plus an
+ATIF trajectory. It lives outside `packages/` because it is not Gleam and not part
+of `make check`; `make harbor-test` runs its tests. Two decisions belong here.
+Isolation is an explicit `jail` option, `container` (the task container is the
+boundary; `loomd --best-effort`) or `platform` (Loom's own jail must enforce every
+probe or the trial is refused before it costs anything), and the posture, with
+what `loom run` measured, is recorded in the results and the trajectory. And
+because `packages/eval` never ships, the adapter converts the session database on
+the host with a Python port of `eval/atif.gleam`, checked step for step against
+this module on a database Loom's storage package wrote. The README lists what the
+trajectory lacks (the system prompt and tool definitions, subagent strands) and
+the Loom-side change that would close each, and what has not been verified: a real
+container run, a real release, a real model.
+
 **Transcripts and the taxonomy.** The failure taxonomy has to come from what
 agents did before anyone writes a task to test for it. `transcripts.export`
 (`eval/transcripts.gleam:125`) copies each session database under
@@ -726,8 +745,10 @@ limits what was exercised, and it is worth being exact about it.
   instruction to run no tests) that must read `Harmed` if the drop is large
   enough to power. `plans/README.md` has the commands, the cost method and the
   minimum detectable effect the committed set gives (about 0.25 at worst).
-- A Terminal-Bench subset ranked against the public board, which needs
-  `loom run`, Docker and the Harbor adapter, none of which exist.
+- A Terminal-Bench subset ranked against the public board. `loom run` and the
+  Harbor adapter now exist (`integrations/harbor`), but the adapter has not been
+  run through a real Harbor trial: this environment had no Docker daemon, no
+  release asset and no model key.
 - The holdout-to-production comparison on real sessions, which needs slice 3A.
 - The governed end to end under full enforcement, on a kernel with delegated
   cgroup v2, where `open_jail` runs under `PlatformEnforcement`.
@@ -746,7 +767,7 @@ limits what was exercised, and it is worth being exact about it.
 | Task set v2 admission through `admit_tasks`; refusing a repeated (fixture, expected) pair | protocol-change/100, "Task set v2 is deferred" |
 | Refunding the unused part of a per-attempt reservation, so large-window targets can reach `Passed` | Follow-up to protocol-change/100 |
 | `Program` verifiers in governed comparisons | ADR-021, deferred |
-| `loom run -p` and the Harbor agent adapter | Issue #492, over `eval/trial.run_one` |
+| `loom run -p` and the Harbor agent adapter | Built (`tui/run`, `integrations/harbor`); a real container run, an in-release ATIF export and strand-aware trajectories remain, see the adapter README |
 | The GEPA search | A later `eval/optimize`, consuming `Arm.components` and `Grade.side_info` |
 | The variance decomposition in the report | `eval/report`, calling `evalstat/paired.decompose` as it stands |
 | Mining of `client`, `tui` and `session_view` | After a measured per-module verifier cost |

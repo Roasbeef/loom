@@ -553,7 +553,15 @@ trial, builds an image or uploads anything.
   says so.
 - The exporter has not been run through Harbor's validator. By hand, once:
   `python -m harbor.utils.trajectory_validator <out.json>`.
-- The Harbor agent adapter, any image build and any upload are out of scope.
+- This package exports tasks *to* Harbor and trajectories *for* it. Harbor running
+  Loom is the reverse direction and lives in `integrations/harbor` (a Python
+  package, `loom_harbor.agent:LoomAgent`, tested by `make harbor-test`). It ships
+  nothing from here: `packages/eval` is not in a release, so the adapter reads the
+  session database on the host with a Python port of `atif.from_session_db`.
+  Change `atif`'s walk, its scrub rule or its metrics and that port
+  (`integrations/harbor/loom_harbor/trajectory.py`) must change with it; the
+  fixture `tests/fixtures/loom-session.gleam-atif.json` is this module's output.
+  Image builds and uploads remain out of scope.
 
 ## Seal and production
 
