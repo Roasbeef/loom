@@ -659,10 +659,19 @@ step)` (the same stream as `evalstat/prng`, which `search_test` checks);
 `select.slot_for` picks the slot round robin over slot names and
 `select.minibatch` draws `b` tune tasks from the same generator; the parent
 runs the minibatch alone (`run.execute` on a one-arm sub-plan at `K_tune`);
-`reflect.records` builds the reflective dataset from those rows and the
-reflector answers the slot's new text; the child is `arm.mint` of the parent
+`select.perfect` ends a step whose parent passed every minibatch cell in a
+`refused` row spelled `gepa.skipped_perfect_reason`, with no call made;
+otherwise `reflect.records` builds the reflective dataset from those rows,
+`reflect.background` and `reflect.view_for` give the slot's kind its
+standing constraints and its record view, `optimize.tried_before` reads the
+lineage's rejected rewrites of the slot back from `arms/` for the digest,
+and the reflector answers the slot's new text; an answer the provider
+stopped at its output limit is refused by `reflect.judge`
+(`Reply.finish`, from the gateway's stop reason, is written on the
+`reflection` row as `finish`); the child is `arm.mint` of the parent
 with that slot replaced; the child runs the same minibatch alone and
-`select.screen` (mean per-task reward at least the parent's) decides whether
+`select.screen` (mean per-task reward strictly above the parent's, or a tie
+that solves a task the parent failed outright) decides whether
 to pay for Validate; the child runs the whole Validate split alone at `K`
 and `evalstat.paired_verdict` pairs its rows against the parent's earlier
 Validate rows and against the incumbent's; the verdicts become the
@@ -679,14 +688,23 @@ headline; anything but `Improved` reads "Not confirmed".
 
 - **The minibatch is a spend filter, not a decision rule.** With three or
   four tasks the sign test cannot reach its level, so the screen only
-  decides whether to pay for the Validate run; the only acceptance is the
+  decides whether to pay for the Validate run, and it is strict: a child
+  that merely ties its parent (nought of three against nought of three)
+  is `screened_out`, unless the tie bought a task the parent scored zero
+  on; the only acceptance is the
   paired verdict on Validate. `Improved` over the parent joins the pool
   (`incumbent` when also not worse than the incumbent and leading more
   tasks, else `joined`); `Indistinguishable` and `Underpowered` join as
   `pareto_only`, never ranked above the parent; `Harmed` and `Incomplete`
   (`unsettled`) stay out. A screen failure is `screened_out`; an answer the
-  bounds refuse, a child the settings refuse, or a reflection that
-  reproduces an existing candidate is a `refused` row and costs nothing.
+  bounds refuse, one the provider cut at its output limit
+  (`gepa.truncated_reason`), a child the settings refuse, or a reflection
+  that reproduces an existing candidate is a `refused` row and costs
+  nothing beyond the call; a parent perfect on its minibatch is a
+  `refused` row spelled `skipped_perfect` that made no call. The driver
+  runs one proposal per step (`budget.Design.proposals` is one here); the
+  library's wider steps, and the rest of the upstream techniques, are
+  issue #1126's.
   Futility never fires inside a sub-run (every sub-plan but the confirm run
   has one arm), so there is no `stopped_futile` disposition.
 - **The log is the state.** `search.replay` translates each row of
