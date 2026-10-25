@@ -94,6 +94,16 @@ pub fn the_search_stops_for_the_counted_ceilings_before_the_budget_test() {
   assert budget.stop_reason(limits, counts, 9.0, costs, design) == None
   assert budget.stop_reason(limits, counts, 8.999, costs, design)
     == Some(budget.Budget)
+
+  // Admission is strict where the two reservation questions are not: a
+  // hair under the step's need is a budget stop, a hair under the confirm
+  // or the reflection is still covered.
+  let hair = 9.0 -. 1.0e-12
+  assert budget.stop_reason(limits, counts, hair, costs, design)
+    == Some(budget.Budget)
+  assert budget.confirm_affordable(remaining: 4.0 -. 1.0e-12, costs:, design:)
+  assert budget.reflection_affordable(remaining: 1.0 -. 1.0e-12, costs:)
+  assert !budget.confirm_affordable(remaining: 3.99, costs:, design:)
   assert budget.cap(remaining: 3.0, hold: 5.0) == 0.0
   assert budget.remaining(limits, spent: 101.0) == 0.0
   assert budget.parse_stop(budget.stop_name(budget.Candidates))

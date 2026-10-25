@@ -215,7 +215,7 @@ pub fn remaining(limits: Limits, spent spent: Float) -> Float {
 
 /// Why the search should stop now, if it should: the counted ceilings
 /// first, then whether the next step's worst case and the confirm run
-/// together fit what remains.
+/// together fit what remains, compared without tolerance.
 ///
 /// ## Examples
 ///
@@ -245,8 +245,10 @@ pub fn stop_reason(
       let need =
         step_worst_case(costs, design) +. confirm_worst_case(costs, design)
 
-      // The step is taken only when the confirm run still fits after it.
-      case covers(remaining:, need:) {
+      // The step is taken only when the confirm run still fits after it,
+      // and strictly: nothing has been reserved yet that rounding could
+      // owe the search.
+      case remaining >=. need {
         False -> Some(Budget)
         True -> None
       }
@@ -256,8 +258,13 @@ pub fn stop_reason(
 
 /// One part in a billion, relative: what remains is a sum of the host's
 /// own charges, and a sum of floats that should come to exactly the
-/// reservation can land a few ulps under it. A hair under by rounding is
-/// not a shortfall, so every "is it covered" question allows this much.
+/// reservation can land a few ulps under it. The tolerance is allowed in
+/// exactly two places, the two questions about a reservation the
+/// arithmetic already made: whether the confirm run, held back since the
+/// seed's run, is still covered, and whether a reflection, whose hold
+/// every earlier stage respected, is. Step admission is strict: a step
+/// is a choice to spend, not a reservation to honour, and a hair short
+/// means the search does not start it.
 const rounding = 1.0e-9
 
 /// Whether `remaining` covers `need`, allowing the rounding of a sum.
