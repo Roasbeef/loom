@@ -51,7 +51,7 @@ fn one_step() -> List(Event) {
     Seeded(seed, [#("a", "x")]),
     run(gepa.SeedValidate, 0, seed, "a", 0.0),
     run(gepa.ParentMinibatch, 1, seed, "b", 0.0),
-    Reflected(1, 0.001, "in/out", gepa.Complete),
+    Reflected(1, 0.001, "in/out", gepa.Complete, 1, 1),
     Minted(child, seed, 1, "a", "y"),
     run(gepa.ChildMinibatch, 1, child, "c", 1.0),
     run(gepa.Validate, 1, child, "d", 1.0),
@@ -188,7 +188,7 @@ pub fn a_lax_row_is_refused_test() {
       list.take(one_step(), 8),
       [
         run(gepa.ParentMinibatch, 2, seed, "b2", 0.0),
-        Reflected(2, 0.001, "", gepa.Unknown),
+        Reflected(2, 0.001, "", gepa.Unknown, 1, 1),
         Minted(grandchild, seed, 2, "a", "z"),
         run(gepa.ChildMinibatch, 2, grandchild, "c2", 1.0),
         run(gepa.Validate, 2, grandchild, "d2", 1.0),
@@ -256,7 +256,7 @@ pub fn a_lost_answer_is_reflected_again_and_counted_test() {
   let assert Ok(state) =
     gepa.replay(
       list.append(list.take(one_step(), 4), [
-        Reflected(1, 0.002, "", gepa.Truncated),
+        Reflected(1, 0.002, "", gepa.Truncated, 1, 1),
       ]),
     )
   assert state.reflections == 2
@@ -330,7 +330,7 @@ pub fn malformed_ids_and_negative_money_are_refused_test() {
   )
   refused_with(
     list.append(list.take(one_step(), 3), [
-      Reflected(1, -0.5, "", gepa.Unknown),
+      Reflected(1, -0.5, "", gepa.Unknown, 1, 1),
     ]),
     "finite, non-negative",
   )
@@ -365,7 +365,7 @@ pub fn non_finite_numbers_are_refused_test() {
   )
   refused_with(
     list.append(list.take(one_step(), 3), [
-      Reflected(1, huge, "", gepa.Unknown),
+      Reflected(1, huge, "", gepa.Unknown, 1, 1),
     ]),
     "finite, non-negative",
   )
@@ -401,4 +401,95 @@ pub fn a_duplicate_candidate_or_a_stranger_is_refused_test() {
   let assert Error(reason) =
     gepa.replay(list.append(list.take(one_step(), 6), [odd]))
   assert string.contains(reason, "measures only the candidates it is about")
+}
+
+/// A two-proposal step up to both children's minibatch runs.
+fn two_children() -> List(Event) {
+  [
+    Seeded(seed, [#("a", "x")]),
+    run(gepa.SeedValidate, 0, seed, "a", 0.0),
+    run(gepa.ParentMinibatch, 1, seed, "b", 0.0),
+    Reflected(1, 0.001, "", gepa.Complete, 1, 2),
+    Minted(child, seed, 1, "a", "y"),
+    Reflected(1, 0.001, "", gepa.Complete, 2, 2),
+    Minted(grandchild, seed, 1, "a", "z"),
+    run(gepa.ChildMinibatch, 1, child, "c", 1.0),
+    run(gepa.ChildMinibatch, 1, grandchild, "c2", 1.0),
+  ]
+}
+
+pub fn a_step_of_several_children_settles_every_sibling_before_validate_test() {
+  let rows = two_children()
+  let assert Ok(state) = gepa.replay(rows)
+  let assert Some(progress) = state.open
+  assert progress.width == 2 && progress.settled == 2
+  assert progress.children == [child, grandchild]
+  assert progress.reached == gepa.ChildMeasured
+
+  // A validate run with a sibling still live is a deleted screen row.
+  refused_with(
+    list.append(rows, [run(gepa.Validate, 1, grandchild, "d", 1.0)]),
+    "a sibling's screen judgement",
+  )
+
+  // The sibling screened out leaves the step open; the validate run then
+  // names the survivor, and its judgement closes the step.
+  let screened =
+    Judged(
+      child,
+      seed,
+      verdict.OnMinibatch,
+      verdict.Incomplete,
+      verdict.ScreenedOut,
+      "",
+    )
+  let assert Ok(open) = gepa.replay(list.append(rows, [screened]))
+  assert open.open != None
+  let assert Ok(closed) =
+    gepa.replay(
+      list.append(rows, [
+        screened,
+        run(gepa.Validate, 1, grandchild, "d", 1.0),
+        Judged(
+          grandchild,
+          seed,
+          verdict.OnValidate,
+          verdict.Improved,
+          verdict.Incumbent,
+          "",
+        ),
+      ]),
+    )
+  assert closed.open == None && closed.incumbent == grandchild
+
+  // Both siblings screened out closes the step with the pool unchanged.
+  let other =
+    Judged(
+      grandchild,
+      seed,
+      verdict.OnMinibatch,
+      verdict.Incomplete,
+      verdict.ScreenedOut,
+      "",
+    )
+  let assert Ok(empty) = gepa.replay(list.append(rows, [screened, other]))
+  assert empty.open == None && empty.pool == [seed]
+
+  // A third child's minibatch before the second proposal is settled, a
+  // reflection after a child has run, and a second minibatch of the same
+  // child are each out of place.
+  refused_with(
+    list.append(list.take(rows, 5), [
+      run(gepa.ChildMinibatch, 1, child, "c", 1.0),
+    ]),
+    "after its last proposal",
+  )
+  refused_with(
+    list.append(rows, [Reflected(1, 0.001, "", gepa.Complete, 3, 2)]),
+    "children have not run",
+  )
+  refused_with(
+    list.append(rows, [run(gepa.ChildMinibatch, 1, child, "c3", 1.0)]),
+    "no earlier one",
+  )
 }

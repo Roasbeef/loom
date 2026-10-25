@@ -46,7 +46,10 @@
 ////    reports the answer `Truncated` at an output limit, since a rewrite
 ////    cut mid-sentence is not the rewrite the reflector meant;
 //// 4. the child is evaluated on the same minibatch (`ChildMinibatch`) and
-////    `select.screen` decides whether to pay for validate;
+////    `select.screen` decides whether to pay for validate; a step that
+////    asked for several proposals (`Config.proposals`) reflects once per
+////    proposal, runs every child it minted on the minibatch, settles the
+////    others `ScreenedOut`, and pays validate for `select.winner` alone;
 //// 5. the child is evaluated on the whole validate split (`Validate`) and
 ////    judged against the parent and, when the parent is not the pool's
 ////    best, against the incumbent; `verdict.dispose` turns the acceptances
@@ -79,22 +82,31 @@
 //// driver orders its own effects — can still fold them, and that host
 //// vouches for their contents itself.
 ////
+//// # A step of several proposals
+////
+//// With `Config.proposals` above one a step reflects that many times in
+//// turn, each call its own request and its own budget check, with the
+//// earlier siblings of the step in the prompt's digest so the reflector
+//// is not asked the same question twice. The rows of the step keep one
+//// shape whatever its width: the first `Reflected` row records the width
+//// (`of`), so the fold, which never sees the configuration, knows from
+//// the log alone how many proposals the step owes before its children run;
+//// a resumed search therefore finishes a step at the width it was begun
+//// at. A refused answer closes the step only when it was the last proposal
+//// and no child was minted; otherwise the next proposal is asked for. Once
+//// every proposal is settled each live child runs the minibatch, the
+//// children that did not win the screen are settled `ScreenedOut` in
+//// minting order, and the winner alone is paid a validate run. A step of
+//// width one writes exactly the rows it always did.
+////
 //// # What is left for a later layer
 ////
 //// The event encoding (`gepa/log`) is tagged by kind under a version
 //// field, so a new kind is one constructor plus one encode and one decode
-//// arm. Four extensions are anticipated and have their places named:
-//// a reflection that asks for several proposals and screens a set of
-//// children (a `Reflect` request with a count, a `Minted` per child, and a
-//// screen judgement per child with only the best passer going to
-//// validate); further dispositions such as a child skipped because the
-//// parent is already perfect on the minibatch (a `verdict.Disposition`
-//// variant and a `consistent` row); a richer reflection reply (`Finish`
-//// already records how the answer ended, so a truncated one can be
-//// refused; per-slot background goes in `prompt.Request.notes`, and a
-//// "tried before" digest would sit beside it); and lineage enough for a
-//// three-way merge (a `Merged` event naming an ancestor and two parents,
-//// with `Member.parent` widened to a lineage).
+//// arm. Lineage enough for a three-way merge (a `Merged` event naming an
+//// ancestor and two parents, with `Member.parent` widened to a lineage)
+//// is the extension still anticipated, and per-trial evidence richer than
+//// a score's feedback is the host's to pack into it.
 ////
 //// ## Flow
 ////
@@ -104,8 +116,8 @@
 ////   `apply_refused`, `apply_judged`, `settle`, `apply_stopped`: one arm
 ////   of the fold each
 //// - `next`: the request the host should perform now
-//// - `between_steps`, `confirm_or_stop`, `within_step`, `draws`: how
-////   `next` decides
+//// - `between_steps`, `confirm_or_stop`, `within_step`,
+////   `screen_or_validate`, `draws`: how `next` decides
 //// - `reflect_or_refuse`, `records`, `tried`, `lineage`: what the
 ////   reflector is shown
 //// - `admit`, `child_components`, `content_id`: minting a child from an
@@ -224,6 +236,12 @@ pub type Event {
     ref: String,
     /// How the answer ended.
     finish: Finish,
+    /// Which of the step's proposals this call was for, counting from
+    /// one; a call made again after a lost answer repeats the number.
+    proposal: Int,
+    /// How many proposals the step asks for, which the step's first
+    /// reflection fixes for the fold.
+    of: Int,
   )
 
   /// A child was minted from the open step's parent.
@@ -324,16 +342,17 @@ pub type Reached {
   /// The parent's minibatch has been evaluated.
   ParentMeasured
 
-  /// At least one reflection has been made since.
+  /// A reflection has been made and its answer not yet minted or refused.
   ReflectedOnce
 
-  /// The child has been minted.
+  /// A proposal has been settled: a child minted, or, in a step of several
+  /// proposals, an answer refused with proposals still to come.
   ChildMinted
 
-  /// The child's minibatch has been evaluated.
+  /// At least one child's minibatch has been evaluated.
   ChildMeasured
 
-  /// The child's validate run has been evaluated.
+  /// The chosen child's validate run has been evaluated.
   ChildValidated
 }
 
@@ -346,11 +365,20 @@ pub type Progress {
     parent: String,
     /// The last stage seen.
     reached: Reached,
-    /// The child, once minted.
+    /// The child the step is about: the latest minted while proposing,
+    /// then the one validate was paid for.
     child: Option(String),
     /// How the last reflection's answer ended, from its row, so `admit`
     /// can refuse a truncated one; none before the step has reflected.
     finish: Option(Finish),
+    /// How many proposals the step asks for, as its first reflection's row
+    /// recorded it; one until then.
+    width: Int,
+    /// How many proposals have been answered, minted or refused.
+    settled: Int,
+    /// Every child minted this step, in minting order, whatever became of
+    /// it since.
+    children: List(String),
     /// The acceptance against the incumbent, when one was recorded before
     /// the settling judgement.
     against_incumbent: Option(Acceptance),
@@ -431,6 +459,10 @@ pub type Config {
     minibatch: Int,
     /// The slots a reflection may rewrite, in round-robin order.
     slots: List(String),
+    /// Children a step asks the reflector for, one per reflection, each
+    /// screened on the parent's minibatch with only the winner validated;
+    /// one is the plain search, and less than one is read as one.
+    proposals: Int,
     /// Identifiers per task the reflector must never read.
     hidden: List(#(String, List(String))),
     /// The search's ceilings.
@@ -463,7 +495,7 @@ pub type Request {
   )
 
   /// Show the reflector `prompt.render(request)` and feed back
-  /// `Reflected`, then `admit` the answer.
+  /// `Reflected`, carrying `proposal` and `of`, then `admit` the answer.
   Reflect(
     /// The step.
     step: Int,
@@ -471,6 +503,10 @@ pub type Request {
     parent: String,
     /// The slot being rewritten.
     slot: String,
+    /// Which proposal of the step this is, counting from one.
+    proposal: Int,
+    /// How many proposals the step asks for.
+    of: Int,
     /// What to show.
     request: prompt.Request,
     /// The worst case the call may cost, already covered.
@@ -733,9 +769,11 @@ fn answers(state: State, config: Config, event: Event) -> Result(Nil, String) {
         "a refused child is the one whose minibatch was asked for",
       )
 
-    Reflect(step:, worst_case:, ..), Reflected(step: got_step, cost:, ..) -> {
+    Reflect(step:, proposal:, of:, worst_case:, ..),
+      Reflected(step: got_step, cost:, proposal: got_proposal, of: got_of, ..)
+    -> {
       use Nil <- result.try(require(
-        step == got_step,
+        step == got_step && proposal == got_proposal && of == got_of,
         "the reflection is not the one asked for",
       ))
 
@@ -760,13 +798,18 @@ fn describe(request: Request) -> String {
       <> ", cap "
       <> float.to_string(cap)
       <> ")"
-    Reflect(step:, parent:, slot:, ..) ->
+    Reflect(step:, parent:, slot:, proposal:, of:, ..) ->
       "a reflection on "
       <> parent
       <> "'s "
       <> slot
       <> " at step "
       <> int.to_string(step)
+      <> " (proposal "
+      <> int.to_string(proposal)
+      <> " of "
+      <> int.to_string(of)
+      <> ")"
     Record(Stopped(reason:)) -> "the stop (" <> budget.stop_name(reason) <> ")"
     Record(Judged(candidate:, against:, disposition:, ..)) ->
       "a judgement of "
@@ -776,8 +819,12 @@ fn describe(request: Request) -> String {
       <> " ("
       <> verdict.disposition_name(disposition)
       <> ")"
-    Record(Reflected(step:, ..)) ->
-      "a zero-cost reflection at step " <> int.to_string(step)
+    Record(Reflected(step:, proposal:, ..)) ->
+      "a zero-cost reflection at step "
+      <> int.to_string(step)
+      <> " (proposal "
+      <> int.to_string(proposal)
+      <> ")"
     Record(Refused(step:, reason:, ..)) ->
       "a refusal at step " <> int.to_string(step) <> " (" <> reason <> ")"
     Record(Seeded(..)) | Record(Evaluated(..)) | Record(Minted(..)) ->
@@ -816,8 +863,8 @@ pub fn apply(state: State, event: Event) -> Result(State, String) {
   case event {
     Seeded(..) -> apply_seeded(state)
     Evaluated(..) -> apply_evaluated(state, event)
-    Reflected(step:, cost:, finish:, ..) ->
-      apply_reflected(state, step, cost, finish)
+    Reflected(step:, cost:, finish:, proposal:, of:, ..) ->
+      apply_reflected(state, step, cost, finish, proposal, of)
     Minted(..) -> apply_minted(state, event)
     Refused(step:, candidate:, ..) -> apply_refused(state, step, candidate)
     Judged(..) -> apply_judged(state, event)
@@ -983,6 +1030,9 @@ fn open_step(state: State, evaluation: Evaluation) -> Result(State, String) {
             reached: ParentMeasured,
             child: None,
             finish: None,
+            width: 1,
+            settled: 0,
+            children: [],
             against_incumbent: None,
           )),
         ),
@@ -1003,7 +1053,8 @@ fn seed_validated(state: State) -> Result(Nil, String) {
   }
 }
 
-/// The child's minibatch follows its minting.
+/// A child's minibatch follows the step's last proposal, is of a child the
+/// step minted and has not refused, and runs once.
 fn child_minibatch(
   state: State,
   evaluation: Evaluation,
@@ -1012,14 +1063,18 @@ fn child_minibatch(
   case state.open {
     Some(progress) -> {
       use Nil <- result.try(require(
-        progress.child != None,
+        progress.children != [],
         "search row missing: the child's candidate row",
       ))
       use Nil <- result.try(require(
         evaluation.step == progress.step
-          && progress.child == Some(evaluation.candidate)
-          && progress.reached == ChildMinted,
-        "a child minibatch needs the step's child and no earlier one",
+          && list.contains(live_children(state, progress), evaluation.candidate)
+          && progress.settled >= progress.width
+          && {
+          progress.reached == ChildMinted || progress.reached == ChildMeasured
+        }
+          && !measured_at(state, evaluation.candidate, progress.step),
+        "a child minibatch needs a live child of the step, after its last proposal, and no earlier one",
       ))
 
       Ok(
@@ -1037,21 +1092,29 @@ fn child_minibatch(
   }
 }
 
-/// A validate run after step 0 is the open step's child's, after its
-/// minibatch.
+/// A validate run after step 0 is of a live child of the open step, after
+/// its minibatch and after every sibling has been settled, and it makes
+/// that child the one the step is about.
 fn validate_run(state: State, evaluation: Evaluation) -> Result(State, String) {
   // A later validate run is the open step's child's.
   case state.open {
     Some(progress) -> {
+      let live = live_children(state, progress)
+
       use Nil <- result.try(require(
         evaluation.step == progress.step
-          && progress.child == Some(evaluation.candidate)
+          && list.contains(live, evaluation.candidate)
           && progress.reached != ChildValidated,
-        "a validate run needs the step's child and no earlier validate run",
+        "a validate run needs a live child of the step and no earlier validate run",
       ))
       use Nil <- result.try(require(
-        progress.reached == ChildMeasured,
+        progress.reached == ChildMeasured
+          && measured_at(state, evaluation.candidate, progress.step),
         "search row missing: the child's minibatch run",
+      ))
+      use Nil <- result.try(require(
+        live == [evaluation.candidate],
+        "search row missing: a sibling's screen judgement",
       ))
 
       Ok(
@@ -1064,7 +1127,13 @@ fn validate_run(state: State, evaluation: Evaluation) -> Result(State, String) {
             evaluation.candidate,
             evaluation.ref,
           ),
-          open: Some(Progress(..progress, reached: ChildValidated)),
+          open: Some(
+            Progress(
+              ..progress,
+              reached: ChildValidated,
+              child: Some(evaluation.candidate),
+            ),
+          ),
         ),
       )
     }
@@ -1120,20 +1189,45 @@ fn with_validated(
 }
 
 /// A reflection belongs to the open step, after the parent's minibatch and
-/// before the child. A second one in the same step is a resumed search
-/// that lost the first answer before minting, and is counted too.
+/// before any child's minibatch, and is for the next unsettled proposal.
+/// The step's first reflection fixes how many proposals the step asks for;
+/// every later one must agree. A second call for the same proposal is a
+/// resumed search that lost the answer before minting, and is counted too.
 fn apply_reflected(
   state: State,
   step: Int,
   cost: Float,
   finish: Finish,
+  proposal: Int,
+  of: Int,
 ) -> Result(State, String) {
-  // A reflection belongs to an open step that has no child yet.
+  // A reflection belongs to an open step whose children have not run.
   case state.open {
     Some(progress) -> {
       use Nil <- result.try(require(
-        step == progress.step && progress.child == None,
-        "a reflection needs an open step with no child yet",
+        step == progress.step
+          && {
+          progress.reached == ParentMeasured
+          || progress.reached == ReflectedOnce
+          || progress.reached == ChildMinted
+        },
+        "a reflection needs an open step whose children have not run",
+      ))
+      use Nil <- result.try(require(
+        proposal >= 1 && of >= proposal,
+        "a reflection is proposal i of n, with 1 <= i <= n",
+      ))
+
+      // The first reflection sets the width; the rest are held to it.
+      let width = case progress.reached {
+        ParentMeasured -> of
+        ReflectedOnce | ChildMinted | ChildMeasured | ChildValidated ->
+          progress.width
+      }
+
+      use Nil <- result.try(require(
+        of == width && proposal == progress.settled + 1,
+        "a reflection is for the step's next proposal, at the step's width",
       ))
       use Nil <- result.try(money(cost, "a reflection's cost"))
 
@@ -1143,7 +1237,12 @@ fn apply_reflected(
           reflections: state.reflections + 1,
           spent_reflecting: state.spent_reflecting +. cost,
           open: Some(
-            Progress(..progress, reached: ReflectedOnce, finish: Some(finish)),
+            Progress(
+              ..progress,
+              reached: ReflectedOnce,
+              finish: Some(finish),
+              width:,
+            ),
           ),
         ),
       )
@@ -1190,7 +1289,13 @@ fn apply_minted(state: State, event: Event) -> Result(State, String) {
           ..state,
           members: list.append(state.members, [member]),
           open: Some(
-            Progress(..progress, reached: ChildMinted, child: Some(candidate)),
+            Progress(
+              ..progress,
+              reached: ChildMinted,
+              child: Some(candidate),
+              settled: progress.settled + 1,
+              children: list.append(progress.children, [candidate]),
+            ),
           ),
         ),
       )
@@ -1214,43 +1319,73 @@ fn member_of(state: State, candidate: String) -> Result(Member, String) {
   |> result.map_error(fn(_) { "no candidate row for " <> candidate })
 }
 
-/// A refusal closes the open step: with no candidate after a refused
-/// answer, or before any reflection when the step had nothing to reflect
-/// on; with the child when the host could not build it.
+/// A refusal settles a proposal: with no candidate after a refused answer,
+/// or before any reflection when the step had nothing to reflect on; with
+/// the child when the host could not build it. It closes the step when
+/// nothing of the step is left to run: no proposal still to ask for and no
+/// child still live.
 fn apply_refused(
   state: State,
   step: Int,
   candidate: Option(String),
 ) -> Result(State, String) {
-  // A refusal closes an open step before its child has run.
+  // A refusal belongs to an open step, in one of three places.
   case state.open {
     Some(progress) -> {
       use Nil <- result.try(require(
         step == progress.step,
         "a refusal names the open step",
       ))
-      use Nil <- result.try(require(
-        case candidate {
-          None ->
-            progress.reached == ReflectedOnce
-            || progress.reached == ParentMeasured
-          Some(_) ->
-            progress.child == candidate && progress.reached == ChildMinted
-        },
-        "a refusal names the step's child, or no candidate before one was minted",
-      ))
 
-      Ok(
-        State(
-          ..state,
-          members: with_disposition(
-            state.members,
-            option.unwrap(candidate, ""),
-            verdict.Refused,
-          ),
-          open: None,
-        ),
-      )
+      // No candidate settles the pending proposal, or ends a step that has
+      // not reflected; a candidate must be a live child of a step whose
+      // proposals are all settled and whose children have not all run.
+      use settled <- result.try(case candidate {
+        None ->
+          case progress.reached {
+            ReflectedOnce -> Ok(progress.settled + 1)
+            ParentMeasured -> Ok(progress.width)
+            ChildMinted | ChildMeasured | ChildValidated ->
+              Error(
+                "a refusal names the step's child, or no candidate before one was minted",
+              )
+          }
+        Some(child) ->
+          require(
+            list.contains(live_children(state, progress), child)
+              && progress.settled >= progress.width
+              && {
+              progress.reached == ChildMinted
+              || progress.reached == ChildMeasured
+            },
+            "a refusal names a live child of the step, or no candidate before one was minted",
+          )
+          |> result.replace(progress.settled)
+      })
+
+      let members =
+        with_disposition(
+          state.members,
+          option.unwrap(candidate, ""),
+          verdict.Refused,
+        )
+
+      // A refused answer settles its proposal, which is the same stage a
+      // minted child reaches; a refused child leaves the stage as it was.
+      let reached = case candidate {
+        None -> ChildMinted
+        Some(_) -> progress.reached
+      }
+
+      let after = Progress(..progress, settled:, reached:)
+      let closed = State(..state, members:)
+
+      // The step stays open while a proposal or a live child remains.
+      case settled < progress.width, live_children(closed, after) {
+        True, _ -> Ok(State(..closed, open: Some(after)))
+        False, [_, ..] -> Ok(State(..closed, open: Some(after)))
+        False, [] -> Ok(State(..closed, open: None))
+      }
     }
 
     None ->
@@ -1285,8 +1420,8 @@ fn apply_judged(state: State, event: Event) -> Result(State, String) {
     -> {
       use Nil <- result.try(nonempty(against, "a judgement's baseline"))
       use Nil <- result.try(require(
-        progress.child == Some(candidate),
-        "a judgement names the step's child",
+        list.contains(progress.children, candidate),
+        "a judgement names a child of the step",
       ))
 
       // Against the parent the row settles the step; against the
@@ -1296,7 +1431,9 @@ fn apply_judged(state: State, event: Event) -> Result(State, String) {
           settle(state, progress, candidate, basis, acceptance, disposition)
         False -> {
           use Nil <- result.try(require(
-            against == state.incumbent && progress.reached == ChildValidated,
+            against == state.incumbent
+              && progress.reached == ChildValidated
+              && progress.child == Some(candidate),
             "a judgement is against the parent or the incumbent, after validate",
           ))
           use Nil <- result.try(require(
@@ -1381,11 +1518,15 @@ fn settle(
     "search row missing: the judgement against the incumbent",
   ))
 
-  // Each disposition names the stage the step must have reached.
+  // Each disposition names the stage the step must have reached: a
+  // screened-out child is a live one that ran its minibatch while no
+  // validate run has; a validated one is the child the step is about.
   use Nil <- result.try(case disposition {
     verdict.ScreenedOut ->
       require(
-        progress.reached == ChildMeasured,
+        progress.reached == ChildMeasured
+          && list.contains(live_children(state, progress), candidate)
+          && measured_at(state, candidate, progress.step),
         "search row missing: a screened-out child has run its minibatch and nothing more",
       )
     verdict.Incumbent
@@ -1394,7 +1535,7 @@ fn settle(
     | verdict.Discarded
     | verdict.Unsettled ->
       require(
-        progress.reached == ChildValidated,
+        progress.reached == ChildValidated && progress.child == Some(candidate),
         "search row missing: the child's validate run",
       )
     verdict.Refused | verdict.Confirmed | verdict.Unconfirmed ->
@@ -1428,15 +1569,40 @@ fn settle(
     | verdict.Unconfirmed -> state.incumbent
   }
 
-  Ok(
+  let settled =
     State(
       ..state,
       members: with_disposition(state.members, candidate, disposition),
       pool:,
       incumbent:,
-      open: None,
-    ),
-  )
+    )
+
+  // A screened-out sibling leaves the step open for the children still
+  // live; the validated child, or the last sibling, closes it.
+  case live_children(settled, progress) {
+    [_, ..] -> Ok(State(..settled, open: Some(progress)))
+    [] -> Ok(State(..settled, open: None))
+  }
+}
+
+/// The children of the open step the search has not yet settled: minted,
+/// and neither refused nor judged.
+fn live_children(state: State, progress: Progress) -> List(String) {
+  list.filter(progress.children, fn(child) {
+    case member_of(state, child) {
+      Ok(Member(disposition: None, ..)) -> True
+      Ok(Member(disposition: Some(_), ..)) | Error(_) -> False
+    }
+  })
+}
+
+/// Whether a child's minibatch has run at a step.
+fn measured_at(state: State, candidate: String, step: Int) -> Bool {
+  list.any(state.evaluations, fn(evaluation) {
+    evaluation.stage == ChildMinibatch
+    && evaluation.step == step
+    && evaluation.candidate == candidate
+  })
 }
 
 /// The stop row ends the log, and only between steps.
@@ -1609,11 +1775,12 @@ fn within_step(
       <> " but the log holds "
       <> progress.parent,
   ))
-  let left = remaining(state, config)
-  let design = design_of(config)
 
-  // Each stage reached names the next request.
-  case progress.reached, progress.child {
+  // Each stage reached names the next request: the parent measured asks
+  // for the first proposal unless there is nothing to improve; a pending
+  // or settled proposal asks for the next while any is owed; otherwise
+  // the children are screened, and the winner validated and judged.
+  case progress.reached, progress.settled < width_of(progress, config) {
     ParentMeasured, _ ->
       // A parent at the ceiling leaves a reflection nothing to improve, so
       // the step ends here at no cost rather than paying to be told so.
@@ -1634,9 +1801,53 @@ fn within_step(
         False -> reflect_or_refuse(state, config, progress, drawn)
       }
 
-    ReflectedOnce, _ -> reflect_or_refuse(state, config, progress, drawn)
+    ReflectedOnce, _ | ChildMinted, True ->
+      reflect_or_refuse(state, config, progress, drawn)
 
-    ChildMinted, Some(child) ->
+    ChildMinted, False | ChildMeasured, _ ->
+      screen_or_validate(state, config, progress, drawn)
+
+    ChildValidated, _ ->
+      case progress.child {
+        Some(child) -> Ok(Record(judge_child(state, config, progress, child)))
+        None -> Error("search row missing: the child's validate run")
+      }
+  }
+}
+
+/// How many proposals the open step asks for: the configuration's until
+/// the step's first reflection has recorded it, then the log's, so a
+/// resumed step finishes at the width it began at.
+fn width_of(progress: Progress, config: Config) -> Int {
+  case progress.reached {
+    ParentMeasured -> int.max(config.proposals, 1)
+    ReflectedOnce | ChildMinted | ChildMeasured | ChildValidated ->
+      progress.width
+  }
+}
+
+/// The screen phase of a step whose proposals are all settled: each live
+/// child runs the minibatch in minting order; then every child but the
+/// winner is settled `ScreenedOut`, in minting order, in a minibatch
+/// judgement that claims nothing; then the winner is paid a validate run.
+/// No winner means the last sibling's judgement closed the step, so the
+/// state cannot arrive here with none.
+fn screen_or_validate(
+  state: State,
+  config: Config,
+  progress: Progress,
+  drawn: Draws,
+) -> Result(Request, String) {
+  let left = remaining(state, config)
+  let design = design_of(config)
+  let live = live_children(state, progress)
+  let unmeasured =
+    list.filter(live, fn(child) { !measured_at(state, child, progress.step) })
+
+  // A child still to measure runs under a hold for the ones after it;
+  // measured children are screened together.
+  case unmeasured {
+    [child, ..rest] ->
       Ok(Evaluate(
         stage: ChildMinibatch,
         step: progress.step,
@@ -1648,25 +1859,29 @@ fn within_step(
           hold: budget.held_back(
             config.costs,
             design,
-            budget.BeforeChildMinibatch,
+            budget.BeforeChildMinibatch(later: list.length(rest)),
           ),
         ),
       ))
 
-    ChildMeasured, Some(child) ->
-      // A failed screen is recorded as a minibatch judgement that claims
-      // nothing; a passed one pays for validate.
-      case
-        select.screen(
+    [] -> {
+      let winner =
+        select.winner(
           minibatch_scores(state, progress.parent, progress.step),
-          minibatch_scores(state, child, progress.step),
+          list.map(live, fn(child) {
+            #(child, minibatch_scores(state, child, progress.step))
+          }),
           drawn.tasks,
         )
-      {
-        select.Failed ->
+      let losers = list.filter(live, fn(child) { Ok(child) != winner })
+
+      // Every loser is settled before the winner is paid for, so the log
+      // reads the screen's decision whole before the validate row.
+      case losers, winner {
+        [loser, ..], _ ->
           Ok(
             Record(Judged(
-              candidate: child,
+              candidate: loser,
               against: progress.parent,
               basis: verdict.OnMinibatch,
               acceptance: verdict.Incomplete,
@@ -1674,7 +1889,7 @@ fn within_step(
               ref: "",
             )),
           )
-        select.Passed ->
+        [], Ok(child) ->
           Ok(Evaluate(
             stage: Validate,
             step: progress.step,
@@ -1690,19 +1905,16 @@ fn within_step(
               ),
             ),
           ))
+        [], Error(Nil) -> Error("search row missing: the child's candidate row")
       }
-
-    ChildValidated, Some(child) ->
-      Ok(Record(judge_child(state, config, progress, child)))
-
-    ChildMinted, None | ChildMeasured, None | ChildValidated, None ->
-      Error("search row missing: the child's candidate row")
+    }
   }
 }
 
-/// The reflection, when its worst case is covered; otherwise a zero-cost
-/// reflection row and then the refusal, so the step's rows keep the order
-/// the fold expects.
+/// The reflection for the step's next proposal, when its worst case is
+/// covered; otherwise a zero-cost reflection row and then the refusal, so
+/// the step's rows keep the order the fold expects whichever proposal
+/// could not be paid for.
 fn reflect_or_refuse(
   state: State,
   config: Config,
@@ -1711,6 +1923,8 @@ fn reflect_or_refuse(
 ) -> Result(Request, String) {
   use parent <- result.try(member_of(state, progress.parent))
   let left = remaining(state, config)
+  let width = width_of(progress, config)
+  let proposal = progress.settled + 1
 
   // The call is made only when it and every stage after it are still
   // covered; a second reflection of a resumed step is held to the same.
@@ -1719,6 +1933,7 @@ fn reflect_or_refuse(
       remaining: left,
       costs: config.costs,
       design: design_of(config),
+      proposal:,
     ),
     progress.reached
   {
@@ -1727,6 +1942,8 @@ fn reflect_or_refuse(
         step: progress.step,
         parent: progress.parent,
         slot: drawn.slot,
+        proposal:,
+        of: width,
         request: prompt.Request(
           objective: config.objective,
           slot: drawn.slot,
@@ -1743,21 +1960,19 @@ fn reflect_or_refuse(
         worst_case: config.costs.reflection,
       ))
 
-    False, ParentMeasured ->
+    False, ParentMeasured | False, ChildMinted ->
       Ok(
         Record(Reflected(
           step: progress.step,
           cost: 0.0,
           ref: "",
           finish: Unknown,
+          proposal:,
+          of: width,
         )),
       )
 
-    False, ReflectedOnce
-    | False, ChildMinted
-    | False, ChildMeasured
-    | False, ChildValidated
-    ->
+    False, ReflectedOnce | False, ChildMeasured | False, ChildValidated ->
       Ok(
         Record(Refused(
           step: progress.step,
@@ -1798,11 +2013,12 @@ fn records(
 
 /// The digest of rewrites of `slot` this lineage already tried and did
 /// not keep: the children of the parent and of its ancestors that were
-/// refused, screened out or shown harmed in that slot, oldest first, the
-/// last `prompt.max_tried` of them. A child whose answer was refused
-/// before minting left no text and is not in it; one shown inconclusive or
-/// left unsettled was not rejected and is not either. Deterministic over
-/// the log, so a resumed step renders the same digest.
+/// refused, screened out or shown harmed in that slot, and the siblings
+/// this step has already minted, oldest first, the last `prompt.max_tried`
+/// of them. A child whose answer was refused before minting left no text
+/// and is not in it; one shown inconclusive or left unsettled was not
+/// rejected and is not either. Deterministic over the log, so a resumed
+/// step renders the same digest.
 fn tried(state: State, progress: Progress, slot: String) -> List(prompt.Tried) {
   let ancestors = lineage(state, progress.parent)
 
@@ -1812,26 +2028,36 @@ fn tried(state: State, progress: Progress, slot: String) -> List(prompt.Tried) {
     && option.map(member.parent, list.contains(ancestors, _)) == Some(True)
   })
   |> list.filter_map(fn(member) {
-    // Only a rejection counts: a refusal, a failed screen or a harm.
+    let text = result.unwrap(list.key_find(member.components, slot), "")
+
+    // A rejection counts: a refusal, a failed screen or a harm; so does a
+    // sibling of this step, which is the only unsettled child there is.
     case member.disposition {
-      Some(verdict.Refused)
-      | Some(verdict.ScreenedOut)
-      | Some(verdict.Discarded) ->
+      Some(verdict.Refused) ->
         Ok(prompt.Tried(
-          step: member.step,
-          outcome: verdict.disposition_name(option.unwrap(
-            member.disposition,
-            verdict.Refused,
-          )),
-          text: result.unwrap(list.key_find(member.components, slot), ""),
+          member.step,
+          verdict.disposition_name(verdict.Refused),
+          text,
         ))
+      Some(verdict.ScreenedOut) ->
+        Ok(prompt.Tried(
+          member.step,
+          verdict.disposition_name(verdict.ScreenedOut),
+          text,
+        ))
+      Some(verdict.Discarded) ->
+        Ok(prompt.Tried(
+          member.step,
+          verdict.disposition_name(verdict.Discarded),
+          text,
+        ))
+      None -> Ok(prompt.Tried(member.step, "proposed", text))
       Some(verdict.Incumbent)
       | Some(verdict.Joined)
       | Some(verdict.ParetoOnly)
       | Some(verdict.Unsettled)
       | Some(verdict.Confirmed)
-      | Some(verdict.Unconfirmed)
-      | None -> Error(Nil)
+      | Some(verdict.Unconfirmed) -> Error(Nil)
     }
   })
   |> last(prompt.max_tried)
@@ -1968,6 +2194,7 @@ fn design_of(config: Config) -> Design {
     minibatch_tasks: int.min(config.minibatch, list.length(config.tune)),
     trials: config.k,
     tune_trials: config.k_tune,
+    proposals: int.max(config.proposals, 1),
   )
 }
 

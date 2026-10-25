@@ -11,7 +11,11 @@
 //// of records. The kind tag picks the keys a row must carry and nothing
 //// else, so a new kind is one constructor plus one encode and one decode
 //// arm, and a row of a version this reader does not know is refused by
-//// its number rather than misread.
+//// its number rather than misread. A key a kind grew later is written
+//// only when its value is not the one an older row meant (`reflected`
+//// writes `proposal` and `of` only for a step of several proposals), so a
+//// log written before the key existed reads back to the same events and
+//// a log of the old shape is written byte for byte as before.
 ////
 //// Lines are ASCII, and both directions walk code points, never
 //// graphemes or code units, because the two targets disagree about
@@ -78,12 +82,25 @@ pub fn encode(event: Event) -> String {
       #("cost", float.to_string(cost)),
       ..list.map(measured, fn(each) { #("measured", measured_text(each)) })
     ])
-    gepa.Reflected(step:, cost:, ref:, finish:) -> #("reflected", [
-      #("step", int.to_string(step)),
-      #("cost", float.to_string(cost)),
-      #("ref", atom(ref)),
-      #("finish", finish_name(finish)),
-    ])
+    gepa.Reflected(step:, cost:, ref:, finish:, proposal:, of:) -> #(
+      "reflected",
+      list.append(
+        [
+          #("step", int.to_string(step)),
+          #("cost", float.to_string(cost)),
+          #("ref", atom(ref)),
+          #("finish", finish_name(finish)),
+        ],
+        // A width-one step writes the row it always did.
+        case proposal == 1 && of == 1 {
+          True -> []
+          False -> [
+            #("proposal", int.to_string(proposal)),
+            #("of", int.to_string(of)),
+          ]
+        },
+      ),
+    )
     gepa.Minted(candidate:, parent:, step:, slot:, text:) -> #("minted", [
       #("candidate", atom(candidate)),
       #("parent", atom(parent)),
@@ -288,17 +305,26 @@ fn score_of(raw: String) -> Result(Score, String) {
   }
 }
 
-/// A `reflected` row.
+/// A `reflected` row; `proposal` and `of` are absent on a row of a
+/// width-one step, written before the keys existed or since.
 fn decode_reflected(fields: Fields) -> Result(Event, String) {
-  use Nil <- result.try(only(fields, ["v", "step", "cost", "ref", "finish"]))
+  use Nil <- result.try(
+    only(fields, ["v", "step", "cost", "ref", "finish", "proposal", "of"]),
+  )
   use step <- result.try(int_field(fields, "step"))
   use cost <- result.try(float_field(fields, "cost"))
   use ref <- result.try(text_field(fields, "ref"))
   use finish <- result.try(
     text_field(fields, "finish") |> result.try(parse_finish),
   )
+  use proposal <- result.try(int_field_or(fields, "proposal", 1))
+  use of <- result.try(int_field_or(fields, "of", 1))
+  use Nil <- result.try(require(
+    proposal >= 1 && of >= proposal,
+    "a reflection is proposal i of n, with 1 <= i <= n",
+  ))
 
-  Ok(gepa.Reflected(step:, cost:, ref:, finish:))
+  Ok(gepa.Reflected(step:, cost:, ref:, finish:, proposal:, of:))
 }
 
 /// A `minted` row.
@@ -520,6 +546,19 @@ fn int_field(fields: Fields, key: String) -> Result(Int, String) {
     require(parsed >= 0, "\"" <> key <> "\" must not be negative")
     |> result.replace(parsed)
   })
+}
+
+/// An integer field a kind grew after its first rows were written: absent
+/// means `fallback`, present is read as `int_field` reads it.
+fn int_field_or(
+  fields: Fields,
+  key: String,
+  fallback: Int,
+) -> Result(Int, String) {
+  case all(fields, key) {
+    [] -> Ok(fallback)
+    [_, ..] -> int_field(fields, key)
+  }
 }
 
 /// A required number field.

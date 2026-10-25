@@ -36,6 +36,7 @@ fn config() -> gepa.Config {
     k_tune: 1,
     minibatch: 2,
     slots: ["a", "b"],
+    proposals: 1,
     hidden: [],
     limits: Limits(
       budget: 1000.0,
@@ -227,7 +228,7 @@ pub fn an_unaffordable_reflection_writes_a_zero_cost_row_and_a_refusal_test() {
     )
   let #(state, events) = world.search(dear, world.World(world.Unbounded, []))
 
-  assert list.contains(events, gepa.Reflected(1, 0.0, "", gepa.Unknown))
+  assert list.contains(events, gepa.Reflected(1, 0.0, "", gepa.Unknown, 1, 1))
   assert list.contains(
     events,
     gepa.Refused(
@@ -254,6 +255,7 @@ fn random_config() -> qcheck.Generator(gepa.Config) {
   use max_steps <- qcheck.bind(qcheck.bounded_int(0, 3))
   use max_reflections <- qcheck.bind(qcheck.bounded_int(0, 4))
   use max_candidates <- qcheck.bind(qcheck.bounded_int(0, 3))
+  use proposals <- qcheck.bind(qcheck.bounded_int(1, 3))
   use scale <- qcheck.map(qcheck.bounded_float(0.0, 3.5))
   let costs = Costs(trial:, attempts:, reflection:)
   let design =
@@ -262,6 +264,7 @@ fn random_config() -> qcheck.Generator(gepa.Config) {
       minibatch_tasks: int_min(minibatch, tune),
       trials: k,
       tune_trials: k_tune,
+      proposals:,
     )
   let unit =
     budget.step_worst_case(costs, design)
@@ -278,6 +281,7 @@ fn random_config() -> qcheck.Generator(gepa.Config) {
     k_tune:,
     minibatch:,
     slots: ["a", "b"],
+    proposals:,
     hidden: [],
     limits: Limits(
       budget: scale *. unit,
@@ -382,6 +386,7 @@ pub fn a_resumed_reflection_that_would_eat_the_reservation_is_refused_test() {
       minibatch_tasks: 2,
       trials: 2,
       tune_trials: 1,
+      proposals: 1,
     )
   let costs = Costs(trial: 1.0, attempts: 2, reflection: 5.0)
   let tight =
@@ -406,7 +411,8 @@ pub fn a_resumed_reflection_that_would_eat_the_reservation_is_refused_test() {
         _ -> True
       }
     })
-  let prefix = list.append(cut, [gepa.Reflected(1, 5.0, "", gepa.Complete)])
+  let prefix =
+    list.append(cut, [gepa.Reflected(1, 5.0, "", gepa.Complete, 1, 1)])
   let assert Ok(resumed) = gepa.replay(prefix)
 
   let assert Ok(gepa.Record(gepa.Refused(step: 1, candidate: None, reason:))) =
@@ -580,7 +586,7 @@ pub fn a_truncated_answer_is_refused_however_well_it_reads_test() {
       }
     })
   let truncated =
-    list.append(before, [gepa.Reflected(1, 1.0, "", gepa.Truncated)])
+    list.append(before, [gepa.Reflected(1, 1.0, "", gepa.Truncated, 1, 1)])
   let assert Ok(state) = gepa.replay(truncated)
 
   assert gepa.admit(state, "a", Ok("better"), gepa.content_id)
@@ -590,8 +596,146 @@ pub fn a_truncated_answer_is_refused_however_well_it_reads_test() {
   assert closed.open == None && gepa.children(closed) == 0
 
   // A complete or unreported finish mints as before.
-  let complete = list.append(before, [gepa.Reflected(1, 1.0, "", gepa.Unknown)])
+  let complete =
+    list.append(before, [gepa.Reflected(1, 1.0, "", gepa.Unknown, 1, 1)])
   let assert Ok(state) = gepa.replay(complete)
   let assert Ok(gepa.Minted(..)) =
     gepa.admit(state, "a", Ok("better"), gepa.content_id)
+}
+
+/// The kinds of a log's rows, in order, as short words.
+fn shape(events: List(gepa.Event)) -> List(String) {
+  list.map(events, fn(event) {
+    case event {
+      gepa.Seeded(..) -> "seeded"
+      gepa.Evaluated(stage:, ..) -> log.stage_name(stage)
+      gepa.Reflected(proposal:, of:, ..) ->
+        "reflected " <> int.to_string(proposal) <> "/" <> int.to_string(of)
+      gepa.Minted(..) -> "minted"
+      gepa.Refused(candidate: None, ..) -> "refused"
+      gepa.Refused(candidate: Some(_), ..) -> "refused child"
+      gepa.Judged(disposition:, ..) -> verdict.disposition_name(disposition)
+      gepa.Stopped(..) -> "stopped"
+    }
+  })
+}
+
+fn two_proposals() -> gepa.Config {
+  gepa.Config(
+    ..config(),
+    proposals: 2,
+    limits: Limits(..config().limits, max_steps: 1),
+  )
+}
+
+pub fn a_step_of_two_proposals_screens_both_and_validates_the_winner_test() {
+  // The first proposal is good and the second better: both are reflected
+  // on in turn, both run the minibatch, the first is screened out as the
+  // loser, and only the second is paid a validate run.
+  let scripted = world.World(world.WorstCase, [#(1, "better|even better")])
+  let #(state, events) = world.search(two_proposals(), scripted)
+
+  assert shape(events)
+    == [
+      "seeded", "seed_validate", "parent_minibatch", "reflected 1/2", "minted",
+      "reflected 2/2", "minted", "child_minibatch", "child_minibatch",
+      "screened_out", "validate", "incumbent", "confirm", "confirmed", "stopped",
+    ]
+  assert gepa.children(state) == 2 && state.reflections == 2
+  let assert [_, child_one, child_two] = state.members
+  assert child_one.disposition == Some(verdict.ScreenedOut)
+  assert child_two.disposition == Some(verdict.Incumbent)
+  assert state.incumbent == child_two.candidate
+
+  // Every row is the one the search asked for, and the log round-trips
+  // with the width written on each reflection.
+  assert gepa.replay_checked(events, two_proposals()) == Ok(state)
+  let text = log.render(events)
+  assert string.contains(text, "proposal=1 of=2")
+    && string.contains(text, "proposal=2 of=2")
+  assert log.parse(text) == Ok(events)
+
+  // The second reflection was told what the first proposed.
+  let after_first =
+    replayed_until(events, fn(event) {
+      case event {
+        gepa.Minted(..) -> True
+        _ -> False
+      }
+    })
+  let assert Ok(gepa.Reflect(proposal: 2, of: 2, request:, ..)) =
+    gepa.next(after_first, two_proposals())
+  assert request.tried == [prompt.Tried(1, "proposed", "better")]
+
+  // A tie between the children goes to the earliest minted.
+  let tied = world.World(world.WorstCase, [#(1, "better|better too")])
+  let #(state, _) = world.search(two_proposals(), tied)
+  let assert [_, first, second] = state.members
+  assert first.disposition == Some(verdict.Incumbent)
+  assert second.disposition == Some(verdict.ScreenedOut)
+}
+
+pub fn a_refused_proposal_does_not_end_a_step_with_proposals_left_test() {
+  // An empty first answer is refused; the step asks for its second
+  // proposal, mints it, and carries it alone through the screen.
+  let scripted = world.World(world.WorstCase, [#(1, "|better")])
+  let #(state, events) = world.search(two_proposals(), scripted)
+
+  assert shape(events)
+    == [
+      "seeded", "seed_validate", "parent_minibatch", "reflected 1/2", "refused",
+      "reflected 2/2", "minted", "child_minibatch", "validate", "incumbent",
+      "confirm", "confirmed", "stopped",
+    ]
+  assert gepa.children(state) == 1
+  assert gepa.replay_checked(events, two_proposals()) == Ok(state)
+
+  // Both answers refused: the second refusal closes the step with no child.
+  let twice = world.World(world.WorstCase, [#(1, "|")])
+  let #(state, events) = world.search(two_proposals(), twice)
+  assert shape(events)
+    == [
+      "seeded", "seed_validate", "parent_minibatch", "reflected 1/2", "refused",
+      "reflected 2/2", "refused", "stopped",
+    ]
+  assert state.pool == ["seed"] && state.open == None
+}
+
+pub fn the_log_fixes_a_step_s_width_and_the_checked_fold_holds_rows_to_it_test() {
+  let scripted = world.World(world.WorstCase, [#(1, "better|even better")])
+  let #(_, events) = world.search(two_proposals(), scripted)
+  let after_first =
+    replayed_until(events, fn(event) {
+      case event {
+        gepa.Minted(..) -> True
+        _ -> False
+      }
+    })
+
+  // A resumed search configured for one proposal still owes the second:
+  // the width is the log's, not the configuration's.
+  let narrowed = gepa.Config(..two_proposals(), proposals: 1)
+  let assert Ok(gepa.Reflect(proposal: 2, of: 2, ..)) =
+    gepa.next(after_first, narrowed)
+  let #(resumed, replayed) =
+    world.drive(after_first, list.take(events, 5), narrowed, scripted)
+  assert replayed == events && gepa.replay(events) == Ok(resumed)
+
+  // A reflection numbered for another proposal, or claiming another
+  // width, is not the one the search asked for.
+  let before = list.take(events, 5)
+  let assert [gepa.Reflected(..) as second, ..] = list.drop(events, 5)
+  let assert gepa.Reflected(proposal: 2, of: 2, ..) = second
+  let refused = fn(row: gepa.Event, naming: String) {
+    let assert Error(reason) =
+      gepa.replay_checked(list.append(before, [row]), two_proposals())
+    assert string.contains(reason, naming)
+  }
+  refused(gepa.Reflected(..second, proposal: 1), "not the one asked for")
+  refused(gepa.Reflected(..second, of: 3), "not the one asked for")
+
+  // The plain fold refuses them too, by the step's own width.
+  let assert Error(reason) =
+    gepa.replay(list.append(before, [gepa.Reflected(..second, of: 3)]))
+  assert string.contains(reason, "at the step's width")
 }

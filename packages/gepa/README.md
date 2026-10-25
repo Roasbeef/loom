@@ -56,10 +56,17 @@ fn run(state: gepa.State, config: gepa.Config, events: List(gepa.Event)) {
     }
 
     // Show the model the prompt, record the call, then admit the answer.
-    gepa.Reflect(step: at, slot:, request:, worst_case:, ..) -> {
+    gepa.Reflect(step: at, slot:, request:, worst_case:, proposal:, of:, ..) -> {
       let #(text, cost) = my_model(prompt.render(request), worst_case)
       let reflected =
-        gepa.Reflected(step: at, cost:, ref: "", finish: gepa.Unknown)
+        gepa.Reflected(
+          step: at,
+          cost:,
+          ref: "",
+          finish: gepa.Unknown,
+          proposal:,
+          of:,
+        )
       let assert Ok(state) = gepa.apply(state, reflected)
       let events = list.append(events, [reflected])
       let assert Ok(minted) =
@@ -112,13 +119,19 @@ One step, given a pool whose members all have validate scores:
    proportion to the tasks it leads (GEPA's Algorithm 2), from a
    generator seeded by the search id and the step;
 2. the parent is evaluated on a minibatch of tune tasks to collect
-   feedback (`ParentMinibatch`);
-3. the reflector is shown that feedback and the slot's current text, and
-   answers the slot's new text; the child is the parent with that slot
-   replaced (`Minted`), or the step ends `Refused`;
+   feedback (`ParentMinibatch`); a parent that scored one on every
+   minibatch task has nothing to reflect on, and the step ends there in
+   a `Refused` row spelled `skipped_perfect` that cost no call;
+3. the reflector is shown that feedback, the slot's current text, the
+   slot's background (`Config.background`) and a digest of the rewrites
+   of that slot this lineage already rejected, and answers the slot's
+   new text; the child is the parent with that slot replaced (`Minted`),
+   or the step ends `Refused` — as it does when your `Reflected` row
+   says the answer was `Truncated` at an output limit;
 4. the child is evaluated on the same minibatch (`ChildMinibatch`); the
-   **screen** passes it on only if its mean is at least the parent's —
-   a spend filter, never a claim;
+   **screen** passes it on only if its mean is strictly above the
+   parent's, or ties it while scoring on a task the parent scored zero
+   on — a spend filter, never a claim;
 5. the child is evaluated on the whole validate split (`Validate`) and
    **judged** by your acceptance rule against the parent and, when the
    parent is not the pool's best, against the incumbent. `Improved` joins
@@ -130,6 +143,18 @@ One step, given a pool whose members all have validate scores:
 At a stop (steps, budget, reflections or candidates), the seed and the
 best are evaluated together once (`Confirm`), the only simultaneous
 comparison, and that judgement is the headline.
+
+With `Config.proposals` above one, a step asks the reflector that many
+times in turn — each call its own `Reflect` request, carrying `proposal`
+and `of`, with the step's earlier siblings in the digest — runs every
+child it minted on the minibatch, settles all but the winner
+`ScreenedOut` (the highest minibatch mean among the passers, the earliest
+minted on a tie), and pays validate for the winner alone. A refused
+answer closes the step only when it was the last proposal and no child
+was minted. The width is written on the step's first `Reflected` row, so
+the fold knows it from the log and a resumed search finishes a step at
+the width it began at; a width of one writes exactly the rows it always
+did.
 
 ## The budget model
 
@@ -143,11 +168,15 @@ Everything is in `gepa/budget`, and the host supplies three numbers:
 The library then **holds money back rather than checking it**. A stage is
 handed `cap = remaining - held_back(stage)`, where the hold is the
 confirm run's worst case plus the worst case of every later stage in the
-step, each cell at its retried worst. A stage whose cells retry is cut
-off by its own cap before it can spend what a later stage, or the
-confirm run, was reserved. A step is taken only when
-`remaining >= step_worst_case + confirm_worst_case`; a reflection is made
-only when its worst case is still covered (otherwise a zero-cost
+step, each cell at its retried worst: with `n` proposals a step is the
+parent's minibatch, `n` reflections and `n` child minibatches, one
+validate run and the confirm, and the hold before proposal `i` counts the
+`n - i + 1` reflections left and all `n` minibatches. A stage whose cells
+retry is cut off by its own cap before it can spend what a later stage,
+or the confirm run, was reserved. A step is taken only when
+`remaining >= step_worst_case + confirm_worst_case` and the reflection
+and candidate ceilings have room for the whole step; each reflection is
+made only when its worst case is still covered (otherwise a zero-cost
 `Reflected` row and a `Refused` naming the budget are recorded, so the
 log still reads the step); a confirm run the budget no longer covers is
 never started.
@@ -164,12 +193,23 @@ seed is always confirmed.
   value, feedback)` per task — and what it cost. For `Confirm`, measure
   the seed too.
 - **Reflection.** Render `prompt.Request` with `prompt.render`, call your
-  model, judge the text with `prompt.answer`, and turn it into an event
-  with `gepa.admit`. The prompt frames every excerpt in `[[record]]`
-  tokens, breaks the tokens inside bodies, bounds each field to 4 KiB and
-  the dataset to 8 rows, and replaces the identifiers you list as hidden
-  per task (`Config.hidden`) with `<test N>` so the model cannot learn a
-  test's name and write it into the program.
+  model, record the call as `Reflected` with its cost and how the answer
+  ended (`Complete`, `Truncated` at an output limit, or `Unknown`), judge
+  the text with `prompt.answer`, and turn it into an event with
+  `gepa.admit`, which refuses a truncated answer however well it reads.
+  The prompt frames every excerpt in `[[record]]` tokens, breaks the
+  tokens inside bodies, bounds each field to 4 KiB and the dataset to 8
+  rows, and replaces the identifiers you list as hidden per task
+  (`Config.hidden`) with `<test N>` so the model cannot learn a test's
+  name and write it into the program. `Config.background` gives each slot
+  its constraints in your words (a tool's description may not misdescribe
+  the tool, say), shown as framed notes; `Config.evidence` decides which
+  fields of a score each slot's reflection reads, so a host can pack what
+  it has into `Score.feedback` and show a tool slot the tool's errors and
+  a prompt slot the verifier's tail (`gepa.feedback_evidence` shows the
+  feedback whole); and the request carries a bounded digest of the
+  rewrites of the slot this lineage already refused, screened out or
+  found harmful, so the model is told what not to repeat.
 - **Acceptance.** `Config.judge: fn(List(judge.Pair)) -> verdict.Acceptance`
   over paired per-task scores. `judge.sign_test` is the default: the
   exact two-sided sign test at 0.05 with the direction read from the

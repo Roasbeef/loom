@@ -14,10 +14,21 @@
 //// and a search that could spend its reservation would end on evidence it
 //// could no longer afford to check.
 ////
+//// A step may ask the reflector for several children (`Design.proposals`),
+//// each reflected on and each run on the parent's minibatch before one of
+//// them is paid a validate run, so a step's worst case is the parent's
+//// minibatch, that many reflections and child minibatches, one validate
+//// run and the confirm. The holds follow the same shape: before proposal
+//// `i` the rest of the proposals and every child minibatch are still to
+//// come, before a child's minibatch only the minibatches after it and the
+//// validate run are.
+////
 //// A step is taken only when `remaining >= step_worst_case + confirm`, and
 //// the counted ceilings (steps, reflections, candidates) are read before
 //// the arithmetic, so a search with no money for a step stops for the
-//// budget rather than quietly taking a cheaper one.
+//// budget rather than quietly taking a cheaper one. The reflection and
+//// candidate ceilings are read against the whole of the next step, so a
+//// step of several proposals is not begun when only some of them fit.
 
 import gleam/float
 import gleam/int
@@ -49,6 +60,9 @@ pub type Design {
     trials: Int,
     /// Trials per cell on a minibatch.
     tune_trials: Int,
+    /// Children a step asks the reflector for, each reflected on and
+    /// screened before one is validated; one is the plain search.
+    proposals: Int,
   )
 }
 
@@ -96,12 +110,17 @@ pub type StopReason {
 /// Where in a step a stage is about to start, which decides how much of
 /// the search's remaining budget is held back from it.
 pub type Stage {
-  /// The parent's minibatch: the reflection, the child's minibatch and
-  /// the child's validate run are still to come.
+  /// The parent's minibatch: every reflection, every child's minibatch
+  /// and the validate run are still to come.
   BeforeParentMinibatch
 
-  /// The child's minibatch: the validate run is still to come.
-  BeforeChildMinibatch
+  /// Reflection `proposal` (counting from one): the reflections from it
+  /// on, every child's minibatch and the validate run are still to come.
+  BeforeReflection(proposal: Int)
+
+  /// A child's minibatch, with `later` children's minibatches still to
+  /// run after it, and then the validate run.
+  BeforeChildMinibatch(later: Int)
 
   /// The child's validate run: only the confirm run is still to come.
   BeforeValidate
@@ -140,7 +159,10 @@ pub fn confirm_worst_case(costs: Costs, design: Design) -> Float {
 /// worst case and the worst case of the stages still to come in its step,
 /// every cell at its retried worst. The stage's cap is what remains less
 /// this, so a step whose cells retry cannot spend the confirm's
-/// reservation.
+/// reservation. Before reflection `i` of `n` the hold counts the `n - i +
+/// 1` reflections still to make and all `n` child minibatches, since
+/// which proposals will mint is not yet known; before a child's minibatch
+/// it counts only the `later` minibatches after it, which is known.
 ///
 /// ## Examples
 ///
@@ -155,25 +177,40 @@ pub fn held_back(costs: Costs, design: Design, stage: Stage) -> Float {
   let minibatch =
     int.to_float(design.minibatch_tasks * design.tune_trials) *. per_cell
   let validate = int.to_float(design.validate_tasks * design.trials) *. per_cell
+  let proposals = int.max(design.proposals, 1)
 
-  // Each stage holds back what follows it.
+  // Each stage holds back what follows it. The parent minibatch's hold and
+  // the first reflection's are the same sum in the same order, so the two
+  // are equal to the bit and nothing is owed between them.
   let later = case stage {
-    BeforeParentMinibatch -> costs.reflection +. minibatch +. validate
-    BeforeChildMinibatch -> validate
+    BeforeParentMinibatch ->
+      int.to_float(proposals)
+      *. costs.reflection
+      +. int.to_float(proposals)
+      *. minibatch
+      +. validate
+    BeforeReflection(proposal:) ->
+      int.to_float(int.clamp(proposals - proposal + 1, 1, proposals))
+      *. costs.reflection
+      +. int.to_float(proposals)
+      *. minibatch
+      +. validate
+    BeforeChildMinibatch(later:) ->
+      int.to_float(int.max(later, 0)) *. minibatch +. validate
     BeforeValidate -> 0.0
   }
 
   confirm_worst_case(costs, design) +. later
 }
 
-/// The worst case of one whole step: the parent's and the child's
-/// minibatches, the child's validate run, and one reflection. The confirm
-/// run is not included; `stop_reason` adds it.
+/// The worst case of one whole step: the parent's minibatch, then a
+/// reflection and a child's minibatch per proposal, then one validate
+/// run. The confirm run is not included; `stop_reason` adds it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // 2 * b * k_tune * cell + |V| * k * cell + reflection
+/// // b * k_tune * cell + n * (reflection + b * k_tune * cell) + |V| * k * cell
 /// assert budget.step_worst_case(costs, design) >=. 0.0
 /// ```
 ///
@@ -214,8 +251,11 @@ pub fn remaining(limits: Limits, spent spent: Float) -> Float {
 }
 
 /// Why the search should stop now, if it should: the counted ceilings
-/// first, then whether the next step's worst case and the confirm run
-/// together fit what remains, compared without tolerance.
+/// first, each read against the whole of the next step (a step of `n`
+/// proposals makes `n` reflections and may mint `n` children, and is not
+/// begun when only some of them fit), then whether the next step's worst
+/// case and the confirm run together fit what remains, compared without
+/// tolerance.
 ///
 /// ## Examples
 ///
@@ -232,11 +272,13 @@ pub fn stop_reason(
   costs: Costs,
   design: Design,
 ) -> Option(StopReason) {
+  let proposals = int.max(design.proposals, 1)
+
   // The counted ceilings need no arithmetic; the budget does.
   case
     counts.steps >= limits.max_steps,
-    counts.reflections >= limits.max_reflections,
-    counts.candidates >= limits.max_candidates
+    counts.reflections + proposals > limits.max_reflections,
+    counts.candidates + proposals > limits.max_candidates
   {
     True, _, _ -> Some(Steps)
     False, True, _ -> Some(Reflections)
@@ -280,30 +322,31 @@ pub fn covers(remaining remaining: Float, need need: Float) -> Bool {
   remaining +. rounding *. float.max(1.0, need) >=. need
 }
 
-/// Whether a reflection may be made: what remains must cover it and
-/// every stage after it in the step, the confirm run included, which is
-/// the hold the parent's minibatch was given less that minibatch. Under
-/// the caps the first reflection of a step always passes, since the
-/// parent's minibatch could not spend into this hold; the check bites a
-/// host that overspent its cap, and a resumed step that lost its answer
-/// and reflects again, whose first reflection already spent from the
-/// hold. A reflection is a live call the search cannot truncate once
-/// made, so a second one that would leave the confirm run unpayable is
-/// refused instead.
+/// Whether reflection `proposal` may be made: what remains must cover it,
+/// the proposals after it, every child's minibatch and the validate run,
+/// the confirm run included, which is the hold the stage before it was
+/// given less what that stage could spend. Under the caps each reflection
+/// of a step passes in turn, since no earlier stage could spend into its
+/// hold; the check bites a host that overspent its cap, and a resumed step
+/// that lost its answer and reflects again, whose first call already
+/// spent from the hold. A reflection is a live call the search cannot
+/// truncate once made, so one that would leave the confirm run unpayable
+/// is refused instead.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// // One reflection at 2.0 and nothing else to run: 1.9 does not cover it.
-/// assert !budget.reflection_affordable(remaining: 1.9, costs: Costs(0.0, 1, 2.0), design:)
+/// assert !budget.reflection_affordable(remaining: 1.9, costs: Costs(0.0, 1, 2.0), design:, proposal: 1)
 /// ```
 ///
 pub fn reflection_affordable(
   remaining remaining: Float,
   costs costs: Costs,
   design design: Design,
+  proposal proposal: Int,
 ) -> Bool {
-  covers(remaining:, need: held_back(costs, design, BeforeParentMinibatch))
+  covers(remaining:, need: held_back(costs, design, BeforeReflection(proposal)))
 }
 
 /// Whether the confirm run is still covered when the search is ready to

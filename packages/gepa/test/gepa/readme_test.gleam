@@ -47,10 +47,17 @@ fn run(state: gepa.State, config: gepa.Config, events: List(gepa.Event)) {
     }
 
     // Show the model the prompt, record the call, then admit the answer.
-    gepa.Reflect(step: at, slot:, request:, worst_case:, ..) -> {
+    gepa.Reflect(step: at, slot:, request:, worst_case:, proposal:, of:, ..) -> {
       let #(text, cost) = my_model(prompt.render(request), worst_case)
       let reflected =
-        gepa.Reflected(step: at, cost:, ref: "", finish: gepa.Unknown)
+        gepa.Reflected(
+          step: at,
+          cost:,
+          ref: "",
+          finish: gepa.Unknown,
+          proposal:,
+          of:,
+        )
       let assert Ok(state) = gepa.apply(state, reflected)
       let events = list.append(events, [reflected])
       let assert Ok(minted) =
@@ -138,6 +145,7 @@ pub fn the_readme_loop_runs_a_search_and_writes_a_replayable_log_test() {
       k_tune: 1,
       minibatch: 2,
       slots: ["system"],
+      proposals: 1,
       hidden: [],
       limits: budget.Limits(
         budget: 1000.0,

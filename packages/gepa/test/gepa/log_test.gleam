@@ -142,8 +142,10 @@ fn reflected() -> qcheck.Generator(Event) {
   use step <- qcheck.bind(qcheck.bounded_int(0, 50))
   use cost <- qcheck.bind(float())
   use ref <- qcheck.bind(text())
-  use finish <- qcheck.map(pick([gepa.Complete, gepa.Truncated, gepa.Unknown]))
-  gepa.Reflected(step:, cost:, ref:, finish:)
+  use finish <- qcheck.bind(pick([gepa.Complete, gepa.Truncated, gepa.Unknown]))
+  use of <- qcheck.bind(qcheck.bounded_int(1, 4))
+  use proposal <- qcheck.map(qcheck.bounded_int(1, of))
+  gepa.Reflected(step:, cost:, ref:, finish:, proposal:, of:)
 }
 
 fn minted() -> qcheck.Generator(Event) {
@@ -206,6 +208,18 @@ pub fn every_event_round_trips_through_the_codec_test() {
 
 pub fn a_fixed_line_is_stable_test() {
   assert log.encode(gepa.Stopped(budget.Steps)) == "stopped v=1 reason=steps"
+
+  // A width-one reflection writes the row it wrote before steps had a
+  // width, and a row of that shape reads back as proposal one of one.
+  let old_line = "reflected v=1 step=1 cost=0.001 ref=in/out finish=complete"
+  assert log.encode(gepa.Reflected(1, 0.001, "in/out", gepa.Complete, 1, 1))
+    == old_line
+  assert log.decode(old_line)
+    == Ok(gepa.Reflected(1, 0.001, "in/out", gepa.Complete, 1, 1))
+  assert log.encode(gepa.Reflected(1, 0.001, "in/out", gepa.Complete, 2, 3))
+    == old_line <> " proposal=2 of=3"
+  assert log.decode(old_line <> " proposal=1 of=1")
+    == Ok(gepa.Reflected(1, 0.001, "in/out", gepa.Complete, 1, 1))
   assert log.encode(gepa.Minted("c", "p", 2, "a slot", "x,y;z\n"))
     == "minted v=1 candidate=c parent=p step=2 slot=a\\sslot text=x\\cy\\pz\\n"
   assert log.encode(gepa.Refused(3, None, "nothing"))
@@ -318,6 +332,14 @@ pub fn malformed_lines_are_refused_by_name_test() {
     "nonempty",
   )
   refused("seeded v=1 candidate=c component=a", "a name and a text")
+  refused(
+    "reflected v=1 step=1 cost=0.0 ref= finish=unknown proposal=2 of=1",
+    "proposal i of n",
+  )
+  refused(
+    "reflected v=1 step=1 cost=0.0 ref= finish=unknown proposal=0 of=2",
+    "proposal i of n",
+  )
 
   // A whole log stops at the first bad line and names it, and a text whose
   // last row has no newline is a tear, not a shorter log.

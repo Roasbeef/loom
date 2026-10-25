@@ -38,7 +38,9 @@ pub type World {
     /// How evaluations charge.
     charge: Charge,
     /// The reflector's answer at each step; a step past the script
-    /// answers a text that changes nothing.
+    /// answers a text that changes nothing. A step of several proposals
+    /// reads its answer as `|`-separated pieces, one per proposal, the
+    /// last piece varied by number when there are fewer pieces.
     answers: List(#(Int, String)),
   )
 }
@@ -153,24 +155,39 @@ pub fn drive(
       )
     }
 
-    gepa.Reflect(step: at, slot:, worst_case:, ..) -> {
+    gepa.Reflect(step: at, slot:, worst_case:, proposal:, of:, ..) -> {
       let text =
         list.key_find(world.answers, at)
         |> result_or("same " <> int.to_string(at))
-      let state_after =
-        apply(state, gepa.Reflected(at, worst_case, "", gepa.Complete))
+        |> variant(proposal)
+      let reflected =
+        gepa.Reflected(at, worst_case, "", gepa.Complete, proposal, of)
+      let state_after = apply(state, reflected)
       let assert Ok(admitted) =
         gepa.admit(state_after, slot, prompt.answer(text), gepa.content_id)
         as "an open step admits an answer"
 
       step(
         state_after,
-        list.append(events, [gepa.Reflected(at, worst_case, "", gepa.Complete)]),
+        list.append(events, [reflected]),
         config,
         world,
         admitted,
       )
     }
+  }
+}
+
+/// The answer for one proposal of a step: a scripted answer is split on
+/// `|`, the proposal's piece if the script has one, else the last piece
+/// marked with the proposal's number so siblings differ.
+fn variant(text: String, proposal: Int) -> String {
+  let pieces = string.split(text, "|")
+
+  // The script names the piece, or the last piece is varied.
+  case list.drop(pieces, proposal - 1) {
+    [piece, ..] -> piece
+    [] -> result_or(list.last(pieces), "") <> " v" <> int.to_string(proposal)
   }
 }
 
