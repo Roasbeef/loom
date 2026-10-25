@@ -460,8 +460,9 @@ shared by later Erlang nodes on the machine, as any `epmd` is.
 Version 5 added the vocabulary a session's evolution work travels in
 (protocol-change/098): eight `HostMessage` constructors, the plain-data types
 they carry, and `RemoteCensus.evolution`, which says whether the executor can
-compile candidates and under which identity. In this version the host only
-refuses them. Each arm judges the scope's fence by the ledger's own check
+compile candidates and under which identity. A plane built with an
+`Evolution` serves them, and one built without refuses them. Each arm judges the
+scope's fence by the ledger's own check
 (`exec_ledger.current`, or `current_incarnation` for the token-less inventory)
 before it asks the plane, so a dead runtime hears `StaleToken`,
 `StaleIncarnation` or `ScopeNotOpen` first, and a plane with no `Evolution`
@@ -469,6 +470,22 @@ answers `NoEvolution` to a current one. `EvolutionEvaluate` and `EvolutionRun`
 are keyed calls, admitted like a background execution and a `Run` under the
 ledger names `evolution:test` and `evolution:<tool>`; the other six change no
 row.
+
+**The evolution path.** A model reaches evolution only through `code_mode`: a
+program imports `cap/evolution`. For a session on an executor whose census says
+`Compiles`, the program runs on the executor and each `evolution.*` call reaches
+the owner as a `Capability(OwnerCapCall)`. The owner's door calls the remote
+machine (`evolution/machine/remote`), which sends the version 5 messages to the
+scope's `executor_evolution` actor over the session's surface. A check or an
+invocation is keyed by the `code_mode` call's key, the capability and the call's
+ordinal, so a repaired link resends it and finds its row. The catalogue, the
+evidence and the operator's approvals stay on the orchestrator; the executor
+snapshots, builds, serves and runs. `executor_evolution` is filed in custody as
+`custody.Evolution`, which ranks before the broker and the helpers, so closing
+a scope or opening a new incarnation retires every generation. A restarted
+executor starts with none, and the orchestrator stages a session's selection
+again when the session is opened. An executor that cannot compile gives its
+sessions doors that refuse with its reason.
 
 The messages between nodes are values of closed custom types: `HostMessage` to
 the executor host, `OwnerMessage` to the owner port, and `orchestrator_port`'s

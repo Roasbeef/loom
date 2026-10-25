@@ -102,6 +102,28 @@ and a remote machine copies neither it nor the evidence write. The mapping from
 a check's result to its verdict is `evaluate.report_of`, shared by extension
 and program checks.
 
+### The seam as built (slice 3)
+
+The remote machine is `evolution/machine/remote`, a `Machine` over the
+`Link` a registered session's attach returns (`Hands.evolution`, either
+`Reachable(Link)` or `Withheld(reason)`). Each function sends one of the eight
+version 5 messages and answers the same plain data the local machine does, so
+the live owner, the store and the fold are the code a local session runs.
+`serve` chooses the machine by placement, and a `Withheld` session gets refusing
+doors in the usual cell and no catalogue. The step 3 text is corrected in
+protocol-change/098's two addenda: the executor builds a `local.Config` and
+calls the catalogue-free core, and a capability call is keyed `(code_mode call
+key, cap, ordinal)`.
+
+Two defects were found only by running the lifecycle across two daemons. The
+orchestrator resolved a candidate's directory with its own empty workspace
+before sending it, so the executor refused every proposal as escaping its
+workspace; the machine now resolves it. And the recovery of a selected
+extension ran before the Agency's holder started, so a session with a selection
+could not be opened again, locally or on an executor; recovery now runs once the
+services are up. A third, found in review, is that a hook which could not reach
+the executor answered `Gone` and so removed the handler; it now skips the event.
+
 ### The executor side
 
 `executor_plane` builds the same `machine.local` beside the workspace it serves,
@@ -172,9 +194,12 @@ is not in this plan.
 2. **The seam, locally.** Introduce `evolution/machine`, move `native` behind
    `machine/local`, fix the empty-pin bug, no behaviour change otherwise. Gate:
    the existing evolution suites unchanged. Done; see "The seam as built".
-3. **Executor machine.** `executor_plane` builds `machine.local`; `remote/host`
-   serves the new messages; `machine.remote` on the orchestrator; census identity;
-   custody. Programs, extensions and author tests work on executor sessions. Also
+3. **Executor machine.** Done, except the move refusal, which is on its own
+   branch. `executor_plane` builds a `local.Config` and `executor_evolution`
+   serves the new messages; `machine.remote` on the orchestrator; census
+   identity; custody. A shipped fixture proves an extension, a program and a
+   restart (`make e2e-evolution-remote`); a pool of one and a link cut during
+   staging are not covered. Programs, extensions and author tests work on executor sessions. Also
    in this slice: refuse `sessions.move` for a session with an evolution
    selection, or carry its catalogue rows (see "The executor side"); admit
    `EvolutionEvaluate` by call key and recover both evolution doors from the
@@ -192,7 +217,9 @@ is not in this plan.
 6. **Acceptance.** Shipped two-daemon tests over `support/remote_pair` for each
    artifact kind on a fixed executor and on a pool, an executor restart with a
    selected extension, a link cut during staging, and an orchestrator restart
-   that recovers the selection onto a new incarnation.
+   that recovers the selection onto a new incarnation. The fixed executor with
+   an extension and a program, and the executor restart, are done in slice 3
+   (`evolution_remote_acceptance_test`).
 
 Each slice is done by Sonnet workers and reviewed by a Fable agent; the design
 in slice 1 is reviewed before any code.

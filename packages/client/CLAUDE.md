@@ -6908,6 +6908,34 @@ first request is matched by `AwaitPromptPrefix(strand_framing.brief_head("main")
   executor, and no daemon can be made to hold a reply back without a hook in
   production code.
 
+`test/client/evolution_remote_acceptance_test.gleam` runs governed evolution
+for a session registered on an executor, on the same `remote_pair` fixture
+(`make e2e-evolution-remote`). The model is scripted: it writes a candidate into
+the executor's checkout with `fs_write`, proposes and tests it in a `code_mode`
+program importing `cap/evolution` (`support/evolution_programs`), and the owner
+approves and selects it through the session socket's `evolution` commands. The
+socket is opened after the turn that produced the candidate, because a
+subscribed socket is pushed every event and the command protocol reads only a
+bounded run of them before its reply. The executor is given the build seed with
+`--codemode-seed`. It skips under `SKIP remote evolution acceptance` when the
+seed, `gleam`, the shipment or an enforcing helper is missing.
+
+- `fixed_executor_test_`: an extension is proposed, tested, approved, selected
+  and invoked, and the answer carries the implementation's own marker. The
+  build exists in the executor's evolution scratch and nowhere under the
+  orchestrator's state, and the source is in the checkout only.
+- `program_candidate_test_`: a program candidate's selection commits in the
+  reply, since a program is not staged. Its invocation writes a file with
+  `cap/fs`, which exists in the executor's checkout and not on the
+  orchestrator.
+- `executor_restart_test_`: the session is stopped, the executor process is
+  retired and started again, and the session is reopened. The selection is
+  still in the orchestrator's catalogue, the new executor stages it afresh, and
+  the same extension answers.
+
+A pool of executors, a link cut during staging and an orchestrator restart are
+not covered.
+
 ### Provisioning a deployment (issue #697)
 
 `loom distribution` (also `loomd distribution`, and `dist` for either) takes an
