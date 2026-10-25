@@ -85,6 +85,7 @@ import client/directories
 import client/effect_abort
 import client/escalate
 import client/evolution
+import client/evolution/candidate as evolution_candidate
 import client/evolution/capability as evolution_capability
 import client/evolution/control as evolution_control
 import client/evolution/evaluate as evolution_evaluate
@@ -7086,27 +7087,40 @@ fn local_evolution_machine(
   // only their own coordinates, rather than the full startup settings.
   let secrets = settings.secrets
   let helper = settings.helper_path
-  evolution_machine_local.new(
-    evolution_machine_local.Config(
-      host: codemode_wiring.without_evolution(host),
-      base:,
-      at: hook_coordinates(
-        settings,
-        base,
-        workspace_plane.mixed_entropy()(),
-        clock,
-        environment,
+  let over = evolution_root(settings)
+  let machine =
+    evolution_machine_local.new(
+      evolution_machine_local.Config(
+        host: codemode_wiring.without_evolution(host),
+        base:,
+        at: hook_coordinates(
+          settings,
+          base,
+          workspace_plane.mixed_entropy()(),
+          clock,
+          environment,
+        ),
+        memory: extension_memory.for_session(agency_config),
+        secrets: fn(name) { secret.lookup(secrets, name) },
+        namespace:,
+        scratch:,
+        logger:,
+        open: fn(policy) {
+          evolution_machine_local.open_plane(helper, policy, scratch, clock)
+        },
       ),
-      memory: extension_memory.for_session(agency_config),
-      secrets: fn(name) { secret.lookup(secrets, name) },
-      namespace:,
-      scratch:,
-      logger:,
-      open: fn(policy) {
-        evolution_machine_local.open_plane(helper, policy, scratch, clock)
-      },
-    ),
-  )
+    )
+
+  // The source is resolved here, in this VM's own terms, and may not overlap
+  // the catalogue. A machine on an executor resolves under its own workspace.
+  evolution_machine.Machine(..machine, snapshot: fn(ctx, directory) {
+    use path <- result.try(
+      evolution_candidate.source_path(ctx, directory, [
+        over,
+      ]),
+    )
+    machine.snapshot(ctx, path)
+  })
 }
 
 // A session on an executor that cannot compile candidates has no plane, but its

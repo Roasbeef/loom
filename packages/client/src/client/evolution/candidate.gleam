@@ -43,7 +43,15 @@ pub type Proposal {
   )
 }
 
-/// Authorizes source reach, then borrows the native owned snapshot capability.
+/// Captures the proposal's source through the machine that holds the workspace,
+/// then admits it to the catalogue.
+///
+/// The directory is handed to `snapshot` as the caller named it. Resolving it
+/// here would use this process's filesystem and workspace, which are not the
+/// executor's for a registered session: the orchestrator would send the
+/// executor an absolute path of its own making. The machine resolves the
+/// directory under its own workspace and refuses what escapes it, with
+/// `source_path`.
 ///
 /// ## Examples
 ///
@@ -55,13 +63,7 @@ pub fn capture_with(
   ctx: tool.Ctx,
   snapshot: fn(tool.Ctx, String) -> Result(archive.Tree, store.Refusal),
 ) -> Result(record.Candidate, store.Refusal) {
-  use path <- result.try(
-    source_path(ctx, proposal.directory, [
-      store.root(catalogue),
-    ]),
-  )
-
-  use tree <- result.try(snapshot(ctx, path))
+  use tree <- result.try(snapshot(ctx, proposal.directory))
   use files <- result.try(
     list.try_map(tree.files, fn(file) {
       bit_array.to_string(file.bytes)
@@ -83,9 +85,9 @@ pub fn capture_with(
 /// refused, and the result is refused when it overlaps the session's protected
 /// entries or any of `extra`, the state that holds the catalogue.
 ///
-/// The local door passes the catalogue's root as `extra`. An executor has no
-/// catalogue, so it passes none, and the session's protected entries still
-/// hold the executor's own evolution directory.
+/// The machine that holds the workspace calls this, with no `extra`: the
+/// session's protected entries hold the evolution directory, which is where
+/// the catalogue and every candidate's scratch live.
 ///
 /// ## Examples
 ///

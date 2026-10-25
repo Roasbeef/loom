@@ -11,6 +11,7 @@
 import broker/broker
 import broker/exec
 import broker/policy
+import client/evolution/candidate
 import client/evolution/live
 import client/evolution/machine
 import client/evolution/machine/remote
@@ -588,6 +589,37 @@ pub fn snapshot_sends_the_directory_and_the_coordinates_test() {
   let assert [plane.Snapshot(coordinates:, directory:)] = drain(r.seen)
   assert directory == "src/ext"
   assert coordinates.key.session == "registered-session"
+  finish(r)
+}
+
+/// A proposal reaches the executor with the directory the model named, not a
+/// path resolved on the orchestrator. The orchestrator's workspace is not the
+/// executor's, and a path made here would be refused there as escaping.
+pub fn a_proposal_sends_the_directory_unresolved_test() {
+  let r = start(staged_script(), extension_candidate(), 300)
+  let proposal =
+    candidate.Proposal(
+      directory: "v1",
+      name: "echo",
+      kind: record.Extension,
+      scope: record.Session("registered-session"),
+      test_entry: None,
+      description: "An echo.",
+      input_schema: "{}",
+    )
+  let origin = record.Origin("registered-session", "main", "/unused", None)
+
+  let _admitted =
+    candidate.capture_with(
+      r.catalogue,
+      proposal,
+      origin,
+      ctx(),
+      r.machine.snapshot,
+    )
+
+  let assert [plane.Snapshot(directory:, ..)] = drain(r.seen)
+  assert directory == "v1"
   finish(r)
 }
 
