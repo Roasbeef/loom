@@ -1,0 +1,9 @@
+{
+  "auth": "provider returned http 401 (authentication_error): invalid x-api-key",
+  "badrequest": "provider returned http 400 (invalid_request_error): messages: text content blocks must be non-empty",
+  "overloaded": "provider returned http 529 (overloaded_error): Overloaded",
+  "rate-limit": "provider returned http 429 (rate_limit_error): This request would exceed your organization's rate limit of 50 requests per minute",
+  "server": "provider returned http 500 (api_error): Internal server error",
+  "stream": "provider stream error (overloaded_error): Overloaded",
+  "transport": "transport failed: closed"
+}

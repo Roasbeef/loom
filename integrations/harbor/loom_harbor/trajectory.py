@@ -366,6 +366,44 @@ def _read_database(path: Path, label: str) -> tuple[list[dict[str, Any]], list[_
     return entries, ledger, int(branches)
 
 
+def _copied_entries(path: Path) -> tuple[list[dict[str, Any]], list[_Row], int]:
+    """Read a database through a private copy of it and of its write-ahead log.
+
+    The log holds commits the main file has not absorbed, so a copy without it
+    would silently lose the newest turns, and opening the original could
+    write a `-shm` next to the evidence. Only the copy is ever opened.
+    """
+    with tempfile.TemporaryDirectory(prefix="loom-atif-") as scratch:
+        copy = Path(scratch) / "session.db"
+        shutil.copyfile(path, copy)
+        wal = Path(str(path) + "-wal")
+        if wal.is_file():
+            shutil.copyfile(wal, Path(str(copy) + "-wal"))
+        return _read_database(copy, path.name)
+
+
+def last_error_message(path: Path) -> str | None:
+    """The provider's words for why the last failed answer failed, if any.
+
+    A failed run's report carries only a machine code (`provider_error`); the
+    status and message live in the failed assistant message's `errorMessage`,
+    written by `provider/stream.describe_error` (for example "provider returned
+    http 429 (rate_limit_error): ..."). Returns `None` when the session has no
+    such message or cannot be read.
+    """
+    try:
+        entries, _, _ = _copied_entries(path)
+    except SessionDatabaseError:
+        return None
+    for entry in reversed(entries):
+        message = entry.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            text = message.get("errorMessage")
+            if isinstance(text, str) and text:
+                return text
+    return None
+
+
 def from_session_db(
     path: Path,
     *,
@@ -384,13 +422,7 @@ def from_session_db(
     newest turns, and opening the original could write a `-shm` next to the
     evidence. Only the copy is ever opened.
     """
-    with tempfile.TemporaryDirectory(prefix="loom-atif-") as scratch:
-        copy = Path(scratch) / "session.db"
-        shutil.copyfile(path, copy)
-        wal = Path(str(path) + "-wal")
-        if wal.is_file():
-            shutil.copyfile(wal, Path(str(copy) + "-wal"))
-        entries, ledger, branches = _read_database(copy, path.name)
+    entries, ledger, branches = _copied_entries(path)
 
     merged = dict(extra or {})
     merged["storage_branches"] = branches

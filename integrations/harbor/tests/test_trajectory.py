@@ -248,3 +248,21 @@ def test_secrets_are_scrubbed_in_every_place_text_lands(tmp_path):
     ]
     text = json.dumps(convert(sessiondb.write(tmp_path / "x.db", entries)).to_json_dict())
     assert key not in text and "sk-ant" not in text
+
+
+# ------------------------------------------------------- provider error text
+
+
+def test_the_provider_error_is_read_from_the_last_failed_answer():
+    fixtures = __import__("pathlib").Path(__file__).parent / "fixtures"
+    text = trajectory.last_error_message(fixtures / "failed-session.db")
+    assert text.startswith("provider returned http 429 (rate_limit_error):")
+
+
+def test_a_session_without_a_failed_answer_has_no_error_text(tmp_path):
+    assert trajectory.last_error_message(sessiondb.sample_session(tmp_path / "ok.db")) is None
+
+
+def test_an_unreadable_database_has_no_error_text_rather_than_an_error(tmp_path):
+    (tmp_path / "x.db").write_text("nope")
+    assert trajectory.last_error_message(tmp_path / "x.db") is None
