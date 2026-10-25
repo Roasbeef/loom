@@ -39,12 +39,14 @@ Isolation is an explicit choice, never a silent default. See `LoomAgentOptions.j
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import shlex
 import tempfile
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 from typing import Any, ClassVar, Literal, override
 
 from harbor.agents.capabilities import AgentCapabilities
@@ -100,8 +102,20 @@ LOOM_ERROR_PATTERNS: tuple[tuple[re.Pattern[str], type[NonZeroAgentExitCodeError
         (r"http 404\b|not_found_error|model.{0,60}(not found|does not exist)", ModelNotFoundError),
         (r"http 529\b|overloaded", ApiOverloadedError),
         (r"http 5\d\d\b|api_error|server_error", ApiInternalServerError),
-        (r"transport failed|stream disconnected|drain proof", ApiConnectionClosedError),
-        (r"context_overflow|context window|prompt is too long", ContextWindowExceededError),
+        # DrainProofLost renders as "provider ownership ended without proof of
+        # drain": Loom could not confirm the request stopped, so a retry could
+        # double-spend. It is deliberately not classified.
+        (r"transport failed|stream disconnected", ApiConnectionClosedError),
+        # Every wording provider/retry.is_overflow_message accepts. Throttling
+        # text that mentions tokens ("Too many tokens, please wait") is excluded
+        # there and is caught by the rate-limit pattern above, which comes first.
+        (
+            r"prompt is too long|request_too_large|exceeds the context window|maximum context length"
+            r"|context_length_exceeded|context length exceeded|context window exceeds limit"
+            r"|reduce the length of the messages|input is too long for requested model"
+            r"|too many tokens|token limit exceeded",
+            ContextWindowExceededError,
+        ),
     )
 )
 
@@ -221,6 +235,31 @@ class LoomAgentOptions(InstalledAgentOptions):
         ),
     )
 
+    @field_validator("endpoint_url")
+    @classmethod
+    def _safe_endpoint(cls, value: str | None) -> str | None:
+        """https, or http only to a local proxy; no credentials in the URL, no fragment.
+
+        The bearer key is sent to this address, so a typo that downgrades it to
+        plain http across a network, or smuggles userinfo into a URL that gets
+        logged, is refused here.
+        """
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        if parts.scheme not in ("https", "http") or not parts.hostname:
+            raise ValueError("endpoint_url must be an http(s) URL with a host")
+        if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+            raise ValueError("endpoint_url must not carry credentials; the key is sent as a bearer token")
+        if parts.fragment or "#" in value:
+            raise ValueError("endpoint_url must not have a fragment")
+        if parts.scheme == "http" and not _is_local_host(parts.hostname):
+            raise ValueError(
+                "endpoint_url must be https; plain http is allowed only to a loopback or private "
+                "address (a local proxy), because the API key travels in the request"
+            )
+        return value
+
     @field_validator("install_dir")
     @classmethod
     def _safe_install_dir(cls, value: str) -> str:
@@ -234,6 +273,17 @@ class LoomAgentOptions(InstalledAgentOptions):
         if isinstance(value, str):
             return [part.strip() for part in value.split(",") if part.strip()]
         return value
+
+
+def _is_local_host(host: str) -> bool:
+    """Loopback or private-range hosts, where plain http does not cross an untrusted network."""
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private
 
 
 def normalise_release(release: str | None) -> str | None:
@@ -283,7 +333,7 @@ class LoomAgent(BaseInstalledAgent):
     # ------------------------------------------------------------ configuration
 
     def _env(self, name: str) -> str | None:
-        """An adapter setting from `--agent-env` or the host environment."""
+        """A non-secret adapter setting from `--agent-env` or the host environment."""
         return self._get_env(name)
 
     def release_tag(self) -> str | None:
@@ -349,9 +399,18 @@ class LoomAgent(BaseInstalledAgent):
         found = self._resolve_env(*spec.api_key_envs)
         if not found or not found[1]:
             wanted = " or ".join(spec.api_key_envs)
+            raise ValueError(f"no API key for {self.model_name}: set {wanted} in the host environment")
+        if found[0] in self._extra_env:
+            # Harbor overlays an agent's extra_env onto every exec (Trial wraps
+            # setup and run in scoped_exec_env), and the Docker environment turns
+            # each overlay entry into `docker compose exec -e KEY=VALUE`: the key
+            # would be on the host's command line and in every process's
+            # environment in the container.
             raise ValueError(
-                f"no API key for {self.model_name}: set {wanted} in the host "
-                "environment, or pass it with --agent-env"
+                f"{found[0]} was passed with --agent-env. Harbor adds agent env to every command "
+                "it runs (as `docker compose exec -e KEY=VALUE` on the host), which would expose "
+                f"the key; export {found[0]} in the host environment instead, and the adapter "
+                "will hand it to the daemon as a private file"
             )
         return found
 
@@ -578,12 +637,18 @@ class LoomAgent(BaseInstalledAgent):
             )
             await self.exec_as_root(environment, command=f"chmod 600 {shlex.quote(REMOTE_KEY)}")
 
-            result = await self.exec_as_agent(
-                environment,
-                command=scripts.bash_command(scripts.RUN_SCRIPT),
-                env=self.run_env(key_name),
-                timeout_sec=self.options.timeout_sec + 300,
-            )
+            try:
+                result = await self.exec_as_agent(
+                    environment,
+                    command=scripts.bash_command(scripts.RUN_SCRIPT),
+                    env=self.run_env(key_name),
+                    timeout_sec=self.options.timeout_sec + 300,
+                )
+            except NonZeroAgentExitCodeError as exc:
+                # Harbor puts the failed command's stdout and stderr in the
+                # exception, which lands in result.json. The script no longer
+                # echoes the daemon's logs, but scrub what is left by value.
+                raise type(exc)(trajectory.scrub(str(exc), self._secrets())) from None
             self._stdout = result.stdout or ""
         finally:
             await self._salvage(environment)
@@ -701,7 +766,17 @@ class LoomAgent(BaseInstalledAgent):
             raise NonZeroAgentExitCodeError(f"unusable loom run report: {exc}") from exc
         if report.outcome != "failed":
             return
-        text = self._provider_error or report.reason or ""
+        # The report names why in Loom's machine codes (planner.gleam):
+        # provider_error, context_overflow, interrupted, invalid_deferred_handle.
+        # Only the first two are about the provider; a session that saw a 429,
+        # retried and recovered, and then failed locally must not be reported
+        # as a rate limit just because the 429 is still in the history.
+        code = (report.reason or "").removeprefix("the run failed: ").strip()
+        if code == "context_overflow":
+            raise ContextWindowExceededError(f"Loom run failed: {code}")
+        if code != "provider_error":
+            return
+        text = self._provider_error  # the final answer's errorMessage, if it is the failed one
         classified = self.classify_provider_error(text) if text else None
         if classified is not None:
             raise classified
@@ -758,10 +833,12 @@ class LoomAgent(BaseInstalledAgent):
         return record
 
     def _secrets(self) -> tuple[str, ...]:
+        """The key's value, for scrubbing; found even where `api_key` would refuse it."""
         try:
-            return (self.api_key()[1],)
+            found = self._resolve_env(*self.model_spec().api_key_envs)
         except ValueError:
             return ()
+        return (found[1],) if found and found[1] else ()
 
     def _run_metadata(self, report: runreport.RunReport | None) -> dict[str, Any]:
         secrets = self._secrets()

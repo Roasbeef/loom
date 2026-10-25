@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import shlex
 from pathlib import Path
@@ -15,9 +16,11 @@ from harbor.agents.installed.base import (
     ApiInternalServerError,
     ApiOverloadedError,
     ApiRateLimitError,
+    ContextWindowExceededError,
     BaseInstalledAgent,
     NonZeroAgentExitCodeError,
 )
+from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.trial.config import AgentConfig
 from harbor.utils.trajectory_validator import TrajectoryValidator
@@ -269,10 +272,34 @@ async def test_install_failure_surfaces_as_harbors_setup_error(agent, environmen
 # ----------------------------------------------------------------- the key
 
 
-def test_the_key_comes_from_agent_env_before_the_host(make_agent, monkeypatch):
+def test_a_key_passed_with_agent_env_is_refused_because_harbor_adds_it_to_every_exec(make_agent, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "host-key-value-0000")
     built = make_agent(extra_env={"ANTHROPIC_API_KEY": "agent-env-key-1111"})
-    assert built.api_key() == ("ANTHROPIC_API_KEY", "agent-env-key-1111")
+    with pytest.raises(ValueError, match="host environment instead") as raised:
+        built.api_key()
+    assert "agent-env-key-1111" not in str(raised.value)
+    # It is still known to the scrubber, so nothing can leak it later.
+    assert "agent-env-key-1111" in built._secrets()
+
+
+def test_a_missing_key_does_not_suggest_agent_env(make_agent, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(ValueError) as raised:
+        make_agent().api_key()
+    assert "--agent-env" not in str(raised.value) and "ANTHROPIC_API_KEY" in str(raised.value)
+
+
+async def test_install_and_run_refuse_before_any_command_when_the_key_is_in_agent_env(make_agent, environment):
+    built = make_agent(extra_env={"ANTHROPIC_API_KEY": "agent-env-key-1111"})
+    built.ensure_system_dependencies = AsyncMock()
+    with pytest.raises(ValueError, match="agent-env"):
+        await built.install(environment)
+    environment.exec.assert_not_awaited()
+
+
+def test_other_agent_env_is_unaffected(make_agent):
+    built = make_agent(extra_env={"LOOM_RELEASE": "0.3.2"})
+    assert built.api_key()[0] == "ANTHROPIC_API_KEY" and built.release_tag() == "v0.3.2"
 
 
 def test_an_explicit_key_variable_is_honoured(make_agent, monkeypatch):
@@ -876,3 +903,186 @@ async def test_platform_mode_still_refuses_any_other_skip(make_agent, environmen
     environment.exec = Scripted(selftest=(0, other))
     with pytest.raises(RuntimeError, match="unexpected skips: fork bomb"):
         await run_agent(built, environment)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.together.example/v1",
+        "http://127.0.0.1:8080/v1",
+        "http://localhost:4000",
+        "http://10.1.2.3/v1",
+        "http://192.168.0.5:11434/v1",
+        "http://[::1]:8000/v1",
+    ],
+)
+def test_endpoints_over_https_or_to_a_local_proxy_are_accepted(make_agent, url):
+    assert make_agent(endpoint_url=url).options.endpoint_url == url
+
+
+@pytest.mark.parametrize(
+    ("url", "why"),
+    [
+        ("http://api.together.example/v1", "https"),
+        ("http://8.8.8.8/v1", "https"),
+        ("ftp://x.example/v1", "http"),
+        ("https://user:pw@api.example/v1", "credentials"),
+        ("https://user@api.example/v1", "credentials"),
+        ("https://api.example/v1#frag", "fragment"),
+        ("https:///v1", "host"),
+        ("api.example/v1", "http"),
+    ],
+)
+def test_unsafe_endpoints_are_refused(make_agent, url, why):
+    with pytest.raises(ValueError, match=why):
+        make_agent(endpoint_url=url)
+
+
+# ------------------------------------------- through Harbor's real env merging
+
+
+class HarborLikeEnvironment:
+    """`exec` that merges env exactly as Harbor's BaseEnvironment does, then builds the
+    `docker compose exec -e KEY=VALUE` argument list the Docker environment builds.
+
+    `_merge_env` and `scoped_exec_env` are Harbor's own functions, not copies, so the
+    overlay Trial applies (`scoped_exec_env(agent.extra_env)`) reaches the argv exactly
+    as it does in a real trial. The mock `environment.exec` used elsewhere sits below
+    that merge and could not see it.
+    """
+
+    default_user = None
+    _merge_env = BaseEnvironment._merge_env
+    scoped_exec_env = BaseEnvironment.scoped_exec_env
+
+    def __init__(self, scripted):
+        self._persistent_env = {}
+        self._exec_env_overlays = contextvars.ContextVar("overlays", default=())
+        self.scripted = scripted
+        self.argv: list[list[str]] = []
+        self.download_file = scripted.download_file
+        self.upload_file = AsyncMock()
+
+    async def exec(self, command, cwd=None, env=None, timeout_sec=None, user=None):
+        merged = self._merge_env(env)
+        argv = ["exec"]
+        for key, value in (merged or {}).items():
+            argv += ["-e", f"{key}={value}"]
+        self.argv.append(argv + [command])
+        return await self.scripted(command, env=merged, timeout_sec=timeout_sec)
+
+
+async def test_the_key_is_on_no_docker_argv_when_agent_env_carries_other_variables(make_agent):
+    """The exact path of the original leak: Trial scopes agent.extra_env over every exec."""
+    built = make_agent(extra_env={"LOOM_RELEASE": "0.3.2"})
+    built.exec_as_root = AsyncMock()
+    built._upload_config_text = AsyncMock()
+    scripted = Scripted()
+    environment = HarborLikeEnvironment(scripted)
+    with environment.scoped_exec_env(built.extra_env):
+        await run_agent(built, environment)
+    assert environment.argv, "the run must have gone through the merge"
+    assert not any(KEY in " ".join(argv) for argv in environment.argv)
+    assert any("LOOM_RELEASE=0.3.2" in " ".join(argv) for argv in environment.argv)  # the overlay did apply
+
+
+async def test_the_key_in_agent_env_would_reach_the_argv_which_is_why_it_is_refused(make_agent):
+    built = make_agent(extra_env={"ANTHROPIC_API_KEY": KEY})
+    environment = HarborLikeEnvironment(Scripted())
+    with environment.scoped_exec_env(built.extra_env):
+        await environment.exec("true")
+    assert any(KEY in " ".join(argv) for argv in environment.argv)  # Harbor itself does this
+    with pytest.raises(ValueError, match="agent-env"):
+        await run_agent(built, environment)
+
+
+# ------------------------------------------- classification: recovered errors
+
+
+def db_with(tmp_path, messages):
+    """A session whose assistant messages carry the given errorMessage (or None), in order."""
+    entries = [sessiondb.user_entry("e1", 1, "go")]
+    for index, text in enumerate(messages):
+        entry = sessiondb.assistant_entry(f"e{index + 2}", index + 2, [{"type": "text", "text": "x"}])
+        if text is not None:
+            entry["message"].update(stopReason="error", errorMessage=text)
+        entries.append(entry)
+    return sessiondb.write(tmp_path / "s.db", entries)
+
+
+async def test_a_recovered_429_followed_by_a_local_failure_is_not_a_rate_limit(agent, environment, tmp_path):
+    db = db_with(tmp_path, [PROVIDER_ERRORS["rate-limit"], None])  # retried, then a good answer
+    environment.exec = Scripted(
+        run_stdout=failed_report("the run failed: interrupted"), files={"/state/sessions/s-123.db": db}
+    )
+    await run_agent(agent, environment)
+
+
+async def test_a_provider_error_report_with_a_recovered_history_is_not_blamed_on_the_old_error(
+    agent, environment, tmp_path
+):
+    db = db_with(tmp_path, [PROVIDER_ERRORS["rate-limit"], None])
+    environment.exec = Scripted(run_stdout=failed_report(), files={"/state/sessions/s-123.db": db})
+    await run_agent(agent, environment)  # the final answer did not fail, so there is nothing to classify
+
+
+async def test_only_the_final_answers_error_counts(agent, environment, tmp_path):
+    db = db_with(tmp_path, [PROVIDER_ERRORS["rate-limit"], PROVIDER_ERRORS["auth"]])
+    environment.exec = Scripted(run_stdout=failed_report(), files={"/state/sessions/s-123.db": db})
+    with pytest.raises(AgentAuthenticationError):
+        await run_agent(agent, environment)
+
+
+@pytest.mark.parametrize("code", ["interrupted", "invalid_deferred_handle"])
+async def test_non_provider_failure_codes_are_never_classified(agent, environment, tmp_path, code):
+    db = db_with(tmp_path, [PROVIDER_ERRORS["rate-limit"]])
+    environment.exec = Scripted(
+        run_stdout=failed_report(f"the run failed: {code}"), files={"/state/sessions/s-123.db": db}
+    )
+    await run_agent(agent, environment)
+
+
+async def test_context_overflow_is_classified_from_the_code_alone(agent, environment):
+    environment.exec = Scripted(run_stdout=failed_report("the run failed: context_overflow"))
+    with pytest.raises(ContextWindowExceededError):
+        await run_agent(agent, environment)
+
+
+# Strings from provider/retry_test.gleam's overflow_patterns_match_real_provider_wording_test,
+# inside the http error text describe_error writes around them.
+OVERFLOW_WORDINGS = PROVIDER_ERRORS["overflow"]
+
+
+@pytest.mark.parametrize("index", range(len(OVERFLOW_WORDINGS)))
+async def test_every_wording_loom_treats_as_overflow_is_classified_as_overflow(agent, environment, tmp_path, index):
+    db = db_with(tmp_path, [OVERFLOW_WORDINGS[index]])
+    environment.exec = Scripted(run_stdout=failed_report(), files={"/state/sessions/s-123.db": db})
+    with pytest.raises(ContextWindowExceededError):
+        await run_agent(agent, environment)
+
+
+@pytest.mark.parametrize("key", ["throttling-tokens", "rate-limit-tokens"])
+async def test_throttling_that_mentions_tokens_is_a_rate_limit_not_an_overflow(agent, environment, tmp_path, key):
+    db = db_with(tmp_path, [PROVIDER_ERRORS[key]])
+    environment.exec = Scripted(run_stdout=failed_report(), files={"/state/sessions/s-123.db": db})
+    with pytest.raises(ApiRateLimitError):
+        await run_agent(agent, environment)
+
+
+async def test_a_lost_drain_proof_is_deliberately_not_a_retry(agent, environment, tmp_path):
+    db = db_with(tmp_path, [PROVIDER_ERRORS["drain-proof-lost"]])
+    environment.exec = Scripted(run_stdout=failed_report(), files={"/state/sessions/s-123.db": db})
+    await run_agent(agent, environment)
+
+
+async def test_a_failed_exec_does_not_carry_the_key_into_the_exception(agent, environment):
+    class Leaky(Scripted):
+        async def __call__(self, command, **kwargs):
+            if is_script(command) and script_of(command) == scripts.RUN_SCRIPT:
+                return result(41, "", f"loomd said {KEY} and died")
+            return await super().__call__(command, **kwargs)
+
+    environment.exec = Leaky()
+    with pytest.raises(NonZeroAgentExitCodeError) as raised:
+        await run_agent(agent, environment)
+    assert KEY not in str(raised.value) and "<redacted>" in str(raised.value)

@@ -5,5 +5,20 @@
   "rate-limit": "provider returned http 429 (rate_limit_error): This request would exceed your organization's rate limit of 50 requests per minute",
   "server": "provider returned http 500 (api_error): Internal server error",
   "stream": "provider stream error (overloaded_error): Overloaded",
-  "transport": "transport failed: closed"
+  "transport": "transport failed: closed",
+  "overflow": [
+    "provider returned http 400 (invalid_request_error): prompt is too long: 213462 tokens > 200000 maximum",
+    "provider returned http 400 (invalid_request_error): 413 {\"error\":{\"type\":\"request_too_large\",\"message\":\"Request exceeds the maximum size\"}}",
+    "provider returned http 400 (invalid_request_error): Your input exceeds the context window of this model",
+    "provider returned http 400 (invalid_request_error): Requested token count exceeds the model's maximum context length of 131072 tokens",
+    "provider returned http 400 (invalid_request_error): Please reduce the length of the messages or completion",
+    "provider returned http 400 (invalid_request_error): invalid params, context window exceeds limit",
+    "provider returned http 400 (invalid_request_error): error code context_length_exceeded",
+    "provider returned http 400 (invalid_request_error): input is too long for requested model",
+    "provider returned http 400 (invalid_request_error): token limit exceeded"
+  ],
+  "throttling-tokens": "provider returned http 400 (invalid_request_error): ThrottlingException: Too many tokens, please wait before trying again.",
+  "rate-limit-tokens": "provider returned http 400 (invalid_request_error): rate limit exceeded, too many tokens used",
+  "drain-proof-lost": "provider ownership ended without proof of drain",
+  "_source": "auth..transport: provider/stream.describe_error output (generate_errors.gleam.txt). overflow, throttling-*: the wordings in provider/retry_test.gleam and retry.is_overflow_message, inside describe_error's http format. drain-proof-lost: describe_error(DrainProofLost)."
 }

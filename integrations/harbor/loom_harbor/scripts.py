@@ -59,10 +59,10 @@ fetch() {
     *) fail "refusing to fetch $1; a release source must be an https or file URL" ;;
   esac
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$2" "$1" \
+    curl -fsSL --proto '=https,file' --proto-redir '=https' --retry 3 --retry-delay 2 --connect-timeout 20 -o "$2" "$1" \
       || fail "could not download $1 (is a $platform release published at that address, and is the network open?)"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1" || fail "could not download $1"
+    wget -q --https-only -O "$2" "$1" || fail "could not download $1"
   else
     fail "neither curl nor wget is installed in the container"
   fi
@@ -151,9 +151,13 @@ verify "$client_file" "$client_sha"
 stage="$work/stage"
 mkdir -p "$stage/server" "$stage/client"
 # This runs as root on an archive from the network: do not take ownership or
-# modes from it (GNU tar; busybox tar has neither option and already ignores both).
+# modes from it (GNU tar; busybox tar spells the first as -o and has no second).
 tar_safe=""
-if tar --version 2>/dev/null | grep -q GNU; then tar_safe="--no-same-owner --no-same-permissions"; fi
+if tar --version 2>/dev/null | grep -q GNU; then
+  tar_safe="--no-same-owner --no-same-permissions"
+else
+  tar_safe="-o"  # busybox: do not restore the archive's ownership
+fi
 # shellcheck disable=SC2086
 tar -xzf "$server_file" -C "$stage/server" --strip-components=1 $tar_safe \
   || fail "could not unpack the server archive"
@@ -192,20 +196,23 @@ echo "$version" >&2
 # /proc/<pid>/stat), and a stop signals nothing whose start time differs.
 _HELPERS = r"""
 start_time() { awk '{ sub(/^.*\) /, ""); print $20 }' "/proc/$1/stat" 2>/dev/null; }
+# A zombie still answers kill -0 and still has a start time, but it has stopped.
+proc_state() { awk '{ sub(/^.*\) /, ""); print $1 }' "/proc/$1/stat" 2>/dev/null; }
+running() { [ "$(start_time "$1")" = "$2" ] && [ "$(proc_state "$1")" != Z ]; }
 
 stop_daemon() {
   [ -f "$OUT/loomd.pid" ] || return 0
   read -r pid started < "$OUT/loomd.pid" || true
-  if [ -n "${pid:-}" ] && [ "$(start_time "$pid")" = "${started:-x}" ]; then
+  if [ -n "${pid:-}" ] && running "$pid" "${started:-x}"; then
     kill -TERM "$pid" 2>/dev/null || true
     for _ in $(seq 1 40); do
-      [ "$(start_time "$pid")" = "$started" ] || break
+      running "$pid" "$started" || break
       sleep 0.5
     done
-    if [ "$(start_time "$pid")" = "$started" ]; then
+    if running "$pid" "$started"; then
       kill -KILL "$pid" 2>/dev/null || true
       for _ in $(seq 1 20); do
-        [ "$(start_time "$pid")" = "$started" ] || break
+        running "$pid" "$started" || break
         sleep 0.25
       done
     fi
@@ -236,6 +243,10 @@ PROMPT_FILE="${LOOM_PROMPT_FILE:?LOOM_PROMPT_FILE is required}"
 TIMEOUT="${LOOM_RUN_TIMEOUT_SEC:?LOOM_RUN_TIMEOUT_SEC is required}"
 JAIL_FLAG="${LOOM_JAIL_FLAG:-}"
 KEY_NAME="${LOOM_KEY_NAME:?LOOM_KEY_NAME is required}"
+# Whatever put the key in this script's environment (Harbor adds an agent's
+# extra_env to every exec), it must not reach `loom run` or anything but loomd,
+# which is given it explicitly below.
+unset "$KEY_NAME"
 """
     + _HELPERS
     + r"""
@@ -268,11 +279,10 @@ WORKSPACE="$(pwd -P)"
 # file's name or the key's file. $JAIL_FLAG is deliberately unquoted so an empty
 # value contributes no argument.
 #
-# A readiness check against a file left by an earlier daemon would pass at once,
-# and `loom run` would then start a daemon of its own without the posture flag.
-# So the marker is made first, a couple of seconds in the past against coarse
-# file timestamps, and only an endpoint record written after it counts.
-touch -d '2 seconds ago' "$OUT/launch.marker" 2>/dev/null || touch "$OUT/launch.marker"
+# A readiness check on the file alone would pass on a record left by an earlier
+# daemon, and `loom run` would then start a daemon of its own without the
+# posture flag. The record names the process that wrote it
+# (host/endpoint.encode writes "pid"), so only this launch's pid counts.
 (
   cd "$STATE" && export "$KEY_NAME=$KEYVAL" && exec env -u LOOM_PROMPT_FILE -u LOOM_KEY_FILE -u LOOM_KEY_NAME     "$LOOMD" --state-dir "$STATE" --config "$CONFIG" $JAIL_FLAG
 ) >"$OUT/loomd.log" 2>&1 </dev/null &
@@ -281,17 +291,17 @@ KEYVAL=""
 echo "$DAEMON_PID $(start_time "$DAEMON_PID")" > "$OUT/loomd.pid"
 
 ready() {
-  [ "$STATE/daemon.endpoint" -nt "$OUT/launch.marker" ]     && grep -Eq '"status" *: *"ready"' "$STATE/daemon.endpoint" 2>/dev/null
+  [ -f "$STATE/daemon.endpoint" ] \
+    && grep -Eq '"status" *: *"ready"' "$STATE/daemon.endpoint" 2>/dev/null \
+    && grep -Eq "\"pid\" *: *$DAEMON_PID[^0-9]" "$STATE/daemon.endpoint" 2>/dev/null
 }
 waited=0
 until ready; do
   if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-    tail -n 40 "$OUT/loomd.log" >&2
     fail "loomd exited before it was ready (log: $OUT/loomd.log)" 41
   fi
   waited=$((waited + 1))
   if [ "$waited" -gt 240 ]; then
-    tail -n 40 "$OUT/loomd.log" >&2
     stop_daemon
     fail "loomd was not ready after 120 seconds (log: $OUT/loomd.log)" 41
   fi
@@ -314,15 +324,12 @@ stop_daemon
 case "$RC" in
   0|1|124)
     if [ -s "$OUT/loom-run.json" ]; then
-      tail -n 20 "$OUT/loom-run.stderr.txt" >&2
       cat "$OUT/loom-run.json"
       exit 0
     fi
-    tail -n 40 "$OUT/loom-run.stderr.txt" >&2
     fail "loom run exited $RC but printed no report" 43
     ;;
   *)
-    tail -n 40 "$OUT/loom-run.stderr.txt" >&2
     echo "loom-harbor run: loom run exited $RC (2 bad arguments, 3 no daemon)" >&2
     exit "$RC"
     ;;

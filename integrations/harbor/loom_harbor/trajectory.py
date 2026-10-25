@@ -383,13 +383,15 @@ def _copied_entries(path: Path) -> tuple[list[dict[str, Any]], list[_Row], int]:
 
 
 def last_error_message(path: Path) -> str | None:
-    """The provider's words for why the last failed answer failed, if any.
+    """The provider's words for why the run's final answer failed, if it did.
 
     A failed run's report carries only a machine code (`provider_error`); the
     status and message live in the failed assistant message's `errorMessage`,
     written by `provider/stream.describe_error` (for example "provider returned
-    http 429 (rate_limit_error): ..."). Returns `None` when the session has no
-    such message or cannot be read.
+    http 429 (rate_limit_error): ..."). Only the final assistant message counts:
+    an earlier one that errored and was retried is history, and treating it as
+    the cause would blame a recovered 429 for a later local failure. Returns
+    `None` when the final answer carries no error or the session cannot be read.
     """
     try:
         entries, _, _ = _copied_entries(path)
@@ -399,8 +401,7 @@ def last_error_message(path: Path) -> str | None:
         message = entry.get("message")
         if isinstance(message, dict) and message.get("role") == "assistant":
             text = message.get("errorMessage")
-            if isinstance(text, str) and text:
-                return text
+            return text if isinstance(text, str) and text else None
     return None
 
 

@@ -260,7 +260,8 @@ STUB_LOOMD = textwrap.dedent(
     mkdir -p "$state/sessions"
     printf 'SQLite stub' > "$state/sessions/s-123.db"
     printf 'wal stub' > "$state/sessions/s-123.db-wal"
-    echo "daemon log line" > "$state/daemon.log"
+    echo "daemon log line ${STUB_LOOMD_LEAK:-}" > "$state/daemon.log"
+    [ -n "${STUB_LOOMD_LEAK:-}" ] && echo "${STUB_LOOMD_LEAK}" >&2
     if [ -n "${STUB_LOOMD_STARTING_FIRST:-}" ]; then
       printf '{"pid":%s,"status":"starting"}' "$$" > "$state/daemon.endpoint"; sleep 1
     fi
@@ -441,7 +442,11 @@ def test_exit_zero_with_no_report_is_its_own_failure(rig):
 def test_a_daemon_that_dies_at_startup_is_reported_with_its_log(rig):
     run = rig.run(STUB_LOOMD_DIE="1")
     assert run.returncode == scripts.EXIT_DAEMON_NOT_READY
-    assert "loomd exited before it was ready" in run.stderr and "boom: cannot bind" in run.stderr
+    assert "loomd exited before it was ready" in run.stderr
+    # The log's contents stay out of the exec's stderr, which Harbor puts in exceptions and logs
+    # unscrubbed; the file is fetched and scrubbed instead.
+    assert "boom: cannot bind" not in run.stderr
+    assert "boom: cannot bind" in (rig.out / "loomd.log").read_text()
 
 
 def test_a_stale_ready_endpoint_does_not_pass_for_a_daemon_that_has_not_started(rig):
@@ -617,3 +622,91 @@ def test_restoring_never_overwrites_a_bwrap_that_is_back(tmp_path):
     (binary.parent / "bwrap.disabled-by-loom-harbor").write_text("old")
     assert disable(binary, scripts.BWRAP_RESTORE).returncode == 0
     assert "new" in binary.read_text()
+
+
+def test_no_log_content_is_echoed_to_the_scripts_stderr(rig):
+    """stderr becomes exception text in Harbor's result.json; the logs are fetched scrubbed instead."""
+    leak = "SECRET-TOKEN-IN-A-LOG"
+    (rig.root / "report.json").write_text(REPORT + "\n")
+    run = rig.run(STUB_LOOM_EXIT="2", STUB_LOOMD_LEAK=leak)
+    assert run.returncode == 2
+    assert leak not in run.stderr and "model said" not in run.stderr
+
+
+def test_a_key_already_in_the_environment_does_not_reach_loom_run(rig):
+    """Harbor overlays agent env onto every exec; the script must not pass it on."""
+    run = rig.run(ANTHROPIC_API_KEY="overlay-key-should-not-propagate")
+    assert run.returncode == 0, run.stderr
+    assert "overlay-key" not in (rig.root / "loom.argv.env").read_text()
+    daemon_env = (rig.state / "loomd.env").read_text()
+    assert f"ANTHROPIC_API_KEY={KEY}" in daemon_env, "the daemon gets the key from the file, not the overlay"
+    assert "overlay-key" not in daemon_env
+
+
+def test_a_ready_record_for_another_pid_is_not_this_daemons(rig):
+    rig.state.mkdir()
+    (rig.state / "daemon.endpoint").write_text('{"pid":999999,"status":"ready"}')
+    run = rig.run(STUB_LOOMD_DIE_LATE="1")
+    assert run.returncode == scripts.EXIT_DAEMON_NOT_READY and not (rig.root / "loom.argv").exists()
+
+
+def test_readiness_follows_the_daemons_own_pid_not_file_age(rig):
+    # A fresh file for the wrong pid (mtime would have accepted it) is not readiness.
+    rig.state.mkdir()
+    (rig.state / "daemon.endpoint").write_text('{"pid":4242,"status":"ready"}')
+    assert rig.run(STUB_LOOMD_DIE_LATE="1").returncode == scripts.EXIT_DAEMON_NOT_READY
+
+
+def test_a_zombie_counts_as_stopped(rig):
+    child = subprocess.Popen(["true"])  # exits at once and, never waited for, stays a zombie
+    time.sleep(0.3)
+    stat = Path(f"/proc/{child.pid}/stat").read_text()
+    assert stat.rsplit(")", 1)[1].split()[0] == "Z"
+    started = stat.rsplit(")", 1)[1].split()[19]
+    rig.out.mkdir(parents=True)
+    (rig.out / "loomd.pid").write_text(f"{child.pid} {started}\n")
+    began = time.monotonic()
+    assert rig.run(scripts.COLLECT_SCRIPT).returncode == 0
+    assert time.monotonic() - began < 8, "a zombie was waited on as if it were still running"
+    child.wait()
+
+
+def shim(directory: Path, name: str, body: str) -> Path:
+    directory.mkdir(exist_ok=True)
+    path = directory / name
+    path.write_text("#!/bin/bash\n" + body)
+    path.chmod(0o755)
+    return path
+
+
+def test_curl_is_restricted_to_https_and_file_including_redirects(tmp_path):
+    shims = tmp_path / "shims"
+    real = shutil.which("curl")
+    shim(shims, "curl", f'echo "$@" >> {tmp_path}/curl.args\nexec {real} "$@"\n')
+    release = make_release(tmp_path / "release")
+    run = bash(
+        scripts.INSTALL_SCRIPT,
+        {"LOOM_PREFIX": str(tmp_path / "opt"), "LOOM_BASE_URL": release.as_uri(), "LOOM_PLATFORM": PLATFORM,
+         "PATH": f"{shims}:{os.environ['PATH']}"},
+        tmp_path,
+    )
+    assert run.returncode == 0, run.stderr
+    for line in (tmp_path / "curl.args").read_text().splitlines():
+        assert "--proto =https,file" in line and "--proto-redir =https" in line, line
+
+
+def test_a_tar_that_is_not_gnu_gets_dash_o(tmp_path):
+    shims = tmp_path / "shims"
+    real = shutil.which("tar")
+    shim(shims, "tar", f'if [ "$1" = --version ]; then echo "tar (busybox v1.36)"; exit 0; fi\n'
+         f'echo "$@" >> {tmp_path}/tar.args\nargs=()\nfor a in "$@"; do [ "$a" = -o ] || args+=("$a"); done\nexec {real} "${{args[@]}}"\n')
+    release = make_release(tmp_path / "release")
+    run = bash(
+        scripts.INSTALL_SCRIPT,
+        {"LOOM_PREFIX": str(tmp_path / "opt"), "LOOM_BASE_URL": release.as_uri(), "LOOM_PLATFORM": PLATFORM,
+         "PATH": f"{shims}:{os.environ['PATH']}"},
+        tmp_path,
+    )
+    assert run.returncode == 0, run.stderr
+    lines = (tmp_path / "tar.args").read_text().splitlines()
+    assert lines and all(" -o" in line and "--no-same-owner" not in line for line in lines), lines
