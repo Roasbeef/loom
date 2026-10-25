@@ -160,17 +160,66 @@ pub fn mde(se: Float) -> Float {
 /// ## Examples
 ///
 /// ```gleam
-/// // Variance 0.25 (s = 0.5): MDE(T) = 2.8 · 0.5 / √T ≤ 0.2 needs T ≥ 49.
-/// assert paired.needed_tasks([0.0, 1.0], 0.2) == 49
+/// // Sample variance 0.5: MDE(T) = 2.8 · √(0.5 / T) ≤ 0.2 needs T ≥ 98.
+/// assert paired.needed_tasks([0.0, 1.0], 0.2) == 98
 /// ```
 pub fn needed_tasks(differences: List(Float), target: Float) -> Int {
-  let variance = sample_variance(differences)
+  needed_tasks_for_variance(sample_variance(differences), target)
+}
+
+/// `needed_tasks` for a per-task variance given directly, which is how the
+/// plug-in floor is turned into a task count when the observed variance is
+/// zero.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert paired.needed_tasks_for_variance(0.5, 0.2) == 98
+/// ```
+pub fn needed_tasks_for_variance(variance: Float, target: Float) -> Int {
   use <- bool.guard(when: target <=. 0.0 || variance <=. 0.0, return: 2)
 
   // Solving `(z_alpha + z_power) · √(s² / T) ≤ target` for `T`.
   let scale = { z_alpha +. z_power } /. target
   let needed = float.ceiling(scale *. scale *. variance)
   int.max(2, float.round(needed))
+}
+
+/// The binomial plug-in variance of one task's difference, the floor the
+/// decision rule uses when the observed spread between tasks is zero: a
+/// Bernoulli outcome with pooled pass rate `p̄` over `K̄` pairs per task
+/// cannot have a smaller difference variance than `2 · p̄(1 − p̄) / K̄`.
+/// When the pooled rate is itself zero or one, nothing varies at all and
+/// the least informative value, `p̄(1 − p̄) = 1/4`, stands in: a plan with no
+/// variation has not shown that it could see any effect.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // 5/5 against 0/5, one pair per task: pooled rate 1/2, so 2 · 1/4 / 1.
+/// let tasks = list.map(["a", "b", "c", "d", "e"], fn(t) { TaskPairs(t, [Pair(0, trial.Fail, trial.Pass)]) })
+/// assert paired.plugin_variance(Paired(tasks, 0, 0)) == 0.5
+/// ```
+pub fn plugin_variance(paired: Paired) -> Float {
+  let pairs = list.flat_map(paired.tasks, fn(task) { task.pairs })
+  let count = int.to_float(list.length(pairs))
+  use <- bool.guard(when: pairs == [], return: 0.5)
+  let passes =
+    list.fold(pairs, 0.0, fn(sum, pair) {
+      sum +. trial.indicator(pair.baseline) +. trial.indicator(pair.candidate)
+    })
+  let pooled = passes /. { 2.0 *. count }
+  let spread = pooled *. { 1.0 -. pooled }
+
+  // A pooled rate of exactly zero or one means every trial on both arms
+  // agreed; the floor then takes the maximum Bernoulli variance.
+  let spread = case spread <=. 0.0 {
+    True -> 0.25
+    False -> spread
+  }
+
+  let mean_pairs = count /. int.to_float(list.length(paired.tasks))
+  2.0 *. spread /. mean_pairs
 }
 
 /// Splits the estimated `Var(d̄)` into its between-task and within-task

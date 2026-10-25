@@ -26,6 +26,7 @@
 //// report sees the dropped count, which says why.
 
 import evalstat/trial.{type Fate, type Trial}
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
@@ -89,6 +90,10 @@ pub type PairingError {
 
   /// A row exists for a `(task, index)` the plan never declared.
   UnplannedRow(task: String, index: Int, arm: String)
+
+  /// Baseline and candidate are the same arm id: every row would pair with
+  /// itself and every difference would be zero by construction.
+  SameArm(arm: String)
 }
 
 /// The `(task, index)` set a plan with `trials` trials per task declares,
@@ -134,6 +139,10 @@ pub fn pair(
   candidate: String,
   expected: List(#(String, Int)),
 ) -> Result(Paired, PairingError) {
+  use <- bool.guard(
+    when: baseline == candidate,
+    return: Error(SameArm(baseline)),
+  )
   let ours =
     list.filter(rows, fn(row) { row.arm == baseline || row.arm == candidate })
   use table <- result.try(index_rows(ours))
@@ -244,8 +253,38 @@ fn excluded(row: Trial) -> Int {
 
 /// Task id first, then index.
 fn compare_keys(left: #(String, Int), right: #(String, Int)) -> Order {
-  string.compare(left.0, right.0)
+  compare_task_ids(left.0, right.0)
   |> order.break_tie(int.compare(left.1, right.1))
+}
+
+/// The one order task ids are sorted in anywhere in this package: by the
+/// list of Unicode code points. `string.compare` orders UTF-8 bytes on the
+/// BEAM and UTF-16 code units on JavaScript, which disagree above the basic
+/// multilingual plane, and the bootstrap draws tasks by position, so a
+/// target-dependent order would make a seeded interval target-dependent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // U+FF61 sorts before U+1F600 on both targets.
+/// assert pairing.compare_task_ids("｡", "😀") == order.Lt
+/// ```
+pub fn compare_task_ids(left: String, right: String) -> Order {
+  let points = fn(text: String) {
+    string.to_utf_codepoints(text) |> list.map(string.utf_codepoint_to_int)
+  }
+  list_compare(points(left), points(right))
+}
+
+/// Lexicographic order on integer lists, a shorter prefix first.
+fn list_compare(left: List(Int), right: List(Int)) -> Order {
+  case left, right {
+    [], [] -> order.Eq
+    [], [_, ..] -> order.Lt
+    [_, ..], [] -> order.Gt
+    [l, ..ls], [r, ..rs] ->
+      int.compare(l, r) |> order.break_tie(list_compare(ls, rs))
+  }
 }
 
 /// The number of surviving pairs across every task.
@@ -291,6 +330,7 @@ pub fn describe(error: PairingError) -> String {
       <> ") on arm "
       <> arm
       <> " is not in the plan"
+    SameArm(arm) -> "baseline and candidate are both arm " <> arm
   }
 }
 

@@ -38,12 +38,13 @@ pub type Policy {
 /// is always `candidate − baseline` in pass rate, so a positive number is
 /// the candidate passing more.
 pub type Verdict {
-  /// `p < α`, the interval excludes zero on the positive side, and the
-  /// effect is at least half the minimum detectable effect.
+  /// The effect is positive, the interval excludes zero on the positive
+  /// side, more tasks favour the candidate than the baseline, the task-level
+  /// sign test has `p < α`, and the effect is at least half the minimum
+  /// detectable effect. `p` is the task-level sign test's.
   Improved(effect: Float, ci: #(Float, Float), p: Float, mde: Float)
 
-  /// The mirror of `Improved`: significant, interval below zero, and at
-  /// least half the minimum detectable effect in the harmful direction.
+  /// The exact mirror of `Improved`, in the harmful direction.
   Harmed(effect: Float, ci: #(Float, Float), p: Float, mde: Float)
 
   /// Neither, and the design was powered to see the target effect: the
@@ -51,31 +52,32 @@ pub type Verdict {
   Indistinguishable(effect: Float, ci: #(Float, Float), p: Float, mde: Float)
 
   /// Neither, and the design could not have seen the target effect; or
-  /// fewer than two tasks, where no variance exists. `needed_tasks` is the
-  /// task count at which the observed variance would make the target
-  /// visible.
-  Underpowered(mde: Float, needed_tasks: Int)
+  /// fewer than two tasks, or no spread between tasks, where the observed
+  /// variance says nothing about the error. `needed_tasks` is the task
+  /// count at which the variance behind `mde` would make the target
+  /// visible, and `reason` says which variance that was: the observed one,
+  /// or the binomial plug-in floor that stands in when the observed one is
+  /// zero (`paired.plugin_variance`).
+  Underpowered(mde: Float, needed_tasks: Int, reason: String)
 
   /// The plan's rows are not all present, or are present twice, or a row
   /// exists the plan never declared. The reason names the first such row.
   Incomplete(reason: String)
 }
 
-/// Whether the sequential futility check lets the run continue.
+/// Whether the sequential futility check lets the run continue. There is
+/// no early *decision*: a verdict also needs the clustered interval, which
+/// the remaining pairs can still move, so the only stop is the one that
+/// under-claims.
 pub type Stop {
-  /// The remaining pairs could still move the sign test across `α` in
-  /// either direction.
+  /// A perfect sweep of the remaining pairs could still bring the
+  /// task-level sign test below `α`, in one direction or the other.
   Continue
 
-  /// Even if every remaining pair favoured the leading arm, `p` could not
-  /// fall below `α`: the plan can only end `Indistinguishable` or
-  /// `Underpowered`, so the remaining spend buys nothing.
-  StopIndistinguishable
-
-  /// Even if every remaining pair went against the leading arm, `p` could
-  /// not rise to `α`: the sign test is settled and the verdict can be
-  /// formed now.
-  StopDecided
+  /// Even the best allocation of every remaining pair could not bring `p`
+  /// below `α`: no completion of this plan can end `Improved` or `Harmed`,
+  /// so the remaining spend buys nothing.
+  StopUndecided
 }
 
 /// The default policy: a ten-point target effect and the clustered

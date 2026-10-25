@@ -5,16 +5,22 @@
 //// arm that is cheaper because it abandons work fails the verifier, so the
 //// outcome verdict is read before any score is. An arm the decision rule
 //// found `Harmed` is `Dominated` whatever it cost; one found `Improved`
-//// `Dominates` whatever it cost. Only when the outcome cannot tell the two
-//// apart do the scores get a vote, and then the vote is Pareto: the
-//// candidate dominates if it is at least as good on every shared score and
-//// strictly better on one. Anything else is a trade-off the report shows
-//// and no rule resolves, because resolving it would need a weighting the
-//// design declined to invent.
+//// `Dominates` whatever it cost. Any arm not shown harmful on outcome,
+//// `Indistinguishable` or `Underpowered` alike, goes to the scores, and
+//// there the vote is Pareto: the candidate dominates if it is at least as
+//// good on every shared score and strictly better on one. Anything else
+//// is a trade-off the report shows and no rule resolves, because resolving
+//// it would need a weighting the design declined to invent. An
+//// `Incomplete` outcome ranks nothing, and so does a pair of score vectors
+//// with no name in common: both are the absence of a comparison, not a
+//// tie.
 ////
 //// Scores are compared by name, on the names both vectors carry, oriented
 //// higher-is-better by the caller (`cost_inv = 1 / (1 + dollars)` and the
-//// like), so this module never needs to know what a score means.
+//// like), so this module never needs to know what a score means. A score
+//// that is not a number (`is_number`) ranks below every number: the BEAM
+//// has no NaN float, but the JavaScript target does, and its
+//// `float.compare` would otherwise call it greater than everything.
 
 import evalstat/verdict.{type Verdict}
 import gleam/float
@@ -26,7 +32,7 @@ pub type Ground {
   /// The outcome verdict settled it before the scores were read.
   Outcome
 
-  /// The outcome was silent and the score vector settled it.
+  /// The outcome was not harmful and the score vector settled it.
   Scores
 }
 
@@ -38,15 +44,15 @@ pub type Dominance {
   /// The candidate is worse, on the named ground.
   Dominated(Ground)
 
-  /// Outcome silent and every shared score equal.
+  /// Outcome not harmful and every shared score equal.
   Tie
 
-  /// Outcome silent and the scores disagree: better on some, worse on
+  /// Outcome not harmful and the scores disagree: better on some, worse on
   /// others, each listed by name.
   Tradeoff(better: List(String), worse: List(String))
 
-  /// The outcome verdict was `Underpowered` or `Incomplete`, so nothing
-  /// about the arms is known well enough to rank them.
+  /// Nothing to compare: the outcome verdict was `Incomplete`, or the two
+  /// score vectors share no name.
   Undecided
 }
 
@@ -75,7 +81,7 @@ pub fn compare(
     verdict.Improved(..) -> Dominates(Outcome)
     verdict.Harmed(..) -> Dominated(Outcome)
     verdict.Indistinguishable(..) -> pareto(candidate, baseline)
-    verdict.Underpowered(..) -> Undecided
+    verdict.Underpowered(..) -> pareto(candidate, baseline)
     verdict.Incomplete(..) -> Undecided
   }
 }
@@ -91,7 +97,7 @@ pub fn compare(
 /// ```
 ///
 /// ```gleam
-/// assert dominance.pareto([#("a", 1.0)], [#("b", 1.0)]) == Tie
+/// assert dominance.pareto([#("a", 1.0)], [#("b", 1.0)]) == Undecided
 /// ```
 pub fn pareto(
   candidate: List(#(String, Float)),
@@ -103,7 +109,7 @@ pub fn pareto(
 
       // A score only one arm reports has nothing to be compared against.
       case list.key_find(baseline, name) {
-        Ok(theirs) -> Ok(#(name, float.compare(ours, theirs)))
+        Ok(theirs) -> Ok(#(name, compare_scores(ours, theirs)))
         Error(Nil) -> Error(Nil)
       }
     })
@@ -118,13 +124,37 @@ pub fn pareto(
   let better = named(order.Gt)
   let worse = named(order.Lt)
 
-  // Strictly better somewhere and nowhere worse is dominance; the mirror is
-  // being dominated; neither better nor worse anywhere is a tie; both is
-  // the trade-off no rule resolves.
-  case better, worse {
-    [], [] -> Tie
-    [_, ..], [] -> Dominates(Scores)
-    [], [_, ..] -> Dominated(Scores)
-    [_, ..], [_, ..] -> Tradeoff(better:, worse:)
+  // No shared name is no comparison. Otherwise: strictly better somewhere
+  // and nowhere worse is dominance; the mirror is being dominated; neither
+  // better nor worse anywhere is a tie; both is the trade-off no rule
+  // resolves.
+  case shared, better, worse {
+    [], _, _ -> Undecided
+    [_, ..], [], [] -> Tie
+    [_, ..], [_, ..], [] -> Dominates(Scores)
+    [_, ..], [], [_, ..] -> Dominated(Scores)
+    [_, ..], [_, ..], [_, ..] -> Tradeoff(better:, worse:)
   }
+}
+
+/// `float.compare` with a non-number ranked below every number. A NaN is
+/// the one float that is not greater than or equal to itself, which is the
+/// only test for it the language offers without a target-specific external.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert dominance.compare_scores(0.5, 0.25) == order.Gt
+/// ```
+pub fn compare_scores(ours: Float, theirs: Float) -> Order {
+  case is_number(ours), is_number(theirs) {
+    True, True -> float.compare(ours, theirs)
+    True, False -> order.Gt
+    False, True -> order.Lt
+    False, False -> order.Eq
+  }
+}
+
+fn is_number(x: Float) -> Bool {
+  x >=. x
 }

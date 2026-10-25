@@ -1,25 +1,28 @@
-//// The nested bootstrap: a percentile interval for the mean difference
-//// that makes no normality assumption and keeps the pairing.
+//// The cluster bootstrap: a percentile interval for the mean difference
+//// that makes no normality assumption and resamples the unit the plan
+//// sampled.
 ////
-//// Each resample redraws the data the way the plan drew it. Tasks are
-//// drawn with replacement, because the task is the sampled unit; within
-//// each drawn task, pair positions are drawn with replacement, and the
-//// same positions are taken from both arms at once. That last clause is
-//// the whole reason this module exists beside the clustered normal
-//// interval: drawing the two arms' trials independently would discard the
-//// within-pair correlation and widen the interval, which
-//// `bootstrap_keeps_pairing_test` turns into a check that perfectly
-//// correlated arms give an interval of zero width.
+//// Each resample draws `T` tasks with replacement and takes the mean of
+//// their observed per-task differences `d_t`. The task is the cluster, and
+//// each drawn task carries its whole observed difference, so the
+//// within-task noise is already inside `d_t` once; redrawing trials inside
+//// each drawn task as well would count that noise a second time and widen
+//// the interval (Davison & Hinkley; Ren et al. 2010), which is why the
+//// nested form the design note sketched is not what this module does. The
+//// pairing is kept because `d_t` is a paired quantity: the same task's two
+//// rates, never one arm's task against another arm's.
 ////
-//// The generator is seeded from the plan id (`prng.from_string`), so the
-//// interval a report prints is a function of the ledger and the plan and
-//// nothing else; a second run over the same inputs prints the same digits
-//// on either target.
+//// The generator is seeded from the plan id (`prng.from_string`) and tasks
+//// are drawn by position in the package's one task order
+//// (`pairing.compare_task_ids`), so the interval a report prints is a
+//// function of the ledger and the plan and nothing else; a second run over
+//// the same inputs prints the same digits on either target. The interval's
+//// ends are read from the sorted resample means at the ranks
+//// `percentile_ranks` fixes, symmetric about the two ends, by `at`.
 
 import evalstat/paired
-import evalstat/pairing.{type Pair, type Paired, type TaskPairs}
+import evalstat/pairing.{type Paired}
 import evalstat/prng.{type Prng}
-import evalstat/trial
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/float
@@ -29,12 +32,6 @@ import gleam/result
 
 /// The number of resamples the design fixes.
 pub const default_resamples = 2000
-
-/// One task prepared for resampling: its pairs indexed by position so a
-/// drawn position is a dictionary lookup rather than a list walk.
-type Indexed {
-  Indexed(size: Int, pairs: Dict(Int, Pair))
-}
 
 /// The percentile 2.5 / 97.5 interval of the resampled mean difference,
 /// over `resamples` draws seeded from `seed`. `Error` when there is no
@@ -47,7 +44,7 @@ type Indexed {
 /// ```
 ///
 /// ```gleam
-/// // Every pair agrees inside its task, so every resample has the same mean.
+/// // Every task has the same difference, so every resample has the same mean.
 /// let pairs = [Pair(0, trial.Fail, trial.Pass), Pair(1, trial.Fail, trial.Pass)]
 /// let paired = Paired([TaskPairs("a", pairs), TaskPairs("b", pairs)], 0, 0)
 /// assert bootstrap.interval(paired, 50, "plan") == Ok(#(1.0, 1.0))
@@ -57,12 +54,12 @@ pub fn interval(
   resamples: Int,
   seed: String,
 ) -> Result(#(Float, Float), Nil) {
-  let tasks = list.map(paired.tasks, index_task)
-  let count = list.length(tasks)
+  let differences = paired.differences(paired)
+  let count = list.length(differences)
   use <- bool.guard(when: count == 0 || resamples < 1, return: Error(Nil))
   let by_position =
-    list.index_fold(tasks, dict.new(), fn(table, task, i) {
-      dict.insert(table, i, task)
+    list.index_fold(differences, dict.new(), fn(table, d, i) {
+      dict.insert(table, i, d)
     })
 
   // Each resample threads the generator forward, so resample `i` depends
@@ -75,69 +72,42 @@ pub fn interval(
       #(state, mean)
     })
   let sorted = list.sort(means, float.compare)
-  use low <- result.try(percentile(sorted, resamples, 0.025))
-  use high <- result.try(percentile(sorted, resamples, 0.975))
+  let #(low_rank, high_rank) = percentile_ranks(resamples)
+  use low <- result.try(at(sorted, low_rank))
+  use high <- result.try(at(sorted, high_rank))
   Ok(#(low, high))
 }
 
 /// One resample's mean difference: `count` tasks drawn with replacement,
-/// each resampled within itself.
+/// each contributing its observed `d_t`.
 fn resample_mean(
-  tasks: Dict(Int, Indexed),
+  differences: Dict(Int, Float),
   count: Int,
   state: Prng,
 ) -> #(Float, Prng) {
-  let #(state, differences) =
+  let #(state, drawn) =
     list.repeat(Nil, count)
     |> list.map_fold(state, fn(state, _) {
       let #(which, state) = prng.below(state, count)
 
-      // The position was drawn below `count`, so the lookup cannot miss;
-      // an empty task in its place contributes a zero difference rather
-      // than a crash, which keeps the function total.
-      case dict.get(tasks, which) {
-        Ok(task) -> {
-          let #(d, state) = resample_task(task, state)
-          #(state, d)
-        }
-        Error(Nil) -> #(state, 0.0)
-      }
+      // The position was drawn below `count`, so the lookup cannot miss; a
+      // zero in its place keeps the function total rather than crashing.
+      #(state, result.unwrap(dict.get(differences, which), 0.0))
     })
-  #(paired.mean(differences), state)
+  #(paired.mean(drawn), state)
 }
 
-/// The mean per-pair difference of one task after drawing `size` positions
-/// with replacement. Each drawn position yields both arms' fates, which is
-/// where the pairing is kept.
-fn resample_task(task: Indexed, state: Prng) -> #(Float, Prng) {
-  let #(sum, state) =
-    list.repeat(Nil, task.size)
-    |> list.fold(#(0.0, state), fn(acc, _) {
-      let #(sum, state) = acc
-      let #(position, state) = prng.below(state, task.size)
-      let d =
-        dict.get(task.pairs, position)
-        |> result.map(fn(pair) {
-          trial.indicator(pair.candidate) -. trial.indicator(pair.baseline)
-        })
-        |> result.unwrap(0.0)
-      #(sum +. d, state)
-    })
-  #(sum /. int.to_float(task.size), state)
+/// The zero-based ranks of the 2.5th and 97.5th percentiles among `n`
+/// sorted resamples, symmetric about the ends: the lower rank is the
+/// `⌈0.025 · n⌉`-th smallest and the upper is the same count from the top,
+/// so for 2000 resamples they are the 50th smallest and the 50th largest.
+fn percentile_ranks(n: Int) -> #(Int, Int) {
+  let from_end = float.round(float.ceiling(0.025 *. int.to_float(n)))
+  let low = int.clamp(from_end - 1, 0, n - 1)
+  #(low, n - 1 - low)
 }
 
-/// Positions a task's pairs for lookup by drawn index.
-fn index_task(task: TaskPairs) -> Indexed {
-  let pairs =
-    list.index_fold(task.pairs, dict.new(), fn(table, pair, i) {
-      dict.insert(table, i, pair)
-    })
-  Indexed(size: list.length(task.pairs), pairs:)
-}
-
-/// The value at quantile `q` of an ascending list of `n`, by the nearest
-/// rank below `q · (n − 1)`.
-fn percentile(sorted: List(Float), n: Int, q: Float) -> Result(Float, Nil) {
-  let rank = float.truncate(q *. int.to_float(n - 1))
+/// The element at a zero-based rank of an ascending list.
+fn at(sorted: List(Float), rank: Int) -> Result(Float, Nil) {
   list.drop(sorted, rank) |> list.first
 }

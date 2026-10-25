@@ -17,6 +17,7 @@
 //// would read as "never passes", which is a claim about the arm; the truth
 //// is that the plan did not run enough trials to ask the question.
 
+import evalstat/pairing
 import evalstat/trial.{type Trial}
 import gleam/bool
 import gleam/dict
@@ -24,7 +25,6 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/result
-import gleam/string
 
 /// Why an estimate could not be formed. Every variant is a defect of the
 /// question, not of the arm.
@@ -135,7 +135,7 @@ pub fn task_counts(
   })
   |> list.group(fn(entry) { entry.0 })
   |> dict.to_list
-  |> list.sort(fn(left, right) { string.compare(left.0, right.0) })
+  |> list.sort(fn(left, right) { pairing.compare_task_ids(left.0, right.0) })
   |> list.map(fn(entry) {
     let #(task, fates) = entry
     let passes = list.count(fates, fn(fate) { fate.1 == trial.Pass })

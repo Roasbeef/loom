@@ -1,42 +1,58 @@
-//// The nested bootstrap keeps the pairing and is reproducible from its
+//// The cluster bootstrap keeps the pairing and is reproducible from its
 //// seed.
 
 import evalstat/bootstrap
-import evalstat/pairing.{type Paired}
+import evalstat/paired
+import evalstat/pairing
 import evalstat/trial.{Fail, Pass}
-import gleam/float
 import gleam/list
 import support/fixture
 
-/// Arms that agree on every pair have a per-pair difference of zero
-/// everywhere, so a bootstrap that redraws the same positions from both
-/// arms sees a mean of exactly zero in every resample and a zero-width
-/// interval. The same fates with the candidate's shuffled within each
-/// task have the same marginal rates and a positive width, so the zero
-/// width is the pairing and not the data; drawing the arms' positions
-/// independently would turn the first interval into the second.
-///
-/// Duplicating every task's pairs in both arms leaves the centre where it
-/// was, since each task's rates are unchanged.
+/// Tasks whose per-arm rates differ a great deal but whose paired
+/// difference is the same everywhere: each task's candidate rate is its
+/// baseline rate plus one quarter. A bootstrap that redraws tasks and takes
+/// each drawn task's own `d_t` sees the same mean in every resample and a
+/// zero-width interval. Drawing the two arms' tasks independently would
+/// pair one task's candidate rate with another task's baseline rate and
+/// spread the resampled means across the rates' whole range; so would
+/// resampling pairs inside a task, since the pairs disagree within each
+/// task. Duplicating every task's pairs in both arms leaves the centre
+/// where it was, since each task's rates are unchanged.
 pub fn bootstrap_keeps_pairing_test() {
-  let agreeing = [
-    fixture.task("a", [#(Pass, Pass), #(Fail, Fail), #(Pass, Pass)]),
-    fixture.task("b", [#(Fail, Fail), #(Fail, Fail), #(Pass, Pass)]),
-    fixture.task("c", [#(Pass, Pass), #(Pass, Pass), #(Fail, Fail)]),
-    fixture.task("d", [#(Fail, Fail), #(Pass, Pass), #(Pass, Pass)]),
+  let rising = [
+    fixture.task("a", [
+      #(Fail, Fail),
+      #(Fail, Fail),
+      #(Fail, Fail),
+      #(Fail, Pass),
+    ]),
+    fixture.task("b", [
+      #(Fail, Pass),
+      #(Pass, Pass),
+      #(Fail, Fail),
+      #(Fail, Fail),
+    ]),
+    fixture.task("c", [
+      #(Pass, Pass),
+      #(Pass, Pass),
+      #(Fail, Pass),
+      #(Fail, Fail),
+    ]),
+    fixture.task("d", [
+      #(Pass, Pass),
+      #(Pass, Pass),
+      #(Pass, Pass),
+      #(Fail, Pass),
+    ]),
   ]
-  assert bootstrap.interval(fixture.paired(agreeing), 500, "plan")
-    == Ok(#(0.0, 0.0))
+  let data = fixture.paired(rising)
+  assert bootstrap.interval(data, 500, "plan") == Ok(#(0.25, 0.25))
 
-  // Each task's candidate column rotated by one position: marginals equal,
-  // pairs broken in the data itself.
-  let unpaired = [
-    fixture.task("a", [#(Pass, Pass), #(Fail, Pass), #(Pass, Fail)]),
-    fixture.task("b", [#(Fail, Pass), #(Fail, Fail), #(Pass, Fail)]),
-    fixture.task("c", [#(Pass, Fail), #(Pass, Pass), #(Fail, Pass)]),
-    fixture.task("d", [#(Fail, Pass), #(Pass, Fail), #(Pass, Pass)]),
-  ]
-  assert width(fixture.paired(unpaired), "plan") >. 0.0
+  // The marginal rates really do differ across tasks, which is what an
+  // unpaired resample would have mixed.
+  let assert [first, _, _, last] = data.tasks as "four tasks"
+  assert paired.rate(first, pairing.Baseline) == 0.0
+  assert paired.rate(last, pairing.Baseline) == 0.75
 
   // A real effect, then the same data with every pair duplicated.
   let effect = [
@@ -52,10 +68,12 @@ pub fn bootstrap_keeps_pairing_test() {
     })
   let single = bootstrap.interval(fixture.paired(effect), 2000, "plan")
   let twice = bootstrap.interval(fixture.paired(doubled), 2000, "plan")
-  assert float.absolute_value(centre(single) -. centre(twice)) <. 0.05
+  assert single == twice
+  assert centre(single) >. 0.2 && centre(single) <. 0.6
 }
 
-/// The same seed gives the same interval; a different seed may not.
+/// The same seed gives the same interval, the percentile ranks are
+/// symmetric, and the degenerate inputs refuse.
 pub fn bootstrap_is_reproducible_from_seed_test() {
   let data =
     fixture.paired([
@@ -67,17 +85,20 @@ pub fn bootstrap_is_reproducible_from_seed_test() {
     == bootstrap.interval(data, 200, "plan-1")
   assert bootstrap.interval(data, 0, "plan-1") == Error(Nil)
   assert bootstrap.interval(fixture.paired([]), 200, "plan-1") == Error(Nil)
+
+  // Two tasks, d = 1 and d = 0, resampled 40 times: the means are 0, 0.5 or
+  // 1, and the 2.5 % ranks from either end (the first and the last) are the
+  // extremes, so the interval is the whole range however the draws fall.
+  let coin =
+    fixture.paired([
+      fixture.task("a", [#(Fail, Pass)]),
+      fixture.task("b", [#(Fail, Fail)]),
+    ])
+  assert bootstrap.interval(coin, 40, "plan-1") == Ok(#(0.0, 1.0))
 }
 
 fn fates(task: pairing.TaskPairs) -> List(#(trial.Fate, trial.Fate)) {
   list.map(task.pairs, fn(pair) { #(pair.baseline, pair.candidate) })
-}
-
-fn width(data: Paired, seed: String) -> Float {
-  case bootstrap.interval(data, 500, seed) {
-    Ok(#(low, high)) -> high -. low
-    Error(Nil) -> -1.0
-  }
 }
 
 fn centre(interval: Result(#(Float, Float), Nil)) -> Float {
