@@ -209,8 +209,14 @@ def with_api_key_env(spec: ModelSpec, chosen: str) -> ModelSpec:
 
 
 def _string(value: str) -> str:
-    """A TOML basic string. JSON escaping is a valid subset of TOML's."""
-    return json.dumps(value)
+    """A TOML basic string.
+
+    JSON's escapes are a valid subset of TOML's, with two differences handled
+    here: `ensure_ascii=False` keeps a character outside the BMP as itself
+    (JSON would write a surrogate pair, `\\ud83d\\ude00`, which TOML rejects),
+    and TOML forbids a raw DEL, which JSON leaves alone.
+    """
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def _number(value: float) -> str:

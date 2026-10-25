@@ -136,3 +136,14 @@ def test_a_string_with_quotes_is_escaped_into_valid_toml():
 def test_rendering_without_a_chosen_key_variable_is_refused():
     with pytest.raises(CatalogueError, match="no API key variable"):
         render_loom_toml(resolve_model("anthropic/c"))
+
+
+@pytest.mark.parametrize("model_id", ["model-\U0001F600", "café-中文", "del\x7fchar", "tab\there"])
+def test_non_ascii_and_control_characters_render_as_valid_toml(model_id):
+    spec = resolve_model("openai/" + model_id)
+    assert tomllib.loads(rendered(spec))["models"]["harbor"]["model_id"] == model_id
+
+
+def test_a_non_bmp_character_is_not_written_as_a_surrogate_pair():
+    # json.dumps' default would write 😀, which TOML rejects.
+    assert "\\ud83d" not in rendered(resolve_model("openai/m-\U0001F600"))
