@@ -65,8 +65,6 @@ MAX_INSTRUCTION_BYTES = 128 * 1024 - 1072
 REMOTE_DIR = "/installed-agent"
 REMOTE_CONFIG = f"{REMOTE_DIR}/loom.toml"
 REMOTE_PROMPT = f"{REMOTE_DIR}/loom-prompt.txt"
-REMOTE_SERVER_TARBALL = f"{REMOTE_DIR}/loom-server.tar.gz"
-REMOTE_CLIENT_TARBALL = f"{REMOTE_DIR}/loom-client.tar.gz"
 
 # `loomd` flag per isolation posture. An empty flag is Loom's own default,
 # `PlatformEnforcement`, which refuses a helper that cannot confine a run.
@@ -134,6 +132,21 @@ class LoomAgentOptions(InstalledAgentOptions):
             "--base-url is not available: it needs a model-connection spec this "
             "adapter does not declare."
         ),
+    )
+    sums_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="Expected SHA-256 of the release's SHA256SUMS file, obtained out of band.",
+    )
+    server_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="Expected SHA-256 of the local server archive (offline runs).",
+    )
+    client_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-fA-F]{64}$",
+        description="Expected SHA-256 of the local client archive (offline runs).",
     )
     dialect: str | None = Field(default=None, description="Override the Loom dialect.")
     api_key_env: str | None = Field(
@@ -322,14 +335,32 @@ class LoomAgent(BaseInstalledAgent):
             self.model_spec(), network=self.options.network, rw_mounts=self.rw_mounts()
         )
 
+    def remote_tarballs(self) -> tuple[str, str] | None:
+        """Where the local archives land in the container, under their own names.
+
+        The names carry the version, which the install script compares.
+        """
+        local = self.local_tarballs()
+        if local is None:
+            return None
+        return tuple(f"{REMOTE_DIR}/{path.name}" for path in local)  # type: ignore[return-value]
+
     def install_env(self) -> dict[str, str]:
         """Variables for the install script. None of them is a credential."""
         env = {"LOOM_PREFIX": self.options.install_dir}
-        if self.local_tarballs() is None:
+        options = self.options
+        remote = self.remote_tarballs()
+        if remote is None:
             env["LOOM_BASE_URL"] = self.release_base_url()
+            sums = options.sums_sha256 or self._env("LOOM_SUMS_SHA256")
+            if sums:
+                env["LOOM_SUMS_SHA256"] = sums.lower()
         else:
-            env["LOOM_SERVER_TARBALL"] = REMOTE_SERVER_TARBALL
-            env["LOOM_CLIENT_TARBALL"] = REMOTE_CLIENT_TARBALL
+            env["LOOM_SERVER_TARBALL"], env["LOOM_CLIENT_TARBALL"] = remote
+            if options.server_sha256:
+                env["LOOM_SERVER_SHA256"] = options.server_sha256.lower()
+            if options.client_sha256:
+                env["LOOM_CLIENT_SHA256"] = options.client_sha256.lower()
         return env
 
     def run_env(self, key_name: str, key_value: str) -> dict[str, str]:
@@ -391,8 +422,9 @@ class LoomAgent(BaseInstalledAgent):
                 self.logger.warning("could not install %s (continuing): %s", dependency, exc)
 
         if local is not None:
-            await environment.upload_file(local[0], REMOTE_SERVER_TARBALL)
-            await environment.upload_file(local[1], REMOTE_CLIENT_TARBALL)
+            remote = self.remote_tarballs() or ("", "")
+            await environment.upload_file(local[0], remote[0])
+            await environment.upload_file(local[1], remote[1])
 
         await self.exec_as_root(
             environment,

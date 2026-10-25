@@ -30,6 +30,13 @@ PREFIX="${LOOM_PREFIX:?LOOM_PREFIX is required}"
 BASE_URL="${LOOM_BASE_URL:-}"
 SERVER_TARBALL="${LOOM_SERVER_TARBALL:-}"
 CLIENT_TARBALL="${LOOM_CLIENT_TARBALL:-}"
+# Optional pins. SHA256SUMS comes from the same origin as the archives, so on
+# its own it detects corruption and truncation, not a malicious release. A pin
+# supplied out of band (the digest of SHA256SUMS, or of each archive) is what
+# turns the check into a provenance check.
+SUMS_PIN="${LOOM_SUMS_SHA256:-}"
+SERVER_PIN="${LOOM_SERVER_SHA256:-}"
+CLIENT_PIN="${LOOM_CLIENT_SHA256:-}"
 
 platform="${LOOM_PLATFORM:-}"
 if [ -z "$platform" ]; then
@@ -47,8 +54,9 @@ fi
 
 fetch() {
   case "$1" in
-    https://*|http://*|file://*) ;;
-    *) fail "refusing to fetch $1; a release source must be an http(s) or file URL" ;;
+    https://*|file://*) ;;
+    http://*) fail "refusing to fetch $1 over plain http; a release source must be https (or a file:// mirror)" ;;
+    *) fail "refusing to fetch $1; a release source must be an https or file URL" ;;
   esac
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$2" "$1" \
@@ -72,10 +80,23 @@ if [ -n "$SERVER_TARBALL" ] || [ -n "$CLIENT_TARBALL" ]; then
   client_file="$CLIENT_TARBALL"
   server_sha="$(sha256sum "$server_file" | cut -d' ' -f1)"
   client_sha="$(sha256sum "$client_file" | cut -d' ' -f1)"
-  source_label="local:$(basename "$server_file"),$(basename "$client_file")"
+  # With no pin the digests above are computed from the files themselves, so
+  # they prove nothing about where the files came from; say so.
+  if [ -z "$SERVER_PIN" ] || [ -z "$CLIENT_PIN" ]; then
+    echo "loom-harbor install: local archives are not verified against any expected digest (set server_sha256 and client_sha256 to pin them)" >&2
+  fi
+  [ -z "$SERVER_PIN" ] || [ "$SERVER_PIN" = "$server_sha" ] || fail "digest mismatch for the server archive: pinned $SERVER_PIN, got $server_sha"
+  [ -z "$CLIENT_PIN" ] || [ "$CLIENT_PIN" = "$client_sha" ] || fail "digest mismatch for the client archive: pinned $CLIENT_PIN, got $client_sha"
+  server_name="$(basename "$server_file")"
+  client_name="$(basename "$client_file")"
+  source_label="local:$server_name,$client_name"
 else
   [ -n "$BASE_URL" ] || fail "no release source: set a release, a release base URL or both tarballs"
   fetch "$BASE_URL/SHA256SUMS" "$work/SHA256SUMS"
+  if [ -n "$SUMS_PIN" ]; then
+    actual_sums="$(sha256sum "$work/SHA256SUMS" | cut -d' ' -f1)"
+    [ "$actual_sums" = "$SUMS_PIN" ] || fail "digest mismatch for SHA256SUMS: pinned $SUMS_PIN, got $actual_sums"
+  fi
   # The server is loomd-<version>-<platform>; the client is loom-<version>-<platform>.
   # `loom-slim-` and `loomd-` are excluded by requiring a digit after the stem.
   names() { awk '{print $2}' "$work/SHA256SUMS" | grep -E "$1" || true; }
@@ -91,6 +112,20 @@ else
   client_file="$work/$client_name"
   source_label="$BASE_URL:$server_name,$client_name"
 fi
+
+# The two archives must be one release: loomd-<version>-<platform> and
+# loom-<version>-<platform> share a version. Names that do not follow the
+# pattern (a renamed local archive) cannot be checked and are not.
+case "$server_name" in loomd-*-"$platform".tar.gz)
+  case "$client_name" in loom-*-"$platform".tar.gz)
+    server_version="${server_name#loomd-}"; server_version="${server_version%-"$platform".tar.gz}"
+    client_version="${client_name#loom-}"; client_version="${client_version%-"$platform".tar.gz}"
+    [ "$server_version" = "$client_version" ] \
+      || fail "the server archive is version $server_version but the client archive is $client_version"
+    ;;
+  esac
+  ;;
+esac
 
 # Already installed at exactly these digests: nothing to do. The marker holds
 # the digests, so a different release replaces the tree and the same one does not.
@@ -115,9 +150,15 @@ verify "$client_file" "$client_sha"
 
 stage="$work/stage"
 mkdir -p "$stage/server" "$stage/client"
-tar -xzf "$server_file" -C "$stage/server" --strip-components=1 \
+# This runs as root on an archive from the network: do not take ownership or
+# modes from it (GNU tar; busybox tar has neither option and already ignores both).
+tar_safe=""
+if tar --version 2>/dev/null | grep -q GNU; then tar_safe="--no-same-owner --no-same-permissions"; fi
+# shellcheck disable=SC2086
+tar -xzf "$server_file" -C "$stage/server" --strip-components=1 $tar_safe \
   || fail "could not unpack the server archive"
-tar -xzf "$client_file" -C "$stage/client" --strip-components=1 \
+# shellcheck disable=SC2086
+tar -xzf "$client_file" -C "$stage/client" --strip-components=1 $tar_safe \
   || fail "could not unpack the client archive"
 for required in server/bin/loomd server/bin/loom-exec client/bin/loom; do
   [ -x "$stage/$required" ] || fail "the release has no executable $required"

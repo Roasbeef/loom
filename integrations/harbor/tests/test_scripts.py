@@ -27,6 +27,7 @@ from loom_harbor import scripts
 from tests.conftest import REPORT
 
 PLATFORM = "linux-x86_64"
+KEY = "sk-ant-secret-0123456789"
 
 
 def bash(script: str, env: dict[str, str], cwd: Path, timeout: int = 60) -> subprocess.CompletedProcess:
@@ -168,6 +169,47 @@ def test_a_non_url_source_is_refused(tmp_path):
     assert run.returncode != 0 and "refusing to fetch" in run.stderr
 
 
+def test_plain_http_is_refused_before_any_connection_is_made(tmp_path):
+    run = install(tmp_path / "r", tmp_path / "opt", tmp_path, LOOM_BASE_URL="http://127.0.0.1:9/releases")
+    assert run.returncode != 0 and "plain http" in run.stderr
+    assert not (tmp_path / "opt/server").exists()
+
+
+def test_a_pinned_sums_digest_must_match(tmp_path):
+    release = make_release(tmp_path / "release")
+    good = hashlib.sha256((release / "SHA256SUMS").read_bytes()).hexdigest()
+    assert install(release, tmp_path / "ok", tmp_path, LOOM_SUMS_SHA256=good).returncode == 0
+    bad = install(release, tmp_path / "bad", tmp_path, LOOM_SUMS_SHA256="0" * 64)
+    assert bad.returncode != 0 and "digest mismatch for SHA256SUMS" in bad.stderr
+    assert not (tmp_path / "bad/server").exists()
+
+
+def test_a_server_and_client_of_different_versions_are_refused(tmp_path):
+    release = make_release(tmp_path / "release", "1.0.0")
+    other = make_release(tmp_path / "other", "2.0.0")
+    shutil.copy(other / f"loom-2.0.0-{PLATFORM}.tar.gz", release / f"loom-2.0.0-{PLATFORM}.tar.gz")
+    sums = (release / "SHA256SUMS").read_text().replace(
+        f"loom-1.0.0-{PLATFORM}.tar.gz", f"loom-2.0.0-{PLATFORM}.tar.gz"
+    )
+    # Point the client line's digest at the 2.0.0 archive so only the version differs.
+    digest = hashlib.sha256((other / f"loom-2.0.0-{PLATFORM}.tar.gz").read_bytes()).hexdigest()
+    lines = [l if f"loom-2.0.0-{PLATFORM}" not in l else f"{digest}  loom-2.0.0-{PLATFORM}.tar.gz" for l in sums.splitlines()]
+    (release / "SHA256SUMS").write_text("\n".join(lines) + "\n")
+    run = install(release, tmp_path / "opt", tmp_path)
+    assert run.returncode != 0 and "version 1.0.0" in run.stderr and "2.0.0" in run.stderr
+
+
+def test_the_install_does_not_take_ownership_or_modes_from_the_archive(tmp_path):
+    # The archive's modes are 0644/0755; a hostile one could carry setuid. GNU tar
+    # with --no-same-permissions applies the umask, so setuid cannot survive.
+    release = make_release(tmp_path / "release")
+    prefix = tmp_path / "opt"
+    assert install(release, prefix, tmp_path).returncode == 0
+    for path in prefix.rglob("*"):
+        if path.is_file():
+            assert not path.stat().st_mode & 0o6000, path
+
+
 def test_offline_install_from_local_archives_needs_no_network(tmp_path):
     release = make_release(tmp_path / "release")
     prefix = tmp_path / "opt"
@@ -184,6 +226,23 @@ def test_offline_install_from_local_archives_needs_no_network(tmp_path):
     )
     assert run.returncode == 0, run.stderr
     assert (prefix / "client/bin/loom").is_file() and "local:" in run.stderr
+    # With no expected digest the check is only against the files themselves, and says so.
+    assert "not verified against any expected digest" in run.stderr
+
+
+def test_offline_install_verifies_pinned_digests(tmp_path):
+    release = make_release(tmp_path / "release")
+    server = release / f"loomd-9.9.9-{PLATFORM}.tar.gz"
+    client = release / f"loom-9.9.9-{PLATFORM}.tar.gz"
+    env = {"LOOM_PLATFORM": PLATFORM, "LOOM_SERVER_TARBALL": str(server), "LOOM_CLIENT_TARBALL": str(client)}
+    good = {
+        "LOOM_SERVER_SHA256": hashlib.sha256(server.read_bytes()).hexdigest(),
+        "LOOM_CLIENT_SHA256": hashlib.sha256(client.read_bytes()).hexdigest(),
+    }
+    ok = bash(scripts.INSTALL_SCRIPT, {"LOOM_PREFIX": str(tmp_path / "a"), **env, **good}, tmp_path)
+    assert ok.returncode == 0 and "not verified" not in ok.stderr
+    bad = bash(scripts.INSTALL_SCRIPT, {"LOOM_PREFIX": str(tmp_path / "b"), **env, **good, "LOOM_SERVER_SHA256": "0" * 64}, tmp_path)
+    assert bad.returncode != 0 and "digest mismatch for the server archive" in bad.stderr
 
 
 # ---------------------------------------------------------------------- run

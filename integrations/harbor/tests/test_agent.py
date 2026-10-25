@@ -224,9 +224,10 @@ async def test_install_uploads_local_archives_and_points_the_script_at_them(make
     built.exec_as_root = AsyncMock()
     await built.install(environment)
     uploads = [(call.args[0], call.args[1]) for call in environment.upload_file.await_args_list]
-    assert uploads == [(server, agent_module.REMOTE_SERVER_TARBALL), (client, agent_module.REMOTE_CLIENT_TARBALL)]
+    # Under their own names, because the names carry the versions the script compares.
+    assert uploads == [(server, "/installed-agent/loomd.tar.gz"), (client, "/installed-agent/loom.tar.gz")]
     env = built.exec_as_root.await_args.kwargs["env"]
-    assert "LOOM_BASE_URL" not in env and env["LOOM_SERVER_TARBALL"] == agent_module.REMOTE_SERVER_TARBALL
+    assert "LOOM_BASE_URL" not in env and env["LOOM_SERVER_TARBALL"] == "/installed-agent/loomd.tar.gz"
 
 
 async def test_install_fails_before_touching_the_container_when_the_key_is_missing(make_agent, environment, monkeypatch):
@@ -676,3 +677,20 @@ async def test_platform_mode_still_refuses_any_other_skip(make_agent, environmen
     environment.exec = Scripted(selftest=(0, other))
     with pytest.raises(RuntimeError, match="unexpected skips: fork bomb"):
         await run_agent(built, environment)
+
+
+def test_pins_reach_the_install_script_and_are_lowercased(make_agent, tmp_path):
+    digest = "AB" * 32
+    assert make_agent(sums_sha256=digest).install_env()["LOOM_SUMS_SHA256"] == digest.lower()
+    server, client = tmp_path / "loomd-1-linux-x86_64.tar.gz", tmp_path / "loom-1-linux-x86_64.tar.gz"
+    server.write_bytes(b"s")
+    client.write_bytes(b"c")
+    env = make_agent(server_tarball=str(server), client_tarball=str(client),
+                     server_sha256=digest, client_sha256="cd" * 32).install_env()
+    assert env["LOOM_SERVER_SHA256"] == digest.lower() and env["LOOM_CLIENT_SHA256"] == "cd" * 32
+    assert "LOOM_SUMS_SHA256" not in env
+
+
+def test_a_malformed_pin_is_refused(make_agent):
+    with pytest.raises(ValueError, match="sums_sha256"):
+        make_agent(sums_sha256="not-a-digest")
