@@ -51,7 +51,7 @@ class Scripted:
         if is_script(command) and script_of(command) == scripts.RUN_SCRIPT:
             return result(self.run_code, self.run_stdout if self.run_code == 0 else "", "narration")
         if is_script(command) and script_of(command) == scripts.BWRAP_PROBE:
-            return result(0, self.bwrap + "\n")
+            return result(0, f"{self.bwrap}\n{'/usr/bin/bwrap' if self.bwrap != 'absent' else ''}\n")
         return result()
 
     def scripts_run(self) -> list[str]:
@@ -458,22 +458,47 @@ async def test_a_degraded_jail_is_not_enough_for_platform_mode(make_agent, envir
         await run_agent(built, environment)
 
 
+def bwrap_scripts(agent):
+    return [c.kwargs["command"] for c in agent.exec_as_root.await_args_list
+            if c.kwargs["command"] in (scripts.bash_command(scripts.BWRAP_DISABLE), scripts.bash_command(scripts.BWRAP_RESTORE))]
+
+
 @pytest.mark.parametrize("state", ["absent", "usable"])
 async def test_container_mode_leaves_absent_or_working_bubblewrap_alone(agent, environment, state):
     environment.exec = Scripted(bwrap=state)
     agent.exec_as_root = AsyncMock()
     await run_agent(agent, environment)
-    agent.exec_as_root.assert_not_awaited()
+    assert bwrap_scripts(agent) == []
     assert agent.jail_record(None)["bubblewrap"] == state
 
 
-async def test_container_mode_moves_an_unusable_bubblewrap_aside_and_says_so(agent, environment):
+async def test_container_mode_moves_the_probed_bubblewrap_aside_and_restores_it_afterwards(agent, environment):
     environment.exec = Scripted(bwrap="unusable")
     agent.exec_as_root = AsyncMock()
     await run_agent(agent, environment)
-    agent.exec_as_root.assert_awaited_once()
-    assert agent.exec_as_root.await_args.kwargs["command"] == scripts.bash_command(scripts.BWRAP_DISABLE)
+    assert bwrap_scripts(agent) == [
+        scripts.bash_command(scripts.BWRAP_DISABLE),
+        scripts.bash_command(scripts.BWRAP_RESTORE),
+    ], "the verifier must grade a container that is not missing a binary"
+    for call in agent.exec_as_root.await_args_list:
+        if call.kwargs["command"] in (scripts.bash_command(scripts.BWRAP_DISABLE), scripts.bash_command(scripts.BWRAP_RESTORE)):
+            assert call.kwargs["env"] == {"LOOM_BWRAP_PATH": "/usr/bin/bwrap"}  # the probed path, not a new lookup
     assert agent.jail_record(None)["bubblewrap"] == "disabled"
+
+
+async def test_bubblewrap_is_restored_even_when_the_run_fails(agent, environment):
+    scripted = Scripted(bwrap="unusable")
+
+    async def exec_(command, **kwargs):
+        if is_script(command) and script_of(command) == scripts.RUN_SCRIPT:
+            raise TimeoutError("cut off")
+        return await scripted(command, **kwargs)
+
+    environment.exec = exec_
+    agent.exec_as_root = AsyncMock()
+    with pytest.raises(TimeoutError):
+        await run_agent(agent, environment)
+    assert bwrap_scripts(agent)[-1] == scripts.bash_command(scripts.BWRAP_RESTORE)
 
 
 async def test_bwrap_keep_never_touches_it_but_records_that_it_is_unusable(make_agent, environment):
@@ -481,7 +506,7 @@ async def test_bwrap_keep_never_touches_it_but_records_that_it_is_unusable(make_
     environment.exec = Scripted(bwrap="unusable")
     built.exec_as_root = AsyncMock()
     await run_agent(built, environment)
-    built.exec_as_root.assert_not_awaited()
+    assert bwrap_scripts(built) == []
     assert built.jail_record(None)["bubblewrap"] == "unusable"
 
 
@@ -491,7 +516,7 @@ async def test_platform_mode_does_not_probe_or_move_bubblewrap(make_agent, envir
     built.exec_as_root = AsyncMock()
     await run_agent(built, environment)
     assert scripts.BWRAP_PROBE not in environment.exec.scripts_run()
-    built.exec_as_root.assert_not_awaited()
+    assert bwrap_scripts(built) == []
 
 
 # ---------------------------------------------------------- after the run

@@ -465,15 +465,19 @@ class LoomAgent(BaseInstalledAgent):
         """Find out whether bubblewrap works here, and degrade honestly if it cannot.
 
         Returns `absent`, `usable`, `unusable` or `disabled` (it was unusable
-        and has been moved aside). Whatever it returns lands in the metadata,
-        next to the label `loom run` measures afterwards.
+        and has been moved aside). The probe also reports the path it
+        resolved, and that path, not a second lookup under root's PATH, is what
+        gets moved and later restored. Whatever it returns lands in the
+        metadata, next to the label `loom run` measures afterwards.
         """
         probe = await environment.exec(command=scripts.bash_command(scripts.BWRAP_PROBE))
-        state = (probe.stdout or "").strip().splitlines()[-1:] or [""]
-        if state[0] not in ("absent", "usable", "unusable"):
+        lines = (probe.stdout or "").strip().splitlines()
+        state = lines[0].strip() if lines else ""
+        path = lines[1].strip() if len(lines) > 1 else ""
+        if state not in ("absent", "usable", "unusable"):
             raise RuntimeError(f"bubblewrap probe gave an unexpected answer: {probe.stdout!r} {probe.stderr!r}")
-        if state[0] != "unusable":
-            return state[0]
+        if state != "unusable":
+            return state
         if self.options.bwrap == "keep":
             self.logger.warning(
                 "bubblewrap is present but cannot create namespaces here and bwrap=keep: "
@@ -483,9 +487,15 @@ class LoomAgent(BaseInstalledAgent):
             return "unusable"
         self.logger.warning(
             "bubblewrap cannot create namespaces in this container; moving it aside so "
-            "Loom runs degraded (the task container is the isolation boundary)"
+            "Loom runs degraded (the task container is the isolation boundary). It is "
+            "restored when the run ends."
         )
-        await self.exec_as_root(environment, command=scripts.bash_command(scripts.BWRAP_DISABLE))
+        await self.exec_as_root(
+            environment,
+            command=scripts.bash_command(scripts.BWRAP_DISABLE),
+            env={"LOOM_BWRAP_PATH": path},
+        )
+        self._bwrap_path = path
         return "disabled"
 
     @with_prompt_template
@@ -502,6 +512,7 @@ class LoomAgent(BaseInstalledAgent):
             )
         self._selftest: runreport.SelfTest | None = None
         self._bwrap: str | None = None
+        self._bwrap_path: str | None = None
         if self.options.jail == "platform":
             self._selftest = await self._preflight_platform(environment)
         else:
@@ -549,6 +560,15 @@ class LoomAgent(BaseInstalledAgent):
             )
         except Exception as exc:  # best effort; the evidence is a bonus, not the verdict
             self.logger.warning("could not collect the Loom session: %s", exc)
+        if self._bwrap == "disabled" and self._bwrap_path:
+            try:
+                await self.exec_as_root(
+                    environment,
+                    command=scripts.bash_command(scripts.BWRAP_RESTORE),
+                    env={"LOOM_BWRAP_PATH": self._bwrap_path},
+                )
+            except Exception as exc:
+                self.logger.error("could not restore %s: %s", self._bwrap_path, exc)
 
     def _raise_for_unusable_or_api_failure(self) -> None:
         """Turn the report into Harbor's error taxonomy where it applies.

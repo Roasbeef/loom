@@ -42,7 +42,7 @@ def bash(script: str, env: dict[str, str], cwd: Path, timeout: int = 60) -> subp
 def test_every_script_parses_under_bash():
     for script in (
         scripts.INSTALL_SCRIPT, scripts.RUN_SCRIPT, scripts.COLLECT_SCRIPT,
-        scripts.BWRAP_PROBE, scripts.BWRAP_DISABLE,
+        scripts.BWRAP_PROBE, scripts.BWRAP_DISABLE, scripts.BWRAP_RESTORE,
     ):
         check = subprocess.run(["bash", "-n", "-c", script], capture_output=True, text=True)
         assert check.returncode == 0, check.stderr
@@ -462,37 +462,69 @@ def path_with(directory: Path) -> dict[str, str]:
     return {"PATH": f"{directory}:{os.environ['PATH']}"}
 
 
-def probe(cwd: Path, directory: Path | None) -> str:
+def probe(cwd: Path, directory: Path | None) -> list[str]:
     env = {"PATH": f"{directory}:{os.environ['PATH']}"} if directory else {"PATH": os.environ["PATH"]}
     return subprocess.run(
         ["bash", "-c", scripts.BWRAP_PROBE], env=env, cwd=cwd, capture_output=True, text=True
-    ).stdout.strip()
+    ).stdout.strip().splitlines()
 
 
-def test_the_probe_distinguishes_usable_from_unusable(tmp_path):
-    assert probe(tmp_path, fake_bwrap(tmp_path / "ok", "exit 0\n").parent) == "usable"
-    assert probe(tmp_path, fake_bwrap(tmp_path / "bad", "echo 'No permissions to create new namespace' >&2\nexit 1\n").parent) == "unusable"
-
-
-@pytest.mark.skipif(shutil.which("bwrap") is not None, reason="a real bwrap on this machine answers instead")
-def test_the_probe_reports_absent_when_there_is_no_bwrap(tmp_path):
-    assert probe(tmp_path, None) == "absent"
+def test_the_probe_distinguishes_usable_from_unusable_and_names_the_file(tmp_path):
+    ok = fake_bwrap(tmp_path / "ok", "exit 0\n")
+    assert probe(tmp_path, ok.parent) == ["usable", str(ok)]
+    bad = fake_bwrap(tmp_path / "bad", "echo 'No permissions to create new namespace' >&2\nexit 1\n")
+    assert probe(tmp_path, bad.parent) == ["unusable", str(bad)]
 
 
 def test_the_probe_asks_for_the_namespaces_the_helper_asks_for(tmp_path):
     record = tmp_path / "argv"
     directory = fake_bwrap(tmp_path / "rec", f"printf '%s\\n' \"$@\" > {record}\nexit 0\n").parent
-    assert probe(tmp_path, directory) == "usable"
+    assert probe(tmp_path, directory)[0] == "usable"
     asked = record.read_text().split()
     assert {"--unshare-user", "--unshare-pid", "--unshare-net", "--proc", "--dev"} <= set(asked)
 
 
-def test_disabling_moves_the_binary_aside_and_nothing_else(tmp_path):
-    binary = fake_bwrap(tmp_path / "bin", "exit 1\n")
-    run = subprocess.run(
-        ["bash", "-c", scripts.BWRAP_DISABLE], env={"PATH": f"{binary.parent}:{os.environ['PATH']}"},
-        cwd=tmp_path, capture_output=True, text=True,
+def disable(path: Path, script: str = scripts.BWRAP_DISABLE, env_path: Path | None = None):
+    return subprocess.run(
+        ["bash", "-c", script], env={"PATH": os.environ["PATH"], "LOOM_BWRAP_PATH": str(env_path or path)},
+        capture_output=True, text=True,
     )
+
+
+def test_disabling_moves_the_probed_file_aside_and_restoring_puts_it_back(tmp_path):
+    binary = fake_bwrap(tmp_path / "bin", "exit 1\n")
+    run = disable(binary)
     assert run.returncode == 0, run.stderr
     assert not binary.exists() and (binary.parent / "bwrap.disabled-by-loom-harbor").is_file()
     assert "moved" in run.stderr and run.stdout == ""
+    restored = disable(binary, scripts.BWRAP_RESTORE)
+    assert restored.returncode == 0 and binary.is_file()
+    assert not (binary.parent / "bwrap.disabled-by-loom-harbor").exists()
+
+
+def test_disabling_acts_on_the_probed_path_and_never_on_a_path_lookup(tmp_path):
+    # Another bwrap earlier on root's PATH must not be the one that is moved.
+    probed = fake_bwrap(tmp_path / "probed", "exit 1\n")
+    other = fake_bwrap(tmp_path / "other", "exit 0\n")
+    run = subprocess.run(
+        ["bash", "-c", scripts.BWRAP_DISABLE],
+        env={"PATH": f"{other.parent}:{os.environ['PATH']}", "LOOM_BWRAP_PATH": str(probed)},
+        capture_output=True, text=True,
+    )
+    assert run.returncode == 0 and other.is_file() and not probed.exists()
+
+
+@pytest.mark.parametrize("path", ["", "relative/bwrap", "/usr/bin/sh", "/etc/passwd"])
+def test_disabling_refuses_anything_that_is_not_an_absolute_bwrap(tmp_path, path):
+    run = subprocess.run(
+        ["bash", "-c", scripts.BWRAP_DISABLE], env={"PATH": os.environ["PATH"], "LOOM_BWRAP_PATH": path},
+        capture_output=True, text=True,
+    )
+    assert run.returncode != 0
+
+
+def test_restoring_never_overwrites_a_bwrap_that_is_back(tmp_path):
+    binary = fake_bwrap(tmp_path / "bin", "echo new\n")
+    (binary.parent / "bwrap.disabled-by-loom-harbor").write_text("old")
+    assert disable(binary, scripts.BWRAP_RESTORE).returncode == 0
+    assert "new" in binary.read_text()

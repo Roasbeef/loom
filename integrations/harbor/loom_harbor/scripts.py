@@ -312,26 +312,42 @@ exit 0
 # in this container. The helper decides "degraded" by whether `bwrap` is on its
 # PATH, not by whether it works, so a bwrap that exists but is refused a user
 # namespace (Docker's default) does not degrade the jail, it breaks every tool
-# call. Prints exactly one word: absent, usable or unusable. The probe asks for
-# the namespaces the helper's own argv asks for.
+# call. Prints the state (absent, usable or unusable) and then the path the
+# probe resolved, so that a later step acts on that file and not on whatever a
+# different user's PATH would find. The probe asks for the namespaces the
+# helper's own argv asks for.
 BWRAP_PROBE = r"""
-if ! command -v bwrap >/dev/null 2>&1; then echo absent; exit 0; fi
+if ! path="$(command -v bwrap 2>/dev/null)"; then echo absent; echo; exit 0; fi
 if bwrap --ro-bind / / --dev /dev --proc /proc --unshare-user --unshare-pid \
      --unshare-net true >/dev/null 2>&1; then
   echo usable
 else
   echo unusable
 fi
+echo "$path"
 """
 
 # Moves an unusable bwrap out of the helper's reach, so that it reports itself
 # degraded (honestly: no namespace layer) and runs the in-process layers
-# instead of failing every call. Runs as root and is reversible by renaming.
+# instead of failing every call. Runs as root on the probed path; the adapter
+# restores it before the verifier runs.
 BWRAP_DISABLE = r"""
 set -eu
-path="$(command -v bwrap)"
+path="${LOOM_BWRAP_PATH:?LOOM_BWRAP_PATH is required}"
+case "$path" in /*/bwrap) ;; *) echo "loom-harbor: refusing to move $path" >&2; exit 1 ;; esac
+[ -f "$path" ] || { echo "loom-harbor: $path is not a file" >&2; exit 1; }
 mv "$path" "$path.disabled-by-loom-harbor"
 echo "loom-harbor: moved the unusable $path aside" >&2
+"""
+
+BWRAP_RESTORE = r"""
+set -eu
+path="${LOOM_BWRAP_PATH:?LOOM_BWRAP_PATH is required}"
+case "$path" in /*/bwrap) ;; *) echo "loom-harbor: refusing to restore $path" >&2; exit 1 ;; esac
+if [ -e "$path.disabled-by-loom-harbor" ] && [ ! -e "$path" ]; then
+  mv "$path.disabled-by-loom-harbor" "$path"
+  echo "loom-harbor: restored $path" >&2
+fi
 """
 
 
