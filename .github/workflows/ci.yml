@@ -403,9 +403,11 @@ jobs:
           # 1.75 min alone; kept isolated because it is the shared-suite
           # package (storage conformance + wiring + e2e) and a change
           # there is worth a log of its own rather than folded into a
-          # mixed bucket.
+          # mixed bucket. `eval`, the evaluation instrument, rides here
+          # because it is the other package that depends on `client` and
+          # never ships, so it pays the same client compile.
           - bucket: conformance
-            packages: conformance
+            packages: conformance eval
           # Everything else: seconds per package in the measured run, so
           # bucketing them together costs nothing. This also carries the
           # two packages the "fast" name in the work order didn't spell
@@ -417,7 +419,7 @@ jobs:
           # and both are cheap.
           - bucket: fast
             packages: >-
-              host core machine prompt statem statem_parallel session_view web_view web_client web_mermaid telemetry provider broker executor
+              host core machine prompt statem statem_parallel evalstat session_view web_view web_client web_mermaid telemetry provider broker executor
               mcp lsp tools cap ext codemode harness tui lint sandbox
     steps:
       # actions/checkout v7.0.1

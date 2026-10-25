@@ -88,10 +88,10 @@ pub const static_gates: List(String) = [
 /// to `scripts/check.sh` together.
 pub const check_order: List(String) = [
   "host", "core", "storage", "session", "machine", "prompt", "statem",
-  "statem_parallel", "session_view", "web_view", "web_client", "web_mermaid",
-  "telemetry", "runtime", "provider", "broker", "executor", "mcp", "lsp",
-  "tools", "cap", "ext", "codemode", "events", "harness", "client", "tui",
-  "conformance", "lint", "sandbox",
+  "statem_parallel", "evalstat", "session_view", "web_view", "web_client",
+  "web_mermaid", "telemetry", "runtime", "provider", "broker", "executor", "mcp",
+  "lsp", "tools", "cap", "ext", "codemode", "events", "harness", "client", "tui",
+  "conformance", "eval", "lint", "sandbox",
 ]
 
 /// Package lanes, taken from `scripts/signoff.sh` so that the packages which
@@ -102,7 +102,7 @@ pub const check_order: List(String) = [
 const lane_groups: List(#(String, List(String))) = [
   #("client", ["client", "tui"]),
   #("mid", ["runtime", "storage", "session", "events"]),
-  #("conformance", ["conformance"]),
+  #("conformance", ["conformance", "eval"]),
 ]
 
 /// Machinery that can change what any gate does. A change here runs the full

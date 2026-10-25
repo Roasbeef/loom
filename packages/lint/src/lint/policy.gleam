@@ -260,7 +260,7 @@ fn is_harness(package: Option(String)) -> Bool {
 /// than trusting that it covers anything. `lint/portable` argues what the
 /// membership protects, and why `session_view` is on the list.
 pub fn portable_packages() -> List(String) {
-  ["core", "machine", "prompt", "session_view", "statem"]
+  ["core", "evalstat", "machine", "prompt", "session_view", "statem"]
 }
 
 /// The packages whose R21 (`case-stanza`) and R22 (`function-doc`) censuses

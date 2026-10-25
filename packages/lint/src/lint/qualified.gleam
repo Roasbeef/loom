@@ -48,6 +48,7 @@ pub fn loom_roots() -> List(String) {
     "codemode",
     "conformance",
     "core",
+    "eval",
     "events",
     "executor",
     "ext",
