@@ -514,6 +514,8 @@ fn sorted(components: List(#(String, String))) -> List(#(String, String)) {
 ///
 pub fn replay(events: List(Event)) -> Result(State, String) {
   case events {
+    [Seeded(candidate: "", ..), ..] ->
+      Error("search row 1: the seed is a nonempty id")
     [Seeded(candidate:, components:), ..rest] ->
       list.index_fold(
         rest,
@@ -590,6 +592,7 @@ fn apply_evaluated(state: State, event: Event) -> Result(State, String) {
   })
 
   use Nil <- result.try(well_measured(state, evaluation))
+  use Nil <- result.try(well_formed(evaluation))
 
   // Each stage has its own place in the step.
   case evaluation.stage {
@@ -623,6 +626,46 @@ fn well_measured(state: State, evaluation: Evaluation) -> Result(Nil, String) {
     list.length(list.unique(named)) == list.length(named),
     "an evaluation measures each candidate once",
   )
+}
+
+/// An evaluation names a candidate and tasks that are not empty, and
+/// its money and scores are finite, the money never negative: a hole in
+/// an id would be a candidate nothing can refer to, and a NaN would
+/// decide nothing and encode differently on each target.
+fn well_formed(evaluation: Evaluation) -> Result(Nil, String) {
+  use Nil <- result.try(nonempty(
+    evaluation.candidate,
+    "an evaluation's candidate",
+  ))
+  use Nil <- result.try(require(
+    list.all(evaluation.tasks, fn(task) { task != "" }),
+    "a task id is nonempty",
+  ))
+  use Nil <- result.try(money(evaluation.cap, "an evaluation's cap"))
+  use Nil <- result.try(money(evaluation.cost, "an evaluation's cost"))
+
+  require(
+    list.all(evaluation.measured, fn(measured) {
+      measured.candidate != ""
+      && list.all(measured.scores, fn(score) {
+        score.task != "" && is_finite(score.value)
+      })
+    }),
+    "a measurement names a candidate and tasks, with finite scores",
+  )
+}
+
+/// A finite, non-negative amount in the host's unit.
+fn money(amount: Float, what: String) -> Result(Nil, String) {
+  require(
+    is_finite(amount) && amount >=. 0.0,
+    what <> " is a finite, non-negative amount",
+  )
+}
+
+/// An id that is not the empty string.
+fn nonempty(id: String, what: String) -> Result(Nil, String) {
+  require(id != "", what <> " is a nonempty id")
 }
 
 /// Step 0 is the seed's validate run, before anything else.
@@ -827,6 +870,7 @@ fn apply_reflected(
         step == progress.step && progress.child == None,
         "a reflection needs an open step with no child yet",
       ))
+      use Nil <- result.try(money(cost, "a reflection's cost"))
 
       Ok(
         State(
@@ -849,6 +893,8 @@ fn apply_minted(state: State, event: Event) -> Result(State, String) {
   // A child needs an open step that has reflected; anything else is misplaced.
   case event, state.open {
     Minted(candidate:, parent:, step:, slot:, text:), Some(progress) -> {
+      use Nil <- result.try(nonempty(candidate, "a child's candidate"))
+      use Nil <- result.try(nonempty(slot, "a child's slot"))
       use Nil <- result.try(require(
         step == progress.step
           && parent == progress.parent
@@ -967,6 +1013,7 @@ fn apply_judged(state: State, event: Event) -> Result(State, String) {
       Some(progress),
       _
     -> {
+      use Nil <- result.try(nonempty(against, "a judgement's baseline"))
       use Nil <- result.try(require(
         progress.child == Some(candidate),
         "a judgement names the step's child",

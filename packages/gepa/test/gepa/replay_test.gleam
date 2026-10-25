@@ -3,8 +3,8 @@
 //// refused at that row.
 
 import gepa.{
-  type Event, type Measured, Evaluated, Judged, Measured, Minted, Reflected,
-  Refused, Score, Seeded, Stopped,
+  type Event, type Measured, type Score, Evaluated, Judged, Measured, Minted,
+  Reflected, Refused, Score, Seeded, Stopped,
 }
 import gepa/budget
 import gepa/verdict
@@ -275,6 +275,100 @@ pub fn an_empty_log_or_a_wrong_first_row_is_refused_test() {
   assert string.contains(reason, "begin with the seed")
   let assert Error(twice) = gepa.replay([Seeded(seed, []), Seeded(seed, [])])
   assert string.contains(twice, "second seed")
+}
+
+fn validate_row(
+  tasks: List(String),
+  cap: Float,
+  cost: Float,
+  scores: List(Score),
+) -> Event {
+  Evaluated(
+    stage: gepa.Validate,
+    step: 1,
+    candidate: child,
+    tasks:,
+    cap:,
+    ref: "d",
+    measured: [Measured(child, scores)],
+    cost:,
+  )
+}
+
+fn refused_with(events: List(Event), naming: String) -> Nil {
+  let assert Error(reason) = gepa.replay(events)
+  assert string.contains(reason, naming)
+}
+
+pub fn malformed_ids_and_negative_money_are_refused_test() {
+  let prefix = list.take(one_step(), 6)
+
+  refused_with([Seeded("", [])], "nonempty id")
+  refused_with(
+    list.append(prefix, [validate_row([""], 0.0, 0.0, [])]),
+    "task id is nonempty",
+  )
+  refused_with(
+    list.append(prefix, [validate_row(["t"], -1.0, 0.0, [])]),
+    "cap is a finite",
+  )
+  refused_with(
+    list.append(prefix, [validate_row(["t"], 1.0, -0.5, [])]),
+    "cost is a finite",
+  )
+  refused_with(
+    list.append(prefix, [validate_row(["t"], 1.0, 0.0, [Score("", 1.0, "")])]),
+    "finite scores",
+  )
+  refused_with(
+    list.append(list.take(one_step(), 4), [Minted("", seed, 1, "a", "y")]),
+    "nonempty id",
+  )
+  refused_with(
+    list.append(list.take(one_step(), 4), [Minted("x", seed, 1, "", "y")]),
+    "nonempty id",
+  )
+  refused_with(
+    list.append(list.take(one_step(), 3), [
+      Reflected(1, -0.5, "", gepa.Unknown),
+    ]),
+    "finite, non-negative",
+  )
+
+  // Zero is money too; the row with nothing wrong is accepted.
+  let assert Ok(_) =
+    gepa.replay(list.append(prefix, [validate_row(["t"], 0.0, 0.0, [])]))
+}
+
+@target(javascript)
+/// The BEAM has no NaN or infinity to construct, so the non-finite cases
+/// can only be exercised where they exist.
+pub fn non_finite_numbers_are_refused_test() {
+  let prefix = list.take(one_step(), 6)
+  // Gleam defines division by zero as zero on JavaScript, so a NaN has to
+  // come from the one subtraction that is not a number.
+  let huge = 1.0e308 *. 10.0
+  let nan = huge -. huge
+
+  assert !gepa.is_finite(nan) && !gepa.is_finite(huge) && gepa.is_finite(0.0)
+  refused_with(
+    list.append(prefix, [validate_row(["t"], nan, 0.0, [])]),
+    "cap is a finite",
+  )
+  refused_with(
+    list.append(prefix, [validate_row(["t"], 1.0, huge, [])]),
+    "cost is a finite",
+  )
+  refused_with(
+    list.append(prefix, [validate_row(["t"], 1.0, 0.0, [Score("t", nan, "")])]),
+    "finite scores",
+  )
+  refused_with(
+    list.append(list.take(one_step(), 3), [
+      Reflected(1, huge, "", gepa.Unknown),
+    ]),
+    "finite, non-negative",
+  )
 }
 
 pub fn a_duplicate_candidate_or_a_stranger_is_refused_test() {
