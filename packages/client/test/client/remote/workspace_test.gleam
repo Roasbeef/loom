@@ -6,6 +6,7 @@
 //// records, how it routes recovery, which clock its non-tool callers read,
 //// and that one open attaches once.
 
+import client/evolution/record
 import client/extension/hooks as extension_hooks
 import client/jobstate
 import client/remote/owner_port
@@ -30,6 +31,8 @@ import storage/exec_ledger
 import storage/storage
 import support/remote_fixtures as fixtures
 import support/remote_orchestrator as rig
+import telemetry/field
+import telemetry/level
 import telemetry/log
 
 fn store() -> session.Session {
@@ -724,4 +727,53 @@ pub fn an_execution_row_is_settled_only_once_its_record_is_closed_test() {
       source_index: 0,
     )
   assert standing_of(owner_port.RecordLive)(call)
+}
+
+// --- evolution link --------------------------------------------------------------
+
+fn evolution_identity() -> record.Identity {
+  record.Identity("build-v1", "extension-v1", "evaluator-v1")
+}
+
+pub fn a_compiling_executor_gives_the_open_an_evolution_link_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let census =
+    rig.compiling(rig.census(rig.standard_tools()), evolution_identity())
+  let executor = rig.start(rig.factory(probe, census, protocol.AllRetired))
+
+  let hands = attached(executor, store())
+
+  let assert Some(link) = hands.evolution
+    as "the census says the executor compiles"
+  assert link.session == "registered-session"
+  assert link.executor == rig.executor_name
+  assert link.identity == evolution_identity()
+  assert link.authority() == Ok(fixtures.authority())
+  rig.stop(executor)
+}
+
+pub fn an_executor_that_cannot_compile_gives_no_link_and_one_notice_test() {
+  let probe = fixtures.probe(fixtures.Open)
+  let executor = standard(probe, protocol.AllRetired)
+  let records = process.new_subject()
+  let logger = log.new(sink: log.to_subject(records), threshold: level.Debug)
+
+  let assert Ok(hands) =
+    workspace.attach(
+      workspace.Registered(
+        ..rig.registered(executor, store(), clock.fixed(at: 1000)),
+        logger:,
+      ),
+    )
+    as "the attach succeeds"
+
+  assert hands.evolution == None
+  let assert Ok(notice) = process.receive(records, 1000)
+  assert notice.event == "evolution.unavailable"
+  assert list.contains(
+    notice.fields,
+    field.text(key: "executor", value: rig.executor_name),
+  )
+  assert process.receive(records, 50) == Error(Nil)
+  rig.stop(executor)
 }

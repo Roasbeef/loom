@@ -4096,6 +4096,7 @@ fn assemble_in(
             session: settings.session_id,
           ),
           mcp: mcp_plan,
+          logger:,
         ),
         owner,
         logger,

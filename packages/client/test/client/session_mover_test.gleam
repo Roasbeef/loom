@@ -381,6 +381,7 @@ fn start_owned(
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      logger: log.discard(),
     ))
     as "the attach succeeds"
 
@@ -574,6 +575,7 @@ pub fn a_stopped_session_moves_and_runs_on_the_receiver_at_the_next_incarnation_
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      logger: log.discard(),
     ))
     as "the receiver attaches to the executor"
   assert rig.hands.incarnation == 1
@@ -1431,6 +1433,7 @@ pub fn a_session_moves_there_and_back_test() {
       reconcile_every_ms: 60_000,
       executions: owner_port.no_executions(),
       mcp: protocol.McpPlan(served: [], expected: []),
+      logger: log.discard(),
     ))
   assert arrived.incarnation == 2
   arrived.plane.close()

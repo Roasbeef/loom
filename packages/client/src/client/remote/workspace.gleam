@@ -87,6 +87,7 @@
 
 import broker/broker
 import client/distribution
+import client/evolution/machine/remote as remote_machine
 import client/executors
 import client/jobs
 import client/jobstate
@@ -115,6 +116,8 @@ import machine/operation
 import runtime/effects.{type Recovery, type ToolRun}
 import session/session.{type Session}
 import storage/storage
+import telemetry/field
+import telemetry/log.{type Logger}
 import tools/tool
 
 /// How an orchestrator reaches one executor.
@@ -190,6 +193,8 @@ pub type Registered {
     /// servers this orchestrator runs, and the names it expects the executor
     /// to run.
     mcp: protocol.McpPlan,
+    /// Where the open reports that the executor offers no evolution.
+    logger: Logger,
   )
 }
 
@@ -223,6 +228,10 @@ pub type Hands {
     execution_lookup: fn(ids.OpId, String) -> Result(protocol.Lookup, String),
     /// How the MCP servers the session expected the executor to run fared.
     mcp: List(remote_census.McpStatus),
+    /// The way to the executor's evolution plane, present when the executor's
+    /// census says it compiles candidates. The session's evolution machine is
+    /// built over it; a session on an executor that does not compile has none.
+    evolution: Option(remote_machine.Link),
   )
 }
 
@@ -563,7 +572,45 @@ fn build(
       )
     },
     mcp: remote.mcp,
+    evolution: evolution_link(registered, candidate, joined, remote.evolution),
   )
+}
+
+/// The evolution link the executor's census allows, and the notice when it does not.
+///
+/// A census that says `Compiles` gives the session a link over the attached
+/// surface. An `Uncompiled` census gives none and logs `evolution.unavailable`
+/// with the executor's name and its reason, which is where an operator learns why
+/// a session on that executor has no governed evolution.
+///
+/// `build` runs once for each open, so the notice is written once for each open.
+fn evolution_link(
+  registered: Registered,
+  candidate: Candidate,
+  joined: surface.Surface(RemoteCensus),
+  census: remote_census.EvolutionCensus,
+) -> Option(remote_machine.Link) {
+  // Only an executor that says it compiles candidates can stage them.
+  case census {
+    remote_census.Compiles(identity:) ->
+      Some(remote_machine.Link(
+        session: registered.session,
+        executor: candidate.executor.name,
+        surface: joined,
+        identity:,
+        authority: fn() { wiring.read_standing(registered.opened) },
+        patience_ms: remote_machine.default_patience_ms,
+        logger: registered.logger,
+      ))
+
+    remote_census.Uncompiled(reason:) -> {
+      log.info(registered.logger, "evolution.unavailable", [
+        field.text(key: "executor", value: candidate.executor.name),
+        field.text(key: "reason", value: reason),
+      ])
+      None
+    }
+  }
 }
 
 // How long recovery waits for the executor to say what it holds for one

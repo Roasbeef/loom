@@ -1213,6 +1213,28 @@ pub fn read_authority(
   Ok(Authority(access:, standing:))
 }
 
+/// The authority the session holds apart from any one call: the operator's
+/// directory additions and the standing grants.
+///
+/// A call that is not a model tool call, such as an evolution check, has no
+/// action of its own for remembered consent to name, so it runs under this and
+/// nothing more. Like `read_authority` it reads the store and never the
+/// filesystem, so the node that owns the session can produce it without a copy
+/// of the workspace.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let assert Ok(wiring.Authority(access:, standing:)) =
+/// //   wiring.read_standing(opened)
+/// ```
+///
+pub fn read_standing(opened: Session) -> Result(Authority, String) {
+  use access <- result.try(directories.read_stored(opened))
+  use standing <- result.map(permissions.read_stored(opened))
+  Authority(access:, standing:)
+}
+
 /// The slice of `Config` which belongs to the machine the workspace is on.
 ///
 /// Every field is something only that machine can answer for: the broker
