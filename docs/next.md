@@ -1,147 +1,75 @@
 # Current handoff
 
-This is a scoped record of the final literate-lint sweep, baselined October 24,
-2026 against `b5e9e0eb9` on `lint/wave-3c-client`. It records this work's measured
-results, not a fresh audit of releases or unrelated feature work. Rewrite it
-after the remaining validation or another body of work changes those facts.
+This is the post-merge CI repair, based on main
+`d70c7d073c96a0afb8d28e676003e6bace147099` on
+`codex/postmerge-fixture-repairs`. The [previous handoff](next-2026-10-24-before-postmerge-repair.md)
+is preserved exactly; its local gates and performance measurements retain their
+original observation cuts. The [repair report](review/postmerge-ci-repair-2026-10-24.md)
+records reproduction, causal evidence and validation.
 
-The [previous handoff](next-2026-10-24-before-final-literate-sweep.md) described
-the reconnect and startup repairs. Those claims retain their original dates
-and were not revalidated here. It did not describe the later lint sweeps.
-Earlier sweep delivery notes also overstated verification: a zero lint census
-did not prove that the comment edits preserved compiling, executable code.
-The repairs below address concrete mistakes found by the final audit.
+## What happened
 
-Reasoning blocks now own one Lustre memo leaf, including source-derived line
-counts, expansion, preview and body work. Its keys preserve changed source,
-held text, elapsed time, fold controls, session and newest-row handoff. Normal
-rows keep their existing leaves. An empty gateway entry cut now preserves its
-attribution cache immediately, avoiding one unnecessary leaf query per strand.
-Operation/result register reads and nonempty attribution keep their ordering.
+PR #1110 merged as `141788049d93cfe97a427e350d75001bd88d091c` and PR #1111
+as `d70c7d073c96a0afb8d28e676003e6bace147099` before their hosted checks
+finished. #1111's older merge script continued after only its watcher child
+was stopped. The remaining merge processes were subsequently terminated.
+The user was notified. A merge is not a completed CI verdict.
 
-| Work | Measured state |
-| --- | --- |
-| Literate sweep | The whole-tree lint command passed across all 29 packages: R11, R21 and R22 each have zero findings. All error-level rules are clear; 2,515 findings remain at warning level. |
-| Global gate | `CaseStanza` and `FunctionDoc` join `finding.error_by_default()`. Sixteen rules gate globally. Tests prove R21/R22 fail an unknown package outside the retained `literate_packages()` ratchet. The ratchet includes all 29 packages and grants no exemption. |
-| Code preservation | The 268 changed client sources match their pre-sweep code tokens except two trailing commas removed by formatting. A direct commit-parent audit of the four earlier sweep commits checked 596 source-file changes outside the intentional lint implementation. |
-| Earlier sweep repairs | `89c61ec39` restores a duplicated `ext` transition parameter, duplicate `cap` monitor selection and discarded fold, and four unplanned expression refactors. The seven repaired files match their respective pre-sweep token streams. Grouping braces in `broker/policy` and `tools/fs` are layout-only. |
-| Generated prelude | `a12c7b1a4` regenerates the two changed capability source digests. The public signatures did not change. The prelude gate and its stale-input self-test pass. |
-| Local validation | Client builds with `--warnings-as-errors`. The extension gate passed 49 tests; the capability gate passed 216; the lint package passed 318. Whole-tree lint and doc-check pass, with warnings retained. These do not replace the incomplete full test run. |
-| Full-gate blocker | `make check` compiles the seed but fails four install-pruning Python fixtures and the fake-origin signoff fixture. All five failures reproduce in a detached checkout of base `1dfef315fd`; the scripts are unchanged. They were not removed or relaxed. |
-| Client test limit | After formatting and compilation, `make check-client` reached the ledger tests before the jailed test process ended with `SIGXCPU` (`exit=-24`). There is no complete client-suite result from this run. |
-| Review | One independent report-only review found an inaccurate deployment copy-state comment. It was corrected and checked against the `facts.copy` encoder. Other false placement claims in the deployment render-budget helpers were corrected as well. |
+Raw #1110 macOS artifacts contradict the normalized success badges. Shard 1
+failed `client@evolution_retention_test:startup_padding_does_not_grow_evolution_trace_test`
+with a 24-word excess. Shard 2 failed
+`lsp@client_test:a_publication_without_the_barrier_does_not_settle_test`
+with an empty diagnostic publication. Both `make check` commands exited one;
+downstream packages did not run. The macOS fan-in skipped artifact downloads
+and its strict skip census, despite its success badge. Those original failures
+remain evidence even if another run passes.
 
-Integration then brought in main `3e258a2f3`, preserving its attach-file key
-lookup and pickglass behavior. The 269 changed client sources match that
-incoming main's code tokens except two formatter-removed trailing commas.
-The attach-file, authority-home and distribution-attach test modules passed,
-as did the integrated format, whole-tree lint, documentation and prelude
-gates. The lint totals remain zero errors and 2,515 warnings.
+## Repairs
 
-No installation, daemon restart or hotpatch was performed. A hosted CI verdict
-for the final published head is still required before merge.
+Both changes are test-only. The real evolution-door fixture now counts its exact
+startup marker through closure environments. Independently minted UUID integers
+can vary by two BEAM words; twelve captured copies explain the unrelated
+24-word difference. The repaired oracle requires zero markers in trace and
+exactly one 4,096-marker snapshot in the whole door, preserving the intended
+capture invariant without increasing a size tolerance. A small helper extends
+the existing test-only FFI because Gleam cannot inspect closure environments.
 
-The full web-view gate passed all 1,330 tests. All 203 gateway-focused client
-tests passed, including read counts at 1/8/64/128 strands, nonempty attribution
-and once-only terminal outcomes. Both affected lints pass. An independent Astra
-adversarial review found no actionable issue; it also checked the later
-fixture unlink-before-kill repair. The new performance regressions fail for
-the intended assertions on pristine production code.
+The LSP fixture acknowledges the changed publication through its existing
+`test/emit` request before starting the unchanged 60 ms settlement deadline.
+The document-symbol barrier remains unanswered, and both the exact deadline
+outcome and diagnostic assertions remain. Its separate positive test still
+covers publication arriving after the barrier. The entire LSP package was
+unchanged between pre-#1110 base `3e258a2f3` and this repair base: that fixture
+race predates the optimizations. The retention fixture was introduced by #1110.
 
-1. Finish validation and publish the final sweep PR. **Exit:** the exact PR
-   head passes the required Linux fan-in, including both client shards, and
-   advisory logs are inspected rather than treating normalized job success
-   as a passing test suite. Do not bypass the required gate to merge.
-2. Record the local test restrictions separately from product failures.
-   **Exit:** preserve the baseline reproductions and the CPU-limit result
-   alongside the eventual CI result. Do not repair unrelated fixtures or
-   skip tests merely to manufacture a green local command.
-3. Resume the earlier feature work only from its own handoff and issues.
-   **Exit:** revalidate the relevant claims against the current tree; this
-   sweep does not install, release or redesign those features.
+## Validation at publication
 
-## Web, SQLite and request-preparation performance
+Five original focused runs passed for each intermittent fixture, followed by
+controlled probes that reproduced each exact failure. Five repaired retention
+runs and 200 repeated LSP cases pass. The full LSP gate passes all 194 tests,
+including format, warning-free build and lint. Client scoped lint passes.
 
-A consolidated change set cuts reductions and copied words in the web lane
-(one memo leaf per reasoning block, a bypass when no summary labels exist),
-in idle gateway reads (an empty entry cut skips branch attribution) and in
-request preparation (a within-budget image shortcut and an identity context
-shortcut). The records are
-[web-sqlite-performance](review/web-sqlite-performance-2026-10-24.md),
-[no-label-performance](review/no-label-performance-2026-10-24.md) and
-[request-preparation-performance](review/request-preparation-performance-2026-10-24.md).
-They report reductions, copied words and CPU in single-scheduler fixtures. No
-live RSS or installed-daemon effect was measured, and the request-preparation
-fixture is not a claim about full prepare or transport cost. The earlier
-terminal-profiling handoff is preserved in
-[next-2026-10-24-before-web-sqlite-performance.md](next-2026-10-24-before-web-sqlite-performance.md).
+Negative controls restore broad Settings capture and allow settlement without
+a barrier, respectively; each fails its strict repaired assertion. One fresh
+independent report-only review found no actionable issue in the four-file
+source delta, including the capture oracle and stream ordering.
 
-## Continued allocation follow-up
+The full local client gate is running at publication. Hosted validation of the
+repair head is pending. Do not infer either from earlier local results or from
+merged #1110/#1111. All original Linux jobs passed; #1111's strict Linux census
+was inspected clean. Its macOS jobs were still active at the last audit.
 
-The owner approved a separate follow-up PR. #1110 merged as
-141788049d93cfe97a427e350d75001bd88d091c; its merged tree matches its reviewed
-head 4e479fcc1. The seven follow-up commits are rebased on that main revision
-on codex/performance-followup, with source head 6feb3ef08 and only this later
-documentation update. Provider326, web1332, codemode90 and workspace41 pass
-again on the rebased source, as do affected lints and documentation checks.
-The whole-tree lint passes. Publication and hosted follow-up checks remain
-pending. #1110's hosted run was still finishing after its admin merge;
-its completed local gates are not represented as completed hosted CI.
+## What remains
 
-Three private changes form the follow-up: Anthropic merges consecutive tool
-results from the end so it copies each original block list once; code-mode
-workspace readers capture the blob-root string rather than their host Config;
-and expandable rows no longer construct an unused flat header. Normal and
-frozen-prefix request order, cache markers, filesystem policy and rendered DOM
-retain their existing behavior. The [round report](review/continued-performance-2026-10-24.md)
-records the actual production measurements and their limits. These changes
-add no public API, dependency, FFI, process or cache.
+1. Publish this isolated repair PR, inspect its exact-head checks and raw
+   macOS advisory artifacts, and merge only after actual validation is green.
+   Preserve assertions, deadlines and strict skip accounting. No direct main
+   push, silent retry, skipped test or speculative revert is authorized.
+2. Finish auditing #1111's remaining raw macOS results. Diagnose additional
+   failures before rerunning. A completed success badge alone is insufficient.
+3. Record the completed full client gate and hosted verdict separately from
+   the reproduction and review evidence above. The quiet CI heartbeat remains
+   active until there are no unresolved failures.
 
-## Rulings already made
-
-Each of these is settled. Re-open one only with new evidence, and record the
-reopening where the ruling lives.
-
-**The gate is global.** `packages/lint/src/lint/finding.gleam` owns the default
-error rules. A package missing from the public sweep ratchet is still subject
-to R21 and R22. The unknown-package tests pin that behavior.
-
-**Comments do not authorize behavior changes.** Restoring source tokens,
-compiling warning-free and running the relevant tests are separate checks.
-A lint pass cannot detect a duplicated operation or prove a comment true.
-Preserve existing explanatory prose when attaching helper documentation.
-
-## Deliberately open
-
-The full local gate and complete client test run remain unverified for this
-head. The former has baseline fixture failures, and the latter hit a kernel
-resource limit. Hosted CI is pending. None of these is unfinished work somebody
-forgot; none is permission to call the corresponding gate green.
-
-## How to verify
-
-Run shipment-building package targets sequentially:
-
-```sh
-make check
-make check-client
-make check-cap
-make check-ext
-make check-lint
-make lint
-make doc-check
-make prelude-check
-```
-
-**Read each command's actual exit status.** The full local check log is
-`$TMPDIR/loom-wave3c-check-final.log`; the client gate is
-`$TMPDIR/loom-wave3c-client-check-final.log`. Baseline Python reproductions are
-`$TMPDIR/loom-wave3c-baseline-python.log` and
-`$TMPDIR/loom-wave3c-baseline-signoff.log`. These are session-local evidence,
-not committed artifacts or a substitute for CI logs.
-
-**Use explicit worktree paths for semantic queries.** Loom's code-mode Gleam
-LSP resolved the repaired `cap/runtime.serving`, `cap/strand.map_batches` and
-`ext/internal/live_runtime.finish` callers in this worktree. Bare project
-queries can describe the main checkout instead. See
-[docs/execution.md](execution.md) for the remaining verification hazards.
+No installation, daemon restart, hotpatch, live state inspection or credential
+search was performed. The enrolled inspector/viewer is unchanged.
