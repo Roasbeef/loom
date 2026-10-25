@@ -840,17 +840,24 @@ fn target_name(target: arm.Target) -> String {
 ///
 pub fn to_gepa(event: Event, store: Store) -> Result(gepa.Event, String) {
   // Each row kind has one library counterpart; the seed's validate run is
-  // told apart from a child's by its step.
+  // told apart from a child's by its step. The two things Loom's rows say
+  // that the library's do not — a candidate's source and a run's split —
+  // are checked here, so the adapter refuses what the old fold refused.
   case event {
-    Candidate(arm:, parent: None, ..) -> {
+    Candidate(arm:, parent: None, step: 0, source: Seed, slot: None) -> {
       use components <- result.map(store.components(arm))
 
       gepa.Seeded(candidate: arm, components:)
     }
 
-    Candidate(arm:, parent: Some(parent), step:, slot:, ..) -> {
+    Candidate(
+      arm:,
+      parent: Some(parent),
+      step:,
+      source: Reflected,
+      slot: Some(slot),
+    ) -> {
       use components <- result.map(store.components(arm))
-      let slot = option.unwrap(slot, "")
 
       gepa.Minted(
         candidate: arm,
@@ -861,7 +868,23 @@ pub fn to_gepa(event: Event, store: Store) -> Result(gepa.Event, String) {
       )
     }
 
-    Run(arm:, plan:, step:, role:, cap:, ..) ->
+    Candidate(parent: None, ..) ->
+      Error("the seed candidate is at step 0, from the seed, with no slot")
+    Candidate(parent: Some(_), ..) ->
+      Error(
+        "a candidate after the seed must be reflected from a parent into a slot",
+      )
+
+    Run(arm:, split:, plan:, step:, role:, cap:) -> {
+      use Nil <- result.try(require(
+        split == split_of(role),
+        "a "
+          <> role_name(role)
+          <> " run draws from the "
+          <> split_name(split_of(role))
+          <> " split",
+      ))
+
       Ok(gepa.Evaluated(
         stage: stage_of(role, step),
         step:,
@@ -872,6 +895,7 @@ pub fn to_gepa(event: Event, store: Store) -> Result(gepa.Event, String) {
         measured: [],
         cost: 0.0,
       ))
+    }
 
     Reflection(step:, dollars:, output_digest:, ..) ->
       Ok(gepa.Reflected(
@@ -902,6 +926,15 @@ pub fn to_gepa(event: Event, store: Store) -> Result(gepa.Event, String) {
       ))
 
     Stop(reason:) -> Ok(gepa.Stopped(stop_to_gepa(reason)))
+  }
+}
+
+/// The split a run role draws from: the minibatches from tune, the
+/// validate and confirm runs from validate.
+fn split_of(role: RunRole) -> Split {
+  case role {
+    ParentMinibatch | ChildMinibatch -> split.Tune
+    ValidateRun | Confirm -> split.Validate
   }
 }
 
@@ -1058,20 +1091,20 @@ pub fn members(state: State) -> List(Member) {
 ///
 pub fn runs(state: State) -> List(Event) {
   list.map(state.search.evaluations, fn(evaluation) {
+    // The seed's validate run and a child's share Loom's role.
+    let role = case evaluation.stage {
+      gepa.SeedValidate | gepa.Validate -> ValidateRun
+      gepa.ParentMinibatch -> ParentMinibatch
+      gepa.ChildMinibatch -> ChildMinibatch
+      gepa.Confirm -> Confirm
+    }
+
     Run(
       arm: evaluation.candidate,
-      split: case evaluation.stage {
-        gepa.ParentMinibatch | gepa.ChildMinibatch -> split.Tune
-        gepa.SeedValidate | gepa.Validate | gepa.Confirm -> split.Validate
-      },
+      split: split_of(role),
       plan: evaluation.ref,
       step: evaluation.step,
-      role: case evaluation.stage {
-        gepa.SeedValidate | gepa.Validate -> ValidateRun
-        gepa.ParentMinibatch -> ParentMinibatch
-        gepa.ChildMinibatch -> ChildMinibatch
-        gepa.Confirm -> Confirm
-      },
+      role:,
       cap: evaluation.cap,
     )
   })

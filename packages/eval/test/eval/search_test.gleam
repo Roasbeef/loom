@@ -184,6 +184,47 @@ pub fn a_deleted_run_row_still_refuses_replay_test() {
   assert progress.reached == gepa.ChildMeasured && progress.child == Some(child)
 }
 
+pub fn the_adapter_refuses_what_the_old_fold_refused_test() {
+  // A run whose split does not match its role, and a candidate after the
+  // seed that is not a reflection into a slot: neither has a library
+  // counterpart, and the old fold refused both.
+  let refused = fn(events: List(Event), naming: String) {
+    let assert Error(reason) = search.replay(events, bare_store())
+    assert string.contains(reason, naming)
+  }
+
+  refused(
+    list.append(list.take(one_step(), 2), [
+      Run(seed, split.Validate, plan_b, 1, search.ParentMinibatch, 0.0),
+    ]),
+    "parent_minibatch run draws from the tune split",
+  )
+  refused(
+    list.append(list.take(one_step(), 6), [
+      Run(child, split.Tune, plan_d, 1, search.ValidateRun, 0.0),
+    ]),
+    "validate run draws from the validate split",
+  )
+  refused(
+    list.append(list.take(one_step(), 4), [
+      Candidate(child, Some(seed), 1, search.Seed, Some("task_prefix:x")),
+    ]),
+    "must be reflected from a parent into a slot",
+  )
+  refused(
+    list.append(list.take(one_step(), 4), [
+      Candidate(child, Some(seed), 1, search.Reflected, None),
+    ]),
+    "must be reflected from a parent into a slot",
+  )
+  refused(
+    list.append(list.take(one_step(), 4), [
+      Candidate(child, None, 1, search.Reflected, None),
+    ]),
+    "step 0, from the seed",
+  )
+}
+
 pub fn the_library_s_words_round_trip_with_loom_s_test() {
   list.each(
     [
