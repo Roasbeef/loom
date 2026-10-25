@@ -875,13 +875,19 @@ fn observation_shape(observation: json.JsonValue) {
         "unreported_tokens",
       ]
       as "a trial report adds only grade and sample to its known members"
+
+    // One assertion per member, so a failure prints the value it found
+    // rather than only that a conjunction was false.
     assert field(report, "outcome") == json.String("succeeded")
-      && field(report, "sample") == json.Int(1)
-      && field(field(report, "grade"), "reward") == json.Float(1.0)
-      && field(field(report, "grade"), "side_info") == json.String("")
-      && field(field(field(report, "grade"), "verifier"), "kind")
+      as "both arms succeed"
+    assert field(report, "sample") == json.Int(1) as "the one sample is 1"
+    assert field(field(report, "grade"), "reward") == json.Float(1.0)
+      as "the exact-byte verifier rewards both arms fully"
+    assert field(field(report, "grade"), "side_info") == json.String("")
+      as "a passing grade carries no side information"
+    assert field(field(field(report, "grade"), "verifier"), "kind")
       == json.String("expected-files")
-      as "the exact-byte verifier graded both arms as passing"
+      as "the exact-byte verifier graded both arms"
   })
 }
 
