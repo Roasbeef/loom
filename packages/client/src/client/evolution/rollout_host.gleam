@@ -7,6 +7,22 @@
 //// request; it is local to this evaluation and shares no default session cost.
 //// Conservative reservations use the whole context window, so a trial can
 //// refuse before exhausting the billed budget. Such a trial is inconclusive.
+////
+//// The reservation is a debit, not a sentence. Once the gateway reports how
+//// an admitted attempt ended, the guard replaces the worst case with
+//// `rollout.attempt_charge` of that settlement: a complete attempt at its
+//// measured usage, anything else at the worst case beside whatever it did
+//// report. The guard's ledger is the one source of the trial's charge. The
+//// step reads it (`charged`) and hands the fold the summed usage records and
+//// the worst case of every attempt that was not measured, including every
+//// reservation still open when the step reads, so the fold's allowance after
+//// the step is the guard's remaining allowance by construction. Nothing is
+//// re-derived from the transcript: a request that settles outside a turn, a
+//// response the runtime never committed and an attempt that never settles are
+//// all charged once, here. The session's own usage ledger is read once more,
+//// as a tripwire only (`cross_check`): spend the guard never admitted stops
+//// the comparison, never joins its charge. The bookkeeping is the pure
+//// `Ledger`; the actor only serialises it.
 
 import broker/internal/call
 import client/evolution/prompt
@@ -14,6 +30,7 @@ import client/evolution/record
 import client/evolution/retirement
 import client/evolution/rollout
 import client/evolution/trace
+import core/accounting
 import core/clock.{type Clock}
 import core/entry
 import core/message
@@ -46,28 +63,81 @@ pub type Running {
   )
 }
 
-/// The reservation actor holds no runtime, secrets or large effect closures.
-type Reservation {
-  Reservation(
-    target: record.ModelScope,
-    remaining: rollout.Allowance,
-    context: Int,
-    output: Int,
+/// The guard's ledger: the allowance one trial opened with, every admitted
+/// attempt's worst case while it is open, and what each settled attempt is
+/// charged. `remaining` is derived from these rather than kept, so it cannot
+/// drift from `charged`, which is the same arithmetic read the other way.
+/// It is pure so the parity property can run it beside the fold without a
+/// process, and opaque so its one invariant, that every open reservation is
+/// settled at most once, is enforced by `reserve` and `settle` alone.
+pub opaque type Ledger {
+  Ledger(
+    /// The exact scope every admitted attempt must name.
+    scope: record.ModelScope,
+    /// The exact target, for the worst case and the output ceiling.
+    target: model.ResolvedModel,
+    /// The rate card the gateway prices this target on.
     card: pricing.Pricing,
-    clock: Clock,
+    /// The allowance the fold handed the trial at open.
+    opened: rollout.Allowance,
+    /// Admitted attempts, which is the turn count the fold reads.
     attempts: Int,
+    /// The newest composition digests, newest first, at most a hundred.
     digests: List(String),
+    /// Pumps whose admitted attempt the gateway has not yet reported, each
+    /// with the worst case reserved for it at its pinned output ceiling.
+    open: List(#(Pid, rollout.Charge)),
+    /// The field-wise sum of every settled attempt's reported usage, whatever
+    /// its stop reason: the records the fold reckons its measured tokens and
+    /// dollars from.
+    reported: message.Usage,
+    /// The summed reservations of settled attempts that were not measured,
+    /// charged beside their reports.
+    unknown: rollout.Charge,
+    /// Retained output bytes charged for measured attempts, four a token.
+    measured_output_bytes: Int,
   )
+}
+
+/// What the step charges the fold, read from the ledger at the moment the
+/// step settles: the turn count, the composition digests, the summed usage
+/// records and the worst case of every attempt that is not measured, which
+/// counts a reservation still open when the step reads.
+pub type Charged {
+  Charged(
+    /// Admitted attempts.
+    turns: Int,
+    /// Composition digests, oldest first.
+    digests: List(String),
+    /// Every settled attempt's reported usage, summed field-wise.
+    usage: message.Usage,
+    /// The worst case of each unmeasured attempt, settled or still open.
+    unreported: rollout.Unreported,
+  )
+}
+
+/// The reservation actor holds the ledger and the clock and nothing else:
+/// no runtime, no secrets and no large effect closures.
+type Reservation {
+  Reservation(ledger: Ledger, clock: Clock)
 }
 
 /// All messages and state precede handlers so the lifetime is visible together.
 type Message {
+  /// The request guard asks, from the pump that will run the attempt.
   Admit(
+    pump: Pid,
     target: record.ModelScope,
     digest: String,
     reply: Subject(Result(Int, String)),
   )
-  Count(reply: Subject(#(Int, List(String))))
+
+  /// The gateway reports how the attempt a pump ran ended.
+  Settled(pump: Pid, settlement: rollout.Settlement)
+
+  /// The step reads what the trial is charged so far.
+  Count(reply: Subject(Charged))
+
   Stop
 }
 
@@ -105,10 +175,17 @@ pub fn callbacks(
       }),
     )
     use guard <- result.try(start_guard(request, target, card, clock))
+
+    // The guard closure and the settlement observer both run in the pump
+    // that owns the attempt, so the pump's pid is the key that pairs a
+    // settlement with the reservation it releases. The gateway reports the
+    // settlement before it delivers the terminal, so the credit lands before
+    // any request the answer provokes can ask for admission.
     let guarded =
       gateway.with_request_guard(base, fn(actual, api_name, provider_request) {
         use output <- result.try(
           call.try_call(guard.requests, waiting: 5000, sending: Admit(
+            process.self(),
             record.ModelScope(actual.provider, actual.model_id, api_name),
             prompt.fingerprint(provider_request.system, provider_request.tools),
             _,
@@ -124,6 +201,12 @@ pub fn callbacks(
             target: model.ForResolved(actual),
             max_output_tokens: Some(output),
           ),
+        )
+      })
+      |> gateway.with_attempt_settled(fn(settled) {
+        process.send(
+          guard.requests,
+          Settled(process.self(), settlement_of_attempt(settled)),
         )
       })
 
@@ -151,9 +234,7 @@ pub fn callbacks(
         let retire = running.retire
         let task = request.task
         Ok(rollout.Trial(
-          step: fn(allowance) {
-            run(runtime, request, guard, clock, allowance, card)
-          },
+          step: fn(allowance) { run(runtime, request, guard, clock, allowance) },
           score: fn(criteria) {
             case criteria == task.criteria {
               True -> score(task, workspace)
@@ -180,14 +261,8 @@ fn start_guard(
 ) -> Result(Guard, String) {
   let state =
     Reservation(
-      target: record.ModelScope(target.provider, target.model_id, request.api),
-      remaining: request.allowance,
-      context: target.context_window,
-      output: target.max_output_tokens,
-      card:,
+      ledger: open_ledger(request.allowance, target, request.api, card),
       clock:,
-      attempts: 0,
-      digests: [],
     )
   actor.new(state)
   |> actor.on_message(handle)
@@ -205,79 +280,300 @@ fn handle(
   case message {
     Stop -> actor.stop()
     Count(reply) -> {
-      process.send(reply, #(state.attempts, list.reverse(state.digests)))
+      process.send(reply, charged(state.ledger))
       actor.continue(state)
     }
-    Admit(target, digest, reply) -> {
-      let #(allowed, next) = reserve(state, target, digest)
+    Admit(pump, target, digest, reply) -> {
+      let #(now, clock) = clock.read(state.clock)
+      let #(allowed, ledger) = reserve(state.ledger, pump, target, digest, now)
       process.send(reply, allowed)
-      actor.continue(next)
+      actor.continue(Reservation(ledger:, clock:))
+    }
+
+    // A settlement the ledger refuses, because no reservation is open for
+    // that pump or it was already credited, changes nothing: the worst case
+    // already debited stands, which is the conservative side of the error.
+    Settled(pump, settlement) -> {
+      let ledger =
+        settle(state.ledger, pump, settlement)
+        |> result.unwrap(state.ledger)
+      actor.continue(Reservation(..state, ledger:))
     }
   }
 }
 
-/// Deducts tokens and cost from quota reservation for admitted rollout requests.
-fn reserve(
-  state: Reservation,
+/// Opens the ledger a trial's guard keeps, holding the allowance the fold
+/// handed the trial and nothing reserved yet.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout_host.open_ledger(request.allowance, target, request.api, card)
+/// ```
+pub fn open_ledger(
+  allowance: rollout.Allowance,
+  target: model.ResolvedModel,
+  api: String,
+  card: pricing.Pricing,
+) -> Ledger {
+  Ledger(
+    scope: record.ModelScope(target.provider, target.model_id, api),
+    target:,
+    card:,
+    opened: allowance,
+    attempts: 0,
+    digests: [],
+    open: [],
+    reported: accounting.zero_usage(),
+    unknown: rollout.Charge(0, 0.0, 0, rollout.WorstCase),
+    measured_output_bytes: 0,
+  )
+}
+
+/// What the ledger has left: the opened allowance less `charged`, reckoned
+/// exactly as `rollout.accept_step` reckons a step, so the fold's allowance
+/// after it accounts the step this ledger reports is this value.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout_host.remaining(ledger).tokens
+/// ```
+pub fn remaining(ledger: Ledger) -> rollout.Allowance {
+  let Charged(turns:, usage:, unreported:, ..) = charged(ledger)
+  let opened = ledger.opened
+  let used =
+    int.max(
+      usage.total_tokens,
+      usage.input + usage.output + usage.cache_read + usage.cache_write,
+    )
+  rollout.Allowance(
+    ..opened,
+    turns: opened.turns - turns,
+    tokens: opened.tokens - used - unreported.tokens,
+    dollars: opened.dollars -. usage.cost.total -. unreported.dollars,
+    output_bytes: opened.output_bytes
+      - ledger.measured_output_bytes
+      - unmeasured(ledger).output_bytes,
+  )
+}
+
+/// What the trial is charged so far, as the step hands it to the fold. An
+/// attempt still open when the step reads is charged the reservation it was
+/// admitted under, because the fold accounts the step once and a settlement
+/// that arrives after the read has nobody left to credit.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout_host.charged(ledger).unreported
+/// ```
+pub fn charged(ledger: Ledger) -> Charged {
+  let unmeasured = unmeasured(ledger)
+  Charged(
+    turns: ledger.attempts,
+    digests: list.reverse(ledger.digests),
+    usage: ledger.reported,
+    unreported: rollout.Unreported(unmeasured.tokens, unmeasured.dollars),
+  )
+}
+
+/// Everything charged at a reservation rather than a measurement: settled
+/// attempts that were not measured, and every reservation still open.
+fn unmeasured(ledger: Ledger) -> rollout.Charge {
+  list.fold(ledger.open, ledger.unknown, fn(sum, open) {
+    let #(_, reserved) = open
+    rollout.Charge(
+      sum.tokens + reserved.tokens,
+      sum.dollars +. reserved.dollars,
+      sum.output_bytes + reserved.output_bytes,
+      rollout.WorstCase,
+    )
+  })
+}
+
+/// Admits one attempt for a pump, or refuses it. The attempt's output
+/// ceiling is pinned to the least of the target's own, the tokens the
+/// allowance has left over three context windows, and a quarter of the
+/// bytes it has left, so a target whose whole ceiling does not fit the
+/// door's caps still runs at the ceiling that does; the request guard pins
+/// that ceiling on the request, which is what makes charging the clipped
+/// reservation sound. The attempt is debited `rollout.reservation` at that
+/// ceiling at once, and that is the figure it keeps if it never settles or
+/// settles unmeasured. A pump with a reservation still open is refused,
+/// because the gateway settles each attempt before the next request from
+/// that pump can ask, so a second ask is a pairing the ledger could not
+/// settle exactly.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let #(Ok(max_output), ledger) = rollout_host.reserve(ledger, pump, scope, digest, now)
+/// ```
+pub fn reserve(
+  ledger: Ledger,
+  pump: Pid,
   target: record.ModelScope,
   digest: String,
-) -> #(Result(Int, String), Reservation) {
-  let #(now, clock) = clock.read(state.clock)
-  let state =
-    Reservation(
-      ..state,
-      clock:,
-      digests: list.take([digest, ..state.digests], 100),
-    )
+  now: Int,
+) -> #(Result(Int, String), Ledger) {
+  let left = remaining(ledger)
+  let context = ledger.target.context_window
   let output =
     int.min(
-      state.output,
-      int.min(
-        state.remaining.tokens - state.context * 3,
-        state.remaining.output_bytes / 4,
-      ),
+      ledger.target.max_output_tokens,
+      int.min(left.tokens - context * 3, left.output_bytes / 4),
     )
-  let tokens = state.context * 3 + output
-  let usage =
-    message.Usage(
-      ..storage.empty_usage(),
-      input: state.context,
-      output:,
-      cache_read: state.context,
-      cache_write: state.context,
-    )
-  let cost = pricing.price(usage, state.card).cost.total
+  let reserved = rollout.reservation(ledger.target, output, ledger.card)
+  let ledger =
+    Ledger(..ledger, digests: list.take([digest, ..ledger.digests], 100))
 
-  // Evaluate remaining balance against projected token and dollar costs.
+  // Evaluate remaining balance against the reservation at the pinned
+  // ceiling; a positive ceiling already fits the tokens and the bytes.
   case
-    target == state.target
-    && now < state.remaining.deadline_ms
-    && state.remaining.turns > 0
+    target == ledger.scope
+    && now < left.deadline_ms
+    && left.turns > 0
     && output > 0
-    && tokens <= state.remaining.tokens
-    && cost <=. state.remaining.dollars
+    && reserved.dollars <=. left.dollars
+    && list.key_find(ledger.open, pump) == Error(Nil)
   {
     False -> #(
       Error(
         "exact rollout target or aggregate reservation budget refused request",
       ),
-      state,
+      ledger,
     )
     True -> #(
       Ok(output),
-      Reservation(
-        ..state,
-        attempts: state.attempts + 1,
-        remaining: rollout.Allowance(
-          ..state.remaining,
-          turns: state.remaining.turns - 1,
-          tokens: state.remaining.tokens - tokens,
-          dollars: state.remaining.dollars -. cost,
-          output_bytes: state.remaining.output_bytes - output * 4,
-        ),
-      ),
+      Ledger(..ledger, attempts: ledger.attempts + 1, open: [
+        #(pump, reserved),
+        ..ledger.open
+      ]),
     )
   }
+}
+
+/// Settles the attempt a pump had open by `rollout.attempt_charge`: the
+/// attempt's reported usage joins the summed records whatever its stop
+/// reason, and an attempt that is not measured keeps its own reservation
+/// charged beside its report. A pump with no open reservation, which
+/// includes one already settled, is refused and the ledger is unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // let Ok(ledger) = rollout_host.settle(ledger, pump, settlement)
+/// ```
+pub fn settle(
+  ledger: Ledger,
+  pump: Pid,
+  settlement: rollout.Settlement,
+) -> Result(Ledger, String) {
+  // Only a pump with an attempt still open can settle, so a second
+  // settlement of one attempt, and one for an attempt never admitted, both
+  // find nothing to credit.
+  use reserved <- result.try(
+    list.key_find(ledger.open, pump)
+    |> result.replace_error(
+      "no admitted attempt of this request awaits settlement",
+    ),
+  )
+
+  let charge =
+    rollout.attempt_charge(
+      ledger.target,
+      ledger.scope.api,
+      settlement,
+      reserved,
+      ledger.card,
+    )
+  let settled =
+    Ledger(
+      ..ledger,
+      open: list.filter(ledger.open, fn(open) { open.0 != pump }),
+      reported: accounting.add_usage(ledger.reported, settlement.usage),
+    )
+
+  // A measured attempt is charged its record alone; any other keeps its
+  // reservation charged on top of that record.
+  case charge.basis {
+    rollout.Measured ->
+      Ok(
+        Ledger(
+          ..settled,
+          measured_output_bytes: settled.measured_output_bytes
+            + charge.output_bytes,
+        ),
+      )
+    rollout.WorstCase ->
+      Ok(
+        Ledger(
+          ..settled,
+          unknown: rollout.Charge(
+            settled.unknown.tokens + reserved.tokens,
+            settled.unknown.dollars +. reserved.dollars,
+            settled.unknown.output_bytes + reserved.output_bytes,
+            rollout.WorstCase,
+          ),
+        ),
+      )
+  }
+}
+
+/// The tripwire between the guard's ledger and the session's own: every
+/// request a trial makes crosses the guarded gateway, so the session's usage
+/// ledger can never carry more than the guard charged. More is spend the
+/// guard never admitted, and the step refuses rather than letting it ride
+/// under a charge that does not include it. Dollars are compared to the
+/// rounding the two sums' orders can differ by; tokens are the fold's own
+/// reckoning of each sum.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout_host.cross_check(charged.usage, stats.usage) == Ok(Nil)
+/// ```
+pub fn cross_check(
+  charged: message.Usage,
+  session: message.Usage,
+) -> Result(Nil, String) {
+  let reckon = fn(usage: message.Usage) {
+    int.max(
+      usage.total_tokens,
+      usage.input + usage.output + usage.cache_read + usage.cache_write,
+    )
+  }
+
+  // Either sum exceeding the guard's is spend that bypassed it.
+  case
+    reckon(session) > reckon(charged)
+    || session.cost.total >. charged.cost.total +. 0.000000001
+  {
+    True ->
+      Error(
+        "the session's usage ledger exceeds the admission ledger: spend bypassed the guarded gateway",
+      )
+    False -> Ok(Nil)
+  }
+}
+
+/// Reads the gateway's settlement report as the fold's settlement shape.
+fn settlement_of_attempt(
+  settled: gateway.AttemptSettled,
+) -> rollout.Settlement {
+  rollout.Settlement(
+    scope: record.ModelScope(
+      settled.target.provider,
+      settled.target.model_id,
+      settled.api,
+    ),
+    usage: settled.usage,
+    response: case settled.ending {
+      gateway.Responded(stop_reason:) -> rollout.Answered(stop_reason:)
+      gateway.Unanswered -> rollout.Unanswered
+    },
+  )
 }
 
 /// Executes a coding task step in the runtime environment and measures resource metrics.
@@ -287,7 +583,6 @@ fn run(
   guard: Guard,
   clock: Clock,
   allowance: rollout.Allowance,
-  card: pricing.Pricing,
 ) -> Result(rollout.Step, String) {
   let #(now, _) = clock.read(clock)
   use operation <- result.try(
@@ -346,10 +641,16 @@ fn run(
     False -> Error("rollout source scan exceeded its bounded inventory")
   })
 
-  use #(turns, composition_digests) <- result.try(
+  // The guard is the one source of the step's charge. A live trial is one
+  // step, since this function never answers `Continue`, so the ledger's
+  // cumulative figures are the step's figures; a reservation still open at
+  // this read is charged its worst case and a settlement arriving after it
+  // credits nothing the fold will ever see.
+  use Charged(turns:, digests: composition_digests, usage:, unreported:) <- result.try(
     call.try_call(guard.requests, waiting: 5000, sending: Count)
     |> result.map_error(fn(_) { "rollout attempt count is unavailable" }),
   )
+  use Nil <- result.try(cross_check(usage, stats.usage))
 
   // Aggregate tool executions and assistant scrubbed output.
   let tools =
@@ -395,68 +696,14 @@ fn run(
       None -> None
       Some(profile) -> Some(provider_profile_id(profile))
     },
-    usage: stats.usage,
+    usage:,
     turns:,
     tool_executions: tools,
     output:,
     progress:,
     composition_digests:,
-    unreported: unreported_debit(turns, target, request.api, entries, card),
+    unreported:,
   ))
-}
-
-/// Retains worst-case spend for attempts without complete exact-target usage.
-/// Positive usage on an ordinary settled response releases its reservation;
-/// synthetic errors, absent usage and unfinished attempts remain uncertain.
-///
-/// ## Examples
-///
-/// `unreported_debit(1, target, api, [], card)` retains one whole reservation.
-pub fn unreported_debit(
-  attempts: Int,
-  target: model.ResolvedModel,
-  api: String,
-  entries: List(entry.Entry),
-  card: pricing.Pricing,
-) -> rollout.Unreported {
-  let complete =
-    list.count(entries, fn(entry) {
-      case entry {
-        entry.MessageEntry(
-          message: message.AssistantMessage(
-            provider:,
-            model:,
-            api: actual_api,
-            stop_reason:,
-            usage:,
-            ..,
-          ),
-          ..,
-        ) ->
-          provider == target.provider
-          && model == target.model_id
-          && actual_api == api
-          && stop_reason != message.Errored
-          && usage.total_tokens > 0
-        entry.MessageEntry(..)
-        | entry.CompactionEntry(..)
-        | entry.BranchSummaryEntry(..)
-        | entry.CustomEntry(..) -> False
-      }
-    })
-  let unknown = int.max(attempts - complete, 0)
-  let maximum =
-    message.Usage(
-      ..storage.empty_usage(),
-      input: target.context_window,
-      output: target.max_output_tokens,
-      cache_read: target.context_window,
-      cache_write: target.context_window,
-    )
-  rollout.Unreported(
-    unknown * { target.context_window * 3 + target.max_output_tokens },
-    int.to_float(unknown) *. pricing.price(maximum, card).cost.total,
-  )
 }
 
 fn provider_profile_id(profile: provider_profile.Profile) -> String {

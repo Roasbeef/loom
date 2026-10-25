@@ -7,7 +7,6 @@ import client/evolution/record
 import client/evolution/record_test
 import client/evolution/retirement
 import client/evolution/rollout
-import client/evolution/rollout_host
 import client/evolution/store
 import client/evolution/trace
 import core/clock
@@ -27,7 +26,6 @@ import gleam/result
 import gleam/string
 import gleeunit/should
 import provider/model
-import provider/pricing
 import provider/profile.{type Profile}
 import session/session
 import storage/storage
@@ -1163,66 +1161,4 @@ fn graded_with(candidate_grade: rollout.Grade) -> record.Evidence {
     )
     as "graded evidence is durable"
   evidence
-}
-
-pub fn unknown_native_attempts_retain_reservation_despite_foreign_or_synthetic_usage_test() {
-  let #(id, _) = ids.mint_entry(ids.generator(clock.fixed(1), seed: 123))
-  let answer =
-    message.AssistantMessage(
-      content: [message.AssistantText("settled", None)],
-      api: "anthropic-messages",
-      provider: "p",
-      model: "m",
-      response_model: None,
-      response_id: None,
-      diagnostics: None,
-      usage: message.Usage(
-        ..storage.empty_usage(),
-        input: 5,
-        output: 2,
-        total_tokens: 7,
-      ),
-      stop_reason: message.Stop,
-      deferred: None,
-      error_message: None,
-      raw_stop_reason: None,
-      end_turn: Some(True),
-      timestamp: 1,
-    )
-  let entries = [
-    entry.MessageEntry(id, None, 0, 0, answer, False),
-    entry.MessageEntry(
-      id,
-      None,
-      0,
-      0,
-      message.AssistantMessage(
-        ..answer,
-        api: "unknown",
-        usage: storage.empty_usage(),
-        stop_reason: message.Errored,
-      ),
-      False,
-    ),
-    entry.MessageEntry(
-      id,
-      None,
-      0,
-      0,
-      message.AssistantMessage(..answer, provider: "foreign"),
-      False,
-    ),
-  ]
-  let debit =
-    rollout_host.unreported_debit(
-      3,
-      target(),
-      "anthropic-messages",
-      entries,
-      pricing.Pricing(1.0, 1.0, 1.0, 1.0),
-    )
-  assert debit.tokens == 6200
-    && debit.dollars >=. 0.006
-    && debit.dollars <=. 0.0063
-    as "only exact complete native usage releases an uncertain attempt reservation"
 }

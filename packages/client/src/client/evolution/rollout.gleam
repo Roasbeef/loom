@@ -51,6 +51,7 @@ import client/evolution/retirement
 import client/evolution/store
 import client/evolution/trace
 import client/mcp
+import core/accounting
 import core/clock.{type Clock}
 import core/json
 import core/message
@@ -66,6 +67,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import provider/model
+import provider/pricing
 import provider/profile.{type Profile}
 
 /// A task and criterion admitted independently of the proposed prompt.
@@ -201,6 +203,61 @@ pub type Unreported {
     /// Worst-case priced debit, separate from observed provider cost.
     dollars: Float,
   )
+}
+
+/// How one admitted provider attempt ended, as the guard's ledger reads it
+/// from the gateway's settlement report. `attempt_charge` turns it into the
+/// charge the fold is handed for the attempt, so the one ledger the guard
+/// keeps is the one source of the comparison's spend.
+pub type Settlement {
+  Settlement(
+    /// The provider, model and API that actually served the attempt.
+    scope: record.ModelScope,
+    /// The usage the attempt reported, priced; the zero record when none.
+    usage: message.Usage,
+    /// Whether a response settled, and how it stopped.
+    response: Response,
+  )
+}
+
+/// Whether an attempt settled a response at all.
+pub type Response {
+  /// A response settled with this stop reason. `Errored` is a response too,
+  /// and it is the one stop reason the completeness rule excludes.
+  Answered(stop_reason: message.StopReason)
+
+  /// No response: a failure, a cancellation or a lost drain proof.
+  Unanswered
+}
+
+/// What one admitted attempt is charged against the allowance. The guard's
+/// ledger charges by the `basis` and sums the usage records themselves
+/// before reckoning tokens, so the figure it hands the fold is the fold's
+/// own reckoning of the sum; `tokens` here is the one record's reckoning,
+/// for a reader of a single attempt.
+pub type Charge {
+  Charge(
+    /// Tokens, by the fold's own reckoning of this one usage record.
+    tokens: Int,
+    /// Priced dollars.
+    dollars: Float,
+    /// Retained output bytes, at the reservation's rate of four per token.
+    output_bytes: Int,
+    /// Whether the charge is the attempt's measured usage or its worst case.
+    basis: Basis,
+  )
+}
+
+/// Which rule produced a charge.
+pub type Basis {
+  /// The attempt reported complete usage for the exact target, and is
+  /// charged exactly that.
+  Measured
+
+  /// The attempt's usage is unknown or incomplete, and the target's whole
+  /// context window, written and read from cache, plus its output ceiling
+  /// are charged beside whatever it did report.
+  WorstCase
 }
 
 /// One settled coding step with actual native turn and tool execution counts.
@@ -983,6 +1040,113 @@ fn allowance(state: State) -> #(Result(Allowance, String), State) {
   }
 
   #(result, state)
+}
+
+/// The one rule an admitted attempt is charged by. A settlement is complete
+/// when the exact target served it, a response settled with a stop reason
+/// other than `Errored`, and the provider reported a positive total; such an
+/// attempt is charged its priced measured usage, the tokens reckoned as
+/// `accept_step` reckons a usage record. Any other settlement is charged
+/// `reserved`, the worst case the guard debited when it admitted the
+/// attempt, beside whatever usage it did report: the report is real spend
+/// and joins the measured records, and the reservation is the answer to not
+/// knowing whether that report was whole. The reservation rather than the
+/// target's whole worst case, because the guard pins the attempt's output
+/// ceiling to what the allowance had left (`reservation`), and the pinned
+/// ceiling bounds what the attempt could really have spent.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout.attempt_charge(target, api, settlement, reserved, card).basis == rollout.Measured
+/// ```
+pub fn attempt_charge(
+  target: model.ResolvedModel,
+  api: String,
+  settlement: Settlement,
+  reserved: Charge,
+  card: pricing.Pricing,
+) -> Charge {
+  let Settlement(scope:, usage:, response:) = settlement
+  let exact = scope == record.ModelScope(target.provider, target.model_id, api)
+
+  // Completeness is the fold's three-part rule: the exact target answered,
+  // it did not answer with an error, and it reported a positive total.
+  let complete = case response {
+    Answered(stop_reason:) ->
+      exact && stop_reason != message.Errored && usage.total_tokens > 0
+    Unanswered -> False
+  }
+
+  let used =
+    int.max(
+      usage.total_tokens,
+      usage.input + usage.output + usage.cache_read + usage.cache_write,
+    )
+  let cost = pricing.price(usage, card).cost.total
+
+  // An incomplete attempt is not charged instead of its reservation but as
+  // well as it: the usage it reported reaches the fold's ledger whatever the
+  // stop reason said, and the reservation is the answer to not knowing
+  // whether that report was whole.
+  case complete {
+    True -> Charge(used, cost, usage.output * 4, Measured)
+    False ->
+      Charge(
+        reserved.tokens + used,
+        reserved.dollars +. cost,
+        reserved.output_bytes,
+        WorstCase,
+      )
+  }
+}
+
+/// The worst case one attempt against a target can cost when its output is
+/// pinned at `output` tokens: the whole context window as input, written to
+/// and read from the cache, plus that output, priced on the card; and four
+/// retained bytes per output token. The guard reserves this with the output
+/// clipped to what the allowance has left, so a target whose whole ceiling
+/// does not fit the door's caps is still admitted at the ceiling that does.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout.reservation(target, 8192, card).tokens == target.context_window * 3 + 8192
+/// ```
+pub fn reservation(
+  target: model.ResolvedModel,
+  output: Int,
+  card: pricing.Pricing,
+) -> Charge {
+  let maximum =
+    message.Usage(
+      ..accounting.zero_usage(),
+      input: target.context_window,
+      output:,
+      cache_read: target.context_window,
+      cache_write: target.context_window,
+    )
+  Charge(
+    target.context_window * 3 + output,
+    pricing.price(maximum, card).cost.total,
+    output * 4,
+    WorstCase,
+  )
+}
+
+/// The worst case one attempt against a target can cost at the target's own
+/// output ceiling: `reservation` with nothing clipped.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // rollout.worst_case(target, card).tokens == target.context_window * 3 + target.max_output_tokens
+/// ```
+pub fn worst_case(
+  target: model.ResolvedModel,
+  card: pricing.Pricing,
+) -> Charge {
+  reservation(target, target.max_output_tokens, card)
 }
 
 /// Decides the comparison, or names why it cannot be decided. The fold's
