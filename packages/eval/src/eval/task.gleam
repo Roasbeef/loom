@@ -145,8 +145,10 @@ pub type Provenance {
 /// The canonical encoding of a task, the bytes its identity is the digest of.
 /// Object keys are sorted by `core/json.canonical`, so two encoders cannot
 /// disagree about them, and file sets are objects keyed by path for the same
-/// reason. Lists the task orders itself (argv, tags, prepare steps) keep
-/// their order because the order is part of their meaning.
+/// reason. Lists the task orders itself (argv, prepare steps) keep their
+/// order because the order is part of their meaning. `tags`, `fail_to_pass`
+/// and `pass_to_pass` are sets: they are written sorted and without repeats,
+/// so two producers listing the same members mint the same task.
 ///
 /// ## Examples
 ///
@@ -163,7 +165,7 @@ pub fn to_json(task: Task) -> JsonValue {
       #("prompt", json.String(task.prompt)),
       #("workspace", workspace_json(task.workspace)),
       #("verifier", verifier_json(task.verifier)),
-      #("tags", strings_json(task.tags)),
+      #("tags", strings_json(wire.sorted_set(task.tags))),
       #("provenance", provenance_json(task.provenance)),
     ]),
   )
@@ -284,11 +286,20 @@ pub fn decode(value: JsonValue) -> Result(Task, String) {
       && list.all(tags, fn(tag) { tag != "" && wire.bytes(tag) <= 128 }),
     "tags must be at most 64 nonempty strings of at most 128 bytes",
   ))
+  use Nil <- result.try(check(wire.is_distinct(tags), "repeated tag"))
   use provenance <- result.try(
     wire.required(fields, "provenance") |> result.try(decode_provenance),
   )
 
-  Ok(Task(id:, name:, prompt:, workspace:, verifier:, tags:, provenance:))
+  Ok(Task(
+    id:,
+    name:,
+    prompt:,
+    workspace:,
+    verifier:,
+    tags: wire.sorted_set(tags),
+    provenance:,
+  ))
 }
 
 // Every key the encoding may carry. A key outside this list is refused.
@@ -364,8 +375,8 @@ fn verifier_json(verifier: Verifier) -> JsonValue {
         #("kind", json.String("program")),
         #("files", files_json(files)),
         #("argv", strings_json(argv)),
-        #("fail_to_pass", strings_json(fail_to_pass)),
-        #("pass_to_pass", strings_json(pass_to_pass)),
+        #("fail_to_pass", strings_json(wire.sorted_set(fail_to_pass))),
+        #("pass_to_pass", strings_json(wire.sorted_set(pass_to_pass))),
         #("timeout_ms", json.Int(timeout_ms)),
         #("scoring", json.String(scoring_name(scoring))),
       ])
@@ -442,19 +453,42 @@ fn decode_git_tree(value: JsonValue) -> Result(Workspace, String) {
     decode_argv("prepare"),
   ))
   use Nil <- result.try(check(
-    repository != "" && wire.bytes(repository) <= 1024,
-    "repository must be 1 to 1024 bytes",
+    safe_repository(repository),
+    "repository must be an absolute local path of at most 1024 bytes, with no option-like segment",
   ))
   use Nil <- result.try(check(
     wire.is_hex(commit, 40) && wire.is_hex(tree, 40),
     "commit and tree must be 40-digit lowercase hex",
   ))
   use Nil <- result.try(check(
-    list.length(prepare) <= 16,
-    "at most 16 prepare steps",
+    list.all(prepare, list.contains(prepare_allowlist, _)),
+    "prepare command not allowlisted",
   ))
 
   Ok(GitTree(repository:, commit:, tree:, prepare:))
+}
+
+/// The only commands a task may ask the host to run before the agent starts.
+/// A task file is untrusted input (a Harbor import is someone else's file),
+/// and `prepare` runs outside the jail, so the file chooses among known
+/// builds of the repository's own tree and never supplies a program.
+const prepare_allowlist = [
+  ["gleam", "deps", "download"],
+  ["gleam", "build"],
+  ["gleam", "build", "--warnings-as-errors"],
+]
+
+/// True for an absolute local path that git cannot read as an option or a
+/// transport: no leading `-` in any segment, no `::` (git's remote-helper
+/// syntax), no NUL, at most 1024 bytes. URLs are refused by the leading `/`.
+fn safe_repository(repository: String) -> Bool {
+  string.starts_with(repository, "/")
+  && wire.bytes(repository) <= 1024
+  && !string.contains(repository, "::")
+  && !string.contains(repository, "\u{0}")
+  && list.all(string.split(repository, "/"), fn(piece) {
+    !string.starts_with(piece, "-")
+  })
 }
 
 /// Decodes one argv: a nonempty array of strings without NUL bytes.
@@ -544,8 +578,19 @@ fn decode_program(value: JsonValue) -> Result(Verifier, String) {
     fail_to_pass != [],
     "a program verifier needs at least one fail_to_pass test",
   ))
+  use Nil <- result.try(check(
+    wire.is_distinct(fail_to_pass) && wire.is_distinct(pass_to_pass),
+    "repeated test id",
+  ))
 
-  Ok(Program(files:, argv:, fail_to_pass:, pass_to_pass:, timeout_ms:, scoring:))
+  Ok(Program(
+    files:,
+    argv:,
+    fail_to_pass: wire.sorted_set(fail_to_pass),
+    pass_to_pass: wire.sorted_set(pass_to_pass),
+    timeout_ms:,
+    scoring:,
+  ))
 }
 
 /// Parses a scoring policy's wire spelling.
@@ -628,7 +673,7 @@ fn decode_files(
     list.try_map(fields, fn(field) {
       use contents <- result.try(wire.string_value(field.1, field.0))
       use Nil <- result.try(check(
-        safe_path(field.0),
+        wire.safe_path(field.0),
         "unsafe path \"" <> field.0 <> "\"",
       ))
       Ok(#(field.0, contents))
@@ -653,23 +698,4 @@ fn decode_files(
   ))
 
   Ok(list.sort(files, fn(left, right) { string.compare(left.0, right.0) }))
-}
-
-/// A path the instrument will write under a workspace root: relative, free
-/// of `.` and `..` pieces, of NUL and of backslashes, and clear of the
-/// directories (`.git`, `.loom`) that carry harness state. This mirrors
-/// `client/evolution/tasks`, so a v1 fixture's paths remain admissible.
-fn safe_path(path: String) -> Bool {
-  path != ""
-  && wire.bytes(path) <= 256
-  && !string.starts_with(path, "/")
-  && !string.contains(path, "\\")
-  && !string.contains(path, "\u{0}")
-  && list.all(string.split(path, "/"), fn(piece) {
-    piece != ""
-    && piece != "."
-    && piece != ".."
-    && piece != ".git"
-    && piece != ".loom"
-  })
 }

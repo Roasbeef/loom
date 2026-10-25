@@ -274,3 +274,61 @@ pub fn is_hex(text: String, length: Int) -> Bool {
     string.contains("0123456789abcdef", digit)
   })
 }
+
+/// A path the instrument will write under a root: relative, free of `.` and
+/// `..` pieces, of NUL and of backslashes, and clear of the directories
+/// (`.git`, `.loom`) that carry harness state. This mirrors
+/// `client/evolution/tasks`, so a v1 fixture's paths remain admissible.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert wire.safe_path("src/a.gleam")
+/// ```
+///
+/// ```gleam
+/// assert !wire.safe_path("../escape")
+/// ```
+///
+pub fn safe_path(path: String) -> Bool {
+  path != ""
+  && bytes(path) <= 256
+  && !string.starts_with(path, "/")
+  && !string.contains(path, "\\")
+  && !string.contains(path, "\u{0}")
+  && list.all(string.split(path, "/"), fn(piece) {
+    piece != ""
+    && piece != "."
+    && piece != ".."
+    && piece != ".git"
+    && piece != ".loom"
+  })
+}
+
+/// True when no element repeats.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert wire.is_distinct(["a", "b"])
+/// ```
+///
+pub fn is_distinct(items: List(String)) -> Bool {
+  list.length(list.unique(items)) == list.length(items)
+}
+
+/// The elements of a set in canonical order, without repeats. Sets are
+/// encoded this way so two producers that list the same members in a
+/// different order mint one identity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// assert wire.sorted_set(["b", "a", "b"]) == ["a", "b"]
+/// ```
+///
+pub fn sorted_set(items: List(String)) -> List(String) {
+  items
+  |> list.unique
+  |> list.sort(string.compare)
+}

@@ -40,7 +40,10 @@ fn row(
     attempt:,
     state:,
     outcome:,
-    reward: 1.0,
+    reward: case outcome {
+      Some(ledger.Passed) -> 1.0
+      Some(_) | None -> 0.0
+    },
     scores: [#("f2p", 1.0), #("p2p", 0.5)],
     side_info: "tail",
     served: [
@@ -131,16 +134,20 @@ pub fn ledger_state_must_match_outcome_test() {
 }
 
 pub fn ledger_reconcile_takes_latest_attempt_test() {
-  let first = infra(1, 1)
-  let second = infra(1, 2)
-  let third = scored(1, 3)
   let running = row(0, 1, ledger.Running, None)
   let done = scored(0, 1)
+  let third = scored(1, 3)
 
-  // Out of order on purpose: the highest attempt wins, and among equal
-  // attempts the later line does.
+  // File order is the order things happened: a running row, then the row
+  // that supersedes it; two infra attempts, then a scored third.
   let reconciled =
-    ledger.reconcile(the_plan(), [third, running, first, done, second])
+    ledger.reconcile(the_plan(), [
+      running,
+      done,
+      infra(1, 1),
+      infra(1, 2),
+      third,
+    ])
 
   assert reconciled == Ok([done, third])
 }
@@ -148,7 +155,12 @@ pub fn ledger_reconcile_takes_latest_attempt_test() {
 pub fn ledger_exhausted_infra_is_terminal_test() {
   let exhausted = infra(1, 3)
 
-  assert ledger.reconcile(the_plan(), [scored(0, 1), exhausted])
+  assert ledger.reconcile(the_plan(), [
+      scored(0, 1),
+      infra(1, 1),
+      infra(1, 2),
+      exhausted,
+    ])
     == Ok([scored(0, 1), exhausted])
 }
 
@@ -162,8 +174,90 @@ pub fn ledger_missing_row_refused_test() {
   // A trial still running, or failed with attempts left, owes a row too.
   assert ledger.reconcile(plan, [scored(0, 1), row(1, 1, ledger.Running, None)])
     == Error("plan row missing: t/a/1")
-  assert ledger.reconcile(plan, [scored(0, 1), infra(1, 2)])
+  assert ledger.reconcile(plan, [scored(0, 1), infra(1, 1)])
     == Error("plan row missing: t/a/1")
+  assert ledger.reconcile(plan, [
+      scored(0, 1),
+      infra(1, 1),
+      row(1, 2, ledger.Running, None),
+    ])
+    == Error("plan row missing: t/a/1")
+}
+
+pub fn scored_cell_cannot_be_rerolled_test() {
+  let plan = the_plan()
+  let failed = row(0, 1, ledger.Scored, Some(ledger.VerifierFailed))
+  let later = row(0, 2, ledger.Scored, Some(ledger.Passed))
+  let same = row(0, 1, ledger.Scored, Some(ledger.Passed))
+
+  assert ledger.reconcile(plan, [failed, later, scored(1, 1)])
+    == Error("cell rerolled: t/a/0")
+  assert ledger.reconcile(plan, [failed, same, scored(1, 1)])
+    == Error("cell rerolled: t/a/0")
+  assert ledger.reconcile(plan, [scored(0, 1), scored(1, 1), scored(1, 2)])
+    == Error("cell rerolled: t/a/1")
+}
+
+pub fn attempt_gap_refused_test() {
+  let plan = the_plan()
+  let broken = Error("attempt sequence broken: t/a/1")
+
+  // A lone infra at attempt 3, a skipped attempt, a repeated attempt and a
+  // retry that follows a running row rather than an infra row.
+  assert ledger.reconcile(plan, [scored(0, 1), infra(1, 3)]) == broken
+  assert ledger.reconcile(plan, [scored(0, 1), infra(1, 1), scored(1, 3)])
+    == broken
+  assert ledger.reconcile(plan, [scored(0, 1), infra(1, 1), infra(1, 1)])
+    == broken
+  assert ledger.reconcile(plan, [
+      scored(0, 1),
+      row(1, 1, ledger.Running, None),
+      row(1, 2, ledger.Running, None),
+    ])
+    == broken
+}
+
+pub fn contradictory_row_refused_test() {
+  let passed_for_nothing = ledger.Row(..scored(0, 1), reward: 0.0)
+  let failed_for_full =
+    ledger.Row(
+      ..row(0, 1, ledger.Scored, Some(ledger.VerifierFailed)),
+      reward: 1.0,
+    )
+  let partial =
+    ledger.Row(
+      ..row(0, 1, ledger.Scored, Some(ledger.VerifierFailed)),
+      reward: 0.5,
+    )
+  let escaping =
+    ledger.Row(
+      ..scored(0, 1),
+      artifacts: ledger.Artifacts(
+        session_db: "../../etc/shadow",
+        workspace: "w",
+        trajectory: "t.json",
+        verifier_stdout: "v.txt",
+      ),
+    )
+  let unwritten =
+    ledger.Row(
+      ..row(0, 1, ledger.Running, None),
+      artifacts: ledger.Artifacts(
+        session_db: "",
+        workspace: "",
+        trajectory: "",
+        verifier_stdout: "",
+      ),
+    )
+
+  assert ledger.decode_line(ledger.encode_line(passed_for_nothing))
+    == Error("a passed row needs a reward above 0")
+  assert ledger.decode_line(ledger.encode_line(failed_for_full))
+    == Error("a row that did not pass needs a reward below 1")
+  assert ledger.decode_line(ledger.encode_line(partial)) == Ok(partial)
+  assert ledger.decode_line(ledger.encode_line(escaping))
+    == Error("\"session_db\" must be a safe relative path")
+  assert ledger.decode_line(ledger.encode_line(unwritten)) == Ok(unwritten)
 }
 
 pub fn ledger_strays_are_refused_test() {

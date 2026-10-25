@@ -39,8 +39,11 @@ pub type Split {
 const family_tag = "family:"
 
 /// Assigns a family to a split: SHA-256 of the salt followed by the family,
-/// first byte modulo ten, with 0 to 5 `Tune`, 6 and 7 `Validate`, 8 and 9
-/// `Holdout`. The salt belongs to the plan, so re-salting is a new plan.
+/// the first four bytes read as a big-endian unsigned integer, modulo ten,
+/// with 0 to 5 `Tune`, 6 and 7 `Validate`, 8 and 9 `Holdout`. Four bytes
+/// rather than one because a single byte modulo ten is biased (residues 0 to
+/// 5 occur 26 times in 256, the rest 25), which would shave the holdout.
+/// The salt belongs to the plan, so re-salting is a new plan.
 ///
 /// ## Examples
 ///
@@ -50,15 +53,15 @@ const family_tag = "family:"
 ///
 pub fn assign(salt: String, family: String) -> Split {
   let digest = mcp.sha256_hex(salt <> family)
-  let byte =
+  let word =
     digest
-    |> string.slice(0, 2)
+    |> string.slice(0, 8)
     |> int.base_parse(16)
     |> result.unwrap(0)
 
-  // The decile of the first digest byte picks the split: six tenths Tune, two
-  // Validate, two Holdout.
-  case byte % 10 {
+  // The decile of the word picks the split: six tenths Tune, two Validate,
+  // two Holdout.
+  case word % 10 {
     0 | 1 | 2 | 3 | 4 | 5 -> Tune
     6 | 7 -> Validate
     _ -> Holdout
@@ -67,9 +70,11 @@ pub fn assign(salt: String, family: String) -> Split {
 
 /// The family a task's split is assigned by. A task does not carry the paths
 /// its fix touched, so a miner records the family as a `family:<value>` tag,
-/// for example `family:packages/core/json`. The first such tag wins. A task
-/// with no such tag is its own family, keyed by its id: it is still assigned
-/// deterministically, it just has no siblings to keep it company.
+/// for example `family:packages/core/json`. When several are present the
+/// least one wins, so the answer does not depend on tag order. A task with
+/// no such tag is its own family, keyed by its `name`: unlike the id, the
+/// name survives the edit that "fixes" a task by minting a new one, so the
+/// replacement stays on the same side of the wall as the task it replaces.
 ///
 /// ## Examples
 ///
@@ -78,19 +83,21 @@ pub fn assign(salt: String, family: String) -> Split {
 /// ```
 ///
 pub fn family(task: Task) -> String {
-  let found =
-    list.find_map(task.tags, fn(tag) {
+  let tagged =
+    task.tags
+    |> list.filter_map(fn(tag) {
       case string.starts_with(tag, family_tag) {
         True -> Ok(string.drop_start(tag, string.length(family_tag)))
         False -> Error(Nil)
       }
     })
+    |> list.filter(fn(value) { value != "" })
+    |> list.sort(string.compare)
 
-  // A blank family tag would pool unrelated tasks, so it falls back to the
-  // task id exactly as a missing tag does.
-  case found {
-    Ok(value) if value != "" -> value
-    Ok(_) | Error(Nil) -> task.id
+  // A blank family tag would pool unrelated tasks, so it counts as absent.
+  case tagged {
+    [first, ..] -> first
+    [] -> task.name
   }
 }
 

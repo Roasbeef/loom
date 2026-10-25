@@ -130,18 +130,24 @@ pub fn to_json(arm: Arm) -> JsonValue {
   )
 }
 
-/// Returns the arm with `id` set to the digest of its canonical components
-/// and knobs. The name and the previous id are left out, so renaming an arm
-/// keeps its identity and minting is idempotent.
+/// Returns the arm in canonical form with `id` set to the digest of its
+/// components and knobs. Canonical form sorts every keyed list by key and
+/// dedupes `disabled_tools`, and a repeated slot, role or thinking entry is
+/// refused with the same message `decode` uses, so the order an arm was built
+/// in, and a tool listed twice, never change its identity. The name and the
+/// previous id are left out, so renaming an arm keeps its identity and
+/// minting is idempotent.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// // arm.mint(arm.mint(a)) == arm.mint(a)
+/// // arm.mint(a) |> result.try(arm.mint) == arm.mint(a)
 /// ```
 ///
-pub fn mint(arm: Arm) -> Arm {
-  Arm(..arm, id: digest(arm))
+pub fn mint(arm: Arm) -> Result(Arm, String) {
+  use canonical <- result.map(canonical(arm))
+
+  Arm(..canonical, id: digest(canonical))
 }
 
 /// Refuses an arm whose id is not the digest of its content.
@@ -149,13 +155,15 @@ pub fn mint(arm: Arm) -> Arm {
 /// ## Examples
 ///
 /// ```gleam
-/// // arm.verify_id(arm.mint(a)) == Ok(arm.mint(a))
+/// // arm.verify_id(minted) == Ok(minted)
 /// ```
 ///
 pub fn verify_id(arm: Arm) -> Result(Arm, String) {
-  let actual = digest(arm)
+  use canonical <- result.try(canonical(arm))
+  let actual = digest(canonical)
 
-  // A mismatch means the arm was edited after it was minted, so the error names both digests.
+  // A mismatch means the arm was edited after it was minted, so the error
+  // names both digests.
   case actual == arm.id {
     True -> Ok(arm)
     False ->
@@ -236,10 +244,19 @@ pub fn decode(value: JsonValue) -> Result(Arm, String) {
     False -> Error("bad arm id")
   })
 
-  use components <- result.try(distinct_sorted(components, component_key))
-  use knobs <- result.try(normalise(knobs))
+  canonical(Arm(id:, name:, components:, knobs:))
+}
 
-  Ok(Arm(id:, name:, components:, knobs:))
+/// Puts an arm in canonical form: components sorted by slot with repeated
+/// slots refused, knob lists sorted by key with repeats refused, and
+/// `disabled_tools` sorted and deduplicated. `mint`, `verify_id` and `decode`
+/// all go through here, which is what makes identity independent of how the
+/// arm was built.
+fn canonical(arm: Arm) -> Result(Arm, String) {
+  use components <- result.try(distinct_sorted(arm.components, component_key))
+  use knobs <- result.map(normalise(arm.knobs))
+
+  Arm(..arm, components:, knobs:)
 }
 
 /// The digest an arm's id is: components and knobs only.
@@ -556,6 +573,6 @@ fn normalise(knobs: Knobs) -> Result(Knobs, String) {
   Ok(Knobs(
     roles:,
     thinking:,
-    disabled_tools: list.sort(knobs.disabled_tools, string.compare),
+    disabled_tools: wire.sorted_set(knobs.disabled_tools),
   ))
 }

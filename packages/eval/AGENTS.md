@@ -50,7 +50,19 @@ keyed by path and decode sorted by path.
 ### Invariants
 
 - Attempts are 1..3; `Infra` is terminal only at attempt 3; a `Running` row
-  never ends a cell.
+  never ends a cell. `reconcile` checks each cell's rows in file order:
+  attempt 1 first, k+1 only after `Infra` at k, nothing after `Scored`
+  (`cell rerolled`), no duplicate or skipped attempts.
+- `arm.mint` returns `Result`: it canonicalises (sorted keyed lists, deduped
+  `disabled_tools`, repeated slots refused) before hashing, as `decode` does.
+- Task files are untrusted: `GitTree.repository` must be an absolute local
+  path with no option-like segment or `::`; `prepare` must be one of three
+  allowlisted gleam argvs. `tags`, `fail_to_pass`, `pass_to_pass` are sets
+  (sorted, deduped, repeats refused on decode).
+- `split.family` falls back to the task name, not its id; `assign` hashes the
+  first four digest bytes.
+- A ledger row's reward must agree with its outcome (`Passed` above 0, all
+  others below 1) and its artifact paths must be safe relative paths or empty.
 - `ledger.Outcome` is a local mirror of evalstat's five variants; keep them
   aligned by hand until the runner joins them.
 - `eval validate <file>` (`src/eval.gleam`) runs these decoders and exits

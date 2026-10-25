@@ -278,7 +278,7 @@ pub fn decode(value: JsonValue) -> Result(Row, String) {
   )
   use Nil <- result.try(state_matches_outcome(state, outcome))
   use reward <- result.try(wire.number(fields, "reward"))
-  use Nil <- result.try(require(reward <=. 1.0, "reward must be at most 1"))
+  use Nil <- result.try(reward_matches_outcome(reward, outcome))
   use scores <- result.try(
     wire.required(fields, "scores") |> result.try(decode_scores),
   )
@@ -369,12 +369,11 @@ pub fn parse(text: String) -> Result(List(Row), String) {
 }
 
 /// Holds a ledger to its plan. Every row must belong to the plan and name one
-/// of its cells; for every cell the plan owes, the latest attempt (the
-/// highest number, and the later line among equals, since a `Running` row is
-/// written before the row that supersedes it) must be finished. A cell whose
-/// latest attempt is `Scored`, or `Infra` with every attempt spent, is
-/// finished. Anything else is `plan row missing: <key>`. The rows come back
-/// in plan order.
+/// of its cells. For every cell the plan owes, the rows in file order must
+/// form a legal attempt sequence (see `check_sequence`), and the last row must
+/// finish the cell: `Scored`, or `Infra` with every attempt spent. Anything
+/// else is `plan row missing: <key>`; a sequence that rerolls a scored cell is
+/// `cell rerolled: <key>`. The rows come back in plan order.
 ///
 /// ## Examples
 ///
@@ -386,46 +385,96 @@ pub fn reconcile(plan: Plan, rows: List(Row)) -> Result(List(Row), String) {
   let owed = plan.rows(plan)
   let known = dict.from_list(list.map(owed, fn(key) { #(key, Nil) }))
 
-  use latest <- result.try(latest_per_cell(plan, known, rows))
+  use by_cell <- result.try(group_by_cell(plan, known, rows))
 
   list.try_map(owed, fn(key) {
-    case dict.get(latest, key) {
-      Ok(row) ->
-        case finished(row) {
-          True -> Ok(row)
-          False -> Error("plan row missing: " <> plan.key_to_string(key))
+    let missing = Error("plan row missing: " <> plan.key_to_string(key))
+
+    // A cell with no rows, or whose last row has not finished it, still owes
+    // a result; a legal sequence is checked first so a reroll is reported as
+    // one even when the rerolled row happens to finish the cell.
+    case dict.get(by_cell, key) {
+      Error(Nil) -> missing
+      Ok(history) -> {
+        use last <- result.try(check_sequence(key, history))
+
+        // The last row of a legal history finishes the cell only if it is
+        // scored or the attempts are spent.
+        case finished(last) {
+          True -> Ok(last)
+          False -> missing
         }
-      Error(Nil) -> Error("plan row missing: " <> plan.key_to_string(key))
+      }
     }
   })
 }
 
-/// Folds the rows into the latest attempt per cell, refusing strays.
-fn latest_per_cell(
+/// Groups the rows by cell, each cell's rows in file order, refusing strays.
+fn group_by_cell(
   plan: Plan,
   known: dict.Dict(RowKey, Nil),
   rows: List(Row),
-) -> Result(dict.Dict(RowKey, Row), String) {
-  list.try_fold(rows, dict.new(), fn(latest, row) {
-    let key = RowKey(task: row.task, arm: row.arm, index: row.index)
+) -> Result(dict.Dict(RowKey, List(Row)), String) {
+  use reversed <- result.map(
+    list.try_fold(rows, dict.new(), fn(grouped, row) {
+      let key = RowKey(task: row.task, arm: row.arm, index: row.index)
 
-    // A row counts only when it belongs to this plan and names a cell the plan
-    // owes; the later attempt replaces an earlier one, and a tie goes to the
-    // later line because a Running row is written before the row that
-    // supersedes it.
-    case row.plan == plan.id, dict.has_key(known, key) {
-      True, True ->
-        case dict.get(latest, key) {
-          Ok(Row(attempt: held, ..)) if held > row.attempt -> Ok(latest)
-          Ok(_) | Error(Nil) -> Ok(dict.insert(latest, key, row))
+      // A row counts only when it belongs to this plan and names a cell the
+      // plan owes; the plan, not the file, decides what the experiment is.
+      case row.plan == plan.id, dict.has_key(known, key) {
+        True, True -> {
+          let held = result.unwrap(dict.get(grouped, key), [])
+          Ok(dict.insert(grouped, key, [row, ..held]))
         }
-      False, _ -> Error("row from another plan: " <> plan.key_to_string(key))
-      True, False -> Error("row outside the plan: " <> plan.key_to_string(key))
-    }
-  })
+        False, _ -> Error("row from another plan: " <> plan.key_to_string(key))
+        True, False ->
+          Error("row outside the plan: " <> plan.key_to_string(key))
+      }
+    }),
+  )
+
+  dict.map_values(reversed, fn(_, history) { list.reverse(history) })
 }
 
-/// Whether a cell's latest row ends it.
+/// Where a cell's attempt history stands: the attempt it is on and the state
+/// of the last row written for that attempt, if any.
+type Cursor {
+  Cursor(attempt: Int, last: Option(RowState))
+}
+
+/// Checks one cell's rows, in file order, against the only legal history:
+/// attempts start at 1; within an attempt an optional `Running` row is
+/// followed by at most one finished row; attempt k+1 may begin only directly
+/// after an `Infra` row at attempt k; and nothing may follow a `Scored` row.
+/// A scored trial that could be rerun and re-appended would let a comparison
+/// keep only the draws it liked. Returns the last row.
+fn check_sequence(key: RowKey, history: List(Row)) -> Result(Row, String) {
+  let start = Cursor(attempt: 1, last: None)
+  let label = plan.key_to_string(key)
+
+  use #(_, last) <- result.try(
+    list.try_fold(history, #(start, None), fn(state, row) {
+      let #(cursor, _) = state
+
+      // The cursor's last state decides what may legally come next. A
+      // scored row ends the cell for good; an infra row opens the next
+      // attempt only; a running row must be superseded within its attempt.
+      case cursor.last, row.attempt - cursor.attempt {
+        Some(Scored), _ -> Error("cell rerolled: " <> label)
+        None, 0 -> Ok(#(Cursor(cursor.attempt, Some(row.state)), Some(row)))
+        Some(Running), 0 if row.state != Running ->
+          Ok(#(Cursor(cursor.attempt, Some(row.state)), Some(row)))
+        Some(Infra), 1 -> Ok(#(Cursor(row.attempt, Some(row.state)), Some(row)))
+        Some(Running), _ | Some(Infra), _ | None, _ ->
+          Error("attempt sequence broken: " <> label)
+      }
+    }),
+  )
+
+  option.to_result(last, "plan row missing: " <> label)
+}
+
+/// Whether a cell's last row ends it.
 fn finished(row: Row) -> Bool {
   case row.state {
     Scored -> True
@@ -519,6 +568,24 @@ fn state_matches_outcome(
       Error("an infra row's outcome must be infrastructure")
     Scored, Some(Infrastructure) | Scored, None ->
       Error("a scored row needs a graded outcome")
+  }
+}
+
+/// A row's reward and its outcome must not contradict each other, because one
+/// consumer reads the outcome and another the reward. The reward lies in zero
+/// to one; the grader decides the outcome, so a `Passed` row needs some
+/// credit (above zero) and every other row, including one still running,
+/// must fall short of full credit (below one).
+fn reward_matches_outcome(
+  reward: Float,
+  outcome: Option(Outcome),
+) -> Result(Nil, String) {
+  case outcome, reward >. 0.0, reward <. 1.0 {
+    _, _, _ if reward >. 1.0 -> Error("reward must be at most 1")
+    Some(Passed), False, _ -> Error("a passed row needs a reward above 0")
+    Some(Passed), True, _ -> Ok(Nil)
+    _, _, False -> Error("a row that did not pass needs a reward below 1")
+    _, _, True -> Ok(Nil)
   }
 }
 
@@ -703,10 +770,23 @@ fn decode_artifacts(value: JsonValue) -> Result(Artifacts, String) {
       "session_db", "workspace", "trajectory", "verifier_stdout",
     ]),
   )
-  use session_db <- result.try(wire.text(fields, "session_db"))
-  use workspace <- result.try(wire.text(fields, "workspace"))
-  use trajectory <- result.try(wire.text(fields, "trajectory"))
-  use verifier_stdout <- result.try(wire.text(fields, "verifier_stdout"))
+  use session_db <- result.try(artifact_path(fields, "session_db"))
+  use workspace <- result.try(artifact_path(fields, "workspace"))
+  use trajectory <- result.try(artifact_path(fields, "trajectory"))
+  use verifier_stdout <- result.try(artifact_path(fields, "verifier_stdout"))
 
   Ok(Artifacts(session_db:, workspace:, trajectory:, verifier_stdout:))
+}
+
+/// An artifact path is empty (the file does not exist yet, as in a `Running`
+/// row) or a safe relative path. A later report opens these, so a row must
+/// not be able to point it outside the trial's directory.
+fn artifact_path(fields: wire.Fields, key: String) -> Result(String, String) {
+  use path <- result.try(wire.text(fields, key))
+
+  // Empty is the one value that is not a path: nothing was written yet.
+  case path == "" || wire.safe_path(path) {
+    True -> Ok(path)
+    False -> Error("\"" <> key <> "\" must be a safe relative path")
+  }
 }
