@@ -1,0 +1,26 @@
+  Resolving versions
+Downloading packages
+ Downloaded 2 packages in 0.01s
+  Compiling gleam_stdlib
+  Compiling core
+  Compiling gleeunit
+  Compiling machine
+   Compiled in 2.07s
+    Running machine_test.main
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m
+[1m[31mlet assert[39m[22m [90mtest/machine/failure_test.gleam:349[39m
+[36m test[39m: machine@failure_test.threshold_summarizer_unresolved_keeps_the_run_alive_test
+[36m code[39m: let assert Ok(RunState(phase: Checkpoint(checkpoint:), settings:, ..)) =
+    scenario.read_op_state(world.store, world.op.id)
+[36mvalue[39m: Ok(RunState(Running, RunSettings(CompactionSettings(True, 1000, 500), ConsumeAll, ConsumeAll, Parallel), FailureDrain(OperationError("model_unavailable", "no configured route resolves to a usable provider", None), ConfigurationProvenance), Inbox([], [], []), Some(EntryId(Uuid(1003000, 2354, 769267188034526354)))))
+[36m info[39m: Pattern match failed, no pattern matched the value.
+
+[1m[31mlet assert[39m[22m [90mtest/machine/failure_test.gleam:403[39m
+[36m test[39m: machine@failure_test.threshold_summary_failure_past_the_ladder_keeps_the_run_alive_test
+[36m code[39m: let assert Ok(RunState(phase: Checkpoint(..), settings:, ..)) =
+    scenario.read_op_state(world.store, world.op.id)
+[36mvalue[39m: Ok(RunState(Running, RunSettings(CompactionSettings(True, 1000, 500), ConsumeAll, ConsumeAll, Parallel), FailureDrain(OperationError("summary_failed", "the summarizer attempted a tool call instead of summarizing", None), StructuralProvenance("0000000f-55c8-7216-a68a-55df9510372a")), Inbox([], [], []), Some(EntryId(Uuid(1003000, 2354, 769267188034526354)))))
+[36m info[39m: Pattern match failed, no pattern matched the value.
+[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[32m.[39m[31m
+77 passed, 2 failures[39m
+EXIT=1

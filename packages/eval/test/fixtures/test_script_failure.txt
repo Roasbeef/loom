@@ -1,0 +1,73 @@
+test command: bash (deadline 1200s)
+Downloading packages
+ Downloaded 8 packages in 0.01s
+  Compiling argv
+  Compiling gleam_stdlib
+  Compiling filepath
+  Compiling splitter
+  Compiling glexer
+  Compiling glance
+  Compiling gleeunit
+  Compiling simplifile
+  Compiling lint
+   Compiled in 2.92s
+======================== EUnit ========================
+lint_test: r1_flags_the_json_regression_test...[0.028 s] ok
+lint_test: r1_flags_replace_error_over_a_call_test...ok
+lint_test: r1_flags_a_concatenated_fallback_test...ok
+lint_test: r1_flags_a_pipeline_fallback_test...ok
+lint_test: r1_flags_the_piped_call_form_test...ok
+lint_test: r1_flags_through_a_module_alias_test...ok
+lint_test: r1_flags_an_unqualified_import_test...ok
+lint_test: r1_leaves_trivially_cheap_fallbacks_alone_test...ok
+lint_test: r1_leaves_the_lazy_counterparts_alone_test...ok
+lint_test: r1_leaves_a_closure_argument_alone_test...ok
+lint_test: r1_ignores_the_lazy_position_test...ok
+lint_test: r1_flags_a_local_use_combinator_by_signature_test...ok
+lint_test: r1_leaves_a_two_parameter_local_combinator_alone_test...ok
+lint_test: r1_leaves_a_cheap_local_combinator_argument_alone_test...ok
+lint_test: r1_leaves_two_function_parameters_alone_test...ok
+lint_test: r1_leaves_a_parameter_used_before_the_decision_alone_test...ok
+lint_test: r1_leaves_a_parameter_the_guard_reads_alone_test...ok
+lint_test: r1_leaves_a_combinator_that_branches_elsewhere_alone_test...ok
+lint_test: r1_flags_the_require_regression_test...ok
+lint_test: r1_require_row_is_lazy_and_path_scoped_test...ok
+lint_test: r1_does_not_nest_code_spans_in_the_require_advice_test...*failed*
+in function gleeunit@should:equal/2 (src/gleeunit/should.gleam, line 10)
+in call from lint_test:r1_does_not_nest_code_spans_in_the_require_advice_test/0 (test/lint_test.gleam, line 462)
+in call from eunit_test:'-mf_wrapper/2-fun-0-'/2 (eunit_test.erl, line 286)
+in call from eunit_test:run_testfun/1 (eunit_test.erl, line 83)
+in call from eunit_proc:run_test/1 (eunit_proc.erl, line 558)
+in call from eunit_proc:with_timeout/3 (eunit_proc.erl, line 382)
+in call from eunit_proc:handle_test/2 (eunit_proc.erl, line 541)
+in call from eunit_proc:tests_inorder/3 (eunit_proc.erl, line 483)
+**error:#{function => <<"equal">>,line => 10,
+  message => <<"\nFalse\nshould equal\nTrue">>,
+  module => <<"gleeunit/should">>,file => <<"src/gleeunit/should.gleam">>,
+  gleam_error => panic}
+  output:<<"">>
+
+lint_test: r1_sets_a_named_lazy_variant_in_a_code_span_test...ok
+lint_test: r1_follows_an_exported_combinator_across_modules_test...ok
+lint_test: r1_is_blind_to_that_call_without_the_table_test...ok
+lint_test: r10_flags_a_comment_welded_to_the_line_above_test...ok
+lint_test: r10_accepts_a_comment_with_a_blank_line_above_it_test...ok
+lint_test: r10_exempts_a_comment_opening_a_body_test...ok
+lint_test: r10_flags_a_comment_between_case_arms_test...ok
+lint_test: r10_exempts_a_comment_above_the_first_arm_test...ok
+lint_test: r10_ignores_a_comment_inside_a_wrapped_literal_test...ok
+lint_test: r10_flags_a_comment_between_type_variants_test...ok
+lint_test: r10_exempts_the_first_variant_test...ok
+lint_test: r10_ignores_record_fields_test...ok
+lint_test: r10_reports_the_top_of_a_comment_block_test...ok
+lint_test: r11_flags_a_body_with_no_paragraphs_test...ok
+lint_test: r11_accepts_the_same_body_broken_into_stanzas_test...ok
+lint_test: r11_accepts_a_body_broken_by_a_comment_test...ok
+lint_test: r11_does_not_count_a_use_chain_test...ok
+lint_test: r11_carries_a_run_across_a_use_test...ok
+lint_test: r11_does_not_count_a_wrapped_literal_test...ok
+lint_test: r10_gates_a_welded_comment_test...[0.001 s] ok
+lint_test: r10_does_not_gate_a_comment_with_room_test...ok
+=======================================================
+  Failed: 1.  Skipped: 0.  Passed: 41.
+test command finished: exit=1, elapsed=3.37s

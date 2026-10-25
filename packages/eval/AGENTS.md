@@ -68,3 +68,61 @@ keyed by path and decode sorted by path.
 - `eval validate <file>` (`src/eval.gleam`) runs these decoders and exits
   nonzero on refusal, using `client/internal/ffi_os.halt`.
 
+## Miner
+
+`eval/mine_cli` (`gleam run -m eval/mine_cli -- --repo <path> --out <dir>
+[--package machine,core] [--limit N] [--commit <hash>] [--work <dir>]`) turns
+Loom's own fix commits into regression tasks. It is host-side and trusted,
+like CI: no jail, runs through `client/secrets.host_runner()`. Modules:
+`eval/eunit_ids` (pure reader of test output, both the `scripts/test.sh`
+verbose shape and raw gleeunit), `eval/git` (argv builders, candidate
+selection, diff splitting, the sabotage revert, `shell_quote`) and
+`eval/mine` (the per-commit pipeline and the pure judgements).
+
+### Pipeline
+
+Per candidate `c` (one package, 1-2 `src/*.gleam`, 1-2 `*_test.gleam`; other
+files under that package's `src/` and `test/` ride along, as do its
+`CLAUDE.md`/`AGENTS.md`; no deletions): worktree at `c^`, apply only the test
+patch, run the touched modules (`scripts/test.sh <pkg> --match <module>:`),
+apply the fix, rerun. Fail-to-pass is failed-then-passed, pass-to-pass is
+passed-both, both scoped to the touched modules. Zero fail-to-pass, any
+failure after the fix, or a before run that reports no tests is a cull with a
+reason. Then the sabotage census (revert the first changed code line, skipping blank, comment and import lines, of
+the fix, rerun) is recorded as a `sabotage:caught|survived|not_applicable`
+tag; it never gates.
+
+### Rulings
+
+- **No agent ever gets a git worktree.** A worktree carries the object store,
+  so `git log --all` would show the fix. The miner's own before/after runs use
+  `git worktree add --detach` under `$HOME/evalwt/` (never `/tmp`, where the
+  code-mode jail replaces the directory) and remove it on every path. The task
+  records `GitTree(repo, commit: c^, tree, prepare)` and the wave-2 runner
+  materialises it with `git archive`.
+- **Old parents get a vendored runner.** `scripts/test.sh` postdates a fifth
+  of the history. When the parent lacks it, `scripts/test.sh`,
+  `scripts/with_timeout.py` and `scripts/serial-tests` from the miner's
+  checkout join the hidden verifier files (the verifier command is `bash scripts/test.sh`, so
+  a parent without it has no way to run or name tests) and the task is tagged
+  `runner:vendored`. They hash into the task id, which pins the runner that
+  produced the recorded ids.
+- **P2P is the touched modules, not the package.** `--match <module>:` ends in
+  a colon so `lint_test` never selects `other_lint_test`. Several modules
+  become one `bash -c` that runs all of them and exits nonzero if any failed.
+- **The prompt never names a hidden test.** Subject plus body, unless the body
+  contains an F2P function name or a touched test file's name, or the message
+  exceeds 8 KiB; then subject only, tagged `prompt:subject-only`.
+- **Verifier files are the post-images of every file the test patch touches**
+  (fixtures and support modules included), read from the patched worktree.
+
+### Hazards
+
+- A before run that does not compile (the test calls the new API) is a cull,
+  not an everything-failed F2P; those are feature commits.
+- Candidates run sequentially; concurrent worktrees share ports and scratch.
+- `eccdddad0`'s module has 9 tests: 2 F2P and 7 P2P. The 77 passed in the
+  raw probe is the whole `machine` package.
+- The host runner (`secrets.host_runner`) double-encodes non-ASCII argv under
+  `scripts/test.sh`, whose emulator has a non-UTF-8 native file-name encoding.
+  Repository and work paths must be ASCII.
