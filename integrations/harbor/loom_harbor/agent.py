@@ -124,6 +124,15 @@ class LoomAgentOptions(InstalledAgentOptions):
             "agent its timeout, so set this a minute or two below the task's."
         ),
     )
+    endpoint_url: str | None = Field(
+        default=None,
+        description=(
+            "Model endpoint root for an OpenAI-compatible provider Loom has no "
+            "built-in address for (together/..., openrouter/...). Harbor's own "
+            "--base-url is not available: it needs a model-connection spec this "
+            "adapter does not declare."
+        ),
+    )
     dialect: str | None = Field(default=None, description="Override the Loom dialect.")
     api_key_env: str | None = Field(
         default=None, description="Name of the host variable that holds the API key."
@@ -191,7 +200,7 @@ def base_url_for(release: str | None) -> str:
 class LoomAgent(BaseInstalledAgent):
     """Runs a Loom release on a Harbor task and reports it as ATIF."""
 
-    capabilities = AgentCapabilities(atif=True, base_url=True, reasoning_effort=True)
+    capabilities = AgentCapabilities(atif=True, reasoning_effort=True)
     options_model = LoomAgentOptions
     options: LoomAgentOptions
 
@@ -265,7 +274,7 @@ class LoomAgent(BaseInstalledAgent):
             self.model_name,
             dialect=options.dialect,
             api_key_env=options.api_key_env,
-            base_url=options.base_url,
+            base_url=options.endpoint_url,
             context_window=options.context_window,
             max_output_tokens=options.max_output_tokens,
             reasoning_effort=options.reasoning_effort,

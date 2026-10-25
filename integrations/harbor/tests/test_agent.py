@@ -606,3 +606,26 @@ def test_the_trajectory_records_the_installed_release_as_the_agent_version(make_
     built.populate_context_post_run(AgentContext())
     assert json.loads((built.logs_dir / "trajectory.json").read_text())["agent"]["version"] == "0.3.2"
     assert built.to_agent_info().version == "0.3.2"
+
+
+# ------------------------------------------------------------ the endpoint
+
+
+def test_a_non_native_provider_can_be_constructed_with_an_endpoint(make_agent, monkeypatch):
+    """Harbor's own base_url needs a model-connection spec; endpoint_url is this adapter's."""
+    monkeypatch.setenv("TOGETHER_API_KEY", "together-key-value-4444")
+    built = make_agent(model_name="together/meta-llama/Llama-3.3-70B", endpoint_url="https://api.together.example/v1")
+    text = built.render_catalogue()
+    assert 'base_url = "https://api.together.example/v1"' in text and 'api_key_env = "TOGETHER_API_KEY"' in text
+    assert built.api_key() == ("TOGETHER_API_KEY", "together-key-value-4444")
+
+
+def test_harbors_own_base_url_is_refused_clearly_rather_than_half_supported(make_agent):
+    with pytest.raises(ValueError, match="inference connection overrides"):
+        make_agent(model_name="together/llama", base_url="https://x.example/v1")
+
+
+def test_a_non_native_provider_without_an_endpoint_is_refused_at_render(make_agent, monkeypatch):
+    monkeypatch.setenv("TOGETHER_API_KEY", "together-key-value-4444")
+    with pytest.raises(ValueError, match="base_url"):
+        make_agent(model_name="together/llama").render_catalogue()
