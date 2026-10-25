@@ -13,7 +13,7 @@ observation's `sample`, `grade` and `limits.samples` members landed in
 verdict, the raised turn and wall ceilings, the evaluator fingerprint and the
 stub's `samples` field land in this change (`client/evolution/rollout`,
 `client/evolution/model_door`, `client/evolution/identity`, `cap/evolution`);
-task-set v2 admission is reserved here and built in wave 3
+task-set v2 admission was reserved here and is decided below (slice 3A; `client/evolution/tasks`, `eval/admit`)
 
 ## Problem
 
@@ -269,21 +269,69 @@ limitation: refunding the unused part of a reservation after each attempt
 reports its usage is the follow-up, not done here, and the money ceilings are
 not raised for it.
 
-### Task set v2 is deferred, and its wording reserved
+### Task set v2: inline workspaces and exact files, admitted
 
-`tasks.decode` continues to accept `version: 1` only: an array of tasks each
-with an id, a prompt, an initial file map and an exact expected-file map, with
-the sorted fixture and criterion bytes part of the task-set identity. Version
-two, when wave 3 builds it, will accept the same payload with `workspace` as a
-sum type (`inline` file map or `git_tree` by commit) and `verifier` as a sum
-type (`expected_files` or a hidden `program` run in a fresh jail after the
-trial's retirement), will keep every v1 payload valid by reading it as
-`workspace: inline` and `verifier: expected_files`, and will record the task-set
-identity rule for the new members, and should refuse a repeated (fixture,
-expected) pair (the independence assumption above). Until then a v2 payload is
-refused with the existing `Bounds` reason, and the evaluation instrument's own task files
-(`packages/eval`) are not admitted through `admit_tasks` at all. The governed
-plane's verdict above does not depend on which version admitted the tasks.
+`tasks.decode` accepts two payload versions. **Version one** is unchanged
+byte for byte: an array of tasks each with an id, a prompt, an initial file map
+and an exact expected-file map, and its identity is the digest of the same
+canonical bytes as before (`v1_task_sets_still_decode_test` pins one digest
+computed outside the code). **Version two** carries, per task, exactly
+`{id, prompt, workspace, verifier}` with the evaluation instrument's two tagged
+sums:
+
+- `workspace` is `{"kind":"inline","files":{path: text}}` or
+  `{"kind":"git_tree",…}`;
+- `verifier` is `{"kind":"expected_files","expected":{path: text}}` or
+  `{"kind":"program",…}`.
+
+Only `inline` and `expected_files` are admitted. A v2 task of those kinds
+scores through the same `fixture.score` as a v1 task, the same bounds apply (ten
+tasks, 256 KiB, 64 paths a map, 512-byte prompts, safe relative paths), and its
+`rollout.Task` carries the same `fixture` and `criteria` digests as the v1 task
+of the same bytes. A `git_tree` workspace is refused with `Bounds: git-tree
+workspaces are not admitted to governed comparisons yet` and a `program`
+verifier with `Bounds: program verifiers are not admitted to governed
+comparisons yet`; an unknown kind or a member the kind does not define is
+refused as malformed. The refusal is at **admission**, not at the scorer, so a
+task set nobody can run never reaches the catalogue.
+
+*Why.* The jailed program verifier lives in `packages/eval`, which `client`
+cannot depend on (`eval` depends on `client`), and moving it would put a
+sandbox runner in the governed plane's package. The governed plane has no
+checkout to materialise a tree from either. Refusing early is the conservative
+reading of "a task set the governed plane cannot score must not be admitted".
+
+*Identity.* A set's id is the digest of its canonical bytes, and those bytes
+carry the version word and, for v2, the tagged `workspace` and `verifier`
+objects. A v2 set therefore never shares an id with the v1 set of the same
+fixtures, and a change to any workspace file or expected file moves it
+(`v2_identity_covers_workspace_and_verifier_test`). `TaskSet` gains a `version`
+field, restored from the stored payload by `load`.
+
+*Independence.* A v2 set refuses two tasks whose fixture and expected bytes
+are both identical (`Bounds: tasks must be independent; a fixture and expected
+pair repeats`), closing the assumption recorded above for new admissions. v1
+keeps admitting them, because "v1 stays valid and means what it meant" outranks
+the tidier rule; an operator who wants the check re-admits under v2.
+
+*Who produces v2.* `eval admit --split tune|validate` converts the
+instrument's tasks of that split to a v2 payload and submits it through the
+existing operator door (`loomd evolution admit_tasks`), so authority stays in
+the daemon. The holdout split is refused by name before any task is read; no
+holdout id is ever put in a payload, which a test over a fixture state
+directory pins (`holdout_ids_never_reach_a_taskset_fact_test`). Instrument
+tasks without a governed form (a repository tree, a program) are reported as
+skipped with the governed decoder's own reason.
+
+*Follow-ups, not done here.* (a) Admitting `program` verifiers needs the jailed
+verifier reachable from the governed plane, either by a seam in `client` that
+`eval` fills or by moving the runner down. (b) The report envelope an
+instrument run writes would be citable beside a candidate as an
+`InstrumentReport` evidence purpose, never `IndependentRollout`
+(`docs/design-notes/eval-instrument.md` section 2); no such purpose exists yet
+and `select` still requires governed evidence. (c) The door's argument file is
+read at most 48 KiB, so a v2 set near the 256 KiB admission bound cannot be
+submitted by `eval admit`, which refuses it with its size.
 
 ### protocol-change/101 is reserved
 
@@ -360,3 +408,13 @@ the door; (S3) the independence assumption, recorded, and the fixture's seven
 tasks given distinct expected bytes; the nits (the samples citation, the
 `cbacf03a4` provenance, the `rollout-2` fingerprint, the native-limits
 admission test) applied. Accepted with those corrections.
+
+Slice 3A (task-set v2) disposition. The reserved wording became the decision
+above. Rulings taken in review: the Program and git-tree refusals sit in the
+decoder rather than the scorer, so no unrunnable set is stored; v1 keeps
+admitting repeated fixture and expected pairs while v2 refuses them; the
+payload's `name`, `tags` and `provenance` are not carried (only what the
+governed plane acts on is hashed). Verified by mutation: accepting a v2
+`program` verifier fails `v2_program_task_is_refused_for_governed_runs_test`
+alone; opening the seal fails `holdout_admit_is_refused_by_name_test`; dropping
+the split filter fails the payload and seal tests.

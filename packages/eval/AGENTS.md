@@ -462,3 +462,51 @@ trial, builds an image or uploads anything.
 - The exporter has not been run through Harbor's validator. By hand, once:
   `python -m harbor.utils.trajectory_validator <out.json>`.
 - The Harbor agent adapter, any image build and any upload are out of scope.
+
+## Seal and production
+
+`eval/admit` is the only road from the instrument's tasks to the governed
+plane, and `eval/production` reports what operators marked beside what the
+holdout measured. The decision for the payload is in
+`protocol-change/100` (task-set v2).
+
+- `admit.prepare(pool, split, salt)` calls `split.admissible` first, so a
+  `Holdout` request is refused (message names the holdout) before any task is
+  read. It then keeps tasks whose `split.assign(salt, split.family(t))` is the
+  requested split, orders them by id, converts each to a v2 task
+  (`inline` + `expected_files` only) and lets `client/evolution/tasks.decode`
+  judge every task alone and then the set. A task the decoder refuses (a
+  `GitTree` workspace, a `Program` verifier, a prompt over 512 bytes) lands in
+  `Admission.skipped` with that reason; an empty result is an error. The salt
+  is the plan's `split_salt`, so a re-salted plan is a different split.
+- `admit.submit(admission, door)` bounds the payload to 48 KiB (the operator
+  door's argument limit) and calls `door`. `admit.door_argv` and
+  `admit_cli` supply the production door: write the args file beside the
+  state, run `loomd evolution --state-dir DIR admit_tasks SESSION --args FILE`,
+  delete the file. The eval process holds no credential. CLI:
+  `gleam run -m eval/admit_cli -- --split tune|validate --tasks DIR --plan FILE
+  --session ID --state DIR [--loomd PROGRAM]`.
+- `production.join(state_dir, since_ms, holdout)` copies every
+  `<state>/sessions/*.db` (and `-wal`, `-shm`) beside itself, reads the copy
+  with a clock past any lease, and deletes it; an original is never opened.
+  Answers are `MessageEntry` assistant messages with `ts >= since_ms`; marks
+  are `prompt/evolution-outcome/<entry id>` facts; profiles are
+  `evolution/attempt/*` facts. The attempt journal carries no entry id, so an
+  answer takes the profile of the latest attempt with a smaller storage seq
+  and the same provider, model and API; none means the absent profile.
+- `Unmarked` is excluded from `marked_rate` (`succeeded / (succeeded +
+  failed)`) and shown as its own column. A malformed mark or attempt fact
+  fails the whole join rather than being counted as unmarked.
+
+### Hazards
+
+- The mark decoder in `production` mirrors `trace.decode_outcome`, which is
+  private; if the mark's shape changes there, change it here (the follow-up is
+  to export that decoder).
+- Concurrent strands on one provider, model and API can attribute an answer to
+  a sibling strand's attempt; this matters only when a selection changes
+  between them.
+- `eval admit` does not exist for the holdout and there is no production CLI
+  yet; `production.join` is a library call.
+- Tests use `build/admit-test/` and `build/production-test/` under the package,
+  never `/tmp`.

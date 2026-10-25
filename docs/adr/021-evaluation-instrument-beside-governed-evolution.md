@@ -129,3 +129,18 @@ and until it lands no instrument task reaches the model door at all.
   comparisons, `loom run` and the Harbor agent adapter, and the GEPA search
   itself, which consumes `Arm.components` and `Grade.side_info` with no new
   abstraction.
+
+## Addendum, 2026-10-25: the seal is complete
+
+The admission tool named above as the next slice has landed. `eval/admit`
+converts a plan's tune or validate split into a version-two task set and
+submits it through the existing operator door (`loomd evolution
+admit_tasks`), and it refuses a holdout split before reading any file.
+The governed decoder accepts version-two sets of inline fixtures with
+exact-file verifiers and refuses git workspaces and program verifiers at
+admission, because the jailed verifier lives in `packages/eval`, which
+`client` cannot depend on. The holdout-to-production join reads copies of
+session databases and excludes unmarked turns from the rate. It matches a
+mark to the latest earlier attempt on the same model, because attempt
+facts carry no entry id; journaling the entry id would make the join
+exact, and protocol-change/100 lists it as follow-up.
