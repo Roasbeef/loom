@@ -825,10 +825,13 @@ Paths are relative to `packages/eval/src/eval/` unless marked.
 | [`normalise`](../../packages/eval/src/eval/normalise.gleam), [`cassette`](../../packages/eval/src/eval/cassette.gleam) | The replay lane. |
 | [`atif`](../../packages/eval/src/eval/atif.gleam), [`harbor`](../../packages/eval/src/eval/harbor.gleam), [`export_cli`](../../packages/eval/src/eval/export_cli.gleam), [`transcripts`](../../packages/eval/src/eval/transcripts.gleam), [`transcripts_cli`](../../packages/eval/src/eval/transcripts_cli.gleam) | Exports and the failure-taxonomy tooling. |
 | [`evalstat`](../../packages/evalstat/src/evalstat.gleam) and its [modules](../../packages/evalstat/src/evalstat/) (`trial`, `pairing`, `binomial`, `mcnemar`, `paired`, `bootstrap`, `prng`, `passk`, `verdict`, `dominance`) | The statistics and the decision rule, in the package's own reading order. |
+| [`search`](../../packages/eval/src/eval/search.gleam), [`reflect`](../../packages/eval/src/eval/reflect.gleam), [`optimize`](../../packages/eval/src/eval/optimize.gleam), [`optimize_cli`](../../packages/eval/src/eval/optimize_cli.gleam) | The prompt search's Loom side: the log rows and their adapter, the reflective dataset and the gateway call, the effectful driver and the front files. |
+| [`gepa`](../../packages/gepa/src/gepa.gleam) and its [modules](../../packages/gepa/src/gepa/) (`verdict`, `select`, `budget`, `prompt`, `judge`, `prng`, `log`) | The search itself as a stdlib-only library another project can embed: the replayable state machine, the front and draws, the budget holds, the reflection prompt, the default acceptance rule and the log codec. |
 
 Dependencies point one way. `eval` depends on `client` (the trial recipe and the
-jail), `evalstat`, `provider`, `storage`, `session`, `runtime`, `tools`, `prompt`
-and `core`, with `weft` for process machinery. Nothing depends on `eval`. The
+jail), `evalstat`, `gepa`, `provider`, `storage`, `session`, `runtime`, `tools`,
+`prompt` and `core`, with `weft` for process machinery. Nothing depends on
+`eval`, and `gepa` depends on nothing in the tree. The
 governed `client/evolution/rollout` depends on `evalstat` and never on `eval`.
 
 When you change the package, three rules are worth knowing before you start. A

@@ -35,6 +35,16 @@ Two packages and a change to the governed plane.
   - holdout-sealed v2 admission and the production join;
   - the first task set (`tasks/loom-history-v1`, 21 proved tasks);
   - operator plans in `plans/`.
+- `packages/gepa` is the prompt search as a stdlib-only library, held to
+  R6 so a project that is not Loom can embed it: a pure state machine the
+  host drives with `next`/`apply`, whose log replays exactly, with the
+  front and draws, the budget holds, the reflection prompt and a default
+  acceptance rule inside it. `eval/search` is now the adapter (Loom's rows
+  and JSON codec unchanged on disk), `eval/reflect` builds Loom's records
+  over `gepa/prompt`, and `eval/optimize` keeps the effectful driver and
+  asks the library for every decision. Its README is written for an
+  embedder; the module doc of `gepa` names where N-proposal reflection,
+  further dispositions, a richer reply and merge lineage would go.
 - The governed `evolution.compare` now decides with evalstat over the
   plan's rows, and takes K samples. The door's turn ceiling is 100 and its
   wall 480 s, kept under the code-mode call timeout. The dollar and token
