@@ -88,10 +88,42 @@ catalogue; each call that needs one is handed it. Its answers are plain data:
 `evaluate` returns an `evaluate.Report` that `serve` writes with
 `evaluate.record`, and `run_program` returns the `tool.ToolOutcome`
 (`program.outcome`). `machine/local` is the former
-`native` module and builds the record for a workspace in this VM; `serve` builds
-one per session. Generations keep their own `tools`, `hooks`, `inventory`,
-`mode` and `retire`, so the seam has no invoke or retire function. Prompt trials
-and the core upgrade (`control.Seam`) stay outside it.
+`native` module and builds the record for a workspace in this VM. `machine/remote`
+builds it for a workspace on an executor: `remote.Link` (session, executor name,
+the attached `surface`, the census identity, a `fn() -> Result(wiring.Authority,
+String)` and a logger) and `remote.new(link)` send the eight version 5 messages.
+`serve` builds one machine per session and chooses it by placement:
+`local_evolution_machine` for a local code-mode host, with the session's run
+scratch; `remote.new(Half.evolution_link)` for a workspace on an executor whose
+census says `Compiles`, with no scratch; none otherwise. The catalogue and the
+live owner are this VM's in both cases. `open_evolution` takes an
+`EvolutionScope`: `LocalScope` keeps naming the workspace by the context's path,
+`ExecutorScope("executor:<executor>/<name>")` names it for the catalogue's scopes
+and the operator's commands. Generations keep their own `tools`, `hooks`,
+`inventory`, `mode` and `retire`, so the seam has no invoke or retire function.
+Prompt trials and the core upgrade (`control.Seam`) stay outside it.
+
+`machine/remote` sends `EvolutionSnapshot`, `EvolutionEvaluate`, `EvolutionStage`,
+`EvolutionRun` (a promoted tool or a program), `EvolutionHook`,
+`EvolutionTransition`, `EvolutionRetire` and `EvolutionInventory` through
+`surface.ask` (waits for the reply, sent again after a repair) or
+`surface.ask_within` (hooks, inventory and retire). `stage` retires every
+`superseded` handle at once with `weft.map`, and a retire that did not confirm
+becomes a `retirement.repeat` folded into the new generation's `retire`. A retire
+the executor does not answer is `Ok` (the scope's close settles it); only
+`UnknownCleanup` fails. A promoted tool's `run` reads the stored authority and
+sends one `EvolutionRun`. An in-place successor gets a bus of its own (hooks reach
+the serving generation by handle); `publish` closes the predecessor's bus, `abort`
+the successor's, and a successor's `retire` also retires its predecessor's handle
+and bus, because the live owner drops the predecessor once the successor is
+published. A `Publish` answered `UnknownHandle` is the "migration lost" refusal.
+`evaluate` refuses a candidate of another identity (`Changed`) before sending, and
+reads the report with `executor_evolution.decode_report`; a lost or unreadable
+answer is an `Inconclusive` report. `tool.from_result_message` is the inverse of
+`to_result_message` that turns the `RunAnswer` back into a `ToolOutcome`. Tests:
+`machine/remote_test` over `support/remote_orchestrator` and the scripted
+`support/remote_evolution` plane, and the registered-session cases of
+`remote_assembly_test`.
 
 Evolution callbacks project their secret store, helper path, source session and
 model gateway before closure construction. Trace callbacks still borrow the
@@ -7102,8 +7134,8 @@ below.
   in a weft run cancelled when its requester exits (`cancel_when_exits`), and a
   `Tail` is served inline. It reconciles acknowledgements on `bind` and on a
   weft periodic timer, acknowledging only keys the injected `settled` accepts.
-- `remote/surface` is `attach`, `run`, `recover`, `ack`, `places` and
-  `functions`. A lost connection is repaired with `weft/poll.fold_until` on a
+- `remote/surface` is `attach`, `run`, `recover`, `ack`, `places`, `functions`,
+  and for the evolution messages `ask`, `ask_within`, `incarnation` and `token`. A lost connection is repaired with `weft/poll.fold_until` on a
   doubling interval and the same `Run` is sent again. `recover` sends
   `QueryOrFence` for a call whose `run.replay` is `ReplayNever` and plain
   `Query` for a `ReplaySafe` one.
@@ -7224,6 +7256,13 @@ local fixtures).
 - **Prompt.** `render_prompt` is unchanged: the user's guidance is read here, the
   workspace's arrives in `census.prompt`, and the platform, shell and policy
   facts come from `census.census`.
+- **Evolution.** `Hands.evolution` is `Some(Link)` when the census says
+  `Compiles(identity)` and `None` otherwise, with `evolution.unavailable` logged
+  once naming the executor (`Registered.logger`). `Half.evolution_link` carries it
+  to `assemble_in`, which opens the catalogue under the census identity and builds
+  the live owner over `machine/remote`. The link reads the session's standing
+  authority (`wiring.read_standing`) for each check, because the executor needs it
+  and only this side holds it.
 - **Scope record.** `remote/scope` keeps `{incarnation, closed, executor}` in the
   reserved cell `client/remote/scope`. No cell attaches at 1, a close that ended,
   clean or with unknown cleanup, at the stored incarnation plus one, anything

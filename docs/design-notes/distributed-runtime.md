@@ -456,7 +456,7 @@ host creates no scope and changes no state
 (`client/remote/host.gleam:580`). The orchestrator's open then stops the
 session's owner port and fails with `executor_unavailable: the executor speaks
 protocol version N and this orchestrator does not`
-(`refused`, `client/remote/workspace.gleam:788`; the wording is
+(`refused`, `client/remote/workspace.gleam:835`; the wording is
 `client/remote/protocol.gleam:573`). There is no negotiation and no accepted
 range. `Run`, `Query` and the other messages carry no version of their own,
 because each session open begins with an `Attach`. The constant's doc comment
