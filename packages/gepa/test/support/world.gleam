@@ -56,19 +56,27 @@ pub fn planted() -> World {
   World(charge: WorstCase, answers: [#(1, "better")])
 }
 
-/// A candidate's score on a task: one when any component says "better",
-/// else zero.
+/// A candidate's score on a task: one when any component says "even
+/// better", three quarters when one says "better", else zero. The middle
+/// grade exists so a found improvement is not at the ceiling, where the
+/// search would rightly skip reflecting on it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// assert world.quality([#("a", "be better")]) == 1.0
+/// assert world.quality([#("a", "be better")]) == 0.75
 /// ```
 ///
 pub fn quality(components: List(#(String, String))) -> Float {
-  case list.any(components, fn(c) { string.contains(c.1, "better") }) {
-    True -> 1.0
-    False -> 0.0
+  let says = fn(word) {
+    list.any(components, fn(c) { string.contains(c.1, word) })
+  }
+
+  // The best word wins; a candidate that says neither scores nothing.
+  case says("even better"), says("better") {
+    True, _ -> 1.0
+    False, True -> 0.75
+    False, False -> 0.0
   }
 }
 

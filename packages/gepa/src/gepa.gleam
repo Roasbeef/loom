@@ -35,12 +35,16 @@
 ////    generator seeded by the search id and the step number, the step's
 ////    slot is `select.slot_for` and its minibatch `select.minibatch`;
 //// 2. the parent is evaluated on the minibatch (`Evaluate`,
-////    `ParentMinibatch`) to collect feedback;
+////    `ParentMinibatch`) to collect feedback; a parent at the ceiling on
+////    every minibatch task has nothing to reflect on, and the step ends
+////    in a `Refused` row that costs nothing (`skipped_perfect_reason`);
 //// 3. the reflector is shown that feedback (`Reflect`), with the slot's
 ////    background (`Config.background`) and a digest of the rewrites of
 ////    that slot the lineage already rejected (`tried`), and answers the
 ////    slot's new text; the child is the parent with that slot replaced
-////    (`Minted`), or the step ends `Refused`;
+////    (`Minted`), or the step ends `Refused`, as it does when the host
+////    reports the answer `Truncated` at an output limit, since a rewrite
+////    cut mid-sentence is not the rewrite the reflector meant;
 //// 4. the child is evaluated on the same minibatch (`ChildMinibatch`) and
 ////    `select.screen` decides whether to pay for validate;
 //// 5. the child is evaluated on the whole validate split (`Validate`) and
@@ -344,6 +348,9 @@ pub type Progress {
     reached: Reached,
     /// The child, once minted.
     child: Option(String),
+    /// How the last reflection's answer ended, from its row, so `admit`
+    /// can refuse a truncated one; none before the step has reflected.
+    finish: Option(Finish),
     /// The acceptance against the incumbent, when one was recorded before
     /// the settling judgement.
     against_incumbent: Option(Acceptance),
@@ -479,6 +486,18 @@ pub type Request {
   /// The search has stopped.
   Done
 }
+
+/// The reason of the `Refused` row a step ends in when its parent scored
+/// one on every minibatch task: there is nothing for a reflection to
+/// improve on, so none is paid for.
+pub const skipped_perfect_reason =
+  "skipped_perfect: the parent scored 1.0 on every minibatch task"
+
+/// The reason of the `Refused` row `admit` writes when the host reported
+/// the reflection's answer `Truncated`: a rewrite cut at an output limit
+/// is not the rewrite the reflector meant, however well it reads.
+pub const truncated_reason =
+  "the reflector's answer was truncated at the output limit"
 
 // What a step draws before it runs anything: all from the pool as it
 // stood and a generator seeded by the search id and the step, so a
@@ -797,7 +816,8 @@ pub fn apply(state: State, event: Event) -> Result(State, String) {
   case event {
     Seeded(..) -> apply_seeded(state)
     Evaluated(..) -> apply_evaluated(state, event)
-    Reflected(step:, cost:, ..) -> apply_reflected(state, step, cost)
+    Reflected(step:, cost:, finish:, ..) ->
+      apply_reflected(state, step, cost, finish)
     Minted(..) -> apply_minted(state, event)
     Refused(step:, candidate:, ..) -> apply_refused(state, step, candidate)
     Judged(..) -> apply_judged(state, event)
@@ -962,6 +982,7 @@ fn open_step(state: State, evaluation: Evaluation) -> Result(State, String) {
             parent: evaluation.candidate,
             reached: ParentMeasured,
             child: None,
+            finish: None,
             against_incumbent: None,
           )),
         ),
@@ -1105,6 +1126,7 @@ fn apply_reflected(
   state: State,
   step: Int,
   cost: Float,
+  finish: Finish,
 ) -> Result(State, String) {
   // A reflection belongs to an open step that has no child yet.
   case state.open {
@@ -1120,7 +1142,9 @@ fn apply_reflected(
           ..state,
           reflections: state.reflections + 1,
           spent_reflecting: state.spent_reflecting +. cost,
-          open: Some(Progress(..progress, reached: ReflectedOnce)),
+          open: Some(
+            Progress(..progress, reached: ReflectedOnce, finish: Some(finish)),
+          ),
         ),
       )
     }
@@ -1191,7 +1215,8 @@ fn member_of(state: State, candidate: String) -> Result(Member, String) {
 }
 
 /// A refusal closes the open step: with no candidate after a refused
-/// answer, with the child when the host could not build it.
+/// answer, or before any reflection when the step had nothing to reflect
+/// on; with the child when the host could not build it.
 fn apply_refused(
   state: State,
   step: Int,
@@ -1206,7 +1231,9 @@ fn apply_refused(
       ))
       use Nil <- result.try(require(
         case candidate {
-          None -> progress.reached == ReflectedOnce
+          None ->
+            progress.reached == ReflectedOnce
+            || progress.reached == ParentMeasured
           Some(_) ->
             progress.child == candidate && progress.reached == ChildMinted
         },
@@ -1587,8 +1614,27 @@ fn within_step(
 
   // Each stage reached names the next request.
   case progress.reached, progress.child {
-    ParentMeasured, _ | ReflectedOnce, _ ->
-      reflect_or_refuse(state, config, progress, drawn)
+    ParentMeasured, _ ->
+      // A parent at the ceiling leaves a reflection nothing to improve, so
+      // the step ends here at no cost rather than paying to be told so.
+      case
+        select.perfect(
+          minibatch_scores(state, progress.parent, progress.step),
+          drawn.tasks,
+        )
+      {
+        True ->
+          Ok(
+            Record(Refused(
+              step: progress.step,
+              candidate: None,
+              reason: skipped_perfect_reason,
+            )),
+          )
+        False -> reflect_or_refuse(state, config, progress, drawn)
+      }
+
+    ReflectedOnce, _ -> reflect_or_refuse(state, config, progress, drawn)
 
     ChildMinted, Some(child) ->
       Ok(Evaluate(
@@ -1934,7 +1980,8 @@ fn remaining(state: State, config: Config) -> Float {
 
 /// The event an answer earns in the open step: `Minted` with the id
 /// `id_of` gives the child's components, or `Refused` when the answer
-/// was refused or reproduces a candidate the search already holds.
+/// was refused, was reported `Truncated` by the `Reflected` row before it,
+/// or reproduces a candidate the search already holds.
 ///
 /// ## Examples
 ///
@@ -1955,11 +2002,14 @@ pub fn admit(
   ))
   use parent <- result.try(member_of(state, progress.parent))
 
-  // A refused answer ends the step with no candidate; a good one mints the
-  // child unless the search already holds it.
-  case answer {
-    Error(reason) -> Ok(Refused(step: progress.step, candidate: None, reason:))
-    Ok(text) -> {
+  // A refused or truncated answer ends the step with no candidate; a good
+  // one mints the child unless the search already holds it.
+  case answer, progress.finish {
+    Error(reason), _ ->
+      Ok(Refused(step: progress.step, candidate: None, reason:))
+    Ok(_), Some(Truncated) ->
+      Ok(Refused(step: progress.step, candidate: None, reason: truncated_reason))
+    Ok(text), Some(Complete) | Ok(text), Some(Unknown) | Ok(text), None -> {
       let components = child_components(parent.components, slot, text)
       let candidate = id_of(components)
 

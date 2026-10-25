@@ -526,3 +526,72 @@ pub fn the_reflector_is_told_what_this_lineage_already_rejected_test() {
   let assert Ok(gepa.Reflect(request: unrelated, ..)) = gepa.next(second, other)
   assert unrelated.tried == []
 }
+
+pub fn a_parent_perfect_on_its_minibatch_is_not_reflected_on_test() {
+  // Step 1 mints a child at the ceiling and it becomes the incumbent, so
+  // step 2 draws it, finds every minibatch task at one, and ends the step
+  // in a refusal that made no call and spent nothing on reflection.
+  let scripted = world.World(world.WorstCase, [#(1, "even better")])
+  let #(state, events) = world.search(config(), scripted)
+
+  assert list.contains(
+    events,
+    gepa.Refused(2, None, gepa.skipped_perfect_reason),
+  )
+  assert state.reflections == 1
+  assert state.step == 2 && gepa.children(state) == 1
+  assert state.stopped == Some(budget.Steps)
+
+  // The skipped step cost its parent minibatch and nothing more: the seed's
+  // run, two minibatches, one reflection, one child minibatch, one
+  // validate run and the confirm run, all at their worst case.
+  let cell = budget.cell_worst_case(config().costs)
+  let minibatch = 2.0 *. cell
+  let validate = 12.0 *. cell
+  assert float.loosely_equals(
+    gepa.spent(state),
+    validate +. 3.0 *. minibatch +. 1.0 +. validate +. 2.0 *. validate,
+    1.0e-9,
+  )
+  assert gepa.replay_checked(events, config()) == Ok(state)
+
+  // The log read back asks for the same refusal where the step was cut.
+  let cut =
+    replayed_until(events, fn(event) {
+      case event {
+        gepa.Evaluated(stage: gepa.ParentMinibatch, step: 2, ..) -> True
+        _ -> False
+      }
+    })
+  assert gepa.next(cut, config())
+    == Ok(gepa.Record(gepa.Refused(2, None, gepa.skipped_perfect_reason)))
+}
+
+pub fn a_truncated_answer_is_refused_however_well_it_reads_test() {
+  // The host reports how the answer ended on the `Reflected` row; an
+  // answer cut at the output limit is refused by `admit` even when the
+  // text passes every other check, and the step ends there.
+  let #(_, events) = world.search(config(), world.planted())
+  let before =
+    list.take_while(events, fn(event) {
+      case event {
+        gepa.Reflected(..) -> False
+        _ -> True
+      }
+    })
+  let truncated =
+    list.append(before, [gepa.Reflected(1, 1.0, "", gepa.Truncated)])
+  let assert Ok(state) = gepa.replay(truncated)
+
+  assert gepa.admit(state, "a", Ok("better"), gepa.content_id)
+    == Ok(gepa.Refused(1, None, gepa.truncated_reason))
+  let assert Ok(closed) =
+    gepa.apply(state, gepa.Refused(1, None, gepa.truncated_reason))
+  assert closed.open == None && gepa.children(closed) == 0
+
+  // A complete or unreported finish mints as before.
+  let complete = list.append(before, [gepa.Reflected(1, 1.0, "", gepa.Unknown)])
+  let assert Ok(state) = gepa.replay(complete)
+  let assert Ok(gepa.Minted(..)) =
+    gepa.admit(state, "a", Ok("better"), gepa.content_id)
+}
