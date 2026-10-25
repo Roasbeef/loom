@@ -62,6 +62,17 @@
 //// `next` re-enters an open step at the stage its events reached and asks
 //// for the same thing again, and the draws are recomputed from the seed.
 ////
+//// Two folds, for two kinds of host. `replay_checked` is the one an
+//// embedder wants: it holds every row to the request `next` made before
+//// it, so an evaluation of other tasks or under another cap, a stage out
+//// of its order, a reflection charged above its worst case, a child in
+//// the wrong slot, a judgement the search did not decide or a stop it
+//// did not reach are refused by name. `replay` and `apply` check only the
+//// shape of the step, because a host whose rows did not come from `next`
+//// — Loom's `eval/search`, whose log predates this library and whose
+//// driver orders its own effects — can still fold them, and that host
+//// vouches for their contents itself.
+////
 //// # What is left for a later layer
 ////
 //// The event encoding (`gepa/log`) is tagged by kind under a version
@@ -81,7 +92,8 @@
 ////
 //// ## Flow
 ////
-//// - `start`, `replay`, `apply`: the state and the fold
+//// - `start`, `replay`, `replay_checked`, `expected`, `answers`, `apply`:
+////   the state and the two folds
 //// - `apply_seeded`, `apply_evaluated`, `apply_reflected`, `apply_minted`,
 ////   `apply_refused`, `apply_judged`, `settle`, `apply_stopped`: one arm
 ////   of the fold each
@@ -99,6 +111,7 @@ import gepa/prng
 import gepa/prompt
 import gepa/select
 import gepa/verdict.{type Acceptance, type Basis, type Disposition}
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -532,6 +545,202 @@ pub fn replay(events: List(Event)) -> Result(State, String) {
 
     [] -> Error("search row missing: the seed")
     [_, ..] -> Error("search row 1: the log must begin with the seed")
+  }
+}
+
+/// Folds a log that a host driving `next` wrote, refusing the first row
+/// that is not the answer to the request `next` made before it, and then
+/// everything `replay` refuses. This is the fold for an embedder; `replay`
+/// alone is for a host whose rows did not come from `next`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gepa.replay_checked(events, config) == Ok(state)   // a log `next` wrote
+/// // gepa.replay_checked([seeded, evaluated_under_another_cap], config)
+/// //   -> Error("search row 2: ...")
+/// ```
+///
+pub fn replay_checked(
+  events: List(Event),
+  config: Config,
+) -> Result(State, String) {
+  // The seed's row opens the state; every later row is first held to the
+  // request before it, then folded.
+  case events {
+    [Seeded(candidate: "", ..), ..] ->
+      Error("search row 1: the seed is a nonempty id")
+    [Seeded(candidate:, components:), ..rest] ->
+      list.index_fold(
+        rest,
+        Ok(start(candidate, components)),
+        fn(folded, event, position) {
+          use state <- result.try(folded)
+
+          {
+            use Nil <- result.try(expected(state, config, event))
+            apply(state, event)
+          }
+          |> result.map_error(fn(reason) {
+            "search row " <> int.to_string(position + 2) <> ": " <> reason
+          })
+        },
+      )
+
+    [] -> Error("search row missing: the seed")
+    [_, ..] -> Error("search row 1: the log must begin with the seed")
+  }
+}
+
+/// Whether a row answers the request `next` makes of the state before
+/// it. A `Record` must be applied as decided; an evaluation must be of
+/// the stage, step, candidate, tasks and cap asked for and cost no more
+/// than its cap; a reflection must be of the step asked for and cost no
+/// more than its worst case; a child must be minted from the parent and
+/// slot asked for, or refused with no child; a child the host could not
+/// build is refused where its minibatch was asked for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // gepa.expected(state, config, Stopped(budget.Steps))
+/// //   == Error("the search did not decide this row: ...")
+/// ```
+///
+pub fn expected(
+  state: State,
+  config: Config,
+  event: Event,
+) -> Result(Nil, String) {
+  // A child, or the refusal of an answer, that follows a reflection answers
+  // the `Reflect` request before it, not the question `next` asks now:
+  // after the reflection was charged `next` asks whether another one is
+  // still affordable, which is the resume case, not this one.
+  case state.open, event {
+    Some(Progress(reached: ReflectedOnce, step:, parent:, ..)),
+      Minted(parent: got_parent, step: got_step, slot: got_slot, ..)
+    -> {
+      use drawn <- result.try(draws(state, config, step))
+
+      require(
+        step == got_step && parent == got_parent && drawn.slot == got_slot,
+        "the child is not minted from the parent and slot asked for",
+      )
+    }
+
+    Some(Progress(reached: ReflectedOnce, step:, ..)),
+      Refused(step: got_step, candidate: None, ..)
+    -> require(step == got_step, "the refusal is not of the step asked for")
+
+    _, _ -> answers(state, config, event)
+  }
+}
+
+/// Whether a row answers the request `next` makes of the state before it.
+fn answers(state: State, config: Config, event: Event) -> Result(Nil, String) {
+  use request <- result.try(next(state, config))
+
+  // Each request admits the rows that answer it, and no other.
+  case request, event {
+    Record(wanted), got ->
+      require(
+        wanted == got,
+        "the search did not decide this row: it recorded "
+          <> describe(Record(wanted)),
+      )
+
+    Evaluate(stage:, step:, candidate:, tasks:, cap:, ..),
+      Evaluated(
+        stage: got_stage,
+        step: got_step,
+        candidate: got_candidate,
+        tasks: got_tasks,
+        cap: got_cap,
+        cost:,
+        ..,
+      )
+    -> {
+      use Nil <- result.try(require(
+        stage == got_stage
+          && step == got_step
+          && candidate == got_candidate
+          && tasks == got_tasks
+          && cap == got_cap,
+        "the evaluation is not the one asked for: " <> describe(request),
+      ))
+
+      require(cost <=. cap, "an evaluation spent past its cap")
+    }
+
+    Evaluate(stage: ChildMinibatch, step:, candidate:, ..),
+      Refused(step: got_step, candidate: Some(got_candidate), ..)
+    ->
+      require(
+        step == got_step && candidate == got_candidate,
+        "a refused child is the one whose minibatch was asked for",
+      )
+
+    Reflect(step:, worst_case:, ..), Reflected(step: got_step, cost:, ..) -> {
+      use Nil <- result.try(require(
+        step == got_step,
+        "the reflection is not the one asked for",
+      ))
+
+      require(cost <=. worst_case, "a reflection cost more than its worst case")
+    }
+
+    Done, _ -> Error("a row follows the stop row")
+    _, _ -> Error("the row does not answer the request: " <> describe(request))
+  }
+}
+
+/// A request in a sentence, for a refusal.
+fn describe(request: Request) -> String {
+  case request {
+    Evaluate(stage:, step:, candidate:, cap:, ..) ->
+      "an evaluation of "
+      <> candidate
+      <> " at step "
+      <> int.to_string(step)
+      <> " ("
+      <> stage_word(stage)
+      <> ", cap "
+      <> float.to_string(cap)
+      <> ")"
+    Reflect(step:, parent:, slot:, ..) ->
+      "a reflection on "
+      <> parent
+      <> "'s "
+      <> slot
+      <> " at step "
+      <> int.to_string(step)
+    Record(Stopped(reason:)) -> "the stop (" <> budget.stop_name(reason) <> ")"
+    Record(Judged(candidate:, against:, disposition:, ..)) ->
+      "a judgement of "
+      <> candidate
+      <> " against "
+      <> against
+      <> " ("
+      <> verdict.disposition_name(disposition)
+      <> ")"
+    Record(Reflected(step:, ..)) ->
+      "a zero-cost reflection at step " <> int.to_string(step)
+    Record(Refused(step:, reason:, ..)) ->
+      "a refusal at step " <> int.to_string(step) <> " (" <> reason <> ")"
+    Record(Seeded(..)) | Record(Evaluated(..)) | Record(Minted(..)) ->
+      "a row of its own"
+    Done -> "nothing: the search has stopped"
+  }
+}
+
+/// A stage as one word.
+fn stage_word(stage: Stage) -> String {
+  case stage {
+    SeedValidate -> "seed validate"
+    ParentMinibatch -> "parent minibatch"
+    ChildMinibatch -> "child minibatch"
+    Validate -> "validate"
+    Confirm -> "confirm"
   }
 }
 

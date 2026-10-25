@@ -71,7 +71,120 @@ pub fn the_planted_improvement_is_found_and_confirmed_test() {
     })
   let assert [verdict.Incumbent, ..] = dispositions
   assert gepa.replay(events) == Ok(state)
+  assert gepa.replay_checked(events, config()) == Ok(state)
   assert log.parse(log.render(events)) == Ok(events)
+}
+
+/// A row that is not the answer to the request before it is refused by
+/// the checked fold and named, whatever the per-event fold thinks of it.
+pub fn the_checked_fold_refuses_a_row_the_search_did_not_ask_for_test() {
+  let #(_, events) = world.search(config(), world.planted())
+  let refused = fn(mutated: List(gepa.Event), naming: String) {
+    let assert Error(reason) = gepa.replay_checked(mutated, config())
+    assert string.contains(reason, naming)
+  }
+  let at = fn(wanted: fn(gepa.Event) -> Bool) {
+    let before = list.take_while(events, fn(event) { !wanted(event) })
+    let assert [found, ..] = list.drop(events, list.length(before))
+    #(before, found)
+  }
+
+  // An evaluation under another cap, or of other tasks.
+  let #(before, found) =
+    at(fn(event) {
+      case event {
+        gepa.Evaluated(stage: gepa.ChildMinibatch, ..) -> True
+        _ -> False
+      }
+    })
+  let assert gepa.Evaluated(cap:, tasks:, ..) = found
+  refused(
+    list.append(before, [gepa.Evaluated(..found, cap: cap +. 1.0)]),
+    "not the one asked for",
+  )
+  refused(
+    list.append(before, [gepa.Evaluated(..found, tasks: list.reverse(tasks))]),
+    "not the one asked for",
+  )
+  refused(
+    list.append(before, [gepa.Evaluated(..found, cost: cap +. 0.5)]),
+    "spent past its cap",
+  )
+
+  // Validate before the screen: the child's validate run where its
+  // minibatch was asked for.
+  let #(_, validate) =
+    at(fn(event) {
+      case event {
+        gepa.Evaluated(stage: gepa.Validate, step: 1, ..) -> True
+        _ -> False
+      }
+    })
+  refused(list.append(before, [validate]), "not the one asked for")
+
+  // A reflection charged above its worst case, and a child in the wrong
+  // slot.
+  let #(before_reflect, reflected) =
+    at(fn(event) {
+      case event {
+        gepa.Reflected(..) -> True
+        _ -> False
+      }
+    })
+  let assert gepa.Reflected(cost:, ..) = reflected
+  refused(
+    list.append(before_reflect, [gepa.Reflected(..reflected, cost: cost +. 1.0)]),
+    "more than its worst case",
+  )
+  let #(before_mint, minted) =
+    at(fn(event) {
+      case event {
+        gepa.Minted(..) -> True
+        _ -> False
+      }
+    })
+  let assert gepa.Minted(..) = minted
+  refused(
+    list.append(before_mint, [gepa.Minted(..minted, slot: "b")]),
+    "not minted from the parent and slot asked for",
+  )
+
+  // A judgement the search did not decide, and a stop it did not reach.
+  let #(before_judged, judged) =
+    at(fn(event) {
+      case event {
+        gepa.Judged(basis: verdict.OnValidate, ..) -> True
+        _ -> False
+      }
+    })
+  let assert gepa.Judged(..) = judged
+  refused(
+    list.append(before_judged, [
+      gepa.Judged(
+        ..judged,
+        acceptance: verdict.Inconclusive,
+        disposition: verdict.ParetoOnly,
+      ),
+    ]),
+    "did not decide this row",
+  )
+  refused(
+    list.append(before_judged, [gepa.Stopped(budget.Steps)]),
+    "did not decide this row",
+  )
+
+  // A stop with the confirm run evaluated and not judged.
+  let #(before_confirm_judged, _) =
+    at(fn(event) {
+      case event {
+        gepa.Judged(basis: verdict.OnConfirm, ..) -> True
+        _ -> False
+      }
+    })
+  refused(
+    list.append(before_confirm_judged, [gepa.Stopped(budget.Steps)]),
+    "did not decide this row",
+  )
 }
 
 pub fn the_seed_is_validated_first_and_a_stop_without_a_best_has_no_confirm_test() {
@@ -216,6 +329,7 @@ pub fn the_log_replays_to_the_final_state_and_resumes_from_any_prefix_test() {
   let #(state, events) = world.search(config, scripted)
 
   assert gepa.replay(events) == Ok(state)
+  assert gepa.replay_checked(events, config) == Ok(state)
   let assert Ok(parsed) = log.parse(log.render(events))
   assert parsed == events
 
@@ -236,7 +350,7 @@ pub fn the_log_replays_to_the_final_state_and_resumes_from_any_prefix_test() {
       Ok(gepa.Reflected(..)) -> {
         assert again.stopped != None
         assert gepa.spent(again) <=. config.limits.budget +. 1.0e-6
-        assert gepa.replay(replayed) == Ok(again)
+        assert gepa.replay_checked(replayed, config) == Ok(again)
         case again.incumbent == again.seed, again.confirmation {
           True, None -> Nil
           False, Some(gepa.Confirmation(acceptance: Some(_), ..)) -> Nil
