@@ -24,10 +24,6 @@ compares and subtracts it.
 The host runs a loop:
 
 ```gleam
-import gepa
-import gepa/log
-import gepa/prompt
-
 fn run(state: gepa.State, config: gepa.Config, events: List(gepa.Event)) {
   let assert Ok(request) = gepa.next(state, config)
 
@@ -39,39 +35,71 @@ fn run(state: gepa.State, config: gepa.Config, events: List(gepa.Event)) {
 
     // Evaluate `candidate` on `tasks`, spending at most `cap`; for the
     // `Confirm` stage evaluate `state.seed` alongside and measure both.
-    gepa.Evaluate(stage:, step:, candidate:, tasks:, trials:, cap:) -> {
-      let #(measured, cost) = my_evaluate(state, candidate, stage, tasks, trials, cap)
-      step(state, config, events, gepa.Evaluated(
-        stage:, step:, candidate:, tasks:, cap:, ref: "my-run-id",
-        measured:, cost:,
-      ))
+    gepa.Evaluate(stage:, step: at, candidate:, tasks:, trials:, cap:) -> {
+      let #(measured, cost) =
+        my_evaluate(state, candidate, stage, tasks, trials, cap)
+      step(
+        state,
+        config,
+        events,
+        gepa.Evaluated(
+          stage:,
+          step: at,
+          candidate:,
+          tasks:,
+          cap:,
+          ref: "my-run-id",
+          measured:,
+          cost:,
+        ),
+      )
     }
 
     // Show the model the prompt, record the call, then admit the answer.
-    gepa.Reflect(step:, slot:, request:, worst_case:, ..) -> {
-      let #(text, cost) = my_model(prompt.render(request))
-      let reflected = gepa.Reflected(step:, cost:, ref: "", finish: gepa.Unknown)
+    gepa.Reflect(step: at, slot:, request:, worst_case:, ..) -> {
+      let #(text, cost) = my_model(prompt.render(request), worst_case)
+      let reflected =
+        gepa.Reflected(step: at, cost:, ref: "", finish: gepa.Unknown)
       let assert Ok(state) = gepa.apply(state, reflected)
+      let events = list.append(events, [reflected])
       let assert Ok(minted) =
         gepa.admit(state, slot, prompt.answer(text), gepa.content_id)
-      step(state, config, list.append(events, [reflected]), minted)
+      step(state, config, events, minted)
     }
   }
 }
 
-fn step(state, config, events, event) {
+fn step(
+  state: gepa.State,
+  config: gepa.Config,
+  events: List(gepa.Event),
+  event: gepa.Event,
+) {
   let assert Ok(state) = gepa.apply(state, event)
   // Persist `log.encode(event)` here: the log is the state.
   run(state, config, list.append(events, [event]))
 }
 ```
 
+This is `test/gepa/readme_test.gleam` verbatim, which compiles and runs
+it on both targets with the simplest `my_evaluate` and `my_model` a host
+could write; copy from there rather than from here if the two ever
+differ.
+
 Start from `gepa.start(seed_id, seed_components)` with a `gepa.Seeded`
 row as the log's first line. To resume after a crash, `log.parse` the
-file, `gepa.replay` the events, and call `run` again: `next` re-enters an
-open step at the stage its rows reached and asks for the same thing. The
-draws are recomputed from the search id and the step number, so a resumed
-step draws the same parent and minibatch it drew before.
+file, `gepa.replay_checked` the events against the same `Config`, and
+call `run` again: `next` re-enters an open step at the stage its rows
+reached and asks for the same thing. The draws are recomputed from the
+search id and the step number, so a resumed step draws the same parent
+and minibatch it drew before. `replay_checked` holds every row to the
+request `next` made before it (the stage, step, candidate, tasks and cap
+of an evaluation, the cost against the cap or the reflection's worst
+case, the parent and slot of a child, the judgements and the stop the
+search itself decided), so a log edited by hand, or written by a host
+that strayed from the loop, is refused by name rather than replayed.
+`gepa.replay` is the same fold without that check, for a host whose rows
+did not come from `next`.
 
 The test support module `test/support/world.gleam` is a complete host of
 this shape, and `test/gepa/loop_test.gleam` is what it is held to.
@@ -150,8 +178,9 @@ seed is always confirmed.
   (128 bits of salted FNV-1a over the components) is enough to tell the
   candidates of one search apart, and a host with a stronger hash should
   use its own.
-- **Persistence.** `gepa/log` encodes one event per line, total to
-  decode; write each line as you apply its event.
+- **Persistence.** `gepa/log` encodes one event per line of printable
+  ASCII, total to decode; write each line as you apply its event, and
+  `log.parse` refuses a file whose last line is torn.
 
 ## Depending on it from another repository
 
