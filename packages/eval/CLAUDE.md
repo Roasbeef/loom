@@ -206,3 +206,56 @@ cancellation. Tape ordinals count from one in prepare order.
 - `sample` reads only headers, groups by model id and outcome, shuffles each
   group with `evalstat/prng.from_string(seed)` and deals round-robin.
 - Tests build synthetic databases under `$HOME/evalwt/transcripts-test/`.
+
+## Exports
+
+`eval/atif` and `eval/harbor` write finished evidence in the formats other
+tools read; `eval/export_cli` is the command line (`gleam run -m
+eval/export_cli -- atif <session.db> <out.json>` and `-- harbor --tasks <dir>
+--out <dir> --repo-url <url> --base-image <ref>`). Neither module runs a
+trial, builds an image or uploads anything.
+
+- `atif.from_entries(entries, usage, model)` is the pure walk to an
+  ATIF-v1.7 `Trajectory`: user turns and answers are steps numbered from 1
+  with no gaps; a tool result joins the step that most recently issued its call
+  id (ids repeat across messages, so the latest issuer wins) and an orphan is
+  dropped; thinking blocks are never read; per-step metrics come from usage rows
+  tied to that assistant entry, `final_metrics` from every row. The store holds
+  no system prompt, so `with_system_prompt` is how a caller adds one.
+- `atif.from_session_db(path)` copies the database and its `-wal` beside the
+  original, opens the copy with a clock far past any lease expiry (so a lease
+  copied from a live writer reads as expired in the copy alone), scans,
+  closes and deletes the copy. The original is neither opened nor written.
+  `atif.write(trajectory, path)` saves it. `trial.gleam` is not wired to
+  these yet; the orchestrator joins them.
+- `atif.scrub` is the replay lane's prefix rule (`sk-`, `xai-`, `ghp_`,
+  `gho_`, `ghs_`, `ghu_`, `github_pat_`, `Bearer `), copied from
+  `cassette.redact_text` because that function is private. It deliberately
+  is not the 32-grapheme scrubber, which would mangle commit hashes and
+  test names. Keep the two prefix lists aligned by hand.
+- `harbor.render` is pure; `harbor.export(task, out_dir, options, runner)`
+  adds the one repository read, `git diff <parent> <fix>` split by
+  `git.split_patch`, whose source half is `solution/gold.patch`. A git
+  task's Dockerfile clones `--repo-url`, checks out the task's commit and
+  deletes `.git`, so the fix is not in the container's object store.
+  `--base-image` and the URL are charset-checked before they reach a
+  Dockerfile line.
+- `tests/test.sh` for a program verifier copies `tests/files/` into the
+  workspace, runs the task's argv, and `tests/reward.py` (python3, which the
+  Dockerfile installs when missing) reads EUnit result lines the way
+  `eval/eunit_ids` does and writes `{"f2p": x, "p2p": y}`. An expected-files
+  verifier compares bytes and writes `{"files": x}`. Both honour
+  `LOOM_WORKSPACE` and `LOOM_VERIFIER_LOGS` (defaults `/app`,
+  `/logs/verifier`), which is how the tests run the generated script on the
+  host.
+
+### Hazards
+
+- `environment_mode = "separate"` is what the design asks for; whether
+  Harbor then carries the agent's workspace into the verifier container is
+  Harbor's rule, not checked here. Confirm with one oracle run.
+- An inline program task has no reference solution; its `solve.sh` fails and
+  says so.
+- The exporter has not been run through Harbor's validator. By hand, once:
+  `python -m harbor.utils.trajectory_validator <out.json>`.
+- The Harbor agent adapter, any image build and any upload are out of scope.
