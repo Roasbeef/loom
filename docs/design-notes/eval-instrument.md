@@ -34,9 +34,9 @@ ceilings. The shared parts are three functions, not a framework.
 
 **P2. "Ensemble" in Loom is already mostly a catalogue question, not a
 profile question.** A profile is keyed by exact `(provider, model_id, api)`
-(`profile.gleam:137-167`); two strands on the same model get the same overlay
+(`provider/profile.gleam:137-167`); two strands on the same model get the same overlay
 and nothing today sees a strand or role at composition time
-(`gateway.gleam:2227-2252`). But the roles that exist — `main`, `subagent`,
+(`provider/gateway.gleam:2227-2252`). But the roles that exist — `main`, `subagent`,
 `advisor`, `summarize`, `vision` — already resolve to *different models* via
 `[roles]` (`client/catalog`; `agency.Config.subagent_model`, client CLAUDE.md),
 and a different model gets its own profile for free. So "different prompts
@@ -44,7 +44,7 @@ or tools per agent" is, for the first two waves, "a different `Settings`
 per arm" (catalogue roles, profile map, `LOOM_PROMPT_PACK`), which needs no
 core change and no protocol change. The per-role key inside one model is a
 real gap, but it is protocol-change work (`prompt.encode_profile`'s strict
-8-field v1 shape, `evo/prompt.gleam:118-160`) and it is deferred, not
+8-field v1 shape, `evolution/prompt.gleam:118-160`) and it is deferred, not
 designed away: the arm type below carries the role axis so step 7 and the
 later change slot in without a new abstraction.
 
@@ -107,7 +107,7 @@ is buying nothing and the modules go under `client/dev/`.
 instrument *produces* and the governed plane *consumes*; they share three
 things and nothing else:
 
-1. **One trial recipe.** `serve.evolution_trial` (`serve.gleam:7876-7968`)
+1. **One trial recipe.** `serve.evolution_trial` (`serve.gleam:8046-8138`)
    builds a `Settings` for a fresh jailed session. Extract its body into
    `@internal pub fn trial_settings(settings, target, api, profiles, root, tag,
    base_policy) -> Settings` so `eval/trial.gleam` and the governed opener
@@ -253,7 +253,7 @@ per-module verifier cost.
 directory is **copied** to `<root>/verify` (so a verifier can never mutate the
 evidence directory, and the raw workspace stays for the artifact);
 (c) `Verifier.Program.files` are written into the copy; (d) `argv` is cleared
-through `tool.broker_runner(broker)` (`tools/tool.gleam:1187`) of the
+through `tool.broker_runner(broker)` (`tools/tool.gleam:1222`) of the
 *evaluating* session, under `serve.evolution_trial_policy(base, trials,
 verify_dir)` (`serve.gleam:7994-8010`: readable/writable roots = that
 directory only, scratch tmpfs, network as the base says). This is
@@ -340,7 +340,7 @@ pub type Knobs {
 `eval/arm.to_settings(arm, base: Settings) -> Result(Settings, String)`
 renders the components into `provider/profile.new` values (one `Profile` per
 distinct `Target` with `role: Any`), builds the profile map via
-`gateway.with_profiles` (`gateway.gleam:558`), writes the pack to a per-arm
+`gateway.with_profiles` (`provider/gateway.gleam:558`), writes the pack to a per-arm
 file, and overrides `catalog.roles`. A component whose `Target.role` is not
 `Any` is **refused** with "per-role profiles need protocol-change 101" — so
 the axis exists in the data and step 7 can emit it, but nothing lies about
@@ -350,8 +350,8 @@ applying it.
 Agency children (`sub:{parent}/{slug}-{digest}`, `agency.child_name`), the
 advisor strand (`advisor`, `client/advisor.ensure_strand`) and the
 `summarize`/`vision` routes. Per-role profile selection would need the strand
-or role at `compose_profile` (`gateway.gleam:2227`) and a 9th field in
-`prompt.encode_profile` (`evo/prompt.gleam:118-137`), hence a persisted-format
+or role at `compose_profile` (`provider/gateway.gleam:2227`) and a 9th field in
+`prompt.encode_profile` (`evolution/prompt.gleam:118-137`), hence a persisted-format
 bump and protocol-change 101. Deferred.
 
 **`profile.apply` stays append-only.** A replace mode is a different trust
@@ -496,7 +496,7 @@ the rule cannot hold α on synthetic data it will not hold it on a model.
   clustering that prevents a leaked near-duplicate.
 - The seal: `evolution.compare` can name only a task set admitted into the
   *source session* by `admit_tasks` (`tasks.load`, `tasks.gleam:95-120`;
-  `serve.evolution_compare`, `serve.gleam:7816-7820`). The instrument's
+  `serve.evolution_compare`, `serve.gleam:7981-7985`). The instrument's
   `eval admit --split tune|validate` writes a v2 task set through the same
   operator door; `eval admit --split holdout` **does not exist** — the
   command refuses, and a lint-style test in `eval` asserts no holdout id
@@ -509,7 +509,7 @@ the rule cannot hold α on synthetic data it will not hold it on a model.
   and the **gap** `d̄_validate − d̄_holdout` with its own paired CI; a
   positive gap beyond its CI is printed as "memorised".
 - Holdout vs production: `eval production --since <date>` reads reserved
-  facts `prompt/evolution-outcome/<entry_id>` (`trace.gleam:490-515`) from
+  facts `prompt/evolution-outcome/<entry_id>` (`evolution/trace.gleam:490-515`) from
   *copies* of production session databases (writer lease, storage
   CLAUDE.md), joins each to the profile id journaled in
   `evolution/attempt/<hex>` facts (`serve.evolution_attempt`,
@@ -532,19 +532,19 @@ must refuse with the words "holdout".
 **Ruling.** Two lanes, two different claims, one transport seam.
 
 **Replay lane (harness/tool regressions).** `eval/cassette.gleam`
-implements `provider/http.Transport` (`http.gleam:145-151`) twice:
+implements `provider/http.Transport` (`provider/http.gleam:145-151`) twice:
 `recording(inner, sink)` tees every `HttpEvent` with the request's
 *ordinal* and a **semantic digest**; `replaying(tape)` answers the *n*-th
 request of a `(task, arm, trial)` with the recorded events **after
 comparing the semantic digest**. A mismatch is not an error to paper over —
 it is the lane's finding: "request 4 of task X diverged: system prompt
 digest changed" with a redacted diff summary. The digest is
-`prompt.fingerprint(system, tools)` (`evo/prompt.gleam:248-272`) plus a
+`prompt.fingerprint(system, tools)` (`evolution/prompt.gleam:248-272`) plus a
 digest of the message list with these normalised: absolute paths under
 the trial root → `<root>`, ISO dates → `<date>`, tool-use ids kept (they
 come from the tape, so they recur). Determinism needs: `Settings` with a
 `clock.stepping` clock, a fixed trial tag (today minted from
-`token.production_entropy()` at `serve.gleam:7888`, so `trial_settings`
+`token.production_entropy()` at `serve.gleam:7784`, so `trial_settings`
 takes the tag as a parameter — part of the §2 extraction), and the agent's
 tools running against a workspace prepared identically (the tree id
 guarantees it). What the lane may claim: *the harness produced the same
@@ -606,7 +606,7 @@ git-ignored; never under `/tmp`; never inside a workspace. One run:
   (the frozen agent tree, before the verifier copy), `verifier/` (stdout,
   stderr, `reward.json`), `trajectory.json` (ATIF-v1.7, §10),
   `requests.jsonl` on the live lane (the cassette tape doubles as the API
-  exchange log, scrubbed with `trace.scrub_excerpt`, `trace.gleam:464`).
+  exchange log, scrubbed with `trace.scrub_excerpt`, `evolution/trace.gleam:464`).
 - `report.json` + `report.md` — the `evalstat` verdict, MDE first line,
   panels per split, variance decomposition, Pareto table, and the list of
   trial rows the verdict used.
@@ -630,10 +630,10 @@ the denominator.
 - `eval transcripts --state <dir> --since <date> --out <dir>` opens *copies*
   of session databases (`session.open_sqlite` takes a writer lease;
   `client_dev.gleam:15-17` carries the same warning), walks
-  `storage.scan_entries`/`scan_usage` (`storage.gleam:365, 402`), and
+  `storage.scan_entries`/`scan_usage` (`storage.gleam:399, 402`), and
   writes one JSONL per session with: user/assistant text through
-  `trace.scrub_excerpt` (`trace.gleam:464`; thinking and images excluded
-  as `trace.select` does, `evolution.md:319-323`), tool calls (name +
+  `trace.scrub_excerpt` (`evolution/trace.gleam:464`; thinking and images excluded
+  as `trace.select` does, `evolution.md:208-212`), tool calls (name +
   argument *keys* + a 256-byte scrubbed argument digest preview), tool
   results (`is_error`, 512-byte scrubbed tail), compactions, usage rows,
   and any `prompt/evolution-outcome/*` mark. The scrubber's limits
